@@ -1,0 +1,30 @@
+services:
+  sockguard:
+    build:
+      context: .
+      args:
+        VERSION: dev
+    container_name: sockguard
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./app/configs/sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LOG_LEVEL=info
+
+  # Example: drydock using sockguard as its socket proxy
+  drydock:
+    image: codeswhat/drydock:latest
+    container_name: drydock
+    depends_on:
+      - sockguard
+    ports:
+      - "3000:3000"
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - DD_WATCHER_LOCAL_SOCKET=/var/run/sockguard/sockguard.sock
+
+volumes:
+  sockguard-socket:

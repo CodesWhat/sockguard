@@ -1,0 +1,122 @@
+# Presets
+
+Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
+
+## Drydock (`drydock.yaml`)
+
+Optimized for the [drydock](https://github.com/CodesWhat/drydock) container update manager.
+
+**Use for:** drydock, or any container updater that needs lifecycle control + image pull.
+
+```yaml
+# Allows: container read, start, stop, restart, remove, create
+# Allows: image read, pull
+# Allows: network read, volume read, distribution
+# Denies: exec, build, swarm, secrets, plugins
+```
+
+## Traefik (`traefik.yaml`)
+
+Minimal read-only access for Traefik reverse proxy.
+
+**Use for:** Traefik, nginx-proxy, or any reverse proxy with Docker provider.
+
+```yaml
+# Allows: GET on containers, networks, services, tasks, events, ping, version
+# Denies: everything else
+```
+
+## Portainer (`portainer.yaml`)
+
+Full Docker API access for Portainer management UI.
+
+**Use for:** Portainer with full management capabilities.
+
+```yaml
+# Allows: containers, images, networks, volumes, exec, build, swarm, plugins (full R/W)
+# WARNING: This grants near-full Docker socket access
+```
+
+## Watchtower (`watchtower.yaml`)
+
+Optimized for the [Watchtower](https://github.com/containrrr/watchtower) container auto-updater.
+
+**Use for:** Watchtower with lifecycle hooks and network-aware updates.
+
+```yaml
+# Allows: container lifecycle (start, stop, kill, restart, rename, remove, create)
+# Allows: image pull/remove, exec (lifecycle hooks), network connect/disconnect
+# Denies: build, swarm, secrets, plugins
+```
+
+## Homepage (`homepage.yaml`)
+
+Read-only access for the [Homepage](https://gethomepage.dev) dashboard.
+
+**Use for:** Homepage, or any dashboard that only reads container state and stats.
+
+```yaml
+# Allows: GET on containers (list, inspect, stats), images, services, tasks, events
+# Denies: all write operations
+```
+
+## Homarr (`homarr.yaml`)
+
+Optimized for [Homarr](https://homarr.dev) dashboard with container management.
+
+**Use for:** Homarr with start/stop/restart controls enabled.
+
+```yaml
+# Allows: container read (list, inspect, stats), start, stop, restart
+# Allows: image read
+# Denies: exec, create, network/volume writes
+```
+
+## Diun (`diun.yaml`)
+
+Minimal read-only access for [Diun](https://github.com/crazy-max/diun) (Docker Image Update Notifier).
+
+**Use for:** Diun, or any tool that only needs to discover running containers and inspect images.
+
+```yaml
+# Allows: GET on containers (list, inspect), images (inspect)
+# Denies: everything else — Diun checks registries directly
+```
+
+## Autoheal (`autoheal.yaml`)
+
+Minimal access for [docker-autoheal](https://github.com/willfarrell/docker-autoheal).
+
+**Use for:** Autoheal, or any health-check-based restart tool.
+
+```yaml
+# Allows: GET /containers/json (list unhealthy), POST /containers/*/restart
+# Denies: everything else — the most restrictive write preset
+```
+
+## Read-Only (`readonly.yaml`)
+
+Allows GET access to all Docker API endpoints. Denies all write operations.
+
+**Use for:** generic dashboards, monitoring tools, read-only Portainer.
+
+```yaml
+# Allows: GET on containers, images, networks, volumes, system, events, info, ping, version
+# Denies: all POST, PUT, DELETE
+```
+
+## Using a Preset
+
+Mount the preset as your config file:
+
+```yaml
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - sockguard-socket:/var/run/sockguard
+    command: ["serve", "-c", "/etc/sockguard/drydock.yaml"]
+```
+
+All preset configs are bundled in the image at `/etc/sockguard/`.

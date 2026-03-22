@@ -1,0 +1,61 @@
+# Migration Guide
+
+## From Tecnativa/docker-socket-proxy
+
+Sockguard accepts the same environment variables as Tecnativa. Replace the image:
+
+```diff
+ services:
+   socket-proxy:
+-    image: tecnativa/docker-socket-proxy
++    image: codeswhat/sockguard
+     volumes:
+       - /var/run/docker.sock:/var/run/docker.sock:ro
+     environment:
+       - CONTAINERS=1
+       - POST=0
+```
+
+That's it. Your existing env var config works as-is.
+
+When ready, migrate to YAML config for more control:
+
+```yaml filename="sockguard.yaml"
+rules:
+  - match: { method: GET, path: "/containers/**" }
+    action: allow
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny
+```
+
+## From LinuxServer/socket-proxy
+
+Same process as Tecnativa. Additionally, granular operation env vars are supported:
+
+```bash
+ALLOW_START=1
+ALLOW_STOP=1
+ALLOW_RESTART=1
+```
+
+## From wollomatic/socket-proxy
+
+wollomatic uses CLI flag regex allowlists. The concepts map directly:
+
+| wollomatic | sockguard |
+|-----------|-----------|
+| `-allowGET "^/(v[0-9.]+/)?containers/json$"` | `{ method: GET, path: "/containers/json" }` |
+| `-allowGET "^/(v[0-9.]+/)?events$"` | `{ method: GET, path: "/events" }` |
+| `-allowPOST "^/(v[0-9.]+/)?containers/[a-z0-9]+/start$"` | `{ method: POST, path: "/containers/*/start" }` |
+
+Key differences:
+- Sockguard auto-strips API version prefixes — no need for `(v[0-9.]+/)?` in patterns
+- Glob patterns (`*`, `**`) instead of regex
+- YAML config instead of CLI flags
+- Auto-anchoring built in (no need for `^` and `$`)

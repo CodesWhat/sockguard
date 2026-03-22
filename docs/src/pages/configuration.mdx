@@ -1,0 +1,103 @@
+# Configuration
+
+Sockguard supports two configuration methods: YAML config files and environment variables.
+
+## YAML Config (recommended)
+
+```yaml filename="sockguard.yaml"
+listen:
+  socket: /var/run/sockguard.sock
+  socket_mode: "0660"
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info        # debug, info, warn, error
+  format: json       # json, text
+  output: stderr
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+
+  - match: { method: GET, path: "/version" }
+    action: allow
+
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  - match: { method: GET, path: "/containers/**" }
+    action: allow
+
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "no matching allow rule"
+```
+
+## Rule Matching
+
+Rules are evaluated in order. **First match wins.** If no rule matches, the request is denied.
+
+### Path Patterns
+
+| Pattern | Matches | Does Not Match |
+|---------|---------|----------------|
+| `/containers/json` | `/containers/json`, `/v1.45/containers/json` | `/containers/abc` |
+| `/containers/*` | `/containers/json`, `/containers/abc123` | `/containers/abc/start` |
+| `/containers/**` | `/containers/json`, `/containers/abc/start`, `/containers/abc/logs/stream` | `/images/json` |
+| `/**` | Everything | Nothing |
+
+Docker API version prefixes (`/v1.45/`) are stripped before matching.
+
+### Methods
+
+- Exact: `GET`, `POST`, `PUT`, `DELETE`, `HEAD`
+- Wildcard: `*` matches any method
+
+## Environment Variables
+
+Every config field can be set via env var with `SOCKGUARD_` prefix:
+
+```bash
+SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard.sock
+SOCKGUARD_UPSTREAM_SOCKET=/var/run/docker.sock
+SOCKGUARD_LOG_LEVEL=debug
+SOCKGUARD_LOG_FORMAT=json
+```
+
+## Tecnativa Compatibility
+
+For drop-in migration, sockguard accepts Tecnativa-style env vars:
+
+```bash
+CONTAINERS=1      # Allow GET /containers/**
+IMAGES=1           # Allow GET /images/**
+NETWORKS=0         # Deny /networks/**
+VOLUMES=0          # Deny /volumes/**
+EVENTS=1           # Allow GET /events (default)
+PING=1             # Allow GET /_ping (default)
+VERSION=1          # Allow GET /version (default)
+POST=0             # Deny all write operations (default)
+```
+
+### Granular Operations (LinuxServer compatible)
+
+When `POST=1` is set:
+
+```bash
+ALLOW_START=1      # Allow POST /containers/{id}/start
+ALLOW_STOP=1       # Allow POST /containers/{id}/stop
+ALLOW_RESTART=1    # Allow POST /containers/{id}/restart
+ALLOW_CREATE=0     # Deny POST /containers/create (default)
+ALLOW_EXEC=0       # Deny POST /containers/{id}/exec (default)
+```
+
+## Precedence
+
+CLI flags > environment variables > config file > defaults

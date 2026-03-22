@@ -1,0 +1,38 @@
+# Planning (internal vision/roadmap docs)
+.planning/
+
+# Go
+sockguard
+*.exe
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+bin/
+
+# Environment
+.env
+.env.*
+
+# Node (website/docs/demo)
+node_modules/
+.next/
+.turbo/
+out/
+
+# Turborepo
+.turbo

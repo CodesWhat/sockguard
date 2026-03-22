@@ -1,0 +1,43 @@
+# Sockguard — Diun Preset
+#
+# Minimal read-only access for Diun (Docker Image Update Notifier).
+# Diun only needs to discover running containers and inspect their images.
+# Registry checks are done directly by Diun, not through Docker.
+
+listen:
+  socket: /var/run/sockguard.sock
+  socket_mode: "0660"
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+
+  # Container read (list and inspect)
+  - match: { method: GET, path: "/containers/**" }
+    action: allow
+
+  # Image read (inspect local image metadata)
+  - match: { method: GET, path: "/images/**" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by diun preset — read-only access only"

@@ -1,0 +1,45 @@
+version: 2
+
+project_name: sockguard
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: sockguard
+    main: ./cmd/sockguard/
+    binary: sockguard
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/codeswhat/sockguard/internal/version.Version={{.Version}}
+      - -X github.com/codeswhat/sockguard/internal/version.Commit={{.Commit}}
+      - -X github.com/codeswhat/sockguard/internal/version.Date={{.Date}}
+    flags:
+      - -trimpath
+
+archives:
+  - id: default
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-dev"
+
+changelog:
+  disable: true  # Release notes come from CHANGELOG.md via extract-changelog-entry.mjs
+
+release:
+  draft: false
+  prerelease: auto  # RC tags marked as prerelease

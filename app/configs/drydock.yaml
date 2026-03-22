@@ -1,0 +1,90 @@
+# Sockguard — Drydock Preset
+#
+# Optimized for drydock container update manager.
+# Allows: container lifecycle (start/stop/restart/kill/rename/update/wait/create/remove),
+#         image pull/remove, events, network/volume/distribution read, Swarm services.
+# Denies: exec, build, secrets, plugins.
+
+listen:
+  socket: /var/run/sockguard.sock
+  socket_mode: "0660"
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container read operations (list, inspect, logs, stats)
+  - match: { method: GET, path: "/containers/**" }
+    action: allow
+
+  # Container lifecycle
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/update" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Container creation (for updates)
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  # Image operations (pull, inspect, list, remove)
+  - match: { method: GET, path: "/images/**" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/*" }
+    action: allow
+
+  # Network read (for container networking info)
+  - match: { method: GET, path: "/networks/**" }
+    action: allow
+
+  # Volume read
+  - match: { method: GET, path: "/volumes/**" }
+    action: allow
+
+  # Distribution (registry info)
+  - match: { method: GET, path: "/distribution/**" }
+    action: allow
+
+  # Swarm services (for service-mode containers)
+  - match: { method: GET, path: "/services/**" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by drydock preset"

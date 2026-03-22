@@ -1,0 +1,42 @@
+# Sockguard — Default Configuration
+#
+# Default posture: DENY ALL
+# Everything must be explicitly allowed.
+# Rules are evaluated in order. First match wins.
+
+listen:
+  socket: /var/run/sockguard.sock
+  socket_mode: "0660"
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info        # debug, info, warn, error
+  format: json       # json, text
+  output: stderr     # stderr, stdout, or file path
+  access_log: true   # log every request
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  # Always safe — health probes
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+
+  # Version info
+  - match: { method: GET, path: "/version" }
+    action: allow
+
+  # Event stream (used by most consumers)
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "no matching allow rule"

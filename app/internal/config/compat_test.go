@@ -1,0 +1,164 @@
+package config
+
+import (
+	"log/slog"
+	"testing"
+)
+
+var discardLogger = slog.New(slog.NewTextHandler(
+	devNull{}, &slog.HandlerOptions{Level: slog.LevelError + 1},
+))
+
+type devNull struct{}
+
+func (devNull) Write(b []byte) (int, error) { return len(b), nil }
+
+func TestCompatNoEnvVars(t *testing.T) {
+	cfg := Defaults()
+	if ApplyCompat(&cfg, discardLogger) {
+		t.Error("expected no-op when no env vars set")
+	}
+}
+
+func TestCompatCustomRulesNoOp(t *testing.T) {
+	cfg := Defaults()
+	cfg.Rules = []RuleConfig{
+		{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},
+	}
+	t.Setenv("CONTAINERS", "1")
+	if ApplyCompat(&cfg, discardLogger) {
+		t.Error("expected no-op when custom rules are present")
+	}
+}
+
+func TestCompatContainers(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("CONTAINERS", "1")
+
+	if !ApplyCompat(&cfg, discardLogger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	// Should have: ping, version, events, containers GET, catch-all deny
+	found := false
+	for _, r := range cfg.Rules {
+		if r.Match.Path == "/containers/**" && r.Match.Method == "GET" && r.Action == "allow" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected GET /containers/** allow rule")
+	}
+
+	// Should end with catch-all deny
+	last := cfg.Rules[len(cfg.Rules)-1]
+	if last.Action != "deny" || last.Match.Method != "*" {
+		t.Error("expected catch-all deny as last rule")
+	}
+}
+
+func TestCompatPostGranular(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("POST", "1")
+	t.Setenv("ALLOW_START", "1")
+
+	if !ApplyCompat(&cfg, discardLogger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	found := false
+	for _, r := range cfg.Rules {
+		if r.Match.Path == "/containers/*/start" && r.Match.Method == "POST" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected POST /containers/*/start rule")
+	}
+
+	// Should NOT have blanket POST allow
+	for _, r := range cfg.Rules {
+		if r.Match.Method == "POST,PUT,DELETE" && r.Match.Path == "/**" {
+			t.Error("expected no blanket POST allow when granular vars set")
+		}
+	}
+}
+
+func TestCompatPostBlanket(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("POST", "1")
+
+	if !ApplyCompat(&cfg, discardLogger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	found := false
+	for _, r := range cfg.Rules {
+		if r.Match.Method == "POST,PUT,DELETE" && r.Match.Path == "/**" && r.Action == "allow" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected blanket POST,PUT,DELETE /** allow rule")
+	}
+}
+
+func TestCompatPingDisabled(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("PING", "0")
+	// Need at least one other var to trigger compat
+	t.Setenv("CONTAINERS", "1")
+
+	if !ApplyCompat(&cfg, discardLogger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	for _, r := range cfg.Rules {
+		if r.Match.Path == "/_ping" {
+			t.Error("expected ping rule to be removed when PING=0")
+		}
+	}
+}
+
+func TestLookupEnvBool(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		wantVal   bool
+		wantFound bool
+	}{
+		{"1", "1", true, true},
+		{"true", "true", true, true},
+		{"yes", "yes", true, true},
+		{"TRUE", "TRUE", true, true},
+		{"0", "0", false, true},
+		{"false", "false", false, true},
+		{"no", "no", false, true},
+		{"invalid", "maybe", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("TEST_BOOL", tt.value)
+			// Override the function to look up TEST_BOOL by temporarily setting
+			// the real env var name
+			t.Setenv("COMPAT_TEST", tt.value)
+
+			val, found := lookupEnvBool("COMPAT_TEST")
+			if val != tt.wantVal || found != tt.wantFound {
+				t.Errorf("lookupEnvBool(%q) = (%v, %v), want (%v, %v)",
+					tt.value, val, found, tt.wantVal, tt.wantFound)
+			}
+		})
+	}
+}
+
+func TestLookupEnvBoolNotSet(t *testing.T) {
+	val, found := lookupEnvBool("DEFINITELY_NOT_SET_" + t.Name())
+	if found {
+		t.Error("expected not found for unset env var")
+	}
+	if val {
+		t.Error("expected false for unset env var")
+	}
+}

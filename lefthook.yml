@@ -1,0 +1,65 @@
+---
+# Lefthook configuration for sockguard monorepo.
+#
+# Pre-push pipeline (piped = sequential, fail-fast):
+#   1. GoReleaser config check
+#   2. Go lint + test
+#   3. Biome lint for TS/JS
+#   4. Build all workspaces
+
+pre-commit:
+  piped: true
+  commands:
+    biome-fix:
+      glob: "*.{ts,tsx,js,jsx,json,css}"
+      run: npx biome check --fix --no-errors-on-unmatched {staged_files} && git add {staged_files}
+      priority: 1
+    biome-format:
+      glob: "*.{ts,tsx,js,jsx,json,css}"
+      run: npx biome format --write --no-errors-on-unmatched {staged_files} && git add {staged_files}
+      priority: 2
+
+commit-msg:
+  commands:
+    convention:
+      run: node scripts/validate-commit-msg.mjs {1}
+      fail_text: "Commit message does not follow Gitmoji + Conventional Commits format"
+
+pre-push:
+  piped: true
+  commands:
+    clean-tree:
+      run: |
+        if ! git diff --quiet --exit-code || ! git diff --cached --quiet --exit-code; then
+          echo "Uncommitted changes detected — commit or stash before pushing."
+          exit 1
+        fi
+      fail_text: "Uncommitted changes detected"
+      priority: 0
+      timeout: 10s
+
+    goreleaser-check:
+      run: cd app && goreleaser check
+      glob: "app/.goreleaser.{yml,yaml}"
+      priority: 1
+      timeout: 15s
+
+    go-lint:
+      run: cd app && golangci-lint run
+      priority: 2
+      timeout: 1m
+
+    go-test:
+      run: cd app && go test ./...
+      priority: 3
+      timeout: 2m
+
+    biome:
+      run: npx biome check .
+      priority: 4
+      timeout: 30s
+
+    build:
+      run: npx turbo build
+      priority: 5
+      timeout: 3m

@@ -1,0 +1,75 @@
+# Getting Started
+
+## Installation
+
+### Docker Compose (recommended)
+
+```yaml filename="docker-compose.yml"
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+
+volumes:
+  sockguard-socket:
+```
+
+### Docker Run
+
+```bash
+docker run -d \
+  --name sockguard \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -v ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro \
+  codeswhat/sockguard:latest
+```
+
+### Binary
+
+Download from [GitHub Releases](https://github.com/CodesWhat/sockguard/releases):
+
+```bash
+sockguard serve -c /etc/sockguard/sockguard.yaml
+```
+
+## Connecting Your Apps
+
+Point your Docker consumers at the proxy socket instead of `docker.sock`:
+
+```yaml
+services:
+  traefik:
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - DOCKER_HOST=unix:///var/run/sockguard/sockguard.sock
+
+  drydock:
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - DD_WATCHER_LOCAL_SOCKET=/var/run/sockguard/sockguard.sock
+```
+
+## CLI Commands
+
+```bash
+# Start the proxy (default command)
+sockguard serve
+
+# Validate configuration
+sockguard validate -c /etc/sockguard/sockguard.yaml
+
+# Print version
+sockguard version
+```
+
+## Next Steps
+
+- [Configuration](/configuration) — YAML config and environment variables
+- [Presets](/presets) — Ready-made configs for drydock, Traefik, and more
+- [Migration](/migration) — Migrate from Tecnativa or LinuxServer

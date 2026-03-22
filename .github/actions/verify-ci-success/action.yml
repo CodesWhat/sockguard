@@ -1,0 +1,92 @@
+name: "Verify CI Success"
+description: "Poll the CI verification workflow for a successful run on the given SHA."
+
+inputs:
+  workflow-file:
+    description: "CI workflow filename (e.g. ci-verify.yml)"
+    required: true
+  target-sha:
+    description: "Git SHA to check for a successful CI run"
+    required: true
+  max-attempts:
+    description: "Maximum polling attempts (15s apart)"
+    required: false
+    default: "40"
+  github-token:
+    description: "GitHub token for API access"
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Resolve CI workflow reference
+      id: ci_workflow
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        CI_VERIFY_WORKFLOW_FILE: ${{ inputs.workflow-file }}
+      run: |
+        set -euo pipefail
+
+        workflow_url="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/${CI_VERIFY_WORKFLOW_FILE}"
+        workflow_json="$(curl -fsSL \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H "Accept: application/vnd.github+json" \
+          "${workflow_url}")"
+
+        workflow_id="$(echo "${workflow_json}" | jq -r '.id // empty')"
+        workflow_name="$(echo "${workflow_json}" | jq -r '.name // empty')"
+        workflow_path="$(echo "${workflow_json}" | jq -r '.path // empty')"
+        if [ -z "${workflow_id}" ] || [ -z "${workflow_path}" ]; then
+          echo "::error::Failed to resolve workflow metadata for ${CI_VERIFY_WORKFLOW_FILE}."
+          exit 1
+        fi
+
+        {
+          echo "id=${workflow_id}"
+          echo "name=${workflow_name}"
+          echo "path=${workflow_path}"
+        } >> "$GITHUB_OUTPUT"
+        echo "Using CI verification workflow: ${workflow_name} (${workflow_path}, id=${workflow_id})"
+
+    - name: Wait for successful branch CI on target SHA
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        CI_WORKFLOW_ID: ${{ steps.ci_workflow.outputs.id }}
+        CI_WORKFLOW_NAME: ${{ steps.ci_workflow.outputs.name }}
+        TARGET_SHA: ${{ inputs.target-sha }}
+        MAX_ATTEMPTS: ${{ inputs.max-attempts }}
+      run: |
+        set -euo pipefail
+
+        sleep_seconds=15
+
+        for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
+          runs_url="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/workflows/${CI_WORKFLOW_ID}/runs?head_sha=${TARGET_SHA}&event=push&per_page=50"
+          runs_json="$(curl -fsSL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${runs_url}")"
+
+          success_count="$(echo "${runs_json}" | jq '[.workflow_runs[] | select(.conclusion == "success" and ((.head_branch // "") | length > 0))] | length')"
+          in_progress_count="$(echo "${runs_json}" | jq '[.workflow_runs[] | select(.status != "completed" and ((.head_branch // "") | length > 0))] | length')"
+          completed_count="$(echo "${runs_json}" | jq '[.workflow_runs[] | select(.status == "completed" and ((.head_branch // "") | length > 0))] | length')"
+
+          if [ "${success_count}" -gt 0 ]; then
+            echo "Found successful ${CI_WORKFLOW_NAME} push run for ${TARGET_SHA}."
+            exit 0
+          fi
+
+          if [ "${completed_count}" -gt 0 ] && [ "${in_progress_count}" -eq 0 ]; then
+            echo "::error::${CI_WORKFLOW_NAME} branch push runs for ${TARGET_SHA} completed without success."
+            echo "${runs_json}" | jq '.workflow_runs[] | select((.head_branch // "") | length > 0) | {id, status, conclusion, head_branch, html_url}'
+            exit 1
+          fi
+
+          echo "Attempt ${attempt}/${MAX_ATTEMPTS}: waiting for ${CI_WORKFLOW_NAME} branch push run on ${TARGET_SHA}..."
+          sleep "${sleep_seconds}"
+        done
+
+        echo "::error::Timed out waiting for successful ${CI_WORKFLOW_NAME} branch push run on ${TARGET_SHA}."
+        exit 1

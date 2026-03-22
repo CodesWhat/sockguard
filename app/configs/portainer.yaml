@@ -1,0 +1,93 @@
+# Sockguard — Portainer Preset
+#
+# Full Docker API access for Portainer management UI.
+# Portainer proxies the entire Docker API — it needs everything.
+#
+# WARNING: This preset grants near-full Docker socket access.
+# Use per-client policies (v0.3.0+) to restrict other consumers.
+
+listen:
+  socket: /var/run/sockguard.sock
+  socket_mode: "0660"
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  # Health and metadata
+  - match: { method: "*", path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Containers (full lifecycle)
+  - match: { method: "*", path: "/containers/**" }
+    action: allow
+
+  # Images (full management)
+  - match: { method: "*", path: "/images/**" }
+    action: allow
+
+  # Networks (full management)
+  - match: { method: "*", path: "/networks/**" }
+    action: allow
+
+  # Volumes (full management)
+  - match: { method: "*", path: "/volumes/**" }
+    action: allow
+
+  # Exec (into containers)
+  - match: { method: "*", path: "/exec/**" }
+    action: allow
+
+  # System
+  - match: { method: GET, path: "/system/**" }
+    action: allow
+
+  # Build, commit, auth
+  - match: { method: POST, path: "/build" }
+    action: allow
+  - match: { method: POST, path: "/commit" }
+    action: allow
+  - match: { method: POST, path: "/auth" }
+    action: allow
+
+  # Distribution
+  - match: { method: GET, path: "/distribution/**" }
+    action: allow
+
+  # Swarm (if applicable)
+  - match: { method: "*", path: "/swarm/**" }
+    action: allow
+  - match: { method: "*", path: "/services/**" }
+    action: allow
+  - match: { method: GET, path: "/tasks/**" }
+    action: allow
+  - match: { method: "*", path: "/nodes/**" }
+    action: allow
+  - match: { method: "*", path: "/configs/**" }
+    action: allow
+  - match: { method: "*", path: "/secrets/**" }
+    action: allow
+
+  # Plugins
+  - match: { method: "*", path: "/plugins/**" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by portainer preset"

@@ -1,0 +1,45 @@
+# Sockguard — Traefik Preset
+#
+# Minimal read-only access for Traefik reverse proxy.
+# Traefik needs: container list, network list, service/task list, events.
+
+listen:
+  socket: /var/run/sockguard.sock
+  socket_mode: "0660"
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+  - match: { method: GET, path: "/containers/**" }
+    action: allow
+  - match: { method: GET, path: "/networks/**" }
+    action: allow
+  - match: { method: GET, path: "/services/**" }
+    action: allow
+  - match: { method: GET, path: "/tasks/**" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by traefik preset — read-only access only"

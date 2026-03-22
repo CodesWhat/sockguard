@@ -1,0 +1,55 @@
+# Sockguard — Homarr Preset
+#
+# Optimized for Homarr dashboard with container management.
+# Allows: container list, inspect, stats, start/stop/restart.
+# Denies: exec, create, image/network/volume writes.
+
+listen:
+  socket: /var/run/sockguard.sock
+  socket_mode: "0660"
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container read (list, inspect, stats)
+  - match: { method: GET, path: "/containers/**" }
+    action: allow
+
+  # Container lifecycle (start, stop, restart)
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+
+  # Image read (for image info display)
+  - match: { method: GET, path: "/images/**" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by homarr preset"

@@ -1,0 +1,94 @@
+# Sockguard — Watchtower Preset
+#
+# Optimized for Watchtower container auto-updater.
+# Allows: container lifecycle, image pull/remove, exec (lifecycle hooks),
+#         network connect/disconnect (preserve network attachments).
+# Denies: build, swarm, secrets, plugins.
+
+listen:
+  socket: /var/run/sockguard.sock
+  socket_mode: "0660"
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container read operations
+  - match: { method: GET, path: "/containers/**" }
+    action: allow
+
+  # Container lifecycle (start, stop, kill, restart, rename, remove)
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Container creation (for updates)
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  # Exec (for lifecycle hooks: pre-update, post-update)
+  - match: { method: POST, path: "/containers/*/exec" }
+    action: allow
+  - match: { method: POST, path: "/exec/*/start" }
+    action: allow
+  - match: { method: GET, path: "/exec/*/json" }
+    action: allow
+
+  # Image operations (pull, inspect, list, remove)
+  - match: { method: GET, path: "/images/**" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/*" }
+    action: allow
+
+  # Network connect/disconnect (preserve network attachments during recreate)
+  - match: { method: GET, path: "/networks/**" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+
+  # Volume read
+  - match: { method: GET, path: "/volumes/**" }
+    action: allow
+
+  # Distribution (registry info)
+  - match: { method: GET, path: "/distribution/**" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by watchtower preset"

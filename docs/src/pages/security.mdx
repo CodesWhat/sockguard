@@ -1,0 +1,58 @@
+# Security Model
+
+## Why Socket Proxying Matters
+
+The Docker socket (`/var/run/docker.sock`) is equivalent to root access on the host. Any container with unrestricted socket access can:
+
+- Create a privileged container that mounts the host filesystem
+- Execute arbitrary commands via `docker exec`
+- Access host PID, network, and IPC namespaces
+- Pull and run malicious images
+- Manipulate Swarm clusters
+
+A socket proxy sits between consumers and the raw socket, filtering requests to limit what each consumer can do.
+
+## Defense in Depth
+
+Sockguard implements multiple layers of filtering:
+
+### Layer 1: Method Filtering
+Block entire HTTP methods. Most consumers only need `GET` (read-only mode).
+
+### Layer 2: Path Filtering
+Allow or deny specific Docker API endpoint paths using glob patterns.
+
+### Layer 3: Request Body Inspection (v0.2.0+)
+Parse JSON request bodies for dangerous configurations:
+- `HostConfig.Privileged: true`
+- Dangerous bind mounts (`/`, `/etc`, `/var/run/docker.sock`)
+- Host namespace sharing (`PidMode`, `NetworkMode`, `IpcMode`)
+- Escalation capabilities (`SYS_ADMIN`, `NET_ADMIN`)
+- Device mappings
+- Security profile overrides
+
+### Layer 4: Response Filtering (v0.4.0+)
+Control what information consumers can see:
+- Hide containers by name/label
+- Redact environment variables from inspect responses
+- Filter mount path details
+
+### Layer 5: Audit Logging
+Every request is logged with method, path, decision, matched rule, and latency.
+
+## Dangerous Docker API Endpoints
+
+| Risk Level | Endpoints |
+|-----------|-----------|
+| **Critical** | `POST /containers/create`, `POST /containers/{id}/exec`, `POST /exec/{id}/start` |
+| **High** | `POST /images/create` (pull), `POST /build`, `POST /swarm/*`, `POST /plugins/install` |
+| **Medium** | `POST /volumes/create`, `POST /networks/create`, `DELETE /containers/{id}` |
+| **Low** | `GET /containers/json`, `GET /events`, `GET /version`, `GET /_ping` |
+
+## Image Security
+
+Sockguard's container image is built on [Wolfi](https://www.chainguard.dev/chainguard-images) (Chainguard):
+- Near-zero CVEs in the base image
+- Built-in SBOM and SLSA provenance
+- Cosign-signed for verification
+- No shell, no package manager in production image

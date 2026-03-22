@@ -1,0 +1,151 @@
+name: "🏷️ Release: Cut"
+run-name: "🏷️ Release: Cut — manual by ${{ github.actor }}"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-cut
+  cancel-in-progress: false
+
+env:
+  CI_VERIFY_WORKFLOW_FILE: ci-verify.yml
+
+jobs:
+  cut:
+    name: "🏷️ Release: Cut Tag"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20  # Includes CI-success polling for target SHA before tagging
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Resolve target SHA
+        id: target
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Target SHA: ${sha}"
+
+      - name: Verify successful branch CI on target SHA
+        uses: ./.github/actions/verify-ci-success
+        with:
+          workflow-file: ${{ env.CI_VERIFY_WORKFLOW_FILE }}
+          target-sha: ${{ steps.target.outputs.sha }}
+          max-attempts: "20"
+          github-token: ${{ github.token }}
+
+      - name: Find latest release tag
+        id: base
+        run: |
+          set -euo pipefail
+          latest_tag="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          if [ -z "${latest_tag}" ]; then
+            latest_tag="v0.0.0"
+          fi
+
+          echo "latest_tag=${latest_tag}" >> "$GITHUB_OUTPUT"
+          echo "current_version=${latest_tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Node (for release scripts)
+        uses: actions/setup-node@49933ea5288caeca8642195f82b8ce8bedf3b8a3  # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Compute next version
+        id: next
+        env:
+          BUMP: auto
+          CURRENT_VERSION: ${{ steps.base.outputs.current_version }}
+          LATEST_TAG: ${{ steps.base.outputs.latest_tag }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ "${BUMP}" = "auto" ] && [ "${LATEST_TAG}" = "v0.0.0" ]; then
+            release_level="patch"
+            next_version="0.0.1"
+          else
+            mapfile -t vars < <(node scripts/release-next-version.mjs \
+              --current "${CURRENT_VERSION}" \
+              --bump "${BUMP}" \
+              --from "${LATEST_TAG}" \
+              --to "${TARGET_SHA}")
+
+            for kv in "${vars[@]}"; do
+              key="${kv%%=*}"
+              value="${kv#*=}"
+              case "${key}" in
+                release_level) release_level="${value}" ;;
+                next_version) next_version="${value}" ;;
+              esac
+            done
+          fi
+
+          release_tag="v${next_version}"
+          if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null; then
+            echo "::error::Tag already exists: ${release_tag}"
+            exit 1
+          fi
+
+          {
+            echo "release_level=${release_level}"
+            echo "next_version=${next_version}"
+            echo "release_tag=${release_tag}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Validate CHANGELOG entry for release tag
+        env:
+          RELEASE_TAG: ${{ steps.next.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          entry_file="$(mktemp)"
+
+          node scripts/extract-changelog-entry.mjs --version "${RELEASE_TAG}" --file CHANGELOG.md > "${entry_file}"
+
+          if ! awk 'NR > 1 && NF { found = 1; exit } END { exit found ? 0 : 1 }' "${entry_file}"; then
+            echo "::error::CHANGELOG entry for ${RELEASE_TAG} is empty. Add release notes under the heading before cutting a tag."
+            exit 1
+          fi
+
+          echo "Validated CHANGELOG entry for ${RELEASE_TAG}."
+
+      - name: Create and push release tag
+        env:
+          RELEASE_TAG: ${{ steps.next.outputs.release_tag }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "${RELEASE_TAG}" "${TARGET_SHA}" -m "release: ${RELEASE_TAG}"
+          git push origin "${RELEASE_TAG}"
+
+      - name: Release summary
+        env:
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
+          RELEASE_LEVEL: ${{ steps.next.outputs.release_level }}
+          NEXT_VERSION: ${{ steps.next.outputs.next_version }}
+          RELEASE_TAG: ${{ steps.next.outputs.release_tag }}
+        run: |
+          {
+            echo "### 🏷️ Release Cut Summary"
+            echo "- Target SHA: \`${TARGET_SHA}\`"
+            echo "- Bump level: \`${RELEASE_LEVEL}\`"
+            echo "- Next version: \`${NEXT_VERSION}\`"
+            echo "- Tag: \`${RELEASE_TAG}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

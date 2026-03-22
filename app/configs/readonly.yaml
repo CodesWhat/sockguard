@@ -1,0 +1,35 @@
+# Sockguard — Read-Only Preset
+#
+# Allows GET access to all Docker API endpoints.
+# Denies all write operations (POST, PUT, DELETE).
+# Suitable for: dashboards, monitoring tools, read-only Portainer.
+
+listen:
+  socket: /var/run/sockguard.sock
+  socket_mode: "0660"
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  # Docker's /_ping supports HEAD — allow it explicitly
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+
+  # Allow all read operations
+  - match: { method: GET, path: "/**" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "read-only mode — write operations are not allowed"

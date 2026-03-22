@@ -1,0 +1,45 @@
+# Sockguard
+
+A Docker socket proxy that actually inspects what it proxies.
+
+## Why Sockguard?
+
+The Docker socket (`/var/run/docker.sock`) is effectively root access to your host.
+Any container with socket access can create privileged containers, mount the host
+filesystem, and escape containment entirely.
+
+Existing proxies filter by URL path only. Sockguard goes further:
+
+- **Request body inspection** — block privileged containers, dangerous mounts, escalation capabilities
+- **Per-client policies** — one proxy instance, many consumers, tailored permissions
+- **Response filtering** — hide containers, redact environment variables
+- **Structured audit logging** — JSON logs with method, path, decision, reasoning, latency
+- **Default-deny** — everything blocked unless explicitly allowed
+- **Tecnativa compatible** — drop-in replacement using the same environment variables
+
+## Quick Start
+
+```yaml filename="docker-compose.yml"
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - CONTAINERS=1
+      - IMAGES=1
+      - EVENTS=1
+
+  your-app:
+    depends_on:
+      - sockguard
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - DOCKER_HOST=unix:///var/run/sockguard/sockguard.sock
+
+volumes:
+  sockguard-socket:
+```
