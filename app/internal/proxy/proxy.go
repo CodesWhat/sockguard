@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -28,8 +29,8 @@ func New(upstreamSocket string) *httputil.ReverseProxy {
 	}
 }
 
-func handleError(w http.ResponseWriter, r *http.Request, err error) {
+func handleError(w http.ResponseWriter, _ *http.Request, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadGateway)
-	w.Write([]byte(`{"message":"upstream Docker socket unreachable","error":"` + err.Error() + `"}`))
+	json.NewEncoder(w).Encode(map[string]string{"message": "upstream Docker socket unreachable", "error": err.Error()})
 }

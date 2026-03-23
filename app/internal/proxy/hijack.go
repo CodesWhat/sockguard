@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bufio"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -65,7 +67,7 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 		logger.Error("hijack: upstream dial failed", "error", err, "path", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
-		w.Write([]byte(`{"message":"upstream Docker socket unreachable","error":"` + err.Error() + `"}`))
+		json.NewEncoder(w).Encode(map[string]string{"message": "upstream Docker socket unreachable", "error": err.Error()})
 		return
 	}
 
@@ -77,7 +79,7 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 		logger.Error("hijack: write request to upstream failed", "error", err, "path", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
-		w.Write([]byte(`{"message":"failed to forward request to upstream"}`))
+		json.NewEncoder(w).Encode(map[string]string{"message": "failed to forward request to upstream", "error": err.Error()})
 		return
 	}
 
@@ -90,7 +92,7 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 		logger.Error("hijack: read upstream response failed", "error", err, "path", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
-		w.Write([]byte(`{"message":"failed to read upstream response"}`))
+		json.NewEncoder(w).Encode(map[string]string{"message": "failed to read upstream response", "error": err.Error()})
 		return
 	}
 
@@ -104,8 +106,12 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 		}
 		w.WriteHeader(resp.StatusCode)
 		if resp.Body != nil {
-			io.Copy(w, resp.Body)
-			resp.Body.Close()
+			if _, err := io.Copy(w, resp.Body); err != nil {
+				logger.Debug("hijack: error copying non-upgrade response body", "error", err, "path", r.URL.Path)
+			}
+			if err := resp.Body.Close(); err != nil {
+				logger.Debug("hijack: error closing non-upgrade response body", "error", err, "path", r.URL.Path)
+			}
 		}
 		return
 	}
@@ -146,19 +152,35 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	reqPath := r.URL.Path
+
 	// upstream → client
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if v := recover(); v != nil {
+				logger.Error("hijack: panic in upstream→client copy", "panic", fmt.Sprint(v), "path", reqPath)
+			}
+		}()
 		buf := make([]byte, hijackBufSize)
-		io.CopyBuffer(clientConn, upstreamBuf, buf)
+		if _, err := io.CopyBuffer(clientConn, upstreamBuf, buf); err != nil {
+			logger.Debug("hijack: upstream→client copy ended", "error", err, "path", reqPath)
+		}
 		closeWrite(clientConn)
 	}()
 
 	// client → upstream (stdin)
 	go func() {
 		defer wg.Done()
+		defer func() {
+			if v := recover(); v != nil {
+				logger.Error("hijack: panic in client→upstream copy", "panic", fmt.Sprint(v), "path", reqPath)
+			}
+		}()
 		buf := make([]byte, hijackBufSize)
-		io.CopyBuffer(upstreamConn, clientBuf, buf)
+		if _, err := io.CopyBuffer(upstreamConn, clientBuf, buf); err != nil {
+			logger.Debug("hijack: client→upstream copy ended", "error", err, "path", reqPath)
+		}
 		closeWrite(upstreamConn)
 	}()
 
