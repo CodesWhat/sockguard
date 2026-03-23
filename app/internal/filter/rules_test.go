@@ -19,6 +19,13 @@ func TestNormalizePath(t *testing.T) {
 		{"ping", "/_ping", "/_ping"},
 		{"versioned ping", "/v1.45/_ping", "/_ping"},
 		{"nested path", "/v1.47/containers/abc123/start", "/containers/abc123/start"},
+		// Path traversal hardening
+		{"dot-dot collapse", "/containers/../images/json", "/images/json"},
+		{"dot-dot at root", "/../../etc/passwd", "/etc/passwd"},
+		{"versioned dot-dot", "/v1.45/../containers/json", "/containers/json"},
+		{"redundant slashes", "//containers///json", "/containers/json"},
+		{"dot segment", "/containers/./json", "/containers/json"},
+		{"empty string", "", ""},
 	}
 
 	for _, tt := range tests {
@@ -45,7 +52,12 @@ func TestGlobToRegex(t *testing.T) {
 		{"/containers/**", "/containers/json", true},
 		{"/containers/**", "/containers/abc/start", true},
 		{"/containers/**", "/containers/abc/def/ghi", true},
+		// /** also matches the bare path (no trailing segment)
+		{"/containers/**", "/containers", true},
+		{"/networks/**", "/networks", true},
+		{"/volumes/**", "/volumes", true},
 		{"/**", "/anything/at/all", true},
+		{"/**", "/", true},
 		{"/_ping", "/_ping", true},
 		{"/_ping", "/version", false},
 	}
@@ -81,8 +93,11 @@ func TestCompiledRuleMatches(t *testing.T) {
 	}{
 		{"GET containers list", "GET", "/containers/json", true},
 		{"GET container inspect", "GET", "/v1.45/containers/abc123/json", true},
+		{"GET bare containers", "GET", "/containers", true},
 		{"POST containers", "POST", "/containers/create", false},
 		{"GET images", "GET", "/images/json", false},
+		// Path traversal should be normalized before matching
+		{"GET traversal escape", "GET", "/containers/../images/json", false},
 	}
 
 	for _, tt := range tests {

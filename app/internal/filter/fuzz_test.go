@@ -23,6 +23,10 @@ func FuzzPathMatch(f *testing.F) {
 		{"GET", ""},
 		{"POST", "/v999.999/images/build"},
 		{"GET", "/containers/abc/def/ghi/jkl"},
+		{"GET", "/containers/../images/json"},
+		{"GET", "/../../etc/passwd"},
+		{"GET", "//containers///json"},
+		{"GET", "/v1.45/../containers/json"},
 	}
 	for _, s := range seeds {
 		f.Add(s.method, s.path)
@@ -143,6 +147,10 @@ func FuzzNormalizePath(f *testing.F) {
 		"/version",                 // starts with /v but not a version prefix
 		"/v1./containers",          // malformed version
 		"/v.1/containers",          // malformed version
+		"/containers/../images",    // path traversal
+		"/../../etc/passwd",        // escape attempt
+		"//containers///json",      // redundant slashes
+		"/containers/./json",       // dot segment
 	}
 	for _, s := range seeds {
 		f.Add(s)

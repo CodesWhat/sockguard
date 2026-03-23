@@ -2,6 +2,7 @@ package filter
 
 import (
 	"net/http"
+	"path"
 	"regexp"
 	"strings"
 )
@@ -35,9 +36,15 @@ type CompiledRule struct {
 // apiVersionPrefix matches Docker API version prefixes like /v1.45/
 var apiVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+)?/`)
 
-// NormalizePath strips the Docker API version prefix from a path.
-func NormalizePath(path string) string {
-	return apiVersionPrefix.ReplaceAllString(path, "/")
+// NormalizePath sanitizes and strips the Docker API version prefix from a path.
+// It resolves ".." and "." segments and collapses redundant slashes before
+// stripping the version prefix, preventing path traversal bypasses.
+func NormalizePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	cleaned := path.Clean(p)
+	return apiVersionPrefix.ReplaceAllString(cleaned, "/")
 }
 
 // CompileRule compiles a Rule into a CompiledRule for efficient matching.
@@ -101,11 +108,17 @@ func evaluateNormalized(rules []*CompiledRule, method, normalizedPath string) (A
 
 // globToRegex converts a simple glob pattern to a regex string.
 // Supports * (single path segment) and ** (any path segments).
+// The sequence /** also matches the bare path without the trailing slash,
+// so /containers/** matches both /containers and /containers/anything.
 func globToRegex(pattern string) string {
 	var b strings.Builder
 	i := 0
 	for i < len(pattern) {
 		switch {
+		case i+2 < len(pattern) && pattern[i] == '/' && pattern[i+1] == '*' && pattern[i+2] == '*':
+			// /** matches the bare path OR /anything/deeper
+			b.WriteString("(/.*)?")
+			i += 3
 		case i+1 < len(pattern) && pattern[i] == '*' && pattern[i+1] == '*':
 			b.WriteString(".*")
 			i += 2
