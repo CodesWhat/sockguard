@@ -2,6 +2,7 @@ package health
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,14 @@ import (
 	"testing"
 	"time"
 )
+
+type devNull struct{}
+
+func (devNull) Write(b []byte) (int, error) { return len(b), nil }
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError + 1}))
+}
 
 func TestHealthReachable(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "upstream.sock")
@@ -18,7 +27,7 @@ func TestHealthReachable(t *testing.T) {
 	}
 	defer ln.Close()
 
-	handler := Handler(sock, time.Now())
+	handler := Handler(sock, time.Now(), testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -43,7 +52,7 @@ func TestHealthReachable(t *testing.T) {
 }
 
 func TestHealthUnreachable(t *testing.T) {
-	handler := Handler("/nonexistent/socket.sock", time.Now())
+	handler := Handler("/nonexistent/socket.sock", time.Now(), testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()

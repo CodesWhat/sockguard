@@ -38,6 +38,21 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 
 	logger.Info("tecnativa compatibility mode active", "note", "generating rules from environment variables")
 
+	// Warn about env vars that are set but have unparseable values
+	for _, v := range compatVars {
+		rawVal, envSet := os.LookupEnv(v)
+		if !envSet {
+			continue
+		}
+		if _, parsed := lookupEnvBool(v); !parsed {
+			logger.Warn("ignoring compat env var with unparseable boolean value",
+				"var", v,
+				"value", rawVal,
+				"accepted_values", "1, true, yes, 0, false, no",
+			)
+		}
+	}
+
 	var rules []RuleConfig
 
 	// Always-on defaults (disabled with =0)

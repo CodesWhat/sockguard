@@ -3,6 +3,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
@@ -11,7 +12,7 @@ import (
 )
 
 // Handler returns an HTTP handler for the /health endpoint.
-func Handler(upstreamSocket string, startTime time.Time) http.HandlerFunc {
+func Handler(upstreamSocket string, startTime time.Time, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -23,6 +24,10 @@ func Handler(upstreamSocket string, startTime time.Time) http.HandlerFunc {
 
 		conn, err := (&net.Dialer{}).DialContext(ctx, "unix", upstreamSocket)
 		if err != nil {
+			logger.WarnContext(r.Context(), "health check failed: upstream unreachable",
+				"error", err,
+				"upstream_socket", upstreamSocket,
+			)
 			w.WriteHeader(http.StatusServiceUnavailable)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"status":         "unhealthy",

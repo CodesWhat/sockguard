@@ -75,9 +75,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// 6. Verify upstream reachable
 	conn, err := net.DialTimeout("unix", cfg.Upstream.Socket, 5*time.Second)
 	if err != nil {
-		return fmt.Errorf("upstream socket unreachable (%s): %w", cfg.Upstream.Socket, err)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("upstream socket not found (%s): %w", cfg.Upstream.Socket, err)
+		case errors.Is(err, os.ErrPermission):
+			return fmt.Errorf("permission denied on upstream socket (%s): %w", cfg.Upstream.Socket, err)
+		default:
+			return fmt.Errorf("upstream socket unreachable (%s): %w", cfg.Upstream.Socket, err)
+		}
 	}
-	conn.Close()
+	if closeErr := conn.Close(); closeErr != nil {
+		logger.Debug("failed to close upstream check connection", "error", closeErr)
+	}
 
 	// 7. Build handler chain (inside-out)
 	upstream := proxy.New(cfg.Upstream.Socket)
@@ -93,7 +102,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// Health interceptor
 	if cfg.Health.Enabled {
 		startTime := time.Now()
-		healthHandler := health.Handler(cfg.Upstream.Socket, startTime)
+		healthHandler := health.Handler(cfg.Upstream.Socket, startTime, logger)
 		handler = healthInterceptor(cfg.Health.Path, healthHandler, handler)
 	}
 
@@ -107,7 +116,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
 	}
-	defer ln.Close()
+	defer func() {
+		if closeErr := ln.Close(); closeErr != nil {
+			logger.Warn("failed to close listener", "error", closeErr)
+		}
+	}()
 
 	// 9. Start server
 	server := &http.Server{
