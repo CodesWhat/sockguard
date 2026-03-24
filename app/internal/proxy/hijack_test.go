@@ -216,6 +216,142 @@ func TestHijackHandler_FullUpgrade(t *testing.T) {
 	serverWg.Wait()
 }
 
+func TestHijackHandler_Non101Fallback_500(t *testing.T) {
+	socketPath := fmt.Sprintf("/tmp/dp-test-500-%d.sock", os.Getpid())
+	t.Cleanup(func() { os.Remove(socketPath) })
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			return
+		}
+		req.Body.Close()
+
+		fmt.Fprintf(conn, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 36\r\n\r\n{\"message\":\"internal server error\"}\r\n")
+	}()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("next should not be called")
+	})
+	handler := HijackHandler(socketPath, logger, next)
+
+	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("client listen: %v", err)
+	}
+	defer clientLn.Close()
+
+	srv := &http.Server{Handler: handler}
+	go srv.Serve(clientLn)
+	defer srv.Close()
+
+	clientConn, err := net.Dial("tcp", clientLn.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer clientConn.Close()
+
+	reqStr := "POST /containers/abc/attach HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+	clientConn.Write([]byte(reqStr))
+
+	clientBuf := bufio.NewReader(clientConn)
+	resp, err := http.ReadResponse(clientBuf, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "internal server error") {
+		t.Errorf("expected error message in body, got %q", string(body))
+	}
+}
+
+func TestHijackHandler_Non101Fallback_503(t *testing.T) {
+	socketPath := fmt.Sprintf("/tmp/dp-test-503-%d.sock", os.Getpid())
+	t.Cleanup(func() { os.Remove(socketPath) })
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			return
+		}
+		req.Body.Close()
+
+		fmt.Fprintf(conn, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 36\r\n\r\n{\"message\":\"service unavailable\"}\r\n\r\n")
+	}()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("next should not be called")
+	})
+	handler := HijackHandler(socketPath, logger, next)
+
+	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("client listen: %v", err)
+	}
+	defer clientLn.Close()
+
+	srv := &http.Server{Handler: handler}
+	go srv.Serve(clientLn)
+	defer srv.Close()
+
+	clientConn, err := net.Dial("tcp", clientLn.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer clientConn.Close()
+
+	reqStr := "POST /v1.45/exec/abc/start HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+	clientConn.Write([]byte(reqStr))
+
+	clientBuf := bufio.NewReader(clientConn)
+	resp, err := http.ReadResponse(clientBuf, nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(body), "service unavailable") {
+		t.Errorf("expected error message in body, got %q", string(body))
+	}
+}
+
 func TestHijackHandler_Non101Fallback(t *testing.T) {
 	// Mock Docker daemon that returns 409 Conflict (e.g., container not running)
 	socketPath := fmt.Sprintf("/tmp/dp-test-fallback-%d.sock", os.Getpid())

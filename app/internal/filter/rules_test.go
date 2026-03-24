@@ -166,6 +166,39 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
+func TestMethodEdgeCases(t *testing.T) {
+	rule, err := CompileRule(Rule{
+		Methods: []string{"GET"},
+		Pattern: "/containers/**",
+		Action:  ActionAllow,
+		Index:   1,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		want   bool
+	}{
+		{"empty method", "", false},
+		{"lowercase get", "get", true},
+		{"method with leading space", " GET", false},
+		{"method with trailing space", "GET ", false},
+		{"method with surrounding spaces", " GET ", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := rule.Matches(tt.method, "/containers/json")
+			if got != tt.want {
+				t.Errorf("Matches(%q, /containers/json) = %v, want %v", tt.method, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEvaluateNoMatch(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/anything", nil)
 	action, index, reason := Evaluate(nil, req)

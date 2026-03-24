@@ -153,6 +153,77 @@ func TestLookupEnvBool(t *testing.T) {
 	}
 }
 
+func TestCompatGranularWithoutPost(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("ALLOW_START", "1")
+	t.Setenv("ALLOW_STOP", "1")
+	// POST is NOT set, so granular rules should NOT be generated
+
+	if !ApplyCompat(&cfg, discardLogger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	for _, r := range cfg.Rules {
+		if r.Match.Path == "/containers/*/start" || r.Match.Path == "/containers/*/stop" {
+			t.Errorf("unexpected granular rule generated without POST=1: %s %s", r.Match.Method, r.Match.Path)
+		}
+	}
+}
+
+func TestCompatMultipleGranularVars(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("POST", "1")
+	t.Setenv("ALLOW_START", "1")
+	t.Setenv("ALLOW_STOP", "1")
+	t.Setenv("ALLOW_RESTART", "1")
+
+	if !ApplyCompat(&cfg, discardLogger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	wantPaths := map[string]bool{
+		"/containers/*/start":   false,
+		"/containers/*/stop":    false,
+		"/containers/*/restart": false,
+	}
+
+	for _, r := range cfg.Rules {
+		if _, ok := wantPaths[r.Match.Path]; ok {
+			wantPaths[r.Match.Path] = true
+		}
+	}
+
+	for path, found := range wantPaths {
+		if !found {
+			t.Errorf("expected granular rule for %s but it was not generated", path)
+		}
+	}
+
+	// Should NOT have blanket POST allow since granular vars are set
+	for _, r := range cfg.Rules {
+		if r.Match.Method == "POST,PUT,DELETE" && r.Match.Path == "/**" {
+			t.Error("expected no blanket POST allow when granular vars set")
+		}
+	}
+}
+
+func TestCompatInvalidEnvValue(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("CONTAINERS", "maybe")
+
+	if !ApplyCompat(&cfg, discardLogger) {
+		t.Fatal("expected compat to activate (env var is set, even if unparseable)")
+	}
+
+	// "maybe" is not a valid boolean, so CONTAINERS should be treated as not set
+	// and no containers rule should be generated
+	for _, r := range cfg.Rules {
+		if r.Match.Path == "/containers/**" && r.Match.Method == "GET" && r.Action == "allow" {
+			t.Error("expected no GET /containers/** rule when CONTAINERS=maybe (unparseable value)")
+		}
+	}
+}
+
 func TestLookupEnvBoolNotSet(t *testing.T) {
 	val, found := lookupEnvBool("DEFINITELY_NOT_SET_" + t.Name())
 	if found {
