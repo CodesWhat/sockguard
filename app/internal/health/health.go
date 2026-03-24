@@ -29,23 +29,31 @@ func Handler(upstreamSocket string, startTime time.Time, logger *slog.Logger) ht
 				"upstream_socket", upstreamSocket,
 			)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]interface{}{
+			if encErr := json.NewEncoder(w).Encode(map[string]interface{}{
 				"status":         "unhealthy",
 				"upstream":       "unreachable",
 				"error":          err.Error(),
 				"version":        version.Version,
 				"uptime_seconds": int(uptime),
-			})
+			}); encErr != nil {
+				logger.WarnContext(r.Context(), "failed to encode unhealthy response",
+					"error", encErr,
+				)
+			}
 			return
 		}
 		conn.Close()
 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
+		if encErr := json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":         "healthy",
 			"upstream":       "connected",
 			"version":        version.Version,
 			"uptime_seconds": int(uptime),
-		})
+		}); encErr != nil {
+			logger.WarnContext(r.Context(), "failed to encode healthy response",
+				"error", encErr,
+			)
+		}
 	}
 }
