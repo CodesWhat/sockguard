@@ -45,6 +45,7 @@ func Middleware(rules []*CompiledRule, logger *slog.Logger) func(http.Handler) h
 				}); err != nil {
 					logger.ErrorContext(r.Context(), "failed to encode denial response", "error", err, "method", r.Method, "path", r.URL.Path)
 					// Fallback: attempt plaintext response since JSON encoding failed
+					w.Header().Set("Content-Type", "text/plain")
 					fmt.Fprintf(w, "request denied by sockguard policy: %s %s", r.Method, r.URL.Path)
 				}
 				return

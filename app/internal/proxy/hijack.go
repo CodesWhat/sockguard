@@ -8,17 +8,15 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/codeswhat/sockguard/internal/filter"
 )
 
 // hijackBufSize is the buffer size for bidirectional copy on hijacked connections.
 // 64KB balances throughput with memory use for Docker's streaming protocols.
 const hijackBufSize = 64 * 1024
-
-// apiVersionPrefix matches Docker API version prefixes like /v1.45/
-var hijackVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+)?/`)
 
 // HijackHandler wraps a standard handler and intercepts Docker API endpoints
 // that use HTTP connection upgrades (attach, exec start). For these endpoints,
@@ -49,7 +47,7 @@ func IsHijackEndpoint(method, path string) bool {
 	}
 
 	// Strip Docker API version prefix
-	p := hijackVersionPrefix.ReplaceAllString(path, "/")
+	p := filter.APIVersionPrefix.ReplaceAllString(path, "/")
 
 	// Match: /containers/{id}/attach or /exec/{id}/start
 	parts := strings.Split(strings.Trim(p, "/"), "/")
@@ -67,7 +65,9 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 		logger.Error("hijack: upstream dial failed", "error", err, "path", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"message": "upstream Docker socket unreachable", "error": err.Error()})
+		if encErr := json.NewEncoder(w).Encode(map[string]string{"message": "upstream Docker socket unreachable", "error": err.Error()}); encErr != nil {
+			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
+		}
 		return
 	}
 
@@ -79,7 +79,9 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 		logger.Error("hijack: write request to upstream failed", "error", err, "path", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"message": "failed to forward request to upstream", "error": err.Error()})
+		if encErr := json.NewEncoder(w).Encode(map[string]string{"message": "failed to forward request to upstream", "error": err.Error()}); encErr != nil {
+			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
+		}
 		return
 	}
 
@@ -92,7 +94,9 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 		logger.Error("hijack: read upstream response failed", "error", err, "path", r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]string{"message": "failed to read upstream response", "error": err.Error()})
+		if encErr := json.NewEncoder(w).Encode(map[string]string{"message": "failed to read upstream response", "error": err.Error()}); encErr != nil {
+			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
+		}
 		return
 	}
 

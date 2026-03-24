@@ -89,7 +89,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	// 7. Build handler chain (inside-out)
-	upstream := proxy.New(cfg.Upstream.Socket)
+	upstream := proxy.New(cfg.Upstream.Socket, logger)
 	var handler http.Handler = upstream
 
 	// Hijack handler: intercepts attach/exec endpoints for native bidirectional

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,11 +13,17 @@ import (
 	"testing"
 )
 
-func TestHandleError(t *testing.T) {
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func TestNew_ErrorHandler(t *testing.T) {
+	// Point at a socket that does not exist so the error handler fires.
+	rp := New("/tmp/dp-nonexistent-socket.sock", testLogger())
+
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-
-	handleError(rec, req, http.ErrServerClosed)
+	rp.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("expected status %d, got %d", http.StatusBadGateway, rec.Code)
@@ -63,7 +70,7 @@ func startMockDocker(t *testing.T) string {
 
 func TestNew_ForwardsRequests(t *testing.T) {
 	socketPath := startMockDocker(t)
-	rp := New(socketPath)
+	rp := New(socketPath, testLogger())
 
 	tests := []struct {
 		method string
@@ -111,7 +118,7 @@ func TestNew_ForwardsRequests(t *testing.T) {
 
 func TestNew_PreservesResponseBody(t *testing.T) {
 	socketPath := startMockDocker(t)
-	rp := New(socketPath)
+	rp := New(socketPath, testLogger())
 
 	req := httptest.NewRequest("GET", "/version", nil)
 	rec := httptest.NewRecorder()
@@ -131,7 +138,7 @@ func TestNew_PreservesResponseBody(t *testing.T) {
 
 func TestNew_UpstreamDown(t *testing.T) {
 	// Point at a socket that does not exist.
-	rp := New("/tmp/dp-nonexistent-socket.sock")
+	rp := New("/tmp/dp-nonexistent-socket.sock", testLogger())
 
 	req := httptest.NewRequest("GET", "/info", nil)
 	rec := httptest.NewRecorder()
@@ -172,7 +179,7 @@ func TestNew_UpstreamGoesAway(t *testing.T) {
 	ln.Close()
 	os.Remove(socketPath)
 
-	rp := New(socketPath)
+	rp := New(socketPath, testLogger())
 	req := httptest.NewRequest("GET", "/info", nil)
 	rec := httptest.NewRecorder()
 	rp.ServeHTTP(rec, req)

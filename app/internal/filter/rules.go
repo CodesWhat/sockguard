@@ -33,8 +33,8 @@ type CompiledRule struct {
 	Index   int
 }
 
-// apiVersionPrefix matches Docker API version prefixes like /v1.45/
-var apiVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+)?/`)
+// APIVersionPrefix matches Docker API version prefixes like /v1.45/
+var APIVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+)?/`)
 
 // NormalizePath sanitizes and strips the Docker API version prefix from a path.
 // It resolves ".." and "." segments and collapses redundant slashes before
@@ -44,7 +44,7 @@ func NormalizePath(p string) string {
 		return ""
 	}
 	cleaned := path.Clean(p)
-	return apiVersionPrefix.ReplaceAllString(cleaned, "/")
+	return APIVersionPrefix.ReplaceAllString(cleaned, "/")
 }
 
 // CompileRule compiles a Rule into a CompiledRule for efficient matching.
@@ -75,15 +75,19 @@ func CompileRule(r Rule) (*CompiledRule, error) {
 }
 
 // Matches returns true if the request matches this rule.
+// It normalizes the path and uppercases the method internally, so callers
+// don't need to pre-process inputs.
 func (cr *CompiledRule) Matches(method, path string) bool {
-	return cr.matchesNormalized(method, NormalizePath(path))
+	return cr.matchesNormalizedUpper(strings.ToUpper(method), NormalizePath(path))
 }
 
-// matchesNormalized returns true when method and an already-normalized path match.
-func (cr *CompiledRule) matchesNormalized(method, normalizedPath string) bool {
+// matchesNormalizedUpper returns true when an already-uppercased method and an
+// already-normalized path match this rule. Use this in hot loops where the
+// method has been uppercased once outside the loop.
+func (cr *CompiledRule) matchesNormalizedUpper(upperMethod, normalizedPath string) bool {
 	// Check method
 	if cr.methods != nil {
-		if !cr.methods[strings.ToUpper(method)] {
+		if !cr.methods[upperMethod] {
 			return false
 		}
 	}
@@ -98,8 +102,9 @@ func Evaluate(rules []*CompiledRule, r *http.Request) (Action, int, string) {
 }
 
 func evaluateNormalized(rules []*CompiledRule, method, normalizedPath string) (Action, int, string) {
+	upperMethod := strings.ToUpper(method)
 	for _, rule := range rules {
-		if rule.matchesNormalized(method, normalizedPath) {
+		if rule.matchesNormalizedUpper(upperMethod, normalizedPath) {
 			return rule.Action, rule.Index, rule.Reason
 		}
 	}
