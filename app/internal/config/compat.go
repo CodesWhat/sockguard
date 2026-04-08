@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -122,7 +123,14 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 		}
 
 		hasGranular := false
-		for envKey, rule := range granularVars {
+		// Sort keys for deterministic rule ordering
+		envKeys := make([]string, 0, len(granularVars))
+		for k := range granularVars {
+			envKeys = append(envKeys, k)
+		}
+		sort.Strings(envKeys)
+		for _, envKey := range envKeys {
+			rule := granularVars[envKey]
 			if v, ok := lookupEnvBool(envKey); ok && v {
 				hasGranular = true
 				rules = append(rules, RuleConfig{
