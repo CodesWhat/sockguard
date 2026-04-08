@@ -98,7 +98,7 @@ func Handler(upstreamSocket string, startTime time.Time, logger *slog.Logger) ht
 			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
 				Status:        "unhealthy",
 				Upstream:      upstreamStatus,
-				Error:         err.Error(),
+				Error:         "upstream unreachable",
 				Version:       version.Version,
 				UptimeSeconds: int(uptime),
 			}); encErr != nil {

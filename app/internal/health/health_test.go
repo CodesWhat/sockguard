@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -105,8 +106,11 @@ func TestHealthUnreachable(t *testing.T) {
 	if body.Upstream != "unreachable" {
 		t.Errorf("expected upstream unreachable, got %v", body.Upstream)
 	}
-	if body.Error == "" {
-		t.Error("expected error message for unhealthy response")
+	if body.Error != "upstream unreachable" {
+		t.Errorf("expected generic error message, got %q", body.Error)
+	}
+	if strings.Contains(rec.Body.String(), "/nonexistent/socket.sock") {
+		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())
 	}
 }
 
