@@ -227,8 +227,13 @@ func TestAccessLogMiddlewareAllocationBudget(t *testing.T) {
 		handler.ServeHTTP(w, req)
 	})
 
-	if allocs > 3 {
-		t.Fatalf("AccessLogMiddleware allocated %.0f times, want <= 3", allocs)
+	// Race detector instruments sync.Pool, adding ~2 extra allocs.
+	limit := 3.0
+	if raceEnabled {
+		limit = 6.0
+	}
+	if allocs > limit {
+		t.Fatalf("AccessLogMiddleware allocated %.0f times, want <= %.0f", allocs, limit)
 	}
 }
 
