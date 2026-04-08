@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Consolidated the repeated non-101 hijack fallback tests behind a shared table-driven harness to keep proxy fallback coverage aligned without duplicating socket setup boilerplate
 - Switched demo glob compilation to `Array.from(pattern)` so surrogate-pair literals are handled as single code points instead of split UTF-16 halves
 - Extracted the landing-page feature cards and comparison table datasets into dedicated website data modules so `page.tsx` is easier to scan and maintain
+- Pooled the 64KB hijack copy buffers so concurrent upgraded streams can reuse the same scratch allocations instead of allocating fresh slices per direction
 
 ### Fixed
 
