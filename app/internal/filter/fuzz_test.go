@@ -1,9 +1,19 @@
 package filter
 
 import (
+	pathpkg "path"
 	"regexp"
 	"testing"
 )
+
+var legacyVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+)?/`)
+
+func legacyNormalizePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	return legacyVersionPrefix.ReplaceAllString(pathpkg.Clean(p), "/")
+}
 
 // FuzzPathMatch fuzzes the full path-matching pipeline: NormalizePath + compiled
 // rule matching. Ensures no panics and that a catch-all rule always matches.
@@ -128,9 +138,9 @@ func FuzzGlobToRegex(f *testing.F) {
 	})
 }
 
-// FuzzNormalizePath fuzzes path normalization in isolation. Checks invariants:
-// the result never contains a version prefix, and non-versioned paths pass
-// through unchanged.
+// FuzzNormalizePath fuzzes path normalization in isolation. The result must
+// stay equivalent to the legacy regex-based version-prefix stripping logic
+// after path cleaning.
 func FuzzNormalizePath(f *testing.F) {
 	seeds := []string{
 		"/containers/json",
@@ -141,16 +151,16 @@ func FuzzNormalizePath(f *testing.F) {
 		"/v1.45/_ping",
 		"",
 		"/",
-		"/v/containers/json",      // "/v" alone is not a version prefix
-		"/v1.45",                   // version prefix with no trailing path
-		"/v1.45/",                  // version prefix with just trailing slash
-		"/version",                 // starts with /v but not a version prefix
-		"/v1./containers",          // malformed version
-		"/v.1/containers",          // malformed version
-		"/containers/../images",    // path traversal
-		"/../../etc/passwd",        // escape attempt
-		"//containers///json",      // redundant slashes
-		"/containers/./json",       // dot segment
+		"/v/containers/json",    // "/v" alone is not a version prefix
+		"/v1.45",                // version prefix with no trailing path
+		"/v1.45/",               // version prefix with just trailing slash
+		"/version",              // starts with /v but not a version prefix
+		"/v1./containers",       // malformed version
+		"/v.1/containers",       // malformed version
+		"/containers/../images", // path traversal
+		"/../../etc/passwd",     // escape attempt
+		"//containers///json",   // redundant slashes
+		"/containers/./json",    // dot segment
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -158,21 +168,9 @@ func FuzzNormalizePath(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, path string) {
 		normalized := NormalizePath(path)
-
-		// Normalized path must never be longer than the original.
-		if len(normalized) > len(path) {
-			t.Errorf("NormalizePath(%q) grew: %q", path, normalized)
-		}
-
-		// If the path had no version prefix, it passes through unchanged.
-		if path == normalized {
-			return
-		}
-
-		// If normalization changed the path, the removed portion must look
-		// like a version prefix (starts with /v and digits).
-		if len(path) > 0 && path[0] != '/' {
-			t.Errorf("NormalizePath changed non-slash-prefixed path: %q -> %q", path, normalized)
+		want := legacyNormalizePath(path)
+		if normalized != want {
+			t.Errorf("NormalizePath(%q) = %q, want legacy-normalized %q", path, normalized, want)
 		}
 	})
 }

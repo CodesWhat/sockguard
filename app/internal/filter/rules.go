@@ -27,14 +27,12 @@ type Rule struct {
 // CompiledRule is a rule with pre-compiled matchers for efficient evaluation.
 type CompiledRule struct {
 	methods map[string]bool
+	literal string
 	pattern *regexp.Regexp
 	Action  Action
 	Reason  string
 	Index   int
 }
-
-// APIVersionPrefix matches Docker API version prefixes like /v1.45/
-var APIVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+)?/`)
 
 // NormalizePath sanitizes and strips the Docker API version prefix from a path.
 // It resolves ".." and "." segments and collapses redundant slashes before
@@ -82,13 +80,6 @@ func stripVersionPrefix(p string) string {
 
 // CompileRule compiles a Rule into a CompiledRule for efficient matching.
 func CompileRule(r Rule) (*CompiledRule, error) {
-	// Convert glob pattern to regex
-	regexPattern := globToRegex(r.Pattern)
-	compiled, err := regexp.Compile("^" + regexPattern + "$")
-	if err != nil {
-		return nil, err
-	}
-
 	methods := make(map[string]bool)
 	for _, m := range r.Methods {
 		if m == "*" {
@@ -98,13 +89,27 @@ func CompileRule(r Rule) (*CompiledRule, error) {
 		methods[strings.ToUpper(m)] = true
 	}
 
-	return &CompiledRule{
+	cr := &CompiledRule{
 		methods: methods,
-		pattern: compiled,
 		Action:  r.Action,
 		Reason:  r.Reason,
 		Index:   r.Index,
-	}, nil
+	}
+
+	if !strings.Contains(r.Pattern, "*") {
+		cr.literal = r.Pattern
+		return cr, nil
+	}
+
+	// Convert glob pattern to regex.
+	regexPattern := globToRegex(r.Pattern)
+	compiled, err := regexp.Compile("^" + regexPattern + "$")
+	if err != nil {
+		return nil, err
+	}
+	cr.pattern = compiled
+
+	return cr, nil
 }
 
 // Matches returns true if the request matches this rule.
@@ -123,6 +128,10 @@ func (cr *CompiledRule) matchesNormalizedUpper(upperMethod, normalizedPath strin
 		if !cr.methods[upperMethod] {
 			return false
 		}
+	}
+
+	if cr.pattern == nil {
+		return normalizedPath == cr.literal
 	}
 
 	return cr.pattern.MatchString(normalizedPath)
