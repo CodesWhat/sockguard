@@ -58,7 +58,7 @@ func IsHijackEndpoint(method, path string) bool {
 	}
 
 	// Strip Docker API version prefix
-	p := filter.APIVersionPrefix.ReplaceAllString(path, "/")
+	p := filter.NormalizePath(path)
 
 	// Match: /containers/{id}/attach or /exec/{id}/start
 	parts := strings.Split(strings.Trim(p, "/"), "/")

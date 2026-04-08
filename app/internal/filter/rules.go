@@ -44,7 +44,40 @@ func NormalizePath(p string) string {
 		return ""
 	}
 	cleaned := path.Clean(p)
-	return APIVersionPrefix.ReplaceAllString(cleaned, "/")
+	return stripVersionPrefix(cleaned)
+}
+
+// stripVersionPrefix removes a leading /vN.N/ or /vN/ prefix, returning the
+// path from the first slash after the version. Uses a hand-rolled check so the
+// common case (no prefix) avoids regexp overhead entirely.
+func stripVersionPrefix(p string) string {
+	// Minimum version prefix is /vN/ (4 chars).
+	if len(p) < 4 || p[0] != '/' || p[1] != 'v' {
+		return p
+	}
+	i := 2
+	// Consume digits.
+	for i < len(p) && p[i] >= '0' && p[i] <= '9' {
+		i++
+	}
+	if i == 2 {
+		return p // no digits after /v
+	}
+	// Optional .N
+	if i < len(p) && p[i] == '.' {
+		j := i + 1
+		for j < len(p) && p[j] >= '0' && p[j] <= '9' {
+			j++
+		}
+		if j > i+1 {
+			i = j
+		}
+	}
+	// Must end with /
+	if i >= len(p) || p[i] != '/' {
+		return p
+	}
+	return p[i:]
 }
 
 // CompileRule compiles a Rule into a CompiledRule for efficient matching.
