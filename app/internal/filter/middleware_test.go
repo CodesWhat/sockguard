@@ -43,6 +43,41 @@ func (w *failingResponseWriter) Write([]byte) (int, error) {
 	return 0, errWriteFailed
 }
 
+type failOnceResponseWriter struct {
+	header        http.Header
+	committed     http.Header
+	status        int
+	writeCalls    int
+	headerWritten bool
+	body          bytes.Buffer
+}
+
+func (w *failOnceResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *failOnceResponseWriter) WriteHeader(status int) {
+	if !w.headerWritten {
+		w.committed = w.Header().Clone()
+		w.headerWritten = true
+	}
+	w.status = status
+}
+
+func (w *failOnceResponseWriter) Write(p []byte) (int, error) {
+	if !w.headerWritten {
+		w.WriteHeader(http.StatusOK)
+	}
+	w.writeCalls++
+	if w.writeCalls == 1 {
+		return 0, errWriteFailed
+	}
+	return w.body.Write(p)
+}
+
 func TestMiddlewareAllowed(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
@@ -239,6 +274,44 @@ func TestMiddlewareLogsEncodeError(t *testing.T) {
 
 	if rec.status != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", rec.status, http.StatusForbidden)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "failed to encode denial response") {
+		t.Errorf("expected encode error log, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, errWriteFailed.Error()) {
+		t.Errorf("expected write error in log, got %q", logOutput)
+	}
+}
+
+func TestMiddlewareDoesNotAttemptFallbackAfterHeadersCommitted(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 0})
+	rules := []*CompiledRule{r1}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("should not reach inner handler")
+	})
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	handler := Middleware(rules, logger)(inner)
+	req := httptest.NewRequest("POST", "/v1.45/../containers/create", nil)
+	rec := &failOnceResponseWriter{}
+	handler.ServeHTTP(rec, req)
+
+	if rec.status != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.status, http.StatusForbidden)
+	}
+	if got := rec.committed.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("committed Content-Type = %q, want application/json", got)
+	}
+	if rec.writeCalls != 1 {
+		t.Fatalf("write calls = %d, want 1", rec.writeCalls)
+	}
+	if rec.body.Len() != 0 {
+		t.Fatalf("body length = %d, want 0", rec.body.Len())
 	}
 
 	logOutput := logBuf.String()
