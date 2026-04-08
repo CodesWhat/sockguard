@@ -83,3 +83,66 @@ func TestWriteDoesNotCommitOnEncodeError(t *testing.T) {
 		t.Fatalf("body length = %d, want 0", len(w.body))
 	}
 }
+
+func TestGetJSONBufferReturnsUsableBuffer(t *testing.T) {
+	buf := getJSONBuffer()
+	if buf == nil {
+		t.Fatal("getJSONBuffer() returned nil")
+	}
+	putJSONBuffer(buf)
+}
+
+func TestPutJSONBufferResetsBuffer(t *testing.T) {
+	buf := getJSONBuffer()
+	buf.WriteString(`{"message":"denied"}`)
+
+	putJSONBuffer(buf)
+
+	if buf.Len() != 0 {
+		t.Fatalf("buffer length after put = %d, want 0", buf.Len())
+	}
+}
+
+type benchmarkResponseWriter struct {
+	header http.Header
+	status int
+}
+
+func newBenchmarkResponseWriter() *benchmarkResponseWriter {
+	return &benchmarkResponseWriter{
+		header: make(http.Header),
+	}
+}
+
+func (w *benchmarkResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *benchmarkResponseWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *benchmarkResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return len(p), nil
+}
+
+func (w *benchmarkResponseWriter) Reset() {
+	clear(w.header)
+	w.status = 0
+}
+
+func BenchmarkWrite(b *testing.B) {
+	payload := map[string]string{"message": "request denied by sockguard policy"}
+	w := newBenchmarkResponseWriter()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		w.Reset()
+		if err := Write(w, http.StatusForbidden, payload); err != nil {
+			b.Fatalf("Write() error = %v", err)
+		}
+	}
+}
