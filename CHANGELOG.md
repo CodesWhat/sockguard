@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `cmd/validate_test.go`, full middleware-chain integration coverage, and edge-case tests for empty rules, nil meta, and implicit 200 response capture writes
 - Expanded adversarial filter coverage for encoded path, Unicode normalization, and method-case matching edge cases
 - Expanded hijack proxy coverage for malformed upstream responses, upgrade disconnects, copy-loop panics, and half-close failures
+- Replaced `reflect.DeepEqual` in compat default-rule detection with explicit rule field comparisons and direct helper coverage
+- Replaced untyped health response maps with a documented `HealthResponse` struct
+- Added lightweight workspace tests for `website` and `docs`, plus a root workspace `test` command for the TypeScript apps
+- Replaced the kernel-backlog-dependent health timeout test with a deterministic blocking-dial mock
+- Added a compile-time `http.Hijacker` assertion for the access-log `responseCapture` wrapper
+- Replaced the remaining untyped proxy/hijack JSON error maps with a shared typed error response struct
 
 ### Fixed
 
