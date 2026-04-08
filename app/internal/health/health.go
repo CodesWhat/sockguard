@@ -37,6 +37,13 @@ type upstreamHealthChecker struct {
 	cachedUp   string
 	cachedErr  error
 	cacheReady bool
+	inFlight   *healthCheckCall
+}
+
+type healthCheckCall struct {
+	done   chan struct{}
+	status string
+	err    error
 }
 
 func newUpstreamHealthChecker(ttl, timeout time.Duration, now func() time.Time, dial dialContextFunc) *upstreamHealthChecker {
@@ -57,6 +64,14 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 		c.mu.Unlock()
 		return status, err
 	}
+	if c.inFlight != nil {
+		call := c.inFlight
+		c.mu.Unlock()
+		<-call.done
+		return call.status, call.err
+	}
+	call := &healthCheckCall{done: make(chan struct{})}
+	c.inFlight = call
 	c.mu.Unlock()
 
 	dialCtx, cancel := context.WithTimeout(ctx, c.timeout)
@@ -71,10 +86,14 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 	}
 
 	c.mu.Lock()
-	c.cachedAt = now
+	c.cachedAt = c.now()
 	c.cachedUp = status
 	c.cachedErr = err
 	c.cacheReady = true
+	c.inFlight = nil
+	call.status = status
+	call.err = err
+	close(call.done)
 	c.mu.Unlock()
 
 	return status, err
@@ -85,8 +104,6 @@ func Handler(upstreamSocket string, startTime time.Time, logger *slog.Logger) ht
 	checker := newUpstreamHealthChecker(healthCacheTTL, healthDialTimeout, time.Now, (&net.Dialer{}).DialContext)
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
 		uptime := time.Since(startTime).Seconds()
 
 		upstreamStatus, err := checker.check(r.Context(), upstreamSocket)

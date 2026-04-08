@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,16 @@ func (devNull) Write(b []byte) (int, error) { return len(b), nil }
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError + 1}))
+}
+
+type headerCallTrackingWriter struct {
+	*httptest.ResponseRecorder
+	headerCalls int
+}
+
+func (w *headerCallTrackingWriter) Header() http.Header {
+	w.headerCalls++
+	return w.ResponseRecorder.Header()
 }
 
 func TestHealthReachable(t *testing.T) {
@@ -55,6 +66,22 @@ func TestHealthReachable(t *testing.T) {
 	}
 	if body.Error != "" {
 		t.Errorf("expected empty error for healthy response, got %q", body.Error)
+	}
+}
+
+func TestHealthHandlerSetsContentTypeOnce(t *testing.T) {
+	handler := Handler("/nonexistent/socket.sock", time.Now(), testLogger())
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := &headerCallTrackingWriter{ResponseRecorder: httptest.NewRecorder()}
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.headerCalls != 1 {
+		t.Fatalf("Header() calls = %d, want 1", rec.headerCalls)
+	}
+	if got := rec.Result().Header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
 	}
 }
 
@@ -152,5 +179,76 @@ func TestHealthCachesUpstreamStatusWithinTTL(t *testing.T) {
 	}
 	if dialCalls.Load() != 2 {
 		t.Fatalf("dial calls after TTL = %d, want 2", dialCalls.Load())
+	}
+}
+
+func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
+	const callers = 16
+
+	releaseDial := make(chan struct{})
+	startChecks := make(chan struct{})
+	results := make(chan struct {
+		status string
+		err    error
+	}, callers)
+
+	var ready sync.WaitGroup
+	ready.Add(callers)
+
+	var wg sync.WaitGroup
+	var dialCalls atomic.Int32
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		3*time.Second,
+		time.Now,
+		func(context.Context, string, string) (net.Conn, error) {
+			dialCalls.Add(1)
+			<-releaseDial
+			return nil, errors.New("upstream down")
+		},
+	)
+
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ready.Done()
+			<-startChecks
+			status, err := checker.check(context.Background(), "/tmp/upstream.sock")
+			results <- struct {
+				status string
+				err    error
+			}{status: status, err: err}
+		}()
+	}
+
+	ready.Wait()
+	close(startChecks)
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if dialCalls.Load() > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if dialCalls.Load() == 0 {
+		t.Fatal("expected at least one upstream dial")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	close(releaseDial)
+	wg.Wait()
+	close(results)
+
+	if dialCalls.Load() != 1 {
+		t.Fatalf("dial calls = %d, want 1", dialCalls.Load())
+	}
+
+	for result := range results {
+		if result.status != "unreachable" || result.err == nil {
+			t.Fatalf("check = (%q, %v), want unreachable with error", result.status, result.err)
+		}
 	}
 }
