@@ -242,7 +242,7 @@ func closeWrite(c net.Conn) {
 		CloseWrite() error
 	}
 	if hc, ok := c.(halfCloser); ok {
-		hc.CloseWrite()
+		hc.CloseWrite() //nolint:errcheck // best-effort half-close; connection tears down next
 	}
 }
 
