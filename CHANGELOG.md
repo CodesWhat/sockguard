@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Buffered JSON helper encoding before headers are committed so encode failures do not partially send the wrong response metadata
 - Dropped the filter plaintext denial fallback after JSON write failures so denied requests cannot end up with mismatched content types or secondary reflected writes
 - Removed the unreachable empty-output branch from the logger writer after normalization rejects blank log targets up front
+- Coalesced concurrent `/health` cache misses onto a single in-flight upstream probe so repeated requests do not stampede the Unix socket before the TTL cache fills
+- Removed the redundant `/health` `Content-Type` header write and left JSON response metadata ownership with the shared HTTP JSON helper
+- Consolidated the repeated non-101 hijack fallback tests behind a shared table-driven harness to keep proxy fallback coverage aligned without duplicating socket setup boilerplate
+- Switched demo glob compilation to `Array.from(pattern)` so surrogate-pair literals are handled as single code points instead of split UTF-16 halves
+- Extracted the landing-page feature cards and comparison table datasets into dedicated website data modules so `page.tsx` is easier to scan and maintain
 
 ### Fixed
 
