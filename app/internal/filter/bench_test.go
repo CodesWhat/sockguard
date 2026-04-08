@@ -97,14 +97,72 @@ func BenchmarkEvaluate(b *testing.B) {
 
 var benchLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
+type benchmarkResponseWriter struct {
+	header http.Header
+	status int
+}
+
+func newBenchmarkResponseWriter() *benchmarkResponseWriter {
+	return &benchmarkResponseWriter{
+		header: make(http.Header),
+	}
+}
+
+func (w *benchmarkResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *benchmarkResponseWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *benchmarkResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return len(p), nil
+}
+
+func (w *benchmarkResponseWriter) Reset() {
+	clear(w.header)
+	w.status = 0
+}
+
+func TestBenchmarkResponseWriterReset(t *testing.T) {
+	w := newBenchmarkResponseWriter()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusForbidden)
+	if _, err := w.Write([]byte(`{"message":"denied"}`)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if w.status != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", w.status, http.StatusForbidden)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+
+	w.Reset()
+
+	if w.status != 0 {
+		t.Fatalf("status after reset = %d, want 0", w.status)
+	}
+	if len(w.Header()) != 0 {
+		t.Fatalf("header count after reset = %d, want 0", len(w.Header()))
+	}
+}
+
 func BenchmarkMiddlewareAllow(b *testing.B) {
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	handler := Middleware(benchRules, benchLogger)(next)
 
 	req := httptest.NewRequest("GET", "/v1.45/containers/json", nil)
-	w := httptest.NewRecorder()
+	w := newBenchmarkResponseWriter()
 
 	for b.Loop() {
+		w.Reset()
 		handler.ServeHTTP(w, req)
 	}
 }
@@ -114,9 +172,10 @@ func BenchmarkMiddlewareDeny(b *testing.B) {
 	handler := Middleware(benchRules, benchLogger)(next)
 
 	req := httptest.NewRequest("DELETE", "/containers/abc123", nil)
-	w := httptest.NewRecorder()
+	w := newBenchmarkResponseWriter()
 
 	for b.Loop() {
+		w.Reset()
 		handler.ServeHTTP(w, req)
 	}
 }
