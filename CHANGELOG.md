@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced the kernel-backlog-dependent health timeout test with a deterministic blocking-dial mock
 - Added a compile-time `http.Hijacker` assertion for the access-log `responseCapture` wrapper
 - Replaced the remaining untyped proxy/hijack JSON error maps with a shared typed error response struct
+- Cached demo glob literal-character escaping so regex compilation stops running the same one-character `.replace()` work repeatedly
+- Sanitized `/health` client error responses so they no longer leak raw socket paths or OS dial errors
+- Buffered JSON helper encoding before headers are committed so encode failures do not partially send the wrong response metadata
+- Dropped the filter plaintext denial fallback after JSON write failures so denied requests cannot end up with mismatched content types or secondary reflected writes
+- Removed the unreachable empty-output branch from the logger writer after normalization rejects blank log targets up front
 
 ### Fixed
 
