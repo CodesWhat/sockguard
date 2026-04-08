@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev --port 3003",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "test": "node --test --experimental-strip-types src/lib/evaluate.test.mjs"
   },
   "dependencies": {
     "next": "^15.3.0",

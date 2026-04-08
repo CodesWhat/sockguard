@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { evaluate, type Rule, type EvalResult } from "../lib/evaluate";
+import { compileRules, evaluateCompiled, type EvalResult, type Rule } from "../lib/evaluate";
 
 const DEFAULT_RULES: Rule[] = [
   { method: "GET", path: "/_ping", action: "allow" },
@@ -12,6 +12,7 @@ const DEFAULT_RULES: Rule[] = [
   { method: "POST", path: "/containers/*/stop", action: "allow" },
   { method: "*", path: "/**", action: "deny", reason: "no matching allow rule" },
 ];
+const DEFAULT_COMPILED_RULES = compileRules(DEFAULT_RULES);
 
 const SAMPLE_REQUESTS = [
   { method: "GET", path: "/v1.45/containers/json", label: "List containers" },
@@ -27,19 +28,18 @@ const SAMPLE_REQUESTS = [
 ];
 
 export default function RuleTester() {
-  const [rules] = useState<Rule[]>(DEFAULT_RULES);
   const [method, setMethod] = useState("GET");
   const [path, setPath] = useState("/containers/json");
   const [result, setResult] = useState<EvalResult | null>(null);
 
   function handleTest() {
-    setResult(evaluate(rules, method, path));
+    setResult(evaluateCompiled(DEFAULT_COMPILED_RULES, method, path));
   }
 
   function handleSample(sampleMethod: string, samplePath: string) {
     setMethod(sampleMethod);
     setPath(samplePath);
-    setResult(evaluate(rules, sampleMethod, samplePath));
+    setResult(evaluateCompiled(DEFAULT_COMPILED_RULES, sampleMethod, samplePath));
   }
 
   return (
@@ -67,7 +67,7 @@ export default function RuleTester() {
             </tr>
           </thead>
           <tbody>
-            {rules.map((rule, i) => (
+            {DEFAULT_RULES.map((rule, i) => (
               <tr
                 key={i}
                 style={{
