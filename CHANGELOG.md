@@ -24,6 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Interactive rule tester demo
 
 - All preset configs bundled in container image at `/etc/sockguard/`
+- Optional Docker integration tests behind the `integration` build tag, including live proxy and health checks against a real daemon socket
+- Fuzz coverage for proxy request headers and bodies in both the standard reverse-proxy and hijack forwarding paths
 
 ### Changed
 

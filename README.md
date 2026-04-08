@@ -96,6 +96,19 @@ sockguard validate -c sockguard.yaml      # Validate config
 sockguard version                         # Print version
 ```
 
+## Testing
+
+```bash
+cd app
+go test ./...
+go test -run=^$ -fuzz=FuzzPathMatch ./internal/filter
+go test -run=^$ -fuzz=FuzzProxyHeadersAndBody ./internal/proxy
+go test -run=^$ -fuzz=FuzzHijackHeadersAndBody ./internal/proxy
+go test -tags=integration ./integration
+```
+
+The `integration` build tag enables live Docker daemon tests. By default they use `/var/run/docker.sock`; override with `SOCKGUARD_TEST_DOCKER_SOCKET=/path/to/docker.sock`.
+
 ## Operational Notes
 
 - `sockguard` keeps Go `http.Server.ReadTimeout` at `0` to preserve Docker streaming endpoints (for example attach, logs follow, and events).
