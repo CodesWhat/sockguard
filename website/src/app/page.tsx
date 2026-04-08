@@ -1,20 +1,14 @@
 import {
-  ArrowRight,
   BookOpen,
   Check,
   Clock,
-  FileText,
   Minus,
-  Shield,
-  ShieldCheck,
-  SlidersHorizontal,
   Terminal,
-  Zap,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-
-type FeatureCategory = "security" | "control" | "operations";
+import { comparisonRows } from "./data/comparison-rows";
+import { features, type FeatureCategory } from "./data/features";
 
 const categoryLabels: Record<FeatureCategory, { label: string; color: string; border: string }> = {
   security: {
@@ -33,131 +27,6 @@ const categoryLabels: Record<FeatureCategory, { label: string; color: string; bo
     border: "border-emerald-500/30",
   },
 };
-
-const features: {
-  icon: typeof Shield;
-  title: string;
-  color: string;
-  bg: string;
-  description: string;
-  category: FeatureCategory;
-}[] = [
-  {
-    icon: ShieldCheck,
-    title: "Default-Deny Posture",
-    color: "text-rose-500 dark:text-rose-400",
-    bg: "bg-rose-100 dark:bg-rose-900/50",
-    description: "Everything blocked unless explicitly allowed. No match means deny.",
-    category: "security",
-  },
-  {
-    icon: SlidersHorizontal,
-    title: "Granular Control",
-    color: "text-blue-500 dark:text-blue-400",
-    bg: "bg-blue-100 dark:bg-blue-900/50",
-    description:
-      "Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching.",
-    category: "control",
-  },
-  {
-    icon: Zap,
-    title: "Structured Logging",
-    color: "text-emerald-500 dark:text-emerald-400",
-    bg: "bg-emerald-100 dark:bg-emerald-900/50",
-    description:
-      "JSON access logs with method, path, decision, matched rule index, latency, and client info.",
-    category: "operations",
-  },
-  {
-    icon: FileText,
-    title: "YAML Configuration",
-    color: "text-blue-500 dark:text-blue-400",
-    bg: "bg-blue-100 dark:bg-blue-900/50",
-    description:
-      "Declarative rules in YAML. Glob patterns for paths, first-match-wins evaluation, 10 bundled presets.",
-    category: "control",
-  },
-  {
-    icon: ArrowRight,
-    title: "Tecnativa Compatible",
-    color: "text-emerald-500 dark:text-emerald-400",
-    bg: "bg-emerald-100 dark:bg-emerald-900/50",
-    description:
-      "Drop-in replacement using the same env vars. CONTAINERS=1, POST=0, ALLOW_START=1 all work.",
-    category: "operations",
-  },
-  {
-    icon: Shield,
-    title: "Minimal Attack Surface",
-    color: "text-rose-500 dark:text-rose-400",
-    bg: "bg-rose-100 dark:bg-rose-900/50",
-    description:
-      "Wolfi-based image, ~12MB, near-zero CVEs. Cosign-signed with SBOM and build provenance.",
-    category: "security",
-  },
-];
-
-const comparisonRows: {
-  feature: string;
-  tecnativa: string;
-  linuxserver: string;
-  wollomatic: string;
-  sockguard: string;
-  planned?: boolean;
-}[] = [
-  {
-    feature: "Method + path filtering",
-    tecnativa: "Yes",
-    linuxserver: "Yes",
-    wollomatic: "Yes",
-    sockguard: "Yes",
-  },
-  {
-    feature: "Granular POST ops",
-    tecnativa: "No",
-    linuxserver: "Partial",
-    wollomatic: "Via regex",
-    sockguard: "Yes",
-  },
-  {
-    feature: "Request body inspection",
-    tecnativa: "No",
-    linuxserver: "No",
-    wollomatic: "No",
-    sockguard: "Planned",
-    planned: true,
-  },
-  {
-    feature: "Per-client policies",
-    tecnativa: "No",
-    linuxserver: "No",
-    wollomatic: "IP only",
-    sockguard: "Planned",
-    planned: true,
-  },
-  {
-    feature: "Response filtering",
-    tecnativa: "No",
-    linuxserver: "No",
-    wollomatic: "No",
-    sockguard: "Planned",
-    planned: true,
-  },
-  {
-    feature: "Structured audit log",
-    tecnativa: "No",
-    linuxserver: "No",
-    wollomatic: "No",
-    sockguard: "Yes",
-  },
-  {
-    feature: "YAML config",
-    tecnativa: "No",
-    linuxserver: "No",
-    wollomatic: "No",
-    sockguard: "Yes",
-  },
-];
 
 const dockerCompose = `services:
   sockguard:
