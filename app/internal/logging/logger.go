@@ -47,7 +47,7 @@ func outputWriter(output string) (io.Writer, io.Closer, error) {
 	}
 
 	switch normalized {
-	case "", "stderr":
+	case "stderr":
 		return os.Stderr, nil, nil
 	case "stdout":
 		return os.Stdout, nil, nil

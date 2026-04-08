@@ -100,6 +100,7 @@ func TestNewInvalidOutputPath(t *testing.T) {
 
 func TestOutputWriterRejectsNonLocalPaths(t *testing.T) {
 	tests := []string{
+		"",
 		"../sockguard.log",
 		"/tmp/sockguard.log",
 	}
