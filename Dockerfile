@@ -1,6 +1,8 @@
 FROM golang:1.26-alpine AS builder
 
 ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
 WORKDIR /build
 
 COPY app/go.mod app/go.sum ./
@@ -8,7 +10,10 @@ RUN go mod download
 
 COPY app/ .
 RUN CGO_ENABLED=0 GOOS=linux go build \
-    -ldflags="-s -w -X github.com/codeswhat/sockguard/internal/version.Version=${VERSION}" \
+    -ldflags="-s -w \
+      -X github.com/codeswhat/sockguard/internal/version.Version=${VERSION} \
+      -X github.com/codeswhat/sockguard/internal/version.Commit=${COMMIT} \
+      -X github.com/codeswhat/sockguard/internal/version.BuildDate=${BUILD_DATE}" \
     -trimpath \
     -o /sockguard ./cmd/sockguard/
 
