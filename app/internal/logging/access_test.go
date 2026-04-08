@@ -3,6 +3,7 @@ package logging
 import (
 	"bytes"
 	"context"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -149,5 +150,106 @@ func TestMetaNilContext(t *testing.T) {
 	got := Meta(context.Background())
 	if got != nil {
 		t.Errorf("Meta() = %v, want nil for empty context", got)
+	}
+}
+
+func TestGetRequestMetaReturnsUsableMeta(t *testing.T) {
+	meta := getRequestMeta()
+	if meta == nil {
+		t.Fatal("getRequestMeta() returned nil")
+	}
+	putRequestMeta(meta)
+}
+
+func TestPutRequestMetaResetsFields(t *testing.T) {
+	meta := &RequestMeta{
+		Decision: "deny",
+		Rule:     7,
+		Reason:   "default deny",
+		NormPath: "/containers/create",
+	}
+
+	putRequestMeta(meta)
+
+	if *meta != (RequestMeta{}) {
+		t.Fatalf("meta after put = %#v, want zero value", *meta)
+	}
+}
+
+type benchmarkResponseWriter struct {
+	header http.Header
+	status int
+}
+
+func newBenchmarkResponseWriter() *benchmarkResponseWriter {
+	return &benchmarkResponseWriter{
+		header: make(http.Header),
+	}
+}
+
+func (w *benchmarkResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *benchmarkResponseWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *benchmarkResponseWriter) Write(p []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return len(p), nil
+}
+
+func (w *benchmarkResponseWriter) Reset() {
+	clear(w.header)
+	w.status = 0
+}
+
+func TestAccessLogMiddlewareAllocationBudget(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m := Meta(r.Context()); m != nil {
+			m.Decision = "allow"
+			m.Rule = 0
+			m.NormPath = "/_ping"
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AccessLogMiddleware(logger)(inner)
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	w := newBenchmarkResponseWriter()
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		w.Reset()
+		handler.ServeHTTP(w, req)
+	})
+
+	if allocs > 3 {
+		t.Fatalf("AccessLogMiddleware allocated %.0f times, want <= 3", allocs)
+	}
+}
+
+func BenchmarkAccessLogMiddleware(b *testing.B) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m := Meta(r.Context()); m != nil {
+			m.Decision = "allow"
+			m.Rule = 0
+			m.NormPath = "/_ping"
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AccessLogMiddleware(logger)(inner)
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	w := newBenchmarkResponseWriter()
+
+	b.ReportAllocs()
+	for b.Loop() {
+		w.Reset()
+		handler.ServeHTTP(w, req)
 	}
 }
