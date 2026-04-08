@@ -1,6 +1,10 @@
 {
   "private": true,
-  "workspaces": ["website", "docs", "demo"],
+  "workspaces": [
+    "website",
+    "docs",
+    "demo"
+  ],
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
