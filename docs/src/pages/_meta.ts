@@ -4,7 +4,5 @@ export default {
   configuration: "Configuration",
   presets: "Presets",
   migration: "Migration",
-  api: "Docker API Reference",
   security: "Security Model",
-  changelog: "Changelog",
 };
