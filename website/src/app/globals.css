@@ -81,7 +81,8 @@
     min-height: 100%;
     background-color: theme(colors.background);
     color: theme(colors.foreground);
-    font-feature-settings: "rlig" 1, "calt" 1;
+    font-feature-settings:
+      "rlig" 1,
+      "calt" 1;
   }
 }
-

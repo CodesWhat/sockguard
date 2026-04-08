@@ -44,12 +44,7 @@ function globToRegex(pattern: string): RegExp {
   let regex = "";
   let i = 0;
   while (i < chars.length) {
-    if (
-      i + 2 < chars.length &&
-      chars[i] === "/" &&
-      chars[i + 1] === "*" &&
-      chars[i + 2] === "*"
-    ) {
+    if (i + 2 < chars.length && chars[i] === "/" && chars[i + 1] === "*" && chars[i + 2] === "*") {
       // /** matches the bare path OR /anything/deeper
       regex += "(/.*)?";
       i += 3;
@@ -71,7 +66,8 @@ function compileRule(rule: Rule): CompiledRule {
   return {
     ...rule,
     matcher: globToRegex(rule.path),
-    matchReason: rule.reason || (rule.action === "allow" ? "matched allow rule" : "matched deny rule"),
+    matchReason:
+      rule.reason || (rule.action === "allow" ? "matched allow rule" : "matched deny rule"),
     normalizedMethod: rule.method.toUpperCase(),
   };
 }

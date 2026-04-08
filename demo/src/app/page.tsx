@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { compileRules, evaluateCompiled, type EvalResult, type Rule } from "../lib/evaluate";
+import { compileRules, type EvalResult, evaluateCompiled, type Rule } from "../lib/evaluate";
 
 const DEFAULT_RULES: Rule[] = [
   { method: "GET", path: "/_ping", action: "allow" },
@@ -69,16 +69,33 @@ export default function RuleTester() {
           <tbody>
             {DEFAULT_RULES.map((rule, i) => (
               <tr
-                key={i}
+                key={`${rule.method}-${rule.path}`}
                 style={{
-                  backgroundColor: result?.ruleIndex === i ? (result.action === "allow" ? "#d4edda" : "#f8d7da") : "transparent",
+                  backgroundColor:
+                    result?.ruleIndex === i
+                      ? result.action === "allow"
+                        ? "#d4edda"
+                        : "#f8d7da"
+                      : "transparent",
                 }}
               >
                 <td style={{ padding: "0.5rem", borderBottom: "1px solid #ddd" }}>{i}</td>
-                <td style={{ padding: "0.5rem", borderBottom: "1px solid #ddd", fontFamily: "monospace" }}>
+                <td
+                  style={{
+                    padding: "0.5rem",
+                    borderBottom: "1px solid #ddd",
+                    fontFamily: "monospace",
+                  }}
+                >
                   {rule.method}
                 </td>
-                <td style={{ padding: "0.5rem", borderBottom: "1px solid #ddd", fontFamily: "monospace" }}>
+                <td
+                  style={{
+                    padding: "0.5rem",
+                    borderBottom: "1px solid #ddd",
+                    fontFamily: "monospace",
+                  }}
+                >
                   {rule.path}
                 </td>
                 <td
@@ -118,6 +135,7 @@ export default function RuleTester() {
             placeholder="/containers/json"
           />
           <button
+            type="button"
             onClick={handleTest}
             style={{
               padding: "0.5rem 1rem",
@@ -153,9 +171,10 @@ export default function RuleTester() {
       <section style={{ marginTop: "2rem" }}>
         <h2>Sample Requests</h2>
         <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
-          {SAMPLE_REQUESTS.map((sample, i) => (
+          {SAMPLE_REQUESTS.map((sample) => (
             <button
-              key={i}
+              type="button"
+              key={`${sample.method}-${sample.path}`}
               onClick={() => handleSample(sample.method, sample.path)}
               style={{
                 padding: "0.5rem 0.75rem",

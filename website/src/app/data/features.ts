@@ -1,10 +1,10 @@
 import {
   ArrowRight,
   FileText,
+  type LucideIcon,
   Shield,
   ShieldCheck,
   SlidersHorizontal,
-  type LucideIcon,
   Zap,
 } from "lucide-react";
 
