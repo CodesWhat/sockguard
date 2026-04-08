@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/codeswhat/sockguard/internal/httpjson"
 )
 
 func TestIsHijackEndpoint(t *testing.T) {
@@ -98,6 +101,13 @@ func TestHijackHandler_UpstreamUnreachable(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("expected status 502, got %d", rec.Code)
+	}
+	var body httpjson.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v", err)
+	}
+	if body.Message != "upstream Docker socket unreachable" {
+		t.Fatalf("unexpected message: %q", body.Message)
 	}
 	if strings.Contains(rec.Body.String(), socketPath) {
 		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())
@@ -476,8 +486,12 @@ func TestHandleHijack_UpstreamMalformedResponse(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "failed to read upstream response") {
-		t.Fatalf("expected malformed upstream error body, got %q", rec.Body.String())
+	var body httpjson.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v", err)
+	}
+	if body.Message != "failed to read upstream response" {
+		t.Fatalf("unexpected message: %q", body.Message)
 	}
 	if strings.Contains(rec.Body.String(), `"error"`) {
 		t.Fatalf("response leaked internal error field: %q", rec.Body.String())
@@ -517,8 +531,12 @@ func TestHandleHijack_RequestWriteErrorDoesNotLeakDetails(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "failed to forward request to upstream") {
-		t.Fatalf("expected generic forward error body, got %q", rec.Body.String())
+	var body httpjson.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("response body is not valid JSON: %v", err)
+	}
+	if body.Message != "failed to forward request to upstream" {
+		t.Fatalf("unexpected message: %q", body.Message)
 	}
 	if strings.Contains(rec.Body.String(), bodyErr.Error()) || strings.Contains(rec.Body.String(), socketPath) {
 		t.Fatalf("response leaked internal error details: %q", rec.Body.String())

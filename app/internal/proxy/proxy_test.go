@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/codeswhat/sockguard/internal/httpjson"
 )
 
 func testLogger() *slog.Logger {
@@ -34,15 +36,12 @@ func TestNew_ErrorHandler(t *testing.T) {
 		t.Errorf("expected Content-Type application/json, got %s", ct)
 	}
 
-	var body map[string]string
+	var body httpjson.ErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("response body is not valid JSON: %v", err)
 	}
-	if body["message"] != "upstream Docker socket unreachable" {
-		t.Errorf("unexpected message: %s", body["message"])
-	}
-	if _, ok := body["error"]; ok {
-		t.Fatalf("expected no error field in client response, got %v", body["error"])
+	if body.Message != "upstream Docker socket unreachable" {
+		t.Errorf("unexpected message: %s", body.Message)
 	}
 	if strings.Contains(rec.Body.String(), socketPath) {
 		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())
@@ -156,15 +155,12 @@ func TestNew_UpstreamDown(t *testing.T) {
 		t.Errorf("expected 502, got %d", rec.Code)
 	}
 
-	var body map[string]string
+	var body httpjson.ErrorResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("response body is not valid JSON: %v", err)
 	}
-	if body["message"] != "upstream Docker socket unreachable" {
-		t.Errorf("unexpected message: %s", body["message"])
-	}
-	if _, ok := body["error"]; ok {
-		t.Fatalf("expected no error field in client response, got %v", body["error"])
+	if body.Message != "upstream Docker socket unreachable" {
+		t.Errorf("unexpected message: %s", body.Message)
 	}
 	if strings.Contains(rec.Body.String(), socketPath) {
 		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())

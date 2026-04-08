@@ -63,7 +63,9 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	upstreamConn, err := net.Dial("unix", upstreamSocket)
 	if err != nil {
 		logger.Error("hijack: upstream dial failed", "error", err, "path", r.URL.Path)
-		if encErr := httpjson.Write(w, http.StatusBadGateway, map[string]string{"message": "upstream Docker socket unreachable"}); encErr != nil {
+		if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{
+			Message: "upstream Docker socket unreachable",
+		}); encErr != nil {
 			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
 		}
 		return
@@ -75,7 +77,9 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	if err := r.Write(upstreamConn); err != nil {
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: write request to upstream failed", "error", err, "path", r.URL.Path)
-		if encErr := httpjson.Write(w, http.StatusBadGateway, map[string]string{"message": "failed to forward request to upstream"}); encErr != nil {
+		if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{
+			Message: "failed to forward request to upstream",
+		}); encErr != nil {
 			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
 		}
 		return
@@ -88,7 +92,9 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	if err != nil {
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: read upstream response failed", "error", err, "path", r.URL.Path)
-		if encErr := httpjson.Write(w, http.StatusBadGateway, map[string]string{"message": "failed to read upstream response"}); encErr != nil {
+		if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{
+			Message: "failed to read upstream response",
+		}); encErr != nil {
 			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
 		}
 		return

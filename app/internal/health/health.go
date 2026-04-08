@@ -13,13 +13,24 @@ import (
 )
 
 const healthCacheTTL = 2 * time.Second
+const healthDialTimeout = 3 * time.Second
 
 type dialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
+// HealthResponse is the JSON body returned by the /health endpoint.
+type HealthResponse struct {
+	Status        string `json:"status"`
+	Upstream      string `json:"upstream"`
+	Error         string `json:"error,omitempty"`
+	Version       string `json:"version"`
+	UptimeSeconds int    `json:"uptime_seconds"`
+}
+
 type upstreamHealthChecker struct {
-	ttl  time.Duration
-	now  func() time.Time
-	dial dialContextFunc
+	ttl     time.Duration
+	timeout time.Duration
+	now     func() time.Time
+	dial    dialContextFunc
 
 	mu         sync.Mutex
 	cachedAt   time.Time
@@ -28,11 +39,12 @@ type upstreamHealthChecker struct {
 	cacheReady bool
 }
 
-func newUpstreamHealthChecker(ttl time.Duration, now func() time.Time, dial dialContextFunc) *upstreamHealthChecker {
+func newUpstreamHealthChecker(ttl, timeout time.Duration, now func() time.Time, dial dialContextFunc) *upstreamHealthChecker {
 	return &upstreamHealthChecker{
-		ttl:  ttl,
-		now:  now,
-		dial: dial,
+		ttl:     ttl,
+		timeout: timeout,
+		now:     now,
+		dial:    dial,
 	}
 }
 
@@ -47,7 +59,7 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 	}
 	c.mu.Unlock()
 
-	dialCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	dialCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	conn, err := c.dial(dialCtx, "unix", upstreamSocket)
@@ -70,7 +82,7 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 
 // Handler returns an HTTP handler for the /health endpoint.
 func Handler(upstreamSocket string, startTime time.Time, logger *slog.Logger) http.HandlerFunc {
-	checker := newUpstreamHealthChecker(healthCacheTTL, time.Now, (&net.Dialer{}).DialContext)
+	checker := newUpstreamHealthChecker(healthCacheTTL, healthDialTimeout, time.Now, (&net.Dialer{}).DialContext)
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -83,12 +95,12 @@ func Handler(upstreamSocket string, startTime time.Time, logger *slog.Logger) ht
 				"error", err,
 				"upstream_socket", upstreamSocket,
 			)
-			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, map[string]interface{}{
-				"status":         "unhealthy",
-				"upstream":       upstreamStatus,
-				"error":          err.Error(),
-				"version":        version.Version,
-				"uptime_seconds": int(uptime),
+			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
+				Status:        "unhealthy",
+				Upstream:      upstreamStatus,
+				Error:         err.Error(),
+				Version:       version.Version,
+				UptimeSeconds: int(uptime),
 			}); encErr != nil {
 				logger.WarnContext(r.Context(), "failed to encode unhealthy response",
 					"error", encErr,
@@ -97,11 +109,11 @@ func Handler(upstreamSocket string, startTime time.Time, logger *slog.Logger) ht
 			return
 		}
 
-		if encErr := httpjson.Write(w, http.StatusOK, map[string]interface{}{
-			"status":         "healthy",
-			"upstream":       upstreamStatus,
-			"version":        version.Version,
-			"uptime_seconds": int(uptime),
+		if encErr := httpjson.Write(w, http.StatusOK, HealthResponse{
+			Status:        "healthy",
+			Upstream:      upstreamStatus,
+			Version:       version.Version,
+			UptimeSeconds: int(uptime),
 		}); encErr != nil {
 			logger.WarnContext(r.Context(), "failed to encode healthy response",
 				"error", encErr,

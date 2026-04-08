@@ -42,6 +42,7 @@ type responseCapture struct {
 }
 
 var _ http.Flusher = (*responseCapture)(nil)
+var _ http.Hijacker = (*responseCapture)(nil)
 
 func (rc *responseCapture) WriteHeader(code int) {
 	rc.status = code

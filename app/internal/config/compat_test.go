@@ -233,3 +233,27 @@ func TestLookupEnvBoolNotSet(t *testing.T) {
 		t.Error("expected false for unset env var")
 	}
 }
+
+func TestRulesMatchDefaults(t *testing.T) {
+	t.Run("matching rules", func(t *testing.T) {
+		rules := append([]RuleConfig(nil), Defaults().Rules...)
+		if !rulesMatchDefaults(rules) {
+			t.Fatal("expected defaults clone to match default rules")
+		}
+	})
+
+	t.Run("mismatched field", func(t *testing.T) {
+		rules := append([]RuleConfig(nil), Defaults().Rules...)
+		rules[0].Match.Path = "/ping"
+		if rulesMatchDefaults(rules) {
+			t.Fatal("expected changed rule field to break default match")
+		}
+	})
+
+	t.Run("mismatched length", func(t *testing.T) {
+		rules := Defaults().Rules[:len(Defaults().Rules)-1]
+		if rulesMatchDefaults(rules) {
+			t.Fatal("expected truncated rules to break default match")
+		}
+	})
+}

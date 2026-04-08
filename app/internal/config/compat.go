@@ -3,7 +3,6 @@ package config
 import (
 	"log/slog"
 	"os"
-	"reflect"
 	"sort"
 	"strings"
 )
@@ -172,7 +171,21 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 
 // rulesMatchDefaults checks if rules are the same as Defaults().Rules.
 func rulesMatchDefaults(rules []RuleConfig) bool {
-	return reflect.DeepEqual(rules, Defaults().Rules)
+	defaultRules := Defaults().Rules
+	if len(rules) != len(defaultRules) {
+		return false
+	}
+
+	for i := range rules {
+		if rules[i].Match.Method != defaultRules[i].Match.Method ||
+			rules[i].Match.Path != defaultRules[i].Match.Path ||
+			rules[i].Action != defaultRules[i].Action ||
+			rules[i].Reason != defaultRules[i].Reason {
+			return false
+		}
+	}
+
+	return true
 }
 
 // lookupEnvBool reads an env var and parses it as a boolean.
