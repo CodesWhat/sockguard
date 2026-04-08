@@ -61,12 +61,23 @@ func IsHijackEndpoint(method, path string) bool {
 	p := filter.NormalizePath(path)
 
 	// Match: /containers/{id}/attach or /exec/{id}/start
-	parts := strings.Split(strings.Trim(p, "/"), "/")
-	if len(parts) != 3 {
+	p, ok := strings.CutPrefix(p, "/")
+	if !ok {
 		return false
 	}
-	return (parts[0] == "containers" && parts[2] == "attach") ||
-		(parts[0] == "exec" && parts[2] == "start")
+
+	resource, remainder, ok := strings.Cut(p, "/")
+	if !ok || resource == "" {
+		return false
+	}
+
+	_, action, ok := strings.Cut(remainder, "/")
+	if !ok || action == "" || strings.Contains(action, "/") {
+		return false
+	}
+
+	return (resource == "containers" && action == "attach") ||
+		(resource == "exec" && action == "start")
 }
 
 func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) {
@@ -219,7 +230,9 @@ func putHijackBuffer(buf []byte) {
 	if cap(buf) < hijackBufSize {
 		return
 	}
-	hijackBufferPool.Put(buf[:hijackBufSize])
+	buf = buf[:hijackBufSize]
+	clear(buf)
+	hijackBufferPool.Put(buf)
 }
 
 // closeWrite performs a TCP/Unix half-close, signaling no more data will be sent

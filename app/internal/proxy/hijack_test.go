@@ -20,6 +20,20 @@ import (
 	"github.com/codeswhat/sockguard/internal/httpjson"
 )
 
+var hijackBufferPoolMu sync.Mutex
+
+func useHijackBufferPool(t *testing.T, pool bytePool) {
+	t.Helper()
+
+	hijackBufferPoolMu.Lock()
+	oldPool := hijackBufferPool
+	hijackBufferPool = pool
+	t.Cleanup(func() {
+		hijackBufferPool = oldPool
+		hijackBufferPoolMu.Unlock()
+	})
+}
+
 func TestIsHijackEndpoint(t *testing.T) {
 	tests := []struct {
 		method string
@@ -59,6 +73,33 @@ func TestIsHijackEndpoint(t *testing.T) {
 			got := IsHijackEndpoint(tt.method, tt.path)
 			if got != tt.want {
 				t.Errorf("IsHijackEndpoint(%q, %q) = %v, want %v", tt.method, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsHijackEndpointDoesNotAllocateForHijackPaths(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "attach", method: http.MethodPost, path: "/containers/abc123/attach"},
+		{name: "versioned_exec", method: http.MethodPost, path: "/v1.45/exec/abc123/start"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !IsHijackEndpoint(tt.method, tt.path) {
+				t.Fatalf("IsHijackEndpoint(%q, %q) = false, want true", tt.method, tt.path)
+			}
+
+			allocs := testing.AllocsPerRun(1000, func() {
+				IsHijackEndpoint(tt.method, tt.path)
+			})
+
+			if allocs > 0 {
+				t.Fatalf("IsHijackEndpoint(%q, %q) allocated %.0f times, want 0", tt.method, tt.path, allocs)
 			}
 		})
 	}
@@ -778,12 +819,37 @@ func TestHandleHijack_FinalCloseErrorLogged(t *testing.T) {
 }
 
 func TestGetHijackBufferRestoresFullLengthFromPool(t *testing.T) {
-	oldPool := hijackBufferPool
 	fakePool := &stubBufferPool{getValue: make([]byte, 128, hijackBufSize)}
-	hijackBufferPool = fakePool
-	t.Cleanup(func() {
-		hijackBufferPool = oldPool
-	})
+	useHijackBufferPool(t, fakePool)
+
+	buf := getHijackBuffer()
+
+	if len(buf) != hijackBufSize {
+		t.Fatalf("buffer length = %d, want %d", len(buf), hijackBufSize)
+	}
+	if cap(buf) != hijackBufSize {
+		t.Fatalf("buffer capacity = %d, want %d", cap(buf), hijackBufSize)
+	}
+}
+
+func TestGetHijackBufferAllocatesWhenPoolReturnsNil(t *testing.T) {
+	fakePool := &stubBufferPool{}
+	useHijackBufferPool(t, fakePool)
+
+	buf := getHijackBuffer()
+
+	if len(buf) != hijackBufSize {
+		t.Fatalf("buffer length = %d, want %d", len(buf), hijackBufSize)
+	}
+	if cap(buf) != hijackBufSize {
+		t.Fatalf("buffer capacity = %d, want %d", cap(buf), hijackBufSize)
+	}
+}
+
+func TestGetHijackBufferAllocatesWhenPoolReturnsUndersizedBuffer(t *testing.T) {
+	undersized := make([]byte, 128, hijackBufSize-1)
+	fakePool := &stubBufferPool{getValue: undersized}
+	useHijackBufferPool(t, fakePool)
 
 	buf := getHijackBuffer()
 
@@ -796,12 +862,8 @@ func TestGetHijackBufferRestoresFullLengthFromPool(t *testing.T) {
 }
 
 func TestPutHijackBufferRestoresFullLengthBeforeReuse(t *testing.T) {
-	oldPool := hijackBufferPool
 	fakePool := &stubBufferPool{}
-	hijackBufferPool = fakePool
-	t.Cleanup(func() {
-		hijackBufferPool = oldPool
-	})
+	useHijackBufferPool(t, fakePool)
 
 	putHijackBuffer(make([]byte, 256, hijackBufSize))
 
@@ -814,6 +876,39 @@ func TestPutHijackBufferRestoresFullLengthBeforeReuse(t *testing.T) {
 	}
 	if cap(pooled) != hijackBufSize {
 		t.Fatalf("pooled capacity = %d, want %d", cap(pooled), hijackBufSize)
+	}
+}
+
+func TestPutHijackBufferDiscardsUndersizedBuffer(t *testing.T) {
+	fakePool := &stubBufferPool{}
+	useHijackBufferPool(t, fakePool)
+
+	putHijackBuffer(make([]byte, 128, hijackBufSize-1))
+
+	if fakePool.putValue != nil {
+		t.Fatalf("pooled value = %#v, want nil", fakePool.putValue)
+	}
+}
+
+func TestPutHijackBufferZeroesBufferBeforeReuse(t *testing.T) {
+	fakePool := &stubBufferPool{}
+	useHijackBufferPool(t, fakePool)
+
+	buf := make([]byte, hijackBufSize)
+	for i := range buf {
+		buf[i] = 0xAB
+	}
+
+	putHijackBuffer(buf)
+
+	pooled, ok := fakePool.putValue.([]byte)
+	if !ok {
+		t.Fatalf("pooled value type = %T, want []byte", fakePool.putValue)
+	}
+	for i, b := range pooled {
+		if b != 0 {
+			t.Fatalf("pooled[%d] = %#x, want 0x00", i, b)
+		}
 	}
 }
 
