@@ -117,21 +117,22 @@ func evaluateNormalized(rules []*CompiledRule, method, normalizedPath string) (A
 // so /containers/** matches both /containers and /containers/anything.
 func globToRegex(pattern string) string {
 	var b strings.Builder
+	runes := []rune(pattern)
 	i := 0
-	for i < len(pattern) {
+	for i < len(runes) {
 		switch {
-		case i+2 < len(pattern) && pattern[i] == '/' && pattern[i+1] == '*' && pattern[i+2] == '*':
+		case i+2 < len(runes) && runes[i] == '/' && runes[i+1] == '*' && runes[i+2] == '*':
 			// /** matches the bare path OR /anything/deeper
 			b.WriteString("(/.*)?")
 			i += 3
-		case i+1 < len(pattern) && pattern[i] == '*' && pattern[i+1] == '*':
+		case i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*':
 			b.WriteString(".*")
 			i += 2
-		case pattern[i] == '*':
+		case runes[i] == '*':
 			b.WriteString("[^/]*")
 			i++
 		default:
-			b.WriteString(regexp.QuoteMeta(string(pattern[i])))
+			b.WriteString(regexp.QuoteMeta(string(runes[i])))
 			i++
 		}
 	}

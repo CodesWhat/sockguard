@@ -19,7 +19,8 @@ func testLogger() *slog.Logger {
 
 func TestNew_ErrorHandler(t *testing.T) {
 	// Point at a socket that does not exist so the error handler fires.
-	rp := New("/tmp/dp-nonexistent-socket.sock", testLogger())
+	socketPath := "/tmp/dp-nonexistent-socket.sock"
+	rp := New(socketPath, testLogger())
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -39,6 +40,12 @@ func TestNew_ErrorHandler(t *testing.T) {
 	}
 	if body["message"] != "upstream Docker socket unreachable" {
 		t.Errorf("unexpected message: %s", body["message"])
+	}
+	if _, ok := body["error"]; ok {
+		t.Fatalf("expected no error field in client response, got %v", body["error"])
+	}
+	if strings.Contains(rec.Body.String(), socketPath) {
+		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())
 	}
 }
 
@@ -138,7 +145,8 @@ func TestNew_PreservesResponseBody(t *testing.T) {
 
 func TestNew_UpstreamDown(t *testing.T) {
 	// Point at a socket that does not exist.
-	rp := New("/tmp/dp-nonexistent-socket.sock", testLogger())
+	socketPath := "/tmp/dp-nonexistent-socket.sock"
+	rp := New(socketPath, testLogger())
 
 	req := httptest.NewRequest("GET", "/info", nil)
 	rec := httptest.NewRecorder()
@@ -155,8 +163,11 @@ func TestNew_UpstreamDown(t *testing.T) {
 	if body["message"] != "upstream Docker socket unreachable" {
 		t.Errorf("unexpected message: %s", body["message"])
 	}
-	if body["error"] == "" {
-		t.Error("expected non-empty error field")
+	if _, ok := body["error"]; ok {
+		t.Fatalf("expected no error field in client response, got %v", body["error"])
+	}
+	if strings.Contains(rec.Body.String(), socketPath) {
+		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())
 	}
 }
 

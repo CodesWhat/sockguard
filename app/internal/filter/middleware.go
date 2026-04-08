@@ -1,11 +1,11 @@
 package filter
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 
+	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -35,9 +35,7 @@ func Middleware(rules []*CompiledRule, logger *slog.Logger) func(http.Handler) h
 			}
 
 			if action == ActionDeny {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				if err := json.NewEncoder(w).Encode(DenialResponse{
+				if err := httpjson.Write(w, http.StatusForbidden, DenialResponse{
 					Message: "request denied by sockguard policy",
 					Method:  r.Method,
 					Path:    r.URL.Path,

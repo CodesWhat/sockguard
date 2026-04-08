@@ -1,12 +1,15 @@
 package health
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -130,5 +133,45 @@ func TestHealthUnreachable(t *testing.T) {
 	}
 	if body["upstream"] != "unreachable" {
 		t.Errorf("expected upstream unreachable, got %v", body["upstream"])
+	}
+}
+
+func TestHealthCachesUpstreamStatusWithinTTL(t *testing.T) {
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var dialCalls atomic.Int32
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		func() time.Time {
+			return baseNow.Add(time.Duration(nowOffset.Load()))
+		},
+		func(context.Context, string, string) (net.Conn, error) {
+			dialCalls.Add(1)
+			return nil, errors.New("upstream down")
+		},
+	)
+
+	status, err := checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "unreachable" || err == nil {
+		t.Fatalf("first check = (%q, %v), want unreachable with error", status, err)
+	}
+
+	nowOffset.Store(int64(1500 * time.Millisecond))
+	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "unreachable" || err == nil {
+		t.Fatalf("cached check = (%q, %v), want unreachable with error", status, err)
+	}
+	if dialCalls.Load() != 1 {
+		t.Fatalf("dial calls within TTL = %d, want 1", dialCalls.Load())
+	}
+
+	nowOffset.Store(int64(2500 * time.Millisecond))
+	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "unreachable" || err == nil {
+		t.Fatalf("post-TTL check = (%q, %v), want unreachable with error", status, err)
+	}
+	if dialCalls.Load() != 2 {
+		t.Fatalf("dial calls after TTL = %d, want 2", dialCalls.Load())
 	}
 }

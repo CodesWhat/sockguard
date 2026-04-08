@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/logging"
 )
 
 // ValidationError holds multiple validation errors.
@@ -68,9 +69,9 @@ func validateBasic(cfg *Config) []string {
 		errs = append(errs, fmt.Sprintf("invalid log format %q (must be json or text)", cfg.Log.Format))
 	}
 
-	// Log output cannot be empty. It may be stderr, stdout, or a file path.
-	if strings.TrimSpace(cfg.Log.Output) == "" {
-		errs = append(errs, "invalid log output (must be stderr, stdout, or a file path)")
+	// Log output must resolve to stderr, stdout, or a local file path.
+	if err := logging.ValidateOutput(cfg.Log.Output); err != nil {
+		errs = append(errs, err.Error())
 	}
 
 	// Health path starts with /

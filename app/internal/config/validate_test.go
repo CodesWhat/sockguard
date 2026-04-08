@@ -73,6 +73,19 @@ func TestValidateInvalidLogOutput(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNonLocalLogOutputPath(t *testing.T) {
+	cfg := Defaults()
+	cfg.Log.Output = "../sockguard.log"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for non-local log output path")
+	}
+	if !strings.Contains(err.Error(), "local file path") {
+		t.Errorf("error should mention local file path validation, got: %v", err)
+	}
+}
+
 func TestValidateEmptyRules(t *testing.T) {
 	cfg := Defaults()
 	cfg.Rules = nil

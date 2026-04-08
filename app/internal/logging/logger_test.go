@@ -32,7 +32,22 @@ func TestOutputWriterStdStreams(t *testing.T) {
 }
 
 func TestNewFileOutput(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "sockguard.log")
+	tmpDir := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd(): %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("Chdir(%q): %v", tmpDir, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	logPath := filepath.Join("logs", "..", "sockguard.log")
+	logFile := filepath.Join(tmpDir, "sockguard.log")
 
 	logger, closer, err := New("info", "text", logPath)
 	if err != nil {
@@ -48,9 +63,9 @@ func TestNewFileOutput(t *testing.T) {
 		t.Fatalf("close log output: %v", err)
 	}
 
-	data, err := os.ReadFile(logPath)
+	data, err := os.ReadFile(logFile)
 	if err != nil {
-		t.Fatalf("ReadFile(%q): %v", logPath, err)
+		t.Fatalf("ReadFile(%q): %v", logFile, err)
 	}
 	output := string(data)
 	if !strings.Contains(output, "test-log-entry") {
@@ -59,12 +74,48 @@ func TestNewFileOutput(t *testing.T) {
 }
 
 func TestNewInvalidOutputPath(t *testing.T) {
-	logPath := filepath.Join(t.TempDir(), "missing", "sockguard.log")
+	tmpDir := t.TempDir()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd(): %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("Chdir(%q): %v", tmpDir, err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(cwd); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	logPath := filepath.Join("missing", "sockguard.log")
 	_, closer, err := New("info", "json", logPath)
 	if err == nil {
 		if closer != nil {
 			_ = closer.Close()
 		}
 		t.Fatal("expected New() to fail for invalid output path")
+	}
+}
+
+func TestOutputWriterRejectsNonLocalPaths(t *testing.T) {
+	tests := []string{
+		"../sockguard.log",
+		"/tmp/sockguard.log",
+	}
+
+	for _, output := range tests {
+		t.Run(output, func(t *testing.T) {
+			_, closer, err := outputWriter(output)
+			if closer != nil {
+				_ = closer.Close()
+			}
+			if err == nil {
+				t.Fatalf("expected outputWriter(%q) to fail", output)
+			}
+			if !strings.Contains(err.Error(), "local file path") {
+				t.Fatalf("expected local path validation error, got %v", err)
+			}
+		})
 	}
 }

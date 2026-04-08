@@ -374,3 +374,17 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 		t.Fatalf("expected normalized path in denied log, got: %s", logOutput)
 	}
 }
+
+func TestNewHTTPServerSetsReadHeaderTimeout(t *testing.T) {
+	server := newHTTPServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	if server.ReadTimeout != 0 {
+		t.Fatalf("ReadTimeout = %v, want 0", server.ReadTimeout)
+	}
+	if server.ReadHeaderTimeout <= 0 {
+		t.Fatalf("ReadHeaderTimeout = %v, want > 0", server.ReadHeaderTimeout)
+	}
+	if server.ReadHeaderTimeout != readHeaderTimeout {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v", server.ReadHeaderTimeout, readHeaderTimeout)
+	}
+}

@@ -22,6 +22,8 @@ import (
 	"github.com/codeswhat/sockguard/internal/version"
 )
 
+const readHeaderTimeout = 5 * time.Second
+
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the proxy server",
@@ -123,14 +125,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}()
 
 	// 9. Start server
-	server := &http.Server{
-		Handler: handler,
-		// Docker attach/logs/events can hold request/response bodies open for long periods.
-		// A non-zero ReadTimeout breaks those streaming APIs, so we intentionally leave it disabled.
-		// Tradeoff: if exposed on TCP this increases slowloris risk. Prefer a Unix socket, private
-		// network binding, and/or an upstream proxy/LB that enforces client read deadlines.
-		ReadTimeout: 0,
-	}
+	server := newHTTPServer(handler)
 
 	// 10. Log startup summary
 	logger.Info("sockguard started",
@@ -177,6 +172,18 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	logger.Info("sockguard stopped")
 	return nil
+}
+
+func newHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler: handler,
+		// Docker attach/logs/events can hold request/response bodies open for long periods.
+		// A non-zero ReadTimeout breaks those streaming APIs, so we intentionally leave it disabled.
+		// ReadHeaderTimeout still bounds header parsing time, which partially mitigates slowloris
+		// attacks on TCP listeners without affecting long-lived upgraded/streaming requests.
+		ReadTimeout:       0,
+		ReadHeaderTimeout: readHeaderTimeout,
+	}
 }
 
 // applyFlagOverrides applies CLI flags that were explicitly set.

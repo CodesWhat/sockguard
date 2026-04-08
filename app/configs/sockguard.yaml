@@ -14,12 +14,13 @@ upstream:
 log:
   level: info        # debug, info, warn, error
   format: json       # json, text
-  output: stderr     # stderr, stdout, or file path
+  output: stderr     # stderr, stdout, or local relative file path
   access_log: true   # log every request
 
 health:
   enabled: true
   path: /health
+  # /health caches upstream reachability for 2s to reduce probe-induced dial churn.
 
 rules:
   # Always safe — health probes

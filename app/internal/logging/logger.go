@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -32,18 +33,47 @@ func New(level, format, output string) (*slog.Logger, io.Closer, error) {
 	return slog.New(handler), closer, nil
 }
 
+// ValidateOutput checks whether the configured log output target is supported.
+// Allowed values are stderr, stdout, or a local file path.
+func ValidateOutput(output string) error {
+	_, err := normalizeOutput(output)
+	return err
+}
+
 func outputWriter(output string) (io.Writer, io.Closer, error) {
-	switch strings.TrimSpace(output) {
+	normalized, err := normalizeOutput(output)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	switch normalized {
 	case "", "stderr":
 		return os.Stderr, nil, nil
 	case "stdout":
 		return os.Stdout, nil, nil
 	default:
-		f, err := os.OpenFile(output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		f, err := os.OpenFile(normalized, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if err != nil {
-			return nil, nil, fmt.Errorf("open log output %q: %w", output, err)
+			return nil, nil, fmt.Errorf("open log output %q: %w", normalized, err)
 		}
 		return f, f, nil
+	}
+}
+
+func normalizeOutput(output string) (string, error) {
+	trimmed := strings.TrimSpace(output)
+	switch trimmed {
+	case "", "stderr", "stdout":
+		if trimmed == "" {
+			return "", fmt.Errorf("invalid log output (must be stderr, stdout, or a local file path)")
+		}
+		return trimmed, nil
+	default:
+		cleaned := filepath.Clean(trimmed)
+		if !filepath.IsLocal(cleaned) {
+			return "", fmt.Errorf("invalid log output %q (must be stderr, stdout, or a local file path)", output)
+		}
+		return cleaned, nil
 	}
 }
 

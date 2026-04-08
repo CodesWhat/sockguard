@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestIsHijackEndpoint(t *testing.T) {
@@ -85,8 +88,9 @@ func TestHijackHandler_UpstreamUnreachable(t *testing.T) {
 		t.Error("next handler should not be called for hijack endpoint")
 	})
 
+	socketPath := "/nonexistent/socket.sock"
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler := HijackHandler("/nonexistent/socket.sock", logger, next)
+	handler := HijackHandler(socketPath, logger, next)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
@@ -94,6 +98,12 @@ func TestHijackHandler_UpstreamUnreachable(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("expected status 502, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), socketPath) {
+		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"error"`) {
+		t.Fatalf("response leaked internal error field: %q", rec.Body.String())
 	}
 }
 
@@ -421,4 +431,502 @@ func TestHijackHandler_Non101Fallback(t *testing.T) {
 	if !strings.Contains(string(body), "not running") {
 		t.Errorf("expected error message in body, got %q", string(body))
 	}
+}
+
+func TestHandleHijack_UpstreamMalformedResponse(t *testing.T) {
+	socketPath := fmt.Sprintf("/tmp/dp-test-malformed-%d.sock", os.Getpid())
+	t.Cleanup(func() { os.Remove(socketPath) })
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	var serverWg sync.WaitGroup
+	serverWg.Add(1)
+	go func() {
+		defer serverWg.Done()
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			t.Errorf("mock: read request: %v", err)
+			return
+		}
+		req.Body.Close()
+
+		if _, err := conn.Write([]byte("not an http response\r\n\r\n")); err != nil {
+			t.Errorf("mock: write malformed response: %v", err)
+		}
+	}()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+
+	handleHijack(rec, req, socketPath, logger)
+	serverWg.Wait()
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "failed to read upstream response") {
+		t.Fatalf("expected malformed upstream error body, got %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"error"`) {
+		t.Fatalf("response leaked internal error field: %q", rec.Body.String())
+	}
+}
+
+func TestHandleHijack_RequestWriteErrorDoesNotLeakDetails(t *testing.T) {
+	socketPath := fmt.Sprintf("/tmp/dp-test-write-error-%d.sock", os.Getpid())
+	t.Cleanup(func() { os.Remove(socketPath) })
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	var serverWg sync.WaitGroup
+	serverWg.Add(1)
+	go func() {
+		defer serverWg.Done()
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		io.Copy(io.Discard, conn)
+	}()
+
+	bodyErr := fmt.Errorf("permission denied opening %s", socketPath)
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", io.NopCloser(errorReader{err: bodyErr}))
+	req.ContentLength = 1
+
+	rec := httptest.NewRecorder()
+	handleHijack(rec, req, socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	serverWg.Wait()
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "failed to forward request to upstream") {
+		t.Fatalf("expected generic forward error body, got %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), bodyErr.Error()) || strings.Contains(rec.Body.String(), socketPath) {
+		t.Fatalf("response leaked internal error details: %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"error"`) {
+		t.Fatalf("response leaked internal error field: %q", rec.Body.String())
+	}
+}
+
+func TestHandleHijack_ClientDisconnectDuringUpgrade(t *testing.T) {
+	socketPath := fmt.Sprintf("/tmp/dp-test-upgrade-disconnect-%d.sock", os.Getpid())
+	t.Cleanup(func() { os.Remove(socketPath) })
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	var serverWg sync.WaitGroup
+	serverWg.Add(1)
+	go func() {
+		defer serverWg.Done()
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			t.Errorf("mock: read request: %v", err)
+			return
+		}
+		req.Body.Close()
+
+		resp := &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{},
+		}
+		resp.Header.Set("Connection", "Upgrade")
+		resp.Header.Set("Upgrade", "tcp")
+		if err := resp.Write(conn); err != nil {
+			t.Errorf("mock: write 101: %v", err)
+		}
+	}()
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	clientConn := &funcConn{
+		writeFn: func([]byte) (int, error) {
+			return 0, net.ErrClosed
+		},
+		closeFn: func() error {
+			return errors.New("client close failed")
+		},
+	}
+	w := newHijackTestWriter(clientConn, strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+
+	done := make(chan struct{})
+	go func() {
+		handleHijack(w, req, socketPath, logger)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleHijack did not return after client disconnect during upgrade")
+	}
+
+	serverWg.Wait()
+
+	if !strings.Contains(logs.String(), "flush 101 to client failed") {
+		t.Fatalf("expected upgrade disconnect log, got %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "failed to close client connection") {
+		t.Fatalf("expected client close debug log, got %q", logs.String())
+	}
+}
+
+func TestHandleHijack_PanicRecoveryInCopyGoroutines(t *testing.T) {
+	socketPath := fmt.Sprintf("/tmp/dp-test-copy-panic-%d.sock", os.Getpid())
+	t.Cleanup(func() { os.Remove(socketPath) })
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	var serverWg sync.WaitGroup
+	serverWg.Add(1)
+	go func() {
+		defer serverWg.Done()
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			t.Errorf("mock: read request: %v", err)
+			return
+		}
+		req.Body.Close()
+
+		resp := &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{},
+		}
+		resp.Header.Set("Connection", "Upgrade")
+		resp.Header.Set("Upgrade", "tcp")
+		if err := resp.Write(conn); err != nil {
+			t.Errorf("mock: write 101: %v", err)
+			return
+		}
+
+		if _, err := conn.Write([]byte("panic-stream")); err != nil {
+			t.Errorf("mock: write stream payload: %v", err)
+		}
+	}()
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	clientConn := &funcConn{
+		writeFn: func(p []byte) (int, error) {
+			if strings.Contains(string(p), "panic-stream") {
+				panic("client write panic")
+			}
+			return len(p), nil
+		},
+	}
+	w := newHijackTestWriter(clientConn, panicReader{message: "client read panic"})
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+
+	done := make(chan struct{})
+	go func() {
+		handleHijack(w, req, socketPath, logger)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleHijack did not return after copy goroutine panics")
+	}
+
+	serverWg.Wait()
+
+	logText := logs.String()
+	if !strings.Contains(logText, "panic in upstream") {
+		t.Fatalf("expected upstream panic log, got %q", logText)
+	}
+	if !strings.Contains(logText, "panic in client") {
+		t.Fatalf("expected client panic log, got %q", logText)
+	}
+}
+
+func TestHandleHijack_HalfCloseFailureIgnored(t *testing.T) {
+	socketPath := fmt.Sprintf("/tmp/dp-test-half-close-%d.sock", os.Getpid())
+	t.Cleanup(func() { os.Remove(socketPath) })
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	var serverWg sync.WaitGroup
+	serverWg.Add(1)
+	go func() {
+		defer serverWg.Done()
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			t.Errorf("mock: read request: %v", err)
+			return
+		}
+		req.Body.Close()
+
+		resp := &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{},
+		}
+		resp.Header.Set("Connection", "Upgrade")
+		resp.Header.Set("Upgrade", "tcp")
+		if err := resp.Write(conn); err != nil {
+			t.Errorf("mock: write 101: %v", err)
+		}
+	}()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	clientConn := &funcConn{
+		writeFn: func(p []byte) (int, error) {
+			return len(p), nil
+		},
+		closeWriteFn: func() error {
+			return net.ErrClosed
+		},
+	}
+	w := newHijackTestWriter(clientConn, strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+
+	done := make(chan struct{})
+	go func() {
+		handleHijack(w, req, socketPath, logger)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleHijack did not return after CloseWrite failure")
+	}
+
+	serverWg.Wait()
+
+	if clientConn.closeWriteCalls == 0 {
+		t.Fatal("expected client CloseWrite to be attempted")
+	}
+}
+
+func TestHandleHijack_FinalCloseErrorLogged(t *testing.T) {
+	socketPath := fmt.Sprintf("/tmp/dp-test-final-close-%d.sock", os.Getpid())
+	t.Cleanup(func() { os.Remove(socketPath) })
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	var serverWg sync.WaitGroup
+	serverWg.Add(1)
+	go func() {
+		defer serverWg.Done()
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			t.Errorf("mock: read request: %v", err)
+			return
+		}
+		req.Body.Close()
+
+		resp := &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{},
+		}
+		resp.Header.Set("Connection", "Upgrade")
+		resp.Header.Set("Upgrade", "tcp")
+		if err := resp.Write(conn); err != nil {
+			t.Errorf("mock: write 101: %v", err)
+		}
+	}()
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	clientConn := &funcConn{
+		writeFn: func(p []byte) (int, error) {
+			return len(p), nil
+		},
+		closeFn: func() error {
+			return errors.New("client close failed")
+		},
+	}
+	w := newHijackTestWriter(clientConn, strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+
+	done := make(chan struct{})
+	go func() {
+		handleHijack(w, req, socketPath, logger)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("handleHijack did not return after final close error")
+	}
+
+	serverWg.Wait()
+
+	logText := logs.String()
+	if !strings.Contains(logText, "failed to close client connection") {
+		t.Fatalf("expected client close debug log, got %q", logText)
+	}
+	if !strings.Contains(logText, "connection closed") {
+		t.Fatalf("expected connection closed debug log, got %q", logText)
+	}
+}
+
+type hijackTestWriter struct {
+	header http.Header
+	conn   net.Conn
+	rw     *bufio.ReadWriter
+}
+
+func newHijackTestWriter(conn net.Conn, reader io.Reader) *hijackTestWriter {
+	return &hijackTestWriter{
+		header: make(http.Header),
+		conn:   conn,
+		rw:     bufio.NewReadWriter(bufio.NewReader(reader), bufio.NewWriter(conn)),
+	}
+}
+
+func (w *hijackTestWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *hijackTestWriter) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (w *hijackTestWriter) WriteHeader(statusCode int) {}
+
+func (w *hijackTestWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return w.conn, w.rw, nil
+}
+
+type funcConn struct {
+	readFn          func([]byte) (int, error)
+	writeFn         func([]byte) (int, error)
+	closeFn         func() error
+	closeWriteFn    func() error
+	closeWriteCalls int
+}
+
+func (c *funcConn) Read(p []byte) (int, error) {
+	if c.readFn != nil {
+		return c.readFn(p)
+	}
+	return 0, io.EOF
+}
+
+func (c *funcConn) Write(p []byte) (int, error) {
+	if c.writeFn != nil {
+		return c.writeFn(p)
+	}
+	return len(p), nil
+}
+
+func (c *funcConn) Close() error {
+	if c.closeFn != nil {
+		return c.closeFn()
+	}
+	return nil
+}
+
+func (c *funcConn) LocalAddr() net.Addr              { return dummyAddr("local") }
+func (c *funcConn) RemoteAddr() net.Addr             { return dummyAddr("remote") }
+func (c *funcConn) SetDeadline(time.Time) error      { return nil }
+func (c *funcConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *funcConn) SetWriteDeadline(time.Time) error { return nil }
+
+func (c *funcConn) CloseWrite() error {
+	c.closeWriteCalls++
+	if c.closeWriteFn != nil {
+		return c.closeWriteFn()
+	}
+	return nil
+}
+
+type panicReader struct {
+	message string
+}
+
+func (r panicReader) Read([]byte) (int, error) {
+	panic(r.message)
+}
+
+type dummyAddr string
+
+func (a dummyAddr) Network() string { return string(a) }
+func (a dummyAddr) String() string  { return string(a) }
+
+type errorReader struct {
+	err error
+}
+
+func (r errorReader) Read([]byte) (int, error) {
+	return 0, r.err
 }

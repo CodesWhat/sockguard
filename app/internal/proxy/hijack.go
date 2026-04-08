@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/httpjson"
 )
 
 // hijackBufSize is the buffer size for bidirectional copy on hijacked connections.
@@ -63,9 +63,7 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	upstreamConn, err := net.Dial("unix", upstreamSocket)
 	if err != nil {
 		logger.Error("hijack: upstream dial failed", "error", err, "path", r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		if encErr := json.NewEncoder(w).Encode(map[string]string{"message": "upstream Docker socket unreachable", "error": err.Error()}); encErr != nil {
+		if encErr := httpjson.Write(w, http.StatusBadGateway, map[string]string{"message": "upstream Docker socket unreachable"}); encErr != nil {
 			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
 		}
 		return
@@ -75,11 +73,9 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	// r.Write serializes the full request (method, path, headers, body) in wire format.
 	// Docker ignores the Host header on Unix socket connections.
 	if err := r.Write(upstreamConn); err != nil {
-		upstreamConn.Close()
+		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: write request to upstream failed", "error", err, "path", r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		if encErr := json.NewEncoder(w).Encode(map[string]string{"message": "failed to forward request to upstream", "error": err.Error()}); encErr != nil {
+		if encErr := httpjson.Write(w, http.StatusBadGateway, map[string]string{"message": "failed to forward request to upstream"}); encErr != nil {
 			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
 		}
 		return
@@ -90,11 +86,9 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	upstreamBuf := bufio.NewReaderSize(upstreamConn, hijackBufSize)
 	resp, err := http.ReadResponse(upstreamBuf, r)
 	if err != nil {
-		upstreamConn.Close()
+		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: read upstream response failed", "error", err, "path", r.URL.Path)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		if encErr := json.NewEncoder(w).Encode(map[string]string{"message": "failed to read upstream response", "error": err.Error()}); encErr != nil {
+		if encErr := httpjson.Write(w, http.StatusBadGateway, map[string]string{"message": "failed to read upstream response"}); encErr != nil {
 			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
 		}
 		return
@@ -102,7 +96,7 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 
 	// If upstream didn't upgrade, fall back: write the response normally.
 	if resp.StatusCode != http.StatusSwitchingProtocols {
-		upstreamConn.Close()
+		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		for k, vv := range resp.Header {
 			for _, v := range vv {
 				w.Header().Add(k, v)
@@ -123,27 +117,27 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	// Hijack the client connection
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		upstreamConn.Close()
+		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: ResponseWriter does not implement http.Hijacker", "path", r.URL.Path)
 		return
 	}
 	clientConn, clientBuf, err := hj.Hijack()
 	if err != nil {
-		upstreamConn.Close()
+		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: client hijack failed", "error", err, "path", r.URL.Path)
 		return
 	}
 
 	// Write the 101 Switching Protocols response to the client
 	if err := resp.Write(clientBuf); err != nil {
-		clientConn.Close()
-		upstreamConn.Close()
+		closeConn(logger, clientConn, "client connection", r.URL.Path)
+		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: write 101 to client failed", "error", err, "path", r.URL.Path)
 		return
 	}
 	if err := clientBuf.Flush(); err != nil {
-		clientConn.Close()
-		upstreamConn.Close()
+		closeConn(logger, clientConn, "client connection", r.URL.Path)
+		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: flush 101 to client failed", "error", err, "path", r.URL.Path)
 		return
 	}
@@ -189,8 +183,8 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	}()
 
 	wg.Wait()
-	clientConn.Close()
-	upstreamConn.Close()
+	closeConn(logger, clientConn, "client connection", r.URL.Path)
+	closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 	logger.Debug("hijack: connection closed", "path", r.URL.Path)
 }
 
@@ -202,5 +196,11 @@ func closeWrite(c net.Conn) {
 	}
 	if hc, ok := c.(halfCloser); ok {
 		hc.CloseWrite()
+	}
+}
+
+func closeConn(logger *slog.Logger, conn net.Conn, label, path string) {
+	if err := conn.Close(); err != nil {
+		logger.Debug("hijack: failed to close "+label, "error", err, "path", path)
 	}
 }
