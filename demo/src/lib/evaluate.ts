@@ -40,26 +40,27 @@ function escapeRegexChar(char: string): string {
 }
 
 function globToRegex(pattern: string): RegExp {
+  const chars = Array.from(pattern);
   let regex = "";
   let i = 0;
-  while (i < pattern.length) {
+  while (i < chars.length) {
     if (
-      i + 2 < pattern.length &&
-      pattern[i] === "/" &&
-      pattern[i + 1] === "*" &&
-      pattern[i + 2] === "*"
+      i + 2 < chars.length &&
+      chars[i] === "/" &&
+      chars[i + 1] === "*" &&
+      chars[i + 2] === "*"
     ) {
       // /** matches the bare path OR /anything/deeper
       regex += "(/.*)?";
       i += 3;
-    } else if (i + 1 < pattern.length && pattern[i] === "*" && pattern[i + 1] === "*") {
+    } else if (i + 1 < chars.length && chars[i] === "*" && chars[i + 1] === "*") {
       regex += ".*";
       i += 2;
-    } else if (pattern[i] === "*") {
+    } else if (chars[i] === "*") {
       regex += "[^/]*";
       i++;
     } else {
-      regex += escapeRegexChar(pattern[i]);
+      regex += escapeRegexChar(chars[i]);
       i++;
     }
   }

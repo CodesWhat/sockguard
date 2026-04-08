@@ -98,3 +98,26 @@ test("glob escaping caches repeated literal characters during compilation", () =
     String.prototype.replace = nativeReplace;
   }
 });
+
+test("glob compilation treats repeated surrogate-pair literals as one character", () => {
+  const nativeReplace = String.prototype.replace;
+  let emojiEscapeCalls = 0;
+  let surrogateHalfEscapeCalls = 0;
+
+  String.prototype.replace = function (...args) {
+    if (this === "😀") {
+      emojiEscapeCalls++;
+    } else if (this === "\uD83D" || this === "\uDE00") {
+      surrogateHalfEscapeCalls++;
+    }
+    return Reflect.apply(nativeReplace, this, args);
+  };
+
+  try {
+    compileRules([{ method: "GET", path: "/😀😀😀", action: "allow" }]);
+    assert.equal(emojiEscapeCalls, 1);
+    assert.equal(surrogateHalfEscapeCalls, 0);
+  } finally {
+    String.prototype.replace = nativeReplace;
+  }
+});
