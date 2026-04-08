@@ -20,10 +20,23 @@ export interface CompiledRule extends Rule {
 }
 
 const API_VERSION_PREFIX = /^\/v\d+(\.\d+)?\//;
+const ESCAPABLE_REGEX_CHAR = /[.*+?^${}()|[\]\\]/g;
 const compiledRulesCache = new WeakMap<Rule[], CompiledRule[]>();
+const escapedCharCache = new Map();
 
 function normalizePath(path: string): string {
   return path.replace(API_VERSION_PREFIX, "/");
+}
+
+function escapeRegexChar(char: string): string {
+  const cached = escapedCharCache.get(char);
+  if (cached) {
+    return cached;
+  }
+
+  const escaped = char.replace(ESCAPABLE_REGEX_CHAR, "\\$&");
+  escapedCharCache.set(char, escaped);
+  return escaped;
 }
 
 function globToRegex(pattern: string): RegExp {
@@ -46,7 +59,7 @@ function globToRegex(pattern: string): RegExp {
       regex += "[^/]*";
       i++;
     } else {
-      regex += pattern[i].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      regex += escapeRegexChar(pattern[i]);
       i++;
     }
   }

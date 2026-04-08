@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { evaluate } from "./evaluate.ts";
+import { compileRules, evaluate } from "./evaluate.ts";
 
 test("trailing /** matches the bare path like the Go proxy", () => {
   const result = evaluate(
@@ -77,5 +77,24 @@ test("repeated evaluations reuse compiled regexes for the same rule set", () => 
     assert.equal(constructions, rules.length);
   } finally {
     globalThis.RegExp = NativeRegExp;
+  }
+});
+
+test("glob escaping caches repeated literal characters during compilation", () => {
+  const nativeReplace = String.prototype.replace;
+  let escapeCalls = 0;
+
+  String.prototype.replace = function (...args) {
+    if (this.length === 1 && args[0] instanceof RegExp && args[1] === "\\$&") {
+      escapeCalls++;
+    }
+    return Reflect.apply(nativeReplace, this, args);
+  };
+
+  try {
+    compileRules([{ method: "GET", path: "/zzzzzzzzzz", action: "allow" }]);
+    assert.equal(escapeCalls, 1);
+  } finally {
+    String.prototype.replace = nativeReplace;
   }
 });
