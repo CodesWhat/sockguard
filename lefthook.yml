@@ -50,16 +50,21 @@ pre-push:
       timeout: 1m
 
     go-test:
-      run: cd app && go test ./...
+      run: cd app && go test -race ./...
       priority: 3
-      timeout: 2m
+      timeout: 3m
 
     biome:
       run: npx biome check .
       priority: 4
       timeout: 30s
 
+    ts-test:
+      run: npm test
+      priority: 5
+      timeout: 1m
+
     build:
       run: npx turbo build
-      priority: 5
+      priority: 6
       timeout: 3m
