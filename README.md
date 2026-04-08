@@ -84,6 +84,8 @@ rules:
     action: deny
 ```
 
+Trailing `/**` matches both the base path and any deeper path. For example, `/containers/**` matches `/containers` and `/containers/abc/json`.
+
 Preset configs included for [drydock](app/configs/drydock.yaml), [Traefik](app/configs/traefik.yaml), [Portainer](app/configs/portainer.yaml), [Watchtower](app/configs/watchtower.yaml), [Homepage](app/configs/homepage.yaml), [Homarr](app/configs/homarr.yaml), [Diun](app/configs/diun.yaml), [Autoheal](app/configs/autoheal.yaml), and [read-only](app/configs/readonly.yaml).
 
 ## CLI
@@ -97,7 +99,9 @@ sockguard version                         # Print version
 ## Operational Notes
 
 - `sockguard` keeps Go `http.Server.ReadTimeout` at `0` to preserve Docker streaming endpoints (for example attach, logs follow, and events).
-- Tradeoff: on TCP listeners this increases exposure to slow-client/slowloris style connections.
+- `sockguard` sets `http.Server.ReadHeaderTimeout` to `5s` as a partial slowloris mitigation while leaving streaming request bodies untouched.
+- Tradeoff: on TCP listeners this still leaves long-lived request bodies and connections more exposed than a fully bounded read timeout would.
+- `/health` caches upstream socket reachability for `2s` to avoid opening a fresh Unix socket on every liveness probe.
 - Recommended deployment: Unix socket where possible, otherwise bind to private interfaces and place Sockguard behind a reverse proxy/load balancer that enforces request-header and read timeouts.
 
 ## Migrating from Tecnativa

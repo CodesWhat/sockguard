@@ -34,3 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Stopped ignoring CLI flag override `GetString` errors by returning explicit errors from `applyFlagOverrides`
 - Expanded `cmd/serve_test.go` coverage for `createListener`, `healthInterceptor`, and `listenerAddr` helpers
 - Added `cmd/validate_test.go`, full middleware-chain integration coverage, and edge-case tests for empty rules, nil meta, and implicit 200 response capture writes
+- Expanded adversarial filter coverage for encoded path, Unicode normalization, and method-case matching edge cases
+- Expanded hijack proxy coverage for malformed upstream responses, upgrade disconnects, copy-loop panics, and half-close failures
+
+### Fixed
+
+- Extracted a shared JSON response writer so proxy, filter, and health handlers stop repeating the same encoding/status boilerplate
+- Logged hijack connection close failures at debug level instead of silently discarding them during upgrade error paths and final cleanup
+- Cached `/health` upstream reachability checks for 2 seconds so frequent probes do not dial the Docker socket on every request
+- Added a `ReadHeaderTimeout` on the HTTP server so TCP listeners get partial slowloris protection without breaking Docker streaming endpoints
+- Hardened log file output handling to reject non-local paths like absolute paths and `..` traversal before opening files
+- Stopped proxy and hijack 502 responses from leaking raw upstream error strings like socket paths and permission details to clients
+- Made filter glob compilation rune-aware so literal Unicode path rules match correctly under adversarial normalization tests
+- Aligned the demo rule evaluator with the Go proxy so trailing `/**` also matches the bare path, and added regression coverage for bare and version-stripped paths
+- Precompiled demo rule matchers so repeated request evaluations reuse regexes instead of rebuilding them on every click
