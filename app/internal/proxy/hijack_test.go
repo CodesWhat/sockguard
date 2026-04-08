@@ -777,6 +777,46 @@ func TestHandleHijack_FinalCloseErrorLogged(t *testing.T) {
 	}
 }
 
+func TestGetHijackBufferRestoresFullLengthFromPool(t *testing.T) {
+	oldPool := hijackBufferPool
+	fakePool := &stubBufferPool{getValue: make([]byte, 128, hijackBufSize)}
+	hijackBufferPool = fakePool
+	t.Cleanup(func() {
+		hijackBufferPool = oldPool
+	})
+
+	buf := getHijackBuffer()
+
+	if len(buf) != hijackBufSize {
+		t.Fatalf("buffer length = %d, want %d", len(buf), hijackBufSize)
+	}
+	if cap(buf) != hijackBufSize {
+		t.Fatalf("buffer capacity = %d, want %d", cap(buf), hijackBufSize)
+	}
+}
+
+func TestPutHijackBufferRestoresFullLengthBeforeReuse(t *testing.T) {
+	oldPool := hijackBufferPool
+	fakePool := &stubBufferPool{}
+	hijackBufferPool = fakePool
+	t.Cleanup(func() {
+		hijackBufferPool = oldPool
+	})
+
+	putHijackBuffer(make([]byte, 256, hijackBufSize))
+
+	pooled, ok := fakePool.putValue.([]byte)
+	if !ok {
+		t.Fatalf("pooled value type = %T, want []byte", fakePool.putValue)
+	}
+	if len(pooled) != hijackBufSize {
+		t.Fatalf("pooled length = %d, want %d", len(pooled), hijackBufSize)
+	}
+	if cap(pooled) != hijackBufSize {
+		t.Fatalf("pooled capacity = %d, want %d", cap(pooled), hijackBufSize)
+	}
+}
+
 type hijackTestWriter struct {
 	header http.Header
 	conn   net.Conn
@@ -867,4 +907,17 @@ type errorReader struct {
 
 func (r errorReader) Read([]byte) (int, error) {
 	return 0, r.err
+}
+
+type stubBufferPool struct {
+	getValue any
+	putValue any
+}
+
+func (p *stubBufferPool) Get() any {
+	return p.getValue
+}
+
+func (p *stubBufferPool) Put(value any) {
+	p.putValue = value
 }

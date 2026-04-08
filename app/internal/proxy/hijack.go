@@ -18,6 +18,17 @@ import (
 // 64KB balances throughput with memory use for Docker's streaming protocols.
 const hijackBufSize = 64 * 1024
 
+type bytePool interface {
+	Get() any
+	Put(any)
+}
+
+var hijackBufferPool bytePool = &sync.Pool{
+	New: func() any {
+		return make([]byte, hijackBufSize)
+	},
+}
+
 // HijackHandler wraps a standard handler and intercepts Docker API endpoints
 // that use HTTP connection upgrades (attach, exec start). For these endpoints,
 // it dials the upstream Docker socket directly and performs a native bidirectional
@@ -161,12 +172,13 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	// upstream → client
 	go func() {
 		defer wg.Done()
+		buf := getHijackBuffer()
+		defer putHijackBuffer(buf)
 		defer func() {
 			if v := recover(); v != nil {
 				logger.Error("hijack: panic in upstream→client copy", "panic", fmt.Sprint(v), "path", reqPath)
 			}
 		}()
-		buf := make([]byte, hijackBufSize)
 		if _, err := io.CopyBuffer(clientConn, upstreamBuf, buf); err != nil {
 			logger.Debug("hijack: upstream→client copy ended", "error", err, "path", reqPath)
 		}
@@ -176,12 +188,13 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	// client → upstream (stdin)
 	go func() {
 		defer wg.Done()
+		buf := getHijackBuffer()
+		defer putHijackBuffer(buf)
 		defer func() {
 			if v := recover(); v != nil {
 				logger.Error("hijack: panic in client→upstream copy", "panic", fmt.Sprint(v), "path", reqPath)
 			}
 		}()
-		buf := make([]byte, hijackBufSize)
 		if _, err := io.CopyBuffer(upstreamConn, clientBuf, buf); err != nil {
 			logger.Debug("hijack: client→upstream copy ended", "error", err, "path", reqPath)
 		}
@@ -192,6 +205,21 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	closeConn(logger, clientConn, "client connection", r.URL.Path)
 	closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 	logger.Debug("hijack: connection closed", "path", r.URL.Path)
+}
+
+func getHijackBuffer() []byte {
+	buf, ok := hijackBufferPool.Get().([]byte)
+	if !ok || cap(buf) < hijackBufSize {
+		return make([]byte, hijackBufSize)
+	}
+	return buf[:hijackBufSize]
+}
+
+func putHijackBuffer(buf []byte) {
+	if cap(buf) < hijackBufSize {
+		return
+	}
+	hijackBufferPool.Put(buf[:hijackBufSize])
 }
 
 // closeWrite performs a TCP/Unix half-close, signaling no more data will be sent
