@@ -1,0 +1,55 @@
+version: 2
+
+updates:
+  # Go modules
+  - package-ecosystem: gomod
+    directory: /app
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "📦 deps"
+    labels:
+      - dependencies
+    groups:
+      go-minor:
+        update-types: [minor, patch]
+
+  # npm (root + workspaces)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "📦 deps"
+    labels:
+      - dependencies
+    groups:
+      npm-minor:
+        update-types: [minor, patch]
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "📦 deps"
+    labels:
+      - dependencies
+    groups:
+      actions-minor:
+        update-types: [minor, patch]
+
+  # Docker
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "📦 deps"
+    labels:
+      - dependencies
