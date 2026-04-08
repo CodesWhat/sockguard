@@ -236,77 +236,57 @@ func TestHijackHandler_FullUpgrade(t *testing.T) {
 	serverWg.Wait()
 }
 
-func TestHijackHandler_Non101Fallback_500(t *testing.T) {
-	socketPath := fmt.Sprintf("/tmp/dp-test-500-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
-	ln, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer ln.Close()
-
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		reader := bufio.NewReader(conn)
-		req, err := http.ReadRequest(reader)
-		if err != nil {
-			return
-		}
-		req.Body.Close()
-
-		fmt.Fprintf(conn, "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: 36\r\n\r\n{\"message\":\"internal server error\"}\r\n")
-	}()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("next should not be called")
-	})
-	handler := HijackHandler(socketPath, logger, next)
-
-	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("client listen: %v", err)
-	}
-	defer clientLn.Close()
-
-	srv := &http.Server{Handler: handler}
-	go srv.Serve(clientLn)
-	defer srv.Close()
-
-	clientConn, err := net.Dial("tcp", clientLn.Addr().String())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer clientConn.Close()
-
-	reqStr := "POST /containers/abc/attach HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
-	clientConn.Write([]byte(reqStr))
-
-	clientBuf := bufio.NewReader(clientConn)
-	resp, err := http.ReadResponse(clientBuf, nil)
-	if err != nil {
-		t.Fatalf("read response: %v", err)
+func TestHijackHandler_Non101Fallbacks(t *testing.T) {
+	tests := []struct {
+		name        string
+		requestPath string
+		statusCode  int
+		message     string
+		wantBody    string
+	}{
+		{
+			name:        "500 internal server error",
+			requestPath: "/containers/abc/attach",
+			statusCode:  http.StatusInternalServerError,
+			message:     "internal server error",
+			wantBody:    "internal server error",
+		},
+		{
+			name:        "503 service unavailable",
+			requestPath: "/v1.45/exec/abc/start",
+			statusCode:  http.StatusServiceUnavailable,
+			message:     "service unavailable",
+			wantBody:    "service unavailable",
+		},
+		{
+			name:        "409 conflict",
+			requestPath: "/v1.45/exec/abc/start",
+			statusCode:  http.StatusConflict,
+			message:     "container is not running",
+			wantBody:    "not running",
+		},
 	}
 
-	if resp.StatusCode != http.StatusInternalServerError {
-		t.Errorf("expected 500, got %d", resp.StatusCode)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			statusCode, body := runHijackFallbackCase(t, tt.requestPath, tt.statusCode, tt.message)
 
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if !strings.Contains(string(body), "internal server error") {
-		t.Errorf("expected error message in body, got %q", string(body))
+			if statusCode != tt.statusCode {
+				t.Errorf("expected %d, got %d", tt.statusCode, statusCode)
+			}
+			if !strings.Contains(body, tt.wantBody) {
+				t.Errorf("expected error message in body, got %q", body)
+			}
+		})
 	}
 }
 
-func TestHijackHandler_Non101Fallback_503(t *testing.T) {
-	socketPath := fmt.Sprintf("/tmp/dp-test-503-%d.sock", os.Getpid())
+func runHijackFallbackCase(t *testing.T, requestPath string, statusCode int, message string) (int, string) {
+	t.Helper()
+
+	socketPath := fmt.Sprintf("/tmp/dp-test-fallback-%d-%d.sock", statusCode, os.Getpid())
 	t.Cleanup(func() { os.Remove(socketPath) })
+
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -327,7 +307,17 @@ func TestHijackHandler_Non101Fallback_503(t *testing.T) {
 		}
 		req.Body.Close()
 
-		fmt.Fprintf(conn, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 36\r\n\r\n{\"message\":\"service unavailable\"}\r\n\r\n")
+		body := fmt.Sprintf(`{"message":%q}`, message)
+		response := fmt.Sprintf(
+			"HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+			statusCode,
+			http.StatusText(statusCode),
+			len(body),
+			body,
+		)
+		if _, err := conn.Write([]byte(response)); err != nil {
+			t.Errorf("mock: write fallback response: %v", err)
+		}
 	}()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -352,95 +342,25 @@ func TestHijackHandler_Non101Fallback_503(t *testing.T) {
 	}
 	defer clientConn.Close()
 
-	reqStr := "POST /v1.45/exec/abc/start HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
-	clientConn.Write([]byte(reqStr))
+	reqStr := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n", requestPath)
+	if _, err := clientConn.Write([]byte(reqStr)); err != nil {
+		t.Fatalf("client write request: %v", err)
+	}
 
-	clientBuf := bufio.NewReader(clientConn)
-	resp, err := http.ReadResponse(clientBuf, nil)
+	resp, err := http.ReadResponse(bufio.NewReader(clientConn), nil)
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
-
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("expected 503, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if !strings.Contains(string(body), "service unavailable") {
-		t.Errorf("expected error message in body, got %q", string(body))
-	}
-}
-
-func TestHijackHandler_Non101Fallback(t *testing.T) {
-	// Mock Docker daemon that returns 409 Conflict (e.g., container not running)
-	socketPath := fmt.Sprintf("/tmp/dp-test-fallback-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
-	ln, err := net.Listen("unix", socketPath)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatalf("listen: %v", err)
+		resp.Body.Close()
+		t.Fatalf("read body: %v", err)
 	}
-	defer ln.Close()
-
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		reader := bufio.NewReader(conn)
-		req, err := http.ReadRequest(reader)
-		if err != nil {
-			return
-		}
-		req.Body.Close()
-
-		// Respond with 409 Conflict
-		fmt.Fprintf(conn, "HTTP/1.1 409 Conflict\r\nContent-Type: application/json\r\nContent-Length: 42\r\n\r\n{\"message\":\"container is not running\"}\r\n\r\n")
-	}()
-
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("next should not be called")
-	})
-	handler := HijackHandler(socketPath, logger, next)
-
-	// Use a real server for hijack support
-	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("client listen: %v", err)
-	}
-	defer clientLn.Close()
-
-	srv := &http.Server{Handler: handler}
-	go srv.Serve(clientLn)
-	defer srv.Close()
-
-	clientConn, err := net.Dial("tcp", clientLn.Addr().String())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer clientConn.Close()
-
-	reqStr := "POST /v1.45/exec/abc/start HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
-	clientConn.Write([]byte(reqStr))
-
-	clientBuf := bufio.NewReader(clientConn)
-	resp, err := http.ReadResponse(clientBuf, nil)
-	if err != nil {
-		t.Fatalf("read response: %v", err)
+	if err := resp.Body.Close(); err != nil {
+		t.Fatalf("close body: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusConflict {
-		t.Errorf("expected 409, got %d", resp.StatusCode)
-	}
-
-	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if !strings.Contains(string(body), "not running") {
-		t.Errorf("expected error message in body, got %q", string(body))
-	}
+	return resp.StatusCode, string(body)
 }
 
 func TestHandleHijack_UpstreamMalformedResponse(t *testing.T) {
