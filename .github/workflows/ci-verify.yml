@@ -42,7 +42,7 @@ jobs:
           persist-credentials: false
 
       - name: Run zizmor
-        uses: woodruffw/zizmor-action@40206e83fe751ac786dcf9e369b8b5a2cf175b32  # v2.0.0
+        uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8  # v0.5.2
         with:
           args: .github/workflows/
 
@@ -52,6 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
+      actions: read
       contents: read
       security-events: write
 
@@ -168,7 +169,7 @@ jobs:
           cache-dependency-path: app/go.sum
 
       - name: Run GoReleaser check
-        uses: goreleaser/goreleaser-action@90a3faa9d0182683851fbfa97ca1a2cb983bfca1  # v6.2.1
+        uses: goreleaser/goreleaser-action@90a3faa9d0182683851fbfa97ca1a2cb983bfca3  # v6.2.1
         with:
           distribution: goreleaser
           version: latest
@@ -261,7 +262,11 @@ jobs:
           cache-dependency-path: app/go.sum
 
       - name: Fuzz filter
-        run: go test -fuzz=. -fuzztime=30s ./internal/filter/
+        run: |
+          go test -fuzz=FuzzPathMatch -fuzztime=30s ./internal/filter/
+          go test -fuzz=FuzzGlobToRegex -fuzztime=30s ./internal/filter/
+          go test -fuzz=FuzzNormalizePath -fuzztime=30s ./internal/filter/
+          go test -fuzz=FuzzCompileRule -fuzztime=30s ./internal/filter/
         working-directory: app
 
       - name: Fuzz proxy
@@ -288,7 +293,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642195f82b8ce8bedf3b8a3  # v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -317,7 +322,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642195f82b8ce8bedf3b8a3  # v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 22
           cache: npm
@@ -345,7 +350,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642195f82b8ce8bedf3b8a3  # v4.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
         with:
           node-version: 22
           cache: npm

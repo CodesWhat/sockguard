@@ -3,6 +3,7 @@
 
 # Go
 sockguard
+!app/cmd/sockguard/
 *.exe
 *.test
 *.out
