@@ -8,6 +8,9 @@ import (
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
+var compileRulesFn = CompileRules
+var compileFilterRule = filter.CompileRule
+
 // ValidationError holds multiple validation errors.
 type ValidationError struct {
 	Errors []string
@@ -32,7 +35,7 @@ func ValidateAndCompile(cfg *Config) ([]*filter.CompiledRule, error) {
 		return nil, &ValidationError{Errors: errs}
 	}
 
-	compiled, err := CompileRules(cfg.Rules)
+	compiled, err := compileRulesFn(cfg.Rules)
 	if err != nil {
 		return nil, &ValidationError{Errors: []string{err.Error()}}
 	}
@@ -115,7 +118,7 @@ func CompileRules(rules []RuleConfig) ([]*filter.CompiledRule, error) {
 	compiled := make([]*filter.CompiledRule, 0, len(rules))
 	for i, r := range rules {
 		methods := splitMethods(r.Match.Method)
-		cr, err := filter.CompileRule(filter.Rule{
+		cr, err := compileFilterRule(filter.Rule{
 			Methods: methods,
 			Pattern: r.Match.Path,
 			Action:  filter.Action(r.Action),

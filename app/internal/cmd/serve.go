@@ -26,8 +26,22 @@ import (
 const readHeaderTimeout = 5 * time.Second
 
 var (
-	umaskMu      sync.Mutex
-	syscallUmask = syscall.Umask
+	umaskMu                 sync.Mutex
+	syscallUmask            = syscall.Umask
+	loadConfig              = config.Load
+	newLogger               = logging.New
+	validateAndCompileRules = config.ValidateAndCompile
+	dialUpstream            = net.DialTimeout
+	listenNetwork           = net.Listen
+	lstatPath               = os.Lstat
+	isAddrInUseFn           = isAddrInUse
+	createServeListener     = createListener
+	notifySignals           = signal.Notify
+	startServing            = func(server *http.Server, ln net.Listener, errCh chan<- error) { errCh <- server.Serve(ln) }
+	shutdownServer          = func(server *http.Server, ctx context.Context) error { return server.Shutdown(ctx) }
+	removePath              = os.Remove
+	now                     = time.Now
+	shutdownGracePeriod     = 30 * time.Second
 
 	serveCmd = &cobra.Command{
 		Use:   "serve",
@@ -49,7 +63,7 @@ func init() {
 
 func runServe(cmd *cobra.Command, args []string) error {
 	// 1. Load config
-	cfg, err := config.Load(cfgFile)
+	cfg, err := loadConfig(cfgFile)
 	if err != nil {
 		return fmt.Errorf("config load: %w", err)
 	}
@@ -60,7 +74,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	// 3. Create logger
-	logger, logOutputCloser, err := logging.New(cfg.Log.Level, cfg.Log.Format, cfg.Log.Output)
+	logger, logOutputCloser, err := newLogger(cfg.Log.Level, cfg.Log.Format, cfg.Log.Output)
 	if err != nil {
 		return fmt.Errorf("logger: %w", err)
 	}
@@ -76,13 +90,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	config.ApplyCompat(cfg, logger)
 
 	// 5. Validate and compile rules
-	rules, err := config.ValidateAndCompile(cfg)
+	rules, err := validateAndCompileRules(cfg)
 	if err != nil {
 		return fmt.Errorf("config validation: %w", err)
 	}
 
 	// 6. Verify upstream reachable
-	conn, err := net.DialTimeout("unix", cfg.Upstream.Socket, 5*time.Second)
+	conn, err := dialUpstream("unix", cfg.Upstream.Socket, 5*time.Second)
 	if err != nil {
 		switch {
 		case errors.Is(err, os.ErrNotExist):
@@ -112,7 +126,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Health interceptor
 	if cfg.Health.Enabled {
-		startTime := time.Now()
+		startTime := now()
 		healthHandler := health.Handler(cfg.Upstream.Socket, startTime, logger)
 		handler = healthInterceptor(cfg.Health.Path, healthHandler, handler)
 	}
@@ -123,7 +137,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	// 8. Create listener
-	ln, err := createListener(cfg)
+	ln, err := createServeListener(cfg)
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
 	}
@@ -147,13 +161,11 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// Start serving in background
 	errCh := make(chan error, 1)
-	go func() {
-		errCh <- server.Serve(ln)
-	}()
+	go startServing(server, ln, errCh)
 
 	// 11. Wait for signal
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	notifySignals(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	select {
 	case sig := <-sigCh:
@@ -165,16 +177,16 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}
 
 	// 12. Graceful shutdown
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGracePeriod)
 	defer cancel()
 
-	if err := server.Shutdown(shutdownCtx); err != nil {
+	if err := shutdownServer(server, shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}
 
 	// Remove socket file
 	if cfg.Listen.Socket != "" {
-		if err := os.Remove(cfg.Listen.Socket); err != nil && !os.IsNotExist(err) {
+		if err := removePath(cfg.Listen.Socket); err != nil && !os.IsNotExist(err) {
 			logger.Error("remove socket error", "socket", cfg.Listen.Socket, "error", err)
 		}
 	}
@@ -255,33 +267,33 @@ func createListener(cfg *config.Config) (net.Listener, error) {
 	}
 
 	// Fall back to TCP
-	return net.Listen("tcp", cfg.Listen.Address)
+	return listenNetwork("tcp", cfg.Listen.Address)
 }
 
 func listenUnixSocket(path string, mode os.FileMode) (net.Listener, error) {
 	return withUmask(socketCreateUmask(mode), func() (net.Listener, error) {
-		ln, err := net.Listen("unix", path)
+		ln, err := listenNetwork("unix", path)
 		if err == nil {
 			return ln, nil
 		}
-		if !isAddrInUse(err) {
+		if !isAddrInUseFn(err) {
 			return nil, err
 		}
 
-		info, statErr := os.Lstat(path)
+		info, statErr := lstatPath(path)
 		if statErr != nil {
 			return nil, fmt.Errorf("socket path already in use and could not inspect %q: %w", path, statErr)
 		}
 		if info.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("socket path %q exists and is not a socket", path)
 		}
-		if removeErr := os.Remove(path); removeErr != nil {
+		if removeErr := removePath(path); removeErr != nil {
 			if !os.IsNotExist(removeErr) {
 				return nil, fmt.Errorf("remove stale socket: %w", removeErr)
 			}
 		}
 
-		ln, err = net.Listen("unix", path)
+		ln, err = listenNetwork("unix", path)
 		if err != nil {
 			return nil, err
 		}

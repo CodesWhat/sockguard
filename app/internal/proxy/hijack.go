@@ -29,6 +29,10 @@ var hijackBufferPool bytePool = &sync.Pool{
 	},
 }
 
+var dialHijackUpstream = net.Dial
+var readHijackResponse = http.ReadResponse
+var copyHijackBuffer = io.CopyBuffer
+
 // HijackHandler wraps a standard handler and intercepts Docker API endpoints
 // that use HTTP connection upgrades (attach, exec start). For these endpoints,
 // it dials the upstream Docker socket directly and performs a native bidirectional
@@ -82,7 +86,7 @@ func IsHijackEndpoint(method, path string) bool {
 
 func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) {
 	// Dial upstream Docker socket
-	upstreamConn, err := net.Dial("unix", upstreamSocket)
+	upstreamConn, err := dialHijackUpstream("unix", upstreamSocket)
 	if err != nil {
 		logger.Error("hijack: upstream dial failed", "error", err, "path", r.URL.Path)
 		if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{
@@ -110,7 +114,7 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	// Read the upstream response. Use a large buffer so data arriving immediately
 	// after the 101 header isn't lost.
 	upstreamBuf := bufio.NewReaderSize(upstreamConn, hijackBufSize)
-	resp, err := http.ReadResponse(upstreamBuf, r)
+	resp, err := readHijackResponse(upstreamBuf, r)
 	if err != nil {
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: read upstream response failed", "error", err, "path", r.URL.Path)
@@ -190,7 +194,7 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 				logger.Error("hijack: panic in upstream→client copy", "panic", fmt.Sprint(v), "path", reqPath)
 			}
 		}()
-		if _, err := io.CopyBuffer(clientConn, upstreamBuf, buf); err != nil {
+			if _, err := copyHijackBuffer(clientConn, upstreamBuf, buf); err != nil {
 			logger.Debug("hijack: upstream→client copy ended", "error", err, "path", reqPath)
 		}
 		closeWrite(clientConn)
@@ -206,7 +210,7 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 				logger.Error("hijack: panic in client→upstream copy", "panic", fmt.Sprint(v), "path", reqPath)
 			}
 		}()
-		if _, err := io.CopyBuffer(upstreamConn, clientBuf, buf); err != nil {
+			if _, err := copyHijackBuffer(upstreamConn, clientBuf, buf); err != nil {
 			logger.Debug("hijack: client→upstream copy ended", "error", err, "path", reqPath)
 		}
 		closeWrite(upstreamConn)

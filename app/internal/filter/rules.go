@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+var regexpCompile = regexp.Compile
+
 // Action represents the result of a rule evaluation.
 type Action string
 
@@ -103,7 +105,7 @@ func CompileRule(r Rule) (*CompiledRule, error) {
 
 	// Convert glob pattern to regex.
 	regexPattern := globToRegex(r.Pattern)
-	compiled, err := regexp.Compile("^" + regexPattern + "$")
+	compiled, err := regexpCompile("^" + regexPattern + "$")
 	if err != nil {
 		return nil, err
 	}

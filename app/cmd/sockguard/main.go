@@ -6,8 +6,11 @@ import (
 	"github.com/codeswhat/sockguard/internal/cmd"
 )
 
+var execute = cmd.Execute
+var exitProcess = os.Exit
+
 func main() {
-	if err := cmd.Execute(); err != nil {
-		os.Exit(1)
+	if err := execute(); err != nil {
+		exitProcess(1)
 	}
 }
