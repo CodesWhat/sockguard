@@ -35,6 +35,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - sockguard-socket:/var/run/sockguard
     environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
       - CONTAINERS=1
       - IMAGES=1
       - EVENTS=1
@@ -52,6 +53,14 @@ services:
 volumes:
   sockguard-socket:
 ```
+
+The container image runs as `65534:65534` by default. The example above keeps the proxy socket inside the shared named volume so the process does not need direct write access to `/var/run/sockguard.sock`. If you bind the default `/var/run/sockguard.sock` on a Linux host instead, either run as root or join the Docker socket group explicitly:
+
+```bash
+docker run --user 65534:$(stat -c %g /var/run/docker.sock) ...
+```
+
+For Docker Compose on Linux, export `DOCKER_GID=$(stat -c %g /var/run/docker.sock)` and set `user: "65534:${DOCKER_GID}"`.
 
 ## Configuration
 
@@ -73,6 +82,9 @@ ALLOW_EXEC=0
 ### YAML Config (recommended)
 
 ```yaml
+response:
+  deny_verbosity: verbose  # verbose, minimal
+
 rules:
   - match: { method: GET, path: "/_ping" }
     action: allow
@@ -85,6 +97,8 @@ rules:
 ```
 
 Trailing `/**` matches both the base path and any deeper path. For example, `/containers/**` matches `/containers` and `/containers/abc/json`.
+
+Set `response.deny_verbosity: minimal` to return only the generic deny message. The default `verbose` response also includes the request method, original path, and matched deny reason.
 
 Preset configs included for [drydock](app/configs/drydock.yaml), [Traefik](app/configs/traefik.yaml), [Portainer](app/configs/portainer.yaml), [Watchtower](app/configs/watchtower.yaml), [Homepage](app/configs/homepage.yaml), [Homarr](app/configs/homarr.yaml), [Diun](app/configs/diun.yaml), [Autoheal](app/configs/autoheal.yaml), and [read-only](app/configs/readonly.yaml).
 

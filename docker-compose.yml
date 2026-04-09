@@ -11,6 +11,7 @@ services:
       - ./app/configs/sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
       - sockguard-socket:/var/run/sockguard
     environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
       - SOCKGUARD_LOG_LEVEL=info
 
   # Example: drydock using sockguard as its socket proxy

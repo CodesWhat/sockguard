@@ -18,6 +18,9 @@ log:
   output: stderr
   access_log: true
 
+response:
+  deny_verbosity: verbose  # verbose, minimal
+
 health:
   enabled: true
   path: /health
@@ -39,6 +42,8 @@ rules:
     action: deny
     reason: "no matching allow rule"
 ```
+
+The default listen socket is `/var/run/sockguard.sock`. The published container image runs as `65534:65534`, so direct writes to `/var/run` usually require root or a writable override. For shared-volume deployments, set `SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock`. If you keep the default path on a Linux host, use `--user 65534:$(stat -c %g /var/run/docker.sock)` or the equivalent Compose `user:` setting so the process joins the Docker socket group.
 
 ## Rule Matching
 
@@ -69,7 +74,13 @@ SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard.sock
 SOCKGUARD_UPSTREAM_SOCKET=/var/run/docker.sock
 SOCKGUARD_LOG_LEVEL=debug
 SOCKGUARD_LOG_FORMAT=json
+SOCKGUARD_RESPONSE_DENY_VERBOSITY=minimal
 ```
+
+`response.deny_verbosity` controls how much metadata Sockguard includes in its own `403` JSON deny responses:
+
+- `verbose` (default): returns `message`, `method`, `path`, and `reason`
+- `minimal`: returns only the generic `message`
 
 ## Tecnativa Compatibility
 
