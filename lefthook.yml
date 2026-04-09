@@ -68,3 +68,11 @@ pre-push:
       run: npx turbo build
       priority: 6
       timeout: 3m
+
+    zizmor:
+      glob: '.github/workflows/*.yml'
+      run: zizmor .github/workflows/
+      skip:
+        - run: '! command -v zizmor >/dev/null 2>&1'
+      priority: 7
+      timeout: 30s
