@@ -69,8 +69,7 @@ export const features: Feature[] = [
     title: "Minimal Attack Surface",
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
-    description:
-      "Wolfi-based image, ~12MB, near-zero CVEs. Cosign-signed with SBOM and build provenance.",
+    description: "Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance.",
     category: "security",
   },
 ];
