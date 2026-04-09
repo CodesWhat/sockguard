@@ -295,14 +295,11 @@ func socketCreateUmask(mode os.FileMode) int {
 
 func withUmask(mask int, fn func() (net.Listener, error)) (net.Listener, error) {
 	umaskMu.Lock()
+	defer umaskMu.Unlock()
+
 	previous := syscallUmask(mask)
-	umaskMu.Unlock()
-
 	ln, err := fn()
-
-	umaskMu.Lock()
 	syscallUmask(previous)
-	umaskMu.Unlock()
 
 	return ln, err
 }
