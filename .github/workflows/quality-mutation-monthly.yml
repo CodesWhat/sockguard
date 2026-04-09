@@ -1,0 +1,94 @@
+name: "🧬 Quality: Mutation Testing"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && '🧬 Quality: Mutation Testing — Monthly schedule' ||
+    format('🧬 Quality: Mutation Testing — Manual by {0}', github.actor)
+  }}
+
+# Monthly/manual quality signal using Gremlins (Go mutation tester).
+# Finds weak assertions, dead code, and refactor candidates.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 6 1 * *'  # Monthly on day 1 at 06:30 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-testing-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  gremlins:
+    name: "🧬 Quality: Gremlins (${{ matrix.name }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    continue-on-error: true  # advisory — review results, don't block
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: filter
+            package: ./internal/filter/...
+          - name: proxy
+            package: ./internal/proxy/...
+          - name: config
+            package: ./internal/config/...
+          - name: httpjson
+            package: ./internal/httpjson/...
+          - name: logging
+            package: ./internal/logging/...
+          - name: cmd
+            package: ./internal/cmd/...
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5  # v6.0.2
+        with:
+          go-version-file: app/go.mod
+
+      - name: Install Gremlins
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+
+      - name: Run Gremlins mutation testing
+        working-directory: app
+        run: |
+          gremlins unleash --tags="" --timeout=90m ${{ matrix.package }} 2>&1 | tee mutation-report.txt
+        env:
+          GOFLAGS: ""
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Mutation Testing: ${{ matrix.name }}"
+            echo "- Tool: Gremlins (Go mutation tester)"
+            echo "- Mode: ADVISORY (non-blocking)"
+            echo "- Package: ${{ matrix.package }}"
+            echo ""
+            if [ -f app/mutation-report.txt ]; then
+              echo '```'
+              tail -20 app/mutation-report.txt
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        with:
+          name: mutation-report-${{ matrix.name }}-${{ github.run_id }}
+          path: app/mutation-report.txt
+          if-no-files-found: warn
+          retention-days: 30

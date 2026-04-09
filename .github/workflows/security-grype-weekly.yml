@@ -1,8 +1,8 @@
-name: "🛡️ Security: Trivy & Govulncheck"
+name: "🛡️ Security: Grype & Govulncheck"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🛡️ Security: Trivy & Govulncheck — Weekly run' ||
-    format('🛡️ Security: Trivy & Govulncheck — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && '🛡️ Security: Grype & Govulncheck — Weekly run' ||
+    format('🛡️ Security: Grype & Govulncheck — Manual by {0}', github.actor)
   }}
 
 on:
@@ -54,8 +54,8 @@ jobs:
             echo "- Database: Go Vulnerability Database (vuln.go.dev)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  trivy-image:
-    name: "🐳 Security: Trivy Container Scan"
+  grype-image:
+    name: "🐳 Security: Grype Container Scan"
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -81,38 +81,38 @@ jobs:
           context: .
           push: false
           load: true
-          tags: sockguard:trivy-scan
+          tags: sockguard:grype-scan
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Run Trivy vulnerability scanner
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947e0f18c28e7e1e126  # v0.34.0
+      - name: Run Grype vulnerability scanner
+        uses: anchore/scan-action@abae793926ec39a8ab1d15000540ee3a5e8febed  # v6.2.0
+        id: grype
         with:
-          image-ref: sockguard:trivy-scan
-          format: sarif
-          output: trivy-results.sarif
-          severity: CRITICAL,HIGH
-          exit-code: '1'
+          image: sockguard:grype-scan
+          severity-cutoff: high
+          fail-build: true
+          output-format: sarif
 
-      - name: Upload Trivy SARIF to code scanning
+      - name: Upload Grype SARIF to code scanning
         if: always()
         uses: github/codeql-action/upload-sarif@b1bff81932f5cdfc8695c7752dcee935dcd061c8  # v4.33.0
         with:
-          sarif_file: trivy-results.sarif
+          sarif_file: ${{ steps.grype.outputs.sarif }}
 
       - name: Summarize
         if: always()
         run: |
           {
-            echo "### Trivy Container Scan"
+            echo "### Grype Container Scan"
             echo "- Scanned container image for HIGH and CRITICAL CVEs"
             echo "- Base image: Wolfi (Chainguard)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  trivy-config:
-    name: "🏗️ Security: Trivy IaC Scan"
+  grype-sbom:
+    name: "📦 Security: Grype Go Module Scan"
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
@@ -127,21 +127,20 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run Trivy IaC scanner
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947e0f18c28e7e1e126  # v0.34.0
+      - name: Run Grype on source directory
+        uses: anchore/scan-action@abae793926ec39a8ab1d15000540ee3a5e8febed  # v6.2.0
+        id: grype-src
         with:
-          scan-type: config
-          scan-ref: .
-          format: sarif
-          output: trivy-iac.sarif
-          severity: CRITICAL,HIGH
-          exit-code: '1'
+          path: app/
+          severity-cutoff: high
+          fail-build: true
+          output-format: sarif
 
-      - name: Upload Trivy IaC SARIF
+      - name: Upload Grype source SARIF
         if: always()
         uses: github/codeql-action/upload-sarif@b1bff81932f5cdfc8695c7752dcee935dcd061c8  # v4.33.0
         with:
-          sarif_file: trivy-iac.sarif
+          sarif_file: ${{ steps.grype-src.outputs.sarif }}
 
   gosec:
     name: "🔐 Security: Gosec SAST"
@@ -162,7 +161,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Gosec
-        uses: securego/gosec@master
+        uses: securego/gosec@26e57d6b340778c2983e1ca93bc2ef44e3e0b757  # v2.22.4
         with:
           args: -fmt sarif -out gosec-results.sarif ./...
           working-directory: app
