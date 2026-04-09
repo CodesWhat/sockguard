@@ -295,12 +295,16 @@ func socketCreateUmask(mode os.FileMode) int {
 
 func withUmask(mask int, fn func() (net.Listener, error)) (net.Listener, error) {
 	umaskMu.Lock()
-	defer umaskMu.Unlock()
-
 	previous := syscallUmask(mask)
-	defer syscallUmask(previous)
+	umaskMu.Unlock()
 
-	return fn()
+	ln, err := fn()
+
+	umaskMu.Lock()
+	syscallUmask(previous)
+	umaskMu.Unlock()
+
+	return ln, err
 }
 
 func isAddrInUse(err error) bool {

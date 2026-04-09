@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
@@ -150,6 +151,53 @@ func TestCreateListenerUnixSocketSetsTemporaryUmask(t *testing.T) {
 	}
 	if calls[1] != 0o022 {
 		t.Fatalf("restored umask = %03o, want 022", calls[1])
+	}
+}
+
+func TestWithUmaskConcurrency(t *testing.T) {
+	originalUmask := syscallUmask
+	var mu sync.Mutex
+	currentMask := 0o022
+	syscallUmask = func(mask int) int {
+		mu.Lock()
+		defer mu.Unlock()
+		previous := currentMask
+		currentMask = mask
+		return previous
+	}
+	t.Cleanup(func() {
+		syscallUmask = originalUmask
+	})
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, goroutines)
+
+	for i := range goroutines {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			socketPath := shortSocketPath(t, fmt.Sprintf("conc%d", id))
+			_, err := withUmask(0o177, func() (net.Listener, error) {
+				return net.Listen("unix", socketPath)
+			})
+			if err != nil {
+				errs <- fmt.Errorf("goroutine %d: %w", id, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Error(err)
+	}
+
+	mu.Lock()
+	finalMask := currentMask
+	mu.Unlock()
+	if finalMask != 0o022 {
+		t.Fatalf("final umask = %03o, want 022 (umask was corrupted by concurrent calls)", finalMask)
 	}
 }
 
