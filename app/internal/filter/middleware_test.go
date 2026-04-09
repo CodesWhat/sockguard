@@ -2,8 +2,11 @@ package filter
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -142,6 +145,44 @@ func TestMiddlewareDenied(t *testing.T) {
 	}
 }
 
+func TestMiddlewareDeniedMinimalVerbosity(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("expected request to NOT reach inner handler")
+	})
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		DenyResponseVerbosity: DenyResponseVerbosityMinimal,
+	})(inner)
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Message != "request denied by sockguard policy" {
+		t.Errorf("message = %q, want 'request denied by sockguard policy'", body.Message)
+	}
+	if body.Method != "" {
+		t.Errorf("method = %q, want empty", body.Method)
+	}
+	if body.Path != "" {
+		t.Errorf("path = %q, want empty", body.Path)
+	}
+	if body.Reason != "" {
+		t.Errorf("reason = %q, want empty", body.Reason)
+	}
+}
+
 func TestMiddlewareWritesMeta(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
 	rules := []*CompiledRule{r1}
@@ -175,6 +216,39 @@ func TestMiddlewareWritesMeta(t *testing.T) {
 	// Also verify meta was written (accessible from outer middleware)
 	if meta.Decision != "allow" {
 		t.Errorf("meta.Decision = %q, want allow", meta.Decision)
+	}
+}
+
+func TestMiddlewareAllowsLargePayloadPassThrough(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{"POST"}, Pattern: "/containers/create", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	payload := bytes.Repeat([]byte("sockguard-payload-"), 1<<15)
+	wantDigest := sha256.Sum256(payload)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if len(body) != len(payload) {
+			t.Fatalf("body len = %d, want %d", len(body), len(payload))
+		}
+		gotDigest := sha256.Sum256(body)
+		if gotDigest != wantDigest {
+			t.Fatalf("body sha256 = %s, want %s", hex.EncodeToString(gotDigest[:]), hex.EncodeToString(wantDigest[:]))
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	handler := Middleware(rules, testLogger())(inner)
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
 	}
 }
 

@@ -5,6 +5,7 @@ type Config struct {
 	Listen   ListenConfig   `mapstructure:"listen"`
 	Upstream UpstreamConfig `mapstructure:"upstream"`
 	Log      LogConfig      `mapstructure:"log"`
+	Response ResponseConfig `mapstructure:"response"`
 	Health   HealthConfig   `mapstructure:"health"`
 	Rules    []RuleConfig   `mapstructure:"rules"`
 }
@@ -27,6 +28,11 @@ type LogConfig struct {
 	Format    string `mapstructure:"format"`
 	Output    string `mapstructure:"output"`
 	AccessLog bool   `mapstructure:"access_log"`
+}
+
+// ResponseConfig configures HTTP responses returned by sockguard itself.
+type ResponseConfig struct {
+	DenyVerbosity string `mapstructure:"deny_verbosity"`
 }
 
 // HealthConfig configures the health check endpoint.
@@ -63,6 +69,9 @@ func Defaults() Config {
 			Format:    "json",
 			Output:    "stderr",
 			AccessLog: true,
+		},
+		Response: ResponseConfig{
+			DenyVerbosity: "verbose",
 		},
 		Health: HealthConfig{
 			Enabled: true,

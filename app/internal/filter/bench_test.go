@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"net/http"
@@ -176,6 +177,38 @@ func BenchmarkMiddlewareDeny(b *testing.B) {
 
 	for b.Loop() {
 		w.Reset()
+		handler.ServeHTTP(w, req)
+	}
+}
+
+func BenchmarkMiddlewareAllowLargePayload(b *testing.B) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			b.Fatalf("copy request body: %v", err)
+		}
+	})
+	handler := Middleware(benchRules, benchLogger)(next)
+	payload := bytes.Repeat([]byte("sockguard-payload-"), 1<<15)
+	w := newBenchmarkResponseWriter()
+
+	for b.Loop() {
+		w.Reset()
+		req := httptest.NewRequest("POST", "/containers/abc123/start", bytes.NewReader(payload))
+		handler.ServeHTTP(w, req)
+	}
+}
+
+func BenchmarkMiddlewareDenyLargePayload(b *testing.B) {
+	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		b.Fatal("deny path should not reach next handler")
+	})
+	handler := Middleware(benchRules, benchLogger)(next)
+	payload := bytes.Repeat([]byte("sockguard-payload-"), 1<<15)
+	w := newBenchmarkResponseWriter()
+
+	for b.Loop() {
+		w.Reset()
+		req := httptest.NewRequest("DELETE", "/containers/abc123", bytes.NewReader(payload))
 		handler.ServeHTTP(w, req)
 	}
 }

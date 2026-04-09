@@ -74,6 +74,13 @@ func validateBasic(cfg *Config) []string {
 		errs = append(errs, err.Error())
 	}
 
+	switch cfg.Response.DenyVerbosity {
+	case "minimal", "verbose":
+		// OK
+	default:
+		errs = append(errs, fmt.Sprintf("invalid deny response verbosity %q (must be minimal or verbose)", cfg.Response.DenyVerbosity))
+	}
+
 	// Health path starts with /
 	if cfg.Health.Enabled && !strings.HasPrefix(cfg.Health.Path, "/") {
 		errs = append(errs, fmt.Sprintf("health path must start with /, got %q", cfg.Health.Path))

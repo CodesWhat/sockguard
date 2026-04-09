@@ -39,7 +39,9 @@ func Write(w http.ResponseWriter, status int, payload any) error {
 		return err
 	}
 
-	w.Header().Set("Content-Type", "application/json")
+	header := w.Header()
+	header.Set("Content-Type", "application/json")
+	header.Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	_, err := w.Write(body.Bytes())
 	return err

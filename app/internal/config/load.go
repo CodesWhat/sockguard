@@ -22,6 +22,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("log.format", defaults.Log.Format)
 	v.SetDefault("log.output", defaults.Log.Output)
 	v.SetDefault("log.access_log", defaults.Log.AccessLog)
+	v.SetDefault("response.deny_verbosity", defaults.Response.DenyVerbosity)
 	v.SetDefault("health.enabled", defaults.Health.Enabled)
 	v.SetDefault("health.path", defaults.Health.Path)
 

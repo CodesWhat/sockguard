@@ -257,3 +257,68 @@ func TestRulesMatchDefaults(t *testing.T) {
 		}
 	})
 }
+
+func TestGeneratePingRules(t *testing.T) {
+	t.Run("default enabled when unset", func(t *testing.T) {
+		rules := generatePingRules()
+		if len(rules) != 2 {
+			t.Fatalf("generatePingRules() len = %d, want 2", len(rules))
+		}
+		if rules[0].Match.Method != "GET" || rules[0].Match.Path != "/_ping" {
+			t.Fatalf("first ping rule = %+v, want GET /_ping", rules[0])
+		}
+		if rules[1].Match.Method != "HEAD" || rules[1].Match.Path != "/_ping" {
+			t.Fatalf("second ping rule = %+v, want HEAD /_ping", rules[1])
+		}
+	})
+
+	t.Run("disabled with zero", func(t *testing.T) {
+		t.Setenv("PING", "0")
+		rules := generatePingRules()
+		if len(rules) != 0 {
+			t.Fatalf("generatePingRules() len = %d, want 0", len(rules))
+		}
+	})
+}
+
+func TestGeneratePostRules(t *testing.T) {
+	t.Run("blanket allow without granular vars", func(t *testing.T) {
+		t.Setenv("POST", "1")
+
+		rules := generatePostRules()
+		if len(rules) != 1 {
+			t.Fatalf("generatePostRules() len = %d, want 1", len(rules))
+		}
+		if rules[0].Match.Method != "POST,PUT,DELETE" || rules[0].Match.Path != "/**" {
+			t.Fatalf("blanket post rule = %+v, want POST,PUT,DELETE /**", rules[0])
+		}
+	})
+
+	t.Run("granular allow suppresses blanket rule", func(t *testing.T) {
+		t.Setenv("POST", "1")
+		t.Setenv("ALLOW_START", "1")
+		t.Setenv("ALLOW_STOP", "1")
+
+		rules := generatePostRules()
+		if len(rules) != 2 {
+			t.Fatalf("generatePostRules() len = %d, want 2", len(rules))
+		}
+		if rules[0].Match.Path != "/containers/*/start" || rules[1].Match.Path != "/containers/*/stop" {
+			t.Fatalf("granular post rules = %+v, want start/stop in deterministic order", rules)
+		}
+		for _, rule := range rules {
+			if rule.Match.Method == "POST,PUT,DELETE" && rule.Match.Path == "/**" {
+				t.Fatalf("unexpected blanket rule alongside granular rules: %+v", rules)
+			}
+		}
+	})
+
+	t.Run("ignored when POST disabled", func(t *testing.T) {
+		t.Setenv("ALLOW_START", "1")
+
+		rules := generatePostRules()
+		if len(rules) != 0 {
+			t.Fatalf("generatePostRules() len = %d, want 0", len(rules))
+		}
+	})
+}

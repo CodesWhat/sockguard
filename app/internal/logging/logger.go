@@ -52,7 +52,7 @@ func outputWriter(output string) (io.Writer, io.Closer, error) {
 	case "stdout":
 		return os.Stdout, nil, nil
 	default:
-		f, err := os.OpenFile(normalized, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		f, err := os.OpenFile(normalized, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
 		if err != nil {
 			return nil, nil, fmt.Errorf("open log output %q: %w", normalized, err)
 		}

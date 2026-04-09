@@ -124,6 +124,19 @@ func TestValidateInvalidHealthPath(t *testing.T) {
 	}
 }
 
+func TestValidateInvalidDenyResponseVerbosity(t *testing.T) {
+	cfg := Defaults()
+	cfg.Response.DenyVerbosity = "chatty"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid deny response verbosity")
+	}
+	if !strings.Contains(err.Error(), "deny response verbosity") {
+		t.Errorf("error should mention deny response verbosity, got: %v", err)
+	}
+}
+
 func TestValidateMultipleErrors(t *testing.T) {
 	cfg := Defaults()
 	cfg.Upstream.Socket = ""

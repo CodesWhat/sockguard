@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
@@ -193,5 +195,115 @@ func TestNew_UpstreamGoesAway(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Errorf("expected 502, got %d", rec.Code)
+	}
+}
+
+func TestNew_ConcurrentRequestsRemainIsolated(t *testing.T) {
+	socketPath := fmt.Sprintf("/tmp/dp-test-proxy-concurrent-%d.sock", os.Getpid())
+	t.Cleanup(func() { os.Remove(socketPath) })
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(
+				w,
+				`{"method":%q,"path":%q,"request_id":%q}`,
+				r.Method,
+				r.URL.Path,
+				r.Header.Get("X-Request-ID"),
+			)
+		}),
+	}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	rp := New(socketPath, testLogger())
+
+	const requestCount = 32
+
+	type result struct {
+		method string
+		path   string
+		id     string
+		err    error
+	}
+
+	results := make(chan result, requestCount)
+	var wg sync.WaitGroup
+
+	for i := 0; i < requestCount; i++ {
+		wg.Add(1)
+
+		go func(i int) {
+			defer wg.Done()
+
+			method := http.MethodGet
+			if i%2 == 1 {
+				method = http.MethodPost
+			}
+			path := fmt.Sprintf("/containers/%d/json", i)
+			id := strconv.Itoa(i)
+
+			req := httptest.NewRequest(method, path, nil)
+			req.Header.Set("X-Request-ID", id)
+			rec := httptest.NewRecorder()
+
+			rp.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				results <- result{err: fmt.Errorf("request %d status = %d, want 200; body: %s", i, rec.Code, rec.Body.String())}
+				return
+			}
+
+			var body map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				results <- result{err: fmt.Errorf("request %d invalid JSON: %w", i, err)}
+				return
+			}
+
+			results <- result{
+				method: body["method"],
+				path:   body["path"],
+				id:     body["request_id"],
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(results)
+
+	seenIDs := make(map[string]bool, requestCount)
+	for res := range results {
+		if res.err != nil {
+			t.Fatal(res.err)
+		}
+		if seenIDs[res.id] {
+			t.Fatalf("duplicate request_id observed in upstream responses: %q", res.id)
+		}
+		seenIDs[res.id] = true
+
+		expectedMethod := http.MethodGet
+		if idNum, err := strconv.Atoi(res.id); err == nil && idNum%2 == 1 {
+			expectedMethod = http.MethodPost
+		}
+		expectedPath := fmt.Sprintf("/containers/%s/json", res.id)
+
+		if res.method != expectedMethod {
+			t.Fatalf("response method for request_id %q = %q, want %q", res.id, res.method, expectedMethod)
+		}
+		if res.path != expectedPath {
+			t.Fatalf("response path for request_id %q = %q, want %q", res.id, res.path, expectedPath)
+		}
+	}
+
+	if len(seenIDs) != requestCount {
+		t.Fatalf("observed %d request ids, want %d", len(seenIDs), requestCount)
 	}
 }

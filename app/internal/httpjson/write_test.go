@@ -22,6 +22,9 @@ func TestWrite(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); got != "application/json" {
 		t.Fatalf("Content-Type = %q, want application/json", got)
 	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
 
 	var body map[string]string
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {

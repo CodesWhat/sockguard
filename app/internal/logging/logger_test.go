@@ -71,6 +71,14 @@ func TestNewFileOutput(t *testing.T) {
 	if !strings.Contains(output, "test-log-entry") {
 		t.Fatalf("expected log output to contain entry, got %q", output)
 	}
+
+	info, err := os.Stat(logFile)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", logFile, err)
+	}
+	if got := info.Mode().Perm(); got != 0o640 {
+		t.Fatalf("log file mode = %04o, want 0640", got)
+	}
 }
 
 func TestNewInvalidOutputPath(t *testing.T) {

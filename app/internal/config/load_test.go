@@ -29,6 +29,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Log.Output != defaults.Log.Output {
 		t.Errorf("Log.Output = %q, want %q", cfg.Log.Output, defaults.Log.Output)
 	}
+	if cfg.Response.DenyVerbosity != defaults.Response.DenyVerbosity {
+		t.Errorf("Response.DenyVerbosity = %q, want %q", cfg.Response.DenyVerbosity, defaults.Response.DenyVerbosity)
+	}
 	if len(cfg.Rules) != len(defaults.Rules) {
 		t.Errorf("got %d rules, want %d", len(cfg.Rules), len(defaults.Rules))
 	}
@@ -43,6 +46,8 @@ upstream:
   socket: /custom/docker.sock
 log:
   level: debug
+response:
+  deny_verbosity: minimal
 rules:
   - match: { method: GET, path: "/_ping" }
     action: allow
@@ -62,6 +67,9 @@ rules:
 	if cfg.Log.Level != "debug" {
 		t.Errorf("Log.Level = %q, want debug", cfg.Log.Level)
 	}
+	if cfg.Response.DenyVerbosity != "minimal" {
+		t.Errorf("Response.DenyVerbosity = %q, want minimal", cfg.Response.DenyVerbosity)
+	}
 	// YAML provided rules should override defaults
 	if len(cfg.Rules) != 1 {
 		t.Errorf("got %d rules, want 1", len(cfg.Rules))
@@ -72,6 +80,7 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("SOCKGUARD_UPSTREAM_SOCKET", "/env/docker.sock")
 	t.Setenv("SOCKGUARD_LOG_LEVEL", "warn")
 	t.Setenv("SOCKGUARD_LOG_OUTPUT", "stdout")
+	t.Setenv("SOCKGUARD_RESPONSE_DENY_VERBOSITY", "minimal")
 
 	cfg, err := Load("/nonexistent/path.yaml")
 	if err != nil {
@@ -86,6 +95,9 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 	if cfg.Log.Output != "stdout" {
 		t.Errorf("Log.Output = %q, want stdout", cfg.Log.Output)
+	}
+	if cfg.Response.DenyVerbosity != "minimal" {
+		t.Errorf("Response.DenyVerbosity = %q, want minimal", cfg.Response.DenyVerbosity)
 	}
 }
 

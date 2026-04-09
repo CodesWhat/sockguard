@@ -211,3 +211,97 @@ func TestConfiguredMethodCaseNormalization(t *testing.T) {
 		})
 	}
 }
+
+func TestEvaluateNullBytePathBypassResistance(t *testing.T) {
+	rules := compileRulesForTest(t, []Rule{
+		{Methods: []string{"GET"}, Pattern: "/containers/json", Action: ActionAllow, Index: 0},
+		{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "default deny", Index: 1},
+	})
+
+	tests := []struct {
+		name       string
+		rawPath    string
+		wantAction Action
+		wantIndex  int
+	}{
+		{
+			name:       "encoded null appended to literal path does not bypass allow rule",
+			rawPath:    "/containers/json%00/extra",
+			wantAction: ActionDeny,
+			wantIndex:  1,
+		},
+		{
+			name:       "encoded null inside path segment does not bypass allow rule",
+			rawPath:    "/containers%00/json",
+			wantAction: ActionDeny,
+			wantIndex:  1,
+		},
+		{
+			name:       "encoded null in nested segment does not bypass allow rule",
+			rawPath:    "/containers/%00/json",
+			wantAction: ActionDeny,
+			wantIndex:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newParsedRequest(t, http.MethodGet, tt.rawPath)
+			action, index, _ := Evaluate(rules, req)
+			if action != tt.wantAction {
+				t.Fatalf("Evaluate(%q) action = %v, want %v", tt.rawPath, action, tt.wantAction)
+			}
+			if index != tt.wantIndex {
+				t.Fatalf("Evaluate(%q) index = %d, want %d", tt.rawPath, index, tt.wantIndex)
+			}
+			if got := NormalizePath(req.URL.Path); got == "/containers/json" {
+				t.Fatalf("NormalizePath(%q) = %q, want null byte to remain non-matching", tt.rawPath, got)
+			}
+		})
+	}
+}
+
+func TestEvaluateIgnoresMethodOverrideHeaders(t *testing.T) {
+	rules := compileRulesForTest(t, []Rule{
+		{Methods: []string{"POST"}, Pattern: "/containers/create", Action: ActionAllow, Index: 0},
+		{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "default deny", Index: 1},
+	})
+
+	tests := []struct {
+		name       string
+		headerName string
+		headerVal  string
+		wantAction Action
+		wantIndex  int
+	}{
+		{
+			name:       "x http method override is ignored",
+			headerName: "X-HTTP-Method-Override",
+			headerVal:  http.MethodPost,
+			wantAction: ActionDeny,
+			wantIndex:  1,
+		},
+		{
+			name:       "x method override is ignored",
+			headerName: "X-Method-Override",
+			headerVal:  http.MethodPost,
+			wantAction: ActionDeny,
+			wantIndex:  1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newParsedRequest(t, http.MethodGet, "/containers/create")
+			req.Header.Set(tt.headerName, tt.headerVal)
+
+			action, index, _ := Evaluate(rules, req)
+			if action != tt.wantAction {
+				t.Fatalf("Evaluate() action = %v, want %v", action, tt.wantAction)
+			}
+			if index != tt.wantIndex {
+				t.Fatalf("Evaluate() index = %d, want %d", index, tt.wantIndex)
+			}
+		})
+	}
+}

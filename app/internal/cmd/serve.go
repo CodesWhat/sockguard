@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,12 +25,17 @@ import (
 
 const readHeaderTimeout = 5 * time.Second
 
-var serveCmd = &cobra.Command{
-	Use:   "serve",
-	Short: "Start the proxy server",
-	Long:  "Start the sockguard proxy, listening for Docker API requests and filtering them according to configured rules.",
-	RunE:  runServe,
-}
+var (
+	umaskMu      sync.Mutex
+	syscallUmask = syscall.Umask
+
+	serveCmd = &cobra.Command{
+		Use:   "serve",
+		Short: "Start the proxy server",
+		Long:  "Start the sockguard proxy, listening for Docker API requests and filtering them according to configured rules.",
+		RunE:  runServe,
+	}
+)
 
 func init() {
 	rootCmd.AddCommand(serveCmd)
@@ -38,6 +44,7 @@ func init() {
 	serveCmd.Flags().String("upstream-socket", "", "Docker socket path (overrides config)")
 	serveCmd.Flags().String("log-level", "", "log level (overrides config)")
 	serveCmd.Flags().String("log-format", "", "log format (overrides config)")
+	serveCmd.Flags().String("deny-response-verbosity", "", "deny response verbosity: verbose or minimal (overrides config)")
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
@@ -99,7 +106,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	handler = proxy.HijackHandler(cfg.Upstream.Socket, logger, handler)
 
 	// Rule evaluator
-	handler = filter.Middleware(rules, logger)(handler)
+	handler = filter.MiddlewareWithOptions(rules, logger, filter.Options{
+		DenyResponseVerbosity: filter.DenyResponseVerbosity(cfg.Response.DenyVerbosity),
+	})(handler)
 
 	// Health interceptor
 	if cfg.Health.Enabled {
@@ -188,54 +197,58 @@ func newHTTPServer(handler http.Handler) *http.Server {
 
 // applyFlagOverrides applies CLI flags that were explicitly set.
 func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) error {
-	if cmd.Flags().Changed("listen-socket") {
-		v, err := cmd.Flags().GetString("listen-socket")
-		if err != nil {
-			return fmt.Errorf("get listen-socket flag: %w", err)
-		}
+	if err := applyStringFlagOverride(cmd, "listen-socket", func(v string) {
 		cfg.Listen.Socket = v
+	}); err != nil {
+		return err
 	}
-	if cmd.Flags().Changed("upstream-socket") {
-		v, err := cmd.Flags().GetString("upstream-socket")
-		if err != nil {
-			return fmt.Errorf("get upstream-socket flag: %w", err)
-		}
+	if err := applyStringFlagOverride(cmd, "upstream-socket", func(v string) {
 		cfg.Upstream.Socket = v
+	}); err != nil {
+		return err
 	}
-	if cmd.Flags().Changed("log-level") {
-		v, err := cmd.Flags().GetString("log-level")
-		if err != nil {
-			return fmt.Errorf("get log-level flag: %w", err)
-		}
+	if err := applyStringFlagOverride(cmd, "log-level", func(v string) {
 		cfg.Log.Level = v
+	}); err != nil {
+		return err
 	}
-	if cmd.Flags().Changed("log-format") {
-		v, err := cmd.Flags().GetString("log-format")
-		if err != nil {
-			return fmt.Errorf("get log-format flag: %w", err)
-		}
+	if err := applyStringFlagOverride(cmd, "log-format", func(v string) {
 		cfg.Log.Format = v
+	}); err != nil {
+		return err
 	}
+	if err := applyStringFlagOverride(cmd, "deny-response-verbosity", func(v string) {
+		cfg.Response.DenyVerbosity = v
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyStringFlagOverride(cmd *cobra.Command, name string, set func(string)) error {
+	if !cmd.Flags().Changed(name) {
+		return nil
+	}
+
+	v, err := cmd.Flags().GetString(name)
+	if err != nil {
+		return fmt.Errorf("get %s flag: %w", name, err)
+	}
+	set(v)
 	return nil
 }
 
 // createListener creates a Unix socket or TCP listener based on config.
 func createListener(cfg *config.Config) (net.Listener, error) {
 	if cfg.Listen.Socket != "" {
-		ln, err := listenUnixSocket(cfg.Listen.Socket)
-		if err != nil {
-			return nil, err
-		}
-
-		// Set socket permissions
 		mode, err := strconv.ParseUint(cfg.Listen.SocketMode, 8, 32)
 		if err != nil {
-			ln.Close()
 			return nil, fmt.Errorf("invalid socket_mode %q: %w", cfg.Listen.SocketMode, err)
 		}
-		if err := os.Chmod(cfg.Listen.Socket, os.FileMode(mode)); err != nil {
-			ln.Close()
-			return nil, fmt.Errorf("chmod socket: %w", err)
+
+		ln, err := listenUnixSocket(cfg.Listen.Socket, os.FileMode(mode))
+		if err != nil {
+			return nil, err
 		}
 
 		return ln, nil
@@ -245,33 +258,49 @@ func createListener(cfg *config.Config) (net.Listener, error) {
 	return net.Listen("tcp", cfg.Listen.Address)
 }
 
-func listenUnixSocket(path string) (net.Listener, error) {
-	ln, err := net.Listen("unix", path)
-	if err == nil {
-		return ln, nil
-	}
-	if !isAddrInUse(err) {
-		return nil, err
-	}
-
-	info, statErr := os.Lstat(path)
-	if statErr != nil {
-		return nil, fmt.Errorf("socket path already in use and could not inspect %q: %w", path, statErr)
-	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return nil, fmt.Errorf("socket path %q exists and is not a socket", path)
-	}
-	if removeErr := os.Remove(path); removeErr != nil {
-		if !os.IsNotExist(removeErr) {
-			return nil, fmt.Errorf("remove stale socket: %w", removeErr)
+func listenUnixSocket(path string, mode os.FileMode) (net.Listener, error) {
+	return withUmask(socketCreateUmask(mode), func() (net.Listener, error) {
+		ln, err := net.Listen("unix", path)
+		if err == nil {
+			return ln, nil
 		}
-	}
+		if !isAddrInUse(err) {
+			return nil, err
+		}
 
-	ln, err = net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	return ln, nil
+		info, statErr := os.Lstat(path)
+		if statErr != nil {
+			return nil, fmt.Errorf("socket path already in use and could not inspect %q: %w", path, statErr)
+		}
+		if info.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("socket path %q exists and is not a socket", path)
+		}
+		if removeErr := os.Remove(path); removeErr != nil {
+			if !os.IsNotExist(removeErr) {
+				return nil, fmt.Errorf("remove stale socket: %w", removeErr)
+			}
+		}
+
+		ln, err = net.Listen("unix", path)
+		if err != nil {
+			return nil, err
+		}
+		return ln, nil
+	})
+}
+
+func socketCreateUmask(mode os.FileMode) int {
+	return int(0o777 &^ mode.Perm())
+}
+
+func withUmask(mask int, fn func() (net.Listener, error)) (net.Listener, error) {
+	umaskMu.Lock()
+	defer umaskMu.Unlock()
+
+	previous := syscallUmask(mask)
+	defer syscallUmask(previous)
+
+	return fn()
 }
 
 func isAddrInUse(err error) bool {

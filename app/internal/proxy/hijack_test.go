@@ -818,6 +818,122 @@ func TestHandleHijack_FinalCloseErrorLogged(t *testing.T) {
 	}
 }
 
+func TestHandleHijack_UpstreamDisconnectDuringStreaming(t *testing.T) {
+	socketPath := fmt.Sprintf("/tmp/dp-test-upstream-disconnect-%d.sock", os.Getpid())
+	t.Cleanup(func() { os.Remove(socketPath) })
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	const streamPayload = "partial-stream"
+
+	var serverWg sync.WaitGroup
+	serverWg.Add(1)
+	go func() {
+		defer serverWg.Done()
+
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			t.Errorf("mock: read request: %v", err)
+			return
+		}
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+
+		resp := &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{},
+		}
+		resp.Header.Set("Connection", "Upgrade")
+		resp.Header.Set("Upgrade", "tcp")
+		if err := resp.Write(conn); err != nil {
+			t.Errorf("mock: write 101: %v", err)
+			return
+		}
+
+		if _, err := conn.Write([]byte(streamPayload)); err != nil {
+			t.Errorf("mock: write stream payload: %v", err)
+		}
+	}()
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("next handler should not be called for hijack endpoint")
+	})
+	handler := HijackHandler(socketPath, logger, next)
+
+	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("client listen: %v", err)
+	}
+	defer clientLn.Close()
+
+	srv := &http.Server{Handler: handler}
+	go srv.Serve(clientLn)
+	defer srv.Close()
+
+	clientConn, err := net.Dial("tcp", clientLn.Addr().String())
+	if err != nil {
+		t.Fatalf("client dial: %v", err)
+	}
+	defer clientConn.Close()
+
+	reqStr := "POST /containers/abc/attach?stream=1 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+	if _, err := clientConn.Write([]byte(reqStr)); err != nil {
+		t.Fatalf("client write request: %v", err)
+	}
+
+	clientBuf := bufio.NewReader(clientConn)
+	resp, err := http.ReadResponse(clientBuf, nil)
+	if err != nil {
+		t.Fatalf("client read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101, got %d", resp.StatusCode)
+	}
+
+	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+		if err := tcpConn.CloseWrite(); err != nil {
+			t.Fatalf("client CloseWrite(): %v", err)
+		}
+	}
+
+	data, err := io.ReadAll(clientBuf)
+	if err != nil {
+		t.Fatalf("client read stream: %v", err)
+	}
+	if string(data) != streamPayload {
+		t.Fatalf("stream payload = %q, want %q", string(data), streamPayload)
+	}
+
+	serverWg.Wait()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if strings.Contains(logs.String(), "connection closed") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected connection closed log, got %q", logs.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestGetHijackBufferRestoresFullLengthFromPool(t *testing.T) {
 	fakePool := &stubBufferPool{getValue: make([]byte, 128, hijackBufSize)}
 	useHijackBufferPool(t, fakePool)

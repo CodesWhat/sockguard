@@ -1,10 +1,12 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 	"net/textproto"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 )
 
 const maxFuzzBodyBytes = 4096
+const maxFuzzStreamBytes = (2 * hijackBufSize) + 1024
 
 type fuzzEchoResponse struct {
 	Method      string `json:"method"`
@@ -85,6 +89,182 @@ func FuzzHijackHeadersAndBody(f *testing.F) {
 		}
 
 		assertFuzzEchoResponse(t, rec, http.MethodPost, "/containers/abc/attach", headerName, expectedForwardedHeaderValue(headerValue), body)
+	})
+}
+
+func FuzzHijackBidirectionalStream(f *testing.F) {
+	f.Add([]byte("stdin"), []byte("stdout"))
+	f.Add(bytes.Repeat([]byte("a"), hijackBufSize-1), bytes.Repeat([]byte("b"), hijackBufSize+1))
+	f.Add(bytes.Repeat([]byte("c"), hijackBufSize+257), bytes.Repeat([]byte("d"), hijackBufSize*2))
+	f.Add([]byte{}, bytes.Repeat([]byte("e"), hijackBufSize+17))
+
+	f.Fuzz(func(t *testing.T, clientPayload, upstreamPayload []byte) {
+		clientPayload = truncateFuzzBytes(clientPayload, maxFuzzStreamBytes)
+		upstreamPayload = truncateFuzzBytes(upstreamPayload, maxFuzzStreamBytes)
+
+		socketPath := fmt.Sprintf("/tmp/sockguard-fuzz-hijack-%d-%d.sock", os.Getpid(), time.Now().UnixNano())
+		ln, err := net.Listen("unix", socketPath)
+		if err != nil {
+			t.Fatalf("listen unix socket: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = ln.Close()
+			_ = os.Remove(socketPath)
+		})
+
+		serverErrs := make(chan error, 4)
+		clientBytesRead := make(chan int64, 1)
+
+		var upstreamWg sync.WaitGroup
+		upstreamWg.Add(1)
+		go func() {
+			defer upstreamWg.Done()
+
+			conn, err := ln.Accept()
+			if err != nil {
+				serverErrs <- fmt.Errorf("accept upstream connection: %w", err)
+				return
+			}
+			defer conn.Close()
+
+			reader := bufio.NewReader(conn)
+			req, err := http.ReadRequest(reader)
+			if err != nil {
+				serverErrs <- fmt.Errorf("read upstream request: %w", err)
+				return
+			}
+			if req.Body != nil {
+				_ = req.Body.Close()
+			}
+
+			resp := &http.Response{
+				StatusCode: http.StatusSwitchingProtocols,
+				ProtoMajor: 1,
+				ProtoMinor: 1,
+				Header:     http.Header{},
+			}
+			resp.Header.Set("Connection", "Upgrade")
+			resp.Header.Set("Upgrade", "tcp")
+			if err := resp.Write(conn); err != nil {
+				serverErrs <- fmt.Errorf("write upgrade response: %w", err)
+				return
+			}
+
+			var ioWg sync.WaitGroup
+			ioWg.Add(2)
+
+			go func() {
+				defer ioWg.Done()
+				if len(upstreamPayload) > 0 {
+					if _, err := conn.Write(upstreamPayload); err != nil {
+						serverErrs <- fmt.Errorf("write upstream payload: %w", err)
+						return
+					}
+				}
+				closeWrite(conn)
+			}()
+
+			go func() {
+				defer ioWg.Done()
+				n, err := io.Copy(io.Discard, reader)
+				if err != nil {
+					serverErrs <- fmt.Errorf("read client payload: %w", err)
+					return
+				}
+				clientBytesRead <- n
+			}()
+
+			ioWg.Wait()
+		}()
+
+		handler := HijackHandler(socketPath, testLogger(), http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			t.Fatal("next handler should not be called for hijack endpoints")
+		}))
+
+		clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen client tcp socket: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = clientLn.Close()
+		})
+
+		srv := &http.Server{Handler: handler}
+		go func() {
+			_ = srv.Serve(clientLn)
+		}()
+		t.Cleanup(func() {
+			_ = srv.Close()
+		})
+
+		clientConn, err := net.Dial("tcp", clientLn.Addr().String())
+		if err != nil {
+			t.Fatalf("dial proxy: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = clientConn.Close()
+		})
+
+		reqStr := "POST /containers/abc/attach?stream=1 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+		if _, err := clientConn.Write([]byte(reqStr)); err != nil {
+			t.Fatalf("write hijack request: %v", err)
+		}
+
+		clientBuf := bufio.NewReader(clientConn)
+		resp, err := http.ReadResponse(clientBuf, nil)
+		if err != nil {
+			t.Fatalf("read hijack response: %v", err)
+		}
+		if resp.StatusCode != http.StatusSwitchingProtocols {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusSwitchingProtocols)
+		}
+
+		writeErr := make(chan error, 1)
+		go func() {
+			if len(clientPayload) > 0 {
+				if _, err := clientConn.Write(clientPayload); err != nil {
+					writeErr <- fmt.Errorf("write client payload: %w", err)
+					return
+				}
+			}
+			if tcpConn, ok := clientConn.(*net.TCPConn); ok {
+				if err := tcpConn.CloseWrite(); err != nil {
+					writeErr <- fmt.Errorf("close client write side: %w", err)
+					return
+				}
+			}
+			writeErr <- nil
+		}()
+
+		gotUpstreamPayload, err := io.ReadAll(clientBuf)
+		if err != nil {
+			t.Fatalf("read upstream payload: %v", err)
+		}
+		if err := <-writeErr; err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(gotUpstreamPayload, upstreamPayload) {
+			t.Fatalf("upstream payload len = %d, want %d", len(gotUpstreamPayload), len(upstreamPayload))
+		}
+
+		upstreamWg.Wait()
+
+		select {
+		case n := <-clientBytesRead:
+			if n != int64(len(clientPayload)) {
+				t.Fatalf("client payload bytes read = %d, want %d", n, len(clientPayload))
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for upstream client payload read")
+		}
+
+		select {
+		case err := <-serverErrs:
+			if err != nil {
+				t.Fatal(err)
+			}
+		default:
+		}
 	})
 }
 
@@ -163,10 +343,14 @@ func assertFuzzEchoResponse(t *testing.T, rec *httptest.ResponseRecorder, wantMe
 }
 
 func truncateFuzzBody(body []byte) []byte {
-	if len(body) > maxFuzzBodyBytes {
-		return body[:maxFuzzBodyBytes]
+	return truncateFuzzBytes(body, maxFuzzBodyBytes)
+}
+
+func truncateFuzzBytes(data []byte, max int) []byte {
+	if len(data) > max {
+		return data[:max]
 	}
-	return body
+	return data
 }
 
 func fuzzHeaderName(s string) string {

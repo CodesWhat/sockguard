@@ -41,7 +41,7 @@ func TestIsAddrInUse(t *testing.T) {
 func TestListenUnixSocketCreatesNewSocket(t *testing.T) {
 	path := shortSocketPath(t, "new")
 
-	ln, err := listenUnixSocket(path)
+	ln, err := listenUnixSocket(path, 0o600)
 	if err != nil {
 		t.Fatalf("listenUnixSocket() error = %v", err)
 	}
@@ -65,7 +65,7 @@ func TestListenUnixSocketReplacesStaleSocket(t *testing.T) {
 	}
 	original.Close()
 
-	ln, err := listenUnixSocket(path)
+	ln, err := listenUnixSocket(path, 0o600)
 	if err != nil {
 		t.Fatalf("listenUnixSocket() with stale socket error = %v", err)
 	}
@@ -78,7 +78,7 @@ func TestListenUnixSocketRejectsNonSocketPath(t *testing.T) {
 		t.Fatalf("write non-socket path: %v", err)
 	}
 
-	_, err := listenUnixSocket(path)
+	_, err := listenUnixSocket(path, 0o600)
 	if err == nil {
 		t.Fatal("expected error for non-socket path")
 	}
@@ -111,6 +111,45 @@ func TestCreateListenerUnixSocket(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("socket mode = %o, want 600", info.Mode().Perm())
+	}
+}
+
+func TestCreateListenerUnixSocketSetsTemporaryUmask(t *testing.T) {
+	socketPath := shortSocketPath(t, "umask")
+	cfg := &config.Config{
+		Listen: config.ListenConfig{
+			Socket:     socketPath,
+			SocketMode: "0600",
+		},
+	}
+
+	originalUmask := syscallUmask
+	currentMask := 0o022
+	var calls []int
+	syscallUmask = func(mask int) int {
+		previous := currentMask
+		currentMask = mask
+		calls = append(calls, mask)
+		return previous
+	}
+	t.Cleanup(func() {
+		syscallUmask = originalUmask
+	})
+
+	ln, err := createListener(cfg)
+	if err != nil {
+		t.Fatalf("createListener() error = %v", err)
+	}
+	defer ln.Close()
+
+	if len(calls) != 2 {
+		t.Fatalf("umask call count = %d, want 2", len(calls))
+	}
+	if calls[0] != 0o177 {
+		t.Fatalf("temporary umask = %03o, want 177", calls[0])
+	}
+	if calls[1] != 0o022 {
+		t.Fatalf("restored umask = %03o, want 022", calls[1])
 	}
 }
 
@@ -158,6 +197,7 @@ func TestApplyFlagOverrides(t *testing.T) {
 	cmd.Flags().String("upstream-socket", "", "")
 	cmd.Flags().String("log-level", "", "")
 	cmd.Flags().String("log-format", "", "")
+	cmd.Flags().String("deny-response-verbosity", "", "")
 
 	if err := cmd.Flags().Set("listen-socket", "/tmp/sockguard.sock"); err != nil {
 		t.Fatalf("set listen-socket: %v", err)
@@ -170,6 +210,9 @@ func TestApplyFlagOverrides(t *testing.T) {
 	}
 	if err := cmd.Flags().Set("log-format", "text"); err != nil {
 		t.Fatalf("set log-format: %v", err)
+	}
+	if err := cmd.Flags().Set("deny-response-verbosity", "minimal"); err != nil {
+		t.Fatalf("set deny-response-verbosity: %v", err)
 	}
 
 	if err := applyFlagOverrides(cmd, &cfg); err != nil {
@@ -187,6 +230,9 @@ func TestApplyFlagOverrides(t *testing.T) {
 	if cfg.Log.Format != "text" {
 		t.Fatalf("log format = %q, want %q", cfg.Log.Format, "text")
 	}
+	if cfg.Response.DenyVerbosity != "minimal" {
+		t.Fatalf("deny response verbosity = %q, want %q", cfg.Response.DenyVerbosity, "minimal")
+	}
 }
 
 func TestApplyFlagOverridesGetStringError(t *testing.T) {
@@ -200,6 +246,55 @@ func TestApplyFlagOverridesGetStringError(t *testing.T) {
 	err := applyFlagOverrides(cmd, &cfg)
 	if err == nil {
 		t.Fatal("expected applyFlagOverrides to fail when log-level is not a string flag")
+	}
+	if !strings.Contains(err.Error(), "get log-level flag") {
+		t.Fatalf("expected get log-level error, got: %v", err)
+	}
+}
+
+func TestApplyStringFlagOverride(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("log-level", "", "")
+	if err := cmd.Flags().Set("log-level", "debug"); err != nil {
+		t.Fatalf("set log-level: %v", err)
+	}
+
+	got := "info"
+	if err := applyStringFlagOverride(cmd, "log-level", func(v string) {
+		got = v
+	}); err != nil {
+		t.Fatalf("applyStringFlagOverride() error = %v", err)
+	}
+	if got != "debug" {
+		t.Fatalf("applied value = %q, want %q", got, "debug")
+	}
+}
+
+func TestApplyStringFlagOverrideUnchangedNoOp(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("log-level", "", "")
+
+	called := false
+	if err := applyStringFlagOverride(cmd, "log-level", func(string) {
+		called = true
+	}); err != nil {
+		t.Fatalf("applyStringFlagOverride() error = %v", err)
+	}
+	if called {
+		t.Fatal("expected unchanged flag to be ignored")
+	}
+}
+
+func TestApplyStringFlagOverrideGetStringError(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().Int("log-level", 0, "")
+	if err := cmd.Flags().Set("log-level", "1"); err != nil {
+		t.Fatalf("set log-level: %v", err)
+	}
+
+	err := applyStringFlagOverride(cmd, "log-level", func(string) {})
+	if err == nil {
+		t.Fatal("expected applyStringFlagOverride to fail when flag is not a string")
 	}
 	if !strings.Contains(err.Error(), "get log-level flag") {
 		t.Fatalf("expected get log-level error, got: %v", err)
