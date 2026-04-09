@@ -4,7 +4,7 @@
 
 <h1 align="center">sockguard</h1>
 
-<p align="center">A Docker socket proxy that actually inspects what it proxies.</p>
+<p align="center">Control what gets through. A security-first Docker socket proxy.</p>
 
 > **Status**: Pre-release. v0.1.0 in development.
 
