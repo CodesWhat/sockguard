@@ -1,6 +1,10 @@
-# sockguard
+<p align="center">
+  <img src="sockguard-logo.png" alt="sockguard" width="180">
+</p>
 
-A Docker socket proxy that actually inspects what it proxies.
+<h1 align="center">sockguard</h1>
+
+<p align="center">A Docker socket proxy that actually inspects what it proxies.</p>
 
 > **Status**: Pre-release. v0.1.0 in development.
 
