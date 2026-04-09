@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -196,6 +197,25 @@ func TestCompileRuleLiteralPatternUsesFastPath(t *testing.T) {
 	}
 	if !rule.Matches("GET", "/v1.45/_ping") {
 		t.Fatal("literal fast path should match normalized versioned path")
+	}
+}
+
+func TestCompileRuleRegexCompileError(t *testing.T) {
+	originalCompile := regexpCompile
+	regexpCompile = func(string) (*regexp.Regexp, error) {
+		return nil, errors.New("boom")
+	}
+	t.Cleanup(func() {
+		regexpCompile = originalCompile
+	})
+
+	_, err := CompileRule(Rule{
+		Methods: []string{"GET"},
+		Pattern: "/containers/**",
+		Action:  ActionAllow,
+	})
+	if err == nil {
+		t.Fatal("expected CompileRule() to fail when regexp compilation fails")
 	}
 }
 

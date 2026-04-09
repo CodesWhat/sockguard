@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -47,6 +48,18 @@ func TestNew_ErrorHandler(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), socketPath) {
 		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())
+	}
+}
+
+func TestNew_ErrorHandlerEncodeFailure(t *testing.T) {
+	rp := New("/tmp/does-not-matter.sock", testLogger())
+	writer := &erroringResponseWriter{}
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+	rp.ErrorHandler(writer, req, errors.New("boom"))
+
+	if writer.status != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", writer.status, http.StatusBadGateway)
 	}
 }
 

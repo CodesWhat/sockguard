@@ -281,6 +281,20 @@ func TestGeneratePingRules(t *testing.T) {
 	})
 }
 
+func TestGenerateVersionRulesDisabled(t *testing.T) {
+	t.Setenv("VERSION", "0")
+	if rules := generateVersionRules(); len(rules) != 0 {
+		t.Fatalf("generateVersionRules() len = %d, want 0", len(rules))
+	}
+}
+
+func TestGenerateEventsRulesDisabled(t *testing.T) {
+	t.Setenv("EVENTS", "0")
+	if rules := generateEventsRules(); len(rules) != 0 {
+		t.Fatalf("generateEventsRules() len = %d, want 0", len(rules))
+	}
+}
+
 func TestGeneratePostRules(t *testing.T) {
 	t.Run("blanket allow without granular vars", func(t *testing.T) {
 		t.Setenv("POST", "1")

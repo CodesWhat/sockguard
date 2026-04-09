@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -250,5 +253,60 @@ func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
 		if result.status != "unreachable" || result.err == nil {
 			t.Fatalf("check = (%q, %v), want unreachable with error", result.status, result.err)
 		}
+	}
+}
+
+type failingWriter struct {
+	header http.Header
+	status int
+}
+
+func (w *failingWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *failingWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *failingWriter) Write(p []byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+func TestHealthHandlerHealthyEncodeFailure(t *testing.T) {
+	sock := fmt.Sprintf("/tmp/health-encode-%d.sock", os.Getpid())
+	_ = os.Remove(sock)
+	t.Cleanup(func() {
+		_ = os.Remove(sock)
+	})
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("failed to create unix listener: %v", err)
+	}
+	defer ln.Close()
+
+	handler := Handler(sock, time.Now(), testLogger())
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	writer := &failingWriter{}
+
+	handler.ServeHTTP(writer, req)
+
+	if writer.status != http.StatusOK {
+		t.Fatalf("status = %d, want %d", writer.status, http.StatusOK)
+	}
+}
+
+func TestHealthHandlerUnhealthyEncodeFailure(t *testing.T) {
+	handler := Handler("/nonexistent/socket.sock", time.Now(), testLogger())
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	writer := &failingWriter{}
+
+	handler.ServeHTTP(writer, req)
+
+	if writer.status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", writer.status, http.StatusServiceUnavailable)
 	}
 }

@@ -34,6 +34,67 @@ func useHijackBufferPool(t *testing.T, pool bytePool) {
 	})
 }
 
+func useHijackDeps(t *testing.T) {
+	t.Helper()
+
+	originalDial := dialHijackUpstream
+	originalReadResponse := readHijackResponse
+	originalCopyBuffer := copyHijackBuffer
+
+	t.Cleanup(func() {
+		dialHijackUpstream = originalDial
+		readHijackResponse = originalReadResponse
+		copyHijackBuffer = originalCopyBuffer
+	})
+}
+
+type erroringResponseWriter struct {
+	header http.Header
+	status int
+}
+
+func (w *erroringResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *erroringResponseWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *erroringResponseWriter) Write(p []byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+type closeErrorReadCloser struct {
+	io.Reader
+	closeErr error
+}
+
+func (r closeErrorReadCloser) Close() error {
+	return r.closeErr
+}
+
+type hijackErrorWriter struct {
+	header http.Header
+	err    error
+}
+
+func (w *hijackErrorWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *hijackErrorWriter) Write([]byte) (int, error) { return 0, nil }
+func (w *hijackErrorWriter) WriteHeader(int)           {}
+func (w *hijackErrorWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, w.err
+}
+
 func TestIsHijackEndpoint(t *testing.T) {
 	tests := []struct {
 		method string
@@ -61,6 +122,8 @@ func TestIsHijackEndpoint(t *testing.T) {
 		{"POST", "/containers/attach", false},
 		{"POST", "/exec/start", false},
 		{"POST", "/containers/a/b/attach", false},
+		{"POST", "containers/abc123/attach", false},
+		{"POST", "/", false},
 		// Negative: other endpoints
 		{"GET", "/containers/json", false},
 		{"GET", "/info", false},
@@ -504,6 +567,219 @@ func TestHandleHijack_RequestWriteErrorDoesNotLeakDetails(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), `"error"`) {
 		t.Fatalf("response leaked internal error field: %q", rec.Body.String())
+	}
+}
+
+func TestHandleHijack_ErrorResponseEncodingFailures(t *testing.T) {
+	t.Run("dial failure", func(t *testing.T) {
+		writer := &erroringResponseWriter{}
+		req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+
+		handleHijack(writer, req, "/nonexistent/socket.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+		if writer.status != http.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", writer.status, http.StatusBadGateway)
+		}
+	})
+
+	t.Run("request write failure", func(t *testing.T) {
+		socketPath := fmt.Sprintf("/tmp/dp-test-write-error-encode-%d.sock", os.Getpid())
+		t.Cleanup(func() { os.Remove(socketPath) })
+
+		ln, err := net.Listen("unix", socketPath)
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		defer ln.Close()
+
+		var serverWg sync.WaitGroup
+		serverWg.Add(1)
+		go func() {
+			defer serverWg.Done()
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			_, _ = io.Copy(io.Discard, conn)
+		}()
+
+		req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", io.NopCloser(errorReader{err: errors.New("body boom")}))
+		req.ContentLength = 1
+		writer := &erroringResponseWriter{}
+
+		handleHijack(writer, req, socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		serverWg.Wait()
+
+		if writer.status != http.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", writer.status, http.StatusBadGateway)
+		}
+	})
+
+	t.Run("read response failure", func(t *testing.T) {
+		socketPath := fmt.Sprintf("/tmp/dp-test-read-error-encode-%d.sock", os.Getpid())
+		t.Cleanup(func() { os.Remove(socketPath) })
+
+		ln, err := net.Listen("unix", socketPath)
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		defer ln.Close()
+
+		var serverWg sync.WaitGroup
+		serverWg.Add(1)
+		go func() {
+			defer serverWg.Done()
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			reader := bufio.NewReader(conn)
+			req, err := http.ReadRequest(reader)
+			if err != nil {
+				return
+			}
+			if req.Body != nil {
+				_ = req.Body.Close()
+			}
+			_, _ = conn.Write([]byte("not an http response\r\n\r\n"))
+		}()
+
+		writer := &erroringResponseWriter{}
+		req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+
+		handleHijack(writer, req, socketPath, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		serverWg.Wait()
+
+		if writer.status != http.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", writer.status, http.StatusBadGateway)
+		}
+	})
+}
+
+func TestHandleHijack_NonUpgradeFallbackEdgePaths(t *testing.T) {
+	useHijackDeps(t)
+
+	dialHijackUpstream = func(network, address string) (net.Conn, error) {
+		return &funcConn{
+			writeFn: func(p []byte) (int, error) { return len(p), nil },
+		}, nil
+	}
+	readHijackResponse = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusConflict,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: closeErrorReadCloser{
+				Reader:   strings.NewReader(`{"message":"conflict"}`),
+				closeErr: errors.New("close boom"),
+			},
+		}, nil
+	}
+
+	writer := &erroringResponseWriter{}
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+
+	handleHijack(writer, req, "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if writer.status != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", writer.status, http.StatusConflict)
+	}
+}
+
+func TestHandleHijack_ResponseWriterNotHijacker(t *testing.T) {
+	useHijackDeps(t)
+
+	dialHijackUpstream = func(network, address string) (net.Conn, error) {
+		return &funcConn{
+			writeFn: func(p []byte) (int, error) { return len(p), nil },
+		}, nil
+	}
+	readHijackResponse = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{"Connection": []string{"Upgrade"}, "Upgrade": []string{"tcp"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	}
+
+	handleHijack(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil), "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func TestHandleHijack_HijackErrorAndWrite101Error(t *testing.T) {
+	useHijackDeps(t)
+
+	dialHijackUpstream = func(network, address string) (net.Conn, error) {
+		return &funcConn{
+			writeFn: func(p []byte) (int, error) { return len(p), nil },
+		}, nil
+	}
+	readHijackResponse = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{"Connection": []string{"Upgrade"}, "Upgrade": []string{"tcp"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+	handleHijack(&hijackErrorWriter{err: errors.New("hijack boom")}, req, "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	failingConn := &funcConn{
+		writeFn: func(p []byte) (int, error) {
+			return 0, io.ErrClosedPipe
+		},
+	}
+	writer := &hijackTestWriter{
+		header: make(http.Header),
+		conn:   failingConn,
+		rw:     bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriterSize(failingConn, 1)),
+	}
+
+	handleHijack(writer, req, "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+}
+
+func TestHandleHijack_CopyErrorsAreLoggedAndIgnored(t *testing.T) {
+	useHijackDeps(t)
+
+	dialHijackUpstream = func(network, address string) (net.Conn, error) {
+		return &funcConn{
+			writeFn: func(p []byte) (int, error) { return len(p), nil },
+		}, nil
+	}
+	readHijackResponse = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{"Connection": []string{"Upgrade"}, "Upgrade": []string{"tcp"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	}
+	copyHijackBuffer = func(io.Writer, io.Reader, []byte) (int64, error) {
+		return 0, io.ErrClosedPipe
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+	writer := newHijackTestWriter(&funcConn{}, strings.NewReader(""))
+
+	handleHijack(writer, req, "/unused.sock", logger)
+
+	logText := logs.String()
+	if !strings.Contains(logText, "upstream→client copy ended") {
+		t.Fatalf("expected upstream copy log, got %q", logText)
+	}
+	if !strings.Contains(logText, "client→upstream copy ended") {
+		t.Fatalf("expected client copy log, got %q", logText)
 	}
 }
 

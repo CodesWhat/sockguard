@@ -1,13 +1,17 @@
 package logging
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -173,6 +177,119 @@ func TestPutRequestMetaResetsFields(t *testing.T) {
 
 	if *meta != (RequestMeta{}) {
 		t.Fatalf("meta after put = %#v, want zero value", *meta)
+	}
+}
+
+func TestRequestMetaPoolFallbackAndNilPut(t *testing.T) {
+	originalPool := requestMetaPool
+	requestMetaPool = sync.Pool{New: func() any { return nil }}
+	t.Cleanup(func() {
+		requestMetaPool = originalPool
+	})
+
+	meta := getRequestMeta()
+	if meta == nil {
+		t.Fatal("getRequestMeta() returned nil")
+	}
+	putRequestMeta(nil)
+}
+
+func TestAccessLogAttrPoolFallbackAndNilPut(t *testing.T) {
+	originalPool := accessLogAttrPool
+	accessLogAttrPool = sync.Pool{New: func() any { return nil }}
+	t.Cleanup(func() {
+		accessLogAttrPool = originalPool
+	})
+
+	attrs := getAccessLogAttrs()
+	if attrs == nil {
+		t.Fatal("getAccessLogAttrs() returned nil")
+	}
+	putAccessLogAttrs(nil)
+}
+
+func TestResponseCapturePoolFallbackAndNilPut(t *testing.T) {
+	originalPool := responseCapturePool
+	responseCapturePool = sync.Pool{New: func() any { return nil }}
+	t.Cleanup(func() {
+		responseCapturePool = originalPool
+	})
+
+	rc := getResponseCapture(httptest.NewRecorder())
+	if rc == nil {
+		t.Fatal("getResponseCapture() returned nil")
+	}
+	putResponseCapture(nil)
+}
+
+type stubHijacker struct {
+	http.ResponseWriter
+	conn net.Conn
+	rw   *bufio.ReadWriter
+	err  error
+}
+
+func (h stubHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return h.conn, h.rw, h.err
+}
+
+func TestResponseCaptureHijack(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+	})
+
+	wantErr := errors.New("boom")
+	rc := &responseCapture{
+		ResponseWriter: stubHijacker{
+			ResponseWriter: httptest.NewRecorder(),
+			conn:           serverConn,
+			rw:             bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
+			err:            wantErr,
+		},
+		status: http.StatusOK,
+	}
+
+	conn, rw, err := rc.Hijack()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Hijack() error = %v, want %v", err, wantErr)
+	}
+	if conn != serverConn {
+		t.Fatalf("conn = %v, want %v", conn, serverConn)
+	}
+	if rw == nil {
+		t.Fatal("readwriter = nil, want non-nil")
+	}
+}
+
+func TestResponseCaptureHijackNotSupported(t *testing.T) {
+	rc := &responseCapture{ResponseWriter: httptest.NewRecorder(), status: http.StatusOK}
+
+	conn, rw, err := rc.Hijack()
+	if !errors.Is(err, http.ErrNotSupported) {
+		t.Fatalf("Hijack() error = %v, want %v", err, http.ErrNotSupported)
+	}
+	if conn != nil || rw != nil {
+		t.Fatalf("Hijack() = (%v, %v), want nils", conn, rw)
+	}
+}
+
+func TestAccessLogDefaultClientAddress(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := AccessLogMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.RemoteAddr = ""
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !strings.Contains(buf.String(), `"client":"unix"`) {
+		t.Fatalf("expected unix client in log output, got: %s", buf.String())
 	}
 }
 

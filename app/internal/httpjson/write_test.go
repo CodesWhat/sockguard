@@ -1,10 +1,12 @@
 package httpjson
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 )
 
@@ -95,6 +97,22 @@ func TestGetJSONBufferReturnsUsableBuffer(t *testing.T) {
 	putJSONBuffer(buf)
 }
 
+func TestGetJSONBufferFallsBackWhenPoolReturnsNil(t *testing.T) {
+	originalPool := jsonBufferPool
+	jsonBufferPool = sync.Pool{New: func() any { return nil }}
+	t.Cleanup(func() {
+		jsonBufferPool = originalPool
+	})
+
+	buf := getJSONBuffer()
+	if buf == nil {
+		t.Fatal("getJSONBuffer() returned nil")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("buffer length = %d, want 0", buf.Len())
+	}
+}
+
 func TestPutJSONBufferResetsBuffer(t *testing.T) {
 	buf := getJSONBuffer()
 	buf.WriteString(`{"message":"denied"}`)
@@ -104,6 +122,22 @@ func TestPutJSONBufferResetsBuffer(t *testing.T) {
 	if buf.Len() != 0 {
 		t.Fatalf("buffer length after put = %d, want 0", buf.Len())
 	}
+}
+
+func TestPutJSONBufferIgnoresNil(t *testing.T) {
+	putJSONBuffer(nil)
+}
+
+func TestPutJSONBufferMakesBufferReusable(t *testing.T) {
+	buf := &bytes.Buffer{}
+	buf.WriteString("stale")
+	putJSONBuffer(buf)
+
+	reused := getJSONBuffer()
+	if reused.Len() != 0 {
+		t.Fatalf("reused buffer length = %d, want 0", reused.Len())
+	}
+	putJSONBuffer(reused)
 }
 
 type benchmarkResponseWriter struct {

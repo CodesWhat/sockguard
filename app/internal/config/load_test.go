@@ -128,3 +128,29 @@ func TestLoadEmptyPath(t *testing.T) {
 		t.Errorf("expected default listen socket")
 	}
 }
+
+func TestLoadReadConfigError(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := Load(dir)
+	if err == nil {
+		t.Fatal("expected error when config path is a directory")
+	}
+}
+
+func TestLoadUnmarshalError(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "bad-types.yaml")
+
+	yaml := `
+rules: definitely-not-a-list
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := Load(cfgPath)
+	if err == nil {
+		t.Fatal("expected unmarshal error for invalid rules type")
+	}
+}

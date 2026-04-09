@@ -107,3 +107,52 @@ rules:
 		t.Fatalf("expected no stdout output on failure, got:\n%s", out.String())
 	}
 }
+
+func TestRunValidateLoadError(t *testing.T) {
+	oldCfgFile := cfgFile
+	cfgFile = t.TempDir()
+	t.Cleanup(func() { cfgFile = oldCfgFile })
+
+	command := &cobra.Command{Use: "validate"}
+	err := runValidate(command, nil)
+	if err == nil {
+		t.Fatal("expected runValidate() to fail when config cannot be read")
+	}
+	if !strings.Contains(err.Error(), "config load:") {
+		t.Fatalf("expected config load error, got: %v", err)
+	}
+}
+
+func TestRunValidateCompatModeOutput(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sockguard.yaml")
+	yaml := `
+upstream:
+  socket: /var/run/docker.sock
+log:
+  level: info
+  format: json
+  output: stderr
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	t.Setenv("CONTAINERS", "1")
+
+	oldCfgFile := cfgFile
+	cfgFile = cfgPath
+	t.Cleanup(func() { cfgFile = oldCfgFile })
+
+	var out bytes.Buffer
+	command := &cobra.Command{Use: "validate"}
+	command.SetOut(&out)
+
+	if err := runValidate(command, nil); err != nil {
+		t.Fatalf("runValidate() error = %v", err)
+	}
+
+	if !strings.Contains(out.String(), "Mode:     tecnativa compatibility") {
+		t.Fatalf("expected compat mode line, got:\n%s", out.String())
+	}
+}

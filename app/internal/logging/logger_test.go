@@ -106,6 +106,53 @@ func TestNewInvalidOutputPath(t *testing.T) {
 	}
 }
 
+func TestNewTextFormatAndParseLevels(t *testing.T) {
+	logger, closer, err := New("warn", "text", "stderr")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if closer != nil {
+		t.Fatalf("closer = %v, want nil for stderr", closer)
+	}
+
+	_ = logger
+
+	if parseLevel("debug") != -4 {
+		t.Fatalf("parseLevel(debug) = %v, want %v", parseLevel("debug"), -4)
+	}
+	if parseLevel("warn") != 4 {
+		t.Fatalf("parseLevel(warn) = %v, want %v", parseLevel("warn"), 4)
+	}
+	if parseLevel("error") != 8 {
+		t.Fatalf("parseLevel(error) = %v, want %v", parseLevel("error"), 8)
+	}
+	if parseLevel("info") != 0 {
+		t.Fatalf("parseLevel(info) = %v, want %v", parseLevel("info"), 0)
+	}
+}
+
+func TestValidateOutput(t *testing.T) {
+	if err := ValidateOutput("stdout"); err != nil {
+		t.Fatalf("ValidateOutput(stdout) error = %v", err)
+	}
+	if err := ValidateOutput("../sockguard.log"); err == nil {
+		t.Fatal("expected ValidateOutput to reject non-local path")
+	}
+}
+
+func TestNewJSONFormat(t *testing.T) {
+	logger, closer, err := New("info", "json", "stdout")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if logger == nil {
+		t.Fatal("logger = nil")
+	}
+	if closer != nil {
+		t.Fatalf("closer = %v, want nil for stdout", closer)
+	}
+}
+
 func TestOutputWriterRejectsNonLocalPaths(t *testing.T) {
 	tests := []string{
 		"",

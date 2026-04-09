@@ -1,8 +1,11 @@
 package config
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/codeswhat/sockguard/internal/filter"
 )
 
 func TestValidateDefaults(t *testing.T) {
@@ -112,6 +115,24 @@ func TestValidateInvalidAction(t *testing.T) {
 	}
 }
 
+func TestValidateMissingRuleFields(t *testing.T) {
+	cfg := Defaults()
+	cfg.Rules = []RuleConfig{
+		{Match: MatchConfig{Method: "", Path: ""}, Action: "allow"},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for missing rule fields")
+	}
+	if !strings.Contains(err.Error(), "match.method is required") {
+		t.Fatalf("error should mention missing match.method, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "match.path is required") {
+		t.Fatalf("error should mention missing match.path, got: %v", err)
+	}
+}
+
 func TestValidateInvalidHealthPath(t *testing.T) {
 	cfg := Defaults()
 	cfg.Health.Path = "health"
@@ -198,5 +219,44 @@ func TestValidateAndCompile(t *testing.T) {
 	}
 	if len(compiled) != len(cfg.Rules) {
 		t.Errorf("got %d compiled rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileCompileError(t *testing.T) {
+	originalCompileRules := compileRulesFn
+	compileRulesFn = func([]RuleConfig) ([]*filter.CompiledRule, error) {
+		return nil, errors.New("boom")
+	}
+	t.Cleanup(func() {
+		compileRulesFn = originalCompileRules
+	})
+
+	cfg := Defaults()
+	_, err := ValidateAndCompile(&cfg)
+	if err == nil {
+		t.Fatal("expected ValidateAndCompile() to fail")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected compile error in result, got: %v", err)
+	}
+}
+
+func TestCompileRulesCompileRuleError(t *testing.T) {
+	originalCompileFilterRule := compileFilterRule
+	compileFilterRule = func(filter.Rule) (*filter.CompiledRule, error) {
+		return nil, errors.New("boom")
+	}
+	t.Cleanup(func() {
+		compileFilterRule = originalCompileFilterRule
+	})
+
+	_, err := CompileRules([]RuleConfig{
+		{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},
+	})
+	if err == nil {
+		t.Fatal("expected CompileRules() to fail")
+	}
+	if !strings.Contains(err.Error(), "rule 1: boom") {
+		t.Fatalf("expected wrapped rule error, got: %v", err)
 	}
 }
