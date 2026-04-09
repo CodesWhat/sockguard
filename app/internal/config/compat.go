@@ -110,8 +110,8 @@ func generatePingRules() []RuleConfig {
 		return nil
 	}
 	return []RuleConfig{
-		compatAllowRule("GET", "/_ping"),
-		compatAllowRule("HEAD", "/_ping"),
+		newAllowRule("GET", "/_ping"),
+		newAllowRule("HEAD", "/_ping"),
 	}
 }
 
@@ -119,21 +119,21 @@ func generateVersionRules() []RuleConfig {
 	if v, ok := lookupEnvBool("VERSION"); ok && !v {
 		return nil
 	}
-	return []RuleConfig{compatAllowRule("GET", "/version")}
+	return []RuleConfig{newAllowRule("GET", "/version")}
 }
 
 func generateEventsRules() []RuleConfig {
 	if v, ok := lookupEnvBool("EVENTS"); ok && !v {
 		return nil
 	}
-	return []RuleConfig{compatAllowRule("GET", "/events")}
+	return []RuleConfig{newAllowRule("GET", "/events")}
 }
 
 func generateCategoryRules() []RuleConfig {
 	var rules []RuleConfig
 	for _, rule := range compatCategoryRules {
 		if v, _ := lookupEnvBool(rule.envKey); v {
-			rules = append(rules, compatAllowRule(rule.method, rule.path))
+			rules = append(rules, newAllowRule(rule.method, rule.path))
 		}
 	}
 	return rules
@@ -148,13 +148,13 @@ func generatePostRules() []RuleConfig {
 	var rules []RuleConfig
 	for _, rule := range compatGranularPostRules {
 		if v, ok := lookupEnvBool(rule.envKey); ok && v {
-			rules = append(rules, compatAllowRule(rule.method, rule.path))
+			rules = append(rules, newAllowRule(rule.method, rule.path))
 		}
 	}
 	if len(rules) > 0 {
 		return rules
 	}
-	return []RuleConfig{compatAllowRule("POST,PUT,DELETE", "/**")}
+	return []RuleConfig{newAllowRule("POST,PUT,DELETE", "/**")}
 }
 
 func catchAllDenyRule() RuleConfig {
@@ -165,7 +165,7 @@ func catchAllDenyRule() RuleConfig {
 	}
 }
 
-func compatAllowRule(method, path string) RuleConfig {
+func newAllowRule(method, path string) RuleConfig {
 	return RuleConfig{
 		Match:  MatchConfig{Method: method, Path: path},
 		Action: "allow",
