@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -181,10 +180,10 @@ func TestPutRequestMetaResetsFields(t *testing.T) {
 }
 
 func TestRequestMetaPoolFallbackAndNilPut(t *testing.T) {
-	originalPool := requestMetaPool
-	requestMetaPool = sync.Pool{New: func() any { return nil }}
+	originalNew := requestMetaPool.New
+	requestMetaPool.New = func() any { return nil }
 	t.Cleanup(func() {
-		requestMetaPool = originalPool
+		requestMetaPool.New = originalNew
 	})
 
 	meta := getRequestMeta()
@@ -195,10 +194,10 @@ func TestRequestMetaPoolFallbackAndNilPut(t *testing.T) {
 }
 
 func TestAccessLogAttrPoolFallbackAndNilPut(t *testing.T) {
-	originalPool := accessLogAttrPool
-	accessLogAttrPool = sync.Pool{New: func() any { return nil }}
+	originalNew := accessLogAttrPool.New
+	accessLogAttrPool.New = func() any { return nil }
 	t.Cleanup(func() {
-		accessLogAttrPool = originalPool
+		accessLogAttrPool.New = originalNew
 	})
 
 	attrs := getAccessLogAttrs()
@@ -209,10 +208,10 @@ func TestAccessLogAttrPoolFallbackAndNilPut(t *testing.T) {
 }
 
 func TestResponseCapturePoolFallbackAndNilPut(t *testing.T) {
-	originalPool := responseCapturePool
-	responseCapturePool = sync.Pool{New: func() any { return nil }}
+	originalNew := responseCapturePool.New
+	responseCapturePool.New = func() any { return nil }
 	t.Cleanup(func() {
-		responseCapturePool = originalPool
+		responseCapturePool.New = originalNew
 	})
 
 	rc := getResponseCapture(httptest.NewRecorder())

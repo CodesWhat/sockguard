@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 )
 
@@ -98,10 +97,10 @@ func TestGetJSONBufferReturnsUsableBuffer(t *testing.T) {
 }
 
 func TestGetJSONBufferFallsBackWhenPoolReturnsNil(t *testing.T) {
-	originalPool := jsonBufferPool
-	jsonBufferPool = sync.Pool{New: func() any { return nil }}
+	originalNew := jsonBufferPool.New
+	jsonBufferPool.New = func() any { return nil }
 	t.Cleanup(func() {
-		jsonBufferPool = originalPool
+		jsonBufferPool.New = originalNew
 	})
 
 	buf := getJSONBuffer()

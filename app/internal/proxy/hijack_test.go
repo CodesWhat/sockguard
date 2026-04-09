@@ -1199,10 +1199,7 @@ func TestHandleHijack_UpstreamDisconnectDuringStreaming(t *testing.T) {
 	serverWg.Wait()
 
 	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if strings.Contains(logs.String(), "connection closed") {
-			break
-		}
+	for !strings.Contains(logs.String(), "connection closed") {
 		if time.Now().After(deadline) {
 			t.Fatalf("expected connection closed log, got %q", logs.String())
 		}
