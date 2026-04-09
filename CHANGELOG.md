@@ -57,6 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pooled the 64KB hijack copy buffers so concurrent upgraded streams can reuse the same scratch allocations instead of allocating fresh slices per direction
 - Documented the non-root runtime socket requirement, updated quick-start examples to place the listen socket inside a shared named volume, and added Linux `--user 65534:$(stat -c %g /var/run/docker.sock)` guidance for direct `/var/run/sockguard.sock` deployments
 - Added configurable deny response verbosity so operators can switch between verbose rule-debugging responses and minimal generic `403` bodies
+- Added deterministic coverage harnesses for CLI and hijack edge paths, expanded branch tests across the Go app, and brought `go test ./... -coverprofile` to 100% statement coverage
 
 ### Fixed
 
