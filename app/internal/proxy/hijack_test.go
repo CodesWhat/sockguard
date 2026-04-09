@@ -22,6 +22,24 @@ import (
 
 var hijackBufferPoolMu sync.Mutex
 
+// safeBuffer is a goroutine-safe bytes.Buffer for concurrent log capture.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *safeBuffer) Write(p []byte) (int, error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *safeBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
+
 func useHijackBufferPool(t *testing.T, pool bytePool) {
 	t.Helper()
 
@@ -1145,7 +1163,7 @@ func TestHandleHijack_UpstreamDisconnectDuringStreaming(t *testing.T) {
 		}
 	}()
 
-	var logs bytes.Buffer
+	var logs safeBuffer
 	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("next handler should not be called for hijack endpoint")
