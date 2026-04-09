@@ -1,0 +1,174 @@
+name: "🛡️ Security: Trivy & Govulncheck"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && '🛡️ Security: Trivy & Govulncheck — Weekly run' ||
+    format('🛡️ Security: Trivy & Govulncheck — Manual by {0}', github.actor)
+  }}
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 7 * * 1'  # Weekly on Monday at 07:15 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-weekly-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  govulncheck:
+    name: "🔍 Security: Govulncheck"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5  # v6.0.2
+        with:
+          go-version-file: app/go.mod
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Run govulncheck
+        working-directory: app
+        run: govulncheck ./...
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Govulncheck"
+            echo "- Scanned Go dependencies for known vulnerabilities"
+            echo "- Database: Go Vulnerability Database (vuln.go.dev)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  trivy-image:
+    name: "🐳 Security: Trivy Container Scan"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd  # v4.0.0
+
+      - name: Build image for scanning
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294  # v7.0.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: sockguard:trivy-scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947e0f18c28e7e1e126  # v0.34.0
+        with:
+          image-ref: sockguard:trivy-scan
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@b1bff81932f5cdfc8695c7752dcee935dcd061c8  # v4.33.0
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Trivy Container Scan"
+            echo "- Scanned container image for HIGH and CRITICAL CVEs"
+            echo "- Base image: Wolfi (Chainguard)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  trivy-config:
+    name: "🏗️ Security: Trivy IaC Scan"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run Trivy IaC scanner
+        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947e0f18c28e7e1e126  # v0.34.0
+        with:
+          scan-type: config
+          scan-ref: .
+          format: sarif
+          output: trivy-iac.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+
+      - name: Upload Trivy IaC SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@b1bff81932f5cdfc8695c7752dcee935dcd061c8  # v4.33.0
+        with:
+          sarif_file: trivy-iac.sarif
+
+  gosec:
+    name: "🔐 Security: Gosec SAST"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Run Gosec
+        uses: securego/gosec@master
+        with:
+          args: -fmt sarif -out gosec-results.sarif ./...
+          working-directory: app
+
+      - name: Upload Gosec SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@b1bff81932f5cdfc8695c7752dcee935dcd061c8  # v4.33.0
+        with:
+          sarif_file: app/gosec-results.sarif

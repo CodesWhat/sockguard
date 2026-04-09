@@ -1,0 +1,131 @@
+name: "🧬 Quality: Go Benchmarks & Extended Fuzzing"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && '🧬 Quality: Benchmarks & Fuzzing — Monthly schedule' ||
+    format('🧬 Quality: Benchmarks & Fuzzing — Manual by {0}', github.actor)
+  }}
+
+# Monthly quality signal: run extended fuzz testing and benchmarks
+# to catch regressions and edge cases that short CI fuzz runs miss.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 6 1 * *'  # Monthly on day 1 at 06:15 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-monthly-${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    name: "📊 Quality: Go Benchmarks"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5  # v6.0.2
+        with:
+          go-version-file: app/go.mod
+
+      - name: Run benchmarks
+        working-directory: app
+        run: |
+          go test -bench=. -benchmem -count=5 -timeout=20m ./... | tee benchmark-results.txt
+
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        with:
+          name: benchmark-results-${{ github.run_id }}
+          path: app/benchmark-results.txt
+          retention-days: 90
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Go Benchmarks"
+            echo '```'
+            grep -E '^Benchmark' app/benchmark-results.txt | head -50 || echo "No benchmark results"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  extended-fuzz:
+    name: "🔀 Quality: Extended Fuzz (${{ matrix.target }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    continue-on-error: true  # advisory — review failures, don't block
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: FuzzPathMatch
+            package: ./internal/filter/
+          - target: FuzzGlobToRegex
+            package: ./internal/filter/
+          - target: FuzzNormalizePath
+            package: ./internal/filter/
+          - target: FuzzCompileRule
+            package: ./internal/filter/
+          - target: FuzzProxyHeadersAndBody
+            package: ./internal/proxy/
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5  # v6.0.2
+        with:
+          go-version-file: app/go.mod
+
+      - name: Restore fuzz corpus cache
+        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: app/internal/**/testdata/fuzz
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.ref_name }}
+          restore-keys: |
+            fuzz-corpus-${{ matrix.target }}-
+
+      - name: Run extended fuzz (5 minutes)
+        working-directory: app
+        run: |
+          go test -fuzz=${{ matrix.target }} -fuzztime=5m -timeout=10m ${{ matrix.package }}
+
+      - name: Upload fuzz corpus
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f  # v7.0.0
+        with:
+          name: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          path: app/internal/**/testdata/fuzz/${{ matrix.target }}
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Extended Fuzz: ${{ matrix.target }}"
+            echo "- Duration: 5 minutes"
+            echo "- Package: ${{ matrix.package }}"
+            echo "- Mode: advisory (non-blocking)"
+          } >> "$GITHUB_STEP_SUMMARY"
