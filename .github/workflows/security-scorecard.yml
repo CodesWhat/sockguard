@@ -19,6 +19,8 @@ permissions: read-all
 jobs:
   analysis:
     name: "🛡️ Security: Scorecard Analysis"
+    # OpenSSF Scorecard only runs on public repos; SARIF upload also requires GHAS.
+    if: github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

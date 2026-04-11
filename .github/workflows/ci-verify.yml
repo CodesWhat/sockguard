@@ -44,11 +44,13 @@ jobs:
       - name: Run zizmor
         uses: zizmorcore/zizmor-action@71321a20a9ded102f6e9ce5718a2fcec2c4f70d8  # v0.5.2
         with:
-          args: .github/workflows/
+          inputs: .github/workflows/
 
   codeql:
     name: "🔍 CodeQL Analysis"
-    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    # CodeQL SARIF upload requires GitHub Advanced Security (GHAS), which is not
+    # available on free private repos. Skip unless the repo is public.
+    if: github.event.repository.visibility == 'public' && (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
