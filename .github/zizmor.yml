@@ -1,0 +1,12 @@
+# zizmor configuration
+# https://docs.zizmor.sh/configuration/
+
+rules:
+  cache-poisoning:
+    # Cache poisoning via setup-go/setup-node cache steps requires attacker-controlled
+    # fork PRs with write access to the cache. Sockguard is a private repo with no
+    # pull_request_target triggers, so untrusted PRs cannot poison the cache.
+    # Re-evaluate if the repo goes public.
+    ignore:
+      - ci-verify.yml
+      - release-from-tag.yml
