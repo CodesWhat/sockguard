@@ -49,6 +49,9 @@ jobs:
           # impostor-commit audit requires API access that harden-runner blocks
           # in the zizmor container. Skip online audits to keep the scan offline.
           online-audits: false
+          # SARIF upload to code scanning requires GHAS, not available on free
+          # private repos. Re-enable when sockguard goes public.
+          advanced-security: false
 
   codeql:
     name: "🔍 CodeQL Analysis"
