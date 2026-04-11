@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/codeswhat/sockguard/internal/banner"
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/health"
@@ -151,6 +152,14 @@ func runServe(cmd *cobra.Command, args []string) error {
 	server := newHTTPServer(handler)
 
 	// 10. Log startup summary
+	banner.Render(cmd.ErrOrStderr(), banner.Info{
+		Listen:    listenerAddr(cfg),
+		Upstream:  cfg.Upstream.Socket,
+		Rules:     len(cfg.Rules),
+		LogFormat: cfg.Log.Format,
+		LogLevel:  cfg.Log.Level,
+		AccessLog: cfg.Log.AccessLog,
+	})
 	logger.Info("sockguard started",
 		"version", version.Version,
 		"listen", listenerAddr(cfg),
