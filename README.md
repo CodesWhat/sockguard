@@ -1,33 +1,69 @@
+<div align="center">
+
+<img src="sockguard-logo.png" alt="sockguard" width="180">
+
+<h1>sockguard</h1>
+
+**Control what gets through. A security-first Docker socket proxy built in Go.**
+
+</div>
+
 <p align="center">
-  <img src="sockguard-logo.png" alt="sockguard" width="180">
+  <a href="https://github.com/CodesWhat/sockguard/releases"><img src="https://img.shields.io/github/v/release/CodesWhat/sockguard?include_prereleases&label=release" alt="Release"></a>
+  <a href="https://github.com/CodesWhat/sockguard/pkgs/container/sockguard"><img src="https://img.shields.io/badge/GHCR-image-2ea44f?logo=github&logoColor=white" alt="GHCR"></a>
+  <a href="https://hub.docker.com/r/codeswhat/sockguard"><img src="https://img.shields.io/docker/pulls/codeswhat/sockguard?logo=docker&logoColor=white&label=Docker+Hub" alt="Docker Hub pulls"></a>
+  <a href="https://quay.io/repository/codeswhat/sockguard"><img src="https://img.shields.io/badge/Quay.io-image-ee0000?logo=redhat&logoColor=white" alt="Quay.io"></a>
+  <br>
+  <a href="https://github.com/orgs/CodesWhat/packages/container/package/sockguard"><img src="https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-informational?logo=linux&logoColor=white" alt="Multi-arch"></a>
+  <a href="https://github.com/orgs/CodesWhat/packages/container/package/sockguard"><img src="https://img.shields.io/docker/image-size/codeswhat/sockguard/latest?logo=docker&logoColor=white&label=image%20size" alt="Image size"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-C9A227" alt="License AGPL-3.0"></a>
 </p>
 
-<h1 align="center">sockguard</h1>
+<p align="center">
+  <a href="https://github.com/CodesWhat/sockguard/stargazers"><img src="https://img.shields.io/github/stars/CodesWhat/sockguard?style=flat" alt="Stars"></a>
+  <a href="https://github.com/CodesWhat/sockguard/forks"><img src="https://img.shields.io/github/forks/CodesWhat/sockguard?style=flat" alt="Forks"></a>
+  <a href="https://github.com/CodesWhat/sockguard/issues"><img src="https://img.shields.io/github/issues/CodesWhat/sockguard?style=flat" alt="Issues"></a>
+  <a href="https://github.com/CodesWhat/sockguard/commits/main"><img src="https://img.shields.io/github/last-commit/CodesWhat/sockguard?style=flat" alt="Last commit"></a>
+  <a href="https://github.com/CodesWhat/sockguard/commits/main"><img src="https://img.shields.io/github/commit-activity/m/CodesWhat/sockguard?style=flat" alt="Commit activity"></a>
+  <br>
+  <a href="https://github.com/CodesWhat/sockguard/discussions"><img src="https://img.shields.io/github/discussions/CodesWhat/sockguard?style=flat" alt="Discussions"></a>
+  <a href="https://github.com/CodesWhat/sockguard"><img src="https://img.shields.io/github/repo-size/CodesWhat/sockguard?style=flat" alt="Repo size"></a>
+</p>
 
-<p align="center">Control what gets through. A security-first Docker socket proxy.</p>
+<p align="center">
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://goreportcard.com/report/github.com/CodesWhat/sockguard"><img src="https://goreportcard.com/badge/github.com/CodesWhat/sockguard" alt="Go Report Card"></a>
+  <a href="https://pkg.go.dev/github.com/CodesWhat/sockguard"><img src="https://pkg.go.dev/badge/github.com/CodesWhat/sockguard.svg" alt="Go Reference"></a>
+  <br>
+  <a href="https://securityscorecards.dev/viewer/?uri=github.com/CodesWhat/sockguard"><img src="https://img.shields.io/ossf-scorecard/github.com/CodesWhat/sockguard?label=openssf+scorecard&style=flat" alt="OpenSSF Scorecard"></a>
+</p>
 
-> **Status**: Pre-release. v0.1.0 in development.
+<hr>
 
-## Why
+<h2 align="center">📑 Contents</h2>
 
-The Docker socket is root access to your host. Every container with socket access can escape containment. Yet tools like Traefik, Portainer, and drydock need socket access to function.
+- [📖 Documentation](https://docs.getsockguard.com)
+- [🌐 Website](https://getsockguard.com)
+- [🚀 Quick Start](#quick-start)
+- [🤔 Why Sockguard](#why-sockguard)
+- [✨ Features](#features)
+- [⚖️ Comparison](#comparison)
+- [⚙️ Configuration](#configuration)
+- [🔧 CLI](#cli)
+- [🔄 Migrating from Tecnativa](#migrating-from-tecnativa)
+- [🗺️ Roadmap](#roadmap)
+- [🛠️ Built With](#built-with)
+- [🤝 Contributing](#contributing)
+- [🔒 Security](#security)
 
-Existing proxies filter by URL path only. Sockguard goes further: granular operation control, request body inspection, per-client policies, and structured audit logging.
+<hr>
 
-## Features
+> [!WARNING]
+> **Pre-release software.** Sockguard is in active development. APIs, rule formats, and CLI flags may change before v1.0.
 
-| Feature | Tecnativa | LinuxServer | wollomatic | Sockguard |
-|---------|-----------|-------------|-----------|-----------|
-| Method + path filtering | Yes | Yes | Yes | Yes |
-| Granular POST ops | No | Partial | Via regex | Yes |
-| Request body inspection | No | No | No | Planned |
-| Per-client policies | No | No | IP only | Planned |
-| Response filtering | No | No | No | Planned |
-| Structured audit log | No | No | No | Yes |
-| YAML config | No | No | No | Yes |
-| Tecnativa env compat | N/A | Yes | No | Yes |
+<h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
-## Quick Start
+Drop sockguard in front of any Docker API consumer. The proxy filters requests, your app stays unchanged.
 
 ```yaml
 # docker-compose.yml
@@ -58,15 +94,63 @@ volumes:
   sockguard-socket:
 ```
 
-The container image runs as `65534:65534` by default. The example above keeps the proxy socket inside the shared named volume so the process does not need direct write access to `/var/run/sockguard.sock`. If you bind the default `/var/run/sockguard.sock` on a Linux host instead, either run as root or join the Docker socket group explicitly:
+<details>
+<summary>Linux user/group permissions</summary>
+
+The container image runs as `65534:65534` by default. The example above keeps the proxy socket inside a shared named volume so the process does not need direct write access to `/var/run/sockguard.sock`. If you bind the default socket path on a Linux host instead, either run as root or join the Docker socket group explicitly:
 
 ```bash
-docker run --user 65534:$(stat -c %g /var/run/docker.sock) ...
+docker run --user 65534:$(stat -c %g /var/run/docker.sock) codeswhat/sockguard
 ```
 
 For Docker Compose on Linux, export `DOCKER_GID=$(stat -c %g /var/run/docker.sock)` and set `user: "65534:${DOCKER_GID}"`.
 
-## Configuration
+</details>
+
+<hr>
+
+<h2 align="center" id="why-sockguard">🤔 Why Sockguard</h2>
+
+The Docker socket is **root access to your host**. Every container with socket access can escape containment, mount the host filesystem, and pivot to other containers. Yet tools like Traefik, Portainer, and drydock need socket access to function.
+
+Existing socket proxies (Tecnativa, LinuxServer) filter by URL path only. Sockguard goes further: granular operation control, structured audit logging, and a default-deny posture out of the box.
+
+<hr>
+
+<h2 align="center" id="features">✨ Features</h2>
+
+| | Feature | Description |
+|---|---|---|
+| 🛡️ | **Default-Deny Posture** | Everything blocked unless explicitly allowed. No match means deny. |
+| 🎛️ | **Granular Control** | Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching. |
+| 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation. 10 bundled presets. |
+| 📊 | **Structured Logging** | JSON access logs with method, path, decision, matched rule, latency, client info. |
+| 🔄 | **Tecnativa Compatible** | Drop-in replacement using the same env vars. `CONTAINERS=1`, `POST=0`, `ALLOW_START=1` all work. |
+| 🪶 | **Minimal Attack Surface** | Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance. |
+| ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts. |
+| 🩺 | **Health Check** | `/health` endpoint with cached upstream reachability probes. |
+| 🧪 | **Battle-Tested** | 100% statement coverage, race-detector clean, fuzz testing on filter and proxy paths. |
+
+<hr>
+
+<h2 align="center" id="comparison">⚖️ Comparison</h2>
+
+How sockguard stacks up against other Docker socket proxies:
+
+| Feature | Tecnativa | LinuxServer | wollomatic | **Sockguard** |
+|---------|:---------:|:-----------:|:----------:|:-------------:|
+| Method + path filtering | ✅ | ✅ | ✅ | ✅ |
+| Granular POST ops | ❌ | Partial | Via regex | ✅ |
+| Request body inspection | ❌ | ❌ | ❌ | 🕒 Planned |
+| Per-client policies | ❌ | ❌ | IP only | 🕒 Planned |
+| Response filtering | ❌ | ❌ | ❌ | 🕒 Planned |
+| Structured audit log | ❌ | ❌ | ❌ | ✅ |
+| YAML config | ❌ | ❌ | ❌ | ✅ |
+| Tecnativa env compat | N/A | ✅ | ❌ | ✅ |
+
+<hr>
+
+<h2 align="center" id="configuration">⚙️ Configuration</h2>
 
 ### Environment Variables (Tecnativa-compatible)
 
@@ -87,7 +171,7 @@ ALLOW_EXEC=0
 
 ```yaml
 response:
-  deny_verbosity: verbose  # verbose, minimal
+  deny_verbosity: verbose  # verbose | minimal
 
 rules:
   - match: { method: GET, path: "/_ping" }
@@ -106,7 +190,9 @@ Set `response.deny_verbosity: minimal` to return only the generic deny message. 
 
 Preset configs included for [drydock](app/configs/drydock.yaml), [Traefik](app/configs/traefik.yaml), [Portainer](app/configs/portainer.yaml), [Watchtower](app/configs/watchtower.yaml), [Homepage](app/configs/homepage.yaml), [Homarr](app/configs/homarr.yaml), [Diun](app/configs/diun.yaml), [Autoheal](app/configs/autoheal.yaml), and [read-only](app/configs/readonly.yaml).
 
-## CLI
+<hr>
+
+<h2 align="center" id="cli">🔧 CLI</h2>
 
 ```bash
 sockguard serve                           # Start proxy (default)
@@ -114,28 +200,9 @@ sockguard validate -c sockguard.yaml      # Validate config
 sockguard version                         # Print version
 ```
 
-## Testing
+<hr>
 
-```bash
-cd app
-go test ./...
-go test -run=^$ -fuzz=FuzzPathMatch ./internal/filter
-go test -run=^$ -fuzz=FuzzProxyHeadersAndBody ./internal/proxy
-go test -run=^$ -fuzz=FuzzHijackHeadersAndBody ./internal/proxy
-go test -tags=integration ./integration
-```
-
-The `integration` build tag enables live Docker daemon tests. By default they use `/var/run/docker.sock`; override with `SOCKGUARD_TEST_DOCKER_SOCKET=/path/to/docker.sock`.
-
-## Operational Notes
-
-- `sockguard` keeps Go `http.Server.ReadTimeout` at `0` to preserve Docker streaming endpoints (for example attach, logs follow, and events).
-- `sockguard` sets `http.Server.ReadHeaderTimeout` to `5s` as a partial slowloris mitigation while leaving streaming request bodies untouched.
-- Tradeoff: on TCP listeners this still leaves long-lived request bodies and connections more exposed than a fully bounded read timeout would.
-- `/health` caches upstream socket reachability for `2s` to avoid opening a fresh Unix socket on every liveness probe.
-- Recommended deployment: Unix socket where possible, otherwise bind to private interfaces and place Sockguard behind a reverse proxy/load balancer that enforces request-header and read timeouts.
-
-## Migrating from Tecnativa
+<h2 align="center" id="migrating-from-tecnativa">🔄 Migrating from Tecnativa</h2>
 
 Replace the image — your env vars work as-is:
 
@@ -151,7 +218,9 @@ Replace the image — your env vars work as-is:
        - POST=0
 ```
 
-## Roadmap
+<hr>
+
+<h2 align="center" id="roadmap">🗺️ Roadmap</h2>
 
 | Version | Theme |
 |---------|-------|
@@ -159,17 +228,41 @@ Replace the image — your env vars work as-is:
 | **0.2.0** | Request body inspection — block privileged containers, dangerous mounts |
 | **0.3.0** | Per-client policy profiles — one proxy, many consumers |
 | **0.4.0** | Response filtering — hide containers, redact env vars |
-| **0.5.0** | Prometheus metrics + audit logging |
+| **0.5.0** | Prometheus metrics + audit log persistence |
 | **0.6.0** | mTLS, rate limiting, security enforcement |
 
-## Built With
+<hr>
 
-Go, Cobra, Viper, Wolfi (Chainguard), Turborepo, Next.js, Nextra
+<h2 align="center" id="built-with">🛠️ Built With</h2>
 
-## Contributing
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white" alt="Go">
+  <img src="https://img.shields.io/badge/Cobra-00ADD8?logo=go&logoColor=white" alt="Cobra">
+  <img src="https://img.shields.io/badge/Viper-00ADD8?logo=go&logoColor=white" alt="Viper">
+  <img src="https://img.shields.io/badge/Wolfi-4A4A55?logo=chainguard&logoColor=white" alt="Wolfi">
+  <img src="https://img.shields.io/badge/Cosign-FFC107?logo=sigstore&logoColor=black" alt="Cosign">
+  <br>
+  <img src="https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=white" alt="Next.js">
+  <img src="https://img.shields.io/badge/Nextra-000000?logo=nextdotjs&logoColor=white" alt="Nextra">
+  <img src="https://img.shields.io/badge/Tailwind-06B6D4?logo=tailwindcss&logoColor=white" alt="Tailwind">
+  <img src="https://img.shields.io/badge/Turborepo-EF4444?logo=turborepo&logoColor=white" alt="Turborepo">
+  <img src="https://img.shields.io/badge/Biome-60A5FA?logo=biome&logoColor=white" alt="Biome">
+</p>
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+<hr>
 
-## Security
+<h2 align="center" id="contributing">🤝 Contributing</h2>
 
-See [SECURITY.md](SECURITY.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). Issues, ideas, and pull requests welcome.
+
+<hr>
+
+<h2 align="center" id="security">🔒 Security</h2>
+
+See [SECURITY.md](SECURITY.md) for the responsible disclosure policy.
+
+<div align="center">
+
+Built by <a href="https://codeswhat.com">CodesWhat</a> · Licensed under <a href="LICENSE">AGPL-3.0</a>
+
+</div>
