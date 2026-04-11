@@ -2,10 +2,12 @@
 # Lefthook configuration for sockguard monorepo.
 #
 # Pre-push pipeline (piped = sequential, fail-fast):
-#   1. GoReleaser config check
+#   1. GoReleaser snapshot dry-run (full release pipeline, skip publish)
 #   2. Go lint + test
 #   3. Biome lint for TS/JS
 #   4. Build all workspaces
+#   5. Zizmor (workflow security)
+#   6. Clean-tree check (no stray artifacts before push)
 
 pre-commit:
   piped: true
@@ -38,11 +40,15 @@ pre-push:
       priority: 0
       timeout: 10s
 
-    goreleaser-check:
-      run: cd app && goreleaser check
-      glob: "app/.goreleaser.{yml,yaml}"
+    # Full release dry-run — mirrors what release-from-tag.yml runs in CI,
+    # minus publish. Catches goreleaser config, build, archive, and dirty-tree
+    # bugs locally before they surface in a tagged release.
+    goreleaser-snapshot:
+      run: cd app && goreleaser release --snapshot --clean --skip=publish
+      skip:
+        - run: '! command -v goreleaser >/dev/null 2>&1'
       priority: 1
-      timeout: 15s
+      timeout: 3m
 
     go-lint:
       run: cd app && golangci-lint run
