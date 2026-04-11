@@ -32,6 +32,13 @@ bin/
 # Local secrets (CI tokens, registry credentials) — NEVER commit
 .secrets/
 
+# Dev screenshots at repo root (real assets live under website/public/)
+/*.png
+!/sockguard-logo.png
+
+# Playwright MCP scratch dir
+.playwright-mcp/
+
 # Node (website/docs/demo)
 node_modules/
 .next/
