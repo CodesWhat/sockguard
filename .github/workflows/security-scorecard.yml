@@ -1,9 +1,9 @@
-name: "🛡️ Security: OpenSSF Scorecard"
+name: "🏅 Security: OpenSSF Scorecard"
 run-name: >-
   ${{
-    github.event_name == 'branch_protection_rule' && '🛡️ Security: OpenSSF Scorecard — Branch protection changed' ||
-    github.event_name == 'schedule' && '🛡️ Security: OpenSSF Scorecard — Weekly schedule' ||
-    format('🛡️ Security: OpenSSF Scorecard — {0}', github.ref_name)
+    github.event_name == 'branch_protection_rule' && '🏅 Security: OpenSSF Scorecard — Branch protection changed' ||
+    github.event_name == 'schedule' && '🏅 Security: OpenSSF Scorecard — Weekly schedule' ||
+    format('🏅 Security: OpenSSF Scorecard — {0}', github.ref_name)
   }}
 
 on:
@@ -18,7 +18,7 @@ permissions: read-all
 
 jobs:
   analysis:
-    name: "🛡️ Security: Scorecard Analysis"
+    name: "🏅 Security: Scorecard Analysis"
     # OpenSSF Scorecard only runs on public repos; SARIF upload also requires GHAS.
     if: github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest

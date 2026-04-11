@@ -1,8 +1,8 @@
-name: "🧬 Quality: Go Benchmarks & Extended Fuzzing"
+name: "⚡ Quality: Go Benchmarks & Extended Fuzzing"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🧬 Quality: Benchmarks & Fuzzing — Monthly schedule' ||
-    format('🧬 Quality: Benchmarks & Fuzzing — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && '⚡ Quality: Benchmarks & Fuzzing — Monthly schedule' ||
+    format('⚡ Quality: Benchmarks & Fuzzing — Manual by {0}', github.actor)
   }}
 
 # Monthly quality signal: run extended fuzz testing and benchmarks
