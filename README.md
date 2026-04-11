@@ -228,7 +228,7 @@ Replace the image — your env vars work as-is:
 | **0.2.0** | Request body inspection — block privileged containers, dangerous mounts |
 | **0.3.0** | Per-client policy profiles — one proxy, many consumers |
 | **0.4.0** | Response filtering — hide containers, redact env vars |
-| **0.5.0** | Prometheus metrics + audit log persistence |
+| **0.5.0** | Observability — Prometheus metrics, audit log persistence, OTel trace/span IDs in log records |
 | **0.6.0** | mTLS, rate limiting, security enforcement |
 
 <hr>
