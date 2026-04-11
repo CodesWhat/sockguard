@@ -413,15 +413,18 @@ jobs:
             --certificate-oidc-issuer "${issuer}" \
             "${artifact}" >/dev/null
 
+      # SLSA build provenance attestations require public repo or GHAS.
+      # Gated on visibility so private alpha releases still ship without them;
+      # once the repo flips to public, attestations auto-activate.
       - name: Attest release artifact provenance
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && github.event.repository.visibility == 'public'
         id: attest_release_artifact
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
         with:
           subject-path: dist/sockguard-${{ github.ref_name }}.tar.gz
 
       - name: Export release provenance asset
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && github.event.repository.visibility == 'public'
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           BUNDLE_PATH: ${{ steps.attest_release_artifact.outputs.bundle-path }}
@@ -435,17 +438,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release upload "${RELEASE_TAG}" \
-            "dist/sockguard-${RELEASE_TAG}.tar.gz" \
-            "dist/sockguard-${RELEASE_TAG}.tar.gz.sha256" \
-            "dist/sockguard-${RELEASE_TAG}.tar.gz.bundle" \
-            "dist/sockguard-${RELEASE_TAG}.tar.gz.sig" \
-            "dist/sockguard-${RELEASE_TAG}.tar.gz.intoto.jsonl" \
-            "dist/sockguard-${RELEASE_TAG}.tar.gz.pem" \
-            --clobber
+          set -euo pipefail
+          assets=(
+            "dist/sockguard-${RELEASE_TAG}.tar.gz"
+            "dist/sockguard-${RELEASE_TAG}.tar.gz.sha256"
+            "dist/sockguard-${RELEASE_TAG}.tar.gz.bundle"
+            "dist/sockguard-${RELEASE_TAG}.tar.gz.sig"
+            "dist/sockguard-${RELEASE_TAG}.tar.gz.pem"
+          )
+          # Only include provenance if it was produced (public repo path).
+          intoto="dist/sockguard-${RELEASE_TAG}.tar.gz.intoto.jsonl"
+          if [ -f "${intoto}" ]; then
+            assets+=("${intoto}")
+          fi
+          gh release upload "${RELEASE_TAG}" "${assets[@]}" --clobber
 
       - name: Attest build provenance
-        if: always() && steps.digest.outputs.value
+        if: always() && steps.digest.outputs.value && github.event.repository.visibility == 'public'
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32  # v4.1.0
         with:
           subject-name: ghcr.io/${{ github.repository }}
