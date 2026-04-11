@@ -39,6 +39,9 @@ bin/
 # Playwright MCP scratch dir
 .playwright-mcp/
 
+# CI-generated release notes (extracted from CHANGELOG by release-from-tag.yml)
+/release-notes.md
+
 # Node (website/docs/demo)
 node_modules/
 .next/
