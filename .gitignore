@@ -29,6 +29,9 @@ bin/
 .env
 .env.*
 
+# Local secrets (CI tokens, registry credentials) — NEVER commit
+.secrets/
+
 # Node (website/docs/demo)
 node_modules/
 .next/
