@@ -18,48 +18,49 @@ const PATCH_TYPES = new Set([
 const conventionalSubjectRegex =
   /^(?:\S+\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
 
+function commitReleaseLevel(commit) {
+  const message = String(commit ?? '').trim();
+  let releaseLevel = null;
+
+  if (message) {
+    if (/\bBREAKING[ -]CHANGE:/iu.test(message)) {
+      releaseLevel = 'major';
+    } else {
+      const subject = message.split(/\r?\n/u, 1)[0] ?? '';
+      const match = subject.match(conventionalSubjectRegex);
+      if (match?.groups) {
+        if (match.groups.breakingA === '!' || match.groups.breakingB === '!') {
+          releaseLevel = 'major';
+        } else if (match.groups.type === 'feat') {
+          releaseLevel = 'minor';
+        } else if (PATCH_TYPES.has(match.groups.type)) {
+          releaseLevel = 'patch';
+        }
+      }
+    }
+  }
+
+  return releaseLevel;
+}
+
 export function inferReleaseLevel(commits) {
-  let hasFeat = false;
-  let hasPatch = false;
+  let releaseLevel = null;
 
   for (const commit of commits) {
-    const message = String(commit ?? '').trim();
-    if (!message) {
-      continue;
-    }
-
-    if (/\bBREAKING[ -]CHANGE:/iu.test(message)) {
+    const level = commitReleaseLevel(commit);
+    if (level === 'major') {
       return 'major';
     }
-
-    const subject = message.split(/\r?\n/u, 1)[0] ?? '';
-    const match = subject.match(conventionalSubjectRegex);
-    if (!match?.groups) {
+    if (level === 'minor') {
+      releaseLevel = 'minor';
       continue;
     }
-
-    const type = match.groups.type;
-    if (match.groups.breakingA === '!' || match.groups.breakingB === '!') {
-      return 'major';
-    }
-
-    if (type === 'feat') {
-      hasFeat = true;
-      continue;
-    }
-
-    if (PATCH_TYPES.has(type)) {
-      hasPatch = true;
+    if (level === 'patch' && releaseLevel == null) {
+      releaseLevel = 'patch';
     }
   }
 
-  if (hasFeat) {
-    return 'minor';
-  }
-  if (hasPatch) {
-    return 'patch';
-  }
-  return null;
+  return releaseLevel;
 }
 
 export function bumpSemver(currentVersion, level) {
