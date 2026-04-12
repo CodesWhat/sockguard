@@ -108,27 +108,40 @@ func (d *serveDeps) verifyUpstreamReachable(upstreamSocket string, logger *slog.
 
 func (d *serveDeps) createListener(cfg *config.Config) (net.Listener, error) {
 	if cfg.Listen.Socket != "" {
-		mode, err := strconv.ParseUint(cfg.Listen.SocketMode, 8, 32)
-		if err != nil {
-			return nil, fmt.Errorf("invalid socket_mode %q: %w", cfg.Listen.SocketMode, err)
-		}
-
-		return d.listenUnixSocket(cfg.Listen.Socket, os.FileMode(mode))
+		return d.createSocketListener(cfg.Listen.Socket, cfg.Listen.SocketMode)
 	}
 
-	ln, err := d.listenNetwork("tcp", cfg.Listen.Address)
+	return d.createTCPListener(cfg.Listen.Address, cfg.Listen.TLS)
+}
+
+func (d *serveDeps) createSocketListener(path, modeValue string) (net.Listener, error) {
+	mode, err := strconv.ParseUint(modeValue, 8, 32)
+	if err != nil {
+		return nil, fmt.Errorf("invalid socket_mode %q: %w", modeValue, err)
+	}
+
+	return d.listenUnixSocket(path, os.FileMode(mode))
+}
+
+func (d *serveDeps) createTCPListener(address string, tlsCfg config.ListenTLSConfig) (net.Listener, error) {
+	ln, err := d.listenNetwork("tcp", address)
 	if err != nil {
 		return nil, err
 	}
-	if !cfg.Listen.TLS.Complete() {
+	if !tlsCfg.Complete() {
 		return ln, nil
 	}
 
-	tlsConfig, err := config.BuildMutualTLSServerConfig(cfg.Listen.TLS)
+	return d.wrapListenerWithTLS(ln, tlsCfg)
+}
+
+func (d *serveDeps) wrapListenerWithTLS(ln net.Listener, tlsCfg config.ListenTLSConfig) (net.Listener, error) {
+	tlsConfig, err := config.BuildMutualTLSServerConfig(tlsCfg)
 	if err != nil {
 		_ = ln.Close()
 		return nil, err
 	}
+
 	return tls.NewListener(ln, tlsConfig), nil
 }
 

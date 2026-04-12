@@ -47,43 +47,94 @@ func runServe(cmd *cobra.Command, args []string) error {
 	return runServeWithDeps(cmd, args, newServeDeps())
 }
 
+type serveRuntime struct {
+	cfg            *config.Config
+	logger         *slog.Logger
+	closeLogOutput func()
+	handler        http.Handler
+	listener       net.Listener
+}
+
 func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error {
-	cfg, err := loadServeConfigWithOverrides(cmd, deps)
+	runtime, err := prepareServeRuntime(cmd, deps)
 	if err != nil {
 		return err
+	}
+	defer runtime.closeLogOutput()
+	defer closeServeListener(runtime.logger, runtime.listener)
+
+	server := newHTTPServer(runtime.handler)
+	logServeStartup(cmd, runtime.cfg, runtime.logger)
+
+	if err := serveUntilShutdown(server, runtime.listener, runtime.logger, deps); err != nil {
+		return err
+	}
+
+	cleanupServeSocket(runtime.cfg, runtime.logger, deps)
+	runtime.logger.Info("sockguard stopped")
+	return nil
+}
+
+func prepareServeRuntime(cmd *cobra.Command, deps *serveDeps) (*serveRuntime, error) {
+	cfg, logger, closeLogOutput, err := loadServeRuntimeConfig(cmd, deps)
+	if err != nil {
+		return nil, err
+	}
+
+	handler, err := buildVerifiedServeHandler(cfg, logger, deps)
+	if err != nil {
+		closeLogOutput()
+		return nil, err
+	}
+
+	listener, err := openServeListener(cfg, deps)
+	if err != nil {
+		closeLogOutput()
+		return nil, err
+	}
+
+	return &serveRuntime{
+		cfg:            cfg,
+		logger:         logger,
+		closeLogOutput: closeLogOutput,
+		handler:        handler,
+		listener:       listener,
+	}, nil
+}
+
+func loadServeRuntimeConfig(cmd *cobra.Command, deps *serveDeps) (*config.Config, *slog.Logger, func(), error) {
+	cfg, err := loadServeConfigWithOverrides(cmd, deps)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 
 	logger, closeLogOutput, err := openServeLogger(cmd, cfg, deps)
 	if err != nil {
-		return err
+		return nil, nil, nil, err
 	}
-	defer closeLogOutput()
 
+	return cfg, logger, closeLogOutput, nil
+}
+
+func buildVerifiedServeHandler(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (http.Handler, error) {
 	rules, err := compileServeRules(cfg, logger, deps)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := deps.verifyUpstreamReachable(cfg.Upstream.Socket, logger); err != nil {
-		return err
+		return nil, err
 	}
 
-	handler := buildServeHandler(cfg, logger, rules, deps)
+	return buildServeHandler(cfg, logger, rules, deps), nil
+}
+
+func openServeListener(cfg *config.Config, deps *serveDeps) (net.Listener, error) {
 	ln, err := deps.createServeListener(cfg)
 	if err != nil {
-		return fmt.Errorf("listener: %w", err)
-	}
-	defer closeServeListener(logger, ln)
-
-	server := newHTTPServer(handler)
-	logServeStartup(cmd, cfg, logger)
-
-	if err := serveUntilShutdown(server, ln, logger, deps); err != nil {
-		return err
+		return nil, fmt.Errorf("listener: %w", err)
 	}
 
-	cleanupServeSocket(cfg, logger, deps)
-	logger.Info("sockguard stopped")
-	return nil
+	return ln, nil
 }
 
 func loadServeConfigWithOverrides(cmd *cobra.Command, deps *serveDeps) (*config.Config, error) {
