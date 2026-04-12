@@ -24,14 +24,14 @@ type serveTestConn struct {
 	closeErr error
 }
 
-func (c *serveTestConn) Read(b []byte) (int, error)         { return 0, io.EOF }
-func (c *serveTestConn) Write(b []byte) (int, error)        { return len(b), nil }
-func (c *serveTestConn) Close() error                       { return c.closeErr }
-func (c *serveTestConn) LocalAddr() net.Addr                { return &net.UnixAddr{Name: "local", Net: "unix"} }
-func (c *serveTestConn) RemoteAddr() net.Addr               { return &net.UnixAddr{Name: "remote", Net: "unix"} }
-func (c *serveTestConn) SetDeadline(time.Time) error        { return nil }
-func (c *serveTestConn) SetReadDeadline(time.Time) error    { return nil }
-func (c *serveTestConn) SetWriteDeadline(time.Time) error   { return nil }
+func (c *serveTestConn) Read(b []byte) (int, error)       { return 0, io.EOF }
+func (c *serveTestConn) Write(b []byte) (int, error)      { return len(b), nil }
+func (c *serveTestConn) Close() error                     { return c.closeErr }
+func (c *serveTestConn) LocalAddr() net.Addr              { return &net.UnixAddr{Name: "local", Net: "unix"} }
+func (c *serveTestConn) RemoteAddr() net.Addr             { return &net.UnixAddr{Name: "remote", Net: "unix"} }
+func (c *serveTestConn) SetDeadline(time.Time) error      { return nil }
+func (c *serveTestConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *serveTestConn) SetWriteDeadline(time.Time) error { return nil }
 
 type serveTestListener struct {
 	addr      net.Addr
@@ -81,7 +81,7 @@ func useServeDeps(t *testing.T) {
 
 	originalLoadConfig := loadConfig
 	originalNewLogger := newLogger
-	originalValidateAndCompileRules := validateAndCompileRules
+	originalValidateRules := validateRules
 	originalDialUpstream := dialUpstream
 	originalListenNetwork := listenNetwork
 	originalLstatPath := lstatPath
@@ -97,7 +97,7 @@ func useServeDeps(t *testing.T) {
 	t.Cleanup(func() {
 		loadConfig = originalLoadConfig
 		newLogger = originalNewLogger
-		validateAndCompileRules = originalValidateAndCompileRules
+		validateRules = originalValidateRules
 		dialUpstream = originalDialUpstream
 		listenNetwork = originalListenNetwork
 		lstatPath = originalLstatPath
@@ -300,7 +300,7 @@ func TestRunServeErrorPaths(t *testing.T) {
 	newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
 		return newDiscardLogger(), nil, nil
 	}
-	validateAndCompileRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+	validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
 	}
 
@@ -353,7 +353,7 @@ func TestRunServeErrorPaths(t *testing.T) {
 		newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
 			return newDiscardLogger(), &serveTestCloser{err: errors.New("close boom")}, nil
 		}
-		validateAndCompileRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 			return nil, errors.New("validation boom")
 		}
 
@@ -368,7 +368,7 @@ func TestRunServeErrorPaths(t *testing.T) {
 		newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
 			return newDiscardLogger(), nil, nil
 		}
-		validateAndCompileRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 			return stubCompiledRules(), nil
 		}
 	})
@@ -427,7 +427,7 @@ func TestRunServeLifecyclePaths(t *testing.T) {
 	newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
 		return newDiscardLogger(), nil, nil
 	}
-	validateAndCompileRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+	validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
 	}
 	dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {

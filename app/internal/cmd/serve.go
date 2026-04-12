@@ -28,22 +28,22 @@ const readHeaderTimeout = 5 * time.Second
 const maxHeaderBytes = 1 << 20
 
 var (
-	umaskMu                 sync.Mutex
-	syscallUmask            = syscall.Umask
-	loadConfig              = config.Load
-	newLogger               = logging.New
-	validateAndCompileRules = config.ValidateAndCompile
-	dialUpstream            = net.DialTimeout
-	listenNetwork           = net.Listen
-	lstatPath               = os.Lstat
-	isAddrInUseFn           = isAddrInUse
-	createServeListener     = createListener
-	notifySignals           = signal.Notify
-	startServing            = func(server *http.Server, ln net.Listener, errCh chan<- error) { errCh <- server.Serve(ln) }
-	shutdownServer          = func(server *http.Server, ctx context.Context) error { return server.Shutdown(ctx) }
-	removePath              = os.Remove
-	now                     = time.Now
-	shutdownGracePeriod     = 30 * time.Second
+	umaskMu             sync.Mutex
+	syscallUmask        = syscall.Umask
+	loadConfig          = config.Load
+	newLogger           = logging.New
+	validateRules       = config.Validate
+	dialUpstream        = net.DialTimeout
+	listenNetwork       = net.Listen
+	lstatPath           = os.Lstat
+	isAddrInUseFn       = isAddrInUse
+	createServeListener = createListener
+	notifySignals       = signal.Notify
+	startServing        = func(server *http.Server, ln net.Listener, errCh chan<- error) { errCh <- server.Serve(ln) }
+	shutdownServer      = func(server *http.Server, ctx context.Context) error { return server.Shutdown(ctx) }
+	removePath          = os.Remove
+	now                 = time.Now
+	shutdownGracePeriod = 30 * time.Second
 
 	serveCmd = &cobra.Command{
 		Use:   "serve",
@@ -92,7 +92,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	config.ApplyCompat(cfg, logger)
 
 	// 5. Validate and compile rules
-	rules, err := validateAndCompileRules(cfg)
+	rules, err := validateRules(cfg)
 	if err != nil {
 		return fmt.Errorf("config validation: %w", err)
 	}

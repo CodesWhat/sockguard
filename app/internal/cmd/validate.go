@@ -33,7 +33,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	compatActive := config.ApplyCompat(cfg, discardLogger)
 
 	// 3. Validate and compile rules
-	compiled, err := config.ValidateAndCompile(cfg)
+	compiled, err := config.Validate(cfg)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Validation FAILED:\n%v\n", err)
 		return err

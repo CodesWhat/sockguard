@@ -21,15 +21,9 @@ func (e *ValidationError) Error() string {
 }
 
 // Validate checks a Config for correctness, returning a ValidationError
-// if any problems are found.
-func Validate(cfg *Config) error {
-	_, err := ValidateAndCompile(cfg)
-	return err
-}
-
-// ValidateAndCompile checks a Config for correctness and compiles the rules.
-// It compiles rules only after basic validation passes.
-func ValidateAndCompile(cfg *Config) ([]*filter.CompiledRule, error) {
+// if any problems are found. On success it returns the compiled filter rules
+// that the server should enforce.
+func Validate(cfg *Config) ([]*filter.CompiledRule, error) {
 	errs := validateBasic(cfg)
 	if len(errs) > 0 {
 		return nil, &ValidationError{Errors: errs}

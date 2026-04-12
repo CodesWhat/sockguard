@@ -34,9 +34,9 @@ func TestPresetConfigsValidate(t *testing.T) {
 				t.Fatalf("Load(%s) error: %v", name, err)
 			}
 
-			compiled, err := ValidateAndCompile(cfg)
+			compiled, err := Validate(cfg)
 			if err != nil {
-				t.Fatalf("ValidateAndCompile(%s) error: %v", name, err)
+				t.Fatalf("Validate(%s) error: %v", name, err)
 			}
 
 			if len(compiled) == 0 {

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,6 +38,15 @@ func TestIsAddrInUse(t *testing.T) {
 	}
 	if isAddrInUse(errors.New("other")) {
 		t.Fatal("did not expect non-EADDRINUSE error to be detected")
+	}
+}
+
+func TestServeUsesConfigValidate(t *testing.T) {
+	got := runtime.FuncForPC(reflect.ValueOf(validateRules).Pointer()).Name()
+	want := runtime.FuncForPC(reflect.ValueOf(config.Validate).Pointer()).Name()
+
+	if got != want {
+		t.Fatalf("serve validation entry point = %s, want %s", got, want)
 	}
 }
 

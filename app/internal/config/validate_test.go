@@ -10,7 +10,7 @@ import (
 
 func TestValidateDefaults(t *testing.T) {
 	cfg := Defaults()
-	if err := Validate(&cfg); err != nil {
+	if _, err := Validate(&cfg); err != nil {
 		t.Errorf("Validate(Defaults()) = %v, want nil", err)
 	}
 }
@@ -18,7 +18,7 @@ func TestValidateDefaults(t *testing.T) {
 func TestValidateMissingUpstream(t *testing.T) {
 	cfg := Defaults()
 	cfg.Upstream.Socket = ""
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for missing upstream")
 	}
@@ -31,7 +31,7 @@ func TestValidateMissingListeners(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Socket = ""
 	cfg.Listen.Address = ""
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for missing listeners")
 	}
@@ -43,7 +43,7 @@ func TestValidateMissingListeners(t *testing.T) {
 func TestValidateInvalidLogLevel(t *testing.T) {
 	cfg := Defaults()
 	cfg.Log.Level = "verbose"
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid log level")
 	}
@@ -55,7 +55,7 @@ func TestValidateInvalidLogLevel(t *testing.T) {
 func TestValidateInvalidLogFormat(t *testing.T) {
 	cfg := Defaults()
 	cfg.Log.Format = "xml"
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid log format")
 	}
@@ -67,7 +67,7 @@ func TestValidateInvalidLogFormat(t *testing.T) {
 func TestValidateInvalidLogOutput(t *testing.T) {
 	cfg := Defaults()
 	cfg.Log.Output = "   "
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid log output")
 	}
@@ -80,7 +80,7 @@ func TestValidateRejectsNonLocalLogOutputPath(t *testing.T) {
 	cfg := Defaults()
 	cfg.Log.Output = "../sockguard.log"
 
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for non-local log output path")
 	}
@@ -92,7 +92,7 @@ func TestValidateRejectsNonLocalLogOutputPath(t *testing.T) {
 func TestValidateEmptyRules(t *testing.T) {
 	cfg := Defaults()
 	cfg.Rules = nil
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for empty rules")
 	}
@@ -106,7 +106,7 @@ func TestValidateInvalidAction(t *testing.T) {
 	cfg.Rules = []RuleConfig{
 		{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "permit"},
 	}
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid action")
 	}
@@ -121,7 +121,7 @@ func TestValidateMissingRuleFields(t *testing.T) {
 		{Match: MatchConfig{Method: "", Path: ""}, Action: "allow"},
 	}
 
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for missing rule fields")
 	}
@@ -136,7 +136,7 @@ func TestValidateMissingRuleFields(t *testing.T) {
 func TestValidateInvalidHealthPath(t *testing.T) {
 	cfg := Defaults()
 	cfg.Health.Path = "health"
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid health path")
 	}
@@ -149,7 +149,7 @@ func TestValidateInvalidDenyResponseVerbosity(t *testing.T) {
 	cfg := Defaults()
 	cfg.Response.DenyVerbosity = "chatty"
 
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid deny response verbosity")
 	}
@@ -162,7 +162,7 @@ func TestValidateMultipleErrors(t *testing.T) {
 	cfg := Defaults()
 	cfg.Upstream.Socket = ""
 	cfg.Log.Level = "verbose"
-	err := Validate(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -181,7 +181,7 @@ func TestValidateCommaSeparatedMethods(t *testing.T) {
 		{Match: MatchConfig{Method: "GET,HEAD", Path: "/containers/**"}, Action: "allow"},
 		{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 	}
-	if err := Validate(&cfg); err != nil {
+	if _, err := Validate(&cfg); err != nil {
 		t.Errorf("Validate() = %v, want nil for comma-separated methods", err)
 	}
 }
@@ -210,19 +210,19 @@ func TestCompileRulesCommaSeparated(t *testing.T) {
 	}
 }
 
-func TestValidateAndCompile(t *testing.T) {
+func TestValidateReturnsCompiledRules(t *testing.T) {
 	cfg := Defaults()
 
-	compiled, err := ValidateAndCompile(&cfg)
+	compiled, err := Validate(&cfg)
 	if err != nil {
-		t.Fatalf("ValidateAndCompile() error = %v", err)
+		t.Fatalf("Validate() error = %v", err)
 	}
 	if len(compiled) != len(cfg.Rules) {
 		t.Errorf("got %d compiled rules, want %d", len(compiled), len(cfg.Rules))
 	}
 }
 
-func TestValidateAndCompileCompileError(t *testing.T) {
+func TestValidateCompileError(t *testing.T) {
 	originalCompileRules := compileRulesFn
 	compileRulesFn = func([]RuleConfig) ([]*filter.CompiledRule, error) {
 		return nil, errors.New("boom")
@@ -232,9 +232,9 @@ func TestValidateAndCompileCompileError(t *testing.T) {
 	})
 
 	cfg := Defaults()
-	_, err := ValidateAndCompile(&cfg)
+	_, err := Validate(&cfg)
 	if err == nil {
-		t.Fatal("expected ValidateAndCompile() to fail")
+		t.Fatal("expected Validate() to fail")
 	}
 	if !strings.Contains(err.Error(), "boom") {
 		t.Fatalf("expected compile error in result, got: %v", err)
