@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { compileRules, evaluate } from "./evaluate.ts";
+import { compileRules, evaluate, evaluateCompiled } from "./evaluate.ts";
 
 test("trailing /** matches the bare path like the Go proxy", () => {
   const result = evaluate(
@@ -48,6 +48,46 @@ test("catch-all /** still matches the root path", () => {
     action: "deny",
     ruleIndex: 0,
     reason: "default deny",
+  });
+});
+
+test("double-star segments outside /** expand across path separators", () => {
+  const result = evaluate(
+    [{ method: "GET", path: "/images**json", action: "allow" }],
+    "GET",
+    "/images/v1/json",
+  );
+
+  assert.deepEqual(result, {
+    action: "allow",
+    ruleIndex: 0,
+    reason: "matched allow rule",
+  });
+});
+
+test("single-star segments stop at path separators", () => {
+  const result = evaluate(
+    [{ method: "GET", path: "/containers/*/logs", action: "allow" }],
+    "GET",
+    "/containers/sockguard/logs",
+  );
+
+  assert.deepEqual(result, {
+    action: "allow",
+    ruleIndex: 0,
+    reason: "matched allow rule",
+  });
+});
+
+test("method mismatches continue scanning and eventually default deny", () => {
+  const compiled = compileRules([
+    { method: "POST", path: "/_ping", action: "allow" },
+  ]);
+
+  assert.deepEqual(evaluateCompiled(compiled, "GET", "/_ping"), {
+    action: "deny",
+    ruleIndex: -1,
+    reason: "no matching allow rule",
   });
 });
 
