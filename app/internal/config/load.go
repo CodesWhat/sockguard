@@ -12,6 +12,11 @@ import (
 func Load(configPath string) (*Config, error) {
 	v := viper.New()
 
+	// Full config precedence across the serve path is:
+	// 1. CLI flags (applied later in internal/cmd/serve.go via applyFlagOverrides)
+	// 2. SOCKGUARD_* environment variables (handled below by Viper)
+	// 3. YAML config file values
+	// 4. Built-in defaults
 	// Set defaults from Defaults()
 	defaults := Defaults()
 	v.SetDefault("listen.socket", defaults.Listen.Socket)

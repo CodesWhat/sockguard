@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -124,6 +125,40 @@ func newServeCommand() *cobra.Command {
 	cmd.Flags().String("log-format", "", "")
 	cmd.Flags().String("deny-response-verbosity", "", "")
 	return cmd
+}
+
+func captureMergedServeConfig(t *testing.T, cmd *cobra.Command, configPath string) *config.Config {
+	t.Helper()
+	useServeDeps(t)
+
+	originalCfgFile := cfgFile
+	cfgFile = configPath
+	t.Cleanup(func() {
+		cfgFile = originalCfgFile
+	})
+
+	newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
+		return newDiscardLogger(), nil, nil
+	}
+
+	stopErr := errors.New("stop after merged config capture")
+	var captured *config.Config
+	validateRules = func(cfg *config.Config) ([]*filter.CompiledRule, error) {
+		clone := *cfg
+		clone.Rules = append([]config.RuleConfig(nil), cfg.Rules...)
+		captured = &clone
+		return nil, stopErr
+	}
+
+	err := runServe(cmd, nil)
+	if !errors.Is(err, stopErr) {
+		t.Fatalf("runServe() error = %v, want wrapped %v", err, stopErr)
+	}
+	if captured == nil {
+		t.Fatal("expected merged config to be captured before validation failure")
+	}
+
+	return captured
 }
 
 func testServeConfig() *config.Config {
@@ -411,6 +446,98 @@ func TestRunServeErrorPaths(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
+}
+
+func TestRunServeConfigSourcePrecedence(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sockguard.yaml")
+
+	yaml := `
+listen:
+  socket: /file/sockguard.sock
+upstream:
+  socket: /file/docker.sock
+log:
+  level: error
+  format: text
+  output: file.log
+response:
+  deny_verbosity: minimal
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	t.Setenv("SOCKGUARD_LISTEN_SOCKET", "/env/sockguard.sock")
+	t.Setenv("SOCKGUARD_UPSTREAM_SOCKET", "/env/docker.sock")
+	t.Setenv("SOCKGUARD_LOG_LEVEL", "warn")
+	t.Setenv("SOCKGUARD_LOG_FORMAT", "json")
+	t.Setenv("SOCKGUARD_LOG_OUTPUT", "stdout")
+	t.Setenv("SOCKGUARD_RESPONSE_DENY_VERBOSITY", "verbose")
+
+	cmd := newServeCommand()
+	if err := cmd.Flags().Set("listen-socket", "/flag/sockguard.sock"); err != nil {
+		t.Fatalf("set listen-socket: %v", err)
+	}
+	if err := cmd.Flags().Set("upstream-socket", "/flag/docker.sock"); err != nil {
+		t.Fatalf("set upstream-socket: %v", err)
+	}
+	if err := cmd.Flags().Set("log-level", "debug"); err != nil {
+		t.Fatalf("set log-level: %v", err)
+	}
+	if err := cmd.Flags().Set("log-format", "console"); err != nil {
+		t.Fatalf("set log-format: %v", err)
+	}
+	if err := cmd.Flags().Set("deny-response-verbosity", "minimal"); err != nil {
+		t.Fatalf("set deny-response-verbosity: %v", err)
+	}
+
+	cfg := captureMergedServeConfig(t, cmd, cfgPath)
+
+	tests := []struct {
+		name string
+		got  func(*config.Config) string
+		want string
+	}{
+		{
+			name: "listen socket uses flag over env, file, and default",
+			got:  func(cfg *config.Config) string { return cfg.Listen.Socket },
+			want: "/flag/sockguard.sock",
+		},
+		{
+			name: "upstream socket uses flag over env, file, and default",
+			got:  func(cfg *config.Config) string { return cfg.Upstream.Socket },
+			want: "/flag/docker.sock",
+		},
+		{
+			name: "log level uses flag over env, file, and default",
+			got:  func(cfg *config.Config) string { return cfg.Log.Level },
+			want: "debug",
+		},
+		{
+			name: "log format uses flag over env, file, and default",
+			got:  func(cfg *config.Config) string { return cfg.Log.Format },
+			want: "console",
+		},
+		{
+			name: "deny verbosity uses flag over env, file, and default",
+			got:  func(cfg *config.Config) string { return cfg.Response.DenyVerbosity },
+			want: "minimal",
+		},
+		{
+			name: "log output uses env over file and default when no flag exists",
+			got:  func(cfg *config.Config) string { return cfg.Log.Output },
+			want: "stdout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.got(cfg); got != tt.want {
+				t.Fatalf("value = %q, want %q", got, tt.want)
+			}
+		})
+	}
 }
 
 func TestRunServeLifecyclePaths(t *testing.T) {

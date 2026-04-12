@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added a filter regression that compiles deep `**` glob patterns and matches them against long paths under a 100ms ceiling to guard the glob-to-regex path against regex-style denial-of-service regressions.
 - Added shared request-correlation fields to the access log and reverse-proxy upstream error log so `request_id` and filter metadata can be used to join a failed upstream attempt to its outer request log entry.
 - Collapsed config validation onto `config.Validate` as the single validation-and-compilation entry point so `serve`, `validate`, and preset checks all exercise the same path.
+- Added an end-to-end serve-path precedence regression that proves explicit CLI flags override env, env overrides YAML, and YAML overrides defaults across conflicting config sources.
+- Documented the full `flag > env > file > default` precedence directly in `config.Load` so the code-level merge contract is visible where configuration sources come together.
 
 ## [0.1.0] - 2026-04-11
 
