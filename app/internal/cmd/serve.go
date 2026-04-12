@@ -25,6 +25,7 @@ import (
 )
 
 const readHeaderTimeout = 5 * time.Second
+const maxHeaderBytes = 1 << 20
 
 var (
 	umaskMu                 sync.Mutex
@@ -211,8 +212,11 @@ func newHTTPServer(handler http.Handler) *http.Server {
 		// A non-zero ReadTimeout breaks those streaming APIs, so we intentionally leave it disabled.
 		// ReadHeaderTimeout still bounds header parsing time, which partially mitigates slowloris
 		// attacks on TCP listeners without affecting long-lived upgraded/streaming requests.
+		// MaxHeaderBytes is pinned to 1 MiB explicitly so the stdlib default does not become
+		// a silent, unreviewed part of Sockguard's network hardening posture.
 		ReadTimeout:       0,
 		ReadHeaderTimeout: readHeaderTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 }
 

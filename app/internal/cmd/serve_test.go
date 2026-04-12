@@ -530,4 +530,7 @@ func TestNewHTTPServerSetsReadHeaderTimeout(t *testing.T) {
 	if server.ReadHeaderTimeout != readHeaderTimeout {
 		t.Fatalf("ReadHeaderTimeout = %v, want %v", server.ReadHeaderTimeout, readHeaderTimeout)
 	}
+	if server.MaxHeaderBytes != maxHeaderBytes {
+		t.Fatalf("MaxHeaderBytes = %d, want %d", server.MaxHeaderBytes, maxHeaderBytes)
+	}
 }
