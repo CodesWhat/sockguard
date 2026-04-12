@@ -404,15 +404,18 @@ func TestHijackHandler_FullUpgrade(t *testing.T) {
 	clientMsg := "ping"
 	clientConn.Write([]byte(clientMsg))
 
-	// Read echoed data + upstream payload
-	result := make([]byte, 1024)
-	n, err := clientBuf.Read(result)
-	if err != nil && err != io.EOF {
+	// Read echoed data + upstream payload.
+	// The upstream writes echo then payload in two calls, so a single Read
+	// may return only part of the data. Use ReadFull with a deadline instead.
+	expected := clientMsg + echoPayload
+	if err := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	result := make([]byte, len(expected))
+	if _, err := io.ReadFull(clientBuf, result); err != nil {
 		t.Fatalf("client read: %v", err)
 	}
-	got := string(result[:n])
-	expected := clientMsg + echoPayload
-	if got != expected {
+	if got := string(result); got != expected {
 		t.Errorf("expected %q, got %q", expected, got)
 	}
 
