@@ -218,12 +218,16 @@ func writeBundleFiles(bundle Bundle, ca issuedCertificate, server issuedCertific
 	return nil
 }
 
-func writePEM(path, blockType string, der []byte) error {
+func writePEM(path, blockType string, der []byte) (err error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close %s: %w", path, closeErr)
+		}
+	}()
 
 	if err := pem.Encode(file, &pem.Block{Type: blockType, Bytes: der}); err != nil {
 		return fmt.Errorf("encode %s: %w", path, err)

@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -220,11 +219,14 @@ func TestRequestMetaPoolFallbackAndNilPut(t *testing.T) {
 }
 
 func TestRequestMetaPoolFallbackWhenPoolReturnsWrongType(t *testing.T) {
-	originalPool := requestMetaPool
-	requestMetaPool = sync.Pool{New: func() any { return "bad-meta" }}
+	wrong := new(int)
+	originalNew := requestMetaPool.New
+	requestMetaPool.New = func() any { return wrong }
 	t.Cleanup(func() {
-		requestMetaPool = originalPool
+		requestMetaPool.New = originalNew
 	})
+
+	requestMetaPool.Put(wrong)
 
 	meta := getRequestMeta()
 	if meta == nil {
@@ -247,11 +249,14 @@ func TestAccessLogAttrPoolFallbackAndNilPut(t *testing.T) {
 }
 
 func TestAccessLogAttrPoolFallbackWhenPoolReturnsWrongType(t *testing.T) {
-	originalPool := accessLogAttrPool
-	accessLogAttrPool = sync.Pool{New: func() any { return "bad-attrs" }}
+	wrong := new(int)
+	originalNew := accessLogAttrPool.New
+	accessLogAttrPool.New = func() any { return wrong }
 	t.Cleanup(func() {
-		accessLogAttrPool = originalPool
+		accessLogAttrPool.New = originalNew
 	})
+
+	accessLogAttrPool.Put(wrong)
 
 	attrs := getAccessLogAttrs()
 	if attrs == nil {
@@ -274,11 +279,14 @@ func TestResponseCapturePoolFallbackAndNilPut(t *testing.T) {
 }
 
 func TestResponseCapturePoolFallbackWhenPoolReturnsWrongType(t *testing.T) {
-	originalPool := responseCapturePool
-	responseCapturePool = sync.Pool{New: func() any { return "bad-capture" }}
+	wrong := new(int)
+	originalNew := responseCapturePool.New
+	responseCapturePool.New = func() any { return wrong }
 	t.Cleanup(func() {
-		responseCapturePool = originalPool
+		responseCapturePool.New = originalNew
 	})
+
+	responseCapturePool.Put(wrong)
 
 	rc := getResponseCapture(httptest.NewRecorder())
 	if rc == nil {
