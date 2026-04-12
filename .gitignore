@@ -47,6 +47,7 @@ node_modules/
 .next/
 .turbo/
 out/
+*.tsbuildinfo
 
 # Turborepo
 .turbo
