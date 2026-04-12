@@ -8,6 +8,8 @@ type Config struct {
 	Response ResponseConfig `mapstructure:"response"`
 	Health   HealthConfig   `mapstructure:"health"`
 	Rules    []RuleConfig   `mapstructure:"rules"`
+
+	rulesExplicitlyConfigured bool
 }
 
 // ListenConfig configures the proxy listener.

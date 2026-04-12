@@ -89,6 +89,50 @@ rules:
 	}
 }
 
+func TestLoadExplicitDefaultRulesDoNotTriggerCompat(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "default-rules.yaml")
+
+	yaml := `
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: no matching allow rule
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	t.Setenv("CONTAINERS", "1")
+
+	if ApplyCompat(cfg, discardLogger) {
+		t.Fatal("expected explicit rules from YAML to suppress compat mode")
+	}
+
+	if len(cfg.Rules) != len(Defaults().Rules) {
+		t.Fatalf("got %d rules after compat check, want %d", len(cfg.Rules), len(Defaults().Rules))
+	}
+
+	for i, rule := range cfg.Rules {
+		if rule != Defaults().Rules[i] {
+			t.Fatalf("rule %d changed after compat check: got %+v want %+v", i, rule, Defaults().Rules[i])
+		}
+	}
+}
+
 func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("SOCKGUARD_UPSTREAM_SOCKET", "/env/docker.sock")
 	t.Setenv("SOCKGUARD_LOG_LEVEL", "warn")

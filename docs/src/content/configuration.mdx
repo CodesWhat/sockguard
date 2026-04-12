@@ -97,6 +97,8 @@ VERSION=1          # Allow GET /version (default)
 POST=0             # Deny all write operations (default)
 ```
 
+Compat env vars only generate rules when no explicit `rules:` are configured. If `rules:` is present in YAML, those rules take precedence even when they are identical to Sockguard's built-in defaults.
+
 ### Granular Operations (LinuxServer compatible)
 
 When `POST=1` is set:

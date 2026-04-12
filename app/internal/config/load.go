@@ -49,6 +49,7 @@ func Load(configPath string) (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
 	}
+	cfg.rulesExplicitlyConfigured = v.IsSet("rules")
 
 	// If no rules came from YAML, use defaults
 	if len(cfg.Rules) == 0 {

@@ -47,6 +47,10 @@ var compatGranularPostRules = []struct {
 // RuleConfig entries. Returns true if any Tecnativa vars were detected.
 // Only activates when cfg.Rules matches the defaults (user hasn't provided custom YAML).
 func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
+	if cfg.rulesExplicitlyConfigured {
+		return false
+	}
+
 	// Only apply if rules are still the defaults
 	if !rulesMatchDefaults(cfg.Rules) {
 		return false

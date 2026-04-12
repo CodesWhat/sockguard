@@ -188,6 +188,8 @@ ALLOW_CREATE=0
 ALLOW_EXEC=0
 ```
 
+Compat env vars only generate rules when no explicit `rules:` are configured. If you provide `rules:` in YAML, those rules win even when they happen to match the built-in defaults exactly.
+
 ### YAML Config (recommended)
 
 ```yaml
