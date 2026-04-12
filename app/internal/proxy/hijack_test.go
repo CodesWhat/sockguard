@@ -44,6 +44,23 @@ func (sb *safeBuffer) String() string {
 	return sb.buf.String()
 }
 
+func waitForGoroutineDrain(t *testing.T, baseline int, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		runtime.GC()
+		got := runtime.NumGoroutine()
+		if got <= baseline+2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines did not drain: got %d, want <= %d", got, baseline+2)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func useHijackBufferPool(t *testing.T, pool bytePool) {
 	t.Helper()
 
@@ -1426,6 +1443,136 @@ func TestHandleHijack_UpstreamDisconnectDuringStreaming(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func TestHijackConnectionClosedByUpstream(t *testing.T) {
+	baseline := runtime.NumGoroutine()
+
+	socketPath := fmt.Sprintf("/tmp/dp-test-upstream-close-lifecycle-%d.sock", os.Getpid())
+	t.Cleanup(func() { os.Remove(socketPath) })
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	const streamPayload = "partial-stream"
+
+	var serverWg sync.WaitGroup
+	serverWg.Add(1)
+	go func() {
+		defer serverWg.Done()
+
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			t.Errorf("mock: read request: %v", err)
+			return
+		}
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+
+		resp := &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{},
+		}
+		resp.Header.Set("Connection", "Upgrade")
+		resp.Header.Set("Upgrade", "tcp")
+		if err := resp.Write(conn); err != nil {
+			t.Errorf("mock: write 101: %v", err)
+			return
+		}
+
+		if _, err := conn.Write([]byte(streamPayload)); err != nil {
+			t.Errorf("mock: write stream payload: %v", err)
+		}
+	}()
+
+	var logs safeBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("next handler should not be called for hijack endpoint")
+	})
+	handler := HijackHandler(socketPath, logger, next)
+
+	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("client listen: %v", err)
+	}
+	defer clientLn.Close()
+
+	srv := &http.Server{Handler: handler}
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = srv.Serve(clientLn)
+	}()
+	defer srv.Close()
+
+	clientConn, err := net.Dial("tcp", clientLn.Addr().String())
+	if err != nil {
+		t.Fatalf("client dial: %v", err)
+	}
+
+	reqStr := "POST /containers/abc/attach?stream=1 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n"
+	if _, err := clientConn.Write([]byte(reqStr)); err != nil {
+		t.Fatalf("client write request: %v", err)
+	}
+
+	clientBuf := bufio.NewReader(clientConn)
+	resp, err := http.ReadResponse(clientBuf, nil)
+	if err != nil {
+		t.Fatalf("client read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101, got %d", resp.StatusCode)
+	}
+
+	if err := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("client SetReadDeadline: %v", err)
+	}
+	data, err := io.ReadAll(clientBuf)
+	if err != nil {
+		t.Fatalf("client read stream: %v", err)
+	}
+	if string(data) != streamPayload {
+		t.Fatalf("stream payload = %q, want %q", string(data), streamPayload)
+	}
+
+	if err := clientConn.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+
+	serverWg.Wait()
+	if err := srv.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		t.Fatalf("close server: %v", err)
+	}
+
+	select {
+	case <-serveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP server did not stop after upstream close")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(logs.String(), "connection closed") {
+		if time.Now().After(deadline) {
+			t.Fatalf("expected connection closed log, got %q", logs.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	waitForGoroutineDrain(t, baseline, 2*time.Second)
 }
 
 func TestGetHijackBufferRestoresFullLengthFromPool(t *testing.T) {
