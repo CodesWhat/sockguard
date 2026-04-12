@@ -52,7 +52,7 @@ func dockerSocketForIntegration(t *testing.T) string {
 func newIntegrationProxyHandler(t *testing.T, socketPath string, rules []config.RuleConfig) http.Handler {
 	t.Helper()
 
-	compiled, err := config.CompileRules(rules)
+	compiled, err := compileRulesForTest(rules)
 	if err != nil {
 		t.Fatalf("compile rules: %v", err)
 	}
@@ -67,6 +67,39 @@ func newIntegrationProxyHandler(t *testing.T, socketPath string, rules []config.
 
 func newIntegrationLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+func compileRulesForTest(rules []config.RuleConfig) ([]*filter.CompiledRule, error) {
+	compiled := make([]*filter.CompiledRule, 0, len(rules))
+	for i, rule := range rules {
+		spec := filter.Rule{
+			Methods: splitRuleMethods(rule.Match.Method),
+			Pattern: rule.Match.Path,
+			Action:  filter.Action(rule.Action),
+			Reason:  rule.Reason,
+			Index:   i,
+		}
+
+		compiledRule, err := filter.CompileRule(spec)
+		if err != nil {
+			return nil, fmt.Errorf("rule %d: %w", i+1, err)
+		}
+		compiled = append(compiled, compiledRule)
+	}
+	return compiled, nil
+}
+
+func splitRuleMethods(methods string) []string {
+	parts := strings.Split(methods, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		result = append(result, trimmed)
+	}
+	return result
 }
 
 func fetchDockerVersion(t *testing.T, socketPath string) dockerVersionResponse {

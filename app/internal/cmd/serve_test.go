@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/testcert"
 )
 
 // shortSocketPath returns a short /tmp socket path that fits within macOS's
@@ -42,11 +44,20 @@ func TestIsAddrInUse(t *testing.T) {
 }
 
 func TestServeUsesConfigValidate(t *testing.T) {
-	got := runtime.FuncForPC(reflect.ValueOf(validateRules).Pointer()).Name()
-	want := runtime.FuncForPC(reflect.ValueOf(config.Validate).Pointer()).Name()
+	got := runtime.FuncForPC(reflect.ValueOf(newServeDeps().validateRules).Pointer()).Name()
+	want := runtime.FuncForPC(reflect.ValueOf(validateAndCompileRules).Pointer()).Name()
 
 	if got != want {
 		t.Fatalf("serve validation entry point = %s, want %s", got, want)
+	}
+}
+
+func TestRuleCompilationUsesConfigValidate(t *testing.T) {
+	got := runtime.FuncForPC(reflect.ValueOf(validateConfig).Pointer()).Name()
+	want := runtime.FuncForPC(reflect.ValueOf(config.Validate).Pointer()).Name()
+
+	if got != want {
+		t.Fatalf("config validation entry point = %s, want %s", got, want)
 	}
 }
 
@@ -135,20 +146,17 @@ func TestCreateListenerUnixSocketSetsTemporaryUmask(t *testing.T) {
 		},
 	}
 
-	originalUmask := syscallUmask
+	deps := newServeTestDeps()
 	currentMask := 0o022
 	var calls []int
-	syscallUmask = func(mask int) int {
+	deps.umask = func(mask int) int {
 		previous := currentMask
 		currentMask = mask
 		calls = append(calls, mask)
 		return previous
 	}
-	t.Cleanup(func() {
-		syscallUmask = originalUmask
-	})
 
-	ln, err := createListener(cfg)
+	ln, err := deps.createListener(cfg)
 	if err != nil {
 		t.Fatalf("createListener() error = %v", err)
 	}
@@ -166,19 +174,16 @@ func TestCreateListenerUnixSocketSetsTemporaryUmask(t *testing.T) {
 }
 
 func TestWithUmaskConcurrency(t *testing.T) {
-	originalUmask := syscallUmask
+	deps := newServeTestDeps()
 	var mu sync.Mutex
 	currentMask := 0o022
-	syscallUmask = func(mask int) int {
+	deps.umask = func(mask int) int {
 		mu.Lock()
 		defer mu.Unlock()
 		previous := currentMask
 		currentMask = mask
 		return previous
 	}
-	t.Cleanup(func() {
-		syscallUmask = originalUmask
-	})
 
 	const goroutines = 10
 	var wg sync.WaitGroup
@@ -189,7 +194,7 @@ func TestWithUmaskConcurrency(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			socketPath := shortSocketPath(t, fmt.Sprintf("conc%d", id))
-			_, err := withUmask(0o177, func() (net.Listener, error) {
+			_, err := deps.withUmask(0o177, func() (net.Listener, error) {
 				return net.Listen("unix", socketPath)
 			})
 			if err != nil {
@@ -227,6 +232,118 @@ func TestCreateListenerTCP(t *testing.T) {
 
 	if ln.Addr().Network() != "tcp" {
 		t.Fatalf("listener network = %q, want tcp", ln.Addr().Network())
+	}
+}
+
+func TestCreateListenerTCPWithMutualTLS(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("WriteMutualTLSBundle: %v", err)
+	}
+
+	cfg := &config.Config{
+		Listen: config.ListenConfig{
+			Address: "127.0.0.1:0",
+			TLS: config.ListenTLSConfig{
+				CertFile:     bundle.ServerCertFile,
+				KeyFile:      bundle.ServerKeyFile,
+				ClientCAFile: bundle.CAFile,
+			},
+		},
+	}
+
+	ln, err := createListener(cfg)
+	if err != nil {
+		t.Fatalf("createListener() error = %v", err)
+	}
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if tlsConn, ok := conn.(*tls.Conn); ok {
+			if err := tlsConn.Handshake(); err != nil {
+				_ = conn.Close()
+				errCh <- err
+				return
+			}
+		}
+		_ = conn.Close()
+		errCh <- nil
+	}()
+
+	clientTLS, err := testcert.ClientTLSConfig(bundle, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("ClientTLSConfig: %v", err)
+	}
+
+	clientConn, err := tls.Dial(ln.Addr().Network(), ln.Addr().String(), clientTLS)
+	if err != nil {
+		t.Fatalf("tls.Dial() error = %v", err)
+	}
+	_ = clientConn.Close()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("listener accept error = %v", err)
+	}
+}
+
+func TestCreateListenerTCPWithMutualTLSRejectsMissingClientCertificate(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("WriteMutualTLSBundle: %v", err)
+	}
+
+	cfg := &config.Config{
+		Listen: config.ListenConfig{
+			Address: "127.0.0.1:0",
+			TLS: config.ListenTLSConfig{
+				CertFile:     bundle.ServerCertFile,
+				KeyFile:      bundle.ServerKeyFile,
+				ClientCAFile: bundle.CAFile,
+			},
+		},
+	}
+
+	ln, err := createListener(cfg)
+	if err != nil {
+		t.Fatalf("createListener() error = %v", err)
+	}
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if tlsConn, ok := conn.(*tls.Conn); ok {
+			err = tlsConn.Handshake()
+		}
+		_ = conn.Close()
+		errCh <- err
+	}()
+
+	clientTLS, err := testcert.ClientTLSConfig(bundle, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("ClientTLSConfig: %v", err)
+	}
+	clientTLS.Certificates = nil
+
+	clientConn, err := tls.Dial(ln.Addr().Network(), ln.Addr().String(), clientTLS)
+	if err == nil {
+		_ = clientConn.Close()
+	}
+
+	if err := <-errCh; err == nil {
+		t.Fatal("expected listener handshake to fail without client certificate")
 	}
 }
 
@@ -604,11 +721,14 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 	}
 }
 
-func TestNewHTTPServerSetsReadHeaderTimeout(t *testing.T) {
+func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 	server := newHTTPServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	if server.ReadTimeout != 0 {
 		t.Fatalf("ReadTimeout = %v, want 0", server.ReadTimeout)
+	}
+	if server.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %v, want 0", server.WriteTimeout)
 	}
 	if server.ReadHeaderTimeout <= 0 {
 		t.Fatalf("ReadHeaderTimeout = %v, want > 0", server.ReadHeaderTimeout)
@@ -616,7 +736,37 @@ func TestNewHTTPServerSetsReadHeaderTimeout(t *testing.T) {
 	if server.ReadHeaderTimeout != readHeaderTimeout {
 		t.Fatalf("ReadHeaderTimeout = %v, want %v", server.ReadHeaderTimeout, readHeaderTimeout)
 	}
+	if server.IdleTimeout <= 0 {
+		t.Fatalf("IdleTimeout = %v, want > 0", server.IdleTimeout)
+	}
+	if server.IdleTimeout != idleTimeout {
+		t.Fatalf("IdleTimeout = %v, want %v", server.IdleTimeout, idleTimeout)
+	}
 	if server.MaxHeaderBytes != maxHeaderBytes {
 		t.Fatalf("MaxHeaderBytes = %d, want %d", server.MaxHeaderBytes, maxHeaderBytes)
+	}
+}
+
+func TestIsWildcardTCPBind(t *testing.T) {
+	tests := []struct {
+		address string
+		want    bool
+	}{
+		{address: ":2375", want: true},
+		{address: "0.0.0.0:2375", want: true},
+		{address: "[::]:2375", want: true},
+		{address: "127.0.0.1:2375", want: false},
+		{address: "localhost:2375", want: false},
+		{address: "[::1]:2375", want: false},
+		{address: "192.168.1.10:2375", want: false},
+		{address: "invalid", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.address, func(t *testing.T) {
+			if got := isWildcardTCPBind(tt.address); got != tt.want {
+				t.Fatalf("isWildcardTCPBind(%q) = %v, want %v", tt.address, got, tt.want)
+			}
+		})
 	}
 }

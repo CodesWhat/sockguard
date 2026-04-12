@@ -2,21 +2,31 @@ package config
 
 // Config represents the sockguard configuration.
 type Config struct {
-	Listen   ListenConfig   `mapstructure:"listen"`
-	Upstream UpstreamConfig `mapstructure:"upstream"`
-	Log      LogConfig      `mapstructure:"log"`
-	Response ResponseConfig `mapstructure:"response"`
-	Health   HealthConfig   `mapstructure:"health"`
-	Rules    []RuleConfig   `mapstructure:"rules"`
+	Listen                       ListenConfig   `mapstructure:"listen"`
+	Upstream                     UpstreamConfig `mapstructure:"upstream"`
+	Log                          LogConfig      `mapstructure:"log"`
+	Response                     ResponseConfig `mapstructure:"response"`
+	Health                       HealthConfig   `mapstructure:"health"`
+	Rules                        []RuleConfig   `mapstructure:"rules"`
+	InsecureAllowBodyBlindWrites bool           `mapstructure:"insecure_allow_body_blind_writes"`
 
 	rulesExplicitlyConfigured bool
 }
 
 // ListenConfig configures the proxy listener.
 type ListenConfig struct {
-	Socket     string `mapstructure:"socket"`
-	SocketMode string `mapstructure:"socket_mode"`
-	Address    string `mapstructure:"address"`
+	Socket                string          `mapstructure:"socket"`
+	SocketMode            string          `mapstructure:"socket_mode"`
+	Address               string          `mapstructure:"address"`
+	InsecureAllowPlainTCP bool            `mapstructure:"insecure_allow_plain_tcp"`
+	TLS                   ListenTLSConfig `mapstructure:"tls"`
+}
+
+// ListenTLSConfig configures mutual TLS for TCP listeners.
+type ListenTLSConfig struct {
+	CertFile     string `mapstructure:"cert_file"`
+	KeyFile      string `mapstructure:"key_file"`
+	ClientCAFile string `mapstructure:"client_ca_file"`
 }
 
 // UpstreamConfig configures the upstream Docker socket.
@@ -58,14 +68,15 @@ type MatchConfig struct {
 
 // Defaults returns a Config with sensible defaults.
 //
-// The default listener is TCP :2375 to match the behavior of
-// tecnativa/docker-socket-proxy and linuxserver/socket-proxy so migration
-// from those is zero-config. Set listen.socket (or SOCKGUARD_LISTEN_SOCKET)
-// to opt into the filesystem-bounded unix socket listener instead.
+// The default listener is loopback TCP 127.0.0.1:2375 so local development
+// stays simple without exposing the Docker API proxy on the network. To expose
+// Sockguard on non-loopback TCP you must either configure listen.tls for mTLS
+// or explicitly opt into legacy plaintext mode with
+// listen.insecure_allow_plain_tcp=true.
 func Defaults() Config {
 	return Config{
 		Listen: ListenConfig{
-			Address:    ":2375",
+			Address:    "127.0.0.1:2375",
 			SocketMode: "0660", // used only when the user opts into a unix socket listener
 		},
 		Upstream: UpstreamConfig{

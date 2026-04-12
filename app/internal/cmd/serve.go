@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
-	"strconv"
-	"sync"
 	"syscall"
 	"time"
 
@@ -25,33 +23,15 @@ import (
 )
 
 const readHeaderTimeout = 5 * time.Second
+const idleTimeout = 120 * time.Second
 const maxHeaderBytes = 1 << 20
 
-var (
-	umaskMu             sync.Mutex
-	syscallUmask        = syscall.Umask
-	loadConfig          = config.Load
-	newLogger           = logging.New
-	validateRules       = config.Validate
-	dialUpstream        = net.DialTimeout
-	listenNetwork       = net.Listen
-	lstatPath           = os.Lstat
-	isAddrInUseFn       = isAddrInUse
-	createServeListener = createListener
-	notifySignals       = signal.Notify
-	startServing        = func(server *http.Server, ln net.Listener, errCh chan<- error) { errCh <- server.Serve(ln) }
-	shutdownServer      = func(server *http.Server, ctx context.Context) error { return server.Shutdown(ctx) }
-	removePath          = os.Remove
-	now                 = time.Now
-	shutdownGracePeriod = 30 * time.Second
-
-	serveCmd = &cobra.Command{
-		Use:   "serve",
-		Short: "Start the proxy server",
-		Long:  "Start the sockguard proxy, listening for Docker API requests and filtering them according to configured rules.",
-		RunE:  runServe,
-	}
-)
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Start the proxy server",
+	Long:  "Start the sockguard proxy, listening for Docker API requests and filtering them according to configured rules.",
+	RunE:  runServe,
+}
 
 func init() {
 	rootCmd.AddCommand(serveCmd)
@@ -64,56 +44,90 @@ func init() {
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
-	// 1. Load config
-	cfg, err := loadConfig(cfgFile)
+	return runServeWithDeps(cmd, args, newServeDeps())
+}
+
+func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error {
+	cfg, err := loadServeConfigWithOverrides(cmd, deps)
 	if err != nil {
-		return fmt.Errorf("config load: %w", err)
+		return err
 	}
 
-	// 2. Apply CLI flag overrides
+	logger, closeLogOutput, err := openServeLogger(cmd, cfg, deps)
+	if err != nil {
+		return err
+	}
+	defer closeLogOutput()
+
+	rules, err := compileServeRules(cfg, logger, deps)
+	if err != nil {
+		return err
+	}
+	if err := deps.verifyUpstreamReachable(cfg.Upstream.Socket, logger); err != nil {
+		return err
+	}
+
+	handler := buildServeHandler(cfg, logger, rules, deps)
+	ln, err := deps.createServeListener(cfg)
+	if err != nil {
+		return fmt.Errorf("listener: %w", err)
+	}
+	defer closeServeListener(logger, ln)
+
+	server := newHTTPServer(handler)
+	logServeStartup(cmd, cfg, logger)
+
+	if err := serveUntilShutdown(server, ln, logger, deps); err != nil {
+		return err
+	}
+
+	cleanupServeSocket(cfg, logger, deps)
+	logger.Info("sockguard stopped")
+	return nil
+}
+
+func loadServeConfigWithOverrides(cmd *cobra.Command, deps *serveDeps) (*config.Config, error) {
+	cfg, err := deps.loadConfig(cfgFile)
+	if err != nil {
+		return nil, fmt.Errorf("config load: %w", err)
+	}
 	if err := applyFlagOverrides(cmd, cfg); err != nil {
-		return fmt.Errorf("apply flag overrides: %w", err)
+		return nil, fmt.Errorf("apply flag overrides: %w", err)
 	}
+	return cfg, nil
+}
 
-	// 3. Create logger
-	logger, logOutputCloser, err := newLogger(cfg.Log.Level, cfg.Log.Format, cfg.Log.Output)
+func openServeLogger(cmd *cobra.Command, cfg *config.Config, deps *serveDeps) (*slog.Logger, func(), error) {
+	logger, logOutputCloser, err := deps.newLogger(cfg.Log.Level, cfg.Log.Format, cfg.Log.Output)
 	if err != nil {
-		return fmt.Errorf("logger: %w", err)
-	}
-	if logOutputCloser != nil {
-		defer func() {
-			if closeErr := logOutputCloser.Close(); closeErr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "failed to close log output: %v\n", closeErr)
-			}
-		}()
+		return nil, nil, fmt.Errorf("logger: %w", err)
 	}
 
-	// 4. Tecnativa compat
-	config.ApplyCompat(cfg, logger)
-
-	// 5. Validate and compile rules
-	rules, err := validateRules(cfg)
-	if err != nil {
-		return fmt.Errorf("config validation: %w", err)
-	}
-
-	// 6. Verify upstream reachable
-	conn, err := dialUpstream("unix", cfg.Upstream.Socket, 5*time.Second)
-	if err != nil {
-		switch {
-		case errors.Is(err, os.ErrNotExist):
-			return fmt.Errorf("upstream socket not found (%s): %w", cfg.Upstream.Socket, err)
-		case errors.Is(err, os.ErrPermission):
-			return fmt.Errorf("permission denied on upstream socket (%s): %w", cfg.Upstream.Socket, err)
-		default:
-			return fmt.Errorf("upstream socket unreachable (%s): %w", cfg.Upstream.Socket, err)
+	closeLogOutput := func() {
+		if logOutputCloser == nil {
+			return
+		}
+		if closeErr := logOutputCloser.Close(); closeErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "failed to close log output: %v\n", closeErr)
 		}
 	}
-	if closeErr := conn.Close(); closeErr != nil {
-		logger.Debug("failed to close upstream check connection", "error", closeErr)
-	}
 
-	// 7. Build handler chain (inside-out)
+	return logger, closeLogOutput, nil
+}
+
+func compileServeRules(cfg *config.Config, logger *slog.Logger, deps *serveDeps) ([]*filter.CompiledRule, error) {
+	// Tecnativa compatibility mode expands legacy env vars like CONTAINERS=1
+	// into explicit allow/deny rules before normal validation and compilation.
+	config.ApplyCompat(cfg, logger)
+
+	rules, err := deps.validateRules(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("config validation: %w", err)
+	}
+	return rules, nil
+}
+
+func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
 	upstream := proxy.New(cfg.Upstream.Socket, logger)
 	var handler http.Handler = upstream
 
@@ -121,38 +135,31 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// streaming with optimized buffers and TCP half-close signaling.
 	handler = proxy.HijackHandler(cfg.Upstream.Socket, logger, handler)
 
-	// Rule evaluator
 	handler = filter.MiddlewareWithOptions(rules, logger, filter.Options{
 		DenyResponseVerbosity: filter.DenyResponseVerbosity(cfg.Response.DenyVerbosity),
 	})(handler)
 
-	// Health interceptor
 	if cfg.Health.Enabled {
-		startTime := now()
+		startTime := deps.now()
 		healthHandler := health.Handler(cfg.Upstream.Socket, startTime, logger)
 		handler = healthInterceptor(cfg.Health.Path, healthHandler, handler)
 	}
 
-	// Access logger
 	if cfg.Log.AccessLog {
 		handler = logging.AccessLogMiddleware(logger)(handler)
 	}
 
-	// 8. Create listener
-	ln, err := createServeListener(cfg)
-	if err != nil {
-		return fmt.Errorf("listener: %w", err)
+	return handler
+}
+
+func closeServeListener(logger *slog.Logger, ln net.Listener) {
+	if closeErr := ln.Close(); closeErr != nil {
+		logger.Warn("failed to close listener", "error", closeErr)
 	}
-	defer func() {
-		if closeErr := ln.Close(); closeErr != nil {
-			logger.Warn("failed to close listener", "error", closeErr)
-		}
-	}()
+}
 
-	// 9. Start server
-	server := newHTTPServer(handler)
-
-	// 10. Log startup summary
+func logServeStartup(cmd *cobra.Command, cfg *config.Config, logger *slog.Logger) {
+	warnOnInsecureRemoteTCPBind(logger, cfg)
 	banner.Render(cmd.ErrOrStderr(), banner.Info{
 		Listen:    listenerAddr(cfg),
 		Upstream:  cfg.Upstream.Socket,
@@ -168,41 +175,51 @@ func runServe(cmd *cobra.Command, args []string) error {
 		"rules", len(cfg.Rules),
 		"log_level", cfg.Log.Level,
 	)
+}
 
-	// Start serving in background
+func serveUntilShutdown(server *http.Server, ln net.Listener, logger *slog.Logger, deps *serveDeps) error {
 	errCh := make(chan error, 1)
-	go startServing(server, ln, errCh)
+	go deps.startServing(server, ln, errCh)
 
-	// 11. Wait for signal
+	if err := waitForServeStop(errCh, logger, deps); err != nil {
+		return err
+	}
+
+	shutdownServeServer(server, logger, deps)
+	return nil
+}
+
+func waitForServeStop(errCh <-chan error, logger *slog.Logger, deps *serveDeps) error {
 	sigCh := make(chan os.Signal, 1)
-	notifySignals(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	deps.notifySignals(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
 	select {
 	case sig := <-sigCh:
 		logger.Info("shutdown signal received", "signal", sig.String())
+		return nil
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
 			return fmt.Errorf("server error: %w", err)
 		}
+		return nil
 	}
+}
 
-	// 12. Graceful shutdown
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGracePeriod)
+func shutdownServeServer(server *http.Server, logger *slog.Logger, deps *serveDeps) {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), deps.shutdownGracePeriod)
 	defer cancel()
 
-	if err := shutdownServer(server, shutdownCtx); err != nil {
+	if err := deps.shutdownServer(server, shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}
+}
 
-	// Remove socket file
+func cleanupServeSocket(cfg *config.Config, logger *slog.Logger, deps *serveDeps) {
 	if cfg.Listen.Socket != "" {
-		if err := removePath(cfg.Listen.Socket); err != nil && !os.IsNotExist(err) {
+		if err := deps.removePath(cfg.Listen.Socket); err != nil && !os.IsNotExist(err) {
 			logger.Error("remove socket error", "socket", cfg.Listen.Socket, "error", err)
 		}
 	}
-
-	logger.Info("sockguard stopped")
-	return nil
 }
 
 func newHTTPServer(handler http.Handler) *http.Server {
@@ -210,12 +227,18 @@ func newHTTPServer(handler http.Handler) *http.Server {
 		Handler: handler,
 		// Docker attach/logs/events can hold request/response bodies open for long periods.
 		// A non-zero ReadTimeout breaks those streaming APIs, so we intentionally leave it disabled.
+		// WriteTimeout stays disabled for the same reason: long-lived streamed responses and hijacked
+		// upgrade sessions must not be cut off by a generic response-write deadline.
 		// ReadHeaderTimeout still bounds header parsing time, which partially mitigates slowloris
 		// attacks on TCP listeners without affecting long-lived upgraded/streaming requests.
+		// IdleTimeout reaps keep-alive connections that go quiescent after a response completes;
+		// it does not terminate active response bodies or hijacked upgrade streams.
 		// MaxHeaderBytes is pinned to 1 MiB explicitly so the stdlib default does not become
 		// a silent, unreviewed part of Sockguard's network hardening posture.
 		ReadTimeout:       0,
+		WriteTimeout:      0,
 		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
 	}
 }
@@ -284,69 +307,8 @@ func applyStringFlagOverride(cmd *cobra.Command, name string, set func(string)) 
 }
 
 // createListener creates a Unix socket or TCP listener based on config.
-func createListener(cfg *config.Config) (net.Listener, error) {
-	if cfg.Listen.Socket != "" {
-		mode, err := strconv.ParseUint(cfg.Listen.SocketMode, 8, 32)
-		if err != nil {
-			return nil, fmt.Errorf("invalid socket_mode %q: %w", cfg.Listen.SocketMode, err)
-		}
-
-		ln, err := listenUnixSocket(cfg.Listen.Socket, os.FileMode(mode))
-		if err != nil {
-			return nil, err
-		}
-
-		return ln, nil
-	}
-
-	// Fall back to TCP
-	return listenNetwork("tcp", cfg.Listen.Address)
-}
-
-func listenUnixSocket(path string, mode os.FileMode) (net.Listener, error) {
-	return withUmask(socketCreateUmask(mode), func() (net.Listener, error) {
-		ln, err := listenNetwork("unix", path)
-		if err == nil {
-			return ln, nil
-		}
-		if !isAddrInUseFn(err) {
-			return nil, err
-		}
-
-		info, statErr := lstatPath(path)
-		if statErr != nil {
-			return nil, fmt.Errorf("socket path already in use and could not inspect %q: %w", path, statErr)
-		}
-		if info.Mode()&os.ModeSocket == 0 {
-			return nil, fmt.Errorf("socket path %q exists and is not a socket", path)
-		}
-		if removeErr := removePath(path); removeErr != nil {
-			if !os.IsNotExist(removeErr) {
-				return nil, fmt.Errorf("remove stale socket: %w", removeErr)
-			}
-		}
-
-		ln, err = listenNetwork("unix", path)
-		if err != nil {
-			return nil, err
-		}
-		return ln, nil
-	})
-}
-
 func socketCreateUmask(mode os.FileMode) int {
 	return int(0o777 &^ mode.Perm())
-}
-
-func withUmask(mask int, fn func() (net.Listener, error)) (net.Listener, error) {
-	umaskMu.Lock()
-	defer umaskMu.Unlock()
-
-	previous := syscallUmask(mask)
-	ln, err := fn()
-	syscallUmask(previous)
-
-	return ln, err
 }
 
 func isAddrInUse(err error) bool {
@@ -374,4 +336,28 @@ func listenerAddr(cfg *config.Config) string {
 		return "unix:" + cfg.Listen.Socket
 	}
 	return "tcp://" + cfg.Listen.Address
+}
+
+func warnOnInsecureRemoteTCPBind(logger *slog.Logger, cfg *config.Config) {
+	if cfg.Listen.Socket != "" || !cfg.Listen.InsecureAllowPlainTCP || cfg.Listen.TLS.Complete() || !config.IsNonLoopbackTCPAddress(cfg.Listen.Address) {
+		return
+	}
+
+	logger.Warn("plaintext TCP listener is exposed beyond loopback",
+		"listen", listenerAddr(cfg),
+		"recommendation", "configure listen.tls for mTLS, bind 127.0.0.1:<port>, or use listen.socket",
+	)
+}
+
+func isWildcardTCPBind(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
 }

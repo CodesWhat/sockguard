@@ -22,6 +22,10 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("listen.socket", defaults.Listen.Socket)
 	v.SetDefault("listen.socket_mode", defaults.Listen.SocketMode)
 	v.SetDefault("listen.address", defaults.Listen.Address)
+	v.SetDefault("listen.insecure_allow_plain_tcp", defaults.Listen.InsecureAllowPlainTCP)
+	v.SetDefault("listen.tls.cert_file", defaults.Listen.TLS.CertFile)
+	v.SetDefault("listen.tls.key_file", defaults.Listen.TLS.KeyFile)
+	v.SetDefault("listen.tls.client_ca_file", defaults.Listen.TLS.ClientCAFile)
 	v.SetDefault("upstream.socket", defaults.Upstream.Socket)
 	v.SetDefault("log.level", defaults.Log.Level)
 	v.SetDefault("log.format", defaults.Log.Format)
@@ -30,6 +34,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("response.deny_verbosity", defaults.Response.DenyVerbosity)
 	v.SetDefault("health.enabled", defaults.Health.Enabled)
 	v.SetDefault("health.path", defaults.Health.Path)
+	v.SetDefault("insecure_allow_body_blind_writes", defaults.InsecureAllowBodyBlindWrites)
 
 	// Read YAML file if it exists
 	if configPath != "" {

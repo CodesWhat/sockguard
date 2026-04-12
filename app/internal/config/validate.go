@@ -3,13 +3,7 @@ package config
 import (
 	"fmt"
 	"strings"
-
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/logging"
 )
-
-var compileRulesFn = CompileRules
-var compileFilterRule = filter.CompileRule
 
 // ValidationError holds multiple validation errors.
 type ValidationError struct {
@@ -21,20 +15,13 @@ func (e *ValidationError) Error() string {
 }
 
 // Validate checks a Config for correctness, returning a ValidationError
-// if any problems are found. On success it returns the compiled filter rules
-// that the server should enforce.
-func Validate(cfg *Config) ([]*filter.CompiledRule, error) {
+// if any problems are found.
+func Validate(cfg *Config) error {
 	errs := validateBasic(cfg)
 	if len(errs) > 0 {
-		return nil, &ValidationError{Errors: errs}
+		return &ValidationError{Errors: errs}
 	}
-
-	compiled, err := compileRulesFn(cfg.Rules)
-	if err != nil {
-		return nil, &ValidationError{Errors: []string{err.Error()}}
-	}
-
-	return compiled, nil
+	return nil
 }
 
 func validateBasic(cfg *Config) []string {
@@ -43,6 +30,10 @@ func validateBasic(cfg *Config) []string {
 	// At least one listener
 	if cfg.Listen.Socket == "" && cfg.Listen.Address == "" {
 		errs = append(errs, "at least one listener required (listen.socket or listen.address)")
+	}
+
+	if cfg.Listen.Socket == "" && cfg.Listen.Address != "" {
+		errs = append(errs, validateTCPListenerSecurity(cfg)...)
 	}
 
 	// Non-empty upstream
@@ -67,7 +58,7 @@ func validateBasic(cfg *Config) []string {
 	}
 
 	// Log output must resolve to stderr, stdout, or a local file path.
-	if err := logging.ValidateOutput(cfg.Log.Output); err != nil {
+	if err := validateLogOutput(cfg.Log.Output); err != nil {
 		errs = append(errs, err.Error())
 	}
 
@@ -107,30 +98,25 @@ func validateBasic(cfg *Config) []string {
 	return errs
 }
 
-// CompileRules converts RuleConfig entries into compiled filter rules.
-func CompileRules(rules []RuleConfig) ([]*filter.CompiledRule, error) {
-	compiled := make([]*filter.CompiledRule, 0, len(rules))
-	for i, r := range rules {
-		methods := splitMethods(r.Match.Method)
-		cr, err := compileFilterRule(filter.Rule{
-			Methods: methods,
-			Pattern: r.Match.Path,
-			Action:  filter.Action(r.Action),
-			Reason:  r.Reason,
-			Index:   i,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("rule %d: %w", i+1, err)
-		}
-		compiled = append(compiled, cr)
-	}
-	return compiled, nil
-}
+func validateTCPListenerSecurity(cfg *Config) []string {
+	var errs []string
 
-func splitMethods(value string) []string {
-	methods := strings.Split(value, ",")
-	for i := range methods {
-		methods[i] = strings.TrimSpace(methods[i])
+	if cfg.Listen.TLS.Enabled() && !cfg.Listen.TLS.Complete() {
+		errs = append(errs, "listen.tls requires cert_file, key_file, and client_ca_file together")
+		return errs
 	}
-	return methods
+
+	if cfg.Listen.TLS.Complete() {
+		if _, err := BuildMutualTLSServerConfig(cfg.Listen.TLS); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+
+	if IsNonLoopbackTCPAddress(cfg.Listen.Address) && !cfg.Listen.InsecureAllowPlainTCP && !cfg.Listen.TLS.Complete() {
+		errs = append(errs,
+			fmt.Sprintf("non-loopback TCP listener %q requires listen.tls mTLS config or listen.insecure_allow_plain_tcp=true", cfg.Listen.Address),
+		)
+	}
+
+	return errs
 }

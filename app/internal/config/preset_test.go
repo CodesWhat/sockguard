@@ -34,17 +34,12 @@ func TestPresetConfigsValidate(t *testing.T) {
 				t.Fatalf("Load(%s) error: %v", name, err)
 			}
 
-			compiled, err := Validate(cfg)
-			if err != nil {
+			if err := Validate(cfg); err != nil {
 				t.Fatalf("Validate(%s) error: %v", name, err)
 			}
 
-			if len(compiled) == 0 {
-				t.Errorf("%s: expected at least one compiled rule, got 0", name)
-			}
-
-			if len(compiled) != len(cfg.Rules) {
-				t.Errorf("%s: compiled %d rules, but config has %d", name, len(compiled), len(cfg.Rules))
+			if len(cfg.Rules) == 0 {
+				t.Errorf("%s: expected at least one configured rule, got 0", name)
 			}
 		})
 	}

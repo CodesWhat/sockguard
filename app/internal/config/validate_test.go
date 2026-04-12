@@ -1,24 +1,85 @@
 package config
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/testcert"
 )
 
 func TestValidateDefaults(t *testing.T) {
 	cfg := Defaults()
-	if _, err := Validate(&cfg); err != nil {
+	if err := Validate(&cfg); err != nil {
 		t.Errorf("Validate(Defaults()) = %v, want nil", err)
+	}
+}
+
+func TestValidateRejectsNonLoopbackPlainTCPWithoutExplicitInsecureOptIn(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Address = ":2375"
+	cfg.Listen.Socket = ""
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for non-loopback plaintext TCP")
+	}
+	if !strings.Contains(err.Error(), "listen.tls") {
+		t.Fatalf("expected mTLS requirement in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "listen.insecure_allow_plain_tcp") {
+		t.Fatalf("expected insecure opt-in hint in error, got: %v", err)
+	}
+}
+
+func TestValidateAllowsNonLoopbackPlainTCPWithExplicitInsecureOptIn(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Address = ":2375"
+	cfg.Listen.Socket = ""
+	cfg.Listen.InsecureAllowPlainTCP = true
+
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+func TestValidateRejectsIncompleteMutualTLSConfig(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Address = ":2376"
+	cfg.Listen.Socket = ""
+	cfg.Listen.TLS.CertFile = "/tmp/server-cert.pem"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for incomplete listen.tls config")
+	}
+	if !strings.Contains(err.Error(), "listen.tls") {
+		t.Fatalf("expected listen.tls error, got: %v", err)
+	}
+}
+
+func TestValidateAcceptsNonLoopbackTCPWithMutualTLS(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("WriteMutualTLSBundle: %v", err)
+	}
+
+	cfg := Defaults()
+	cfg.Listen.Address = ":2376"
+	cfg.Listen.Socket = ""
+	cfg.Listen.TLS.CertFile = bundle.ServerCertFile
+	cfg.Listen.TLS.KeyFile = bundle.ServerKeyFile
+	cfg.Listen.TLS.ClientCAFile = bundle.CAFile
+
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
 	}
 }
 
 func TestValidateMissingUpstream(t *testing.T) {
 	cfg := Defaults()
 	cfg.Upstream.Socket = ""
-	_, err := Validate(&cfg)
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for missing upstream")
 	}
@@ -31,7 +92,7 @@ func TestValidateMissingListeners(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Socket = ""
 	cfg.Listen.Address = ""
-	_, err := Validate(&cfg)
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for missing listeners")
 	}
@@ -43,7 +104,7 @@ func TestValidateMissingListeners(t *testing.T) {
 func TestValidateInvalidLogLevel(t *testing.T) {
 	cfg := Defaults()
 	cfg.Log.Level = "verbose"
-	_, err := Validate(&cfg)
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid log level")
 	}
@@ -55,7 +116,7 @@ func TestValidateInvalidLogLevel(t *testing.T) {
 func TestValidateInvalidLogFormat(t *testing.T) {
 	cfg := Defaults()
 	cfg.Log.Format = "xml"
-	_, err := Validate(&cfg)
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid log format")
 	}
@@ -67,7 +128,7 @@ func TestValidateInvalidLogFormat(t *testing.T) {
 func TestValidateInvalidLogOutput(t *testing.T) {
 	cfg := Defaults()
 	cfg.Log.Output = "   "
-	_, err := Validate(&cfg)
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid log output")
 	}
@@ -80,7 +141,7 @@ func TestValidateRejectsNonLocalLogOutputPath(t *testing.T) {
 	cfg := Defaults()
 	cfg.Log.Output = "../sockguard.log"
 
-	_, err := Validate(&cfg)
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for non-local log output path")
 	}
@@ -92,7 +153,7 @@ func TestValidateRejectsNonLocalLogOutputPath(t *testing.T) {
 func TestValidateEmptyRules(t *testing.T) {
 	cfg := Defaults()
 	cfg.Rules = nil
-	_, err := Validate(&cfg)
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for empty rules")
 	}
@@ -103,10 +164,9 @@ func TestValidateEmptyRules(t *testing.T) {
 
 func TestValidateInvalidAction(t *testing.T) {
 	cfg := Defaults()
-	cfg.Rules = []RuleConfig{
-		{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "permit"},
-	}
-	_, err := Validate(&cfg)
+	cfg.Rules = []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "permit"}}
+
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid action")
 	}
@@ -117,11 +177,9 @@ func TestValidateInvalidAction(t *testing.T) {
 
 func TestValidateMissingRuleFields(t *testing.T) {
 	cfg := Defaults()
-	cfg.Rules = []RuleConfig{
-		{Match: MatchConfig{Method: "", Path: ""}, Action: "allow"},
-	}
+	cfg.Rules = []RuleConfig{{Match: MatchConfig{Method: "", Path: ""}, Action: "allow"}}
 
-	_, err := Validate(&cfg)
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for missing rule fields")
 	}
@@ -136,7 +194,7 @@ func TestValidateMissingRuleFields(t *testing.T) {
 func TestValidateInvalidHealthPath(t *testing.T) {
 	cfg := Defaults()
 	cfg.Health.Path = "health"
-	_, err := Validate(&cfg)
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid health path")
 	}
@@ -149,7 +207,7 @@ func TestValidateInvalidDenyResponseVerbosity(t *testing.T) {
 	cfg := Defaults()
 	cfg.Response.DenyVerbosity = "chatty"
 
-	_, err := Validate(&cfg)
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid deny response verbosity")
 	}
@@ -162,7 +220,8 @@ func TestValidateMultipleErrors(t *testing.T) {
 	cfg := Defaults()
 	cfg.Upstream.Socket = ""
 	cfg.Log.Level = "verbose"
-	_, err := Validate(&cfg)
+
+	err := Validate(&cfg)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -181,82 +240,8 @@ func TestValidateCommaSeparatedMethods(t *testing.T) {
 		{Match: MatchConfig{Method: "GET,HEAD", Path: "/containers/**"}, Action: "allow"},
 		{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 	}
-	if _, err := Validate(&cfg); err != nil {
+
+	if err := Validate(&cfg); err != nil {
 		t.Errorf("Validate() = %v, want nil for comma-separated methods", err)
-	}
-}
-
-func TestCompileRules(t *testing.T) {
-	rules := Defaults().Rules
-	compiled, err := CompileRules(rules)
-	if err != nil {
-		t.Fatalf("CompileRules() error = %v", err)
-	}
-	if len(compiled) != len(rules) {
-		t.Errorf("got %d compiled rules, want %d", len(compiled), len(rules))
-	}
-}
-
-func TestCompileRulesCommaSeparated(t *testing.T) {
-	rules := []RuleConfig{
-		{Match: MatchConfig{Method: "POST,PUT,DELETE", Path: "/**"}, Action: "deny"},
-	}
-	compiled, err := CompileRules(rules)
-	if err != nil {
-		t.Fatalf("CompileRules() error = %v", err)
-	}
-	if len(compiled) != 1 {
-		t.Errorf("got %d rules, want 1", len(compiled))
-	}
-}
-
-func TestValidateReturnsCompiledRules(t *testing.T) {
-	cfg := Defaults()
-
-	compiled, err := Validate(&cfg)
-	if err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-	if len(compiled) != len(cfg.Rules) {
-		t.Errorf("got %d compiled rules, want %d", len(compiled), len(cfg.Rules))
-	}
-}
-
-func TestValidateCompileError(t *testing.T) {
-	originalCompileRules := compileRulesFn
-	compileRulesFn = func([]RuleConfig) ([]*filter.CompiledRule, error) {
-		return nil, errors.New("boom")
-	}
-	t.Cleanup(func() {
-		compileRulesFn = originalCompileRules
-	})
-
-	cfg := Defaults()
-	_, err := Validate(&cfg)
-	if err == nil {
-		t.Fatal("expected Validate() to fail")
-	}
-	if !strings.Contains(err.Error(), "boom") {
-		t.Fatalf("expected compile error in result, got: %v", err)
-	}
-}
-
-func TestCompileRulesCompileRuleError(t *testing.T) {
-	originalCompileFilterRule := compileFilterRule
-	compileFilterRule = func(filter.Rule) (*filter.CompiledRule, error) {
-		return nil, errors.New("boom")
-	}
-	t.Cleanup(func() {
-		compileFilterRule = originalCompileFilterRule
-	})
-
-	_, err := CompileRules([]RuleConfig{
-		{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},
-	})
-	if err == nil {
-		t.Fatal("expected CompileRules() to fail")
-	}
-	if !strings.Contains(err.Error(), "rule 1: boom") {
-		t.Fatalf("expected wrapped rule error, got: %v", err)
 	}
 }

@@ -272,7 +272,7 @@ func TestFullProxyChainHijackDenied(t *testing.T) {
 func newFullProxyChainHandler(t *testing.T, socketPath string, rules []config.RuleConfig) (http.Handler, *bytes.Buffer) {
 	t.Helper()
 
-	compiled, err := config.CompileRules(rules)
+	compiled, err := compileRuleConfigsForTest(rules)
 	if err != nil {
 		t.Fatalf("compile rules: %v", err)
 	}
@@ -286,6 +286,39 @@ func newFullProxyChainHandler(t *testing.T, socketPath string, rules []config.Ru
 	handler = logging.AccessLogMiddleware(logger)(handler)
 
 	return handler, &logBuf
+}
+
+func compileRuleConfigsForTest(rules []config.RuleConfig) ([]*filter.CompiledRule, error) {
+	compiled := make([]*filter.CompiledRule, 0, len(rules))
+	for i, rule := range rules {
+		spec := filter.Rule{
+			Methods: splitConfiguredMethods(rule.Match.Method),
+			Pattern: rule.Match.Path,
+			Action:  filter.Action(rule.Action),
+			Reason:  rule.Reason,
+			Index:   i,
+		}
+
+		compiledRule, err := filter.CompileRule(spec)
+		if err != nil {
+			return nil, err
+		}
+		compiled = append(compiled, compiledRule)
+	}
+	return compiled, nil
+}
+
+func splitConfiguredMethods(methods string) []string {
+	parts := strings.Split(methods, ",")
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		result = append(result, trimmed)
+	}
+	return result
 }
 
 func startProxyChainServer(t *testing.T, handler http.Handler) (string, func()) {

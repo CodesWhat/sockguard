@@ -3,8 +3,62 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func FuzzLoadYAML(f *testing.F) {
+	f.Add([]byte(""))
+	f.Add([]byte("listen:\n  address: 127.0.0.1:2375\n"))
+	f.Add([]byte("rules:\n  - match: { method: GET, path: /_ping }\n    action: allow\n"))
+	f.Add([]byte("rules: definitely-not-a-list\n"))
+
+	f.Fuzz(func(t *testing.T, yaml []byte) {
+		restoreEnv := snapshotSockguardEnv(t)
+		defer restoreEnv()
+
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "fuzz.yaml")
+		if err := os.WriteFile(cfgPath, yaml, 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+
+		_, _ = Load(cfgPath)
+	})
+}
+
+func snapshotSockguardEnv(t *testing.T) func() {
+	t.Helper()
+
+	type envVar struct {
+		name    string
+		value   string
+		present bool
+	}
+
+	var saved []envVar
+	for _, kv := range os.Environ() {
+		name, value, ok := strings.Cut(kv, "=")
+		if !ok || !strings.HasPrefix(name, "SOCKGUARD_") {
+			continue
+		}
+		saved = append(saved, envVar{name: name, value: value, present: true})
+	}
+
+	return func() {
+		for _, kv := range os.Environ() {
+			name, _, ok := strings.Cut(kv, "=")
+			if ok && strings.HasPrefix(name, "SOCKGUARD_") {
+				_ = os.Unsetenv(name)
+			}
+		}
+		for _, env := range saved {
+			if env.present {
+				_ = os.Setenv(env.name, env.value)
+			}
+		}
+	}
+}
 
 func TestLoadDefaults(t *testing.T) {
 	// Load with non-existent file — should return defaults
@@ -15,10 +69,10 @@ func TestLoadDefaults(t *testing.T) {
 
 	defaults := Defaults()
 
-	// The default listener must be TCP :2375 to match tecnativa/docker-socket-proxy
-	// and linuxserver/socket-proxy. Flipping this is a breaking change.
-	if defaults.Listen.Address != ":2375" {
-		t.Errorf("Defaults().Listen.Address = %q, want %q", defaults.Listen.Address, ":2375")
+	// The default listener must stay loopback-only so the built-in config is safe
+	// without exposing the Docker API proxy on the network.
+	if defaults.Listen.Address != "127.0.0.1:2375" {
+		t.Errorf("Defaults().Listen.Address = %q, want %q", defaults.Listen.Address, "127.0.0.1:2375")
 	}
 	if defaults.Listen.Socket != "" {
 		t.Errorf("Defaults().Listen.Socket = %q, want empty (opt-in only)", defaults.Listen.Socket)
@@ -134,10 +188,17 @@ rules:
 }
 
 func TestLoadEnvOverrides(t *testing.T) {
+	t.Setenv("SOCKGUARD_LISTEN_ADDRESS", "0.0.0.0:1234")
+	t.Setenv("SOCKGUARD_LISTEN_SOCKET", "/env/sockguard.sock")
 	t.Setenv("SOCKGUARD_UPSTREAM_SOCKET", "/env/docker.sock")
 	t.Setenv("SOCKGUARD_LOG_LEVEL", "warn")
 	t.Setenv("SOCKGUARD_LOG_OUTPUT", "stdout")
 	t.Setenv("SOCKGUARD_RESPONSE_DENY_VERBOSITY", "minimal")
+	t.Setenv("SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP", "true")
+	t.Setenv("SOCKGUARD_LISTEN_TLS_CERT_FILE", "/env/server-cert.pem")
+	t.Setenv("SOCKGUARD_LISTEN_TLS_KEY_FILE", "/env/server-key.pem")
+	t.Setenv("SOCKGUARD_LISTEN_TLS_CLIENT_CA_FILE", "/env/ca.pem")
+	t.Setenv("SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES", "true")
 
 	cfg, err := Load("/nonexistent/path.yaml")
 	if err != nil {
@@ -147,6 +208,12 @@ func TestLoadEnvOverrides(t *testing.T) {
 	if cfg.Upstream.Socket != "/env/docker.sock" {
 		t.Errorf("Upstream.Socket = %q, want /env/docker.sock", cfg.Upstream.Socket)
 	}
+	if cfg.Listen.Address != "0.0.0.0:1234" {
+		t.Errorf("Listen.Address = %q, want 0.0.0.0:1234", cfg.Listen.Address)
+	}
+	if cfg.Listen.Socket != "/env/sockguard.sock" {
+		t.Errorf("Listen.Socket = %q, want /env/sockguard.sock", cfg.Listen.Socket)
+	}
 	if cfg.Log.Level != "warn" {
 		t.Errorf("Log.Level = %q, want warn", cfg.Log.Level)
 	}
@@ -155,6 +222,21 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 	if cfg.Response.DenyVerbosity != "minimal" {
 		t.Errorf("Response.DenyVerbosity = %q, want minimal", cfg.Response.DenyVerbosity)
+	}
+	if !cfg.Listen.InsecureAllowPlainTCP {
+		t.Errorf("Listen.InsecureAllowPlainTCP = %v, want true", cfg.Listen.InsecureAllowPlainTCP)
+	}
+	if cfg.Listen.TLS.CertFile != "/env/server-cert.pem" {
+		t.Errorf("Listen.TLS.CertFile = %q, want /env/server-cert.pem", cfg.Listen.TLS.CertFile)
+	}
+	if cfg.Listen.TLS.KeyFile != "/env/server-key.pem" {
+		t.Errorf("Listen.TLS.KeyFile = %q, want /env/server-key.pem", cfg.Listen.TLS.KeyFile)
+	}
+	if cfg.Listen.TLS.ClientCAFile != "/env/ca.pem" {
+		t.Errorf("Listen.TLS.ClientCAFile = %q, want /env/ca.pem", cfg.Listen.TLS.ClientCAFile)
+	}
+	if !cfg.InsecureAllowBodyBlindWrites {
+		t.Errorf("InsecureAllowBodyBlindWrites = %v, want true", cfg.InsecureAllowBodyBlindWrites)
 	}
 }
 

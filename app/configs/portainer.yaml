@@ -18,6 +18,12 @@ health:
   enabled: true
   path: /health
 
+# Portainer needs broad Docker write access, including body-sensitive endpoints
+# such as container create, exec, build, and swarm management. Sockguard cannot
+# inspect those request bodies yet, so this preset opts into body-blind writes
+# explicitly until request body inspection lands.
+insecure_allow_body_blind_writes: true
+
 rules:
   # Health and metadata
   - match: { method: "*", path: "/_ping" }

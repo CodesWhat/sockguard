@@ -17,6 +17,11 @@ health:
   enabled: true
   path: /health
 
+# Watchtower recreates containers and can use exec lifecycle hooks. Sockguard
+# cannot inspect those request bodies yet, so this preset opts into body-blind
+# write access explicitly until request body inspection lands.
+insecure_allow_body_blind_writes: true
+
 rules:
   # Health and metadata
   - match: { method: GET, path: "/_ping" }
