@@ -222,30 +222,50 @@ func newHTTPServer(handler http.Handler) *http.Server {
 
 // applyFlagOverrides applies CLI flags that were explicitly set.
 func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) error {
-	if err := applyStringFlagOverride(cmd, "listen-socket", func(v string) {
-		cfg.Listen.Socket = v
-	}); err != nil {
-		return err
-	}
-	if err := applyStringFlagOverride(cmd, "upstream-socket", func(v string) {
-		cfg.Upstream.Socket = v
-	}); err != nil {
-		return err
-	}
-	if err := applyStringFlagOverride(cmd, "log-level", func(v string) {
-		cfg.Log.Level = v
-	}); err != nil {
-		return err
-	}
-	if err := applyStringFlagOverride(cmd, "log-format", func(v string) {
-		cfg.Log.Format = v
-	}); err != nil {
-		return err
-	}
-	if err := applyStringFlagOverride(cmd, "deny-response-verbosity", func(v string) {
-		cfg.Response.DenyVerbosity = v
-	}); err != nil {
-		return err
+	return applyStringFlagOverrides(cmd, []stringFlagOverride{
+		{
+			name: "listen-socket",
+			set: func(v string) {
+				cfg.Listen.Socket = v
+			},
+		},
+		{
+			name: "upstream-socket",
+			set: func(v string) {
+				cfg.Upstream.Socket = v
+			},
+		},
+		{
+			name: "log-level",
+			set: func(v string) {
+				cfg.Log.Level = v
+			},
+		},
+		{
+			name: "log-format",
+			set: func(v string) {
+				cfg.Log.Format = v
+			},
+		},
+		{
+			name: "deny-response-verbosity",
+			set: func(v string) {
+				cfg.Response.DenyVerbosity = v
+			},
+		},
+	})
+}
+
+type stringFlagOverride struct {
+	name string
+	set  func(string)
+}
+
+func applyStringFlagOverrides(cmd *cobra.Command, overrides []stringFlagOverride) error {
+	for _, override := range overrides {
+		if err := applyStringFlagOverride(cmd, override.name, override.set); err != nil {
+			return err
+		}
 	}
 	return nil
 }

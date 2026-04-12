@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Collapsed config validation onto `config.Validate` as the single validation-and-compilation entry point so `serve`, `validate`, and preset checks all exercise the same path.
 - Added an end-to-end serve-path precedence regression that proves explicit CLI flags override env, env overrides YAML, and YAML overrides defaults across conflicting config sources.
 - Documented the full `flag > env > file > default` precedence directly in `config.Load` so the code-level merge contract is visible where configuration sources come together.
+- Collapsed the repeated `applyStringFlagOverride` calls in `serve.go` behind a table-driven helper so CLI override coverage and future flag additions stay aligned in one path.
 
 ## [0.1.0] - 2026-04-11
 

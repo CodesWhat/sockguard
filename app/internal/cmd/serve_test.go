@@ -329,6 +329,81 @@ func TestApplyStringFlagOverride(t *testing.T) {
 	}
 }
 
+func TestApplyStringFlagOverrides(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().String("log-level", "", "")
+	cmd.Flags().String("log-format", "", "")
+	if err := cmd.Flags().Set("log-level", "debug"); err != nil {
+		t.Fatalf("set log-level: %v", err)
+	}
+	if err := cmd.Flags().Set("log-format", "text"); err != nil {
+		t.Fatalf("set log-format: %v", err)
+	}
+
+	gotLevel := "info"
+	gotFormat := "json"
+	err := applyStringFlagOverrides(cmd, []stringFlagOverride{
+		{
+			name: "log-level",
+			set: func(v string) {
+				gotLevel = v
+			},
+		},
+		{
+			name: "log-format",
+			set: func(v string) {
+				gotFormat = v
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("applyStringFlagOverrides() error = %v", err)
+	}
+	if gotLevel != "debug" {
+		t.Fatalf("log level = %q, want %q", gotLevel, "debug")
+	}
+	if gotFormat != "text" {
+		t.Fatalf("log format = %q, want %q", gotFormat, "text")
+	}
+}
+
+func TestApplyStringFlagOverridesReturnsFirstError(t *testing.T) {
+	cmd := &cobra.Command{Use: "test"}
+	cmd.Flags().Int("log-level", 0, "")
+	cmd.Flags().String("log-format", "", "")
+	if err := cmd.Flags().Set("log-level", "1"); err != nil {
+		t.Fatalf("set log-level: %v", err)
+	}
+	if err := cmd.Flags().Set("log-format", "text"); err != nil {
+		t.Fatalf("set log-format: %v", err)
+	}
+
+	called := false
+	err := applyStringFlagOverrides(cmd, []stringFlagOverride{
+		{
+			name: "log-level",
+			set: func(string) {
+				t.Fatal("setter should not be called when GetString fails")
+			},
+		},
+		{
+			name: "log-format",
+			set: func(string) {
+				called = true
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected applyStringFlagOverrides to fail when the first flag is not a string")
+	}
+	if !strings.Contains(err.Error(), "get log-level flag") {
+		t.Fatalf("expected get log-level error, got: %v", err)
+	}
+	if called {
+		t.Fatal("expected overrides after the first error to be skipped")
+	}
+}
+
 func TestApplyStringFlagOverrideUnchangedNoOp(t *testing.T) {
 	cmd := &cobra.Command{Use: "test"}
 	cmd.Flags().String("log-level", "", "")
