@@ -103,6 +103,18 @@ test("path mismatches continue scanning and eventually default deny", () => {
   });
 });
 
+test("deny rules without an explicit reason use the default deny match reason", () => {
+  const compiled = compileRules([
+    { method: "DELETE", path: "/containers/*", action: "deny" },
+  ]);
+
+  assert.deepEqual(evaluateCompiled(compiled, "DELETE", "/containers/sockguard"), {
+    action: "deny",
+    ruleIndex: 0,
+    reason: "matched deny rule",
+  });
+});
+
 test("repeated evaluations reuse compiled regexes for the same rule set", () => {
   const NativeRegExp = globalThis.RegExp;
   let constructions = 0;
