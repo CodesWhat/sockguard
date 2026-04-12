@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -751,6 +752,46 @@ func TestHandleHijack_StripsHopByHopHeadersBeforeForwarding(t *testing.T) {
 	}
 }
 
+func TestNewUpstreamHijackRequest_BuildsMinimalOutboundRequest(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/containers/abc/attach?stream=1", strings.NewReader("stdin"))
+	req.RequestURI = "/containers/abc/attach?stream=1"
+	req.RemoteAddr = "192.0.2.10:12345"
+	req.TLS = &tls.ConnectionState{}
+	req.Response = &http.Response{StatusCode: http.StatusTeapot}
+	req.TransferEncoding = []string{"chunked"}
+	req.Trailer = http.Header{"X-Trace": []string{"secret"}}
+	req.Header.Set("Connection", "keep-alive")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("X-Test", "ok")
+
+	upstreamReq := newUpstreamHijackRequest(req)
+
+	if upstreamReq == req {
+		t.Fatal("expected a distinct request")
+	}
+	if upstreamReq.RequestURI != "" {
+		t.Fatalf("RequestURI = %q, want empty", upstreamReq.RequestURI)
+	}
+	if upstreamReq.RemoteAddr != "" {
+		t.Fatalf("RemoteAddr = %q, want empty", upstreamReq.RemoteAddr)
+	}
+	if upstreamReq.TLS != nil {
+		t.Fatalf("TLS = %#v, want nil", upstreamReq.TLS)
+	}
+	if upstreamReq.Response != nil {
+		t.Fatalf("Response = %#v, want nil", upstreamReq.Response)
+	}
+	if got := upstreamReq.Header.Get("X-Test"); got != "ok" {
+		t.Fatalf("X-Test = %q, want %q", got, "ok")
+	}
+	if got := upstreamReq.Header.Get("Connection"); got != "Upgrade" {
+		t.Fatalf("Connection = %q, want %q", got, "Upgrade")
+	}
+	if got := upstreamReq.Header.Get("Upgrade"); got != "tcp" {
+		t.Fatalf("Upgrade = %q, want %q", got, "tcp")
+	}
+}
+
 func TestHandleHijack_ErrorResponseEncodingFailures(t *testing.T) {
 	t.Run("dial failure", func(t *testing.T) {
 		writer := &erroringResponseWriter{}
@@ -838,6 +879,145 @@ func TestHandleHijack_ErrorResponseEncodingFailures(t *testing.T) {
 			t.Fatalf("status = %d, want %d", writer.status, http.StatusBadGateway)
 		}
 	})
+}
+
+func TestWriteHijackBadGateway(t *testing.T) {
+	t.Run("writes bad gateway json response", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+
+		writeHijackBadGateway(rec, slog.New(slog.NewTextHandler(io.Discard, nil)), "/containers/abc/attach", "failed to read upstream response")
+
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+		}
+
+		var body httpjson.ErrorResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("response body is not valid JSON: %v", err)
+		}
+		if body.Message != "failed to read upstream response" {
+			t.Fatalf("message = %q, want %q", body.Message, "failed to read upstream response")
+		}
+	})
+
+	t.Run("logs encode failure", func(t *testing.T) {
+		var logBuf safeBuffer
+		logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+		writeHijackBadGateway(&erroringResponseWriter{}, logger, "/containers/abc/attach", "failed to read upstream response")
+
+		logOutput := logBuf.String()
+		if !strings.Contains(logOutput, "hijack: failed to encode error response") {
+			t.Fatalf("expected encode failure log, got: %s", logOutput)
+		}
+		if !strings.Contains(logOutput, "/containers/abc/attach") {
+			t.Fatalf("expected request path in log, got: %s", logOutput)
+		}
+	})
+}
+
+func TestUpgradeHijackConnectionReturnsReadySession(t *testing.T) {
+	useHijackDeps(t)
+
+	upstreamConn := &funcConn{
+		writeFn: func(p []byte) (int, error) { return len(p), nil },
+	}
+	dialHijackUpstream = func(network, address string) (net.Conn, error) {
+		return upstreamConn, nil
+	}
+	readHijackResponse = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{"Connection": []string{"Upgrade"}, "Upgrade": []string{"tcp"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	}
+
+	clientConn := &funcConn{
+		writeFn: func(p []byte) (int, error) { return len(p), nil },
+	}
+	writer := newHijackTestWriter(clientConn, strings.NewReader(""))
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+
+	session, ok := upgradeHijackConnection(writer, req, "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if !ok {
+		t.Fatal("expected upgradeHijackConnection() to return a ready session")
+	}
+	if session == nil {
+		t.Fatal("expected non-nil hijack session")
+	}
+	if session.path != req.URL.Path {
+		t.Fatalf("session path = %q, want %q", session.path, req.URL.Path)
+	}
+	if session.upstreamConn != upstreamConn {
+		t.Fatal("expected upstream connection to be preserved in session")
+	}
+	if session.clientConn != clientConn {
+		t.Fatal("expected client connection to be preserved in session")
+	}
+	if session.upstreamBuf == nil {
+		t.Fatal("expected upstream reader buffer in session")
+	}
+	if session.clientBuf == nil {
+		t.Fatal("expected client read-writer in session")
+	}
+}
+
+func TestProxyHijackStreamsClosesConnections(t *testing.T) {
+	useHijackDeps(t)
+
+	copyCalls := 0
+	copyHijackBuffer = func(io.Writer, io.Reader, []byte) (int64, error) {
+		copyCalls++
+		return 0, io.EOF
+	}
+
+	var logs safeBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	clientClosed := 0
+	upstreamClosed := 0
+	clientConn := &funcConn{
+		closeFn: func() error {
+			clientClosed++
+			return nil
+		},
+	}
+	upstreamConn := &funcConn{
+		closeFn: func() error {
+			upstreamClosed++
+			return nil
+		},
+	}
+
+	proxyHijackStreams(&hijackSession{
+		path:         "/containers/abc/attach",
+		upstreamConn: upstreamConn,
+		upstreamBuf:  bufio.NewReader(strings.NewReader("")),
+		clientConn:   clientConn,
+		clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
+	}, logger)
+
+	if copyCalls != 2 {
+		t.Fatalf("copyHijackBuffer calls = %d, want 2", copyCalls)
+	}
+	if clientConn.closeWriteCalls == 0 {
+		t.Fatal("expected client CloseWrite to be attempted")
+	}
+	if upstreamConn.closeWriteCalls == 0 {
+		t.Fatal("expected upstream CloseWrite to be attempted")
+	}
+	if clientClosed != 1 {
+		t.Fatalf("client close calls = %d, want 1", clientClosed)
+	}
+	if upstreamClosed != 1 {
+		t.Fatalf("upstream close calls = %d, want 1", upstreamClosed)
+	}
+	if !strings.Contains(logs.String(), "connection closed") {
+		t.Fatalf("expected connection closed log, got %q", logs.String())
+	}
 }
 
 func TestHandleHijack_NonUpgradeFallbackEdgePaths(t *testing.T) {

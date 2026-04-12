@@ -59,6 +59,14 @@ var hopByHopHeaders = []string{
 	"Upgrade",
 }
 
+type hijackSession struct {
+	path         string
+	upstreamConn net.Conn
+	upstreamBuf  *bufio.Reader
+	clientConn   net.Conn
+	clientBuf    *bufio.ReadWriter
+}
+
 // HijackHandler wraps a standard handler and intercepts Docker API endpoints
 // that use HTTP connection upgrades (attach, exec start). For these endpoints,
 // it dials the upstream Docker socket directly and performs a native bidirectional
@@ -114,17 +122,30 @@ func defaultDialHijackUpstream(network, address string) (net.Conn, error) {
 	return dialHijackUpstreamWithTimeout(network, address, hijackDialTimeout)
 }
 
+func writeHijackBadGateway(w http.ResponseWriter, logger *slog.Logger, path, message string) {
+	if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{
+		Message: message,
+	}); encErr != nil {
+		logger.Warn("hijack: failed to encode error response", "error", encErr, "path", path)
+	}
+}
+
 func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) {
+	session, ok := upgradeHijackConnection(w, r, upstreamSocket, logger)
+	if !ok {
+		return
+	}
+
+	proxyHijackStreams(session, logger)
+}
+
+func upgradeHijackConnection(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) (*hijackSession, bool) {
 	// Dial upstream Docker socket
 	upstreamConn, err := dialHijackUpstream("unix", upstreamSocket)
 	if err != nil {
 		logger.Error("hijack: upstream dial failed", "error", err, "path", r.URL.Path)
-		if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{
-			Message: "upstream Docker socket unreachable",
-		}); encErr != nil {
-			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
-		}
-		return
+		writeHijackBadGateway(w, logger, r.URL.Path, "upstream Docker socket unreachable")
+		return nil, false
 	}
 
 	// Write a sanitized HTTP request to upstream.
@@ -134,12 +155,8 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	if err := upstreamReq.Write(upstreamConn); err != nil {
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: write request to upstream failed", "error", err, "path", r.URL.Path)
-		if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{
-			Message: "failed to forward request to upstream",
-		}); encErr != nil {
-			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
-		}
-		return
+		writeHijackBadGateway(w, logger, r.URL.Path, "failed to forward request to upstream")
+		return nil, false
 	}
 
 	// Read the upstream response. Use a large buffer so data arriving immediately
@@ -149,12 +166,8 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	if err != nil {
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: read upstream response failed", "error", err, "path", r.URL.Path)
-		if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{
-			Message: "failed to read upstream response",
-		}); encErr != nil {
-			logger.Warn("hijack: failed to encode error response", "error", encErr, "path", r.URL.Path)
-		}
-		return
+		writeHijackBadGateway(w, logger, r.URL.Path, "failed to read upstream response")
+		return nil, false
 	}
 
 	// If upstream didn't upgrade, fall back: write the response normally.
@@ -174,7 +187,7 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 				logger.Debug("hijack: error closing non-upgrade response body", "error", err, "path", r.URL.Path)
 			}
 		}
-		return
+		return nil, false
 	}
 
 	// Hijack the client connection
@@ -182,13 +195,13 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	if !ok {
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: ResponseWriter does not implement http.Hijacker", "path", r.URL.Path)
-		return
+		return nil, false
 	}
 	clientConn, clientBuf, err := hj.Hijack()
 	if err != nil {
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: client hijack failed", "error", err, "path", r.URL.Path)
-		return
+		return nil, false
 	}
 
 	// Write the 101 Switching Protocols response to the client
@@ -196,24 +209,34 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 		closeConn(logger, clientConn, "client connection", r.URL.Path)
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: write 101 to client failed", "error", err, "path", r.URL.Path)
-		return
+		return nil, false
 	}
 	if err := clientBuf.Flush(); err != nil {
 		closeConn(logger, clientConn, "client connection", r.URL.Path)
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: flush 101 to client failed", "error", err, "path", r.URL.Path)
-		return
+		return nil, false
 	}
 
 	logger.Debug("hijack: connection upgraded", "path", r.URL.Path)
 
+	return &hijackSession{
+		path:         r.URL.Path,
+		upstreamConn: upstreamConn,
+		upstreamBuf:  upstreamBuf,
+		clientConn:   clientConn,
+		clientBuf:    clientBuf,
+	}, true
+}
+
+func proxyHijackStreams(session *hijackSession, logger *slog.Logger) {
 	// Bidirectional copy with proper half-close signaling.
 	// When one direction reaches EOF, we signal the other side via CloseWrite
 	// so it knows no more data is coming (critical for stdin EOF → container stop).
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	reqPath := r.URL.Path
+	reqPath := session.path
 
 	// upstream → client
 	go func() {
@@ -225,12 +248,12 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 				logger.Error("hijack: panic in upstream→client copy", "panic", fmt.Sprint(v), "path", reqPath)
 			}
 		}()
-		src := withReadInactivityDeadline(upstreamBuf, upstreamConn, hijackInactivityTimeout)
-		dst := withWriteInactivityDeadline(clientConn, clientConn, hijackInactivityTimeout)
+		src := withReadInactivityDeadline(session.upstreamBuf, session.upstreamConn, hijackInactivityTimeout)
+		dst := withWriteInactivityDeadline(session.clientConn, session.clientConn, hijackInactivityTimeout)
 		if _, err := copyHijackBuffer(dst, src, buf); err != nil {
 			logger.Debug("hijack: upstream→client copy ended", "error", err, "path", reqPath)
 		}
-		closeWrite(clientConn)
+		closeWrite(session.clientConn)
 	}()
 
 	// client → upstream (stdin)
@@ -243,24 +266,34 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 				logger.Error("hijack: panic in client→upstream copy", "panic", fmt.Sprint(v), "path", reqPath)
 			}
 		}()
-		src := withReadInactivityDeadline(clientBuf, clientConn, hijackInactivityTimeout)
-		dst := withWriteInactivityDeadline(upstreamConn, upstreamConn, hijackInactivityTimeout)
+		src := withReadInactivityDeadline(session.clientBuf, session.clientConn, hijackInactivityTimeout)
+		dst := withWriteInactivityDeadline(session.upstreamConn, session.upstreamConn, hijackInactivityTimeout)
 		if _, err := copyHijackBuffer(dst, src, buf); err != nil {
 			logger.Debug("hijack: client→upstream copy ended", "error", err, "path", reqPath)
 		}
-		closeWrite(upstreamConn)
+		closeWrite(session.upstreamConn)
 	}()
 
 	wg.Wait()
-	closeConn(logger, clientConn, "client connection", r.URL.Path)
-	closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
-	logger.Debug("hijack: connection closed", "path", r.URL.Path)
+	closeConn(logger, session.clientConn, "client connection", reqPath)
+	closeConn(logger, session.upstreamConn, "upstream connection", reqPath)
+	logger.Debug("hijack: connection closed", "path", reqPath)
 }
 
 func newUpstreamHijackRequest(r *http.Request) *http.Request {
-	upstreamReq := r.Clone(r.Context())
-	if upstreamReq.Header == nil {
-		upstreamReq.Header = make(http.Header)
+	upstreamReq := &http.Request{
+		Method:        r.Method,
+		Host:          r.Host,
+		Proto:         r.Proto,
+		ProtoMajor:    r.ProtoMajor,
+		ProtoMinor:    r.ProtoMinor,
+		Header:        r.Header.Clone(),
+		Body:          r.Body,
+		ContentLength: r.ContentLength,
+	}
+	if r.URL != nil {
+		urlCopy := *r.URL
+		upstreamReq.URL = &urlCopy
 	}
 	if upstreamReq.ContentLength == 0 {
 		upstreamReq.Body = nil
