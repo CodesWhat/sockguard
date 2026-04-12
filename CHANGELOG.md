@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-12
+
 ### Changed
 
 - Changed the default TCP listener from `:2375` to loopback `127.0.0.1:2375`, added mutual TLS support for non-loopback TCP listeners, and now reject plaintext non-loopback TCP unless `listen.insecure_allow_plain_tcp=true` is set explicitly for legacy compatibility.
@@ -23,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced the `serve` command's package-level dependency-injection hooks with a per-run `serveDeps` struct so command tests can stub dependencies without mutating global process state, which removes the main blocker to running those tests in parallel.
 - Added regression coverage for first-match rule precedence, concurrent filter metadata isolation, `splitMethods` edge cases, adversarial YAML config loading fuzzing, deterministic health-check coalescing, and `httpjson.Write` nil/write-failure paths.
 - Documented the explicit `WriteTimeout: 0` streaming rationale beside the existing `ReadTimeout: 0` note, clarified the inline Tecnativa compatibility expansion point in `serve`, asserted health endpoint version/uptime fields in tests, and added env-var override coverage for `SOCKGUARD_LISTEN_ADDRESS` and `SOCKGUARD_LISTEN_SOCKET`.
+- Added a `.qlty/qlty.toml` configuration so the qlty code-quality tool runs with comment-only smells and project-appropriate file exclusions across local and CI runs.
+- Split `runServeWithDeps` into a `serveRuntime` struct plus `prepareServeRuntime`, `loadServeRuntimeConfig`, `buildVerifiedServeHandler`, and `openServeListener` helpers, and split `createListener` into `createSocketListener`, `createTCPListener`, and `wrapListenerWithTLS` so the TLS wrap path is no longer buried inside the TCP branch.
+- Split `upgradeHijackConnection` into `writeHijackUpstreamRequest`, `readHijackUpstreamResponse`, `writeNonUpgradeHijackResponse`, and `finalizeHijackUpgrade`, and replaced the two duplicated upstream↔client copy goroutines with a single parameterized `startHijackCopy` launcher driven by a `hijackCopyStream` value.
+- Extracted the testcert mutual-TLS bundle writer into `newCertificateAuthority`, `newServerCertificate`, `newClientCertificate`, `newLeafCertificate`, and `writeBundleFiles` helpers so the `WriteMutualTLSBundle` entry point reads as a linear CA → server → client → write pipeline.
+- Extracted a `commitReleaseLevel` helper in `scripts/release-next-version.mjs` so the per-commit major/minor/patch classification is isolated from the priority-aggregation loop in `inferReleaseLevel`.
+- Added demo evaluator coverage for `/**` wildcard expansion across path separators, `*` segments stopping at separators, method-mismatch default-deny fallthrough, and default-deny match reason reporting, and scoped the Go coverage artifact upload to the `app/` packages.
+
+### Fixed
+
+- Returned the deferred `file.Close` error from `writePEM` via a named return so a silent close failure can no longer leave a half-written PEM file on disk, and reworked the three "pool returns wrong type" logging tests to swap only the pool's `New` hook and `Put` a pointer-typed wrong value so they no longer trip `govet` `copylocks` or `staticcheck` `SA6002`.
 
 ## [0.1.1] - 2026-04-11
 
