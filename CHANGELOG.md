@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-04-11
+
 ### Fixed
 
 - Stopped Tecnativa compatibility mode from regenerating rules when `rules:` was explicitly provided in config but happened to equal the built-in defaults. Explicit user rules now win over compat env vars regardless of value equality.
