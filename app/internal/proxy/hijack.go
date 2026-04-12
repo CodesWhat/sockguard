@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
@@ -18,9 +20,20 @@ import (
 // 64KB balances throughput with memory use for Docker's streaming protocols.
 const hijackBufSize = 64 * 1024
 
+const hijackDialTimeout = 5 * time.Second
+const hijackInactivityTimeout = 10 * time.Minute
+
 type bytePool interface {
 	Get() any
 	Put(any)
+}
+
+type readDeadlineSetter interface {
+	SetReadDeadline(time.Time) error
+}
+
+type writeDeadlineSetter interface {
+	SetWriteDeadline(time.Time) error
 }
 
 var hijackBufferPool bytePool = &sync.Pool{
@@ -29,9 +42,22 @@ var hijackBufferPool bytePool = &sync.Pool{
 	},
 }
 
-var dialHijackUpstream = net.Dial
+var dialHijackUpstreamWithTimeout = net.DialTimeout
+var dialHijackUpstream = defaultDialHijackUpstream
 var readHijackResponse = http.ReadResponse
 var copyHijackBuffer = io.CopyBuffer
+
+var hopByHopHeaders = []string{
+	"Connection",
+	"Proxy-Connection",
+	"Keep-Alive",
+	"Proxy-Authenticate",
+	"Proxy-Authorization",
+	"Te",
+	"Trailer",
+	"Transfer-Encoding",
+	"Upgrade",
+}
 
 // HijackHandler wraps a standard handler and intercepts Docker API endpoints
 // that use HTTP connection upgrades (attach, exec start). For these endpoints,
@@ -84,6 +110,10 @@ func IsHijackEndpoint(method, path string) bool {
 		(resource == "exec" && action == "start")
 }
 
+func defaultDialHijackUpstream(network, address string) (net.Conn, error) {
+	return dialHijackUpstreamWithTimeout(network, address, hijackDialTimeout)
+}
+
 func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) {
 	// Dial upstream Docker socket
 	upstreamConn, err := dialHijackUpstream("unix", upstreamSocket)
@@ -97,10 +127,11 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 		return
 	}
 
-	// Write the original HTTP request to upstream.
-	// r.Write serializes the full request (method, path, headers, body) in wire format.
-	// Docker ignores the Host header on Unix socket connections.
-	if err := r.Write(upstreamConn); err != nil {
+	// Write a sanitized HTTP request to upstream.
+	// We remove client-controlled hop-by-hop metadata and emit a fixed Docker
+	// upgrade hint so upstream sees only proxy-controlled connection semantics.
+	upstreamReq := newUpstreamHijackRequest(r)
+	if err := upstreamReq.Write(upstreamConn); err != nil {
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: write request to upstream failed", "error", err, "path", r.URL.Path)
 		if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{
@@ -194,7 +225,9 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 				logger.Error("hijack: panic in upstream→client copy", "panic", fmt.Sprint(v), "path", reqPath)
 			}
 		}()
-			if _, err := copyHijackBuffer(clientConn, upstreamBuf, buf); err != nil {
+		src := withReadInactivityDeadline(upstreamBuf, upstreamConn, hijackInactivityTimeout)
+		dst := withWriteInactivityDeadline(clientConn, clientConn, hijackInactivityTimeout)
+		if _, err := copyHijackBuffer(dst, src, buf); err != nil {
 			logger.Debug("hijack: upstream→client copy ended", "error", err, "path", reqPath)
 		}
 		closeWrite(clientConn)
@@ -210,7 +243,9 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 				logger.Error("hijack: panic in client→upstream copy", "panic", fmt.Sprint(v), "path", reqPath)
 			}
 		}()
-			if _, err := copyHijackBuffer(upstreamConn, clientBuf, buf); err != nil {
+		src := withReadInactivityDeadline(clientBuf, clientConn, hijackInactivityTimeout)
+		dst := withWriteInactivityDeadline(upstreamConn, upstreamConn, hijackInactivityTimeout)
+		if _, err := copyHijackBuffer(dst, src, buf); err != nil {
 			logger.Debug("hijack: client→upstream copy ended", "error", err, "path", reqPath)
 		}
 		closeWrite(upstreamConn)
@@ -220,6 +255,81 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	closeConn(logger, clientConn, "client connection", r.URL.Path)
 	closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 	logger.Debug("hijack: connection closed", "path", r.URL.Path)
+}
+
+func newUpstreamHijackRequest(r *http.Request) *http.Request {
+	upstreamReq := r.Clone(r.Context())
+	if upstreamReq.Header == nil {
+		upstreamReq.Header = make(http.Header)
+	}
+	if upstreamReq.ContentLength == 0 {
+		upstreamReq.Body = nil
+	}
+
+	removeHopByHopHeaders(upstreamReq.Header)
+	upstreamReq.TransferEncoding = nil
+	upstreamReq.Trailer = nil
+	upstreamReq.Close = false
+	upstreamReq.Header.Set("Connection", "Upgrade")
+	upstreamReq.Header.Set("Upgrade", "tcp")
+
+	return upstreamReq
+}
+
+func removeHopByHopHeaders(h http.Header) {
+	for _, value := range h["Connection"] {
+		for token := range strings.SplitSeq(value, ",") {
+			if token = textproto.TrimString(token); token != "" {
+				h.Del(token)
+			}
+		}
+	}
+
+	for _, name := range hopByHopHeaders {
+		h.Del(name)
+	}
+}
+
+type inactivityDeadlineReader struct {
+	reader  io.Reader
+	conn    readDeadlineSetter
+	timeout time.Duration
+}
+
+func withReadInactivityDeadline(reader io.Reader, conn readDeadlineSetter, timeout time.Duration) io.Reader {
+	return &inactivityDeadlineReader{
+		reader:  reader,
+		conn:    conn,
+		timeout: timeout,
+	}
+}
+
+func (r *inactivityDeadlineReader) Read(p []byte) (int, error) {
+	if err := r.conn.SetReadDeadline(time.Now().Add(r.timeout)); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
+type inactivityDeadlineWriter struct {
+	writer  io.Writer
+	conn    writeDeadlineSetter
+	timeout time.Duration
+}
+
+func withWriteInactivityDeadline(writer io.Writer, conn writeDeadlineSetter, timeout time.Duration) io.Writer {
+	return &inactivityDeadlineWriter{
+		writer:  writer,
+		conn:    conn,
+		timeout: timeout,
+	}
+}
+
+func (w *inactivityDeadlineWriter) Write(p []byte) (int, error) {
+	if err := w.conn.SetWriteDeadline(time.Now().Add(w.timeout)); err != nil {
+		return 0, err
+	}
+	return w.writer.Write(p)
 }
 
 func getHijackBuffer() []byte {

@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +23,8 @@ import (
 )
 
 var hijackBufferPoolMu sync.Mutex
+
+const wantHijackInactivityTimeout = 10 * time.Minute
 
 // safeBuffer is a goroutine-safe bytes.Buffer for concurrent log capture.
 type safeBuffer struct {
@@ -56,14 +60,54 @@ func useHijackDeps(t *testing.T) {
 	t.Helper()
 
 	originalDial := dialHijackUpstream
+	originalDialWithTimeout := dialHijackUpstreamWithTimeout
 	originalReadResponse := readHijackResponse
 	originalCopyBuffer := copyHijackBuffer
 
 	t.Cleanup(func() {
 		dialHijackUpstream = originalDial
+		dialHijackUpstreamWithTimeout = originalDialWithTimeout
 		readHijackResponse = originalReadResponse
 		copyHijackBuffer = originalCopyBuffer
 	})
+}
+
+func TestDialHijackUpstreamDefaultIsNotBareNetDial(t *testing.T) {
+	got := runtime.FuncForPC(reflect.ValueOf(dialHijackUpstream).Pointer()).Name()
+	wantNot := runtime.FuncForPC(reflect.ValueOf(net.Dial).Pointer()).Name()
+
+	if got == wantNot {
+		t.Fatalf("dialHijackUpstream = %s, want a wrapper that applies a timeout", got)
+	}
+}
+
+func TestDefaultDialHijackUpstreamUsesFiveSecondTimeout(t *testing.T) {
+	useHijackDeps(t)
+
+	var gotNetwork, gotAddress string
+	var gotTimeout time.Duration
+	wantErr := errors.New("dial boom")
+
+	dialHijackUpstreamWithTimeout = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		gotNetwork = network
+		gotAddress = address
+		gotTimeout = timeout
+		return nil, wantErr
+	}
+
+	_, err := defaultDialHijackUpstream("unix", "/tmp/docker.sock")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	if gotNetwork != "unix" {
+		t.Fatalf("network = %q, want %q", gotNetwork, "unix")
+	}
+	if gotAddress != "/tmp/docker.sock" {
+		t.Fatalf("address = %q, want %q", gotAddress, "/tmp/docker.sock")
+	}
+	if gotTimeout != hijackDialTimeout {
+		t.Fatalf("timeout = %v, want %v", gotTimeout, hijackDialTimeout)
+	}
 }
 
 type erroringResponseWriter struct {
@@ -588,6 +632,105 @@ func TestHandleHijack_RequestWriteErrorDoesNotLeakDetails(t *testing.T) {
 	}
 }
 
+func TestHandleHijack_StripsHopByHopHeadersBeforeForwarding(t *testing.T) {
+	useHijackDeps(t)
+
+	var rawRequest bytes.Buffer
+	dialHijackUpstream = func(network, address string) (net.Conn, error) {
+		return &funcConn{
+			writeFn: func(p []byte) (int, error) {
+				return rawRequest.Write(p)
+			},
+		}, nil
+	}
+	readHijackResponse = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"message":"bad request"}`)),
+		}, nil
+	}
+
+	const body = "stdin payload"
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach?stream=1", strings.NewReader(body))
+	req.Close = true
+	req.TransferEncoding = []string{"chunked"}
+	req.Header.Set("Connection", "keep-alive, X-Smuggled")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("X-Smuggled", "attack")
+	req.Header.Set("Proxy-Connection", "keep-alive")
+	req.Header.Set("Keep-Alive", "timeout=5")
+	req.Header.Set("Proxy-Authenticate", "Basic realm=upstream")
+	req.Header.Set("Proxy-Authorization", "Basic dXNlcjpwYXNz")
+	req.Header.Set("Te", "gzip")
+	req.Header.Set("Trailer", "X-Trace")
+	req.Trailer = http.Header{"X-Trace": []string{"secret"}}
+
+	rec := httptest.NewRecorder()
+	handleHijack(rec, req, "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+
+	gotReq, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(rawRequest.Bytes())))
+	if err != nil {
+		t.Fatalf("read forwarded request: %v", err)
+	}
+	defer gotReq.Body.Close()
+
+	gotBody, err := io.ReadAll(gotReq.Body)
+	if err != nil {
+		t.Fatalf("read forwarded body: %v", err)
+	}
+	if string(gotBody) != body {
+		t.Fatalf("forwarded body = %q, want %q", string(gotBody), body)
+	}
+
+	if gotReq.Header.Get("Connection") != "Upgrade" {
+		t.Fatalf("Connection = %q, want %q", gotReq.Header.Get("Connection"), "Upgrade")
+	}
+	if gotReq.Header.Get("Upgrade") != "tcp" {
+		t.Fatalf("Upgrade = %q, want %q", gotReq.Header.Get("Upgrade"), "tcp")
+	}
+	if gotReq.Header.Get("X-Smuggled") != "" {
+		t.Fatalf("X-Smuggled leaked upstream: %q", gotReq.Header.Get("X-Smuggled"))
+	}
+	if gotReq.Header.Get("Proxy-Connection") != "" {
+		t.Fatalf("Proxy-Connection leaked upstream: %q", gotReq.Header.Get("Proxy-Connection"))
+	}
+	if gotReq.Header.Get("Keep-Alive") != "" {
+		t.Fatalf("Keep-Alive leaked upstream: %q", gotReq.Header.Get("Keep-Alive"))
+	}
+	if gotReq.Header.Get("Proxy-Authenticate") != "" {
+		t.Fatalf("Proxy-Authenticate leaked upstream: %q", gotReq.Header.Get("Proxy-Authenticate"))
+	}
+	if gotReq.Header.Get("Proxy-Authorization") != "" {
+		t.Fatalf("Proxy-Authorization leaked upstream: %q", gotReq.Header.Get("Proxy-Authorization"))
+	}
+	if gotReq.Header.Get("Te") != "" {
+		t.Fatalf("Te leaked upstream: %q", gotReq.Header.Get("Te"))
+	}
+	if gotReq.Header.Get("Trailer") != "" {
+		t.Fatalf("Trailer leaked upstream: %q", gotReq.Header.Get("Trailer"))
+	}
+	if len(gotReq.TransferEncoding) != 0 {
+		t.Fatalf("TransferEncoding = %v, want empty", gotReq.TransferEncoding)
+	}
+	if gotReq.ContentLength != int64(len(body)) {
+		t.Fatalf("ContentLength = %d, want %d", gotReq.ContentLength, len(body))
+	}
+	if gotReq.Close {
+		t.Fatal("forwarded request unexpectedly asked upstream to close the connection")
+	}
+	if len(gotReq.Trailer) != 0 {
+		t.Fatalf("Trailer = %v, want empty", gotReq.Trailer)
+	}
+}
+
 func TestHandleHijack_ErrorResponseEncodingFailures(t *testing.T) {
 	t.Run("dial failure", func(t *testing.T) {
 		writer := &erroringResponseWriter{}
@@ -799,6 +942,66 @@ func TestHandleHijack_CopyErrorsAreLoggedAndIgnored(t *testing.T) {
 	if !strings.Contains(logText, "client→upstream copy ended") {
 		t.Fatalf("expected client copy log, got %q", logText)
 	}
+}
+
+func TestHandleHijack_StreamingActivityRefreshesInactivityDeadlines(t *testing.T) {
+	useHijackDeps(t)
+
+	readHijackResponse = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{"Connection": []string{"Upgrade"}, "Upgrade": []string{"tcp"}},
+			Body:       io.NopCloser(strings.NewReader("")),
+		}, nil
+	}
+
+	upstreamPayload := bytes.Repeat([]byte("u"), hijackBufSize+1)
+	clientPayload := bytes.Repeat([]byte("c"), hijackBufSize+1)
+
+	upstreamReader := bytes.NewReader(upstreamPayload)
+	upstreamConn := &funcConn{
+		readFn: func(p []byte) (int, error) {
+			return upstreamReader.Read(p)
+		},
+		writeFn: func(p []byte) (int, error) {
+			return len(p), nil
+		},
+	}
+	dialHijackUpstream = func(network, address string) (net.Conn, error) {
+		return upstreamConn, nil
+	}
+
+	clientConn := &funcConn{
+		writeFn: func(p []byte) (int, error) {
+			return len(p), nil
+		},
+	}
+	writer := newHijackTestWriter(clientConn, bytes.NewReader(clientPayload))
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+
+	start := time.Now()
+	handleHijack(writer, req, "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	end := time.Now()
+
+	if upstreamConn.readDeadlineCalls < 2 {
+		t.Fatalf("upstream read deadline calls = %d, want at least 2", upstreamConn.readDeadlineCalls)
+	}
+	if upstreamConn.writeDeadlineCalls < 2 {
+		t.Fatalf("upstream write deadline calls = %d, want at least 2", upstreamConn.writeDeadlineCalls)
+	}
+	if clientConn.readDeadlineCalls < 2 {
+		t.Fatalf("client read deadline calls = %d, want at least 2", clientConn.readDeadlineCalls)
+	}
+	if clientConn.writeDeadlineCalls < 2 {
+		t.Fatalf("client write deadline calls = %d, want at least 2", clientConn.writeDeadlineCalls)
+	}
+
+	assertDeadlineNearTimeout(t, upstreamConn.readDeadlines[0], start, end)
+	assertDeadlineNearTimeout(t, upstreamConn.writeDeadlines[0], start, end)
+	assertDeadlineNearTimeout(t, clientConn.readDeadlines[0], start, end)
+	assertDeadlineNearTimeout(t, clientConn.writeDeadlines[0], start, end)
 }
 
 func TestHandleHijack_ClientDisconnectDuringUpgrade(t *testing.T) {
@@ -1286,6 +1489,16 @@ func TestPutHijackBufferRestoresFullLengthBeforeReuse(t *testing.T) {
 	}
 }
 
+func assertDeadlineNearTimeout(t *testing.T, got, start, end time.Time) {
+	t.Helper()
+
+	lowerBound := start.Add(wantHijackInactivityTimeout - time.Second)
+	upperBound := end.Add(wantHijackInactivityTimeout + time.Second)
+	if got.Before(lowerBound) || got.After(upperBound) {
+		t.Fatalf("deadline = %v, want between %v and %v", got, lowerBound, upperBound)
+	}
+}
+
 func TestPutHijackBufferDiscardsUndersizedBuffer(t *testing.T) {
 	fakePool := &stubBufferPool{}
 	useHijackBufferPool(t, fakePool)
@@ -1348,11 +1561,17 @@ func (w *hijackTestWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 type funcConn struct {
-	readFn          func([]byte) (int, error)
-	writeFn         func([]byte) (int, error)
-	closeFn         func() error
-	closeWriteFn    func() error
-	closeWriteCalls int
+	readFn             func([]byte) (int, error)
+	writeFn            func([]byte) (int, error)
+	closeFn            func() error
+	closeWriteFn       func() error
+	closeWriteCalls    int
+	readDeadlineFn     func(time.Time) error
+	writeDeadlineFn    func(time.Time) error
+	readDeadlines      []time.Time
+	writeDeadlines     []time.Time
+	readDeadlineCalls  int
+	writeDeadlineCalls int
 }
 
 func (c *funcConn) Read(p []byte) (int, error) {
@@ -1376,11 +1595,25 @@ func (c *funcConn) Close() error {
 	return nil
 }
 
-func (c *funcConn) LocalAddr() net.Addr              { return dummyAddr("local") }
-func (c *funcConn) RemoteAddr() net.Addr             { return dummyAddr("remote") }
-func (c *funcConn) SetDeadline(time.Time) error      { return nil }
-func (c *funcConn) SetReadDeadline(time.Time) error  { return nil }
-func (c *funcConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *funcConn) LocalAddr() net.Addr         { return dummyAddr("local") }
+func (c *funcConn) RemoteAddr() net.Addr        { return dummyAddr("remote") }
+func (c *funcConn) SetDeadline(time.Time) error { return nil }
+func (c *funcConn) SetReadDeadline(t time.Time) error {
+	c.readDeadlineCalls++
+	c.readDeadlines = append(c.readDeadlines, t)
+	if c.readDeadlineFn != nil {
+		return c.readDeadlineFn(t)
+	}
+	return nil
+}
+func (c *funcConn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadlineCalls++
+	c.writeDeadlines = append(c.writeDeadlines, t)
+	if c.writeDeadlineFn != nil {
+		return c.writeDeadlineFn(t)
+	}
+	return nil
+}
 
 func (c *funcConn) CloseWrite() error {
 	c.closeWriteCalls++
