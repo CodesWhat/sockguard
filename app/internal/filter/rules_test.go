@@ -5,8 +5,38 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"testing"
+	"time"
 )
+
+func assertCompileAndMatchWithin(t *testing.T, pattern, normalizedPath string, wantMatch bool, limit time.Duration) {
+	t.Helper()
+
+	compileStart := time.Now()
+	rule, err := CompileRule(Rule{
+		Methods: []string{"GET"},
+		Pattern: pattern,
+		Action:  ActionAllow,
+	})
+	compileElapsed := time.Since(compileStart)
+	if err != nil {
+		t.Fatalf("CompileRule(%q) error = %v", pattern, err)
+	}
+	if compileElapsed > limit {
+		t.Fatalf("CompileRule(%q) took %v, want <= %v", pattern, compileElapsed, limit)
+	}
+
+	matchStart := time.Now()
+	got := rule.matchesNormalizedUpper(http.MethodGet, normalizedPath)
+	matchElapsed := time.Since(matchStart)
+	if matchElapsed > limit {
+		t.Fatalf("rule match for %q on %d-byte path took %v, want <= %v", pattern, len(normalizedPath), matchElapsed, limit)
+	}
+	if got != wantMatch {
+		t.Fatalf("match result = %v, want %v", got, wantMatch)
+	}
+}
 
 func TestStripVersionPrefix(t *testing.T) {
 	tests := []struct {
@@ -135,6 +165,43 @@ func TestGlobToRegex(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("pattern %q match %q = %v, want %v", tt.pattern, tt.match, got, tt.want)
 			}
+		})
+	}
+}
+
+func TestCompileRuleComplexGlobRemainsFastOnLongPaths(t *testing.T) {
+	longPrefix := "/" + strings.Repeat("a/", 4096)
+	longMiddle := strings.Repeat("b/", 4096)
+
+	tests := []struct {
+		name      string
+		pattern   string
+		path      string
+		wantMatch bool
+	}{
+		{
+			name:      "match near end of long path",
+			pattern:   "/**/x/**/y/**",
+			path:      longPrefix + "x/" + longMiddle + "y/tail",
+			wantMatch: true,
+		},
+		{
+			name:      "non-match scans long path without backtracking explosion",
+			pattern:   "/**/x/**/y/**",
+			path:      longPrefix + "x/" + longMiddle + "z/tail",
+			wantMatch: false,
+		},
+		{
+			name:      "multiple deep wildcards stay linear",
+			pattern:   "/**/alpha/**/omega/**",
+			path:      longPrefix + "alpha/" + longMiddle + "omega/final",
+			wantMatch: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertCompileAndMatchWithin(t, tt.pattern, tt.path, tt.wantMatch, 100*time.Millisecond)
 		})
 	}
 }

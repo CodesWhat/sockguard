@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sanitized hijack upstream requests before serialization so client-controlled hop-by-hop headers and transfer encoding metadata are not forwarded verbatim to the Docker socket. The proxy now emits its own fixed Docker upgrade hint instead, the upstream Unix-socket dial fails fast after 5 seconds instead of blocking indefinitely, and idle hijack streams now reap stalled peers after 10 minutes of per-direction inactivity.
 - Added an end-to-end hijack regression for mid-stream upstream disconnects that asserts the upgraded connection tears down cleanly and the handler does not leave extra goroutines behind after the Docker side closes.
 - Pinned the HTTP server `MaxHeaderBytes` cap to 1 MiB explicitly so request-header limits remain an intentional hardening choice instead of an implicit stdlib default.
+- Added a filter regression that compiles deep `**` glob patterns and matches them against long paths under a 100ms ceiling to guard the glob-to-regex path against regex-style denial-of-service regressions.
 
 ## [0.1.0] - 2026-04-11
 
