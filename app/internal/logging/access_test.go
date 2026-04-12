@@ -77,6 +77,31 @@ func TestAccessLogDenied(t *testing.T) {
 	}
 }
 
+func TestAccessLogIncludesRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m := Meta(r.Context()); m != nil {
+			m.Decision = "allow"
+			m.NormPath = "/info"
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AccessLogMiddleware(logger)(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/info", nil)
+	req.Header.Set("X-Request-ID", "req-123")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, `"request_id":"req-123"`) {
+		t.Fatalf("expected request_id in access log, got: %s", logOutput)
+	}
+}
+
 func TestResponseCaptureTracksStatusAndBytes(t *testing.T) {
 	rec := httptest.NewRecorder()
 	rc := &responseCapture{ResponseWriter: rec, status: http.StatusOK}

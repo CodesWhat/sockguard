@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an end-to-end hijack regression for mid-stream upstream disconnects that asserts the upgraded connection tears down cleanly and the handler does not leave extra goroutines behind after the Docker side closes.
 - Pinned the HTTP server `MaxHeaderBytes` cap to 1 MiB explicitly so request-header limits remain an intentional hardening choice instead of an implicit stdlib default.
 - Added a filter regression that compiles deep `**` glob patterns and matches them against long paths under a 100ms ceiling to guard the glob-to-regex path against regex-style denial-of-service regressions.
+- Added shared request-correlation fields to the access log and reverse-proxy upstream error log so `request_id` and filter metadata can be used to join a failed upstream attempt to its outer request log entry.
 
 ## [0.1.0] - 2026-04-11
 

@@ -30,7 +30,9 @@ var requestMetaPool = sync.Pool{
 	},
 }
 
-type accessLogAttrs [10]slog.Attr
+const requestIDHeader = "X-Request-Id"
+
+type accessLogAttrs [11]slog.Attr
 
 var accessLogAttrPool = sync.Pool{
 	New: func() any {
@@ -79,6 +81,36 @@ func putAccessLogAttrs(attrs *accessLogAttrs) {
 	}
 	clear(attrs[:])
 	accessLogAttrPool.Put(attrs)
+}
+
+// AppendCorrelationAttrs appends request correlation attributes that should match
+// across access logs and subsystem error logs for the same request.
+func AppendCorrelationAttrs(attrs []slog.Attr, r *http.Request) []slog.Attr {
+	if r == nil {
+		return attrs
+	}
+
+	attrs = append(attrs,
+		slog.String("method", r.Method),
+		slog.String("path", r.URL.Path),
+	)
+
+	if values := r.Header[requestIDHeader]; len(values) > 0 && values[0] != "" {
+		attrs = append(attrs, slog.String("request_id", values[0]))
+	}
+
+	if meta := Meta(r.Context()); meta != nil {
+		attrs = append(attrs,
+			slog.String("normalized_path", meta.NormPath),
+			slog.String("decision", meta.Decision),
+			slog.Int("rule", meta.Rule),
+		)
+		if meta.Reason != "" {
+			attrs = append(attrs, slog.String("reason", meta.Reason))
+		}
+	}
+
+	return attrs
 }
 
 // responseCapture wraps http.ResponseWriter to capture status and bytes written.
@@ -171,21 +203,14 @@ func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			attrBuf := getAccessLogAttrs()
 			attrs := attrBuf[:0]
+			attrs = AppendCorrelationAttrs(attrs, r)
 			attrs = append(
 				attrs,
-				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
-				slog.String("normalized_path", meta.NormPath),
 				slog.Int("status", rc.status),
-				slog.String("decision", meta.Decision),
-				slog.Int("rule", meta.Rule),
 				slog.Float64("latency_ms", latencyMS),
 				slog.Int("bytes", rc.bytes),
 				slog.String("client", client),
 			)
-			if meta.Reason != "" {
-				attrs = append(attrs, slog.String("reason", meta.Reason))
-			}
 			defer putAccessLogAttrs(attrBuf)
 
 			if meta.Decision == "deny" {

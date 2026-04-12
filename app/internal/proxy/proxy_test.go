@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
+	"github.com/codeswhat/sockguard/internal/logging"
 )
 
 func testLogger() *slog.Logger {
@@ -60,6 +61,41 @@ func TestNew_ErrorHandlerEncodeFailure(t *testing.T) {
 
 	if writer.status != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d", writer.status, http.StatusBadGateway)
+	}
+}
+
+func TestNew_ErrorHandlerLogsRequestCorrelation(t *testing.T) {
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	rp := New("/tmp/does-not-matter.sock", logger)
+
+	meta := &logging.RequestMeta{
+		Decision: "allow",
+		Rule:     1,
+		NormPath: "/info",
+	}
+	req := httptest.NewRequest(http.MethodGet, "/v1.45/info", nil)
+	req.Header.Set("X-Request-ID", "req-123")
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+
+	rec := httptest.NewRecorder()
+	rp.ErrorHandler(rec, req, errors.New("dial boom"))
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, `"msg":"upstream request failed"`) {
+		t.Fatalf("expected upstream failure log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"request_id":"req-123"`) {
+		t.Fatalf("expected request_id in proxy error log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"normalized_path":"/info"`) {
+		t.Fatalf("expected normalized_path in proxy error log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"decision":"allow"`) {
+		t.Fatalf("expected decision in proxy error log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"rule":1`) {
+		t.Fatalf("expected rule in proxy error log, got: %s", logOutput)
 	}
 }
 
