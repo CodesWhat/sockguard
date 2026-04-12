@@ -69,14 +69,14 @@ func FuzzPathMatch(f *testing.F) {
 		normalized := NormalizePath(path)
 
 		// Matches must never panic.
-		catchAll.Matches(method, path)
-		containers.Matches(method, path)
+		catchAll.matches(method, path)
+		containers.matches(method, path)
 
 		// Invariant: catch-all rule matches every non-empty normalized path
 		// that starts with "/" and contains no newlines. Go's regexp ".*"
 		// does not match \n, and newlines are invalid in HTTP paths anyway.
 		if len(normalized) > 0 && normalized[0] == '/' && !containsNewline(normalized) {
-			if !catchAll.Matches(method, path) {
+			if !catchAll.matches(method, path) {
 				t.Errorf("catch-all did not match method=%q path=%q (normalized=%q)", method, path, normalized)
 			}
 		}
@@ -208,10 +208,10 @@ func FuzzCompileRule(f *testing.F) {
 		}
 
 		// If compilation succeeded, matching must never panic.
-		rule.Matches("GET", "/containers/json")
-		rule.Matches("POST", "/v1.45/containers/create")
-		rule.Matches(method, "/"+pattern)
-		rule.Matches("", "")
+		rule.matches("GET", "/containers/json")
+		rule.matches("POST", "/v1.45/containers/create")
+		rule.matches(method, "/"+pattern)
+		rule.matches("", "")
 	})
 }
 

@@ -62,11 +62,12 @@ func outputWriter(output string) (io.Writer, io.Closer, error) {
 
 func normalizeOutput(output string) (string, error) {
 	trimmed := strings.TrimSpace(output)
+	if trimmed == "" {
+		return "", fmt.Errorf("invalid log output (must be stderr, stdout, or a local file path)")
+	}
+
 	switch trimmed {
-	case "", "stderr", "stdout":
-		if trimmed == "" {
-			return "", fmt.Errorf("invalid log output (must be stderr, stdout, or a local file path)")
-		}
+	case "stderr", "stdout":
 		return trimmed, nil
 	default:
 		cleaned := filepath.Clean(trimmed)

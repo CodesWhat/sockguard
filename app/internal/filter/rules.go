@@ -114,10 +114,10 @@ func CompileRule(r Rule) (*CompiledRule, error) {
 	return cr, nil
 }
 
-// Matches returns true if the request matches this rule.
+// matches returns true if the request matches this rule.
 // It normalizes the path and uppercases the method internally, so callers
 // don't need to pre-process inputs.
-func (cr *CompiledRule) Matches(method, path string) bool {
+func (cr *CompiledRule) matches(method, path string) bool {
 	return cr.matchesNormalizedUpper(strings.ToUpper(method), NormalizePath(path))
 }
 

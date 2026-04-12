@@ -206,7 +206,7 @@ func TestCompileRuleComplexGlobRemainsFastOnLongPaths(t *testing.T) {
 	}
 }
 
-func TestCompiledRuleMatches(t *testing.T) {
+func TestCompiledRulematches(t *testing.T) {
 	rule, err := CompileRule(Rule{
 		Methods: []string{"GET"},
 		Pattern: "/containers/**",
@@ -234,9 +234,9 @@ func TestCompiledRuleMatches(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := rule.Matches(tt.method, tt.path)
+			got := rule.matches(tt.method, tt.path)
 			if got != tt.want {
-				t.Errorf("Matches(%q, %q) = %v, want %v", tt.method, tt.path, got, tt.want)
+				t.Errorf("matches(%q, %q) = %v, want %v", tt.method, tt.path, got, tt.want)
 			}
 		})
 	}
@@ -259,10 +259,10 @@ func TestCompileRuleLiteralPatternUsesFastPath(t *testing.T) {
 	if rule.literal != "/_ping" {
 		t.Fatalf("literal = %q, want %q", rule.literal, "/_ping")
 	}
-	if !rule.Matches("GET", "/_ping") {
+	if !rule.matches("GET", "/_ping") {
 		t.Fatal("literal fast path should match exact path")
 	}
-	if !rule.Matches("GET", "/v1.45/_ping") {
+	if !rule.matches("GET", "/v1.45/_ping") {
 		t.Fatal("literal fast path should match normalized versioned path")
 	}
 }
@@ -298,13 +298,13 @@ func TestWildcardMethodRule(t *testing.T) {
 		t.Fatalf("CompileRule failed: %v", err)
 	}
 
-	if !rule.Matches("GET", "/anything") {
+	if !rule.matches("GET", "/anything") {
 		t.Error("wildcard method should match GET")
 	}
-	if !rule.Matches("POST", "/anything") {
+	if !rule.matches("POST", "/anything") {
 		t.Error("wildcard method should match POST")
 	}
-	if !rule.Matches("DELETE", "/anything") {
+	if !rule.matches("DELETE", "/anything") {
 		t.Error("wildcard method should match DELETE")
 	}
 }
@@ -367,9 +367,9 @@ func TestMethodEdgeCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := rule.Matches(tt.method, "/containers/json")
+			got := rule.matches(tt.method, "/containers/json")
 			if got != tt.want {
-				t.Errorf("Matches(%q, /containers/json) = %v, want %v", tt.method, got, tt.want)
+				t.Errorf("matches(%q, /containers/json) = %v, want %v", tt.method, got, tt.want)
 			}
 		})
 	}

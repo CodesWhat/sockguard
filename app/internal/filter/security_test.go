@@ -204,9 +204,9 @@ func TestConfiguredMethodCaseNormalization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := rule.Matches(tt.method, "/containers/json")
+			got := rule.matches(tt.method, "/containers/json")
 			if got != tt.want {
-				t.Fatalf("Matches(%q, /containers/json) = %v, want %v", tt.method, got, tt.want)
+				t.Fatalf("matches(%q, /containers/json) = %v, want %v", tt.method, got, tt.want)
 			}
 		})
 	}
