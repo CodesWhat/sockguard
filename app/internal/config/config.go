@@ -55,11 +55,16 @@ type MatchConfig struct {
 }
 
 // Defaults returns a Config with sensible defaults.
+//
+// The default listener is TCP :2375 to match the behavior of
+// tecnativa/docker-socket-proxy and linuxserver/socket-proxy so migration
+// from those is zero-config. Set listen.socket (or SOCKGUARD_LISTEN_SOCKET)
+// to opt into the filesystem-bounded unix socket listener instead.
 func Defaults() Config {
 	return Config{
 		Listen: ListenConfig{
-			Socket:     "/var/run/sockguard.sock",
-			SocketMode: "0660",
+			Address:    ":2375",
+			SocketMode: "0660", // used only when the user opts into a unix socket listener
 		},
 		Upstream: UpstreamConfig{
 			Socket: "/var/run/docker.sock",

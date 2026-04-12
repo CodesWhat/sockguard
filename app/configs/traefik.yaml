@@ -3,10 +3,6 @@
 # Minimal read-only access for Traefik reverse proxy.
 # Traefik needs: container list, network list, service/task list, events.
 
-listen:
-  socket: /var/run/sockguard.sock
-  socket_mode: "0660"
-
 upstream:
   socket: /var/run/docker.sock
 

@@ -5,10 +5,6 @@
 #         image pull/remove, events, network/volume/distribution read, Swarm services.
 # Denies: exec, build, secrets, plugins.
 
-listen:
-  socket: /var/run/sockguard.sock
-  socket_mode: "0660"
-
 upstream:
   socket: /var/run/docker.sock
 

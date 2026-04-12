@@ -425,8 +425,8 @@ func TestListenerAddr(t *testing.T) {
 			Address: "127.0.0.1:2375",
 		},
 	}
-	if got := listenerAddr(withTCP); got != "tcp:127.0.0.1:2375" {
-		t.Fatalf("listenerAddr(withTCP) = %q, want %q", got, "tcp:127.0.0.1:2375")
+	if got := listenerAddr(withTCP); got != "tcp://127.0.0.1:2375" {
+		t.Fatalf("listenerAddr(withTCP) = %q, want %q", got, "tcp://127.0.0.1:2375")
 	}
 }
 

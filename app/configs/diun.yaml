@@ -4,10 +4,6 @@
 # Diun only needs to discover running containers and inspect their images.
 # Registry checks are done directly by Diun, not through Docker.
 
-listen:
-  socket: /var/run/sockguard.sock
-  socket_mode: "0660"
-
 upstream:
   socket: /var/run/docker.sock
 

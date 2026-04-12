@@ -4,10 +4,6 @@
 # Denies all write operations (POST, PUT, DELETE).
 # Suitable for: dashboards, monitoring tools, read-only Portainer.
 
-listen:
-  socket: /var/run/sockguard.sock
-  socket_mode: "0660"
-
 upstream:
   socket: /var/run/docker.sock
 

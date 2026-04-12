@@ -4,10 +4,6 @@
 # Everything must be explicitly allowed.
 # Rules are evaluated in order. First match wins.
 
-listen:
-  socket: /var/run/sockguard.sock
-  socket_mode: "0660"
-
 upstream:
   socket: /var/run/docker.sock
 

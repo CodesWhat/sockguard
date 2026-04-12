@@ -73,14 +73,44 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - sockguard-socket:/var/run/sockguard
     environment:
-      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
       - CONTAINERS=1
       - IMAGES=1
       - EVENTS=1
 
-  # Your app connects to the proxy socket instead of docker.sock
+  # Your app talks to tcp://sockguard:2375 over the compose network
+  # instead of mounting /var/run/docker.sock.
+  drydock:
+    image: codeswhat/drydock:latest
+    depends_on:
+      - sockguard
+    environment:
+      - DD_WATCHER_LOCAL_SOCKET=tcp://sockguard:2375
+```
+
+By default sockguard listens on TCP `:2375` inside the container — same as `tecnativa/docker-socket-proxy` and `linuxserver/socket-proxy`, so migrations are zero-config. There is no published port: sockguard is only reachable over the compose network, never from the host.
+
+<details>
+<summary>Unix socket mode (filesystem-bounded access)</summary>
+
+If you prefer to expose sockguard as a unix socket (no network surface at all), opt in by setting `SOCKGUARD_LISTEN_SOCKET` and sharing the socket via a named volume:
+
+```yaml
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    # Root inside the container so the process can bind a socket inside the
+    # named-volume mountpoint (which docker creates as root:root). This
+    # matches the runtime behavior of tecnativa/docker-socket-proxy and
+    # linuxserver/socket-proxy.
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+      - CONTAINERS=1
+
   drydock:
     image: codeswhat/drydock:latest
     depends_on:
@@ -94,16 +124,7 @@ volumes:
   sockguard-socket:
 ```
 
-<details>
-<summary>Linux user/group permissions</summary>
-
-The container image runs as `65534:65534` by default. The example above keeps the proxy socket inside a shared named volume so the process does not need direct write access to `/var/run/sockguard.sock`. If you bind the default socket path on a Linux host instead, either run as root or join the Docker socket group explicitly:
-
-```bash
-docker run --user 65534:$(stat -c %g /var/run/docker.sock) codeswhat/sockguard
-```
-
-For Docker Compose on Linux, export `DOCKER_GID=$(stat -c %g /var/run/docker.sock)` and set `user: "65534:${DOCKER_GID}"`.
+To run fully unprivileged with a unix socket, pre-create a host directory with the uid/gid you want and bind-mount it in place of the named volume.
 
 </details>
 

@@ -14,8 +14,21 @@ func TestLoadDefaults(t *testing.T) {
 	}
 
 	defaults := Defaults()
+
+	// The default listener must be TCP :2375 to match tecnativa/docker-socket-proxy
+	// and linuxserver/socket-proxy. Flipping this is a breaking change.
+	if defaults.Listen.Address != ":2375" {
+		t.Errorf("Defaults().Listen.Address = %q, want %q", defaults.Listen.Address, ":2375")
+	}
+	if defaults.Listen.Socket != "" {
+		t.Errorf("Defaults().Listen.Socket = %q, want empty (opt-in only)", defaults.Listen.Socket)
+	}
+
 	if cfg.Listen.Socket != defaults.Listen.Socket {
 		t.Errorf("Listen.Socket = %q, want %q", cfg.Listen.Socket, defaults.Listen.Socket)
+	}
+	if cfg.Listen.Address != defaults.Listen.Address {
+		t.Errorf("Listen.Address = %q, want %q", cfg.Listen.Address, defaults.Listen.Address)
 	}
 	if cfg.Upstream.Socket != defaults.Upstream.Socket {
 		t.Errorf("Upstream.Socket = %q, want %q", cfg.Upstream.Socket, defaults.Upstream.Socket)

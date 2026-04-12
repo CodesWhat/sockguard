@@ -4,10 +4,6 @@
 # Allows: container list, inspect, stats, events.
 # Includes Swarm endpoints (services, tasks) for Swarm deployments.
 
-listen:
-  socket: /var/run/sockguard.sock
-  socket_mode: "0660"
-
 upstream:
   socket: /var/run/docker.sock
 

@@ -349,5 +349,5 @@ func listenerAddr(cfg *config.Config) string {
 	if cfg.Listen.Socket != "" {
 		return "unix:" + cfg.Listen.Socket
 	}
-	return "tcp:" + cfg.Listen.Address
+	return "tcp://" + cfg.Listen.Address
 }

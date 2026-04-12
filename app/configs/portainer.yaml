@@ -6,10 +6,6 @@
 # WARNING: This preset grants near-full Docker socket access.
 # Use per-client policies (v0.3.0+) to restrict other consumers.
 
-listen:
-  socket: /var/run/sockguard.sock
-  socket_mode: "0660"
-
 upstream:
   socket: /var/run/docker.sock
 

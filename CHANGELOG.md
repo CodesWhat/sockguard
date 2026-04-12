@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Default listener flipped to TCP `:2375`** to match `tecnativa/docker-socket-proxy` and `linuxserver/socket-proxy`. Running `sockguard serve` with no config now binds TCP on `:2375` inside the container instead of a unix socket at `/var/run/sockguard.sock`. The unix socket listener is still fully supported — opt in by setting `SOCKGUARD_LISTEN_SOCKET` (or `listen.socket` in YAML). This makes zero-config drop-in migration from Tecnativa/LinuxServer actually zero-config, and eliminates the named-volume uid/gid friction for users running sockguard as a non-root user.
+- Stripped the `listen:` block from every bundled preset (`drydock`, `traefik`, `portainer`, `watchtower`, `homepage`, `homarr`, `diun`, `autoheal`, `readonly`, `sockguard`) so they inherit the new default. Presets are about rules, not transport.
+- README Quick Start now leads with the TCP-mode example. The unix-socket recipe (including the `user: "0:0"` note for named-volume setups) is documented under a collapsible "Unix socket mode" section.
+
 ## [0.0.1] - 2026-04-11
 
 ### Added
