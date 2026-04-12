@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-04-11
+
 ### Changed
 
 - **Default listener flipped to TCP `:2375`** to match `tecnativa/docker-socket-proxy` and `linuxserver/socket-proxy`. Running `sockguard serve` with no config now binds TCP on `:2375` inside the container instead of a unix socket at `/var/run/sockguard.sock`. The unix socket listener is still fully supported — opt in by setting `SOCKGUARD_LISTEN_SOCKET` (or `listen.socket` in YAML). This makes zero-config drop-in migration from Tecnativa/LinuxServer actually zero-config, and eliminates the named-volume uid/gid friction for users running sockguard as a non-root user.
