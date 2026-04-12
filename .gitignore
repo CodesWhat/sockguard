@@ -39,6 +39,10 @@ bin/
 # Playwright MCP scratch dir
 .playwright-mcp/
 
+# QLTY runtime state
+.qlty/*
+!.qlty/qlty.toml
+
 # CI-generated release notes (extracted from CHANGELOG by release-from-tag.yml)
 /release-notes.md
 

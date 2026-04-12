@@ -1,0 +1,44 @@
+config_version = "0"
+
+exclude_patterns = [
+  "*_min.*",
+  "*-min.*",
+  "*.min.*",
+  "**/*.d.ts",
+  "**/.next/**",
+  "**/.turbo/**",
+  "**/.yarn/**",
+  "**/build/**",
+  "**/coverage/**",
+  "**/dist/**",
+  "**/generated/**",
+  "**/node_modules/**",
+  "**/testdata/**",
+  "**/vendor/**",
+  ".planning/**",
+  ".qlty/**",
+  ".secrets/**",
+]
+
+test_patterns = [
+  "**/test/**",
+  "**/spec/**",
+  "**/*.test.*",
+  "**/*.spec.*",
+  "**/*_test.*",
+  "**/*_spec.*",
+  "**/test_*.*",
+  "**/spec_*.*",
+]
+
+[smells]
+mode = "comment"
+
+# Table-driven Go tests and large integration harnesses inflate whole-file
+# complexity without giving much actionable signal. Keep function-level smells on.
+[smells.file_complexity]
+enabled = false
+
+[[source]]
+name = "default"
+default = true
