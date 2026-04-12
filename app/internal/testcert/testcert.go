@@ -24,90 +24,30 @@ type Bundle struct {
 	ClientKeyFile  string
 }
 
+type issuedCertificate struct {
+	cert *x509.Certificate
+	der  []byte
+	key  *ecdsa.PrivateKey
+}
+
 func WriteMutualTLSBundle(dir string, serverHosts ...string) (Bundle, error) {
-	if len(serverHosts) == 0 {
-		serverHosts = []string{"127.0.0.1", "localhost"}
-	}
-
-	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("generate CA key: %w", err)
-	}
-	caTemplate, err := certificateTemplate("sockguard-test-ca")
+	ca, err := newCertificateAuthority()
 	if err != nil {
 		return Bundle{}, err
 	}
-	caTemplate.IsCA = true
-	caTemplate.KeyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign
-	caTemplate.BasicConstraintsValid = true
 
-	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, caKey.Public(), caKey)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("create CA certificate: %w", err)
-	}
-	caCert, err := x509.ParseCertificate(caDER)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("parse CA certificate: %w", err)
-	}
-
-	serverKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("generate server key: %w", err)
-	}
-	serverTemplate, err := certificateTemplate("sockguard-test-server")
+	server, err := newServerCertificate(defaultServerHosts(serverHosts), ca)
 	if err != nil {
 		return Bundle{}, err
 	}
-	serverTemplate.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}
-	for _, host := range serverHosts {
-		if ip := net.ParseIP(host); ip != nil {
-			serverTemplate.IPAddresses = append(serverTemplate.IPAddresses, ip)
-			continue
-		}
-		serverTemplate.DNSNames = append(serverTemplate.DNSNames, host)
-	}
 
-	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caCert, serverKey.Public(), caKey)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("create server certificate: %w", err)
-	}
-
-	clientKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("generate client key: %w", err)
-	}
-	clientTemplate, err := certificateTemplate("sockguard-test-client")
+	client, err := newClientCertificate(ca)
 	if err != nil {
 		return Bundle{}, err
 	}
-	clientTemplate.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 
-	clientDER, err := x509.CreateCertificate(rand.Reader, clientTemplate, caCert, clientKey.Public(), caKey)
-	if err != nil {
-		return Bundle{}, fmt.Errorf("create client certificate: %w", err)
-	}
-
-	bundle := Bundle{
-		CAFile:         filepath.Join(dir, "ca.pem"),
-		ServerCertFile: filepath.Join(dir, "server-cert.pem"),
-		ServerKeyFile:  filepath.Join(dir, "server-key.pem"),
-		ClientCertFile: filepath.Join(dir, "client-cert.pem"),
-		ClientKeyFile:  filepath.Join(dir, "client-key.pem"),
-	}
-
-	if err := writePEM(bundle.CAFile, "CERTIFICATE", caDER); err != nil {
-		return Bundle{}, err
-	}
-	if err := writePEM(bundle.ServerCertFile, "CERTIFICATE", serverDER); err != nil {
-		return Bundle{}, err
-	}
-	if err := writeECPrivateKey(bundle.ServerKeyFile, serverKey); err != nil {
-		return Bundle{}, err
-	}
-	if err := writePEM(bundle.ClientCertFile, "CERTIFICATE", clientDER); err != nil {
-		return Bundle{}, err
-	}
-	if err := writeECPrivateKey(bundle.ClientKeyFile, clientKey); err != nil {
+	bundle := newBundle(dir)
+	if err := writeBundleFiles(bundle, ca, server, client); err != nil {
 		return Bundle{}, err
 	}
 
@@ -154,6 +94,128 @@ func certificateTemplate(commonName string) (*x509.Certificate, error) {
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		BasicConstraintsValid: true,
 	}, nil
+}
+
+func defaultServerHosts(serverHosts []string) []string {
+	if len(serverHosts) == 0 {
+		return []string{"127.0.0.1", "localhost"}
+	}
+	return serverHosts
+}
+
+func newBundle(dir string) Bundle {
+	return Bundle{
+		CAFile:         filepath.Join(dir, "ca.pem"),
+		ServerCertFile: filepath.Join(dir, "server-cert.pem"),
+		ServerKeyFile:  filepath.Join(dir, "server-key.pem"),
+		ClientCertFile: filepath.Join(dir, "client-cert.pem"),
+		ClientKeyFile:  filepath.Join(dir, "client-key.pem"),
+	}
+}
+
+func newCertificateAuthority() (issuedCertificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return issuedCertificate{}, fmt.Errorf("generate CA key: %w", err)
+	}
+
+	template, err := certificateTemplate("sockguard-test-ca")
+	if err != nil {
+		return issuedCertificate{}, err
+	}
+	template.IsCA = true
+	template.KeyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign
+	template.BasicConstraintsValid = true
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
+	if err != nil {
+		return issuedCertificate{}, fmt.Errorf("create CA certificate: %w", err)
+	}
+
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		return issuedCertificate{}, fmt.Errorf("parse CA certificate: %w", err)
+	}
+
+	return issuedCertificate{cert: cert, der: der, key: key}, nil
+}
+
+func newServerCertificate(serverHosts []string, ca issuedCertificate) (issuedCertificate, error) {
+	return newLeafCertificate("sockguard-test-server", x509.ExtKeyUsageServerAuth, ca, func(template *x509.Certificate) {
+		for _, host := range serverHosts {
+			if ip := net.ParseIP(host); ip != nil {
+				template.IPAddresses = append(template.IPAddresses, ip)
+				continue
+			}
+			template.DNSNames = append(template.DNSNames, host)
+		}
+	})
+}
+
+func newClientCertificate(ca issuedCertificate) (issuedCertificate, error) {
+	return newLeafCertificate("sockguard-test-client", x509.ExtKeyUsageClientAuth, ca, nil)
+}
+
+func newLeafCertificate(
+	commonName string,
+	extKeyUsage x509.ExtKeyUsage,
+	ca issuedCertificate,
+	configure func(*x509.Certificate),
+) (issuedCertificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return issuedCertificate{}, fmt.Errorf("generate %s key: %w", commonName, err)
+	}
+
+	template, err := certificateTemplate(commonName)
+	if err != nil {
+		return issuedCertificate{}, err
+	}
+	template.ExtKeyUsage = []x509.ExtKeyUsage{extKeyUsage}
+	if configure != nil {
+		configure(template)
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, ca.cert, key.Public(), ca.key)
+	if err != nil {
+		return issuedCertificate{}, fmt.Errorf("create %s certificate: %w", commonName, err)
+	}
+
+	return issuedCertificate{der: der, key: key}, nil
+}
+
+func writeBundleFiles(bundle Bundle, ca issuedCertificate, server issuedCertificate, client issuedCertificate) error {
+	files := []struct {
+		path      string
+		blockType string
+		der       []byte
+	}{
+		{path: bundle.CAFile, blockType: "CERTIFICATE", der: ca.der},
+		{path: bundle.ServerCertFile, blockType: "CERTIFICATE", der: server.der},
+		{path: bundle.ClientCertFile, blockType: "CERTIFICATE", der: client.der},
+	}
+
+	for _, file := range files {
+		if err := writePEM(file.path, file.blockType, file.der); err != nil {
+			return err
+		}
+	}
+
+	keys := []struct {
+		path string
+		key  *ecdsa.PrivateKey
+	}{
+		{path: bundle.ServerKeyFile, key: server.key},
+		{path: bundle.ClientKeyFile, key: client.key},
+	}
+
+	for _, file := range keys {
+		if err := writeECPrivateKey(file.path, file.key); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func writePEM(path, blockType string, der []byte) error {
