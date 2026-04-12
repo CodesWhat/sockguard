@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -218,6 +219,19 @@ func TestRequestMetaPoolFallbackAndNilPut(t *testing.T) {
 	putRequestMeta(nil)
 }
 
+func TestRequestMetaPoolFallbackWhenPoolReturnsWrongType(t *testing.T) {
+	originalPool := requestMetaPool
+	requestMetaPool = sync.Pool{New: func() any { return "bad-meta" }}
+	t.Cleanup(func() {
+		requestMetaPool = originalPool
+	})
+
+	meta := getRequestMeta()
+	if meta == nil {
+		t.Fatal("getRequestMeta() returned nil")
+	}
+}
+
 func TestAccessLogAttrPoolFallbackAndNilPut(t *testing.T) {
 	originalNew := accessLogAttrPool.New
 	accessLogAttrPool.New = func() any { return nil }
@@ -232,6 +246,19 @@ func TestAccessLogAttrPoolFallbackAndNilPut(t *testing.T) {
 	putAccessLogAttrs(nil)
 }
 
+func TestAccessLogAttrPoolFallbackWhenPoolReturnsWrongType(t *testing.T) {
+	originalPool := accessLogAttrPool
+	accessLogAttrPool = sync.Pool{New: func() any { return "bad-attrs" }}
+	t.Cleanup(func() {
+		accessLogAttrPool = originalPool
+	})
+
+	attrs := getAccessLogAttrs()
+	if attrs == nil {
+		t.Fatal("getAccessLogAttrs() returned nil")
+	}
+}
+
 func TestResponseCapturePoolFallbackAndNilPut(t *testing.T) {
 	originalNew := responseCapturePool.New
 	responseCapturePool.New = func() any { return nil }
@@ -244,6 +271,50 @@ func TestResponseCapturePoolFallbackAndNilPut(t *testing.T) {
 		t.Fatal("getResponseCapture() returned nil")
 	}
 	putResponseCapture(nil)
+}
+
+func TestResponseCapturePoolFallbackWhenPoolReturnsWrongType(t *testing.T) {
+	originalPool := responseCapturePool
+	responseCapturePool = sync.Pool{New: func() any { return "bad-capture" }}
+	t.Cleanup(func() {
+		responseCapturePool = originalPool
+	})
+
+	rc := getResponseCapture(httptest.NewRecorder())
+	if rc == nil {
+		t.Fatal("getResponseCapture() returned nil")
+	}
+}
+
+func TestAppendCorrelationAttrsNilRequest(t *testing.T) {
+	attrs := []slog.Attr{slog.String("existing", "value")}
+	got := AppendCorrelationAttrs(attrs, nil)
+	if len(got) != 1 {
+		t.Fatalf("attrs length = %d, want 1", len(got))
+	}
+	if got[0].Key != "existing" {
+		t.Fatalf("first attr key = %q, want existing", got[0].Key)
+	}
+}
+
+func TestAppendCorrelationAttrsOmitsEmptyRequestIDAndReason(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	req.Header[requestIDHeader] = []string{""}
+	req = req.WithContext(WithMeta(req.Context(), &RequestMeta{
+		Decision: "allow",
+		Rule:     3,
+		NormPath: "/containers/json",
+	}))
+
+	attrs := AppendCorrelationAttrs(nil, req)
+	for _, attr := range attrs {
+		if attr.Key == "request_id" {
+			t.Fatalf("unexpected request_id attr: %#v", attr)
+		}
+		if attr.Key == "reason" {
+			t.Fatalf("unexpected reason attr: %#v", attr)
+		}
+	}
 }
 
 type stubHijacker struct {

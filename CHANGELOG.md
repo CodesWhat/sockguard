@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Changed the default TCP listener from `:2375` to loopback `127.0.0.1:2375`, added mutual TLS support for non-loopback TCP listeners, and now reject plaintext non-loopback TCP unless `listen.insecure_allow_plain_tcp=true` is set explicitly for legacy compatibility.
+- Added a startup warning when Sockguard is intentionally run in insecure plaintext remote-TCP mode, with recommendations to switch to mTLS, loopback-only TCP, or a unix socket.
+- Added validation guardrails for body-sensitive write endpoints such as `POST /containers/create`, `POST /containers/*/exec`, `POST /exec/*/start`, `POST /build`, and Swarm service writes. These rules now require `insecure_allow_body_blind_writes=true` until request body inspection exists, and the shipped Drydock, Watchtower, and Portainer presets now opt in explicitly.
+- Added an explicit 120 second HTTP `IdleTimeout` so idle TCP keep-alive connections are reaped instead of lingering indefinitely after a request completes.
+- Stopped cloning the entire inbound request when forwarding hijack upgrade requests upstream, and instead build a minimal outbound request with only the method, URL, host, protocol, headers, and body fields that the serialized Docker upgrade path actually needs.
+- Extracted the repeated hijack `502 Bad Gateway` JSON-response path into a shared helper so upstream dial, write, and read failures stay consistent in one place.
+- Split hijack handling into an explicit upgrade phase and a bidirectional stream relay phase so the control flow is easier to audit without changing Docker attach/exec behavior.
+- Simplified log-output normalization by handling empty output values before the main switch in both the logging package and config validation mirror, reducing nested control flow without changing behavior.
+- Unexported the test-only `CompiledRule.matches` wrapper while leaving `filter.Evaluate` exported, since the command layer still uses it for production rule evaluation.
+- Refactored `runServe` into named lifecycle helpers for config loading, logger setup, rule compilation, upstream verification, handler construction, startup logging, shutdown coordination, and socket cleanup so the `serve` command flow is easier to audit and extend.
+- Moved rule compilation and body-sensitive endpoint policy checks out of `internal/config` and into the command layer so config validation no longer depends upward on the filter or logging packages.
+- Replaced the `serve` command's package-level dependency-injection hooks with a per-run `serveDeps` struct so command tests can stub dependencies without mutating global process state, which removes the main blocker to running those tests in parallel.
+- Added regression coverage for first-match rule precedence, concurrent filter metadata isolation, `splitMethods` edge cases, adversarial YAML config loading fuzzing, deterministic health-check coalescing, and `httpjson.Write` nil/write-failure paths.
+- Documented the explicit `WriteTimeout: 0` streaming rationale beside the existing `ReadTimeout: 0` note, clarified the inline Tecnativa compatibility expansion point in `serve`, asserted health endpoint version/uptime fields in tests, and added env-var override coverage for `SOCKGUARD_LISTEN_ADDRESS` and `SOCKGUARD_LISTEN_SOCKET`.
+
 ## [0.1.1] - 2026-04-11
 
 ### Fixed

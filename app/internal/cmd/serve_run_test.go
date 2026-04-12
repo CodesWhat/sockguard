@@ -36,9 +36,10 @@ func (c *serveTestConn) SetReadDeadline(time.Time) error  { return nil }
 func (c *serveTestConn) SetWriteDeadline(time.Time) error { return nil }
 
 type serveTestListener struct {
-	addr      net.Addr
-	acceptErr error
-	closeErr  error
+	addr       net.Addr
+	acceptErr  error
+	closeErr   error
+	closeCalls int
 }
 
 func (l *serveTestListener) Accept() (net.Conn, error) {
@@ -49,6 +50,7 @@ func (l *serveTestListener) Accept() (net.Conn, error) {
 }
 
 func (l *serveTestListener) Close() error {
+	l.closeCalls++
 	return l.closeErr
 }
 
@@ -108,6 +110,22 @@ func TestRunServeWithDepsUsesInjectedLoadConfig(t *testing.T) {
 
 	err := runServeWithDeps(newServeCommand(), nil, deps)
 	if err == nil || !strings.Contains(err.Error(), "config load: boom") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunServeWrapperPropagatesConfigLoadError(t *testing.T) {
+	originalCfgFile := cfgFile
+	cfgFile = filepath.Join(t.TempDir(), "invalid.yaml")
+	if err := os.WriteFile(cfgFile, []byte("rules: [:"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Cleanup(func() {
+		cfgFile = originalCfgFile
+	})
+
+	err := runServe(newServeCommand(), nil)
+	if err == nil || !strings.Contains(err.Error(), "config load:") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -643,6 +661,31 @@ func TestVerifyUpstreamReachable(t *testing.T) {
 			t.Fatalf("expected debug close log, got: %s", logBuf.String())
 		}
 	})
+}
+
+func TestVerifyUpstreamReachableWrapperMissingSocket(t *testing.T) {
+	t.Parallel()
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	err := verifyUpstreamReachable(shortSocketPath(t, "missing-upstream"), logger)
+	if err == nil || !strings.Contains(err.Error(), "upstream socket not found") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWithUmaskWrapperReturnsCallbackResult(t *testing.T) {
+	t.Parallel()
+
+	ln := &serveTestListener{}
+	got, err := withUmask(0o177, func() (net.Listener, error) {
+		return ln, nil
+	})
+	if err != nil {
+		t.Fatalf("withUmask() error = %v", err)
+	}
+	if got != ln {
+		t.Fatalf("listener = %v, want %v", got, ln)
+	}
 }
 
 func TestRunServeWarnsOnWildcardTCPBind(t *testing.T) {

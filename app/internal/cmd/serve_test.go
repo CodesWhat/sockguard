@@ -235,6 +235,22 @@ func TestCreateListenerTCP(t *testing.T) {
 	}
 }
 
+func TestCreateListenerTCPReturnsListenError(t *testing.T) {
+	deps := newServeTestDeps()
+	deps.listenNetwork = func(network, address string) (net.Listener, error) {
+		return nil, errors.New("listen boom")
+	}
+
+	_, err := deps.createListener(&config.Config{
+		Listen: config.ListenConfig{
+			Address: "127.0.0.1:0",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "listen boom") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestCreateListenerTCPWithMutualTLS(t *testing.T) {
 	dir := t.TempDir()
 	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
@@ -344,6 +360,36 @@ func TestCreateListenerTCPWithMutualTLSRejectsMissingClientCertificate(t *testin
 
 	if err := <-errCh; err == nil {
 		t.Fatal("expected listener handshake to fail without client certificate")
+	}
+}
+
+func TestCreateListenerTCPWithMutualTLSClosesBaseListenerOnTLSConfigError(t *testing.T) {
+	deps := newServeTestDeps()
+	baseListener := &serveTestListener{}
+	deps.listenNetwork = func(network, address string) (net.Listener, error) {
+		return baseListener, nil
+	}
+
+	cfg := &config.Config{
+		Listen: config.ListenConfig{
+			Address: "127.0.0.1:0",
+			TLS: config.ListenTLSConfig{
+				CertFile:     "/nonexistent/server-cert.pem",
+				KeyFile:      "/nonexistent/server-key.pem",
+				ClientCAFile: "/nonexistent/ca.pem",
+			},
+		},
+	}
+
+	ln, err := deps.createListener(cfg)
+	if err == nil {
+		if ln != nil {
+			_ = ln.Close()
+		}
+		t.Fatal("expected createListener() to fail")
+	}
+	if baseListener.closeCalls != 1 {
+		t.Fatalf("base listener close calls = %d, want 1", baseListener.closeCalls)
 	}
 }
 

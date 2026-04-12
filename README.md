@@ -74,6 +74,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
+      - SOCKGUARD_LISTEN_ADDRESS=:2375
+      - SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true
       - CONTAINERS=1
       - IMAGES=1
       - EVENTS=1
@@ -88,7 +90,34 @@ services:
       - DD_WATCHER_LOCAL_SOCKET=tcp://sockguard:2375
 ```
 
-By default sockguard listens on TCP `:2375` inside the container — same as `tecnativa/docker-socket-proxy` and `linuxserver/socket-proxy`, so migrations are zero-config. There is no published port: sockguard is only reachable over the compose network, never from the host.
+By default sockguard listens on loopback TCP `127.0.0.1:2375`, not on all interfaces. Non-loopback TCP now requires mutual TLS via `listen.tls` by default.
+
+The compose example above opts into **legacy plaintext TCP** with `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true` so migration from `tecnativa/docker-socket-proxy` and `linuxserver/socket-proxy` still works on a private Docker network. Do not publish that plaintext listener to the host or Internet.
+
+If you run sockguard directly on a host, keep `SOCKGUARD_LISTEN_ADDRESS=127.0.0.1:2375`, configure `listen.tls` for remote TCP, or switch to `SOCKGUARD_LISTEN_SOCKET` to avoid a network listener entirely.
+
+<details>
+<summary>mTLS TCP mode (recommended for remote TCP)</summary>
+
+```yaml
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./certs:/certs:ro
+    environment:
+      - SOCKGUARD_LISTEN_ADDRESS=:2376
+      - SOCKGUARD_LISTEN_TLS_CERT_FILE=/certs/server-cert.pem
+      - SOCKGUARD_LISTEN_TLS_KEY_FILE=/certs/server-key.pem
+      - SOCKGUARD_LISTEN_TLS_CLIENT_CA_FILE=/certs/client-ca.pem
+      - CONTAINERS=1
+```
+
+Non-loopback TCP without `listen.tls` fails startup unless you explicitly set `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true`.
+
+</details>
 
 <details>
 <summary>Unix socket mode (filesystem-bounded access)</summary>
@@ -146,9 +175,11 @@ Existing socket proxies (Tecnativa, LinuxServer) filter by URL path only. Sockgu
 | 🎛️ | **Granular Control** | Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching. |
 | 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation. 10 bundled presets. |
 | 📊 | **Structured Logging** | JSON access logs with method, path, decision, matched rule, latency, client info. |
+| 🔐 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
+| 🧱 | **Body-Blind Write Guardrail** | Body-sensitive write endpoints such as `POST /containers/create` require explicit unsafe opt-in until request body inspection ships. |
 | 🔄 | **Tecnativa Compatible** | Drop-in replacement using the same env vars. `CONTAINERS=1`, `POST=0`, `ALLOW_START=1` all work. |
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance. |
-| ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts. |
+| ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
 | 🩺 | **Health Check** | `/health` endpoint with cached upstream reachability probes. |
 | 🧪 | **Battle-Tested** | 100% statement coverage, race-detector clean, fuzz testing on filter and proxy paths. |
 
@@ -193,6 +224,16 @@ Compat env vars only generate rules when no explicit `rules:` are configured. If
 ### YAML Config (recommended)
 
 ```yaml
+listen:
+  address: 127.0.0.1:2375
+  insecure_allow_plain_tcp: false
+  tls:
+    cert_file: /run/secrets/sockguard/server-cert.pem
+    key_file: /run/secrets/sockguard/server-key.pem
+    client_ca_file: /run/secrets/sockguard/client-ca.pem
+
+insecure_allow_body_blind_writes: false
+
 response:
   deny_verbosity: verbose  # verbose | minimal
 
@@ -208,6 +249,10 @@ rules:
 ```
 
 Trailing `/**` matches both the base path and any deeper path. For example, `/containers/**` matches `/containers` and `/containers/abc/json`.
+
+`listen.tls` is only needed when you expose Sockguard on non-loopback TCP. Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`, which is intended only for legacy compatibility on a private, trusted network.
+
+`insecure_allow_body_blind_writes` is off by default. If your rule set allows body-sensitive Docker write endpoints such as `POST /containers/create`, `POST /containers/*/exec`, `POST /exec/*/start`, `POST /build`, or Swarm service creation/update, validation fails unless you explicitly set this flag to `true`. That opt-in acknowledges that Sockguard is still enforcing method+path only for those writes.
 
 Set `response.deny_verbosity: minimal` to return only the generic deny message. The default `verbose` response also includes the request method, original path, and matched deny reason.
 
@@ -237,6 +282,8 @@ Replace the image — your env vars work as-is:
      volumes:
        - /var/run/docker.sock:/var/run/docker.sock:ro
      environment:
+       - SOCKGUARD_LISTEN_ADDRESS=:2375
+       - SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true
        - CONTAINERS=1
        - POST=0
 ```
@@ -252,7 +299,7 @@ Replace the image — your env vars work as-is:
 | **0.3.0** | Per-client policy profiles — one proxy, many consumers |
 | **0.4.0** | Response filtering — hide containers, redact env vars |
 | **0.5.0** | Observability — Prometheus metrics, audit log persistence, OTel trace/span IDs in log records |
-| **0.6.0** | mTLS, rate limiting, security enforcement |
+| **0.6.0** | Rate limiting, policy safety rails, security enforcement |
 
 <hr>
 

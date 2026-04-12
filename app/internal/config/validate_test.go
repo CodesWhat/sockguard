@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -73,6 +74,31 @@ func TestValidateAcceptsNonLoopbackTCPWithMutualTLS(t *testing.T) {
 
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+func TestValidateRejectsCompleteButInvalidMutualTLSConfig(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("WriteMutualTLSBundle: %v", err)
+	}
+
+	invalidCA := dir + "/invalid-ca.pem"
+	if err := os.WriteFile(invalidCA, []byte("not pem"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg := Defaults()
+	cfg.Listen.Address = ":2376"
+	cfg.Listen.Socket = ""
+	cfg.Listen.TLS.CertFile = bundle.ServerCertFile
+	cfg.Listen.TLS.KeyFile = bundle.ServerKeyFile
+	cfg.Listen.TLS.ClientCAFile = invalidCA
+
+	err = Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "no PEM certificates found") {
+		t.Fatalf("expected TLS parse error, got: %v", err)
 	}
 }
 

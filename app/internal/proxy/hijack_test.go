@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -968,9 +969,9 @@ func TestUpgradeHijackConnectionReturnsReadySession(t *testing.T) {
 func TestProxyHijackStreamsClosesConnections(t *testing.T) {
 	useHijackDeps(t)
 
-	copyCalls := 0
+	var copyCalls atomic.Int32
 	copyHijackBuffer = func(io.Writer, io.Reader, []byte) (int64, error) {
-		copyCalls++
+		copyCalls.Add(1)
 		return 0, io.EOF
 	}
 
@@ -1000,8 +1001,8 @@ func TestProxyHijackStreamsClosesConnections(t *testing.T) {
 		clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
 	}, logger)
 
-	if copyCalls != 2 {
-		t.Fatalf("copyHijackBuffer calls = %d, want 2", copyCalls)
+	if got := copyCalls.Load(); got != 2 {
+		t.Fatalf("copyHijackBuffer calls = %d, want 2", got)
 	}
 	if clientConn.closeWriteCalls == 0 {
 		t.Fatal("expected client CloseWrite to be attempted")
@@ -1017,6 +1018,38 @@ func TestProxyHijackStreamsClosesConnections(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "connection closed") {
 		t.Fatalf("expected connection closed log, got %q", logs.String())
+	}
+}
+
+func TestInactivityDeadlineReaderReturnsDeadlineError(t *testing.T) {
+	wantErr := errors.New("deadline boom")
+	conn := &funcConn{
+		readDeadlineFn: func(time.Time) error { return wantErr },
+		readFn: func([]byte) (int, error) {
+			t.Fatal("reader should not be called when deadline setup fails")
+			return 0, nil
+		},
+	}
+
+	_, err := withReadInactivityDeadline(strings.NewReader("data"), conn, time.Second).Read(make([]byte, 4))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Read() error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestInactivityDeadlineWriterReturnsDeadlineError(t *testing.T) {
+	wantErr := errors.New("deadline boom")
+	conn := &funcConn{
+		writeDeadlineFn: func(time.Time) error { return wantErr },
+		writeFn: func([]byte) (int, error) {
+			t.Fatal("writer should not be called when deadline setup fails")
+			return 0, nil
+		},
+	}
+
+	_, err := withWriteInactivityDeadline(io.Discard, conn, time.Second).Write([]byte("data"))
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Write() error = %v, want %v", err, wantErr)
 	}
 }
 

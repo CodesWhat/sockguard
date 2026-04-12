@@ -31,6 +31,8 @@ Parse JSON request bodies for dangerous configurations:
 - Device mappings
 - Security profile overrides
 
+Until that layer ships, Sockguard rejects rule sets that allow body-sensitive write endpoints such as `POST /containers/create` unless `insecure_allow_body_blind_writes: true` is set explicitly. That opt-in exists to keep the current method+path-only enforcement honest.
+
 ### Layer 4: Response Filtering (v0.4.0+)
 Control what information consumers can see:
 - Hide containers by name/label

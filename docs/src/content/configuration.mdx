@@ -6,8 +6,14 @@ Sockguard supports two configuration methods: YAML config files and environment 
 
 ```yaml filename="sockguard.yaml"
 listen:
-  socket: /var/run/sockguard.sock
-  socket_mode: "0660"
+  address: 127.0.0.1:2375
+  insecure_allow_plain_tcp: false
+  tls:
+    cert_file: /run/secrets/sockguard/server-cert.pem
+    key_file: /run/secrets/sockguard/server-key.pem
+    client_ca_file: /run/secrets/sockguard/client-ca.pem
+
+insecure_allow_body_blind_writes: false
 
 upstream:
   socket: /var/run/docker.sock
@@ -43,7 +49,12 @@ rules:
     reason: "no matching allow rule"
 ```
 
-The default listen socket is `/var/run/sockguard.sock`. The published container image runs as `65534:65534`, so direct writes to `/var/run` usually require root or a writable override. For shared-volume deployments, set `SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock`. If you keep the default path on a Linux host, use `--user 65534:$(stat -c %g /var/run/docker.sock)` or the equivalent Compose `user:` setting so the process joins the Docker socket group.
+The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker API proxy off the network unless you explicitly choose otherwise.
+
+- For the safest deployment, use `listen.socket` and share a unix socket.
+- For remote or container-network TCP, configure `listen.tls` so Sockguard requires mutual TLS.
+- Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`. That mode is only for legacy compatibility on a private, trusted network.
+- Body-sensitive write endpoints such as `POST /containers/create` are rejected by validation unless you set `insecure_allow_body_blind_writes: true`. That opt-in exists because Sockguard does not inspect request bodies yet.
 
 ## Rule Matching
 
@@ -70,7 +81,13 @@ Docker API version prefixes (`/v1.45/`) are stripped before matching.
 Every config field can be set via env var with `SOCKGUARD_` prefix:
 
 ```bash
+SOCKGUARD_LISTEN_ADDRESS=127.0.0.1:2375
+SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=false
+SOCKGUARD_LISTEN_TLS_CERT_FILE=/run/secrets/sockguard/server-cert.pem
+SOCKGUARD_LISTEN_TLS_KEY_FILE=/run/secrets/sockguard/server-key.pem
+SOCKGUARD_LISTEN_TLS_CLIENT_CA_FILE=/run/secrets/sockguard/client-ca.pem
 SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard.sock
+SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES=false
 SOCKGUARD_UPSTREAM_SOCKET=/var/run/docker.sock
 SOCKGUARD_LOG_LEVEL=debug
 SOCKGUARD_LOG_FORMAT=json

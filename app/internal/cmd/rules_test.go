@@ -213,3 +213,23 @@ func TestValidateAndCompileRulesReturnsConfigValidationError(t *testing.T) {
 		t.Fatalf("expected config validation error, got: %v", err)
 	}
 }
+
+func TestValidateAndCompileRulesReturnsCompileError(t *testing.T) {
+	useRuleDeps(t)
+
+	validateConfig = func(*config.Config) error {
+		return nil
+	}
+	compileFilterRule = func(filter.Rule) (*filter.CompiledRule, error) {
+		return nil, errors.New("boom")
+	}
+
+	cfg := config.Defaults()
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected validateAndCompileRules() to fail")
+	}
+	if !strings.Contains(err.Error(), "rule 1: boom") {
+		t.Fatalf("expected wrapped compile error, got: %v", err)
+	}
+}

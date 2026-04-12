@@ -185,6 +185,22 @@ func TestGetJSONBufferFallsBackWhenPoolReturnsNil(t *testing.T) {
 	}
 }
 
+func TestGetJSONBufferFallsBackWhenPoolReturnsWrongType(t *testing.T) {
+	originalNew := jsonBufferPool.New
+	jsonBufferPool.New = func() any { return "not-a-buffer" }
+	t.Cleanup(func() {
+		jsonBufferPool.New = originalNew
+	})
+
+	buf := getJSONBuffer()
+	if buf == nil {
+		t.Fatal("getJSONBuffer() returned nil")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("buffer length = %d, want 0", buf.Len())
+	}
+}
+
 func TestPutJSONBufferResetsBuffer(t *testing.T) {
 	buf := getJSONBuffer()
 	buf.WriteString(`{"message":"denied"}`)
