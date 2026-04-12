@@ -91,6 +91,18 @@ test("method mismatches continue scanning and eventually default deny", () => {
   });
 });
 
+test("path mismatches continue scanning and eventually default deny", () => {
+  const compiled = compileRules([
+    { method: "GET", path: "/containers/*/logs", action: "allow" },
+  ]);
+
+  assert.deepEqual(evaluateCompiled(compiled, "GET", "/volumes"), {
+    action: "deny",
+    ruleIndex: -1,
+    reason: "no matching allow rule",
+  });
+});
+
 test("repeated evaluations reuse compiled regexes for the same rule set", () => {
   const NativeRegExp = globalThis.RegExp;
   let constructions = 0;
