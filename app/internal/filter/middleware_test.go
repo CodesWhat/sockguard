@@ -2,15 +2,18 @@ package filter
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/codeswhat/sockguard/internal/logging"
@@ -25,6 +28,44 @@ type devNull struct{}
 func (devNull) Write(b []byte) (int, error) { return len(b), nil }
 
 var errWriteFailed = errors.New("write failed")
+
+type loggedRequest struct {
+	message string
+	attrs   map[string]any
+}
+
+type collectingHandler struct {
+	mu      sync.Mutex
+	records []loggedRequest
+}
+
+func (h *collectingHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *collectingHandler) Handle(_ context.Context, r slog.Record) error {
+	attrs := make(map[string]any, r.NumAttrs())
+	r.Attrs(func(a slog.Attr) bool {
+		attrs[a.Key] = a.Value.Any()
+		return true
+	})
+
+	h.mu.Lock()
+	h.records = append(h.records, loggedRequest{message: r.Message, attrs: attrs})
+	h.mu.Unlock()
+	return nil
+}
+
+func (h *collectingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h *collectingHandler) WithGroup(string) slog.Handler { return h }
+
+func (h *collectingHandler) snapshot() []loggedRequest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	out := make([]loggedRequest, len(h.records))
+	copy(out, h.records)
+	return out
+}
 
 type failingResponseWriter struct {
 	header http.Header
@@ -216,6 +257,150 @@ func TestMiddlewareWritesMeta(t *testing.T) {
 	// Also verify meta was written (accessible from outer middleware)
 	if meta.Decision != "allow" {
 		t.Errorf("meta.Decision = %q, want allow", meta.Decision)
+	}
+}
+
+func TestMiddlewareConcurrentRequestMetaIsolation(t *testing.T) {
+	allowRule, _ := CompileRule(Rule{Methods: []string{http.MethodGet}, Pattern: "/allowed/**", Action: ActionAllow, Index: 0})
+	denyRule, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{allowRule, denyRule}
+
+	const totalRequests = 64
+	const allowedRequests = totalRequests / 2
+
+	collector := &collectingHandler{}
+	logger := slog.New(collector)
+
+	releaseAllowed := make(chan struct{})
+	enteredAllowed := make(chan string, allowedRequests)
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enteredAllowed <- r.URL.Path
+		<-releaseAllowed
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	handler := logging.AccessLogMiddleware(logger)(Middleware(rules, logger)(inner))
+
+	type expectation struct {
+		message        string
+		decision       string
+		rule           int
+		normalizedPath string
+		reason         string
+		status         int
+	}
+
+	expectations := make(map[string]expectation, totalRequests)
+	requests := make([]struct {
+		method string
+		path   string
+	}, 0, totalRequests)
+
+	for i := 0; i < totalRequests; i++ {
+		if i%2 == 0 {
+			path := fmt.Sprintf("/allowed/%02d", i)
+			requests = append(requests, struct {
+				method string
+				path   string
+			}{method: http.MethodGet, path: path})
+			expectations[path] = expectation{
+				message:        "request",
+				decision:       "allow",
+				rule:           0,
+				normalizedPath: NormalizePath(path),
+				status:         http.StatusAccepted,
+			}
+			continue
+		}
+
+		path := fmt.Sprintf("/blocked/%02d", i)
+		requests = append(requests, struct {
+			method string
+			path   string
+		}{method: http.MethodPost, path: path})
+		expectations[path] = expectation{
+			message:        "request_denied",
+			decision:       "deny",
+			rule:           1,
+			normalizedPath: NormalizePath(path),
+			reason:         "deny all",
+			status:         http.StatusForbidden,
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(len(requests))
+	errCh := make(chan error, len(requests))
+
+	for _, reqSpec := range requests {
+		reqSpec := reqSpec
+		go func() {
+			defer wg.Done()
+
+			req := httptest.NewRequest(reqSpec.method, reqSpec.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if got, want := rec.Code, expectations[reqSpec.path].status; got != want {
+				errCh <- fmt.Errorf("status for %s = %d, want %d", reqSpec.path, got, want)
+			}
+		}()
+	}
+
+	for i := 0; i < allowedRequests; i++ {
+		<-enteredAllowed
+	}
+	close(releaseAllowed)
+
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
+	}
+
+	records := collector.snapshot()
+	if len(records) != totalRequests {
+		t.Fatalf("log records = %d, want %d", len(records), totalRequests)
+	}
+
+	seen := make(map[string]loggedRequest, totalRequests)
+	for _, record := range records {
+		path, _ := record.attrs["path"].(string)
+		if path == "" {
+			t.Fatalf("log record %q missing path attr: %#v", record.message, record.attrs)
+		}
+		seen[path] = record
+	}
+
+	for _, reqSpec := range requests {
+		want := expectations[reqSpec.path]
+		record, ok := seen[reqSpec.path]
+		if !ok {
+			t.Fatalf("missing log record for %s", reqSpec.path)
+		}
+
+		if record.message != want.message {
+			t.Errorf("message for %s = %q, want %q", reqSpec.path, record.message, want.message)
+		}
+		if got, _ := record.attrs["method"].(string); got != reqSpec.method {
+			t.Errorf("method for %s = %q, want %q", reqSpec.path, got, reqSpec.method)
+		}
+		if got, _ := record.attrs["path"].(string); got != reqSpec.path {
+			t.Errorf("path for %s = %q, want %q", reqSpec.path, got, reqSpec.path)
+		}
+		if got, _ := record.attrs["normalized_path"].(string); got != want.normalizedPath {
+			t.Errorf("normalized_path for %s = %q, want %q", reqSpec.path, got, want.normalizedPath)
+		}
+		if got, _ := record.attrs["decision"].(string); got != want.decision {
+			t.Errorf("decision for %s = %q, want %q", reqSpec.path, got, want.decision)
+		}
+		if got, ok := record.attrs["rule"].(int64); !ok || int(got) != want.rule {
+			t.Errorf("rule for %s = %v, want %d", reqSpec.path, record.attrs["rule"], want.rule)
+		}
+		if got, _ := record.attrs["reason"].(string); got != want.reason {
+			t.Errorf("reason for %s = %q, want %q", reqSpec.path, got, want.reason)
+		}
 	}
 }
 

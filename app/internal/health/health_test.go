@@ -17,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/codeswhat/sockguard/internal/version"
 )
 
 type devNull struct{}
@@ -45,7 +47,8 @@ func TestHealthReachable(t *testing.T) {
 	}
 	defer ln.Close()
 
-	handler := Handler(sock, time.Now(), testLogger())
+	startTime := time.Now().Add(-90 * time.Second)
+	handler := Handler(sock, startTime, testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -69,6 +72,12 @@ func TestHealthReachable(t *testing.T) {
 	}
 	if body.Error != "" {
 		t.Errorf("expected empty error for healthy response, got %q", body.Error)
+	}
+	if body.Version != version.Version {
+		t.Errorf("expected version %q, got %q", version.Version, body.Version)
+	}
+	if body.UptimeSeconds < 90 {
+		t.Errorf("expected uptime >= 90, got %d", body.UptimeSeconds)
 	}
 }
 
@@ -114,7 +123,8 @@ func TestHealthCheckerTimesOutWithBlockingDial(t *testing.T) {
 }
 
 func TestHealthUnreachable(t *testing.T) {
-	handler := Handler("/nonexistent/socket.sock", time.Now(), testLogger())
+	startTime := time.Now().Add(-45 * time.Second)
+	handler := Handler("/nonexistent/socket.sock", startTime, testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -138,6 +148,12 @@ func TestHealthUnreachable(t *testing.T) {
 	}
 	if body.Error != "upstream unreachable" {
 		t.Errorf("expected generic error message, got %q", body.Error)
+	}
+	if body.Version != version.Version {
+		t.Errorf("expected version %q, got %q", version.Version, body.Version)
+	}
+	if body.UptimeSeconds < 45 {
+		t.Errorf("expected uptime >= 45, got %d", body.UptimeSeconds)
 	}
 	if strings.Contains(rec.Body.String(), "/nonexistent/socket.sock") {
 		t.Fatalf("response leaked upstream socket path: %q", rec.Body.String())
@@ -190,6 +206,7 @@ func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
 
 	releaseDial := make(chan struct{})
 	startChecks := make(chan struct{})
+	dialEntered := make(chan struct{})
 	results := make(chan struct {
 		status string
 		err    error
@@ -207,6 +224,7 @@ func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
 		time.Now,
 		func(context.Context, string, string) (net.Conn, error) {
 			dialCalls.Add(1)
+			dialEntered <- struct{}{}
 			<-releaseDial
 			return nil, errors.New("upstream down")
 		},
@@ -229,18 +247,12 @@ func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
 	ready.Wait()
 	close(startChecks)
 
-	deadline := time.Now().Add(250 * time.Millisecond)
-	for time.Now().Before(deadline) {
-		if dialCalls.Load() > 0 {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if dialCalls.Load() == 0 {
+	select {
+	case <-dialEntered:
+	case <-time.After(250 * time.Millisecond):
 		t.Fatal("expected at least one upstream dial")
 	}
 
-	time.Sleep(20 * time.Millisecond)
 	close(releaseDial)
 	wg.Wait()
 	close(results)

@@ -88,6 +88,79 @@ func TestWriteDoesNotCommitOnEncodeError(t *testing.T) {
 	}
 }
 
+func TestWriteEncodesNilPayload(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	err := Write(rec, http.StatusAccepted, nil)
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := rec.Body.String(); got != "null\n" {
+		t.Fatalf("body = %q, want null\\n", got)
+	}
+}
+
+type errorAfterWriteWriter struct {
+	header http.Header
+	status int
+	body   []byte
+	err    error
+	writes int
+}
+
+func (w *errorAfterWriteWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *errorAfterWriteWriter) WriteHeader(status int) {
+	w.status = status
+}
+
+func (w *errorAfterWriteWriter) Write(p []byte) (int, error) {
+	w.writes++
+	w.body = append(w.body, p...)
+	return 0, w.err
+}
+
+func TestWriteReturnsBodyWriteErrorAfterCommittingHeaders(t *testing.T) {
+	writeErr := errors.New("body write failed")
+	w := &errorAfterWriteWriter{err: writeErr}
+
+	err := Write(w, http.StatusForbidden, map[string]string{"message": "denied"})
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("error = %v, want %v", err, writeErr)
+	}
+
+	if w.status != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", w.status, http.StatusForbidden)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if w.writes != 1 {
+		t.Fatalf("writes = %d, want 1", w.writes)
+	}
+	if got := string(w.body); got != "{\"message\":\"denied\"}\n" {
+		t.Fatalf("body = %q, want encoded JSON", got)
+	}
+}
+
 func TestGetJSONBufferReturnsUsableBuffer(t *testing.T) {
 	buf := getJSONBuffer()
 	if buf == nil {
