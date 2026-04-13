@@ -16,7 +16,7 @@
   <br>
   <a href="https://github.com/orgs/CodesWhat/packages/container/package/sockguard"><img src="https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-informational?logo=linux&logoColor=white" alt="Multi-arch"></a>
   <a href="https://github.com/orgs/CodesWhat/packages/container/package/sockguard"><img src="https://img.shields.io/docker/image-size/codeswhat/sockguard/latest?logo=docker&logoColor=white&label=image%20size" alt="Image size"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-C9A227" alt="License AGPL-3.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-C9A227" alt="License Apache-2.0"></a>
 </p>
 
 <p align="center">
@@ -362,6 +362,6 @@ See [SECURITY.md](SECURITY.md) for the responsible disclosure policy.
 
 <div align="center">
 
-Built by <a href="https://codeswhat.com">CodesWhat</a> · Licensed under <a href="LICENSE">AGPL-3.0</a>
+Built by <a href="https://codeswhat.com">CodesWhat</a> · Licensed under <a href="LICENSE">Apache-2.0</a>
 
 </div>

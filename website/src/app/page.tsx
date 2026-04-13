@@ -103,7 +103,7 @@ export default function Home() {
             </div>
 
             <Badge variant="secondary" className="mb-6 px-4 py-1.5 text-sm font-medium">
-              Open Source &middot; AGPL-3.0
+              Open Source &middot; Apache-2.0
             </Badge>
 
             <div className="max-w-4xl text-center">
@@ -230,8 +230,8 @@ export default function Home() {
                 <a href="LICENSE" target="_blank" rel="noopener noreferrer">
                   {/* biome-ignore lint/performance/noImgElement: external badge */}
                   <img
-                    src="https://img.shields.io/badge/license-AGPL--3.0-C9A227"
-                    alt="License AGPL-3.0"
+                    src="https://img.shields.io/badge/license-Apache--2.0-C9A227"
+                    alt="License Apache-2.0"
                   />
                 </a>
                 <a
@@ -455,7 +455,7 @@ export default function Home() {
                 />
               </a>
               <span className="text-sm text-neutral-500">
-                &copy; {new Date().getFullYear()} CodesWhat. AGPL-3.0 License.
+                &copy; {new Date().getFullYear()} CodesWhat. Apache-2.0 License.
               </span>
             </div>
             <div className="flex items-center gap-4">

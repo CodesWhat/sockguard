@@ -23,7 +23,7 @@ LABEL maintainer="CodesWhat"
 LABEL org.opencontainers.image.title="sockguard"
 LABEL org.opencontainers.image.description="Docker socket proxy — guide what gets through"
 LABEL org.opencontainers.image.source="https://github.com/CodesWhat/sockguard"
-LABEL org.opencontainers.image.licenses="AGPL-3.0"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=builder /sockguard /sockguard
 COPY app/configs/ /etc/sockguard/

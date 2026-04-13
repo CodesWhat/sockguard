@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Relicensed Sockguard from AGPL-3.0 to Apache-2.0 so the proxy can be embedded inside other projects, docker-compose templates, and enterprise security hardening guides without the copyleft speed bump that blocks AGPL adoption for middleware. Matches `tecnativa/docker-socket-proxy` so migration and comparison narratives stay consistent with the incumbent. The sibling CodesWhat project `drydock` remains AGPL-3.0 because it is an end-user web application with a different adoption model — different role, different license.
+
 ## [0.3.1] - 2026-04-13
 
 ### Security
