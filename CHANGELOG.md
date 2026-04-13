@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-04-13
+
 ### Security
 
 - Pinned the production `Dockerfile` base images to immutable `@sha256:` digests so a compromised or retagged upstream can no longer silently flow into a Sockguard release build. The build stage now targets the concrete `golang:1.26.2-alpine3.23@sha256:c2a1f7b2...0826166` tag, and the runtime stage pins `cgr.dev/chainguard/static:latest@sha256:d6d54da1...6d5dbc` — Chainguard only publishes `latest` and `latest-glibc` cosmetic tags for the `static` image since it is a rolling daily rebuild of a minimal distroless base with CA certs, so the digest is the version lock. Dependabot's existing `package-ecosystem: docker` updater will continue to open weekly PRs bumping both digests.
