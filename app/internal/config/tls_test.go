@@ -26,8 +26,8 @@ func TestBuildMutualTLSServerConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BuildMutualTLSServerConfig() error = %v", err)
 		}
-		if cfg.MinVersion != tls.VersionTLS12 {
-			t.Fatalf("MinVersion = %v, want TLS1.2", cfg.MinVersion)
+		if cfg.MinVersion != tls.VersionTLS13 {
+			t.Fatalf("MinVersion = %v, want TLS1.3", cfg.MinVersion)
 		}
 		if cfg.ClientAuth != tls.RequireAndVerifyClientCert {
 			t.Fatalf("ClientAuth = %v, want RequireAndVerifyClientCert", cfg.ClientAuth)
