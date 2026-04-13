@@ -569,14 +569,30 @@ func TestRunServeLifecyclePaths(t *testing.T) {
 
 	t.Run("server error", func(t *testing.T) {
 		deps := newLifecycleDeps()
+		shutdownCalled := false
+		removeCalled := false
 		deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {
 			errCh <- errors.New("serve boom")
 		}
 		deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
+		deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
+			shutdownCalled = true
+			return nil
+		}
+		deps.removePath = func(string) error {
+			removeCalled = true
+			return nil
+		}
 
 		err := runServeWithDeps(newServeCommand(), nil, deps)
 		if err == nil || !strings.Contains(err.Error(), "server error: serve boom") {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if shutdownCalled {
+			t.Fatal("expected shutdownServer to be skipped on serve error")
+		}
+		if removeCalled {
+			t.Fatal("expected socket cleanup to be skipped on serve error")
 		}
 	})
 
@@ -663,21 +679,21 @@ func TestVerifyUpstreamReachable(t *testing.T) {
 	})
 }
 
-func TestVerifyUpstreamReachableWrapperMissingSocket(t *testing.T) {
+func TestVerifyUpstreamReachableMissingSocket(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	err := verifyUpstreamReachable(shortSocketPath(t, "missing-upstream"), logger)
+	err := newServeDeps().verifyUpstreamReachable(shortSocketPath(t, "missing-upstream"), logger)
 	if err == nil || !strings.Contains(err.Error(), "upstream socket not found") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestWithUmaskWrapperReturnsCallbackResult(t *testing.T) {
+func TestWithUmaskReturnsCallbackResult(t *testing.T) {
 	t.Parallel()
 
 	ln := &serveTestListener{}
-	got, err := withUmask(0o177, func() (net.Listener, error) {
+	got, err := newServeDeps().withUmask(0o177, func() (net.Listener, error) {
 		return ln, nil
 	})
 	if err != nil {

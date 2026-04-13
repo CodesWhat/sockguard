@@ -72,22 +72,6 @@ func defaultServeShutdown(server *http.Server, ctx context.Context) error {
 	return server.Shutdown(ctx)
 }
 
-func createListener(cfg *config.Config) (net.Listener, error) {
-	return newServeDeps().createListener(cfg)
-}
-
-func listenUnixSocket(path string, mode os.FileMode) (net.Listener, error) {
-	return newServeDeps().listenUnixSocket(path, mode)
-}
-
-func withUmask(mask int, fn func() (net.Listener, error)) (net.Listener, error) {
-	return newServeDeps().withUmask(mask, fn)
-}
-
-func verifyUpstreamReachable(upstreamSocket string, logger *slog.Logger) error {
-	return newServeDeps().verifyUpstreamReachable(upstreamSocket, logger)
-}
-
 func (d *serveDeps) verifyUpstreamReachable(upstreamSocket string, logger *slog.Logger) error {
 	conn, err := d.dialUpstream("unix", upstreamSocket, 5*time.Second)
 	if err != nil {

@@ -86,10 +86,17 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 	}
 
 	c.mu.Lock()
-	c.cachedAt = c.now()
-	c.cachedUp = status
-	c.cachedErr = err
-	c.cacheReady = true
+	if err == nil {
+		c.cachedAt = c.now()
+		c.cachedUp = status
+		c.cachedErr = nil
+		c.cacheReady = true
+	} else {
+		c.cachedAt = time.Time{}
+		c.cachedUp = ""
+		c.cachedErr = nil
+		c.cacheReady = false
+	}
 	c.inFlight = nil
 	call.status = status
 	call.err = err

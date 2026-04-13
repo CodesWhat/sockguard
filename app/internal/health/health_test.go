@@ -25,6 +25,17 @@ type devNull struct{}
 
 func (devNull) Write(b []byte) (int, error) { return len(b), nil }
 
+type noopConn struct{}
+
+func (noopConn) Read([]byte) (int, error)         { return 0, io.EOF }
+func (noopConn) Write(p []byte) (int, error)      { return len(p), nil }
+func (noopConn) Close() error                     { return nil }
+func (noopConn) LocalAddr() net.Addr              { return &net.UnixAddr{Name: "local", Net: "unix"} }
+func (noopConn) RemoteAddr() net.Addr             { return &net.UnixAddr{Name: "remote", Net: "unix"} }
+func (noopConn) SetDeadline(time.Time) error      { return nil }
+func (noopConn) SetReadDeadline(time.Time) error  { return nil }
+func (noopConn) SetWriteDeadline(time.Time) error { return nil }
+
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 }
@@ -173,6 +184,47 @@ func TestHealthCachesUpstreamStatusWithinTTL(t *testing.T) {
 		},
 		func(context.Context, string, string) (net.Conn, error) {
 			dialCalls.Add(1)
+			return noopConn{}, nil
+		},
+	)
+
+	status, err := checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "connected" || err != nil {
+		t.Fatalf("first check = (%q, %v), want connected with nil error", status, err)
+	}
+
+	nowOffset.Store(int64(1500 * time.Millisecond))
+	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "connected" || err != nil {
+		t.Fatalf("cached check = (%q, %v), want connected with nil error", status, err)
+	}
+	if dialCalls.Load() != 1 {
+		t.Fatalf("dial calls within TTL = %d, want 1", dialCalls.Load())
+	}
+
+	nowOffset.Store(int64(2500 * time.Millisecond))
+	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "connected" || err != nil {
+		t.Fatalf("post-TTL check = (%q, %v), want connected with nil error", status, err)
+	}
+	if dialCalls.Load() != 2 {
+		t.Fatalf("dial calls after TTL = %d, want 2", dialCalls.Load())
+	}
+}
+
+func TestHealthDoesNotCacheUnhealthyStatusWithinTTL(t *testing.T) {
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var dialCalls atomic.Int32
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		3*time.Second,
+		func() time.Time {
+			return baseNow.Add(time.Duration(nowOffset.Load()))
+		},
+		func(context.Context, string, string) (net.Conn, error) {
+			dialCalls.Add(1)
 			return nil, errors.New("upstream down")
 		},
 	)
@@ -185,19 +237,10 @@ func TestHealthCachesUpstreamStatusWithinTTL(t *testing.T) {
 	nowOffset.Store(int64(1500 * time.Millisecond))
 	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
 	if status != "unreachable" || err == nil {
-		t.Fatalf("cached check = (%q, %v), want unreachable with error", status, err)
-	}
-	if dialCalls.Load() != 1 {
-		t.Fatalf("dial calls within TTL = %d, want 1", dialCalls.Load())
-	}
-
-	nowOffset.Store(int64(2500 * time.Millisecond))
-	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
-	if status != "unreachable" || err == nil {
-		t.Fatalf("post-TTL check = (%q, %v), want unreachable with error", status, err)
+		t.Fatalf("second check = (%q, %v), want unreachable with error", status, err)
 	}
 	if dialCalls.Load() != 2 {
-		t.Fatalf("dial calls after TTL = %d, want 2", dialCalls.Load())
+		t.Fatalf("dial calls within TTL after unhealthy result = %d, want 2", dialCalls.Load())
 	}
 }
 

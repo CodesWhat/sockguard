@@ -114,6 +114,8 @@ func TestNormalizePath(t *testing.T) {
 		{"ping", "/_ping", "/_ping"},
 		{"versioned ping", "/v1.45/_ping", "/_ping"},
 		{"nested path", "/v1.47/containers/abc123/start", "/containers/abc123/start"},
+		{"root path", "/", "/"},
+		{"version root keeps current clean semantics", "/v1.45/", "/v1.45"},
 		// Path traversal hardening
 		{"dot-dot collapse", "/containers/../images/json", "/images/json"},
 		{"dot-dot at root", "/../../etc/passwd", "/etc/passwd"},
@@ -130,6 +132,140 @@ func TestNormalizePath(t *testing.T) {
 				t.Errorf("NormalizePath(%q) = %q, want %q", tt.path, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPathNeedsClean(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "clean absolute path", path: "/containers/json", want: false},
+		{name: "clean versioned path", path: "/v1.45/containers/json", want: false},
+		{name: "root path", path: "/", want: false},
+		{name: "double slash", path: "//containers/json", want: true},
+		{name: "dot segment", path: "/containers/./json", want: true},
+		{name: "dot dot segment", path: "/containers/../json", want: true},
+		{name: "trailing slash", path: "/containers/json/", want: true},
+		{name: "relative dot", path: "./containers", want: true},
+		{name: "relative clean", path: "containers/json", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := pathNeedsClean(tt.path); got != tt.want {
+				t.Fatalf("pathNeedsClean(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestUpperHTTPMethodASCII(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		want   string
+	}{
+		{name: "uppercase ascii", method: "GET", want: "GET"},
+		{name: "lowercase ascii", method: "post", want: "POST"},
+		{name: "mixed case ascii", method: "pAtCh", want: "PATCH"},
+		{name: "empty", method: "", want: ""},
+		{name: "non ascii fallback", method: "méthod", want: strings.ToUpper("méthod")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := upperHTTPMethodASCII(tt.method); got != tt.want {
+				t.Fatalf("upperHTTPMethodASCII(%q) = %q, want %q", tt.method, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHTTPMethodBit(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		want   httpMethodMask
+	}{
+		{name: "get", method: http.MethodGet, want: httpMethodMaskGet},
+		{name: "head", method: http.MethodHead, want: httpMethodMaskHead},
+		{name: "post", method: http.MethodPost, want: httpMethodMaskPost},
+		{name: "put", method: http.MethodPut, want: httpMethodMaskPut},
+		{name: "delete", method: http.MethodDelete, want: httpMethodMaskDelete},
+		{name: "patch", method: http.MethodPatch, want: httpMethodMaskPatch},
+		{name: "options", method: http.MethodOptions, want: httpMethodMaskOptions},
+		{name: "connect", method: http.MethodConnect, want: httpMethodMaskConnect},
+		{name: "trace", method: http.MethodTrace, want: httpMethodMaskTrace},
+		{name: "unknown", method: "BREW", want: 0},
+		{name: "empty", method: "", want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := httpMethodBit(tt.method); got != tt.want {
+				t.Fatalf("httpMethodBit(%q) = %d, want %d", tt.method, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompileRuleMatchesCustomMethods(t *testing.T) {
+	rule, err := CompileRule(Rule{
+		Methods: []string{"brew"},
+		Pattern: "/containers/**",
+		Action:  ActionAllow,
+		Index:   1,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	if !rule.matches("BREW", "/containers/json") {
+		t.Fatal("custom method should still match its configured rule")
+	}
+	if rule.matches("WHEN", "/containers/json") {
+		t.Fatal("different custom method should not match")
+	}
+}
+
+func TestLiteralPrefixForPattern(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		want    string
+	}{
+		{name: "literal", pattern: "/containers/json", want: "/containers/json"},
+		{name: "single star after slash", pattern: "/containers/*/json", want: "/containers/"},
+		{name: "double star at end trims optional slash", pattern: "/containers/**", want: "/containers"},
+		{name: "double star before slash keeps slash prefix", pattern: "/containers/**/json", want: "/containers/"},
+		{name: "leading wildcard", pattern: "**/json", want: ""},
+		{name: "match all", pattern: "/**", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := literalPrefixForPattern(tt.pattern); got != tt.want {
+				t.Fatalf("literalPrefixForPattern(%q) = %q, want %q", tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCompileRuleGlobStoresLiteralPrefix(t *testing.T) {
+	rule, err := CompileRule(Rule{
+		Methods: []string{"GET"},
+		Pattern: "/containers/**",
+		Action:  ActionAllow,
+		Index:   1,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	if rule.literalPrefix != "/containers" {
+		t.Fatalf("literalPrefix = %q, want %q", rule.literalPrefix, "/containers")
 	}
 }
 
@@ -268,19 +404,16 @@ func TestCompileRuleLiteralPatternUsesFastPath(t *testing.T) {
 }
 
 func TestCompileRuleRegexCompileError(t *testing.T) {
-	originalCompile := regexpCompile
-	regexpCompile = func(string) (*regexp.Regexp, error) {
+	deps := newRuleDeps()
+	deps.regexpCompile = func(string) (*regexp.Regexp, error) {
 		return nil, errors.New("boom")
 	}
-	t.Cleanup(func() {
-		regexpCompile = originalCompile
-	})
 
-	_, err := CompileRule(Rule{
+	_, err := compileRuleWithDeps(Rule{
 		Methods: []string{"GET"},
 		Pattern: "/containers/**",
 		Action:  ActionAllow,
-	})
+	}, deps)
 	if err == nil {
 		t.Fatal("expected CompileRule() to fail when regexp compilation fails")
 	}

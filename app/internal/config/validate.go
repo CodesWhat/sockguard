@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net/netip"
+	"path"
 	"strings"
 )
 
@@ -74,6 +76,8 @@ func validateBasic(cfg *Config) []string {
 		errs = append(errs, fmt.Sprintf("health path must start with /, got %q", cfg.Health.Path))
 	}
 
+	errs = append(errs, validateRequestBody(cfg)...)
+
 	// At least one rule
 	if len(cfg.Rules) == 0 {
 		errs = append(errs, "at least one rule is required")
@@ -119,4 +123,57 @@ func validateTCPListenerSecurity(cfg *Config) []string {
 	}
 
 	return errs
+}
+
+func validateRequestBody(cfg *Config) []string {
+	var errs []string
+
+	for _, rawPath := range cfg.RequestBody.ContainerCreate.AllowedBindMounts {
+		if _, ok := normalizeAllowedBindMount(rawPath); ok {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf(
+				"request_body.container_create.allowed_bind_mounts entries must be absolute host paths, got %q",
+				rawPath,
+			),
+		)
+	}
+
+	for _, rawCIDR := range cfg.Clients.AllowedCIDRs {
+		if _, err := netip.ParsePrefix(strings.TrimSpace(rawCIDR)); err == nil {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf("clients.allowed_cidrs entries must be valid CIDR prefixes, got %q", rawCIDR),
+		)
+	}
+
+	if cfg.Clients.ContainerLabels.Enabled && cfg.Clients.ContainerLabels.LabelPrefix == "" {
+		errs = append(errs, "clients.container_labels.label_prefix is required when clients.container_labels.enabled is true")
+	}
+
+	if cfg.Listen.Socket != "" && len(cfg.Clients.AllowedCIDRs) > 0 {
+		errs = append(errs, "clients.allowed_cidrs requires a TCP listener; remove listen.socket or clear clients.allowed_cidrs")
+	}
+
+	if cfg.Listen.Socket != "" && cfg.Clients.ContainerLabels.Enabled {
+		errs = append(errs, "clients.container_labels requires a TCP listener; remove listen.socket or disable clients.container_labels")
+	}
+
+	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
+		errs = append(errs, "ownership.label_key is required when ownership.owner is set")
+	}
+
+	return errs
+}
+
+func normalizeAllowedBindMount(value string) (string, bool) {
+	if value == "" || !strings.HasPrefix(value, "/") {
+		return "", false
+	}
+	cleaned := path.Clean(value)
+	return cleaned, true
 }

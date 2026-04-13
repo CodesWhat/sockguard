@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Raised the default minimum version for `listen.tls` mutual-TLS listeners to TLS 1.3.
+- Added foundational per-client ACL primitives: `clients.allowed_cidrs` now gates TCP callers by source CIDR, and `clients.container_labels` can enforce per-client method/path allowlists from caller container labels resolved by source IP.
+- Implemented `POST /containers/create` request-body inspection. Sockguard now blocks privileged containers, host networking, and non-allowlisted bind mounts by default, while leaving the remaining body-sensitive write endpoints behind `insecure_allow_body_blind_writes=true` until their request bodies are inspected too.
+- Added per-proxy owner-label enforcement. When `ownership.owner` is set, Sockguard now stamps created containers, networks, volumes, and build-produced images with an owner label, filters list/prune/events requests by that label, and denies cross-owner access to labeled resources.
+
+### Fixed
+
+- Redacted denied verbose-response paths for `/secrets/*` and `/swarm/unlockkey`, and documented `response.deny_verbosity: minimal` as the recommended production setting so `403` bodies do not echo request details unnecessarily.
+
 ## [0.2.0] - 2026-04-12
 
 ### Changed

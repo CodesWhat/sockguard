@@ -17,10 +17,12 @@ health:
   enabled: true
   path: /health
 
-# Drydock needs container creation during update flows. Sockguard cannot inspect
-# create request bodies yet, so this preset opts into those body-blind writes
-# explicitly until request body inspection lands.
-insecure_allow_body_blind_writes: true
+# Drydock needs container creation during update flows. Container-create bodies
+# are inspected by default, but bind-mounted workloads are denied until you
+# allowlist their host paths here.
+request_body:
+  container_create:
+    allowed_bind_mounts: []
 
 rules:
   # Health and metadata

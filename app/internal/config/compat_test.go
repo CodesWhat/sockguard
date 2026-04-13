@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -100,6 +102,26 @@ func TestCompatPostBlanket(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected blanket POST,PUT,DELETE /** allow rule")
+	}
+}
+
+func TestCompatPostBlanketWarnsAboutBroadWriteFallback(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("POST", "1")
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	if !ApplyCompat(&cfg, logger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "level=WARN") {
+		t.Fatalf("expected warning log level, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "compat") || !strings.Contains(logOutput, "POST,PUT,DELETE") || !strings.Contains(logOutput, "/**") {
+		t.Fatalf("expected blanket write fallback warning, got: %s", logOutput)
 	}
 }
 

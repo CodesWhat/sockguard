@@ -99,6 +99,46 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Response.DenyVerbosity != defaults.Response.DenyVerbosity {
 		t.Errorf("Response.DenyVerbosity = %q, want %q", cfg.Response.DenyVerbosity, defaults.Response.DenyVerbosity)
 	}
+	if cfg.RequestBody.ContainerCreate.AllowPrivileged != defaults.RequestBody.ContainerCreate.AllowPrivileged {
+		t.Errorf(
+			"RequestBody.ContainerCreate.AllowPrivileged = %v, want %v",
+			cfg.RequestBody.ContainerCreate.AllowPrivileged,
+			defaults.RequestBody.ContainerCreate.AllowPrivileged,
+		)
+	}
+	if cfg.RequestBody.ContainerCreate.AllowHostNetwork != defaults.RequestBody.ContainerCreate.AllowHostNetwork {
+		t.Errorf(
+			"RequestBody.ContainerCreate.AllowHostNetwork = %v, want %v",
+			cfg.RequestBody.ContainerCreate.AllowHostNetwork,
+			defaults.RequestBody.ContainerCreate.AllowHostNetwork,
+		)
+	}
+	if len(cfg.RequestBody.ContainerCreate.AllowedBindMounts) != len(defaults.RequestBody.ContainerCreate.AllowedBindMounts) {
+		t.Errorf(
+			"got %d RequestBody.ContainerCreate.AllowedBindMounts, want %d",
+			len(cfg.RequestBody.ContainerCreate.AllowedBindMounts),
+			len(defaults.RequestBody.ContainerCreate.AllowedBindMounts),
+		)
+	}
+	if cfg.Ownership.Owner != defaults.Ownership.Owner {
+		t.Errorf("Ownership.Owner = %q, want %q", cfg.Ownership.Owner, defaults.Ownership.Owner)
+	}
+	if cfg.Ownership.LabelKey != defaults.Ownership.LabelKey {
+		t.Errorf("Ownership.LabelKey = %q, want %q", cfg.Ownership.LabelKey, defaults.Ownership.LabelKey)
+	}
+	if cfg.Ownership.AllowUnownedImages != defaults.Ownership.AllowUnownedImages {
+		t.Errorf("Ownership.AllowUnownedImages = %v, want %v", cfg.Ownership.AllowUnownedImages, defaults.Ownership.AllowUnownedImages)
+	}
+	if got := len(cfg.Clients.AllowedCIDRs); got != 0 {
+		t.Errorf("got %d Clients.AllowedCIDRs, want 0", got)
+	}
+	if cfg.Clients.ContainerLabels.LabelPrefix != defaults.Clients.ContainerLabels.LabelPrefix {
+		t.Errorf(
+			"Clients.ContainerLabels.LabelPrefix = %q, want %q",
+			cfg.Clients.ContainerLabels.LabelPrefix,
+			defaults.Clients.ContainerLabels.LabelPrefix,
+		)
+	}
 	if len(cfg.Rules) != len(defaults.Rules) {
 		t.Errorf("got %d rules, want %d", len(cfg.Rules), len(defaults.Rules))
 	}
@@ -115,6 +155,23 @@ log:
   level: debug
 response:
   deny_verbosity: minimal
+request_body:
+  container_create:
+    allow_host_network: true
+    allowed_bind_mounts:
+      - /srv/data
+      - /var/lib/sockguard
+ownership:
+  owner: ci-job-123
+  label_key: com.example.owner
+  allow_unowned_images: false
+clients:
+  allowed_cidrs:
+    - 10.10.0.0/16
+    - 192.0.2.0/24
+  container_labels:
+    enabled: true
+    label_prefix: socket-proxy.allow.
 rules:
   - match: { method: GET, path: "/_ping" }
     action: allow
@@ -136,6 +193,30 @@ rules:
 	}
 	if cfg.Response.DenyVerbosity != "minimal" {
 		t.Errorf("Response.DenyVerbosity = %q, want minimal", cfg.Response.DenyVerbosity)
+	}
+	if !cfg.RequestBody.ContainerCreate.AllowHostNetwork {
+		t.Errorf("RequestBody.ContainerCreate.AllowHostNetwork = %v, want true", cfg.RequestBody.ContainerCreate.AllowHostNetwork)
+	}
+	if got := cfg.RequestBody.ContainerCreate.AllowedBindMounts; len(got) != 2 || got[0] != "/srv/data" || got[1] != "/var/lib/sockguard" {
+		t.Errorf("RequestBody.ContainerCreate.AllowedBindMounts = %#v, want [/srv/data /var/lib/sockguard]", got)
+	}
+	if cfg.Ownership.Owner != "ci-job-123" {
+		t.Errorf("Ownership.Owner = %q, want ci-job-123", cfg.Ownership.Owner)
+	}
+	if cfg.Ownership.LabelKey != "com.example.owner" {
+		t.Errorf("Ownership.LabelKey = %q, want com.example.owner", cfg.Ownership.LabelKey)
+	}
+	if cfg.Ownership.AllowUnownedImages {
+		t.Errorf("Ownership.AllowUnownedImages = %v, want false", cfg.Ownership.AllowUnownedImages)
+	}
+	if got := cfg.Clients.AllowedCIDRs; len(got) != 2 || got[0] != "10.10.0.0/16" || got[1] != "192.0.2.0/24" {
+		t.Errorf("Clients.AllowedCIDRs = %#v, want [10.10.0.0/16 192.0.2.0/24]", got)
+	}
+	if !cfg.Clients.ContainerLabels.Enabled {
+		t.Errorf("Clients.ContainerLabels.Enabled = %v, want true", cfg.Clients.ContainerLabels.Enabled)
+	}
+	if cfg.Clients.ContainerLabels.LabelPrefix != "socket-proxy.allow." {
+		t.Errorf("Clients.ContainerLabels.LabelPrefix = %q, want socket-proxy.allow.", cfg.Clients.ContainerLabels.LabelPrefix)
 	}
 	// YAML provided rules should override defaults
 	if len(cfg.Rules) != 1 {
@@ -199,6 +280,11 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("SOCKGUARD_LISTEN_TLS_KEY_FILE", "/env/server-key.pem")
 	t.Setenv("SOCKGUARD_LISTEN_TLS_CLIENT_CA_FILE", "/env/ca.pem")
 	t.Setenv("SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_PRIVILEGED", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_NETWORK", "true")
+	t.Setenv("SOCKGUARD_OWNERSHIP_OWNER", "ci-job-456")
+	t.Setenv("SOCKGUARD_OWNERSHIP_LABEL_KEY", "com.example.owner")
+	t.Setenv("SOCKGUARD_OWNERSHIP_ALLOW_UNOWNED_IMAGES", "false")
 
 	cfg, err := Load("/nonexistent/path.yaml")
 	if err != nil {
@@ -238,6 +324,21 @@ func TestLoadEnvOverrides(t *testing.T) {
 	if !cfg.InsecureAllowBodyBlindWrites {
 		t.Errorf("InsecureAllowBodyBlindWrites = %v, want true", cfg.InsecureAllowBodyBlindWrites)
 	}
+	if !cfg.RequestBody.ContainerCreate.AllowPrivileged {
+		t.Errorf("RequestBody.ContainerCreate.AllowPrivileged = %v, want true", cfg.RequestBody.ContainerCreate.AllowPrivileged)
+	}
+	if !cfg.RequestBody.ContainerCreate.AllowHostNetwork {
+		t.Errorf("RequestBody.ContainerCreate.AllowHostNetwork = %v, want true", cfg.RequestBody.ContainerCreate.AllowHostNetwork)
+	}
+	if cfg.Ownership.Owner != "ci-job-456" {
+		t.Errorf("Ownership.Owner = %q, want ci-job-456", cfg.Ownership.Owner)
+	}
+	if cfg.Ownership.LabelKey != "com.example.owner" {
+		t.Errorf("Ownership.LabelKey = %q, want com.example.owner", cfg.Ownership.LabelKey)
+	}
+	if cfg.Ownership.AllowUnownedImages {
+		t.Errorf("Ownership.AllowUnownedImages = %v, want false", cfg.Ownership.AllowUnownedImages)
+	}
 }
 
 func TestLoadInvalidYAML(t *testing.T) {
@@ -274,6 +375,19 @@ func TestLoadReadConfigError(t *testing.T) {
 	_, err := Load(dir)
 	if err == nil {
 		t.Fatal("expected error when config path is a directory")
+	}
+}
+
+func TestLoadReadConfigErrorWhenParentIsNotDirectory(t *testing.T) {
+	dir := t.TempDir()
+	parentFile := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(parentFile, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, err := Load(filepath.Join(parentFile, "sockguard.yaml"))
+	if err == nil {
+		t.Fatal("expected error when config path parent is not a directory")
 	}
 }
 

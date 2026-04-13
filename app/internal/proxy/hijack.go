@@ -14,6 +14,7 @@ import (
 
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
+	"github.com/codeswhat/sockguard/internal/logging"
 )
 
 // hijackBufSize is the buffer size for bidirectional copy on hijacked connections.
@@ -36,16 +37,28 @@ type writeDeadlineSetter interface {
 	SetWriteDeadline(time.Time) error
 }
 
-var hijackBufferPool bytePool = &sync.Pool{
-	New: func() any {
-		return make([]byte, hijackBufSize)
-	},
+type hijackDeps struct {
+	bufferPool              bytePool
+	dialUpstreamWithTimeout func(string, string, time.Duration) (net.Conn, error)
+	dialUpstream            func(string, string) (net.Conn, error)
+	readResponse            func(*bufio.Reader, *http.Request) (*http.Response, error)
+	copyBuffer              func(io.Writer, io.Reader, []byte) (int64, error)
 }
 
-var dialHijackUpstreamWithTimeout = net.DialTimeout
-var dialHijackUpstream = defaultDialHijackUpstream
-var readHijackResponse = http.ReadResponse
-var copyHijackBuffer = io.CopyBuffer
+func newHijackDeps() *hijackDeps {
+	deps := &hijackDeps{
+		bufferPool: &sync.Pool{
+			New: func() any {
+				return make([]byte, hijackBufSize)
+			},
+		},
+		dialUpstreamWithTimeout: net.DialTimeout,
+		readResponse:            http.ReadResponse,
+		copyBuffer:              io.CopyBuffer,
+	}
+	deps.dialUpstream = deps.defaultDialUpstream
+	return deps
+}
 
 var hopByHopHeaders = []string{
 	"Connection",
@@ -89,12 +102,16 @@ type hijackUpgradeState struct {
 // hijack with optimized buffers and proper TCP half-close signaling, rather than
 // relying on the stdlib reverse proxy's generic upgrade handling.
 func HijackHandler(upstreamSocket string, logger *slog.Logger, next http.Handler) http.Handler {
+	return hijackHandlerWithDeps(upstreamSocket, logger, next, newHijackDeps())
+}
+
+func hijackHandlerWithDeps(upstreamSocket string, logger *slog.Logger, next http.Handler, deps *hijackDeps) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !IsHijackEndpoint(r.Method, r.URL.Path) {
+		if !isHijackRequest(w, r) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		handleHijack(w, r, upstreamSocket, logger)
+		handleHijackWithDeps(w, r, upstreamSocket, logger, deps)
 	})
 }
 
@@ -107,15 +124,33 @@ func HijackHandler(upstreamSocket string, logger *slog.Logger, next http.Handler
 //
 // Docker API version prefixes (/v1.XX/) are stripped before matching.
 func IsHijackEndpoint(method, path string) bool {
+	return isHijackEndpointNormalized(method, filter.NormalizePath(path))
+}
+
+func isHijackRequest(w http.ResponseWriter, r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return isHijackEndpointNormalized(r.Method, requestHijackPath(w, r))
+}
+
+func requestHijackPath(w http.ResponseWriter, r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if meta := logging.MetaForRequest(w, r); meta != nil && meta.NormPath != "" {
+		return meta.NormPath
+	}
+	return filter.NormalizePath(r.URL.Path)
+}
+
+func isHijackEndpointNormalized(method, path string) bool {
 	if method != http.MethodPost {
 		return false
 	}
 
-	// Strip Docker API version prefix
-	p := filter.NormalizePath(path)
-
 	// Match: /containers/{id}/attach or /exec/{id}/start
-	p, ok := strings.CutPrefix(p, "/")
+	p, ok := strings.CutPrefix(path, "/")
 	if !ok {
 		return false
 	}
@@ -134,8 +169,8 @@ func IsHijackEndpoint(method, path string) bool {
 		(resource == "exec" && action == "start")
 }
 
-func defaultDialHijackUpstream(network, address string) (net.Conn, error) {
-	return dialHijackUpstreamWithTimeout(network, address, hijackDialTimeout)
+func (d *hijackDeps) defaultDialUpstream(network, address string) (net.Conn, error) {
+	return d.dialUpstreamWithTimeout(network, address, hijackDialTimeout)
 }
 
 func writeHijackBadGateway(w http.ResponseWriter, logger *slog.Logger, path, message string) {
@@ -147,19 +182,33 @@ func writeHijackBadGateway(w http.ResponseWriter, logger *slog.Logger, path, mes
 }
 
 func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) {
-	session, ok := upgradeHijackConnection(w, r, upstreamSocket, logger)
+	handleHijackWithDeps(w, r, upstreamSocket, logger, newHijackDeps())
+}
+
+func handleHijackWithDeps(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger, deps *hijackDeps) {
+	session, ok := upgradeHijackConnectionWithDeps(w, r, upstreamSocket, logger, deps)
 	if !ok {
 		return
 	}
 
-	proxyHijackStreams(session, logger)
+	proxyHijackStreamsWithDeps(session, logger, deps)
 }
 
 func upgradeHijackConnection(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) (*hijackSession, bool) {
+	return upgradeHijackConnectionWithDeps(w, r, upstreamSocket, logger, newHijackDeps())
+}
+
+func upgradeHijackConnectionWithDeps(
+	w http.ResponseWriter,
+	r *http.Request,
+	upstreamSocket string,
+	logger *slog.Logger,
+	deps *hijackDeps,
+) (*hijackSession, bool) {
 	reqPath := r.URL.Path
 
 	// Dial upstream Docker socket
-	upstreamConn, err := dialHijackUpstream("unix", upstreamSocket)
+	upstreamConn, err := deps.dialUpstream("unix", upstreamSocket)
 	if err != nil {
 		logger.Error("hijack: upstream dial failed", "error", err, "path", reqPath)
 		writeHijackBadGateway(w, logger, reqPath, "upstream Docker socket unreachable")
@@ -170,7 +219,7 @@ func upgradeHijackConnection(w http.ResponseWriter, r *http.Request, upstreamSoc
 		return nil, false
 	}
 
-	upstreamBuf, resp, ok := readHijackUpstreamResponse(upstreamConn, w, r, logger)
+	upstreamBuf, resp, ok := readHijackUpstreamResponseWithDeps(upstreamConn, w, r, logger, deps)
 	if !ok {
 		return nil, false
 	}
@@ -195,6 +244,10 @@ func upgradeHijackConnection(w http.ResponseWriter, r *http.Request, upstreamSoc
 }
 
 func proxyHijackStreams(session *hijackSession, logger *slog.Logger) {
+	proxyHijackStreamsWithDeps(session, logger, newHijackDeps())
+}
+
+func proxyHijackStreamsWithDeps(session *hijackSession, logger *slog.Logger, deps *hijackDeps) {
 	// Bidirectional copy with proper half-close signaling.
 	// When one direction reaches EOF, we signal the other side via CloseWrite
 	// so it knows no more data is coming (critical for stdin EOF → container stop).
@@ -215,6 +268,7 @@ func proxyHijackStreams(session *hijackSession, logger *slog.Logger) {
 			writeConn:      session.clientConn,
 			closeConnOnEOF: session.clientConn,
 		},
+		deps,
 	)
 	startHijackCopy(
 		&wg,
@@ -228,6 +282,7 @@ func proxyHijackStreams(session *hijackSession, logger *slog.Logger) {
 			writeConn:      session.upstreamConn,
 			closeConnOnEOF: session.upstreamConn,
 		},
+		deps,
 	)
 
 	wg.Wait()
@@ -250,15 +305,16 @@ func writeHijackUpstreamRequest(upstreamConn net.Conn, w http.ResponseWriter, r 
 	return true
 }
 
-func readHijackUpstreamResponse(
+func readHijackUpstreamResponseWithDeps(
 	upstreamConn net.Conn,
 	w http.ResponseWriter,
 	r *http.Request,
 	logger *slog.Logger,
+	deps *hijackDeps,
 ) (*bufio.Reader, *http.Response, bool) {
 	// Use a large buffer so data arriving immediately after the 101 header isn't lost.
 	upstreamBuf := bufio.NewReaderSize(upstreamConn, hijackBufSize)
-	resp, err := readHijackResponse(upstreamBuf, r)
+	resp, err := deps.readResponse(upstreamBuf, r)
 	if err != nil {
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: read upstream response failed", "error", err, "path", r.URL.Path)
@@ -336,11 +392,12 @@ func startHijackCopy(
 	logger *slog.Logger,
 	reqPath string,
 	stream hijackCopyStream,
+	deps *hijackDeps,
 ) {
 	go func() {
 		defer wg.Done()
-		buf := getHijackBuffer()
-		defer putHijackBuffer(buf)
+		buf := deps.getHijackBuffer()
+		defer deps.putHijackBuffer(buf)
 		defer func() {
 			if v := recover(); v != nil {
 				logger.Error("hijack: panic in "+stream.direction+" copy", "panic", fmt.Sprint(v), "path", reqPath)
@@ -349,7 +406,7 @@ func startHijackCopy(
 
 		reader := withReadInactivityDeadline(stream.src, stream.readConn, hijackInactivityTimeout)
 		writer := withWriteInactivityDeadline(stream.dst, stream.writeConn, hijackInactivityTimeout)
-		if _, err := copyHijackBuffer(writer, reader, buf); err != nil {
+		if _, err := deps.copyBuffer(writer, reader, buf); err != nil {
 			logger.Debug("hijack: "+stream.direction+" copy ended", "error", err, "path", reqPath)
 		}
 		closeWrite(stream.closeConnOnEOF)
@@ -400,62 +457,76 @@ func removeHopByHopHeaders(h http.Header) {
 }
 
 type inactivityDeadlineReader struct {
-	reader  io.Reader
-	conn    readDeadlineSetter
-	timeout time.Duration
+	reader          io.Reader
+	conn            readDeadlineSetter
+	timeout         time.Duration
+	refreshInterval time.Duration
+	lastRefresh     time.Time
 }
 
 func withReadInactivityDeadline(reader io.Reader, conn readDeadlineSetter, timeout time.Duration) io.Reader {
 	return &inactivityDeadlineReader{
-		reader:  reader,
-		conn:    conn,
-		timeout: timeout,
+		reader:          reader,
+		conn:            conn,
+		timeout:         timeout,
+		refreshInterval: timeout / 4,
 	}
 }
 
 func (r *inactivityDeadlineReader) Read(p []byte) (int, error) {
-	if err := r.conn.SetReadDeadline(time.Now().Add(r.timeout)); err != nil {
-		return 0, err
+	now := time.Now()
+	if r.lastRefresh.IsZero() || now.Sub(r.lastRefresh) > r.refreshInterval {
+		if err := r.conn.SetReadDeadline(now.Add(r.timeout)); err != nil {
+			return 0, err
+		}
+		r.lastRefresh = now
 	}
 	return r.reader.Read(p)
 }
 
 type inactivityDeadlineWriter struct {
-	writer  io.Writer
-	conn    writeDeadlineSetter
-	timeout time.Duration
+	writer          io.Writer
+	conn            writeDeadlineSetter
+	timeout         time.Duration
+	refreshInterval time.Duration
+	lastRefresh     time.Time
 }
 
 func withWriteInactivityDeadline(writer io.Writer, conn writeDeadlineSetter, timeout time.Duration) io.Writer {
 	return &inactivityDeadlineWriter{
-		writer:  writer,
-		conn:    conn,
-		timeout: timeout,
+		writer:          writer,
+		conn:            conn,
+		timeout:         timeout,
+		refreshInterval: timeout / 4,
 	}
 }
 
 func (w *inactivityDeadlineWriter) Write(p []byte) (int, error) {
-	if err := w.conn.SetWriteDeadline(time.Now().Add(w.timeout)); err != nil {
-		return 0, err
+	now := time.Now()
+	if w.lastRefresh.IsZero() || now.Sub(w.lastRefresh) > w.refreshInterval {
+		if err := w.conn.SetWriteDeadline(now.Add(w.timeout)); err != nil {
+			return 0, err
+		}
+		w.lastRefresh = now
 	}
 	return w.writer.Write(p)
 }
 
-func getHijackBuffer() []byte {
-	buf, ok := hijackBufferPool.Get().([]byte)
+func (d *hijackDeps) getHijackBuffer() []byte {
+	buf, ok := d.bufferPool.Get().([]byte)
 	if !ok || cap(buf) < hijackBufSize {
 		return make([]byte, hijackBufSize)
 	}
 	return buf[:hijackBufSize]
 }
 
-func putHijackBuffer(buf []byte) {
+func (d *hijackDeps) putHijackBuffer(buf []byte) {
 	if cap(buf) < hijackBufSize {
 		return
 	}
 	buf = buf[:hijackBufSize]
 	clear(buf)
-	hijackBufferPool.Put(buf)
+	d.bufferPool.Put(buf)
 }
 
 // closeWrite performs a TCP/Unix half-close, signaling no more data will be sent

@@ -32,6 +32,15 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("log.output", defaults.Log.Output)
 	v.SetDefault("log.access_log", defaults.Log.AccessLog)
 	v.SetDefault("response.deny_verbosity", defaults.Response.DenyVerbosity)
+	v.SetDefault("request_body.container_create.allow_privileged", defaults.RequestBody.ContainerCreate.AllowPrivileged)
+	v.SetDefault("request_body.container_create.allow_host_network", defaults.RequestBody.ContainerCreate.AllowHostNetwork)
+	v.SetDefault("request_body.container_create.allowed_bind_mounts", defaults.RequestBody.ContainerCreate.AllowedBindMounts)
+	v.SetDefault("clients.allowed_cidrs", defaults.Clients.AllowedCIDRs)
+	v.SetDefault("clients.container_labels.enabled", defaults.Clients.ContainerLabels.Enabled)
+	v.SetDefault("clients.container_labels.label_prefix", defaults.Clients.ContainerLabels.LabelPrefix)
+	v.SetDefault("ownership.owner", defaults.Ownership.Owner)
+	v.SetDefault("ownership.label_key", defaults.Ownership.LabelKey)
+	v.SetDefault("ownership.allow_unowned_images", defaults.Ownership.AllowUnownedImages)
 	v.SetDefault("health.enabled", defaults.Health.Enabled)
 	v.SetDefault("health.path", defaults.Health.Path)
 	v.SetDefault("insecure_allow_body_blind_writes", defaults.InsecureAllowBodyBlindWrites)
@@ -41,10 +50,10 @@ func Load(configPath string) (*Config, error) {
 		v.SetConfigFile(configPath)
 		if err := v.ReadInConfig(); err != nil {
 			// Missing file is OK; parse errors are not
-			if _, statErr := os.Stat(configPath); statErr != nil {
+			if _, statErr := os.Stat(configPath); statErr != nil && os.IsNotExist(statErr) {
 				// File doesn't exist — that's fine, use defaults
 			} else {
-				// File exists but failed to parse
+				// Any other error means the config path exists but couldn't be read or parsed.
 				return nil, err
 			}
 		}

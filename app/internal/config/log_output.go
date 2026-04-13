@@ -1,25 +1,5 @@
 package config
 
-import (
-	"fmt"
-	"path/filepath"
-	"strings"
-)
+import "github.com/codeswhat/sockguard/internal/logging"
 
-func validateLogOutput(output string) error {
-	trimmed := strings.TrimSpace(output)
-	if trimmed == "" {
-		return fmt.Errorf("invalid log output (must be stderr, stdout, or a local file path)")
-	}
-
-	switch trimmed {
-	case "stderr", "stdout":
-		return nil
-	default:
-		cleaned := filepath.Clean(trimmed)
-		if !filepath.IsLocal(cleaned) {
-			return fmt.Errorf("invalid log output %q (must be stderr, stdout, or a local file path)", output)
-		}
-		return nil
-	}
-}
+var validateLogOutput = logging.ValidateOutput

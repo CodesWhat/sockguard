@@ -116,6 +116,7 @@ services:
 ```
 
 Non-loopback TCP without `listen.tls` fails startup unless you explicitly set `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true`.
+Sockguard's server-side TLS minimum for `listen.tls` is TLS 1.3, so remote clients must support TLS 1.3.
 
 </details>
 
@@ -176,7 +177,10 @@ Existing socket proxies (Tecnativa, LinuxServer) filter by URL path only. Sockgu
 | 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation. 10 bundled presets. |
 | 📊 | **Structured Logging** | JSON access logs with method, path, decision, matched rule, latency, client info. |
 | 🔐 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
-| 🧱 | **Body-Blind Write Guardrail** | Body-sensitive write endpoints such as `POST /containers/create` require explicit unsafe opt-in until request body inspection ships. |
+| 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks and client-container label ACLs let one proxy differentiate TCP callers before the global rule set runs. |
+| 🔍 | **Request Body Inspection** | `POST /containers/create` bodies are inspected to block privileged containers, host networking, and non-allowlisted bind mounts before Docker sees the request. |
+| 🏷️ | **Owner Label Isolation** | A proxy instance can stamp containers, networks, volumes, and build-produced images with an owner label, auto-filter list/prune/events calls, and deny cross-owner access to labeled resources. |
+| 🧱 | **Body-Blind Write Guardrail** | Remaining body-sensitive write endpoints such as `exec`, `build`, and Swarm writes still require explicit unsafe opt-in until their request bodies are inspected. |
 | 🔄 | **Tecnativa Compatible** | Drop-in replacement using the same env vars. `CONTAINERS=1`, `POST=0`, `ALLOW_START=1` all work. |
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance. |
 | ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
@@ -193,8 +197,8 @@ How sockguard stacks up against other Docker socket proxies:
 |---------|:---------:|:-----------:|:----------:|:-------------:|
 | Method + path filtering | ✅ | ✅ | ✅ | ✅ |
 | Granular POST ops | ❌ | Partial | Via regex | ✅ |
-| Request body inspection | ❌ | ❌ | ❌ | 🕒 Planned |
-| Per-client policies | ❌ | ❌ | IP only | 🕒 Planned |
+| Request body inspection | ❌ | ❌ | ❌ | ✅ (`/containers/create`) |
+| Per-client policies | ❌ | ❌ | CIDR + client labels | ✅ (CIDR + client labels) |
 | Response filtering | ❌ | ❌ | ❌ | 🕒 Planned |
 | Structured audit log | ❌ | ❌ | ❌ | ✅ |
 | YAML config | ❌ | ❌ | ❌ | ✅ |
@@ -235,7 +239,24 @@ listen:
 insecure_allow_body_blind_writes: false
 
 response:
-  deny_verbosity: verbose  # verbose | minimal
+  deny_verbosity: minimal  # recommended for production; verbose adds method/path/reason for debugging
+
+request_body:
+  container_create:
+    allowed_bind_mounts:
+      - /srv/containers
+      - /var/lib/app-data
+
+clients:
+  allowed_cidrs:
+    - 172.18.0.0/16
+  container_labels:
+    enabled: true
+    label_prefix: com.sockguard.allow.
+
+ownership:
+  owner: ci-job-123
+  label_key: com.sockguard.owner
 
 rules:
   - match: { method: GET, path: "/_ping" }
@@ -252,9 +273,17 @@ Trailing `/**` matches both the base path and any deeper path. For example, `/co
 
 `listen.tls` is only needed when you expose Sockguard on non-loopback TCP. Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`, which is intended only for legacy compatibility on a private, trusted network.
 
-`insecure_allow_body_blind_writes` is off by default. If your rule set allows body-sensitive Docker write endpoints such as `POST /containers/create`, `POST /containers/*/exec`, `POST /exec/*/start`, `POST /build`, or Swarm service creation/update, validation fails unless you explicitly set this flag to `true`. That opt-in acknowledges that Sockguard is still enforcing method+path only for those writes.
+Allowed `POST /containers/create` requests are inspected by default. Unless you opt out, Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, and any bind mount source outside `request_body.container_create.allowed_bind_mounts`. Named volumes still work without allowlist entries because they are not host bind mounts.
 
-Set `response.deny_verbosity: minimal` to return only the generic deny message. The default `verbose` response also includes the request method, original path, and matched deny reason.
+`clients.allowed_cidrs` is a coarse TCP-client gate. Requests whose source IP falls outside every configured CIDR are denied before `/health` or the global rule set runs.
+
+When `clients.container_labels.enabled` is true, Sockguard resolves bridge-network callers by source IP through the Docker API and looks for per-client allow labels on the calling container. Each `clients.container_labels.label_prefix + <method>` label is interpreted as a comma-separated Sockguard glob allowlist for that HTTP method. For example, `com.sockguard.allow.get=/containers/**,/events` allows only `GET /containers/**` and `GET /events` for that client. If you are migrating from wollomatic, set `clients.container_labels.label_prefix: socket-proxy.allow.` to reuse existing labels.
+
+Set `ownership.owner` to turn on per-proxy resource ownership isolation. Sockguard will add `ownership.label_key=ownership.owner` labels to container, network, and volume creates, add the same label to `POST /build`, inject owner label filters into list/prune/events requests, and deny direct access to labeled resources owned by some other proxy instance. Unowned images are still readable by default so shared base images can be pulled and inspected without relabeling.
+
+`insecure_allow_body_blind_writes` is off by default. If your rule set allows the remaining body-sensitive Docker write endpoints such as `POST /containers/*/exec`, `POST /exec/*/start`, `POST /build`, or Swarm service creation/update, validation fails unless you explicitly set this flag to `true`. That opt-in acknowledges that Sockguard is still enforcing method+path only for those writes.
+
+Set `response.deny_verbosity: minimal` in production to return only the generic deny message. The default `verbose` response is still useful while authoring rules because it includes the request method, path, and matched deny reason, but it will echo request details in `403` bodies. Even in `verbose` mode, Sockguard now redacts denied `/secrets/*` and `/swarm/unlockkey` paths before returning them.
 
 Preset configs included for [drydock](app/configs/drydock.yaml), [Traefik](app/configs/traefik.yaml), [Portainer](app/configs/portainer.yaml), [Watchtower](app/configs/watchtower.yaml), [Homepage](app/configs/homepage.yaml), [Homarr](app/configs/homarr.yaml), [Diun](app/configs/diun.yaml), [Autoheal](app/configs/autoheal.yaml), and [read-only](app/configs/readonly.yaml).
 
@@ -296,7 +325,7 @@ Replace the image — your env vars work as-is:
 |---------|-------|
 | **0.1.0** | MVP — drop-in replacement with granular control, YAML config, structured logging |
 | **0.2.0** | Request body inspection — block privileged containers, dangerous mounts |
-| **0.3.0** | Per-client policy profiles — one proxy, many consumers |
+| **0.3.0** | Named per-client policy profiles — one proxy, many consumers |
 | **0.4.0** | Response filtering — hide containers, redact env vars |
 | **0.5.0** | Observability — Prometheus metrics, audit log persistence, OTel trace/span IDs in log records |
 | **0.6.0** | Rate limiting, policy safety rails, security enforcement |

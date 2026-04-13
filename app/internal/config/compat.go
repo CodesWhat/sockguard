@@ -67,7 +67,15 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 	rules = append(rules, generateVersionRules()...)
 	rules = append(rules, generateEventsRules()...)
 	rules = append(rules, generateCategoryRules()...)
-	rules = append(rules, generatePostRules()...)
+	postRules := generatePostRules()
+	if usesCompatBlanketPostFallback(postRules) {
+		logger.Warn("tecnativa POST compatibility fallback grants blanket write access",
+			"method", "POST,PUT,DELETE",
+			"path", "/**",
+			"note", "set granular ALLOW_* env vars to narrow write access",
+		)
+	}
+	rules = append(rules, postRules...)
 	rules = append(rules, catchAllDenyRule())
 
 	cfg.Rules = rules
@@ -159,6 +167,17 @@ func generatePostRules() []RuleConfig {
 		return rules
 	}
 	return []RuleConfig{newAllowRule("POST,PUT,DELETE", "/**")}
+}
+
+func usesCompatBlanketPostFallback(rules []RuleConfig) bool {
+	if len(rules) != 1 {
+		return false
+	}
+
+	rule := rules[0]
+	return rule.Match.Method == "POST,PUT,DELETE" &&
+		rule.Match.Path == "/**" &&
+		rule.Action == "allow"
 }
 
 func catchAllDenyRule() RuleConfig {

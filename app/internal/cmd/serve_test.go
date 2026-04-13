@@ -64,7 +64,7 @@ func TestRuleCompilationUsesConfigValidate(t *testing.T) {
 func TestListenUnixSocketCreatesNewSocket(t *testing.T) {
 	path := shortSocketPath(t, "new")
 
-	ln, err := listenUnixSocket(path, 0o600)
+	ln, err := newServeDeps().listenUnixSocket(path, 0o600)
 	if err != nil {
 		t.Fatalf("listenUnixSocket() error = %v", err)
 	}
@@ -88,7 +88,7 @@ func TestListenUnixSocketReplacesStaleSocket(t *testing.T) {
 	}
 	original.Close()
 
-	ln, err := listenUnixSocket(path, 0o600)
+	ln, err := newServeDeps().listenUnixSocket(path, 0o600)
 	if err != nil {
 		t.Fatalf("listenUnixSocket() with stale socket error = %v", err)
 	}
@@ -101,7 +101,7 @@ func TestListenUnixSocketRejectsNonSocketPath(t *testing.T) {
 		t.Fatalf("write non-socket path: %v", err)
 	}
 
-	_, err := listenUnixSocket(path, 0o600)
+	_, err := newServeDeps().listenUnixSocket(path, 0o600)
 	if err == nil {
 		t.Fatal("expected error for non-socket path")
 	}
@@ -119,7 +119,7 @@ func TestCreateListenerUnixSocket(t *testing.T) {
 		},
 	}
 
-	ln, err := createListener(cfg)
+	ln, err := newServeDeps().createListener(cfg)
 	if err != nil {
 		t.Fatalf("createListener() error = %v", err)
 	}
@@ -224,7 +224,7 @@ func TestCreateListenerTCP(t *testing.T) {
 		},
 	}
 
-	ln, err := createListener(cfg)
+	ln, err := newServeDeps().createListener(cfg)
 	if err != nil {
 		t.Fatalf("createListener() error = %v", err)
 	}
@@ -269,7 +269,7 @@ func TestCreateListenerTCPWithMutualTLS(t *testing.T) {
 		},
 	}
 
-	ln, err := createListener(cfg)
+	ln, err := newServeDeps().createListener(cfg)
 	if err != nil {
 		t.Fatalf("createListener() error = %v", err)
 	}
@@ -327,7 +327,7 @@ func TestCreateListenerTCPWithMutualTLSRejectsMissingClientCertificate(t *testin
 		},
 	}
 
-	ln, err := createListener(cfg)
+	ln, err := newServeDeps().createListener(cfg)
 	if err != nil {
 		t.Fatalf("createListener() error = %v", err)
 	}
@@ -402,7 +402,7 @@ func TestCreateListenerInvalidSocketMode(t *testing.T) {
 		},
 	}
 
-	ln, err := createListener(cfg)
+	ln, err := newServeDeps().createListener(cfg)
 	if err == nil {
 		ln.Close()
 		t.Fatal("expected createListener() to fail for invalid socket_mode")
@@ -655,6 +655,63 @@ func TestHealthInterceptorFallsThrough(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestBuildServeHandlerFiltersHijackEndpointsBeforeHijackHandler(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "missing-hijack-upstream")
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1.45/containers/abc/attach?stream=1", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "request denied by sockguard policy") {
+		t.Fatalf("expected denial body, got: %s", rec.Body.String())
+	}
+}
+
+func TestBuildServeHandlerClientACLWrapsHealthInterceptor(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "missing-health-upstream")
+	cfg.Log.AccessLog = false
+	cfg.Clients.AllowedCIDRs = []string{"10.0.0.0/8"}
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "client IP not allowed") {
+		t.Fatalf("expected client ACL denial body, got: %s", rec.Body.String())
 	}
 }
 

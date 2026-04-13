@@ -14,10 +14,12 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/codeswhat/sockguard/internal/banner"
+	"github.com/codeswhat/sockguard/internal/clientacl"
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/health"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/ownership"
 	"github.com/codeswhat/sockguard/internal/proxy"
 	"github.com/codeswhat/sockguard/internal/version"
 )
@@ -47,135 +49,98 @@ func runServe(cmd *cobra.Command, args []string) error {
 	return runServeWithDeps(cmd, args, newServeDeps())
 }
 
-type serveRuntime struct {
-	cfg            *config.Config
-	logger         *slog.Logger
-	closeLogOutput func()
-	handler        http.Handler
-	listener       net.Listener
-}
-
 func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error {
-	runtime, err := prepareServeRuntime(cmd, deps)
-	if err != nil {
-		return err
-	}
-	defer runtime.closeLogOutput()
-	defer closeServeListener(runtime.logger, runtime.listener)
-
-	server := newHTTPServer(runtime.handler)
-	logServeStartup(cmd, runtime.cfg, runtime.logger)
-
-	if err := serveUntilShutdown(server, runtime.listener, runtime.logger, deps); err != nil {
-		return err
-	}
-
-	cleanupServeSocket(runtime.cfg, runtime.logger, deps)
-	runtime.logger.Info("sockguard stopped")
-	return nil
-}
-
-func prepareServeRuntime(cmd *cobra.Command, deps *serveDeps) (*serveRuntime, error) {
-	cfg, logger, closeLogOutput, err := loadServeRuntimeConfig(cmd, deps)
-	if err != nil {
-		return nil, err
-	}
-
-	handler, err := buildVerifiedServeHandler(cfg, logger, deps)
-	if err != nil {
-		closeLogOutput()
-		return nil, err
-	}
-
-	listener, err := openServeListener(cfg, deps)
-	if err != nil {
-		closeLogOutput()
-		return nil, err
-	}
-
-	return &serveRuntime{
-		cfg:            cfg,
-		logger:         logger,
-		closeLogOutput: closeLogOutput,
-		handler:        handler,
-		listener:       listener,
-	}, nil
-}
-
-func loadServeRuntimeConfig(cmd *cobra.Command, deps *serveDeps) (*config.Config, *slog.Logger, func(), error) {
-	cfg, err := loadServeConfigWithOverrides(cmd, deps)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	logger, closeLogOutput, err := openServeLogger(cmd, cfg, deps)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-
-	return cfg, logger, closeLogOutput, nil
-}
-
-func buildVerifiedServeHandler(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (http.Handler, error) {
-	rules, err := compileServeRules(cfg, logger, deps)
-	if err != nil {
-		return nil, err
-	}
-	if err := deps.verifyUpstreamReachable(cfg.Upstream.Socket, logger); err != nil {
-		return nil, err
-	}
-
-	return buildServeHandler(cfg, logger, rules, deps), nil
-}
-
-func openServeListener(cfg *config.Config, deps *serveDeps) (net.Listener, error) {
-	ln, err := deps.createServeListener(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("listener: %w", err)
-	}
-
-	return ln, nil
-}
-
-func loadServeConfigWithOverrides(cmd *cobra.Command, deps *serveDeps) (*config.Config, error) {
 	cfg, err := deps.loadConfig(cfgFile)
 	if err != nil {
-		return nil, fmt.Errorf("config load: %w", err)
+		return fmt.Errorf("config load: %w", err)
 	}
 	if err := applyFlagOverrides(cmd, cfg); err != nil {
-		return nil, fmt.Errorf("apply flag overrides: %w", err)
+		return fmt.Errorf("apply flag overrides: %w", err)
 	}
-	return cfg, nil
-}
 
-func openServeLogger(cmd *cobra.Command, cfg *config.Config, deps *serveDeps) (*slog.Logger, func(), error) {
 	logger, logOutputCloser, err := deps.newLogger(cfg.Log.Level, cfg.Log.Format, cfg.Log.Output)
 	if err != nil {
-		return nil, nil, fmt.Errorf("logger: %w", err)
+		return fmt.Errorf("logger: %w", err)
 	}
-
-	closeLogOutput := func() {
+	defer func() {
 		if logOutputCloser == nil {
 			return
 		}
 		if closeErr := logOutputCloser.Close(); closeErr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "failed to close log output: %v\n", closeErr)
 		}
-	}
+	}()
 
-	return logger, closeLogOutput, nil
-}
-
-func compileServeRules(cfg *config.Config, logger *slog.Logger, deps *serveDeps) ([]*filter.CompiledRule, error) {
 	// Tecnativa compatibility mode expands legacy env vars like CONTAINERS=1
 	// into explicit allow/deny rules before normal validation and compilation.
 	config.ApplyCompat(cfg, logger)
 
 	rules, err := deps.validateRules(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("config validation: %w", err)
+		return fmt.Errorf("config validation: %w", err)
 	}
-	return rules, nil
+	if err := deps.verifyUpstreamReachable(cfg.Upstream.Socket, logger); err != nil {
+		return err
+	}
+
+	handler := buildServeHandler(cfg, logger, rules, deps)
+	listener, err := deps.createServeListener(cfg)
+	if err != nil {
+		return fmt.Errorf("listener: %w", err)
+	}
+	defer func() {
+		if closeErr := listener.Close(); closeErr != nil {
+			logger.Warn("failed to close listener", "error", closeErr)
+		}
+	}()
+
+	server := newHTTPServer(handler)
+	listen := listenerAddr(cfg)
+	warnOnInsecureRemoteTCPBind(logger, cfg)
+	banner.Render(cmd.ErrOrStderr(), banner.Info{
+		Listen:    listen,
+		Upstream:  cfg.Upstream.Socket,
+		Rules:     len(cfg.Rules),
+		LogFormat: cfg.Log.Format,
+		LogLevel:  cfg.Log.Level,
+		AccessLog: cfg.Log.AccessLog,
+	})
+	logger.Info("sockguard started",
+		"version", version.Version,
+		"listen", listen,
+		"upstream", cfg.Upstream.Socket,
+		"rules", len(cfg.Rules),
+		"log_level", cfg.Log.Level,
+	)
+
+	errCh := make(chan error, 1)
+	go deps.startServing(server, listener, errCh)
+
+	sigCh := make(chan os.Signal, 1)
+	deps.notifySignals(sigCh, syscall.SIGTERM, syscall.SIGINT)
+
+	select {
+	case sig := <-sigCh:
+		logger.Info("shutdown signal received", "signal", sig.String())
+	case err := <-errCh:
+		if err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("server error: %w", err)
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), deps.shutdownGracePeriod)
+	defer cancel()
+
+	if err := deps.shutdownServer(server, shutdownCtx); err != nil {
+		logger.Error("shutdown error", "error", err)
+	}
+	if cfg.Listen.Socket != "" {
+		if err := deps.removePath(cfg.Listen.Socket); err != nil && !os.IsNotExist(err) {
+			logger.Error("remove socket error", "socket", cfg.Listen.Socket, "error", err)
+		}
+	}
+	logger.Info("sockguard stopped")
+	return nil
 }
 
 func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
@@ -186,8 +151,19 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 	// streaming with optimized buffers and TCP half-close signaling.
 	handler = proxy.HijackHandler(cfg.Upstream.Socket, logger, handler)
 
+	handler = ownership.Middleware(cfg.Upstream.Socket, logger, ownership.Options{
+		Owner:              cfg.Ownership.Owner,
+		LabelKey:           cfg.Ownership.LabelKey,
+		AllowUnownedImages: cfg.Ownership.AllowUnownedImages,
+	})(handler)
+
 	handler = filter.MiddlewareWithOptions(rules, logger, filter.Options{
-		DenyResponseVerbosity: filter.DenyResponseVerbosity(cfg.Response.DenyVerbosity),
+		DenyResponseVerbosity: filter.ParseDenyResponseVerbosity(cfg.Response.DenyVerbosity),
+		ContainerCreate: filter.ContainerCreateOptions{
+			AllowPrivileged:   cfg.RequestBody.ContainerCreate.AllowPrivileged,
+			AllowHostNetwork:  cfg.RequestBody.ContainerCreate.AllowHostNetwork,
+			AllowedBindMounts: cfg.RequestBody.ContainerCreate.AllowedBindMounts,
+		},
 	})(handler)
 
 	if cfg.Health.Enabled {
@@ -196,81 +172,19 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 		handler = healthInterceptor(cfg.Health.Path, healthHandler, handler)
 	}
 
+	handler = clientacl.Middleware(cfg.Upstream.Socket, logger, clientacl.Options{
+		AllowedCIDRs: cfg.Clients.AllowedCIDRs,
+		ContainerLabels: clientacl.ContainerLabelOptions{
+			Enabled:     cfg.Clients.ContainerLabels.Enabled,
+			LabelPrefix: cfg.Clients.ContainerLabels.LabelPrefix,
+		},
+	})(handler)
+
 	if cfg.Log.AccessLog {
 		handler = logging.AccessLogMiddleware(logger)(handler)
 	}
 
 	return handler
-}
-
-func closeServeListener(logger *slog.Logger, ln net.Listener) {
-	if closeErr := ln.Close(); closeErr != nil {
-		logger.Warn("failed to close listener", "error", closeErr)
-	}
-}
-
-func logServeStartup(cmd *cobra.Command, cfg *config.Config, logger *slog.Logger) {
-	warnOnInsecureRemoteTCPBind(logger, cfg)
-	banner.Render(cmd.ErrOrStderr(), banner.Info{
-		Listen:    listenerAddr(cfg),
-		Upstream:  cfg.Upstream.Socket,
-		Rules:     len(cfg.Rules),
-		LogFormat: cfg.Log.Format,
-		LogLevel:  cfg.Log.Level,
-		AccessLog: cfg.Log.AccessLog,
-	})
-	logger.Info("sockguard started",
-		"version", version.Version,
-		"listen", listenerAddr(cfg),
-		"upstream", cfg.Upstream.Socket,
-		"rules", len(cfg.Rules),
-		"log_level", cfg.Log.Level,
-	)
-}
-
-func serveUntilShutdown(server *http.Server, ln net.Listener, logger *slog.Logger, deps *serveDeps) error {
-	errCh := make(chan error, 1)
-	go deps.startServing(server, ln, errCh)
-
-	if err := waitForServeStop(errCh, logger, deps); err != nil {
-		return err
-	}
-
-	shutdownServeServer(server, logger, deps)
-	return nil
-}
-
-func waitForServeStop(errCh <-chan error, logger *slog.Logger, deps *serveDeps) error {
-	sigCh := make(chan os.Signal, 1)
-	deps.notifySignals(sigCh, syscall.SIGTERM, syscall.SIGINT)
-
-	select {
-	case sig := <-sigCh:
-		logger.Info("shutdown signal received", "signal", sig.String())
-		return nil
-	case err := <-errCh:
-		if err != nil && err != http.ErrServerClosed {
-			return fmt.Errorf("server error: %w", err)
-		}
-		return nil
-	}
-}
-
-func shutdownServeServer(server *http.Server, logger *slog.Logger, deps *serveDeps) {
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), deps.shutdownGracePeriod)
-	defer cancel()
-
-	if err := deps.shutdownServer(server, shutdownCtx); err != nil {
-		logger.Error("shutdown error", "error", err)
-	}
-}
-
-func cleanupServeSocket(cfg *config.Config, logger *slog.Logger, deps *serveDeps) {
-	if cfg.Listen.Socket != "" {
-		if err := deps.removePath(cfg.Listen.Socket); err != nil && !os.IsNotExist(err) {
-			logger.Error("remove socket error", "socket", cfg.Listen.Socket, "error", err)
-		}
-	}
 }
 
 func newHTTPServer(handler http.Handler) *http.Server {

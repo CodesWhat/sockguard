@@ -224,14 +224,35 @@ func TestMiddlewareDeniedMinimalVerbosity(t *testing.T) {
 	}
 }
 
+func TestParseDenyResponseVerbosity(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  DenyResponseVerbosity
+	}{
+		{name: "minimal", input: "minimal", want: DenyResponseVerbosityMinimal},
+		{name: "verbose", input: "verbose", want: DenyResponseVerbosityVerbose},
+		{name: "empty defaults verbose", input: "", want: DenyResponseVerbosityVerbose},
+		{name: "invalid defaults verbose", input: "chatty", want: DenyResponseVerbosityVerbose},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ParseDenyResponseVerbosity(tt.input); got != tt.want {
+				t.Fatalf("ParseDenyResponseVerbosity(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMiddlewareWritesMeta(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
 	rules := []*CompiledRule{r1}
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		m := logging.Meta(r.Context())
+		m := logging.MetaForRequest(w, r)
 		if m == nil {
-			t.Fatal("expected meta in context")
+			t.Fatal("expected request meta")
 		}
 		if m.Decision != "allow" {
 			t.Errorf("Decision = %q, want allow", m.Decision)
@@ -409,7 +430,7 @@ func TestMiddlewareAllowsLargePayloadPassThrough(t *testing.T) {
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
 	rules := []*CompiledRule{r1, r2}
 
-	payload := bytes.Repeat([]byte("sockguard-payload-"), 1<<15)
+	payload := []byte(`{"Image":"busybox:1.37","Labels":{"payload":"` + strings.Repeat("sockguard-payload-", 1<<15) + `"}}`)
 	wantDigest := sha256.Sum256(payload)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -437,6 +458,132 @@ func TestMiddlewareAllowsLargePayloadPassThrough(t *testing.T) {
 	}
 }
 
+func TestMiddlewareDeniesPrivilegedContainerCreate(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/create", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	reached := false
+	handler := Middleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached = true
+	}))
+
+	meta := &logging.RequestMeta{}
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"busybox:1.37","HostConfig":{"Privileged":true}}`))
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if reached {
+		t.Fatal("expected privileged container create to be denied before reaching inner handler")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(body.Reason, "privileged") {
+		t.Fatalf("reason = %q, want privileged denial", body.Reason)
+	}
+	if meta.Decision != "deny" {
+		t.Fatalf("meta.Decision = %q, want deny", meta.Decision)
+	}
+	if meta.Reason != body.Reason {
+		t.Fatalf("meta.Reason = %q, want %q", meta.Reason, body.Reason)
+	}
+}
+
+func TestMiddlewareDeniesHostNetworkContainerCreate(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/create", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := Middleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected host-network container create to be denied")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"busybox:1.37","HostConfig":{"NetworkMode":"host"}}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(body.Reason, "host network") {
+		t.Fatalf("reason = %q, want host network denial", body.Reason)
+	}
+}
+
+func TestMiddlewareDeniesUnallowlistedContainerCreateBindMounts(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/create", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := Middleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected bind-mounted container create to be denied")
+	}))
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/containers/create",
+		strings.NewReader(`{"Image":"busybox:1.37","HostConfig":{"Binds":["/srv/unsafe:/data:rw"],"Mounts":[{"Type":"bind","Source":"/srv/also-unsafe","Target":"/config"}]}}`),
+	)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(body.Reason, "bind mount") {
+		t.Fatalf("reason = %q, want bind mount denial", body.Reason)
+	}
+}
+
+func TestMiddlewareAllowsAllowlistedContainerCreateBindMounts(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/create", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	payload := []byte(`{"Image":"busybox:1.37","HostConfig":{"Binds":["/srv/sockguard/data:/data:rw","named-cache:/cache"],"Mounts":[{"Type":"bind","Source":"/srv/sockguard/config","Target":"/config"},{"Type":"volume","Source":"build-cache","Target":"/var/cache"}]}}`)
+	wantDigest := sha256.Sum256(payload)
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		ContainerCreate: ContainerCreateOptions{
+			AllowedBindMounts: []string{"/srv/sockguard"},
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if gotDigest := sha256.Sum256(body); gotDigest != wantDigest {
+			t.Fatalf("body sha256 = %s, want %s", hex.EncodeToString(gotDigest[:]), hex.EncodeToString(wantDigest[:]))
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+}
+
 func TestMiddlewareVersionPrefixInDenial(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 0})
 	rules := []*CompiledRule{r1}
@@ -461,6 +608,57 @@ func TestMiddlewareVersionPrefixInDenial(t *testing.T) {
 	// Original path should be preserved in denial response
 	if body.Path != "/v1.45/containers/create" {
 		t.Errorf("path = %q, want /v1.45/containers/create", body.Path)
+	}
+}
+
+func TestMiddlewareDeniedRedactsSensitiveVerbosePaths(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 0})
+	rules := []*CompiledRule{r1}
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{
+			name: "secret resource",
+			path: "/v1.45/secrets/prod-db-password",
+			want: "/v1.45/secrets/<redacted>",
+		},
+		{
+			name: "swarm unlock key",
+			path: "/v1.45/swarm/unlockkey",
+			want: "/v1.45/swarm/<redacted>",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := Middleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("should not reach inner handler")
+			}))
+			req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+
+			var body DenialResponse
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if body.Path != tt.want {
+				t.Fatalf("path = %q, want %q", body.Path, tt.want)
+			}
+			if body.Method != http.MethodPost {
+				t.Fatalf("method = %q, want %q", body.Method, http.MethodPost)
+			}
+			if body.Reason != "deny all" {
+				t.Fatalf("reason = %q, want %q", body.Reason, "deny all")
+			}
+		})
 	}
 }
 
@@ -579,5 +777,52 @@ func TestMiddlewareDoesNotAttemptFallbackAfterHeadersCommitted(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, errWriteFailed.Error()) {
 		t.Errorf("expected write error in log, got %q", logOutput)
+	}
+}
+
+func TestMiddlewareDeniesWhenContainerCreateInspectionFails(t *testing.T) {
+	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/create", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	logs := &collectingHandler{}
+	handler := Middleware([]*CompiledRule{rule}, slog.New(logs))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected request to be denied before reaching inner handler")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+	req.Body = &erroringReadCloser{
+		Reader:   strings.NewReader(`{}`),
+		closeErr: errors.New("close failed"),
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Reason != "unable to inspect container create request body" {
+		t.Fatalf("reason = %q, want inspection failure", body.Reason)
+	}
+
+	records := logs.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("log records = %d, want 1", len(records))
+	}
+	if records[0].message != "failed to inspect container create request body" {
+		t.Fatalf("message = %q, want inspection failure log", records[0].message)
+	}
+}
+
+func TestRedactDeniedPathEmpty(t *testing.T) {
+	if got := redactDeniedPath(""); got != "" {
+		t.Fatalf("redactDeniedPath(\"\") = %q, want empty", got)
 	}
 }

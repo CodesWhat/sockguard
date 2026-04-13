@@ -17,9 +17,15 @@ health:
   enabled: true
   path: /health
 
-# Watchtower recreates containers and can use exec lifecycle hooks. Sockguard
-# cannot inspect those request bodies yet, so this preset opts into body-blind
-# write access explicitly until request body inspection lands.
+# Watchtower recreates containers and can use exec lifecycle hooks. Container
+# creation is inspected by default, but bind-mounted workloads are denied until
+# you allowlist their host paths here. Exec lifecycle hooks still require the
+# body-blind opt-in below because those request bodies are not inspected yet.
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+
+# Exec lifecycle hooks are still body-blind today.
 insecure_allow_body_blind_writes: true
 
 rules:

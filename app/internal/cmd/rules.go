@@ -21,7 +21,6 @@ type bodySensitiveWriteEndpoint struct {
 }
 
 var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
-	{method: http.MethodPost, path: "/containers/create"},
 	{method: http.MethodPost, path: "/containers/sockguard-test/exec"},
 	{method: http.MethodPost, path: "/exec/sockguard-test/start"},
 	{method: http.MethodPost, path: "/build"},

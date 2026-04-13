@@ -31,14 +31,14 @@ func New(upstreamSocket string, logger *slog.Logger) *httputil.ReverseProxy {
 		Transport:     transport,
 		FlushInterval: -1, // immediate flush for streaming endpoints
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			attrs := logging.AppendCorrelationAttrs(nil, r)
+			attrs := logging.AppendCorrelationAttrsForResponseWriter(nil, r, w)
 			attrs = append(attrs, slog.Any("error", err))
 			logger.LogAttrs(r.Context(), slog.LevelError, "upstream request failed", attrs...)
 
 			if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{
 				Message: "upstream Docker socket unreachable",
 			}); encErr != nil {
-				attrs := logging.AppendCorrelationAttrs(nil, r)
+				attrs := logging.AppendCorrelationAttrsForResponseWriter(nil, r, w)
 				attrs = append(attrs, slog.Any("error", encErr))
 				logger.LogAttrs(r.Context(), slog.LevelWarn, "failed to encode error response", attrs...)
 			}

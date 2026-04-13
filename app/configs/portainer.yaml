@@ -4,7 +4,7 @@
 # Portainer proxies the entire Docker API — it needs everything.
 #
 # WARNING: This preset grants near-full Docker socket access.
-# Use per-client policies (v0.3.0+) to restrict other consumers.
+# Use client CIDR gates or client-container label ACLs to restrict other consumers.
 
 upstream:
   socket: /var/run/docker.sock
@@ -19,9 +19,15 @@ health:
   path: /health
 
 # Portainer needs broad Docker write access, including body-sensitive endpoints
-# such as container create, exec, build, and swarm management. Sockguard cannot
-# inspect those request bodies yet, so this preset opts into body-blind writes
-# explicitly until request body inspection lands.
+# such as container create, exec, build, and swarm management. Container-create
+# bodies are inspected by default, but bind-mounted workloads are denied until
+# you allowlist their host paths here. Exec, build, and swarm-management
+# request bodies are still body-blind today, so this preset keeps the unsafe
+# opt-in below.
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+
 insecure_allow_body_blind_writes: true
 
 rules:

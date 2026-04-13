@@ -271,3 +271,115 @@ func TestValidateCommaSeparatedMethods(t *testing.T) {
 		t.Errorf("Validate() = %v, want nil for comma-separated methods", err)
 	}
 }
+
+func TestValidateAllowsAbsoluteContainerCreateBindMountAllowlist(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.ContainerCreate.AllowedBindMounts = []string{"/srv/data", "/var/lib/sockguard"}
+
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+func TestValidateRejectsRelativeContainerCreateBindMountAllowlist(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.ContainerCreate.AllowedBindMounts = []string{"srv/data"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for relative bind mount allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.container_create.allowed_bind_mounts") {
+		t.Fatalf("expected request_body.container_create.allowed_bind_mounts in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsOwnershipWithoutOwner(t *testing.T) {
+	cfg := Defaults()
+	cfg.Ownership.Owner = "ci-job-123"
+	cfg.Ownership.LabelKey = ""
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for empty ownership label key")
+	}
+	if !strings.Contains(err.Error(), "ownership.label_key") {
+		t.Fatalf("expected ownership.label_key in error, got: %v", err)
+	}
+}
+
+func TestValidateAllowsClientCIDRACLs(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.AllowedCIDRs = []string{"10.0.0.0/8", "192.0.2.0/24"}
+
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+func TestValidateRejectsInvalidClientCIDRACLs(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.AllowedCIDRs = []string{"definitely-not-a-cidr"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid client CIDR")
+	}
+	if !strings.Contains(err.Error(), "clients.allowed_cidrs") {
+		t.Fatalf("expected clients.allowed_cidrs in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsEnabledClientContainerLabelsWithoutPrefix(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.ContainerLabels.Enabled = true
+	cfg.Clients.ContainerLabels.LabelPrefix = ""
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for empty client container label prefix")
+	}
+	if !strings.Contains(err.Error(), "clients.container_labels.label_prefix") {
+		t.Fatalf("expected clients.container_labels.label_prefix in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsClientACLsOnUnixSocketListener(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Socket = "/tmp/sockguard.sock"
+	cfg.Listen.Address = ""
+	cfg.Clients.AllowedCIDRs = []string{"10.0.0.0/8"}
+	cfg.Clients.ContainerLabels.Enabled = true
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for client ACLs on unix socket listener")
+	}
+	if !strings.Contains(err.Error(), "clients.allowed_cidrs") && !strings.Contains(err.Error(), "clients.container_labels") {
+		t.Fatalf("expected client ACL error, got: %v", err)
+	}
+}
+
+func TestNormalizeAllowedBindMount(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+		ok    bool
+	}{
+		{name: "empty", input: "", want: "", ok: false},
+		{name: "relative", input: "srv/data", want: "", ok: false},
+		{name: "root", input: "/", want: "/", ok: true},
+		{name: "absolute clean", input: "/srv/data", want: "/srv/data", ok: true},
+		{name: "absolute cleaned", input: "/srv/../srv/data", want: "/srv/data", ok: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := normalizeAllowedBindMount(tt.input)
+			if got != tt.want || ok != tt.ok {
+				t.Fatalf("normalizeAllowedBindMount(%q) = (%q, %v), want (%q, %v)", tt.input, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}

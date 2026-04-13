@@ -14,14 +14,19 @@ type contextKey int
 
 const contextKeyMeta contextKey = iota
 
-// RequestMeta holds mutable decision metadata, shared between middlewares
-// via a pointer in the request context. The access log middleware creates it,
-// and the filter middleware writes to it.
+// RequestMeta holds mutable decision metadata shared between middlewares. The
+// access log middleware creates it and attaches it to the wrapped
+// ResponseWriter; tests and non-access-log callers can also pass it through
+// request context via WithMeta.
 type RequestMeta struct {
 	Decision string
 	Rule     int
 	Reason   string
 	NormPath string
+}
+
+type requestMetaCarrier interface {
+	RequestMeta() *RequestMeta
 }
 
 var requestMetaPool = sync.Pool{
@@ -32,7 +37,9 @@ var requestMetaPool = sync.Pool{
 
 const requestIDHeader = "X-Request-Id"
 
-type accessLogAttrs [11]slog.Attr
+// accessLogAttrs leaves headroom beyond today's max log field count so adding
+// one or two attrs later does not force a new backing slice allocation.
+type accessLogAttrs [16]slog.Attr
 
 var accessLogAttrPool = sync.Pool{
 	New: func() any {
@@ -49,6 +56,28 @@ func WithMeta(ctx context.Context, m *RequestMeta) context.Context {
 func Meta(ctx context.Context) *RequestMeta {
 	m, _ := ctx.Value(contextKeyMeta).(*RequestMeta)
 	return m
+}
+
+// MetaFromResponseWriter retrieves the RequestMeta pointer from a wrapped
+// ResponseWriter when access logging has attached one, or nil.
+func MetaFromResponseWriter(w http.ResponseWriter) *RequestMeta {
+	carrier, _ := w.(requestMetaCarrier)
+	if carrier == nil {
+		return nil
+	}
+	return carrier.RequestMeta()
+}
+
+// MetaForRequest prefers ResponseWriter-attached request metadata and falls
+// back to request context when no access-log wrapper is present.
+func MetaForRequest(w http.ResponseWriter, r *http.Request) *RequestMeta {
+	if meta := MetaFromResponseWriter(w); meta != nil {
+		return meta
+	}
+	if r == nil {
+		return nil
+	}
+	return Meta(r.Context())
 }
 
 func getRequestMeta() *RequestMeta {
@@ -86,6 +115,21 @@ func putAccessLogAttrs(attrs *accessLogAttrs) {
 // AppendCorrelationAttrs appends request correlation attributes that should match
 // across access logs and subsystem error logs for the same request.
 func AppendCorrelationAttrs(attrs []slog.Attr, r *http.Request) []slog.Attr {
+	var meta *RequestMeta
+	if r != nil {
+		meta = Meta(r.Context())
+	}
+	return appendCorrelationAttrs(attrs, r, meta)
+}
+
+// AppendCorrelationAttrsForResponseWriter appends request correlation
+// attributes, preferring ResponseWriter-attached metadata from the access log
+// middleware and falling back to request context.
+func AppendCorrelationAttrsForResponseWriter(attrs []slog.Attr, r *http.Request, w http.ResponseWriter) []slog.Attr {
+	return appendCorrelationAttrs(attrs, r, MetaForRequest(w, r))
+}
+
+func appendCorrelationAttrs(attrs []slog.Attr, r *http.Request, meta *RequestMeta) []slog.Attr {
 	if r == nil {
 		return attrs
 	}
@@ -99,7 +143,7 @@ func AppendCorrelationAttrs(attrs []slog.Attr, r *http.Request) []slog.Attr {
 		attrs = append(attrs, slog.String("request_id", values[0]))
 	}
 
-	if meta := Meta(r.Context()); meta != nil {
+	if meta != nil {
 		attrs = append(attrs,
 			slog.String("normalized_path", meta.NormPath),
 			slog.String("decision", meta.Decision),
@@ -118,6 +162,7 @@ type responseCapture struct {
 	http.ResponseWriter
 	status int
 	bytes  int
+	meta   *RequestMeta
 }
 
 var _ http.Flusher = (*responseCapture)(nil)
@@ -137,6 +182,7 @@ func getResponseCapture(w http.ResponseWriter) *responseCapture {
 	rc.ResponseWriter = w
 	rc.status = http.StatusOK
 	rc.bytes = 0
+	rc.meta = nil
 	return rc
 }
 
@@ -147,7 +193,12 @@ func putResponseCapture(rc *responseCapture) {
 	rc.ResponseWriter = nil
 	rc.status = 0
 	rc.bytes = 0
+	rc.meta = nil
 	responseCapturePool.Put(rc)
+}
+
+func (rc *responseCapture) RequestMeta() *RequestMeta {
+	return rc.meta
 }
 
 func (rc *responseCapture) WriteHeader(code int) {
@@ -177,18 +228,19 @@ func (rc *responseCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 // AccessLogMiddleware returns middleware that logs every request with structured fields.
-// It injects a mutable RequestMeta into context so downstream middleware (filter) can
-// record decision data that flows back up to the log entry.
+// It attaches a pooled RequestMeta to the wrapped ResponseWriter so downstream
+// middleware can record decision data without allocating a derived request context.
 func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
 			meta := getRequestMeta()
-			defer putRequestMeta(meta)
-			r = r.WithContext(WithMeta(r.Context(), meta))
-
 			rc := getResponseCapture(w)
+			rc.meta = meta
+			// LogAttrs and downstream middlewares still read meta through rc, so
+			// the pool return must stay deferred until after the log entry is emitted.
+			defer putRequestMeta(meta)
 			defer putResponseCapture(rc)
 			next.ServeHTTP(rc, r)
 
@@ -203,7 +255,7 @@ func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			attrBuf := getAccessLogAttrs()
 			attrs := attrBuf[:0]
-			attrs = AppendCorrelationAttrs(attrs, r)
+			attrs = appendCorrelationAttrs(attrs, r, meta)
 			attrs = append(
 				attrs,
 				slog.Int("status", rc.status),

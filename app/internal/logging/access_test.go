@@ -20,11 +20,16 @@ func TestAccessLogAllowed(t *testing.T) {
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Simulate filter middleware writing to the shared meta
-		if m := Meta(r.Context()); m != nil {
-			m.Decision = "allow"
-			m.Rule = 0
-			m.NormPath = "/_ping"
+		if Meta(r.Context()) != nil {
+			t.Fatal("expected request context to remain untouched by access log middleware")
 		}
+		m := MetaFromResponseWriter(w)
+		if m == nil {
+			t.Fatal("expected meta on wrapped response writer")
+		}
+		m.Decision = "allow"
+		m.Rule = 0
+		m.NormPath = "/_ping"
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
@@ -52,7 +57,7 @@ func TestAccessLogDenied(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if m := Meta(r.Context()); m != nil {
+		if m := MetaFromResponseWriter(w); m != nil {
 			m.Decision = "deny"
 			m.Rule = 2
 			m.Reason = "default deny"
@@ -82,7 +87,7 @@ func TestAccessLogIncludesRequestID(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if m := Meta(r.Context()); m != nil {
+		if m := MetaFromResponseWriter(w); m != nil {
 			m.Decision = "allow"
 			m.NormPath = "/info"
 		}
@@ -264,6 +269,18 @@ func TestAccessLogAttrPoolFallbackWhenPoolReturnsWrongType(t *testing.T) {
 	}
 }
 
+func TestAccessLogAttrPoolHasHeadroomForFutureFields(t *testing.T) {
+	attrs := getAccessLogAttrs()
+	if attrs == nil {
+		t.Fatal("getAccessLogAttrs() returned nil")
+	}
+	defer putAccessLogAttrs(attrs)
+
+	if got, want := len(*attrs), 16; got != want {
+		t.Fatalf("pooled access log attr capacity = %d, want %d", got, want)
+	}
+}
+
 func TestResponseCapturePoolFallbackAndNilPut(t *testing.T) {
 	originalNew := responseCapturePool.New
 	responseCapturePool.New = func() any { return nil }
@@ -291,6 +308,76 @@ func TestResponseCapturePoolFallbackWhenPoolReturnsWrongType(t *testing.T) {
 	rc := getResponseCapture(httptest.NewRecorder())
 	if rc == nil {
 		t.Fatal("getResponseCapture() returned nil")
+	}
+}
+
+func TestMetaFromResponseWriter(t *testing.T) {
+	meta := &RequestMeta{Decision: "allow"}
+	rc := &responseCapture{meta: meta}
+
+	got := MetaFromResponseWriter(rc)
+	if got != meta {
+		t.Fatalf("MetaFromResponseWriter() = %p, want %p", got, meta)
+	}
+	if MetaFromResponseWriter(httptest.NewRecorder()) != nil {
+		t.Fatal("expected nil meta for non-capturing writer")
+	}
+}
+
+func TestMetaForRequest(t *testing.T) {
+	responseMeta := &RequestMeta{Decision: "allow"}
+	ctxMeta := &RequestMeta{Decision: "deny"}
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req = req.WithContext(WithMeta(req.Context(), ctxMeta))
+
+	if got := MetaForRequest(&responseCapture{meta: responseMeta}, req); got != responseMeta {
+		t.Fatalf("MetaForRequest() = %p, want response-writer meta %p", got, responseMeta)
+	}
+	if got := MetaForRequest(httptest.NewRecorder(), req); got != ctxMeta {
+		t.Fatalf("MetaForRequest() = %p, want context meta %p", got, ctxMeta)
+	}
+	if got := MetaForRequest(httptest.NewRecorder(), nil); got != nil {
+		t.Fatalf("MetaForRequest() = %v, want nil", got)
+	}
+}
+
+func TestAppendCorrelationAttrsForResponseWriter(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+	req.Header.Set(requestIDHeader, "req-123")
+	req = req.WithContext(WithMeta(req.Context(), &RequestMeta{
+		Decision: "deny",
+		Rule:     4,
+		Reason:   "context reason",
+		NormPath: "/context/path",
+	}))
+
+	attrs := AppendCorrelationAttrsForResponseWriter(nil, req, &responseCapture{meta: &RequestMeta{
+		Decision: "allow",
+		Rule:     2,
+		Reason:   "writer reason",
+		NormPath: "/writer/path",
+	}})
+
+	got := make(map[string]any, len(attrs))
+	for _, attr := range attrs {
+		got[attr.Key] = attr.Value.Any()
+	}
+
+	if got["request_id"] != "req-123" {
+		t.Fatalf("request_id = %#v, want req-123", got["request_id"])
+	}
+	if got["normalized_path"] != "/writer/path" {
+		t.Fatalf("normalized_path = %#v, want /writer/path", got["normalized_path"])
+	}
+	if got["decision"] != "allow" {
+		t.Fatalf("decision = %#v, want allow", got["decision"])
+	}
+	if got["rule"] != int64(2) && got["rule"] != 2 {
+		t.Fatalf("rule = %#v, want 2", got["rule"])
+	}
+	if got["reason"] != "writer reason" {
+		t.Fatalf("reason = %#v, want writer reason", got["reason"])
 	}
 }
 
@@ -430,7 +517,7 @@ func (w *benchmarkResponseWriter) Reset() {
 func TestAccessLogMiddlewareAllocationBudget(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if m := Meta(r.Context()); m != nil {
+		if m := MetaFromResponseWriter(w); m != nil {
 			m.Decision = "allow"
 			m.Rule = 0
 			m.NormPath = "/_ping"
@@ -448,9 +535,9 @@ func TestAccessLogMiddlewareAllocationBudget(t *testing.T) {
 	})
 
 	// Race detector instruments sync.Pool, adding ~2 extra allocs.
-	limit := 3.0
+	limit := 2.0
 	if raceEnabled {
-		limit = 6.0
+		limit = 5.0
 	}
 	if allocs > limit {
 		t.Fatalf("AccessLogMiddleware allocated %.0f times, want <= %.0f", allocs, limit)
@@ -460,7 +547,7 @@ func TestAccessLogMiddlewareAllocationBudget(t *testing.T) {
 func BenchmarkAccessLogMiddleware(b *testing.B) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if m := Meta(r.Context()); m != nil {
+		if m := MetaFromResponseWriter(w); m != nil {
 			m.Decision = "allow"
 			m.Rule = 0
 			m.NormPath = "/_ping"

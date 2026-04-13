@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -30,24 +31,90 @@ type issuedCertificate struct {
 	key  *ecdsa.PrivateKey
 }
 
+type bundleDeps struct {
+	newCertificateAuthority func() (issuedCertificate, error)
+	newServerCertificate    func([]string, issuedCertificate) (issuedCertificate, error)
+	newClientCertificate    func(issuedCertificate) (issuedCertificate, error)
+	writeBundleFiles        func(Bundle, issuedCertificate, issuedCertificate, issuedCertificate) error
+}
+
+func newBundleDeps() bundleDeps {
+	return bundleDeps{
+		newCertificateAuthority: newCertificateAuthority,
+		newServerCertificate:    newServerCertificate,
+		newClientCertificate:    newClientCertificate,
+		writeBundleFiles:        writeBundleFiles,
+	}
+}
+
+type certDeps struct {
+	generateKey         func() (*ecdsa.PrivateKey, error)
+	certificateTemplate func(string) (*x509.Certificate, error)
+	createCertificate   func(*x509.Certificate, *x509.Certificate, any, any) ([]byte, error)
+	parseCertificate    func([]byte) (*x509.Certificate, error)
+}
+
+func newCertDeps() certDeps {
+	return certDeps{
+		generateKey: func() (*ecdsa.PrivateKey, error) {
+			return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		},
+		certificateTemplate: certificateTemplate,
+		createCertificate: func(template, parent *x509.Certificate, pub, priv any) ([]byte, error) {
+			return x509.CreateCertificate(rand.Reader, template, parent, pub, priv)
+		},
+		parseCertificate: x509.ParseCertificate,
+	}
+}
+
+type bundleWriteDeps struct {
+	writePEM          func(string, string, []byte) error
+	writeECPrivateKey func(string, *ecdsa.PrivateKey) error
+}
+
+func newBundleWriteDeps() bundleWriteDeps {
+	return bundleWriteDeps{
+		writePEM:          writePEM,
+		writeECPrivateKey: writeECPrivateKey,
+	}
+}
+
+type writePEMDeps struct {
+	openFile  func(string) (io.WriteCloser, error)
+	encodePEM func(io.Writer, *pem.Block) error
+}
+
+func newWritePEMDeps() writePEMDeps {
+	return writePEMDeps{
+		openFile: func(path string) (io.WriteCloser, error) {
+			return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		},
+		encodePEM: pem.Encode,
+	}
+}
+
 func WriteMutualTLSBundle(dir string, serverHosts ...string) (Bundle, error) {
-	ca, err := newCertificateAuthority()
+	return writeMutualTLSBundleWithDeps(dir, newBundleDeps(), serverHosts...)
+}
+
+func writeMutualTLSBundleWithDeps(dir string, deps bundleDeps, serverHosts ...string) (Bundle, error) {
+	ca, err := deps.newCertificateAuthority()
 	if err != nil {
 		return Bundle{}, err
 	}
 
-	server, err := newServerCertificate(defaultServerHosts(serverHosts), ca)
+	server, err := deps.newServerCertificate(defaultServerHosts(serverHosts), ca)
 	if err != nil {
 		return Bundle{}, err
 	}
 
-	client, err := newClientCertificate(ca)
+	client, err := deps.newClientCertificate(ca)
 	if err != nil {
 		return Bundle{}, err
 	}
 
 	bundle := newBundle(dir)
-	if err := writeBundleFiles(bundle, ca, server, client); err != nil {
+	if err := deps.writeBundleFiles(bundle, ca, server, client); err != nil {
 		return Bundle{}, err
 	}
 
@@ -114,12 +181,16 @@ func newBundle(dir string) Bundle {
 }
 
 func newCertificateAuthority() (issuedCertificate, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	return newCertificateAuthorityWithDeps(newCertDeps())
+}
+
+func newCertificateAuthorityWithDeps(deps certDeps) (issuedCertificate, error) {
+	key, err := deps.generateKey()
 	if err != nil {
 		return issuedCertificate{}, fmt.Errorf("generate CA key: %w", err)
 	}
 
-	template, err := certificateTemplate("sockguard-test-ca")
+	template, err := deps.certificateTemplate("sockguard-test-ca")
 	if err != nil {
 		return issuedCertificate{}, err
 	}
@@ -127,12 +198,12 @@ func newCertificateAuthority() (issuedCertificate, error) {
 	template.KeyUsage = x509.KeyUsageCertSign | x509.KeyUsageCRLSign
 	template.BasicConstraintsValid = true
 
-	der, err := x509.CreateCertificate(rand.Reader, template, template, key.Public(), key)
+	der, err := deps.createCertificate(template, template, key.Public(), key)
 	if err != nil {
 		return issuedCertificate{}, fmt.Errorf("create CA certificate: %w", err)
 	}
 
-	cert, err := x509.ParseCertificate(der)
+	cert, err := deps.parseCertificate(der)
 	if err != nil {
 		return issuedCertificate{}, fmt.Errorf("parse CA certificate: %w", err)
 	}
@@ -162,12 +233,22 @@ func newLeafCertificate(
 	ca issuedCertificate,
 	configure func(*x509.Certificate),
 ) (issuedCertificate, error) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	return newLeafCertificateWithDeps(commonName, extKeyUsage, ca, configure, newCertDeps())
+}
+
+func newLeafCertificateWithDeps(
+	commonName string,
+	extKeyUsage x509.ExtKeyUsage,
+	ca issuedCertificate,
+	configure func(*x509.Certificate),
+	deps certDeps,
+) (issuedCertificate, error) {
+	key, err := deps.generateKey()
 	if err != nil {
 		return issuedCertificate{}, fmt.Errorf("generate %s key: %w", commonName, err)
 	}
 
-	template, err := certificateTemplate(commonName)
+	template, err := deps.certificateTemplate(commonName)
 	if err != nil {
 		return issuedCertificate{}, err
 	}
@@ -176,7 +257,7 @@ func newLeafCertificate(
 		configure(template)
 	}
 
-	der, err := x509.CreateCertificate(rand.Reader, template, ca.cert, key.Public(), ca.key)
+	der, err := deps.createCertificate(template, ca.cert, key.Public(), ca.key)
 	if err != nil {
 		return issuedCertificate{}, fmt.Errorf("create %s certificate: %w", commonName, err)
 	}
@@ -185,6 +266,10 @@ func newLeafCertificate(
 }
 
 func writeBundleFiles(bundle Bundle, ca issuedCertificate, server issuedCertificate, client issuedCertificate) error {
+	return writeBundleFilesWithDeps(bundle, ca, server, client, newBundleWriteDeps())
+}
+
+func writeBundleFilesWithDeps(bundle Bundle, ca issuedCertificate, server issuedCertificate, client issuedCertificate, deps bundleWriteDeps) error {
 	files := []struct {
 		path      string
 		blockType string
@@ -196,7 +281,7 @@ func writeBundleFiles(bundle Bundle, ca issuedCertificate, server issuedCertific
 	}
 
 	for _, file := range files {
-		if err := writePEM(file.path, file.blockType, file.der); err != nil {
+		if err := deps.writePEM(file.path, file.blockType, file.der); err != nil {
 			return err
 		}
 	}
@@ -210,7 +295,7 @@ func writeBundleFiles(bundle Bundle, ca issuedCertificate, server issuedCertific
 	}
 
 	for _, file := range keys {
-		if err := writeECPrivateKey(file.path, file.key); err != nil {
+		if err := deps.writeECPrivateKey(file.path, file.key); err != nil {
 			return err
 		}
 	}
@@ -219,7 +304,11 @@ func writeBundleFiles(bundle Bundle, ca issuedCertificate, server issuedCertific
 }
 
 func writePEM(path, blockType string, der []byte) (err error) {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	return writePEMWithDeps(path, blockType, der, newWritePEMDeps())
+}
+
+func writePEMWithDeps(path, blockType string, der []byte, deps writePEMDeps) (err error) {
+	file, err := deps.openFile(path)
 	if err != nil {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
@@ -229,7 +318,7 @@ func writePEM(path, blockType string, der []byte) (err error) {
 		}
 	}()
 
-	if err := pem.Encode(file, &pem.Block{Type: blockType, Bytes: der}); err != nil {
+	if err := deps.encodePEM(file, &pem.Block{Type: blockType, Bytes: der}); err != nil {
 		return fmt.Errorf("encode %s: %w", path, err)
 	}
 	return nil

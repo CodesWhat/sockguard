@@ -36,22 +36,19 @@ func TestValidateAndCompileRulesReturnsCompiledRules(t *testing.T) {
 	}
 }
 
-func TestValidateAndCompileRulesRejectsBodySensitiveWriteRulesWithoutExplicitOptIn(t *testing.T) {
+func TestValidateAndCompileRulesAllowsContainerCreateWithRequestBodyInspection(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/create"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 	}
 
-	_, err := validateAndCompileRules(&cfg)
-	if err == nil {
-		t.Fatal("expected body-blind write validation to fail")
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes") {
-		t.Fatalf("expected opt-in hint, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "POST /containers/create") {
-		t.Fatalf("expected endpoint hint, got: %v", err)
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
 	}
 }
 
@@ -83,11 +80,11 @@ func TestValidateAndCompileRulesRejectsBroadContainerWriteRulesWithoutExplicitOp
 	if err == nil {
 		t.Fatal("expected broad container write validation to fail")
 	}
-	if !strings.Contains(err.Error(), "POST /containers/create") {
-		t.Fatalf("expected create endpoint in error, got: %v", err)
-	}
 	if !strings.Contains(err.Error(), "POST /containers/sockguard-test/exec") {
 		t.Fatalf("expected exec endpoint in error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "POST /containers/create") {
+		t.Fatalf("did not expect create endpoint in error once request body inspection exists, got: %v", err)
 	}
 }
 
