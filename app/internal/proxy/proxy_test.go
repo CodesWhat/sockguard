@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
@@ -21,6 +23,23 @@ import (
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// tempSocketPath returns a unique /tmp unix-socket path for a test. Uses
+// os.CreateTemp so parallel tests and interrupted prior runs never collide,
+// and /tmp (not t.TempDir()) to keep the path under macOS's 104-byte
+// sun_path limit. t.Cleanup removes the path after the test.
+func tempSocketPath(t *testing.T, label string) string {
+	t.Helper()
+	f, err := os.CreateTemp("/tmp", "dp-"+label+"-*.sock")
+	if err != nil {
+		t.Fatalf("create temp socket: %v", err)
+	}
+	path := f.Name()
+	_ = f.Close()
+	_ = os.Remove(path)
+	t.Cleanup(func() { _ = os.Remove(path) })
+	return path
 }
 
 func TestNew_ErrorHandler(t *testing.T) {
@@ -104,8 +123,7 @@ func TestNew_ErrorHandlerLogsRequestCorrelation(t *testing.T) {
 // server is shut down via t.Cleanup.
 func startMockDocker(t *testing.T) string {
 	t.Helper()
-	socketPath := fmt.Sprintf("/tmp/dp-test-proxy-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "proxy")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -220,8 +238,7 @@ func TestNew_UpstreamDown(t *testing.T) {
 
 func TestNew_UpstreamGoesAway(t *testing.T) {
 	// Start a real upstream, then shut it down before the request.
-	socketPath := fmt.Sprintf("/tmp/dp-test-goaway-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "goaway")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -248,8 +265,7 @@ func TestNew_UpstreamGoesAway(t *testing.T) {
 }
 
 func TestNew_ConcurrentRequestsRemainIsolated(t *testing.T) {
-	socketPath := fmt.Sprintf("/tmp/dp-test-proxy-concurrent-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "proxy-concurrent")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -354,5 +370,100 @@ func TestNew_ConcurrentRequestsRemainIsolated(t *testing.T) {
 
 	if len(seenIDs) != requestCount {
 		t.Fatalf("observed %d request ids, want %d", len(seenIDs), requestCount)
+	}
+}
+
+// TestNew_ClientCancelMidResponsePropagates verifies that when a client
+// disconnects while the reverse proxy is mid-stream, the cancellation
+// propagates to the upstream handler (via req.Context().Done()) and the
+// server releases its goroutines instead of leaking them.
+func TestNew_ClientCancelMidResponsePropagates(t *testing.T) {
+	socketPath := tempSocketPath(t, "cancel-mid-stream")
+
+	upstreamCtx := make(chan struct{}, 1)
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	upstream := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Error("upstream ResponseWriter is not a Flusher")
+				return
+			}
+			flusher.Flush()
+
+			// Write small chunks until the caller's context cancels. If the
+			// proxy correctly forwards client disconnects, r.Context().Done()
+			// fires and we stop.
+			chunk := []byte("tick\n")
+			deadline := time.After(5 * time.Second)
+			for {
+				select {
+				case <-r.Context().Done():
+					upstreamCtx <- struct{}{}
+					return
+				case <-deadline:
+					t.Error("upstream never saw client context cancel")
+					return
+				default:
+				}
+				if _, err := w.Write(chunk); err != nil {
+					upstreamCtx <- struct{}{}
+					return
+				}
+				flusher.Flush()
+				time.Sleep(5 * time.Millisecond)
+			}
+		}),
+	}
+	go func() { _ = upstream.Serve(ln) }()
+	t.Cleanup(func() { _ = upstream.Close() })
+
+	rp := New(socketPath, testLogger())
+	proxySrv := httptest.NewServer(rp)
+	t.Cleanup(proxySrv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, proxySrv.URL+"/containers/abc/logs?stdout=1&follow=1", nil)
+	if err != nil {
+		cancel()
+		t.Fatalf("new request: %v", err)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		cancel()
+		t.Fatalf("client Do: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		cancel()
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// Read one chunk so we know the body is actively streaming, then cancel.
+	buf := make([]byte, 5)
+	if _, err := io.ReadFull(resp.Body, buf); err != nil {
+		_ = resp.Body.Close()
+		cancel()
+		t.Fatalf("read first chunk: %v", err)
+	}
+
+	cancel()
+	_ = resp.Body.Close()
+
+	select {
+	case <-upstreamCtx:
+	case <-time.After(3 * time.Second):
+		t.Fatal("upstream handler did not observe client cancellation within 3s")
 	}
 }

@@ -329,9 +329,7 @@ func TestHijackHandler_UpstreamUnreachable(t *testing.T) {
 func TestHijackHandler_FullUpgrade(t *testing.T) {
 	// Create a mock Docker daemon on a Unix socket that responds with 101
 	// and then echoes data back.
-	// Use /tmp directly — macOS limits Unix socket paths to 104 bytes.
-	socketPath := fmt.Sprintf("/tmp/dp-test-upgrade-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "upgrade")
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -496,8 +494,7 @@ func TestHijackHandler_Non101Fallbacks(t *testing.T) {
 func runHijackFallbackCase(t *testing.T, requestPath string, statusCode int, message string) (int, string) {
 	t.Helper()
 
-	socketPath := fmt.Sprintf("/tmp/dp-test-fallback-%d-%d.sock", statusCode, os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, fmt.Sprintf("fallback-%d", statusCode))
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -576,8 +573,7 @@ func runHijackFallbackCase(t *testing.T, requestPath string, statusCode int, mes
 }
 
 func TestHandleHijack_UpstreamMalformedResponse(t *testing.T) {
-	socketPath := fmt.Sprintf("/tmp/dp-test-malformed-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "malformed")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -631,8 +627,7 @@ func TestHandleHijack_UpstreamMalformedResponse(t *testing.T) {
 }
 
 func TestHandleHijack_RequestWriteErrorDoesNotLeakDetails(t *testing.T) {
-	socketPath := fmt.Sprintf("/tmp/dp-test-write-error-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "write-error")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -830,8 +825,7 @@ func TestHandleHijack_ErrorResponseEncodingFailures(t *testing.T) {
 	})
 
 	t.Run("request write failure", func(t *testing.T) {
-		socketPath := fmt.Sprintf("/tmp/dp-test-write-error-encode-%d.sock", os.Getpid())
-		t.Cleanup(func() { os.Remove(socketPath) })
+		socketPath := tempSocketPath(t, "write-error-encode")
 
 		ln, err := net.Listen("unix", socketPath)
 		if err != nil {
@@ -864,8 +858,7 @@ func TestHandleHijack_ErrorResponseEncodingFailures(t *testing.T) {
 	})
 
 	t.Run("read response failure", func(t *testing.T) {
-		socketPath := fmt.Sprintf("/tmp/dp-test-read-error-encode-%d.sock", os.Getpid())
-		t.Cleanup(func() { os.Remove(socketPath) })
+		socketPath := tempSocketPath(t, "read-error-encode")
 
 		ln, err := net.Listen("unix", socketPath)
 		if err != nil {
@@ -1441,8 +1434,7 @@ func TestWriteInactivityDeadlineRefreshIsThrottled(t *testing.T) {
 }
 
 func TestHandleHijack_ClientDisconnectDuringUpgrade(t *testing.T) {
-	socketPath := fmt.Sprintf("/tmp/dp-test-upgrade-disconnect-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "upgrade-disconnect")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1518,8 +1510,7 @@ func TestHandleHijack_ClientDisconnectDuringUpgrade(t *testing.T) {
 }
 
 func TestHandleHijack_PanicRecoveryInCopyGoroutines(t *testing.T) {
-	socketPath := fmt.Sprintf("/tmp/dp-test-copy-panic-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "copy-panic")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1601,8 +1592,7 @@ func TestHandleHijack_PanicRecoveryInCopyGoroutines(t *testing.T) {
 }
 
 func TestHandleHijack_HalfCloseFailureIgnored(t *testing.T) {
-	socketPath := fmt.Sprintf("/tmp/dp-test-half-close-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "half-close")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1674,8 +1664,7 @@ func TestHandleHijack_HalfCloseFailureIgnored(t *testing.T) {
 }
 
 func TestHandleHijack_FinalCloseErrorLogged(t *testing.T) {
-	socketPath := fmt.Sprintf("/tmp/dp-test-final-close-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "final-close")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1752,8 +1741,7 @@ func TestHandleHijack_FinalCloseErrorLogged(t *testing.T) {
 }
 
 func TestHandleHijack_UpstreamDisconnectDuringStreaming(t *testing.T) {
-	socketPath := fmt.Sprintf("/tmp/dp-test-upstream-disconnect-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "upstream-disconnect")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1867,8 +1855,7 @@ func TestHandleHijack_UpstreamDisconnectDuringStreaming(t *testing.T) {
 func TestHijackConnectionClosedByUpstream(t *testing.T) {
 	baseline := runtime.NumGoroutine()
 
-	socketPath := fmt.Sprintf("/tmp/dp-test-upstream-close-lifecycle-%d.sock", os.Getpid())
-	t.Cleanup(func() { os.Remove(socketPath) })
+	socketPath := tempSocketPath(t, "upstream-close-lifecycle")
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {

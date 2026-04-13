@@ -316,6 +316,40 @@ func TestHealthDoesNotCacheCallerCancelledFailure(t *testing.T) {
 	}
 }
 
+func TestHealthDoesNotCacheCallerDeadlineFailure(t *testing.T) {
+	baseNow := time.Unix(1_700_000_000, 0)
+	var dialCalls atomic.Int32
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		50*time.Millisecond,
+		func() time.Time { return baseNow },
+		func(ctx context.Context, _, _ string) (net.Conn, error) {
+			dialCalls.Add(1)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	)
+
+	// Caller deadline fires before dial returns. Caller gave up, not upstream,
+	// so we must not cache this as a health verdict.
+	deadlineCtx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+	defer cancel()
+
+	status, err := checker.check(deadlineCtx, "/tmp/upstream.sock")
+	if status != "unreachable" || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline check = (%q, %v), want unreachable with context deadline exceeded", status, err)
+	}
+
+	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "unreachable" || err == nil {
+		t.Fatalf("fresh check after deadline = (%q, %v), want unreachable with error", status, err)
+	}
+	if dialCalls.Load() != 2 {
+		t.Fatalf("dial calls after deadline failure = %d, want 2 (no cache)", dialCalls.Load())
+	}
+}
+
 func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
 	const callers = 16
 
@@ -344,6 +378,10 @@ func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
 			return nil, errors.New("upstream down")
 		},
 	)
+	// Keep the failure cache comfortably open so any straggler that enters
+	// check() after the leader cleared inFlight still hits the cached error
+	// instead of becoming a new leader. Covers scheduling jitter under -race.
+	checker.failureTTL = 10 * time.Second
 
 	for range callers {
 		wg.Add(1)

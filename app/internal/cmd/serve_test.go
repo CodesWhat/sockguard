@@ -25,12 +25,19 @@ import (
 	"github.com/codeswhat/sockguard/internal/testcert"
 )
 
-// shortSocketPath returns a short /tmp socket path that fits within macOS's
-// 104-byte sun_path limit (t.TempDir() paths are too long on macOS).
+// shortSocketPath returns a unique short /tmp socket path that fits within
+// macOS's 104-byte sun_path limit (t.TempDir() paths are too long on macOS).
+// os.CreateTemp guarantees uniqueness across -count=N and crashed prior runs.
 func shortSocketPath(t *testing.T, label string) string {
 	t.Helper()
-	path := fmt.Sprintf("/tmp/dp-%s-%d.sock", label, os.Getpid())
-	t.Cleanup(func() { os.Remove(path) })
+	f, err := os.CreateTemp("/tmp", "dp-"+label+"-*.sock")
+	if err != nil {
+		t.Fatalf("create temp socket: %v", err)
+	}
+	path := f.Name()
+	_ = f.Close()
+	_ = os.Remove(path)
+	t.Cleanup(func() { _ = os.Remove(path) })
 	return path
 }
 

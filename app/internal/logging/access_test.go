@@ -107,6 +107,44 @@ func TestAccessLogIncludesRequestID(t *testing.T) {
 	}
 }
 
+func TestAccessLogEscapesCRLFInRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m := MetaFromResponseWriter(w); m != nil {
+			m.Decision = "allow"
+			m.NormPath = "/info"
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AccessLogMiddleware(logger)(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/info", nil)
+	// httptest lets us set values containing CRLF that a real HTTP parser
+	// would reject. The log sink is the next line of defense — slog must
+	// escape control characters so an attacker can't forge a new log record.
+	req.Header.Set("X-Request-ID", "legit\r\nmsg=\"spoofed\"")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logOutput := buf.String()
+	// Every log record emitted by this middleware ends in exactly one LF. If
+	// the CRLF in the header made it through unescaped, there would be an
+	// extra \n inside the line, so we'd see more than one newline total.
+	if got := strings.Count(logOutput, "\n"); got != 1 {
+		t.Fatalf("log output contains %d newlines, want 1 — CRLF may have leaked: %q", got, logOutput)
+	}
+	if strings.Contains(logOutput, "\r") {
+		t.Fatalf("log output contains raw CR: %q", logOutput)
+	}
+	// slog's JSON encoder escapes CR/LF as \r and \n within the string value.
+	if !strings.Contains(logOutput, `"request_id":"legit\r\nmsg=\"spoofed\""`) {
+		t.Fatalf("expected CRLF-escaped request_id in log, got: %s", logOutput)
+	}
+}
+
 func TestResponseCaptureTracksStatusAndBytes(t *testing.T) {
 	rec := httptest.NewRecorder()
 	rc := &responseCapture{ResponseWriter: rec, status: http.StatusOK}

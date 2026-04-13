@@ -94,6 +94,14 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 	}
 
 	c.mu.Lock()
+	// Failure-cache semantics: we only record an error in the cache if the
+	// failure was about the upstream, not about the caller giving up. If the
+	// caller's own context was cancelled or deadline-exceeded before dial
+	// returned, err reflects the caller's state, not upstream health — caching
+	// it would unfairly coalesce later well-formed callers onto a verdict
+	// their neighbor gave up on. A dial that times out against a healthy
+	// caller (c.timeout < caller deadline) IS an upstream signal and gets
+	// cached for failureTTL so a burst of probes coalesces into one dial.
 	if err == nil {
 		c.cachedAt = c.now()
 		c.cachedUp = status
