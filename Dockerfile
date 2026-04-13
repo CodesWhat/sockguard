@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26.2-alpine3.23@sha256:c2a1f7b2095d046ae14b286b18413a05bb82c9bca9b25fe7ff5efef0f0826166 AS builder
 
 ARG VERSION=dev
 ARG COMMIT=unknown
@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -o /sockguard ./cmd/sockguard/
 
-FROM cgr.dev/chainguard/static:latest
+FROM cgr.dev/chainguard/static:latest@sha256:d6d54da1c5bf5d9cecb231786adca86934607763067c8d7d9d22057abe6d5dbc
 
 LABEL maintainer="CodesWhat"
 LABEL org.opencontainers.image.title="sockguard"
