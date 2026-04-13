@@ -45,13 +45,14 @@ var compatGranularPostRules = []struct {
 
 // ApplyCompat detects Tecnativa-style env vars and generates equivalent
 // RuleConfig entries. Returns true if any Tecnativa vars were detected.
-// Only activates when cfg.Rules matches the defaults (user hasn't provided custom YAML).
+// Activates only when the effective ruleset still matches the built-in
+// defaults — regardless of whether those defaults came from the fallback
+// path or from a YAML file that happens to be byte-identical to them (the
+// shipped image's `/etc/sockguard/sockguard.yaml` is literally the
+// defaults, so an earlier `rulesExplicitlyConfigured` guard here silently
+// broke the README Quick Start for anyone using the published image with
+// the Tecnativa-style env example).
 func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
-	if cfg.rulesExplicitlyConfigured {
-		return false
-	}
-
-	// Only apply if rules are still the defaults
 	if !rulesMatchDefaults(cfg.Rules) {
 		return false
 	}

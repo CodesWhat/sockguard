@@ -12,8 +12,6 @@ type Config struct {
 	Health                       HealthConfig      `mapstructure:"health"`
 	Rules                        []RuleConfig      `mapstructure:"rules"`
 	InsecureAllowBodyBlindWrites bool              `mapstructure:"insecure_allow_body_blind_writes"`
-
-	rulesExplicitlyConfigured bool
 }
 
 // ListenConfig configures the proxy listener.

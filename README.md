@@ -71,6 +71,14 @@ services:
   sockguard:
     image: codeswhat/sockguard:latest
     restart: unless-stopped
+    # The published image runs as nobody:nobody, which matches sockguard's
+    # minimal-privilege posture but cannot read /var/run/docker.sock on a
+    # typical host where the socket is root:docker. Running as root inside
+    # the container is the straightforward drop-in behavior (it matches
+    # tecnativa/docker-socket-proxy) and keeps the proxy itself the only
+    # process in the container. Alternatively, pre-create a host-side
+    # docker group, mount the socket, and set `user: "nobody:<docker-gid>"`.
+    user: "0:0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
@@ -104,6 +112,7 @@ services:
   sockguard:
     image: codeswhat/sockguard:latest
     restart: unless-stopped
+    user: "0:0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./certs:/certs:ro

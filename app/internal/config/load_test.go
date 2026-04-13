@@ -224,7 +224,17 @@ rules:
 	}
 }
 
-func TestLoadExplicitDefaultRulesDoNotTriggerCompat(t *testing.T) {
+func TestLoadExplicitDefaultRulesStillTriggerCompat(t *testing.T) {
+	// The published sockguard image ships `/etc/sockguard/sockguard.yaml`
+	// with a rules block that is byte-identical to Defaults().Rules so
+	// `validate` can print the posture even for fresh installs. That
+	// baked YAML used to silently suppress the Tecnativa compat shim,
+	// which meant the README Quick Start (`CONTAINERS=1 IMAGES=1
+	// EVENTS=1`) did not actually wire up any allow rules on the
+	// published image. Compat must fire whenever the effective ruleset
+	// still matches the defaults, regardless of whether those rules
+	// came from the fallback path or from a YAML file that happens to
+	// match them.
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "default-rules.yaml")
 
@@ -253,18 +263,19 @@ rules:
 
 	t.Setenv("CONTAINERS", "1")
 
-	if ApplyCompat(cfg, discardLogger) {
-		t.Fatal("expected explicit rules from YAML to suppress compat mode")
+	if !ApplyCompat(cfg, discardLogger) {
+		t.Fatal("expected default-equivalent YAML + CONTAINERS=1 to activate compat mode")
 	}
 
-	if len(cfg.Rules) != len(Defaults().Rules) {
-		t.Fatalf("got %d rules after compat check, want %d", len(cfg.Rules), len(Defaults().Rules))
-	}
-
-	for i, rule := range cfg.Rules {
-		if rule != Defaults().Rules[i] {
-			t.Fatalf("rule %d changed after compat check: got %+v want %+v", i, rule, Defaults().Rules[i])
+	foundContainers := false
+	for _, rule := range cfg.Rules {
+		if rule.Match.Method == "GET" && rule.Match.Path == "/containers/**" && rule.Action == "allow" {
+			foundContainers = true
+			break
 		}
+	}
+	if !foundContainers {
+		t.Fatalf("compat mode did not wire up CONTAINERS=1 allow rule; got rules: %+v", cfg.Rules)
 	}
 }
 
