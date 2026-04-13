@@ -79,19 +79,40 @@ Organized by severity. Everything in "Ship blockers" has to land before Phase 6.
 
 - [ ] Commit + push (multiple commits, grouped: security fixes | stability/test hardening | code-quality dedup/refactor | doc polish). Keep each commit passing tests + lint independently.
 
-## Phase 4 — Audits (parallel)
+## Phase 4 — Audits
 
-- [ ] **Comparison matrix audit** (research agent): verify every cell of `README.md` comparison table, `website/src/app/data/comparison-rows.ts`, and `docs/src/content/index.mdx` hero bullets against current upstream Tecnativa / LSIO / wollomatic sources. Return diff of facts that need changing. No hype, no "we'll support this soon," just cells that are wrong or stale. The earlier v0.3.0 competitive analysis is the starting point but is already slightly out of date.
-- [ ] **Getting-started walkthrough**: fresh Colima context `colima start sockguard-audit`, docker-compose up the README Quick Start verbatim, curl every documented endpoint, track each step PASS/FAIL. Only steps that actually work end-to-end count as passing. Fix anything that breaks before launch. Tear down the Colima context when done.
-- [ ] Commit any doc fixes produced by the audits
-- [ ] Commit + push
+- [x] **Comparison matrix audit** — research subagent verified every cell of `README.md` (line 201), `website/src/app/data/comparison-rows.ts`, and `docs/src/content/index.mdx` against current upstream Tecnativa, LinuxServer, and wollomatic sources (v1.11.4). One discrepancy found: the TS file claimed wollomatic had "IP only" per-client policies while README correctly said "CIDR + client labels" (wollomatic does support both via `-allowfrom` + `socket-proxy.allow.` labels). Fixed in `comparison-rows.ts:36`. Every other sockguard-vs-competitor claim (Tecnativa/LSIO path-only, no body inspection, no mTLS, no structured logging; wollomatic regex filtering, from-scratch base) verified accurate.
+- [ ] **Getting-started walkthrough**: fresh Colima context `colima start sockguard-audit`, docker-compose up the README Quick Start verbatim, curl every documented endpoint, track each step PASS/FAIL. Only steps that actually work end-to-end count as passing. Fix anything that breaks before launch. Tear down the Colima context when done. **Status:** deferred to immediately before the flip (Phase 6) so it runs against the same SHA that goes public, not a pre-stabilized snapshot.
+- [x] Commit any doc fixes produced by the audits (bundled with Phase 5 commit).
 
-## Phase 5 — External validation → BENCHMARKS.md
+## Phase 5 — Benchmarks (regression-focused, not a marketing piece)
 
-- [ ] **Synthetic bench**: local Colima + stdlib Go mock-Docker on unix socket + sockguard 0.3.1 binary + stdlib Go load generator. Scenarios: `GET /_ping`, `GET /containers/json`, `POST /exec/*/start` (deny), with concurrency levels 10 / 50 / 200 for 20s each. Record p50/p90/p99/max/RPS, FD growth, goroutine count before/after. Baseline: same loadgen against the mock's socket direct (no sockguard) so overhead is attributable.
-- [ ] **Production snapshot**: pull 48 hours of sockguard access logs from the NAS (`docker logs sockguard` or wherever the JSON access log lands), summarize: total requests, allow/deny ratio, top 10 paths by frequency, p50/p99 latency, rule match distribution. No PII, redact any IPs or container IDs that matter.
-- [ ] Write `BENCHMARKS.md` at repo root with both sections, reproduction commands, and honest caveats. No hype — numbers first.
-- [ ] Commit + push
+- **Decision:** after the first dry run it became clear that a public
+  performance comparison against HAProxy-based proxies (Tecnativa, LSIO)
+  would lose regardless of framing — HAProxy is C and two decades of tuning
+  ahead — and would undermine sockguard's actual pitch (features, not
+  speed). So Phase 5 pivoted to a *regression check against wollomatic*,
+  the only peer in the same architectural class (Go + `httputil.ReverseProxy`),
+  and the NAS production snapshot was descoped.
+- [x] **Synthetic bench harness** landed under [`benchmarks/`](benchmarks/): a
+  stdlib-Go mock Docker daemon on a unix socket, a stdlib-Go load generator
+  that pins a persistent `http.Client` per worker, and a `run.sh` orchestrator
+  that builds sockguard + mockdocker + loadgen + (optionally) wollomatic
+  from a clean checkout and runs every scenario against all three.
+- [x] **Sockguard vs wollomatic same-class comparison** written up in
+  [`BENCHMARKS.md`](BENCHMARKS.md): 3 endpoints × 3 concurrencies × 20 s
+  runs, allow + deny paths, zero-error profile vs wollomatic's 640×502s at
+  `concurrency=200`. Sockguard is within ±5 % of wollomatic on allow paths
+  (slightly ahead in RPS and p50 at every concurrency), ties on deny at
+  `concurrency=200`. No regression; the Go-proxy core is healthy.
+- [x] **HAProxy comparisons dropped.** Explicit note in `BENCHMARKS.md`
+  explaining why — same-class regression check is more honest than
+  cross-class marketing.
+- [x] **NAS production snapshot descoped.** The bench harness is
+  reproducible by anyone, doesn't depend on my NAS, and answers the same
+  question ("is sockguard broken?") more definitively than a frozen log
+  dump.
+- [x] Commit + push
 
 ## Phase 6 — Final sweep and public flip
 

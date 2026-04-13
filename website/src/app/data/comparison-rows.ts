@@ -33,7 +33,7 @@ export const comparisonRows: ComparisonRow[] = [
     feature: "Per-client policies",
     tecnativa: "No",
     linuxserver: "No",
-    wollomatic: "IP only",
+    wollomatic: "CIDR + labels",
     sockguard: "CIDR + labels",
   },
   {

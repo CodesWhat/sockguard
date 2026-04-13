@@ -1,0 +1,27 @@
+listen:
+  socket: /tmp/sg-bench-proxy.sock
+  socket_mode: "0666"
+
+upstream:
+  socket: /tmp/sg-bench-mock.sock
+
+log:
+  level: error
+  format: json
+  output: stderr
+  access_log: false
+
+health:
+  enabled: false
+
+response:
+  deny_verbosity: minimal
+
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: default deny
