@@ -251,10 +251,33 @@ jobs:
           retention-days: 14
 
   go-fuzz:
-    name: "🔀 Go Fuzz"
+    # Tier 1 — per-PR smoke-level fuzzing. Each fuzzer gets a fixed 60 s
+    # coverage budget in its own matrix job so the whole matrix runs in
+    # parallel and the critical path stays at ~1–2 min wall time regardless
+    # of how many fuzzers we ship. The deep-coverage tier lives in
+    # .github/workflows/quality-fuzz-nightly.yml where each fuzzer gets 15
+    # minutes by default (configurable via workflow_dispatch input).
+    #
+    # `fail-fast: false` lets every fuzzer complete even if a sibling finds
+    # a crash, so one failure surfaces alongside the other fuzzers' state
+    # instead of aborting the run early. `-timeout=0` disables the test
+    # binary's default 10-min timeout so a future longer fuzztime on main
+    # doesn't silently abort before the fuzzer hits its budget.
+    name: "🔀 Go Fuzz (${{ matrix.fuzzer.name }})"
     if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        fuzzer:
+          - { name: FuzzPathMatch,            pkg: ./internal/filter/ }
+          - { name: FuzzGlobToRegex,          pkg: ./internal/filter/ }
+          - { name: FuzzNormalizePath,        pkg: ./internal/filter/ }
+          - { name: FuzzCompileRule,          pkg: ./internal/filter/ }
+          - { name: FuzzProxyHeadersAndBody,  pkg: ./internal/proxy/ }
+          - { name: FuzzHijackHeadersAndBody, pkg: ./internal/proxy/ }
 
     steps:
       - name: Harden Runner
@@ -273,19 +296,23 @@ jobs:
           go-version: "1.26"
           cache-dependency-path: app/go.sum
 
-      - name: Fuzz filter
-        run: |
-          go test -fuzz=FuzzPathMatch -fuzztime=30s ./internal/filter/
-          go test -fuzz=FuzzGlobToRegex -fuzztime=30s ./internal/filter/
-          go test -fuzz=FuzzNormalizePath -fuzztime=30s ./internal/filter/
-          go test -fuzz=FuzzCompileRule -fuzztime=30s ./internal/filter/
+      - name: Fuzz ${{ matrix.fuzzer.name }}
         working-directory: app
+        run: |
+          go test -run=^$ \
+            -fuzz=^${{ matrix.fuzzer.name }}$ \
+            -fuzztime=60s \
+            -timeout=0 \
+            ${{ matrix.fuzzer.pkg }}
 
-      - name: Fuzz proxy
-        run: |
-          go test -fuzz=FuzzProxyHeadersAndBody -fuzztime=30s ./internal/proxy/
-          go test -fuzz=FuzzHijackHeadersAndBody -fuzztime=30s ./internal/proxy/
-        working-directory: app
+      - name: Upload fuzz corpus on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: fuzz-corpus-${{ matrix.fuzzer.name }}-${{ github.run_id }}
+          path: app/internal/**/testdata/fuzz/${{ matrix.fuzzer.name }}/
+          retention-days: 30
+          if-no-files-found: ignore
 
   ts-lint:
     name: "🎨 Biome Lint"

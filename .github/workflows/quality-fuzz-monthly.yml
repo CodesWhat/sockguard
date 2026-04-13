@@ -1,0 +1,136 @@
+name: "🔀 Quality: Deep Fuzz (monthly)"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && '🔀 Quality: Deep Fuzz — Monthly schedule' ||
+    format('🔀 Quality: Deep Fuzz — Monthly, manual by {0}', github.actor)
+  }}
+
+# Tier 3 of the fuzz strategy. Tier 1 lives in `ci-verify.yml go-fuzz`
+# (60-second smoke per PR/push), Tier 2 in `quality-fuzz-nightly.yml`
+# (15 minutes per fuzzer daily). This workflow gives every fuzzer a
+# 1-hour coverage budget on the first day of each month so we get one
+# very deep pass per month that can find paths the shorter tiers miss,
+# plus on-demand longer runs via `workflow_dispatch` before a release.
+#
+# 1 hour per fuzzer × 8 fuzzers × matrix-parallel = ~1 hour wall time,
+# ~8 runner-hours total. That's well within the free-tier budget for
+# public repos and cheap insurance for a default-deny security proxy.
+#
+# Crashes are uploaded with 180-day retention so a failing input from
+# an older monthly run stays recoverable long enough to turn into a
+# committed regression test.
+
+on:
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Per-fuzzer coverage budget (Go duration, e.g. 1h, 3h). Hard-capped by the job's 6-hour timeout."
+        required: false
+        default: "1h"
+  schedule:
+    - cron: '30 7 1 * *'  # Monthly on day 1 at 07:30 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  # Don't cancel an in-flight monthly when a manual dispatch fires — they
+  # answer different questions and either can confirm health.
+  group: quality-fuzz-monthly-${{ github.workflow }}-${{ github.event.inputs.fuzztime || 'scheduled' }}
+  cancel-in-progress: false
+
+jobs:
+  monthly-fuzz:
+    name: "🔀 Fuzz ${{ matrix.fuzzer.name }} (monthly)"
+    runs-on: ubuntu-latest
+    # 6-hour ceiling is the hard cap regardless of the fuzztime input.
+    # Anything longer should run on a dedicated box, not a shared runner.
+    timeout-minutes: 360
+
+    strategy:
+      fail-fast: false
+      matrix:
+        fuzzer:
+          - { name: FuzzPathMatch,                 pkg: ./internal/filter/ }
+          - { name: FuzzGlobToRegex,               pkg: ./internal/filter/ }
+          - { name: FuzzNormalizePath,             pkg: ./internal/filter/ }
+          - { name: FuzzCompileRule,               pkg: ./internal/filter/ }
+          - { name: FuzzLoadYAML,                  pkg: ./internal/config/ }
+          - { name: FuzzProxyHeadersAndBody,       pkg: ./internal/proxy/ }
+          - { name: FuzzHijackHeadersAndBody,      pkg: ./internal/proxy/ }
+          - { name: FuzzHijackBidirectionalStream, pkg: ./internal/proxy/ }
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176  # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: Resolve fuzz budget
+        id: budget
+        env:
+          INPUT_FUZZTIME: ${{ github.event.inputs.fuzztime }}
+        run: |
+          FUZZTIME="${INPUT_FUZZTIME:-1h}"
+          echo "fuzztime=${FUZZTIME}" >> "$GITHUB_OUTPUT"
+          echo "Running ${{ matrix.fuzzer.name }} for ${FUZZTIME}"
+
+      - name: Fuzz ${{ matrix.fuzzer.name }}
+        working-directory: app
+        env:
+          FUZZER: ${{ matrix.fuzzer.name }}
+          PKG: ${{ matrix.fuzzer.pkg }}
+          FUZZTIME: ${{ steps.budget.outputs.fuzztime }}
+        run: |
+          # -timeout=0 disables the test binary's default 10-min timeout so
+          # fuzz can actually run for the full configured budget. The job-
+          # level `timeout-minutes` above is the real ceiling.
+          go test -run='^$' \
+            -fuzz="^${FUZZER}\$" \
+            -fuzztime="${FUZZTIME}" \
+            -timeout=0 \
+            "${PKG}"
+
+      - name: Upload fuzz corpus on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: fuzz-corpus-monthly-${{ matrix.fuzzer.name }}-${{ github.run_id }}
+          path: app/internal/**/testdata/fuzz/${{ matrix.fuzzer.name }}/
+          retention-days: 180
+          if-no-files-found: ignore
+
+      - name: Summarize
+        if: always()
+        env:
+          FUZZER: ${{ matrix.fuzzer.name }}
+          PKG: ${{ matrix.fuzzer.pkg }}
+          FUZZTIME: ${{ steps.budget.outputs.fuzztime }}
+          STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          {
+            echo "### ${FUZZER} (monthly)"
+            echo ""
+            echo "- Package: \`${PKG}\`"
+            echo "- Budget:  ${FUZZTIME}"
+            echo "- Result:  ${STATUS}"
+            echo ""
+            if [ "${STATUS}" = "failure" ]; then
+              echo "A crashing input was saved to \`testdata/fuzz/${FUZZER}/\`"
+              echo "and uploaded as \`fuzz-corpus-monthly-${FUZZER}-${RUN_ID}\`"
+              echo "(180-day retention). Triage: download, commit the minimized input"
+              echo "to the seed corpus, fix the regression, push."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

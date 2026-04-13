@@ -2,12 +2,20 @@
 # Lefthook configuration for sockguard monorepo.
 #
 # Pre-push pipeline (piped = sequential, fail-fast):
-#   1. GoReleaser snapshot dry-run (full release pipeline, skip publish)
-#   2. Go lint + test
-#   3. Biome lint for TS/JS
-#   4. Build all workspaces
-#   5. Zizmor (workflow security)
-#   6. Clean-tree check (no stray artifacts before push)
+#   1. Clean-tree check (no stray artifacts before push)
+#   2. GoReleaser snapshot dry-run (full release pipeline, skip publish)
+#   3. Go lint + test
+#   4. Go fuzz smoke (5 s per fuzzer, all 8 fuzzers) — tier 0 of the
+#      fuzz strategy. Catches broken fuzz drivers and stale seed corpora
+#      before the push even leaves the machine. The real coverage tiers
+#      are in `.github/workflows/ci-verify.yml` (60 s per fuzzer in a
+#      matrix, on every PR/push), `quality-fuzz-nightly.yml` (15 min
+#      per fuzzer, daily), and `quality-fuzz-monthly.yml` (1 h per
+#      fuzzer, monthly + manual).
+#   5. Biome lint for TS/JS
+#   6. TS workspace tests
+#   7. Build all workspaces
+#   8. Zizmor (workflow security)
 
 pre-commit:
   piped: true
@@ -60,19 +68,43 @@ pre-push:
       priority: 3
       timeout: 3m
 
+    # Fuzz smoke — 5 s per fuzzer, all 8 in series. Tier 0 of the fuzz
+    # strategy: catches broken fuzz drivers and stale seed corpora before
+    # the push leaves the machine. Real coverage (60 s, 15 min, 1 h)
+    # happens in the ci-verify + quality-fuzz-{nightly,monthly} workflows.
+    # -timeout=0 disables the test binary's default 10-min timeout so
+    # fuzztime is the only budget knob; fail-fast is inherent from set -e.
+    go-fuzz:
+      run: |
+        cd app && set -e
+        for entry in \
+          "FuzzPathMatch ./internal/filter/" \
+          "FuzzGlobToRegex ./internal/filter/" \
+          "FuzzNormalizePath ./internal/filter/" \
+          "FuzzCompileRule ./internal/filter/" \
+          "FuzzLoadYAML ./internal/config/" \
+          "FuzzProxyHeadersAndBody ./internal/proxy/" \
+          "FuzzHijackHeadersAndBody ./internal/proxy/" \
+          "FuzzHijackBidirectionalStream ./internal/proxy/"; do
+          set -- $entry
+          go test -run='^$' -fuzz="^$1\$" -fuzztime=5s -timeout=0 "$2"
+        done
+      priority: 4
+      timeout: 2m
+
     biome:
       run: npx biome check .
-      priority: 4
+      priority: 5
       timeout: 30s
 
     ts-test:
       run: npm test
-      priority: 5
+      priority: 6
       timeout: 1m
 
     build:
       run: npx turbo build
-      priority: 6
+      priority: 7
       timeout: 3m
 
     zizmor:
@@ -80,5 +112,5 @@ pre-push:
       run: zizmor .github/workflows/
       skip:
         - run: '! command -v zizmor >/dev/null 2>&1'
-      priority: 7
+      priority: 8
       timeout: 30s

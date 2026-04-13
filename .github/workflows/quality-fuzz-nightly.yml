@@ -1,0 +1,142 @@
+name: "🔀 Quality: Deep Fuzz"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && '🔀 Quality: Deep Fuzz — Nightly' ||
+    format('🔀 Quality: Deep Fuzz — Manual by {0}', github.actor)
+  }}
+
+# Tier 2 of the fuzz strategy. Tier 1 lives in `ci-verify.yml go-fuzz` and
+# gives every fuzzer a 60-second budget on every PR/push to main so obvious
+# regressions fail fast. This workflow is where the deep coverage work
+# happens: 15 minutes per fuzzer by default (overridable via
+# `workflow_dispatch` input up to the job `timeout-minutes` cap), every
+# fuzzer in the suite, matrix-parallelized across runners so the whole
+# thing finishes in ~15 minutes of wall time.
+#
+# Two fuzzers ride exclusively in this tier for now — `FuzzLoadYAML` and
+# `FuzzHijackBidirectionalStream` have never run in CI before, and surfacing
+# their first-ever crashes through a nightly schedule instead of a blocking
+# PR check keeps merges unblocked while we triage anything they find.
+#
+# Crashes are uploaded as artifacts with 90-day retention so the failing
+# input is recoverable. The triage workflow is: download the artifact,
+# commit the minimized input under `app/internal/<pkg>/testdata/fuzz/<Fuzz*>/`
+# so it enters the seed corpus for all future runs, fix the bug, push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Per-fuzzer coverage budget (Go duration, e.g. 15m, 1h). Max ≈55m before the job timeout trims it."
+        required: false
+        default: "15m"
+  schedule:
+    - cron: '30 9 * * *'  # Daily at 09:30 UTC (quiet window before US/EU start-of-day)
+
+permissions:
+  contents: read
+
+concurrency:
+  # Don't cancel an in-flight nightly when a manual dispatch kicks off — the
+  # two runs answer different questions and either can confirm health.
+  group: quality-fuzz-${{ github.workflow }}-${{ github.event.inputs.fuzztime || 'scheduled' }}
+  cancel-in-progress: false
+
+jobs:
+  deep-fuzz:
+    name: "🔀 Fuzz ${{ matrix.fuzzer.name }}"
+    runs-on: ubuntu-latest
+    # Job-level cap is the hard ceiling regardless of what -fuzztime asks
+    # for. Keep it comfortably above the default 15m + setup overhead, and
+    # document the ceiling in the workflow_dispatch input description.
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        fuzzer:
+          - { name: FuzzPathMatch,                 pkg: ./internal/filter/ }
+          - { name: FuzzGlobToRegex,               pkg: ./internal/filter/ }
+          - { name: FuzzNormalizePath,             pkg: ./internal/filter/ }
+          - { name: FuzzCompileRule,               pkg: ./internal/filter/ }
+          - { name: FuzzLoadYAML,                  pkg: ./internal/config/ }
+          - { name: FuzzProxyHeadersAndBody,       pkg: ./internal/proxy/ }
+          - { name: FuzzHijackHeadersAndBody,      pkg: ./internal/proxy/ }
+          - { name: FuzzHijackBidirectionalStream, pkg: ./internal/proxy/ }
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@f808768d1510423e83855289c910610ca9b43176  # v2.17.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: Resolve fuzz budget
+        id: budget
+        env:
+          INPUT_FUZZTIME: ${{ github.event.inputs.fuzztime }}
+        run: |
+          FUZZTIME="${INPUT_FUZZTIME:-15m}"
+          echo "fuzztime=${FUZZTIME}" >> "$GITHUB_OUTPUT"
+          echo "Running ${{ matrix.fuzzer.name }} for ${FUZZTIME}"
+
+      - name: Fuzz ${{ matrix.fuzzer.name }}
+        working-directory: app
+        env:
+          FUZZER: ${{ matrix.fuzzer.name }}
+          PKG: ${{ matrix.fuzzer.pkg }}
+          FUZZTIME: ${{ steps.budget.outputs.fuzztime }}
+        run: |
+          # -run=^$ skips normal unit tests in the package so only the fuzz
+          # driver runs. -timeout=0 disables the test binary's default 10-min
+          # timeout, which would otherwise silently abort any fuzztime ≥10m.
+          # The job `timeout-minutes` above is the real ceiling.
+          go test -run='^$' \
+            -fuzz="^${FUZZER}\$" \
+            -fuzztime="${FUZZTIME}" \
+            -timeout=0 \
+            "${PKG}"
+
+      - name: Upload fuzz corpus on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: fuzz-corpus-${{ matrix.fuzzer.name }}-${{ github.run_id }}
+          path: app/internal/**/testdata/fuzz/${{ matrix.fuzzer.name }}/
+          retention-days: 90
+          if-no-files-found: ignore
+
+      - name: Summarize
+        if: always()
+        env:
+          FUZZER: ${{ matrix.fuzzer.name }}
+          PKG: ${{ matrix.fuzzer.pkg }}
+          FUZZTIME: ${{ steps.budget.outputs.fuzztime }}
+          STATUS: ${{ job.status }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          {
+            echo "### ${FUZZER}"
+            echo ""
+            echo "- Package: \`${PKG}\`"
+            echo "- Budget:  ${FUZZTIME}"
+            echo "- Result:  ${STATUS}"
+            echo ""
+            if [ "${STATUS}" = "failure" ]; then
+              echo "A crashing input was saved to \`testdata/fuzz/${FUZZER}/\`"
+              echo "and uploaded as artifact"
+              echo "\`fuzz-corpus-${FUZZER}-${RUN_ID}\`."
+              echo "Download it, commit the minimized input to the seed corpus,"
+              echo "fix the regression, and push."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
