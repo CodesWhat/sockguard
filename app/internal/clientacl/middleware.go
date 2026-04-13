@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
@@ -153,8 +154,9 @@ func newACLDeps(upstreamSocket string) aclDeps {
 	resolver := upstreamResolver{
 		client: &http.Client{Transport: transport},
 	}
+	cache := newClientCache(clientCacheTTL, clientCacheMaxSize, time.Now, resolver.resolveClient)
 	return aclDeps{
-		resolveClient: resolver.resolveClient,
+		resolveClient: cache.Lookup,
 	}
 }
 

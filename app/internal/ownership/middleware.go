@@ -337,6 +337,23 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	return nil
 }
 
+// decodeDockerFilters parses Docker's `filters` query parameter into a
+// normalized map[string][]string that we can append our owner-label
+// filter to. Docker's wire format for filters has two shapes in use:
+//
+//  1. map[string][]string — the modern encoding, e.g.
+//     `{"label":["com.sockguard.owner=alice","status=running"]}`.
+//     Negation (`label!=foo`) lives inside the string value, so it's
+//     transparent to us — we don't need to parse the `!=` sentinel.
+//
+//  2. map[string]map[string]bool — the legacy encoding still accepted by
+//     the Docker daemon, e.g.
+//     `{"label":{"com.sockguard.owner=alice":true}}`. We flatten the
+//     object's keys into a []string so downstream code sees one shape.
+//
+// Any other encoding returns an error: a filter type we don't know how to
+// render safely is a fail-fast, not a silent drop, so a future Docker API
+// extension surfaces here instead of silently skipping ownership checks.
 func decodeDockerFilters(encoded string) (map[string][]string, error) {
 	filters := make(map[string][]string)
 	if encoded == "" {
@@ -393,8 +410,16 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 		return fmt.Errorf("request body is required")
 	}
 
+	// UseNumber preserves JSON numbers as json.Number (underlying string)
+	// instead of coercing them to float64. That matters because the default
+	// map[string]any decode path silently truncates any Docker container
+	// create field with a 53-bit-or-larger integer — memory limits, pid
+	// caps, CPU shares — on the re-encode pass. json.Number round-trips
+	// exact digits whether we touch the field or not.
 	var decoded map[string]any
-	if err := json.Unmarshal(body, &decoded); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(&decoded); err != nil {
 		return fmt.Errorf("decode request body: %w", err)
 	}
 	if err := mutate(decoded); err != nil {

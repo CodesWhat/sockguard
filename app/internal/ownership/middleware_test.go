@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -553,6 +554,26 @@ func TestDecodeDockerFilters(t *testing.T) {
 	if _, err := decodeDockerFilters(`{`); err == nil {
 		t.Fatal("expected invalid JSON error")
 	}
+
+	// Negation (key!=value) must pass through verbatim. Docker treats `!=`
+	// as an in-string sentinel; ownership doesn't parse it, so round-
+	// tripping the literal string keeps the original semantics.
+	negated, err := decodeDockerFilters(`{"label":["com.example.role!=worker"]}`)
+	if err != nil {
+		t.Fatalf("decodeDockerFilters(negated) error = %v", err)
+	}
+	if len(negated["label"]) != 1 || negated["label"][0] != "com.example.role!=worker" {
+		t.Fatalf("negated label filters = %#v, want [com.example.role!=worker]", negated["label"])
+	}
+
+	// Unknown future shapes (numbers, booleans) must be rejected so the
+	// decoder never silently drops a filter and weakens ownership checks.
+	if _, err := decodeDockerFilters(`{"label":42}`); err == nil {
+		t.Fatal("expected number filter value to be rejected")
+	}
+	if _, err := decodeDockerFilters(`{"label":true}`); err == nil {
+		t.Fatal("expected bool filter value to be rejected")
+	}
 }
 
 func TestMutateJSONBody(t *testing.T) {
@@ -603,6 +624,52 @@ func TestMutateJSONBody(t *testing.T) {
 			t.Fatal("expected close error")
 		}
 	})
+}
+
+func TestMutateJSONBodyPreservesLargeIntegers(t *testing.T) {
+	// Docker container create payloads routinely carry 53-bit+ integers —
+	// MemorySwap, Memory, PidsLimit, NanoCpus — that float64 silently
+	// truncates. UseNumber must round-trip these exactly through the
+	// mutate-and-re-encode pass, even though ownership itself only writes
+	// the Labels object.
+	const (
+		bigMemory = 9007199254740993 // 2^53 + 1, smallest integer float64 loses
+		bigSwap   = 9223372036854775800
+	)
+	bodyIn := fmt.Sprintf(
+		`{"Image":"busybox","HostConfig":{"Memory":%d,"MemorySwap":%d}}`,
+		bigMemory, bigSwap,
+	)
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(bodyIn))
+
+	if err := mutateJSONBody(req, func(decoded map[string]any) error {
+		labels, err := nestedObject(decoded, "Labels")
+		if err != nil {
+			return err
+		}
+		labels["x"] = "y"
+		return nil
+	}); err != nil {
+		t.Fatalf("mutateJSONBody: %v", err)
+	}
+
+	rewritten, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read rewritten body: %v", err)
+	}
+	got := string(rewritten)
+
+	wantMemory := fmt.Sprintf(`"Memory":%d`, bigMemory)
+	if !strings.Contains(got, wantMemory) {
+		t.Fatalf("rewritten body missing exact Memory integer %d; got: %s", bigMemory, got)
+	}
+	wantSwap := fmt.Sprintf(`"MemorySwap":%d`, bigSwap)
+	if !strings.Contains(got, wantSwap) {
+		t.Fatalf("rewritten body missing exact MemorySwap integer %d; got: %s", bigSwap, got)
+	}
+	if !strings.Contains(got, `"x":"y"`) {
+		t.Fatalf("rewritten body missing injected label: %s", got)
+	}
 }
 
 func TestNestedObject(t *testing.T) {
