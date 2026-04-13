@@ -244,12 +244,84 @@ func TestHealthDoesNotCacheUnhealthyStatusWithinTTL(t *testing.T) {
 	}
 }
 
+func TestHealthBrieflyCachesUnhealthyStatusForLateCallers(t *testing.T) {
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var dialCalls atomic.Int32
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		3*time.Second,
+		func() time.Time {
+			return baseNow.Add(time.Duration(nowOffset.Load()))
+		},
+		func(context.Context, string, string) (net.Conn, error) {
+			dialCalls.Add(1)
+			return nil, errors.New("upstream down")
+		},
+	)
+
+	status, err := checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "unreachable" || err == nil {
+		t.Fatalf("first check = (%q, %v), want unreachable with error", status, err)
+	}
+
+	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "unreachable" || err == nil {
+		t.Fatalf("immediate follow-up check = (%q, %v), want unreachable with error", status, err)
+	}
+	if dialCalls.Load() != 1 {
+		t.Fatalf("dial calls for immediate follow-up = %d, want 1", dialCalls.Load())
+	}
+
+	nowOffset.Store(int64(time.Second))
+	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "unreachable" || err == nil {
+		t.Fatalf("later check = (%q, %v), want unreachable with error", status, err)
+	}
+	if dialCalls.Load() != 2 {
+		t.Fatalf("dial calls after brief failure cache window = %d, want 2", dialCalls.Load())
+	}
+}
+
+func TestHealthDoesNotCacheCallerCancelledFailure(t *testing.T) {
+	baseNow := time.Unix(1_700_000_000, 0)
+	var dialCalls atomic.Int32
+
+	checker := newUpstreamHealthChecker(
+		2*time.Second,
+		3*time.Second,
+		func() time.Time { return baseNow },
+		func(ctx context.Context, _, _ string) (net.Conn, error) {
+			dialCalls.Add(1)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	)
+
+	canceledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	status, err := checker.check(canceledCtx, "/tmp/upstream.sock")
+	if status != "unreachable" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled check = (%q, %v), want unreachable with context canceled", status, err)
+	}
+
+	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
+	if status != "unreachable" || err == nil {
+		t.Fatalf("fresh check = (%q, %v), want unreachable with error", status, err)
+	}
+	if dialCalls.Load() != 2 {
+		t.Fatalf("dial calls after cancelled failure = %d, want 2", dialCalls.Load())
+	}
+}
+
 func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
 	const callers = 16
 
 	releaseDial := make(chan struct{})
 	startChecks := make(chan struct{})
-	dialEntered := make(chan struct{})
+	dialEntered := make(chan struct{}, callers)
 	results := make(chan struct {
 		status string
 		err    error

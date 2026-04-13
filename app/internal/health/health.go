@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 )
 
 const healthCacheTTL = 2 * time.Second
+const healthFailureCacheTTL = 100 * time.Millisecond
 const healthDialTimeout = 3 * time.Second
 
 type dialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
@@ -27,10 +29,11 @@ type HealthResponse struct {
 }
 
 type upstreamHealthChecker struct {
-	ttl     time.Duration
-	timeout time.Duration
-	now     func() time.Time
-	dial    dialContextFunc
+	ttl        time.Duration
+	failureTTL time.Duration
+	timeout    time.Duration
+	now        func() time.Time
+	dial       dialContextFunc
 
 	mu         sync.Mutex
 	cachedAt   time.Time
@@ -48,10 +51,11 @@ type healthCheckCall struct {
 
 func newUpstreamHealthChecker(ttl, timeout time.Duration, now func() time.Time, dial dialContextFunc) *upstreamHealthChecker {
 	return &upstreamHealthChecker{
-		ttl:     ttl,
-		timeout: timeout,
-		now:     now,
-		dial:    dial,
+		ttl:        ttl,
+		failureTTL: healthFailureCacheTTL,
+		timeout:    timeout,
+		now:        now,
+		dial:       dial,
 	}
 }
 
@@ -59,7 +63,11 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 	now := c.now()
 
 	c.mu.Lock()
-	if c.cacheReady && now.Sub(c.cachedAt) < c.ttl {
+	cacheTTL := c.ttl
+	if c.cachedErr != nil {
+		cacheTTL = c.failureTTL
+	}
+	if c.cacheReady && cacheTTL > 0 && now.Sub(c.cachedAt) < cacheTTL {
 		status, err := c.cachedUp, c.cachedErr
 		c.mu.Unlock()
 		return status, err
@@ -90,6 +98,11 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 		c.cachedAt = c.now()
 		c.cachedUp = status
 		c.cachedErr = nil
+		c.cacheReady = true
+	} else if c.failureTTL > 0 && !errors.Is(ctx.Err(), context.Canceled) && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		c.cachedAt = c.now()
+		c.cachedUp = status
+		c.cachedErr = err
 		c.cacheReady = true
 	} else {
 		c.cachedAt = time.Time{}
