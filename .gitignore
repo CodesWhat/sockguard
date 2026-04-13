@@ -43,6 +43,9 @@ bin/
 .qlty/*
 !.qlty/qlty.toml
 
+# Claude Code agent worktrees and session scratch
+.claude/
+
 # CI-generated release notes (extracted from CHANGELOG by release-from-tag.yml)
 /release-notes.md
 
