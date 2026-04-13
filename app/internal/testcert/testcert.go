@@ -136,7 +136,11 @@ func ClientTLSConfig(bundle Bundle, serverName string) (*tls.Config, error) {
 	}
 
 	return &tls.Config{
-		MinVersion:   tls.VersionTLS12,
+		// Match the production mutual-TLS server config, which requires
+		// TLS 1.3 (see config.BuildMutualTLSServerConfig). Keeping the test
+		// client pinned to 1.2 would let tests pass while hiding the fact
+		// that a real 1.2-only client is rejected in production.
+		MinVersion:   tls.VersionTLS13,
 		ServerName:   serverName,
 		Certificates: []tls.Certificate{cert},
 		RootCAs:      rootCAs,

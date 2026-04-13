@@ -314,15 +314,3 @@ func warnOnInsecureRemoteTCPBind(logger *slog.Logger, cfg *config.Config) {
 	)
 }
 
-func isWildcardTCPBind(address string) bool {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return false
-	}
-	if host == "" {
-		return true
-	}
-
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsUnspecified()
-}

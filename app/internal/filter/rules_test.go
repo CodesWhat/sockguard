@@ -591,3 +591,19 @@ func TestEvaluateNoMatch(t *testing.T) {
 		t.Errorf("expected reason 'no matching allow rule', got %q", reason)
 	}
 }
+
+// matches and matchesNormalizedUpper are test-only wrappers around the real
+// hot-path matcher `matchesNormalizedUpperWithBit`. Production code calls the
+// With-Bit variant directly from `evaluateNormalized` so the method-to-bit
+// conversion happens once per request, not once per rule. Keeping these
+// wrappers out of the production surface lets the compiled binary stay
+// slimmer while the tests can still express "does this rule match this
+// method + path" without the bit bookkeeping.
+func (cr *CompiledRule) matches(method, path string) bool {
+	upperMethod := upperHTTPMethodASCII(method)
+	return cr.matchesNormalizedUpperWithBit(upperMethod, httpMethodBit(upperMethod), NormalizePath(path))
+}
+
+func (cr *CompiledRule) matchesNormalizedUpper(upperMethod, normalizedPath string) bool {
+	return cr.matchesNormalizedUpperWithBit(upperMethod, httpMethodBit(upperMethod), normalizedPath)
+}

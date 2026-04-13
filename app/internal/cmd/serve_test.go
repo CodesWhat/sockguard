@@ -873,3 +873,22 @@ func TestIsWildcardTCPBind(t *testing.T) {
 		})
 	}
 }
+
+// isWildcardTCPBind is a test-only helper that classifies an address as a
+// wildcard TCP bind (empty host, 0.0.0.0, or ::). Production code never calls
+// it — the guardrail that cares about wildcard binds lives elsewhere — but
+// the classification logic is useful enough for test coverage that we keep
+// it defined here rather than inlined per test case. Move back into
+// production code only if a real caller appears.
+func isWildcardTCPBind(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	if host == "" {
+		return true
+	}
+
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
+}

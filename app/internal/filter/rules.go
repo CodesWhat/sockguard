@@ -224,21 +224,6 @@ func compileRuleWithDeps(r Rule, deps *ruleDeps) (*CompiledRule, error) {
 	return cr, nil
 }
 
-// matches returns true if the request matches this rule.
-// It normalizes the path and uppercases the method internally, so callers
-// don't need to pre-process inputs.
-func (cr *CompiledRule) matches(method, path string) bool {
-	upperMethod := upperHTTPMethodASCII(method)
-	return cr.matchesNormalizedUpperWithBit(upperMethod, httpMethodBit(upperMethod), NormalizePath(path))
-}
-
-// matchesNormalizedUpper returns true when an already-uppercased method and an
-// already-normalized path match this rule. Use this in hot loops where the
-// method has been uppercased once outside the loop.
-func (cr *CompiledRule) matchesNormalizedUpper(upperMethod, normalizedPath string) bool {
-	return cr.matchesNormalizedUpperWithBit(upperMethod, httpMethodBit(upperMethod), normalizedPath)
-}
-
 func (cr *CompiledRule) matchesNormalizedUpperWithBit(upperMethod string, methodBit httpMethodMask, normalizedPath string) bool {
 	// Check method
 	if !cr.matchAllMethods {

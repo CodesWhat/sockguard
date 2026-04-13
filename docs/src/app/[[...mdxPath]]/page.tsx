@@ -13,7 +13,6 @@ export default async function Page(props: { params: Promise<{ mdxPath?: string[]
   const params = await props.params;
   const result = await importPage(params.mdxPath);
   const { default: MDXContent, toc, metadata } = result;
-  // biome-ignore lint/correctness/useHookAtTopLevel: useMDXComponents is not a React hook despite the name — it's a Nextra build-time component accessor
   const { wrapper: Wrapper } = useMDXComponents();
   return (
     <Wrapper toc={toc} metadata={metadata} sourceCode={result.sourceCode}>
