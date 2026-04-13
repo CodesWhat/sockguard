@@ -21,16 +21,12 @@ Working document tracking everything that must be true before the `sockguard` re
 - [x] `CHANGELOG.md` `[Unreleased] / Changed` entry documenting the relicense and rationale
 - [x] Commit + push (`75c882a`)
 
-## Phase 2 — Security surface
+## Phase 2 — Security surface ✅
 
-- [ ] `SECURITY.md` mirroring drydock's structure (supported versions, email `80784472+s-b-e-n-s-o-n@users.noreply.github.com`, GitHub private vulnerability reporting link, 48h ack / 7d status / fix ASAP, credit reporters in release notes). Add a `Scope` section listing what's in-scope (the Go proxy, published images) and what's not (the website, the demo sandbox, third-party deployments), plus a short "What to include in a report" checklist.
-- [ ] Cosign verification docs: new page `docs/src/content/verification.mdx` with exact `cosign verify` invocation for `ghcr.io/codeswhat/sockguard:<tag>`, derived from `.github/workflows/release-from-tag.yml` (GitHub Actions OIDC issuer `https://token.actions.githubusercontent.com`, subject matching the release workflow run). Include:
-  - What Cosign is verifying (signature, SBOM attestation, build provenance)
-  - Expected OIDC `--certificate-identity-regexp` and `--certificate-oidc-issuer` values
-  - One-liner copy-paste verify command
-  - "If this fails, do not run the image" paragraph
-- [ ] `README.md` Security section links to the new verification page
-- [ ] Commit + push
+- [x] `SECURITY.md` expanded with mail address, 48h/7d SLAs, `Scope` section (Go proxy + ghcr image + release binaries in, website/docs/demo/third-party deployments out), and a "What to include in a report" checklist.
+- [x] Cosign verification docs: new `docs/src/content/verification.mdx` page with the canonical `cosign verify` invocation derived directly from `.github/workflows/release-from-tag.yml` — covers what cosign verifies (signature, SBOM attestation, build provenance), expected `--certificate-identity-regexp` and `--certificate-oidc-issuer` values, one-liner verify, digest-pinned verify, an "if verification fails, do not run the image" triage section, and `cosign verify-blob` for the signed release tarball.
+- [x] `README.md` Security section now links to both `SECURITY.md` and the new image verification guide.
+- [x] Commit + push
 
 ## Phase 3 — Known issues and code audit findings
 

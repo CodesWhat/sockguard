@@ -5,4 +5,5 @@ export default {
   presets: "Presets",
   migration: "Migration",
   security: "Security Model",
+  verification: "Image Verification",
 };

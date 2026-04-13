@@ -1,0 +1,127 @@
+# Verifying Sockguard Images
+
+Every sockguard release is signed with [cosign](https://github.com/sigstore/cosign)
+using GitHub Actions OIDC keyless signing. Before running a sockguard
+image in production, verify it against the expected signing identity —
+this is the only reliable way to be sure you're running a binary we
+actually published.
+
+## What cosign verifies
+
+The `cosign verify` command below checks three things at once:
+
+1. **Signature** — the image digest was signed by a workflow whose OIDC
+   identity matches the release pipeline in this repo.
+2. **SBOM attestation** — a software bill of materials was attached at
+   build time so you can audit what's inside the image.
+3. **Build provenance** — a [SLSA](https://slsa.dev) provenance
+   attestation links the image back to the specific workflow run, Git
+   SHA, and builder that produced it.
+
+The signing identity is the full GitHub Actions workflow reference:
+
+- **Certificate identity pattern:**
+  `^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$`
+- **OIDC issuer:**
+  `https://token.actions.githubusercontent.com`
+
+If either value differs from what cosign finds in the signature, the
+image was not produced by our release pipeline — **do not run it**.
+
+## Prerequisites
+
+Install cosign (v2 or later is required for keyless verification):
+
+```bash
+# macOS
+brew install cosign
+
+# Linux (pre-built binary, pin the sha as you see fit)
+curl -Lo cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
+chmod +x cosign
+sudo mv cosign /usr/local/bin/
+```
+
+## One-liner verify
+
+Replace `<TAG>` with the release tag you're pulling (for example
+`0.3.1`, `0.3`, or `latest`):
+
+```bash
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  ghcr.io/codeswhat/sockguard:<TAG>
+```
+
+A successful verification looks like:
+
+```text
+Verification for ghcr.io/codeswhat/sockguard:<TAG> --
+The following checks were performed on each of these signatures:
+  - The cosign claims were validated
+  - Existence of the claims in the transparency log was verified offline
+  - The code-signing certificate was verified using trusted certificate authority certificates
+[{...}]
+```
+
+The last line is a JSON object with the signing certificate details;
+any well-formed JSON there is proof the signature matched. If cosign
+returns a non-zero exit code, the signature is missing or does not
+match the expected identity.
+
+## Pinning by digest
+
+For reproducible deployments, prefer verifying and pulling by SHA256
+digest rather than by tag — a tag can be re-pointed, a digest cannot.
+
+```bash
+# Resolve the current digest for a tag
+digest=$(docker buildx imagetools inspect \
+  ghcr.io/codeswhat/sockguard:0.3.1 --format '{{json .Manifest.Digest}}' \
+  | tr -d '"')
+
+# Verify against the digest
+cosign verify \
+  --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  "ghcr.io/codeswhat/sockguard@${digest}"
+
+# Then reference the same digest in your compose file
+# image: ghcr.io/codeswhat/sockguard@sha256:...
+```
+
+## If verification fails
+
+**Do not run the image.** Treat a verification failure as a potential
+supply-chain compromise until proven otherwise:
+
+- Double-check you pasted the full `certificate-identity-regexp` and
+  that the escaping survived your shell (`^`, `$`, and `.+` must all
+  appear in the regex).
+- Run `cosign version` and confirm you have cosign v2 or later.
+- Try the verification again with a fresh registry pull; a stale
+  cached manifest can sometimes produce confusing errors.
+- If the identity or issuer values differ from the ones published
+  here, stop — open a private security advisory via the process in
+  [`SECURITY.md`](https://github.com/CodesWhat/sockguard/blob/main/SECURITY.md)
+  so we can investigate.
+
+## Verifying release tarballs
+
+The GitHub release assets (`sockguard-v<TAG>.tar.gz`) are also
+cosign-signed. The release workflow uploads a detached signature
+(`.sig`), a signing certificate (`.pem`), and a sigstore bundle
+(`.bundle`) alongside each tarball.
+
+```bash
+cosign verify-blob \
+  --certificate "sockguard-v0.3.1.tar.gz.pem" \
+  --signature   "sockguard-v0.3.1.tar.gz.sig" \
+  --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  "sockguard-v0.3.1.tar.gz"
+```
+
+Same interpretation as the image verify: a clean exit code is a
+passing signature, anything else means stop and investigate.

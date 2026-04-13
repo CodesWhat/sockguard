@@ -358,7 +358,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Issues, ideas, and pull requests welcome
 
 <h2 align="center" id="security">🔒 Security</h2>
 
-See [SECURITY.md](SECURITY.md) for the responsible disclosure policy.
+- **Responsible disclosure** — see [SECURITY.md](SECURITY.md) for scope, supported versions, and how to report a vulnerability privately.
+- **Image verification** — every release is cosign-signed via GitHub Actions OIDC. Before running a sockguard image in production, verify it with the canonical invocation in the [image verification guide](docs/src/content/verification.mdx).
 
 <div align="center">
 
