@@ -11,15 +11,15 @@ Working document tracking everything that must be true before the `sockguard` re
 - **Known issues to fix before launch**: all three (health test flake, Biome suppression warning, Grype CVE scan on 0.3.1).
 - **Pre-release warning in README**: stays. Sockguard is 0.3.x and the API contract isn't frozen. Honesty over cosmetics.
 
-## Phase 1 — License relicense to Apache-2.0
+## Phase 1 — License relicense to Apache-2.0 ✅
 
-- [ ] Replace `LICENSE` with canonical Apache-2.0 text, copyright `2026 CodesWhat`
-- [ ] `README.md` badge src/alt (`AGPL-3.0` → `Apache-2.0`)
-- [ ] `README.md` footer "Licensed under …" link text
-- [ ] `Dockerfile` `LABEL org.opencontainers.image.licenses`
-- [ ] `website/src/app/page.tsx` hero badge text, Shields.io image URL, footer copyright line
-- [ ] `CHANGELOG.md` `[Unreleased] / Changed` entry documenting the relicense and rationale
-- [ ] Commit + push
+- [x] Replace `LICENSE` with canonical Apache-2.0 text, copyright `2026 CodesWhat`
+- [x] `README.md` badge src/alt (`AGPL-3.0` → `Apache-2.0`)
+- [x] `README.md` footer "Licensed under …" link text
+- [x] `Dockerfile` `LABEL org.opencontainers.image.licenses`
+- [x] `website/src/app/page.tsx` hero badge text, Shields.io image URL, footer copyright line
+- [x] `CHANGELOG.md` `[Unreleased] / Changed` entry documenting the relicense and rationale
+- [x] Commit + push (`75c882a`)
 
 ## Phase 2 — Security surface
 
