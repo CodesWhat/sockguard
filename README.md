@@ -71,14 +71,11 @@ services:
   sockguard:
     image: codeswhat/sockguard:latest
     restart: unless-stopped
-    # The published image runs as nobody:nobody, which matches sockguard's
-    # minimal-privilege posture but cannot read /var/run/docker.sock on a
-    # typical host where the socket is root:docker. Running as root inside
-    # the container is the straightforward drop-in behavior (it matches
-    # tecnativa/docker-socket-proxy) and keeps the proxy itself the only
-    # process in the container. Alternatively, pre-create a host-side
-    # docker group, mount the socket, and set `user: "nobody:<docker-gid>"`.
-    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
@@ -105,6 +102,21 @@ The compose example above opts into **legacy plaintext TCP** with `SOCKGUARD_LIS
 If you run sockguard directly on a host, keep `SOCKGUARD_LISTEN_ADDRESS=127.0.0.1:2375`, configure `listen.tls` for remote TCP, or switch to `SOCKGUARD_LISTEN_SOCKET` to avoid a network listener entirely.
 
 <details>
+<summary>Container runtime hardening</summary>
+
+Sockguard runs as root inside the container by default so it can open `/var/run/docker.sock` on stock Docker hosts without `user` or `group_add` overrides. For this class of tool, the meaningful hardening levers are the proxy policy, a read-only root filesystem, dropped capabilities, `no-new-privileges`, and the host runtime's seccomp/AppArmor/SELinux confinement.
+
+The examples in this README already opt into the container-level controls sockguard actually benefits from:
+
+- `read_only: true`
+- `cap_drop: [ALL]`
+- `security_opt: ["no-new-privileges:true"]`
+
+Keep Docker's default seccomp profile or replace it with a stricter custom profile via `security_opt`. On AppArmor or SELinux hosts, keep the runtime's default confinement enabled or replace it with a stricter host policy. If the host runs rootless dockerd, a compromised Docker API client inherits the daemon's reduced authority instead of full host root.
+
+</details>
+
+<details>
 <summary>mTLS TCP mode (recommended for remote TCP)</summary>
 
 ```yaml
@@ -112,7 +124,11 @@ services:
   sockguard:
     image: codeswhat/sockguard:latest
     restart: unless-stopped
-    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./certs:/certs:ro
@@ -138,11 +154,11 @@ If you prefer to expose sockguard as a unix socket (no network surface at all), 
 services:
   sockguard:
     image: codeswhat/sockguard:latest
-    # Root inside the container so the process can bind a socket inside the
-    # named-volume mountpoint (which docker creates as root:root). This
-    # matches the runtime behavior of tecnativa/docker-socket-proxy and
-    # linuxserver/socket-proxy.
-    user: "0:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - sockguard-socket:/var/run/sockguard

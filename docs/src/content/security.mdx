@@ -67,3 +67,26 @@ Sockguard's container image is built on [Wolfi](https://www.chainguard.dev/chain
 - Built-in SBOM and SLSA provenance
 - Cosign-signed for verification — see the [image verification guide](/verification) for the canonical `cosign verify` invocation
 - No shell, no package manager in production image
+
+## Runtime Hardening
+
+Sockguard runs as root inside the container by default so it can open
+`/var/run/docker.sock` on stock Docker hosts without `user` or
+`group_add` overrides. For a Docker socket proxy, the real security
+frontier is what the daemon will accept through the proxy, not whether
+the proxy process reports UID 0 or UID 65534 after it already has access
+to the upstream socket.
+
+The runtime controls that matter are:
+
+- Correct policy rules and request-body inspection
+- `read_only: true`
+- `cap_drop: [ALL]`
+- `security_opt: ["no-new-privileges:true"]`
+- Docker's default seccomp profile or a stricter custom profile
+- AppArmor/SELinux confinement on the host
+- Rootless dockerd on the host when available
+
+The getting-started examples use the container-level controls above by
+default so the drop-in path stays simple without hiding the real
+hardening story.

@@ -6,6 +6,11 @@ services:
         VERSION: dev
     container_name: sockguard
     restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./app/configs/sockguard.yaml:/etc/sockguard/sockguard.yaml:ro

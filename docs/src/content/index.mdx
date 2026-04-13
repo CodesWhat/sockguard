@@ -25,6 +25,11 @@ services:
   sockguard:
     image: codeswhat/sockguard:latest
     restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - sockguard-socket:/var/run/sockguard
@@ -46,6 +51,6 @@ volumes:
   sockguard-socket:
 ```
 
-> The container image runs as `65534:65534` by default. The named-volume example above keeps the proxy socket inside the shared volume so the process does not need direct write access to `/var/run/sockguard.sock`. If you bind the default `/var/run/sockguard.sock` on a Linux host instead, either run as root or use `--user 65534:$(stat -c %g /var/run/docker.sock)` so the process joins the Docker socket group. In Compose, export `DOCKER_GID=$(stat -c %g /var/run/docker.sock)` and set `user: "65534:${DOCKER_GID}"`.
+> The published image runs as root inside the container by default so it can open `/var/run/docker.sock` on stock Docker hosts without `user` or `group_add` overrides. The meaningful hardening levers are the proxy policy, `read_only`, dropped capabilities, `no-new-privileges`, and your runtime's seccomp/AppArmor/SELinux defaults.
 
 > If you choose TCP instead of a unix socket, Sockguard only allows loopback TCP by default. Non-loopback TCP requires mutual TLS unless you explicitly opt into legacy plaintext mode with `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true`.

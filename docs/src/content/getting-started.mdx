@@ -9,6 +9,11 @@ services:
   sockguard:
     image: codeswhat/sockguard:latest
     restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
@@ -25,6 +30,9 @@ volumes:
 ```bash
 docker run -d \
   --name sockguard \
+  --read-only \
+  --cap-drop=ALL \
+  --security-opt no-new-privileges:true \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -v ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro \
   -v sockguard-socket:/var/run/sockguard \
@@ -32,11 +40,11 @@ docker run -d \
   codeswhat/sockguard:latest
 ```
 
-If you keep the default `/var/run/sockguard.sock` listen path on a Linux host instead of writing into a named volume, the container needs write access to `/var/run` and access to the Docker socket group. Run it as root, or start it with:
-
-```bash
-docker run --user 65534:$(stat -c %g /var/run/docker.sock) ...
-```
+Sockguard runs as root inside the container by default so it can open
+`/var/run/docker.sock` on stock Docker hosts without `user` or
+`group_add` overrides. The hardening knobs that matter in practice are
+`--read-only`, `--cap-drop=ALL`, `--security-opt no-new-privileges:true`,
+and your runtime's seccomp/AppArmor/SELinux defaults.
 
 ### Binary
 
