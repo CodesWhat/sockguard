@@ -67,6 +67,7 @@ func BenchmarkEvaluateRealisticBasket(b *testing.B) {
 	}
 	for _, c := range cases {
 		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
 			norm := NormalizePath(c.path)
 			for b.Loop() {
 				evaluateNormalized(rules, c.method, norm)
@@ -115,6 +116,7 @@ func BenchmarkNormalizePathAdversarial(b *testing.B) {
 	}
 	for _, c := range cases {
 		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
 			for b.Loop() {
 				NormalizePath(c.path)
 			}
@@ -142,6 +144,7 @@ func BenchmarkGlobToRegexDeep(b *testing.B) {
 	}
 	for _, p := range patterns {
 		b.Run(p, func(b *testing.B) {
+			b.ReportAllocs()
 			for b.Loop() {
 				globToRegex(p)
 			}

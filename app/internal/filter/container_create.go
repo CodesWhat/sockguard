@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -51,7 +52,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	allowed := make([]string, 0, len(opts.AllowedBindMounts))
 	for _, bindMount := range opts.AllowedBindMounts {
 		normalized, ok := normalizeContainerCreateBindMount(bindMount)
-		if !ok || containsString(allowed, normalized) {
+		if !ok || slices.Contains(allowed, normalized) {
 			continue
 		}
 		allowed = append(allowed, normalized)

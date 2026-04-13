@@ -35,6 +35,7 @@ func init() {
 }
 
 func BenchmarkNormalizePath(b *testing.B) {
+	b.ReportAllocs()
 	paths := []struct {
 		name string
 		path string
@@ -47,6 +48,7 @@ func BenchmarkNormalizePath(b *testing.B) {
 	}
 	for _, p := range paths {
 		b.Run(p.name, func(b *testing.B) {
+			b.ReportAllocs()
 			for b.Loop() {
 				NormalizePath(p.path)
 			}
@@ -68,6 +70,7 @@ func BenchmarkEvaluateNormalized(b *testing.B) {
 	}
 	for _, c := range cases {
 		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
 			norm := NormalizePath(c.path)
 			for b.Loop() {
 				evaluateNormalized(benchRules, c.method, norm)
@@ -88,6 +91,7 @@ func BenchmarkEvaluate(b *testing.B) {
 	}
 	for _, c := range cases {
 		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
 			req := httptest.NewRequest(c.method, c.path, nil)
 			for b.Loop() {
 				Evaluate(benchRules, req)
@@ -156,6 +160,7 @@ func TestBenchmarkResponseWriterReset(t *testing.T) {
 }
 
 func BenchmarkMiddlewareAllow(b *testing.B) {
+	b.ReportAllocs()
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	handler := Middleware(benchRules, benchLogger)(next)
 
@@ -169,6 +174,7 @@ func BenchmarkMiddlewareAllow(b *testing.B) {
 }
 
 func BenchmarkMiddlewareDeny(b *testing.B) {
+	b.ReportAllocs()
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	handler := Middleware(benchRules, benchLogger)(next)
 
@@ -182,6 +188,7 @@ func BenchmarkMiddlewareDeny(b *testing.B) {
 }
 
 func BenchmarkMiddlewareAllowLargePayload(b *testing.B) {
+	b.ReportAllocs()
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := io.Copy(io.Discard, r.Body); err != nil {
 			b.Fatalf("copy request body: %v", err)
@@ -199,6 +206,7 @@ func BenchmarkMiddlewareAllowLargePayload(b *testing.B) {
 }
 
 func BenchmarkMiddlewareDenyLargePayload(b *testing.B) {
+	b.ReportAllocs()
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		b.Fatal("deny path should not reach next handler")
 	})
@@ -225,6 +233,7 @@ func BenchmarkGlobToRegex(b *testing.B) {
 	}
 	for _, p := range patterns {
 		b.Run(p.name, func(b *testing.B) {
+			b.ReportAllocs()
 			for b.Loop() {
 				globToRegex(p.pattern)
 			}

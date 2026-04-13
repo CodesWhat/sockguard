@@ -584,17 +584,21 @@ func TestContainerHelpers(t *testing.T) {
 	}
 }
 
-func TestSetDeniedMeta(t *testing.T) {
+func TestClientACLSetDeniedNormalizesPath(t *testing.T) {
+	// clientacl fires logging.SetDenied with filter.NormalizePath so the
+	// access log still carries a clean path even when clientacl runs
+	// before the filter middleware stamps meta.NormPath.
 	meta := &logging.RequestMeta{}
 	req := httptest.NewRequest(http.MethodGet, "/v1.45/containers/json", nil)
 	writer := &metaCarrierWriter{meta: meta}
 
-	setDeniedMeta(writer, req, "nope")
+	logging.SetDenied(writer, req, "nope", filter.NormalizePath)
 	if meta.Decision != "deny" || meta.Reason != "nope" || meta.NormPath != "/containers/json" {
-		t.Fatalf("meta after setDeniedMeta = %#v", meta)
+		t.Fatalf("meta after SetDenied = %#v", meta)
 	}
 
-	setDeniedMeta(httptest.NewRecorder(), req, "ignored")
+	// No panic when there is no meta to stamp.
+	logging.SetDenied(httptest.NewRecorder(), req, "ignored", filter.NormalizePath)
 }
 
 type metaCarrierWriter struct {

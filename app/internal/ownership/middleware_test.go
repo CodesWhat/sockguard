@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -134,7 +135,7 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 		for _, value := range values {
 			got = append(got, value.(string))
 		}
-		if !containsString(got, "existing=1") || !containsString(got, "com.sockguard.owner=job-123") {
+		if !slices.Contains(got, "existing=1") || !slices.Contains(got, "com.sockguard.owner=job-123") {
 			t.Fatalf("label filters = %#v, want existing label and owner label", got)
 		}
 		w.WriteHeader(http.StatusOK)
@@ -432,14 +433,16 @@ func TestOwnerHelpers(t *testing.T) {
 	}
 }
 
-func TestSetDeniedMeta(t *testing.T) {
+func TestOwnershipSetDenied(t *testing.T) {
+	// Ownership passes nil for the normalize callback because filter has
+	// already stamped meta.NormPath by the time ownership fires.
 	meta := &logging.RequestMeta{}
 	req := httptest.NewRequest(http.MethodGet, "/containers/abc123/json", nil)
-	setDeniedMeta(&metaWriter{meta: meta}, req, "nope")
+	logging.SetDenied(&metaWriter{meta: meta}, req, "nope", nil)
 	if meta.Decision != "deny" || meta.Reason != "nope" {
 		t.Fatalf("meta = %#v, want deny/nope", meta)
 	}
-	setDeniedMeta(httptest.NewRecorder(), req, "ignored")
+	logging.SetDenied(httptest.NewRecorder(), req, "ignored", nil)
 }
 
 func TestIdentifierHelpers(t *testing.T) {

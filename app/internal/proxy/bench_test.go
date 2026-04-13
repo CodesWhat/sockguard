@@ -15,6 +15,7 @@ func BenchmarkIsHijackEndpoint(b *testing.B) {
 	}
 	for _, c := range cases {
 		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
 			for b.Loop() {
 				IsHijackEndpoint(c.method, c.path)
 			}

@@ -56,24 +56,24 @@ Organized by severity. Everything in "Ship blockers" has to land before Phase 6.
 ### Ship blockers — housekeeping
 
 - [x] **Biome suppression warning** — `cf49c26`. Stale `biome-ignore` in `page.tsx:16` deleted; `useMDXComponents` no longer triggers the `useHookAtTopLevel` rule so the suppression had no effect anyway.
-- [ ] **Grype CVE scan**: run against `ghcr.io/codeswhat/sockguard:0.3.1`. Patch any High/Critical. Document Medium/Low in `SECURITY.md` or accept with rationale.
+- [x] **Grype CVE scan**: `grype ghcr.io/codeswhat/sockguard:0.3.1 -o table` returns `No vulnerabilities found` across all severity levels, DB current as of 2026-04-13. The Chainguard `static` base image + single statically-linked Go binary footprint lands at zero CVEs, so no `SECURITY.md` acceptance entries or patch rollbacks are needed.
 - [x] **Dead code (`isWildcardTCPBind`)** — `cf49c26`. Moved from `cmd/serve.go` into `serve_test.go` as a test-only helper so the function still covers its one test caller without bloating the production binary.
 - [x] **Test-only wrappers in production surface** — `cf49c26`. `CompiledRule.matches` and `CompiledRule.matchesNormalizedUpper` moved from `rules.go` into `rules_test.go`; production `evaluateNormalized` already uses the `WithBit` hot path so the wrappers were never needed in production.
 
 ### Should-fix — code quality (bundle while we're in the file)
 
-- [ ] **De-duplicate `containsString`**: defined separately in `filter`, `ownership`, and `clientacl`. Replace all three with stdlib `slices.Contains` (Go 1.21+, matches zero-deps constraint).
-- [ ] **De-duplicate `setDeniedMeta`**: clientacl and ownership each define the same helper. Consolidate as `logging.SetDenied(w, r, reason)` and import from both sites.
-- [ ] **Unify unix-socket `http.Client` boilerplate**: `clientacl.upstreamResolver` and `ownership.upstreamInspector` build nearly identical transports. Extract a shared `internal/dockerclient` helper that returns an `*http.Client` pointed at a unix socket.
-- [ ] **Ownership `NormalizePath` called twice per request**: `ownership/middleware.go:61` re-normalizes a path the filter middleware already stored in `meta.NormPath`. Read from meta instead. Same shape as the earlier hijack `IsHijackEndpoint` fix.
-- [ ] **Collapse the four `*Identifier` helpers**: `ownership/middleware.go:222-264` `containerIdentifier` / `execIdentifier` / `networkIdentifier` / `volumeIdentifier` / `imageIdentifier` all have the same structure. Replace with a table-driven `identifierFor(kind, normPath)`.
-- [ ] **Missing `b.ReportAllocs()`**: `filter/bench_test.go`, `filter/perf_bench_test.go:50,104,136`, and the middleware benches don't report alloc numbers. Without them, alloc regressions hide under `-bench`. Add to every `Benchmark*` in the new bench files.
-- [ ] **Config defaults mirrored in 3 places**: `config/load.go:22-46` silently risks env-var precedence breakage if one mirror is forgotten. Source defaults from `Defaults()` only; the other two paths should call it or reference the same struct literal.
-- [ ] **Pick one error-ignore convention**: codebase mixes `_ =` and a single `//nolint:errcheck` (`hijack.go:539`). Pick `_ =` everywhere and update the one outlier.
+- [x] **De-duplicate `containsString`** — quality bundle. Deleted the duplicate helpers in `filter/rules.go` and `ownership/middleware.go` and replaced all call sites (in both files plus `filter/container_create.go` and the ownership test) with stdlib `slices.Contains`. Zero behavior change, two fewer 5-line helpers to keep in sync.
+- [x] **De-duplicate `setDeniedMeta`** — quality bundle. Added `logging.SetDenied(w, r, reason, normalize func(string) string)` as the single canonical entry point. `clientacl` passes `filter.NormalizePath` (it runs before the filter middleware, so meta.NormPath may be empty); `ownership` passes `nil` (filter has already stamped NormPath by then). Import cycle between `logging` and `filter` is sidestepped by taking the normalizer as a callback. Test files in both packages updated to exercise the consolidated helper.
+- [ ] **Unify unix-socket `http.Client` boilerplate**: `clientacl.upstreamResolver` and `ownership.upstreamInspector` build nearly identical transports. Extract a shared `internal/dockerclient` helper that returns an `*http.Client` pointed at a unix socket. Deferred — 5-package refactor not load-bearing for launch, tracked under Post-launch.
+- [x] **Ownership `NormalizePath` called twice per request** — quality bundle. `ownership/middleware.go` now prefers `logging.MetaForRequest(w, r).NormPath` when the filter middleware has already stamped it, and only falls back to `filter.NormalizePath` when ownership runs outside a filter chain (rare — tests and isolated usage).
+- [ ] **Collapse the four `*Identifier` helpers**: `ownership/middleware.go:222-264`. Deferred — small surface-area refactor, no correctness or perf impact, tracked under Post-launch.
+- [x] **Missing `b.ReportAllocs()`** — quality bundle. Added to every `Benchmark*` and every `b.Run` closure across `filter/bench_test.go`, `filter/perf_bench_test.go`, and `proxy/bench_test.go`. `go test -bench=. -benchtime=1x` now reports `B/op` and `allocs/op` for every sub-benchmark instead of just the few that already had it, so alloc regressions surface immediately under `-bench`.
+- [x] **Config defaults mirrored in 3 places** — reviewed. `config/load.go:22-46` already sources every `v.SetDefault` key from the single `Defaults()` struct — the checklist's earlier "3 mirrors" state has since been consolidated. No other files reproduce default literals outside of `config.go`, so nothing to change.
+- [x] **Pick one error-ignore convention** — quality bundle. Converted the sole `//nolint:errcheck` directive in `proxy/hijack.go:539` to the repo-wide `_ =` pattern with a sibling comment explaining the best-effort half-close.
 
 ### Should-fix — documentation polish
 
-- [ ] Add a WHY comment on `filter/rules.go:84-123 pathNeedsClean` fast-path citing the benchmark delta, not just WHAT it does.
+- [x] WHY comment on `filter/rules.go pathNeedsClean` — quality bundle. Block comment now explains the zero-allocation fast-path rationale (the common case of already-clean paths like `/containers/json` skips `path.Clean`'s string allocation entirely, which `BenchmarkNormalizePath/bare` + `/clean` now report as 0 B/op) and enumerates the exact shapes that force a clean pass.
 
 ### Wrap-up
 

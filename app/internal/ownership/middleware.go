@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/codeswhat/sockguard/internal/filter"
@@ -84,10 +85,19 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps ownerDeps) func(
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			normPath := filter.NormalizePath(r.URL.Path)
+			// Prefer the normalized path the filter middleware already stamped
+			// on the access-log meta so we don't re-run NormalizePath on the
+			// hot path. If ownership runs outside a filter chain (rare — tests
+			// and isolated usage), fall back to computing it here.
+			var normPath string
+			if meta := logging.MetaForRequest(w, r); meta != nil && meta.NormPath != "" {
+				normPath = meta.NormPath
+			} else {
+				normPath = filter.NormalizePath(r.URL.Path)
+			}
 
 			if err := mutateOwnershipRequest(r, normPath, opts); err != nil {
-				setDeniedMeta(w, r, err.Error())
+				logging.SetDenied(w, r, err.Error(), nil)
 				_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 				return
 			}
@@ -95,7 +105,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps ownerDeps) func(
 			verdict, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, deps)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
-				setDeniedMeta(w, r, "owner policy lookup failed")
+				logging.SetDenied(w, r, "owner policy lookup failed", nil)
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "owner policy lookup failed"})
 				return
 			}
@@ -104,7 +114,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps ownerDeps) func(
 				return
 			}
 
-			setDeniedMeta(w, r, reason)
+			logging.SetDenied(w, r, reason, nil)
 			_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 		})
 	}
@@ -208,13 +218,6 @@ func singularResource(kind resourceKind) string {
 		return "volume"
 	default:
 		return string(kind)
-	}
-}
-
-func setDeniedMeta(w http.ResponseWriter, r *http.Request, reason string) {
-	if meta := logging.MetaForRequest(w, r); meta != nil {
-		meta.Decision = "deny"
-		meta.Reason = reason
 	}
 }
 
@@ -328,7 +331,7 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 		return err
 	}
 	label := labelKey + "=" + owner
-	if !containsString(filters["label"], label) {
+	if !slices.Contains(filters["label"], label) {
 		filters["label"] = append(filters["label"], label)
 	}
 	encoded, _ := json.Marshal(filters)
@@ -447,15 +450,6 @@ func nestedObject(decoded map[string]any, key string) (map[string]any, error) {
 		return nil, fmt.Errorf("%s must be an object", key)
 	}
 	return obj, nil
-}
-
-func containsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func (u upstreamInspector) inspectResource(ctx context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {

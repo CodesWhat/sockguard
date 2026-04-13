@@ -80,6 +80,25 @@ func MetaForRequest(w http.ResponseWriter, r *http.Request) *RequestMeta {
 	return Meta(r.Context())
 }
 
+// SetDenied stamps a deny verdict onto the request metadata so the access
+// log records the decision and reason. If the matching meta is missing its
+// NormPath (which happens when a middleware that runs before `filter`
+// evaluates the deny) and `normalize` is non-nil, the callback is used to
+// populate NormPath so the access log still carries a clean path. Keeping
+// the normalization as a callback avoids an import cycle between `logging`
+// and `filter`.
+func SetDenied(w http.ResponseWriter, r *http.Request, reason string, normalize func(string) string) {
+	meta := MetaForRequest(w, r)
+	if meta == nil {
+		return
+	}
+	meta.Decision = "deny"
+	meta.Reason = reason
+	if meta.NormPath == "" && normalize != nil && r != nil {
+		meta.NormPath = normalize(r.URL.Path)
+	}
+}
+
 func getRequestMeta() *RequestMeta {
 	meta, _ := requestMetaPool.Get().(*RequestMeta)
 	if meta == nil {
