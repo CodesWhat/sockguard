@@ -185,7 +185,7 @@ Existing socket proxies (Tecnativa, LinuxServer) filter by URL path only. Sockgu
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance. |
 | ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
 | 🩺 | **Health Check** | `/health` endpoint with cached upstream reachability probes. |
-| 🧪 | **Battle-Tested** | 100% statement coverage, race-detector clean, fuzz testing on filter and proxy paths. |
+| 🧪 | **Battle-Tested** | ~99% statement coverage, race-detector clean, fuzz testing on filter, config, proxy, and hijack paths. |
 
 <hr>
 
@@ -321,14 +321,14 @@ Replace the image — your env vars work as-is:
 
 <h2 align="center" id="roadmap">🗺️ Roadmap</h2>
 
-| Version | Theme |
-|---------|-------|
-| **0.1.0** | MVP — drop-in replacement with granular control, YAML config, structured logging |
-| **0.2.0** | Request body inspection — block privileged containers, dangerous mounts |
-| **0.3.0** | Named per-client policy profiles — one proxy, many consumers |
-| **0.4.0** | Response filtering — hide containers, redact env vars |
-| **0.5.0** | Observability — Prometheus metrics, audit log persistence, OTel trace/span IDs in log records |
-| **0.6.0** | Rate limiting, policy safety rails, security enforcement |
+| Version | Theme | Status |
+|---------|-------|--------|
+| **0.1.0** | MVP — drop-in replacement with granular control, YAML config, structured logging | ✅ shipped |
+| **0.2.0** | mTLS for remote TCP, TLS 1.3 minimum, loopback-by-default listener, body-blind write guardrail | ✅ shipped |
+| **0.3.0** | Request-body inspection for `/containers/create`, per-proxy owner labels, per-client CIDR + container-label ACLs | ✅ shipped |
+| **0.4.0** | Named per-client policy profiles, body inspection for `/build` and `exec`, response filtering | 🕒 planned |
+| **0.5.0** | Observability — Prometheus metrics, audit log persistence, OTel trace/span IDs in log records | 🕒 planned |
+| **0.6.0** | Rate limiting, policy safety rails, security enforcement | 🕒 planned |
 
 <hr>
 

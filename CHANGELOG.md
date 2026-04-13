@@ -7,16 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-13
+
 ### Changed
 
 - Raised the default minimum version for `listen.tls` mutual-TLS listeners to TLS 1.3.
 - Added foundational per-client ACL primitives: `clients.allowed_cidrs` now gates TCP callers by source CIDR, and `clients.container_labels` can enforce per-client method/path allowlists from caller container labels resolved by source IP.
 - Implemented `POST /containers/create` request-body inspection. Sockguard now blocks privileged containers, host networking, and non-allowlisted bind mounts by default, while leaving the remaining body-sensitive write endpoints behind `insecure_allow_body_blind_writes=true` until their request bodies are inspected too.
 - Added per-proxy owner-label enforcement. When `ownership.owner` is set, Sockguard now stamps created containers, networks, volumes, and build-produced images with an owner label, filters list/prune/events requests by that label, and denies cross-owner access to labeled resources.
+- Specialized path matching by discriminating literal, match-all, trailing `/**`, per-segment glob, and regex matcher kinds at compile time so the rule evaluator skips the regex engine entirely for the common rule shapes used by every bundled preset.
+- Wrote httpjson deny-response headers by direct `http.Header` map assignment instead of `Header.Set` so the canonicalization walk does not run twice on every denied request hot path.
+- Bundled filter, logging, and proxy microbenchmarks under `internal/{filter,logging,proxy}/*_bench_test.go` so future perf work has a documented baseline to measure against (`go test -bench=. -benchmem -run=^$`).
 
 ### Fixed
 
 - Redacted denied verbose-response paths for `/secrets/*` and `/swarm/unlockkey`, and documented `response.deny_verbosity: minimal` as the recommended production setting so `403` bodies do not echo request details unnecessarily.
+- Cached short-lived upstream failures in the `/health` checker (100 ms default) so late-arriving probes reuse the cached failure instead of becoming new singleflight leaders when the previous leader has already returned an error, preventing a retry dial stampede against an unreachable Docker socket. Caller-cancelled and deadline-exceeded failures still bypass the cache.
+- Handled the body `Close` return value in the ownership and clientacl upstream inspectors so a silent close error cannot be ignored, dropped three nil-context coverage subtests that were exercising stdlib `http.NewRequestWithContext` behaviour rather than Sockguard code.
 
 ## [0.2.0] - 2026-04-12
 

@@ -13,7 +13,8 @@ Optimized for the [drydock](https://github.com/CodesWhat/drydock) container upda
 # Allows: image read, pull
 # Allows: network read, volume read, distribution
 # Denies: exec, build, swarm, secrets, plugins
-# Opts into insecure_allow_body_blind_writes because create bodies are not inspected yet
+# container-create bodies are inspected by default — add host bind-mount sources to
+# request_body.container_create.allowed_bind_mounts if your updates require them
 ```
 
 ## Traefik (`traefik.yaml`)
@@ -36,7 +37,8 @@ Full Docker API access for Portainer management UI.
 ```yaml
 # Allows: containers, images, networks, volumes, exec, build, swarm, plugins (full R/W)
 # WARNING: This grants near-full Docker socket access
-# Opts into insecure_allow_body_blind_writes because multiple body-sensitive writes are allowed
+# Container-create bodies are inspected, but exec/build/swarm writes are still method+path only
+# so this preset opts into insecure_allow_body_blind_writes=true until those layers ship
 ```
 
 ## Watchtower (`watchtower.yaml`)
@@ -49,7 +51,8 @@ Optimized for the [Watchtower](https://github.com/containrrr/watchtower) contain
 # Allows: container lifecycle (start, stop, kill, restart, rename, remove, create)
 # Allows: image pull/remove, exec (lifecycle hooks), network connect/disconnect
 # Denies: build, swarm, secrets, plugins
-# Opts into insecure_allow_body_blind_writes because create/exec bodies are not inspected yet
+# Container-create bodies are inspected; exec bodies are still method+path only so this
+# preset opts into insecure_allow_body_blind_writes=true for exec until that layer ships
 ```
 
 ## Homepage (`homepage.yaml`)
