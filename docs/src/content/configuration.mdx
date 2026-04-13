@@ -25,7 +25,7 @@ log:
   access_log: true
 
 response:
-  deny_verbosity: verbose  # verbose, minimal
+  deny_verbosity: minimal  # minimal (default, production) or verbose (dev/rule-authoring)
 
 request_body:
   container_create:
@@ -150,8 +150,8 @@ SOCKGUARD_OWNERSHIP_ALLOW_UNOWNED_IMAGES=true
 
 `response.deny_verbosity` controls how much metadata Sockguard includes in its own `403` JSON deny responses:
 
-- `verbose` (default): returns `message`, `method`, `path`, and `reason`
-- `minimal`: returns only the generic `message`
+- `minimal` (default): returns only the generic `message`. Never echoes the request method, path, or matched rule reason.
+- `verbose`: returns `message`, `method`, `path` (with `/secrets/*` and `/swarm/unlockkey` paths redacted), and `reason`. Intended for rule authoring and dev work only — never a production default because it can leak request details to denied callers.
 
 ## Tecnativa Compatibility
 

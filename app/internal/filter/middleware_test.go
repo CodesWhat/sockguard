@@ -23,6 +23,16 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 }
 
+// verboseMiddleware returns the filter middleware with verbose deny responses
+// so tests that assert on method/path/reason fields still work after the
+// production default for `response.deny_verbosity` flipped to `minimal`.
+// Use this in any test that needs to see rendered deny metadata; tests that
+// verify minimal behavior explicitly should call MiddlewareWithOptions
+// directly.
+func verboseMiddleware(rules []*CompiledRule, logger *slog.Logger) func(http.Handler) http.Handler {
+	return MiddlewareWithOptions(rules, logger, Options{DenyResponseVerbosity: DenyResponseVerbosityVerbose})
+}
+
 type devNull struct{}
 
 func (devNull) Write(b []byte) (int, error) { return len(b), nil }
@@ -133,7 +143,7 @@ func TestMiddlewareAllowed(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := Middleware(rules, testLogger())(inner)
+	handler := verboseMiddleware(rules, testLogger())(inner)
 	req := httptest.NewRequest("GET", "/_ping", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -156,7 +166,7 @@ func TestMiddlewareDenied(t *testing.T) {
 		reached = true
 	})
 
-	handler := Middleware(rules, testLogger())(inner)
+	handler := verboseMiddleware(rules, testLogger())(inner)
 	req := httptest.NewRequest("POST", "/containers/create", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -232,8 +242,8 @@ func TestParseDenyResponseVerbosity(t *testing.T) {
 	}{
 		{name: "minimal", input: "minimal", want: DenyResponseVerbosityMinimal},
 		{name: "verbose", input: "verbose", want: DenyResponseVerbosityVerbose},
-		{name: "empty defaults verbose", input: "", want: DenyResponseVerbosityVerbose},
-		{name: "invalid defaults verbose", input: "chatty", want: DenyResponseVerbosityVerbose},
+		{name: "empty defaults minimal", input: "", want: DenyResponseVerbosityMinimal},
+		{name: "invalid defaults minimal", input: "chatty", want: DenyResponseVerbosityMinimal},
 	}
 
 	for _, tt := range tests {
@@ -265,7 +275,7 @@ func TestMiddlewareWritesMeta(t *testing.T) {
 		}
 	})
 
-	handler := Middleware(rules, testLogger())(inner)
+	handler := verboseMiddleware(rules, testLogger())(inner)
 
 	// Simulate access log middleware by injecting meta
 	meta := &logging.RequestMeta{}
@@ -301,7 +311,7 @@ func TestMiddlewareConcurrentRequestMetaIsolation(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	})
 
-	handler := logging.AccessLogMiddleware(logger)(Middleware(rules, logger)(inner))
+	handler := logging.AccessLogMiddleware(logger)(verboseMiddleware(rules, logger)(inner))
 
 	type expectation struct {
 		message        string
@@ -448,7 +458,7 @@ func TestMiddlewareAllowsLargePayloadPassThrough(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	})
 
-	handler := Middleware(rules, testLogger())(inner)
+	handler := verboseMiddleware(rules, testLogger())(inner)
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(payload))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -464,7 +474,7 @@ func TestMiddlewareDeniesPrivilegedContainerCreate(t *testing.T) {
 	rules := []*CompiledRule{r1, r2}
 
 	reached := false
-	handler := Middleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		reached = true
 	}))
 
@@ -501,7 +511,7 @@ func TestMiddlewareDeniesHostNetworkContainerCreate(t *testing.T) {
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
 	rules := []*CompiledRule{r1, r2}
 
-	handler := Middleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected host-network container create to be denied")
 	}))
 
@@ -527,7 +537,7 @@ func TestMiddlewareDeniesUnallowlistedContainerCreateBindMounts(t *testing.T) {
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
 	rules := []*CompiledRule{r1, r2}
 
-	handler := Middleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected bind-mounted container create to be denied")
 	}))
 
@@ -592,7 +602,7 @@ func TestMiddlewareVersionPrefixInDenial(t *testing.T) {
 		t.Error("should not reach inner handler")
 	})
 
-	handler := Middleware(rules, testLogger())(inner)
+	handler := verboseMiddleware(rules, testLogger())(inner)
 	req := httptest.NewRequest("POST", "/v1.45/containers/create", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -634,7 +644,7 @@ func TestMiddlewareDeniedRedactsSensitiveVerbosePaths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			handler := Middleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Fatal("should not reach inner handler")
 			}))
 			req := httptest.NewRequest(http.MethodPost, tt.path, nil)
@@ -668,7 +678,7 @@ func TestMiddlewareEmptyRulesDeny(t *testing.T) {
 		reached = true
 	})
 
-	handler := Middleware(nil, testLogger())(inner)
+	handler := verboseMiddleware(nil, testLogger())(inner)
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -699,7 +709,7 @@ func TestMiddlewareNilMetaInContext(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := Middleware(rules, testLogger())(inner)
+	handler := verboseMiddleware(rules, testLogger())(inner)
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	req = req.WithContext(logging.WithMeta(req.Context(), nil))
 	rec := httptest.NewRecorder()
@@ -724,7 +734,7 @@ func TestMiddlewareLogsEncodeError(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	handler := Middleware(rules, logger)(inner)
+	handler := verboseMiddleware(rules, logger)(inner)
 	req := httptest.NewRequest("POST", "/containers/create", nil)
 	rec := &failingResponseWriter{}
 	handler.ServeHTTP(rec, req)
@@ -753,7 +763,7 @@ func TestMiddlewareDoesNotAttemptFallbackAfterHeadersCommitted(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	handler := Middleware(rules, logger)(inner)
+	handler := verboseMiddleware(rules, logger)(inner)
 	req := httptest.NewRequest("POST", "/v1.45/../containers/create", nil)
 	rec := &failOnceResponseWriter{}
 	handler.ServeHTTP(rec, req)
@@ -787,7 +797,7 @@ func TestMiddlewareDeniesWhenContainerCreateInspectionFails(t *testing.T) {
 	}
 
 	logs := &collectingHandler{}
-	handler := Middleware([]*CompiledRule{rule}, slog.New(logs))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := verboseMiddleware([]*CompiledRule{rule}, slog.New(logs))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected request to be denied before reaching inner handler")
 	}))
 

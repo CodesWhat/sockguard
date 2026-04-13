@@ -39,7 +39,9 @@ type Options struct {
 }
 
 // ParseDenyResponseVerbosity normalizes a configured deny verbosity value.
-// Empty or unknown values default to DenyResponseVerbosityVerbose.
+// Empty or unknown values default to DenyResponseVerbosityMinimal so the proxy
+// never leaks the raw request path on an unknown or missing config — verbose
+// is an explicit opt-in for rule authoring and dev work only.
 func ParseDenyResponseVerbosity(value string) DenyResponseVerbosity {
 	switch DenyResponseVerbosity(value) {
 	case DenyResponseVerbosityMinimal:
@@ -47,7 +49,7 @@ func ParseDenyResponseVerbosity(value string) DenyResponseVerbosity {
 	case DenyResponseVerbosityVerbose:
 		return DenyResponseVerbosityVerbose
 	default:
-		return DenyResponseVerbosityVerbose
+		return DenyResponseVerbosityMinimal
 	}
 }
 

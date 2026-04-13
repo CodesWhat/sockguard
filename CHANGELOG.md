@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Relicensed Sockguard from AGPL-3.0 to Apache-2.0 so the proxy can be embedded inside other projects, docker-compose templates, and enterprise security hardening guides without the copyleft speed bump that blocks AGPL adoption for middleware. Matches `tecnativa/docker-socket-proxy` so migration and comparison narratives stay consistent with the incumbent. The sibling CodesWhat project `drydock` remains AGPL-3.0 because it is an end-user web application with a different adoption model — different role, different license.
+- Flipped the default `response.deny_verbosity` from `verbose` to `minimal` so `403` deny responses no longer echo the request method, path, and matched rule reason back to callers by default. Verbose mode is still supported as an explicit opt-in for rule authoring and dev work but should never run in production because even with `/secrets/*` and `/swarm/unlockkey` redacted, it can leak request details that a honest security product should not hand a denied caller. `ParseDenyResponseVerbosity` now falls back to minimal on empty or unknown values as well, so a broken config never accidentally widens the response.
+
+### Security
+
+- Capped request body reads at 1 MiB (`maxContainerCreateBodyBytes` and `maxOwnershipBodyBytes`) in the container-create inspection path (`internal/filter/container_create.go`) and the ownership mutation path (`internal/ownership/middleware.go`). An allowlisted client can no longer OOM the proxy by posting a multi-GB JSON body to `/containers/create`, `/networks/create`, or `/volumes/create`; an over-limit body short-circuits with a policy deny reason or error before the JSON decode runs.
+
+### Fixed
+
+- Replaced the four-valued `(bool, bool, string, error)` return from `allowOwnershipRequest` and `checkOwnedResource` with an `ownershipVerdict` enum (`verdictPassThrough`, `verdictAllow`, `verdictDeny`) so the caller no longer has to juggle a meaningless-on-falsehood first bool. Behavior is unchanged — the shape is just safer to read and harder to misuse.
+- Wrapped the `http.ErrServerClosed` sentinel check in `serve.go` with `errors.Is` so the shutdown listener loop stays correct against any future wrapping of the listen error path. No observable behavior change today because `http.Server.ListenAndServe` returns the sentinel unwrapped.
 
 ## [0.3.1] - 2026-04-13
 

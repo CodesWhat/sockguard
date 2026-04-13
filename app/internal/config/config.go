@@ -126,7 +126,13 @@ func Defaults() Config {
 			AccessLog: true,
 		},
 		Response: ResponseConfig{
-			DenyVerbosity: "verbose",
+			// Default to minimal deny responses: the generic message only,
+			// no method, path, or reason echoed back. Verbose mode is still
+			// supported for rule-authoring and dev work, but it is never a
+			// production default because it can leak request path details
+			// (even with `/secrets/*` and `/swarm/unlockkey` redacted) that
+			// a honest security product should not hand a denied caller.
+			DenyVerbosity: "minimal",
 		},
 		RequestBody: RequestBodyConfig{
 			ContainerCreate: ContainerCreateRequestBodyConfig{},
