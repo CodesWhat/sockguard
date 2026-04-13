@@ -371,25 +371,25 @@ func TestAllowOwnershipRequest(t *testing.T) {
 		},
 	}.deps()
 
-	if allowed, found, _, err := allowOwnershipRequest(context.Background(), "/networks/net-1", opts, deps); err != nil || !found || !allowed {
-		t.Fatalf("allowOwnershipRequest(network) = (%v, %v, %v), want true/true/nil", allowed, found, err)
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/networks/net-1", opts, deps); err != nil || verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequest(network) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if allowed, found, _, err := allowOwnershipRequest(context.Background(), "/volumes/vol-1", opts, deps); err != nil || !found || !allowed {
-		t.Fatalf("allowOwnershipRequest(volume) = (%v, %v, %v), want true/true/nil", allowed, found, err)
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/volumes/vol-1", opts, deps); err != nil || verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequest(volume) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if allowed, found, _, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", opts, deps); err != nil || !found || !allowed {
-		t.Fatalf("allowOwnershipRequest(image) = (%v, %v, %v), want true/true/nil", allowed, found, err)
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", opts, deps); err != nil || verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequest(image) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if allowed, found, reason, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, deps); err != nil || !found || allowed || !strings.Contains(reason, "owner policy denied access to image") {
-		t.Fatalf("allowOwnershipRequest(image deny) = (%v, %v, %q, %v), want false/true/image denial/nil", allowed, found, reason, err)
+	if verdict, reason, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, deps); err != nil || verdict != verdictDeny || !strings.Contains(reason, "owner policy denied access to image") {
+		t.Fatalf("allowOwnershipRequest(image deny) = (%v, %q, %v), want verdictDeny/image denial/nil", verdict, reason, err)
 	}
-	if allowed, found, reason, err := allowOwnershipRequest(context.Background(), "/exec/missing/start", opts, fakeInspector{
+	if verdict, reason, err := allowOwnershipRequest(context.Background(), "/exec/missing/start", opts, fakeInspector{
 		execs: map[string]execResult{"missing": {found: false}},
-	}.deps()); err != nil || found || allowed || reason != "" {
-		t.Fatalf("allowOwnershipRequest(exec missing) = (%v, %v, %q, %v), want false/false/\"\"/nil", allowed, found, reason, err)
+	}.deps()); err != nil || verdict != verdictPassThrough || reason != "" {
+		t.Fatalf("allowOwnershipRequest(exec missing) = (%v, %q, %v), want verdictPassThrough/\"\"/nil", verdict, reason, err)
 	}
-	if allowed, found, _, err := allowOwnershipRequest(context.Background(), "/info", opts, deps); err != nil || found || !allowed {
-		t.Fatalf("allowOwnershipRequest(no match) = (%v, %v, %v), want true/false/nil", allowed, found, err)
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/info", opts, deps); err != nil || verdict != verdictPassThrough {
+		t.Fatalf("allowOwnershipRequest(no match) = (%v, %v), want verdictPassThrough/nil", verdict, err)
 	}
 }
 
@@ -785,5 +785,26 @@ func newUnixHTTPClient(socketPath string) *http.Client {
 				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 			},
 		},
+	}
+}
+
+// TestMutateJSONBodyRejectsOversizedBody locks in the OOM guard on the
+// ownership mutation path. A client posting a body larger than
+// maxOwnershipBodyBytes to /containers/create /networks/create /volumes/create
+// must short-circuit with an error and never invoke the mutate callback, so
+// we don't hand a multi-GB byte slice to json.Unmarshal.
+func TestMutateJSONBodyRejectsOversizedBody(t *testing.T) {
+	oversized := strings.Repeat("x", maxOwnershipBodyBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(oversized))
+
+	err := mutateJSONBody(req, func(map[string]any) error {
+		t.Fatal("mutate callback invoked despite oversized body")
+		return nil
+	})
+	if err == nil {
+		t.Fatal("mutateJSONBody() err = nil, want 'exceeds ... byte limit'")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("mutateJSONBody() err = %v, want contains 'exceeds'", err)
 	}
 }

@@ -19,6 +19,32 @@ import (
 
 const DefaultLabelKey = "com.sockguard.owner"
 
+// maxOwnershipBodyBytes caps the request body the ownership middleware will
+// read when it mutates a container/network/volume create body or a build
+// query to inject the owner label. Docker's own create payloads are at most
+// a few KiB, so 1 MiB is generous while preventing an allowlisted client
+// from OOMing the proxy with an unbounded JSON body.
+const maxOwnershipBodyBytes = 1 << 20 // 1 MiB
+
+// ownershipVerdict is the outcome of an ownership policy check against an
+// inbound request. Callers should forward `verdictPassThrough` and
+// `verdictAllow` unchanged to the next handler; `verdictDeny` should short
+// circuit with a 403 and the accompanying reason.
+type ownershipVerdict int
+
+const (
+	// verdictPassThrough means the request does not target a resource that
+	// the ownership middleware knows how to inspect, so it is forwarded
+	// unchanged to the next handler.
+	verdictPassThrough ownershipVerdict = iota
+	// verdictAllow means the request targets a labeled resource that matches
+	// the configured owner.
+	verdictAllow
+	// verdictDeny means the request targets a labeled resource that belongs
+	// to a different owner identity.
+	verdictDeny
+)
+
 type resourceKind string
 
 const (
@@ -66,14 +92,14 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps ownerDeps) func(
 				return
 			}
 
-			allowed, found, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, deps)
+			verdict, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, deps)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
 				setDeniedMeta(w, r, "owner policy lookup failed")
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "owner policy lookup failed"})
 				return
 			}
-			if !found || allowed {
+			if verdict != verdictDeny {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -119,14 +145,17 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) erro
 	}
 }
 
-func allowOwnershipRequest(ctx context.Context, normPath string, opts Options, deps ownerDeps) (bool, bool, string, error) {
+func allowOwnershipRequest(ctx context.Context, normPath string, opts Options, deps ownerDeps) (ownershipVerdict, string, error) {
 	if identifier, ok := containerIdentifier(normPath); ok {
 		return checkOwnedResource(ctx, deps, resourceKindContainer, identifier, opts, false)
 	}
 	if execID, ok := execIdentifier(normPath); ok {
 		containerID, found, err := deps.inspectExec(ctx, execID)
-		if err != nil || !found {
-			return false, found, "", err
+		if err != nil {
+			return verdictPassThrough, "", err
+		}
+		if !found {
+			return verdictPassThrough, "", nil
 		}
 		return checkOwnedResource(ctx, deps, resourceKindContainer, containerID, opts, false)
 	}
@@ -139,18 +168,21 @@ func allowOwnershipRequest(ctx context.Context, normPath string, opts Options, d
 	if identifier, ok := imageIdentifier(normPath); ok {
 		return checkOwnedResource(ctx, deps, resourceKindImage, identifier, opts, opts.AllowUnownedImages)
 	}
-	return true, false, "", nil
+	return verdictPassThrough, "", nil
 }
 
-func checkOwnedResource(ctx context.Context, deps ownerDeps, kind resourceKind, identifier string, opts Options, allowUnowned bool) (bool, bool, string, error) {
+func checkOwnedResource(ctx context.Context, deps ownerDeps, kind resourceKind, identifier string, opts Options, allowUnowned bool) (ownershipVerdict, string, error) {
 	labels, found, err := deps.inspectResource(ctx, kind, identifier)
-	if err != nil || !found {
-		return false, found, "", err
+	if err != nil {
+		return verdictPassThrough, "", err
+	}
+	if !found {
+		return verdictPassThrough, "", nil
 	}
 	if ownerMatches(labels, opts.LabelKey, opts.Owner, allowUnowned) {
-		return true, true, "", nil
+		return verdictAllow, "", nil
 	}
-	return false, true, fmt.Sprintf("owner policy denied access to %s", singularResource(kind)), nil
+	return verdictDeny, fmt.Sprintf("owner policy denied access to %s", singularResource(kind)), nil
 }
 
 func ownerMatches(labels map[string]string, labelKey, owner string, allowUnowned bool) bool {
@@ -345,12 +377,17 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	if r.Body == nil {
 		return fmt.Errorf("request body is required")
 	}
-	body, err := io.ReadAll(r.Body)
+	// Read one byte past the limit so we can distinguish at-limit from
+	// over-limit without giving the client room to OOM the proxy.
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxOwnershipBodyBytes+1))
 	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
 		err = closeErr
 	}
 	if err != nil {
 		return fmt.Errorf("read request body: %w", err)
+	}
+	if int64(len(body)) > maxOwnershipBodyBytes {
+		return fmt.Errorf("request body exceeds %d byte limit", maxOwnershipBodyBytes)
 	}
 	if len(body) == 0 {
 		return fmt.Errorf("request body is required")

@@ -190,3 +190,25 @@ func TestNormalizeContainerCreateBindMount(t *testing.T) {
 		})
 	}
 }
+
+// TestContainerCreatePolicyInspectCapsOversizedBody locks in the OOM guard.
+// A malicious client sending a body larger than maxContainerCreateBodyBytes
+// must be rejected with a policy deny reason and must not cause the proxy
+// to read unbounded memory. The LimitReader caps the read at maxBytes+1, so
+// even a body of 100 MiB on the wire only costs ~1 MiB of proxy RAM for the
+// check itself before the deny reason is returned.
+func TestContainerCreatePolicyInspectCapsOversizedBody(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+
+	oversized := bytes.Repeat([]byte{'x'}, maxContainerCreateBodyBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(oversized))
+
+	reason, err := policy.inspect(req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v, want nil", err)
+	}
+	wantPrefix := "container create denied: request body exceeds"
+	if len(reason) < len(wantPrefix) || reason[:len(wantPrefix)] != wantPrefix {
+		t.Fatalf("inspect() reason = %q, want prefix %q", reason, wantPrefix)
+	}
+}

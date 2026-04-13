@@ -10,6 +10,13 @@ import (
 	"strings"
 )
 
+// maxContainerCreateBodyBytes caps the request body Sockguard will read when
+// inspecting POST /containers/create. Docker's own container-create payloads
+// are at most a few KiB even for complex specs, so a 1 MiB ceiling is
+// generous while still preventing a malicious or misbehaving client from
+// OOMing the proxy with an unbounded body.
+const maxContainerCreateBodyBytes = 1 << 20 // 1 MiB
+
 // ContainerCreateOptions configures request-body policy checks for
 // POST /containers/create.
 type ContainerCreateOptions struct {
@@ -62,12 +69,18 @@ func (p containerCreatePolicy) inspect(r *http.Request, normalizedPath string) (
 		return "", nil
 	}
 
-	body, err := io.ReadAll(r.Body)
+	// Read one byte past the limit so we can distinguish an at-limit payload
+	// from an over-limit one without giving the client room to OOM the proxy.
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxContainerCreateBodyBytes+1))
 	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
 		err = closeErr
 	}
 	if err != nil {
 		return "", fmt.Errorf("read body: %w", err)
+	}
+
+	if int64(len(body)) > maxContainerCreateBodyBytes {
+		return fmt.Sprintf("container create denied: request body exceeds %d byte limit", maxContainerCreateBodyBytes), nil
 	}
 
 	r.Body = io.NopCloser(bytes.NewReader(body))
