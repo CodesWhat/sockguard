@@ -403,6 +403,75 @@ func TestCompileRuleLiteralPatternUsesFastPath(t *testing.T) {
 	}
 }
 
+func TestCompileRuleTrailingDoubleStarUsesFastPath(t *testing.T) {
+	rule, err := CompileRule(Rule{
+		Methods: []string{"GET"},
+		Pattern: "/networks/**",
+		Action:  ActionAllow,
+		Index:   1,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	if rule.pattern != nil {
+		t.Fatal("trailing /** pattern should not compile a regexp")
+	}
+	if !rule.matches("GET", "/networks") {
+		t.Fatal("trailing /** fast path should match the bare prefix")
+	}
+	if !rule.matches("GET", "/networks/user-defined/endpoints/abc") {
+		t.Fatal("trailing /** fast path should match deeper paths")
+	}
+	if rule.matches("GET", "/networks-and-more") {
+		t.Fatal("trailing /** fast path should not match sibling prefixes")
+	}
+}
+
+func TestCompileRuleSingleSegmentGlobUsesFastPath(t *testing.T) {
+	rule, err := CompileRule(Rule{
+		Methods: []string{"POST"},
+		Pattern: "/containers/*/exec",
+		Action:  ActionAllow,
+		Index:   1,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	if rule.pattern != nil {
+		t.Fatal("single-segment glob should not compile a regexp")
+	}
+	if !rule.matches("POST", "/containers/abc123/exec") {
+		t.Fatal("single-segment glob fast path should match a single segment")
+	}
+	if rule.matches("POST", "/containers/abc/def/exec") {
+		t.Fatal("single-segment glob fast path should not match across slashes")
+	}
+}
+
+func TestCompileRuleMultiSegmentSingleStarUsesFastPath(t *testing.T) {
+	rule, err := CompileRule(Rule{
+		Methods: []string{"GET"},
+		Pattern: "/a/*/b/*/c",
+		Action:  ActionAllow,
+		Index:   1,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	if rule.pattern != nil {
+		t.Fatal("single-star-only patterns should not compile a regexp")
+	}
+	if !rule.matches("GET", "/a/one/b/two/c") {
+		t.Fatal("single-star-only fast path should match segment-by-segment")
+	}
+	if rule.matches("GET", "/a/one/b/two/three/c") {
+		t.Fatal("single-star-only fast path should reject extra path segments")
+	}
+}
+
 func TestCompileRuleRegexCompileError(t *testing.T) {
 	deps := newRuleDeps()
 	deps.regexpCompile = func(string) (*regexp.Regexp, error) {
@@ -411,7 +480,7 @@ func TestCompileRuleRegexCompileError(t *testing.T) {
 
 	_, err := compileRuleWithDeps(Rule{
 		Methods: []string{"GET"},
-		Pattern: "/containers/**",
+		Pattern: "/**/x/**/y/**",
 		Action:  ActionAllow,
 	}, deps)
 	if err == nil {

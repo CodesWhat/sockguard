@@ -49,13 +49,26 @@ const (
 	httpMethodMaskTrace
 )
 
+type pathMatcherKind uint8
+
+const (
+	pathMatcherLiteral pathMatcherKind = iota
+	pathMatcherMatchAll
+	pathMatcherTrailingDeep
+	pathMatcherSegmentGlob
+	pathMatcherRegex
+)
+
 // CompiledRule is a rule with pre-compiled matchers for efficient evaluation.
 type CompiledRule struct {
 	methodMask      httpMethodMask
 	unknownMethods  []string
 	matchAllMethods bool
+	matcherKind     pathMatcherKind
 	literal         string
 	literalPrefix   string
+	trailingPrefix  string
+	segmentPatterns []string
 	pattern         *regexp.Regexp
 	// Action is returned when this rule matches.
 	Action Action
@@ -180,7 +193,22 @@ func compileRuleWithDeps(r Rule, deps *ruleDeps) (*CompiledRule, error) {
 	}
 
 	if !strings.Contains(r.Pattern, "*") {
+		cr.matcherKind = pathMatcherLiteral
 		cr.literal = r.Pattern
+		return cr, nil
+	}
+	if r.Pattern == "/**" {
+		cr.matcherKind = pathMatcherMatchAll
+		return cr, nil
+	}
+	if isTrailingDoubleStarPattern(r.Pattern) {
+		cr.matcherKind = pathMatcherTrailingDeep
+		cr.trailingPrefix = strings.TrimSuffix(r.Pattern, "/**")
+		return cr, nil
+	}
+	if !strings.Contains(r.Pattern, "**") {
+		cr.matcherKind = pathMatcherSegmentGlob
+		cr.segmentPatterns = splitGlobSegments(r.Pattern)
 		return cr, nil
 	}
 
@@ -190,6 +218,7 @@ func compileRuleWithDeps(r Rule, deps *ruleDeps) (*CompiledRule, error) {
 	if err != nil {
 		return nil, err
 	}
+	cr.matcherKind = pathMatcherRegex
 	cr.pattern = compiled
 
 	return cr, nil
@@ -222,14 +251,26 @@ func (cr *CompiledRule) matchesNormalizedUpperWithBit(upperMethod string, method
 		}
 	}
 
-	if cr.pattern == nil {
+	switch cr.matcherKind {
+	case pathMatcherLiteral:
 		return normalizedPath == cr.literal
-	}
-	if cr.literalPrefix != "" && !strings.HasPrefix(normalizedPath, cr.literalPrefix) {
+	case pathMatcherMatchAll:
+		return true
+	case pathMatcherTrailingDeep:
+		return matchTrailingDoubleStar(cr.trailingPrefix, normalizedPath)
+	case pathMatcherSegmentGlob:
+		if cr.literalPrefix != "" && !strings.HasPrefix(normalizedPath, cr.literalPrefix) {
+			return false
+		}
+		return matchGlobSegments(cr.segmentPatterns, normalizedPath)
+	case pathMatcherRegex:
+		if cr.literalPrefix != "" && !strings.HasPrefix(normalizedPath, cr.literalPrefix) {
+			return false
+		}
+		return cr.pattern.MatchString(normalizedPath)
+	default:
 		return false
 	}
-
-	return cr.pattern.MatchString(normalizedPath)
 }
 
 // Evaluate evaluates a request against an ordered list of compiled rules.
@@ -309,6 +350,84 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func isTrailingDoubleStarPattern(pattern string) bool {
+	return strings.HasSuffix(pattern, "/**") && !strings.Contains(pattern[:len(pattern)-3], "*")
+}
+
+func splitGlobSegments(pattern string) []string {
+	return strings.Split(strings.TrimPrefix(pattern, "/"), "/")
+}
+
+func matchTrailingDoubleStar(prefix, path string) bool {
+	if prefix == "" {
+		return true
+	}
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
+}
+
+func matchGlobSegments(patternSegments []string, path string) bool {
+	path = strings.TrimPrefix(path, "/")
+	if path == "" {
+		return len(patternSegments) == 1 && matchGlobSegment(patternSegments[0], "")
+	}
+
+	for _, patternSegment := range patternSegments {
+		if path == "" {
+			return false
+		}
+
+		segment, rest, hasMore := strings.Cut(path, "/")
+		if !matchGlobSegment(patternSegment, segment) {
+			return false
+		}
+		if !hasMore {
+			path = ""
+			continue
+		}
+		path = rest
+	}
+
+	return path == ""
+}
+
+func matchGlobSegment(pattern, segment string) bool {
+	if pattern == "*" {
+		return true
+	}
+	if !strings.Contains(pattern, "*") {
+		return pattern == segment
+	}
+
+	segmentIndex := 0
+	patternIndex := 0
+	starIndex := -1
+	segmentRetry := 0
+	for segmentIndex < len(segment) {
+		if patternIndex < len(pattern) && pattern[patternIndex] == segment[segmentIndex] {
+			patternIndex++
+			segmentIndex++
+			continue
+		}
+		if patternIndex < len(pattern) && pattern[patternIndex] == '*' {
+			starIndex = patternIndex
+			patternIndex++
+			segmentRetry = segmentIndex
+			continue
+		}
+		if starIndex == -1 {
+			return false
+		}
+		patternIndex = starIndex + 1
+		segmentRetry++
+		segmentIndex = segmentRetry
+	}
+
+	for patternIndex < len(pattern) && pattern[patternIndex] == '*' {
+		patternIndex++
+	}
+	return patternIndex == len(pattern)
 }
 
 func literalPrefixForPattern(pattern string) string {

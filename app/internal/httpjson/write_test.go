@@ -161,6 +161,21 @@ func TestWriteReturnsBodyWriteErrorAfterCommittingHeaders(t *testing.T) {
 	}
 }
 
+func TestSetJSONHeaders(t *testing.T) {
+	header := make(http.Header)
+	header.Set("Content-Type", "text/plain")
+	header.Set("X-Content-Type-Options", "ignore-me")
+
+	setJSONHeaders(header)
+
+	if got := header.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	if got := header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+}
+
 func TestGetJSONBufferReturnsUsableBuffer(t *testing.T) {
 	buf := getJSONBuffer()
 	if buf == nil {
