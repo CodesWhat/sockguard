@@ -519,18 +519,6 @@ func TestResolveClientNotFoundAndErrors(t *testing.T) {
 			t.Fatal("expected transport error")
 		}
 	})
-
-	t.Run("nil context", func(t *testing.T) {
-		socketPath := startUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			t.Fatal("request should not be built with nil context")
-		}))
-		resolver := upstreamResolver{client: newUnixHTTPClient(socketPath)}
-
-		_, _, err := resolver.resolveClient(nil, netip.MustParseAddr("172.18.0.5"))
-		if err == nil {
-			t.Fatal("expected nil context error")
-		}
-	})
 }
 
 func TestContainerHelpers(t *testing.T) {

@@ -302,7 +302,7 @@ func (r upstreamResolver) resolveClient(ctx context.Context, addr netip.Addr) (r
 	if err != nil {
 		return resolvedClient{}, false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))

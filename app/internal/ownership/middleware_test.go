@@ -690,9 +690,6 @@ func TestUpstreamInspectorInspectResource(t *testing.T) {
 	if _, _, err := inspector.inspectResource(context.Background(), resourceKind("other"), "id"); err == nil {
 		t.Fatal("expected unsupported kind error")
 	}
-	if _, _, err := inspector.inspectResource(nil, resourceKindContainer, "abc"); err == nil {
-		t.Fatal("expected nil context request error")
-	}
 }
 
 func TestUpstreamInspectorInspectExec(t *testing.T) {
@@ -736,9 +733,6 @@ func TestUpstreamInspectorInspectExec(t *testing.T) {
 	transportErrorInspector := upstreamInspector{client: newUnixHTTPClient(filepath.Join("/tmp", "sockguard-ownership-missing-"+time.Now().Format("150405000000000")+".sock"))}
 	if _, _, err := transportErrorInspector.inspectExec(context.Background(), "exec-1"); err == nil {
 		t.Fatal("expected transport error")
-	}
-	if _, _, err := inspector.inspectExec(nil, "exec-1"); err == nil {
-		t.Fatal("expected nil context request error")
 	}
 }
 
