@@ -407,6 +407,23 @@ func TestCompileContainerLabelRules(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected compile error")
 	}
+
+	// Lock in deterministic rule ordering. Go randomizes map iteration on
+	// every run, so without the explicit sort in compileContainerLabelRulesWith
+	// the (index, error reporting, first-match-wins) contract would flake.
+	// Keys are sorted alphabetically ahead of iteration, so `get` lands before
+	// `post` and rule 0 is the GET rule regardless of the underlying map order.
+	multi := map[string]string{
+		DefaultLabelPrefix + "post": "/containers/*/start",
+		DefaultLabelPrefix + "get":  "/containers/**",
+	}
+	ordered, _, err := compileContainerLabelRules(multi, DefaultLabelPrefix)
+	if err != nil || len(ordered) != 2 {
+		t.Fatalf("compileContainerLabelRules(multi) = (%v, %v), want 2 rules nil error", len(ordered), err)
+	}
+	if ordered[0].Index != 0 || ordered[1].Index != 1 {
+		t.Fatalf("rule indices = (%d, %d), want (0, 1) in sorted key order", ordered[0].Index, ordered[1].Index)
+	}
 }
 
 func TestLabelMethod(t *testing.T) {

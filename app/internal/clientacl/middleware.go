@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sort"
 	"strings"
 
 	"github.com/codeswhat/sockguard/internal/filter"
@@ -217,10 +218,23 @@ func compileContainerLabelRulesWith(
 		return nil, false, nil
 	}
 
+	// Sort the label keys before iterating so the compiled rule order,
+	// error reporting, and first-match-wins evaluation stay deterministic
+	// across runs. Go's map iteration is randomized on purpose, so without
+	// this sort a container with multiple `com.sockguard.allow.*` labels
+	// would see rule indices — and therefore the order in which validation
+	// errors surface — change between requests. That drifts into a latent
+	// flake and makes first-match-wins debugging confusing.
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
 	rules := make([]*filter.CompiledRule, 0)
 	hasACLLabels := false
 	index := 0
-	for key, value := range labels {
+	for _, key := range keys {
 		if !strings.HasPrefix(key, labelPrefix) {
 			continue
 		}
@@ -231,6 +245,7 @@ func compileContainerLabelRulesWith(
 			return nil, true, fmt.Errorf("unsupported client ACL label %q", key)
 		}
 
+		value := labels[key]
 		patterns := splitLabelPatterns(value)
 		if len(patterns) == 0 {
 			return nil, true, fmt.Errorf("empty client ACL label %q", key)
