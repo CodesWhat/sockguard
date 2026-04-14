@@ -380,6 +380,7 @@ func decodeDockerFilters(encoded string) (map[string][]string, error) {
 			for item := range typed {
 				values = append(values, item)
 			}
+			slices.Sort(values)
 			filters[key] = values
 		default:
 			return nil, fmt.Errorf("decode filters: unexpected %s filter type %T", key, value)

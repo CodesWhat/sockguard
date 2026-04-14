@@ -2,14 +2,37 @@ package visibility
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func missingSocketPath(t *testing.T) string {
+	t.Helper()
+
+	file, err := os.CreateTemp("/tmp", "sockguard-visibility-*.sock")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	path := file.Name()
+	_ = file.Close()
+	_ = os.Remove(path)
+	t.Cleanup(func() { _ = os.Remove(path) })
+	return path
+}
 
 func TestMiddlewareInjectsVisibilityLabelsIntoContainerListAndEvents(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -195,6 +218,71 @@ func TestMiddlewarePassesThroughWhenInspectTargetIsMissing(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
 	}
+}
+
+func TestMiddlewareUpstreamInspectNetworkFailure(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	nextCalled := false
+
+	handler := Middleware(missingSocketPath(t), logger, Options{
+		VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc123/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if nextCalled {
+		t.Fatal("expected upstream inspect failure to short-circuit request")
+	}
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "visibility policy lookup failed") {
+		t.Fatalf("body = %s, want visibility lookup failure", rec.Body.String())
+	}
+}
+
+func TestVisibilityInspectTimeout(t *testing.T) {
+	newTimeoutInspector := func() upstreamInspector {
+		return upstreamInspector{
+			client: &http.Client{
+				Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					<-r.Context().Done()
+					return nil, r.Context().Err()
+				}),
+			},
+		}
+	}
+
+	t.Run("resource inspect", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+
+		_, _, err := newTimeoutInspector().inspectResource(ctx, resourceKindContainer, "abc123")
+		if err == nil {
+			t.Fatal("expected inspectResource() to fail")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("errors.Is(err, context.DeadlineExceeded) = false, err = %v", err)
+		}
+	})
+
+	t.Run("exec inspect", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+
+		_, _, err := newTimeoutInspector().inspectExec(ctx, "exec-123")
+		if err == nil {
+			t.Fatal("expected inspectExec() to fail")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("errors.Is(err, context.DeadlineExceeded) = false, err = %v", err)
+		}
+	})
 }
 
 func TestDecodeDockerFilters(t *testing.T) {
