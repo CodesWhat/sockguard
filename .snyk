@@ -7,12 +7,31 @@ patch: {}
 # that section is SCA-only. Use `exclude: code:` to remove files from
 # Snyk Code scanning entirely.
 exclude:
+  global:
+    # Local agent worktrees — gitignored, never deployed, contain stale
+    # snapshots of the repo. Snyk's --all-projects mode picks up their
+    # package.json/go.mod files and reports historical vulns from old
+    # next.js versions that the live workspaces have long since fixed.
+    # SCA scans should always be invoked with `--exclude=.claude` as a
+    # belt-and-braces measure since global excludes aren't guaranteed
+    # to apply to every Snyk product.
+    - .claude/**
+
   code:
     # Developer-only benchmark harnesses — never compiled into the
     # sockguard binary. loadgen uses a -path CLI flag as the HTTP
     # request path against a transport pinned to a unix socket via a
     # custom DialContext, which Snyk Code's taint analysis flags as
-    # SSRF (CWE-918). It is not: the network destination is fixed by
-    # -socket, not -path, and the tool is run locally by the developer
-    # with their own arguments. No attacker-controlled input exists.
+    # SSRF (CWE-918). mockdocker calls os.Remove on its -socket flag
+    # to clean up the unix socket it owns, which Snyk flags as path
+    # traversal (CWE-23). Both tools run locally with developer-supplied
+    # arguments — no attacker-controlled input exists.
     - benchmarks/**
+
+    # Git commit-msg hook invoked by Lefthook (see lefthook.yml). Git
+    # passes the path to .git/COMMIT_EDITMSG as argv[2]; the script
+    # reads it with readFileSync, which Snyk flags as path traversal
+    # (CWE-23). The script runs locally in the developer's own shell
+    # during `git commit` — anyone who could influence argv[2] already
+    # has shell access, making "read arbitrary files" a non-threat.
+    - scripts/validate-commit-msg.mjs
