@@ -189,6 +189,52 @@ rules:
 	}
 }
 
+func TestExecuteMatchCommandRejectsMissingConfig(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist.yaml")
+
+	_, _, err := executeRootCommand(t,
+		"-c", missing,
+		"match",
+		"--method", "GET",
+		"--path", "/_ping",
+	)
+	if err == nil {
+		t.Fatal("expected match to fail when config file is missing")
+	}
+	if !strings.Contains(err.Error(), "config file") {
+		t.Fatalf("error = %v, want reference to config file", err)
+	}
+}
+
+func TestExecuteMatchCommandRejectsNonAbsolutePath(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sockguard.yaml")
+	yaml := `
+upstream:
+  socket: /var/run/docker.sock
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, _, err := executeRootCommand(t,
+		"-c", cfgPath,
+		"match",
+		"--method", "GET",
+		"--path", "containers/json",
+	)
+	if err == nil {
+		t.Fatal("expected match to fail on a path without a leading slash")
+	}
+	if !strings.Contains(err.Error(), "start with") {
+		t.Fatalf("error = %v, want guidance about leading slash", err)
+	}
+}
+
 func executeRootCommand(t *testing.T, args ...string) (stdout string, stderr string, err error) {
 	t.Helper()
 

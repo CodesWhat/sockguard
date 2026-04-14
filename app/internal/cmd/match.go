@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -76,6 +77,23 @@ func runMatch(cmd *cobra.Command, args []string) error {
 	}
 	if path == "" {
 		return fmt.Errorf("path is required")
+	}
+	// Real HTTP request paths are always absolute. Reject paths that
+	// don't start with "/" so users don't accidentally run a match
+	// against a half-written input and get a misleading default-deny
+	// result that looks authoritative.
+	if !strings.HasPrefix(path, "/") {
+		return fmt.Errorf("path must start with %q", "/")
+	}
+
+	// config.Load treats a missing file as "use defaults" to keep the
+	// serve path flexible, but match is a check tool: if the user
+	// pointed us at a file that doesn't exist, evaluating against the
+	// built-in defaults would silently answer the wrong question.
+	if cfgFile != "" {
+		if _, err := os.Stat(cfgFile); err != nil {
+			return fmt.Errorf("config file: %w", err)
+		}
 	}
 
 	cfg, err := config.Load(cfgFile)
