@@ -45,7 +45,7 @@ Allow or deny specific Docker API endpoint paths using glob patterns. Docker API
 
 The remaining blind-write guardrail now covers the gaps Sockguard still cannot constrain safely, chiefly arbitrary exec without an allowlist and Swarm service management. Validation refuses to start with those rules allowed unless you explicitly set `insecure_allow_body_blind_writes: true`, to keep the enforcement boundary honest.
 
-Future body-inspection additions (tracked for v0.4+): escalation capabilities like `SYS_ADMIN`/`NET_ADMIN`, device mappings, host namespace sharing beyond `NetworkMode`, and security profile overrides.
+Future body-inspection additions on the roadmap: escalation capabilities like `SYS_ADMIN`/`NET_ADMIN`, device mappings, host namespace sharing beyond `NetworkMode`, and security profile overrides.
 
 ### Layer 6: Owner Label Isolation
 When `ownership.owner` is set, Sockguard stamps created containers, networks, volumes, and build-produced images with an owner label, injects `label=` filters into list/prune/events responses, and inspects target resources on individual requests to deny cross-owner access. This turns one shared Docker socket into N isolated identity views.
