@@ -5,7 +5,7 @@
       "entry": ["scripts/*.mjs"]
     },
     "docs": {
-      "ignore": [".source/**"]
+      "entry": ["source.config.ts"]
     }
   }
 }
