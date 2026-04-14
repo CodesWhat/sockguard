@@ -181,12 +181,19 @@ func FuzzHijackBidirectionalStream(f *testing.F) {
 			t.Fatal("next handler should not be called for hijack endpoints")
 		}))
 
-		clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+		// Client↔proxy leg uses a unix socket rather than a loopback TCP
+		// listener so the 5 s pre-push smoke run doesn't exhaust macOS
+		// ephemeral ports by cycling through hundreds of dial/close
+		// pairs per second. Bidirectional hijack semantics are identical
+		// across the two transports for what this fuzz exercises.
+		clientSocketPath := fmt.Sprintf("/tmp/sockguard-fuzz-hijack-client-%d-%d.sock", os.Getpid(), time.Now().UnixNano())
+		clientLn, err := net.Listen("unix", clientSocketPath)
 		if err != nil {
-			t.Fatalf("listen client tcp socket: %v", err)
+			t.Fatalf("listen client unix socket: %v", err)
 		}
 		t.Cleanup(func() {
 			_ = clientLn.Close()
+			_ = os.Remove(clientSocketPath)
 		})
 
 		srv := &http.Server{Handler: handler}
@@ -197,7 +204,7 @@ func FuzzHijackBidirectionalStream(f *testing.F) {
 			_ = srv.Close()
 		})
 
-		clientConn, err := net.Dial("tcp", clientLn.Addr().String())
+		clientConn, err := net.Dial("unix", clientSocketPath)
 		if err != nil {
 			t.Fatalf("dial proxy: %v", err)
 		}
@@ -227,8 +234,8 @@ func FuzzHijackBidirectionalStream(f *testing.F) {
 					return
 				}
 			}
-			if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-				if err := tcpConn.CloseWrite(); err != nil {
+			if cw, ok := clientConn.(interface{ CloseWrite() error }); ok {
+				if err := cw.CloseWrite(); err != nil {
 					writeErr <- fmt.Errorf("close client write side: %w", err)
 					return
 				}
