@@ -49,16 +49,22 @@ ALLOW_RESTART=1
 
 ## From wollomatic/socket-proxy
 
-wollomatic uses CLI flag regex allowlists. The concepts map directly:
+wollomatic already does more than a basic path gate: regex allowlists per method, IP or hostname admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, and a filtered unix-socket endpoint. Sockguard's migration story is mostly direct, but not every concept is a 1:1 swap yet.
 
 | wollomatic | sockguard |
 |-----------|-----------|
 | `-allowGET "^/(v[0-9.]+/)?containers/json$"` | `{ method: GET, path: "/containers/json" }` |
 | `-allowGET "^/(v[0-9.]+/)?events$"` | `{ method: GET, path: "/events" }` |
 | `-allowPOST "^/(v[0-9.]+/)?containers/[a-z0-9]+/start$"` | `{ method: POST, path: "/containers/*/start" }` |
+| `-allowfrom=172.18.0.0/16` | `clients.allowed_cidrs: ["172.18.0.0/16"]` |
+| `-allowfrom=traefik` | Not shipped yet. Today use source CIDRs, mTLS certificate common names, or unix socket mode. Hostname/SAN/SPIFFE selectors are on the roadmap. |
+| `socket-proxy.allow.get=.*` | `clients.container_labels.label_prefix: socket-proxy.allow.` |
+| `-allowbindmountfrom=/srv/data,/var/log` | `request_body.container_create.allowed_bind_mounts: ["/srv/data", "/var/log"]` |
+| `-proxysocketendpoint=/tmp/filtered.sock` | `listen.socket: /tmp/filtered.sock` |
 
 Key differences:
 - Sockguard auto-strips API version prefixes — no need for `(v[0-9.]+/)?` in patterns
 - Glob patterns (`*`, `**`) instead of regex
 - YAML config instead of CLI flags
 - Auto-anchoring built in (no need for `^` and `$`)
+- Wollomatic already supports hostname allowlists and a filtered unix-socket endpoint today; Sockguard is stronger on exec/pull/build inspection, named profiles, ownership isolation, and visibility-controlled reads

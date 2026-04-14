@@ -67,7 +67,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Gate callers by source CIDR and enforce per-client allowlists resolved from the calling container's labels over the bridge network.",
+      "Gate callers by source CIDR, bridge-network container labels, and named mTLS certificate profiles before the global policy runs.",
     category: "control",
   },
   {
@@ -81,7 +81,7 @@ export const features: Feature[] = [
   },
   {
     icon: Zap,
-    title: "Structured Logging",
+    title: "Structured Access Logging",
     color: "text-emerald-500 dark:text-emerald-400",
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
@@ -111,7 +111,7 @@ export const features: Feature[] = [
     title: "Minimal Attack Surface",
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
-    description: "Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance.",
+    description: "Wolfi-based image. Cosign-signed with SBOM and build provenance.",
     category: "security",
   },
   {

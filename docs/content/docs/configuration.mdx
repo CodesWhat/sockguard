@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: Configure sockguard via YAML or environment variables — listeners, TLS, request-body inspection, client profiles, ownership, and audit logging.
+description: Configure sockguard via YAML or environment variables — listeners, TLS, request-body inspection, client profiles, ownership, and structured access logging.
 ---
 
 Sockguard supports two configuration methods: YAML config files and environment variables.
@@ -165,7 +165,7 @@ clients:
 ```
 
 - `clients.source_ip_profiles` matches the caller's remote IP against CIDRs in config order.
-- `clients.client_certificate_profiles` matches the verified mTLS leaf certificate common name in config order and takes precedence over source-IP assignment.
+- `clients.client_certificate_profiles` matches the verified mTLS leaf certificate common name in config order and takes precedence over source-IP assignment. DNS/IP/URI SAN selectors, SPIFFE-style identities, and unix peer credentials are planned but not shipped yet.
 - `clients.default_profile` is the fallback when no specific assignment matches.
 - Each profile has its own `rules` and `request_body` policy, so one proxy can safely host a read-only dashboard, a container updater, and an admin UI at the same time.
 - `clients.client_certificate_profiles` requires `listen.tls` mutual TLS.

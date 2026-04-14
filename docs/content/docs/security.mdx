@@ -1,6 +1,6 @@
 ---
 title: Security Model
-description: Sockguard's defense-in-depth model — transport admission, client admission, method/path filtering, request-body inspection, ownership isolation, visibility-controlled reads, and audit logging.
+description: Sockguard's defense-in-depth model — transport admission, client admission, method/path filtering, request-body inspection, ownership isolation, visibility-controlled reads, and structured access logging.
 ---
 
 ## Why Socket Proxying Matters
@@ -48,7 +48,7 @@ Allow or deny specific Docker API endpoint paths using glob patterns. Docker API
 
 The remaining blind-write guardrail now covers the gaps Sockguard still cannot constrain safely, chiefly arbitrary exec without an allowlist and Swarm service management. Validation refuses to start with those rules allowed unless you explicitly set `insecure_allow_body_blind_writes: true`, to keep the enforcement boundary honest.
 
-Future body-inspection additions on the roadmap: escalation capabilities like `SYS_ADMIN`/`NET_ADMIN`, device mappings, host namespace sharing beyond `NetworkMode`, and security profile overrides.
+Future body-inspection additions on the roadmap: service/swarm write inspection, escalation capabilities like `SYS_ADMIN`/`NET_ADMIN`, device mappings, host namespace sharing beyond `NetworkMode`, `allowPrivilegeEscalation` / non-root rails, and security profile overrides.
 
 ### Layer 6: Owner Label Isolation
 When `ownership.owner` is set, Sockguard stamps created containers, networks, volumes, and build-produced images with an owner label, injects `label=` filters into list/prune/events responses, and inspects target resources on individual requests to deny cross-owner access. This turns one shared Docker socket into N isolated identity views.
@@ -66,11 +66,13 @@ Sockguard now filters successful Docker read responses and narrows read visibili
 These controls are on by default where they are pure redaction because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout.
 
 Future response-filtering additions still tracked for the next tier:
-- Hide containers by name/label beyond ownership
 - Name/image pattern visibility controls beyond label selectors
+- Wider read-side coverage across services, tasks, configs, secrets, plugins, and system endpoints
 
-### Layer 8: Audit Logging
-Every request is logged with method, path, decision, matched rule index, selected client profile when present, latency, request ID, and client metadata. Upstream reverse-proxy errors are correlated with the outer access-log entry by shared request ID.
+### Layer 8: Structured Access Logging And Correlation
+Every request is logged with method, path, decision, matched rule index, selected client profile when present, latency, request ID, and client metadata. Upstream reverse-proxy errors are correlated with the outer access-log entry by the same request context and, when present, the caller-supplied request ID header.
+
+Sockguard does not yet ship a separate audit pipeline. Prometheus metrics, trusted request-ID generation, a dedicated audit schema, and explicit deny reason codes remain planned operator-auditability work rather than current runtime behavior.
 
 ## Dangerous Docker API Endpoints
 

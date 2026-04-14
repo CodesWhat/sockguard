@@ -12,7 +12,7 @@ export const comparisonRows: ComparisonRow[] = [
     feature: "Method + path filtering",
     tecnativa: "Yes",
     linuxserver: "Yes",
-    wollomatic: "Yes",
+    wollomatic: "Yes (regex)",
     sockguard: "Yes",
   },
   {
@@ -26,14 +26,14 @@ export const comparisonRows: ComparisonRow[] = [
     feature: "Request body inspection",
     tecnativa: "No",
     linuxserver: "No",
-    wollomatic: "No",
+    wollomatic: "Partial (bind-mount restrictions)",
     sockguard: "Yes (create, exec, pull, build)",
   },
   {
     feature: "Per-client policies",
     tecnativa: "No",
     linuxserver: "No",
-    wollomatic: "CIDR + labels",
+    wollomatic: "IP/hostname + labels",
     sockguard: "CIDR + labels + cert profiles",
   },
   {
@@ -58,11 +58,18 @@ export const comparisonRows: ComparisonRow[] = [
     sockguard: "Yes (visibility + redaction)",
   },
   {
-    feature: "Structured audit log",
+    feature: "Structured access logs",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "Yes (JSON option)",
+    sockguard: "Yes",
+  },
+  {
+    feature: "Dedicated audit log schema",
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
-    sockguard: "Yes",
+    sockguard: "Roadmap",
   },
   {
     feature: "YAML config",

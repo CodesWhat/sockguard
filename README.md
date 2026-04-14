@@ -191,7 +191,7 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 
 The Docker socket is **root access to your host**. Every container with socket access can escape containment, mount the host filesystem, and pivot to other containers. Yet tools like Traefik, Portainer, and drydock need socket access to function.
 
-Existing socket proxies (Tecnativa, LinuxServer) filter by URL path only. Sockguard goes further: granular operation control, structured audit logging, and a default-deny posture out of the box.
+Most existing socket proxies stop at method/path or regex filtering. Tecnativa and LinuxServer gate broad Docker API sections, and wollomatic adds regex allowlists, hostname/IP admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, and a filtered unix-socket endpoint. Sockguard goes further on body-aware policy enforcement, per-client profile selection, ownership isolation, and read-side visibility/redaction.
 
 <hr>
 
@@ -202,7 +202,7 @@ Existing socket proxies (Tecnativa, LinuxServer) filter by URL path only. Sockgu
 | 🛡️ | **Default-Deny Posture** | Everything blocked unless explicitly allowed. No match means deny. |
 | 🎛️ | **Granular Control** | Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching. |
 | 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation. 10 bundled presets. |
-| 📊 | **Structured Logging** | JSON access logs with method, path, decision, matched rule, latency, client info. |
+| 📊 | **Structured Access Logging** | JSON access logs with method, path, decision, matched rule, latency, client info. |
 | 🔐 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
 | 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks and client-container label ACLs let one proxy differentiate TCP callers before the global rule set runs. |
 | 🔍 | **Request Body Inspection** | `POST /containers/create`, `/containers/*/exec`, `/images/create`, and `/build` bodies are inspected to block privileged/host-network containers, non-allowlisted bind mounts and exec argv, untrusted registries and `fromSrc` imports, and remote build contexts before Docker sees the request. |
@@ -210,7 +210,7 @@ Existing socket proxies (Tecnativa, LinuxServer) filter by URL path only. Sockgu
 | 🫥 | **Visibility-Controlled Reads** | Redacts env, mount, and network-topology metadata by default and can hide list/events/inspect results behind per-client label visibility rules. |
 | 🧱 | **Body-Blind Write Guardrail** | Exec without an `allowed_commands` allowlist and Swarm service writes still require explicit `insecure_allow_body_blind_writes` opt-in until their request bodies are inspected. |
 | 🔄 | **Tecnativa Compatible** | Drop-in replacement using the same env vars. `CONTAINERS=1`, `POST=0`, `ALLOW_START=1` all work. |
-| 🪶 | **Minimal Attack Surface** | Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance. |
+| 🪶 | **Minimal Attack Surface** | Wolfi-based image. Cosign-signed with SBOM and build provenance. |
 | ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
 | 🩺 | **Health Check** | `/health` endpoint with cached upstream reachability probes. |
 | 🧪 | **Battle-Tested** | ~99% statement coverage, race-detector clean, fuzz testing on filter, config, proxy, and hijack paths. |
@@ -223,14 +223,17 @@ How sockguard stacks up against other Docker socket proxies:
 
 | Feature | Tecnativa | LinuxServer | wollomatic | **Sockguard** |
 |---------|:---------:|:-----------:|:----------:|:-------------:|
-| Method + path filtering | ✅ | ✅ | ✅ | ✅ |
-| Granular POST ops | ❌ | Partial | Via regex | ✅ |
-| Request body inspection | ❌ | ❌ | ❌ | ✅ (`create`, `exec`, `pull`, `build`) |
-| Per-client policies | ❌ | ❌ | CIDR + client labels | ✅ (CIDR + labels + mTLS-CN profiles) |
-| Response filtering | ❌ | ❌ | ❌ | ✅ (visibility + redaction) |
-| Structured audit log | ❌ | ❌ | ❌ | ✅ |
+| Method + path filtering | ✅ | ✅ | ✅ (regex) | ✅ |
+| Granular container write ops | ❌ | Partial (`ALLOW_*`) | Via regex | ✅ |
+| Request body inspection | ❌ | ❌ | Partial (bind-mount source restrictions) | ✅ (`create`, `exec`, `pull`, `build`) |
+| Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ✅ (CIDR + labels + mTLS-CN profiles) |
+| Read-side visibility / redaction | ❌ | ❌ | ❌ | ✅ (visibility + redaction) |
+| Structured access logs | ❌ | ❌ | ✅ (JSON option) | ✅ |
+| Dedicated audit log schema | ❌ | ❌ | ❌ | 🕒 roadmap |
 | YAML config | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ✅ |
+
+Wollomatic deserves more credit than earlier versions of this README gave it. Current releases already support hostname/IP admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, and a filtered unix-socket endpoint. Sockguard's current lead is in exec/pull/build inspection, named profiles, ownership isolation, and read-side visibility/redaction.
 
 <hr>
 
@@ -433,14 +436,14 @@ Replace the image — your env vars work as-is:
 
 | Version | Theme | Status |
 |---------|-------|--------|
-| **0.1.0** | MVP — drop-in replacement with granular control, YAML config, structured logging | ✅ shipped |
+| **0.1.0** | MVP — drop-in replacement with granular control, YAML config, structured access logging | ✅ shipped |
 | **0.2.0** | mTLS for remote TCP, TLS 1.3 minimum, loopback-by-default listener, body-blind write guardrail | ✅ shipped |
-| **0.3.0** | Request-body inspection for `/containers/create`, per-proxy owner labels, per-client CIDR + container-label ACLs | ✅ shipped |
-| **0.4.0** | Profile inheritance, unix peer creds, name/image pattern visibility beyond label selectors | 🕒 planned |
-| **0.5.0** | Operator auditability — Prometheus metrics, dedicated audit log schema, stable request IDs, explicit deny reason codes | 🕒 planned |
-| **0.6.0** | Secure container enforcement — readonly rootfs, resource limits, approved seccomp/AppArmor/SELinux, restricted CapAdd/Devices, image signature verification | 🕒 planned |
-| **0.7.0** | Abuse controls — per-client rate limits, burst controls, concurrency caps | 🕒 planned |
-| **0.8.0** | Dynamic configuration — hot reload, admin API, config validation, policy versioning | 🕒 planned |
+| **0.3.0** | Body inspection for create/exec/pull/build, owner labels, per-client profiles, visibility/redaction | ✅ shipped |
+| **0.4.0** | Close remaining control-plane gaps — service/swarm inspection, profile inheritance, unix peer creds plus SAN/SPIFFE selectors, name/image patterns, broader read-side coverage | 🕒 planned |
+| **0.5.0** | Operator auditability — Prometheus metrics, dedicated audit log schema, trusted request IDs, explicit deny reason codes | 🕒 planned |
+| **0.6.0** | Secure container enforcement — readonly rootfs, non-root/no-new-privilege rails, resource limits, approved seccomp/AppArmor/SELinux, restricted CapAdd/Devices, image signatures plus attestations | 🕒 planned |
+| **0.7.0** | Abuse controls — per-client rate limits, burst budgets, concurrency caps, expensive-endpoint quotas | 🕒 planned |
+| **0.8.0** | Dynamic policy delivery — signed bundles, long-poll/hot reload, audit/warn/enforce rollout modes, admin API, policy versioning | 🕒 planned |
 
 <hr>
 
