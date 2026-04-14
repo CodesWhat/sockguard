@@ -193,6 +193,7 @@ func extractBuildDockerfile(file *os.File, contentType string, dockerfilePath st
 		return nil, false, err
 	}
 
+	// Docker build inputs usually arrive as gzip tar, then plain tar, and only sometimes as raw Dockerfile bytes, so probe in that order.
 	if dockerfile, ok, err := extractDockerfileFromGzipTar(file, dockerfilePath); ok || err != nil {
 		return dockerfile, ok, err
 	}

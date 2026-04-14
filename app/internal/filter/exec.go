@@ -180,6 +180,7 @@ func decodeExecCommand(raw json.RawMessage) ([]string, error) {
 	}
 
 	var command string
+	// Docker clients can send exec Cmd as argv or a shell-style string, so we prefer structured args and fall back for compatibility.
 	if err := json.Unmarshal(raw, &command); err != nil {
 		return nil, err
 	}
