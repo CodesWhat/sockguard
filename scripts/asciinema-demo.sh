@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
 # scripts/asciinema-demo.sh
 #
-# Records a ~15-second walkthrough of the sockguard CLI for the
-# marketing site. Runs `sockguard version`, `sockguard validate`, and
-# `sockguard serve` against a throwaway config so visitors see the
-# mascot banner, the compiled rule table, and a real startup log line
-# — not a synthetic rule tester.
+# Records a ~20-second walkthrough of the sockguard CLI for the
+# marketing site. The flow is:
+#
+#   1. sockguard version              — tool identification
+#   2. sockguard validate             — compiled rule table
+#   3. sockguard match (allow)        — GET /containers/json → rule #3
+#   4. sockguard match (deny+reason)  — POST /containers/*/exec → rule #5
+#   5. sockguard match (default-deny) — DELETE /images/* → rule #6
+#   6. sockguard serve                — mascot banner + startup log
+#
+# Visitors see the dim-label/green-check/red-cross UI land in real
+# terminal output instead of on a synthetic React page. The match
+# calls are the hook — "here's your rules, here's what sockguard
+# would do with this request, right now, offline, before you proxy
+# a single byte."
 #
 # Usage (from the repo root):
 #
@@ -73,6 +83,9 @@ rules:
     action: allow
   - match: { method: GET, path: "/containers/*/json" }
     action: allow
+  - match: { method: POST, path: "/containers/*/exec" }
+    action: deny
+    reason: exec disabled
   - match: { method: "*", path: "/**" }
     action: deny
     reason: no matching allow rule
@@ -104,24 +117,51 @@ pause() {
   sleep "${1:-1}"
 }
 
+# Helper: run a sockguard subcommand with the throwaway config, but
+# print the command on screen without the long /tmp/... path — keeps
+# the frame readable. Callers pass the fake-typed command and the
+# real args; the real args include -c "$CONFIG".
+run_demo() {
+  local fake="$1"
+  shift
+  typeline "$fake"
+  "$SOCKGUARD_BIN" "$@" || true
+}
+
 clear
 
-# ────────────── sockguard version ──────────────
-typeline "sockguard version"
-"$SOCKGUARD_BIN" version || true
-pause 1.2
+# ────────────── 1. sockguard version ──────────────
+run_demo "sockguard version" version
+pause 1.0
 
-# ────────────── sockguard validate ──────────────
-typeline "sockguard validate --config ./sockguard.yaml"
-"$SOCKGUARD_BIN" validate --config "$CONFIG" || true
-pause 1.8
+# ────────────── 2. sockguard validate ──────────────
+run_demo "sockguard validate --config ./sockguard.yaml" \
+  validate --config "$CONFIG"
+pause 1.6
 
-# ────────────── sockguard serve ──────────────
-# Starts the proxy. Prints the mascot banner + the startup log line,
-# then we SIGINT it so the recording doesn't hang on a long-lived
-# process. 2.5 s is empirically enough time on a dev laptop for the
-# banner to flush and the first `sockguard started` log entry to
-# appear.
+# ────────────── 3. sockguard match — allowed request ──────────────
+# "Would sockguard let Traefik list containers?"
+run_demo "sockguard match -X GET --path /v1.45/containers/json" \
+  match --config "$CONFIG" --method GET --path /v1.45/containers/json
+pause 1.4
+
+# ────────────── 4. sockguard match — explicit deny with reason ──────────────
+# "What if Portainer tries to exec into a container?"
+run_demo "sockguard match -X POST --path /containers/abc/exec" \
+  match --config "$CONFIG" --method POST --path /containers/abc/exec
+pause 1.4
+
+# ────────────── 5. sockguard match — default-deny fallthrough ──────────────
+# "What about deleting an image? Nothing explicit — default deny."
+run_demo "sockguard match -X DELETE --path /images/sha256:abc" \
+  match --config "$CONFIG" --method DELETE --path /images/sha256:abc
+pause 1.6
+
+# ────────────── 6. sockguard serve ──────────────
+# Final beat. Prints the mascot banner + the startup log line, then
+# we SIGINT it so the recording doesn't hang on a long-lived process.
+# 2.5 s is empirically enough time on a dev laptop for the banner to
+# flush and the first `sockguard started` log entry to appear.
 typeline "sockguard serve --config ./sockguard.yaml"
 "$SOCKGUARD_BIN" serve --config "$CONFIG" &
 SERVE_PID=$!
