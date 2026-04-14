@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net"
@@ -266,6 +267,152 @@ func TestFullProxyChainHijackDenied(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, `"normalized_path":"/containers/abc/attach"`) {
 		t.Fatalf("expected normalized path in denied log, got: %s", logOutput)
+	}
+}
+
+func TestBuildServeHandlerExercisesClientACLVisibilityFilterAndResponseFilter(t *testing.T) {
+	socketPath := shortSocketPath(t, "chain-full")
+	_ = os.Remove(socketPath)
+
+	var mu sync.Mutex
+	upstreamHits := make(map[string]int)
+
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		upstreamHits[r.URL.Path]++
+		mu.Unlock()
+
+		switch r.URL.Path {
+		case "/containers/visible/json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{
+				"Config":{"Labels":{"com.sockguard.client":"watchtower"}}
+			}`)
+		case "/v1.45/containers/visible/json":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{
+				"Config":{
+					"Env":["SECRET=value"],
+					"Labels":{"com.sockguard.client":"watchtower"}
+				},
+				"HostConfig":{
+					"Binds":["/srv/secrets:/run/secrets:ro"],
+					"NetworkMode":"bridge"
+				},
+				"Mounts":[
+					{"Source":"/srv/secrets","Destination":"/run/secrets"}
+				],
+				"NetworkSettings":{
+					"IPAddress":"172.18.0.2",
+					"Networks":{
+						"bridge":{
+							"IPAddress":"172.18.0.2",
+							"NetworkID":"deadbeef"
+						}
+					}
+				}
+			}`)
+		default:
+			t.Fatalf("unexpected upstream path %q", r.URL.Path)
+		}
+	}))
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Response.VisibleResourceLabels = nil
+	cfg.Response.RedactContainerEnv = true
+	cfg.Response.RedactMountPaths = true
+	cfg.Response.RedactNetworkTopology = true
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	}
+	cfg.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name: "watchtower",
+			Response: config.ClientProfileResponseConfig{
+				VisibleResourceLabels: []string{"com.sockguard.client=watchtower"},
+			},
+			Rules: []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/*/json"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "profile deny"},
+			},
+		},
+	}
+	cfg.Clients.SourceIPProfiles = []config.ClientSourceIPProfileAssignmentConfig{
+		{Profile: "watchtower", CIDRs: []string{"127.0.0.0/8"}},
+	}
+
+	rules, err := compileRuleConfigsForTest(cfg.Rules)
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	addr, waitForRequest := startProxyChainServer(t, handler)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + addr + "/v1.45/containers/visible/json")
+	if err != nil {
+		t.Fatalf("proxy GET /containers/visible/json: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read proxy response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, string(body))
+	}
+
+	waitForRequest()
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nbody: %s", err, string(body))
+	}
+
+	configBody, _ := payload["Config"].(map[string]any)
+	if env, _ := configBody["Env"].([]any); len(env) != 0 {
+		t.Fatalf("Config.Env = %#v, want empty redacted array", configBody["Env"])
+	}
+
+	hostConfig, _ := payload["HostConfig"].(map[string]any)
+	if got, _ := hostConfig["NetworkMode"].(string); got != "<redacted>" {
+		t.Fatalf("HostConfig.NetworkMode = %q, want %q", got, "<redacted>")
+	}
+	binds, _ := hostConfig["Binds"].([]any)
+	if got, _ := binds[0].(string); got != "<redacted>:/run/secrets:ro" {
+		t.Fatalf("HostConfig.Binds[0] = %q, want %q", got, "<redacted>:/run/secrets:ro")
+	}
+
+	mounts, _ := payload["Mounts"].([]any)
+	firstMount, _ := mounts[0].(map[string]any)
+	if got, _ := firstMount["Source"].(string); got != "<redacted>" {
+		t.Fatalf("Mounts[0].Source = %q, want %q", got, "<redacted>")
+	}
+
+	networkSettings, _ := payload["NetworkSettings"].(map[string]any)
+	if got, _ := networkSettings["IPAddress"].(string); got != "<redacted>" {
+		t.Fatalf("NetworkSettings.IPAddress = %q, want %q", got, "<redacted>")
+	}
+	networks, _ := networkSettings["Networks"].(map[string]any)
+	bridge, _ := networks["bridge"].(map[string]any)
+	if got, _ := bridge["NetworkID"].(string); got != "<redacted>" {
+		t.Fatalf("NetworkSettings.Networks[bridge].NetworkID = %q, want %q", got, "<redacted>")
+	}
+
+	mu.Lock()
+	gotVersioned := upstreamHits["/v1.45/containers/visible/json"]
+	gotInspect := upstreamHits["/containers/visible/json"]
+	mu.Unlock()
+	if gotInspect != 1 {
+		t.Fatalf("visibility inspect hits = %d, want 1", gotInspect)
+	}
+	if gotVersioned != 1 {
+		t.Fatalf("proxied inspect hits = %d, want 1", gotVersioned)
 	}
 }
 

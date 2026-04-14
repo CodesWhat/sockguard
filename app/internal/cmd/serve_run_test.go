@@ -61,6 +61,23 @@ func (l *serveTestListener) Addr() net.Addr {
 	return l.addr
 }
 
+type serveTestSequentialCloseListener struct {
+	serveTestListener
+	closeErrs []error
+}
+
+func (l *serveTestSequentialCloseListener) Close() error {
+	l.closeCalls++
+	if len(l.closeErrs) == 0 {
+		return nil
+	}
+	idx := l.closeCalls - 1
+	if idx >= len(l.closeErrs) {
+		return l.closeErrs[len(l.closeErrs)-1]
+	}
+	return l.closeErrs[idx]
+}
+
 type serveTestCloser struct {
 	err error
 }
@@ -744,6 +761,51 @@ func TestRunServeWarnsOnWildcardTCPBind(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, `"recommendation":"configure listen.tls for mTLS, bind 127.0.0.1:<port>, or use listen.socket"`) {
 		t.Fatalf("expected mTLS/loopback/socket recommendation, got: %s", logOutput)
+	}
+}
+
+func TestRunServeDoesNotWarnWhenDeferredListenerCloseReturnsNetErrClosed(t *testing.T) {
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		cfg := testServeConfig()
+		cfg.Listen.Address = "127.0.0.1:2375"
+		return cfg, nil
+	}
+
+	var logBuf strings.Builder
+	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
+		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
+	}
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		return stubCompiledRules(), nil
+	}
+	deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return &serveTestConn{}, nil
+	}
+
+	listener := &serveTestSequentialCloseListener{
+		closeErrs: []error{nil, net.ErrClosed},
+	}
+	deps.createServeListener = func(*config.Config) (net.Listener, error) {
+		return listener, nil
+	}
+	deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {}
+	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {
+		c <- syscall.SIGINT
+	}
+	deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
+		return listener.Close()
+	}
+
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
+		t.Fatalf("runServe() error = %v", err)
+	}
+
+	if listener.closeCalls != 2 {
+		t.Fatalf("listener close calls = %d, want 2", listener.closeCalls)
+	}
+	if strings.Contains(logBuf.String(), `"msg":"failed to close listener"`) {
+		t.Fatalf("unexpected listener-close warning for net.ErrClosed: %s", logBuf.String())
 	}
 }
 
