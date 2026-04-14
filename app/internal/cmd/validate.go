@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/codeswhat/sockguard/internal/config"
+	"github.com/codeswhat/sockguard/internal/ui"
 )
 
 var validateCmd = &cobra.Command{
@@ -22,44 +23,62 @@ func init() {
 }
 
 func runValidate(cmd *cobra.Command, args []string) error {
-	// 1. Load config
+	out := cmd.OutOrStdout()
+	errOut := cmd.ErrOrStderr()
+	stdoutP := ui.New(out)
+	stderrP := ui.New(errOut)
+
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
-		return fmt.Errorf("config load: %w", err)
+		wrapped := fmt.Errorf("config load: %w", err)
+		printValidationFailure(errOut, stderrP, wrapped)
+		return wrapped
 	}
 
-	// 2. Tecnativa compat (with discard logger)
 	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	compatActive := config.ApplyCompat(cfg, discardLogger)
 
-	// 3. Validate and compile rules
 	compiled, err := newServeDeps().validateRules(cfg)
 	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Validation FAILED:\n%v\n", err)
+		printValidationFailure(errOut, stderrP, err)
 		return err
 	}
 
-	// 4. Print effective config
-	fmt.Fprintf(cmd.OutOrStdout(), "Config:   %s\n", cfgFile)
-	fmt.Fprintf(cmd.OutOrStdout(), "Listen:   %s\n", listenerAddr(cfg))
-	fmt.Fprintf(cmd.OutOrStdout(), "Upstream: %s\n", cfg.Upstream.Socket)
-	if compatActive {
-		fmt.Fprintf(cmd.OutOrStdout(), "Mode:     tecnativa compatibility\n")
-	}
-	fmt.Fprintln(cmd.OutOrStdout())
-
-	// 5. Print rule table
-	fmt.Fprintf(cmd.OutOrStdout(), "Rules (%d):\n", len(compiled))
-	for _, r := range cfg.Rules {
-		action := "ALLOW"
-		if r.Action == "deny" {
-			action = "DENY "
-		}
-		fmt.Fprintf(cmd.OutOrStdout(), "  %s  %-20s %s\n", action, r.Match.Method, r.Match.Path)
-	}
-	fmt.Fprintln(cmd.OutOrStdout())
-
-	// 6. Print result
-	fmt.Fprintln(cmd.OutOrStdout(), "Validation: OK")
+	printHeader(out, stdoutP, cfg, compatActive)
+	printRules(out, stdoutP, cfg, len(compiled))
+	fmt.Fprintf(out, "  %s %s\n", stdoutP.Green(ui.Check), stdoutP.Green("validation passed"))
 	return nil
+}
+
+func printHeader(out io.Writer, p *ui.Printer, cfg *config.Config, compatActive bool) {
+	fmt.Fprintf(out, "  %s  %s\n", p.Dim("Config  "), cfgFile)
+	fmt.Fprintf(out, "  %s  %s\n", p.Dim("Listen  "), listenerAddr(cfg))
+	fmt.Fprintf(out, "  %s  %s\n", p.Dim("Upstream"), cfg.Upstream.Socket)
+	if compatActive {
+		fmt.Fprintf(out, "  %s  %s\n", p.Dim("Mode    "), "tecnativa compatibility")
+	}
+	fmt.Fprintln(out)
+}
+
+func printRules(out io.Writer, p *ui.Printer, cfg *config.Config, count int) {
+	fmt.Fprintf(out, "  %s\n", p.Bold(fmt.Sprintf("Rules (%d)", count)))
+	for _, r := range cfg.Rules {
+		glyph := p.Green(ui.Check)
+		action := p.Green("allow")
+		if r.Action == "deny" {
+			glyph = p.Red(ui.Cross)
+			action = p.Red("deny ")
+		}
+		method := r.Match.Method
+		if method == "" {
+			method = "*"
+		}
+		fmt.Fprintf(out, "    %s %s  %-6s %s\n", glyph, action, method, r.Match.Path)
+	}
+	fmt.Fprintln(out)
+}
+
+func printValidationFailure(out io.Writer, p *ui.Printer, err error) {
+	fmt.Fprintf(out, "  %s %s\n", p.Red(ui.Cross), p.Red("validation failed"))
+	fmt.Fprintf(out, "    %s\n", err)
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"runtime"
 
+	"github.com/codeswhat/sockguard/internal/ui"
 	"github.com/codeswhat/sockguard/internal/version"
 )
 
@@ -70,17 +71,22 @@ func Render(w io.Writer, info Info) {
 	if info.AccessLog {
 		access = "on"
 	}
+	p := ui.New(w)
 
 	fmt.Fprintln(w)
-	fmt.Fprint(w, art)
+	fmt.Fprint(w, p.Cyan(art))
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "  sockguard %s  (commit %s, built %s, %s)\n",
-		version.Version, shortCommit(version.Commit), version.BuildDate, runtime.Version())
+	fmt.Fprintf(w, "  %s %s  %s\n",
+		p.Bold("sockguard"),
+		version.Version,
+		p.Dim(fmt.Sprintf("(commit %s, built %s, %s)",
+			shortCommit(version.Commit), version.BuildDate, runtime.Version())))
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "  listen    %s\n", info.Listen)
-	fmt.Fprintf(w, "  upstream  %s\n", info.Upstream)
-	fmt.Fprintf(w, "  rules     %d  (log %s/%s, access=%s)\n",
-		info.Rules, info.LogFormat, info.LogLevel, access)
+	fmt.Fprintf(w, "  %s %s\n", p.Dim("listen   "), info.Listen)
+	fmt.Fprintf(w, "  %s %s\n", p.Dim("upstream "), info.Upstream)
+	fmt.Fprintf(w, "  %s %d  %s\n",
+		p.Dim("rules    "), info.Rules,
+		p.Dim(fmt.Sprintf("(log %s/%s, access=%s)", info.LogFormat, info.LogLevel, access)))
 	fmt.Fprintln(w)
 }
 

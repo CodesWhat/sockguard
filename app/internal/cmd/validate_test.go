@@ -47,13 +47,13 @@ rules:
 	}
 
 	stdout := out.String()
-	if !strings.Contains(stdout, "Config:   "+cfgPath) {
+	if !strings.Contains(stdout, "Config  ") || !strings.Contains(stdout, cfgPath) {
 		t.Fatalf("expected config path in output, got:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "Rules (2):") {
+	if !strings.Contains(stdout, "Rules (2)") {
 		t.Fatalf("expected rules section in output, got:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "Validation: OK") {
+	if !strings.Contains(stdout, "validation passed") {
 		t.Fatalf("expected validation success in output, got:\n%s", stdout)
 	}
 	if errOut.Len() != 0 {
@@ -97,7 +97,7 @@ rules:
 	}
 
 	stderr := errOut.String()
-	if !strings.Contains(stderr, "Validation FAILED:") {
+	if !strings.Contains(stderr, "validation failed") {
 		t.Fatalf("expected validation failure banner, got:\n%s", stderr)
 	}
 	if !strings.Contains(stderr, "rule 1:") {
@@ -152,7 +152,7 @@ log:
 		t.Fatalf("runValidate() error = %v", err)
 	}
 
-	if !strings.Contains(out.String(), "Mode:     tecnativa compatibility") {
+	if !strings.Contains(out.String(), "tecnativa compatibility") || !strings.Contains(out.String(), "Mode    ") {
 		t.Fatalf("expected compat mode line, got:\n%s", out.String())
 	}
 }
