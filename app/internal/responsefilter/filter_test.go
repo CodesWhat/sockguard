@@ -9,6 +9,27 @@ import (
 	"testing"
 )
 
+type readFailAfterCloser struct {
+	remaining []byte
+	err       error
+}
+
+func (r *readFailAfterCloser) Read(p []byte) (int, error) {
+	if len(r.remaining) > 0 {
+		n := copy(p, r.remaining)
+		r.remaining = r.remaining[n:]
+		if len(r.remaining) == 0 {
+			return n, r.err
+		}
+		return n, nil
+	}
+	return 0, r.err
+}
+
+func (r *readFailAfterCloser) Close() error {
+	return nil
+}
+
 func newResponseForTest(t *testing.T, method, path, body string) *http.Response {
 	t.Helper()
 
@@ -162,6 +183,84 @@ func TestFilterModifyResponse_RejectsMalformedProtectedJSON(t *testing.T) {
 	}
 	if !errors.Is(err, ErrResponseRejected) {
 		t.Fatalf("ModifyResponse() error = %v, want errors.Is(..., ErrResponseRejected)", err)
+	}
+}
+
+func TestFilterRejectsOversizedResponse(t *testing.T) {
+	filter := New(Options{
+		RedactContainerEnv: true,
+	})
+
+	body := `{"Config":{"Env":["` + strings.Repeat("A", maxResponseBodyBytes) + `"]}}`
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/containers/abc123/json", body)
+
+	err := filter.ModifyResponse(resp)
+	if err == nil {
+		t.Fatal("ModifyResponse() error = nil, want rejection error")
+	}
+	if !errors.Is(err, ErrResponseRejected) {
+		t.Fatalf("ModifyResponse() error = %v, want errors.Is(..., ErrResponseRejected)", err)
+	}
+	if !strings.Contains(err.Error(), "response body exceeds") {
+		t.Fatalf("ModifyResponse() error = %v, want size-limit context", err)
+	}
+}
+
+func TestFilterHandlesChunkedEncoding(t *testing.T) {
+	filter := New(Options{
+		RedactContainerEnv: true,
+	})
+
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/containers/abc123/json", `{
+		"Config":{"Env":["SECRET_TOKEN=shh"]}
+	}`)
+	resp.ContentLength = -1
+	resp.TransferEncoding = []string{"chunked"}
+
+	if err := filter.ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+
+	if resp.ContentLength <= 0 {
+		t.Fatalf("ContentLength = %d, want rewritten positive length", resp.ContentLength)
+	}
+	if got := resp.Header.Get("Content-Length"); got == "" {
+		t.Fatal("Content-Length header = empty, want rewritten length")
+	}
+	if resp.TransferEncoding != nil {
+		t.Fatalf("TransferEncoding = %#v, want nil after rewrite", resp.TransferEncoding)
+	}
+
+	got := decodeBodyForTest(t, resp)
+	config, _ := got["Config"].(map[string]any)
+	env, _ := config["Env"].([]any)
+	if len(env) != 0 {
+		t.Fatalf("Config.Env = %#v, want empty redacted array", config["Env"])
+	}
+}
+
+func TestFilterRejectsMidStreamReadFailure(t *testing.T) {
+	filter := New(Options{
+		RedactContainerEnv: true,
+	})
+
+	readErr := errors.New("upstream read failed")
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/containers/abc123/json", "")
+	resp.Body = &readFailAfterCloser{
+		remaining: []byte(`{"Config":{"Env":["SECRET_TOKEN=shh"]}`),
+		err:       readErr,
+	}
+	resp.ContentLength = -1
+
+	err := filter.ModifyResponse(resp)
+	if err == nil {
+		t.Fatal("ModifyResponse() error = nil, want rejection error")
+	}
+	if !errors.Is(err, ErrResponseRejected) {
+		t.Fatalf("ModifyResponse() error = %v, want errors.Is(..., ErrResponseRejected)", err)
+	}
+	if !errors.Is(err, readErr) {
+		t.Fatalf("ModifyResponse() error = %v, want errors.Is(..., readErr)", err)
 	}
 }
 
