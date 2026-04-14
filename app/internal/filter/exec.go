@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +16,12 @@ import (
 )
 
 const maxExecBodyBytes = 64 << 10 // 64 KiB
+
+var (
+	errExecMissingCmd     = errors.New("missing Cmd")
+	errExecEmptyCmdArray  = errors.New("empty Cmd array")
+	errExecEmptyCmdString = errors.New("empty Cmd string")
+)
 
 // ExecInspectResult captures the effective exec command metadata Docker stores
 // after POST /containers/{id}/exec and returns from GET /exec/{id}/json.
@@ -74,14 +82,14 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 	}
 }
 
-func (p execPolicy) inspect(r *http.Request, normalizedPath string) (string, error) {
+func (p execPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodPost {
 		return "", nil
 	}
 
 	switch {
 	case isExecCreatePath(normalizedPath):
-		return p.inspectCreate(r)
+		return p.inspectCreate(logger, r)
 	case isExecStartPath(normalizedPath):
 		return p.inspectExisting(r.Context(), normalizedPath)
 	default:
@@ -89,7 +97,7 @@ func (p execPolicy) inspect(r *http.Request, normalizedPath string) (string, err
 	}
 }
 
-func (p execPolicy) inspectCreate(r *http.Request) (string, error) {
+func (p execPolicy) inspectCreate(logger *slog.Logger, r *http.Request) (string, error) {
 	if r.Body == nil {
 		return "", nil
 	}
@@ -114,11 +122,17 @@ func (p execPolicy) inspectCreate(r *http.Request) (string, error) {
 
 	var req execCreateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
+		if logger != nil {
+			logger.DebugContext(r.Context(), "exec request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+		}
 		return "", nil
 	}
 
 	command, err := decodeExecCommand(req.Cmd)
 	if err != nil {
+		if logger != nil {
+			logger.DebugContext(r.Context(), "exec request body has unparseable Cmd; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+		}
 		return "", nil
 	}
 
@@ -168,13 +182,13 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 
 func decodeExecCommand(raw json.RawMessage) ([]string, error) {
 	if len(raw) == 0 || string(raw) == "null" {
-		return nil, fmt.Errorf("missing Cmd")
+		return nil, fmt.Errorf("decode exec command: %w", errExecMissingCmd)
 	}
 
 	var argv []string
 	if err := json.Unmarshal(raw, &argv); err == nil {
 		if len(argv) == 0 {
-			return nil, fmt.Errorf("empty Cmd array")
+			return nil, fmt.Errorf("decode exec command: %w", errExecEmptyCmdArray)
 		}
 		return argv, nil
 	}
@@ -182,11 +196,11 @@ func decodeExecCommand(raw json.RawMessage) ([]string, error) {
 	var command string
 	// Docker clients can send exec Cmd as argv or a shell-style string, so we prefer structured args and fall back for compatibility.
 	if err := json.Unmarshal(raw, &command); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode Cmd string: %w", err)
 	}
 	fields := strings.Fields(command)
 	if len(fields) == 0 {
-		return nil, fmt.Errorf("empty Cmd string")
+		return nil, fmt.Errorf("decode exec command: %w", errExecEmptyCmdString)
 	}
 	return fields, nil
 }

@@ -41,6 +41,7 @@ var errWriteFailed = errors.New("write failed")
 
 type loggedRequest struct {
 	message string
+	level   slog.Level
 	attrs   map[string]any
 }
 
@@ -59,7 +60,7 @@ func (h *collectingHandler) Handle(_ context.Context, r slog.Record) error {
 	})
 
 	h.mu.Lock()
-	h.records = append(h.records, loggedRequest{message: r.Message, attrs: attrs})
+	h.records = append(h.records, loggedRequest{message: r.Message, level: r.Level, attrs: attrs})
 	h.mu.Unlock()
 	return nil
 }
@@ -828,6 +829,119 @@ func TestMiddlewareDeniesWhenContainerCreateInspectionFails(t *testing.T) {
 	}
 	if records[0].message != "failed to inspect container create request body" {
 		t.Fatalf("message = %q, want inspection failure log", records[0].message)
+	}
+}
+
+func TestMiddlewareDeniesWhenExecInspectionFails(t *testing.T) {
+	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/exec", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	logs := &collectingHandler{}
+	handler := verboseMiddleware([]*CompiledRule{rule}, slog.New(logs))(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected request to be denied before reaching inner handler")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", nil)
+	req.Body = &erroringReadCloser{
+		Reader:   strings.NewReader(`{}`),
+		closeErr: errors.New("close failed"),
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Reason != "unable to inspect exec request body" {
+		t.Fatalf("reason = %q, want inspection failure", body.Reason)
+	}
+
+	records := logs.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("log records = %d, want 1", len(records))
+	}
+	if records[0].message != "failed to inspect exec request body" {
+		t.Fatalf("message = %q, want inspection failure log", records[0].message)
+	}
+}
+
+func TestMiddlewareLogsDebugForMalformedContainerCreateBody(t *testing.T) {
+	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/create", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	logs := &collectingHandler{}
+	reached := false
+	handler := verboseMiddleware([]*CompiledRule{rule}, slog.New(logs))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"HostConfig":`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !reached {
+		t.Fatal("expected malformed container create body to pass through to Docker")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	records := logs.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("log records = %d, want 1", len(records))
+	}
+	if records[0].level != slog.LevelDebug {
+		t.Fatalf("level = %v, want %v", records[0].level, slog.LevelDebug)
+	}
+	if records[0].message != "container create request body is not valid JSON; deferring to Docker validation" {
+		t.Fatalf("message = %q, want malformed JSON debug log", records[0].message)
+	}
+}
+
+func TestMiddlewareLogsDebugForMalformedExecBody(t *testing.T) {
+	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/exec", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	logs := &collectingHandler{}
+	reached := false
+	handler := verboseMiddleware([]*CompiledRule{rule}, slog.New(logs))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", strings.NewReader(`{"Cmd":`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !reached {
+		t.Fatal("expected malformed exec body to pass through to Docker")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	records := logs.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("log records = %d, want 1", len(records))
+	}
+	if records[0].level != slog.LevelDebug {
+		t.Fatalf("level = %v, want %v", records[0].level, slog.LevelDebug)
+	}
+	if records[0].message != "exec request body is not valid JSON; deferring to Docker validation" {
+		t.Fatalf("message = %q, want malformed JSON debug log", records[0].message)
 	}
 }
 

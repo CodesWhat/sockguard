@@ -58,7 +58,7 @@ func FuzzExec(f *testing.F) {
 		body = truncateParserFuzzBytes(body, maxParserFuzzBytes)
 
 		req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", bytes.NewReader(body))
-		_, _ = policy.inspect(req, "/containers/abc123/exec")
+		_, _ = policy.inspect(nil, req, "/containers/abc123/exec")
 
 		if req.Body != nil {
 			_, _ = io.Copy(io.Discard, req.Body)

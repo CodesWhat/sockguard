@@ -82,10 +82,13 @@ func (o Options) normalized() Options {
 type runtimePolicy struct {
 	rules                 []*CompiledRule
 	denyResponseVerbosity DenyResponseVerbosity
-	containerCreatePolicy containerCreatePolicy
-	execPolicy            execPolicy
-	imagePullPolicy       imagePullPolicy
-	buildPolicy           buildPolicy
+	inspectPolicies       []requestInspectPolicy
+}
+
+type requestInspectPolicy struct {
+	inspect           func(*slog.Logger, *http.Request, string) (string, error)
+	errorLogMessage   string
+	denyReasonOnError string
 }
 
 // Middleware is the stable convenience API for callers that want filter middleware
@@ -143,32 +146,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			if action == ActionAllow {
-				denyReason, err := activePolicy.containerCreatePolicy.inspect(r, normPath)
-				if err != nil {
-					logger.ErrorContext(r.Context(), "failed to inspect container create request body", "error", err, "method", r.Method, "path", r.URL.Path)
-					denyReason = "unable to inspect container create request body"
-				}
-				if denyReason == "" {
-					denyReason, err = activePolicy.execPolicy.inspect(r, normPath)
-					if err != nil {
-						logger.ErrorContext(r.Context(), "failed to inspect exec request body", "error", err, "method", r.Method, "path", r.URL.Path)
-						denyReason = "unable to inspect exec request body"
-					}
-				}
-				if denyReason == "" {
-					denyReason, err = activePolicy.imagePullPolicy.inspect(r, normPath)
-					if err != nil {
-						logger.ErrorContext(r.Context(), "failed to inspect image pull request", "error", err, "method", r.Method, "path", r.URL.Path)
-						denyReason = "unable to inspect image pull request"
-					}
-				}
-				if denyReason == "" {
-					denyReason, err = activePolicy.buildPolicy.inspect(r, normPath)
-					if err != nil {
-						logger.ErrorContext(r.Context(), "failed to inspect build request", "error", err, "method", r.Method, "path", r.URL.Path)
-						denyReason = "unable to inspect build request"
-					}
-				}
+				denyReason := activePolicy.inspectAllowedRequest(logger, r, normPath)
 				if denyReason != "" {
 					action = ActionDeny
 					reason = denyReason
@@ -193,14 +171,55 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 
 func compileRuntimePolicy(rules []*CompiledRule, opts Options) runtimePolicy {
 	opts = opts.normalized()
+	containerCreate := newContainerCreatePolicy(opts.ContainerCreate)
+	exec := newExecPolicy(opts.Exec)
+	imagePull := newImagePullPolicy(opts.ImagePull)
+	build := newBuildPolicy(opts.Build)
+
 	return runtimePolicy{
 		rules:                 rules,
 		denyResponseVerbosity: opts.DenyResponseVerbosity,
-		containerCreatePolicy: newContainerCreatePolicy(opts.ContainerCreate),
-		execPolicy:            newExecPolicy(opts.Exec),
-		imagePullPolicy:       newImagePullPolicy(opts.ImagePull),
-		buildPolicy:           newBuildPolicy(opts.Build),
+		inspectPolicies: []requestInspectPolicy{
+			{
+				inspect:           containerCreate.inspect,
+				errorLogMessage:   "failed to inspect container create request body",
+				denyReasonOnError: "unable to inspect container create request body",
+			},
+			{
+				inspect:           exec.inspect,
+				errorLogMessage:   "failed to inspect exec request body",
+				denyReasonOnError: "unable to inspect exec request body",
+			},
+			{
+				inspect: func(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
+					return imagePull.inspect(r, normalizedPath)
+				},
+				errorLogMessage:   "failed to inspect image pull request",
+				denyReasonOnError: "unable to inspect image pull request",
+			},
+			{
+				inspect: func(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
+					return build.inspect(r, normalizedPath)
+				},
+				errorLogMessage:   "failed to inspect build request",
+				denyReasonOnError: "unable to inspect build request",
+			},
+		},
 	}
+}
+
+func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) string {
+	for _, policy := range p.inspectPolicies {
+		denyReason, err := policy.inspect(logger, r, normalizedPath)
+		if err != nil {
+			logger.ErrorContext(r.Context(), policy.errorLogMessage, "error", err, "method", r.Method, "path", r.URL.Path)
+			return policy.denyReasonOnError
+		}
+		if denyReason != "" {
+			return denyReason
+		}
+	}
+	return ""
 }
 
 func denyWithReason(w http.ResponseWriter, r *http.Request, logger *slog.Logger, reason string, verbosity DenyResponseVerbosity) {

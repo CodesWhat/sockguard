@@ -57,7 +57,7 @@ func TestContainerCreatePolicyInspectSkipsNonCreateRequests(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reason, err := policy.inspect(tt.request, tt.normalizedPath)
+			reason, err := policy.inspect(nil, tt.request, tt.normalizedPath)
 			if err != nil {
 				t.Fatalf("inspect() error = %v", err)
 			}
@@ -74,7 +74,7 @@ func TestContainerCreatePolicyInspectHandlesBodyEdgeCases(t *testing.T) {
 	t.Run("empty body", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/containers/create", http.NoBody)
 
-		reason, err := policy.inspect(req, "/containers/create")
+		reason, err := policy.inspect(nil, req, "/containers/create")
 		if err != nil {
 			t.Fatalf("inspect() error = %v", err)
 		}
@@ -86,7 +86,7 @@ func TestContainerCreatePolicyInspectHandlesBodyEdgeCases(t *testing.T) {
 	t.Run("malformed json", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString("{"))
 
-		reason, err := policy.inspect(req, "/containers/create")
+		reason, err := policy.inspect(nil, req, "/containers/create")
 		if err != nil {
 			t.Fatalf("inspect() error = %v", err)
 		}
@@ -112,7 +112,7 @@ func TestContainerCreatePolicyInspectHandlesBodyEdgeCases(t *testing.T) {
 			},
 		}
 
-		reason, err := policy.inspect(req, "/containers/create")
+		reason, err := policy.inspect(nil, req, "/containers/create")
 		if reason != "" {
 			t.Fatalf("inspect() reason = %q, want empty", reason)
 		}
@@ -203,7 +203,7 @@ func TestContainerCreatePolicyInspectCapsOversizedBody(t *testing.T) {
 	oversized := bytes.Repeat([]byte{'x'}, maxContainerCreateBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(oversized))
 
-	reason, err := policy.inspect(req, "/containers/create")
+	reason, err := policy.inspect(nil, req, "/containers/create")
 	if err != nil {
 		t.Fatalf("inspect() error = %v, want nil", err)
 	}

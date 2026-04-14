@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"path"
 	"slices"
@@ -65,7 +66,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	}
 }
 
-func (p containerCreatePolicy) inspect(r *http.Request, normalizedPath string) (string, error) {
+func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodPost || normalizedPath != "/containers/create" || r.Body == nil {
 		return "", nil
 	}
@@ -95,6 +96,9 @@ func (p containerCreatePolicy) inspect(r *http.Request, normalizedPath string) (
 	if err := json.Unmarshal(body, &createReq); err != nil {
 		// Let Docker return its native validation error when the create payload
 		// is malformed; Sockguard only overrides known-dangerous valid requests.
+		if logger != nil {
+			logger.DebugContext(r.Context(), "container create request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+		}
 		return "", nil
 	}
 
