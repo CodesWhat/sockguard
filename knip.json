@@ -3,6 +3,9 @@
   "workspaces": {
     ".": {
       "entry": ["scripts/*.mjs"]
+    },
+    "docs": {
+      "ignore": [".source/**"]
     }
   }
 }

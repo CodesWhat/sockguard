@@ -1,0 +1,12 @@
+{
+  "title": "Sockguard",
+  "pages": [
+    "index",
+    "getting-started",
+    "configuration",
+    "presets",
+    "migration",
+    "security",
+    "verification"
+  ]
+}

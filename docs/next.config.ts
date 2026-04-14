@@ -1,16 +1,17 @@
-import nextra from "nextra";
+import { createMDX } from "fumadocs-mdx/next";
 
-const withNextra = nextra({});
+const withMDX = createMDX();
 
-// The docs app is mounted at /docs inside the marketing site via a
-// Vercel rewrite (see website/vercel.json). basePath tells Next to
-// prefix every internal link and asset URL with /docs so navigation
-// and static imports keep working after the rewrite lands them on
-// getsockguard.com/docs/... instead of the standalone
-// sockguard-docs.vercel.app root. Nextra honors Next's basePath so
-// sidebar links, breadcrumbs, and the table of contents all emit
-// the correct absolute URLs without further config.
-export default withNextra({
+// The docs app is a separate Next.js workspace mounted at /docs inside
+// the marketing site. `output: "export"` produces the static HTML that
+// the website's `build:docs-content` script copies into
+// `website/public/docs/`. `basePath: "/docs"` tells Next to prefix every
+// internal link and asset URL accordingly so navigation keeps working
+// after the website serves the static export at getsockguard.com/docs/...
+export default withMDX({
   output: "export",
   basePath: "/docs",
+  images: {
+    unoptimized: true,
+  },
 });
