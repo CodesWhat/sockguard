@@ -14,7 +14,7 @@ import {
 
 export type FeatureCategory = "security" | "control" | "operations";
 
-export interface Feature {
+interface Feature {
   icon: LucideIcon;
   title: string;
   color: string;

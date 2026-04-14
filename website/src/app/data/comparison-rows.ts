@@ -1,4 +1,4 @@
-export interface ComparisonRow {
+interface ComparisonRow {
   feature: string;
   tecnativa: string;
   linuxserver: string;

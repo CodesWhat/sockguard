@@ -13,7 +13,7 @@ export interface EvalResult {
   reason: string;
 }
 
-export interface CompiledRule extends Rule {
+interface CompiledRule extends Rule {
   matcher: RegExp;
   matchReason: string;
   normalizedMethod: string;
