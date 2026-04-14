@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -420,44 +421,11 @@ func (i upstreamInspector) inspectResource(ctx context.Context, kind resourceKin
 		return nil, false, fmt.Errorf("inspect %s %q returned status %d", kind, identifier, resp.StatusCode)
 	}
 
-	switch kind {
-	case resourceKindContainer:
-		var payload struct {
-			Config struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"Config"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-			return nil, false, err
-		}
-		return payload.Config.Labels, true, nil
-	case resourceKindImage:
-		var payload struct {
-			Config struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"Config"`
-			ContainerConfig struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"ContainerConfig"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-			return nil, false, err
-		}
-		if len(payload.Config.Labels) > 0 {
-			return payload.Config.Labels, true, nil
-		}
-		return payload.ContainerConfig.Labels, true, nil
-	case resourceKindNetwork, resourceKindVolume:
-		var payload struct {
-			Labels map[string]string `json:"Labels"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-			return nil, false, err
-		}
-		return payload.Labels, true, nil
-	default:
-		return nil, false, fmt.Errorf("unsupported resource kind %q", kind)
+	labels, err := decodeResourceLabels(resp.Body, kind)
+	if err != nil {
+		return nil, false, err
 	}
+	return labels, true, nil
 }
 
 func (i upstreamInspector) inspectExec(ctx context.Context, identifier string) (string, bool, error) {
@@ -488,4 +456,45 @@ func (i upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 		return "", false, nil
 	}
 	return payload.ContainerID, true, nil
+}
+
+func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string, error) {
+	switch kind {
+	case resourceKindContainer:
+		var payload struct {
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		return payload.Config.Labels, nil
+	case resourceKindImage:
+		var payload struct {
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+			ContainerConfig struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"ContainerConfig"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if len(payload.Config.Labels) > 0 {
+			return payload.Config.Labels, nil
+		}
+		return payload.ContainerConfig.Labels, nil
+	case resourceKindNetwork, resourceKindVolume:
+		var payload struct {
+			Labels map[string]string `json:"Labels"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		return payload.Labels, nil
+	default:
+		return nil, fmt.Errorf("unsupported resource kind %q", kind)
+	}
 }

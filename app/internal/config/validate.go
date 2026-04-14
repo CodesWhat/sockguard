@@ -155,22 +155,7 @@ func validateRequestBody(cfg *Config) []string {
 
 	profilesByName := make(map[string]struct{}, len(cfg.Clients.Profiles))
 	for i, profile := range cfg.Clients.Profiles {
-		prefix := fmt.Sprintf("clients.profiles[%d]", i)
-		name := strings.TrimSpace(profile.Name)
-		if name == "" {
-			errs = append(errs, prefix+".name is required")
-		} else {
-			if _, exists := profilesByName[name]; exists {
-				errs = append(errs, fmt.Sprintf("%s.name %q is duplicated", prefix, name))
-			}
-			profilesByName[name] = struct{}{}
-		}
-		if len(profile.Rules) == 0 {
-			errs = append(errs, prefix+".rules requires at least one rule")
-		}
-		errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels)...)
-		errs = append(errs, validateRequestBodyConfig(prefix+".request_body", profile.RequestBody)...)
-		errs = append(errs, validateRuleConfigs(profile.Rules, prefix+".rules")...)
+		errs = append(errs, validateClientProfile(i, profile, profilesByName)...)
 	}
 
 	if cfg.Clients.DefaultProfile != "" {
@@ -227,6 +212,31 @@ func validateRequestBody(cfg *Config) []string {
 	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
 		errs = append(errs, "ownership.label_key is required when ownership.owner is set")
 	}
+
+	return errs
+}
+
+func validateClientProfile(index int, profile ClientProfileConfig, profilesByName map[string]struct{}) []string {
+	var errs []string
+
+	prefix := fmt.Sprintf("clients.profiles[%d]", index)
+	name := strings.TrimSpace(profile.Name)
+	if name == "" {
+		errs = append(errs, prefix+".name is required")
+	} else {
+		if _, exists := profilesByName[name]; exists {
+			errs = append(errs, fmt.Sprintf("%s.name %q is duplicated", prefix, name))
+		}
+		profilesByName[name] = struct{}{}
+	}
+
+	if len(profile.Rules) == 0 {
+		errs = append(errs, prefix+".rules requires at least one rule")
+	}
+
+	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels)...)
+	errs = append(errs, validateRequestBodyConfig(prefix+".request_body", profile.RequestBody)...)
+	errs = append(errs, validateRuleConfigs(profile.Rules, prefix+".rules")...)
 
 	return errs
 }

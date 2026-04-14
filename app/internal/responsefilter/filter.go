@@ -435,27 +435,25 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 		return fmt.Errorf("NetworkSettings has unexpected type %T", networkSettingsValue)
 	}
 
-	for _, key := range []string{
-		"Bridge",
-		"EndpointID",
-		"Gateway",
-		"GlobalIPv6Address",
-		"IPAddress",
-		"IPv6Gateway",
-		"LinkLocalIPv6Address",
-		"MacAddress",
-		"SandboxID",
-		"SandboxKey",
-	} {
-		redactStringField(networkSettings, key)
-	}
-	for _, key := range []string{
-		"GlobalIPv6PrefixLen",
-		"IPPrefixLen",
-		"LinkLocalIPv6PrefixLen",
-	} {
-		redactNumberField(networkSettings, key)
-	}
+	redactNetworkAddressFields(networkSettings,
+		[]string{
+			"Bridge",
+			"EndpointID",
+			"Gateway",
+			"GlobalIPv6Address",
+			"IPAddress",
+			"IPv6Gateway",
+			"LinkLocalIPv6Address",
+			"MacAddress",
+			"SandboxID",
+			"SandboxKey",
+		},
+		[]string{
+			"GlobalIPv6PrefixLen",
+			"IPPrefixLen",
+			"LinkLocalIPv6PrefixLen",
+		},
+	)
 	redactArrayField(networkSettings, "SecondaryIPAddresses")
 	redactArrayField(networkSettings, "SecondaryIPv6Addresses")
 
@@ -472,23 +470,21 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 		if !ok {
 			return fmt.Errorf("NetworkSettings.Networks[%s] has unexpected type %T", name, networkValue)
 		}
-		for _, key := range []string{
-			"EndpointID",
-			"Gateway",
-			"GlobalIPv6Address",
-			"IPAddress",
-			"IPv6Gateway",
-			"MacAddress",
-			"NetworkID",
-		} {
-			redactStringField(network, key)
-		}
-		for _, key := range []string{
-			"GlobalIPv6PrefixLen",
-			"IPPrefixLen",
-		} {
-			redactNumberField(network, key)
-		}
+		redactNetworkAddressFields(network,
+			[]string{
+				"EndpointID",
+				"Gateway",
+				"GlobalIPv6Address",
+				"IPAddress",
+				"IPv6Gateway",
+				"MacAddress",
+				"NetworkID",
+			},
+			[]string{
+				"GlobalIPv6PrefixLen",
+				"IPPrefixLen",
+			},
+		)
 	}
 	return nil
 }
@@ -552,6 +548,15 @@ func redactArrayField(payload map[string]any, key string) {
 	}
 	if _, ok := value.([]any); ok {
 		payload[key] = []any{}
+	}
+}
+
+func redactNetworkAddressFields(payload map[string]any, stringKeys, numberKeys []string) {
+	for _, key := range stringKeys {
+		redactStringField(payload, key)
+	}
+	for _, key := range numberKeys {
+		redactNumberField(payload, key)
 	}
 }
 
