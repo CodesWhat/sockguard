@@ -247,7 +247,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 			return nil, errors.New("boom")
 		}
 
-		_, err := deps.listenUnixSocket("/tmp/test.sock", 0o600)
+		_, err := deps.listenUnixSocket("/tmp/test.sock")
 		if err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Fatalf("expected direct listen error, got: %v", err)
 		}
@@ -265,7 +265,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 			return nil, errors.New("stat failed")
 		}
 
-		_, err := deps.listenUnixSocket("/tmp/test.sock", 0o600)
+		_, err := deps.listenUnixSocket("/tmp/test.sock")
 		if err == nil || !strings.Contains(err.Error(), "could not inspect") {
 			t.Fatalf("expected stat error, got: %v", err)
 		}
@@ -287,7 +287,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 			return errors.New("remove failed")
 		}
 
-		_, err := deps.listenUnixSocket("/tmp/test.sock", 0o600)
+		_, err := deps.listenUnixSocket("/tmp/test.sock")
 		if err == nil {
 			t.Fatal("expected listenUnixSocket() to fail")
 		}
@@ -314,7 +314,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 			return os.ErrNotExist
 		}
 
-		ln, err := deps.listenUnixSocket("/tmp/test.sock", 0o600)
+		ln, err := deps.listenUnixSocket("/tmp/test.sock")
 		if err != nil {
 			t.Fatalf("expected success, got: %v", err)
 		}
@@ -342,7 +342,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 			return nil
 		}
 
-		_, err := deps.listenUnixSocket("/tmp/test.sock", 0o600)
+		_, err := deps.listenUnixSocket("/tmp/test.sock")
 		if err == nil || !strings.Contains(err.Error(), "second boom") {
 			t.Fatalf("expected second listen error, got: %v", err)
 		}

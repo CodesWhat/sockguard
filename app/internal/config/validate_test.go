@@ -60,6 +60,24 @@ func TestValidateRejectsIncompleteMutualTLSConfig(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnixSocketModeOtherThan0600(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Socket = "/tmp/sockguard.sock"
+	cfg.Listen.Address = ""
+	cfg.Listen.SocketMode = "0660"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for unsupported listen.socket_mode")
+	}
+	if !strings.Contains(err.Error(), "listen.socket_mode") {
+		t.Fatalf("expected listen.socket_mode in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), `"0600"`) {
+		t.Fatalf("expected hardened mode hint in error, got: %v", err)
+	}
+}
+
 func TestValidateAcceptsNonLoopbackTCPWithMutualTLS(t *testing.T) {
 	dir := t.TempDir()
 	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
@@ -136,8 +154,8 @@ func TestValidateInvalidLogLevel(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid log level")
 	}
-	if !strings.Contains(err.Error(), "log level") {
-		t.Errorf("error should mention log level, got: %v", err)
+	if !strings.Contains(err.Error(), `log.level must be debug, info, warn, or error, got "verbose"`) {
+		t.Errorf("error should use normalized log.level phrasing, got: %v", err)
 	}
 }
 
@@ -148,8 +166,8 @@ func TestValidateInvalidLogFormat(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid log format")
 	}
-	if !strings.Contains(err.Error(), "log format") {
-		t.Errorf("error should mention log format, got: %v", err)
+	if !strings.Contains(err.Error(), `log.format must be json or text, got "xml"`) {
+		t.Errorf("error should use normalized log.format phrasing, got: %v", err)
 	}
 }
 
@@ -198,8 +216,8 @@ func TestValidateInvalidAction(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid action")
 	}
-	if !strings.Contains(err.Error(), "invalid action") {
-		t.Errorf("error should mention invalid action, got: %v", err)
+	if !strings.Contains(err.Error(), `rule 1: action must be allow or deny, got "permit"`) {
+		t.Errorf("error should use normalized action phrasing, got: %v", err)
 	}
 }
 
@@ -226,8 +244,8 @@ func TestValidateInvalidHealthPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid health path")
 	}
-	if !strings.Contains(err.Error(), "health path") {
-		t.Errorf("error should mention health path, got: %v", err)
+	if !strings.Contains(err.Error(), `health.path must start with /, got "health"`) {
+		t.Errorf("error should use normalized health.path phrasing, got: %v", err)
 	}
 }
 
@@ -239,8 +257,8 @@ func TestValidateInvalidDenyResponseVerbosity(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid deny response verbosity")
 	}
-	if !strings.Contains(err.Error(), "deny response verbosity") {
-		t.Errorf("error should mention deny response verbosity, got: %v", err)
+	if !strings.Contains(err.Error(), `response.deny_verbosity must be minimal or verbose, got "chatty"`) {
+		t.Errorf("error should use normalized response.deny_verbosity phrasing, got: %v", err)
 	}
 }
 
@@ -461,8 +479,42 @@ func TestValidateRejectsUnknownClientProfileReference(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown profile reference")
 	}
-	if !strings.Contains(err.Error(), "clients.default_profile") {
-		t.Fatalf("expected clients.default_profile in error, got: %v", err)
+	if !strings.Contains(err.Error(), `clients.default_profile must match a configured client profile, got "missing"`) {
+		t.Fatalf("expected normalized clients.default_profile error, got: %v", err)
+	}
+}
+
+func TestValidateNormalizesClientProfileCollectionErrors(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{
+			Name:  "readonly",
+			Rules: []RuleConfig{{Match: MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"}},
+		},
+		{
+			Name:  "readonly",
+			Rules: nil,
+		},
+	}
+	cfg.Clients.SourceIPProfiles = []ClientSourceIPProfileAssignmentConfig{
+		{Profile: "missing"},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid client profile collection config")
+	}
+	if !strings.Contains(err.Error(), `clients.profiles[1].name must be unique, got duplicate "readonly"`) {
+		t.Fatalf("expected normalized duplicate-profile error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.profiles[1].rules must contain at least one rule") {
+		t.Fatalf("expected normalized empty-rules error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), `clients.source_ip_profiles[0].profile must match a configured client profile, got "missing"`) {
+		t.Fatalf("expected normalized profile reference error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.source_ip_profiles[0].cidrs must contain at least one CIDR") {
+		t.Fatalf("expected normalized empty-cidrs error, got: %v", err)
 	}
 }
 

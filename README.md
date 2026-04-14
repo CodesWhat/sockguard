@@ -179,6 +179,8 @@ volumes:
   sockguard-socket:
 ```
 
+Sockguard hardens its own unix socket to `0600` owner-only permissions. `listen.socket_mode` remains in the config surface as a guardrail and must stay `0600`; broader modes are rejected at startup instead of being applied.
+
 To run fully unprivileged with a unix socket, pre-create a host directory with the uid/gid you want and bind-mount it in place of the named volume.
 
 </details>

@@ -77,6 +77,9 @@ func TestLoadDefaults(t *testing.T) {
 	if defaults.Listen.Socket != "" {
 		t.Errorf("Defaults().Listen.Socket = %q, want empty (opt-in only)", defaults.Listen.Socket)
 	}
+	if defaults.Listen.SocketMode != HardenedListenSocketMode {
+		t.Errorf("Defaults().Listen.SocketMode = %q, want %q", defaults.Listen.SocketMode, HardenedListenSocketMode)
+	}
 
 	if cfg.Listen.Socket != defaults.Listen.Socket {
 		t.Errorf("Listen.Socket = %q, want %q", cfg.Listen.Socket, defaults.Listen.Socket)

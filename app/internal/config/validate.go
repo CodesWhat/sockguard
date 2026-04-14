@@ -31,7 +31,11 @@ func validateBasic(cfg *Config) []string {
 
 	// At least one listener
 	if cfg.Listen.Socket == "" && cfg.Listen.Address == "" {
-		errs = append(errs, "at least one listener required (listen.socket or listen.address)")
+		errs = append(errs, "at least one listener is required (listen.socket or listen.address)")
+	}
+
+	if cfg.Listen.Socket != "" {
+		errs = append(errs, validateUnixSocketListenerSecurity(cfg)...)
 	}
 
 	if cfg.Listen.Socket == "" && cfg.Listen.Address != "" {
@@ -48,7 +52,7 @@ func validateBasic(cfg *Config) []string {
 	case "debug", "info", "warn", "error":
 		// OK
 	default:
-		errs = append(errs, fmt.Sprintf("invalid log level %q (must be debug, info, warn, or error)", cfg.Log.Level))
+		errs = append(errs, enumValueError("log.level", cfg.Log.Level, "debug", "info", "warn", "error"))
 	}
 
 	// Valid log format
@@ -56,7 +60,7 @@ func validateBasic(cfg *Config) []string {
 	case "json", "text":
 		// OK
 	default:
-		errs = append(errs, fmt.Sprintf("invalid log format %q (must be json or text)", cfg.Log.Format))
+		errs = append(errs, enumValueError("log.format", cfg.Log.Format, "json", "text"))
 	}
 
 	// Log output must resolve to stderr, stdout, or a local file path.
@@ -68,20 +72,20 @@ func validateBasic(cfg *Config) []string {
 	case "minimal", "verbose":
 		// OK
 	default:
-		errs = append(errs, fmt.Sprintf("invalid deny response verbosity %q (must be minimal or verbose)", cfg.Response.DenyVerbosity))
+		errs = append(errs, enumValueError("response.deny_verbosity", cfg.Response.DenyVerbosity, "minimal", "verbose"))
 	}
 	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels)...)
 
 	// Health path starts with /
 	if cfg.Health.Enabled && !strings.HasPrefix(cfg.Health.Path, "/") {
-		errs = append(errs, fmt.Sprintf("health path must start with /, got %q", cfg.Health.Path))
+		errs = append(errs, fmt.Sprintf("health.path must start with /, got %q", cfg.Health.Path))
 	}
 
 	errs = append(errs, validateRequestBody(cfg)...)
 
 	// At least one rule
 	if len(cfg.Rules) == 0 {
-		errs = append(errs, "at least one rule is required")
+		errs = append(errs, containsAtLeastOneError("rules", "rule"))
 	}
 
 	// Validate each rule
@@ -96,18 +100,28 @@ func validateBasic(cfg *Config) []string {
 		case "allow", "deny":
 			// OK
 		default:
-			errs = append(errs, fmt.Sprintf("rule %d: invalid action %q (must be allow or deny)", i+1, r.Action))
+			errs = append(errs, fmt.Sprintf("rule %d: %s", i+1, enumValueError("action", r.Action, "allow", "deny")))
 		}
 	}
 
 	return errs
 }
 
+func validateUnixSocketListenerSecurity(cfg *Config) []string {
+	if strings.TrimSpace(cfg.Listen.SocketMode) == HardenedListenSocketMode {
+		return nil
+	}
+
+	return []string{
+		fmt.Sprintf("listen.socket_mode must be %q because unix listeners are created with owner-only permissions", HardenedListenSocketMode),
+	}
+}
+
 func validateTCPListenerSecurity(cfg *Config) []string {
 	var errs []string
 
 	if cfg.Listen.TLS.Enabled() && !cfg.Listen.TLS.Complete() {
-		errs = append(errs, "listen.tls requires cert_file, key_file, and client_ca_file together")
+		errs = append(errs, requiresError("listen.tls", "cert_file, key_file, and client_ca_file together"))
 		return errs
 	}
 
@@ -142,7 +156,7 @@ func validateRequestBody(cfg *Config) []string {
 	}
 
 	if cfg.Clients.ContainerLabels.Enabled && cfg.Clients.ContainerLabels.LabelPrefix == "" {
-		errs = append(errs, "clients.container_labels.label_prefix is required when clients.container_labels.enabled is true")
+		errs = append(errs, requiredWhenError("clients.container_labels.label_prefix", "clients.container_labels.enabled is true"))
 	}
 
 	if cfg.Listen.Socket != "" && len(cfg.Clients.AllowedCIDRs) > 0 {
@@ -160,7 +174,7 @@ func validateRequestBody(cfg *Config) []string {
 
 	if cfg.Clients.DefaultProfile != "" {
 		if _, ok := profilesByName[cfg.Clients.DefaultProfile]; !ok {
-			errs = append(errs, fmt.Sprintf("clients.default_profile %q does not match any configured client profile", cfg.Clients.DefaultProfile))
+			errs = append(errs, configuredMatchError("clients.default_profile", "client profile", cfg.Clients.DefaultProfile))
 		}
 	}
 
@@ -170,12 +184,12 @@ func validateRequestBody(cfg *Config) []string {
 	for i, assignment := range cfg.Clients.SourceIPProfiles {
 		prefix := fmt.Sprintf("clients.source_ip_profiles[%d]", i)
 		if assignment.Profile == "" {
-			errs = append(errs, prefix+".profile is required")
+			errs = append(errs, requiredFieldError(prefix+".profile"))
 		} else if _, ok := profilesByName[assignment.Profile]; !ok {
-			errs = append(errs, fmt.Sprintf("%s.profile %q does not match any configured client profile", prefix, assignment.Profile))
+			errs = append(errs, configuredMatchError(prefix+".profile", "client profile", assignment.Profile))
 		}
 		if len(assignment.CIDRs) == 0 {
-			errs = append(errs, prefix+".cidrs requires at least one CIDR")
+			errs = append(errs, containsAtLeastOneError(prefix+".cidrs", "CIDR"))
 		}
 		for _, rawCIDR := range assignment.CIDRs {
 			if _, err := netip.ParsePrefix(strings.TrimSpace(rawCIDR)); err == nil {
@@ -186,7 +200,7 @@ func validateRequestBody(cfg *Config) []string {
 	}
 
 	if len(cfg.Clients.ClientCertificateProfiles) > 0 && !cfg.Listen.TLS.Complete() {
-		errs = append(errs, "clients.client_certificate_profiles requires listen.tls mutual TLS configuration")
+		errs = append(errs, requiresError("clients.client_certificate_profiles", "listen.tls mutual TLS configuration"))
 	}
 	if cfg.Listen.Socket != "" && len(cfg.Clients.ClientCertificateProfiles) > 0 {
 		errs = append(errs, "clients.client_certificate_profiles requires a TCP listener; remove listen.socket or clear clients.client_certificate_profiles")
@@ -194,12 +208,12 @@ func validateRequestBody(cfg *Config) []string {
 	for i, assignment := range cfg.Clients.ClientCertificateProfiles {
 		prefix := fmt.Sprintf("clients.client_certificate_profiles[%d]", i)
 		if assignment.Profile == "" {
-			errs = append(errs, prefix+".profile is required")
+			errs = append(errs, requiredFieldError(prefix+".profile"))
 		} else if _, ok := profilesByName[assignment.Profile]; !ok {
-			errs = append(errs, fmt.Sprintf("%s.profile %q does not match any configured client profile", prefix, assignment.Profile))
+			errs = append(errs, configuredMatchError(prefix+".profile", "client profile", assignment.Profile))
 		}
 		if len(assignment.CommonNames) == 0 {
-			errs = append(errs, prefix+".common_names requires at least one client certificate common name")
+			errs = append(errs, containsAtLeastOneError(prefix+".common_names", "client certificate common name"))
 		}
 		for _, value := range assignment.CommonNames {
 			if strings.TrimSpace(value) != "" {
@@ -210,7 +224,7 @@ func validateRequestBody(cfg *Config) []string {
 	}
 
 	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
-		errs = append(errs, "ownership.label_key is required when ownership.owner is set")
+		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))
 	}
 
 	return errs
@@ -222,16 +236,16 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 	prefix := fmt.Sprintf("clients.profiles[%d]", index)
 	name := strings.TrimSpace(profile.Name)
 	if name == "" {
-		errs = append(errs, prefix+".name is required")
+		errs = append(errs, requiredFieldError(prefix+".name"))
 	} else {
 		if _, exists := profilesByName[name]; exists {
-			errs = append(errs, fmt.Sprintf("%s.name %q is duplicated", prefix, name))
+			errs = append(errs, uniqueValueError(prefix+".name", name))
 		}
 		profilesByName[name] = struct{}{}
 	}
 
 	if len(profile.Rules) == 0 {
-		errs = append(errs, prefix+".rules requires at least one rule")
+		errs = append(errs, containsAtLeastOneError(prefix+".rules", "rule"))
 	}
 
 	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels)...)
@@ -294,10 +308,51 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 		switch r.Action {
 		case "allow", "deny":
 		default:
-			errs = append(errs, fmt.Sprintf("%s invalid action %q (must be allow or deny)", rulePrefix, r.Action))
+			errs = append(errs, fmt.Sprintf("%s %s", rulePrefix, enumValueError("action", r.Action, "allow", "deny")))
 		}
 	}
 	return errs
+}
+
+func requiredFieldError(field string) string {
+	return field + " is required"
+}
+
+func requiredWhenError(field, condition string) string {
+	return fmt.Sprintf("%s is required when %s", field, condition)
+}
+
+func requiresError(field, requirement string) string {
+	return fmt.Sprintf("%s requires %s", field, requirement)
+}
+
+func containsAtLeastOneError(field, singular string) string {
+	return fmt.Sprintf("%s must contain at least one %s", field, singular)
+}
+
+func configuredMatchError(field, kind, got string) string {
+	return fmt.Sprintf("%s must match a configured %s, got %q", field, kind, got)
+}
+
+func uniqueValueError(field, got string) string {
+	return fmt.Sprintf("%s must be unique, got duplicate %q", field, got)
+}
+
+func enumValueError(field, got string, allowed ...string) string {
+	return fmt.Sprintf("%s must be %s, got %q", field, formatAllowedValues(allowed...), got)
+}
+
+func formatAllowedValues(values ...string) string {
+	switch len(values) {
+	case 0:
+		return ""
+	case 1:
+		return values[0]
+	case 2:
+		return values[0] + " or " + values[1]
+	default:
+		return strings.Join(values[:len(values)-1], ", ") + ", or " + values[len(values)-1]
+	}
 }
 
 func normalizeAllowedBindMount(value string) (string, bool) {

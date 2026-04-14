@@ -73,7 +73,7 @@ func TestRuleCompilationUsesConfigValidate(t *testing.T) {
 func TestListenUnixSocketCreatesNewSocket(t *testing.T) {
 	path := shortSocketPath(t, "new")
 
-	ln, err := newServeDeps().listenUnixSocket(path, 0o600)
+	ln, err := newServeDeps().listenUnixSocket(path)
 	if err != nil {
 		t.Fatalf("listenUnixSocket() error = %v", err)
 	}
@@ -97,7 +97,7 @@ func TestListenUnixSocketReplacesStaleSocket(t *testing.T) {
 	}
 	original.Close()
 
-	ln, err := newServeDeps().listenUnixSocket(path, 0o600)
+	ln, err := newServeDeps().listenUnixSocket(path)
 	if err != nil {
 		t.Fatalf("listenUnixSocket() with stale socket error = %v", err)
 	}
@@ -110,7 +110,7 @@ func TestListenUnixSocketRejectsNonSocketPath(t *testing.T) {
 		t.Fatalf("write non-socket path: %v", err)
 	}
 
-	_, err := newServeDeps().listenUnixSocket(path, 0o600)
+	_, err := newServeDeps().listenUnixSocket(path)
 	if err == nil {
 		t.Fatal("expected error for non-socket path")
 	}
@@ -416,8 +416,30 @@ func TestCreateListenerInvalidSocketMode(t *testing.T) {
 		ln.Close()
 		t.Fatal("expected createListener() to fail for invalid socket_mode")
 	}
-	if !strings.Contains(err.Error(), "invalid socket_mode") {
-		t.Fatalf("expected invalid socket_mode error, got: %v", err)
+	if !strings.Contains(err.Error(), "listen.socket_mode") {
+		t.Fatalf("expected listen.socket_mode error, got: %v", err)
+	}
+}
+
+func TestCreateListenerRejectsSocketModeOtherThan0600(t *testing.T) {
+	socketPath := shortSocketPath(t, "badperm")
+	cfg := &config.Config{
+		Listen: config.ListenConfig{
+			Socket:     socketPath,
+			SocketMode: "0660",
+		},
+	}
+
+	ln, err := newServeDeps().createListener(cfg)
+	if err == nil {
+		ln.Close()
+		t.Fatal("expected createListener() to fail for unsupported socket_mode")
+	}
+	if !strings.Contains(err.Error(), "listen.socket_mode") {
+		t.Fatalf("expected listen.socket_mode error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), `"0600"`) {
+		t.Fatalf("expected hardened mode hint, got: %v", err)
 	}
 }
 

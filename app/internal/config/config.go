@@ -1,5 +1,8 @@
 package config
 
+// HardenedListenSocketMode is the only supported unix-socket permission mode.
+const HardenedListenSocketMode = "0600"
+
 // Config represents the sockguard configuration.
 type Config struct {
 	Listen                       ListenConfig      `mapstructure:"listen"`
@@ -173,7 +176,7 @@ func Defaults() Config {
 	return Config{
 		Listen: ListenConfig{
 			Address:    "127.0.0.1:2375",
-			SocketMode: "0660", // used only when the user opts into a unix socket listener
+			SocketMode: HardenedListenSocketMode, // used only when the user opts into a unix socket listener
 		},
 		Upstream: UpstreamConfig{
 			Socket: "/var/run/docker.sock",
