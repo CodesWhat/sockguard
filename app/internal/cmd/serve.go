@@ -89,9 +89,15 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return fmt.Errorf("listener: %w", err)
 	}
 	defer func() {
-		if closeErr := listener.Close(); closeErr != nil {
-			logger.Warn("failed to close listener", "error", closeErr)
+		// http.Server.Shutdown closes the listener as part of its
+		// normal teardown, so by the time this defer runs the FD is
+		// usually already gone and Close returns net.ErrClosed. That
+		// is the healthy shutdown path — don't surface it as a WARN.
+		closeErr := listener.Close()
+		if closeErr == nil || errors.Is(closeErr, net.ErrClosed) {
+			return
 		}
+		logger.Warn("failed to close listener", "error", closeErr)
 	}()
 
 	server := newHTTPServer(handler)
