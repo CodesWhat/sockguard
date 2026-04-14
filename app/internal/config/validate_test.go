@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"strings"
@@ -252,8 +253,8 @@ func TestValidateMultipleErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	ve, ok := err.(*ValidationError)
-	if !ok {
+	var ve *ValidationError
+	if !errors.As(err, &ve) {
 		t.Fatalf("expected *ValidationError, got %T", err)
 	}
 	if len(ve.Errors) < 2 {

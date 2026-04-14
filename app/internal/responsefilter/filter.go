@@ -243,7 +243,7 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 		return nil, errors.New("missing response body")
 	}
 
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	reader := &io.LimitedReader{R: resp.Body, N: maxResponseBodyBytes + 1}
 	body, err := io.ReadAll(reader)
@@ -505,14 +505,14 @@ func redactNetworkTopology(payload map[string]any) error {
 
 	if containersValue, ok := payload["Containers"]; ok && containersValue != nil {
 		if _, ok := containersValue.(map[string]any); !ok {
-			return fmt.Errorf("Containers has unexpected type %T", containersValue)
+			return fmt.Errorf("containers field has unexpected type %T", containersValue)
 		}
 		payload["Containers"] = map[string]any{}
 	}
 
 	if peersValue, ok := payload["Peers"]; ok && peersValue != nil {
 		if _, ok := peersValue.([]any); !ok {
-			return fmt.Errorf("Peers has unexpected type %T", peersValue)
+			return fmt.Errorf("peers field has unexpected type %T", peersValue)
 		}
 		payload["Peers"] = []any{}
 	}
@@ -559,5 +559,5 @@ func rejectResponse(err error) error {
 	if err == nil {
 		return ErrResponseRejected
 	}
-	return fmt.Errorf("%w: %v", ErrResponseRejected, err)
+	return fmt.Errorf("%w: %w", ErrResponseRejected, err)
 }

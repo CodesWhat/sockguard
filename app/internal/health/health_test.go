@@ -304,7 +304,7 @@ func TestHealthDoesNotCacheCallerCancelledFailure(t *testing.T) {
 
 	status, err := checker.check(canceledCtx, "/tmp/upstream.sock")
 	if status != "unreachable" || !errors.Is(err, context.Canceled) {
-		t.Fatalf("cancelled check = (%q, %v), want unreachable with context canceled", status, err)
+		t.Fatalf("canceled check = (%q, %v), want unreachable with context canceled", status, err)
 	}
 
 	status, err = checker.check(context.Background(), "/tmp/upstream.sock")
@@ -312,7 +312,7 @@ func TestHealthDoesNotCacheCallerCancelledFailure(t *testing.T) {
 		t.Fatalf("fresh check = (%q, %v), want unreachable with error", status, err)
 	}
 	if dialCalls.Load() != 2 {
-		t.Fatalf("dial calls after cancelled failure = %d, want 2", dialCalls.Load())
+		t.Fatalf("dial calls after canceled failure = %d, want 2", dialCalls.Load())
 	}
 }
 

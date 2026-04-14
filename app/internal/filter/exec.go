@@ -246,7 +246,7 @@ func NewDockerExecInspector(upstreamSocket string) ExecInspectFunc {
 		if err != nil {
 			return ExecInspectResult{}, false, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode == http.StatusNotFound {
 			return ExecInspectResult{}, false, nil

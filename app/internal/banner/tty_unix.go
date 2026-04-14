@@ -33,6 +33,12 @@ func terminalCols(w io.Writer) int {
 		return 0
 	}
 	var ws winsize
+	// TIOCGWINSZ is the POSIX way to read a terminal's column count
+	// and requires passing a pointer to a kernel-filled struct. The
+	// unsafe.Pointer conversion is exactly what syscall.Syscall
+	// documents for this pattern, and the write only ever lands in
+	// the local `ws` struct above.
+	//nolint:gosec // G103: intentional unsafe.Pointer for ioctl(TIOCGWINSZ)
 	_, _, errno := syscall.Syscall(
 		syscall.SYS_IOCTL,
 		f.Fd(),

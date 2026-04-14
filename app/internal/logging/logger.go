@@ -52,7 +52,13 @@ func outputWriter(output string) (io.Writer, io.Closer, error) {
 	case "stdout":
 		return os.Stdout, nil, nil
 	default:
-		f, err := os.OpenFile(normalized, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+		// 0o600: audit logs routinely carry client IPs, user agents,
+		// request paths with query strings, and the specific deny
+		// reason a policy emitted. Locking them down to owner-only
+		// read/write matches how the Chainguard base image runs as
+		// a single identity and keeps log-scrape sidecars from
+		// grabbing request metadata they weren't granted access to.
+		f, err := os.OpenFile(normalized, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return nil, nil, fmt.Errorf("open log output %q: %w", normalized, err)
 		}

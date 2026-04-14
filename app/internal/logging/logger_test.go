@@ -76,8 +76,8 @@ func TestNewFileOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat(%q): %v", logFile, err)
 	}
-	if got := info.Mode().Perm(); got != 0o640 {
-		t.Fatalf("log file mode = %04o, want 0640", got)
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("log file mode = %04o, want 0600", got)
 	}
 }
 

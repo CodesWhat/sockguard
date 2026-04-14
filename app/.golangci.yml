@@ -1,6 +1,31 @@
 version: "2"
 
+# Linter selection — picked deliberately for a Docker socket proxy.
+# Defaults (errcheck / govet / ineffassign / staticcheck / unused)
+# catch generic Go mistakes; the four explicit enables below are
+# targeted at the specific failure modes this project can't afford:
+#
+#   gosec     — security scanner (file perms, crypto, command
+#               injection, obvious foot-guns). Table-stakes for
+#               a security product.
+#   bodyclose — makes sure every http.Response.Body is Closed.
+#               Critical for a proxy: a leaked body means a leaked
+#               connection to dockerd, and that's exactly the
+#               failure sockguard exists to prevent.
+#   errorlint — enforces Go 1.13+ error-wrapping patterns
+#               (fmt.Errorf("...: %w"), errors.Is/As) so wrapping
+#               stays consistent across the middleware chain and
+#               responsefilter's fail-closed path.
+#   misspell  — cheap: catches typos in comments, log messages,
+#               and deny reasons before they ship to an operator.
 linters:
+  default: standard
+  enable:
+    - gosec
+    - bodyclose
+    - errorlint
+    - misspell
+
   settings:
     errcheck:
       exclude-functions:
@@ -11,9 +36,47 @@ linters:
         - (net.Listener).Close
         - (*net/http.Server).Close
         - (*net/http.Server).Serve
+        # Response bodies: the short-running defers after Do() always
+        # run on the Close path and a failed Close there can't recover
+        # the body bytes that already landed in the caller.
+        - (io.Closer).Close
+        - (*net/http.Response).Body.Close
+    gosec:
+      # Every exclusion here is a deliberate call that we've audited
+      # to confirm the lint is a false positive for this codebase:
+      #
+      #   G104  — duplicates errcheck; covered above with tighter
+      #           scoping per call site.
+      #   G204  — "command injection via exec.Command" is a non-issue
+      #           because sockguard never runs user-supplied commands;
+      #           the proxy just filters Docker API requests.
+      #   G304  — "file inclusion via variable" fires on os.Open/
+      #           os.OpenFile calls where the path is driven by
+      #           config (log.output) or by internal test helpers,
+      #           never by unauthenticated user input.
+      #   G602  — "slice bounds out of range" on getHijackBuffer/
+      #           putHijackBuffer where the slice is guarded by an
+      #           explicit `cap(buf) < hijackBufSize` check before
+      #           the reslice.
+      #   G704  — "SSRF via taint analysis" fires on http.Client.Do
+      #           calls inside internal/visibility and internal/filter
+      #           where the http.Client uses a custom Transport whose
+      #           DialContext is hardcoded to dial the upstream unix
+      #           socket. The URL host is always the literal placeholder
+      #           "docker" and can't reach anything else.
+      excludes:
+        - G104
+        - G204
+        - G304
+        - G602
+        - G704
+    misspell:
+      locale: US
 
   exclusions:
     rules:
       - path: _test\.go
         linters:
           - errcheck
+          - gosec
+          - bodyclose
