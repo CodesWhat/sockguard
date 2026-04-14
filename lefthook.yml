@@ -12,10 +12,12 @@
 #      matrix, on every PR/push), `quality-fuzz-nightly.yml` (15 min
 #      per fuzzer, daily), and `quality-fuzz-monthly.yml` (1 h per
 #      fuzzer, monthly + manual).
-#   5. Biome lint for TS/JS
-#   6. TS workspace tests
-#   7. Build all workspaces
-#   8. Zizmor (workflow security)
+#   5. Lockfile dedupe check (catches orphaned hoisted packages)
+#   6. Knip (unused files/exports/deps in TS workspaces)
+#   7. Biome lint for TS/JS
+#   8. TS workspace tests
+#   9. Build all workspaces
+#  10. Zizmor (workflow security)
 
 pre-commit:
   piped: true
@@ -92,19 +94,42 @@ pre-push:
       priority: 4
       timeout: 2m
 
+    # Lockfile hygiene — catches orphaned hoisted packages (e.g. a stale
+    # next@15.5.15 left behind after a version bump) before they ship to
+    # CI and get flagged by Snyk. Non-mutating: --dry-run only reports
+    # what `npm dedupe` would change; we fail the push if anything would.
+    lockfile-dedupe:
+      run: |
+        out=$(npm dedupe --dry-run --json 2>&1)
+        if echo "$out" | grep -qE '"(added|removed|changed)":[[:space:]]*[1-9]'; then
+          echo "Lockfile drift detected — run 'npm dedupe' and commit the result:"
+          echo "$out"
+          exit 1
+        fi
+      priority: 5
+      timeout: 30s
+
+    # Knip — finds unused files, exports, types, and unlisted/unused
+    # dependencies across the TS workspaces. Catches dead code and
+    # phantom deps that biome/tsc don't see. Config in knip.json.
+    knip:
+      run: npx knip
+      priority: 6
+      timeout: 1m
+
     biome:
       run: npx biome check .
-      priority: 5
+      priority: 7
       timeout: 30s
 
     ts-test:
       run: npm test
-      priority: 6
+      priority: 8
       timeout: 1m
 
     build:
       run: npx turbo build
-      priority: 7
+      priority: 9
       timeout: 3m
 
     zizmor:
@@ -112,5 +137,5 @@ pre-push:
       run: zizmor .github/workflows/
       skip:
         - run: '! command -v zizmor >/dev/null 2>&1'
-      priority: 8
+      priority: 10
       timeout: 30s
