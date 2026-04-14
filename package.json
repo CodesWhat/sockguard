@@ -14,9 +14,9 @@
     "prepare": "lefthook install"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.7",
+    "@biomejs/biome": "^2.4.11",
     "lefthook": "^2.1.1",
-    "turbo": "^2.5.0"
+    "turbo": "^2.9.6"
   },
   "packageManager": "npm@11.9.0",
   "engines": {
