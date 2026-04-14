@@ -1,13 +1,4 @@
-import {
-  BookOpen,
-  BookOpenText,
-  Check,
-  ChevronDown,
-  Clock,
-  FlaskConical,
-  Minus,
-  Terminal,
-} from "lucide-react";
+import { BookOpen, BookOpenText, Check, ChevronDown, Clock, Minus, Terminal } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { CliDemo } from "@/components/cli-demo";
@@ -152,12 +143,6 @@ export default function Home() {
                   <Link href="/docs">
                     <BookOpen className="h-4 w-4" />
                     Documentation
-                  </Link>
-                </Button>
-                <Button variant="outline" size="lg" asChild>
-                  <Link href="/demo">
-                    <FlaskConical className="h-4 w-4" />
-                    Try the rule tester
                   </Link>
                 </Button>
               </div>

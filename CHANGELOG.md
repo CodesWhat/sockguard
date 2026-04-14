@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- Removed the client-side rule tester at `getsockguard.com/demo` along with its supporting `website/src/lib/evaluate.ts` engine and the unit tests under `website/src/lib/evaluate.test.mjs`. The widget duplicated what the docs already explain about glob matching and first-match-wins evaluation without adding any evidence that the real Go proxy behaves the same way — the asciinema recording planned for the hero spot is the better demonstration. The "Try the rule tester" CTA on the landing page and the corresponding `FlaskConical` import from `lucide-react` are gone, and the SECURITY.md, CONTRIBUTING.md, CLAUDE.md, AGENTS.md, and GO-LIVE-CHECKLIST.md references to `/demo` have been cleaned up at the same time.
+
 ### Changed
 
 - Relicensed Sockguard from AGPL-3.0 to Apache-2.0 so the proxy can be embedded inside other projects, docker-compose templates, and enterprise security hardening guides without the copyleft speed bump that blocks AGPL adoption for middleware. Matches `tecnativa/docker-socket-proxy` so migration and comparison narratives stay consistent with the incumbent. The sibling CodesWhat project `drydock` remains AGPL-3.0 because it is an end-user web application with a different adoption model — different role, different license.

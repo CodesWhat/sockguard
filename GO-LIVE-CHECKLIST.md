@@ -5,8 +5,8 @@ Working document tracking everything that must be true before the `sockguard` re
 ## Decision log
 
 - **License**: sockguard relicenses AGPL-3.0 → Apache-2.0. Drydock stays AGPL-3.0. Rationale: sockguard is security middleware whose value comes from being embedded — Apache-2.0 removes the "call legal" speed bump that blocks AGPL adoption in enterprise compose files and hardening guides. Drydock is an end-user web UI where AGPL is defensible. Matches Tecnativa/docker-socket-proxy so migration/comparison narratives stay clean.
-- **Public infrastructure** (`getsockguard.com` marketing site + `/docs` subpath + `/demo` rule tester): blocked on repo going public; nothing to do here until Phase 6. Docs run as a subpath of the marketing site (same shape as drydock's `/docs`) — no separate `docs.` subdomain.
-- **Interactive demo**: replaced post-launch with an asciinema recording of real sockguard denying a privileged container create. Keep the current TS rule-tester as a fallback / sandbox but don't feature it as the hero.
+- **Public infrastructure** (`getsockguard.com` marketing site + `/docs` subpath): blocked on repo going public; nothing to do here until Phase 6. Docs run as a subpath of the marketing site (same shape as drydock's `/docs`) — no separate `docs.` subdomain.
+- **Interactive demo**: an asciinema recording of real sockguard denying a privileged container create. The earlier client-side TS rule-tester at `/demo` was removed in favor of the asciinema cast since it duplicated the docs without adding evidence.
 - **External validation story**: synthetic Colima load-gen benchmark **plus** NAS production snapshot pulled from the real access log, both published to `BENCHMARKS.md`.
 - **Known issues to fix before launch**: all three (health test flake, Biome suppression warning, Grype CVE scan on 0.3.1).
 - **Pre-release warning in README**: stays. Sockguard is 0.3.x and the API contract isn't frozen. Honesty over cosmetics.
@@ -23,7 +23,7 @@ Working document tracking everything that must be true before the `sockguard` re
 
 ## Phase 2 — Security surface ✅
 
-- [x] `SECURITY.md` expanded with mail address, 48h/7d SLAs, `Scope` section (Go proxy + ghcr image + release binaries in, website/docs/demo/third-party deployments out), and a "What to include in a report" checklist.
+- [x] `SECURITY.md` expanded with mail address, 48h/7d SLAs, `Scope` section (Go proxy + ghcr image + release binaries in, website/docs/third-party deployments out), and a "What to include in a report" checklist.
 - [x] Cosign verification docs: new `docs/src/content/verification.mdx` page with the canonical `cosign verify` invocation derived directly from `.github/workflows/release-from-tag.yml` — covers what cosign verifies (signature, SBOM attestation, build provenance), expected `--certificate-identity-regexp` and `--certificate-oidc-issuer` values, one-liner verify, digest-pinned verify, an "if verification fails, do not run the image" triage section, and `cosign verify-blob` for the signed release tarball.
 - [x] `README.md` Security section now links to both `SECURITY.md` and the new image verification guide.
 - [x] Commit + push
@@ -129,7 +129,7 @@ Organized by severity. Everything in "Ship blockers" has to land before Phase 6.
   - GHCR image pull works anonymously
   - Cosign verify command from Phase 2 docs works anonymously
   - `gh repo view` shows the repo as public
-  - `getsockguard.com` (including the `/demo` rule-tester route and the `/docs` Nextra subpath) deploys and resolves
+  - `getsockguard.com` (including the `/docs` Nextra subpath) deploys and resolves
 - [ ] Merge the first Dependabot PR (docker digest bump on next Monday) to prove the automation pipeline works end-to-end on the public repo
 
 ## Post-launch (not ship blockers)

@@ -58,15 +58,6 @@ npm run dev --workspace=docs       # Dev server
 npm run build --workspace=docs     # Production build
 ```
 
-### Interactive rule tester
-
-The rule tester lives at `website/src/app/demo/page.tsx` and renders at
-`getsockguard.com/demo` on the deployed site. It runs entirely in the
-browser — no API, no sockguard backend — and shares the website's build
-pipeline, so there's no separate workspace to run. Use
-`npm run dev --workspace=website` and navigate to
-`http://localhost:3001/demo` to iterate on it locally.
-
 ## Code style
 
 ### Go (proxy)

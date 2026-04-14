@@ -47,9 +47,6 @@ release notes unless you prefer to stay anonymous.
   `getsockguard.com`. Report bugs here via a regular GitHub issue.
 - The docs site under `docs/` and served at `getsockguard.com/docs`.
   Same — regular issues.
-- The interactive rule tester at `getsockguard.com/demo` (source at
-  `website/src/app/demo/page.tsx`). It runs entirely in the browser,
-  has no server component, and never talks to a real Docker socket.
 - Third-party deployments of sockguard. If you find a misconfigured
   compose file in the wild, contact that operator directly. We can
   help triage but we can't ship a fix for it.
