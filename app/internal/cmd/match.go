@@ -13,6 +13,7 @@ import (
 
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/ui"
 )
 
 const (
@@ -125,23 +126,40 @@ func runMatch(cmd *cobra.Command, args []string) error {
 }
 
 func writeMatchText(w io.Writer, result matchResult) {
-	fmt.Fprintf(w, "Config:          %s\n", result.Config)
-	fmt.Fprintf(w, "Method:          %s\n", result.Method)
-	fmt.Fprintf(w, "Path:            %s\n", result.Path)
-	fmt.Fprintf(w, "Normalized path: %s\n", result.NormalizedPath)
+	p := ui.New(w)
+	// Pad the label text *before* styling so ANSI escapes don't eat
+	// visible width and break alignment when colors are enabled.
+	label := func(s string) string { return p.Dim(fmt.Sprintf("%-16s", s)) }
+
+	fmt.Fprintf(w, "%s %s\n", label("Config:"), result.Config)
+	fmt.Fprintf(w, "%s %s\n", label("Method:"), result.Method)
+	fmt.Fprintf(w, "%s %s\n", label("Path:"), result.Path)
+	fmt.Fprintf(w, "%s %s\n", label("Normalized path:"), result.NormalizedPath)
 	if result.CompatMode {
-		fmt.Fprintln(w, "Mode:            tecnativa compatibility")
+		fmt.Fprintf(w, "%s %s\n", label("Mode:"), "tecnativa compatibility")
 	}
 	fmt.Fprintln(w)
 
-	fmt.Fprintf(w, "Decision:        %s\n", result.Decision)
-	if result.MatchedRule == nil {
-		fmt.Fprintln(w, "Matched rule:    none")
+	decision := result.Decision
+	if result.Decision == string(filter.ActionAllow) {
+		decision = p.Green(decision)
 	} else {
-		fmt.Fprintf(w, "Matched rule:    #%d\n", result.MatchedRule.Index)
-		fmt.Fprintf(w, "Rule:            %s %s %s\n", result.MatchedRule.Action, result.MatchedRule.Method, result.MatchedRule.Path)
+		decision = p.Red(decision)
+	}
+	fmt.Fprintf(w, "%s %s\n", label("Decision:"), decision)
+	if result.MatchedRule == nil {
+		fmt.Fprintf(w, "%s %s\n", label("Matched rule:"), "none")
+	} else {
+		action := result.MatchedRule.Action
+		if result.MatchedRule.Action == string(filter.ActionAllow) {
+			action = p.Green(action)
+		} else {
+			action = p.Red(action)
+		}
+		fmt.Fprintf(w, "%s #%d\n", label("Matched rule:"), result.MatchedRule.Index)
+		fmt.Fprintf(w, "%s %s %s %s\n", label("Rule:"), action, result.MatchedRule.Method, result.MatchedRule.Path)
 	}
 	if result.Reason != "" {
-		fmt.Fprintf(w, "Reason:          %s\n", result.Reason)
+		fmt.Fprintf(w, "%s %s\n", label("Reason:"), result.Reason)
 	}
 }
