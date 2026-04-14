@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev --port 3001",
+    "prebuild": "npm run build:docs-content",
     "build": "next build",
+    "build:docs-content": "(cd ../docs && npm run build) && rm -rf public/docs && mkdir -p public/docs && cp -R ../docs/out/. public/docs/",
     "test": "node --test --experimental-strip-types src/**/*.test.mjs",
     "start": "next start"
   },

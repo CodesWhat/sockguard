@@ -1,0 +1,18 @@
+# Mirror of the generated output ignored in .gitignore so Vercel's
+# monorepo deploy doesn't waste upload bandwidth on .next/, out/,
+# and node_modules trees. Anything else that should never be
+# shipped to Vercel goes here too.
+node_modules
+**/node_modules
+.next
+**/.next
+.turbo
+**/.turbo
+out
+**/out
+**/*.tsbuildinfo
+app/dist
+.claude
+.planning
+.playwright-mcp
+.qlty
