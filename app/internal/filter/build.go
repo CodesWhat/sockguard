@@ -17,6 +17,8 @@ const maxBuildContextBytes = 512 << 20  // 512 MiB
 const maxBuildDockerfileBytes = 1 << 20 // 1 MiB
 const defaultBuildDockerfilePath = "Dockerfile"
 
+var errBuildDockerfileTooLarge = errors.New("dockerfile exceeds byte limit")
+
 // BuildOptions configures request-body/query inspection for POST /build.
 type BuildOptions struct {
 	AllowRemoteContext   bool
@@ -109,7 +111,7 @@ type spooledRequestBody struct {
 func spoolRequestBodyToTempFile(r *http.Request, prefix string, maxBytes int64) (*spooledRequestBody, int64, error) {
 	file, err := os.CreateTemp("", prefix)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("create temp file: %w", err)
 	}
 
 	limited := io.LimitReader(r.Body, maxBytes+1)
@@ -122,14 +124,14 @@ func spoolRequestBodyToTempFile(r *http.Request, prefix string, maxBytes int64) 
 		name := file.Name()
 		_ = file.Close()
 		_ = os.Remove(name)
-		return nil, 0, copyErr
+		return nil, 0, fmt.Errorf("spool build body: %w", copyErr)
 	}
 
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		name := file.Name()
 		_ = file.Close()
 		_ = os.Remove(name)
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("rewind temp file: %w", err)
 	}
 
 	return &spooledRequestBody{
@@ -190,7 +192,7 @@ func normalizeBuildDockerfilePath(value string) string {
 
 func extractBuildDockerfile(file *os.File, contentType string, dockerfilePath string) ([]byte, bool, error) {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("rewind Dockerfile reader: %w", err)
 	}
 
 	// Docker build inputs usually arrive as gzip tar, then plain tar, and only sometimes as raw Dockerfile bytes, so probe in that order.
@@ -198,21 +200,21 @@ func extractBuildDockerfile(file *os.File, contentType string, dockerfilePath st
 		return dockerfile, ok, err
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("rewind Dockerfile reader: %w", err)
 	}
 	if dockerfile, ok, err := extractDockerfileFromTar(file, dockerfilePath); ok || err != nil {
 		return dockerfile, ok, err
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("rewind Dockerfile reader: %w", err)
 	}
 
 	raw, err := io.ReadAll(io.LimitReader(file, maxBuildDockerfileBytes+1))
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("read raw Dockerfile: %w", err)
 	}
 	if len(raw) > maxBuildDockerfileBytes {
-		return nil, false, fmt.Errorf("dockerfile exceeds %d byte limit", maxBuildDockerfileBytes)
+		return nil, false, fmt.Errorf("%w: %d bytes", errBuildDockerfileTooLarge, maxBuildDockerfileBytes)
 	}
 	if !looksLikeDockerfile(raw, contentType) {
 		return nil, false, nil
@@ -226,10 +228,19 @@ func extractDockerfileFromGzipTar(file *os.File, dockerfilePath string) ([]byte,
 		if errors.Is(err, gzip.ErrHeader) {
 			return nil, false, nil
 		}
-		return nil, false, err
+		return nil, false, fmt.Errorf("create gzip reader: %w", err)
 	}
-	defer func() { _ = gzr.Close() }()
-	return extractDockerfileFromTarReader(tar.NewReader(gzr), dockerfilePath)
+
+	dockerfile, ok, err := extractDockerfileFromTarReader(tar.NewReader(gzr), dockerfilePath)
+	if err == nil {
+		if _, drainErr := io.Copy(io.Discard, gzr); drainErr != nil {
+			err = fmt.Errorf("drain gzip stream: %w", drainErr)
+		}
+	}
+	if closeErr := gzr.Close(); err == nil && closeErr != nil {
+		err = fmt.Errorf("close gzip reader: %w", closeErr)
+	}
+	return dockerfile, ok, err
 }
 
 func extractDockerfileFromTar(file *os.File, dockerfilePath string) ([]byte, bool, error) {
@@ -247,7 +258,7 @@ func extractDockerfileFromTarReader(tr *tar.Reader, dockerfilePath string) ([]by
 			if strings.Contains(err.Error(), "invalid tar header") {
 				return nil, false, nil
 			}
-			return nil, false, err
+			return nil, false, fmt.Errorf("read tar entry: %w", err)
 		}
 
 		if header.Typeflag != tar.TypeReg {
@@ -259,10 +270,10 @@ func extractDockerfileFromTarReader(tr *tar.Reader, dockerfilePath string) ([]by
 
 		body, err := io.ReadAll(io.LimitReader(tr, maxBuildDockerfileBytes+1))
 		if err != nil {
-			return nil, false, err
+			return nil, false, fmt.Errorf("read Dockerfile entry: %w", err)
 		}
 		if len(body) > maxBuildDockerfileBytes {
-			return nil, false, fmt.Errorf("dockerfile exceeds %d byte limit", maxBuildDockerfileBytes)
+			return nil, false, fmt.Errorf("%w: %d bytes", errBuildDockerfileTooLarge, maxBuildDockerfileBytes)
 		}
 		return body, true, nil
 	}

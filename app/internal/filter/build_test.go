@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -139,6 +141,109 @@ func TestMiddlewareAllowsRunInstructionsWhenConfigured(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestBuildGzipTruncationDenial(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	payload := mustBuildContextGzipTarSeed(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")
+	truncated := payload[:len(payload)-8]
+
+	handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected truncated gzip build context to be denied")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(truncated))
+	req.Header.Set("Content-Type", "application/gzip")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Reason != "unable to inspect build request" {
+		t.Fatalf("reason = %q, want %q", body.Reason, "unable to inspect build request")
+	}
+}
+
+func TestSpoolRequestBodyToTempFileWrapsCopyError(t *testing.T) {
+	sentinel := errors.New("close failed")
+	req := httptest.NewRequest(http.MethodPost, "/build", nil)
+	req.Body = &erroringReadCloser{
+		Reader:   strings.NewReader("FROM busybox\n"),
+		closeErr: sentinel,
+	}
+
+	spool, size, err := spoolRequestBodyToTempFile(req, "sockguard-build-test-", 1024)
+	if err == nil {
+		t.Fatal("expected spoolRequestBodyToTempFile() to fail")
+	}
+	if spool != nil {
+		t.Fatalf("spool = %#v, want nil", spool)
+	}
+	if size != 0 {
+		t.Fatalf("size = %d, want 0", size)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("errors.Is(err, sentinel) = false, err = %v", err)
+	}
+	if !strings.Contains(err.Error(), "spool build body") {
+		t.Fatalf("err = %q, want wrapped spool context", err)
+	}
+}
+
+func TestExtractBuildDockerfileWrapsTooLargeError(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		payload     []byte
+	}{
+		{
+			name:        "raw dockerfile",
+			contentType: "text/plain",
+			payload:     bytes.Repeat([]byte("A"), maxBuildDockerfileBytes+1),
+		},
+		{
+			name:        "tar dockerfile",
+			contentType: "application/x-tar",
+			payload:     mustBuildContextTar(t, "Dockerfile", strings.Repeat("A", maxBuildDockerfileBytes+1)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := os.CreateTemp("", "sockguard-build-dockerfile-*")
+			if err != nil {
+				t.Fatalf("CreateTemp: %v", err)
+			}
+			t.Cleanup(func() {
+				_ = file.Close()
+				_ = os.Remove(file.Name())
+			})
+
+			if _, err := file.Write(tt.payload); err != nil {
+				t.Fatalf("Write: %v", err)
+			}
+
+			_, _, err = extractBuildDockerfile(file, tt.contentType, "Dockerfile")
+			if err == nil {
+				t.Fatal("expected extractBuildDockerfile() to fail")
+			}
+			if !errors.Is(err, errBuildDockerfileTooLarge) {
+				t.Fatalf("errors.Is(err, errBuildDockerfileTooLarge) = false, err = %v", err)
+			}
+			if !strings.Contains(err.Error(), "dockerfile exceeds") {
+				t.Fatalf("err = %q, want dockerfile limit context", err)
+			}
+		})
 	}
 }
 
