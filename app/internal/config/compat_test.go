@@ -229,6 +229,53 @@ func TestCompatMultipleGranularVars(t *testing.T) {
 	}
 }
 
+func TestCompatCategoryAndGranularFlagsTogether(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("CONTAINERS", "1")
+	t.Setenv("IMAGES", "0")
+	t.Setenv("POST", "1")
+	t.Setenv("ALLOW_START", "1")
+	t.Setenv("ALLOW_STOP", "1")
+
+	if !ApplyCompat(&cfg, discardLogger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	foundContainers := false
+	foundImages := false
+	foundStart := false
+	foundStop := false
+	foundBlanketPost := false
+
+	for _, r := range cfg.Rules {
+		switch {
+		case r.Match.Method == "GET" && r.Match.Path == "/containers/**" && r.Action == "allow":
+			foundContainers = true
+		case r.Match.Method == "GET" && r.Match.Path == "/images/**" && r.Action == "allow":
+			foundImages = true
+		case r.Match.Method == "POST" && r.Match.Path == "/containers/*/start" && r.Action == "allow":
+			foundStart = true
+		case r.Match.Method == "POST" && r.Match.Path == "/containers/*/stop" && r.Action == "allow":
+			foundStop = true
+		case r.Match.Method == "POST,PUT,DELETE" && r.Match.Path == "/**" && r.Action == "allow":
+			foundBlanketPost = true
+		}
+	}
+
+	if !foundContainers {
+		t.Fatal("expected GET /containers/** allow rule when CONTAINERS=1")
+	}
+	if foundImages {
+		t.Fatal("expected no GET /images/** allow rule when IMAGES=0")
+	}
+	if !foundStart || !foundStop {
+		t.Fatalf("expected granular start/stop rules, got rules: %+v", cfg.Rules)
+	}
+	if foundBlanketPost {
+		t.Fatalf("expected no blanket POST fallback when granular ALLOW_* flags are set, got rules: %+v", cfg.Rules)
+	}
+}
+
 func TestCompatInvalidEnvValue(t *testing.T) {
 	cfg := Defaults()
 	t.Setenv("CONTAINERS", "maybe")
