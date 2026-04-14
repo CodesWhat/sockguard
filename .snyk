@@ -1,0 +1,18 @@
+# Snyk (https://snyk.io) policy file
+version: v1.25.0
+ignore: {}
+patch: {}
+
+# Snyk Code findings cannot be ignored via the `ignore:` section above —
+# that section is SCA-only. Use `exclude: code:` to remove files from
+# Snyk Code scanning entirely.
+exclude:
+  code:
+    # Developer-only benchmark harnesses — never compiled into the
+    # sockguard binary. loadgen uses a -path CLI flag as the HTTP
+    # request path against a transport pinned to a unix socket via a
+    # custom DialContext, which Snyk Code's taint analysis flags as
+    # SSRF (CWE-918). It is not: the network destination is fixed by
+    # -socket, not -path, and the tool is run locally by the developer
+    # with their own arguments. No attacker-controlled input exists.
+    - benchmarks/**
