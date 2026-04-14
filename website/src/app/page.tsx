@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
+import { CliDemo } from "@/components/cli-demo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -304,6 +305,22 @@ export default function Home() {
             <div className="mt-20 animate-bounce">
               <ChevronDown className="h-10 w-10 text-rose-500 drop-shadow-[0_0_8px_rgba(244,63,94,0.5)]" />
             </div>
+          </div>
+        </section>
+
+        {/* CLI Tour Section */}
+        <section className="px-4 py-24">
+          <div className="mx-auto max-w-5xl">
+            <div className="relative mb-10 text-center">
+              <h2 className="text-3xl font-bold tracking-tight text-neutral-900 sm:text-4xl dark:text-neutral-50">
+                See it work
+              </h2>
+              <p className="mt-4 text-neutral-600 dark:text-neutral-400">
+                The real CLI, looped — validate a config, trace what one request would do, watch the
+                proxy hum.
+              </p>
+            </div>
+            <CliDemo />
           </div>
         </section>
 
