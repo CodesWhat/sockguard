@@ -17,6 +17,8 @@ updates:
     groups:
       go-minor:
         update-types: [minor, patch]
+      go-major:
+        update-types: [major]
 
   # npm (root + workspaces)
   - package-ecosystem: npm
@@ -34,6 +36,8 @@ updates:
     groups:
       npm-minor:
         update-types: [minor, patch]
+      npm-major:
+        update-types: [major]
 
   # GitHub Actions
   - package-ecosystem: github-actions
@@ -51,6 +55,8 @@ updates:
     groups:
       actions-minor:
         update-types: [minor, patch]
+      actions-major:
+        update-types: [major]
 
   # Docker
   - package-ecosystem: docker
@@ -65,3 +71,8 @@ updates:
     cooldown:
       default-days: 7
       semver-major-days: 14
+    groups:
+      docker-minor:
+        update-types: [minor, patch]
+      docker-major:
+        update-types: [major]
