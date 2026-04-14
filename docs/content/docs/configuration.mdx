@@ -93,6 +93,7 @@ rules:
 The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker API proxy off the network unless you explicitly choose otherwise.
 
 - For the safest deployment, use `listen.socket` and share a unix socket.
+- Sockguard hardens the unix socket to `0600` owner-only permissions. `listen.socket_mode` must stay `0600`; broader modes are rejected at startup.
 - For remote or container-network TCP, configure `listen.tls` so Sockguard requires mutual TLS. Sockguard's mTLS server minimum is TLS 1.3, so callers must support TLS 1.3.
 - Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`. That mode is only for legacy compatibility on a private, trusted network.
 - `POST /containers/create` bodies are inspected by default. Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, and bind mount sources outside `request_body.container_create.allowed_bind_mounts`. Named volumes still work without allowlist entries because they are not host bind mounts.

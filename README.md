@@ -205,10 +205,10 @@ Existing socket proxies (Tecnativa, LinuxServer) filter by URL path only. Sockgu
 | 📊 | **Structured Logging** | JSON access logs with method, path, decision, matched rule, latency, client info. |
 | 🔐 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
 | 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks and client-container label ACLs let one proxy differentiate TCP callers before the global rule set runs. |
-| 🔍 | **Request Body Inspection** | `POST /containers/create` bodies are inspected to block privileged containers, host networking, and non-allowlisted bind mounts before Docker sees the request. |
+| 🔍 | **Request Body Inspection** | `POST /containers/create`, `/containers/*/exec`, `/images/create`, and `/build` bodies are inspected to block privileged/host-network containers, non-allowlisted bind mounts and exec argv, untrusted registries and `fromSrc` imports, and remote build contexts before Docker sees the request. |
 | 🏷️ | **Owner Label Isolation** | A proxy instance can stamp containers, networks, volumes, and build-produced images with an owner label, auto-filter list/prune/events calls, and deny cross-owner access to labeled resources. |
 | 🫥 | **Visibility-Controlled Reads** | Redacts env, mount, and network-topology metadata by default and can hide list/events/inspect results behind per-client label visibility rules. |
-| 🧱 | **Body-Blind Write Guardrail** | Remaining body-sensitive write endpoints such as `exec`, `build`, and Swarm writes still require explicit unsafe opt-in until their request bodies are inspected. |
+| 🧱 | **Body-Blind Write Guardrail** | Exec without an `allowed_commands` allowlist and Swarm service writes still require explicit `insecure_allow_body_blind_writes` opt-in until their request bodies are inspected. |
 | 🔄 | **Tecnativa Compatible** | Drop-in replacement using the same env vars. `CONTAINERS=1`, `POST=0`, `ALLOW_START=1` all work. |
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance. |
 | ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
@@ -225,8 +225,8 @@ How sockguard stacks up against other Docker socket proxies:
 |---------|:---------:|:-----------:|:----------:|:-------------:|
 | Method + path filtering | ✅ | ✅ | ✅ | ✅ |
 | Granular POST ops | ❌ | Partial | Via regex | ✅ |
-| Request body inspection | ❌ | ❌ | ❌ | ✅ (`/containers/create`) |
-| Per-client policies | ❌ | ❌ | CIDR + client labels | ✅ (CIDR + client labels) |
+| Request body inspection | ❌ | ❌ | ❌ | ✅ (`create`, `exec`, `pull`, `build`) |
+| Per-client policies | ❌ | ❌ | CIDR + client labels | ✅ (CIDR + labels + mTLS-CN profiles) |
 | Response filtering | ❌ | ❌ | ❌ | ✅ (visibility + redaction) |
 | Structured audit log | ❌ | ❌ | ❌ | ✅ |
 | YAML config | ❌ | ❌ | ❌ | ✅ |
@@ -436,7 +436,7 @@ Replace the image — your env vars work as-is:
 | **0.1.0** | MVP — drop-in replacement with granular control, YAML config, structured logging | ✅ shipped |
 | **0.2.0** | mTLS for remote TCP, TLS 1.3 minimum, loopback-by-default listener, body-blind write guardrail | ✅ shipped |
 | **0.3.0** | Request-body inspection for `/containers/create`, per-proxy owner labels, per-client CIDR + container-label ACLs | ✅ shipped |
-| **0.4.0** | Profile inheritance, unix peer creds, container/image pattern visibility | 🕒 planned |
+| **0.4.0** | Profile inheritance, unix peer creds, name/image pattern visibility beyond label selectors | 🕒 planned |
 | **0.5.0** | Operator auditability — Prometheus metrics, dedicated audit log schema, stable request IDs, explicit deny reason codes | 🕒 planned |
 | **0.6.0** | Secure container enforcement — readonly rootfs, resource limits, approved seccomp/AppArmor/SELinux, restricted CapAdd/Devices, image signature verification | 🕒 planned |
 | **0.7.0** | Abuse controls — per-client rate limits, burst controls, concurrency caps | 🕒 planned |

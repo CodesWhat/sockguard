@@ -1,5 +1,6 @@
 import {
   ArrowRight,
+  EyeOff,
   FileText,
   LockKeyhole,
   type LucideIcon,
@@ -9,6 +10,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Tag,
+  UsersRound,
   Zap,
 } from "lucide-react";
 
@@ -38,7 +40,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "POST /containers/create bodies are parsed to block privileged containers, host networking, and non-allowlisted bind mounts before Docker ever sees the request.",
+      "Container create, exec, image pull, and build bodies are parsed to block privileged, host-network, untrusted registries, remote contexts, and non-allowlisted mounts or commands.",
     category: "security",
   },
   {
@@ -111,5 +113,23 @@ export const features: Feature[] = [
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description: "Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance.",
     category: "security",
+  },
+  {
+    icon: EyeOff,
+    title: "Visibility-Controlled Reads",
+    color: "text-rose-500 dark:text-rose-400",
+    bg: "bg-rose-100 dark:bg-rose-900/50",
+    description:
+      "Label selectors hide list, events, and inspect results for non-matching resources, while container env, mount host paths, and network topology are redacted by default.",
+    category: "security",
+  },
+  {
+    icon: UsersRound,
+    title: "Named Client Profiles",
+    color: "text-blue-500 dark:text-blue-400",
+    bg: "bg-blue-100 dark:bg-blue-900/50",
+    description:
+      "Route callers to named profiles with their own rules and request-body policy by source CIDR or mTLS client certificate, with a configurable default fallback.",
+    category: "control",
   },
 ];

@@ -27,14 +27,14 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
-    sockguard: "Yes (/containers/create)",
+    sockguard: "Yes (create, exec, pull, build)",
   },
   {
     feature: "Per-client policies",
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "CIDR + labels",
-    sockguard: "CIDR + labels",
+    sockguard: "CIDR + labels + cert profiles",
   },
   {
     feature: "Resource owner labels",
@@ -55,8 +55,7 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
-    sockguard: "Planned",
-    planned: true,
+    sockguard: "Yes (visibility + redaction)",
   },
   {
     feature: "Structured audit log",
