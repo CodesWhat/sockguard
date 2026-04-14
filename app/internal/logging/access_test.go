@@ -107,6 +107,31 @@ func TestAccessLogIncludesRequestID(t *testing.T) {
 	}
 }
 
+func TestAccessLogIncludesSelectedProfile(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m := MetaFromResponseWriter(w); m != nil {
+			m.Decision = "allow"
+			m.NormPath = "/_ping"
+			m.Profile = "watchtower"
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AccessLogMiddleware(logger)(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, `"profile":"watchtower"`) {
+		t.Fatalf("expected profile in access log, got: %s", logOutput)
+	}
+}
+
 func TestAccessLogEscapesCRLFInRequestID(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -395,6 +420,7 @@ func TestAppendCorrelationAttrsForResponseWriter(t *testing.T) {
 		Rule:     2,
 		Reason:   "writer reason",
 		NormPath: "/writer/path",
+		Profile:  "watchtower",
 	}})
 
 	got := make(map[string]any, len(attrs))
@@ -416,6 +442,9 @@ func TestAppendCorrelationAttrsForResponseWriter(t *testing.T) {
 	}
 	if got["reason"] != "writer reason" {
 		t.Fatalf("reason = %#v, want writer reason", got["reason"])
+	}
+	if got["profile"] != "watchtower" {
+		t.Fatalf("profile = %#v, want watchtower", got["profile"])
 	}
 }
 

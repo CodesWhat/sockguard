@@ -792,6 +792,121 @@ func TestBuildServeHandlerRedactsProtectedResponsesByDefault(t *testing.T) {
 	}
 }
 
+func TestBuildServeHandlerAppliesAssignedClientProfile(t *testing.T) {
+	socketPath := shortSocketPath(t, "profile-upstream")
+	_ = os.Remove(socketPath)
+
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_ping" {
+			t.Fatalf("path = %q, want /_ping", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "OK")
+	}))
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	}
+	cfg.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name: "readonly",
+			Rules: []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "profile deny"},
+			},
+		},
+	}
+	cfg.Clients.SourceIPProfiles = []config.ClientSourceIPProfileAssignmentConfig{
+		{Profile: "readonly", CIDRs: []string{"192.0.2.0/24"}},
+	}
+
+	rules, err := compileRuleConfigsForTest(cfg.Rules)
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Body.String() != "OK" {
+		t.Fatalf("body = %q, want %q", rec.Body.String(), "OK")
+	}
+}
+
+func TestBuildServeHandlerAppliesAssignedClientVisibilityProfile(t *testing.T) {
+	socketPath := shortSocketPath(t, "visibility-upstream")
+	_ = os.Remove(socketPath)
+
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/containers/json" {
+			t.Fatalf("path = %q, want /containers/json", r.URL.Path)
+		}
+		filters := r.URL.Query().Get("filters")
+		if !strings.Contains(filters, "com.sockguard.visible=true") {
+			t.Fatalf("filters = %q, want default visibility label", filters)
+		}
+		if !strings.Contains(filters, "com.sockguard.client=watchtower") {
+			t.Fatalf("filters = %q, want profile visibility label", filters)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[]`)
+	}))
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Response.VisibleResourceLabels = []string{"com.sockguard.visible=true"}
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	}
+	cfg.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name: "watchtower",
+			Response: config.ClientProfileResponseConfig{
+				VisibleResourceLabels: []string{"com.sockguard.client=watchtower"},
+			},
+			Rules: []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/json"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "profile deny"},
+			},
+		},
+	}
+	cfg.Clients.SourceIPProfiles = []config.ClientSourceIPProfileAssignmentConfig{
+		{Profile: "watchtower", CIDRs: []string{"192.0.2.0/24"}},
+	}
+
+	rules, err := compileRuleConfigsForTest(cfg.Rules)
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Body.String() != "[]" {
+		t.Fatalf("body = %q, want %q", rec.Body.String(), "[]")
+	}
+}
+
 func TestListenerAddr(t *testing.T) {
 	withSocket := &config.Config{
 		Listen: config.ListenConfig{

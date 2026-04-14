@@ -23,6 +23,7 @@ type bodySensitiveWriteEndpoint struct {
 var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/containers/sockguard-test/exec"},
 	{method: http.MethodPost, path: "/exec/sockguard-test/start"},
+	{method: http.MethodPost, path: "/images/create"},
 	{method: http.MethodPost, path: "/build"},
 	{method: http.MethodPost, path: "/services/create"},
 	{method: http.MethodPost, path: "/services/sockguard-test/update"},
@@ -40,6 +41,9 @@ func validateAndCompileRules(cfg *config.Config) ([]*filter.CompiledRule, error)
 	}
 
 	if err := validateBodyBlindWriteRules(cfg, compiled); err != nil {
+		return nil, err
+	}
+	if _, err := compileClientProfiles(cfg); err != nil {
 		return nil, err
 	}
 
@@ -80,24 +84,39 @@ func splitMethods(methods string) []string {
 }
 
 func validateBodyBlindWriteRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
-	if cfg.InsecureAllowBodyBlindWrites {
+	return validateBodyBlindWriteRulesForPolicy("", cfg.InsecureAllowBodyBlindWrites, cfg.RequestBody, compiled)
+}
+
+func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule) error {
+	if insecure {
 		return nil
 	}
 
-	exposed := allowedBodySensitiveWriteEndpoints(compiled)
+	exposed := allowedBodySensitiveWriteEndpoints(requestBody, compiled)
 	if len(exposed) == 0 {
 		return nil
 	}
 
+	if scope == "" {
+		return fmt.Errorf(
+			"rules allow body-sensitive write endpoints without request body inspection; set insecure_allow_body_blind_writes=true to acknowledge this risk: %s",
+			strings.Join(exposed, ", "),
+		)
+	}
+
 	return fmt.Errorf(
-		"rules allow body-sensitive write endpoints without request body inspection; set insecure_allow_body_blind_writes=true to acknowledge this risk: %s",
+		"client profile %q allows body-sensitive write endpoints without request body inspection; set insecure_allow_body_blind_writes=true to acknowledge this risk: %s",
+		scope,
 		strings.Join(exposed, ", "),
 	)
 }
 
-func allowedBodySensitiveWriteEndpoints(compiled []*filter.CompiledRule) []string {
+func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule) []string {
 	allowed := make([]string, 0, len(bodySensitiveWriteEndpoints))
 	for _, endpoint := range bodySensitiveWriteEndpoints {
+		if bodyInspectionConfiguredForEndpoint(requestBody, endpoint) {
+			continue
+		}
 		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
 		action, _, _ := filter.Evaluate(compiled, req)
 		if action != filter.ActionAllow {
@@ -106,4 +125,53 @@ func allowedBodySensitiveWriteEndpoints(compiled []*filter.CompiledRule) []strin
 		allowed = append(allowed, endpoint.method+" "+endpoint.path)
 	}
 	return allowed
+}
+
+func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, endpoint bodySensitiveWriteEndpoint) bool {
+	switch endpoint.path {
+	case "/containers/sockguard-test/exec", "/exec/sockguard-test/start":
+		return len(requestBody.Exec.AllowedCommands) > 0
+	case "/images/create", "/build":
+		return true
+	default:
+		return false
+	}
+}
+
+func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error) {
+	profiles := make(map[string]filter.Policy, len(cfg.Clients.Profiles))
+	for _, profile := range cfg.Clients.Profiles {
+		compiledRules, err := compileConfiguredRules(profile.Rules)
+		if err != nil {
+			return nil, fmt.Errorf("client profile %q: %w", profile.Name, err)
+		}
+		if err := validateBodyBlindWriteRulesForPolicy(profile.Name, cfg.InsecureAllowBodyBlindWrites, profile.RequestBody, compiledRules); err != nil {
+			return nil, err
+		}
+		profiles[profile.Name] = filter.Policy{
+			Rules: compiledRules,
+			ContainerCreate: filter.ContainerCreateOptions{
+				AllowPrivileged:   profile.RequestBody.ContainerCreate.AllowPrivileged,
+				AllowHostNetwork:  profile.RequestBody.ContainerCreate.AllowHostNetwork,
+				AllowedBindMounts: profile.RequestBody.ContainerCreate.AllowedBindMounts,
+			},
+			Exec: filter.ExecOptions{
+				AllowPrivileged: profile.RequestBody.Exec.AllowPrivileged,
+				AllowRootUser:   profile.RequestBody.Exec.AllowRootUser,
+				AllowedCommands: profile.RequestBody.Exec.AllowedCommands,
+			},
+			ImagePull: filter.ImagePullOptions{
+				AllowImports:       profile.RequestBody.ImagePull.AllowImports,
+				AllowAllRegistries: profile.RequestBody.ImagePull.AllowAllRegistries,
+				AllowOfficial:      profile.RequestBody.ImagePull.AllowOfficial,
+				AllowedRegistries:  profile.RequestBody.ImagePull.AllowedRegistries,
+			},
+			Build: filter.BuildOptions{
+				AllowRemoteContext:   profile.RequestBody.Build.AllowRemoteContext,
+				AllowHostNetwork:     profile.RequestBody.Build.AllowHostNetwork,
+				AllowRunInstructions: profile.RequestBody.Build.AllowRunInstructions,
+			},
+		}
+	}
+	return profiles, nil
 }

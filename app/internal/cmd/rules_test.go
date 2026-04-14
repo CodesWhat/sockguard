@@ -69,6 +69,111 @@ func TestValidateAndCompileRulesAllowsBodySensitiveWriteRulesWithExplicitOptIn(t
 	}
 }
 
+func TestValidateAndCompileRulesAllowsExecWithConfiguredBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/exec"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/exec/*/start"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/local/bin/pre-update"}}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsImagePullWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/images/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsBuildWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/build"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsNamedClientProfilesWithBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	cfg.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name: "watchtower",
+			RequestBody: config.RequestBodyConfig{
+				Exec: config.ExecRequestBodyConfig{
+					AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+				},
+			},
+			Rules: []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/exec"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/exec/*/start"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			},
+		},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesRejectsNamedClientProfileBlindWrites(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	cfg.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name: "watchtower",
+			Rules: []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/exec"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/exec/*/start"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			},
+		},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected named client profile blind-write validation to fail")
+	}
+	if !strings.Contains(err.Error(), "watchtower") {
+		t.Fatalf("expected profile name in error, got: %v", err)
+	}
+}
+
 func TestValidateAndCompileRulesRejectsBroadContainerWriteRulesWithoutExplicitOptIn(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{

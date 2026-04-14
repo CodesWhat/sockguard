@@ -18,11 +18,13 @@ import (
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/health"
+	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/ownership"
 	"github.com/codeswhat/sockguard/internal/proxy"
 	"github.com/codeswhat/sockguard/internal/responsefilter"
 	"github.com/codeswhat/sockguard/internal/version"
+	"github.com/codeswhat/sockguard/internal/visibility"
 )
 
 const readHeaderTimeout = 5 * time.Second
@@ -151,10 +153,26 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 }
 
 func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
+	clientProfiles, err := compileClientProfiles(cfg)
+	if err != nil {
+		logger.Error("invalid client profile config", "error", err)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			logging.SetDenied(w, r, "client profile config invalid", filter.NormalizePath)
+			_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "client profile config invalid"})
+		})
+	}
+	for name, profile := range clientProfiles {
+		exec := profile.Exec
+		exec.InspectStart = filter.NewDockerExecInspector(cfg.Upstream.Socket)
+		profile.Exec = exec
+		clientProfiles[name] = profile
+	}
+
 	upstream := proxy.NewWithOptions(cfg.Upstream.Socket, logger, proxy.Options{
 		ModifyResponse: responsefilter.New(responsefilter.Options{
-			RedactContainerEnv: cfg.Response.RedactContainerEnv,
-			RedactMountPaths:   cfg.Response.RedactMountPaths,
+			RedactContainerEnv:    cfg.Response.RedactContainerEnv,
+			RedactMountPaths:      cfg.Response.RedactMountPaths,
+			RedactNetworkTopology: cfg.Response.RedactNetworkTopology,
 		}).ModifyResponse,
 	})
 	var handler http.Handler = upstream
@@ -169,6 +187,12 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 		AllowUnownedImages: cfg.Ownership.AllowUnownedImages,
 	})(handler)
 
+	handler = visibility.Middleware(cfg.Upstream.Socket, logger, visibility.Options{
+		VisibleResourceLabels: cfg.Response.VisibleResourceLabels,
+		Profiles:              clientVisibilityProfiles(cfg.Clients.Profiles),
+		ResolveProfile:        clientacl.RequestProfile,
+	})(handler)
+
 	handler = filter.MiddlewareWithOptions(rules, logger, filter.Options{
 		DenyResponseVerbosity: filter.ParseDenyResponseVerbosity(cfg.Response.DenyVerbosity),
 		ContainerCreate: filter.ContainerCreateOptions{
@@ -176,6 +200,25 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 			AllowHostNetwork:  cfg.RequestBody.ContainerCreate.AllowHostNetwork,
 			AllowedBindMounts: cfg.RequestBody.ContainerCreate.AllowedBindMounts,
 		},
+		Exec: filter.ExecOptions{
+			AllowPrivileged: cfg.RequestBody.Exec.AllowPrivileged,
+			AllowRootUser:   cfg.RequestBody.Exec.AllowRootUser,
+			AllowedCommands: cfg.RequestBody.Exec.AllowedCommands,
+			InspectStart:    filter.NewDockerExecInspector(cfg.Upstream.Socket),
+		},
+		ImagePull: filter.ImagePullOptions{
+			AllowImports:       cfg.RequestBody.ImagePull.AllowImports,
+			AllowAllRegistries: cfg.RequestBody.ImagePull.AllowAllRegistries,
+			AllowOfficial:      cfg.RequestBody.ImagePull.AllowOfficial,
+			AllowedRegistries:  cfg.RequestBody.ImagePull.AllowedRegistries,
+		},
+		Build: filter.BuildOptions{
+			AllowRemoteContext:   cfg.RequestBody.Build.AllowRemoteContext,
+			AllowHostNetwork:     cfg.RequestBody.Build.AllowHostNetwork,
+			AllowRunInstructions: cfg.RequestBody.Build.AllowRunInstructions,
+		},
+		Profiles:       clientProfiles,
+		ResolveProfile: clientacl.RequestProfile,
 	})(handler)
 
 	if cfg.Health.Enabled {
@@ -190,6 +233,13 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 			Enabled:     cfg.Clients.ContainerLabels.Enabled,
 			LabelPrefix: cfg.Clients.ContainerLabels.LabelPrefix,
 		},
+		Profiles: clientacl.ProfileOptions{
+			DefaultProfile: cfg.Clients.DefaultProfile,
+			SourceIPs:      clientSourceIPProfiles(cfg.Clients.SourceIPProfiles),
+			ClientCertificates: clientCertificateProfiles(
+				cfg.Clients.ClientCertificateProfiles,
+			),
+		},
 	})(handler)
 
 	if cfg.Log.AccessLog {
@@ -197,6 +247,38 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 	}
 
 	return handler
+}
+
+func clientSourceIPProfiles(values []config.ClientSourceIPProfileAssignmentConfig) []clientacl.SourceIPProfileAssignment {
+	assignments := make([]clientacl.SourceIPProfileAssignment, 0, len(values))
+	for _, value := range values {
+		assignments = append(assignments, clientacl.SourceIPProfileAssignment{
+			Profile: value.Profile,
+			CIDRs:   value.CIDRs,
+		})
+	}
+	return assignments
+}
+
+func clientCertificateProfiles(values []config.ClientCertificateProfileAssignmentConfig) []clientacl.ClientCertificateProfileAssignment {
+	assignments := make([]clientacl.ClientCertificateProfileAssignment, 0, len(values))
+	for _, value := range values {
+		assignments = append(assignments, clientacl.ClientCertificateProfileAssignment{
+			Profile:     value.Profile,
+			CommonNames: value.CommonNames,
+		})
+	}
+	return assignments
+}
+
+func clientVisibilityProfiles(values []config.ClientProfileConfig) map[string]visibility.Policy {
+	profiles := make(map[string]visibility.Policy, len(values))
+	for _, value := range values {
+		profiles[value.Name] = visibility.Policy{
+			VisibleResourceLabels: value.Response.VisibleResourceLabels,
+		}
+	}
+	return profiles
 }
 
 func newHTTPServer(handler http.Handler) *http.Server {

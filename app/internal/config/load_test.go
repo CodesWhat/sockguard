@@ -105,6 +105,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Response.RedactMountPaths != defaults.Response.RedactMountPaths {
 		t.Errorf("Response.RedactMountPaths = %v, want %v", cfg.Response.RedactMountPaths, defaults.Response.RedactMountPaths)
 	}
+	if cfg.Response.RedactNetworkTopology != defaults.Response.RedactNetworkTopology {
+		t.Errorf("Response.RedactNetworkTopology = %v, want %v", cfg.Response.RedactNetworkTopology, defaults.Response.RedactNetworkTopology)
+	}
+	if len(cfg.Response.VisibleResourceLabels) != len(defaults.Response.VisibleResourceLabels) {
+		t.Errorf("got %d Response.VisibleResourceLabels, want %d", len(cfg.Response.VisibleResourceLabels), len(defaults.Response.VisibleResourceLabels))
+	}
 	if cfg.RequestBody.ContainerCreate.AllowPrivileged != defaults.RequestBody.ContainerCreate.AllowPrivileged {
 		t.Errorf(
 			"RequestBody.ContainerCreate.AllowPrivileged = %v, want %v",
@@ -125,6 +131,36 @@ func TestLoadDefaults(t *testing.T) {
 			len(cfg.RequestBody.ContainerCreate.AllowedBindMounts),
 			len(defaults.RequestBody.ContainerCreate.AllowedBindMounts),
 		)
+	}
+	if cfg.RequestBody.Exec.AllowPrivileged != defaults.RequestBody.Exec.AllowPrivileged {
+		t.Errorf("RequestBody.Exec.AllowPrivileged = %v, want %v", cfg.RequestBody.Exec.AllowPrivileged, defaults.RequestBody.Exec.AllowPrivileged)
+	}
+	if cfg.RequestBody.Exec.AllowRootUser != defaults.RequestBody.Exec.AllowRootUser {
+		t.Errorf("RequestBody.Exec.AllowRootUser = %v, want %v", cfg.RequestBody.Exec.AllowRootUser, defaults.RequestBody.Exec.AllowRootUser)
+	}
+	if len(cfg.RequestBody.Exec.AllowedCommands) != len(defaults.RequestBody.Exec.AllowedCommands) {
+		t.Errorf("got %d RequestBody.Exec.AllowedCommands, want %d", len(cfg.RequestBody.Exec.AllowedCommands), len(defaults.RequestBody.Exec.AllowedCommands))
+	}
+	if cfg.RequestBody.ImagePull.AllowImports != defaults.RequestBody.ImagePull.AllowImports {
+		t.Errorf("RequestBody.ImagePull.AllowImports = %v, want %v", cfg.RequestBody.ImagePull.AllowImports, defaults.RequestBody.ImagePull.AllowImports)
+	}
+	if cfg.RequestBody.ImagePull.AllowAllRegistries != defaults.RequestBody.ImagePull.AllowAllRegistries {
+		t.Errorf("RequestBody.ImagePull.AllowAllRegistries = %v, want %v", cfg.RequestBody.ImagePull.AllowAllRegistries, defaults.RequestBody.ImagePull.AllowAllRegistries)
+	}
+	if cfg.RequestBody.ImagePull.AllowOfficial != defaults.RequestBody.ImagePull.AllowOfficial {
+		t.Errorf("RequestBody.ImagePull.AllowOfficial = %v, want %v", cfg.RequestBody.ImagePull.AllowOfficial, defaults.RequestBody.ImagePull.AllowOfficial)
+	}
+	if len(cfg.RequestBody.ImagePull.AllowedRegistries) != len(defaults.RequestBody.ImagePull.AllowedRegistries) {
+		t.Errorf("got %d RequestBody.ImagePull.AllowedRegistries, want %d", len(cfg.RequestBody.ImagePull.AllowedRegistries), len(defaults.RequestBody.ImagePull.AllowedRegistries))
+	}
+	if cfg.RequestBody.Build.AllowRemoteContext != defaults.RequestBody.Build.AllowRemoteContext {
+		t.Errorf("RequestBody.Build.AllowRemoteContext = %v, want %v", cfg.RequestBody.Build.AllowRemoteContext, defaults.RequestBody.Build.AllowRemoteContext)
+	}
+	if cfg.RequestBody.Build.AllowHostNetwork != defaults.RequestBody.Build.AllowHostNetwork {
+		t.Errorf("RequestBody.Build.AllowHostNetwork = %v, want %v", cfg.RequestBody.Build.AllowHostNetwork, defaults.RequestBody.Build.AllowHostNetwork)
+	}
+	if cfg.RequestBody.Build.AllowRunInstructions != defaults.RequestBody.Build.AllowRunInstructions {
+		t.Errorf("RequestBody.Build.AllowRunInstructions = %v, want %v", cfg.RequestBody.Build.AllowRunInstructions, defaults.RequestBody.Build.AllowRunInstructions)
 	}
 	if cfg.Ownership.Owner != defaults.Ownership.Owner {
 		t.Errorf("Ownership.Owner = %q, want %q", cfg.Ownership.Owner, defaults.Ownership.Owner)
@@ -163,12 +199,28 @@ response:
   deny_verbosity: minimal
   redact_container_env: false
   redact_mount_paths: false
+  redact_network_topology: false
+  visible_resource_labels:
+    - com.sockguard.visible=true
 request_body:
   container_create:
     allow_host_network: true
     allowed_bind_mounts:
       - /srv/data
       - /var/lib/sockguard
+  exec:
+    allow_root_user: true
+    allowed_commands:
+      - ["/usr/local/bin/pre-update", "--check"]
+  image_pull:
+    allow_all_registries: true
+    allowed_registries:
+      - ghcr.io
+      - quay.io
+  build:
+    allow_remote_context: true
+    allow_host_network: true
+    allow_run_instructions: true
 ownership:
   owner: ci-job-123
   label_key: com.example.owner
@@ -208,11 +260,38 @@ rules:
 	if cfg.Response.RedactMountPaths {
 		t.Errorf("Response.RedactMountPaths = %v, want false", cfg.Response.RedactMountPaths)
 	}
+	if cfg.Response.RedactNetworkTopology {
+		t.Errorf("Response.RedactNetworkTopology = %v, want false", cfg.Response.RedactNetworkTopology)
+	}
+	if got := cfg.Response.VisibleResourceLabels; len(got) != 1 || got[0] != "com.sockguard.visible=true" {
+		t.Errorf("Response.VisibleResourceLabels = %#v, want [com.sockguard.visible=true]", got)
+	}
 	if !cfg.RequestBody.ContainerCreate.AllowHostNetwork {
 		t.Errorf("RequestBody.ContainerCreate.AllowHostNetwork = %v, want true", cfg.RequestBody.ContainerCreate.AllowHostNetwork)
 	}
 	if got := cfg.RequestBody.ContainerCreate.AllowedBindMounts; len(got) != 2 || got[0] != "/srv/data" || got[1] != "/var/lib/sockguard" {
 		t.Errorf("RequestBody.ContainerCreate.AllowedBindMounts = %#v, want [/srv/data /var/lib/sockguard]", got)
+	}
+	if !cfg.RequestBody.Exec.AllowRootUser {
+		t.Errorf("RequestBody.Exec.AllowRootUser = %v, want true", cfg.RequestBody.Exec.AllowRootUser)
+	}
+	if got := cfg.RequestBody.Exec.AllowedCommands; len(got) != 1 || len(got[0]) != 2 || got[0][0] != "/usr/local/bin/pre-update" || got[0][1] != "--check" {
+		t.Errorf("RequestBody.Exec.AllowedCommands = %#v, want [[/usr/local/bin/pre-update --check]]", got)
+	}
+	if !cfg.RequestBody.ImagePull.AllowAllRegistries {
+		t.Errorf("RequestBody.ImagePull.AllowAllRegistries = %v, want true", cfg.RequestBody.ImagePull.AllowAllRegistries)
+	}
+	if got := cfg.RequestBody.ImagePull.AllowedRegistries; len(got) != 2 || got[0] != "ghcr.io" || got[1] != "quay.io" {
+		t.Errorf("RequestBody.ImagePull.AllowedRegistries = %#v, want [ghcr.io quay.io]", got)
+	}
+	if !cfg.RequestBody.Build.AllowRemoteContext {
+		t.Errorf("RequestBody.Build.AllowRemoteContext = %v, want true", cfg.RequestBody.Build.AllowRemoteContext)
+	}
+	if !cfg.RequestBody.Build.AllowHostNetwork {
+		t.Errorf("RequestBody.Build.AllowHostNetwork = %v, want true", cfg.RequestBody.Build.AllowHostNetwork)
+	}
+	if !cfg.RequestBody.Build.AllowRunInstructions {
+		t.Errorf("RequestBody.Build.AllowRunInstructions = %v, want true", cfg.RequestBody.Build.AllowRunInstructions)
 	}
 	if cfg.Ownership.Owner != "ci-job-123" {
 		t.Errorf("Ownership.Owner = %q, want ci-job-123", cfg.Ownership.Owner)
@@ -235,6 +314,79 @@ rules:
 	// YAML provided rules should override defaults
 	if len(cfg.Rules) != 1 {
 		t.Errorf("got %d rules, want 1", len(cfg.Rules))
+	}
+}
+
+func TestLoadYAMLOverridesClientProfiles(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "profiles.yaml")
+
+	yaml := `
+listen:
+  address: 127.0.0.1:2376
+  tls:
+    cert_file: /certs/server.pem
+    key_file: /certs/server-key.pem
+    client_ca_file: /certs/ca.pem
+clients:
+  default_profile: readonly
+  source_ip_profiles:
+    - profile: watchtower
+      cidrs:
+        - 172.18.0.0/16
+  client_certificate_profiles:
+    - profile: portainer
+      common_names:
+        - portainer-admin
+  profiles:
+    - name: readonly
+      response:
+        visible_resource_labels:
+          - com.sockguard.visible=true
+      rules:
+        - match: { method: GET, path: "/_ping" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+    - name: watchtower
+      request_body:
+        exec:
+          allowed_commands:
+            - ["/usr/local/bin/pre-update"]
+      rules:
+        - match: { method: POST, path: "/containers/*/exec" }
+          action: allow
+        - match: { method: POST, path: "/exec/*/start" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.Clients.DefaultProfile != "readonly" {
+		t.Fatalf("Clients.DefaultProfile = %q, want readonly", cfg.Clients.DefaultProfile)
+	}
+	if got := cfg.Clients.SourceIPProfiles; len(got) != 1 || got[0].Profile != "watchtower" || len(got[0].CIDRs) != 1 || got[0].CIDRs[0] != "172.18.0.0/16" {
+		t.Fatalf("Clients.SourceIPProfiles = %#v, want watchtower assignment", got)
+	}
+	if got := cfg.Clients.ClientCertificateProfiles; len(got) != 1 || got[0].Profile != "portainer" || len(got[0].CommonNames) != 1 || got[0].CommonNames[0] != "portainer-admin" {
+		t.Fatalf("Clients.ClientCertificateProfiles = %#v, want portainer certificate assignment", got)
+	}
+	if got := cfg.Clients.Profiles; len(got) != 2 || got[0].Name != "readonly" || got[1].Name != "watchtower" {
+		t.Fatalf("Clients.Profiles = %#v, want readonly/watchtower profiles", got)
+	}
+	if got := cfg.Clients.Profiles[0].Response.VisibleResourceLabels; len(got) != 1 || got[0] != "com.sockguard.visible=true" {
+		t.Fatalf("Clients.Profiles[0].Response.VisibleResourceLabels = %#v, want [com.sockguard.visible=true]", got)
+	}
+	if got := cfg.Clients.Profiles[1].RequestBody.Exec.AllowedCommands; len(got) != 1 || len(got[0]) != 1 || got[0][0] != "/usr/local/bin/pre-update" {
+		t.Fatalf("Clients.Profiles[1].RequestBody.Exec.AllowedCommands = %#v, want [[/usr/local/bin/pre-update]]", got)
 	}
 }
 

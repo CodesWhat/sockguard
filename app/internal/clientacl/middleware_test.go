@@ -2,6 +2,9 @@ package clientacl
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
 	"io"
@@ -64,6 +67,60 @@ func TestMiddlewareAllowsRemoteIPWithinAllowedCIDRs(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareAssignsProfileFromSourceIP(t *testing.T) {
+	handler := middlewareWithDeps(testLogger(), Options{
+		Profiles: ProfileOptions{
+			SourceIPs: []SourceIPProfileAssignment{
+				{Profile: "watchtower", CIDRs: []string{"192.0.2.0/24"}},
+			},
+		},
+	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		profile, ok := RequestProfile(r)
+		if !ok || profile != "watchtower" {
+			t.Fatalf("RequestProfile() = (%q, %v), want (watchtower, true)", profile, ok)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareAssignsProfileFromClientCertificate(t *testing.T) {
+	handler := middlewareWithDeps(testLogger(), Options{
+		Profiles: ProfileOptions{
+			ClientCertificates: []ClientCertificateProfileAssignment{
+				{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
+			},
+		},
+	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		profile, ok := RequestProfile(r)
+		if !ok || profile != "portainer" {
+			t.Fatalf("RequestProfile() = (%q, %v), want (portainer, true)", profile, ok)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{
+			{Subject: pkix.Name{CommonName: "portainer-admin"}},
+		},
+	}
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 

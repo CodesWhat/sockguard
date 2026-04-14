@@ -1,0 +1,343 @@
+package filter
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path"
+	"strings"
+)
+
+const maxBuildContextBytes = 512 << 20  // 512 MiB
+const maxBuildDockerfileBytes = 1 << 20 // 1 MiB
+const defaultBuildDockerfilePath = "Dockerfile"
+
+// BuildOptions configures request-body/query inspection for POST /build.
+type BuildOptions struct {
+	AllowRemoteContext   bool
+	AllowHostNetwork     bool
+	AllowRunInstructions bool
+}
+
+type buildPolicy struct {
+	allowRemoteContext   bool
+	allowHostNetwork     bool
+	allowRunInstructions bool
+}
+
+func newBuildPolicy(opts BuildOptions) buildPolicy {
+	return buildPolicy{
+		allowRemoteContext:   opts.AllowRemoteContext,
+		allowHostNetwork:     opts.AllowHostNetwork,
+		allowRunInstructions: opts.AllowRunInstructions,
+	}
+}
+
+func (p buildPolicy) inspect(r *http.Request, normalizedPath string) (string, error) {
+	if r == nil || r.Method != http.MethodPost || normalizedPath != "/build" {
+		return "", nil
+	}
+
+	query := r.URL.Query()
+	if remote := strings.TrimSpace(query.Get("remote")); remote != "" {
+		if p.allowRemoteContext {
+			if p.allowRunInstructions {
+				return "", nil
+			}
+			return "build denied: remote build contexts cannot be inspected while RUN instructions are restricted", nil
+		}
+		return fmt.Sprintf("build denied: remote build context %q is not allowed", remote), nil
+	}
+
+	if !p.allowHostNetwork && strings.EqualFold(strings.TrimSpace(query.Get("networkmode")), "host") {
+		return "build denied: host network mode is not allowed", nil
+	}
+
+	if p.allowRunInstructions || r.Body == nil {
+		return "", nil
+	}
+
+	spool, size, err := spoolRequestBodyToTempFile(r, "sockguard-build-", maxBuildContextBytes)
+	if err != nil {
+		return "", err
+	}
+	if spool.tooLarge {
+		spool.closeAndRemove()
+		return fmt.Sprintf("build denied: request body exceeds %d byte limit", maxBuildContextBytes), nil
+	}
+	if size == 0 {
+		spool.closeAndRemove()
+		return "", nil
+	}
+
+	dockerfilePath := normalizeBuildDockerfilePath(query.Get("dockerfile"))
+	dockerfile, ok, err := extractBuildDockerfile(spool.file, r.Header.Get("Content-Type"), dockerfilePath)
+	if err != nil {
+		spool.closeAndRemove()
+		return "", fmt.Errorf("extract Dockerfile: %w", err)
+	}
+	if !ok {
+		spool.closeAndRemove()
+		return fmt.Sprintf("build denied: unable to inspect Dockerfile %q", dockerfilePath), nil
+	}
+
+	if dockerfileContainsRunInstruction(dockerfile) {
+		spool.closeAndRemove()
+		return "build denied: RUN instructions are not allowed", nil
+	}
+
+	if _, err := spool.file.Seek(0, io.SeekStart); err != nil {
+		spool.closeAndRemove()
+		return "", fmt.Errorf("rewind build body: %w", err)
+	}
+	r.Body = spool.requestBody()
+	r.ContentLength = size
+	return "", nil
+}
+
+type spooledRequestBody struct {
+	file     *os.File
+	path     string
+	tooLarge bool
+}
+
+func spoolRequestBodyToTempFile(r *http.Request, prefix string, maxBytes int64) (*spooledRequestBody, int64, error) {
+	file, err := os.CreateTemp("", prefix)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	limited := io.LimitReader(r.Body, maxBytes+1)
+	size, copyErr := io.Copy(file, limited)
+	closeErr := r.Body.Close()
+	if copyErr == nil && closeErr != nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil {
+		name := file.Name()
+		_ = file.Close()
+		_ = os.Remove(name)
+		return nil, 0, copyErr
+	}
+
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		name := file.Name()
+		_ = file.Close()
+		_ = os.Remove(name)
+		return nil, 0, err
+	}
+
+	return &spooledRequestBody{
+		file:     file,
+		path:     file.Name(),
+		tooLarge: size > maxBytes,
+	}, size, nil
+}
+
+func (s *spooledRequestBody) requestBody() io.ReadCloser {
+	return &tempFileBody{file: s.file, path: s.path}
+}
+
+func (s *spooledRequestBody) closeAndRemove() {
+	if s == nil || s.file == nil {
+		return
+	}
+	_ = s.file.Close()
+	_ = os.Remove(s.path)
+}
+
+type tempFileBody struct {
+	file *os.File
+	path string
+}
+
+func (b *tempFileBody) Read(p []byte) (int, error) {
+	return b.file.Read(p)
+}
+
+func (b *tempFileBody) Close() error {
+	closeErr := b.file.Close()
+	removeErr := os.Remove(b.path)
+	if closeErr != nil {
+		return closeErr
+	}
+	if removeErr != nil && !os.IsNotExist(removeErr) {
+		return removeErr
+	}
+	return nil
+}
+
+func normalizeBuildDockerfilePath(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return defaultBuildDockerfilePath
+	}
+	cleaned := path.Clean(strings.TrimPrefix(trimmed, "/"))
+	if cleaned == "." || cleaned == "" {
+		return defaultBuildDockerfilePath
+	}
+	return cleaned
+}
+
+func extractBuildDockerfile(file *os.File, contentType string, dockerfilePath string) ([]byte, bool, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, false, err
+	}
+
+	if dockerfile, ok, err := extractDockerfileFromGzipTar(file, dockerfilePath); ok || err != nil {
+		return dockerfile, ok, err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, false, err
+	}
+	if dockerfile, ok, err := extractDockerfileFromTar(file, dockerfilePath); ok || err != nil {
+		return dockerfile, ok, err
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, false, err
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(file, maxBuildDockerfileBytes+1))
+	if err != nil {
+		return nil, false, err
+	}
+	if len(raw) > maxBuildDockerfileBytes {
+		return nil, false, fmt.Errorf("Dockerfile exceeds %d byte limit", maxBuildDockerfileBytes)
+	}
+	if !looksLikeDockerfile(raw, contentType) {
+		return nil, false, nil
+	}
+	return raw, true, nil
+}
+
+func extractDockerfileFromGzipTar(file *os.File, dockerfilePath string) ([]byte, bool, error) {
+	gzr, err := gzip.NewReader(file)
+	if err != nil {
+		if err == gzip.ErrHeader {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	defer gzr.Close()
+	return extractDockerfileFromTarReader(tar.NewReader(gzr), dockerfilePath)
+}
+
+func extractDockerfileFromTar(file *os.File, dockerfilePath string) ([]byte, bool, error) {
+	return extractDockerfileFromTarReader(tar.NewReader(file), dockerfilePath)
+}
+
+func extractDockerfileFromTarReader(tr *tar.Reader, dockerfilePath string) ([]byte, bool, error) {
+	want := normalizeBuildDockerfilePath(dockerfilePath)
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			return nil, false, nil
+		}
+		if err != nil {
+			if strings.Contains(err.Error(), "invalid tar header") {
+				return nil, false, nil
+			}
+			return nil, false, err
+		}
+
+		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+			continue
+		}
+		if normalizeBuildDockerfilePath(header.Name) != want {
+			continue
+		}
+
+		body, err := io.ReadAll(io.LimitReader(tr, maxBuildDockerfileBytes+1))
+		if err != nil {
+			return nil, false, err
+		}
+		if len(body) > maxBuildDockerfileBytes {
+			return nil, false, fmt.Errorf("Dockerfile exceeds %d byte limit", maxBuildDockerfileBytes)
+		}
+		return body, true, nil
+	}
+}
+
+func looksLikeDockerfile(raw []byte, contentType string) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/plain") {
+		return true
+	}
+
+	for _, line := range strings.Split(string(trimmed), "\n") {
+		normalized := strings.TrimSpace(line)
+		if normalized == "" || strings.HasPrefix(normalized, "#") {
+			continue
+		}
+		switch dockerfileInstruction(normalized) {
+		case "ADD", "ARG", "CMD", "COPY", "ENTRYPOINT", "ENV", "EXPOSE", "FROM", "HEALTHCHECK", "LABEL", "MAINTAINER", "ONBUILD", "RUN", "SHELL", "STOPSIGNAL", "USER", "VOLUME", "WORKDIR":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+func dockerfileContainsRunInstruction(raw []byte) bool {
+	lines := strings.Split(string(raw), "\n")
+	var logical string
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if logical == "" && strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		if logical == "" {
+			logical = trimmed
+		} else {
+			logical = logical + " " + trimmed
+		}
+
+		if strings.HasSuffix(logical, "\\") {
+			logical = strings.TrimSpace(strings.TrimSuffix(logical, "\\"))
+			continue
+		}
+
+		instruction := dockerfileInstruction(logical)
+		if instruction == "RUN" || instruction == "ONBUILD RUN" {
+			return true
+		}
+		logical = ""
+	}
+
+	if logical == "" {
+		return false
+	}
+	instruction := dockerfileInstruction(logical)
+	return instruction == "RUN" || instruction == "ONBUILD RUN"
+}
+
+func dockerfileInstruction(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return ""
+	}
+
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return ""
+	}
+
+	first := strings.ToUpper(fields[0])
+	if first != "ONBUILD" || len(fields) < 2 {
+		return first
+	}
+	return first + " " + strings.ToUpper(fields[1])
+}

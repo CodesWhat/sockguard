@@ -19,10 +19,14 @@ health:
 
 # Drydock needs container creation during update flows. Container-create bodies
 # are inspected by default, but bind-mounted workloads are denied until you
-# allowlist their host paths here.
+# allowlist their host paths here. Image pulls are inspected too; this preset
+# explicitly allows any registry so Drydock can continue tracking arbitrary
+# images while still denying `fromSrc` imports.
 request_body:
   container_create:
     allowed_bind_mounts: []
+  image_pull:
+    allow_all_registries: true
 
 rules:
   # Health and metadata

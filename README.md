@@ -205,7 +205,7 @@ Existing socket proxies (Tecnativa, LinuxServer) filter by URL path only. Sockgu
 | 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks and client-container label ACLs let one proxy differentiate TCP callers before the global rule set runs. |
 | 🔍 | **Request Body Inspection** | `POST /containers/create` bodies are inspected to block privileged containers, host networking, and non-allowlisted bind mounts before Docker sees the request. |
 | 🏷️ | **Owner Label Isolation** | A proxy instance can stamp containers, networks, volumes, and build-produced images with an owner label, auto-filter list/prune/events calls, and deny cross-owner access to labeled resources. |
-| 🫥 | **Response Filtering** | Redacts `Config.Env` and mount-path metadata on common Docker read endpoints by default so allowlisted readers do not inherit raw host topology or runtime secret exposure. |
+| 🫥 | **Visibility-Controlled Reads** | Redacts env, mount, and network-topology metadata by default and can hide list/events/inspect results behind per-client label visibility rules. |
 | 🧱 | **Body-Blind Write Guardrail** | Remaining body-sensitive write endpoints such as `exec`, `build`, and Swarm writes still require explicit unsafe opt-in until their request bodies are inspected. |
 | 🔄 | **Tecnativa Compatible** | Drop-in replacement using the same env vars. `CONTAINERS=1`, `POST=0`, `ALLOW_START=1` all work. |
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance. |
@@ -225,7 +225,7 @@ How sockguard stacks up against other Docker socket proxies:
 | Granular POST ops | ❌ | Partial | Via regex | ✅ |
 | Request body inspection | ❌ | ❌ | ❌ | ✅ (`/containers/create`) |
 | Per-client policies | ❌ | ❌ | CIDR + client labels | ✅ (CIDR + client labels) |
-| Response filtering | ❌ | ❌ | ❌ | ✅ (env + mount redaction) |
+| Response filtering | ❌ | ❌ | ❌ | ✅ (visibility + redaction) |
 | Structured audit log | ❌ | ❌ | ❌ | ✅ |
 | YAML config | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ✅ |
@@ -268,12 +268,24 @@ response:
   deny_verbosity: minimal  # recommended for production; verbose adds method/path/reason for debugging
   redact_container_env: true
   redact_mount_paths: true
+  redact_network_topology: true
 
 request_body:
   container_create:
     allowed_bind_mounts:
       - /srv/containers
       - /var/lib/app-data
+  exec:
+    allowed_commands:
+      - ["/usr/local/bin/pre-update", "--check"]
+  image_pull:
+    allow_official: true
+    allowed_registries:
+      - ghcr.io
+  build:
+    allow_remote_context: false
+    allow_host_network: false
+    allow_run_instructions: false
 
 clients:
   allowed_cidrs:
@@ -303,17 +315,75 @@ Trailing `/**` matches both the base path and any deeper path. For example, `/co
 
 Allowed `POST /containers/create` requests are inspected by default. Unless you opt out, Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, and any bind mount source outside `request_body.container_create.allowed_bind_mounts`. Named volumes still work without allowlist entries because they are not host bind mounts.
 
+Allowed `POST /containers/*/exec` and `POST /exec/*/start` requests are inspected when `request_body.exec.allowed_commands` is non-empty. Sockguard denies non-allowlisted argv vectors, denies privileged execs unless `request_body.exec.allow_privileged: true`, denies root-user execs unless `request_body.exec.allow_root_user: true`, and re-inspects `POST /exec/*/start` against Docker's stored exec metadata before letting it run.
+
+Allowed `POST /images/create` requests are inspected by default. Sockguard denies `fromSrc` image imports unless `request_body.image_pull.allow_imports: true` and only allows Docker Hub official images unless you set `request_body.image_pull.allow_all_registries: true` or list explicit `request_body.image_pull.allowed_registries`.
+
+Allowed `POST /build` requests are inspected by default. Sockguard denies remote build contexts, `networkmode=host`, and Dockerfiles containing `RUN` instructions unless you explicitly allow those behaviors under `request_body.build.*`.
+
 `clients.allowed_cidrs` is a coarse TCP-client gate. Requests whose source IP falls outside every configured CIDR are denied before `/health` or the global rule set runs.
 
 When `clients.container_labels.enabled` is true, Sockguard resolves bridge-network callers by source IP through the Docker API and looks for per-client allow labels on the calling container. Each `clients.container_labels.label_prefix + <method>` label is interpreted as a comma-separated Sockguard glob allowlist for that HTTP method. For example, `com.sockguard.allow.get=/containers/**,/events` allows only `GET /containers/**` and `GET /events` for that client. If you are migrating from wollomatic, set `clients.container_labels.label_prefix: socket-proxy.allow.` to reuse existing labels.
 
+For multi-consumer setups, define named client profiles and assign them by source IP or mTLS client certificate common name. Root-level `rules` and `request_body` remain the fallback policy unless `clients.default_profile` points at one of the named profiles:
+
+```yaml
+clients:
+  default_profile: readonly
+  source_ip_profiles:
+    - profile: watchtower
+      cidrs:
+        - 172.18.0.0/16
+  client_certificate_profiles:
+    - profile: portainer
+      common_names:
+        - portainer-admin
+  profiles:
+    - name: readonly
+      response:
+        visible_resource_labels:
+          - com.sockguard.visible=true
+      rules:
+        - match: { method: GET, path: "/containers/**" }
+          action: allow
+        - match: { method: GET, path: "/events" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+    - name: watchtower
+      response:
+        visible_resource_labels:
+          - com.sockguard.client=watchtower
+      request_body:
+        image_pull:
+          allow_all_registries: true
+        exec:
+          allowed_commands:
+            - ["/usr/local/bin/pre-update"]
+      rules:
+        - match: { method: GET, path: "/containers/**" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/exec" }
+          action: allow
+        - match: { method: POST, path: "/exec/*/start" }
+          action: allow
+        - match: { method: POST, path: "/images/create" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+```
+
+Client-certificate profile assignment requires `listen.tls` mutual TLS. Profile rules and request-body policies are compiled and validated at startup just like the root policy, and `sockguard validate` now prints the configured client-profile sections too.
+
+`response.visible_resource_labels` and `clients.profiles[].response.visible_resource_labels` add read-side visibility control on top of allow rules. Sockguard injects those label selectors into `GET /containers/json`, `/images/json`, `/networks`, `/volumes`, and `/events`, and returns `404` for hidden targets on inspect-style reads such as `GET /containers/*/json`, `/images/*/json`, `/networks/*`, `/volumes/*`, and `GET /exec/*/json`. Selectors use Docker label syntax (`key` or `key=value`), are ANDed together, and profile selectors are additive with the root response selectors.
+
 Set `ownership.owner` to turn on per-proxy resource ownership isolation. Sockguard will add `ownership.label_key=ownership.owner` labels to container, network, and volume creates, add the same label to `POST /build`, inject owner label filters into list/prune/events requests, and deny direct access to labeled resources owned by some other proxy instance. Unowned images are still readable by default so shared base images can be pulled and inspected without relabeling.
 
-`insecure_allow_body_blind_writes` is off by default. If your rule set allows the remaining body-sensitive Docker write endpoints such as `POST /containers/*/exec`, `POST /exec/*/start`, `POST /build`, or Swarm service creation/update, validation fails unless you explicitly set this flag to `true`. That opt-in acknowledges that Sockguard is still enforcing method+path only for those writes.
+`insecure_allow_body_blind_writes` is off by default. Validation still fails unless you explicitly set it to `true` when your rules allow body-sensitive writes Sockguard cannot safely constrain yet, such as arbitrary `POST /containers/*/exec` / `POST /exec/*/start` without a `request_body.exec.allowed_commands` allowlist, `POST /services/create`, `POST /services/*/update`, or `POST /swarm/init`.
 
 `response.deny_verbosity` defaults to `minimal` so `403` responses carry only a generic deny message and never leak the request method, path, or matched rule reason back to the caller. Set it to `verbose` explicitly during rule authoring if you need to see which rule denied a request — verbose is still useful in dev but should never run in production because it echoes request details in the response body. Even in `verbose` mode, Sockguard redacts denied `/secrets/*` and `/swarm/unlockkey` paths before returning them.
 
-`response.redact_container_env` and `response.redact_mount_paths` also default to `true`. Sockguard now scrubs `Config.Env` on `GET /containers/*/json`, redacts `HostConfig.Binds` host paths plus `Mounts[*].Source` on container list/inspect responses, and redacts `Mountpoint` on volume list/inspect responses. Disable either toggle only for trusted admin clients that genuinely need raw Docker metadata.
+`response.redact_container_env`, `response.redact_mount_paths`, and `response.redact_network_topology` also default to `true`. Sockguard scrubs `Config.Env` on `GET /containers/*/json`, redacts `HostConfig.Binds` host paths plus `Mounts[*].Source` on container list/inspect responses, redacts volume `Mountpoint` on volume list/inspect responses, and strips container/network address topology from `GET /containers/json`, `GET /containers/*/json`, `GET /networks`, and `GET /networks/*`. Disable those toggles only for trusted admin clients that genuinely need raw Docker metadata.
 
 Preset configs included for [drydock](app/configs/drydock.yaml), [Traefik](app/configs/traefik.yaml), [Portainer](app/configs/portainer.yaml), [Watchtower](app/configs/watchtower.yaml), [Homepage](app/configs/homepage.yaml), [Homarr](app/configs/homarr.yaml), [Diun](app/configs/diun.yaml), [Autoheal](app/configs/autoheal.yaml), and [read-only](app/configs/readonly.yaml).
 
@@ -364,9 +434,11 @@ Replace the image — your env vars work as-is:
 | **0.1.0** | MVP — drop-in replacement with granular control, YAML config, structured logging | ✅ shipped |
 | **0.2.0** | mTLS for remote TCP, TLS 1.3 minimum, loopback-by-default listener, body-blind write guardrail | ✅ shipped |
 | **0.3.0** | Request-body inspection for `/containers/create`, per-proxy owner labels, per-client CIDR + container-label ACLs | ✅ shipped |
-| **0.4.0** | Named per-client policy profiles, body inspection for `/build` and `exec`, expanded response filtering (visibility rules, network redaction) | 🕒 planned |
-| **0.5.0** | Observability — Prometheus metrics, audit log persistence, OTel trace/span IDs in log records | 🕒 planned |
-| **0.6.0** | Rate limiting, policy safety rails, security enforcement | 🕒 planned |
+| **0.4.0** | Profile inheritance, unix peer creds, container/image pattern visibility | 🕒 planned |
+| **0.5.0** | Operator auditability — Prometheus metrics, dedicated audit log schema, stable request IDs, explicit deny reason codes | 🕒 planned |
+| **0.6.0** | Secure container enforcement — readonly rootfs, resource limits, approved seccomp/AppArmor/SELinux, restricted CapAdd/Devices, image signature verification | 🕒 planned |
+| **0.7.0** | Abuse controls — per-client rate limits, burst controls, concurrency caps | 🕒 planned |
+| **0.8.0** | Dynamic configuration — hot reload, admin API, config validation, policy versioning | 🕒 planned |
 
 <hr>
 

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -294,6 +295,42 @@ func TestValidateRejectsRelativeContainerCreateBindMountAllowlist(t *testing.T) 
 	}
 }
 
+func TestValidateAllowsExecCommandAndImageRegistryAllowlists(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/local/bin/pre-update", "--check"}}
+	cfg.RequestBody.ImagePull.AllowedRegistries = []string{"ghcr.io", "registry.example.com:5000"}
+
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+func TestValidateRejectsEmptyExecCommandAllowlistEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Exec.AllowedCommands = [][]string{{""}}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for empty exec allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.exec.allowed_commands") {
+		t.Fatalf("expected request_body.exec.allowed_commands in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidImageRegistryAllowlistEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.ImagePull.AllowedRegistries = []string{"https://ghcr.io/acme"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid image registry allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.image_pull.allowed_registries") {
+		t.Fatalf("expected request_body.image_pull.allowed_registries in error, got: %v", err)
+	}
+}
+
 func TestValidateRejectsOwnershipWithoutOwner(t *testing.T) {
 	cfg := Defaults()
 	cfg.Ownership.Owner = "ci-job-123"
@@ -357,6 +394,120 @@ func TestValidateRejectsClientACLsOnUnixSocketListener(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "clients.allowed_cidrs") && !strings.Contains(err.Error(), "clients.container_labels") {
 		t.Fatalf("expected client ACL error, got: %v", err)
+	}
+}
+
+func TestValidateAllowsNamedClientProfiles(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("WriteMutualTLSBundle: %v", err)
+	}
+
+	cfg := Defaults()
+	cfg.Listen.TLS.CertFile = bundle.ServerCertFile
+	cfg.Listen.TLS.KeyFile = bundle.ServerKeyFile
+	cfg.Listen.TLS.ClientCAFile = bundle.CAFile
+	cfg.Clients.DefaultProfile = "readonly"
+	cfg.Clients.SourceIPProfiles = []ClientSourceIPProfileAssignmentConfig{
+		{Profile: "watchtower", CIDRs: []string{"172.18.0.0/16"}},
+	}
+	cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
+		{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
+	}
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{
+			Name: "readonly",
+			Rules: []RuleConfig{
+				{Match: MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+				{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			},
+		},
+		{
+			Name: "watchtower",
+			RequestBody: RequestBodyConfig{
+				Exec: ExecRequestBodyConfig{
+					AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+				},
+			},
+			Rules: []RuleConfig{
+				{Match: MatchConfig{Method: http.MethodPost, Path: "/containers/*/exec"}, Action: "allow"},
+				{Match: MatchConfig{Method: http.MethodPost, Path: "/exec/*/start"}, Action: "allow"},
+				{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			},
+		},
+		{
+			Name: "portainer",
+			Rules: []RuleConfig{
+				{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "allow"},
+			},
+		},
+	}
+
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+func TestValidateRejectsUnknownClientProfileReference(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.DefaultProfile = "missing"
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "readonly", Rules: []RuleConfig{{Match: MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"}}},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for unknown profile reference")
+	}
+	if !strings.Contains(err.Error(), "clients.default_profile") {
+		t.Fatalf("expected clients.default_profile in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsClientCertificateProfilesWithoutMutualTLS(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "readonly", Rules: []RuleConfig{{Match: MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"}}},
+	}
+	cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
+		{Profile: "readonly", CommonNames: []string{"portainer-admin"}},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for client certificate profile assignment without mTLS")
+	}
+	if !strings.Contains(err.Error(), "clients.client_certificate_profiles") {
+		t.Fatalf("expected clients.client_certificate_profiles in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidVisibleResourceLabels(t *testing.T) {
+	cfg := Defaults()
+	cfg.Response.VisibleResourceLabels = []string{" "}
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{
+			Name: "readonly",
+			Response: ClientProfileResponseConfig{
+				VisibleResourceLabels: []string{"bad,label"},
+			},
+			Rules: []RuleConfig{
+				{Match: MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+				{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			},
+		},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid visible resource labels")
+	}
+	if !strings.Contains(err.Error(), "response.visible_resource_labels") {
+		t.Fatalf("expected response.visible_resource_labels in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.profiles[0].response.visible_resource_labels") {
+		t.Fatalf("expected clients.profiles[0].response.visible_resource_labels in error, got: %v", err)
 	}
 }
 

@@ -156,3 +156,53 @@ log:
 		t.Fatalf("expected compat mode line, got:\n%s", out.String())
 	}
 }
+
+func TestRunValidatePrintsClientProfiles(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sockguard.yaml")
+	yaml := `
+listen:
+  socket: /tmp/sockguard.sock
+upstream:
+  socket: /var/run/docker.sock
+log:
+  level: info
+  format: json
+  output: stderr
+clients:
+  default_profile: readonly
+  profiles:
+    - name: readonly
+      rules:
+        - match: { method: GET, path: "/_ping" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+rules:
+  - match: { method: "*", path: "/**" }
+    action: deny
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	oldCfgFile := cfgFile
+	cfgFile = cfgPath
+	t.Cleanup(func() { cfgFile = oldCfgFile })
+
+	var out bytes.Buffer
+	command := &cobra.Command{Use: "validate"}
+	command.SetOut(&out)
+
+	if err := runValidate(command, nil); err != nil {
+		t.Fatalf("runValidate() error = %v", err)
+	}
+
+	stdout := out.String()
+	if !strings.Contains(stdout, "Client Profiles (1)") {
+		t.Fatalf("expected client profiles section, got:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "readonly (default)") {
+		t.Fatalf("expected default profile label, got:\n%s", stdout)
+	}
+}

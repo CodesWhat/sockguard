@@ -21,12 +21,20 @@ health:
 # Portainer needs broad Docker write access, including body-sensitive endpoints
 # such as container create, exec, build, and swarm management. Container-create
 # bodies are inspected by default, but bind-mounted workloads are denied until
-# you allowlist their host paths here. Exec, build, and swarm-management
-# request bodies are still body-blind today, so this preset keeps the unsafe
-# opt-in below.
+# you allowlist their host paths here. Image pulls and build requests are
+# inspected too, and this preset widens those controls to preserve Portainer's
+# expected functionality. Exec and swarm-management writes still require the
+# unsafe opt-in below because Portainer allows arbitrary commands and cluster
+# mutation.
 request_body:
   container_create:
     allowed_bind_mounts: []
+  image_pull:
+    allow_all_registries: true
+  build:
+    allow_remote_context: true
+    allow_host_network: true
+    allow_run_instructions: true
 
 insecure_allow_body_blind_writes: true
 

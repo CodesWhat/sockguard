@@ -70,6 +70,7 @@ func validateBasic(cfg *Config) []string {
 	default:
 		errs = append(errs, fmt.Sprintf("invalid deny response verbosity %q (must be minimal or verbose)", cfg.Response.DenyVerbosity))
 	}
+	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels)...)
 
 	// Health path starts with /
 	if cfg.Health.Enabled && !strings.HasPrefix(cfg.Health.Path, "/") {
@@ -128,18 +129,7 @@ func validateTCPListenerSecurity(cfg *Config) []string {
 func validateRequestBody(cfg *Config) []string {
 	var errs []string
 
-	for _, rawPath := range cfg.RequestBody.ContainerCreate.AllowedBindMounts {
-		if _, ok := normalizeAllowedBindMount(rawPath); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf(
-				"request_body.container_create.allowed_bind_mounts entries must be absolute host paths, got %q",
-				rawPath,
-			),
-		)
-	}
+	errs = append(errs, validateRequestBodyConfig("request_body", cfg.RequestBody)...)
 
 	for _, rawCIDR := range cfg.Clients.AllowedCIDRs {
 		if _, err := netip.ParsePrefix(strings.TrimSpace(rawCIDR)); err == nil {
@@ -163,10 +153,140 @@ func validateRequestBody(cfg *Config) []string {
 		errs = append(errs, "clients.container_labels requires a TCP listener; remove listen.socket or disable clients.container_labels")
 	}
 
+	profilesByName := make(map[string]struct{}, len(cfg.Clients.Profiles))
+	for i, profile := range cfg.Clients.Profiles {
+		prefix := fmt.Sprintf("clients.profiles[%d]", i)
+		name := strings.TrimSpace(profile.Name)
+		if name == "" {
+			errs = append(errs, prefix+".name is required")
+		} else {
+			if _, exists := profilesByName[name]; exists {
+				errs = append(errs, fmt.Sprintf("%s.name %q is duplicated", prefix, name))
+			}
+			profilesByName[name] = struct{}{}
+		}
+		if len(profile.Rules) == 0 {
+			errs = append(errs, prefix+".rules requires at least one rule")
+		}
+		errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels)...)
+		errs = append(errs, validateRequestBodyConfig(prefix+".request_body", profile.RequestBody)...)
+		errs = append(errs, validateRuleConfigs(profile.Rules, prefix+".rules")...)
+	}
+
+	if cfg.Clients.DefaultProfile != "" {
+		if _, ok := profilesByName[cfg.Clients.DefaultProfile]; !ok {
+			errs = append(errs, fmt.Sprintf("clients.default_profile %q does not match any configured client profile", cfg.Clients.DefaultProfile))
+		}
+	}
+
+	if cfg.Listen.Socket != "" && len(cfg.Clients.SourceIPProfiles) > 0 {
+		errs = append(errs, "clients.source_ip_profiles requires a TCP listener; remove listen.socket or clear clients.source_ip_profiles")
+	}
+	for i, assignment := range cfg.Clients.SourceIPProfiles {
+		prefix := fmt.Sprintf("clients.source_ip_profiles[%d]", i)
+		if assignment.Profile == "" {
+			errs = append(errs, prefix+".profile is required")
+		} else if _, ok := profilesByName[assignment.Profile]; !ok {
+			errs = append(errs, fmt.Sprintf("%s.profile %q does not match any configured client profile", prefix, assignment.Profile))
+		}
+		if len(assignment.CIDRs) == 0 {
+			errs = append(errs, prefix+".cidrs requires at least one CIDR")
+		}
+		for _, rawCIDR := range assignment.CIDRs {
+			if _, err := netip.ParsePrefix(strings.TrimSpace(rawCIDR)); err == nil {
+				continue
+			}
+			errs = append(errs, fmt.Sprintf("%s.cidrs entries must be valid CIDR prefixes, got %q", prefix, rawCIDR))
+		}
+	}
+
+	if len(cfg.Clients.ClientCertificateProfiles) > 0 && !cfg.Listen.TLS.Complete() {
+		errs = append(errs, "clients.client_certificate_profiles requires listen.tls mutual TLS configuration")
+	}
+	if cfg.Listen.Socket != "" && len(cfg.Clients.ClientCertificateProfiles) > 0 {
+		errs = append(errs, "clients.client_certificate_profiles requires a TCP listener; remove listen.socket or clear clients.client_certificate_profiles")
+	}
+	for i, assignment := range cfg.Clients.ClientCertificateProfiles {
+		prefix := fmt.Sprintf("clients.client_certificate_profiles[%d]", i)
+		if assignment.Profile == "" {
+			errs = append(errs, prefix+".profile is required")
+		} else if _, ok := profilesByName[assignment.Profile]; !ok {
+			errs = append(errs, fmt.Sprintf("%s.profile %q does not match any configured client profile", prefix, assignment.Profile))
+		}
+		if len(assignment.CommonNames) == 0 {
+			errs = append(errs, prefix+".common_names requires at least one client certificate common name")
+		}
+		for _, value := range assignment.CommonNames {
+			if strings.TrimSpace(value) != "" {
+				continue
+			}
+			errs = append(errs, prefix+".common_names entries must be non-empty")
+		}
+	}
+
 	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
 		errs = append(errs, "ownership.label_key is required when ownership.owner is set")
 	}
 
+	return errs
+}
+
+func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
+	var errs []string
+
+	for _, rawPath := range cfg.ContainerCreate.AllowedBindMounts {
+		if _, ok := normalizeAllowedBindMount(rawPath); ok {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf(
+				"%s.container_create.allowed_bind_mounts entries must be absolute host paths, got %q",
+				prefix,
+				rawPath,
+			),
+		)
+	}
+
+	for i, command := range cfg.Exec.AllowedCommands {
+		if validExecCommand(command) {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf("%s.exec.allowed_commands entries must contain at least one non-empty argv token, got entry %d", prefix, i+1),
+		)
+	}
+
+	for _, registry := range cfg.ImagePull.AllowedRegistries {
+		if _, ok := normalizeAllowedRegistryHost(registry); ok {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf("%s.image_pull.allowed_registries entries must be bare registry hosts, got %q", prefix, registry),
+		)
+	}
+
+	return errs
+}
+
+func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
+	var errs []string
+	for i, r := range rules {
+		rulePrefix := fmt.Sprintf("%s[%d]", prefix, i)
+		if r.Match.Method == "" {
+			errs = append(errs, rulePrefix+".match.method is required")
+		}
+		if r.Match.Path == "" {
+			errs = append(errs, rulePrefix+".match.path is required")
+		}
+		switch r.Action {
+		case "allow", "deny":
+		default:
+			errs = append(errs, fmt.Sprintf("%s invalid action %q (must be allow or deny)", rulePrefix, r.Action))
+		}
+	}
 	return errs
 }
 
@@ -176,4 +296,53 @@ func normalizeAllowedBindMount(value string) (string, bool) {
 	}
 	cleaned := path.Clean(value)
 	return cleaned, true
+}
+
+func validExecCommand(command []string) bool {
+	if len(command) == 0 {
+		return false
+	}
+	for _, token := range command {
+		if strings.TrimSpace(token) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeAllowedRegistryHost(value string) (string, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	if trimmed == "" || strings.Contains(trimmed, "://") || strings.Contains(trimmed, "/") {
+		return "", false
+	}
+	switch trimmed {
+	case "index.docker.io":
+		return "docker.io", true
+	default:
+		return trimmed, true
+	}
+}
+
+func validateVisibleResourceLabels(prefix string, values []string) []string {
+	var errs []string
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			errs = append(errs, fmt.Sprintf("%s entries must be non-empty", prefix))
+			continue
+		}
+		if strings.Contains(value, ",") {
+			errs = append(errs, fmt.Sprintf("%s entries must not contain commas, got %q", prefix, raw))
+			continue
+		}
+		key, selected, hasValue := strings.Cut(value, "=")
+		if strings.TrimSpace(key) == "" {
+			errs = append(errs, fmt.Sprintf("%s entries must include a label key, got %q", prefix, raw))
+			continue
+		}
+		if hasValue && strings.TrimSpace(selected) == "" {
+			errs = append(errs, fmt.Sprintf("%s entries with '=' must include a non-empty value, got %q", prefix, raw))
+		}
+	}
+	return errs
 }

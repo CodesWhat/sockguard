@@ -23,6 +23,7 @@ type RequestMeta struct {
 	Rule     int
 	Reason   string
 	NormPath string
+	Profile  string
 }
 
 type requestMetaCarrier interface {
@@ -168,6 +169,9 @@ func appendCorrelationAttrs(attrs []slog.Attr, r *http.Request, meta *RequestMet
 			slog.String("decision", meta.Decision),
 			slog.Int("rule", meta.Rule),
 		)
+		if meta.Profile != "" {
+			attrs = append(attrs, slog.String("profile", meta.Profile))
+		}
 		if meta.Reason != "" {
 			attrs = append(attrs, slog.String("reason", meta.Reason))
 		}

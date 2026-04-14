@@ -24,8 +24,9 @@ var ErrResponseRejected = errors.New("upstream Docker response rejected by sockg
 
 // Options configures response-side redaction policy.
 type Options struct {
-	RedactContainerEnv bool
-	RedactMountPaths   bool
+	RedactContainerEnv    bool
+	RedactMountPaths      bool
+	RedactNetworkTopology bool
 }
 
 // Filter applies response redactions to selected Docker read endpoints.
@@ -43,7 +44,7 @@ func (f *Filter) Enabled() bool {
 	if f == nil {
 		return false
 	}
-	return f.opts.RedactContainerEnv || f.opts.RedactMountPaths
+	return f.opts.RedactContainerEnv || f.opts.RedactMountPaths || f.opts.RedactNetworkTopology
 }
 
 // ModifyResponse rewrites supported Docker JSON responses in place.
@@ -62,6 +63,10 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifyContainerInspect(resp)
 	case normPath == "/containers/json":
 		return f.modifyContainerList(resp)
+	case normPath == "/networks":
+		return f.modifyNetworkList(resp)
+	case isNetworkInspectPath(normPath):
+		return f.modifyNetworkInspect(resp)
 	case normPath == "/volumes":
 		return f.modifyVolumeList(resp)
 	case isVolumeInspectPath(normPath):
@@ -95,12 +100,17 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 			return rejectResponse(err)
 		}
 	}
+	if f.opts.RedactNetworkTopology {
+		if err := redactContainerNetworkTopology(payload); err != nil {
+			return rejectResponse(err)
+		}
+	}
 
 	return writeResponseBody(resp, payload)
 }
 
 func (f *Filter) modifyContainerList(resp *http.Response) error {
-	if !f.opts.RedactMountPaths {
+	if !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology {
 		return nil
 	}
 
@@ -115,11 +125,63 @@ func (f *Filter) modifyContainerList(resp *http.Response) error {
 	}
 
 	for _, container := range payload {
-		if err := redactMountObjects(container, "Mounts"); err != nil {
+		if f.opts.RedactMountPaths {
+			if err := redactMountObjects(container, "Mounts"); err != nil {
+				return rejectResponse(err)
+			}
+		}
+		if f.opts.RedactNetworkTopology {
+			if err := redactContainerNetworkTopology(container); err != nil {
+				return rejectResponse(err)
+			}
+		}
+	}
+
+	return writeResponseBody(resp, payload)
+}
+
+func (f *Filter) modifyNetworkList(resp *http.Response) error {
+	if !f.opts.RedactNetworkTopology {
+		return nil
+	}
+
+	body, err := readResponseBody(resp)
+	if err != nil {
+		return rejectResponse(err)
+	}
+
+	var payload []map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return rejectResponse(err)
+	}
+
+	for _, network := range payload {
+		if err := redactNetworkTopology(network); err != nil {
 			return rejectResponse(err)
 		}
 	}
 
+	return writeResponseBody(resp, payload)
+}
+
+func (f *Filter) modifyNetworkInspect(resp *http.Response) error {
+	if !f.opts.RedactNetworkTopology {
+		return nil
+	}
+
+	body, err := readResponseBody(resp)
+	if err != nil {
+		return rejectResponse(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return rejectResponse(err)
+	}
+
+	if err := redactNetworkTopology(payload); err != nil {
+		return rejectResponse(err)
+	}
 	return writeResponseBody(resp, payload)
 }
 
@@ -349,6 +411,148 @@ func isVolumeInspectPath(normPath string) bool {
 	}
 	rest := strings.TrimPrefix(normPath, "/volumes/")
 	return rest != "" && !strings.Contains(rest, "/")
+}
+
+func isNetworkInspectPath(normPath string) bool {
+	if !strings.HasPrefix(normPath, "/networks/") {
+		return false
+	}
+	rest := strings.TrimPrefix(normPath, "/networks/")
+	return rest != "" && !strings.Contains(rest, "/")
+}
+
+func redactContainerNetworkTopology(payload map[string]any) error {
+	if err := redactNestedStringValue(payload, "HostConfig", "NetworkMode"); err != nil {
+		return err
+	}
+
+	networkSettingsValue, ok := payload["NetworkSettings"]
+	if !ok || networkSettingsValue == nil {
+		return nil
+	}
+	networkSettings, ok := networkSettingsValue.(map[string]any)
+	if !ok {
+		return fmt.Errorf("NetworkSettings has unexpected type %T", networkSettingsValue)
+	}
+
+	for _, key := range []string{
+		"Bridge",
+		"EndpointID",
+		"Gateway",
+		"GlobalIPv6Address",
+		"IPAddress",
+		"IPv6Gateway",
+		"LinkLocalIPv6Address",
+		"MacAddress",
+		"SandboxID",
+		"SandboxKey",
+	} {
+		redactStringField(networkSettings, key)
+	}
+	for _, key := range []string{
+		"GlobalIPv6PrefixLen",
+		"IPPrefixLen",
+		"LinkLocalIPv6PrefixLen",
+	} {
+		redactNumberField(networkSettings, key)
+	}
+	redactArrayField(networkSettings, "SecondaryIPAddresses")
+	redactArrayField(networkSettings, "SecondaryIPv6Addresses")
+
+	networksValue, ok := networkSettings["Networks"]
+	if !ok || networksValue == nil {
+		return nil
+	}
+	networks, ok := networksValue.(map[string]any)
+	if !ok {
+		return fmt.Errorf("NetworkSettings.Networks has unexpected type %T", networksValue)
+	}
+	for name, networkValue := range networks {
+		network, ok := networkValue.(map[string]any)
+		if !ok {
+			return fmt.Errorf("NetworkSettings.Networks[%s] has unexpected type %T", name, networkValue)
+		}
+		for _, key := range []string{
+			"EndpointID",
+			"Gateway",
+			"GlobalIPv6Address",
+			"IPAddress",
+			"IPv6Gateway",
+			"MacAddress",
+			"NetworkID",
+		} {
+			redactStringField(network, key)
+		}
+		for _, key := range []string{
+			"GlobalIPv6PrefixLen",
+			"IPPrefixLen",
+		} {
+			redactNumberField(network, key)
+		}
+	}
+	return nil
+}
+
+func redactNetworkTopology(payload map[string]any) error {
+	ipamValue, ok := payload["IPAM"]
+	if ok && ipamValue != nil {
+		ipam, ok := ipamValue.(map[string]any)
+		if !ok {
+			return fmt.Errorf("IPAM has unexpected type %T", ipamValue)
+		}
+		ipam["Config"] = []any{}
+	}
+
+	if containersValue, ok := payload["Containers"]; ok && containersValue != nil {
+		if _, ok := containersValue.(map[string]any); !ok {
+			return fmt.Errorf("Containers has unexpected type %T", containersValue)
+		}
+		payload["Containers"] = map[string]any{}
+	}
+
+	if peersValue, ok := payload["Peers"]; ok && peersValue != nil {
+		if _, ok := peersValue.([]any); !ok {
+			return fmt.Errorf("Peers has unexpected type %T", peersValue)
+		}
+		payload["Peers"] = []any{}
+	}
+
+	return nil
+}
+
+func redactNestedStringValue(payload map[string]any, objectKey, fieldKey string) error {
+	objectValue, ok := payload[objectKey]
+	if !ok || objectValue == nil {
+		return nil
+	}
+
+	object, ok := objectValue.(map[string]any)
+	if !ok {
+		return fmt.Errorf("%s has unexpected type %T", objectKey, objectValue)
+	}
+	redactStringField(object, fieldKey)
+	return nil
+}
+
+func redactNumberField(payload map[string]any, key string) {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return
+	}
+	switch value.(type) {
+	case float64, json.Number, int, int32, int64:
+		payload[key] = 0
+	}
+}
+
+func redactArrayField(payload map[string]any, key string) {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return
+	}
+	if _, ok := value.([]any); ok {
+		payload[key] = []any{}
+	}
 }
 
 func rejectResponse(err error) error {

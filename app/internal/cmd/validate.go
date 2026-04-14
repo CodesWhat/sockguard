@@ -46,6 +46,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 
 	printHeader(out, stdoutP, cfg, compatActive)
 	printRules(out, stdoutP, cfg, len(compiled))
+	printClientProfiles(out, stdoutP, cfg)
 	fmt.Fprintf(out, "  %s %s\n", stdoutP.Green(ui.Check), stdoutP.Green("validation passed"))
 	return nil
 }
@@ -74,6 +75,35 @@ func printRules(out io.Writer, p *ui.Printer, cfg *config.Config, count int) {
 			method = "*"
 		}
 		fmt.Fprintf(out, "    %s %s  %-6s %s\n", glyph, action, method, r.Match.Path)
+	}
+	fmt.Fprintln(out)
+}
+
+func printClientProfiles(out io.Writer, p *ui.Printer, cfg *config.Config) {
+	if len(cfg.Clients.Profiles) == 0 {
+		return
+	}
+
+	fmt.Fprintf(out, "  %s\n", p.Bold(fmt.Sprintf("Client Profiles (%d)", len(cfg.Clients.Profiles))))
+	for _, profile := range cfg.Clients.Profiles {
+		name := profile.Name
+		if cfg.Clients.DefaultProfile == profile.Name {
+			name += " (default)"
+		}
+		fmt.Fprintf(out, "    %s\n", p.Bold(name))
+		for _, r := range profile.Rules {
+			glyph := p.Green(ui.Check)
+			action := p.Green("allow")
+			if r.Action == "deny" {
+				glyph = p.Red(ui.Cross)
+				action = p.Red("deny ")
+			}
+			method := r.Match.Method
+			if method == "" {
+				method = "*"
+			}
+			fmt.Fprintf(out, "      %s %s  %-6s %s\n", glyph, action, method, r.Match.Path)
+		}
 	}
 	fmt.Fprintln(out)
 }

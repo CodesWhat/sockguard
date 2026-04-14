@@ -45,14 +45,19 @@ type LogConfig struct {
 
 // ResponseConfig configures HTTP responses returned by sockguard itself.
 type ResponseConfig struct {
-	DenyVerbosity      string `mapstructure:"deny_verbosity"`
-	RedactContainerEnv bool   `mapstructure:"redact_container_env"`
-	RedactMountPaths   bool   `mapstructure:"redact_mount_paths"`
+	DenyVerbosity         string   `mapstructure:"deny_verbosity"`
+	RedactContainerEnv    bool     `mapstructure:"redact_container_env"`
+	RedactMountPaths      bool     `mapstructure:"redact_mount_paths"`
+	RedactNetworkTopology bool     `mapstructure:"redact_network_topology"`
+	VisibleResourceLabels []string `mapstructure:"visible_resource_labels"`
 }
 
 // RequestBodyConfig configures request-body inspection policies.
 type RequestBodyConfig struct {
 	ContainerCreate ContainerCreateRequestBodyConfig `mapstructure:"container_create"`
+	Exec            ExecRequestBodyConfig            `mapstructure:"exec"`
+	ImagePull       ImagePullRequestBodyConfig       `mapstructure:"image_pull"`
+	Build           BuildRequestBodyConfig           `mapstructure:"build"`
 }
 
 // ContainerCreateRequestBodyConfig configures body inspection for
@@ -63,10 +68,36 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowedBindMounts []string `mapstructure:"allowed_bind_mounts"`
 }
 
+// ExecRequestBodyConfig configures body inspection for exec creation/start.
+type ExecRequestBodyConfig struct {
+	AllowPrivileged bool       `mapstructure:"allow_privileged"`
+	AllowRootUser   bool       `mapstructure:"allow_root_user"`
+	AllowedCommands [][]string `mapstructure:"allowed_commands"`
+}
+
+// ImagePullRequestBodyConfig configures inspection for POST /images/create.
+type ImagePullRequestBodyConfig struct {
+	AllowImports       bool     `mapstructure:"allow_imports"`
+	AllowAllRegistries bool     `mapstructure:"allow_all_registries"`
+	AllowOfficial      bool     `mapstructure:"allow_official"`
+	AllowedRegistries  []string `mapstructure:"allowed_registries"`
+}
+
+// BuildRequestBodyConfig configures inspection for POST /build.
+type BuildRequestBodyConfig struct {
+	AllowRemoteContext   bool `mapstructure:"allow_remote_context"`
+	AllowHostNetwork     bool `mapstructure:"allow_host_network"`
+	AllowRunInstructions bool `mapstructure:"allow_run_instructions"`
+}
+
 // ClientsConfig configures coarse per-client access controls.
 type ClientsConfig struct {
-	AllowedCIDRs    []string                    `mapstructure:"allowed_cidrs"`
-	ContainerLabels ClientContainerLabelsConfig `mapstructure:"container_labels"`
+	AllowedCIDRs              []string                                   `mapstructure:"allowed_cidrs"`
+	ContainerLabels           ClientContainerLabelsConfig                `mapstructure:"container_labels"`
+	DefaultProfile            string                                     `mapstructure:"default_profile"`
+	SourceIPProfiles          []ClientSourceIPProfileAssignmentConfig    `mapstructure:"source_ip_profiles"`
+	ClientCertificateProfiles []ClientCertificateProfileAssignmentConfig `mapstructure:"client_certificate_profiles"`
+	Profiles                  []ClientProfileConfig                      `mapstructure:"profiles"`
 }
 
 // ClientContainerLabelsConfig configures opt-in per-client ACLs loaded from
@@ -74,6 +105,34 @@ type ClientsConfig struct {
 type ClientContainerLabelsConfig struct {
 	Enabled     bool   `mapstructure:"enabled"`
 	LabelPrefix string `mapstructure:"label_prefix"`
+}
+
+// ClientSourceIPProfileAssignmentConfig maps one or more source CIDRs to a
+// named client profile.
+type ClientSourceIPProfileAssignmentConfig struct {
+	Profile string   `mapstructure:"profile"`
+	CIDRs   []string `mapstructure:"cidrs"`
+}
+
+// ClientCertificateProfileAssignmentConfig maps one or more mTLS client
+// certificate common names to a named client profile.
+type ClientCertificateProfileAssignmentConfig struct {
+	Profile     string   `mapstructure:"profile"`
+	CommonNames []string `mapstructure:"common_names"`
+}
+
+// ClientProfileConfig defines a named per-client request policy profile.
+type ClientProfileConfig struct {
+	Name        string                      `mapstructure:"name"`
+	Response    ClientProfileResponseConfig `mapstructure:"response"`
+	RequestBody RequestBodyConfig           `mapstructure:"request_body"`
+	Rules       []RuleConfig                `mapstructure:"rules"`
+}
+
+// ClientProfileResponseConfig configures per-profile visibility control on
+// Docker read endpoints.
+type ClientProfileResponseConfig struct {
+	VisibleResourceLabels []string `mapstructure:"visible_resource_labels"`
 }
 
 // OwnershipConfig configures per-proxy resource ownership labeling and
@@ -132,12 +191,16 @@ func Defaults() Config {
 			// production default because it can leak request path details
 			// (even with `/secrets/*` and `/swarm/unlockkey` redacted) that
 			// a honest security product should not hand a denied caller.
-			DenyVerbosity:      "minimal",
-			RedactContainerEnv: true,
-			RedactMountPaths:   true,
+			DenyVerbosity:         "minimal",
+			RedactContainerEnv:    true,
+			RedactMountPaths:      true,
+			RedactNetworkTopology: true,
 		},
 		RequestBody: RequestBodyConfig{
 			ContainerCreate: ContainerCreateRequestBodyConfig{},
+			ImagePull: ImagePullRequestBodyConfig{
+				AllowOfficial: true,
+			},
 		},
 		Clients: ClientsConfig{
 			ContainerLabels: ClientContainerLabelsConfig{

@@ -19,13 +19,19 @@ health:
 
 # Watchtower recreates containers and can use exec lifecycle hooks. Container
 # creation is inspected by default, but bind-mounted workloads are denied until
-# you allowlist their host paths here. Exec lifecycle hooks still require the
-# body-blind opt-in below because those request bodies are not inspected yet.
+# you allowlist their host paths here. Image pulls are inspected too; this
+# preset explicitly allows any registry so Watchtower can continue tracking
+# arbitrary images while still denying `fromSrc` imports. Exec lifecycle hooks
+# can be inspected when you configure a fixed command allowlist, but this preset
+# keeps the compatibility opt-in below because hooks are often arbitrary.
 request_body:
   container_create:
     allowed_bind_mounts: []
+  image_pull:
+    allow_all_registries: true
 
-# Exec lifecycle hooks are still body-blind today.
+# If your lifecycle hooks are fixed commands, replace this with
+# request_body.exec.allowed_commands and remove the unsafe opt-in.
 insecure_allow_body_blind_writes: true
 
 rules:

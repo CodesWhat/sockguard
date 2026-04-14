@@ -24,6 +24,7 @@ const DefaultLabelPrefix = "com.sockguard.allow."
 type Options struct {
 	AllowedCIDRs    []string
 	ContainerLabels ContainerLabelOptions
+	Profiles        ProfileOptions
 }
 
 // ContainerLabelOptions configures opt-in ACLs loaded from the caller
@@ -31,6 +32,26 @@ type Options struct {
 type ContainerLabelOptions struct {
 	Enabled     bool
 	LabelPrefix string
+}
+
+// ProfileOptions configures named profile selection for callers.
+type ProfileOptions struct {
+	DefaultProfile     string
+	SourceIPs          []SourceIPProfileAssignment
+	ClientCertificates []ClientCertificateProfileAssignment
+}
+
+// SourceIPProfileAssignment maps one or more source CIDRs to a named profile.
+type SourceIPProfileAssignment struct {
+	Profile string
+	CIDRs   []string
+}
+
+// ClientCertificateProfileAssignment maps one or more client-certificate common
+// names to a named profile.
+type ClientCertificateProfileAssignment struct {
+	Profile     string
+	CommonNames []string
 }
 
 type aclDeps struct {
@@ -44,9 +65,26 @@ type resolvedClient struct {
 }
 
 type compiledOptions struct {
-	allowedCIDRs []netip.Prefix
-	labelPrefix  string
-	labelsOn     bool
+	allowedCIDRs       []netip.Prefix
+	labelPrefix        string
+	labelsOn           bool
+	defaultProfile     string
+	sourceIPProfiles   []compiledSourceIPProfileAssignment
+	clientCertProfiles []compiledClientCertificateProfileAssignment
+}
+
+type compiledSourceIPProfileAssignment struct {
+	profile string
+	cidrs   []netip.Prefix
+}
+
+type compiledClientCertificateProfileAssignment struct {
+	profile     string
+	commonNames []string
+}
+
+func (c compiledOptions) hasProfileSelection() bool {
+	return c.defaultProfile != "" || len(c.sourceIPProfiles) > 0 || len(c.clientCertProfiles) > 0
 }
 
 type listedContainer struct {
@@ -64,6 +102,10 @@ type listedContainer struct {
 type upstreamResolver struct {
 	client *http.Client
 }
+
+type contextKey int
+
+const contextKeyProfile contextKey = iota
 
 // Middleware applies client CIDR admission checks and optional per-client
 // label ACLs resolved from the caller container's source IP.
@@ -83,7 +125,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 		}
 	}
 
-	if len(compiled.allowedCIDRs) == 0 && !compiled.labelsOn {
+	if len(compiled.allowedCIDRs) == 0 && !compiled.labelsOn && !compiled.hasProfileSelection() {
 		return func(next http.Handler) http.Handler { return next }
 	}
 
@@ -96,6 +138,13 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 					_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: "client IP not allowed"})
 					return
 				}
+			}
+
+			if profile, ok := selectProfile(r, clientIP, ipOK, compiled); ok {
+				if meta := logging.MetaForRequest(w, r); meta != nil {
+					meta.Profile = profile
+				}
+				r = r.WithContext(withProfile(r.Context(), profile))
 			}
 
 			if !compiled.labelsOn || !ipOK {
@@ -162,8 +211,9 @@ func newACLDeps(upstreamSocket string) aclDeps {
 
 func compileOptions(opts Options) (compiledOptions, error) {
 	compiled := compiledOptions{
-		labelPrefix: opts.ContainerLabels.LabelPrefix,
-		labelsOn:    opts.ContainerLabels.Enabled,
+		labelPrefix:    opts.ContainerLabels.LabelPrefix,
+		labelsOn:       opts.ContainerLabels.Enabled,
+		defaultProfile: strings.TrimSpace(opts.Profiles.DefaultProfile),
 	}
 	if compiled.labelsOn && compiled.labelPrefix == "" {
 		compiled.labelPrefix = DefaultLabelPrefix
@@ -178,7 +228,96 @@ func compileOptions(opts Options) (compiledOptions, error) {
 		compiled.allowedCIDRs = append(compiled.allowedCIDRs, prefix.Masked())
 	}
 
+	compiled.sourceIPProfiles = make([]compiledSourceIPProfileAssignment, 0, len(opts.Profiles.SourceIPs))
+	for _, assignment := range opts.Profiles.SourceIPs {
+		compiledAssignment := compiledSourceIPProfileAssignment{
+			profile: strings.TrimSpace(assignment.Profile),
+			cidrs:   make([]netip.Prefix, 0, len(assignment.CIDRs)),
+		}
+		for _, raw := range assignment.CIDRs {
+			prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+			if err != nil {
+				return compiled, fmt.Errorf("parse profile CIDR %q: %w", raw, err)
+			}
+			compiledAssignment.cidrs = append(compiledAssignment.cidrs, prefix.Masked())
+		}
+		compiled.sourceIPProfiles = append(compiled.sourceIPProfiles, compiledAssignment)
+	}
+
+	compiled.clientCertProfiles = make([]compiledClientCertificateProfileAssignment, 0, len(opts.Profiles.ClientCertificates))
+	for _, assignment := range opts.Profiles.ClientCertificates {
+		compiledAssignment := compiledClientCertificateProfileAssignment{
+			profile:     strings.TrimSpace(assignment.Profile),
+			commonNames: make([]string, 0, len(assignment.CommonNames)),
+		}
+		for _, value := range assignment.CommonNames {
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" {
+				continue
+			}
+			compiledAssignment.commonNames = append(compiledAssignment.commonNames, trimmed)
+		}
+		compiled.clientCertProfiles = append(compiled.clientCertProfiles, compiledAssignment)
+	}
+
 	return compiled, nil
+}
+
+func withProfile(ctx context.Context, profile string) context.Context {
+	return context.WithValue(ctx, contextKeyProfile, profile)
+}
+
+// RequestProfile returns the named policy profile selected for the request.
+func RequestProfile(r *http.Request) (string, bool) {
+	if r == nil {
+		return "", false
+	}
+	value, _ := r.Context().Value(contextKeyProfile).(string)
+	return value, value != ""
+}
+
+func selectProfile(r *http.Request, clientIP netip.Addr, ipOK bool, compiled compiledOptions) (string, bool) {
+	if profile, ok := matchClientCertificateProfile(r, compiled.clientCertProfiles); ok {
+		return profile, true
+	}
+	if ipOK {
+		if profile, ok := matchSourceIPProfile(clientIP, compiled.sourceIPProfiles); ok {
+			return profile, true
+		}
+	}
+	if compiled.defaultProfile != "" {
+		return compiled.defaultProfile, true
+	}
+	return "", false
+}
+
+func matchSourceIPProfile(addr netip.Addr, assignments []compiledSourceIPProfileAssignment) (string, bool) {
+	for _, assignment := range assignments {
+		for _, prefix := range assignment.cidrs {
+			if prefix.Contains(addr) {
+				return assignment.profile, true
+			}
+		}
+	}
+	return "", false
+}
+
+func matchClientCertificateProfile(r *http.Request, assignments []compiledClientCertificateProfileAssignment) (string, bool) {
+	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+		return "", false
+	}
+	commonName := strings.TrimSpace(r.TLS.PeerCertificates[0].Subject.CommonName)
+	if commonName == "" {
+		return "", false
+	}
+	for _, assignment := range assignments {
+		for _, allowed := range assignment.commonNames {
+			if commonName == allowed {
+				return assignment.profile, true
+			}
+		}
+	}
+	return "", false
 }
 
 func remoteIP(remoteAddr string) (netip.Addr, bool) {
@@ -377,4 +516,3 @@ func clientName(client resolvedClient) string {
 	}
 	return client.ID
 }
-
