@@ -19,6 +19,7 @@ import (
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/responsefilter"
 )
 
 func testLogger() *slog.Logger {
@@ -208,6 +209,115 @@ func TestNew_PreservesResponseBody(t *testing.T) {
 	}
 	if !strings.Contains(string(body), "/version") {
 		t.Errorf("expected body to contain path, got: %s", string(body))
+	}
+}
+
+func TestNewWithOptions_RedactsProtectedResponses(t *testing.T) {
+	socketPath := tempSocketPath(t, "response-filter")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{
+				"Config":{"Env":["SECRET_TOKEN=shh","PATH=/usr/bin"]},
+				"HostConfig":{"Binds":["/srv/secrets:/run/secrets:ro","named-cache:/cache"]},
+				"Mounts":[
+					{"Type":"bind","Source":"/srv/secrets","Destination":"/run/secrets"},
+					{"Type":"volume","Source":"/var/lib/docker/volumes/cache/_data","Destination":"/cache"}
+				]
+			}`)
+		}),
+	}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	rp := NewWithOptions(socketPath, testLogger(), Options{
+		ModifyResponse: responsefilter.New(responsefilter.Options{
+			RedactContainerEnv: true,
+			RedactMountPaths:   true,
+		}).ModifyResponse,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc123/json", nil)
+	rp.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nbody: %s", err, rec.Body.String())
+	}
+
+	config, _ := body["Config"].(map[string]any)
+	if env, _ := config["Env"].([]any); len(env) != 0 {
+		t.Fatalf("Config.Env = %#v, want empty redacted array", config["Env"])
+	}
+
+	hostConfig, _ := body["HostConfig"].(map[string]any)
+	binds, _ := hostConfig["Binds"].([]any)
+	if gotBind, _ := binds[0].(string); gotBind != "<redacted>:/run/secrets:ro" {
+		t.Fatalf("HostConfig.Binds[0] = %q, want %q", gotBind, "<redacted>:/run/secrets:ro")
+	}
+	if gotBind, _ := binds[1].(string); gotBind != "named-cache:/cache" {
+		t.Fatalf("HostConfig.Binds[1] = %q, want named volume bind unchanged", gotBind)
+	}
+
+	mounts, _ := body["Mounts"].([]any)
+	for i, mountValue := range mounts {
+		mount, _ := mountValue.(map[string]any)
+		if gotSource, _ := mount["Source"].(string); gotSource != "<redacted>" {
+			t.Fatalf("Mounts[%d].Source = %q, want %q", i, gotSource, "<redacted>")
+		}
+	}
+}
+
+func TestNewWithOptions_RejectsProtectedResponsesThatCannotBeSanitized(t *testing.T) {
+	socketPath := tempSocketPath(t, "response-reject")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"Config":`)
+		}),
+	}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	rp := NewWithOptions(socketPath, testLogger(), Options{
+		ModifyResponse: responsefilter.New(responsefilter.Options{
+			RedactContainerEnv: true,
+		}).ModifyResponse,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc123/json", nil)
+	rp.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+
+	var body httpjson.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nbody: %s", err, rec.Body.String())
+	}
+	if body.Message != "upstream Docker response rejected by sockguard policy" {
+		t.Fatalf("message = %q, want %q", body.Message, "upstream Docker response rejected by sockguard policy")
 	}
 }
 
