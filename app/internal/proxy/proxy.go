@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -10,10 +11,22 @@ import (
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/responsefilter"
 )
+
+// Options configures reverse-proxy behavior beyond the fixed upstream socket.
+type Options struct {
+	ModifyResponse func(*http.Response) error
+}
 
 // New creates a reverse proxy that forwards requests to the upstream Docker socket.
 func New(upstreamSocket string, logger *slog.Logger) *httputil.ReverseProxy {
+	return NewWithOptions(upstreamSocket, logger, Options{})
+}
+
+// NewWithOptions creates a reverse proxy that forwards requests to the upstream
+// Docker socket and optionally enforces response-side policy.
+func NewWithOptions(upstreamSocket string, logger *slog.Logger, opts Options) *httputil.ReverseProxy {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", upstreamSocket)
@@ -28,16 +41,20 @@ func New(upstreamSocket string, logger *slog.Logger) *httputil.ReverseProxy {
 			pr.Out.URL.Scheme = "http"
 			pr.Out.URL.Host = "docker"
 		},
-		Transport:     transport,
-		FlushInterval: -1, // immediate flush for streaming endpoints
+		Transport:      transport,
+		ModifyResponse: opts.ModifyResponse,
+		FlushInterval:  -1, // immediate flush for streaming endpoints
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			attrs := logging.AppendCorrelationAttrsForResponseWriter(nil, r, w)
 			attrs = append(attrs, slog.Any("error", err))
 			logger.LogAttrs(r.Context(), slog.LevelError, "upstream request failed", attrs...)
 
-			if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{
-				Message: "upstream Docker socket unreachable",
-			}); encErr != nil {
+			message := "upstream Docker socket unreachable"
+			if errors.Is(err, responsefilter.ErrResponseRejected) {
+				message = "upstream Docker response rejected by sockguard policy"
+			}
+
+			if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: message}); encErr != nil {
 				attrs := logging.AppendCorrelationAttrsForResponseWriter(nil, r, w)
 				attrs = append(attrs, slog.Any("error", encErr))
 				logger.LogAttrs(r.Context(), slog.LevelWarn, "failed to encode error response", attrs...)

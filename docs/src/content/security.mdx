@@ -42,11 +42,19 @@ Future body-inspection additions (tracked for v0.4+): escalation capabilities li
 ### Layer 6: Owner Label Isolation
 When `ownership.owner` is set, Sockguard stamps created containers, networks, volumes, and build-produced images with an owner label, injects `label=` filters into list/prune/events responses, and inspects target resources on individual requests to deny cross-owner access. This turns one shared Docker socket into N isolated identity views.
 
-### Layer 7: Response Filtering (v0.4.0+)
-Control what information consumers can see on read paths:
+### Layer 7: Response Filtering
+Sockguard now filters successful Docker read responses as well as incoming requests:
+
+- Redact `Config.Env` on `GET /containers/*/json`
+- Redact `HostConfig.Binds` host paths plus `Mounts[*].Source` on container list/inspect responses
+- Redact volume `Mountpoint` on `GET /volumes` and `GET /volumes/*`
+
+These redactions are on by default because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths that reveal filesystem layout.
+
+Future response-filtering additions still tracked for the next tier:
 - Hide containers by name/label beyond ownership
-- Redact environment variables from inspect responses
-- Filter mount path details
+- Label-based visibility rules per client
+- Network topology redaction
 
 ### Layer 8: Audit Logging
 Every request is logged with method, path, decision, matched rule index, latency, request ID, and client metadata. Upstream reverse-proxy errors are correlated with the outer access-log entry by shared request ID.

@@ -205,6 +205,7 @@ Existing socket proxies (Tecnativa, LinuxServer) filter by URL path only. Sockgu
 | 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks and client-container label ACLs let one proxy differentiate TCP callers before the global rule set runs. |
 | 🔍 | **Request Body Inspection** | `POST /containers/create` bodies are inspected to block privileged containers, host networking, and non-allowlisted bind mounts before Docker sees the request. |
 | 🏷️ | **Owner Label Isolation** | A proxy instance can stamp containers, networks, volumes, and build-produced images with an owner label, auto-filter list/prune/events calls, and deny cross-owner access to labeled resources. |
+| 🫥 | **Response Filtering** | Redacts `Config.Env` and mount-path metadata on common Docker read endpoints by default so allowlisted readers do not inherit raw host topology or runtime secret exposure. |
 | 🧱 | **Body-Blind Write Guardrail** | Remaining body-sensitive write endpoints such as `exec`, `build`, and Swarm writes still require explicit unsafe opt-in until their request bodies are inspected. |
 | 🔄 | **Tecnativa Compatible** | Drop-in replacement using the same env vars. `CONTAINERS=1`, `POST=0`, `ALLOW_START=1` all work. |
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance. |
@@ -224,7 +225,7 @@ How sockguard stacks up against other Docker socket proxies:
 | Granular POST ops | ❌ | Partial | Via regex | ✅ |
 | Request body inspection | ❌ | ❌ | ❌ | ✅ (`/containers/create`) |
 | Per-client policies | ❌ | ❌ | CIDR + client labels | ✅ (CIDR + client labels) |
-| Response filtering | ❌ | ❌ | ❌ | 🕒 Planned |
+| Response filtering | ❌ | ❌ | ❌ | ✅ (env + mount redaction) |
 | Structured audit log | ❌ | ❌ | ❌ | ✅ |
 | YAML config | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ✅ |
@@ -265,6 +266,8 @@ insecure_allow_body_blind_writes: false
 
 response:
   deny_verbosity: minimal  # recommended for production; verbose adds method/path/reason for debugging
+  redact_container_env: true
+  redact_mount_paths: true
 
 request_body:
   container_create:
@@ -310,6 +313,8 @@ Set `ownership.owner` to turn on per-proxy resource ownership isolation. Sockgua
 
 `response.deny_verbosity` defaults to `minimal` so `403` responses carry only a generic deny message and never leak the request method, path, or matched rule reason back to the caller. Set it to `verbose` explicitly during rule authoring if you need to see which rule denied a request — verbose is still useful in dev but should never run in production because it echoes request details in the response body. Even in `verbose` mode, Sockguard redacts denied `/secrets/*` and `/swarm/unlockkey` paths before returning them.
 
+`response.redact_container_env` and `response.redact_mount_paths` also default to `true`. Sockguard now scrubs `Config.Env` on `GET /containers/*/json`, redacts `HostConfig.Binds` host paths plus `Mounts[*].Source` on container list/inspect responses, and redacts `Mountpoint` on volume list/inspect responses. Disable either toggle only for trusted admin clients that genuinely need raw Docker metadata.
+
 Preset configs included for [drydock](app/configs/drydock.yaml), [Traefik](app/configs/traefik.yaml), [Portainer](app/configs/portainer.yaml), [Watchtower](app/configs/watchtower.yaml), [Homepage](app/configs/homepage.yaml), [Homarr](app/configs/homarr.yaml), [Diun](app/configs/diun.yaml), [Autoheal](app/configs/autoheal.yaml), and [read-only](app/configs/readonly.yaml).
 
 <hr>
@@ -351,7 +356,7 @@ Replace the image — your env vars work as-is:
 | **0.1.0** | MVP — drop-in replacement with granular control, YAML config, structured logging | ✅ shipped |
 | **0.2.0** | mTLS for remote TCP, TLS 1.3 minimum, loopback-by-default listener, body-blind write guardrail | ✅ shipped |
 | **0.3.0** | Request-body inspection for `/containers/create`, per-proxy owner labels, per-client CIDR + container-label ACLs | ✅ shipped |
-| **0.4.0** | Named per-client policy profiles, body inspection for `/build` and `exec`, response filtering | 🕒 planned |
+| **0.4.0** | Named per-client policy profiles, body inspection for `/build` and `exec`, expanded response filtering (visibility rules, network redaction) | 🕒 planned |
 | **0.5.0** | Observability — Prometheus metrics, audit log persistence, OTel trace/span IDs in log records | 🕒 planned |
 | **0.6.0** | Rate limiting, policy safety rails, security enforcement | 🕒 planned |
 

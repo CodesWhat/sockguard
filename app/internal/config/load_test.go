@@ -99,6 +99,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Response.DenyVerbosity != defaults.Response.DenyVerbosity {
 		t.Errorf("Response.DenyVerbosity = %q, want %q", cfg.Response.DenyVerbosity, defaults.Response.DenyVerbosity)
 	}
+	if cfg.Response.RedactContainerEnv != defaults.Response.RedactContainerEnv {
+		t.Errorf("Response.RedactContainerEnv = %v, want %v", cfg.Response.RedactContainerEnv, defaults.Response.RedactContainerEnv)
+	}
+	if cfg.Response.RedactMountPaths != defaults.Response.RedactMountPaths {
+		t.Errorf("Response.RedactMountPaths = %v, want %v", cfg.Response.RedactMountPaths, defaults.Response.RedactMountPaths)
+	}
 	if cfg.RequestBody.ContainerCreate.AllowPrivileged != defaults.RequestBody.ContainerCreate.AllowPrivileged {
 		t.Errorf(
 			"RequestBody.ContainerCreate.AllowPrivileged = %v, want %v",
@@ -155,6 +161,8 @@ log:
   level: debug
 response:
   deny_verbosity: minimal
+  redact_container_env: false
+  redact_mount_paths: false
 request_body:
   container_create:
     allow_host_network: true
@@ -193,6 +201,12 @@ rules:
 	}
 	if cfg.Response.DenyVerbosity != "minimal" {
 		t.Errorf("Response.DenyVerbosity = %q, want minimal", cfg.Response.DenyVerbosity)
+	}
+	if cfg.Response.RedactContainerEnv {
+		t.Errorf("Response.RedactContainerEnv = %v, want false", cfg.Response.RedactContainerEnv)
+	}
+	if cfg.Response.RedactMountPaths {
+		t.Errorf("Response.RedactMountPaths = %v, want false", cfg.Response.RedactMountPaths)
 	}
 	if !cfg.RequestBody.ContainerCreate.AllowHostNetwork {
 		t.Errorf("RequestBody.ContainerCreate.AllowHostNetwork = %v, want true", cfg.RequestBody.ContainerCreate.AllowHostNetwork)

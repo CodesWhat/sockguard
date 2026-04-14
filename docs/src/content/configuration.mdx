@@ -26,6 +26,8 @@ log:
 
 response:
   deny_verbosity: minimal  # minimal (default, production) or verbose (dev/rule-authoring)
+  redact_container_env: true
+  redact_mount_paths: true
 
 request_body:
   container_create:
@@ -76,6 +78,7 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`. That mode is only for legacy compatibility on a private, trusted network.
 - `POST /containers/create` bodies are inspected by default. Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, and bind mount sources outside `request_body.container_create.allowed_bind_mounts`. Named volumes still work without allowlist entries because they are not host bind mounts.
 - The remaining body-sensitive write endpoints (`POST /containers/*/exec`, `POST /exec/*/start`, `POST /build`, Swarm service writes) still fail validation unless you opt in with `insecure_allow_body_blind_writes: true`. That opt-in acknowledges that Sockguard enforces method + path only for those writes until their request bodies are inspected.
+- `response.redact_container_env` and `response.redact_mount_paths` default to `true`. Sockguard redacts `Config.Env` on `GET /containers/*/json`, redacts container `HostConfig.Binds` host paths plus `Mounts[*].Source` on `GET /containers/json` and inspect responses, and redacts volume `Mountpoint` on `GET /volumes` and `GET /volumes/*`. Disable them only for trusted admin clients that truly need Docker's raw metadata.
 
 ## Per-Client ACLs
 
@@ -137,6 +140,8 @@ SOCKGUARD_UPSTREAM_SOCKET=/var/run/docker.sock
 SOCKGUARD_LOG_LEVEL=debug
 SOCKGUARD_LOG_FORMAT=json
 SOCKGUARD_RESPONSE_DENY_VERBOSITY=minimal
+SOCKGUARD_RESPONSE_REDACT_CONTAINER_ENV=true
+SOCKGUARD_RESPONSE_REDACT_MOUNT_PATHS=true
 SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_PRIVILEGED=false
 SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_NETWORK=false
 SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_BIND_MOUNTS=/srv/containers,/var/lib/app-data
@@ -152,6 +157,11 @@ SOCKGUARD_OWNERSHIP_ALLOW_UNOWNED_IMAGES=true
 
 - `minimal` (default): returns only the generic `message`. Never echoes the request method, path, or matched rule reason.
 - `verbose`: returns `message`, `method`, `path` (with `/secrets/*` and `/swarm/unlockkey` paths redacted), and `reason`. Intended for rule authoring and dev work only — never a production default because it can leak request details to denied callers.
+
+`response.redact_container_env` and `response.redact_mount_paths` control response filtering on successful Docker read calls:
+
+- `redact_container_env` (default `true`): replaces `Config.Env` with an empty array on `GET /containers/*/json`.
+- `redact_mount_paths` (default `true`): redacts container mount `Source` paths, host bind sources inside `HostConfig.Binds`, and volume `Mountpoint` fields on the Docker read endpoints Sockguard currently understands.
 
 ## Tecnativa Compatibility
 

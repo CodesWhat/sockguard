@@ -32,6 +32,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("log.output", defaults.Log.Output)
 	v.SetDefault("log.access_log", defaults.Log.AccessLog)
 	v.SetDefault("response.deny_verbosity", defaults.Response.DenyVerbosity)
+	v.SetDefault("response.redact_container_env", defaults.Response.RedactContainerEnv)
+	v.SetDefault("response.redact_mount_paths", defaults.Response.RedactMountPaths)
 	v.SetDefault("request_body.container_create.allow_privileged", defaults.RequestBody.ContainerCreate.AllowPrivileged)
 	v.SetDefault("request_body.container_create.allow_host_network", defaults.RequestBody.ContainerCreate.AllowHostNetwork)
 	v.SetDefault("request_body.container_create.allowed_bind_mounts", defaults.RequestBody.ContainerCreate.AllowedBindMounts)

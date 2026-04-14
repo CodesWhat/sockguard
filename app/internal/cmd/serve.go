@@ -21,6 +21,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/ownership"
 	"github.com/codeswhat/sockguard/internal/proxy"
+	"github.com/codeswhat/sockguard/internal/responsefilter"
 	"github.com/codeswhat/sockguard/internal/version"
 )
 
@@ -150,7 +151,12 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 }
 
 func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
-	upstream := proxy.New(cfg.Upstream.Socket, logger)
+	upstream := proxy.NewWithOptions(cfg.Upstream.Socket, logger, proxy.Options{
+		ModifyResponse: responsefilter.New(responsefilter.Options{
+			RedactContainerEnv: cfg.Response.RedactContainerEnv,
+			RedactMountPaths:   cfg.Response.RedactMountPaths,
+		}).ModifyResponse,
+	})
 	var handler http.Handler = upstream
 
 	// Hijack handler: intercepts attach/exec endpoints for native bidirectional
@@ -319,4 +325,3 @@ func warnOnInsecureRemoteTCPBind(logger *slog.Logger, cfg *config.Config) {
 		"recommendation", "configure listen.tls for mTLS, bind 127.0.0.1:<port>, or use listen.socket",
 	)
 }
-

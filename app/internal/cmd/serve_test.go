@@ -3,8 +3,10 @@ package cmd
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -719,6 +721,74 @@ func TestBuildServeHandlerClientACLWrapsHealthInterceptor(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "client IP not allowed") {
 		t.Fatalf("expected client ACL denial body, got: %s", rec.Body.String())
+	}
+}
+
+func TestBuildServeHandlerRedactsProtectedResponsesByDefault(t *testing.T) {
+	socketPath := shortSocketPath(t, "response-redaction")
+	_ = os.Remove(socketPath)
+
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{
+			"Config":{"Env":["SECRET_TOKEN=shh","PATH=/usr/bin"]},
+			"HostConfig":{"Binds":["/srv/secrets:/run/secrets:ro","named-cache:/cache"]},
+			"Mounts":[
+				{"Type":"bind","Source":"/srv/secrets","Destination":"/run/secrets"},
+				{"Type":"volume","Source":"/var/lib/docker/volumes/cache/_data","Destination":"/cache"}
+			]
+		}`)
+	}))
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc123/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nbody: %s", err, rec.Body.String())
+	}
+
+	configBody, _ := body["Config"].(map[string]any)
+	if env, _ := configBody["Env"].([]any); len(env) != 0 {
+		t.Fatalf("Config.Env = %#v, want empty redacted array", configBody["Env"])
+	}
+
+	hostConfig, _ := body["HostConfig"].(map[string]any)
+	binds, _ := hostConfig["Binds"].([]any)
+	if gotBind, _ := binds[0].(string); gotBind != "<redacted>:/run/secrets:ro" {
+		t.Fatalf("HostConfig.Binds[0] = %q, want %q", gotBind, "<redacted>:/run/secrets:ro")
+	}
+	if gotBind, _ := binds[1].(string); gotBind != "named-cache:/cache" {
+		t.Fatalf("HostConfig.Binds[1] = %q, want named volume bind unchanged", gotBind)
+	}
+
+	mounts, _ := body["Mounts"].([]any)
+	for i, mountValue := range mounts {
+		mount, _ := mountValue.(map[string]any)
+		if gotSource, _ := mount["Source"].(string); gotSource != "<redacted>" {
+			t.Fatalf("Mounts[%d].Source = %q, want %q", i, gotSource, "<redacted>")
+		}
 	}
 }
 

@@ -45,7 +45,9 @@ type LogConfig struct {
 
 // ResponseConfig configures HTTP responses returned by sockguard itself.
 type ResponseConfig struct {
-	DenyVerbosity string `mapstructure:"deny_verbosity"`
+	DenyVerbosity      string `mapstructure:"deny_verbosity"`
+	RedactContainerEnv bool   `mapstructure:"redact_container_env"`
+	RedactMountPaths   bool   `mapstructure:"redact_mount_paths"`
 }
 
 // RequestBodyConfig configures request-body inspection policies.
@@ -130,7 +132,9 @@ func Defaults() Config {
 			// production default because it can leak request path details
 			// (even with `/secrets/*` and `/swarm/unlockkey` redacted) that
 			// a honest security product should not hand a denied caller.
-			DenyVerbosity: "minimal",
+			DenyVerbosity:      "minimal",
+			RedactContainerEnv: true,
+			RedactMountPaths:   true,
 		},
 		RequestBody: RequestBodyConfig{
 			ContainerCreate: ContainerCreateRequestBodyConfig{},
