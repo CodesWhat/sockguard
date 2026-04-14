@@ -5,7 +5,7 @@ Working document tracking everything that must be true before the `sockguard` re
 ## Decision log
 
 - **License**: sockguard relicenses AGPL-3.0 → Apache-2.0. Drydock stays AGPL-3.0. Rationale: sockguard is security middleware whose value comes from being embedded — Apache-2.0 removes the "call legal" speed bump that blocks AGPL adoption in enterprise compose files and hardening guides. Drydock is an end-user web UI where AGPL is defensible. Matches Tecnativa/docker-socket-proxy so migration/comparison narratives stay clean.
-- **Public infrastructure** (`getsockguard.com`, `docs.getsockguard.com`, demo): blocked on repo going public; nothing to do here until Phase 6.
+- **Public infrastructure** (`getsockguard.com` marketing site + `/docs` subpath + `/demo` rule tester): blocked on repo going public; nothing to do here until Phase 6. Docs run as a subpath of the marketing site (same shape as drydock's `/docs`) — no separate `docs.` subdomain.
 - **Interactive demo**: replaced post-launch with an asciinema recording of real sockguard denying a privileged container create. Keep the current TS rule-tester as a fallback / sandbox but don't feature it as the hero.
 - **External validation story**: synthetic Colima load-gen benchmark **plus** NAS production snapshot pulled from the real access log, both published to `BENCHMARKS.md`.
 - **Known issues to fix before launch**: all three (health test flake, Biome suppression warning, Grype CVE scan on 0.3.1).
@@ -129,7 +129,7 @@ Organized by severity. Everything in "Ship blockers" has to land before Phase 6.
   - GHCR image pull works anonymously
   - Cosign verify command from Phase 2 docs works anonymously
   - `gh repo view` shows the repo as public
-  - `getsockguard.com` (including the `/demo` rule-tester route) and `docs.getsockguard.com` deploy and resolve
+  - `getsockguard.com` (including the `/demo` rule-tester route and the `/docs` Nextra subpath) deploys and resolves
 - [ ] Merge the first Dependabot PR (docker digest bump on next Monday) to prove the automation pipeline works end-to-end on the public repo
 
 ## Post-launch (not ship blockers)

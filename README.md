@@ -42,7 +42,7 @@
 
 <h2 align="center">📑 Contents</h2>
 
-- [📖 Documentation](https://docs.getsockguard.com)
+- [📖 Documentation](https://getsockguard.com/docs)
 - [🌐 Website](https://getsockguard.com)
 - [🚀 Quick Start](#quick-start)
 - [🤔 Why Sockguard](#why-sockguard)
