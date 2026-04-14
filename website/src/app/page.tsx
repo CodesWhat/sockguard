@@ -316,8 +316,8 @@ export default function Home() {
                 See it work
               </h2>
               <p className="mt-4 text-neutral-600 dark:text-neutral-400">
-                The real CLI, looped — validate a config, trace what one request would do, watch the
-                proxy hum.
+                A looping recreation of the real CLI — inspect a config, dry-run a single request
+                through the rules, and watch the proxy stream access logs.
               </p>
             </div>
             <CliDemo />

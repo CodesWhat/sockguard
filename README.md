@@ -322,10 +322,18 @@ Preset configs included for [drydock](app/configs/drydock.yaml), [Traefik](app/c
 <h2 align="center" id="cli">🔧 CLI</h2>
 
 ```bash
-sockguard serve                           # Start proxy (default)
-sockguard validate -c sockguard.yaml      # Validate config
-sockguard version                         # Print version
+sockguard serve                                     # Start proxy (default)
+sockguard validate -c sockguard.yaml                # Validate + print compiled rule table
+sockguard match -c sockguard.yaml -X GET --path /v1.45/containers/json
+                                                    # Dry-run a single request through the rules
+sockguard version                                   # Print version
 ```
+
+`sockguard match` is the offline rule-evaluation probe — point it
+at a config and a `<method, path>` and it prints which rule fires,
+what the normalized path looks like, and the reason (if any), so
+you can sanity-check a ruleset before any traffic hits the proxy.
+Output is text by default or JSON via `-o json`.
 
 <hr>
 

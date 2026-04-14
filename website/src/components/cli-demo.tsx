@@ -458,12 +458,20 @@ function buildLogLines(): RawFrameLine[] {
     msg: string;
     fields: Array<[string, string]>;
   };
+  // Field order and field names mirror sockguard's real access log
+  // from app/internal/logging/access.go: allows log `msg="request"`
+  // at INFO with method/path/status/latency_ms/bytes/client, denies
+  // log `msg="request_denied"` at WARN with an extra rule+reason.
+  // The "sockguard started" boot line carries version/listen/
+  // upstream/rules/log_level per app/internal/cmd/serve.go.
   const entries: LogEntry[] = [
     {
       level: "INFO",
       msg: "sockguard started",
       fields: [
+        ["version", "v0.3.1"],
         ["listen", "unix:/var/run/sockguard/sockguard.sock"],
+        ["upstream", "/var/run/docker.sock"],
         ["rules", "6"],
         ["log_level", "info"],
       ],
@@ -475,8 +483,9 @@ function buildLogLines(): RawFrameLine[] {
         ["method", "GET"],
         ["path", "/_ping"],
         ["status", "200"],
-        ["duration_ms", "1"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "0.412"],
+        ["bytes", "2"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
     {
@@ -486,8 +495,9 @@ function buildLogLines(): RawFrameLine[] {
         ["method", "GET"],
         ["path", "/v1.45/version"],
         ["status", "200"],
-        ["duration_ms", "2"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "1.823"],
+        ["bytes", "713"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
     {
@@ -497,8 +507,9 @@ function buildLogLines(): RawFrameLine[] {
         ["method", "GET"],
         ["path", "/v1.45/containers/json"],
         ["status", "200"],
-        ["duration_ms", "6"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "6.104"],
+        ["bytes", "4081"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
     {
@@ -511,8 +522,9 @@ function buildLogLines(): RawFrameLine[] {
           "/v1.45/containers/json?filters=%7B%22label%22%3A%5B%22traefik.enable%3Dtrue%22%5D%7D",
         ],
         ["status", "200"],
-        ["duration_ms", "4"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "3.917"],
+        ["bytes", "2411"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
     {
@@ -522,8 +534,9 @@ function buildLogLines(): RawFrameLine[] {
         ["method", "GET"],
         ["path", "/v1.45/containers/a3f1b9c/json"],
         ["status", "200"],
-        ["duration_ms", "3"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "2.641"],
+        ["bytes", "3127"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
     {
@@ -533,20 +546,24 @@ function buildLogLines(): RawFrameLine[] {
         ["method", "GET"],
         ["path", "/_ping"],
         ["status", "200"],
-        ["duration_ms", "1"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "0.388"],
+        ["bytes", "2"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
     {
       level: "WARN",
-      msg: "request denied",
+      msg: "request_denied",
       fields: [
         ["method", "POST"],
         ["path", "/v1.45/containers/a3f1b9c/exec"],
-        ["status", "403"],
+        ["decision", "deny"],
         ["rule", "5"],
         ["reason", "exec disabled"],
-        ["client", "10.0.4.91"],
+        ["status", "403"],
+        ["latency_ms", "0.094"],
+        ["bytes", "73"],
+        ["client", "10.0.4.91:41218"],
       ],
     },
     {
@@ -556,8 +573,9 @@ function buildLogLines(): RawFrameLine[] {
         ["method", "GET"],
         ["path", "/v1.45/events"],
         ["status", "200"],
-        ["duration_ms", "2"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "1.512"],
+        ["bytes", "0"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
     {
@@ -567,20 +585,24 @@ function buildLogLines(): RawFrameLine[] {
         ["method", "GET"],
         ["path", "/v1.45/containers/json"],
         ["status", "200"],
-        ["duration_ms", "5"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "4.731"],
+        ["bytes", "4081"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
     {
       level: "WARN",
-      msg: "request denied",
+      msg: "request_denied",
       fields: [
         ["method", "DELETE"],
         ["path", "/v1.45/images/sha256:bc3e..."],
-        ["status", "403"],
+        ["decision", "deny"],
         ["rule", "6"],
         ["reason", "no matching allow rule"],
-        ["client", "10.0.4.91"],
+        ["status", "403"],
+        ["latency_ms", "0.087"],
+        ["bytes", "94"],
+        ["client", "10.0.4.91:41218"],
       ],
     },
     {
@@ -590,8 +612,9 @@ function buildLogLines(): RawFrameLine[] {
         ["method", "GET"],
         ["path", "/v1.45/containers/a3f1b9c/json"],
         ["status", "200"],
-        ["duration_ms", "3"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "3.018"],
+        ["bytes", "3127"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
     {
@@ -601,8 +624,9 @@ function buildLogLines(): RawFrameLine[] {
         ["method", "GET"],
         ["path", "/_ping"],
         ["status", "200"],
-        ["duration_ms", "1"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "0.402"],
+        ["bytes", "2"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
     {
@@ -612,8 +636,9 @@ function buildLogLines(): RawFrameLine[] {
         ["method", "GET"],
         ["path", "/v1.45/containers/json"],
         ["status", "200"],
-        ["duration_ms", "4"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "4.216"],
+        ["bytes", "4081"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
     {
@@ -623,8 +648,9 @@ function buildLogLines(): RawFrameLine[] {
         ["method", "HEAD"],
         ["path", "/v1.45/containers/a3f1b9c/json"],
         ["status", "200"],
-        ["duration_ms", "2"],
-        ["client", "172.17.0.4"],
+        ["latency_ms", "1.812"],
+        ["bytes", "0"],
+        ["client", "172.17.0.4:52104"],
       ],
     },
   ];
@@ -634,7 +660,7 @@ function buildLogLines(): RawFrameLine[] {
   let t = new Date("2026-04-13T21:18:48.803Z").getTime();
   return entries.map((e) => {
     t += 120 + Math.floor(Math.random() * 180);
-    const iso = new Date(t).toISOString().replace("Z", "Z");
+    const iso = new Date(t).toISOString();
     const levelCls = e.level === "INFO" ? tok.cyan : tok.yellow;
     return {
       kind: "text",
@@ -881,7 +907,9 @@ export function CliDemo({ className, typeMs = 35, lineMs = 55, autoStart = true 
         </div>
       </div>
       <p className="mt-3 text-center text-xs text-neutral-500 dark:text-neutral-400">
-        Mocked CLI — real output is identical. Click play / restart to replay.
+        A hand-rendered recreation of the real CLI — every frame mirrors what{" "}
+        <code className="rounded bg-neutral-200 px-1 dark:bg-neutral-800">sockguard</code> actually
+        prints. Use the controls above to pause, restart, or change speed.
       </p>
     </div>
   );

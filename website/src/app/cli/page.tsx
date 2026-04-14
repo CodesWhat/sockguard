@@ -19,8 +19,9 @@ export default function CliPreviewPage() {
         <div className="mb-10">
           <h1 className="text-3xl font-semibold tracking-tight">CLI tour</h1>
           <p className="mt-2 max-w-2xl text-sm text-neutral-600 dark:text-neutral-400">
-            A mocked terminal that cycles through the real sockguard subcommands. Loops forever,
-            respects system theme, and works with no JavaScript runtime outside React.
+            A hand-rendered recreation of the sockguard CLI that cycles through `version`,
+            `validate`, `match`, and `serve` — every line mirrors what the real binary actually
+            prints. Respects system theme, loops forever, pure React.
           </p>
         </div>
 

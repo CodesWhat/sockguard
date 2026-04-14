@@ -81,12 +81,22 @@ services:
 # Start the proxy (default command)
 sockguard serve
 
-# Validate configuration
+# Validate configuration and print the compiled rule table
 sockguard validate -c /etc/sockguard/sockguard.yaml
+
+# Offline dry-run: evaluate a single request against the rules,
+# show which rule fires and why, without starting the proxy.
+sockguard match -c /etc/sockguard/sockguard.yaml \
+  -X GET --path /v1.45/containers/json
 
 # Print version
 sockguard version
 ```
+
+`sockguard match` reads the same config, applies the same path
+normalization as the running proxy, and reports the decision in
+text (default) or JSON (`-o json`). Use it to sanity-check a
+ruleset before any traffic hits the proxy.
 
 ## Next Steps
 
