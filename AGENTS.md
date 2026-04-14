@@ -8,12 +8,11 @@ Sockguard is a Docker socket proxy written in Go. It sits between Docker API con
 
 ## Repository Structure
 
-This is a monorepo with four workspaces:
+This is a monorepo with three workspaces:
 
 - **`app/`** — Go proxy (the core binary). Built with Go 1.26, uses stdlib `net/http/httputil.ReverseProxy` for proxying, Cobra+Viper for CLI/config.
-- **`website/`** — Next.js landing page at getsockguard.com
-- **`docs/`** — Nextra documentation site
-- **`demo/`** — Interactive rule tester (React app)
+- **`website/`** — Next.js landing page at getsockguard.com. Hosts the interactive rule tester at `/demo` (pure client-side React, no API) and the benchmarks + feature pages.
+- **`docs/`** — Nextra documentation site at docs.getsockguard.com.
 
 Turborepo orchestrates the TypeScript workspaces. The Go app is built independently.
 

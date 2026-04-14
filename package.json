@@ -2,8 +2,7 @@
   "private": true,
   "workspaces": [
     "website",
-    "docs",
-    "demo"
+    "docs"
   ],
   "scripts": {
     "dev": "turbo dev",

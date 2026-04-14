@@ -129,7 +129,7 @@ Organized by severity. Everything in "Ship blockers" has to land before Phase 6.
   - GHCR image pull works anonymously
   - Cosign verify command from Phase 2 docs works anonymously
   - `gh repo view` shows the repo as public
-  - `getsockguard.com`, `docs.getsockguard.com`, demo deploy and resolve
+  - `getsockguard.com` (including the `/demo` rule-tester route) and `docs.getsockguard.com` deploy and resolve
 - [ ] Merge the first Dependabot PR (docker digest bump on next Monday) to prove the automation pipeline works end-to-end on the public repo
 
 ## Post-launch (not ship blockers)

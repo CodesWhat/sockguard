@@ -13,7 +13,7 @@ Questions or ideas? Start a [GitHub Discussion](https://github.com/CodesWhat/soc
    go version  # should be 1.26+
    ```
 
-3. **Install Node.js 22+** (required for website/docs/demo):
+3. **Install Node.js 22+** (required for website/docs):
 
    ```bash
    nvm use || nvm install
@@ -25,7 +25,7 @@ Questions or ideas? Start a [GitHub Discussion](https://github.com/CodesWhat/soc
    # Go proxy
    cd app && go mod download
 
-   # Website/docs/demo
+   # Website/docs
    npm install  # from repo root (Turborepo workspace)
    ```
 
@@ -58,12 +58,14 @@ npm run dev --workspace=docs       # Dev server
 npm run build --workspace=docs     # Production build
 ```
 
-### Demo (`demo/`)
+### Interactive rule tester
 
-```bash
-npm run dev --workspace=demo       # Dev server
-npm run build --workspace=demo     # Production build
-```
+The rule tester lives at `website/src/app/demo/page.tsx` and renders at
+`getsockguard.com/demo` on the deployed site. It runs entirely in the
+browser — no API, no sockguard backend — and shares the website's build
+pipeline, so there's no separate workspace to run. Use
+`npm run dev --workspace=website` and navigate to
+`http://localhost:3001/demo` to iterate on it locally.
 
 ## Code style
 
@@ -74,7 +76,7 @@ npm run build --workspace=demo     # Production build
 - Line length: no hard limit, use judgement
 - Follow [Effective Go](https://go.dev/doc/effective_go) conventions
 
-### TypeScript (website/docs/demo)
+### TypeScript (website/docs)
 
 - **Linter/formatter:** [Biome](https://biomejs.dev/)
 - **Line width:** 100

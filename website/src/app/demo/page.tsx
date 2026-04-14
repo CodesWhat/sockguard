@@ -1,7 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
-import { compileRules, type EvalResult, evaluateCompiled, type Rule } from "../lib/evaluate";
+
+import { compileRules, type EvalResult, evaluateCompiled, type Rule } from "@/lib/evaluate";
 
 const DEFAULT_RULES: Rule[] = [
   { method: "GET", path: "/_ping", action: "allow" },
@@ -44,6 +46,12 @@ export default function RuleTester() {
 
   return (
     <main style={{ maxWidth: 900, margin: "0 auto", padding: "2rem", fontFamily: "system-ui" }}>
+      <p style={{ marginBottom: "1rem" }}>
+        <Link href="/" style={{ color: "#333", textDecoration: "underline" }}>
+          ← Back to sockguard
+        </Link>
+      </p>
+
       <h1>Sockguard Rule Tester</h1>
       <p>Test how sockguard rules evaluate Docker API requests.</p>
 

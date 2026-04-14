@@ -1,5 +1,15 @@
-import { BookOpen, BookOpenText, Check, ChevronDown, Clock, Minus, Terminal } from "lucide-react";
+import {
+  BookOpen,
+  BookOpenText,
+  Check,
+  ChevronDown,
+  Clock,
+  FlaskConical,
+  Minus,
+  Terminal,
+} from "lucide-react";
 import Image from "next/image";
+import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -142,6 +152,12 @@ export default function Home() {
                     <BookOpen className="h-4 w-4" />
                     Documentation
                   </a>
+                </Button>
+                <Button variant="outline" size="lg" asChild>
+                  <Link href="/demo">
+                    <FlaskConical className="h-4 w-4" />
+                    Try the rule tester
+                  </Link>
                 </Button>
               </div>
 

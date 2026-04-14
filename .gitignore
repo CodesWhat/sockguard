@@ -49,7 +49,7 @@ bin/
 # CI-generated release notes (extracted from CHANGELOG by release-from-tag.yml)
 /release-notes.md
 
-# Node (website/docs/demo)
+# Node (website/docs)
 node_modules/
 .next/
 .turbo/
