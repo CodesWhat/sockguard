@@ -1,3 +1,4 @@
+import { Analytics } from "@vercel/analytics/next";
 import { Head } from "nextra/components";
 import { getPageMap } from "nextra/page-map";
 import { Footer, Layout, Navbar } from "nextra-theme-docs";
@@ -15,11 +16,12 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       <body>
         <Layout
           navbar={<Navbar logo={<b>Sockguard</b>} />}
-          footer={<Footer>MIT {new Date().getFullYear()} © Sockguard</Footer>}
+          footer={<Footer>Apache-2.0 {new Date().getFullYear()} © Sockguard</Footer>}
           pageMap={await getPageMap()}
         >
           {children}
         </Layout>
+        <Analytics />
       </body>
     </html>
   );
