@@ -3,7 +3,9 @@ import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
+import Image from "next/image";
 import { source } from "@/lib/source";
+import logo from "../../public/sockguard-logo.png";
 import "./globals.css";
 
 const ibmPlexSans = IBM_Plex_Sans({
@@ -42,7 +44,12 @@ export default function RootLayout({
           <DocsLayout
             tree={source.pageTree}
             nav={{
-              title: <span className="font-semibold tracking-tight">Sockguard</span>,
+              title: (
+                <span className="flex items-center gap-2">
+                  <Image src={logo} alt="Sockguard" width={28} height={28} priority />
+                  <span className="font-semibold tracking-tight">Sockguard</span>
+                </span>
+              ),
               url: "/",
             }}
             links={[
