@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "turbo dev",
     "build": "turbo build",
-    "test": "npm --workspaces --if-present test",
+    "test": "npm --workspaces --if-present test && node --test --experimental-strip-types scripts/*.test.mjs",
     "lint": "biome check .",
     "lint:fix": "biome check --fix .",
     "format": "biome format --write .",
@@ -15,6 +15,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.11",
+    "knip": "6.4.1",
     "lefthook": "^2.1.5",
     "turbo": "^2.9.6"
   },
