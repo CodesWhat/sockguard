@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,6 +127,186 @@ func TestMiddlewareAssignsProfileFromClientCertificate(t *testing.T) {
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareAssignsProfileFromClientCertificateExtendedSelectors(t *testing.T) {
+	spiffeURI, err := url.Parse("spiffe://sockguard.test/workload/portainer")
+	if err != nil {
+		t.Fatalf("Parse SPIFFE URI: %v", err)
+	}
+	uriSAN, err := url.Parse("urn:example:sockguard:test")
+	if err != nil {
+		t.Fatalf("Parse URI SAN: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		assignments []ClientCertificateProfileAssignment
+		cert        *x509.Certificate
+		wantProfile string
+	}{
+		{
+			name: "dns san",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "dashboard", DNSNames: []string{"dashboard.internal"}},
+			},
+			cert:        &x509.Certificate{DNSNames: []string{"dashboard.internal"}},
+			wantProfile: "dashboard",
+		},
+		{
+			name: "ip san",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "agent", IPAddresses: []string{"192.0.2.44"}},
+			},
+			cert:        &x509.Certificate{IPAddresses: []net.IP{net.ParseIP("192.0.2.44")}},
+			wantProfile: "agent",
+		},
+		{
+			name: "uri san",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "uri-client", URISANs: []string{"urn:example:sockguard:test"}},
+			},
+			cert:        &x509.Certificate{URIs: []*url.URL{uriSAN}},
+			wantProfile: "uri-client",
+		},
+		{
+			name: "spiffe id",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "spiffe-client", SPIFFEIDs: []string{"spiffe://sockguard.test/workload/portainer"}},
+			},
+			cert:        &x509.Certificate{URIs: []*url.URL{spiffeURI}},
+			wantProfile: "spiffe-client",
+		},
+		{
+			name: "multiple selectors on one assignment are anded",
+			assignments: []ClientCertificateProfileAssignment{
+				{
+					Profile:   "strict-client",
+					DNSNames:  []string{"dashboard.internal"},
+					SPIFFEIDs: []string{"spiffe://sockguard.test/workload/portainer"},
+				},
+			},
+			cert: &x509.Certificate{
+				DNSNames: []string{"dashboard.internal"},
+				URIs:     []*url.URL{spiffeURI},
+			},
+			wantProfile: "strict-client",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := middlewareWithDeps(testLogger(), Options{
+				Profiles: ProfileOptions{
+					ClientCertificates: tt.assignments,
+				},
+			}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				profile, ok := RequestProfile(r)
+				if !ok || profile != tt.wantProfile {
+					t.Fatalf("RequestProfile() = (%q, %v), want (%s, true)", profile, ok, tt.wantProfile)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+			req.TLS = &tls.ConnectionState{
+				PeerCertificates: []*x509.Certificate{tt.cert},
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+			}
+		})
+	}
+}
+
+func TestMiddlewareAssignsProfileFromUnixPeerCredentials(t *testing.T) {
+	handler := middlewareWithDeps(testLogger(), Options{
+		Profiles: ProfileOptions{
+			UnixPeers: []UnixPeerProfileAssignment{
+				{
+					Profile: "local-admin",
+					UIDs:    []uint32{1001},
+					GIDs:    []uint32{1002},
+					PIDs:    []int32{4242},
+				},
+			},
+		},
+	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		profile, ok := RequestProfile(r)
+		if !ok || profile != "local-admin" {
+			t.Fatalf("RequestProfile() = (%q, %v), want (local-admin, true)", profile, ok)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req = req.WithContext(withUnixPeerCredentials(req.Context(), unixPeerCredentials{
+		UID: 1001,
+		GID: 1002,
+		PID: 4242,
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestConnContextCapturesUnixPeerCredentials(t *testing.T) {
+	socketPath := filepath.Join("/tmp", "sockguard-clientacl-peer-"+strconvTime()+".sock")
+	_ = os.Remove(socketPath)
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer func() {
+		_ = ln.Close()
+		_ = os.Remove(socketPath)
+	}()
+
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	client, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial unix: %v", err)
+	}
+	defer client.Close()
+
+	var serverConn net.Conn
+	select {
+	case err := <-acceptErr:
+		t.Fatalf("accept unix: %v", err)
+	case serverConn = <-accepted:
+	}
+	defer serverConn.Close()
+
+	ctx := ConnContext(context.Background(), serverConn)
+	creds, ok := unixPeerCredentialsFromContext(ctx)
+	if !ok {
+		t.Fatal("expected unix peer credentials in context")
+	}
+	if creds.UID != uint32(os.Getuid()) {
+		t.Fatalf("UID = %d, want %d", creds.UID, os.Getuid())
+	}
+	if creds.GID != uint32(os.Getgid()) {
+		t.Fatalf("GID = %d, want %d", creds.GID, os.Getgid())
+	}
+	if creds.PID <= 0 {
+		t.Fatalf("PID = %d, want > 0", creds.PID)
 	}
 }
 
