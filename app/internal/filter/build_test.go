@@ -174,6 +174,34 @@ func TestBuildGzipTruncationDenial(t *testing.T) {
 	}
 }
 
+func TestMiddlewareDeniesOversizedBuildContext(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected oversized build context to be denied")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/build", nil)
+	req.Body = io.NopCloser(&repeatingByteReader{remaining: maxBuildContextBytes + 1, value: 'A'})
+	req.ContentLength = maxBuildContextBytes + 1
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(body.Reason, "exceeds") {
+		t.Fatalf("reason = %q, want body-limit denial", body.Reason)
+	}
+}
+
 func TestSpoolRequestBodyToTempFileWrapsCopyError(t *testing.T) {
 	sentinel := errors.New("close failed")
 	req := httptest.NewRequest(http.MethodPost, "/build", nil)
@@ -274,4 +302,23 @@ func mustBuildContextTar(t *testing.T, dockerfilePath string, dockerfile string)
 		t.Fatalf("close tar: %v", err)
 	}
 	return buf.Bytes()
+}
+
+type repeatingByteReader struct {
+	remaining int64
+	value     byte
+}
+
+func (r *repeatingByteReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	for i := range p {
+		p[i] = r.value
+	}
+	r.remaining -= int64(len(p))
+	return len(p), nil
 }

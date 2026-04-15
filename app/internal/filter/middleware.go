@@ -42,6 +42,18 @@ type Options struct {
 	ImagePull ImagePullOptions
 	// Build configures request-body/query inspection for POST /build.
 	Build BuildOptions
+	// Volume configures request-body inspection for POST /volumes/create.
+	Volume VolumeOptions
+	// Secret configures request-body inspection for POST /secrets/create.
+	Secret SecretOptions
+	// ConfigWrite configures request-body inspection for POST /configs/create.
+	ConfigWrite ConfigWriteOptions
+	// Service configures request-body inspection for service create/update.
+	Service ServiceOptions
+	// Swarm configures request-body inspection for swarm init.
+	Swarm SwarmOptions
+	// Plugin configures request-body inspection for plugin write endpoints.
+	Plugin PluginOptions
 	// Profiles defines named per-client policy overrides selected at request time.
 	Profiles map[string]Policy
 	// ResolveProfile returns the named policy to apply for the request.
@@ -57,6 +69,12 @@ type Policy struct {
 	Exec                  ExecOptions
 	ImagePull             ImagePullOptions
 	Build                 BuildOptions
+	Volume                VolumeOptions
+	Secret                SecretOptions
+	ConfigWrite           ConfigWriteOptions
+	Service               ServiceOptions
+	Swarm                 SwarmOptions
+	Plugin                PluginOptions
 }
 
 // ParseDenyResponseVerbosity normalizes a configured deny verbosity value.
@@ -114,6 +132,12 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			Exec:                  profile.Exec,
 			ImagePull:             profile.ImagePull,
 			Build:                 profile.Build,
+			Volume:                profile.Volume,
+			Secret:                profile.Secret,
+			ConfigWrite:           profile.ConfigWrite,
+			Service:               profile.Service,
+			Swarm:                 profile.Swarm,
+			Plugin:                profile.Plugin,
 		})
 	}
 
@@ -175,6 +199,12 @@ func compileRuntimePolicy(rules []*CompiledRule, opts Options) runtimePolicy {
 	exec := newExecPolicy(opts.Exec)
 	imagePull := newImagePullPolicy(opts.ImagePull)
 	build := newBuildPolicy(opts.Build)
+	volume := newVolumePolicy(opts.Volume)
+	secret := newSecretPolicy(opts.Secret)
+	configWrite := newConfigWritePolicy(opts.ConfigWrite)
+	service := newServicePolicy(opts.Service)
+	swarm := newSwarmPolicy(opts.Swarm)
+	plugin := newPluginPolicy(opts.Plugin)
 
 	return runtimePolicy{
 		rules:                 rules,
@@ -203,6 +233,38 @@ func compileRuntimePolicy(rules []*CompiledRule, opts Options) runtimePolicy {
 				},
 				errorLogMessage:   "failed to inspect build request",
 				denyReasonOnError: "unable to inspect build request",
+			},
+			{
+				inspect: func(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
+					return volume.inspect(logger, r, normalizedPath)
+				},
+				errorLogMessage:   "failed to inspect volume create request body",
+				denyReasonOnError: "unable to inspect volume create request body",
+			},
+			{
+				inspect:           secret.inspect,
+				errorLogMessage:   "failed to inspect secret create request body",
+				denyReasonOnError: "unable to inspect secret create request body",
+			},
+			{
+				inspect:           configWrite.inspect,
+				errorLogMessage:   "failed to inspect config create request body",
+				denyReasonOnError: "unable to inspect config create request body",
+			},
+			{
+				inspect:           service.inspect,
+				errorLogMessage:   "failed to inspect service request body",
+				denyReasonOnError: "unable to inspect service request body",
+			},
+			{
+				inspect:           swarm.inspect,
+				errorLogMessage:   "failed to inspect swarm init request body",
+				denyReasonOnError: "unable to inspect swarm init request body",
+			},
+			{
+				inspect:           plugin.inspect,
+				errorLogMessage:   "failed to inspect plugin request body",
+				denyReasonOnError: "unable to inspect plugin request body",
 			},
 		},
 	}

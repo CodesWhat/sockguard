@@ -58,21 +58,32 @@ func (p imagePullPolicy) inspect(r *http.Request, normalizedPath string) (string
 		return "", nil
 	}
 
-	ref, ok := parseImageReference(fromImage)
-	if !ok {
-		return "", nil
+	if denyReason := p.denyReasonForReference(fromImage, "image pull"); denyReason != "" {
+		return denyReason, nil
 	}
-	if p.allowAllRegistries {
-		return "", nil
-	}
-	if p.allowOfficial && ref.official {
-		return "", nil
-	}
-	if slices.Contains(p.allowedRegistries, ref.registry) {
-		return "", nil
+	return "", nil
+}
+
+func (p imagePullPolicy) denyReasonForReference(fromImage, subject string) string {
+	if fromImage == "" {
+		return ""
 	}
 
-	return fmt.Sprintf("image pull denied: registry %q is not allowlisted", ref.registry), nil
+	ref, ok := parseImageReference(fromImage)
+	if !ok {
+		return ""
+	}
+	if p.allowAllRegistries {
+		return ""
+	}
+	if p.allowOfficial && ref.official {
+		return ""
+	}
+	if slices.Contains(p.allowedRegistries, ref.registry) {
+		return ""
+	}
+
+	return fmt.Sprintf("%s denied: registry %q is not allowlisted", subject, ref.registry)
 }
 
 type parsedImageReference struct {

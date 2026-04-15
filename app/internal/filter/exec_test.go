@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -125,6 +126,39 @@ func TestMiddlewareDeniesPrivilegedAndRootExecCreate(t *testing.T) {
 				t.Fatalf("reason = %q, want substring %q", body.Reason, tt.want)
 			}
 		})
+	}
+}
+
+func TestMiddlewareDeniesOversizedExecCreateBody(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/exec", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+		Exec: ExecOptions{
+			AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+		},
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected oversized exec request body to be denied")
+	}))
+
+	padding := strings.Repeat("A", maxExecBodyBytes)
+	payload := fmt.Sprintf(`{"Cmd":["/usr/local/bin/pre-update"],"Pad":"%s"}`, padding)
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", strings.NewReader(payload))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(body.Reason, "exceeds") {
+		t.Fatalf("reason = %q, want body-limit denial", body.Reason)
 	}
 }
 
