@@ -419,16 +419,29 @@ func matchSourceIPProfile(addr netip.Addr, assignments []compiledSourceIPProfile
 }
 
 func matchClientCertificateProfile(r *http.Request, assignments []compiledClientCertificateProfileAssignment) (string, bool) {
-	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+	leaf := clientCertificateLeaf(r)
+	if leaf == nil {
 		return "", false
 	}
-	leaf := r.TLS.PeerCertificates[0]
 	for _, assignment := range assignments {
 		if assignment.matches(leaf) {
 			return assignment.profile, true
 		}
 	}
 	return "", false
+}
+
+func clientCertificateLeaf(r *http.Request) *x509.Certificate {
+	if r == nil || r.TLS == nil {
+		return nil
+	}
+	if len(r.TLS.VerifiedChains) > 0 && len(r.TLS.VerifiedChains[0]) > 0 {
+		return r.TLS.VerifiedChains[0][0]
+	}
+	if len(r.TLS.PeerCertificates) > 0 {
+		return r.TLS.PeerCertificates[0]
+	}
+	return nil
 }
 
 func matchUnixPeerProfile(r *http.Request, assignments []compiledUnixPeerProfileAssignment) (string, bool, error) {
