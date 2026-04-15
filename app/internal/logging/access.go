@@ -21,6 +21,13 @@ const (
 	contextKeyClientRequestID
 )
 
+const (
+	requestIDBytes           = 16
+	requestIDEncodedBytes    = requestIDBytes * 2
+	requestIDPoolSize        = 256
+	requestIDRefillThreshold = requestIDPoolSize / 2
+)
+
 // RequestMeta holds mutable decision metadata shared between middlewares. The
 // access log middleware creates it and attaches it to the wrapped
 // ResponseWriter; tests and non-access-log callers can also pass it through
@@ -47,6 +54,115 @@ var requestMetaPool = sync.Pool{
 const requestIDHeader = "X-Request-Id"
 
 var requestIDFallbackCounter uint64
+var defaultRequestIDGenerator = newRequestIDGenerator(requestIDPoolSize, requestIDRefillThreshold, rand.Read)
+
+type requestIDGenerator struct {
+	ids             chan [requestIDBytes]byte
+	refillCh        chan struct{}
+	stopCh          chan struct{}
+	wg              sync.WaitGroup
+	refillThreshold int
+	fill            func([]byte) (int, error)
+}
+
+func newRequestIDGenerator(poolSize, refillThreshold int, fill func([]byte) (int, error)) *requestIDGenerator {
+	if poolSize < 1 {
+		poolSize = 1
+	}
+	if refillThreshold < 0 {
+		refillThreshold = 0
+	}
+	if refillThreshold >= poolSize {
+		refillThreshold = poolSize - 1
+	}
+
+	generator := &requestIDGenerator{
+		ids:             make(chan [requestIDBytes]byte, poolSize),
+		refillCh:        make(chan struct{}, 1),
+		stopCh:          make(chan struct{}),
+		refillThreshold: refillThreshold,
+		fill:            fill,
+	}
+	generator.wg.Add(1)
+	go generator.run()
+	generator.signalRefill()
+	return generator
+}
+
+func (g *requestIDGenerator) Next() string {
+	if g == nil {
+		return encodeRequestID(fallbackRequestIDRaw())
+	}
+
+	select {
+	case raw := <-g.ids:
+		if len(g.ids) <= g.refillThreshold {
+			g.signalRefill()
+		}
+		return encodeRequestID(raw)
+	default:
+		g.signalRefill()
+		return encodeRequestID(fallbackRequestIDRaw())
+	}
+}
+
+func (g *requestIDGenerator) run() {
+	defer g.wg.Done()
+
+	for {
+		select {
+		case <-g.refillCh:
+			g.refillSync()
+		case <-g.stopCh:
+			return
+		}
+	}
+}
+
+func (g *requestIDGenerator) refillSync() {
+	if g == nil || g.fill == nil || len(g.ids) > g.refillThreshold {
+		return
+	}
+
+	needed := cap(g.ids) - len(g.ids)
+	if needed == 0 {
+		return
+	}
+
+	slab := make([]byte, needed*requestIDBytes)
+	n, err := g.fill(slab)
+	if err != nil || n != len(slab) {
+		return
+	}
+
+	for i := 0; i < needed; i++ {
+		var raw [requestIDBytes]byte
+		copy(raw[:], slab[i*requestIDBytes:(i+1)*requestIDBytes])
+		select {
+		case g.ids <- raw:
+		default:
+			return
+		}
+	}
+}
+
+func (g *requestIDGenerator) signalRefill() {
+	if g == nil {
+		return
+	}
+	select {
+	case g.refillCh <- struct{}{}:
+	default:
+	}
+}
+
+func (g *requestIDGenerator) close() {
+	if g == nil {
+		return
+	}
+	close(g.stopCh)
+	g.wg.Wait()
+}
 
 // accessLogAttrs leaves headroom beyond today's max log field count so adding
 // one or two attrs later does not force a new backing slice allocation.
@@ -345,13 +461,18 @@ func clientRequestIDForRequest(r *http.Request, meta *RequestMeta) string {
 }
 
 func newRequestID() string {
-	var raw [16]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		binary.BigEndian.PutUint64(raw[:8], uint64(time.Now().UnixNano()))
-		binary.BigEndian.PutUint64(raw[8:], atomic.AddUint64(&requestIDFallbackCounter, 1))
-	}
+	return defaultRequestIDGenerator.Next()
+}
 
-	var encoded [32]byte
+func fallbackRequestIDRaw() [requestIDBytes]byte {
+	var raw [requestIDBytes]byte
+	binary.BigEndian.PutUint64(raw[:8], uint64(time.Now().UnixNano()))
+	binary.BigEndian.PutUint64(raw[8:], atomic.AddUint64(&requestIDFallbackCounter, 1))
+	return raw
+}
+
+func encodeRequestID(raw [requestIDBytes]byte) string {
+	var encoded [requestIDEncodedBytes]byte
 	hex.Encode(encoded[:], raw[:])
 	return string(encoded[:])
 }

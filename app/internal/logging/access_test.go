@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -246,6 +247,46 @@ func TestRequestIDMiddlewareGeneratesCanonicalIDWithoutAccessLog(t *testing.T) {
 	}
 	if got := rec.Header().Get(requestIDHeader); got != seenHeader {
 		t.Fatalf("response %s = %q, want %q", requestIDHeader, got, seenHeader)
+	}
+}
+
+func TestRequestIDGeneratorBatchesEntropyReads(t *testing.T) {
+	var fillCalls atomic.Int32
+	gen := newRequestIDGenerator(8, 1, func(dst []byte) (int, error) {
+		fillCalls.Add(1)
+		for i := range dst {
+			dst[i] = byte(i + 1)
+		}
+		return len(dst), nil
+	})
+	defer gen.close()
+
+	gen.refillSync()
+
+	for range 4 {
+		got := gen.Next()
+		if len(got) != 32 {
+			t.Fatalf("Next() len = %d, want 32", len(got))
+		}
+	}
+
+	if got := fillCalls.Load(); got != 1 {
+		t.Fatalf("entropy fill calls = %d, want 1 for four generated IDs", got)
+	}
+}
+
+func TestRequestIDGeneratorFallsBackWhenPoolEmpty(t *testing.T) {
+	gen := newRequestIDGenerator(4, 1, func([]byte) (int, error) {
+		return 0, errors.New("entropy unavailable")
+	})
+	defer gen.close()
+
+	got := gen.Next()
+	if len(got) != 32 {
+		t.Fatalf("Next() len = %d, want 32", len(got))
+	}
+	if got == strings.Repeat("0", 32) {
+		t.Fatal("Next() returned all-zero request id, want fallback entropy")
 	}
 }
 
