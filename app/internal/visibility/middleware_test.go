@@ -346,6 +346,26 @@ func TestDecodeDockerFilters(t *testing.T) {
 	}
 }
 
+func TestAddVisibilityLabelFiltersLeavesQueryUntouchedWhenSelectorsAlreadyPresent(t *testing.T) {
+	req := httptest.NewRequest(
+		http.MethodGet,
+		`/v1.53/containers/json?all=1&filters={"label":["com.sockguard.visible=true","com.sockguard.client=watchtower"]}`,
+		nil,
+	)
+	originalRawQuery := req.URL.RawQuery
+
+	err := addVisibilityLabelFilters(req, "/containers/json", []compiledSelector{
+		{key: "com.sockguard.visible", value: "true", hasValue: true},
+		{key: "com.sockguard.client", value: "watchtower", hasValue: true},
+	})
+	if err != nil {
+		t.Fatalf("addVisibilityLabelFilters() error = %v, want nil", err)
+	}
+	if req.URL.RawQuery != originalRawQuery {
+		t.Fatalf("RawQuery = %q, want unchanged %q", req.URL.RawQuery, originalRawQuery)
+	}
+}
+
 func TestMiddlewareInjectsVisibilityLabelsIntoExpandedLists(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var gotPaths []string

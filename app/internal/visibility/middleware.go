@@ -11,9 +11,11 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
+	"github.com/codeswhat/sockguard/internal/inspectcache"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -163,9 +165,19 @@ func newVisibilityDeps(upstreamSocket string) visibilityDeps {
 	inspector := upstreamInspector{
 		client: &http.Client{Transport: transport},
 	}
+	cache := inspectcache.New(
+		inspectcache.DefaultTTL,
+		inspectcache.DefaultMaxSize,
+		time.Now,
+		func(ctx context.Context, kind, identifier string) (map[string]string, bool, error) {
+			return inspector.inspectResource(ctx, resourceKind(kind), identifier)
+		},
+	)
 	return visibilityDeps{
-		inspectResource: inspector.inspectResource,
-		inspectExec:     inspector.inspectExec,
+		inspectResource: func(ctx context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
+			return cache.Lookup(ctx, string(kind), identifier)
+		},
+		inspectExec: inspector.inspectExec,
 	}
 }
 
@@ -226,6 +238,7 @@ func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []com
 		return err
 	}
 	filterKey := visibilityLabelFilterKey(normPath)
+	changed := false
 	for _, selector := range selectors {
 		value := selector.key
 		if selector.hasValue {
@@ -233,7 +246,11 @@ func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []com
 		}
 		if !slices.Contains(filters[filterKey], value) {
 			filters[filterKey] = append(filters[filterKey], value)
+			changed = true
 		}
+	}
+	if !changed {
+		return nil
 	}
 	encoded, _ := json.Marshal(filters)
 	query.Set("filters", string(encoded))
