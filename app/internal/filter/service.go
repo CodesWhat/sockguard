@@ -2,7 +2,6 @@ package filter
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -92,9 +91,9 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 	}
 
 	var req serviceRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "service request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "service request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
 		return "", nil
 	}

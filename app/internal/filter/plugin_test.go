@@ -361,28 +361,28 @@ type pluginTarEntry struct {
 	mode int64
 }
 
-func mustPluginCreateContextTar(t *testing.T, cfg pluginCreateConfig, gzipEncoded bool) []byte {
-	t.Helper()
+func mustPluginCreateContextTar(tb testing.TB, cfg pluginCreateConfig, gzipEncoded bool) []byte {
+	tb.Helper()
 	configBytes, err := json.Marshal(cfg)
 	if err != nil {
-		t.Fatalf("json.Marshal: %v", err)
+		tb.Fatalf("json.Marshal: %v", err)
 	}
-	return mustPluginCreateContextTarBytes(t, []pluginTarEntry{
+	return mustPluginCreateContextTarBytes(tb, []pluginTarEntry{
 		{name: "rootfs/", typ: tar.TypeDir, mode: 0o755},
 		{name: "config.json", body: configBytes, typ: tar.TypeReg, mode: 0o644},
 	}, gzipEncoded)
 }
 
-func mustPluginCreateContextPayload(t *testing.T, configJSON string, gzipEncoded bool) []byte {
-	t.Helper()
-	return mustPluginCreateContextTarBytes(t, []pluginTarEntry{
+func mustPluginCreateContextPayload(tb testing.TB, configJSON string, gzipEncoded bool) []byte {
+	tb.Helper()
+	return mustPluginCreateContextTarBytes(tb, []pluginTarEntry{
 		{name: "rootfs/", typ: tar.TypeDir, mode: 0o755},
 		{name: "config.json", body: []byte(configJSON), typ: tar.TypeReg, mode: 0o644},
 	}, gzipEncoded)
 }
 
-func mustPluginCreateContextTarBytes(t *testing.T, entries []pluginTarEntry, gzipEncoded bool) []byte {
-	t.Helper()
+func mustPluginCreateContextTarBytes(tb testing.TB, entries []pluginTarEntry, gzipEncoded bool) []byte {
+	tb.Helper()
 
 	var tarBuf bytes.Buffer
 	tw := tar.NewWriter(&tarBuf)
@@ -403,16 +403,16 @@ func mustPluginCreateContextTarBytes(t *testing.T, entries []pluginTarEntry, gzi
 			hdr.Size = 0
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
-			t.Fatalf("WriteHeader(%q): %v", entry.name, err)
+			tb.Fatalf("WriteHeader(%q): %v", entry.name, err)
 		}
 		if len(entry.body) > 0 {
 			if _, err := tw.Write(entry.body); err != nil {
-				t.Fatalf("Write(%q): %v", entry.name, err)
+				tb.Fatalf("Write(%q): %v", entry.name, err)
 			}
 		}
 	}
 	if err := tw.Close(); err != nil {
-		t.Fatalf("tar close: %v", err)
+		tb.Fatalf("tar close: %v", err)
 	}
 
 	if !gzipEncoded {
@@ -422,10 +422,10 @@ func mustPluginCreateContextTarBytes(t *testing.T, entries []pluginTarEntry, gzi
 	var gzBuf bytes.Buffer
 	gzw := gzip.NewWriter(&gzBuf)
 	if _, err := gzw.Write(tarBuf.Bytes()); err != nil {
-		t.Fatalf("gzip write: %v", err)
+		tb.Fatalf("gzip write: %v", err)
 	}
 	if err := gzw.Close(); err != nil {
-		t.Fatalf("gzip close: %v", err)
+		tb.Fatalf("gzip close: %v", err)
 	}
 	return gzBuf.Bytes()
 }

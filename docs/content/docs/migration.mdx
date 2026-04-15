@@ -19,7 +19,7 @@ Sockguard accepts the current Tecnativa environment-variable surface, including 
       - POST=0
 ```
 
-That gets you current Tecnativa env-surface compatibility. If you intentionally want section-wide raw archive/export parity from `CONTAINERS=1` or `IMAGES=1`, also set `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true`; otherwise move to YAML and allow only the list/inspect endpoints you actually need.
+That gets you current Tecnativa env-surface compatibility. If you intentionally want section-wide raw archive/export or log/attach streaming parity from `CONTAINERS=1` or `IMAGES=1`, also set `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true`; otherwise move to YAML and allow only the list/inspect endpoints you actually need.
 
 When ready, migrate to YAML config for more control:
 

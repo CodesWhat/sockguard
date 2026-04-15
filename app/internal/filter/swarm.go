@@ -108,9 +108,9 @@ func (p swarmPolicy) inspectInit(logger *slog.Logger, r *http.Request) (string, 
 	}
 
 	var req swarmInitRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "swarm init request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "swarm init request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
 		return "", nil
 	}
@@ -143,9 +143,9 @@ func (p swarmPolicy) inspectJoin(logger *slog.Logger, r *http.Request) (string, 
 	}
 
 	var req swarmJoinRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "swarm join request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "swarm join request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
 		return "", nil
 	}
@@ -176,9 +176,9 @@ func (p swarmPolicy) inspectUpdate(logger *slog.Logger, r *http.Request) (string
 	}
 
 	var req swarmUpdateRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "swarm update request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "swarm update request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
 		return "", nil
 	}

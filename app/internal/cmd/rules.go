@@ -55,6 +55,14 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 var readSensitiveExfilEndpoints = []readSensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/containers/sockguard-test/archive"},
 	{method: http.MethodGet, path: "/containers/sockguard-test/export"},
+	// Validation only sees method+path, not query strings, so treat the
+	// path-level logs surface conservatively rather than trying to special-case
+	// follow=1 or other streaming toggles here.
+	{method: http.MethodGet, path: "/containers/sockguard-test/logs"},
+	{method: http.MethodGet, path: "/containers/sockguard-test/attach/ws"},
+	{method: http.MethodGet, path: "/services/sockguard-test/logs"},
+	{method: http.MethodGet, path: "/tasks/sockguard-test/logs"},
+	{method: http.MethodPost, path: "/containers/sockguard-test/attach"},
 	{method: http.MethodGet, path: "/images/get"},
 	{method: http.MethodGet, path: "/images/sockguard-test/get"},
 }
@@ -159,13 +167,13 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 
 	if scope == "" {
 		return fmt.Errorf(
-			"rules allow raw archive/export read endpoints; set insecure_allow_read_exfiltration=true to acknowledge this risk: %s",
+			"rules allow raw archive/export or log/attach streaming endpoints; set insecure_allow_read_exfiltration=true to acknowledge this risk: %s",
 			strings.Join(exposed, ", "),
 		)
 	}
 
 	return fmt.Errorf(
-		"client profile %q allows raw archive/export read endpoints; set insecure_allow_read_exfiltration=true to acknowledge this risk: %s",
+		"client profile %q allows raw archive/export or log/attach streaming endpoints; set insecure_allow_read_exfiltration=true to acknowledge this risk: %s",
 		scope,
 		strings.Join(exposed, ", "),
 	)
@@ -265,7 +273,7 @@ func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error)
 				AllowCustomDrivers:   profile.RequestBody.Secret.AllowCustomDrivers,
 				AllowTemplateDrivers: profile.RequestBody.Secret.AllowTemplateDrivers,
 			},
-			ConfigWrite: filter.ConfigWriteOptions{
+			Config: filter.ConfigOptions{
 				AllowCustomDrivers:   profile.RequestBody.Config.AllowCustomDrivers,
 				AllowTemplateDrivers: profile.RequestBody.Config.AllowTemplateDrivers,
 			},

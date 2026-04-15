@@ -10,7 +10,7 @@ import (
 )
 
 func TestConfigWriteInspectAllowsDefaultCreate(t *testing.T) {
-	policy := newConfigWritePolicy(ConfigWriteOptions{})
+	policy := newConfigPolicy(ConfigOptions{})
 
 	req := httptest.NewRequest(http.MethodPost, "/configs/create", strings.NewReader(`{"Name":"app-config","Data":"Y29uZmln"}`))
 	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
@@ -23,7 +23,7 @@ func TestConfigWriteInspectAllowsDefaultCreate(t *testing.T) {
 }
 
 func TestConfigWriteInspectDeniesDriverSelections(t *testing.T) {
-	policy := newConfigWritePolicy(ConfigWriteOptions{})
+	policy := newConfigPolicy(ConfigOptions{})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1.53/configs/create", strings.NewReader(`{"Driver":"vault"}`))
 	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
@@ -45,7 +45,7 @@ func TestConfigWriteInspectDeniesDriverSelections(t *testing.T) {
 }
 
 func TestConfigWriteInspectHandlesMalformedJSON(t *testing.T) {
-	policy := newConfigWritePolicy(ConfigWriteOptions{})
+	policy := newConfigPolicy(ConfigOptions{})
 	req := httptest.NewRequest(http.MethodPost, "/configs/create", bytes.NewBufferString("{"))
 
 	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
@@ -66,7 +66,7 @@ func TestConfigWriteInspectHandlesMalformedJSON(t *testing.T) {
 }
 
 func TestConfigWriteInspectCapsOversizedBody(t *testing.T) {
-	policy := newConfigWritePolicy(ConfigWriteOptions{})
+	policy := newConfigPolicy(ConfigOptions{})
 	req := httptest.NewRequest(http.MethodPost, "/configs/create", bytes.NewReader(bytes.Repeat([]byte{'x'}, maxConfigWriteBodyBytes+1)))
 
 	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))

@@ -226,7 +226,7 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 			AllowCustomDrivers:   cfg.RequestBody.Secret.AllowCustomDrivers,
 			AllowTemplateDrivers: cfg.RequestBody.Secret.AllowTemplateDrivers,
 		},
-		ConfigWrite: filter.ConfigWriteOptions{
+		Config: filter.ConfigOptions{
 			AllowCustomDrivers:   cfg.RequestBody.Config.AllowCustomDrivers,
 			AllowTemplateDrivers: cfg.RequestBody.Config.AllowTemplateDrivers,
 		},

@@ -206,6 +206,26 @@ func TestFilterRejectsOversizedResponse(t *testing.T) {
 	}
 }
 
+func TestFilterRejectsOversizedSwarmInspectResponse(t *testing.T) {
+	filter := New(Options{
+		RedactSensitiveData: true,
+	})
+
+	body := `{"JoinTokens":{"Worker":"` + strings.Repeat("A", maxResponseBodyBytes) + `"}}`
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/swarm", body)
+
+	err := filter.ModifyResponse(resp)
+	if err == nil {
+		t.Fatal("ModifyResponse() error = nil, want rejection error")
+	}
+	if !errors.Is(err, ErrResponseRejected) {
+		t.Fatalf("ModifyResponse() error = %v, want errors.Is(..., ErrResponseRejected)", err)
+	}
+	if !strings.Contains(err.Error(), "response body exceeds") {
+		t.Fatalf("ModifyResponse() error = %v, want size-limit context", err)
+	}
+}
+
 func TestFilterHandlesChunkedEncoding(t *testing.T) {
 	filter := New(Options{
 		RedactContainerEnv: true,
@@ -236,6 +256,32 @@ func TestFilterHandlesChunkedEncoding(t *testing.T) {
 	env, _ := config["Env"].([]any)
 	if len(env) != 0 {
 		t.Fatalf("Config.Env = %#v, want empty redacted array", config["Env"])
+	}
+}
+
+func TestFilterRejectsChunkedSwarmInspectReadFailure(t *testing.T) {
+	filter := New(Options{
+		RedactSensitiveData: true,
+	})
+
+	readErr := errors.New("chunked upstream read failed")
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/swarm", "")
+	resp.Body = &readFailAfterCloser{
+		remaining: []byte(`{"JoinTokens":{"Worker":"worker-token"}`),
+		err:       readErr,
+	}
+	resp.ContentLength = -1
+	resp.TransferEncoding = []string{"chunked"}
+
+	err := filter.ModifyResponse(resp)
+	if err == nil {
+		t.Fatal("ModifyResponse() error = nil, want rejection error")
+	}
+	if !errors.Is(err, ErrResponseRejected) {
+		t.Fatalf("ModifyResponse() error = %v, want errors.Is(..., ErrResponseRejected)", err)
+	}
+	if !errors.Is(err, readErr) {
+		t.Fatalf("ModifyResponse() error = %v, want errors.Is(..., readErr)", err)
 	}
 }
 

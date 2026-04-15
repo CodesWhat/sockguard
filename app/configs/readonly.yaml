@@ -17,7 +17,7 @@ health:
   path: /health
 
 # This preset intentionally exposes all Docker read endpoints, including raw
-# archive/export paths, so it must acknowledge the read exfiltration guardrail.
+# archive/export and log/attach stream paths, so it must acknowledge the read exfiltration guardrail.
 insecure_allow_read_exfiltration: true
 
 rules:

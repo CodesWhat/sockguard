@@ -1,10 +1,7 @@
 package filter
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -41,10 +38,7 @@ func (p volumePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 		return "", nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxVolumeBodyBytes+1))
-	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
+	body, err := readBoundedBody(r, maxVolumeBodyBytes)
 	if err != nil {
 		return "", fmt.Errorf("read body: %w", err)
 	}
@@ -52,17 +46,14 @@ func (p volumePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 		return fmt.Sprintf("volume create denied: request body exceeds %d byte limit", maxVolumeBodyBytes), nil
 	}
 
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-
 	if len(body) == 0 {
 		return "", nil
 	}
 
 	var req volumeCreateRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "volume create request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "volume create request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
 		return "", nil
 	}

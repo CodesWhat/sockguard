@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -163,9 +162,9 @@ func (p pluginPolicy) inspectPrivileges(logger *slog.Logger, r *http.Request, su
 	}
 
 	var privileges []pluginPrivilege
-	if err := json.Unmarshal(body, &privileges); err != nil {
+	if err := decodePolicySubsetJSON(body, &privileges); err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "plugin privilege body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "plugin privilege body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
 		return "", nil
 	}
@@ -197,9 +196,9 @@ func (p pluginPolicy) inspectPluginSet(logger *slog.Logger, r *http.Request) (st
 	}
 
 	var settings []string
-	if err := json.Unmarshal(body, &settings); err != nil {
+	if err := decodePolicySubsetJSON(body, &settings); err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "plugin set body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "plugin set body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
 		return "", nil
 	}
@@ -255,9 +254,9 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 	}
 	if ok {
 		var cfg pluginCreateConfig
-		if err := json.Unmarshal(configBytes, &cfg); err != nil {
+		if err := decodePolicySubsetJSON(configBytes, &cfg); err != nil {
 			if logger != nil {
-				logger.DebugContext(r.Context(), "plugin config.json is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+				logger.DebugContext(r.Context(), "plugin config.json could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 			}
 		} else if denyReason := p.denyReasonForCreateConfig(cfg); denyReason != "" {
 			spool.closeAndRemove()

@@ -57,6 +57,6 @@ volumes:
 
 > The published image runs as root inside the container by default so it can open `/var/run/docker.sock` on stock Docker hosts without `user` or `group_add` overrides. The meaningful hardening levers are the proxy policy, `read_only`, dropped capabilities, `no-new-privileges`, and your runtime's seccomp/AppArmor/SELinux defaults.
 
-> `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` is only there to preserve broad `CONTAINERS=1` / `IMAGES=1` compatibility, including raw archive/export endpoints. Remove it once you switch to tighter YAML list/inspect rules.
+> `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` is only there to preserve broad `CONTAINERS=1` / `IMAGES=1` compatibility, including raw archive/export and log/attach streaming endpoints. Remove it once you switch to tighter YAML list/inspect rules.
 
 > If you choose TCP instead of a unix socket, Sockguard only allows loopback TCP by default. Non-loopback TCP requires mutual TLS unless you explicitly opt into legacy plaintext mode with `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true`.

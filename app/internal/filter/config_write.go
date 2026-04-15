@@ -1,10 +1,7 @@
 package filter
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,18 +9,18 @@ import (
 
 const maxConfigWriteBodyBytes = 1 << 20 // 1 MiB
 
-// ConfigWriteOptions configures request-body policy checks for POST /configs/create.
-type ConfigWriteOptions struct {
+// ConfigOptions configures request-body policy checks for POST /configs/create.
+type ConfigOptions struct {
 	AllowCustomDrivers   bool
 	AllowTemplateDrivers bool
 }
 
-type configWritePolicy struct {
+type configPolicy struct {
 	allowCustomDrivers   bool
 	allowTemplateDrivers bool
 }
 
-type configWriteRequest struct {
+type configRequest struct {
 	Driver         string `json:"Driver"`
 	TemplateDriver string `json:"TemplateDriver"`
 	Templating     struct {
@@ -31,22 +28,19 @@ type configWriteRequest struct {
 	} `json:"Templating"`
 }
 
-func newConfigWritePolicy(opts ConfigWriteOptions) configWritePolicy {
-	return configWritePolicy{
+func newConfigPolicy(opts ConfigOptions) configPolicy {
+	return configPolicy{
 		allowCustomDrivers:   opts.AllowCustomDrivers,
 		allowTemplateDrivers: opts.AllowTemplateDrivers,
 	}
 }
 
-func (p configWritePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
+func (p configPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodPost || normalizedPath != "/configs/create" || r.Body == nil {
 		return "", nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxConfigWriteBodyBytes+1))
-	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
+	body, err := readBoundedBody(r, maxConfigWriteBodyBytes)
 	if err != nil {
 		return "", fmt.Errorf("read body: %w", err)
 	}
@@ -54,17 +48,14 @@ func (p configWritePolicy) inspect(logger *slog.Logger, r *http.Request, normali
 		return fmt.Sprintf("config create denied: request body exceeds %d byte limit", maxConfigWriteBodyBytes), nil
 	}
 
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-
 	if len(body) == 0 {
 		return "", nil
 	}
 
-	var req configWriteRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	var req configRequest
+	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "config create request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "config create request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
 		return "", nil
 	}

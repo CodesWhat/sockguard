@@ -46,8 +46,8 @@ type Options struct {
 	Volume VolumeOptions
 	// Secret configures request-body inspection for POST /secrets/create.
 	Secret SecretOptions
-	// ConfigWrite configures request-body inspection for POST /configs/create.
-	ConfigWrite ConfigWriteOptions
+	// Config configures request-body inspection for POST /configs/create.
+	Config ConfigOptions
 	// Service configures request-body inspection for service create/update.
 	Service ServiceOptions
 	// Swarm configures request-body inspection for swarm init.
@@ -71,7 +71,7 @@ type Policy struct {
 	Build                 BuildOptions
 	Volume                VolumeOptions
 	Secret                SecretOptions
-	ConfigWrite           ConfigWriteOptions
+	Config                ConfigOptions
 	Service               ServiceOptions
 	Swarm                 SwarmOptions
 	Plugin                PluginOptions
@@ -134,7 +134,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			Build:                 profile.Build,
 			Volume:                profile.Volume,
 			Secret:                profile.Secret,
-			ConfigWrite:           profile.ConfigWrite,
+			Config:                profile.Config,
 			Service:               profile.Service,
 			Swarm:                 profile.Swarm,
 			Plugin:                profile.Plugin,
@@ -201,7 +201,7 @@ func compileRuntimePolicy(rules []*CompiledRule, opts Options) runtimePolicy {
 	build := newBuildPolicy(opts.Build)
 	volume := newVolumePolicy(opts.Volume)
 	secret := newSecretPolicy(opts.Secret)
-	configWrite := newConfigWritePolicy(opts.ConfigWrite)
+	configPolicy := newConfigPolicy(opts.Config)
 	service := newServicePolicy(opts.Service)
 	swarm := newSwarmPolicy(opts.Swarm)
 	plugin := newPluginPolicy(opts.Plugin)
@@ -247,7 +247,7 @@ func compileRuntimePolicy(rules []*CompiledRule, opts Options) runtimePolicy {
 				denyReasonOnError: "unable to inspect secret create request body",
 			},
 			{
-				inspect:           configWrite.inspect,
+				inspect:           configPolicy.inspect,
 				errorLogMessage:   "failed to inspect config create request body",
 				denyReasonOnError: "unable to inspect config create request body",
 			},

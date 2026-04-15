@@ -293,6 +293,9 @@ func TestValidateAndCompileRulesRejectsRawReadExfiltrationRulesWithoutExplicitOp
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/services/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/tasks/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/attach"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/images/**"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 	}
@@ -304,12 +307,36 @@ func TestValidateAndCompileRulesRejectsRawReadExfiltrationRulesWithoutExplicitOp
 	for _, endpoint := range []string{
 		"GET /containers/sockguard-test/archive",
 		"GET /containers/sockguard-test/export",
+		"GET /containers/sockguard-test/logs",
+		"GET /containers/sockguard-test/attach/ws",
+		"GET /services/sockguard-test/logs",
+		"GET /tasks/sockguard-test/logs",
+		"POST /containers/sockguard-test/attach",
 		"GET /images/get",
 		"GET /images/sockguard-test/get",
 	} {
 		if !strings.Contains(err.Error(), endpoint) {
 			t.Fatalf("expected %s in error, got: %v", endpoint, err)
 		}
+	}
+	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration=true") {
+		t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
+	}
+}
+
+func TestValidateAndCompileRulesRejectsContainerArchiveRuleWithoutReadExfiltrationOptIn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/*/archive"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected container archive read exfiltration validation to fail")
+	}
+	if !strings.Contains(err.Error(), "GET /containers/sockguard-test/archive") {
+		t.Fatalf("expected guarded container archive endpoint in error, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration=true") {
 		t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
@@ -381,6 +408,9 @@ func TestValidateAndCompileRulesRejectsNamedClientProfileReadExfiltration(t *tes
 			Name: "backup-agent",
 			Rules: []config.RuleConfig{
 				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/**"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/services/**"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/tasks/**"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/attach"}, Action: "allow"},
 				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/images/**"}, Action: "allow"},
 				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 			},
@@ -396,6 +426,15 @@ func TestValidateAndCompileRulesRejectsNamedClientProfileReadExfiltration(t *tes
 	}
 	if !strings.Contains(err.Error(), "GET /containers/sockguard-test/archive") {
 		t.Fatalf("expected guarded raw read endpoint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "POST /containers/sockguard-test/attach") {
+		t.Fatalf("expected guarded attach endpoint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "GET /containers/sockguard-test/attach/ws") {
+		t.Fatalf("expected guarded websocket attach endpoint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "GET /services/sockguard-test/logs") {
+		t.Fatalf("expected guarded service logs endpoint in error, got: %v", err)
 	}
 }
 

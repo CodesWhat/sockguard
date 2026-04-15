@@ -116,7 +116,7 @@ Allows GET access to all Docker API endpoints. Denies all write operations.
 # Denies: all POST, PUT, DELETE
 ```
 
-This preset intentionally includes raw archive/export reads, so it sets `insecure_allow_read_exfiltration: true`. Tighten it if your client only needs list/inspect endpoints.
+This preset intentionally includes raw archive/export and log/attach stream reads, so it sets `insecure_allow_read_exfiltration: true`. Tighten it if your client only needs list/inspect endpoints.
 
 ## Using a Preset
 

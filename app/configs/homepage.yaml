@@ -16,7 +16,7 @@ health:
   enabled: true
   path: /health
 
-# Preserve broad Homepage read compatibility, including raw archive/export paths.
+# Preserve broad Homepage read compatibility, including raw archive/export and log/attach stream paths.
 insecure_allow_read_exfiltration: true
 
 rules:

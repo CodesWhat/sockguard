@@ -33,7 +33,7 @@ request_body:
 # If your lifecycle hooks are fixed commands, replace this with
 # request_body.exec.allowed_commands and remove the unsafe opt-in.
 insecure_allow_body_blind_writes: true
-# Preserve broad Watchtower read compatibility, including raw archive/export paths.
+# Preserve broad Watchtower read compatibility, including raw archive/export and log/attach stream paths.
 insecure_allow_read_exfiltration: true
 
 rules:
