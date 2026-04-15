@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -113,6 +115,49 @@ func TestCompatPingDisabled(t *testing.T) {
 		if r.Match.Path == "/_ping" {
 			t.Error("expected ping rule to be removed when PING=0")
 		}
+	}
+}
+
+func TestCompatDefaultOnSectionEnvSemantics(t *testing.T) {
+	tests := []struct {
+		name      string
+		envKey    string
+		envValue  string
+		trigger   bool
+		path      string
+		wantAllow bool
+	}{
+		{name: "unset uses default allow", envKey: "PING", trigger: true, path: "/_ping", wantAllow: true},
+		{name: "true keeps section enabled", envKey: "PING", envValue: "1", path: "/_ping", wantAllow: true},
+		{name: "false disables section", envKey: "PING", envValue: "0", path: "/_ping", wantAllow: false},
+		{name: "malformed fails closed", envKey: "PING", envValue: "maybe", path: "/_ping", wantAllow: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			if tt.trigger {
+				t.Setenv("CONTAINERS", "1")
+			}
+			if tt.envValue != "" {
+				t.Setenv(tt.envKey, tt.envValue)
+			}
+
+			if !ApplyCompat(&cfg, discardLogger) {
+				t.Fatal("expected compat to activate")
+			}
+
+			found := false
+			for _, r := range cfg.Rules {
+				if r.Match.Path == tt.path && r.Action == "allow" {
+					found = true
+					break
+				}
+			}
+			if found != tt.wantAllow {
+				t.Fatalf("allow rule for %s present = %v, want %v; rules: %+v", tt.path, found, tt.wantAllow, cfg.Rules)
+			}
+		})
 	}
 }
 
@@ -265,12 +310,57 @@ func TestCompatInvalidEnvValue(t *testing.T) {
 		t.Fatal("expected compat to activate (env var is set, even if unparseable)")
 	}
 
-	// "maybe" is not a valid boolean, so CONTAINERS should be treated as not set
-	// and no containers rule should be generated
+	// "maybe" is not a valid boolean, so CONTAINERS should fail closed and
+	// generate no containers allow rule.
 	for _, r := range cfg.Rules {
 		if r.Match.Path == "/containers/**" && r.Action == "allow" {
 			t.Error("expected no GET /containers/** rule when CONTAINERS=maybe (unparseable value)")
 		}
+	}
+}
+
+func TestCompatMalformedDefaultOnValuesFailClosed(t *testing.T) {
+	tests := []struct {
+		name   string
+		envKey string
+		path   string
+	}{
+		{name: "ping", envKey: "PING", path: "/_ping"},
+		{name: "version", envKey: "VERSION", path: "/version"},
+		{name: "events", envKey: "EVENTS", path: "/events"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			t.Setenv(tt.envKey, "maybe")
+
+			if !ApplyCompat(&cfg, discardLogger) {
+				t.Fatal("expected compat to activate")
+			}
+
+			for _, r := range cfg.Rules {
+				if r.Match.Path == tt.path && r.Action == "allow" {
+					t.Fatalf("expected no allow rule for %s when %s=maybe, got %+v", tt.path, tt.envKey, r)
+				}
+			}
+		})
+	}
+}
+
+func TestCompatMalformedDefaultOnValueStillWarnsAndActivates(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("PING", "maybe")
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if !ApplyCompat(&cfg, logger) {
+		t.Fatal("expected compat to activate when malformed env var is present")
+	}
+
+	if !strings.Contains(logBuf.String(), "ignoring compat env var with unparseable boolean value") {
+		t.Fatalf("expected malformed compat warning, got logs: %s", logBuf.String())
 	}
 }
 

@@ -173,10 +173,14 @@ func compatReadMethods() string {
 }
 
 func compatEnvEnabled(key string, defaultValue bool) bool {
-	if value, ok := lookupEnvBool(key); ok {
+	rawValue, envSet := os.LookupEnv(key)
+	if !envSet {
+		return defaultValue
+	}
+	if value, ok := parseCompatBool(rawValue); ok {
 		return value
 	}
-	return defaultValue
+	return false
 }
 
 func compatAnyEnvEnabled(keys ...string) bool {
@@ -248,6 +252,10 @@ func lookupEnvBool(key string) (bool, bool) {
 	if !ok {
 		return false, false
 	}
+	return parseCompatBool(val)
+}
+
+func parseCompatBool(val string) (bool, bool) {
 	switch strings.ToLower(val) {
 	case "1", "true", "yes":
 		return true, true
