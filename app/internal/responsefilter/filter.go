@@ -27,6 +27,7 @@ type Options struct {
 	RedactContainerEnv    bool
 	RedactMountPaths      bool
 	RedactNetworkTopology bool
+	RedactSensitiveData   bool
 }
 
 // Filter applies response redactions to selected Docker read endpoints.
@@ -44,7 +45,7 @@ func (f *Filter) Enabled() bool {
 	if f == nil {
 		return false
 	}
-	return f.opts.RedactContainerEnv || f.opts.RedactMountPaths || f.opts.RedactNetworkTopology
+	return f.opts.RedactContainerEnv || f.opts.RedactMountPaths || f.opts.RedactNetworkTopology || f.opts.RedactSensitiveData
 }
 
 // ModifyResponse rewrites supported Docker JSON responses in place.
@@ -63,6 +64,14 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifyContainerInspect(resp)
 	case normPath == "/containers/json":
 		return f.modifyContainerList(resp)
+	case normPath == "/services":
+		return f.modifyServiceList(resp)
+	case isServiceInspectPath(normPath):
+		return f.modifyServiceInspect(resp)
+	case normPath == "/tasks":
+		return f.modifyTaskList(resp)
+	case isTaskInspectPath(normPath):
+		return f.modifyTaskInspect(resp)
 	case normPath == "/networks":
 		return f.modifyNetworkList(resp)
 	case isNetworkInspectPath(normPath):
@@ -71,6 +80,30 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifyVolumeList(resp)
 	case isVolumeInspectPath(normPath):
 		return f.modifyVolumeInspect(resp)
+	case normPath == "/secrets":
+		return f.modifySecretList(resp)
+	case isSecretInspectPath(normPath):
+		return f.modifySecretInspect(resp)
+	case normPath == "/configs":
+		return f.modifyConfigList(resp)
+	case isConfigInspectPath(normPath):
+		return f.modifyConfigInspect(resp)
+	case normPath == "/plugins":
+		return f.modifyPluginList(resp)
+	case isPluginInspectPath(normPath):
+		return f.modifyPluginInspect(resp)
+	case normPath == "/nodes":
+		return f.modifyNodeList(resp)
+	case isNodeInspectPath(normPath):
+		return f.modifyNodeInspect(resp)
+	case normPath == "/swarm":
+		return f.modifySwarmInspect(resp)
+	case normPath == "/swarm/unlockkey":
+		return f.modifySwarmUnlockKey(resp)
+	case normPath == "/info":
+		return f.modifyInfo(resp)
+	case normPath == "/system/df":
+		return f.modifySystemDataUsage(resp)
 	default:
 		return nil
 	}
@@ -236,6 +269,584 @@ func (f *Filter) modifyVolumeInspect(resp *http.Response) error {
 
 	redactStringField(payload, "Mountpoint")
 	return writeResponseBody(resp, payload)
+}
+
+func (f *Filter) modifyServiceList(resp *http.Response) error {
+	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyListResponse(resp, f.redactServicePayload)
+}
+
+func (f *Filter) modifyServiceInspect(resp *http.Response) error {
+	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyMapResponse(resp, f.redactServicePayload)
+}
+
+func (f *Filter) modifyTaskList(resp *http.Response) error {
+	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyListResponse(resp, f.redactTaskPayload)
+}
+
+func (f *Filter) modifyTaskInspect(resp *http.Response) error {
+	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyMapResponse(resp, f.redactTaskPayload)
+}
+
+func (f *Filter) modifySecretList(resp *http.Response) error {
+	if !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyListResponse(resp, redactSecretPayload)
+}
+
+func (f *Filter) modifySecretInspect(resp *http.Response) error {
+	if !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyMapResponse(resp, redactSecretPayload)
+}
+
+func (f *Filter) modifyConfigList(resp *http.Response) error {
+	if !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyListResponse(resp, redactConfigPayload)
+}
+
+func (f *Filter) modifyConfigInspect(resp *http.Response) error {
+	if !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyMapResponse(resp, redactConfigPayload)
+}
+
+func (f *Filter) modifyPluginList(resp *http.Response) error {
+	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths {
+		return nil
+	}
+	return modifyListResponse(resp, f.redactPluginPayload)
+}
+
+func (f *Filter) modifyPluginInspect(resp *http.Response) error {
+	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths {
+		return nil
+	}
+	return modifyMapResponse(resp, f.redactPluginPayload)
+}
+
+func (f *Filter) modifyNodeList(resp *http.Response) error {
+	if !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyListResponse(resp, f.redactNodePayload)
+}
+
+func (f *Filter) modifyNodeInspect(resp *http.Response) error {
+	if !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyMapResponse(resp, f.redactNodePayload)
+}
+
+func (f *Filter) modifySwarmInspect(resp *http.Response) error {
+	if !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyMapResponse(resp, f.redactSwarmPayload)
+}
+
+func (f *Filter) modifySwarmUnlockKey(resp *http.Response) error {
+	if !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyMapResponse(resp, func(payload map[string]any) error {
+		redactStringField(payload, "UnlockKey")
+		return nil
+	})
+}
+
+func (f *Filter) modifyInfo(resp *http.Response) error {
+	if !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
+		return nil
+	}
+	return modifyMapResponse(resp, f.redactInfoPayload)
+}
+
+func (f *Filter) modifySystemDataUsage(resp *http.Response) error {
+	if !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology {
+		return nil
+	}
+	return modifyMapResponse(resp, f.redactSystemDataUsagePayload)
+}
+
+func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) error {
+	body, err := readResponseBody(resp)
+	if err != nil {
+		return rejectResponse(err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return rejectResponse(err)
+	}
+	if err := mutate(payload); err != nil {
+		return rejectResponse(err)
+	}
+	return writeResponseBody(resp, payload)
+}
+
+func modifyListResponse(resp *http.Response, mutate func(map[string]any) error) error {
+	body, err := readResponseBody(resp)
+	if err != nil {
+		return rejectResponse(err)
+	}
+
+	var payload []map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return rejectResponse(err)
+	}
+	for _, item := range payload {
+		if err := mutate(item); err != nil {
+			return rejectResponse(err)
+		}
+	}
+	return writeResponseBody(resp, payload)
+}
+
+func (f *Filter) redactServicePayload(payload map[string]any) error {
+	containerSpec, found, err := nestedMapValue(payload, "Spec", "TaskTemplate", "ContainerSpec")
+	if err != nil {
+		return err
+	}
+	if found {
+		if f.opts.RedactContainerEnv {
+			redactArrayField(containerSpec, "Env")
+		}
+		if f.opts.RedactMountPaths {
+			if err := redactMountObjects(containerSpec, "Mounts"); err != nil {
+				return err
+			}
+		}
+		if f.opts.RedactSensitiveData {
+			if err := redactReferenceObjects(containerSpec, "Secrets", "SecretID", "SecretName"); err != nil {
+				return err
+			}
+			if err := redactReferenceObjects(containerSpec, "Configs", "ConfigID", "ConfigName"); err != nil {
+				return err
+			}
+		}
+	}
+	if f.opts.RedactNetworkTopology {
+		if err := redactVirtualIPs(payload, "Endpoint", "VirtualIPs"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *Filter) redactTaskPayload(payload map[string]any) error {
+	containerSpec, found, err := nestedMapValue(payload, "Spec", "ContainerSpec")
+	if err != nil {
+		return err
+	}
+	if found {
+		if f.opts.RedactContainerEnv {
+			redactArrayField(containerSpec, "Env")
+		}
+		if f.opts.RedactMountPaths {
+			if err := redactMountObjects(containerSpec, "Mounts"); err != nil {
+				return err
+			}
+		}
+		if f.opts.RedactSensitiveData {
+			if err := redactReferenceObjects(containerSpec, "Secrets", "SecretID", "SecretName"); err != nil {
+				return err
+			}
+			if err := redactReferenceObjects(containerSpec, "Configs", "ConfigID", "ConfigName"); err != nil {
+				return err
+			}
+		}
+	}
+	if f.opts.RedactNetworkTopology {
+		redactStringField(payload, "ServiceID")
+		redactStringField(payload, "NodeID")
+		if err := redactTaskStatus(payload); err != nil {
+			return err
+		}
+		if err := redactTaskNetworkAttachments(payload); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func redactSecretPayload(payload map[string]any) error {
+	spec, found, err := nestedMapValue(payload, "Spec")
+	if err != nil || !found {
+		return err
+	}
+	redactStringField(spec, "Data")
+	return nil
+}
+
+func redactConfigPayload(payload map[string]any) error {
+	spec, found, err := nestedMapValue(payload, "Spec")
+	if err != nil || !found {
+		return err
+	}
+	redactStringField(spec, "Data")
+	return nil
+}
+
+func (f *Filter) redactPluginPayload(payload map[string]any) error {
+	if settings, found, err := nestedMapValue(payload, "Settings"); err != nil {
+		return err
+	} else if found {
+		if f.opts.RedactContainerEnv {
+			if err := redactEnvStrings(settings, "Env"); err != nil {
+				return err
+			}
+		}
+		if f.opts.RedactMountPaths {
+			if err := redactMountObjects(settings, "Mounts"); err != nil {
+				return err
+			}
+			if err := redactReferenceObjects(settings, "Devices", "Path"); err != nil {
+				return err
+			}
+		}
+	}
+	if config, found, err := nestedMapValue(payload, "Config"); err != nil {
+		return err
+	} else if found {
+		if f.opts.RedactContainerEnv {
+			if err := redactPluginEnvObjects(config, "Env"); err != nil {
+				return err
+			}
+		}
+		if f.opts.RedactMountPaths {
+			if err := redactMountObjects(config, "Mounts"); err != nil {
+				return err
+			}
+			redactStringField(config, "PropagatedMount")
+			if linux, found, err := nestedMapValue(config, "Linux"); err != nil {
+				return err
+			} else if found {
+				if err := redactReferenceObjects(linux, "Devices", "Path"); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (f *Filter) redactNodePayload(payload map[string]any) error {
+	if f.opts.RedactNetworkTopology {
+		if status, found, err := nestedMapValue(payload, "Status"); err != nil {
+			return err
+		} else if found {
+			redactStringField(status, "Addr")
+		}
+		if status, found, err := nestedMapValue(payload, "ManagerStatus"); err != nil {
+			return err
+		} else if found {
+			redactStringField(status, "Addr")
+		}
+	}
+	if f.opts.RedactSensitiveData {
+		if tlsInfo, found, err := nestedMapValue(payload, "Description", "TLSInfo"); err != nil {
+			return err
+		} else if found {
+			redactTLSInfo(tlsInfo)
+		}
+	}
+	return nil
+}
+
+func (f *Filter) redactSwarmPayload(payload map[string]any) error {
+	if f.opts.RedactSensitiveData {
+		if joinTokens, found, err := nestedMapValue(payload, "JoinTokens"); err != nil {
+			return err
+		} else if found {
+			redactStringField(joinTokens, "Worker")
+			redactStringField(joinTokens, "Manager")
+		}
+		if tlsInfo, found, err := nestedMapValue(payload, "TLSInfo"); err != nil {
+			return err
+		} else if found {
+			redactTLSInfo(tlsInfo)
+		}
+		if caConfig, found, err := nestedMapValue(payload, "Spec", "CAConfig"); err != nil {
+			return err
+		} else if found {
+			redactStringField(caConfig, "SigningCACert")
+			redactStringField(caConfig, "SigningCAKey")
+			redactArrayField(caConfig, "ExternalCAs")
+		}
+	}
+	if f.opts.RedactNetworkTopology {
+		redactArrayField(payload, "DefaultAddrPool")
+	}
+	return nil
+}
+
+func (f *Filter) redactInfoPayload(payload map[string]any) error {
+	swarmInfo, found, err := nestedMapValue(payload, "Swarm")
+	if err != nil || !found {
+		return err
+	}
+	if f.opts.RedactNetworkTopology {
+		redactStringField(swarmInfo, "NodeID")
+		redactStringField(swarmInfo, "NodeAddr")
+		redactArrayField(swarmInfo, "RemoteManagers")
+		if cluster, found, err := nestedMapValue(swarmInfo, "Cluster"); err != nil {
+			return err
+		} else if found {
+			redactArrayField(cluster, "DefaultAddrPool")
+		}
+	}
+	if f.opts.RedactSensitiveData {
+		if cluster, found, err := nestedMapValue(swarmInfo, "Cluster"); err != nil {
+			return err
+		} else if found {
+			if tlsInfo, found, err := nestedMapValue(cluster, "TLSInfo"); err != nil {
+				return err
+			} else if found {
+				redactTLSInfo(tlsInfo)
+			}
+		}
+	}
+	return nil
+}
+
+func (f *Filter) redactSystemDataUsagePayload(payload map[string]any) error {
+	if containerUsage, found, err := nestedMapValue(payload, "ContainerUsage"); err != nil {
+		return err
+	} else if found {
+		items, ok := containerUsage["Items"]
+		if ok && items != nil {
+			containers, ok := items.([]any)
+			if !ok {
+				return fmt.Errorf("ContainerUsage.Items has unexpected type %T", items)
+			}
+			for _, value := range containers {
+				container, ok := value.(map[string]any)
+				if !ok {
+					return fmt.Errorf("ContainerUsage.Items entry has unexpected type %T", value)
+				}
+				if f.opts.RedactMountPaths {
+					if err := redactMountObjects(container, "Mounts"); err != nil {
+						return err
+					}
+				}
+				if f.opts.RedactNetworkTopology {
+					if err := redactContainerNetworkTopology(container); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	if volumeUsage, found, err := nestedMapValue(payload, "VolumeUsage"); err != nil {
+		return err
+	} else if found {
+		items, ok := volumeUsage["Items"]
+		if ok && items != nil {
+			volumes, ok := items.([]any)
+			if !ok {
+				return fmt.Errorf("VolumeUsage.Items has unexpected type %T", items)
+			}
+			for _, value := range volumes {
+				volume, ok := value.(map[string]any)
+				if !ok {
+					return fmt.Errorf("VolumeUsage.Items entry has unexpected type %T", value)
+				}
+				if f.opts.RedactMountPaths {
+					redactStringField(volume, "Mountpoint")
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func nestedMapValue(payload map[string]any, keys ...string) (map[string]any, bool, error) {
+	current := payload
+	for index, key := range keys {
+		value, ok := current[key]
+		if !ok || value == nil {
+			return nil, false, nil
+		}
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil, false, fmt.Errorf("%s has unexpected type %T", strings.Join(keys[:index+1], "."), value)
+		}
+		current = object
+	}
+	return current, true, nil
+}
+
+func redactReferenceObjects(payload map[string]any, field string, keys ...string) error {
+	values, ok := payload[field]
+	if !ok || values == nil {
+		return nil
+	}
+	items, ok := values.([]any)
+	if !ok {
+		return fmt.Errorf("%s has unexpected type %T", field, values)
+	}
+	for _, value := range items {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s entry has unexpected type %T", field, value)
+		}
+		for _, key := range keys {
+			redactStringField(object, key)
+		}
+	}
+	return nil
+}
+
+func redactVirtualIPs(payload map[string]any, keys ...string) error {
+	values, found, err := nestedArrayValue(payload, keys...)
+	if err != nil || !found {
+		return err
+	}
+	for _, value := range values {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s entry has unexpected type %T", strings.Join(keys, "."), value)
+		}
+		redactStringField(object, "NetworkID")
+		redactStringField(object, "Addr")
+	}
+	return nil
+}
+
+func nestedArrayValue(payload map[string]any, keys ...string) ([]any, bool, error) {
+	if len(keys) == 0 {
+		return nil, false, nil
+	}
+	current := payload
+	for index, key := range keys[:len(keys)-1] {
+		value, ok := current[key]
+		if !ok || value == nil {
+			return nil, false, nil
+		}
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil, false, fmt.Errorf("%s has unexpected type %T", strings.Join(keys[:index+1], "."), value)
+		}
+		current = object
+	}
+	value, ok := current[keys[len(keys)-1]]
+	if !ok || value == nil {
+		return nil, false, nil
+	}
+	array, ok := value.([]any)
+	if !ok {
+		return nil, false, fmt.Errorf("%s has unexpected type %T", strings.Join(keys, "."), value)
+	}
+	return array, true, nil
+}
+
+func redactTaskStatus(payload map[string]any) error {
+	containerStatus, found, err := nestedMapValue(payload, "Status", "ContainerStatus")
+	if err != nil || !found {
+		return err
+	}
+	redactStringField(containerStatus, "ContainerID")
+	redactNumberField(containerStatus, "PID")
+	return nil
+}
+
+func redactTaskNetworkAttachments(payload map[string]any) error {
+	values, ok := payload["NetworksAttachments"]
+	if !ok || values == nil {
+		return nil
+	}
+	attachments, ok := values.([]any)
+	if !ok {
+		return fmt.Errorf("NetworksAttachments has unexpected type %T", values)
+	}
+	for _, value := range attachments {
+		attachment, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("NetworksAttachments entry has unexpected type %T", value)
+		}
+		redactArrayField(attachment, "Addresses")
+		if network, found, err := nestedMapValue(attachment, "Network"); err != nil {
+			return err
+		} else if found {
+			redactStringField(network, "ID")
+			if ipam, found, err := nestedMapValue(network, "IPAMOptions"); err != nil {
+				return err
+			} else if found {
+				redactArrayField(ipam, "Configs")
+			}
+		}
+	}
+	return nil
+}
+
+func redactEnvStrings(payload map[string]any, field string) error {
+	values, ok := payload[field]
+	if !ok || values == nil {
+		return nil
+	}
+	items, ok := values.([]any)
+	if !ok {
+		return fmt.Errorf("%s has unexpected type %T", field, values)
+	}
+	for index, value := range items {
+		entry, ok := value.(string)
+		if !ok {
+			return fmt.Errorf("%s entry has unexpected type %T", field, value)
+		}
+		items[index] = redactEnvVar(entry)
+	}
+	return nil
+}
+
+func redactPluginEnvObjects(payload map[string]any, field string) error {
+	values, ok := payload[field]
+	if !ok || values == nil {
+		return nil
+	}
+	items, ok := values.([]any)
+	if !ok {
+		return fmt.Errorf("%s has unexpected type %T", field, values)
+	}
+	for _, value := range items {
+		entry, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s entry has unexpected type %T", field, value)
+		}
+		redactStringField(entry, "Value")
+	}
+	return nil
+}
+
+func redactEnvVar(value string) string {
+	name, _, hasValue := strings.Cut(value, "=")
+	if !hasValue {
+		return redactedValue
+	}
+	return name + "=" + redactedValue
+}
+
+func redactTLSInfo(payload map[string]any) {
+	redactStringField(payload, "TrustRoot")
+	redactStringField(payload, "CertIssuerSubject")
+	redactStringField(payload, "CertIssuerPublicKey")
 }
 
 func readResponseBody(resp *http.Response) ([]byte, error) {
@@ -413,11 +1024,60 @@ func isVolumeInspectPath(normPath string) bool {
 	return rest != "" && !strings.Contains(rest, "/")
 }
 
+func isServiceInspectPath(normPath string) bool {
+	if !strings.HasPrefix(normPath, "/services/") {
+		return false
+	}
+	rest := strings.TrimPrefix(normPath, "/services/")
+	return rest != "" && !strings.Contains(rest, "/")
+}
+
+func isTaskInspectPath(normPath string) bool {
+	if !strings.HasPrefix(normPath, "/tasks/") {
+		return false
+	}
+	rest := strings.TrimPrefix(normPath, "/tasks/")
+	return rest != "" && !strings.Contains(rest, "/")
+}
+
 func isNetworkInspectPath(normPath string) bool {
 	if !strings.HasPrefix(normPath, "/networks/") {
 		return false
 	}
 	rest := strings.TrimPrefix(normPath, "/networks/")
+	return rest != "" && !strings.Contains(rest, "/")
+}
+
+func isSecretInspectPath(normPath string) bool {
+	if !strings.HasPrefix(normPath, "/secrets/") {
+		return false
+	}
+	rest := strings.TrimPrefix(normPath, "/secrets/")
+	return rest != "" && !strings.Contains(rest, "/")
+}
+
+func isConfigInspectPath(normPath string) bool {
+	if !strings.HasPrefix(normPath, "/configs/") {
+		return false
+	}
+	rest := strings.TrimPrefix(normPath, "/configs/")
+	return rest != "" && !strings.Contains(rest, "/")
+}
+
+func isPluginInspectPath(normPath string) bool {
+	if !strings.HasPrefix(normPath, "/plugins/") {
+		return false
+	}
+	rest := strings.TrimPrefix(normPath, "/plugins/")
+	identifier, tail, ok := strings.Cut(rest, "/")
+	return ok && identifier != "" && tail == "json"
+}
+
+func isNodeInspectPath(normPath string) bool {
+	if !strings.HasPrefix(normPath, "/nodes/") {
+		return false
+	}
+	rest := strings.TrimPrefix(normPath, "/nodes/")
 	return rest != "" && !strings.Contains(rest, "/")
 }
 
