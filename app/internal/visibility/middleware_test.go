@@ -345,3 +345,98 @@ func TestDecodeDockerFilters(t *testing.T) {
 		})
 	}
 }
+
+func TestMiddlewareInjectsVisibilityLabelsIntoExpandedLists(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var gotPaths []string
+
+	handler := middlewareWithDeps(logger, Options{
+		VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+	}, visibilityDeps{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.RequestURI())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	targets := []string{
+		"/v1.53/services",
+		"/v1.53/tasks",
+		"/v1.53/secrets",
+		"/v1.53/configs",
+		"/v1.53/nodes",
+	}
+	for _, target := range targets {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("status for %s = %d, want %d", target, rec.Code, http.StatusNoContent)
+		}
+	}
+
+	if len(gotPaths) != len(targets) {
+		t.Fatalf("got %d forwarded requests, want %d", len(gotPaths), len(targets))
+	}
+	for _, got := range gotPaths[:4] {
+		if !strings.Contains(got, "com.sockguard.visible%3Dtrue") {
+			t.Fatalf("query = %q, want label visibility filter", got)
+		}
+	}
+	if !strings.Contains(gotPaths[4], "node.label") || !strings.Contains(gotPaths[4], "com.sockguard.visible%3Dtrue") {
+		t.Fatalf("node list query = %q, want node.label visibility filter", gotPaths[4])
+	}
+}
+
+func TestMiddlewareReturnsNotFoundForInvisibleExpandedReadTargets(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	tests := []struct {
+		name       string
+		target     string
+		kind       resourceKind
+		identifier string
+	}{
+		{name: "service inspect", target: "/v1.53/services/web", kind: resourceKindService, identifier: "web"},
+		{name: "service logs", target: "/v1.53/services/web/logs", kind: resourceKindService, identifier: "web"},
+		{name: "task inspect", target: "/v1.53/tasks/task-1", kind: resourceKindTask, identifier: "task-1"},
+		{name: "task logs", target: "/v1.53/tasks/task-1/logs", kind: resourceKindTask, identifier: "task-1"},
+		{name: "secret inspect", target: "/v1.53/secrets/sec-1", kind: resourceKindSecret, identifier: "sec-1"},
+		{name: "config inspect", target: "/v1.53/configs/cfg-1", kind: resourceKindConfig, identifier: "cfg-1"},
+		{name: "node inspect", target: "/v1.53/nodes/node-1", kind: resourceKindNode, identifier: "node-1"},
+		{name: "swarm inspect", target: "/v1.53/swarm", kind: resourceKindSwarm, identifier: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nextCalled := false
+			var gotKind resourceKind
+			var gotIdentifier string
+
+			handler := middlewareWithDeps(logger, Options{
+				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+			}, visibilityDeps{
+				inspectResource: func(_ context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
+					gotKind = kind
+					gotIdentifier = identifier
+					return map[string]string{"com.sockguard.visible": "false"}, true, nil
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if nextCalled {
+				t.Fatal("expected hidden read target to be short-circuited")
+			}
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+			if gotKind != tt.kind || gotIdentifier != tt.identifier {
+				t.Fatalf("inspectResource kind/id = %s/%s, want %s/%s", gotKind, gotIdentifier, tt.kind, tt.identifier)
+			}
+		})
+	}
+}
