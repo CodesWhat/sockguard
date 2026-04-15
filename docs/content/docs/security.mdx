@@ -25,7 +25,7 @@ Non-loopback TCP listeners require mutual TLS 1.3 by default via `listen.tls`. P
 ### Layer 2: Client Admission
 `clients.allowed_cidrs` gates incoming TCP callers by source CIDR before any rule evaluation runs. When `clients.container_labels.enabled` is true, Sockguard resolves the calling container by source IP and enforces per-client `com.sockguard.allow.<method>` label allowlists in addition to the global rule set.
 
-Named client profiles sit on top of that admission layer. Sockguard can now select a per-client ruleset and request-body policy by source IP or verified mTLS client certificate common name, with a configurable default profile for unmatched callers. That turns one proxy from "one ruleset in front of Docker" into a shared control plane for multiple consumers without collapsing back to broad allowlists.
+Named client profiles sit on top of that admission layer. Sockguard can now select a per-client ruleset and request-body policy by source IP, verified mTLS certificate selectors (`common_names`, `dns_names`, `ip_addresses`, `uri_sans`, `spiffe_ids`), or unix peer credentials (`uids`, `gids`, `pids`), with a configurable default profile for unmatched callers. That turns one proxy from "one ruleset in front of Docker" into a shared control plane for multiple consumers without collapsing back to broad allowlists.
 
 ### Layer 3: Method Filtering
 Block entire HTTP methods. Most consumers only need `GET` (read-only mode).
@@ -46,33 +46,47 @@ Allow or deny specific Docker API endpoint paths using glob patterns. Docker API
 
 `POST /build` is inspected by default. Sockguard blocks remote build contexts, `networkmode=host`, and Dockerfiles containing `RUN` instructions unless those behaviors are explicitly allowed.
 
-The remaining blind-write guardrail now covers the gaps Sockguard still cannot constrain safely, chiefly arbitrary exec without an allowlist and Swarm service management. Validation refuses to start with those rules allowed unless you explicitly set `insecure_allow_body_blind_writes: true`, to keep the enforcement boundary honest.
+`POST /services/create` and `POST /services/*/update` are inspected by default. Sockguard blocks host-network services, bind mounts outside `request_body.service.allowed_bind_mounts`, and service images outside the configured official/allowlisted registry set.
 
-Future body-inspection additions on the roadmap: service/swarm write inspection, escalation capabilities like `SYS_ADMIN`/`NET_ADMIN`, device mappings, host namespace sharing beyond `NetworkMode`, `allowPrivilegeEscalation` / non-root rails, and security profile overrides.
+`POST /volumes/create`, `POST /secrets/create`, and `POST /configs/create` are inspected by default. Sockguard blocks non-local volume drivers and driver options unless explicitly allowed, and blocks custom or template drivers on secrets/configs unless explicitly allowed.
+
+`POST /swarm/init`, `POST /swarm/join`, and `POST /swarm/update` are inspected by default. Sockguard blocks `ForceNewCluster`, external CA configuration, non-allowlisted join targets, token rotations, manager unlock-key rotations, manager autolock, and signing-CA updates unless explicitly allowed.
+
+`POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains remote registries, privilege grants, plugin-set assignments, local plugin tar `config.json`, host mounts, device exposure, and capability requests unless explicitly allowed.
+
+The remaining blind-write guardrail now covers the body-bearing writes Sockguard still cannot constrain safely, including arbitrary exec without an allowlist and other write paths such as network create/connect/disconnect, image load, container update/archive, swarm unlock, and node update. Validation refuses to start with those rules allowed unless you explicitly set `insecure_allow_body_blind_writes: true`, to keep the enforcement boundary honest.
+
+Sockguard now applies the same honesty rule to raw archive/export reads. Validation refuses to start broad read rules that would expose `GET /containers/*/archive`, `GET /containers/*/export`, `GET /images/get`, or `GET /images/*/get` unless you explicitly set `insecure_allow_read_exfiltration: true`. That keeps backup/export use cases possible without letting a casual `GET /containers/**` or Tecnativa-style section gate silently include filesystem tar streams.
+
+Future body-inspection additions on the roadmap: the remaining blind-write endpoints above, plus deeper secure-create rails such as escalation capabilities like `SYS_ADMIN`/`NET_ADMIN`, broader device policy, `allowPrivilegeEscalation` / non-root rails, and security profile overrides.
 
 ### Layer 6: Owner Label Isolation
-When `ownership.owner` is set, Sockguard stamps created containers, networks, volumes, and build-produced images with an owner label, injects `label=` filters into list/prune/events responses, and inspects target resources on individual requests to deny cross-owner access. This turns one shared Docker socket into N isolated identity views.
+When `ownership.owner` is set, Sockguard stamps label-capable creates and build-produced images with an owner label, injects `label=` filters into list/prune/events responses, and inspects target resources on individual requests to deny cross-owner access. That now covers owned containers, images, networks, volumes, services, tasks, secrets, and configs, with service writes stamping both the service and its task template so downstream tasks inherit the same owner identity. This turns one shared Docker socket into N isolated identity views.
 
 ### Layer 7: Visibility-Controlled Reads
 Sockguard now filters successful Docker read responses and narrows read visibility itself:
 
 - Inject label visibility selectors into `GET /containers/json`, `GET /images/json`, `GET /networks`, `GET /volumes`, and `GET /events`
-- Return `404` for hidden targets on inspect-style reads such as `GET /containers/*/json`, `GET /images/*/json`, `GET /networks/*`, `GET /volumes/*`, and `GET /exec/*/json`
+- Inject label visibility selectors into `GET /services`, `GET /tasks`, `GET /secrets`, `GET /configs`, and `GET /nodes`
+- Return `404` for hidden targets on inspect/log-style reads such as `GET /containers/*/json`, `GET /images/*/json`, `GET /networks/*`, `GET /volumes/*`, `GET /exec/*/json`, `GET /services/*`, `GET /services/*/logs`, `GET /tasks/*`, `GET /tasks/*/logs`, `GET /secrets/*`, `GET /configs/*`, `GET /nodes/*`, and `GET /swarm`
+- Fail startup unless raw archive/export reads are explicitly acknowledged via `insecure_allow_read_exfiltration: true`
 - Redact `Config.Env` on `GET /containers/*/json`
 - Redact `HostConfig.Binds` host paths plus `Mounts[*].Source` on container list/inspect responses
 - Redact volume `Mountpoint` on `GET /volumes` and `GET /volumes/*`
 - Redact container and network address topology on container/network list and inspect responses
+- Redact service/task env, mount, secret/config-reference, and network metadata
+- Redact config payload data, plugin env/path metadata, node/swarm TLS material, swarm join/unlock material, and `/info` plus `/system/df` topology-sensitive fields
 
 These controls are on by default where they are pure redaction because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout.
 
 Future response-filtering additions still tracked for the next tier:
 - Name/image pattern visibility controls beyond label selectors
-- Wider read-side coverage across services, tasks, configs, secrets, plugins, and system endpoints
+- Per-resource-type visibility controls for resource families that do not expose Docker label selectors cleanly
 
 ### Layer 8: Structured Access Logging And Correlation
-Every request is logged with method, path, decision, matched rule index, selected client profile when present, latency, request ID, and client metadata. Upstream reverse-proxy errors are correlated with the outer access-log entry by the same request context and, when present, the caller-supplied request ID header.
+Every request is stamped with a proxy-generated canonical `X-Request-Id` and logged with method, path, decision, matched rule index, selected client profile when present, latency, request ID, and client metadata. If the caller supplied its own request ID, Sockguard preserves it separately as `client_request_id` in logs instead of trusting it as the canonical correlation key. Upstream reverse-proxy errors are correlated with the outer access-log entry by that same canonical request ID.
 
-Sockguard does not yet ship a separate audit pipeline. Prometheus metrics, trusted request-ID generation, a dedicated audit schema, and explicit deny reason codes remain planned operator-auditability work rather than current runtime behavior.
+Sockguard does not yet ship a separate audit pipeline. Prometheus metrics, a dedicated audit schema, and explicit deny reason codes remain planned operator-auditability work rather than current runtime behavior.
 
 ## Dangerous Docker API Endpoints
 

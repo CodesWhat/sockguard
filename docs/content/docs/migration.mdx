@@ -1,11 +1,11 @@
 ---
 title: Migration
-description: Drop-in migration paths from Tecnativa, LinuxServer, and wollomatic socket proxies — same env vars, same intent, stronger inspection underneath.
+description: Drop-in migration paths from Tecnativa, LinuxServer, and wollomatic socket proxies — current env compatibility, same intent, stronger inspection underneath.
 ---
 
 ## From Tecnativa/docker-socket-proxy
 
-Sockguard accepts the same environment variables as Tecnativa. Replace the image:
+Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. Replace the image:
 
 ```diff
  services:
@@ -14,18 +14,20 @@ Sockguard accepts the same environment variables as Tecnativa. Replace the image
 +    image: codeswhat/sockguard
      volumes:
        - /var/run/docker.sock:/var/run/docker.sock:ro
-     environment:
-       - CONTAINERS=1
-       - POST=0
+    environment:
+      - CONTAINERS=1
+      - POST=0
 ```
 
-That's it. Your existing env var config works as-is.
+That gets you current Tecnativa env-surface compatibility. If you intentionally want section-wide raw archive/export parity from `CONTAINERS=1` or `IMAGES=1`, also set `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true`; otherwise move to YAML and allow only the list/inspect endpoints you actually need.
 
 When ready, migrate to YAML config for more control:
 
 ```yaml filename="sockguard.yaml"
 rules:
-  - match: { method: GET, path: "/containers/**" }
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
     action: allow
   - match: { method: GET, path: "/_ping" }
     action: allow
@@ -44,7 +46,7 @@ Same process as Tecnativa. Additionally, granular operation env vars are support
 ```bash
 ALLOW_START=1
 ALLOW_STOP=1
-ALLOW_RESTART=1
+ALLOW_RESTARTS=1
 ```
 
 ## From wollomatic/socket-proxy
@@ -57,7 +59,7 @@ wollomatic already does more than a basic path gate: regex allowlists per method
 | `-allowGET "^/(v[0-9.]+/)?events$"` | `{ method: GET, path: "/events" }` |
 | `-allowPOST "^/(v[0-9.]+/)?containers/[a-z0-9]+/start$"` | `{ method: POST, path: "/containers/*/start" }` |
 | `-allowfrom=172.18.0.0/16` | `clients.allowed_cidrs: ["172.18.0.0/16"]` |
-| `-allowfrom=traefik` | Not shipped yet. Today use source CIDRs, mTLS certificate common names, or unix socket mode. Hostname/SAN/SPIFFE selectors are on the roadmap. |
+| `-allowfrom=traefik` | Use `clients.client_certificate_profiles` with `dns_names` / `spiffe_ids`, `clients.allowed_cidrs`, or unix peer profiles depending on how the caller reaches Sockguard. |
 | `socket-proxy.allow.get=.*` | `clients.container_labels.label_prefix: socket-proxy.allow.` |
 | `-allowbindmountfrom=/srv/data,/var/log` | `request_body.container_create.allowed_bind_mounts: ["/srv/data", "/var/log"]` |
 | `-proxysocketendpoint=/tmp/filtered.sock` | `listen.socket: /tmp/filtered.sock` |

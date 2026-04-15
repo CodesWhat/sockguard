@@ -34,13 +34,16 @@ test("website comparison rows live in extracted data modules", () => {
 
   const requestBodyRow = comparisonRows.find((row) => row.feature === "Request body inspection");
   assert.ok(requestBodyRow);
-  assert.equal(requestBodyRow.sockguard, "Yes (create, exec, pull, build)");
+  assert.equal(
+    requestBodyRow.sockguard,
+    "Yes (create, exec, volume, secret, config, service, swarm, plugin, pull, build)",
+  );
   assert.notEqual(requestBodyRow.planned, true);
   assert.equal(requestBodyRow.wollomatic, "Partial (bind-mount restrictions)");
 
   const perClientRow = comparisonRows.find((row) => row.feature === "Per-client policies");
   assert.ok(perClientRow);
-  assert.equal(perClientRow.sockguard, "CIDR + labels + cert profiles");
+  assert.equal(perClientRow.sockguard, "CIDR + labels + SAN/SPIFFE cert + unix peer");
   assert.equal(perClientRow.wollomatic, "IP/hostname + labels");
 
   assert.ok(comparisonRows.find((row) => row.feature === "Resource owner labels"));

@@ -40,7 +40,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "Container create, exec, image pull, and build bodies are parsed to block privileged, host-network, untrusted registries, remote contexts, and non-allowlisted mounts or commands.",
+      "Container, volume, secret, config, service, swarm, image-pull, build, and plugin writes are parsed to block host-bound workloads, non-allowlisted mounts, devices, commands, and remotes, unsafe swarm rotations, and remote build contexts.",
     category: "security",
   },
   {
@@ -58,7 +58,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Stamp containers, networks, volumes, and build images with an owner label. List and prune calls are auto-filtered, and cross-owner access is denied.",
+      "Stamp label-capable creates and build images with an owner label. Labeled list, prune, and event reads are auto-filtered, and cross-owner access is denied across workload and control-plane resources.",
     category: "control",
   },
   {
@@ -67,7 +67,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Gate callers by source CIDR, bridge-network container labels, and named mTLS certificate profiles before the global policy runs.",
+      "Gate callers by source CIDR, bridge-network container labels, certificate selectors, and unix peer credentials before the global policy runs.",
     category: "control",
   },
   {
@@ -85,7 +85,7 @@ export const features: Feature[] = [
     color: "text-emerald-500 dark:text-emerald-400",
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
-      "JSON access logs with method, path, decision, matched rule index, latency, and client info.",
+      "JSON access logs with method, path, decision, matched rule index, latency, canonical request_id, and client info.",
     category: "operations",
   },
   {
@@ -103,7 +103,7 @@ export const features: Feature[] = [
     color: "text-emerald-500 dark:text-emerald-400",
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
-      "Drop-in replacement using the same env vars. CONTAINERS=1, POST=0, ALLOW_START=1 all work.",
+      "Drop-in replacement for the current Tecnativa env surface, including section vars, ALLOW_RESTARTS, SOCKET_PATH, and LOG_LEVEL.",
     category: "operations",
   },
   {
@@ -120,7 +120,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "Label selectors hide list, events, and inspect results for non-matching resources, while container env, mount host paths, and network topology are redacted by default.",
+      "Label selectors hide labeled list, inspect, and log reads for non-matching resources, env/mount/network/config/plugin/swarm-sensitive metadata is redacted by default, and raw archive/export reads stay behind explicit opt-in.",
     category: "security",
   },
   {

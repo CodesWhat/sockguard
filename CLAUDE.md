@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Sockguard?
 
-Sockguard is a Docker socket proxy written in Go. It sits between Docker API consumers (Traefik, drydock, Portainer, etc.) and the Docker socket, filtering requests by HTTP method, path, and request body content (container-create, exec, image pull, and build are all inspected; Swarm writes remain behind the blind-write opt-in). Default-deny posture, structured logging, per-client policy profiles, and read-side visibility/redaction make it the most comprehensive Docker socket security layer available.
+Sockguard is a Docker socket proxy written in Go. It sits between Docker API consumers (Traefik, drydock, Portainer, etc.) and the Docker socket, filtering requests by HTTP method, path, and request body content (`containers/create`, exec create/start, service create/update, swarm init, image pull, and build are all inspected; the remaining blind-write guardrail is arbitrary exec without an allowlist). Default-deny posture, structured logging, per-client policy profiles, owner-label isolation, and read-side visibility/redaction make it the most comprehensive Docker socket security layer available.
 
 ## Repository Structure
 
