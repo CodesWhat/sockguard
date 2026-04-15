@@ -90,12 +90,13 @@ func TestNew_ErrorHandlerLogsRequestCorrelation(t *testing.T) {
 	rp := New("/tmp/does-not-matter.sock", logger)
 
 	meta := &logging.RequestMeta{
-		Decision: "allow",
-		Rule:     1,
-		NormPath: "/info",
+		Decision:        "allow",
+		Rule:            1,
+		NormPath:        "/info",
+		ClientRequestID: "client-456",
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v1.45/info", nil)
-	req.Header.Set("X-Request-ID", "req-123")
+	req.Header.Set("X-Request-ID", "trusted-123")
 	req = req.WithContext(logging.WithMeta(req.Context(), meta))
 
 	rec := httptest.NewRecorder()
@@ -105,8 +106,11 @@ func TestNew_ErrorHandlerLogsRequestCorrelation(t *testing.T) {
 	if !strings.Contains(logOutput, `"msg":"upstream request failed"`) {
 		t.Fatalf("expected upstream failure log, got: %s", logOutput)
 	}
-	if !strings.Contains(logOutput, `"request_id":"req-123"`) {
+	if !strings.Contains(logOutput, `"request_id":"trusted-123"`) {
 		t.Fatalf("expected request_id in proxy error log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"client_request_id":"client-456"`) {
+		t.Fatalf("expected client_request_id in proxy error log, got: %s", logOutput)
 	}
 	if !strings.Contains(logOutput, `"normalized_path":"/info"`) {
 		t.Fatalf("expected normalized_path in proxy error log, got: %s", logOutput)

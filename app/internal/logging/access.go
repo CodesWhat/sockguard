@@ -3,27 +3,35 @@ package logging
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/binary"
+	"encoding/hex"
 	"log/slog"
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type contextKey int
 
-const contextKeyMeta contextKey = iota
+const (
+	contextKeyMeta contextKey = iota
+	contextKeyClientRequestID
+)
 
 // RequestMeta holds mutable decision metadata shared between middlewares. The
 // access log middleware creates it and attaches it to the wrapped
 // ResponseWriter; tests and non-access-log callers can also pass it through
 // request context via WithMeta.
 type RequestMeta struct {
-	Decision string
-	Rule     int
-	Reason   string
-	NormPath string
-	Profile  string
+	Decision        string
+	Rule            int
+	Reason          string
+	NormPath        string
+	Profile         string
+	ClientRequestID string
 }
 
 type requestMetaCarrier interface {
@@ -37,6 +45,8 @@ var requestMetaPool = sync.Pool{
 }
 
 const requestIDHeader = "X-Request-Id"
+
+var requestIDFallbackCounter uint64
 
 // accessLogAttrs leaves headroom beyond today's max log field count so adding
 // one or two attrs later does not force a new backing slice allocation.
@@ -162,6 +172,9 @@ func appendCorrelationAttrs(attrs []slog.Attr, r *http.Request, meta *RequestMet
 	if values := r.Header[requestIDHeader]; len(values) > 0 && values[0] != "" {
 		attrs = append(attrs, slog.String("request_id", values[0]))
 	}
+	if clientRequestID := clientRequestIDForRequest(r, meta); clientRequestID != "" {
+		attrs = append(attrs, slog.String("client_request_id", clientRequestID))
+	}
 
 	if meta != nil {
 		attrs = append(attrs,
@@ -178,6 +191,29 @@ func appendCorrelationAttrs(attrs []slog.Attr, r *http.Request, meta *RequestMet
 	}
 
 	return attrs
+}
+
+// RequestIDMiddleware stamps every request with a canonical, proxy-generated
+// request ID so log correlation never relies on a caller-controlled header.
+// Any caller-supplied ID is preserved separately for auditing.
+func RequestIDMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			clientRequestID := r.Header.Get(requestIDHeader)
+			if clientRequestID != "" {
+				if meta := MetaForRequest(w, r); meta != nil {
+					meta.ClientRequestID = clientRequestID
+				}
+				r = r.WithContext(context.WithValue(r.Context(), contextKeyClientRequestID, clientRequestID))
+			}
+
+			requestID := newRequestID()
+			r.Header.Set(requestIDHeader, requestID)
+			w.Header().Set(requestIDHeader, requestID)
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // responseCapture wraps http.ResponseWriter to capture status and bytes written.
@@ -295,4 +331,27 @@ func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			}
 		})
 	}
+}
+
+func clientRequestIDForRequest(r *http.Request, meta *RequestMeta) string {
+	if meta != nil && meta.ClientRequestID != "" {
+		return meta.ClientRequestID
+	}
+	if r == nil {
+		return ""
+	}
+	clientRequestID, _ := r.Context().Value(contextKeyClientRequestID).(string)
+	return clientRequestID
+}
+
+func newRequestID() string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		binary.BigEndian.PutUint64(raw[:8], uint64(time.Now().UnixNano()))
+		binary.BigEndian.PutUint64(raw[8:], atomic.AddUint64(&requestIDFallbackCounter, 1))
+	}
+
+	var encoded [32]byte
+	hex.Encode(encoded[:], raw[:])
+	return string(encoded[:])
 }
