@@ -53,6 +53,10 @@ const (
 	resourceKindImage     resourceKind = "images"
 	resourceKindNetwork   resourceKind = "networks"
 	resourceKindVolume    resourceKind = "volumes"
+	resourceKindService   resourceKind = "services"
+	resourceKindTask      resourceKind = "tasks"
+	resourceKindSecret    resourceKind = "secrets"
+	resourceKindConfig    resourceKind = "configs"
 )
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -144,8 +148,10 @@ func (o Options) normalized() Options {
 
 func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) error {
 	switch {
-	case normPath == "/containers/create", normPath == "/networks/create", normPath == "/volumes/create":
+	case normPath == "/containers/create", normPath == "/networks/create", normPath == "/volumes/create", normPath == "/secrets/create", normPath == "/configs/create":
 		return addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
+	case normPath == "/services/create", isServiceUpdatePath(normPath):
+		return addOwnerLabelToServiceBody(r, opts.LabelKey, opts.Owner)
 	case normPath == "/build":
 		return addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
 	case needsOwnerFilter(normPath):
@@ -177,6 +183,18 @@ func allowOwnershipRequest(ctx context.Context, normPath string, opts Options, d
 	}
 	if identifier, ok := imageIdentifier(normPath); ok {
 		return checkOwnedResource(ctx, deps, resourceKindImage, identifier, opts, opts.AllowUnownedImages)
+	}
+	if identifier, ok := serviceIdentifier(normPath); ok {
+		return checkOwnedResource(ctx, deps, resourceKindService, identifier, opts, false)
+	}
+	if identifier, ok := taskIdentifier(normPath); ok {
+		return checkOwnedResource(ctx, deps, resourceKindTask, identifier, opts, false)
+	}
+	if identifier, ok := secretIdentifier(normPath); ok {
+		return checkOwnedResource(ctx, deps, resourceKindSecret, identifier, opts, false)
+	}
+	if identifier, ok := configIdentifier(normPath); ok {
+		return checkOwnedResource(ctx, deps, resourceKindConfig, identifier, opts, false)
 	}
 	return verdictPassThrough, "", nil
 }
@@ -216,6 +234,14 @@ func singularResource(kind resourceKind) string {
 		return "network"
 	case resourceKindVolume:
 		return "volume"
+	case resourceKindService:
+		return "service"
+	case resourceKindTask:
+		return "task"
+	case resourceKindSecret:
+		return "secret"
+	case resourceKindConfig:
+		return "config"
 	default:
 		return string(kind)
 	}
@@ -223,7 +249,7 @@ func singularResource(kind resourceKind) string {
 
 func needsOwnerFilter(normPath string) bool {
 	switch normPath {
-	case "/events", "/containers/json", "/containers/prune", "/images/json", "/images/prune", "/networks", "/networks/prune", "/volumes", "/volumes/prune":
+	case "/events", "/containers/json", "/containers/prune", "/images/json", "/images/prune", "/networks", "/networks/prune", "/volumes", "/volumes/prune", "/services", "/tasks", "/secrets", "/configs":
 		return true
 	default:
 		return false
@@ -298,6 +324,64 @@ func imageIdentifier(normPath string) (string, bool) {
 	return rest, true
 }
 
+func serviceIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/services/") {
+		return "", false
+	}
+	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/services/"), "/")
+	switch identifier {
+	case "", "create":
+		return "", false
+	default:
+		return identifier, true
+	}
+}
+
+func isServiceUpdatePath(normPath string) bool {
+	if !strings.HasPrefix(normPath, "/services/") {
+		return false
+	}
+	identifier, tail, ok := strings.Cut(strings.TrimPrefix(normPath, "/services/"), "/")
+	return ok && identifier != "" && identifier != "create" && tail == "update"
+}
+
+func taskIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/tasks/") {
+		return "", false
+	}
+	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/tasks/"), "/")
+	if identifier == "" {
+		return "", false
+	}
+	return identifier, true
+}
+
+func secretIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/secrets/") {
+		return "", false
+	}
+	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/secrets/"), "/")
+	switch identifier {
+	case "", "create":
+		return "", false
+	default:
+		return identifier, true
+	}
+}
+
+func configIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/configs/") {
+		return "", false
+	}
+	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/configs/"), "/")
+	switch identifier {
+	case "", "create":
+		return "", false
+	default:
+		return identifier, true
+	}
+}
+
 func addOwnerLabelToBody(r *http.Request, labelKey, owner string) error {
 	return mutateJSONBody(r, func(decoded map[string]any) error {
 		labels, err := nestedObject(decoded, "Labels")
@@ -305,6 +389,23 @@ func addOwnerLabelToBody(r *http.Request, labelKey, owner string) error {
 			return err
 		}
 		labels[labelKey] = owner
+		return nil
+	})
+}
+
+func addOwnerLabelToServiceBody(r *http.Request, labelKey, owner string) error {
+	return mutateJSONBody(r, func(decoded map[string]any) error {
+		serviceLabels, err := nestedObject(decoded, "Labels")
+		if err != nil {
+			return err
+		}
+		serviceLabels[labelKey] = owner
+
+		containerLabels, err := nestedObjectPath(decoded, "TaskTemplate", "ContainerSpec", "Labels")
+		if err != nil {
+			return err
+		}
+		containerLabels[labelKey] = owner
 		return nil
 	})
 }
@@ -452,6 +553,18 @@ func nestedObject(decoded map[string]any, key string) (map[string]any, error) {
 	return obj, nil
 }
 
+func nestedObjectPath(decoded map[string]any, keys ...string) (map[string]any, error) {
+	current := decoded
+	for _, key := range keys {
+		next, err := nestedObject(current, key)
+		if err != nil {
+			return nil, err
+		}
+		current = next
+	}
+	return current, nil
+}
+
 func (u upstreamInspector) inspectResource(ctx context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
 	var target string
 	switch kind {
@@ -463,6 +576,14 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind resourceKin
 		target = "/networks/" + url.PathEscape(identifier)
 	case resourceKindVolume:
 		target = "/volumes/" + url.PathEscape(identifier)
+	case resourceKindService:
+		target = "/services/" + url.PathEscape(identifier)
+	case resourceKindTask:
+		target = "/tasks/" + url.PathEscape(identifier)
+	case resourceKindSecret:
+		target = "/secrets/" + url.PathEscape(identifier)
+	case resourceKindConfig:
+		target = "/configs/" + url.PathEscape(identifier)
 	default:
 		return nil, false, fmt.Errorf("unsupported resource kind %q", kind)
 	}
@@ -484,25 +605,11 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind resourceKin
 		return nil, false, fmt.Errorf("inspect %s %q: upstream returned %s", kind, identifier, resp.Status)
 	}
 
-	if kind == resourceKindContainer || kind == resourceKindImage {
-		var body struct {
-			Config struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"Config"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-			return nil, false, err
-		}
-		return body.Config.Labels, true, nil
-	}
-
-	var body struct {
-		Labels map[string]string `json:"Labels"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	labels, err := decodeResourceLabels(resp.Body, kind)
+	if err != nil {
 		return nil, false, err
 	}
-	return body.Labels, true, nil
+	return labels, true, nil
 }
 
 func (u upstreamInspector) inspectExec(ctx context.Context, identifier string) (string, bool, error) {
@@ -533,4 +640,71 @@ func (u upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 		return "", false, fmt.Errorf("inspect exec %q: empty container id", identifier)
 	}
 	return body.ContainerID, true, nil
+}
+
+func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string, error) {
+	switch kind {
+	case resourceKindContainer:
+		var payload struct {
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		return payload.Config.Labels, nil
+	case resourceKindImage:
+		var payload struct {
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+			ContainerConfig struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"ContainerConfig"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if len(payload.Config.Labels) > 0 {
+			return payload.Config.Labels, nil
+		}
+		return payload.ContainerConfig.Labels, nil
+	case resourceKindNetwork, resourceKindVolume:
+		var payload struct {
+			Labels map[string]string `json:"Labels"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		return payload.Labels, nil
+	case resourceKindService, resourceKindSecret, resourceKindConfig:
+		var payload struct {
+			Spec struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Spec"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		return payload.Spec.Labels, nil
+	case resourceKindTask:
+		var payload struct {
+			Labels map[string]string `json:"Labels"`
+			Spec   struct {
+				ContainerSpec struct {
+					Labels map[string]string `json:"Labels"`
+				} `json:"ContainerSpec"`
+			} `json:"Spec"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if len(payload.Labels) > 0 {
+			return payload.Labels, nil
+		}
+		return payload.Spec.ContainerSpec.Labels, nil
+	default:
+		return nil, fmt.Errorf("unsupported resource kind %q", kind)
+	}
 }
