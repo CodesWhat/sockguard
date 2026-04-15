@@ -1,9 +1,7 @@
 package config
 
 import (
-	"bytes"
 	"log/slog"
-	"strings"
 	"testing"
 )
 
@@ -41,15 +39,15 @@ func TestCompatContainers(t *testing.T) {
 		t.Fatal("expected compat to activate")
 	}
 
-	// Should have: ping, version, events, containers GET, catch-all deny
+	// Should have: read-only containers section and catch-all deny.
 	found := false
 	for _, r := range cfg.Rules {
-		if r.Match.Path == "/containers/**" && r.Match.Method == "GET" && r.Action == "allow" {
+		if r.Match.Path == "/containers/**" && r.Match.Method == "GET,HEAD" && r.Action == "allow" {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("expected GET /containers/** allow rule")
+		t.Error("expected GET,HEAD /containers/** allow rule")
 	}
 
 	// Should end with catch-all deny
@@ -86,7 +84,7 @@ func TestCompatPostGranular(t *testing.T) {
 	}
 }
 
-func TestCompatPostBlanket(t *testing.T) {
+func TestCompatPostDoesNotGrantBlanketWriteFallback(t *testing.T) {
 	cfg := Defaults()
 	t.Setenv("POST", "1")
 
@@ -94,34 +92,10 @@ func TestCompatPostBlanket(t *testing.T) {
 		t.Fatal("expected compat to activate")
 	}
 
-	found := false
 	for _, r := range cfg.Rules {
 		if r.Match.Method == "POST,PUT,DELETE" && r.Match.Path == "/**" && r.Action == "allow" {
-			found = true
+			t.Fatalf("expected no blanket POST fallback, got rule: %+v", r)
 		}
-	}
-	if !found {
-		t.Error("expected blanket POST,PUT,DELETE /** allow rule")
-	}
-}
-
-func TestCompatPostBlanketWarnsAboutBroadWriteFallback(t *testing.T) {
-	cfg := Defaults()
-	t.Setenv("POST", "1")
-
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-
-	if !ApplyCompat(&cfg, logger) {
-		t.Fatal("expected compat to activate")
-	}
-
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, "level=WARN") {
-		t.Fatalf("expected warning log level, got: %s", logOutput)
-	}
-	if !strings.Contains(logOutput, "compat") || !strings.Contains(logOutput, "POST,PUT,DELETE") || !strings.Contains(logOutput, "/**") {
-		t.Fatalf("expected blanket write fallback warning, got: %s", logOutput)
 	}
 }
 
@@ -179,25 +153,31 @@ func TestCompatGranularWithoutPost(t *testing.T) {
 	cfg := Defaults()
 	t.Setenv("ALLOW_START", "1")
 	t.Setenv("ALLOW_STOP", "1")
-	// POST is NOT set, so granular rules should NOT be generated
 
 	if !ApplyCompat(&cfg, discardLogger) {
 		t.Fatal("expected compat to activate")
 	}
 
+	foundStart := false
+	foundStop := false
 	for _, r := range cfg.Rules {
-		if r.Match.Path == "/containers/*/start" || r.Match.Path == "/containers/*/stop" {
-			t.Errorf("unexpected granular rule generated without POST=1: %s %s", r.Match.Method, r.Match.Path)
+		switch {
+		case r.Match.Method == "POST" && r.Match.Path == "/containers/*/start":
+			foundStart = true
+		case r.Match.Method == "POST" && r.Match.Path == "/containers/*/stop":
+			foundStop = true
 		}
+	}
+	if !foundStart || !foundStop {
+		t.Fatalf("expected granular start/stop rules without POST=1, got rules: %+v", cfg.Rules)
 	}
 }
 
 func TestCompatMultipleGranularVars(t *testing.T) {
 	cfg := Defaults()
-	t.Setenv("POST", "1")
 	t.Setenv("ALLOW_START", "1")
 	t.Setenv("ALLOW_STOP", "1")
-	t.Setenv("ALLOW_RESTART", "1")
+	t.Setenv("ALLOW_RESTARTS", "1")
 
 	if !ApplyCompat(&cfg, discardLogger) {
 		t.Fatal("expected compat to activate")
@@ -207,6 +187,7 @@ func TestCompatMultipleGranularVars(t *testing.T) {
 		"/containers/*/start":   false,
 		"/containers/*/stop":    false,
 		"/containers/*/restart": false,
+		"/containers/*/kill":    false,
 	}
 
 	for _, r := range cfg.Rules {
@@ -249,9 +230,9 @@ func TestCompatCategoryAndGranularFlagsTogether(t *testing.T) {
 
 	for _, r := range cfg.Rules {
 		switch {
-		case r.Match.Method == "GET" && r.Match.Path == "/containers/**" && r.Action == "allow":
+		case r.Match.Method == "*" && r.Match.Path == "/containers/**" && r.Action == "allow":
 			foundContainers = true
-		case r.Match.Method == "GET" && r.Match.Path == "/images/**" && r.Action == "allow":
+		case r.Match.Method == "*" && r.Match.Path == "/images/**" && r.Action == "allow":
 			foundImages = true
 		case r.Match.Method == "POST" && r.Match.Path == "/containers/*/start" && r.Action == "allow":
 			foundStart = true
@@ -263,10 +244,10 @@ func TestCompatCategoryAndGranularFlagsTogether(t *testing.T) {
 	}
 
 	if !foundContainers {
-		t.Fatal("expected GET /containers/** allow rule when CONTAINERS=1")
+		t.Fatal("expected * /containers/** allow rule when CONTAINERS=1 and POST=1")
 	}
 	if foundImages {
-		t.Fatal("expected no GET /images/** allow rule when IMAGES=0")
+		t.Fatal("expected no /images/** allow rule when IMAGES=0")
 	}
 	if !foundStart || !foundStop {
 		t.Fatalf("expected granular start/stop rules, got rules: %+v", cfg.Rules)
@@ -287,8 +268,67 @@ func TestCompatInvalidEnvValue(t *testing.T) {
 	// "maybe" is not a valid boolean, so CONTAINERS should be treated as not set
 	// and no containers rule should be generated
 	for _, r := range cfg.Rules {
-		if r.Match.Path == "/containers/**" && r.Match.Method == "GET" && r.Action == "allow" {
+		if r.Match.Path == "/containers/**" && r.Action == "allow" {
 			t.Error("expected no GET /containers/** rule when CONTAINERS=maybe (unparseable value)")
+		}
+	}
+}
+
+func TestCompatSupportsExtendedTecnativaSections(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("AUTH", "1")
+	t.Setenv("SERVICES", "1")
+	t.Setenv("SYSTEM", "1")
+
+	if !ApplyCompat(&cfg, discardLogger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	wantRules := map[string]string{
+		"/auth/**":     "GET,HEAD",
+		"/services/**": "GET,HEAD",
+		"/system/**":   "GET,HEAD",
+	}
+
+	for _, r := range cfg.Rules {
+		wantMethod, ok := wantRules[r.Match.Path]
+		if !ok || r.Action != "allow" {
+			continue
+		}
+		if r.Match.Method != wantMethod {
+			t.Fatalf("rule %s method = %q, want %q", r.Match.Path, r.Match.Method, wantMethod)
+		}
+		delete(wantRules, r.Match.Path)
+	}
+
+	if len(wantRules) > 0 {
+		t.Fatalf("missing expected compat section rules: %+v", wantRules)
+	}
+}
+
+func TestCompatAllowRestartAliasStillWorks(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("ALLOW_RESTART", "1")
+
+	if !ApplyCompat(&cfg, discardLogger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	wantPaths := map[string]bool{
+		"/containers/*/stop":    false,
+		"/containers/*/restart": false,
+		"/containers/*/kill":    false,
+	}
+
+	for _, r := range cfg.Rules {
+		if _, ok := wantPaths[r.Match.Path]; ok && r.Match.Method == "POST" && r.Action == "allow" {
+			wantPaths[r.Match.Path] = true
+		}
+	}
+
+	for path, found := range wantPaths {
+		if !found {
+			t.Fatalf("expected restart alias to allow %s, got rules: %+v", path, cfg.Rules)
 		}
 	}
 }
@@ -327,81 +367,77 @@ func TestRulesMatchDefaults(t *testing.T) {
 	})
 }
 
-func TestGeneratePingRules(t *testing.T) {
+func TestGenerateSectionRules(t *testing.T) {
 	t.Run("default enabled when unset", func(t *testing.T) {
-		rules := generatePingRules()
-		if len(rules) != 2 {
-			t.Fatalf("generatePingRules() len = %d, want 2", len(rules))
+		rules := generateSectionRules()
+		if len(rules) != 3 {
+			t.Fatalf("generateSectionRules() len = %d, want 3", len(rules))
 		}
-		if rules[0].Match.Method != "GET" || rules[0].Match.Path != "/_ping" {
-			t.Fatalf("first ping rule = %+v, want GET /_ping", rules[0])
+		if rules[0].Match.Method != "GET,HEAD" || rules[0].Match.Path != "/_ping" {
+			t.Fatalf("first section rule = %+v, want GET,HEAD /_ping", rules[0])
 		}
-		if rules[1].Match.Method != "HEAD" || rules[1].Match.Path != "/_ping" {
-			t.Fatalf("second ping rule = %+v, want HEAD /_ping", rules[1])
+		if rules[1].Match.Method != "GET,HEAD" || rules[1].Match.Path != "/version" {
+			t.Fatalf("second section rule = %+v, want GET,HEAD /version", rules[1])
+		}
+		if rules[2].Match.Method != "GET,HEAD" || rules[2].Match.Path != "/events" {
+			t.Fatalf("third section rule = %+v, want GET,HEAD /events", rules[2])
+		}
+	})
+
+	t.Run("post broadens methods on enabled sections", func(t *testing.T) {
+		t.Setenv("POST", "1")
+		t.Setenv("SERVICES", "1")
+
+		rules := generateSectionRules()
+		foundServices := false
+		for _, rule := range rules {
+			if rule.Match.Path == "/services/**" {
+				foundServices = true
+				if rule.Match.Method != "*" {
+					t.Fatalf("service rule method = %q, want *", rule.Match.Method)
+				}
+			}
+		}
+		if !foundServices {
+			t.Fatalf("expected /services/** rule in %+v", rules)
 		}
 	})
 
 	t.Run("disabled with zero", func(t *testing.T) {
 		t.Setenv("PING", "0")
-		rules := generatePingRules()
+		t.Setenv("VERSION", "0")
+		t.Setenv("EVENTS", "0")
+		rules := generateSectionRules()
 		if len(rules) != 0 {
-			t.Fatalf("generatePingRules() len = %d, want 0", len(rules))
+			t.Fatalf("generateSectionRules() len = %d, want 0", len(rules))
 		}
 	})
 }
 
-func TestGenerateVersionRulesDisabled(t *testing.T) {
-	t.Setenv("VERSION", "0")
-	if rules := generateVersionRules(); len(rules) != 0 {
-		t.Fatalf("generateVersionRules() len = %d, want 0", len(rules))
-	}
-}
+func TestGenerateGranularPostRules(t *testing.T) {
+	t.Run("restarts env allows stop restart and kill", func(t *testing.T) {
+		t.Setenv("ALLOW_RESTARTS", "1")
 
-func TestGenerateEventsRulesDisabled(t *testing.T) {
-	t.Setenv("EVENTS", "0")
-	if rules := generateEventsRules(); len(rules) != 0 {
-		t.Fatalf("generateEventsRules() len = %d, want 0", len(rules))
-	}
-}
+		rules := generateGranularPostRules()
+		if len(rules) != 3 {
+			t.Fatalf("generateGranularPostRules() len = %d, want 3", len(rules))
+		}
+		if rules[0].Match.Path != "/containers/*/kill" ||
+			rules[1].Match.Path != "/containers/*/restart" ||
+			rules[2].Match.Path != "/containers/*/stop" {
+			t.Fatalf("granular restart rules = %+v, want kill/restart/stop in deterministic order", rules)
+		}
+	})
 
-func TestGeneratePostRules(t *testing.T) {
-	t.Run("blanket allow without granular vars", func(t *testing.T) {
-		t.Setenv("POST", "1")
+	t.Run("works without post enabled", func(t *testing.T) {
+		t.Setenv("ALLOW_START", "1")
 
-		rules := generatePostRules()
+		rules := generateGranularPostRules()
 		if len(rules) != 1 {
-			t.Fatalf("generatePostRules() len = %d, want 1", len(rules))
+			t.Fatalf("generateGranularPostRules() len = %d, want 1", len(rules))
 		}
-		if rules[0].Match.Method != "POST,PUT,DELETE" || rules[0].Match.Path != "/**" {
-			t.Fatalf("blanket post rule = %+v, want POST,PUT,DELETE /**", rules[0])
-		}
-	})
-
-	t.Run("granular allow suppresses blanket rule", func(t *testing.T) {
-		t.Setenv("POST", "1")
-		t.Setenv("ALLOW_START", "1")
-		t.Setenv("ALLOW_STOP", "1")
-
-		rules := generatePostRules()
-		if len(rules) != 2 {
-			t.Fatalf("generatePostRules() len = %d, want 2", len(rules))
-		}
-		if rules[0].Match.Path != "/containers/*/start" || rules[1].Match.Path != "/containers/*/stop" {
-			t.Fatalf("granular post rules = %+v, want start/stop in deterministic order", rules)
-		}
-		for _, rule := range rules {
-			if rule.Match.Method == "POST,PUT,DELETE" && rule.Match.Path == "/**" {
-				t.Fatalf("unexpected blanket rule alongside granular rules: %+v", rules)
-			}
-		}
-	})
-
-	t.Run("ignored when POST disabled", func(t *testing.T) {
-		t.Setenv("ALLOW_START", "1")
-
-		rules := generatePostRules()
-		if len(rules) != 0 {
-			t.Fatalf("generatePostRules() len = %d, want 0", len(rules))
+		if rules[0].Match.Method != "POST" || rules[0].Match.Path != "/containers/*/start" {
+			t.Fatalf("granular rule = %+v, want POST /containers/*/start", rules[0])
 		}
 	})
 }

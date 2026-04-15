@@ -7,40 +7,62 @@ import (
 )
 
 var compatVars = []string{
-	"CONTAINERS", "IMAGES", "NETWORKS", "VOLUMES", "INFO",
-	"POST", "PING", "VERSION", "EVENTS",
+	"AUTH", "BUILD", "COMMIT", "CONFIGS", "CONTAINERS",
+	"DISTRIBUTION", "EVENTS", "EXEC", "GRPC", "IMAGES",
+	"INFO", "NETWORKS", "NODES", "PING", "PLUGINS",
+	"POST", "SECRETS", "SERVICES", "SESSION", "SWARM",
+	"SYSTEM", "TASKS", "VERSION", "VOLUMES",
 	"ALLOW_START", "ALLOW_STOP", "ALLOW_RESTART",
-	"ALLOW_PAUSE", "ALLOW_UNPAUSE", "ALLOW_CREATE",
+	"ALLOW_RESTARTS", "ALLOW_PAUSE", "ALLOW_UNPAUSE", "ALLOW_CREATE",
 	"ALLOW_EXEC", "ALLOW_KILL", "ALLOW_DELETE", "ALLOW_PRUNE",
 }
 
-var compatCategoryRules = []struct {
-	envKey string
-	method string
-	path   string
+var compatSectionRules = []struct {
+	envKey       string
+	path         string
+	defaultAllow bool
 }{
-	{envKey: "INFO", method: "GET", path: "/info"},
-	{envKey: "CONTAINERS", method: "GET", path: "/containers/**"},
-	{envKey: "IMAGES", method: "GET", path: "/images/**"},
-	{envKey: "NETWORKS", method: "GET", path: "/networks/**"},
-	{envKey: "VOLUMES", method: "GET", path: "/volumes/**"},
+	{envKey: "PING", path: "/_ping", defaultAllow: true},
+	{envKey: "VERSION", path: "/version", defaultAllow: true},
+	{envKey: "EVENTS", path: "/events", defaultAllow: true},
+	{envKey: "AUTH", path: "/auth/**"},
+	{envKey: "BUILD", path: "/build/**"},
+	{envKey: "COMMIT", path: "/commit/**"},
+	{envKey: "CONFIGS", path: "/configs/**"},
+	{envKey: "CONTAINERS", path: "/containers/**"},
+	{envKey: "DISTRIBUTION", path: "/distribution/**"},
+	{envKey: "EXEC", path: "/exec/**"},
+	{envKey: "EXEC", path: "/containers/*/exec"},
+	{envKey: "GRPC", path: "/grpc/**"},
+	{envKey: "IMAGES", path: "/images/**"},
+	{envKey: "INFO", path: "/info"},
+	{envKey: "NETWORKS", path: "/networks/**"},
+	{envKey: "NODES", path: "/nodes/**"},
+	{envKey: "PLUGINS", path: "/plugins/**"},
+	{envKey: "SECRETS", path: "/secrets/**"},
+	{envKey: "SERVICES", path: "/services/**"},
+	{envKey: "SESSION", path: "/session/**"},
+	{envKey: "SWARM", path: "/swarm/**"},
+	{envKey: "SYSTEM", path: "/system/**"},
+	{envKey: "TASKS", path: "/tasks/**"},
+	{envKey: "VOLUMES", path: "/volumes/**"},
 }
 
 var compatGranularPostRules = []struct {
-	envKey string
-	method string
-	path   string
+	envKeys []string
+	method  string
+	path    string
 }{
-	{envKey: "ALLOW_CREATE", method: "POST", path: "/containers/create"},
-	{envKey: "ALLOW_DELETE", method: "DELETE", path: "/containers/*"},
-	{envKey: "ALLOW_EXEC", method: "POST", path: "/containers/*/exec"},
-	{envKey: "ALLOW_KILL", method: "POST", path: "/containers/*/kill"},
-	{envKey: "ALLOW_PAUSE", method: "POST", path: "/containers/*/pause"},
-	{envKey: "ALLOW_PRUNE", method: "POST", path: "/containers/prune"},
-	{envKey: "ALLOW_RESTART", method: "POST", path: "/containers/*/restart"},
-	{envKey: "ALLOW_START", method: "POST", path: "/containers/*/start"},
-	{envKey: "ALLOW_STOP", method: "POST", path: "/containers/*/stop"},
-	{envKey: "ALLOW_UNPAUSE", method: "POST", path: "/containers/*/unpause"},
+	{envKeys: []string{"ALLOW_CREATE"}, method: "POST", path: "/containers/create"},
+	{envKeys: []string{"ALLOW_DELETE"}, method: "DELETE", path: "/containers/*"},
+	{envKeys: []string{"ALLOW_EXEC"}, method: "POST", path: "/containers/*/exec"},
+	{envKeys: []string{"ALLOW_KILL", "ALLOW_RESTARTS", "ALLOW_RESTART"}, method: "POST", path: "/containers/*/kill"},
+	{envKeys: []string{"ALLOW_PAUSE"}, method: "POST", path: "/containers/*/pause"},
+	{envKeys: []string{"ALLOW_PRUNE"}, method: "POST", path: "/containers/prune"},
+	{envKeys: []string{"ALLOW_RESTARTS", "ALLOW_RESTART"}, method: "POST", path: "/containers/*/restart"},
+	{envKeys: []string{"ALLOW_START"}, method: "POST", path: "/containers/*/start"},
+	{envKeys: []string{"ALLOW_STOP", "ALLOW_RESTARTS", "ALLOW_RESTART"}, method: "POST", path: "/containers/*/stop"},
+	{envKeys: []string{"ALLOW_UNPAUSE"}, method: "POST", path: "/containers/*/unpause"},
 }
 
 // ApplyCompat detects Tecnativa-style env vars and generates equivalent
@@ -64,19 +86,8 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 	logger.Info("tecnativa compatibility mode active", "note", "generating rules from environment variables")
 	warnInvalidCompatEnvVars(logger)
 
-	rules := generatePingRules()
-	rules = append(rules, generateVersionRules()...)
-	rules = append(rules, generateEventsRules()...)
-	rules = append(rules, generateCategoryRules()...)
-	postRules := generatePostRules()
-	if usesCompatBlanketPostFallback(postRules) {
-		logger.Warn("tecnativa POST compatibility fallback grants blanket write access",
-			"method", "POST,PUT,DELETE",
-			"path", "/**",
-			"note", "set granular ALLOW_* env vars to narrow write access",
-		)
-	}
-	rules = append(rules, postRules...)
+	rules := generateSectionRules()
+	rules = append(rules, generateGranularPostRules()...)
 	rules = append(rules, catchAllDenyRule())
 
 	cfg.Rules = rules
@@ -118,67 +129,25 @@ func warnInvalidCompatEnvVars(logger *slog.Logger) {
 	}
 }
 
-func generatePingRules() []RuleConfig {
-	if v, ok := lookupEnvBool("PING"); ok && !v {
-		return nil
-	}
-	return []RuleConfig{
-		newAllowRule("GET", "/_ping"),
-		newAllowRule("HEAD", "/_ping"),
-	}
-}
-
-func generateVersionRules() []RuleConfig {
-	if v, ok := lookupEnvBool("VERSION"); ok && !v {
-		return nil
-	}
-	return []RuleConfig{newAllowRule("GET", "/version")}
-}
-
-func generateEventsRules() []RuleConfig {
-	if v, ok := lookupEnvBool("EVENTS"); ok && !v {
-		return nil
-	}
-	return []RuleConfig{newAllowRule("GET", "/events")}
-}
-
-func generateCategoryRules() []RuleConfig {
+func generateSectionRules() []RuleConfig {
 	var rules []RuleConfig
-	for _, rule := range compatCategoryRules {
-		if v, _ := lookupEnvBool(rule.envKey); v {
-			rules = append(rules, newAllowRule(rule.method, rule.path))
+	methods := compatReadMethods()
+	for _, rule := range compatSectionRules {
+		if compatEnvEnabled(rule.envKey, rule.defaultAllow) {
+			rules = append(rules, newAllowRule(methods, rule.path))
 		}
 	}
 	return rules
 }
 
-func generatePostRules() []RuleConfig {
-	postEnabled, _ := lookupEnvBool("POST")
-	if !postEnabled {
-		return nil
-	}
-
+func generateGranularPostRules() []RuleConfig {
 	var rules []RuleConfig
 	for _, rule := range compatGranularPostRules {
-		if v, ok := lookupEnvBool(rule.envKey); ok && v {
+		if compatAnyEnvEnabled(rule.envKeys...) {
 			rules = append(rules, newAllowRule(rule.method, rule.path))
 		}
 	}
-	if len(rules) > 0 {
-		return rules
-	}
-	return []RuleConfig{newAllowRule("POST,PUT,DELETE", "/**")}
-}
-
-func usesCompatBlanketPostFallback(rules []RuleConfig) bool {
-	if len(rules) != 1 {
-		return false
-	}
-
-	rule := rules[0]
-	return rule.Match.Method == "POST,PUT,DELETE" &&
-		rule.Match.Path == "/**" &&
-		rule.Action == "allow"
+	return rules
 }
 
 func catchAllDenyRule() RuleConfig {
@@ -193,6 +162,63 @@ func newAllowRule(method, path string) RuleConfig {
 	return RuleConfig{
 		Match:  MatchConfig{Method: method, Path: path},
 		Action: "allow",
+	}
+}
+
+func compatReadMethods() string {
+	if postEnabled, _ := lookupEnvBool("POST"); postEnabled {
+		return "*"
+	}
+	return "GET,HEAD"
+}
+
+func compatEnvEnabled(key string, defaultValue bool) bool {
+	if value, ok := lookupEnvBool(key); ok {
+		return value
+	}
+	return defaultValue
+}
+
+func compatAnyEnvEnabled(keys ...string) bool {
+	for _, key := range keys {
+		if value, ok := lookupEnvBool(key); ok && value {
+			return true
+		}
+	}
+	return false
+}
+
+func applyCompatEnvAliases(cfg *Config) {
+	if _, ok := os.LookupEnv("SOCKGUARD_UPSTREAM_SOCKET"); !ok {
+		if socketPath, ok := os.LookupEnv("SOCKET_PATH"); ok && strings.TrimSpace(socketPath) != "" {
+			cfg.Upstream.Socket = strings.TrimSpace(socketPath)
+		}
+	}
+
+	if _, ok := os.LookupEnv("SOCKGUARD_LOG_LEVEL"); ok {
+		return
+	}
+
+	rawLevel, ok := os.LookupEnv("LOG_LEVEL")
+	if !ok {
+		return
+	}
+
+	cfg.Log.Level = normalizeCompatLogLevel(rawLevel)
+}
+
+func normalizeCompatLogLevel(level string) string {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "debug":
+		return "debug"
+	case "info", "notice":
+		return "info"
+	case "warn", "warning":
+		return "warn"
+	case "error", "err", "crit", "alert", "emerg":
+		return "error"
+	default:
+		return strings.ToLower(strings.TrimSpace(level))
 	}
 }
 
