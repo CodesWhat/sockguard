@@ -318,6 +318,14 @@ func TestValidateAllowsExecCommandAndImageRegistryAllowlists(t *testing.T) {
 	cfg := Defaults()
 	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/local/bin/pre-update", "--check"}}
 	cfg.RequestBody.ImagePull.AllowedRegistries = []string{"ghcr.io", "registry.example.com:5000"}
+	cfg.RequestBody.Service.AllowedBindMounts = []string{"/srv/services"}
+	cfg.RequestBody.Service.AllowedRegistries = []string{"ghcr.io", "registry.example.com:5000"}
+	cfg.RequestBody.Swarm.AllowedJoinRemoteAddrs = []string{"manager.internal:2377"}
+	cfg.RequestBody.Plugin.AllowedBindMounts = []string{"/var/lib/plugins"}
+	cfg.RequestBody.Plugin.AllowedDevices = []string{"/dev/fuse"}
+	cfg.RequestBody.Plugin.AllowedRegistries = []string{"plugins.example.com"}
+	cfg.RequestBody.Plugin.AllowedCapabilities = []string{"CAP_SYS_ADMIN"}
+	cfg.RequestBody.Plugin.AllowedSetEnvPrefixes = []string{"DEBUG=", "LOG_LEVEL="}
 
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("Validate() error = %v, want nil", err)
@@ -347,6 +355,84 @@ func TestValidateRejectsInvalidImageRegistryAllowlistEntry(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "request_body.image_pull.allowed_registries") {
 		t.Fatalf("expected request_body.image_pull.allowed_registries in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsRelativeServiceBindMountAllowlist(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Service.AllowedBindMounts = []string{"srv/services"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for relative service bind mount allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.service.allowed_bind_mounts") {
+		t.Fatalf("expected request_body.service.allowed_bind_mounts in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidServiceRegistryAllowlistEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Service.AllowedRegistries = []string{"https://ghcr.io/acme"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid service registry allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.service.allowed_registries") {
+		t.Fatalf("expected request_body.service.allowed_registries in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidPluginDeviceAllowlistEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Plugin.AllowedDevices = []string{"dev/fuse"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid plugin device allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.plugin.allowed_devices") {
+		t.Fatalf("expected request_body.plugin.allowed_devices in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidPluginRegistryAllowlistEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Plugin.AllowedRegistries = []string{"https://plugins.example.com/acme"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid plugin registry allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.plugin.allowed_registries") {
+		t.Fatalf("expected request_body.plugin.allowed_registries in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsEmptySwarmJoinRemoteAddrAllowlistEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Swarm.AllowedJoinRemoteAddrs = []string{""}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for empty swarm join remote address entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.swarm.allowed_join_remote_addrs") {
+		t.Fatalf("expected request_body.swarm.allowed_join_remote_addrs in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsEmptyPluginSetEnvPrefixEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Plugin.AllowedSetEnvPrefixes = []string{""}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for empty plugin set env prefix entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.plugin.allowed_set_env_prefixes") {
+		t.Fatalf("expected request_body.plugin.allowed_set_env_prefixes in error, got: %v", err)
 	}
 }
 
@@ -533,6 +619,63 @@ func TestValidateRejectsClientCertificateProfilesWithoutMutualTLS(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "clients.client_certificate_profiles") {
 		t.Fatalf("expected clients.client_certificate_profiles in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidExtendedClientIdentitySelectors(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Address = "127.0.0.1:2376"
+	cfg.Listen.TLS.CertFile = "/certs/server.pem"
+	cfg.Listen.TLS.KeyFile = "/certs/server-key.pem"
+	cfg.Listen.TLS.ClientCAFile = "/certs/ca.pem"
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "readonly", Rules: []RuleConfig{{Match: MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"}}},
+	}
+	cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
+		{
+			Profile:     "readonly",
+			DNSNames:    []string{" "},
+			IPAddresses: []string{"not-an-ip"},
+			URISANs:     []string{":"},
+			SPIFFEIDs:   []string{"https://not-spiffe.example/test"},
+		},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid extended client identity selectors")
+	}
+	if !strings.Contains(err.Error(), "clients.client_certificate_profiles[0].dns_names") {
+		t.Fatalf("expected dns_names validation error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.client_certificate_profiles[0].ip_addresses") {
+		t.Fatalf("expected ip_addresses validation error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.client_certificate_profiles[0].uri_sans") {
+		t.Fatalf("expected uri_sans validation error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.client_certificate_profiles[0].spiffe_ids") {
+		t.Fatalf("expected spiffe_ids validation error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidUnixPeerProfileSelectors(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Socket = ""
+	cfg.Listen.Address = "127.0.0.1:2376"
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "readonly", Rules: []RuleConfig{{Match: MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"}}},
+	}
+	cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{
+		{Profile: "readonly"},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid unix peer profile selectors")
+	}
+	if !strings.Contains(err.Error(), "clients.unix_peer_profiles") {
+		t.Fatalf("expected clients.unix_peer_profiles in error, got: %v", err)
 	}
 }
 

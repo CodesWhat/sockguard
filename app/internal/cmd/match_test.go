@@ -20,7 +20,7 @@ log:
   format: json
   output: stderr
 rules:
-  - match: { method: GET, path: "/containers/**" }
+  - match: { method: GET, path: "/containers/*/json" }
     action: allow
   - match: { method: POST, path: "/containers/*/exec" }
     action: deny

@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/netip"
+	"net/url"
 	"path"
 	"strings"
 )
@@ -212,14 +213,71 @@ func validateRequestBody(cfg *Config) []string {
 		} else if _, ok := profilesByName[assignment.Profile]; !ok {
 			errs = append(errs, configuredMatchError(prefix+".profile", "client profile", assignment.Profile))
 		}
-		if len(assignment.CommonNames) == 0 {
-			errs = append(errs, containsAtLeastOneError(prefix+".common_names", "client certificate common name"))
-		}
+		selectorCount := 0
 		for _, value := range assignment.CommonNames {
-			if strings.TrimSpace(value) != "" {
+			if strings.TrimSpace(value) == "" {
+				errs = append(errs, prefix+".common_names entries must be non-empty")
 				continue
 			}
-			errs = append(errs, prefix+".common_names entries must be non-empty")
+			selectorCount++
+		}
+		for _, value := range assignment.DNSNames {
+			if strings.TrimSpace(value) == "" {
+				errs = append(errs, prefix+".dns_names entries must be non-empty")
+				continue
+			}
+			selectorCount++
+		}
+		for _, value := range assignment.IPAddresses {
+			addr, err := netip.ParseAddr(strings.TrimSpace(value))
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%s.ip_addresses entries must be valid IP addresses, got %q", prefix, value))
+				continue
+			}
+			selectorCount++
+			if !addr.IsValid() {
+				errs = append(errs, fmt.Sprintf("%s.ip_addresses entries must be valid IP addresses, got %q", prefix, value))
+			}
+		}
+		for _, value := range assignment.URISANs {
+			parsed, err := url.Parse(strings.TrimSpace(value))
+			if err != nil || parsed.String() == "" {
+				errs = append(errs, fmt.Sprintf("%s.uri_sans entries must be valid URIs, got %q", prefix, value))
+				continue
+			}
+			selectorCount++
+		}
+		for _, value := range assignment.SPIFFEIDs {
+			parsed, err := url.Parse(strings.TrimSpace(value))
+			if err != nil || parsed.String() == "" || parsed.Scheme != "spiffe" {
+				errs = append(errs, fmt.Sprintf("%s.spiffe_ids entries must be valid SPIFFE IDs, got %q", prefix, value))
+				continue
+			}
+			selectorCount++
+		}
+		if selectorCount == 0 {
+			errs = append(errs, containsAtLeastOneError(prefix, "client certificate identity selector"))
+		}
+	}
+
+	if cfg.Listen.Socket == "" && len(cfg.Clients.UnixPeerProfiles) > 0 {
+		errs = append(errs, "clients.unix_peer_profiles requires a unix listener; set listen.socket or clear clients.unix_peer_profiles")
+	}
+	for i, assignment := range cfg.Clients.UnixPeerProfiles {
+		prefix := fmt.Sprintf("clients.unix_peer_profiles[%d]", i)
+		if assignment.Profile == "" {
+			errs = append(errs, requiredFieldError(prefix+".profile"))
+		} else if _, ok := profilesByName[assignment.Profile]; !ok {
+			errs = append(errs, configuredMatchError(prefix+".profile", "client profile", assignment.Profile))
+		}
+		if len(assignment.UIDs) == 0 && len(assignment.GIDs) == 0 && len(assignment.PIDs) == 0 {
+			errs = append(errs, containsAtLeastOneError(prefix, "unix peer credential selector"))
+		}
+		for _, pid := range assignment.PIDs {
+			if pid > 0 {
+				continue
+			}
+			errs = append(errs, fmt.Sprintf("%s.pids entries must be positive process IDs, got %d", prefix, pid))
 		}
 	}
 
@@ -289,6 +347,98 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 		errs = append(
 			errs,
 			fmt.Sprintf("%s.image_pull.allowed_registries entries must be bare registry hosts, got %q", prefix, registry),
+		)
+	}
+
+	for _, rawPath := range cfg.Service.AllowedBindMounts {
+		if _, ok := normalizeAllowedBindMount(rawPath); ok {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf(
+				"%s.service.allowed_bind_mounts entries must be absolute host paths, got %q",
+				prefix,
+				rawPath,
+			),
+		)
+	}
+
+	for _, registry := range cfg.Service.AllowedRegistries {
+		if _, ok := normalizeAllowedRegistryHost(registry); ok {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf("%s.service.allowed_registries entries must be bare registry hosts, got %q", prefix, registry),
+		)
+	}
+
+	for _, remoteAddr := range cfg.Swarm.AllowedJoinRemoteAddrs {
+		if validRemoteAddress(remoteAddr) {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf("%s.swarm.allowed_join_remote_addrs entries must be bare host[:port] values, got %q", prefix, remoteAddr),
+		)
+	}
+
+	for _, registry := range cfg.Plugin.AllowedRegistries {
+		if _, ok := normalizeAllowedRegistryHost(registry); ok {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf("%s.plugin.allowed_registries entries must be bare registry hosts, got %q", prefix, registry),
+		)
+	}
+
+	for _, rawPath := range cfg.Plugin.AllowedBindMounts {
+		if _, ok := normalizeAllowedBindMount(rawPath); ok {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf(
+				"%s.plugin.allowed_bind_mounts entries must be absolute host paths, got %q",
+				prefix,
+				rawPath,
+			),
+		)
+	}
+
+	for _, rawPath := range cfg.Plugin.AllowedDevices {
+		if _, ok := normalizeAllowedBindMount(rawPath); ok {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf(
+				"%s.plugin.allowed_devices entries must be absolute host paths, got %q",
+				prefix,
+				rawPath,
+			),
+		)
+	}
+
+	for _, capability := range cfg.Plugin.AllowedCapabilities {
+		if validPluginCapability(capability) {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf("%s.plugin.allowed_capabilities entries must be non-empty capability names, got %q", prefix, capability),
+		)
+	}
+
+	for _, rawPrefix := range cfg.Plugin.AllowedSetEnvPrefixes {
+		if validPluginSetEnvPrefix(rawPrefix) {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf("%s.plugin.allowed_set_env_prefixes entries must be non-empty env assignment prefixes, got %q", prefix, rawPrefix),
 		)
 	}
 
@@ -386,6 +536,23 @@ func normalizeAllowedRegistryHost(value string) (string, bool) {
 	default:
 		return trimmed, true
 	}
+}
+
+func validRemoteAddress(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || strings.Contains(trimmed, "://") || strings.Contains(trimmed, "/") {
+		return false
+	}
+	return !strings.ContainsAny(trimmed, " \t\r\n")
+}
+
+func validPluginSetEnvPrefix(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return trimmed != "" && strings.Contains(trimmed, "=") && !strings.ContainsAny(trimmed, " \t\r\n")
+}
+
+func validPluginCapability(value string) bool {
+	return strings.TrimSpace(value) != ""
 }
 
 func validateVisibleResourceLabels(prefix string, values []string) []string {

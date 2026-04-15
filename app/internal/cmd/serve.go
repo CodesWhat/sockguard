@@ -173,6 +173,7 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 			RedactContainerEnv:    cfg.Response.RedactContainerEnv,
 			RedactMountPaths:      cfg.Response.RedactMountPaths,
 			RedactNetworkTopology: cfg.Response.RedactNetworkTopology,
+			RedactSensitiveData:   cfg.Response.RedactSensitiveData,
 		}).ModifyResponse,
 	})
 	var handler http.Handler = upstream
@@ -217,6 +218,48 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 			AllowHostNetwork:     cfg.RequestBody.Build.AllowHostNetwork,
 			AllowRunInstructions: cfg.RequestBody.Build.AllowRunInstructions,
 		},
+		Volume: filter.VolumeOptions{
+			AllowCustomDrivers: cfg.RequestBody.Volume.AllowCustomDrivers,
+			AllowDriverOpts:    cfg.RequestBody.Volume.AllowDriverOpts,
+		},
+		Secret: filter.SecretOptions{
+			AllowCustomDrivers:   cfg.RequestBody.Secret.AllowCustomDrivers,
+			AllowTemplateDrivers: cfg.RequestBody.Secret.AllowTemplateDrivers,
+		},
+		ConfigWrite: filter.ConfigWriteOptions{
+			AllowCustomDrivers:   cfg.RequestBody.Config.AllowCustomDrivers,
+			AllowTemplateDrivers: cfg.RequestBody.Config.AllowTemplateDrivers,
+		},
+		Service: filter.ServiceOptions{
+			AllowHostNetwork:   cfg.RequestBody.Service.AllowHostNetwork,
+			AllowedBindMounts:  cfg.RequestBody.Service.AllowedBindMounts,
+			AllowAllRegistries: cfg.RequestBody.Service.AllowAllRegistries,
+			AllowOfficial:      cfg.RequestBody.Service.AllowOfficial,
+			AllowedRegistries:  cfg.RequestBody.Service.AllowedRegistries,
+		},
+		Swarm: filter.SwarmOptions{
+			AllowForceNewCluster:          cfg.RequestBody.Swarm.AllowForceNewCluster,
+			AllowExternalCA:               cfg.RequestBody.Swarm.AllowExternalCA,
+			AllowedJoinRemoteAddrs:        cfg.RequestBody.Swarm.AllowedJoinRemoteAddrs,
+			AllowTokenRotation:            cfg.RequestBody.Swarm.AllowTokenRotation,
+			AllowManagerUnlockKeyRotation: cfg.RequestBody.Swarm.AllowManagerUnlockKeyRotation,
+			AllowAutoLockManagers:         cfg.RequestBody.Swarm.AllowAutoLockManagers,
+			AllowSigningCAUpdate:          cfg.RequestBody.Swarm.AllowSigningCAUpdate,
+		},
+		Plugin: filter.PluginOptions{
+			AllowHostNetwork:      cfg.RequestBody.Plugin.AllowHostNetwork,
+			AllowIPCHost:          cfg.RequestBody.Plugin.AllowIPCHost,
+			AllowPIDHost:          cfg.RequestBody.Plugin.AllowPIDHost,
+			AllowAllDevices:       cfg.RequestBody.Plugin.AllowAllDevices,
+			AllowedBindMounts:     cfg.RequestBody.Plugin.AllowedBindMounts,
+			AllowedDevices:        cfg.RequestBody.Plugin.AllowedDevices,
+			AllowAllCapabilities:  cfg.RequestBody.Plugin.AllowAllCapabilities,
+			AllowedCapabilities:   cfg.RequestBody.Plugin.AllowedCapabilities,
+			AllowAllRegistries:    cfg.RequestBody.Plugin.AllowAllRegistries,
+			AllowOfficial:         cfg.RequestBody.Plugin.AllowOfficial,
+			AllowedRegistries:     cfg.RequestBody.Plugin.AllowedRegistries,
+			AllowedSetEnvPrefixes: cfg.RequestBody.Plugin.AllowedSetEnvPrefixes,
+		},
 		Profiles:       clientProfiles,
 		ResolveProfile: clientacl.RequestProfile,
 	})(handler)
@@ -239,8 +282,11 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 			ClientCertificates: clientCertificateProfiles(
 				cfg.Clients.ClientCertificateProfiles,
 			),
+			UnixPeers: clientUnixPeerProfiles(cfg.Clients.UnixPeerProfiles),
 		},
 	})(handler)
+
+	handler = logging.RequestIDMiddleware()(handler)
 
 	if cfg.Log.AccessLog {
 		handler = logging.AccessLogMiddleware(logger)(handler)
@@ -266,6 +312,23 @@ func clientCertificateProfiles(values []config.ClientCertificateProfileAssignmen
 		assignments = append(assignments, clientacl.ClientCertificateProfileAssignment{
 			Profile:     value.Profile,
 			CommonNames: value.CommonNames,
+			DNSNames:    value.DNSNames,
+			IPAddresses: value.IPAddresses,
+			URISANs:     value.URISANs,
+			SPIFFEIDs:   value.SPIFFEIDs,
+		})
+	}
+	return assignments
+}
+
+func clientUnixPeerProfiles(values []config.ClientUnixPeerProfileAssignmentConfig) []clientacl.UnixPeerProfileAssignment {
+	assignments := make([]clientacl.UnixPeerProfileAssignment, 0, len(values))
+	for _, value := range values {
+		assignments = append(assignments, clientacl.UnixPeerProfileAssignment{
+			Profile: value.Profile,
+			UIDs:    value.UIDs,
+			GIDs:    value.GIDs,
+			PIDs:    value.PIDs,
 		})
 	}
 	return assignments
@@ -283,7 +346,8 @@ func clientVisibilityProfiles(values []config.ClientProfileConfig) map[string]vi
 
 func newHTTPServer(handler http.Handler) *http.Server {
 	return &http.Server{
-		Handler: handler,
+		Handler:     handler,
+		ConnContext: clientacl.ConnContext,
 		// Docker attach/logs/events can hold request/response bodies open for long periods.
 		// A non-zero ReadTimeout breaks those streaming APIs, so we intentionally leave it disabled.
 		// WriteTimeout stays disabled for the same reason: long-lived streamed responses and hijacked

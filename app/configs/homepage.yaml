@@ -16,6 +16,9 @@ health:
   enabled: true
   path: /health
 
+# Preserve broad Homepage read compatibility, including raw archive/export paths.
+insecure_allow_read_exfiltration: true
+
 rules:
   # Health and metadata
   - match: { method: GET, path: "/_ping" }

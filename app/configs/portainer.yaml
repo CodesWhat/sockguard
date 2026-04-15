@@ -37,6 +37,7 @@ request_body:
     allow_run_instructions: true
 
 insecure_allow_body_blind_writes: true
+insecure_allow_read_exfiltration: true
 
 rules:
   # Health and metadata

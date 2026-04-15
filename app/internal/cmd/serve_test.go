@@ -929,6 +929,57 @@ func TestBuildServeHandlerAppliesAssignedClientVisibilityProfile(t *testing.T) {
 	}
 }
 
+func TestBuildServeHandlerGeneratesTrustedRequestIDWithoutAccessLog(t *testing.T) {
+	socketPath := shortSocketPath(t, "request-id-upstream")
+	_ = os.Remove(socketPath)
+
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"request_id":"`+r.Header.Get("X-Request-ID")+`"}`)
+	}))
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/info"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/info", nil)
+	req.Header.Set("X-Request-ID", "client-123")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nbody: %s", err, rec.Body.String())
+	}
+
+	generatedID := body["request_id"]
+	if generatedID == "" {
+		t.Fatal("expected generated request id upstream, got empty string")
+	}
+	if generatedID == "client-123" {
+		t.Fatalf("expected generated request id to replace caller header, got %q", generatedID)
+	}
+	if got := rec.Header().Get("X-Request-Id"); got != generatedID {
+		t.Fatalf("response X-Request-Id = %q, want %q", got, generatedID)
+	}
+}
+
 func TestListenerAddr(t *testing.T) {
 	withSocket := &config.Config{
 		Listen: config.ListenConfig{
@@ -991,6 +1042,7 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 	var handler http.Handler = upstream
 	handler = filter.Middleware(rules, logger)(handler)
 	handler = healthInterceptor("/health", healthHandler, handler)
+	handler = logging.RequestIDMiddleware()(handler)
 	handler = logging.AccessLogMiddleware(logger)(handler)
 
 	healthReq := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -1061,6 +1113,9 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 	}
 	if server.MaxHeaderBytes != maxHeaderBytes {
 		t.Fatalf("MaxHeaderBytes = %d, want %d", server.MaxHeaderBytes, maxHeaderBytes)
+	}
+	if server.ConnContext == nil {
+		t.Fatal("ConnContext is nil, want client identity capture hook")
 	}
 }
 

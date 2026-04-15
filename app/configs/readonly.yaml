@@ -16,6 +16,10 @@ health:
   enabled: true
   path: /health
 
+# This preset intentionally exposes all Docker read endpoints, including raw
+# archive/export paths, so it must acknowledge the read exfiltration guardrail.
+insecure_allow_read_exfiltration: true
+
 rules:
   # Docker's /_ping supports HEAD — allow it explicitly
   - match: { method: HEAD, path: "/_ping" }

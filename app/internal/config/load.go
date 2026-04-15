@@ -35,6 +35,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("response.redact_container_env", defaults.Response.RedactContainerEnv)
 	v.SetDefault("response.redact_mount_paths", defaults.Response.RedactMountPaths)
 	v.SetDefault("response.redact_network_topology", defaults.Response.RedactNetworkTopology)
+	v.SetDefault("response.redact_sensitive_data", defaults.Response.RedactSensitiveData)
 	v.SetDefault("response.visible_resource_labels", defaults.Response.VisibleResourceLabels)
 	v.SetDefault("request_body.container_create.allow_privileged", defaults.RequestBody.ContainerCreate.AllowPrivileged)
 	v.SetDefault("request_body.container_create.allow_host_network", defaults.RequestBody.ContainerCreate.AllowHostNetwork)
@@ -49,12 +50,43 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("request_body.build.allow_remote_context", defaults.RequestBody.Build.AllowRemoteContext)
 	v.SetDefault("request_body.build.allow_host_network", defaults.RequestBody.Build.AllowHostNetwork)
 	v.SetDefault("request_body.build.allow_run_instructions", defaults.RequestBody.Build.AllowRunInstructions)
+	v.SetDefault("request_body.volume.allow_custom_drivers", defaults.RequestBody.Volume.AllowCustomDrivers)
+	v.SetDefault("request_body.volume.allow_driver_opts", defaults.RequestBody.Volume.AllowDriverOpts)
+	v.SetDefault("request_body.secret.allow_custom_drivers", defaults.RequestBody.Secret.AllowCustomDrivers)
+	v.SetDefault("request_body.secret.allow_template_drivers", defaults.RequestBody.Secret.AllowTemplateDrivers)
+	v.SetDefault("request_body.config.allow_custom_drivers", defaults.RequestBody.Config.AllowCustomDrivers)
+	v.SetDefault("request_body.config.allow_template_drivers", defaults.RequestBody.Config.AllowTemplateDrivers)
+	v.SetDefault("request_body.service.allow_host_network", defaults.RequestBody.Service.AllowHostNetwork)
+	v.SetDefault("request_body.service.allowed_bind_mounts", defaults.RequestBody.Service.AllowedBindMounts)
+	v.SetDefault("request_body.service.allow_all_registries", defaults.RequestBody.Service.AllowAllRegistries)
+	v.SetDefault("request_body.service.allow_official", defaults.RequestBody.Service.AllowOfficial)
+	v.SetDefault("request_body.service.allowed_registries", defaults.RequestBody.Service.AllowedRegistries)
+	v.SetDefault("request_body.swarm.allow_force_new_cluster", defaults.RequestBody.Swarm.AllowForceNewCluster)
+	v.SetDefault("request_body.swarm.allow_external_ca", defaults.RequestBody.Swarm.AllowExternalCA)
+	v.SetDefault("request_body.swarm.allowed_join_remote_addrs", defaults.RequestBody.Swarm.AllowedJoinRemoteAddrs)
+	v.SetDefault("request_body.swarm.allow_token_rotation", defaults.RequestBody.Swarm.AllowTokenRotation)
+	v.SetDefault("request_body.swarm.allow_manager_unlock_key_rotation", defaults.RequestBody.Swarm.AllowManagerUnlockKeyRotation)
+	v.SetDefault("request_body.swarm.allow_auto_lock_managers", defaults.RequestBody.Swarm.AllowAutoLockManagers)
+	v.SetDefault("request_body.swarm.allow_signing_ca_update", defaults.RequestBody.Swarm.AllowSigningCAUpdate)
+	v.SetDefault("request_body.plugin.allow_host_network", defaults.RequestBody.Plugin.AllowHostNetwork)
+	v.SetDefault("request_body.plugin.allow_ipc_host", defaults.RequestBody.Plugin.AllowIPCHost)
+	v.SetDefault("request_body.plugin.allow_pid_host", defaults.RequestBody.Plugin.AllowPIDHost)
+	v.SetDefault("request_body.plugin.allow_all_devices", defaults.RequestBody.Plugin.AllowAllDevices)
+	v.SetDefault("request_body.plugin.allowed_bind_mounts", defaults.RequestBody.Plugin.AllowedBindMounts)
+	v.SetDefault("request_body.plugin.allowed_devices", defaults.RequestBody.Plugin.AllowedDevices)
+	v.SetDefault("request_body.plugin.allow_all_capabilities", defaults.RequestBody.Plugin.AllowAllCapabilities)
+	v.SetDefault("request_body.plugin.allowed_capabilities", defaults.RequestBody.Plugin.AllowedCapabilities)
+	v.SetDefault("request_body.plugin.allow_all_registries", defaults.RequestBody.Plugin.AllowAllRegistries)
+	v.SetDefault("request_body.plugin.allow_official", defaults.RequestBody.Plugin.AllowOfficial)
+	v.SetDefault("request_body.plugin.allowed_registries", defaults.RequestBody.Plugin.AllowedRegistries)
+	v.SetDefault("request_body.plugin.allowed_set_env_prefixes", defaults.RequestBody.Plugin.AllowedSetEnvPrefixes)
 	v.SetDefault("clients.allowed_cidrs", defaults.Clients.AllowedCIDRs)
 	v.SetDefault("clients.container_labels.enabled", defaults.Clients.ContainerLabels.Enabled)
 	v.SetDefault("clients.container_labels.label_prefix", defaults.Clients.ContainerLabels.LabelPrefix)
 	v.SetDefault("clients.default_profile", defaults.Clients.DefaultProfile)
 	v.SetDefault("clients.source_ip_profiles", defaults.Clients.SourceIPProfiles)
 	v.SetDefault("clients.client_certificate_profiles", defaults.Clients.ClientCertificateProfiles)
+	v.SetDefault("clients.unix_peer_profiles", defaults.Clients.UnixPeerProfiles)
 	v.SetDefault("clients.profiles", defaults.Clients.Profiles)
 	v.SetDefault("ownership.owner", defaults.Ownership.Owner)
 	v.SetDefault("ownership.label_key", defaults.Ownership.LabelKey)
@@ -62,6 +94,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("health.enabled", defaults.Health.Enabled)
 	v.SetDefault("health.path", defaults.Health.Path)
 	v.SetDefault("insecure_allow_body_blind_writes", defaults.InsecureAllowBodyBlindWrites)
+	v.SetDefault("insecure_allow_read_exfiltration", defaults.InsecureAllowReadExfiltration)
 
 	// Read YAML file if it exists
 	if configPath != "" {
@@ -86,6 +119,8 @@ func Load(configPath string) (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
 	}
+
+	applyCompatEnvAliases(&cfg)
 
 	// If no rules came from YAML, use defaults
 	if len(cfg.Rules) == 0 {
