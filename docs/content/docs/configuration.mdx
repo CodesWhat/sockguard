@@ -208,11 +208,13 @@ clients:
 
 Setting `ownership.owner` turns on per-proxy resource ownership isolation. Sockguard will:
 
-- Add `ownership.label_key=ownership.owner` to `POST /containers/create`, `/networks/create`, `/volumes/create`, `/services/create`, `/services/*/update`, `/secrets/create`, and `/configs/create`
+- Add `ownership.label_key=ownership.owner` to `POST /containers/create`, `/networks/create`, `/volumes/create`, `/services/create`, `/services/*/update`, `/secrets/create`, `/configs/create`, `/nodes/*/update`, and `/swarm/update`
 - Stamp service writes at both `Labels` and `TaskTemplate.ContainerSpec.Labels` so downstream tasks inherit the same owner identity
 - Add the same label to `POST /build` via the `labels` query parameter so build-produced images can carry the owner identity too
-- Inject `label=<owner>` filters into list, prune, and events requests, including `/services`, `/tasks`, `/secrets`, and `/configs`, so responses only reveal resources owned by this proxy instance
-- Inspect target resources on individual `GET`, `POST`, `PUT`, and `DELETE` paths and deny cross-owner access to owned containers, images, networks, volumes, services, tasks, secrets, and configs
+- Inject `label=<owner>` filters into list, prune, and events requests, including `/services`, `/tasks`, `/secrets`, `/configs`, and `/nodes` (`node.label=<owner>` there), so responses only reveal resources owned by this proxy instance
+- Inspect target resources on individual `GET`, `POST`, `PUT`, and `DELETE` paths and deny cross-owner access to owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state
+
+Unlabeled nodes and swarm state are denied on reads once ownership is enabled. They can still be claimed through `POST /nodes/*/update` and `POST /swarm/update`, where Sockguard stamps the current owner label into the outgoing update body before forwarding it to Docker.
 
 `allow_unowned_images` defaults to `true` so shared base images can still be pulled and inspected without relabeling. Set it to `false` in tighter multi-tenant setups.
 

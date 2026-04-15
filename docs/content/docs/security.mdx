@@ -61,7 +61,7 @@ Sockguard now applies the same honesty rule to raw archive/export reads. Validat
 Future body-inspection additions on the roadmap: the remaining blind-write endpoints above, plus deeper secure-create rails such as escalation capabilities like `SYS_ADMIN`/`NET_ADMIN`, broader device policy, `allowPrivilegeEscalation` / non-root rails, and security profile overrides.
 
 ### Layer 6: Owner Label Isolation
-When `ownership.owner` is set, Sockguard stamps label-capable creates and build-produced images with an owner label, injects `label=` filters into list/prune/events responses, and inspects target resources on individual requests to deny cross-owner access. That now covers owned containers, images, networks, volumes, services, tasks, secrets, and configs, with service writes stamping both the service and its task template so downstream tasks inherit the same owner identity. This turns one shared Docker socket into N isolated identity views.
+When `ownership.owner` is set, Sockguard stamps label-capable creates and build-produced images with an owner label, injects owner filters into list/prune/events responses, and inspects target resources on individual requests to deny cross-owner access. That now covers owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state, with service writes stamping both the service and its task template so downstream tasks inherit the same owner identity, `/nodes` using Docker's `node.label` filter key, and unlabeled node/swarm resources only claimable through their update paths. This turns one shared Docker socket into N isolated identity views.
 
 ### Layer 7: Visibility-Controlled Reads
 Sockguard now filters successful Docker read responses and narrows read visibility itself:

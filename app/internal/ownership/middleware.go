@@ -57,6 +57,8 @@ const (
 	resourceKindTask      resourceKind = "tasks"
 	resourceKindSecret    resourceKind = "secrets"
 	resourceKindConfig    resourceKind = "configs"
+	resourceKindNode      resourceKind = "nodes"
+	resourceKindSwarm     resourceKind = "swarm"
 )
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -152,6 +154,8 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) erro
 		return addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case normPath == "/services/create", isServiceUpdatePath(normPath):
 		return addOwnerLabelToServiceBody(r, opts.LabelKey, opts.Owner)
+	case isNodeUpdatePath(normPath), isSwarmUpdatePath(normPath):
+		return addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case normPath == "/build":
 		return addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
 	case needsOwnerFilter(normPath):
@@ -195,6 +199,12 @@ func allowOwnershipRequest(ctx context.Context, normPath string, opts Options, d
 	}
 	if identifier, ok := configIdentifier(normPath); ok {
 		return checkOwnedResource(ctx, deps, resourceKindConfig, identifier, opts, false)
+	}
+	if identifier, ok := nodeIdentifier(normPath); ok {
+		return checkOwnedResource(ctx, deps, resourceKindNode, identifier, opts, isNodeUpdatePath(normPath))
+	}
+	if isSwarmPath(normPath) || isSwarmUpdatePath(normPath) {
+		return checkOwnedResource(ctx, deps, resourceKindSwarm, "", opts, isSwarmUpdatePath(normPath))
 	}
 	return verdictPassThrough, "", nil
 }
@@ -242,6 +252,10 @@ func singularResource(kind resourceKind) string {
 		return "secret"
 	case resourceKindConfig:
 		return "config"
+	case resourceKindNode:
+		return "node"
+	case resourceKindSwarm:
+		return "swarm"
 	default:
 		return string(kind)
 	}
@@ -249,7 +263,7 @@ func singularResource(kind resourceKind) string {
 
 func needsOwnerFilter(normPath string) bool {
 	switch normPath {
-	case "/events", "/containers/json", "/containers/prune", "/images/json", "/images/prune", "/networks", "/networks/prune", "/volumes", "/volumes/prune", "/services", "/tasks", "/secrets", "/configs":
+	case "/events", "/containers/json", "/containers/prune", "/images/json", "/images/prune", "/networks", "/networks/prune", "/volumes", "/volumes/prune", "/services", "/tasks", "/secrets", "/configs", "/nodes":
 		return true
 	default:
 		return false
@@ -382,6 +396,33 @@ func configIdentifier(normPath string) (string, bool) {
 	}
 }
 
+func nodeIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/nodes/") {
+		return "", false
+	}
+	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/nodes/"), "/")
+	if identifier == "" {
+		return "", false
+	}
+	return identifier, true
+}
+
+func isNodeUpdatePath(normPath string) bool {
+	if !strings.HasPrefix(normPath, "/nodes/") {
+		return false
+	}
+	identifier, tail, ok := strings.Cut(strings.TrimPrefix(normPath, "/nodes/"), "/")
+	return ok && identifier != "" && tail == "update"
+}
+
+func isSwarmPath(normPath string) bool {
+	return normPath == "/swarm"
+}
+
+func isSwarmUpdatePath(normPath string) bool {
+	return normPath == "/swarm/update"
+}
+
 func addOwnerLabelToBody(r *http.Request, labelKey, owner string) error {
 	return mutateJSONBody(r, func(decoded map[string]any) error {
 		labels, err := nestedObject(decoded, "Labels")
@@ -431,14 +472,22 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	if err != nil {
 		return err
 	}
+	filterKey := ownerFilterKey(filter.NormalizePath(r.URL.Path))
 	label := labelKey + "=" + owner
-	if !slices.Contains(filters["label"], label) {
-		filters["label"] = append(filters["label"], label)
+	if !slices.Contains(filters[filterKey], label) {
+		filters[filterKey] = append(filters[filterKey], label)
 	}
 	encoded, _ := json.Marshal(filters)
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
 	return nil
+}
+
+func ownerFilterKey(normPath string) string {
+	if normPath == "/nodes" {
+		return "node.label"
+	}
+	return "label"
 }
 
 // decodeDockerFilters parses Docker's `filters` query parameter into a
@@ -584,6 +633,10 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind resourceKin
 		target = "/secrets/" + url.PathEscape(identifier)
 	case resourceKindConfig:
 		target = "/configs/" + url.PathEscape(identifier)
+	case resourceKindNode:
+		target = "/nodes/" + url.PathEscape(identifier)
+	case resourceKindSwarm:
+		target = "/swarm"
 	default:
 		return nil, false, fmt.Errorf("unsupported resource kind %q", kind)
 	}
@@ -678,7 +731,7 @@ func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string,
 			return nil, err
 		}
 		return payload.Labels, nil
-	case resourceKindService, resourceKindSecret, resourceKindConfig:
+	case resourceKindService, resourceKindSecret, resourceKindConfig, resourceKindNode, resourceKindSwarm:
 		var payload struct {
 			Spec struct {
 				Labels map[string]string `json:"Labels"`

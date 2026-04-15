@@ -58,7 +58,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Stamp label-capable creates and build images with an owner label. Labeled list, prune, and event reads are auto-filtered, and cross-owner access is denied across workload and control-plane resources.",
+      "Stamp label-capable creates, node/swarm claim updates, and build images with an owner label. Labeled list, prune, and event reads are auto-filtered, and cross-owner access is denied across workload and control-plane resources.",
     category: "control",
   },
   {
