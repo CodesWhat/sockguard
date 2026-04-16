@@ -22,6 +22,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  GORELEASER_VERSION: v2.15.3
+
 jobs:
   zizmor:
     name: "🔒 Workflow Security"
@@ -183,7 +186,7 @@ jobs:
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29  # v7.0.0
         with:
           distribution: goreleaser
-          version: latest
+          version: ${{ env.GORELEASER_VERSION }}
           args: check
           workdir: app
 

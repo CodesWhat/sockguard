@@ -13,6 +13,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GOVULNCHECK_VERSION: v1.2.0
+
 concurrency:
   group: security-weekly-${{ github.workflow }}
   cancel-in-progress: true
@@ -39,7 +42,7 @@ jobs:
           go-version-file: app/go.mod
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+        run: go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
 
       - name: Run govulncheck
         working-directory: app
@@ -51,6 +54,7 @@ jobs:
           {
             echo "### Govulncheck"
             echo "- Scanned Go dependencies for known vulnerabilities"
+            echo "- Tool version: ${GOVULNCHECK_VERSION}"
             echo "- Database: Go Vulnerability Database (vuln.go.dev)"
           } >> "$GITHUB_STEP_SUMMARY"
 

@@ -217,7 +217,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image. Cosign-signed with SBOM and build provenance. |
 | ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
 | 🩺 | **Health Check** | `/health` endpoint with cached upstream reachability probes. |
-| 🧪 | **Battle-Tested** | ~99% statement coverage, race-detector clean, fuzz testing on filter, config, proxy, and hijack paths. |
+| 🧪 | **Battle-Tested** | ~99% statement coverage, race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
 
 <hr>
 

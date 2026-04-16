@@ -109,7 +109,14 @@ jobs:
       - name: Run extended fuzz (5 minutes)
         working-directory: app
         run: |
-          go test -fuzz=${{ matrix.target }} -fuzztime=5m -timeout=10m ${{ matrix.package }}
+          # Keep the monthly extended-fuzz invocation aligned with the other
+          # fuzz tiers: skip normal tests and let the job timeout, not the test
+          # binary's default timeout, be the real ceiling.
+          go test -run='^$' \
+            -fuzz="^${{ matrix.target }}$" \
+            -fuzztime=5m \
+            -timeout=0 \
+            "${{ matrix.package }}"
 
       - name: Upload fuzz corpus
         if: always()
