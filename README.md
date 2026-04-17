@@ -144,6 +144,7 @@ services:
 
 Non-loopback TCP without `listen.tls` fails startup unless you explicitly set `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true`.
 Sockguard's server-side TLS minimum for `listen.tls` is TLS 1.3, so remote clients must support TLS 1.3.
+If one client CA issues multiple workloads, narrow the trusted set further in YAML with `listen.tls.allowed_common_names`, `allowed_dns_names`, `allowed_ip_addresses`, `allowed_uri_sans`, and/or `allowed_public_key_sha256_pins` so any CA-issued client cert is not automatically accepted.
 
 </details>
 
@@ -204,7 +205,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 |---|---|---|
 | 🛡️ | **Default-Deny Posture** | Everything blocked unless explicitly allowed. No match means deny. |
 | 🎛️ | **Granular Control** | Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching. |
-| 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation. 10 bundled presets. |
+| 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 10 bundled presets. |
 | 📊 | **Structured Access Logging** | JSON access logs with method, path, decision, matched rule, latency, canonical request ID, and client info. Canonical request IDs are generated from a buffered pool so request logging does not block on a fresh entropy read per request. |
 | 🔐 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
 | 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks, client-container label ACLs, certificate selectors, and unix peer credentials let one proxy differentiate callers before the global rule set runs. When mTLS is enabled, certificate selectors follow the verified client leaf certificate rather than an unverified peer slice entry. |
@@ -276,6 +277,10 @@ listen:
     cert_file: /run/secrets/sockguard/server-cert.pem
     key_file: /run/secrets/sockguard/server-key.pem
     client_ca_file: /run/secrets/sockguard/client-ca.pem
+    allowed_dns_names:
+      - portainer.internal
+    allowed_uri_sans:
+      - spiffe://sockguard.test/workload/portainer
 
 insecure_allow_body_blind_writes: false
 insecure_allow_read_exfiltration: false
@@ -341,7 +346,7 @@ rules:
 
 Trailing `/**` matches both the base path and any deeper path. For example, `/containers/**` matches `/containers` and `/containers/abc/json`.
 
-`listen.tls` is only needed when you expose Sockguard on non-loopback TCP. Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`, which is intended only for legacy compatibility on a private, trusted network.
+`listen.tls` is only needed when you expose Sockguard on non-loopback TCP. Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`, which is intended only for legacy compatibility on a private, trusted network. `listen.tls.client_ca_file` still defines the issuing trust root, and the optional `listen.tls.allowed_common_names`, `allowed_dns_names`, `allowed_ip_addresses`, `allowed_uri_sans`, and `allowed_public_key_sha256_pins` fields let you narrow that trust to specific verified client leaves. Different selector fields are ANDed, while entries inside one field are ORed.
 
 Allowed `POST /containers/create` requests are inspected by default. Unless you opt out, Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, and any bind mount source outside `request_body.container_create.allowed_bind_mounts`. Named volumes still work without allowlist entries because they are not host bind mounts.
 
