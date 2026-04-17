@@ -29,9 +29,14 @@ type ListenConfig struct {
 
 // ListenTLSConfig configures mutual TLS for TCP listeners.
 type ListenTLSConfig struct {
-	CertFile     string `mapstructure:"cert_file"`
-	KeyFile      string `mapstructure:"key_file"`
-	ClientCAFile string `mapstructure:"client_ca_file"`
+	CertFile                   string   `mapstructure:"cert_file"`
+	KeyFile                    string   `mapstructure:"key_file"`
+	ClientCAFile               string   `mapstructure:"client_ca_file"`
+	AllowedCommonNames         []string `mapstructure:"allowed_common_names"`
+	AllowedDNSNames            []string `mapstructure:"allowed_dns_names"`
+	AllowedIPAddresses         []string `mapstructure:"allowed_ip_addresses"`
+	AllowedURISANs             []string `mapstructure:"allowed_uri_sans"`
+	AllowedPublicKeySHA256Pins []string `mapstructure:"allowed_public_key_sha256_pins"`
 }
 
 // UpstreamConfig configures the upstream Docker socket.

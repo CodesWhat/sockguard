@@ -566,6 +566,16 @@ listen:
     cert_file: /certs/server.pem
     key_file: /certs/server-key.pem
     client_ca_file: /certs/ca.pem
+    allowed_common_names:
+      - portainer-admin
+    allowed_dns_names:
+      - portainer.internal
+    allowed_ip_addresses:
+      - 192.0.2.44
+    allowed_uri_sans:
+      - spiffe://sockguard.test/workload/portainer
+    allowed_public_key_sha256_pins:
+      - 7f83b1657ff1fc53b92dc18148a1d65dfa135014fbf4f5e7d68b5b2f5d7f2e2c
 clients:
   default_profile: readonly
   source_ip_profiles:
@@ -626,6 +636,21 @@ clients:
 
 	if cfg.Clients.DefaultProfile != "readonly" {
 		t.Fatalf("Clients.DefaultProfile = %q, want readonly", cfg.Clients.DefaultProfile)
+	}
+	if got := cfg.Listen.TLS.AllowedCommonNames; len(got) != 1 || got[0] != "portainer-admin" {
+		t.Fatalf("Listen.TLS.AllowedCommonNames = %#v, want [portainer-admin]", got)
+	}
+	if got := cfg.Listen.TLS.AllowedDNSNames; len(got) != 1 || got[0] != "portainer.internal" {
+		t.Fatalf("Listen.TLS.AllowedDNSNames = %#v, want [portainer.internal]", got)
+	}
+	if got := cfg.Listen.TLS.AllowedIPAddresses; len(got) != 1 || got[0] != "192.0.2.44" {
+		t.Fatalf("Listen.TLS.AllowedIPAddresses = %#v, want [192.0.2.44]", got)
+	}
+	if got := cfg.Listen.TLS.AllowedURISANs; len(got) != 1 || got[0] != "spiffe://sockguard.test/workload/portainer" {
+		t.Fatalf("Listen.TLS.AllowedURISANs = %#v, want [spiffe://sockguard.test/workload/portainer]", got)
+	}
+	if got := cfg.Listen.TLS.AllowedPublicKeySHA256Pins; len(got) != 1 || got[0] != "7f83b1657ff1fc53b92dc18148a1d65dfa135014fbf4f5e7d68b5b2f5d7f2e2c" {
+		t.Fatalf("Listen.TLS.AllowedPublicKeySHA256Pins = %#v, want configured pin", got)
 	}
 	if got := cfg.Clients.SourceIPProfiles; len(got) != 1 || got[0].Profile != "watchtower" || len(got[0].CIDRs) != 1 || got[0].CIDRs[0] != "172.18.0.0/16" {
 		t.Fatalf("Clients.SourceIPProfiles = %#v, want watchtower assignment", got)

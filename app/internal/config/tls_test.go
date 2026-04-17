@@ -2,6 +2,10 @@ package config
 
 import (
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +81,77 @@ func TestBuildMutualTLSServerConfig(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
+
+	t.Run("client identity allowlists and pins", func(t *testing.T) {
+		allowedLeaf := &x509.Certificate{
+			Subject:                 pkix.Name{CommonName: "allowed-client"},
+			DNSNames:                []string{"client.example.com"},
+			IPAddresses:             []net.IP{net.ParseIP("10.0.0.7")},
+			URIs:                    []*url.URL{mustParseURL(t, "spiffe://sockguard/client")},
+			RawSubjectPublicKeyInfo: []byte("allowed-client-key"),
+		}
+		blockedLeaf := &x509.Certificate{
+			Subject:                 pkix.Name{CommonName: "blocked-client"},
+			DNSNames:                []string{"blocked.example.com"},
+			IPAddresses:             []net.IP{net.ParseIP("10.0.0.9")},
+			URIs:                    []*url.URL{mustParseURL(t, "spiffe://sockguard/blocked")},
+			RawSubjectPublicKeyInfo: []byte("blocked-client-key"),
+		}
+
+		cfg, err := BuildMutualTLSServerConfig(ListenTLSConfig{
+			CertFile:                   bundle.ServerCertFile,
+			KeyFile:                    bundle.ServerKeyFile,
+			ClientCAFile:               bundle.CAFile,
+			AllowedCommonNames:         []string{"allowed-client"},
+			AllowedDNSNames:            []string{"client.example.com"},
+			AllowedIPAddresses:         []string{"10.0.0.7"},
+			AllowedURISANs:             []string{"spiffe://sockguard/client"},
+			AllowedPublicKeySHA256Pins: []string{subjectPublicKeySHA256Hex(allowedLeaf)},
+		})
+		if err != nil {
+			t.Fatalf("BuildMutualTLSServerConfig() error = %v", err)
+		}
+		if cfg.VerifyConnection == nil {
+			t.Fatal("VerifyConnection = nil, want client identity verifier")
+		}
+
+		if err := cfg.VerifyConnection(tls.ConnectionState{
+			VerifiedChains:   [][]*x509.Certificate{{allowedLeaf}},
+			PeerCertificates: []*x509.Certificate{allowedLeaf},
+		}); err != nil {
+			t.Fatalf("VerifyConnection(allowed leaf) error = %v, want nil", err)
+		}
+
+		err = cfg.VerifyConnection(tls.ConnectionState{
+			VerifiedChains:   [][]*x509.Certificate{{blockedLeaf}},
+			PeerCertificates: []*x509.Certificate{blockedLeaf},
+		})
+		if err == nil || !strings.Contains(err.Error(), "client certificate not allowed") {
+			t.Fatalf("VerifyConnection(blocked leaf) error = %v, want client certificate not allowed", err)
+		}
+	})
+
+	t.Run("invalid public key pin", func(t *testing.T) {
+		_, err := BuildMutualTLSServerConfig(ListenTLSConfig{
+			CertFile:                   bundle.ServerCertFile,
+			KeyFile:                    bundle.ServerKeyFile,
+			ClientCAFile:               bundle.CAFile,
+			AllowedPublicKeySHA256Pins: []string{"not-a-pin"},
+		})
+		if err == nil || !strings.Contains(err.Error(), "allowed_public_key_sha256_pins") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("url.Parse(%q): %v", raw, err)
+	}
+	return parsed
 }
 
 func TestIsLoopbackTCPAddress(t *testing.T) {

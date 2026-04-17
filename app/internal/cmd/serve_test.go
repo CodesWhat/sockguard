@@ -271,9 +271,10 @@ func TestCreateListenerTCPWithMutualTLS(t *testing.T) {
 		Listen: config.ListenConfig{
 			Address: "127.0.0.1:0",
 			TLS: config.ListenTLSConfig{
-				CertFile:     bundle.ServerCertFile,
-				KeyFile:      bundle.ServerKeyFile,
-				ClientCAFile: bundle.CAFile,
+				CertFile:           bundle.ServerCertFile,
+				KeyFile:            bundle.ServerKeyFile,
+				ClientCAFile:       bundle.CAFile,
+				AllowedCommonNames: []string{"sockguard-test-client"},
 			},
 		},
 	}
@@ -369,6 +370,60 @@ func TestCreateListenerTCPWithMutualTLSRejectsMissingClientCertificate(t *testin
 
 	if err := <-errCh; err == nil {
 		t.Fatal("expected listener handshake to fail without client certificate")
+	}
+}
+
+func TestCreateListenerTCPWithMutualTLSRejectsDisallowedClientCertificateIdentity(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("WriteMutualTLSBundle: %v", err)
+	}
+
+	cfg := &config.Config{
+		Listen: config.ListenConfig{
+			Address: "127.0.0.1:0",
+			TLS: config.ListenTLSConfig{
+				CertFile:           bundle.ServerCertFile,
+				KeyFile:            bundle.ServerKeyFile,
+				ClientCAFile:       bundle.CAFile,
+				AllowedCommonNames: []string{"different-client"},
+			},
+		},
+	}
+
+	ln, err := newServeDeps().createListener(cfg)
+	if err != nil {
+		t.Fatalf("createListener() error = %v", err)
+	}
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if tlsConn, ok := conn.(*tls.Conn); ok {
+			err = tlsConn.Handshake()
+		}
+		_ = conn.Close()
+		errCh <- err
+	}()
+
+	clientTLS, err := testcert.ClientTLSConfig(bundle, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("ClientTLSConfig: %v", err)
+	}
+
+	clientConn, err := tls.Dial(ln.Addr().Network(), ln.Addr().String(), clientTLS)
+	if err == nil {
+		_ = clientConn.Close()
+	}
+
+	if err := <-errCh; err == nil {
+		t.Fatal("expected listener handshake to fail for disallowed client certificate identity")
 	}
 }
 

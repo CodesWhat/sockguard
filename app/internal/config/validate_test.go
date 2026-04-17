@@ -60,6 +60,24 @@ func TestValidateRejectsIncompleteMutualTLSConfig(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMutualTLSClientIdentitySelectorsWithoutCertificates(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Address = ":2376"
+	cfg.Listen.Socket = ""
+	cfg.Listen.TLS.AllowedCommonNames = []string{"portainer"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for incomplete listen.tls config with identity selectors")
+	}
+	if !strings.Contains(err.Error(), "listen.tls") {
+		t.Fatalf("expected listen.tls error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cert_file, key_file, and client_ca_file together") {
+		t.Fatalf("expected listen.tls completeness hint, got: %v", err)
+	}
+}
+
 func TestValidateRejectsUnixSocketModeOtherThan0600(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Socket = "/tmp/sockguard.sock"

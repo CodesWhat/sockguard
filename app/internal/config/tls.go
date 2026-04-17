@@ -1,16 +1,28 @@
 package config
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"fmt"
 	"net"
+	"net/netip"
+	"net/url"
 	"os"
+	"strings"
 )
 
 // Enabled reports whether any listen.tls setting has been configured.
 func (cfg ListenTLSConfig) Enabled() bool {
-	return cfg.CertFile != "" || cfg.KeyFile != "" || cfg.ClientCAFile != ""
+	return cfg.CertFile != "" ||
+		cfg.KeyFile != "" ||
+		cfg.ClientCAFile != "" ||
+		len(cfg.AllowedCommonNames) > 0 ||
+		len(cfg.AllowedDNSNames) > 0 ||
+		len(cfg.AllowedIPAddresses) > 0 ||
+		len(cfg.AllowedURISANs) > 0 ||
+		len(cfg.AllowedPublicKeySHA256Pins) > 0
 }
 
 // Complete reports whether listen.tls has the full certificate, key, and
@@ -22,6 +34,11 @@ func (cfg ListenTLSConfig) Complete() bool {
 // BuildMutualTLSServerConfig builds a TLS server config that requires and
 // verifies client certificates for TCP listeners.
 func BuildMutualTLSServerConfig(cfg ListenTLSConfig) (*tls.Config, error) {
+	clientIdentity, err := compileClientCertificateIdentityConstraints(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("load listen.tls cert/key pair: %w", err)
@@ -37,12 +54,207 @@ func BuildMutualTLSServerConfig(cfg ListenTLSConfig) (*tls.Config, error) {
 		return nil, fmt.Errorf("parse listen.tls client_ca_file: no PEM certificates found")
 	}
 
-	return &tls.Config{
+	tlsConfig := &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{cert},
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    clientCAs,
-	}, nil
+	}
+	if clientIdentity.hasSelectors() {
+		tlsConfig.VerifyConnection = clientIdentity.verifyConnection
+	}
+
+	return tlsConfig, nil
+}
+
+type compiledClientCertificateIdentityConstraints struct {
+	commonNames         []string
+	dnsNames            []string
+	ipAddresses         []netip.Addr
+	uriSANs             []string
+	publicKeySHA256Pins []string
+}
+
+func compileClientCertificateIdentityConstraints(cfg ListenTLSConfig) (compiledClientCertificateIdentityConstraints, error) {
+	compiled := compiledClientCertificateIdentityConstraints{
+		commonNames:         make([]string, 0, len(cfg.AllowedCommonNames)),
+		dnsNames:            make([]string, 0, len(cfg.AllowedDNSNames)),
+		ipAddresses:         make([]netip.Addr, 0, len(cfg.AllowedIPAddresses)),
+		uriSANs:             make([]string, 0, len(cfg.AllowedURISANs)),
+		publicKeySHA256Pins: make([]string, 0, len(cfg.AllowedPublicKeySHA256Pins)),
+	}
+
+	values, err := normalizeNonEmptyStrings("listen.tls.allowed_common_names", cfg.AllowedCommonNames)
+	if err != nil {
+		return compiled, err
+	}
+	compiled.commonNames = append(compiled.commonNames, values...)
+
+	values, err = normalizeNonEmptyStrings("listen.tls.allowed_dns_names", cfg.AllowedDNSNames)
+	if err != nil {
+		return compiled, err
+	}
+	compiled.dnsNames = append(compiled.dnsNames, values...)
+
+	for _, raw := range cfg.AllowedIPAddresses {
+		trimmed := strings.TrimSpace(raw)
+		addr, err := netip.ParseAddr(trimmed)
+		if err != nil || !addr.IsValid() {
+			return compiled, fmt.Errorf("listen.tls.allowed_ip_addresses entries must be valid IP addresses, got %q", raw)
+		}
+		compiled.ipAddresses = append(compiled.ipAddresses, addr.Unmap())
+	}
+
+	for _, raw := range cfg.AllowedURISANs {
+		trimmed := strings.TrimSpace(raw)
+		parsed, err := url.Parse(trimmed)
+		if err != nil || parsed.String() == "" {
+			return compiled, fmt.Errorf("listen.tls.allowed_uri_sans entries must be valid URIs, got %q", raw)
+		}
+		compiled.uriSANs = append(compiled.uriSANs, parsed.String())
+	}
+
+	for _, raw := range cfg.AllowedPublicKeySHA256Pins {
+		pin, err := normalizeSubjectPublicKeySHA256Pin(raw)
+		if err != nil {
+			return compiled, fmt.Errorf("listen.tls.allowed_public_key_sha256_pins entries must be lowercase or uppercase hex SHA-256 digests, got %q", raw)
+		}
+		compiled.publicKeySHA256Pins = append(compiled.publicKeySHA256Pins, pin)
+	}
+
+	return compiled, nil
+}
+
+func (c compiledClientCertificateIdentityConstraints) hasSelectors() bool {
+	return len(c.commonNames) > 0 ||
+		len(c.dnsNames) > 0 ||
+		len(c.ipAddresses) > 0 ||
+		len(c.uriSANs) > 0 ||
+		len(c.publicKeySHA256Pins) > 0
+}
+
+func (c compiledClientCertificateIdentityConstraints) verifyConnection(state tls.ConnectionState) error {
+	leaf, err := verifiedClientCertificateLeaf(state)
+	if err != nil {
+		return fmt.Errorf("verify listen.tls client certificate identity: %w", err)
+	}
+	if !c.matches(leaf) {
+		return fmt.Errorf("verify listen.tls client certificate identity: client certificate not allowed")
+	}
+	return nil
+}
+
+func (c compiledClientCertificateIdentityConstraints) matches(cert *x509.Certificate) bool {
+	if cert == nil || !c.hasSelectors() {
+		return false
+	}
+	if len(c.commonNames) > 0 && !containsExactString(c.commonNames, strings.TrimSpace(cert.Subject.CommonName)) {
+		return false
+	}
+	if len(c.dnsNames) > 0 && !intersectsStrings(c.dnsNames, cert.DNSNames) {
+		return false
+	}
+	if len(c.ipAddresses) > 0 && !intersectsIPAddrs(c.ipAddresses, cert.IPAddresses) {
+		return false
+	}
+	if len(c.uriSANs) > 0 && !intersectsStrings(c.uriSANs, certificateURIStrings(cert)) {
+		return false
+	}
+	if len(c.publicKeySHA256Pins) > 0 && !containsExactString(c.publicKeySHA256Pins, subjectPublicKeySHA256Hex(cert)) {
+		return false
+	}
+	return true
+}
+
+func verifiedClientCertificateLeaf(state tls.ConnectionState) (*x509.Certificate, error) {
+	if len(state.VerifiedChains) == 0 || len(state.VerifiedChains[0]) == 0 {
+		return nil, fmt.Errorf("no verified client certificate")
+	}
+	return state.VerifiedChains[0][0], nil
+}
+
+func normalizeNonEmptyStrings(field string, values []string) ([]string, error) {
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return nil, fmt.Errorf("%s entries must be non-empty", field)
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized, nil
+}
+
+func normalizeSubjectPublicKeySHA256Pin(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("empty pin")
+	}
+	normalized := strings.ToLower(trimmed)
+	normalized = strings.TrimPrefix(normalized, "sha256:")
+	if len(normalized) != sha256.Size*2 {
+		return "", fmt.Errorf("invalid pin length")
+	}
+	if _, err := hex.DecodeString(normalized); err != nil {
+		return "", err
+	}
+	return normalized, nil
+}
+
+func containsExactString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func intersectsStrings(allowed []string, actual []string) bool {
+	for _, candidate := range actual {
+		if containsExactString(allowed, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func intersectsIPAddrs(allowed []netip.Addr, actual []net.IP) bool {
+	for _, candidate := range actual {
+		addr, ok := netip.AddrFromSlice(candidate)
+		if !ok {
+			continue
+		}
+		addr = addr.Unmap()
+		for _, allowedAddr := range allowed {
+			if allowedAddr == addr {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func certificateURIStrings(cert *x509.Certificate) []string {
+	if cert == nil || len(cert.URIs) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(cert.URIs))
+	for _, value := range cert.URIs {
+		if value == nil {
+			continue
+		}
+		values = append(values, value.String())
+	}
+	return values
+}
+
+func subjectPublicKeySHA256Hex(cert *x509.Certificate) string {
+	if cert == nil {
+		return ""
+	}
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return hex.EncodeToString(sum[:])
 }
 
 // IsLoopbackTCPAddress reports whether address resolves to a loopback TCP host.
