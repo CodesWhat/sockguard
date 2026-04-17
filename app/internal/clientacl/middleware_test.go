@@ -1,6 +1,7 @@
 package clientacl
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -127,6 +128,41 @@ func TestMiddlewareAssignsProfileFromClientCertificate(t *testing.T) {
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareLogsMatchedProfileStrategyAtDebugLevel(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := middlewareWithDeps(logger, Options{
+		Profiles: ProfileOptions{
+			SourceIPs: []SourceIPProfileAssignment{
+				{Profile: "watchtower", CIDRs: []string{"192.0.2.0/24"}},
+			},
+		},
+	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "client ACL profile matched") {
+		t.Fatalf("expected profile match log, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "strategy=source_ip") {
+		t.Fatalf("expected source_ip strategy in log, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "profile=watchtower") {
+		t.Fatalf("expected matched profile in log, got %q", logOutput)
 	}
 }
 
@@ -371,12 +407,162 @@ func TestMatchClientCertificateProfileSelectorSemantics(t *testing.T) {
 				PeerCertificates: []*x509.Certificate{tt.cert},
 			}
 
-			profile, ok := matchClientCertificateProfile(req, compiled.clientCertProfiles)
+			profile, ok := matchClientCertificateProfile(req, compiled.clientCertProfiles, compiled.clientCertProfileIndex)
 			if ok != tt.wantOK {
 				t.Fatalf("matchClientCertificateProfile() ok = %v, want %v", ok, tt.wantOK)
 			}
 			if profile != tt.wantProfile {
 				t.Fatalf("matchClientCertificateProfile() profile = %q, want %q", profile, tt.wantProfile)
+			}
+		})
+	}
+}
+
+func TestProfileLookupIndexesCacheSourceIPAndClientCertificateMatches(t *testing.T) {
+	compiled, err := compileOptions(Options{
+		Profiles: ProfileOptions{
+			SourceIPs: []SourceIPProfileAssignment{
+				{Profile: "watchtower", CIDRs: []string{"192.0.2.0/24"}},
+			},
+			ClientCertificates: []ClientCertificateProfileAssignment{
+				{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compileOptions() error = %v", err)
+	}
+
+	addr := netip.MustParseAddr("192.0.2.10")
+	profile, ok := matchSourceIPProfile(addr, compiled.sourceIPProfiles, compiled.sourceIPProfileIndex)
+	if !ok || profile != "watchtower" {
+		t.Fatalf("matchSourceIPProfile() = (%q, %v), want (watchtower, true)", profile, ok)
+	}
+	if cached, found := compiled.sourceIPProfileIndex.lookup(addr); !found || !cached.ok || cached.profile != "watchtower" {
+		t.Fatalf("source IP cache = (%#v, %v), want watchtower hit", cached, found)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{
+			{
+				Raw:     []byte("client-cert-raw"),
+				Subject: pkix.Name{CommonName: "portainer-admin"},
+			},
+		},
+	}
+
+	profile, ok = matchClientCertificateProfile(req, compiled.clientCertProfiles, compiled.clientCertProfileIndex)
+	if !ok || profile != "portainer" {
+		t.Fatalf("matchClientCertificateProfile() = (%q, %v), want (portainer, true)", profile, ok)
+	}
+
+	fingerprint, fingerprintOK := clientCertificateFingerprint(req.TLS.PeerCertificates[0])
+	if !fingerprintOK {
+		t.Fatal("clientCertificateFingerprint() ok = false, want true")
+	}
+	if cached, found := compiled.clientCertProfileIndex.lookup(fingerprint); !found || !cached.ok || cached.profile != "portainer" {
+		t.Fatalf("client certificate cache = (%#v, %v), want portainer hit", cached, found)
+	}
+}
+
+func TestSelectProfileReturnsMatchStrategy(t *testing.T) {
+	tests := []struct {
+		name         string
+		options      Options
+		request      *http.Request
+		clientIP     netip.Addr
+		ipOK         bool
+		wantProfile  string
+		wantStrategy profileMatchStrategy
+		wantOK       bool
+	}{
+		{
+			name: "client certificate",
+			options: Options{
+				Profiles: ProfileOptions{
+					ClientCertificates: []ClientCertificateProfileAssignment{
+						{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
+					},
+				},
+			},
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+				req.TLS = &tls.ConnectionState{
+					PeerCertificates: []*x509.Certificate{{Subject: pkix.Name{CommonName: "portainer-admin"}}},
+				}
+				return req
+			}(),
+			wantProfile:  "portainer",
+			wantStrategy: profileMatchStrategyClientCertificate,
+			wantOK:       true,
+		},
+		{
+			name: "unix peer",
+			options: Options{
+				Profiles: ProfileOptions{
+					UnixPeers: []UnixPeerProfileAssignment{
+						{Profile: "local-admin", UIDs: []uint32{1001}},
+					},
+				},
+			},
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+				return req.WithContext(withUnixPeerCredentials(req.Context(), unixPeerCredentials{UID: 1001}))
+			}(),
+			wantProfile:  "local-admin",
+			wantStrategy: profileMatchStrategyUnixPeer,
+			wantOK:       true,
+		},
+		{
+			name: "source ip",
+			options: Options{
+				Profiles: ProfileOptions{
+					SourceIPs: []SourceIPProfileAssignment{
+						{Profile: "watchtower", CIDRs: []string{"192.0.2.0/24"}},
+					},
+				},
+			},
+			request:      httptest.NewRequest(http.MethodGet, "/_ping", nil),
+			clientIP:     netip.MustParseAddr("192.0.2.10"),
+			ipOK:         true,
+			wantProfile:  "watchtower",
+			wantStrategy: profileMatchStrategySourceIP,
+			wantOK:       true,
+		},
+		{
+			name: "default profile",
+			options: Options{
+				Profiles: ProfileOptions{
+					DefaultProfile: "readonly",
+				},
+			},
+			request:      httptest.NewRequest(http.MethodGet, "/_ping", nil),
+			wantProfile:  "readonly",
+			wantStrategy: profileMatchStrategyDefaultProfile,
+			wantOK:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			compiled, err := compileOptions(tt.options)
+			if err != nil {
+				t.Fatalf("compileOptions() error = %v", err)
+			}
+
+			profile, strategy, ok, err := selectProfile(tt.request, tt.clientIP, tt.ipOK, compiled)
+			if err != nil {
+				t.Fatalf("selectProfile() error = %v", err)
+			}
+			if ok != tt.wantOK {
+				t.Fatalf("selectProfile() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if profile != tt.wantProfile {
+				t.Fatalf("selectProfile() profile = %q, want %q", profile, tt.wantProfile)
+			}
+			if strategy != tt.wantStrategy {
+				t.Fatalf("selectProfile() strategy = %q, want %q", strategy, tt.wantStrategy)
 			}
 		})
 	}

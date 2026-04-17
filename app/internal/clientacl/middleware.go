@@ -2,6 +2,7 @@ package clientacl
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/filter"
@@ -80,13 +82,43 @@ type resolvedClient struct {
 }
 
 type compiledOptions struct {
-	allowedCIDRs       []netip.Prefix
-	labelPrefix        string
-	labelsOn           bool
-	defaultProfile     string
-	sourceIPProfiles   []compiledSourceIPProfileAssignment
-	clientCertProfiles []compiledClientCertificateProfileAssignment
-	unixPeerProfiles   []compiledUnixPeerProfileAssignment
+	allowedCIDRs           []netip.Prefix
+	labelPrefix            string
+	labelsOn               bool
+	defaultProfile         string
+	sourceIPProfiles       []compiledSourceIPProfileAssignment
+	sourceIPProfileIndex   *sourceIPProfileIndex
+	clientCertProfiles     []compiledClientCertificateProfileAssignment
+	clientCertProfileIndex *clientCertificateProfileIndex
+	unixPeerProfiles       []compiledUnixPeerProfileAssignment
+}
+
+type profileMatchStrategy string
+
+const (
+	profileMatchStrategyClientCertificate profileMatchStrategy = "client_certificate"
+	profileMatchStrategyUnixPeer          profileMatchStrategy = "unix_peer"
+	profileMatchStrategySourceIP          profileMatchStrategy = "source_ip"
+	profileMatchStrategyDefaultProfile    profileMatchStrategy = "default_profile"
+)
+
+type profileLookupResult struct {
+	profile string
+	ok      bool
+}
+
+// These per-process runtime indexes avoid re-scanning the configured profile
+// assignments on every request for the same concrete client IP or certificate.
+// Selection semantics stay the same: the first lookup for a key still walks the
+// assignment list in config order, then memoizes that first-match-wins result.
+type sourceIPProfileIndex struct {
+	mu    sync.RWMutex
+	cache map[netip.Addr]profileLookupResult
+}
+
+type clientCertificateProfileIndex struct {
+	mu    sync.RWMutex
+	cache map[[sha256.Size]byte]profileLookupResult
 }
 
 type compiledSourceIPProfileAssignment struct {
@@ -175,7 +207,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 				}
 			}
 
-			profile, ok, err := selectProfile(r, clientIP, ipOK, compiled)
+			profile, strategy, ok, err := selectProfile(r, clientIP, ipOK, compiled)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "client identity lookup failed", "error", err)
 				logging.SetDenied(w, r, "client identity lookup failed", filter.NormalizePath)
@@ -183,6 +215,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 				return
 			}
 			if ok {
+				logger.DebugContext(r.Context(), "client ACL profile matched", "profile", profile, "strategy", strategy)
 				if meta := logging.MetaForRequest(w, r); meta != nil {
 					meta.Profile = profile
 				}
@@ -344,6 +377,17 @@ func compileOptions(opts Options) (compiledOptions, error) {
 		})
 	}
 
+	if len(compiled.sourceIPProfiles) > 0 {
+		compiled.sourceIPProfileIndex = &sourceIPProfileIndex{
+			cache: make(map[netip.Addr]profileLookupResult),
+		}
+	}
+	if len(compiled.clientCertProfiles) > 0 {
+		compiled.clientCertProfileIndex = &clientCertificateProfileIndex{
+			cache: make(map[[sha256.Size]byte]profileLookupResult),
+		}
+	}
+
 	return compiled, nil
 }
 
@@ -389,44 +433,69 @@ func RequestProfile(r *http.Request) (string, bool) {
 	return value, value != ""
 }
 
-func selectProfile(r *http.Request, clientIP netip.Addr, ipOK bool, compiled compiledOptions) (string, bool, error) {
-	if profile, ok := matchClientCertificateProfile(r, compiled.clientCertProfiles); ok {
-		return profile, true, nil
+func selectProfile(r *http.Request, clientIP netip.Addr, ipOK bool, compiled compiledOptions) (string, profileMatchStrategy, bool, error) {
+	if profile, ok := matchClientCertificateProfile(r, compiled.clientCertProfiles, compiled.clientCertProfileIndex); ok {
+		return profile, profileMatchStrategyClientCertificate, true, nil
 	}
 	if profile, ok, err := matchUnixPeerProfile(r, compiled.unixPeerProfiles); ok || err != nil {
-		return profile, ok, err
+		return profile, profileMatchStrategyUnixPeer, ok, err
 	}
 	if ipOK {
-		if profile, ok := matchSourceIPProfile(clientIP, compiled.sourceIPProfiles); ok {
-			return profile, true, nil
+		if profile, ok := matchSourceIPProfile(clientIP, compiled.sourceIPProfiles, compiled.sourceIPProfileIndex); ok {
+			return profile, profileMatchStrategySourceIP, true, nil
 		}
 	}
 	if compiled.defaultProfile != "" {
-		return compiled.defaultProfile, true, nil
+		return compiled.defaultProfile, profileMatchStrategyDefaultProfile, true, nil
 	}
-	return "", false, nil
+	return "", "", false, nil
 }
 
-func matchSourceIPProfile(addr netip.Addr, assignments []compiledSourceIPProfileAssignment) (string, bool) {
+func matchSourceIPProfile(addr netip.Addr, assignments []compiledSourceIPProfileAssignment, index *sourceIPProfileIndex) (string, bool) {
+	if cached, found := index.lookup(addr); found {
+		return cached.profile, cached.ok
+	}
+
+	result := profileLookupResult{}
 	for _, assignment := range assignments {
 		for _, prefix := range assignment.cidrs {
 			if prefix.Contains(addr) {
-				return assignment.profile, true
+				result = profileLookupResult{profile: assignment.profile, ok: true}
+				index.store(addr, result)
+				return result.profile, result.ok
 			}
 		}
 	}
+
+	index.store(addr, result)
 	return "", false
 }
 
-func matchClientCertificateProfile(r *http.Request, assignments []compiledClientCertificateProfileAssignment) (string, bool) {
+func matchClientCertificateProfile(r *http.Request, assignments []compiledClientCertificateProfileAssignment, index *clientCertificateProfileIndex) (string, bool) {
 	leaf := clientCertificateLeaf(r)
 	if leaf == nil {
 		return "", false
 	}
+
+	fingerprint, fingerprintOK := clientCertificateFingerprint(leaf)
+	if fingerprintOK {
+		if cached, found := index.lookup(fingerprint); found {
+			return cached.profile, cached.ok
+		}
+	}
+
+	result := profileLookupResult{}
 	for _, assignment := range assignments {
 		if assignment.matches(leaf) {
-			return assignment.profile, true
+			result = profileLookupResult{profile: assignment.profile, ok: true}
+			if fingerprintOK {
+				index.store(fingerprint, result)
+			}
+			return result.profile, result.ok
 		}
+	}
+	if fingerprintOK {
+		index.store(fingerprint, result)
 	}
 	return "", false
 }
@@ -575,6 +644,51 @@ func certificateURIStrings(cert *x509.Certificate) []string {
 		values = append(values, value.String())
 	}
 	return values
+}
+
+func clientCertificateFingerprint(cert *x509.Certificate) ([sha256.Size]byte, bool) {
+	if cert == nil || len(cert.Raw) == 0 {
+		return [sha256.Size]byte{}, false
+	}
+	return sha256.Sum256(cert.Raw), true
+}
+
+func (i *sourceIPProfileIndex) lookup(addr netip.Addr) (profileLookupResult, bool) {
+	if i == nil {
+		return profileLookupResult{}, false
+	}
+	i.mu.RLock()
+	result, ok := i.cache[addr]
+	i.mu.RUnlock()
+	return result, ok
+}
+
+func (i *sourceIPProfileIndex) store(addr netip.Addr, result profileLookupResult) {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	i.cache[addr] = result
+	i.mu.Unlock()
+}
+
+func (i *clientCertificateProfileIndex) lookup(fingerprint [sha256.Size]byte) (profileLookupResult, bool) {
+	if i == nil {
+		return profileLookupResult{}, false
+	}
+	i.mu.RLock()
+	result, ok := i.cache[fingerprint]
+	i.mu.RUnlock()
+	return result, ok
+}
+
+func (i *clientCertificateProfileIndex) store(fingerprint [sha256.Size]byte, result profileLookupResult) {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	i.cache[fingerprint] = result
+	i.mu.Unlock()
 }
 
 func remoteIP(remoteAddr string) (netip.Addr, bool) {
