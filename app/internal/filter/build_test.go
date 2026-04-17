@@ -2,17 +2,21 @@ package filter
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMiddlewareDeniesRemoteBuildContextByDefault(t *testing.T) {
@@ -121,15 +125,117 @@ func TestMiddlewareAllowsBuildWithoutRunInstructionsAndPreservesBody(t *testing.
 	}
 }
 
+func TestBuildContextStreaming(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	payload := mustBuildContextTar(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")
+	wantDigest := sha256.Sum256(payload)
+	downstreamResult := make(chan error, 1)
+
+	handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			downstreamResult <- fmt.Errorf("read body: %w", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if gotDigest := sha256.Sum256(body); gotDigest != wantDigest {
+			downstreamResult <- fmt.Errorf(
+				"body sha256 = %s, want %s",
+				hex.EncodeToString(gotDigest[:]),
+				hex.EncodeToString(wantDigest[:]),
+			)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if r.ContentLength != int64(len(payload)) {
+			downstreamResult <- fmt.Errorf("content length = %d, want %d", r.ContentLength, len(payload))
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		downstreamResult <- nil
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(server.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial server: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = conn.Close()
+	})
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline: %v", err)
+	}
+
+	if _, err := fmt.Fprintf(
+		conn,
+		"POST /build HTTP/1.1\r\nHost: %s\r\nTransfer-Encoding: chunked\r\nContent-Type: application/x-tar\r\nConnection: close\r\n\r\n",
+		strings.TrimPrefix(server.URL, "http://"),
+	); err != nil {
+		t.Fatalf("write request headers: %v", err)
+	}
+
+	const chunkSize = 37
+	for offset := 0; offset < len(payload); offset += chunkSize {
+		end := offset + chunkSize
+		if end > len(payload) {
+			end = len(payload)
+		}
+		chunk := payload[offset:end]
+		if _, err := fmt.Fprintf(conn, "%x\r\n", len(chunk)); err != nil {
+			t.Fatalf("write chunk size: %v", err)
+		}
+		if _, err := conn.Write(chunk); err != nil {
+			t.Fatalf("write chunk body: %v", err)
+		}
+		if _, err := io.WriteString(conn, "\r\n"); err != nil {
+			t.Fatalf("write chunk trailer: %v", err)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if _, err := io.WriteString(conn, "0\r\n\r\n"); err != nil {
+		t.Fatalf("write terminal chunk: %v", err)
+	}
+
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodPost})
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusNoContent, body)
+	}
+
+	select {
+	case err := <-downstreamResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for downstream build handler")
+	}
+}
+
 func TestMiddlewareAllowsRunInstructionsWhenConfigured(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
 	rules := []*CompiledRule{r1, r2}
 
 	handler := MiddlewareWithOptions(rules, testLogger(), Options{
-		DenyResponseVerbosity: DenyResponseVerbosityVerbose,
-		Build: BuildOptions{
-			AllowRunInstructions: true,
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			Build: BuildOptions{
+				AllowRunInstructions: true,
+			},
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

@@ -30,7 +30,11 @@ func testLogger() *slog.Logger {
 // verify minimal behavior explicitly should call MiddlewareWithOptions
 // directly.
 func verboseMiddleware(rules []*CompiledRule, logger *slog.Logger) func(http.Handler) http.Handler {
-	return MiddlewareWithOptions(rules, logger, Options{DenyResponseVerbosity: DenyResponseVerbosityVerbose})
+	return MiddlewareWithOptions(rules, logger, Options{
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+		},
+	})
 }
 
 type devNull struct{}
@@ -207,7 +211,9 @@ func TestMiddlewareDeniedMinimalVerbosity(t *testing.T) {
 	})
 
 	handler := MiddlewareWithOptions(rules, testLogger(), Options{
-		DenyResponseVerbosity: DenyResponseVerbosityMinimal,
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityMinimal,
+		},
 	})(inner)
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
 	rec := httptest.NewRecorder()
@@ -235,6 +241,80 @@ func TestMiddlewareDeniedMinimalVerbosity(t *testing.T) {
 	}
 }
 
+func TestMiddlewareRejectsOversizedBoundedRequestBodiesWith413(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/volumes/create", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	reached := false
+	handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		reached = true
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/volumes/create", bytes.NewReader(bytes.Repeat([]byte{'x'}, maxVolumeBodyBytes+1)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if reached {
+		t.Fatal("expected oversized request to NOT reach inner handler")
+	}
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Message != "request denied by sockguard policy" {
+		t.Fatalf("message = %q, want %q", body.Message, "request denied by sockguard policy")
+	}
+	if !strings.HasPrefix(body.Reason, "volume create denied: request body exceeds") {
+		t.Fatalf("reason = %q, want oversize denial", body.Reason)
+	}
+}
+
+func TestInspectAllowedRequestPrefersHighestSeverityMatch(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+	var called []string
+
+	policy := runtimePolicy{
+		inspectPolicies: []requestInspectPolicy{
+			{
+				matches:  func(*http.Request, string) bool { return true },
+				severity: inspectSeverityMedium,
+				inspect: func(*slog.Logger, *http.Request, string) (string, error) {
+					called = append(called, "medium")
+					return "medium deny", nil
+				},
+				errorLogMessage:   "medium failed",
+				denyReasonOnError: "medium error",
+			},
+			{
+				matches:  func(*http.Request, string) bool { return true },
+				severity: inspectSeverityCritical,
+				inspect: func(*slog.Logger, *http.Request, string) (string, error) {
+					called = append(called, "critical")
+					return "critical deny", nil
+				},
+				errorLogMessage:   "critical failed",
+				denyReasonOnError: "critical error",
+			},
+		},
+	}
+
+	reason, status := policy.inspectAllowedRequest(testLogger(), req, NormalizePath(req.URL.Path))
+	if reason != "critical deny" {
+		t.Fatalf("reason = %q, want %q", reason, "critical deny")
+	}
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", status, http.StatusForbidden)
+	}
+	if got, want := strings.Join(called, ","), "critical"; got != want {
+		t.Fatalf("called = %q, want %q", got, want)
+	}
+}
+
 func TestParseDenyResponseVerbosity(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -253,6 +333,17 @@ func TestParseDenyResponseVerbosity(t *testing.T) {
 				t.Fatalf("ParseDenyResponseVerbosity(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPolicyConfigNormalized(t *testing.T) {
+	cfg := PolicyConfig{
+		DenyResponseVerbosity: "chatty",
+	}
+
+	got := cfg.normalized()
+	if got.DenyResponseVerbosity != DenyResponseVerbosityMinimal {
+		t.Fatalf("normalized deny verbosity = %q, want %q", got.DenyResponseVerbosity, DenyResponseVerbosityMinimal)
 	}
 }
 
@@ -572,8 +663,10 @@ func TestMiddlewareAllowsAllowlistedContainerCreateBindMounts(t *testing.T) {
 	wantDigest := sha256.Sum256(payload)
 
 	handler := MiddlewareWithOptions(rules, testLogger(), Options{
-		ContainerCreate: ContainerCreateOptions{
-			AllowedBindMounts: []string{"/srv/sockguard"},
+		PolicyConfig: PolicyConfig{
+			ContainerCreate: ContainerCreateOptions{
+				AllowedBindMounts: []string{"/srv/sockguard"},
+			},
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -803,9 +896,8 @@ func TestMiddlewareDeniesWhenContainerCreateInspectionFails(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
-	req.Body = &erroringReadCloser{
-		Reader:   strings.NewReader(`{}`),
-		closeErr: errors.New("close failed"),
+	req.Body = &readErrorReadCloser{
+		readErr: errors.New("read failed"),
 	}
 
 	rec := httptest.NewRecorder()

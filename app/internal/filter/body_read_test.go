@@ -32,25 +32,17 @@ func TestReadBoundedBodyRestoresRequestBody(t *testing.T) {
 	}
 }
 
-func TestReadBoundedBodyReturnsOverflowByte(t *testing.T) {
+func TestReadBoundedBodyRejectsOversizedPayload(t *testing.T) {
 	const maxBodyBytes = 4
 
 	payload := []byte("12345")
 	req := httptest.NewRequest(http.MethodPost, "/secrets/create", bytes.NewReader(payload))
 
 	body, err := readBoundedBody(req, maxBodyBytes)
-	if err != nil {
-		t.Fatalf("readBoundedBody() error = %v", err)
+	if body != nil {
+		t.Fatalf("readBoundedBody() body = %q, want nil", string(body))
 	}
-	if len(body) != maxBodyBytes+1 {
-		t.Fatalf("len(body) = %d, want %d", len(body), maxBodyBytes+1)
-	}
-
-	resetBody, err := io.ReadAll(req.Body)
-	if err != nil {
-		t.Fatalf("ReadAll() error = %v", err)
-	}
-	if !bytes.Equal(resetBody, body) {
-		t.Fatalf("reset body = %q, want %q", string(resetBody), string(body))
+	if !isBodyTooLargeError(err) {
+		t.Fatalf("readBoundedBody() error = %v, want body-too-large error", err)
 	}
 }

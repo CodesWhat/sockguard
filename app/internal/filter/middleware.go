@@ -3,7 +3,6 @@ package filter
 import (
 	"log/slog"
 	"net/http"
-	"path"
 	"strings"
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
@@ -28,8 +27,9 @@ const (
 	DenyResponseVerbosityMinimal DenyResponseVerbosity = "minimal"
 )
 
-// Options configures filter middleware behavior.
-type Options struct {
+// PolicyConfig configures deny-response behavior plus request-body inspection
+// policies shared by the default middleware policy and named client profiles.
+type PolicyConfig struct {
 	// DenyResponseVerbosity controls how much detail denied requests include in
 	// the JSON response body.
 	DenyResponseVerbosity DenyResponseVerbosity
@@ -54,6 +54,11 @@ type Options struct {
 	Swarm SwarmOptions
 	// Plugin configures request-body inspection for plugin write endpoints.
 	Plugin PluginOptions
+}
+
+// Options configures filter middleware behavior.
+type Options struct {
+	PolicyConfig
 	// Profiles defines named per-client policy overrides selected at request time.
 	Profiles map[string]Policy
 	// ResolveProfile returns the named policy to apply for the request.
@@ -63,18 +68,8 @@ type Options struct {
 // Policy defines a named request policy profile that can override the global
 // rules and request-body inspection options for a single request.
 type Policy struct {
-	Rules                 []*CompiledRule
-	DenyResponseVerbosity DenyResponseVerbosity
-	ContainerCreate       ContainerCreateOptions
-	Exec                  ExecOptions
-	ImagePull             ImagePullOptions
-	Build                 BuildOptions
-	Volume                VolumeOptions
-	Secret                SecretOptions
-	Config                ConfigOptions
-	Service               ServiceOptions
-	Swarm                 SwarmOptions
-	Plugin                PluginOptions
+	Rules []*CompiledRule
+	PolicyConfig
 }
 
 // ParseDenyResponseVerbosity normalizes a configured deny verbosity value.
@@ -92,8 +87,13 @@ func ParseDenyResponseVerbosity(value string) DenyResponseVerbosity {
 	}
 }
 
+func (c PolicyConfig) normalized() PolicyConfig {
+	c.DenyResponseVerbosity = ParseDenyResponseVerbosity(string(c.DenyResponseVerbosity))
+	return c
+}
+
 func (o Options) normalized() Options {
-	o.DenyResponseVerbosity = ParseDenyResponseVerbosity(string(o.DenyResponseVerbosity))
+	o.PolicyConfig = o.PolicyConfig.normalized()
 	return o
 }
 
@@ -103,7 +103,17 @@ type runtimePolicy struct {
 	inspectPolicies       []requestInspectPolicy
 }
 
+type inspectSeverity int
+
+const (
+	inspectSeverityMedium inspectSeverity = iota
+	inspectSeverityHigh
+	inspectSeverityCritical
+)
+
 type requestInspectPolicy struct {
+	matches           func(*http.Request, string) bool
+	severity          inspectSeverity
 	inspect           func(*slog.Logger, *http.Request, string) (string, error)
 	errorLogMessage   string
 	denyReasonOnError string
@@ -113,8 +123,9 @@ type requestInspectPolicy struct {
 // with default options. Use MiddlewareWithOptions only when overriding deny
 // response behavior.
 //
-// Denied requests get a 403 JSON response. Allowed requests pass through to next.
-// Decision metadata is written to the access log RequestMeta when present.
+// Denied requests get a JSON response: most policy denials are 403, while
+// request-body size rejections return 413. Allowed requests pass through to
+// next. Decision metadata is written to the access log RequestMeta when present.
 func Middleware(rules []*CompiledRule, logger *slog.Logger) func(http.Handler) http.Handler {
 	return MiddlewareWithOptions(rules, logger, Options{})
 }
@@ -123,22 +134,10 @@ func Middleware(rules []*CompiledRule, logger *slog.Logger) func(http.Handler) h
 // against compiled rules and allows deny response detail to be configured.
 func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {
 	opts = opts.normalized()
-	defaultPolicy := compileRuntimePolicy(rules, opts)
+	defaultPolicy := compileRuntimePolicy(rules, opts.PolicyConfig)
 	profilePolicies := make(map[string]runtimePolicy, len(opts.Profiles))
 	for name, profile := range opts.Profiles {
-		profilePolicies[name] = compileRuntimePolicy(profile.Rules, Options{
-			DenyResponseVerbosity: profile.DenyResponseVerbosity,
-			ContainerCreate:       profile.ContainerCreate,
-			Exec:                  profile.Exec,
-			ImagePull:             profile.ImagePull,
-			Build:                 profile.Build,
-			Volume:                profile.Volume,
-			Secret:                profile.Secret,
-			Config:                profile.Config,
-			Service:               profile.Service,
-			Swarm:                 profile.Swarm,
-			Plugin:                profile.Plugin,
-		})
+		profilePolicies[name] = compileRuntimePolicy(profile.Rules, profile.PolicyConfig)
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -160,6 +159,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 
 			normPath := NormalizePath(r.URL.Path)
 			action, ruleIndex, reason := evaluateNormalized(activePolicy.rules, r.Method, normPath)
+			denyStatus := http.StatusForbidden
 
 			// Write decision to shared RequestMeta (created by access log middleware).
 			if m := logging.MetaForRequest(w, r); m != nil {
@@ -170,10 +170,13 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			if action == ActionAllow {
-				denyReason := activePolicy.inspectAllowedRequest(logger, r, normPath)
+				denyReason, status := activePolicy.inspectAllowedRequest(logger, r, normPath)
 				if denyReason != "" {
 					action = ActionDeny
 					reason = denyReason
+					if status != 0 {
+						denyStatus = status
+					}
 					if m := logging.MetaForRequest(w, r); m != nil {
 						m.Decision = string(action)
 						m.Reason = reason
@@ -182,7 +185,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			if action == ActionDeny {
-				if err := httpjson.Write(w, http.StatusForbidden, denyResponse(r, reason, activePolicy.denyResponseVerbosity)); err != nil {
+				if err := httpjson.Write(w, denyStatus, denyResponse(r, reason, activePolicy.denyResponseVerbosity)); err != nil {
 					logger.ErrorContext(r.Context(), "failed to encode denial response", "error", err, "method", r.Method, "path", r.URL.Path)
 				}
 				return
@@ -193,34 +196,40 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 	}
 }
 
-func compileRuntimePolicy(rules []*CompiledRule, opts Options) runtimePolicy {
-	opts = opts.normalized()
-	containerCreate := newContainerCreatePolicy(opts.ContainerCreate)
-	exec := newExecPolicy(opts.Exec)
-	imagePull := newImagePullPolicy(opts.ImagePull)
-	build := newBuildPolicy(opts.Build)
-	volume := newVolumePolicy(opts.Volume)
-	secret := newSecretPolicy(opts.Secret)
-	configPolicy := newConfigPolicy(opts.Config)
-	service := newServicePolicy(opts.Service)
-	swarm := newSwarmPolicy(opts.Swarm)
-	plugin := newPluginPolicy(opts.Plugin)
+func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy {
+	cfg = cfg.normalized()
+	containerCreate := newContainerCreatePolicy(cfg.ContainerCreate)
+	exec := newExecPolicy(cfg.Exec)
+	imagePull := newImagePullPolicy(cfg.ImagePull)
+	build := newBuildPolicy(cfg.Build)
+	volume := newVolumePolicy(cfg.Volume)
+	secret := newSecretPolicy(cfg.Secret)
+	configPolicy := newConfigPolicy(cfg.Config)
+	service := newServicePolicy(cfg.Service)
+	swarm := newSwarmPolicy(cfg.Swarm)
+	plugin := newPluginPolicy(cfg.Plugin)
 
 	return runtimePolicy{
 		rules:                 rules,
-		denyResponseVerbosity: opts.DenyResponseVerbosity,
+		denyResponseVerbosity: cfg.DenyResponseVerbosity,
 		inspectPolicies: []requestInspectPolicy{
 			{
+				matches:           matchesContainerCreateInspection,
+				severity:          inspectSeverityCritical,
 				inspect:           containerCreate.inspect,
 				errorLogMessage:   "failed to inspect container create request body",
 				denyReasonOnError: "unable to inspect container create request body",
 			},
 			{
+				matches:           matchesExecInspection,
+				severity:          inspectSeverityHigh,
 				inspect:           exec.inspect,
 				errorLogMessage:   "failed to inspect exec request body",
 				denyReasonOnError: "unable to inspect exec request body",
 			},
 			{
+				matches:  matchesImagePullInspection,
+				severity: inspectSeverityHigh,
 				inspect: func(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 					return imagePull.inspect(r, normalizedPath)
 				},
@@ -228,6 +237,8 @@ func compileRuntimePolicy(rules []*CompiledRule, opts Options) runtimePolicy {
 				denyReasonOnError: "unable to inspect image pull request",
 			},
 			{
+				matches:  matchesBuildInspection,
+				severity: inspectSeverityCritical,
 				inspect: func(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 					return build.inspect(r, normalizedPath)
 				},
@@ -235,6 +246,8 @@ func compileRuntimePolicy(rules []*CompiledRule, opts Options) runtimePolicy {
 				denyReasonOnError: "unable to inspect build request",
 			},
 			{
+				matches:  matchesVolumeInspection,
+				severity: inspectSeverityMedium,
 				inspect: func(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 					return volume.inspect(logger, r, normalizedPath)
 				},
@@ -242,26 +255,36 @@ func compileRuntimePolicy(rules []*CompiledRule, opts Options) runtimePolicy {
 				denyReasonOnError: "unable to inspect volume create request body",
 			},
 			{
+				matches:           matchesSecretInspection,
+				severity:          inspectSeverityMedium,
 				inspect:           secret.inspect,
 				errorLogMessage:   "failed to inspect secret create request body",
 				denyReasonOnError: "unable to inspect secret create request body",
 			},
 			{
+				matches:           matchesConfigInspection,
+				severity:          inspectSeverityMedium,
 				inspect:           configPolicy.inspect,
 				errorLogMessage:   "failed to inspect config create request body",
 				denyReasonOnError: "unable to inspect config create request body",
 			},
 			{
+				matches:           matchesServiceInspection,
+				severity:          inspectSeverityCritical,
 				inspect:           service.inspect,
 				errorLogMessage:   "failed to inspect service request body",
 				denyReasonOnError: "unable to inspect service request body",
 			},
 			{
+				matches:           matchesSwarmInspection,
+				severity:          inspectSeverityCritical,
 				inspect:           swarm.inspect,
 				errorLogMessage:   "failed to inspect swarm init request body",
 				denyReasonOnError: "unable to inspect swarm init request body",
 			},
 			{
+				matches:           matchesPluginInspection,
+				severity:          inspectSeverityCritical,
 				inspect:           plugin.inspect,
 				errorLogMessage:   "failed to inspect plugin request body",
 				denyReasonOnError: "unable to inspect plugin request body",
@@ -270,18 +293,85 @@ func compileRuntimePolicy(rules []*CompiledRule, opts Options) runtimePolicy {
 	}
 }
 
-func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) string {
+func matchesContainerCreateInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && normalizedPath == "/containers/create"
+}
+
+func matchesExecInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && (isExecCreatePath(normalizedPath) || isExecStartPath(normalizedPath))
+}
+
+func matchesImagePullInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && normalizedPath == "/images/create"
+}
+
+func matchesBuildInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && normalizedPath == "/build"
+}
+
+func matchesVolumeInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && normalizedPath == "/volumes/create"
+}
+
+func matchesSecretInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && normalizedPath == "/secrets/create"
+}
+
+func matchesConfigInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && normalizedPath == "/configs/create"
+}
+
+func matchesServiceInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && isServiceWritePath(normalizedPath)
+}
+
+func matchesSwarmInspection(r *http.Request, normalizedPath string) bool {
+	if r == nil || r.Method != http.MethodPost {
+		return false
+	}
+	switch normalizedPath {
+	case "/swarm/init", "/swarm/join", "/swarm/update":
+		return true
+	default:
+		return false
+	}
+}
+
+func matchesPluginInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost &&
+		(normalizedPath == "/plugins/pull" || normalizedPath == "/plugins/create" || isPluginUpgradePath(normalizedPath) || isPluginSetPath(normalizedPath))
+}
+
+func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, int) {
+	bestSeverity := inspectSeverity(-1)
+	matchingPolicies := make([]requestInspectPolicy, 0, len(p.inspectPolicies))
 	for _, policy := range p.inspectPolicies {
-		denyReason, err := policy.inspect(logger, r, normalizedPath)
-		if err != nil {
-			logger.ErrorContext(r.Context(), policy.errorLogMessage, "error", err, "method", r.Method, "path", r.URL.Path)
-			return policy.denyReasonOnError
+		if policy.matches != nil && !policy.matches(r, normalizedPath) {
+			continue
 		}
-		if denyReason != "" {
-			return denyReason
+		if policy.severity > bestSeverity {
+			bestSeverity = policy.severity
+			matchingPolicies = matchingPolicies[:0]
+		}
+		if policy.severity == bestSeverity {
+			matchingPolicies = append(matchingPolicies, policy)
 		}
 	}
-	return ""
+
+	for _, policy := range matchingPolicies {
+		denyReason, err := policy.inspect(logger, r, normalizedPath)
+		if err != nil {
+			if rejection, ok := requestRejectionFromError(err); ok {
+				return rejection.reason, rejection.status
+			}
+			logger.ErrorContext(r.Context(), policy.errorLogMessage, "error", err, "method", r.Method, "path", r.URL.Path)
+			return policy.denyReasonOnError, http.StatusForbidden
+		}
+		if denyReason != "" {
+			return denyReason, http.StatusForbidden
+		}
+	}
+	return "", 0
 }
 
 func denyWithReason(w http.ResponseWriter, r *http.Request, logger *slog.Logger, reason string, verbosity DenyResponseVerbosity) {
@@ -316,7 +406,7 @@ func redactDeniedPath(requestPath string) string {
 		return ""
 	}
 
-	cleanedPath := path.Clean(requestPath)
+	cleanedPath := canonicalizePath(requestPath)
 	normalizedPath := stripVersionPrefix(cleanedPath)
 
 	var versionPrefix string

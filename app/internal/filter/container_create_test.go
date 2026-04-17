@@ -18,6 +18,19 @@ func (r *erroringReadCloser) Close() error {
 	return r.closeErr
 }
 
+type readErrorReadCloser struct {
+	readErr  error
+	closeErr error
+}
+
+func (r *readErrorReadCloser) Read([]byte) (int, error) {
+	return 0, r.readErr
+}
+
+func (r *readErrorReadCloser) Close() error {
+	return r.closeErr
+}
+
 func TestNewContainerCreatePolicyNormalizesAndDeduplicatesAllowedBindMounts(t *testing.T) {
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
 		AllowedBindMounts: []string{
@@ -103,7 +116,7 @@ func TestContainerCreatePolicyInspectHandlesBodyEdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("close error after read", func(t *testing.T) {
+	t.Run("close error after read is ignored", func(t *testing.T) {
 		req := &http.Request{
 			Method: http.MethodPost,
 			Body: &erroringReadCloser{
@@ -116,8 +129,16 @@ func TestContainerCreatePolicyInspectHandlesBodyEdgeCases(t *testing.T) {
 		if reason != "" {
 			t.Fatalf("inspect() reason = %q, want empty", reason)
 		}
-		if err == nil || err.Error() != "read body: close failed" {
-			t.Fatalf("inspect() error = %v, want read body close failure", err)
+		if err != nil {
+			t.Fatalf("inspect() error = %v, want nil", err)
+		}
+
+		body, readErr := io.ReadAll(req.Body)
+		if readErr != nil {
+			t.Fatalf("ReadAll() error = %v", readErr)
+		}
+		if string(body) != "{}" {
+			t.Fatalf("reset body = %q, want %q", string(body), "{}")
 		}
 	})
 }
@@ -155,6 +176,56 @@ func TestContainerCreateBindSource(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := containerCreateBindSource(tt.bind)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Fatalf("source = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractAndValidateBindSource(t *testing.T) {
+	tests := []struct {
+		name   string
+		bind   string
+		mount  containerCreateMount
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "bind string",
+			bind:   "/source:/target:ro",
+			want:   "/source",
+			wantOK: true,
+		},
+		{
+			name:   "bind string missing separator",
+			bind:   "/source",
+			wantOK: false,
+		},
+		{
+			name:   "bind mount entry",
+			mount:  containerCreateMount{Type: "bind", Source: "/safe/../allowed"},
+			want:   "/allowed",
+			wantOK: true,
+		},
+		{
+			name:   "non-bind mount entry",
+			mount:  containerCreateMount{Type: "volume", Source: "/allowed"},
+			wantOK: false,
+		},
+		{
+			name:   "bind mount with relative source",
+			mount:  containerCreateMount{Type: "bind", Source: "relative"},
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := extractAndValidateBindSource(tt.bind, tt.mount)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}

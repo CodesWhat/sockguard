@@ -71,12 +71,11 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return "", nil
 	}
 
+	defer func() { _ = r.Body.Close() }()
+
 	// Read one byte past the limit so we can distinguish an at-limit payload
 	// from an over-limit one without giving the client room to OOM the proxy.
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxContainerCreateBodyBytes+1))
-	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
 	if err != nil {
 		return "", fmt.Errorf("read body: %w", err)
 	}
@@ -117,7 +116,7 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 
 func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHostConfig) string {
 	for _, bind := range hostConfig.Binds {
-		source, ok := containerCreateBindSource(bind)
+		source, ok := extractAndValidateBindSource(bind, containerCreateMount{})
 		if !ok || p.bindMountAllowed(source) {
 			continue
 		}
@@ -125,10 +124,7 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 	}
 
 	for _, mount := range hostConfig.Mounts {
-		if !strings.EqualFold(mount.Type, "bind") {
-			continue
-		}
-		source, ok := normalizeContainerCreateBindMount(mount.Source)
+		source, ok := extractAndValidateBindSource("", mount)
 		if !ok || p.bindMountAllowed(source) {
 			continue
 		}
@@ -148,11 +144,23 @@ func (p containerCreatePolicy) bindMountAllowed(source string) bool {
 }
 
 func containerCreateBindSource(bind string) (string, bool) {
-	source, _, ok := strings.Cut(bind, ":")
-	if !ok {
+	return extractAndValidateBindSource(bind, containerCreateMount{})
+}
+
+func extractAndValidateBindSource(bind string, mount containerCreateMount) (string, bool) {
+	if bind != "" {
+		source, _, ok := strings.Cut(bind, ":")
+		if !ok {
+			return "", false
+		}
+		return normalizeContainerCreateBindMount(source)
+	}
+
+	if !strings.EqualFold(mount.Type, "bind") {
 		return "", false
 	}
-	return normalizeContainerCreateBindMount(source)
+
+	return normalizeContainerCreateBindMount(mount.Source)
 }
 
 func normalizeContainerCreateBindMount(value string) (string, bool) {

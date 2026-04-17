@@ -40,10 +40,10 @@ func (p volumePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 
 	body, err := readBoundedBody(r, maxVolumeBodyBytes)
 	if err != nil {
+		if isBodyTooLargeError(err) {
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("volume create denied: request body exceeds %d byte limit", maxVolumeBodyBytes))
+		}
 		return "", fmt.Errorf("read body: %w", err)
-	}
-	if int64(len(body)) > maxVolumeBodyBytes {
-		return fmt.Sprintf("volume create denied: request body exceeds %d byte limit", maxVolumeBodyBytes), nil
 	}
 
 	if len(body) == 0 {

@@ -1035,6 +1035,43 @@ func TestBuildServeHandlerGeneratesTrustedRequestIDWithoutAccessLog(t *testing.T
 	}
 }
 
+func TestBuildServeHandlerLayers(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Health.Enabled = true
+	cfg.Log.AccessLog = true
+
+	got := serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), nil, newServeTestDeps(), nil))
+	want := []string{
+		"withHijack",
+		"withOwnership",
+		"withVisibility",
+		"withFilter",
+		"withHealth",
+		"withClientACL",
+		"withRequestID",
+		"withAccessLog",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("layer names = %#v, want %#v", got, want)
+	}
+
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+
+	got = serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), nil, newServeTestDeps(), nil))
+	want = []string{
+		"withHijack",
+		"withOwnership",
+		"withVisibility",
+		"withFilter",
+		"withClientACL",
+		"withRequestID",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("layer names without optional middleware = %#v, want %#v", got, want)
+	}
+}
+
 func TestListenerAddr(t *testing.T) {
 	withSocket := &config.Config{
 		Listen: config.ListenConfig{
@@ -1054,6 +1091,14 @@ func TestListenerAddr(t *testing.T) {
 	if got := listenerAddr(withTCP); got != "tcp://127.0.0.1:2375" {
 		t.Fatalf("listenerAddr(withTCP) = %q, want %q", got, "tcp://127.0.0.1:2375")
 	}
+}
+
+func serveHandlerLayerNames(layers []serveHandlerLayer) []string {
+	names := make([]string, 0, len(layers))
+	for _, layer := range layers {
+		names = append(names, layer.name)
+	}
+	return names
 }
 
 func TestFullMiddlewareChainIntegration(t *testing.T) {

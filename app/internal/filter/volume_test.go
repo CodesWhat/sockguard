@@ -71,11 +71,18 @@ func TestVolumeInspectCapsOversizedBody(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/volumes/create", bytes.NewReader(bytes.Repeat([]byte{'x'}, maxVolumeBodyBytes+1)))
 
 	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
-	if err != nil {
-		t.Fatalf("inspect() error = %v", err)
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
 	}
-	if !strings.HasPrefix(reason, "volume create denied: request body exceeds") {
-		t.Fatalf("inspect() reason = %q, want oversize denial", reason)
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspect() error = %v, want request rejection", err)
+	}
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
+	}
+	if !strings.HasPrefix(rejection.reason, "volume create denied: request body exceeds") {
+		t.Fatalf("rejection reason = %q, want oversize denial", rejection.reason)
 	}
 }
 

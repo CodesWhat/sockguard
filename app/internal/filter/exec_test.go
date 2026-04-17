@@ -54,8 +54,10 @@ func TestMiddlewareAllowsAllowlistedExecCreateCommand(t *testing.T) {
 	wantDigest := sha256.Sum256(payload)
 
 	handler := MiddlewareWithOptions(rules, testLogger(), Options{
-		Exec: ExecOptions{
-			AllowedCommands: [][]string{{"/usr/local/bin/pre-update", "--check"}},
+		PolicyConfig: PolicyConfig{
+			Exec: ExecOptions{
+				AllowedCommands: [][]string{{"/usr/local/bin/pre-update", "--check"}},
+			},
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -102,9 +104,11 @@ func TestMiddlewareDeniesPrivilegedAndRootExecCreate(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			handler := MiddlewareWithOptions(rules, testLogger(), Options{
-				DenyResponseVerbosity: DenyResponseVerbosityVerbose,
-				Exec: ExecOptions{
-					AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+				PolicyConfig: PolicyConfig{
+					DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+					Exec: ExecOptions{
+						AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+					},
 				},
 			})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				t.Fatal("expected exec create to be denied")
@@ -135,9 +139,11 @@ func TestMiddlewareDeniesOversizedExecCreateBody(t *testing.T) {
 	rules := []*CompiledRule{r1, r2}
 
 	handler := MiddlewareWithOptions(rules, testLogger(), Options{
-		DenyResponseVerbosity: DenyResponseVerbosityVerbose,
-		Exec: ExecOptions{
-			AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			Exec: ExecOptions{
+				AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+			},
 		},
 	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected oversized exec request body to be denied")
@@ -168,14 +174,16 @@ func TestMiddlewareDeniesExecStartWhenInspectedExecViolatesPolicy(t *testing.T) 
 	rules := []*CompiledRule{r1, r2}
 
 	handler := MiddlewareWithOptions(rules, testLogger(), Options{
-		DenyResponseVerbosity: DenyResponseVerbosityVerbose,
-		Exec: ExecOptions{
-			AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
-			InspectStart: func(context.Context, string) (ExecInspectResult, bool, error) {
-				return ExecInspectResult{
-					Command:    []string{"/bin/sh", "-c", "id"},
-					Privileged: false,
-				}, true, nil
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			Exec: ExecOptions{
+				AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+				InspectStart: func(context.Context, string) (ExecInspectResult, bool, error) {
+					return ExecInspectResult{
+						Command:    []string{"/bin/sh", "-c", "id"},
+						Privileged: false,
+					}, true, nil
+				},
 			},
 		},
 	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -232,11 +240,13 @@ func TestExecCommandAllowlistOverlapHandling(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			handler := MiddlewareWithOptions(rules, testLogger(), Options{
-				DenyResponseVerbosity: DenyResponseVerbosityVerbose,
-				Exec: ExecOptions{
-					AllowedCommands: [][]string{
-						{"/usr/local/bin/pre-update"},
-						{"/usr/local/bin/pre-update", "--check"},
+				PolicyConfig: PolicyConfig{
+					DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+					Exec: ExecOptions{
+						AllowedCommands: [][]string{
+							{"/usr/local/bin/pre-update"},
+							{"/usr/local/bin/pre-update", "--check"},
+						},
 					},
 				},
 			})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -263,6 +273,93 @@ func TestExecCommandAllowlistOverlapHandling(t *testing.T) {
 			}
 			if !strings.Contains(body.Reason, tt.wantReason) {
 				t.Fatalf("reason = %q, want substring %q", body.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestExecAttachHijackStreamInterruption(t *testing.T) {
+	allowExecStart, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/exec/*/start", Action: ActionAllow, Index: 0})
+	allowAttach, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/attach", Action: ActionAllow, Index: 1})
+	denyAll, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 2})
+	rules := []*CompiledRule{allowExecStart, allowAttach, denyAll}
+
+	streamErr := errors.New("stream interrupted")
+
+	tests := []struct {
+		name            string
+		path            string
+		payload         string
+		wantInspectID   string
+		wantInspectCall bool
+	}{
+		{
+			name:            "exec start passes interrupted body downstream after inspection",
+			path:            "/v1.53/exec/exec-123/start",
+			payload:         `{"Detach":false,"Tty":false}`,
+			wantInspectID:   "exec-123",
+			wantInspectCall: true,
+		},
+		{
+			name:            "attach passes interrupted body downstream unchanged",
+			path:            "/v1.53/containers/abc123/attach",
+			payload:         "stdin chunk",
+			wantInspectCall: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inspectCalls := 0
+			var gotBody string
+			var gotBodyErr error
+
+			handler := MiddlewareWithOptions(rules, testLogger(), Options{
+				PolicyConfig: PolicyConfig{
+					DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+					Exec: ExecOptions{
+						AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+						InspectStart: func(_ context.Context, execID string) (ExecInspectResult, bool, error) {
+							inspectCalls++
+							if execID != tt.wantInspectID {
+								t.Fatalf("inspect exec id = %q, want %q", execID, tt.wantInspectID)
+							}
+							return ExecInspectResult{
+								Command: []string{"/usr/local/bin/pre-update"},
+							}, true, nil
+						},
+					},
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				gotBody = string(body)
+				gotBodyErr = err
+				w.WriteHeader(http.StatusSwitchingProtocols)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+			req.Body = io.NopCloser(io.MultiReader(strings.NewReader(tt.payload), execTestErrorReader{err: streamErr}))
+			req.ContentLength = int64(len(tt.payload))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusSwitchingProtocols {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusSwitchingProtocols, rec.Body.String())
+			}
+			if gotBody != tt.payload {
+				t.Fatalf("downstream body = %q, want %q", gotBody, tt.payload)
+			}
+			if !errors.Is(gotBodyErr, streamErr) {
+				t.Fatalf("downstream body error = %v, want %v", gotBodyErr, streamErr)
+			}
+
+			wantCalls := 0
+			if tt.wantInspectCall {
+				wantCalls = 1
+			}
+			if inspectCalls != wantCalls {
+				t.Fatalf("inspect calls = %d, want %d", inspectCalls, wantCalls)
 			}
 		})
 	}
@@ -309,4 +406,12 @@ func TestDecodeExecCommandWrapsSentinelErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+type execTestErrorReader struct {
+	err error
+}
+
+func (r execTestErrorReader) Read([]byte) (int, error) {
+	return 0, r.err
 }

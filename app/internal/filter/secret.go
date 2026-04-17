@@ -42,10 +42,10 @@ func (p secretPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 
 	body, err := readBoundedBody(r, maxSecretBodyBytes)
 	if err != nil {
+		if isBodyTooLargeError(err) {
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("secret create denied: request body exceeds %d byte limit", maxSecretBodyBytes))
+		}
 		return "", fmt.Errorf("read body: %w", err)
-	}
-	if int64(len(body)) > maxSecretBodyBytes {
-		return fmt.Sprintf("secret create denied: request body exceeds %d byte limit", maxSecretBodyBytes), nil
 	}
 
 	if len(body) == 0 {

@@ -41,12 +41,16 @@ func TestMiddlewareUsesResolvedProfileBodyPolicy(t *testing.T) {
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
 
 	handler := MiddlewareWithOptions([]*CompiledRule{r1, r2}, testLogger(), Options{
-		DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+		},
 		Profiles: map[string]Policy{
 			"watchtower": {
 				Rules: []*CompiledRule{r1, r2},
-				Exec: ExecOptions{
-					AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+				PolicyConfig: PolicyConfig{
+					Exec: ExecOptions{
+						AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+					},
 				},
 			},
 		},
@@ -71,7 +75,9 @@ func TestMiddlewareDeniesUnknownResolvedProfile(t *testing.T) {
 	defaultDeny, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
 
 	handler := MiddlewareWithOptions([]*CompiledRule{defaultAllow, defaultDeny}, testLogger(), Options{
-		DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+		},
 		ResolveProfile: func(*http.Request) (string, bool) {
 			return "missing", true
 		},

@@ -42,10 +42,10 @@ func (p configPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 
 	body, err := readBoundedBody(r, maxConfigWriteBodyBytes)
 	if err != nil {
+		if isBodyTooLargeError(err) {
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("config create denied: request body exceeds %d byte limit", maxConfigWriteBodyBytes))
+		}
 		return "", fmt.Errorf("read body: %w", err)
-	}
-	if int64(len(body)) > maxConfigWriteBodyBytes {
-		return fmt.Sprintf("config create denied: request body exceeds %d byte limit", maxConfigWriteBodyBytes), nil
 	}
 
 	if len(body) == 0 {

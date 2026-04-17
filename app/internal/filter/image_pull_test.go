@@ -66,9 +66,11 @@ func TestMiddlewareAllowsOfficialImagePullWhenConfigured(t *testing.T) {
 	rules := []*CompiledRule{r1, r2}
 
 	handler := MiddlewareWithOptions(rules, testLogger(), Options{
-		DenyResponseVerbosity: DenyResponseVerbosityVerbose,
-		ImagePull: ImagePullOptions{
-			AllowOfficial: true,
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			ImagePull: ImagePullOptions{
+				AllowOfficial: true,
+			},
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
@@ -89,9 +91,11 @@ func TestMiddlewareAllowsConfiguredImageRegistry(t *testing.T) {
 	rules := []*CompiledRule{r1, r2}
 
 	handler := MiddlewareWithOptions(rules, testLogger(), Options{
-		DenyResponseVerbosity: DenyResponseVerbosityVerbose,
-		ImagePull: ImagePullOptions{
-			AllowedRegistries: []string{"ghcr.io"},
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			ImagePull: ImagePullOptions{
+				AllowedRegistries: []string{"ghcr.io"},
+			},
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusCreated)
