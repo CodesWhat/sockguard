@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -323,6 +324,28 @@ func TestPluginPolicyInspectCreateDefersMalformedConfigJSON(t *testing.T) {
 	}
 }
 
+func TestPluginPolicyInspectCreateDeniesMultipartFormUpload(t *testing.T) {
+	policy := newPluginPolicy(PluginOptions{
+		AllowedBindMounts:   []string{"/allowed"},
+		AllowedDevices:      []string{"/dev/allowed"},
+		AllowedCapabilities: []string{"NET_ADMIN"},
+	})
+
+	archivePayload := mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":["SYS_ADMIN"]}}`, false)
+	body, contentType := mustMultipartPluginUpload(t, archivePayload)
+
+	req := httptest.NewRequest(http.MethodPost, "/plugins/create?name=acme/plugin", bytes.NewReader(body))
+	req.Header.Set("Content-Type", contentType)
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != `plugin create denied: capability "SYS_ADMIN" is not allowlisted` {
+		t.Fatalf("reason = %q", reason)
+	}
+}
+
 func TestParsePluginSetting(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -428,6 +451,29 @@ func mustPluginCreateContextTarBytes(tb testing.TB, entries []pluginTarEntry, gz
 		tb.Fatalf("gzip close: %v", err)
 	}
 	return gzBuf.Bytes()
+}
+
+func mustMultipartPluginUpload(tb testing.TB, payload []byte) ([]byte, string) {
+	tb.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("note", "ignored"); err != nil {
+		tb.Fatalf("WriteField(): %v", err)
+	}
+
+	part, err := writer.CreateFormFile("context", "plugin.tar")
+	if err != nil {
+		tb.Fatalf("CreateFormFile(): %v", err)
+	}
+	if _, err := part.Write(payload); err != nil {
+		tb.Fatalf("Write(): %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		tb.Fatalf("Close(): %v", err)
+	}
+
+	return body.Bytes(), writer.FormDataContentType()
 }
 
 func slicesEqual[T comparable](got, want []T) bool {

@@ -2,12 +2,15 @@ package filter
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path"
@@ -247,7 +250,7 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 		return "", nil
 	}
 
-	configBytes, ok, err := extractPluginConfig(spool.file)
+	configBytes, ok, err := extractPluginConfig(spool.file, r.Header.Get("Content-Type"))
 	if err != nil {
 		spool.closeAndRemove()
 		return "", fmt.Errorf("extract plugin config: %w", err)
@@ -430,7 +433,18 @@ func (p pluginPolicy) setEnvAllowed(setting string) bool {
 	return false
 }
 
-func extractPluginConfig(file *os.File) ([]byte, bool, error) {
+func extractPluginConfig(file *os.File, contentType string) ([]byte, bool, error) {
+	if mediaType, params, err := mime.ParseMediaType(contentType); err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
+		boundary := strings.TrimSpace(params["boundary"])
+		if boundary == "" {
+			return nil, false, nil
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
+		}
+		return extractPluginConfigFromMultipart(file, boundary)
+	}
+
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
 	}
@@ -444,8 +458,52 @@ func extractPluginConfig(file *os.File) ([]byte, bool, error) {
 	return extractPluginConfigFromTar(file)
 }
 
+func extractPluginConfigFromMultipart(file *os.File, boundary string) ([]byte, bool, error) {
+	reader := multipart.NewReader(file, boundary)
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, fmt.Errorf("read multipart part: %w", err)
+		}
+
+		config, ok, err := extractPluginConfigFromArchiveReader(part)
+		if err != nil {
+			return nil, false, err
+		}
+		if ok {
+			return config, true, nil
+		}
+	}
+}
+
 func extractPluginConfigFromGzipTar(file *os.File) ([]byte, bool, error) {
-	gzr, err := gzip.NewReader(file)
+	return extractPluginConfigFromGzipReader(file)
+}
+
+func extractPluginConfigFromTar(file *os.File) ([]byte, bool, error) {
+	return extractPluginConfigFromTarReader(tar.NewReader(file))
+}
+
+func extractPluginConfigFromArchiveReader(reader io.Reader) ([]byte, bool, error) {
+	buffered := bufio.NewReader(reader)
+	header, err := buffered.Peek(512)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, false, fmt.Errorf("peek archive header: %w", err)
+	}
+	if looksLikeGzipHeader(header) {
+		return extractPluginConfigFromGzipReader(buffered)
+	}
+	if !looksLikeTarHeader(header) {
+		return nil, false, nil
+	}
+	return extractPluginConfigFromTarReader(tar.NewReader(buffered))
+}
+
+func extractPluginConfigFromGzipReader(reader io.Reader) ([]byte, bool, error) {
+	gzr, err := gzip.NewReader(reader)
 	if err != nil {
 		if errors.Is(err, gzip.ErrHeader) {
 			return nil, false, nil
@@ -463,10 +521,6 @@ func extractPluginConfigFromGzipTar(file *os.File) ([]byte, bool, error) {
 		err = fmt.Errorf("close gzip reader: %w", closeErr)
 	}
 	return config, ok, err
-}
-
-func extractPluginConfigFromTar(file *os.File) ([]byte, bool, error) {
-	return extractPluginConfigFromTarReader(tar.NewReader(file))
 }
 
 func extractPluginConfigFromTarReader(tr *tar.Reader) ([]byte, bool, error) {
@@ -504,6 +558,14 @@ func extractPluginConfigFromTarReader(tr *tar.Reader) ([]byte, bool, error) {
 			found = true
 		}
 	}
+}
+
+func looksLikeGzipHeader(header []byte) bool {
+	return len(header) >= 2 && header[0] == 0x1f && header[1] == 0x8b
+}
+
+func looksLikeTarHeader(header []byte) bool {
+	return len(header) >= 262 && string(header[257:262]) == "ustar"
 }
 
 func normalizePluginConfigPath(value string) string {
