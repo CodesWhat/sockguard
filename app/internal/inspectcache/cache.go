@@ -121,6 +121,10 @@ func (c *Cache) storeLocked(cacheKey key, labels map[string]string, found bool, 
 	c.entries[cacheKey] = entry{labels: labels, found: found, at: at}
 }
 
+// cloneLabels intentionally returns a defensive copy before exposing cached
+// resolver output to callers. The ownership and visibility paths treat label
+// maps as ordinary mutable Go maps, so sharing the cached backing map across
+// requests would let one caller corrupt later cache hits.
 func cloneLabels(labels map[string]string) map[string]string {
 	if labels == nil {
 		return nil

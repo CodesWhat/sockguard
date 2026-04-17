@@ -3,6 +3,7 @@ package inspectcache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -169,4 +170,81 @@ func TestCacheCachesNotFound(t *testing.T) {
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("resolver calls for cached not-found = %d, want 1", got)
 	}
+}
+
+func TestCacheReturnsDefensiveLabelCopies(t *testing.T) {
+	var calls atomic.Int32
+	cache := New(
+		10*time.Second,
+		4,
+		time.Now,
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			calls.Add(1)
+			return map[string]string{
+				"com.sockguard.owner":   "job-123",
+				"com.sockguard.visible": "true",
+			}, true, nil
+		},
+	)
+
+	first, found, err := cache.Lookup(context.Background(), "containers", "abc123")
+	if err != nil || !found {
+		t.Fatalf("first lookup = (%v, found=%v), want (nil, found=true)", err, found)
+	}
+	first["com.sockguard.owner"] = "mutated"
+	first["com.sockguard.extra"] = "leak"
+
+	second, found, err := cache.Lookup(context.Background(), "containers", "abc123")
+	if err != nil || !found {
+		t.Fatalf("second lookup = (%v, found=%v), want (nil, found=true)", err, found)
+	}
+	if got := second["com.sockguard.owner"]; got != "job-123" {
+		t.Fatalf("cached owner label = %q, want job-123", got)
+	}
+	if _, ok := second["com.sockguard.extra"]; ok {
+		t.Fatalf("cached labels unexpectedly retained caller mutation: %#v", second)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("resolver calls for defensive-copy hit = %d, want 1", got)
+	}
+}
+
+func BenchmarkCacheLookupHitClonesLabels(b *testing.B) {
+	for _, labelCount := range []int{1, 8, 32} {
+		b.Run(fmt.Sprintf("labels_%d", labelCount), func(b *testing.B) {
+			labels := benchmarkLabels(labelCount)
+			cache := New(
+				10*time.Second,
+				4,
+				time.Now,
+				func(context.Context, string, string) (map[string]string, bool, error) {
+					return labels, true, nil
+				},
+			)
+
+			if _, _, err := cache.Lookup(context.Background(), "containers", "abc123"); err != nil {
+				b.Fatalf("warm lookup: %v", err)
+			}
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				got, found, err := cache.Lookup(context.Background(), "containers", "abc123")
+				if err != nil || !found {
+					b.Fatalf("cached lookup = (%v, found=%v), want (nil, found=true)", err, found)
+				}
+				benchmarkLookupLabels = got
+			}
+		})
+	}
+}
+
+var benchmarkLookupLabels map[string]string
+
+func benchmarkLabels(n int) map[string]string {
+	labels := make(map[string]string, n)
+	for i := 0; i < n; i++ {
+		labels[fmt.Sprintf("com.sockguard.label.%d", i)] = fmt.Sprintf("value-%d", i)
+	}
+	return labels
 }
