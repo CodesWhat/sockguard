@@ -122,6 +122,9 @@ func TestNormalizePath(t *testing.T) {
 		{"versioned dot-dot", "/v1.45/../containers/json", "/containers/json"},
 		{"redundant slashes", "//containers///json", "/containers/json"},
 		{"dot segment", "/containers/./json", "/containers/json"},
+		{"encoded slash unescapes before match", "/containers%2Fjson", "/containers/json"},
+		{"encoded dot-dot collapses after unescape", "/containers/%2e%2e/images/json", "/images/json"},
+		{"encoded version separator strips prefix", "/v1.45%2Fcontainers/json", "/containers/json"},
 		{"empty string", "", ""},
 	}
 
