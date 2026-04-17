@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -73,6 +75,46 @@ func TestFullProxyChainHTTPIntegration(t *testing.T) {
 	if !strings.Contains(logOutput, `"normalized_path":"/_ping"`) {
 		t.Fatalf("expected normalized path in log output, got: %s", logOutput)
 	}
+}
+
+func TestFullProxyChainErrorHandling_SocketDown(t *testing.T) {
+	socketPath := shortSocketPath(t, "chain-socket-down")
+
+	handler, logBuf := newBuildServeChainHandler(t, socketPath)
+
+	assertFullProxyChainUpstreamError(t, handler, logBuf, socketPath, "")
+}
+
+func TestFullProxyChainErrorHandling_PermissionDenied(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "dp-chain-perm-*")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	socketPath := filepath.Join(dir, "docker.sock")
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("unexpected-upstream-ok"))
+	}))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatalf("chmod upstream dir: %v", err)
+	}
+
+	probeConn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
+	if err == nil {
+		_ = probeConn.Close()
+		t.Skip("permission-denied socket setup did not block unix dial on this platform")
+	}
+	if !errors.Is(err, os.ErrPermission) && !strings.Contains(strings.ToLower(err.Error()), "permission denied") {
+		t.Skipf("permission-denied socket setup yielded %v, want permission denied", err)
+	}
+
+	handler, logBuf := newBuildServeChainHandler(t, socketPath)
+
+	assertFullProxyChainUpstreamError(t, handler, logBuf, socketPath, "permission denied")
 }
 
 func TestFullProxyChainHijackIntegration(t *testing.T) {
@@ -561,6 +603,104 @@ func TestBuildServeHandlerExercisesOwnershipForNodesAndSwarm(t *testing.T) {
 	}
 	if gotSwarmInspect != 1 || gotSwarmUpdate != 1 {
 		t.Fatalf("swarm hits = (%d inspect, %d proxied), want 1/1", gotSwarmInspect, gotSwarmUpdate)
+	}
+}
+
+func newBuildServeChainHandler(t *testing.T, socketPath string) (http.Handler, *bytes.Buffer) {
+	t.Helper()
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = true
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	return buildServeHandler(&cfg, logger, rules, newServeTestDeps()), &logBuf
+}
+
+func assertFullProxyChainUpstreamError(
+	t *testing.T,
+	handler http.Handler,
+	logBuf *bytes.Buffer,
+	upstreamSocket string,
+	wantLogFragment string,
+) {
+	t.Helper()
+
+	addr, waitForRequest := startProxyChainServer(t, handler)
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/v1.45/_ping", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Request-ID", "client-123")
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("proxy GET /_ping: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read proxy response: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusBadGateway, string(body))
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content type = %q, want %q", ct, "application/json")
+	}
+
+	requestID := resp.Header.Get("X-Request-Id")
+	if requestID == "" {
+		t.Fatal("expected generated X-Request-Id response header")
+	}
+	if requestID == "client-123" {
+		t.Fatalf("expected proxy-generated request id, got caller id %q", requestID)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nbody: %s", err, string(body))
+	}
+	if got := payload["message"]; got != "upstream Docker socket unreachable" {
+		t.Fatalf("message = %q, want %q", got, "upstream Docker socket unreachable")
+	}
+	if strings.Contains(string(body), upstreamSocket) {
+		t.Fatalf("response leaked upstream socket path: %s", string(body))
+	}
+
+	waitForRequest()
+
+	logOutput := logBuf.String()
+	for _, fragment := range []string{
+		`"msg":"upstream request failed"`,
+		`"msg":"request"`,
+		`"request_id":"` + requestID + `"`,
+		`"client_request_id":"client-123"`,
+		`"normalized_path":"/_ping"`,
+		`"decision":"allow"`,
+		`"rule":0`,
+		`"status":502`,
+	} {
+		if !strings.Contains(logOutput, fragment) {
+			t.Fatalf("expected %q in log output, got: %s", fragment, logOutput)
+		}
+	}
+	if wantLogFragment != "" && !strings.Contains(strings.ToLower(logOutput), wantLogFragment) {
+		t.Fatalf("expected %q in log output, got: %s", wantLogFragment, logOutput)
 	}
 }
 
