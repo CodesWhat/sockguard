@@ -176,6 +176,11 @@ func TestSetJSONHeaders(t *testing.T) {
 	}
 }
 
+func TestSetJSONHeadersNilIsNoop(t *testing.T) {
+	// Must not panic when header is nil — the nil guard branch.
+	setJSONHeaders(nil)
+}
+
 func TestGetJSONBufferReturnsUsableBuffer(t *testing.T) {
 	buf := getJSONBuffer()
 	if buf == nil {

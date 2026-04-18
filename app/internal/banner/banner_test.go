@@ -2,6 +2,7 @@ package banner
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -89,6 +90,56 @@ func centerArtBlock(in string, cols int) string {
 	}
 	defer func() { artMaxWidth = old }()
 	return centerArt(in, cols)
+}
+
+func TestTerminalColsNonFileWriterReturnsZero(t *testing.T) {
+	// bytes.Buffer is not an *os.File — should return 0 immediately.
+	var buf bytes.Buffer
+	if got := terminalCols(&buf); got != 0 {
+		t.Fatalf("terminalCols(bytes.Buffer) = %d, want 0", got)
+	}
+}
+
+func TestTerminalColsClosedFileReturnsZero(t *testing.T) {
+	// An *os.File whose fd is closed will fail Stat(), so terminalCols should
+	// return 0 from the stat-error branch.
+	f, err := os.CreateTemp(t.TempDir(), "banner-tty-*.tmp")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	_ = f.Close()
+	if got := terminalCols(f); got != 0 {
+		t.Fatalf("terminalCols(closed file) = %d, want 0", got)
+	}
+}
+
+func TestTerminalColsRegularFileReturnsZero(t *testing.T) {
+	// A regular open file is not a character device, so terminalCols returns 0
+	// from the ModeCharDevice branch.
+	f, err := os.CreateTemp(t.TempDir(), "banner-tty-*.tmp")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+	if got := terminalCols(f); got != 0 {
+		t.Fatalf("terminalCols(regular file) = %d, want 0", got)
+	}
+}
+
+// TestTerminalColsTTYReturnsNonZero opens /dev/tty when available and confirms
+// terminalCols returns a positive column count. Skipped in environments without
+// a controlling terminal (headless CI without a PTY).
+func TestTerminalColsTTY(t *testing.T) {
+	f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0)
+	if err != nil {
+		t.Skipf("cannot open /dev/tty (%v) — TTY ioctl branch untestable here", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	got := terminalCols(f)
+	if got <= 0 {
+		t.Skipf("terminalCols(/dev/tty) = %d — ioctl returned 0 (headless terminal)", got)
+	}
 }
 
 func TestShortCommit(t *testing.T) {

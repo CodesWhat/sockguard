@@ -209,6 +209,113 @@ func TestCacheReturnsDefensiveLabelCopies(t *testing.T) {
 	}
 }
 
+// TestStoreLocked_EvictsStaleEntries exercises the scrub-stale branch of
+// storeLocked: when the cache is full and at least one entry is past its TTL,
+// those entries are deleted without touching the live ones.
+func TestStoreLocked_EvictsStaleEntries(t *testing.T) {
+	const maxSize = 2
+	ttl := 10 * time.Second
+
+	// epoch is our controllable clock.
+	epoch := time.Unix(1_700_000_000, 0)
+	now := epoch
+
+	cache := New(
+		ttl,
+		maxSize,
+		func() time.Time { return now },
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			return map[string]string{"k": "v"}, true, nil
+		},
+	)
+
+	// Fill to capacity at t=0.
+	if _, _, err := cache.Lookup(context.Background(), "containers", "a"); err != nil {
+		t.Fatalf("lookup a: %v", err)
+	}
+	if _, _, err := cache.Lookup(context.Background(), "containers", "b"); err != nil {
+		t.Fatalf("lookup b: %v", err)
+	}
+
+	// Advance time past TTL so both existing entries are stale.
+	now = epoch.Add(ttl + time.Second)
+
+	// A third lookup triggers storeLocked at capacity — stale scrub removes
+	// "a" and "b", so "c" fits without evicting a live entry.
+	if _, _, err := cache.Lookup(context.Background(), "containers", "c"); err != nil {
+		t.Fatalf("lookup c: %v", err)
+	}
+
+	cache.mu.Lock()
+	_, aPresent := cache.entries[key{kind: "containers", identifier: "a"}]
+	_, bPresent := cache.entries[key{kind: "containers", identifier: "b"}]
+	_, cPresent := cache.entries[key{kind: "containers", identifier: "c"}]
+	size := len(cache.entries)
+	cache.mu.Unlock()
+
+	if aPresent || bPresent {
+		t.Fatalf("stale entries a/b should have been evicted (a=%v b=%v)", aPresent, bPresent)
+	}
+	if !cPresent {
+		t.Fatal("new entry c should be present after stale scrub")
+	}
+	if size != 1 {
+		t.Fatalf("cache size = %d, want 1", size)
+	}
+}
+
+// TestStoreLocked_EvictsOldestWhenAllLive exercises the oldest-eviction branch:
+// when the cache is full and no entry is stale, the oldest live entry is deleted.
+func TestStoreLocked_EvictsOldestWhenAllLive(t *testing.T) {
+	const maxSize = 2
+	ttl := 10 * time.Second
+
+	epoch := time.Unix(1_700_000_000, 0)
+	tick := int64(0) // monotonic tick in nanoseconds
+
+	cache := New(
+		ttl,
+		maxSize,
+		func() time.Time { return epoch.Add(time.Duration(tick)) },
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			return map[string]string{"k": "v"}, true, nil
+		},
+	)
+
+	// Insert "a" at t=0, "b" at t=1ns — both well within TTL.
+	if _, _, err := cache.Lookup(context.Background(), "containers", "a"); err != nil {
+		t.Fatalf("lookup a: %v", err)
+	}
+	tick = 1
+	if _, _, err := cache.Lookup(context.Background(), "containers", "b"); err != nil {
+		t.Fatalf("lookup b: %v", err)
+	}
+
+	// Advance to t=2ns — still within TTL — then insert "c" to trigger eviction.
+	tick = 2
+	if _, _, err := cache.Lookup(context.Background(), "containers", "c"); err != nil {
+		t.Fatalf("lookup c: %v", err)
+	}
+
+	cache.mu.Lock()
+	_, aPresent := cache.entries[key{kind: "containers", identifier: "a"}]
+	_, bPresent := cache.entries[key{kind: "containers", identifier: "b"}]
+	_, cPresent := cache.entries[key{kind: "containers", identifier: "c"}]
+	size := len(cache.entries)
+	cache.mu.Unlock()
+
+	// "a" is oldest and should have been evicted.
+	if aPresent {
+		t.Fatal("oldest entry a should have been evicted")
+	}
+	if !bPresent || !cPresent {
+		t.Fatalf("live entries b/c should be present (b=%v c=%v)", bPresent, cPresent)
+	}
+	if size != maxSize {
+		t.Fatalf("cache size = %d, want %d", size, maxSize)
+	}
+}
+
 func BenchmarkCacheLookupHitClonesLabels(b *testing.B) {
 	for _, labelCount := range []int{1, 8, 32} {
 		b.Run(fmt.Sprintf("labels_%d", labelCount), func(b *testing.B) {
