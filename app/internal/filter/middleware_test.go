@@ -1042,3 +1042,298 @@ func TestRedactDeniedPathEmpty(t *testing.T) {
 		t.Fatalf("redactDeniedPath(\"\") = %q, want empty", got)
 	}
 }
+
+// TestMiddlewareWrapperDelegates verifies the Middleware convenience wrapper
+// produces identical behaviour to MiddlewareWithOptions with empty Options{}.
+func TestMiddlewareWrapperDelegates(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
+	rules := []*CompiledRule{r1}
+
+	reached := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Middleware is the thin public wrapper around MiddlewareWithOptions.
+	handler := Middleware(rules, testLogger())(inner)
+	req := httptest.NewRequest("GET", "/_ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !reached {
+		t.Error("expected request to reach inner handler via Middleware wrapper")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestMiddlewareWrapperDenies confirms Middleware still denies unmatched requests.
+func TestMiddlewareWrapperDenies(t *testing.T) {
+	rules := []*CompiledRule{} // empty rules → default-deny everything
+
+	inner := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("should not reach inner handler")
+	})
+
+	handler := Middleware(rules, testLogger())(inner)
+	req := httptest.NewRequest("POST", "/containers/create", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+// TestDenyWithReasonWritesMeta verifies denyWithReason populates RequestMeta.
+func TestDenyWithReasonWritesMeta(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	meta := &logging.RequestMeta{}
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+
+	denyWithReason(rec, req, logger, "test denial", DenyResponseVerbosityMinimal)
+
+	if meta.Decision != "deny" {
+		t.Errorf("meta.Decision = %q, want deny", meta.Decision)
+	}
+	if meta.Reason != "test denial" {
+		t.Errorf("meta.Reason = %q, want %q", meta.Reason, "test denial")
+	}
+	if meta.NormPath != "/containers/json" {
+		t.Errorf("meta.NormPath = %q, want /containers/json", meta.NormPath)
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+// TestDenyWithReasonWithPresetNormPath verifies denyWithReason does not
+// overwrite an already-set NormPath on the meta.
+func TestDenyWithReasonWithPresetNormPath(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	meta := &logging.RequestMeta{NormPath: "/already/set"}
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+
+	denyWithReason(rec, req, logger, "profile not found", DenyResponseVerbosityMinimal)
+
+	// NormPath was already set, so denyWithReason should NOT overwrite it.
+	if meta.NormPath != "/already/set" {
+		t.Errorf("meta.NormPath = %q, want /already/set", meta.NormPath)
+	}
+}
+
+// TestDenyWithReasonLogsEncodeError covers the error-logging branch when
+// the response writer fails to write the JSON denial body.
+func TestDenyWithReasonLogsEncodeError(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	w := &failingResponseWriter{}
+	denyWithReason(w, req, logger, "some reason", DenyResponseVerbosityVerbose)
+
+	if !strings.Contains(logBuf.String(), "failed to encode denial response") {
+		t.Errorf("expected encode-error log, got %q", logBuf.String())
+	}
+}
+
+// TestMatchesSwarmInspectionNonPostMethod covers the r.Method != POST branch.
+func TestMatchesSwarmInspectionNonPostMethod(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/swarm/init", nil)
+	if matchesSwarmInspection(req, "/swarm/init") {
+		t.Error("matchesSwarmInspection() = true for GET, want false")
+	}
+}
+
+// TestMatchesSwarmInspectionNilRequest covers the r == nil branch.
+func TestMatchesSwarmInspectionNilRequest(t *testing.T) {
+	if matchesSwarmInspection(nil, "/swarm/init") {
+		t.Error("matchesSwarmInspection() = true for nil request, want false")
+	}
+}
+
+// TestMatchesSwarmInspectionAllPaths exercises all switch arms.
+func TestMatchesSwarmInspectionAllPaths(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/swarm/init", true},
+		{"/swarm/join", true},
+		{"/swarm/update", true},
+		{"/swarm/leave", false},
+		{"/containers/create", false},
+	}
+	for _, tt := range tests {
+		req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+		got := matchesSwarmInspection(req, tt.path)
+		if got != tt.want {
+			t.Errorf("matchesSwarmInspection(POST, %q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
+// TestMiddlewareProfileResolutionUnknownProfile covers the "profile not found"
+// branch inside the ResolveProfile path.
+func TestMiddlewareProfileResolutionUnknownProfile(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/**", Action: ActionAllow, Index: 0})
+	rules := []*CompiledRule{r1}
+
+	inner := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("should not reach inner handler when profile is unknown")
+	})
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		PolicyConfig: PolicyConfig{DenyResponseVerbosity: DenyResponseVerbosityVerbose},
+		Profiles:     map[string]Policy{}, // no profiles registered
+		ResolveProfile: func(*http.Request) (string, bool) {
+			return "nonexistent-profile", true
+		},
+	})(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(body.Reason, "profile") {
+		t.Errorf("reason = %q, want profile-resolution denial", body.Reason)
+	}
+}
+
+// TestMiddlewareProfileResolutionFound verifies a successfully resolved
+// profile overrides the default policy.
+func TestMiddlewareProfileResolutionFound(t *testing.T) {
+	defaultRules := []*CompiledRule{} // deny all by default
+
+	profileRule, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
+
+	reached := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := MiddlewareWithOptions(defaultRules, testLogger(), Options{
+		PolicyConfig: PolicyConfig{DenyResponseVerbosity: DenyResponseVerbosityVerbose},
+		Profiles: map[string]Policy{
+			"trusted": {Rules: []*CompiledRule{profileRule}},
+		},
+		ResolveProfile: func(*http.Request) (string, bool) {
+			return "trusted", true
+		},
+	})(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !reached {
+		t.Error("expected request to reach inner handler via profile policy")
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// TestMiddlewareResolveProfileReturnsFalse verifies that when ResolveProfile
+// returns ok=false the default policy is used without any profile lookup.
+func TestMiddlewareResolveProfileReturnsFalse(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
+	rules := []*CompiledRule{r1}
+
+	reached := false
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		ResolveProfile: func(*http.Request) (string, bool) {
+			return "", false // no profile selected
+		},
+	})(inner)
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !reached {
+		t.Error("expected request to reach inner handler when ResolveProfile returns false")
+	}
+}
+
+// TestMiddlewareProfileResolutionSetsMetaProfile verifies that when ResolveProfile
+// returns a non-empty profile name and logging.MetaForRequest returns a non-nil meta,
+// meta.Profile is populated (middleware.go lines 148-150).
+func TestMiddlewareProfileResolutionSetsMetaProfile(t *testing.T) {
+	profileRule, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
+
+	handler := MiddlewareWithOptions([]*CompiledRule{}, testLogger(), Options{
+		PolicyConfig: PolicyConfig{DenyResponseVerbosity: DenyResponseVerbosityVerbose},
+		Profiles: map[string]Policy{
+			"trusted": {Rules: []*CompiledRule{profileRule}},
+		},
+		ResolveProfile: func(*http.Request) (string, bool) {
+			return "trusted", true
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Inject RequestMeta into context so MetaForRequest returns it (covers lines 148-150).
+	meta := &logging.RequestMeta{}
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if meta.Profile != "trusted" {
+		t.Fatalf("meta.Profile = %q, want %q", meta.Profile, "trusted")
+	}
+}
+
+// TestInspectAllowedRequestReturnsRejectionStatusFromError covers the
+// requestRejectionError path inside inspectAllowedRequest.
+func TestInspectAllowedRequestReturnsRejectionStatusFromError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/volumes/create", nil)
+
+	policy := runtimePolicy{
+		inspectPolicies: []requestInspectPolicy{
+			{
+				matches:  func(*http.Request, string) bool { return true },
+				severity: inspectSeverityMedium,
+				inspect: func(*slog.Logger, *http.Request, string) (string, error) {
+					return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, "entity too large")
+				},
+				errorLogMessage:   "inspect failed",
+				denyReasonOnError: "unable to inspect",
+			},
+		},
+	}
+
+	reason, status := policy.inspectAllowedRequest(testLogger(), req, "/volumes/create")
+	if reason != "entity too large" {
+		t.Fatalf("reason = %q, want %q", reason, "entity too large")
+	}
+	if status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", status, http.StatusRequestEntityTooLarge)
+	}
+}

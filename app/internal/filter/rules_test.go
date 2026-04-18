@@ -610,3 +610,168 @@ func (cr *CompiledRule) matches(method, path string) bool {
 func (cr *CompiledRule) matchesNormalizedUpper(upperMethod, normalizedPath string) bool {
 	return cr.matchesNormalizedUpperWithBit(upperMethod, httpMethodBit(upperMethod), normalizedPath)
 }
+
+func TestMatchGlobSegment(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		segment string
+		want    bool
+	}{
+		// Wildcard-only: always true.
+		{name: "star matches anything", pattern: "*", segment: "abc123", want: true},
+		{name: "star matches empty", pattern: "*", segment: "", want: true},
+		// Literal (no wildcard).
+		{name: "literal match", pattern: "json", segment: "json", want: true},
+		{name: "literal mismatch", pattern: "json", segment: "yaml", want: false},
+		// Patterns with single star.
+		{name: "prefix star match", pattern: "abc*", segment: "abcdef", want: true},
+		{name: "prefix star empty suffix match", pattern: "abc*", segment: "abc", want: true},
+		{name: "prefix star mismatch", pattern: "abc*", segment: "xbc", want: false},
+		{name: "suffix star match", pattern: "*def", segment: "abcdef", want: true},
+		{name: "suffix star mismatch", pattern: "*def", segment: "abcxyz", want: false},
+		{name: "mid star match", pattern: "a*z", segment: "abcz", want: true},
+		{name: "mid star mismatch", pattern: "a*z", segment: "abcy", want: false},
+		{name: "star only at start no segment chars", pattern: "*xyz", segment: "xyz", want: true},
+		// Pattern with multiple stars.
+		{name: "two stars match", pattern: "a*b*c", segment: "a1b2c", want: true},
+		{name: "two stars mismatch", pattern: "a*b*c", segment: "a1b2x", want: false},
+		// Star at end matches remainder.
+		{name: "trailing star empty remainder", pattern: "abc*", segment: "abc", want: true},
+		// Pattern longer than segment.
+		{name: "pattern longer than segment no star", pattern: "abcde", segment: "abc", want: false},
+		// Segment is longer than pattern.
+		{name: "segment longer no star in pattern", pattern: "abc", segment: "abcde", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchGlobSegment(tt.pattern, tt.segment)
+			if got != tt.want {
+				t.Fatalf("matchGlobSegment(%q, %q) = %v, want %v", tt.pattern, tt.segment, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchTrailingDoubleStar(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		path   string
+		want   bool
+	}{
+		{name: "empty prefix always matches", prefix: "", path: "/anything", want: true},
+		{name: "exact match", prefix: "/containers", path: "/containers", want: true},
+		{name: "child match", prefix: "/containers", path: "/containers/json", want: true},
+		{name: "sibling does not match", prefix: "/containers", path: "/containers-extra", want: false},
+		{name: "unrelated path does not match", prefix: "/containers", path: "/images/json", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchTrailingDoubleStar(tt.prefix, tt.path)
+			if got != tt.want {
+				t.Fatalf("matchTrailingDoubleStar(%q, %q) = %v, want %v", tt.prefix, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMatchGlobSegmentsRootPath(t *testing.T) {
+	// Exercises the len(patternSegments)==1 && matchGlobSegment(…,"") branch.
+	rule, _ := CompileRule(Rule{
+		Methods: []string{"GET"},
+		Pattern: "/*",
+		Action:  ActionAllow,
+	})
+	// A single-segment glob should match the root path "/" (one empty segment).
+	if !rule.matches("GET", "/") {
+		t.Fatal("single-segment glob should match /")
+	}
+}
+
+func TestMatchesNormalizedUpperWithBitUnknownMethod(t *testing.T) {
+	// Covers the unknownMethods branch in matchesNormalizedUpperWithBit.
+	rule, _ := CompileRule(Rule{
+		Methods: []string{"BREW"},
+		Pattern: "/_ping",
+		Action:  ActionAllow,
+	})
+
+	// BREW has no known bit (returns 0), so unknownMethods lookup is used.
+	if !rule.matchesNormalizedUpper("BREW", "/_ping") {
+		t.Fatal("BREW method should match rule configured for BREW")
+	}
+	// A different unknown method must not match.
+	if rule.matchesNormalizedUpper("POUR", "/_ping") {
+		t.Fatal("POUR method should not match rule configured for BREW")
+	}
+}
+
+func TestMatchesNormalizedUpperWithBitDefaultCase(t *testing.T) {
+	// Exercises the `default: return false` branch by constructing a CompiledRule
+	// with an impossible matcherKind value via direct struct initialisation.
+	cr := &CompiledRule{
+		matchAllMethods: true,
+		matcherKind:     pathMatcherKind(255), // unknown kind
+		Action:          ActionAllow,
+	}
+	if cr.matchesNormalizedUpperWithBit("GET", httpMethodMaskGet, "/anything") {
+		t.Fatal("unknown matcherKind should return false")
+	}
+}
+
+func TestMatchGlobSegmentsPatternLongerThanPath(t *testing.T) {
+	// Pattern /*/b/c has 3 segments but path /a has only 1 segment.
+	// literalPrefix is "/" (from the leading slash before *), which matches "/a",
+	// so matchGlobSegments IS called. It returns false at line 374-376 when the
+	// second pattern segment is processed but path is already exhausted.
+	rule, _ := CompileRule(Rule{
+		Methods: []string{"GET"},
+		Pattern: "/*/b/c",
+		Action:  ActionAllow,
+	})
+	if rule.matches("GET", "/a") {
+		t.Fatal("pattern longer than path should not match")
+	}
+}
+
+func TestMatchGlobSegmentsPathLongerThanPattern(t *testing.T) {
+	// Pattern /a/b but path /a/b/c — path has more segments than pattern.
+	rule, _ := CompileRule(Rule{
+		Methods: []string{"GET"},
+		Pattern: "/a/b",
+		Action:  ActionAllow,
+	})
+	if rule.matches("GET", "/a/b/c") {
+		t.Fatal("path longer than pattern should not match literal")
+	}
+}
+
+func TestMatchesNormalizedUpperWithBitSegmentGlobLiteralPrefixMismatch(t *testing.T) {
+	// segmentGlob matcher with a literalPrefix; path does NOT start with the prefix.
+	rule, _ := CompileRule(Rule{
+		Methods: []string{"GET"},
+		Pattern: "/containers/*/exec",
+		Action:  ActionAllow,
+	})
+	// Path doesn't start with /containers/ → should short-circuit via literalPrefix check.
+	if rule.matches("GET", "/images/abc/exec") {
+		t.Fatal("literalPrefix mismatch should not match")
+	}
+}
+
+func TestMatchesNormalizedUpperWithBitRegexLiteralPrefixMismatch(t *testing.T) {
+	// pathMatcherRegex with a literalPrefix that doesn't match the path.
+	// Pattern with ** (not trailing) compiles to regex. "/containers/**/json" → regex.
+	rule, _ := CompileRule(Rule{
+		Methods: []string{"GET"},
+		Pattern: "/containers/**/json",
+		Action:  ActionAllow,
+	})
+	// Path doesn't start with /containers/ → literalPrefix short-circuit applies.
+	if rule.matches("GET", "/images/abc/def/json") {
+		t.Fatal("regex literalPrefix mismatch should not match")
+	}
+}

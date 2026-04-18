@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -86,6 +87,43 @@ func TestVolumeInspectCapsOversizedBody(t *testing.T) {
 	}
 }
 
+func TestVolumeInspectNilRequestReturnsEmpty(t *testing.T) {
+	policy := newVolumePolicy(VolumeOptions{})
+	reason, err := policy.inspect(nil, nil, "/volumes/create")
+	if err != nil || reason != "" {
+		t.Fatalf("inspect(nil) = (%q, %v), want empty", reason, err)
+	}
+}
+
+func TestVolumeInspectNilBodyReturnsEmpty(t *testing.T) {
+	policy := newVolumePolicy(VolumeOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/volumes/create", nil)
+	req.Body = nil
+	reason, err := policy.inspect(nil, req, "/volumes/create")
+	if err != nil || reason != "" {
+		t.Fatalf("inspect(nil body) = (%q, %v), want empty", reason, err)
+	}
+}
+
+func TestVolumeInspectEmptyBodyReturnsEmpty(t *testing.T) {
+	policy := newVolumePolicy(VolumeOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/volumes/create", bytes.NewReader(nil))
+	reason, err := policy.inspect(nil, req, "/volumes/create")
+	if err != nil || reason != "" {
+		t.Fatalf("inspect(empty body) = (%q, %v), want empty", reason, err)
+	}
+}
+
+func TestVolumeInspectAllowsLocalDriverExplicitly(t *testing.T) {
+	// Driver "local" should be allowed even when AllowCustomDrivers is false.
+	policy := newVolumePolicy(VolumeOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/volumes/create", strings.NewReader(`{"Driver":"local"}`))
+	reason, err := policy.inspect(nil, req, "/volumes/create")
+	if err != nil || reason != "" {
+		t.Fatalf("inspect() = (%q, %v), want allow for local driver", reason, err)
+	}
+}
+
 type volumeCloseErrorReadCloser struct {
 	io.Reader
 	closeErr error
@@ -109,5 +147,22 @@ func TestVolumeInspectReturnsCloseError(t *testing.T) {
 	}
 	if err == nil || err.Error() != "read body: close failed" {
 		t.Fatalf("inspect() error = %v, want read body close failure", err)
+	}
+}
+
+func TestVolumeInspectMalformedJSONWithLogger(t *testing.T) {
+	// Exercises the logger debug branch when JSON decode fails (lines 55-57).
+	policy := newVolumePolicy(VolumeOptions{})
+	logs := &collectingHandler{}
+	req := httptest.NewRequest(http.MethodPost, "/volumes/create", strings.NewReader("{bad json}"))
+	reason, err := policy.inspect(slog.New(logs), req, "/volumes/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	}
+	if len(logs.snapshot()) != 1 {
+		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
 	}
 }

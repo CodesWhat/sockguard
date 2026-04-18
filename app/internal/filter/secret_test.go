@@ -3,6 +3,7 @@ package filter
 import (
 	"bytes"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -82,5 +83,73 @@ func TestSecretInspectCapsOversizedBody(t *testing.T) {
 	}
 	if !strings.HasPrefix(rejection.reason, "secret create denied: request body exceeds") {
 		t.Fatalf("rejection reason = %q, want oversize denial", rejection.reason)
+	}
+}
+
+func TestSecretInspectNilRequestReturnsEmpty(t *testing.T) {
+	policy := newSecretPolicy(SecretOptions{})
+	reason, err := policy.inspect(nil, nil, "/secrets/create")
+	if err != nil || reason != "" {
+		t.Fatalf("inspect(nil) = (%q, %v), want empty", reason, err)
+	}
+}
+
+func TestSecretInspectNilBodyReturnsEmpty(t *testing.T) {
+	policy := newSecretPolicy(SecretOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/secrets/create", nil)
+	req.Body = nil
+	reason, err := policy.inspect(nil, req, "/secrets/create")
+	if err != nil || reason != "" {
+		t.Fatalf("inspect(nil body) = (%q, %v), want empty", reason, err)
+	}
+}
+
+func TestSecretInspectEmptyBodyReturnsEmpty(t *testing.T) {
+	policy := newSecretPolicy(SecretOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/secrets/create", bytes.NewReader(nil))
+	reason, err := policy.inspect(nil, req, "/secrets/create")
+	if err != nil || reason != "" {
+		t.Fatalf("inspect(empty body) = (%q, %v), want empty", reason, err)
+	}
+}
+
+func TestSecretInspectAllowsTemplateDriverWhenConfigured(t *testing.T) {
+	policy := newSecretPolicy(SecretOptions{AllowTemplateDrivers: true})
+	req := httptest.NewRequest(http.MethodPost, "/secrets/create", strings.NewReader(`{"TemplateDriver":"golang-template"}`))
+	reason, err := policy.inspect(nil, req, "/secrets/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+func TestSecretInspectBodyReadErrorPropagates(t *testing.T) {
+	// Exercises the non-tooLarge error branch from readBoundedBody (line 48).
+	policy := newSecretPolicy(SecretOptions{})
+	sentinel := io.ErrUnexpectedEOF
+	req := httptest.NewRequest(http.MethodPost, "/secrets/create", nil)
+	req.Body = &readErrorReadCloser{readErr: sentinel}
+	_, err := policy.inspect(nil, req, "/secrets/create")
+	if err == nil {
+		t.Fatal("expected read error to propagate")
+	}
+}
+
+func TestSecretInspectMalformedJSONWithLogger(t *testing.T) {
+	// Exercises the logger debug branch when JSON decode fails (lines 57-59).
+	policy := newSecretPolicy(SecretOptions{})
+	logs := &collectingHandler{}
+	req := httptest.NewRequest(http.MethodPost, "/secrets/create", strings.NewReader("{bad json}"))
+	reason, err := policy.inspect(slog.New(logs), req, "/secrets/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	}
+	if len(logs.snapshot()) != 1 {
+		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
 	}
 }

@@ -9,8 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -414,4 +418,416 @@ type execTestErrorReader struct {
 
 func (r execTestErrorReader) Read([]byte) (int, error) {
 	return 0, r.err
+}
+
+func TestNewExecPolicyFiltersEmptyCommands(t *testing.T) {
+	// Empty slices in AllowedCommands should be silently dropped.
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{
+			{},
+			{"/usr/bin/env"},
+			{},
+		},
+	})
+	if len(policy.allowedCommands) != 1 {
+		t.Fatalf("allowedCommands = %v, want 1 entry", policy.allowedCommands)
+	}
+	if policy.allowedCommands[0][0] != "/usr/bin/env" {
+		t.Fatalf("allowedCommands[0] = %v, want [/usr/bin/env]", policy.allowedCommands[0])
+	}
+}
+
+func TestExecInspectNilRequestReturnsEmpty(t *testing.T) {
+	policy := newExecPolicy(ExecOptions{})
+	reason, err := policy.inspect(nil, nil, "/containers/abc/exec")
+	if err != nil {
+		t.Fatalf("inspect(nil) error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestExecInspectNonPostReturnsEmpty(t *testing.T) {
+	policy := newExecPolicy(ExecOptions{})
+	req := httptest.NewRequest(http.MethodGet, "/containers/abc/exec", nil)
+	reason, err := policy.inspect(nil, req, "/containers/abc/exec")
+	if err != nil {
+		t.Fatalf("inspect(GET) error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestExecInspectDefaultPathReturnsEmpty(t *testing.T) {
+	// A POST to a path that is neither exec-create nor exec-start.
+	policy := newExecPolicy(ExecOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/logs", nil)
+	reason, err := policy.inspect(nil, req, "/containers/abc/logs")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestExecInspectNilBodyReturnsEmpty(t *testing.T) {
+	policy := newExecPolicy(ExecOptions{AllowedCommands: [][]string{{"/bin/sh"}}})
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/exec", nil)
+	req.Body = nil
+	reason, err := policy.inspect(nil, req, "/containers/abc/exec")
+	if err != nil {
+		t.Fatalf("inspect(nil body) error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestExecStartIdentifierMissingIDReturnsNotOK(t *testing.T) {
+	// Path /exec//start has empty ID segment.
+	id, ok := execStartIdentifier("/exec//start")
+	if ok {
+		t.Fatalf("expected ok=false for empty id, got id=%q", id)
+	}
+}
+
+func TestExecStartIdentifierWrongTailReturnsNotOK(t *testing.T) {
+	// Path /exec/abc123/json is not a start path.
+	id, ok := execStartIdentifier("/exec/abc123/json")
+	if ok {
+		t.Fatalf("expected ok=false for wrong tail, got id=%q", id)
+	}
+}
+
+func TestExecStartIdentifierNoPrefixReturnsNotOK(t *testing.T) {
+	_, ok := execStartIdentifier("/containers/abc/start")
+	if ok {
+		t.Fatal("expected ok=false for non-exec path")
+	}
+}
+
+func TestNewDockerExecInspectorConstructor(t *testing.T) {
+	// Verifies the constructor returns a non-nil function without panicking.
+	fn := NewDockerExecInspector("/var/run/docker.sock")
+	if fn == nil {
+		t.Fatal("NewDockerExecInspector() returned nil")
+	}
+}
+
+func TestNewDockerExecInspectorDialError(t *testing.T) {
+	// Exercises lines 261-263: client.Do fails when the socket doesn't exist.
+	fn := NewDockerExecInspector("/nonexistent/path/docker.sock")
+	_, _, err := fn(context.Background(), "abc123")
+	if err == nil {
+		t.Fatal("expected dial error for nonexistent socket")
+	}
+}
+
+func TestNewDockerExecInspectorNilContext(t *testing.T) {
+	// Exercises lines 257-259: http.NewRequestWithContext returns error for nil context.
+	fn := NewDockerExecInspector("/nonexistent/docker.sock")
+	//nolint:staticcheck // intentionally passing nil to test error branch
+	_, _, err := fn(nil, "abc123") //nolint:SA1012
+	if err == nil {
+		t.Fatal("expected error for nil context")
+	}
+}
+
+func TestNewDockerExecInspectorUsesHTTPServer(t *testing.T) {
+	// Spin up a mock upstream that responds to GET /exec/{id}/json with a
+	// minimal response, and wire the inspector to it via a TCP address.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/exec/notfound/json":
+			w.WriteHeader(http.StatusNotFound)
+		case r.URL.Path == "/exec/errored/json":
+			w.WriteHeader(http.StatusInternalServerError)
+		case r.URL.Path == "/exec/badjson/json":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{not json"))
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			body := `{"ProcessConfig":{"entrypoint":"/bin/sh","arguments":["-c","id"],"privileged":false,"user":""}}`
+			_, _ = w.Write([]byte(body))
+		}
+	})
+
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	// Build an inspector backed by TCP (not unix) to avoid needing root.
+	transport := &http.Transport{}
+	client := &http.Client{Transport: transport}
+	inspectFn := func(ctx context.Context, id string) (ExecInspectResult, bool, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/exec/"+id+"/json", nil)
+		if err != nil {
+			return ExecInspectResult{}, false, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return ExecInspectResult{}, false, err
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode == http.StatusNotFound {
+			return ExecInspectResult{}, false, nil
+		}
+		if resp.StatusCode != http.StatusOK {
+			return ExecInspectResult{}, false, fmt.Errorf("upstream returned %s", resp.Status)
+		}
+		var decoded execInspectResponse
+		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+			return ExecInspectResult{}, false, err
+		}
+		command := make([]string, 0, 1+len(decoded.ProcessConfig.Arguments))
+		if decoded.ProcessConfig.Entrypoint != "" {
+			command = append(command, decoded.ProcessConfig.Entrypoint)
+		}
+		command = append(command, decoded.ProcessConfig.Arguments...)
+		return ExecInspectResult{
+			Command:    command,
+			Privileged: decoded.ProcessConfig.Privileged,
+			User:       decoded.ProcessConfig.User,
+		}, true, nil
+	}
+
+	ctx := context.Background()
+
+	// Success case.
+	result, found, err := inspectFn(ctx, "abc123")
+	if err != nil {
+		t.Fatalf("inspectFn success: error = %v", err)
+	}
+	if !found {
+		t.Fatal("inspectFn success: found = false")
+	}
+	if len(result.Command) == 0 || result.Command[0] != "/bin/sh" {
+		t.Fatalf("command = %v, want [/bin/sh -c id]", result.Command)
+	}
+
+	// Not found.
+	_, found, err = inspectFn(ctx, "notfound")
+	if err != nil {
+		t.Fatalf("inspectFn notfound: error = %v", err)
+	}
+	if found {
+		t.Fatal("inspectFn notfound: found = true, want false")
+	}
+
+	// Upstream error.
+	_, _, err = inspectFn(ctx, "errored")
+	if err == nil {
+		t.Fatal("inspectFn errored: expected error")
+	}
+
+	// Bad JSON.
+	_, _, err = inspectFn(ctx, "badjson")
+	if err == nil {
+		t.Fatal("inspectFn badjson: expected JSON decode error")
+	}
+}
+
+func TestInspectExistingNilInspectStartDenies(t *testing.T) {
+	// inspectExisting with nil inspectStart should deny.
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{{"/bin/sh"}},
+		InspectStart:    nil,
+	})
+	reason, err := policy.inspectExisting(context.Background(), "/exec/abc123/start")
+	if err != nil {
+		t.Fatalf("inspectExisting() error = %v", err)
+	}
+	if reason == "" {
+		t.Fatal("expected denial when inspectStart is nil")
+	}
+}
+
+func TestInspectExistingInspectStartError(t *testing.T) {
+	sentinel := errors.New("inspect failed")
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{{"/bin/sh"}},
+		InspectStart: func(context.Context, string) (ExecInspectResult, bool, error) {
+			return ExecInspectResult{}, false, sentinel
+		},
+	})
+	_, err := policy.inspectExisting(context.Background(), "/exec/abc123/start")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("errors.Is(err, sentinel) = false, err = %v", err)
+	}
+}
+
+func TestInspectExistingNotFoundReturnsEmpty(t *testing.T) {
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{{"/bin/sh"}},
+		InspectStart: func(context.Context, string) (ExecInspectResult, bool, error) {
+			return ExecInspectResult{}, false, nil // not found
+		},
+	})
+	reason, err := policy.inspectExisting(context.Background(), "/exec/abc123/start")
+	if err != nil {
+		t.Fatalf("inspectExisting() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty when exec not found", reason)
+	}
+}
+
+func TestInspectCreateEmptyBodyReturnsEmpty(t *testing.T) {
+	policy := newExecPolicy(ExecOptions{AllowedCommands: [][]string{{"/bin/sh"}}})
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/exec", bytes.NewReader([]byte{}))
+	reason, err := policy.inspectCreate(nil, req)
+	if err != nil {
+		t.Fatalf("inspectCreate(empty body) error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestInspectCreateMalformedJSONWithLogger(t *testing.T) {
+	policy := newExecPolicy(ExecOptions{AllowedCommands: [][]string{{"/bin/sh"}}})
+	logs := &collectingHandler{}
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/exec", strings.NewReader("{bad"))
+	reason, err := policy.inspectCreate(slog.New(logs), req)
+	if err != nil {
+		t.Fatalf("inspectCreate() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	}
+	if len(logs.snapshot()) != 1 {
+		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
+	}
+}
+
+func TestInspectExistingInvalidPathReturnsEmpty(t *testing.T) {
+	// execStartIdentifier returns false for non-start paths.
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{{"/bin/sh"}},
+		InspectStart:    func(context.Context, string) (ExecInspectResult, bool, error) { return ExecInspectResult{}, true, nil },
+	})
+	reason, err := policy.inspectExisting(context.Background(), "/exec/abc/json")
+	if err != nil {
+		t.Fatalf("inspectExisting() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty for non-start path", reason)
+	}
+}
+
+func TestDecodeExecCommandStringFallback(t *testing.T) {
+	// Exercises the string fallback path in decodeExecCommand.
+	raw := json.RawMessage(`"/bin/sh -c id"`)
+	argv, err := decodeExecCommand(raw)
+	if err != nil {
+		t.Fatalf("decodeExecCommand() error = %v", err)
+	}
+	if len(argv) == 0 || argv[0] != "/bin/sh" {
+		t.Fatalf("argv = %v, want [/bin/sh -c id]", argv)
+	}
+}
+
+func TestDecodeExecCommandInvalidJSONFails(t *testing.T) {
+	raw := json.RawMessage(`{not json}`)
+	_, err := decodeExecCommand(raw)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestInspectCreateUnparseableCmdWithLogger(t *testing.T) {
+	// Exercises the logger.DebugContext branch at exec.go:133 — valid JSON body
+	// with Cmd as an object (not array or string) causes decodeExecCommand to fail.
+	policy := newExecPolicy(ExecOptions{AllowedCommands: [][]string{{"/bin/sh"}}})
+	logs := &collectingHandler{}
+	// {"Cmd":{}} parses as execCreateRequest but Cmd={} fails both []string and string unmarshal.
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/exec", strings.NewReader(`{"Cmd":{}}`))
+	reason, err := policy.inspectCreate(slog.New(logs), req)
+	if err != nil {
+		t.Fatalf("inspectCreate() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	}
+	if len(logs.snapshot()) != 1 {
+		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
+	}
+}
+
+func TestNewDockerExecInspectorViaUnixSocket(t *testing.T) {
+	// Create a temporary unix socket and serve a minimal exec inspect HTTP server.
+	// macOS limits unix socket paths to 104 bytes; use os.MkdirTemp with a short prefix.
+	tmpDir, err := os.MkdirTemp("", "sg")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+	socketPath := filepath.Join(tmpDir, "d.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("Listen unix: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/exec/abc123/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ProcessConfig":{"entrypoint":"/bin/sh","arguments":["-c","id"],"privileged":false,"user":""}}`))
+	})
+	mux.HandleFunc("/exec/notfound/json", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/exec/errored/json", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/exec/badjson/json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{not json"))
+	})
+
+	srv := &http.Server{Handler: mux}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	inspectFn := NewDockerExecInspector(socketPath)
+	ctx := context.Background()
+
+	// Success path.
+	result, found, err := inspectFn(ctx, "abc123")
+	if err != nil {
+		t.Fatalf("inspect abc123: error = %v", err)
+	}
+	if !found {
+		t.Fatal("inspect abc123: found = false, want true")
+	}
+	if len(result.Command) == 0 || result.Command[0] != "/bin/sh" {
+		t.Fatalf("command = %v, want [/bin/sh -c id]", result.Command)
+	}
+
+	// Not found path.
+	_, found, err = inspectFn(ctx, "notfound")
+	if err != nil {
+		t.Fatalf("inspect notfound: error = %v", err)
+	}
+	if found {
+		t.Fatal("inspect notfound: found = true, want false")
+	}
+
+	// Upstream error path.
+	_, _, err = inspectFn(ctx, "errored")
+	if err == nil {
+		t.Fatal("inspect errored: expected error from non-200 response")
+	}
+
+	// Bad JSON path.
+	_, _, err = inspectFn(ctx, "badjson")
+	if err == nil {
+		t.Fatal("inspect badjson: expected JSON decode error")
+	}
 }
