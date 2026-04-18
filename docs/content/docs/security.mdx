@@ -31,7 +31,7 @@ Named client profiles sit on top of that admission layer. Sockguard can now sele
 Block entire HTTP methods. Most consumers only need `GET` (read-only mode).
 
 ### Layer 4: Path Filtering
-Allow or deny specific Docker API endpoint paths using glob patterns. Docker API version prefixes (`/v1.45/`), percent-encoded separators, and `.` / `..` segments are normalized before matching so adversarial path shapes cannot slip past a literal allowlist.
+Allow or deny specific Docker API endpoint paths using glob patterns. Before matching, Sockguard strips Docker API version prefixes (`/v1.45/`), percent-decodes the path (including double-encoded separators and mixed-case escapes such as `%2F`, `%2E`, and `%252F`), and resolves `.` / `..` segments via `path.Clean`. That means `/v1.45/containers/%2e%2e/images/json` canonicalizes to `/images/json` before the glob matcher sees it, so adversarial path shapes cannot slip past a literal allowlist or skip a request-body inspector.
 
 ### Layer 5: Request Body Inspection
 `POST /containers/create` bodies are parsed on every request and denied when they contain dangerous configuration:
@@ -52,7 +52,9 @@ Allow or deny specific Docker API endpoint paths using glob patterns. Docker API
 
 `POST /swarm/init`, `POST /swarm/join`, and `POST /swarm/update` are inspected by default. Sockguard blocks `ForceNewCluster`, external CA configuration, non-allowlisted join targets, token rotations, manager unlock-key rotations, manager autolock, and signing-CA updates unless explicitly allowed.
 
-`POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains remote registries, privilege grants, plugin-set assignments, local plugin tar `config.json`, host mounts, device exposure, and capability requests unless explicitly allowed.
+`POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains remote registries, privilege grants, plugin-set assignments, local plugin tar `config.json`, host mounts, device exposure, and capability requests unless explicitly allowed. `POST /plugins/create` is treated as `multipart/form-data` as well as raw tar: Sockguard spools the upload to a temporary file, parses the multipart envelope, extracts `config.json` from the embedded tar, and applies the same plugin policy it applies to `POST /plugins/pull`. Uploads without a parseable `config.json`, or whose `config.json` fails policy, are denied before the body reaches Docker.
+
+Each inspector reads its request body under a per-endpoint byte cap and returns `413 Payload Too Large` when the cap is exceeded, instead of streaming unbounded bodies into memory. A malformed or hostile client cannot tie up the filter or the Docker daemon with oversized payloads — the bounded reader short-circuits before the JSON decode or tar parse even begins.
 
 These inspectors intentionally decode only the Docker request fields Sockguard actually enforces. They are not full Docker-schema validators, so full payload validation still belongs to Docker once Sockguard has checked the policy-relevant subset.
 

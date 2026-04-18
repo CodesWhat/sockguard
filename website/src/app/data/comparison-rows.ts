@@ -34,7 +34,7 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "IP/hostname + labels",
-    sockguard: "CIDR + labels + SAN/SPIFFE cert + unix peer",
+    sockguard: "CIDR + labels + cert (CN/SAN/SPKI pin) + unix peer",
   },
   {
     feature: "Resource owner labels",

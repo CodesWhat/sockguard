@@ -31,7 +31,8 @@ export const features: Feature[] = [
     title: "Default-Deny Posture",
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
-    description: "Everything blocked unless explicitly allowed. No match means deny.",
+    description:
+      "Everything blocked unless explicitly allowed. Request paths are percent-decoded and canonicalized before matching, so `%2e%2e` and encoded-separator tricks cannot slip past an allowlist.",
     category: "security",
   },
   {
@@ -40,7 +41,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "Container, volume, secret, config, service, swarm, image-pull, build, and plugin writes are parsed to block host-bound workloads, non-allowlisted mounts, devices, commands, and remotes, unsafe swarm rotations, and remote build contexts.",
+      "Container, volume, secret, config, service, swarm, image-pull, build, and plugin writes are parsed to block host-bound workloads, non-allowlisted mounts, devices, commands, and remotes, unsafe swarm rotations, and remote build contexts. Multipart plugin uploads are inspected too, and oversized bounded bodies are rejected with 413 before the inspector runs.",
     category: "security",
   },
   {
@@ -67,7 +68,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Gate callers by source CIDR, bridge-network container labels, certificate selectors, and unix peer credentials before the global policy runs.",
+      "Gate callers by source CIDR, bridge-network container labels, mTLS certificate selectors (CN, DNS/IP/URI SAN, SHA-256 SPKI pin), and unix peer credentials before the global policy runs.",
     category: "control",
   },
   {

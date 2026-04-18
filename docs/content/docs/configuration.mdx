@@ -113,7 +113,7 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - For the safest deployment, use `listen.socket` and share a unix socket.
 - Sockguard hardens the unix socket to `0600` owner-only permissions. `listen.socket_mode` must stay `0600`; broader modes are rejected at startup.
 - For remote or container-network TCP, configure `listen.tls` so Sockguard requires mutual TLS. Sockguard's mTLS server minimum is TLS 1.3, so callers must support TLS 1.3.
-- `listen.tls.client_ca_file` still defines the issuing trust root. To avoid trusting every cert that CA can mint, optionally narrow the accepted verified client leaf with `listen.tls.allowed_common_names`, `allowed_dns_names`, `allowed_ip_addresses`, `allowed_uri_sans`, and/or `allowed_public_key_sha256_pins`. Different selector fields are ANDed, while entries inside one field are ORed.
+- `listen.tls.client_ca_file` still defines the issuing trust root. To avoid trusting every cert that CA can mint, optionally narrow the accepted verified client leaf with the selectors described under [mTLS Client Selectors](#mtls-client-selectors) below. Different selector fields are ANDed, while entries inside one field are ORed.
 - Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`. That mode is only for legacy compatibility on a private, trusted network.
 - `POST /containers/create` bodies are inspected by default. Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, and bind mount sources outside `request_body.container_create.allowed_bind_mounts`. Named volumes still work without allowlist entries because they are not host bind mounts.
 - `POST /containers/*/exec` and `POST /exec/*/start` are inspected when `request_body.exec.allowed_commands` is non-empty. Sockguard denies argv vectors outside that allowlist, denies privileged exec unless `allow_privileged: true`, denies root-user exec unless `allow_root_user: true`, and re-checks `POST /exec/*/start` against Docker's stored exec metadata before execution.
@@ -123,10 +123,37 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - `POST /secrets/create` and `POST /configs/create` are inspected by default. Sockguard blocks custom and template drivers unless you explicitly allow them under `request_body.secret.*` and `request_body.config.*`.
 - `POST /services/create` and `POST /services/*/update` are inspected by default. Sockguard blocks services that attach the `host` network, blocks bind mounts outside `request_body.service.allowed_bind_mounts`, and constrains service images to Docker Hub official images unless you set `request_body.service.allow_all_registries: true` or list explicit `request_body.service.allowed_registries`.
 - `POST /swarm/init`, `POST /swarm/join`, and `POST /swarm/update` are inspected by default. Sockguard blocks `ForceNewCluster`, external CA configuration, non-allowlisted join targets, token rotations, manager unlock-key rotations, manager autolock, and signing-CA updates unless you explicitly allow them under `request_body.swarm.*`.
-- `POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains plugin registries, privileges, assignment prefixes, local tar `config.json`, host mounts, device exposure, and capabilities unless you explicitly allow them under `request_body.plugin.*`.
+- `POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains plugin registries, privileges, assignment prefixes, local tar `config.json`, host mounts, device exposure, and capabilities unless you explicitly allow them under `request_body.plugin.*`. `POST /plugins/create` is inspected whether the upload arrives as a raw tar body or a `multipart/form-data` envelope — the multipart stream is parsed and the embedded `config.json` is extracted before policy evaluation.
+- Bounded JSON writes (`POST /containers/create`, `/volumes/create`, `/secrets/create`, `/configs/create`) and plugin tar uploads that exceed their per-endpoint byte caps are rejected with `413 Payload Too Large` before the inspector decodes them, so a misbehaving or hostile client cannot tie up the filter or the Docker daemon with oversized payloads.
 - `insecure_allow_body_blind_writes` is now reserved for the body-bearing writes Sockguard still cannot safely constrain, chiefly arbitrary exec without an `allowed_commands` allowlist plus other uninspected paths such as network create/connect/disconnect, image load, container update/archive, swarm unlock, and node update.
 - `insecure_allow_read_exfiltration` stays `false` by default and must be set explicitly before broad read rules can expose raw archive/export or stream-style endpoints such as `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, or `GET /images/*/get`.
 - `response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` default to `true`. Sockguard redacts workload env arrays across container/service/task/plugin reads, redacts host-path-bearing mount and device metadata across container/volume/task/service/plugin/system-usage reads, strips container/network/swarm/node topology from container/network/service/task/node/swarm/info/system-usage responses, and redacts higher-risk payload material such as config `Spec.Data`, service secret/config references, plugin env values, swarm join/unlock material, and swarm/node TLS metadata. Disable them only for trusted admin clients that truly need Docker's raw metadata.
+
+## mTLS Client Selectors
+
+`listen.tls.client_ca_file` is the issuing trust root. To avoid trusting every leaf that CA can mint, narrow admission with one or more of the selector fields below. Different fields are ANDed; entries inside one field are ORed. An empty selector means "any verified client certificate issued by the configured CA is accepted".
+
+| Field | Type | Matches |
+| --- | --- | --- |
+| `allowed_common_names` | `[]string` | Exact CN on the verified leaf certificate |
+| `allowed_dns_names` | `[]string` | DNS SAN entries on the verified leaf |
+| `allowed_ip_addresses` | `[]string` | IP SAN entries on the verified leaf (not the TCP source IP) |
+| `allowed_uri_sans` | `[]string` | URI SAN entries on the verified leaf (for example `spiffe://...`) |
+| `allowed_public_key_sha256_pins` | `[]string` | Lowercase hex SHA-256 of the leaf `SubjectPublicKeyInfo`, optionally prefixed with `sha256:` |
+
+```yaml
+listen:
+  tls:
+    client_ca_file: /run/secrets/sockguard/client-ca.pem
+    allowed_common_names: ["portainer"]
+    allowed_dns_names: ["portainer.internal"]
+    allowed_ip_addresses: ["10.0.5.12"]
+    allowed_uri_sans: ["spiffe://sockguard.test/workload/portainer"]
+    allowed_public_key_sha256_pins:
+      - 3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b
+```
+
+Malformed selectors (invalid IPs, malformed URIs, non-hex SPKI pins, pins that are not 32 bytes) are rejected at startup. The TLS handshake fails closed with no upstream connection when a CA-issued client certificate does not match the configured allowlist.
 
 ## Per-Client ACLs And Profiles
 
@@ -236,7 +263,7 @@ Rules are evaluated in order. **First match wins.** If no rule matches, the requ
 | `/containers/**` | `/containers/json`, `/containers/abc/start`, `/containers/abc/logs/stream` | `/images/json` |
 | `/**` | Everything | Nothing |
 
-Docker API version prefixes (`/v1.45/`) are stripped before matching.
+Before rule evaluation, Sockguard canonicalizes the request path: it strips any `/vN.NN/` Docker API version prefix, percent-decodes the path (so `%2F`, `%2E`, and mixed-case escapes cannot smuggle separators past a literal allowlist), and resolves `.` / `..` segments via `path.Clean`. A request for `/v1.45/containers/%2e%2e/images/json` therefore matches as `/images/json`.
 
 ### Methods
 
