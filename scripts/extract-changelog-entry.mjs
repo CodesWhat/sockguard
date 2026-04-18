@@ -16,7 +16,7 @@ function listChangelogVersions(changelog) {
   const versions = [];
   const headingRegex = /^##\s+\[([^\]]+)\].*$/gmu;
   for (const match of changelog.matchAll(headingRegex)) {
-    const version = String(match[1] ?? '').trim();
+    const version = match[1].trim();
     if (version) {
       versions.push(version);
     }
@@ -36,7 +36,7 @@ export function extractChangelogEntry(changelog, version) {
     'mu',
   );
   const startMatch = content.match(versionHeadingRegex);
-  if (!startMatch || startMatch.index === undefined) {
+  if (!startMatch) {
     const availableVersions = listChangelogVersions(content).slice(0, 10);
     const availableText =
       availableVersions.length > 0
@@ -85,6 +85,10 @@ function parseArgs(argv) {
   return args;
 }
 
+export function formatCLIError(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const version = args.version;
@@ -103,7 +107,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     main();
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(formatCLIError(error));
     process.exit(1);
   }
 }
