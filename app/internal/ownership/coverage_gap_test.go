@@ -65,6 +65,29 @@ func TestMiddlewareWithDepsNormPathFallback(t *testing.T) {
 	}
 }
 
+func TestMiddlewareWithDepsUsesPrecomputedNormPath(t *testing.T) {
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"containers": {
+				"abc": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+			},
+		},
+	}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected precomputed normalized path to drive owner lookup")
+	}))
+
+	meta := &logging.RequestMeta{NormPath: "/containers/abc/json"}
+	req := httptest.NewRequest(http.MethodGet, "/not-used", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // middleware.go: middlewareWithDeps — mutate error from SetDenied path
 // ---------------------------------------------------------------------------

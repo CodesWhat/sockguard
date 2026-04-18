@@ -235,6 +235,61 @@ func TestRefillSyncShortFill(t *testing.T) {
 	}
 }
 
+func TestRefillSyncFullPoolIsNoop(t *testing.T) {
+	var fillCalls atomic.Int32
+	gen := &requestIDGenerator{
+		ids:             make(chan [requestIDBytes]byte, 1),
+		refillThreshold: 1,
+		fill: func(b []byte) (int, error) {
+			fillCalls.Add(1)
+			return len(b), nil
+		},
+	}
+	gen.ids <- [requestIDBytes]byte{}
+
+	gen.refillSync()
+
+	if got := fillCalls.Load(); got != 0 {
+		t.Fatalf("fill calls = %d, want 0 when pool is already full", got)
+	}
+}
+
+func TestRefillSyncFillErrorNoop(t *testing.T) {
+	gen := &requestIDGenerator{
+		ids:             make(chan [requestIDBytes]byte, 2),
+		refillThreshold: 2,
+		fill: func([]byte) (int, error) {
+			return 0, errors.New("fill failed")
+		},
+	}
+
+	gen.refillSync()
+
+	if got := len(gen.ids); got != 0 {
+		t.Fatalf("len(ids) = %d, want 0 after fill failure", got)
+	}
+}
+
+func TestEnqueueRequestIDReturnsFalseWhenChannelFull(t *testing.T) {
+	ids := make(chan [requestIDBytes]byte, 1)
+	ids <- [requestIDBytes]byte{}
+
+	if enqueueRequestID(ids, [requestIDBytes]byte{}) {
+		t.Fatal("enqueueRequestID() = true, want false for a full channel")
+	}
+}
+
+func TestEnqueueRequestIDsStopsWhenChannelFull(t *testing.T) {
+	ids := make(chan [requestIDBytes]byte, 1)
+	ids <- [requestIDBytes]byte{}
+
+	enqueueRequestIDs(ids, make([]byte, requestIDBytes))
+
+	if got := len(ids); got != 1 {
+		t.Fatalf("len(ids) = %d, want 1 after full-channel enqueue attempt", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // access.go: Next — pool-empty default branch (signals refill, returns fallback)
 // ---------------------------------------------------------------------------

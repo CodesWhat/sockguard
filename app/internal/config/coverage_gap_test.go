@@ -195,6 +195,55 @@ func TestValidateRequestBodyClientCertProfileEmptyCommonName(t *testing.T) {
 	}
 }
 
+func TestValidateRequestBodyClientCertProfileRequiresKnownProfile(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Socket = ""
+	cfg.Listen.Address = "127.0.0.1:2376"
+	cfg.Listen.TLS.CertFile = "server.pem"
+	cfg.Listen.TLS.KeyFile = "server-key.pem"
+	cfg.Listen.TLS.ClientCAFile = "ca.pem"
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "ro", Rules: []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"}}},
+	}
+	cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
+		{Profile: "", DNSNames: []string{"client.example.com"}},
+		{Profile: "missing", DNSNames: []string{"other.example.com"}},
+	}
+
+	errs := validateRequestBody(&cfg)
+	if !containsSubstring(errs, "clients.client_certificate_profiles[0].profile is required") {
+		t.Fatalf("expected missing profile error, got %v", errs)
+	}
+	if !containsSubstring(errs, `clients.client_certificate_profiles[1].profile must match a configured client profile, got "missing"`) {
+		t.Fatalf("expected unknown profile error, got %v", errs)
+	}
+}
+
+func TestValidateRequestBodyAcceptsValidClientCertificateSelectors(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Socket = ""
+	cfg.Listen.Address = "127.0.0.1:2376"
+	cfg.Listen.TLS.CertFile = "server.pem"
+	cfg.Listen.TLS.KeyFile = "server-key.pem"
+	cfg.Listen.TLS.ClientCAFile = "ca.pem"
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "ro", Rules: []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"}}},
+	}
+	cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
+		{
+			Profile:     "ro",
+			DNSNames:    []string{"client.example.com"},
+			IPAddresses: []string{"127.0.0.1"},
+			URISANs:     []string{"https://example.com/clients/ro"},
+			SPIFFEIDs:   []string{"spiffe://example.com/clients/ro"},
+		},
+	}
+
+	if errs := validateRequestBody(&cfg); len(errs) != 0 {
+		t.Fatalf("validateRequestBody() errors = %v, want none", errs)
+	}
+}
+
 func TestValidateRequestBodyUnixPeerProfileMissingProfile(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Socket = "/tmp/sockguard.sock"
@@ -253,6 +302,39 @@ func TestValidateRequestBodyUnixPeerProfileNonPositivePID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "pids") {
 		t.Fatalf("error should mention pids, got: %v", err)
+	}
+}
+
+func TestValidateRequestBodyUnixPeerProfileRequiresKnownProfile(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Socket = "/tmp/sockguard.sock"
+	cfg.Listen.Address = ""
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "ro", Rules: []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"}}},
+	}
+	cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{
+		{Profile: "missing", UIDs: []uint32{1000}},
+	}
+
+	errs := validateRequestBody(&cfg)
+	if !containsSubstring(errs, `clients.unix_peer_profiles[0].profile must match a configured client profile, got "missing"`) {
+		t.Fatalf("expected unknown unix peer profile error, got %v", errs)
+	}
+}
+
+func TestValidateRequestBodyUnixPeerProfileAcceptsPositivePID(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Socket = "/tmp/sockguard.sock"
+	cfg.Listen.Address = ""
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "ro", Rules: []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"}}},
+	}
+	cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{
+		{Profile: "ro", PIDs: []int32{1}},
+	}
+
+	if errs := validateRequestBody(&cfg); len(errs) != 0 {
+		t.Fatalf("validateRequestBody() errors = %v, want none", errs)
 	}
 }
 
@@ -317,6 +399,22 @@ func TestValidateVisibleResourceLabelsEmptyKey(t *testing.T) {
 	}
 	if !strings.Contains(errs[0], "label key") {
 		t.Fatalf("error should mention label key, got: %v", errs[0])
+	}
+}
+
+func TestValidateRequestBodyConfigRejectsInvalidPluginEntries(t *testing.T) {
+	errs := validateRequestBodyConfig("request_body", RequestBodyConfig{
+		Plugin: PluginRequestBodyConfig{
+			AllowedBindMounts:   []string{"relative/path"},
+			AllowedCapabilities: []string{"   "},
+		},
+	})
+
+	if !containsSubstring(errs, "request_body.plugin.allowed_bind_mounts") {
+		t.Fatalf("expected plugin allowed_bind_mounts error, got %v", errs)
+	}
+	if !containsSubstring(errs, "request_body.plugin.allowed_capabilities") {
+		t.Fatalf("expected plugin allowed_capabilities error, got %v", errs)
 	}
 }
 
@@ -572,4 +670,13 @@ func TestSubjectPublicKeySHA256HexNilCert(t *testing.T) {
 	if got := subjectPublicKeySHA256Hex(nil); got != "" {
 		t.Fatalf("subjectPublicKeySHA256Hex(nil) = %q, want empty", got)
 	}
+}
+
+func containsSubstring(values []string, want string) bool {
+	for _, value := range values {
+		if strings.Contains(value, want) {
+			return true
+		}
+	}
+	return false
 }

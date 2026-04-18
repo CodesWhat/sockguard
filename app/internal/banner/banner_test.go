@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -123,6 +124,37 @@ func TestTerminalColsRegularFileReturnsZero(t *testing.T) {
 	t.Cleanup(func() { _ = f.Close() })
 	if got := terminalCols(f); got != 0 {
 		t.Fatalf("terminalCols(regular file) = %d, want 0", got)
+	}
+}
+
+func TestTerminalColsCharDeviceIoctlErrorReturnsZero(t *testing.T) {
+	f, err := os.OpenFile("/dev/null", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("OpenFile(/dev/null): %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	if got := terminalCols(f); got != 0 {
+		t.Fatalf("terminalCols(/dev/null) = %d, want 0 when ioctl fails", got)
+	}
+}
+
+func TestTerminalColsUsesWinsizeFromIoctl(t *testing.T) {
+	f, err := os.OpenFile("/dev/null", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("OpenFile(/dev/null): %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	old := ioctlGetWinsize
+	ioctlGetWinsize = func(fd uintptr, ws *winsize) syscall.Errno {
+		ws.Col = 88
+		return 0
+	}
+	t.Cleanup(func() { ioctlGetWinsize = old })
+
+	if got := terminalCols(f); got != 88 {
+		t.Fatalf("terminalCols(/dev/null) = %d, want 88", got)
 	}
 }
 

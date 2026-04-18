@@ -267,7 +267,7 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 		}
 	}
 
-	if _, err := spool.file.Seek(0, io.SeekStart); err != nil {
+	if err := seekToStart(spool.file); err != nil {
 		spool.closeAndRemove()
 		return "", fmt.Errorf("rewind plugin body: %w", err)
 	}
@@ -439,20 +439,20 @@ func extractPluginConfig(file *os.File, contentType string) ([]byte, bool, error
 		if boundary == "" {
 			return nil, false, nil
 		}
-		if _, err := file.Seek(0, io.SeekStart); err != nil {
+		if err := seekToStart(file); err != nil {
 			return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
 		}
 		return extractPluginConfigFromMultipart(file, boundary)
 	}
 
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	if err := seekToStart(file); err != nil {
 		return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
 	}
 
 	if config, ok, err := extractPluginConfigFromGzipTar(file); ok || err != nil {
 		return config, ok, err
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	if err := seekToStart(file); err != nil {
 		return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
 	}
 	return extractPluginConfigFromTar(file)
@@ -513,11 +513,11 @@ func extractPluginConfigFromGzipReader(reader io.Reader) ([]byte, bool, error) {
 
 	config, ok, err := extractPluginConfigFromTarReader(tar.NewReader(gzr))
 	if err == nil {
-		if _, drainErr := io.Copy(io.Discard, gzr); drainErr != nil {
+		if drainErr := drainReader(gzr); drainErr != nil {
 			err = fmt.Errorf("drain gzip stream: %w", drainErr)
 		}
 	}
-	if closeErr := gzr.Close(); err == nil && closeErr != nil {
+	if closeErr := closeReadCloser(gzr); err == nil && closeErr != nil {
 		err = fmt.Errorf("close gzip reader: %w", closeErr)
 	}
 	return config, ok, err
@@ -546,7 +546,7 @@ func extractPluginConfigFromTarReader(tr *tar.Reader) ([]byte, bool, error) {
 			continue
 		}
 
-		body, err := io.ReadAll(io.LimitReader(tr, maxPluginConfigBytes+1))
+		body, err := readAllLimited(tr, maxPluginConfigBytes+1)
 		if err != nil {
 			return nil, false, fmt.Errorf("read plugin config entry: %w", err)
 		}

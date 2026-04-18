@@ -334,6 +334,32 @@ func TestSpoolRequestBodyToTempFileWrapsCopyError(t *testing.T) {
 	}
 }
 
+func TestSpoolRequestBodyToTempFileCreateTempError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	sentinel := errors.New("create temp failed")
+	createTempFile = func(string, string) (*os.File, error) { return nil, sentinel }
+
+	req := httptest.NewRequest(http.MethodPost, "/build", strings.NewReader("FROM busybox\n"))
+	_, _, err := spoolRequestBodyToTempFile(req, "sockguard-build-test-", 1024)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("spoolRequestBodyToTempFile() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestSpoolRequestBodyToTempFileRewindError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	sentinel := errors.New("seek failed")
+	seekToStart = func(*os.File) error { return sentinel }
+
+	req := httptest.NewRequest(http.MethodPost, "/build", strings.NewReader("FROM busybox\n"))
+	_, _, err := spoolRequestBodyToTempFile(req, "sockguard-build-test-", 1024)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("spoolRequestBodyToTempFile() error = %v, want %v", err, sentinel)
+	}
+}
+
 func TestExtractBuildDockerfileWrapsTooLargeError(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -378,6 +404,29 @@ func TestExtractBuildDockerfileWrapsTooLargeError(t *testing.T) {
 				t.Fatalf("err = %q, want dockerfile limit context", err)
 			}
 		})
+	}
+}
+
+func TestBuildPolicyInspectRewindBuildBodyError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	payload := mustBuildContextTar(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")
+	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(payload))
+
+	realSeekToStart := seekToStart
+	var seekCalls int
+	sentinel := errors.New("rewind build body failed")
+	seekToStart = func(file *os.File) error {
+		seekCalls++
+		if seekCalls == 4 {
+			return sentinel
+		}
+		return realSeekToStart(file)
+	}
+
+	_, err := buildPolicy{}.inspect(req, "/build")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("inspect() error = %v, want %v", err, sentinel)
 	}
 }
 
@@ -616,6 +665,111 @@ func TestExtractBuildDockerfileFromTarNotFoundReturnsNotOK(t *testing.T) {
 	}
 }
 
+func TestExtractBuildDockerfileInitialRewindError(t *testing.T) {
+	file, err := os.CreateTemp("", "sockguard-build-rewind-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	name := file.Name()
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(name) })
+
+	_, _, err = extractBuildDockerfile(file, "text/plain", "Dockerfile")
+	if err == nil || !strings.Contains(err.Error(), "rewind Dockerfile reader") {
+		t.Fatalf("extractBuildDockerfile() error = %v, want rewind Dockerfile reader failure", err)
+	}
+}
+
+func TestExtractBuildDockerfileRewindAfterGzipProbeError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	file, err := os.CreateTemp("", "sockguard-build-rewind-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	})
+	if _, err := file.Write(mustBuildContextTar(t, "Dockerfile", "FROM busybox\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	realSeekToStart := seekToStart
+	var seekCalls int
+	sentinel := errors.New("second rewind failed")
+	seekToStart = func(file *os.File) error {
+		seekCalls++
+		if seekCalls == 2 {
+			return sentinel
+		}
+		return realSeekToStart(file)
+	}
+
+	_, _, err = extractBuildDockerfile(file, "application/x-tar", "Dockerfile")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractBuildDockerfile() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestExtractBuildDockerfileRewindAfterTarProbeError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	file, err := os.CreateTemp("", "sockguard-build-rewind-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	})
+	if _, err := file.Write(bytes.Repeat([]byte("A"), 512)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	realSeekToStart := seekToStart
+	var seekCalls int
+	sentinel := errors.New("third rewind failed")
+	seekToStart = func(file *os.File) error {
+		seekCalls++
+		if seekCalls == 3 {
+			return sentinel
+		}
+		return realSeekToStart(file)
+	}
+
+	_, _, err = extractBuildDockerfile(file, "", "Dockerfile")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractBuildDockerfile() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestExtractBuildDockerfileRawReadError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	file, err := os.CreateTemp("", "sockguard-build-raw-read-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	})
+	if _, err := file.Write(bytes.Repeat([]byte("A"), 512)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	sentinel := errors.New("raw read failed")
+	readAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
+
+	_, _, err = extractBuildDockerfile(file, "text/plain", "Dockerfile")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractBuildDockerfile() error = %v, want %v", err, sentinel)
+	}
+}
+
 func TestTempFileBodyCloseRemovesFile(t *testing.T) {
 	file, err := os.CreateTemp("", "sockguard-tempclose-*")
 	if err != nil {
@@ -647,6 +801,38 @@ func TestTempFileBodyCloseIdempotentOnAlreadyRemoved(t *testing.T) {
 	// Close will fail on the file descriptor (already closed? no, we didn't
 	// close it yet) but Remove should return IsNotExist which is ignored.
 	_ = body.Close() // tolerate either outcome; just must not panic
+}
+
+func TestTempFileBodyCloseReturnsRemoveError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	file, err := os.CreateTemp("", "sockguard-tempclose-error-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	sentinel := errors.New("remove failed")
+	removeFilePath = func(string) error { return sentinel }
+	t.Cleanup(func() { _ = file.Close() })
+
+	body := &tempFileBody{file: file, path: file.Name()}
+	if err := body.Close(); !errors.Is(err, sentinel) {
+		t.Fatalf("Close() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestTempFileBodyCloseReturnsCloseError(t *testing.T) {
+	file, err := os.CreateTemp("", "sockguard-tempclose-closeerr-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	body := &tempFileBody{file: file, path: file.Name()}
+	if err := body.Close(); err == nil {
+		t.Fatal("Close() error = nil, want file close error")
+	}
 }
 
 func TestSpoolRequestBodyToTempFileHandlesTooLargeBody(t *testing.T) {
@@ -842,6 +1028,45 @@ func TestExtractBuildDockerfileRawDockerfilePath(t *testing.T) {
 	}
 	if len(got) == 0 {
 		t.Fatal("extractBuildDockerfile() returned empty dockerfile")
+	}
+}
+
+func TestExtractDockerfileFromGzipTarCloseError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	file, err := os.CreateTemp("", "sockguard-build-gzip-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	})
+	if _, err := file.Write(mustBuildContextGzipTarSeed(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatalf("Seek: %v", err)
+	}
+
+	sentinel := errors.New("gzip close failed")
+	closeReadCloser = func(io.Closer) error { return sentinel }
+
+	_, _, err = extractDockerfileFromGzipTar(file, "Dockerfile")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractDockerfileFromGzipTar() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestExtractDockerfileFromTarReaderReadError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	sentinel := errors.New("tar read failed")
+	readAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
+
+	_, _, err := extractDockerfileFromTarReader(tar.NewReader(bytes.NewReader(mustBuildContextTar(t, "Dockerfile", "FROM busybox\n"))), "Dockerfile")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractDockerfileFromTarReader() error = %v, want %v", err, sentinel)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -1067,6 +1068,52 @@ func TestInspectPluginCreateBodySpoolError(t *testing.T) {
 	}
 }
 
+func TestInspectPluginCreateExtractConfigError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	payload := mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false)
+	req := httptest.NewRequest(http.MethodPost, "/plugins/create", bytes.NewReader(payload))
+
+	realSeekToStart := seekToStart
+	var seekCalls int
+	sentinel := errors.New("extract config failed")
+	seekToStart = func(file *os.File) error {
+		seekCalls++
+		if seekCalls == 2 {
+			return sentinel
+		}
+		return realSeekToStart(file)
+	}
+
+	_, err := newPluginPolicy(PluginOptions{}).inspectPluginCreate(nil, req)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("inspectPluginCreate() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestInspectPluginCreateRewindBodyError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	payload := mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false)
+	req := httptest.NewRequest(http.MethodPost, "/plugins/create", bytes.NewReader(payload))
+
+	realSeekToStart := seekToStart
+	var seekCalls int
+	sentinel := errors.New("rewind plugin body failed")
+	seekToStart = func(file *os.File) error {
+		seekCalls++
+		if seekCalls == 4 {
+			return sentinel
+		}
+		return realSeekToStart(file)
+	}
+
+	_, err := newPluginPolicy(PluginOptions{}).inspectPluginCreate(nil, req)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("inspectPluginCreate() error = %v, want %v", err, sentinel)
+	}
+}
+
 func TestInspectPluginCreateLoggerOnDecodeError(t *testing.T) {
 	// Exercises lines 261-263: logger debug when plugin config JSON decode fails.
 	// Build a gzip tar with an invalid config.json.
@@ -1083,6 +1130,148 @@ func TestInspectPluginCreateLoggerOnDecodeError(t *testing.T) {
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
+	}
+}
+
+func TestExtractPluginConfigMultipartRewindError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	body, contentType := mustMultipartPluginUpload(t, mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false))
+	file, err := os.CreateTemp("", "sockguard-plugin-multipart-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	})
+	if _, err := file.Write(body); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	sentinel := errors.New("multipart rewind failed")
+	seekToStart = func(*os.File) error { return sentinel }
+
+	_, _, err = extractPluginConfig(file, contentType)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestExtractPluginConfigInitialRewindError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	file, err := os.CreateTemp("", "sockguard-plugin-rewind-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	})
+	if _, err := file.Write([]byte("not-gzip")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	sentinel := errors.New("initial rewind failed")
+	seekToStart = func(*os.File) error { return sentinel }
+
+	_, _, err = extractPluginConfig(file, "application/x-tar")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestExtractPluginConfigRewindAfterGzipProbeError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	file, err := os.CreateTemp("", "sockguard-plugin-rewind-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	})
+	if _, err := file.Write(mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	realSeekToStart := seekToStart
+	var seekCalls int
+	sentinel := errors.New("second rewind failed")
+	seekToStart = func(file *os.File) error {
+		seekCalls++
+		if seekCalls == 2 {
+			return sentinel
+		}
+		return realSeekToStart(file)
+	}
+
+	_, _, err = extractPluginConfig(file, "application/x-tar")
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestExtractPluginConfigFromMultipartArchiveError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	body, contentType := mustMultipartPluginUpload(t, mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false))
+	file, err := os.CreateTemp("", "sockguard-plugin-multipart-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	})
+	if _, err := file.Write(body); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	sentinel := errors.New("archive read failed")
+	readAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
+
+	_, _, err = extractPluginConfig(file, contentType)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestExtractPluginConfigFromGzipReaderDrainError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	sentinel := errors.New("drain failed")
+	drainReader = func(io.Reader) error { return sentinel }
+
+	_, _, err := extractPluginConfigFromGzipReader(bytes.NewReader(mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, true)))
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractPluginConfigFromGzipReader() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestExtractPluginConfigFromGzipReaderCloseError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	sentinel := errors.New("close failed")
+	closeReadCloser = func(io.Closer) error { return sentinel }
+
+	_, _, err := extractPluginConfigFromGzipReader(bytes.NewReader(mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, true)))
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractPluginConfigFromGzipReader() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestExtractPluginConfigFromTarReaderReadError(t *testing.T) {
+	restoreFilterIODeps(t)
+
+	sentinel := errors.New("config read failed")
+	readAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
+
+	_, _, err := extractPluginConfigFromTarReader(tar.NewReader(bytes.NewReader(mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false))))
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("extractPluginConfigFromTarReader() error = %v, want %v", err, sentinel)
 	}
 }
 
@@ -1376,7 +1565,6 @@ func mustPluginCreateContextPayloadWithConfig(t *testing.T, configJSON string, u
 	}
 	return gzBuf.Bytes()
 }
-
 
 func TestPluginPolicyInspectCreateEmptyBodyReturnsEmpty(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{})

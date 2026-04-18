@@ -108,22 +108,17 @@ func parseImageReference(value string) (parsedImageReference, bool) {
 	}
 
 	parts := strings.Split(ref, "/")
-	if len(parts) == 0 {
-		return parsedImageReference{}, false
-	}
 
 	registry := "docker.io"
 	repository := parts
 	if len(parts) > 1 && looksLikeRegistryComponent(parts[0]) {
-		normalized, ok := normalizeRegistryHost(parts[0])
-		if !ok {
-			return parsedImageReference{}, false
-		}
-		registry = normalized
+		registry, _ = normalizeRegistryHost(parts[0])
 		repository = parts[1:]
 	}
-	if len(repository) == 0 {
-		return parsedImageReference{}, false
+	for _, segment := range repository {
+		if strings.TrimSpace(segment) == "" {
+			return parsedImageReference{}, false
+		}
 	}
 
 	official := registry == "docker.io" && (len(repository) == 1 || (len(repository) == 2 && repository[0] == "library"))

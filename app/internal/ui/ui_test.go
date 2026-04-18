@@ -106,6 +106,21 @@ func TestDetectColorCharDevice(t *testing.T) {
 	}
 }
 
+func TestDetectColorCharDeviceWithoutTTYStillReturnsTrue(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("FORCE_COLOR", "")
+
+	f, err := os.OpenFile("/dev/null", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("OpenFile(/dev/null): %v", err)
+	}
+	t.Cleanup(func() { _ = f.Close() })
+
+	if !detectColor(f) {
+		t.Fatal("detectColor(/dev/null) should return true for a character device")
+	}
+}
+
 func TestAllStylesWrapWithReset(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("FORCE_COLOR", "1")

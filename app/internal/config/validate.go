@@ -229,15 +229,11 @@ func validateRequestBody(cfg *Config) []string {
 			selectorCount++
 		}
 		for _, value := range assignment.IPAddresses {
-			addr, err := netip.ParseAddr(strings.TrimSpace(value))
-			if err != nil {
+			if _, err := netip.ParseAddr(strings.TrimSpace(value)); err != nil {
 				errs = append(errs, fmt.Sprintf("%s.ip_addresses entries must be valid IP addresses, got %q", prefix, value))
 				continue
 			}
 			selectorCount++
-			if !addr.IsValid() {
-				errs = append(errs, fmt.Sprintf("%s.ip_addresses entries must be valid IP addresses, got %q", prefix, value))
-			}
 		}
 		for _, value := range assignment.URISANs {
 			parsed, err := url.Parse(strings.TrimSpace(value))

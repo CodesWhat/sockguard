@@ -203,6 +203,12 @@ func TestDenyReasonForReferenceWhenParseReturnsFalse(t *testing.T) {
 	}
 }
 
+func TestParseImageReferenceRejectsEmptyRepositorySegment(t *testing.T) {
+	if _, ok := parseImageReference("ghcr.io/"); ok {
+		t.Fatal("expected ok=false for a reference with an empty repository segment")
+	}
+}
+
 func TestMiddlewareAllowsConfiguredImageRegistry(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/images/create", Action: ActionAllow, Index: 0})
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})

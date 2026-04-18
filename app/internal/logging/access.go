@@ -135,14 +135,25 @@ func (g *requestIDGenerator) refillSync() {
 		return
 	}
 
-	for i := 0; i < needed; i++ {
+	enqueueRequestIDs(g.ids, slab)
+}
+
+func enqueueRequestIDs(ids chan [requestIDBytes]byte, slab []byte) {
+	for i := 0; i < len(slab)/requestIDBytes; i++ {
 		var raw [requestIDBytes]byte
 		copy(raw[:], slab[i*requestIDBytes:(i+1)*requestIDBytes])
-		select {
-		case g.ids <- raw:
-		default:
+		if !enqueueRequestID(ids, raw) {
 			return
 		}
+	}
+}
+
+func enqueueRequestID(ids chan [requestIDBytes]byte, raw [requestIDBytes]byte) bool {
+	select {
+	case ids <- raw:
+		return true
+	default:
+		return false
 	}
 }
 

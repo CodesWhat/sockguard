@@ -820,10 +820,7 @@ func splitLabelPatterns(value string) []string {
 }
 
 func (r upstreamResolver) resolveClient(ctx context.Context, addr netip.Addr) (resolvedClient, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/json", nil)
-	if err != nil {
-		return resolvedClient{}, false, err
-	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/json", nil)
 
 	resp, err := r.client.Do(req)
 	if err != nil {
