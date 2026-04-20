@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -o /sockguard ./cmd/sockguard/
 
-FROM cgr.dev/chainguard/static:latest@sha256:d6d54da1c5bf5d9cecb231786adca86934607763067c8d7d9d22057abe6d5dbc
+FROM cgr.dev/chainguard/static:latest@sha256:1f14279403150757d801f6308bb0f4b816b162fddce10b9bd342f10adc3cf7fa
 
 LABEL maintainer="CodesWhat"
 LABEL org.opencontainers.image.title="sockguard"
