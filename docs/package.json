@@ -10,11 +10,11 @@
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
-    "fumadocs-core": "16.6.17",
-    "fumadocs-mdx": "14.2.10",
-    "fumadocs-ui": "16.6.17",
+    "fumadocs-core": "16.8.1",
+    "fumadocs-mdx": "14.3.1",
+    "fumadocs-ui": "16.8.1",
     "lucide-react": "0.577.0",
-    "next": "16.2.3",
+    "next": "16.2.4",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },
@@ -24,9 +24,9 @@
     "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "19.2.3",
-    "postcss": "8.5.9",
+    "postcss": "8.5.10",
     "postcss-load-config": "6.0.1",
     "tailwindcss": "4.2.2",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.3"
   }
 }
