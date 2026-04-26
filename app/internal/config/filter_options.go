@@ -20,8 +20,6 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 	}
 }
 
-// ToFilterOptions converts container-create request-body config into filter
-// options.
 func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCreateOptions {
 	return filter.ContainerCreateOptions{
 		AllowPrivileged:   c.AllowPrivileged,
@@ -30,7 +28,6 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 	}
 }
 
-// ToFilterOptions converts exec request-body config into filter options.
 func (c ExecRequestBodyConfig) ToFilterOptions() filter.ExecOptions {
 	return filter.ExecOptions{
 		AllowPrivileged: c.AllowPrivileged,
@@ -39,7 +36,6 @@ func (c ExecRequestBodyConfig) ToFilterOptions() filter.ExecOptions {
 	}
 }
 
-// ToFilterOptions converts image-pull request config into filter options.
 func (c ImagePullRequestBodyConfig) ToFilterOptions() filter.ImagePullOptions {
 	return filter.ImagePullOptions{
 		AllowImports:       c.AllowImports,
@@ -49,7 +45,6 @@ func (c ImagePullRequestBodyConfig) ToFilterOptions() filter.ImagePullOptions {
 	}
 }
 
-// ToFilterOptions converts build request-body config into filter options.
 func (c BuildRequestBodyConfig) ToFilterOptions() filter.BuildOptions {
 	return filter.BuildOptions{
 		AllowRemoteContext:   c.AllowRemoteContext,
@@ -58,7 +53,6 @@ func (c BuildRequestBodyConfig) ToFilterOptions() filter.BuildOptions {
 	}
 }
 
-// ToFilterOptions converts volume request-body config into filter options.
 func (c VolumeRequestBodyConfig) ToFilterOptions() filter.VolumeOptions {
 	return filter.VolumeOptions{
 		AllowCustomDrivers: c.AllowCustomDrivers,
@@ -66,7 +60,6 @@ func (c VolumeRequestBodyConfig) ToFilterOptions() filter.VolumeOptions {
 	}
 }
 
-// ToFilterOptions converts secret request-body config into filter options.
 func (c SecretRequestBodyConfig) ToFilterOptions() filter.SecretOptions {
 	return filter.SecretOptions{
 		AllowCustomDrivers:   c.AllowCustomDrivers,
@@ -74,8 +67,6 @@ func (c SecretRequestBodyConfig) ToFilterOptions() filter.SecretOptions {
 	}
 }
 
-// ToFilterOptions converts config-write request-body config into filter
-// options.
 func (c ConfigRequestBodyConfig) ToFilterOptions() filter.ConfigOptions {
 	return filter.ConfigOptions{
 		AllowCustomDrivers:   c.AllowCustomDrivers,
@@ -83,7 +74,6 @@ func (c ConfigRequestBodyConfig) ToFilterOptions() filter.ConfigOptions {
 	}
 }
 
-// ToFilterOptions converts service request-body config into filter options.
 func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 	return filter.ServiceOptions{
 		AllowHostNetwork:   c.AllowHostNetwork,
@@ -94,7 +84,6 @@ func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 	}
 }
 
-// ToFilterOptions converts swarm request-body config into filter options.
 func (c SwarmRequestBodyConfig) ToFilterOptions() filter.SwarmOptions {
 	return filter.SwarmOptions{
 		AllowForceNewCluster:          c.AllowForceNewCluster,
@@ -107,7 +96,6 @@ func (c SwarmRequestBodyConfig) ToFilterOptions() filter.SwarmOptions {
 	}
 }
 
-// ToFilterOptions converts plugin request-body config into filter options.
 func (c PluginRequestBodyConfig) ToFilterOptions() filter.PluginOptions {
 	return filter.PluginOptions{
 		AllowHostNetwork:      c.AllowHostNetwork,
