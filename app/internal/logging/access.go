@@ -36,6 +36,7 @@ type RequestMeta struct {
 	Decision        string
 	Rule            int
 	Reason          string
+	ReasonCode      string
 	NormPath        string
 	Profile         string
 	ClientRequestID string
@@ -226,11 +227,19 @@ func MetaForRequest(w http.ResponseWriter, r *http.Request) *RequestMeta {
 // the normalization as a callback avoids an import cycle between `logging`
 // and `filter`.
 func SetDenied(w http.ResponseWriter, r *http.Request, reason string, normalize func(string) string) {
+	SetDeniedWithCode(w, r, "", reason, normalize)
+}
+
+// SetDeniedWithCode stamps a deny verdict plus a stable machine-readable
+// reason code onto the request metadata so access and audit logs can correlate
+// human-readable reasons with a bounded schema.
+func SetDeniedWithCode(w http.ResponseWriter, r *http.Request, reasonCode, reason string, normalize func(string) string) {
 	meta := MetaForRequest(w, r)
 	if meta == nil {
 		return
 	}
 	meta.Decision = "deny"
+	meta.ReasonCode = reasonCode
 	meta.Reason = reason
 	if meta.NormPath == "" && normalize != nil && r != nil {
 		meta.NormPath = normalize(r.URL.Path)
@@ -312,6 +321,9 @@ func appendCorrelationAttrs(attrs []slog.Attr, r *http.Request, meta *RequestMet
 		if meta.Profile != "" {
 			attrs = append(attrs, slog.String("profile", meta.Profile))
 		}
+		if meta.ReasonCode != "" {
+			attrs = append(attrs, slog.String("reason_code", meta.ReasonCode))
+		}
 		if meta.Reason != "" {
 			attrs = append(attrs, slog.String("reason", meta.Reason))
 		}
@@ -372,6 +384,13 @@ func getResponseCapture(w http.ResponseWriter) *responseCapture {
 	return rc
 }
 
+func wrapResponseCapture(w http.ResponseWriter) (*responseCapture, bool) {
+	if rc, ok := w.(*responseCapture); ok {
+		return rc, false
+	}
+	return getResponseCapture(w), true
+}
+
 func putResponseCapture(rc *responseCapture) {
 	if rc == nil {
 		return
@@ -385,6 +404,18 @@ func putResponseCapture(rc *responseCapture) {
 
 func (rc *responseCapture) RequestMeta() *RequestMeta {
 	return rc.meta
+}
+
+func ensureRequestMeta(rc *responseCapture) (*RequestMeta, bool) {
+	if rc == nil {
+		return nil, false
+	}
+	if rc.meta != nil {
+		return rc.meta, false
+	}
+	meta := getRequestMeta()
+	rc.meta = meta
+	return meta, true
 }
 
 func (rc *responseCapture) WriteHeader(code int) {
@@ -421,13 +452,16 @@ func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 
-			meta := getRequestMeta()
-			rc := getResponseCapture(w)
-			rc.meta = meta
+			rc, ownRC := wrapResponseCapture(w)
+			meta, ownMeta := ensureRequestMeta(rc)
 			// LogAttrs and downstream middlewares still read meta through rc, so
 			// the pool return must stay deferred until after the log entry is emitted.
-			defer putRequestMeta(meta)
-			defer putResponseCapture(rc)
+			if ownMeta {
+				defer putRequestMeta(meta)
+			}
+			if ownRC {
+				defer putResponseCapture(rc)
+			}
 			next.ServeHTTP(rc, r)
 
 			latency := time.Since(start)

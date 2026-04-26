@@ -30,6 +30,24 @@ func TestSetDeniedPopulatesDecisionAndReason(t *testing.T) {
 	}
 }
 
+func TestSetDeniedWithCodePopulatesReasonCode(t *testing.T) {
+	meta := &RequestMeta{}
+	rc := &responseCapture{ResponseWriter: httptest.NewRecorder(), meta: meta}
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+	SetDeniedWithCode(rc, req, "no_matching_allow_rule", "test reason", nil)
+
+	if meta.Decision != "deny" {
+		t.Fatalf("Decision = %q, want deny", meta.Decision)
+	}
+	if meta.ReasonCode != "no_matching_allow_rule" {
+		t.Fatalf("ReasonCode = %q, want no_matching_allow_rule", meta.ReasonCode)
+	}
+	if meta.Reason != "test reason" {
+		t.Fatalf("Reason = %q, want test reason", meta.Reason)
+	}
+}
+
 func TestSetDeniedNilMetaIsNoop(t *testing.T) {
 	// Plain recorder has no RequestMeta — should be a no-op
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
