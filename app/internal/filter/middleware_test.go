@@ -355,6 +355,29 @@ func TestInspectAllowedRequestNoMatchAllocatesNothing(t *testing.T) {
 	}
 }
 
+func TestInspectAllowedRequestManyMatchesAllocatesNothing(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/plugins/create", nil)
+	inspectPolicies := make([]requestInspectPolicy, 12)
+	for i := range inspectPolicies {
+		inspectPolicies[i] = requestInspectPolicy{
+			matches:  func(*http.Request, string) bool { return true },
+			severity: inspectSeverityCritical,
+			inspect:  func(*slog.Logger, *http.Request, string) (string, error) { return "", nil },
+		}
+	}
+	policy := runtimePolicy{inspectPolicies: inspectPolicies}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		reason, reasonCode, status := policy.inspectAllowedRequest(nil, req, "/plugins/create")
+		if reason != "" || reasonCode != "" || status != 0 {
+			t.Fatalf("inspectAllowedRequest() = (%q, %q, %d), want empty result", reason, reasonCode, status)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("inspectAllowedRequest() allocations = %.0f, want 0", allocs)
+	}
+}
+
 func TestRuleDecisionReasonCode(t *testing.T) {
 	tests := []struct {
 		name   string

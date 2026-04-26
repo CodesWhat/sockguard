@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Removed the fixed-size matching policy buffer from filter inspector selection; the allowed-request path now uses a two-pass severity scan with zero allocations regardless of inspector count.
 - Documented that audit events always include the ownership context and repeat the configured `ownership.owner` identifier on every event when ownership is enabled.
 - Documented the unavoidable Docker API TOCTOU window between exec metadata inspection and forwarding `POST /exec/*/start`.
 - Documented the logging path-field contract for SIEM integrations: access-log `path` and audit-log `raw_path` preserve client-controlled request paths for forensics, while `normalized_path` is the canonical policy path to use for alerting, grouping, and allow/deny analysis.

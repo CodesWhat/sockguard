@@ -358,22 +358,23 @@ func matchesPluginInspection(r *http.Request, normalizedPath string) bool {
 
 func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int) {
 	bestSeverity := inspectSeverity(-1)
-	var matchingPolicyBuf [11]requestInspectPolicy
-	matchingPolicies := matchingPolicyBuf[:0]
 	for _, policy := range p.inspectPolicies {
 		if policy.matches != nil && !policy.matches(r, normalizedPath) {
 			continue
 		}
 		if policy.severity > bestSeverity {
 			bestSeverity = policy.severity
-			matchingPolicies = matchingPolicies[:0]
-		}
-		if policy.severity == bestSeverity {
-			matchingPolicies = append(matchingPolicies, policy)
 		}
 	}
 
-	for _, policy := range matchingPolicies {
+	if bestSeverity < 0 {
+		return "", "", 0
+	}
+
+	for _, policy := range p.inspectPolicies {
+		if policy.severity != bestSeverity || (policy.matches != nil && !policy.matches(r, normalizedPath)) {
+			continue
+		}
 		denyReason, err := policy.inspect(logger, r, normalizedPath)
 		if err != nil {
 			if rejection, ok := requestRejectionFromError(err); ok {
