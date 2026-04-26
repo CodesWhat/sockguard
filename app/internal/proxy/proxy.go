@@ -14,6 +14,11 @@ import (
 	"github.com/codeswhat/sockguard/internal/responsefilter"
 )
 
+const (
+	reasonCodeUpstreamSocketUnreachable = "upstream_socket_unreachable"
+	reasonCodeUpstreamResponseRejected  = "upstream_response_rejected_by_policy"
+)
+
 // Options configures reverse-proxy behavior beyond the fixed upstream socket.
 type Options struct {
 	ModifyResponse func(*http.Response) error
@@ -50,8 +55,14 @@ func NewWithOptions(upstreamSocket string, logger *slog.Logger, opts Options) *h
 			logger.LogAttrs(r.Context(), slog.LevelError, "upstream request failed", attrs...)
 
 			message := "upstream Docker socket unreachable"
+			reasonCode := reasonCodeUpstreamSocketUnreachable
 			if errors.Is(err, responsefilter.ErrResponseRejected) {
 				message = "upstream Docker response rejected by sockguard policy"
+				reasonCode = reasonCodeUpstreamResponseRejected
+			}
+			if meta := logging.MetaForRequest(w, r); meta != nil {
+				meta.ReasonCode = reasonCode
+				meta.Reason = message
 			}
 
 			if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: message}); encErr != nil {

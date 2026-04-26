@@ -303,9 +303,12 @@ func TestInspectAllowedRequestPrefersHighestSeverityMatch(t *testing.T) {
 		},
 	}
 
-	reason, status := policy.inspectAllowedRequest(testLogger(), req, NormalizePath(req.URL.Path))
+	reason, reasonCode, status := policy.inspectAllowedRequest(testLogger(), req, NormalizePath(req.URL.Path))
 	if reason != "critical deny" {
 		t.Fatalf("reason = %q, want %q", reason, "critical deny")
+	}
+	if reasonCode != reasonCodeRequestBodyPolicyDenied {
+		t.Fatalf("reasonCode = %q, want %q", reasonCode, reasonCodeRequestBodyPolicyDenied)
 	}
 	if status != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", status, http.StatusForbidden)
@@ -1329,9 +1332,12 @@ func TestInspectAllowedRequestReturnsRejectionStatusFromError(t *testing.T) {
 		},
 	}
 
-	reason, status := policy.inspectAllowedRequest(testLogger(), req, "/volumes/create")
+	reason, reasonCode, status := policy.inspectAllowedRequest(testLogger(), req, "/volumes/create")
 	if reason != "entity too large" {
 		t.Fatalf("reason = %q, want %q", reason, "entity too large")
+	}
+	if reasonCode != reasonCodeRequestBodyTooLarge {
+		t.Fatalf("reasonCode = %q, want %q", reasonCode, reasonCodeRequestBodyTooLarge)
 	}
 	if status != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d", status, http.StatusRequestEntityTooLarge)

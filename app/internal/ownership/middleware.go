@@ -22,6 +22,12 @@ import (
 
 const DefaultLabelKey = "com.sockguard.owner"
 
+const (
+	reasonCodeOwnerRequestInvalid     = "owner_request_invalid"
+	reasonCodeOwnerPolicyLookupFailed = "owner_policy_lookup_failed"
+	reasonCodeOwnerPolicyDeniedAccess = "owner_policy_denied_access"
+)
+
 // maxOwnershipBodyBytes caps the request body the ownership middleware will
 // read when it mutates a container/network/volume create body or a build
 // query to inject the owner label. Docker's own create payloads are at most
@@ -105,7 +111,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps ownerDeps) func(
 			}
 
 			if err := mutateOwnershipRequest(r, normPath, opts); err != nil {
-				logging.SetDenied(w, r, err.Error(), nil)
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerRequestInvalid, err.Error(), nil)
 				_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 				return
 			}
@@ -113,7 +119,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps ownerDeps) func(
 			verdict, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, deps)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
-				logging.SetDenied(w, r, "owner policy lookup failed", nil)
+				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyLookupFailed, "owner policy lookup failed", nil)
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "owner policy lookup failed"})
 				return
 			}
@@ -122,7 +128,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps ownerDeps) func(
 				return
 			}
 
-			logging.SetDenied(w, r, reason, nil)
+			logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, reason, nil)
 			_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 		})
 	}

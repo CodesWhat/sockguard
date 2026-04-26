@@ -34,6 +34,14 @@ const (
 	resourceKindSwarm     resourceKind = "swarm"
 )
 
+const (
+	reasonCodeVisibilityPolicyMisconfigured = "visibility_policy_misconfigured"
+	reasonCodeVisibilityProfileUnresolved   = "visibility_profile_unresolved"
+	reasonCodeVisibilityFilterInvalid       = "visibility_filter_invalid"
+	reasonCodeVisibilityPolicyLookupFailed  = "visibility_policy_lookup_failed"
+	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
+)
+
 // Options configures label-based visibility control on Docker read endpoints.
 type Options struct {
 	VisibleResourceLabels []string
@@ -78,7 +86,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 		logger.Error("invalid visibility config", "error", err)
 		return func(http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				logging.SetDenied(w, r, "visibility policy misconfigured", filter.NormalizePath)
+				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyMisconfigured, "visibility policy misconfigured", filter.NormalizePath)
 				_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility policy misconfigured"})
 			})
 		}
@@ -91,7 +99,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			logger.Error("invalid visibility profile config", "profile", name, "error", err)
 			return func(http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					logging.SetDenied(w, r, "visibility policy misconfigured", filter.NormalizePath)
+					logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyMisconfigured, "visibility policy misconfigured", filter.NormalizePath)
 					_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility policy misconfigured"})
 				})
 			}
@@ -110,7 +118,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 				if profileName, ok := opts.ResolveProfile(r); ok && profileName != "" {
 					profile, found := profilePolicies[profileName]
 					if !found {
-						logging.SetDenied(w, r, "visibility profile could not be resolved", filter.NormalizePath)
+						logging.SetDeniedWithCode(w, r, reasonCodeVisibilityProfileUnresolved, "visibility profile could not be resolved", filter.NormalizePath)
 						_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility profile could not be resolved"})
 						return
 					}
@@ -130,7 +138,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			normPath := normalizedPathForRequest(w, r)
 			if needsVisibilityLabelFilter(normPath) {
 				if err := addVisibilityLabelFilters(r, normPath, selectors); err != nil {
-					logging.SetDenied(w, r, err.Error(), nil)
+					logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
 					_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 					return
 				}
@@ -141,12 +149,12 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			visible, err := requestVisible(r.Context(), normPath, selectors, deps)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "visibility policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
-				logging.SetDenied(w, r, "visibility policy lookup failed", nil)
+				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility policy lookup failed", nil)
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility policy lookup failed"})
 				return
 			}
 			if !visible {
-				logging.SetDenied(w, r, "visibility policy hid resource", nil)
+				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyHidResource, "visibility policy hid resource", nil)
 				_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "resource not found"})
 				return
 			}

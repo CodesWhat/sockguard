@@ -123,6 +123,42 @@ func TestNew_ErrorHandlerLogsRequestCorrelation(t *testing.T) {
 	}
 }
 
+func TestNew_ErrorHandlerStampsRequestMetaReasonCode(t *testing.T) {
+	rp := New("/tmp/does-not-matter.sock", testLogger())
+
+	meta := &logging.RequestMeta{Decision: "allow", ReasonCode: "matched_allow_rule", Reason: "allow"}
+	req := httptest.NewRequest(http.MethodGet, "/info", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+
+	rp.ErrorHandler(rec, req, errors.New("dial boom"))
+
+	if meta.ReasonCode != reasonCodeUpstreamSocketUnreachable {
+		t.Fatalf("ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeUpstreamSocketUnreachable)
+	}
+	if meta.Reason != "upstream Docker socket unreachable" {
+		t.Fatalf("Reason = %q, want %q", meta.Reason, "upstream Docker socket unreachable")
+	}
+}
+
+func TestNew_ErrorHandlerStampsResponseRejectedReasonCode(t *testing.T) {
+	rp := New("/tmp/does-not-matter.sock", testLogger())
+
+	meta := &logging.RequestMeta{Decision: "allow", ReasonCode: "matched_allow_rule", Reason: "allow"}
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+
+	rp.ErrorHandler(rec, req, responsefilter.ErrResponseRejected)
+
+	if meta.ReasonCode != reasonCodeUpstreamResponseRejected {
+		t.Fatalf("ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeUpstreamResponseRejected)
+	}
+	if meta.Reason != "upstream Docker response rejected by sockguard policy" {
+		t.Fatalf("Reason = %q, want %q", meta.Reason, "upstream Docker response rejected by sockguard policy")
+	}
+}
+
 // startMockDocker creates a Unix socket with an HTTP server that echoes
 // the request method and path as JSON. Returns the socket path; the
 // server is shut down via t.Cleanup.

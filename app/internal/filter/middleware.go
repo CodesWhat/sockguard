@@ -27,6 +27,16 @@ const (
 	DenyResponseVerbosityMinimal DenyResponseVerbosity = "minimal"
 )
 
+const (
+	reasonCodeMatchedAllowRule              = "matched_allow_rule"
+	reasonCodeMatchedDenyRule               = "matched_deny_rule"
+	reasonCodeNoMatchingAllowRule           = "no_matching_allow_rule"
+	reasonCodeClientPolicyProfileUnresolved = "client_policy_profile_unresolved"
+	reasonCodeRequestBodyPolicyDenied       = "request_body_policy_denied"
+	reasonCodeRequestBodyTooLarge           = "request_body_too_large"
+	reasonCodeRequestBodyInspectionFailed   = "request_body_inspection_failed"
+)
+
 // PolicyConfig configures deny-response behavior plus request-body inspection
 // policies shared by the default middleware policy and named client profiles.
 type PolicyConfig struct {
@@ -150,7 +160,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 					}
 					profile, found := profilePolicies[profileName]
 					if !found {
-						denyWithReason(w, r, logger, "client policy profile could not be resolved", activePolicy.denyResponseVerbosity)
+						denyWithReasonCode(w, r, logger, reasonCodeClientPolicyProfileUnresolved, "client policy profile could not be resolved", activePolicy.denyResponseVerbosity)
 						return
 					}
 					activePolicy = profile
@@ -160,25 +170,29 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			normPath := NormalizePath(r.URL.Path)
 			action, ruleIndex, reason := evaluateNormalized(activePolicy.rules, r.Method, normPath)
 			denyStatus := http.StatusForbidden
+			reasonCode := ruleDecisionReasonCode(action, reason)
 
 			// Write decision to shared RequestMeta (created by access log middleware).
 			if m := logging.MetaForRequest(w, r); m != nil {
 				m.Decision = string(action)
 				m.Rule = ruleIndex
+				m.ReasonCode = reasonCode
 				m.Reason = reason
 				m.NormPath = normPath
 			}
 
 			if action == ActionAllow {
-				denyReason, status := activePolicy.inspectAllowedRequest(logger, r, normPath)
+				denyReason, denyReasonCode, status := activePolicy.inspectAllowedRequest(logger, r, normPath)
 				if denyReason != "" {
 					action = ActionDeny
+					reasonCode = denyReasonCode
 					reason = denyReason
 					if status != 0 {
 						denyStatus = status
 					}
 					if m := logging.MetaForRequest(w, r); m != nil {
 						m.Decision = string(action)
+						m.ReasonCode = reasonCode
 						m.Reason = reason
 					}
 				}
@@ -342,7 +356,7 @@ func matchesPluginInspection(r *http.Request, normalizedPath string) bool {
 		(normalizedPath == "/plugins/pull" || normalizedPath == "/plugins/create" || isPluginUpgradePath(normalizedPath) || isPluginSetPath(normalizedPath))
 }
 
-func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, int) {
+func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int) {
 	bestSeverity := inspectSeverity(-1)
 	matchingPolicies := make([]requestInspectPolicy, 0, len(p.inspectPolicies))
 	for _, policy := range p.inspectPolicies {
@@ -362,21 +376,26 @@ func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Reques
 		denyReason, err := policy.inspect(logger, r, normalizedPath)
 		if err != nil {
 			if rejection, ok := requestRejectionFromError(err); ok {
-				return rejection.reason, rejection.status
+				return rejection.reason, requestRejectionReasonCode(rejection.status), rejection.status
 			}
 			logger.ErrorContext(r.Context(), policy.errorLogMessage, "error", err, "method", r.Method, "path", r.URL.Path)
-			return policy.denyReasonOnError, http.StatusForbidden
+			return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden
 		}
 		if denyReason != "" {
-			return denyReason, http.StatusForbidden
+			return denyReason, reasonCodeRequestBodyPolicyDenied, http.StatusForbidden
 		}
 	}
-	return "", 0
+	return "", "", 0
 }
 
 func denyWithReason(w http.ResponseWriter, r *http.Request, logger *slog.Logger, reason string, verbosity DenyResponseVerbosity) {
+	denyWithReasonCode(w, r, logger, "", reason, verbosity)
+}
+
+func denyWithReasonCode(w http.ResponseWriter, r *http.Request, logger *slog.Logger, reasonCode, reason string, verbosity DenyResponseVerbosity) {
 	if meta := logging.MetaForRequest(w, r); meta != nil {
 		meta.Decision = string(ActionDeny)
+		meta.ReasonCode = reasonCode
 		meta.Reason = reason
 		if meta.NormPath == "" {
 			meta.NormPath = NormalizePath(r.URL.Path)
@@ -385,6 +404,27 @@ func denyWithReason(w http.ResponseWriter, r *http.Request, logger *slog.Logger,
 	if err := httpjson.Write(w, http.StatusForbidden, denyResponse(r, reason, verbosity)); err != nil {
 		logger.ErrorContext(r.Context(), "failed to encode denial response", "error", err, "method", r.Method, "path", r.URL.Path)
 	}
+}
+
+func ruleDecisionReasonCode(action Action, reason string) string {
+	switch action {
+	case ActionAllow:
+		return reasonCodeMatchedAllowRule
+	case ActionDeny:
+		if reason == "no matching allow rule" {
+			return reasonCodeNoMatchingAllowRule
+		}
+		return reasonCodeMatchedDenyRule
+	default:
+		return ""
+	}
+}
+
+func requestRejectionReasonCode(status int) string {
+	if status == http.StatusRequestEntityTooLarge {
+		return reasonCodeRequestBodyTooLarge
+	}
+	return reasonCodeRequestBodyPolicyDenied
 }
 
 func denyResponse(r *http.Request, reason string, verbosity DenyResponseVerbosity) DenialResponse {

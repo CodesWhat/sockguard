@@ -24,6 +24,15 @@ import (
 
 const DefaultLabelPrefix = "com.sockguard.allow."
 
+const (
+	reasonCodeClientACLMisconfigured        = "client_acl_misconfigured"
+	reasonCodeClientIPNotAllowed            = "client_ip_not_allowed"
+	reasonCodeClientIdentityLookupFailed    = "client_identity_lookup_failed"
+	reasonCodeClientLabelACLLookupFailed    = "client_label_acl_lookup_failed"
+	reasonCodeClientLabelACLEvalFailed      = "client_label_acl_evaluation_failed"
+	reasonCodeClientLabelPolicyDenied       = "client_label_policy_denied_request"
+)
+
 // Options configures client admission and per-client container-label ACLs.
 type Options struct {
 	AllowedCIDRs    []string
@@ -184,13 +193,13 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 	compiled, err := compileOptions(opts)
 	if err != nil {
 		logger.Error("invalid client ACL config", "error", err)
-		return func(http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				logging.SetDenied(w, r, "client ACL misconfigured", filter.NormalizePath)
-				_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "client ACL misconfigured"})
-			})
+			return func(http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					logging.SetDeniedWithCode(w, r, reasonCodeClientACLMisconfigured, "client ACL misconfigured", filter.NormalizePath)
+					_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "client ACL misconfigured"})
+				})
+			}
 		}
-	}
 
 	if len(compiled.allowedCIDRs) == 0 && !compiled.labelsOn && !compiled.hasProfileSelection() {
 		return func(next http.Handler) http.Handler { return next }
@@ -201,7 +210,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 			clientIP, ipOK := remoteIP(r.RemoteAddr)
 			if len(compiled.allowedCIDRs) > 0 {
 				if !ipOK || !ipAllowed(clientIP, compiled.allowedCIDRs) {
-					logging.SetDenied(w, r, "client IP not allowed", filter.NormalizePath)
+					logging.SetDeniedWithCode(w, r, reasonCodeClientIPNotAllowed, "client IP not allowed", filter.NormalizePath)
 					_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: "client IP not allowed"})
 					return
 				}
@@ -210,7 +219,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 			profile, strategy, ok, err := selectProfile(r, clientIP, ipOK, compiled)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "client identity lookup failed", "error", err)
-				logging.SetDenied(w, r, "client identity lookup failed", filter.NormalizePath)
+				logging.SetDeniedWithCode(w, r, reasonCodeClientIdentityLookupFailed, "client identity lookup failed", filter.NormalizePath)
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client identity lookup failed"})
 				return
 			}
@@ -230,7 +239,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 			client, found, err := deps.resolveClient(r.Context(), clientIP)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "client label ACL lookup failed", "error", err, "client_ip", clientIP.String())
-				logging.SetDenied(w, r, "client label ACL lookup failed", filter.NormalizePath)
+				logging.SetDeniedWithCode(w, r, reasonCodeClientLabelACLLookupFailed, "client label ACL lookup failed", filter.NormalizePath)
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client label ACL lookup failed"})
 				return
 			}
@@ -248,7 +257,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 					"client_ip", clientIP.String(),
 					"client_container", clientName(client),
 				)
-				logging.SetDenied(w, r, "client label ACL evaluation failed", filter.NormalizePath)
+				logging.SetDeniedWithCode(w, r, reasonCodeClientLabelACLEvalFailed, "client label ACL evaluation failed", filter.NormalizePath)
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client label ACL evaluation failed"})
 				return
 			}
@@ -263,7 +272,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 				return
 			}
 
-			logging.SetDenied(w, r, "client label policy denied request", filter.NormalizePath)
+			logging.SetDeniedWithCode(w, r, reasonCodeClientLabelPolicyDenied, "client label policy denied request", filter.NormalizePath)
 			_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: "client label policy denied request"})
 		})
 	}
