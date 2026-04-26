@@ -126,7 +126,12 @@ func TestFullProxyChainHijackIntegration(t *testing.T) {
 		echoPayload = "hello from upstream"
 	)
 
-	upstreamPath := make(chan string, 1)
+	type upstreamHijackRequest struct {
+		host     string
+		path     string
+		rawQuery string
+	}
+	upstreamRequest := make(chan upstreamHijackRequest, 1)
 	upstreamDone := make(chan struct{})
 
 	ln, err := net.Listen("unix", socketPath)
@@ -153,7 +158,11 @@ func TestFullProxyChainHijackIntegration(t *testing.T) {
 			t.Errorf("upstream read request: %v", err)
 			return
 		}
-		upstreamPath <- req.URL.Path
+		upstreamRequest <- upstreamHijackRequest{
+			host:     req.Host,
+			path:     req.URL.Path,
+			rawQuery: req.URL.RawQuery,
+		}
 		if req.Body != nil {
 			_ = req.Body.Close()
 		}
@@ -254,9 +263,15 @@ func TestFullProxyChainHijackIntegration(t *testing.T) {
 	}
 
 	select {
-	case got := <-upstreamPath:
-		if got != "/v1.45/containers/abc/attach" {
-			t.Fatalf("upstream path = %q, want %q", got, "/v1.45/containers/abc/attach")
+	case got := <-upstreamRequest:
+		if got.host != "docker" {
+			t.Fatalf("upstream host = %q, want %q", got.host, "docker")
+		}
+		if got.path != "/containers/abc/attach" {
+			t.Fatalf("upstream path = %q, want %q", got.path, "/containers/abc/attach")
+		}
+		if got.rawQuery != "stream=1" {
+			t.Fatalf("upstream raw query = %q, want %q", got.rawQuery, "stream=1")
 		}
 	default:
 		t.Fatal("expected upstream hijack request")

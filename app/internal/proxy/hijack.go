@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/textproto"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -294,11 +295,12 @@ func proxyHijackStreamsWithDeps(session *hijackSession, logger *slog.Logger, dep
 func writeHijackUpstreamRequest(upstreamConn net.Conn, w http.ResponseWriter, r *http.Request, logger *slog.Logger) bool {
 	// We remove client-controlled hop-by-hop metadata and emit a fixed Docker
 	// upgrade hint so upstream sees only proxy-controlled connection semantics.
-	upstreamReq := newUpstreamHijackRequest(r)
+	reqPath := requestHijackPath(w, r)
+	upstreamReq := newUpstreamHijackRequest(r, reqPath)
 	if err := upstreamReq.Write(upstreamConn); err != nil {
-		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
-		logger.Error("hijack: write request to upstream failed", "error", err, "path", r.URL.Path)
-		writeHijackBadGateway(w, logger, r.URL.Path, "failed to forward request to upstream")
+		closeConn(logger, upstreamConn, "upstream connection", reqPath)
+		logger.Error("hijack: write request to upstream failed", "error", err, "path", reqPath)
+		writeHijackBadGateway(w, logger, reqPath, "failed to forward request to upstream")
 		return false
 	}
 
@@ -416,20 +418,25 @@ func startHijackCopy(
 	}()
 }
 
-func newUpstreamHijackRequest(r *http.Request) *http.Request {
+func newUpstreamHijackRequest(r *http.Request, normalizedPath string) *http.Request {
+	rawQuery := ""
+	if normalizedPath == "" && r.URL != nil {
+		normalizedPath = filter.NormalizePath(r.URL.Path)
+	}
+	if r.URL != nil {
+		rawQuery = r.URL.Query().Encode()
+	}
+
 	upstreamReq := &http.Request{
 		Method:        r.Method,
-		Host:          r.Host,
+		Host:          "docker",
+		URL:           &url.URL{Scheme: "http", Host: "docker", Path: normalizedPath, RawQuery: rawQuery},
 		Proto:         r.Proto,
 		ProtoMajor:    r.ProtoMajor,
 		ProtoMinor:    r.ProtoMinor,
 		Header:        r.Header.Clone(),
 		Body:          r.Body,
 		ContentLength: r.ContentLength,
-	}
-	if r.URL != nil {
-		urlCopy := *r.URL
-		upstreamReq.URL = &urlCopy
 	}
 	if upstreamReq.ContentLength == 0 {
 		upstreamReq.Body = nil
