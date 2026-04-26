@@ -68,6 +68,17 @@ func validateBasic(cfg *Config) []string {
 	if err := validateLogOutput(cfg.Log.Output); err != nil {
 		errs = append(errs, err.Error())
 	}
+	if cfg.Log.Audit.Enabled {
+		switch cfg.Log.Audit.Format {
+		case "json":
+			// OK
+		default:
+			errs = append(errs, fmt.Sprintf("log.audit.format must be json, got %q", cfg.Log.Audit.Format))
+		}
+		if err := validateLogOutput(cfg.Log.Audit.Output); err != nil {
+			errs = append(errs, strings.Replace(err.Error(), "log output", "log.audit.output", 1))
+		}
+	}
 
 	switch cfg.Response.DenyVerbosity {
 	case "minimal", "verbose":

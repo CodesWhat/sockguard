@@ -99,6 +99,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Log.Output != defaults.Log.Output {
 		t.Errorf("Log.Output = %q, want %q", cfg.Log.Output, defaults.Log.Output)
 	}
+	if cfg.Log.Audit.Enabled != defaults.Log.Audit.Enabled {
+		t.Errorf("Log.Audit.Enabled = %v, want %v", cfg.Log.Audit.Enabled, defaults.Log.Audit.Enabled)
+	}
+	if cfg.Log.Audit.Format != defaults.Log.Audit.Format {
+		t.Errorf("Log.Audit.Format = %q, want %q", cfg.Log.Audit.Format, defaults.Log.Audit.Format)
+	}
+	if cfg.Log.Audit.Output != defaults.Log.Audit.Output {
+		t.Errorf("Log.Audit.Output = %q, want %q", cfg.Log.Audit.Output, defaults.Log.Audit.Output)
+	}
 	if cfg.Response.DenyVerbosity != defaults.Response.DenyVerbosity {
 		t.Errorf("Response.DenyVerbosity = %q, want %q", cfg.Response.DenyVerbosity, defaults.Response.DenyVerbosity)
 	}

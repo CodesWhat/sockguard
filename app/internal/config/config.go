@@ -50,6 +50,14 @@ type LogConfig struct {
 	Format    string `mapstructure:"format"`
 	Output    string `mapstructure:"output"`
 	AccessLog bool   `mapstructure:"access_log"`
+	Audit     AuditLogConfig `mapstructure:"audit"`
+}
+
+// AuditLogConfig configures the dedicated audit-event pipeline.
+type AuditLogConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Format  string `mapstructure:"format"`
+	Output  string `mapstructure:"output"`
 }
 
 // ResponseConfig configures HTTP responses returned by sockguard itself.
@@ -267,6 +275,11 @@ func Defaults() Config {
 			Format:    "json",
 			Output:    "stderr",
 			AccessLog: true,
+			Audit: AuditLogConfig{
+				Enabled: false,
+				Format:  "json",
+				Output:  "stderr",
+			},
 		},
 		Response: ResponseConfig{
 			// Default to minimal deny responses: the generic message only,

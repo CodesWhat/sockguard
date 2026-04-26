@@ -214,6 +214,20 @@ func TestValidateRejectsNonLocalLogOutputPath(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidAuditLogFormat(t *testing.T) {
+	cfg := Defaults()
+	cfg.Log.Audit.Enabled = true
+	cfg.Log.Audit.Format = "text"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid audit log format")
+	}
+	if !strings.Contains(err.Error(), `log.audit.format must be json, got "text"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestValidateEmptyRules(t *testing.T) {
 	cfg := Defaults()
 	cfg.Rules = nil
