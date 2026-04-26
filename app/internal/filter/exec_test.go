@@ -540,12 +540,12 @@ func TestNewDockerExecInspectorUsesHTTPServer(t *testing.T) {
 	// Spin up a mock upstream that responds to GET /exec/{id}/json with a
 	// minimal response, and wire the inspector to it via a TCP address.
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/exec/notfound/json":
+		switch r.URL.Path {
+		case "/exec/notfound/json":
 			w.WriteHeader(http.StatusNotFound)
-		case r.URL.Path == "/exec/errored/json":
+		case "/exec/errored/json":
 			w.WriteHeader(http.StatusInternalServerError)
-		case r.URL.Path == "/exec/badjson/json":
+		case "/exec/badjson/json":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("{not json"))

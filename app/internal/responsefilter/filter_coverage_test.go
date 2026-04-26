@@ -2086,9 +2086,7 @@ func TestModifyContainerList_SkipsWhenNeitherFlagSet(t *testing.T) {
 	// The body should be unchanged since neither RedactMountPaths nor RedactNetworkTopology are set
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "/host/path") {
-		// If filter ran, source would be redacted; if no-op, it's still there.
-		// We can't assert no-op from the response since the body is already consumed.
-		// Just confirm no error occurred (done above).
+		t.Errorf("expected mount source /host/path to be present in body (filter should be no-op), got: %s", string(body))
 	}
 }
 

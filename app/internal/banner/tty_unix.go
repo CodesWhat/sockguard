@@ -14,7 +14,7 @@ var ioctlGetWinsize = func(fd uintptr, ws *winsize) syscall.Errno {
 		syscall.SYS_IOCTL,
 		fd,
 		uintptr(syscall.TIOCGWINSZ),
-		uintptr(unsafe.Pointer(ws)),
+		uintptr(unsafe.Pointer(ws)), //nolint:gosec // G103: unsafe.Pointer required by SYS_IOCTL
 	)
 	return errno
 }

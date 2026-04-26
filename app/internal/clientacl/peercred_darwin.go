@@ -46,8 +46,8 @@ var readPeerXUCred = func(fd int, rawCreds *xucred) error {
 		uintptr(fd),
 		uintptr(solLocal),
 		uintptr(localPeercredOption),
-		uintptr(unsafe.Pointer(rawCreds)),
-		uintptr(unsafe.Pointer(&size)),
+		uintptr(unsafe.Pointer(rawCreds)),  //nolint:gosec // G103: unsafe.Pointer required by SYS_GETSOCKOPT
+		uintptr(unsafe.Pointer(&size)),     //nolint:gosec // G103: unsafe.Pointer required by SYS_GETSOCKOPT
 		0,
 	)
 	if errno != 0 {
@@ -82,7 +82,7 @@ func peerCredentialsFromSyscaller(conn syscallConner) (unixPeerCredentials, erro
 	var creds unixPeerCredentials
 	var lookupErr error
 	if err := rawConnControl(raw, func(fd uintptr) {
-		creds, lookupErr = peerCredentialsFromFD(int(fd))
+		creds, lookupErr = peerCredentialsFromFD(int(fd)) //nolint:gosec // G115: fd from RawConn.Control is a valid file descriptor
 	}); err != nil {
 		return unixPeerCredentials{}, err
 	}
@@ -115,6 +115,6 @@ func peerCredentialsFromFD(fd int) (unixPeerCredentials, error) {
 	return unixPeerCredentials{
 		UID: rawCreds.UID,
 		GID: gid,
-		PID: int32(pid),
+		PID: int32(pid), //nolint:gosec // G115: pid from GetsockoptInt is a valid process ID, always fits int32
 	}, nil
 }

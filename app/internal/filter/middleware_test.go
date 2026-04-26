@@ -1044,7 +1044,7 @@ func TestRedactDeniedPathEmpty(t *testing.T) {
 }
 
 // TestMiddlewareWrapperDelegates verifies the Middleware convenience wrapper
-// produces identical behaviour to MiddlewareWithOptions with empty Options{}.
+// produces identical behavior to MiddlewareWithOptions with empty Options{}.
 func TestMiddlewareWrapperDelegates(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
 	rules := []*CompiledRule{r1}
