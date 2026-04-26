@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +23,7 @@ import (
 
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/logging"
 )
 
 type serveTestConn struct {
@@ -421,6 +425,55 @@ func TestRunServeErrorPaths(t *testing.T) {
 		}
 		if !strings.Contains(errOut.String(), "failed to close log output: close boom") {
 			t.Fatalf("expected log output close warning, got: %q", errOut.String())
+		}
+	})
+
+	t.Run("audit log pipeline", func(t *testing.T) {
+		deps := newRunServeDeps()
+		cfg := testServeConfig()
+		cfg.Log.Audit.Enabled = true
+		deps.loadConfig = func(string) (*config.Config, error) {
+			return cfg, nil
+		}
+
+		var auditBuf bytes.Buffer
+		deps.newAuditLogger = func(format, output string) (*logging.AuditLogger, io.Closer, error) {
+			return logging.NewAuditLogger(&auditBuf), nil, nil
+		}
+		deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+			return &serveTestConn{}, nil
+		}
+		deps.createServeListener = func(*config.Config) (net.Listener, error) {
+			return &serveTestListener{addr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2375}}, nil
+		}
+		deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {
+			req := httptest.NewRequest(http.MethodGet, "/v1.45/denied", nil)
+			req.RemoteAddr = "198.51.100.10:4444"
+			req.Header.Set("X-Request-ID", "client-123")
+			rec := httptest.NewRecorder()
+			server.Handler.ServeHTTP(rec, req)
+			errCh <- http.ErrServerClosed
+		}
+
+		if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
+			t.Fatalf("runServeWithDeps() error = %v, want nil", err)
+		}
+
+		var event map[string]any
+		if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+			t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+		}
+		if got := event["decision"]; got != "deny" {
+			t.Fatalf("decision = %#v, want %q", got, "deny")
+		}
+		if got := event["normalized_path"]; got != "/denied" {
+			t.Fatalf("normalized_path = %#v, want %q", got, "/denied")
+		}
+		if got := event["reason_code"]; got != "no_matching_allow_rule" {
+			t.Fatalf("reason_code = %#v, want %q", got, "no_matching_allow_rule")
+		}
+		if got := event["client_request_id"]; got != "client-123" {
+			t.Fatalf("client_request_id = %#v, want %q", got, "client-123")
 		}
 	})
 

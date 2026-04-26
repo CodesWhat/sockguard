@@ -758,7 +758,7 @@ func TestBuildServeHandlerFiltersHijackEndpointsBeforeHijackHandler(t *testing.T
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1.45/containers/abc/attach?stream=1", nil)
 	rec := httptest.NewRecorder()
@@ -786,7 +786,7 @@ func TestBuildServeHandlerClientACLWrapsHealthInterceptor(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -831,7 +831,7 @@ func TestBuildServeHandlerRedactsProtectedResponsesByDefault(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc123/json", nil)
 	rec := httptest.NewRecorder()
@@ -906,7 +906,7 @@ func TestBuildServeHandlerAppliesAssignedClientProfile(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -969,7 +969,7 @@ func TestBuildServeHandlerAppliesAssignedClientVisibilityProfile(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -1007,7 +1007,7 @@ func TestBuildServeHandlerGeneratesTrustedRequestIDWithoutAccessLog(t *testing.T
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/info", nil)
 	req.Header.Set("X-Request-ID", "client-123")
@@ -1035,12 +1035,231 @@ func TestBuildServeHandlerGeneratesTrustedRequestIDWithoutAccessLog(t *testing.T
 	}
 }
 
+func TestBuildServeHandlerEmitsAuditEventWhenEnabled(t *testing.T) {
+	socketPath := shortSocketPath(t, "audit-upstream")
+	_ = os.Remove(socketPath)
+
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Log.Audit.Enabled = true
+	cfg.Ownership.Owner = "ci-job-123"
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/info"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	var auditBuf bytes.Buffer
+	auditLogger := logging.NewAuditLogger(&auditBuf)
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.45/info", nil)
+	req.RemoteAddr = "198.51.100.10:4444"
+	req.Header.Set("X-Request-ID", "client-123")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+		t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+	}
+	if got := event["decision"]; got != "allow" {
+		t.Fatalf("decision = %#v, want %q", got, "allow")
+	}
+	if got := event["normalized_path"]; got != "/info" {
+		t.Fatalf("normalized_path = %#v, want %q", got, "/info")
+	}
+	if got := event["status"]; got != float64(http.StatusOK) {
+		t.Fatalf("status = %#v, want %d", got, http.StatusOK)
+	}
+	if got := event["client_request_id"]; got != "client-123" {
+		t.Fatalf("client_request_id = %#v, want %q", got, "client-123")
+	}
+	requestID, _ := event["request_id"].(string)
+	if requestID == "" || requestID == "client-123" {
+		t.Fatalf("request_id = %#v, want generated canonical id", event["request_id"])
+	}
+	ownership, ok := event["ownership"].(map[string]any)
+	if !ok {
+		t.Fatalf("ownership = %#v, want object", event["ownership"])
+	}
+	if got := ownership["owner"]; got != "ci-job-123" {
+		t.Fatalf("ownership.owner = %#v, want %q", got, "ci-job-123")
+	}
+}
+
+func TestBuildServeHandlerAuditEventIncludesSelectedProfile(t *testing.T) {
+	socketPath := shortSocketPath(t, "audit-profile-upstream")
+	_ = os.Remove(socketPath)
+
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_ping" {
+			t.Fatalf("path = %q, want /_ping", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "OK")
+	}))
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Log.Audit.Enabled = true
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	}
+	cfg.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name: "readonly",
+			Rules: []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "profile deny"},
+			},
+		},
+	}
+	cfg.Clients.SourceIPProfiles = []config.ClientSourceIPProfileAssignmentConfig{
+		{Profile: "readonly", CIDRs: []string{"192.0.2.0/24"}},
+	}
+
+	rules, err := compileRuleConfigsForTest(cfg.Rules)
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	var auditBuf bytes.Buffer
+	handler := buildServeHandler(&cfg, newDiscardLogger(), logging.NewAuditLogger(&auditBuf), rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+		t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+	}
+	if got := event["selected_profile"]; got != "readonly" {
+		t.Fatalf("selected_profile = %#v, want %q", got, "readonly")
+	}
+	if got := event["reason_code"]; got != "matched_allow_rule" {
+		t.Fatalf("reason_code = %#v, want %q", got, "matched_allow_rule")
+	}
+	if got := event["status"]; got != float64(http.StatusOK) {
+		t.Fatalf("status = %#v, want %d", got, http.StatusOK)
+	}
+}
+
+func TestBuildServeHandlerAuditEventCapturesMalformedOwnershipRequest(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "audit-malformed-upstream")
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Log.Audit.Enabled = true
+	cfg.Ownership.Owner = "ci-job-123"
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	var auditBuf bytes.Buffer
+	handler := buildServeHandler(&cfg, newDiscardLogger(), logging.NewAuditLogger(&auditBuf), rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1.45/containers/create", strings.NewReader("{"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+		t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+	}
+	if got := event["decision"]; got != "deny" {
+		t.Fatalf("decision = %#v, want %q", got, "deny")
+	}
+	if got := event["reason_code"]; got != "owner_request_invalid" {
+		t.Fatalf("reason_code = %#v, want %q", got, "owner_request_invalid")
+	}
+	if got := event["status"]; got != float64(http.StatusBadRequest) {
+		t.Fatalf("status = %#v, want %d", got, http.StatusBadRequest)
+	}
+}
+
+func TestBuildServeHandlerAuditEventCapturesUpstreamFailure(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "audit-upstream-missing")
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Log.Audit.Enabled = true
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	var auditBuf bytes.Buffer
+	handler := buildServeHandler(&cfg, newDiscardLogger(), logging.NewAuditLogger(&auditBuf), rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+		t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+	}
+	if got := event["decision"]; got != "allow" {
+		t.Fatalf("decision = %#v, want %q", got, "allow")
+	}
+	if got := event["reason_code"]; got != "upstream_socket_unreachable" {
+		t.Fatalf("reason_code = %#v, want %q", got, "upstream_socket_unreachable")
+	}
+	if got := event["status"]; got != float64(http.StatusBadGateway) {
+		t.Fatalf("status = %#v, want %d", got, http.StatusBadGateway)
+	}
+}
+
 func TestBuildServeHandlerLayers(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Health.Enabled = true
 	cfg.Log.AccessLog = true
+	cfg.Log.Audit.Enabled = true
 
-	got := serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), nil, newServeTestDeps(), nil))
+	got := serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), logging.NewAuditLogger(io.Discard), nil, newServeTestDeps(), nil))
 	want := []string{
 		"withHijack",
 		"withOwnership",
@@ -1049,6 +1268,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 		"withHealth",
 		"withClientACL",
 		"withRequestID",
+		"withAuditLog",
 		"withAccessLog",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -1057,8 +1277,9 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 
 	cfg.Health.Enabled = false
 	cfg.Log.AccessLog = false
+	cfg.Log.Audit.Enabled = false
 
-	got = serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), nil, newServeTestDeps(), nil))
+	got = serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), nil, nil, newServeTestDeps(), nil))
 	want = []string{
 		"withHijack",
 		"withOwnership",

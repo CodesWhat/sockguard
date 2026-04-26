@@ -391,7 +391,7 @@ func TestBuildServeHandlerExercisesClientACLVisibilityFilterAndResponseFilter(t 
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 	addr, waitForRequest := startProxyChainServer(t, handler)
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -520,7 +520,7 @@ func TestBuildServeHandlerExercisesOwnershipForNodesAndSwarm(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 	addr, waitForRequest := startProxyChainServer(t, handler)
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -625,7 +625,7 @@ func newBuildServeChainHandler(t *testing.T, socketPath string) (http.Handler, *
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	return buildServeHandler(&cfg, logger, rules, newServeTestDeps()), &logBuf
+	return buildServeHandler(&cfg, logger, nil, rules, newServeTestDeps()), &logBuf
 }
 
 func assertFullProxyChainUpstreamError(

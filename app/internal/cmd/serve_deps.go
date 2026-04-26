@@ -26,6 +26,7 @@ const hardenedListenSocketMode = os.FileMode(0o600)
 type serveDeps struct {
 	loadConfig          func(string) (*config.Config, error)
 	newLogger           func(string, string, string) (*slog.Logger, io.Closer, error)
+	newAuditLogger      func(string, string) (*logging.AuditLogger, io.Closer, error)
 	validateRules       func(*config.Config) ([]*filter.CompiledRule, error)
 	dialUpstream        func(string, string, time.Duration) (net.Conn, error)
 	listenNetwork       func(string, string) (net.Listener, error)
@@ -48,6 +49,7 @@ func newServeDeps() *serveDeps {
 	deps := &serveDeps{
 		loadConfig:          config.Load,
 		newLogger:           logging.New,
+		newAuditLogger:      logging.NewAudit,
 		validateRules:       validateAndCompileRules,
 		dialUpstream:        net.DialTimeout,
 		listenNetwork:       net.Listen,

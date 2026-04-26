@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -74,6 +75,23 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		}
 	}()
 
+	var auditLogger *logging.AuditLogger
+	var auditLogOutputCloser io.Closer
+	if cfg.Log.Audit.Enabled {
+		auditLogger, auditLogOutputCloser, err = deps.newAuditLogger(cfg.Log.Audit.Format, cfg.Log.Audit.Output)
+		if err != nil {
+			return fmt.Errorf("audit logger: %w", err)
+		}
+		defer func() {
+			if auditLogOutputCloser == nil {
+				return
+			}
+			if closeErr := auditLogOutputCloser.Close(); closeErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "failed to close audit log output: %v\n", closeErr)
+			}
+		}()
+	}
+
 	// Tecnativa compatibility mode expands legacy env vars like CONTAINERS=1
 	// into explicit allow/deny rules before normal validation and compilation.
 	config.ApplyCompat(cfg, logger)
@@ -86,7 +104,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return err
 	}
 
-	handler := buildServeHandler(cfg, logger, rules, deps)
+	handler := buildServeHandler(cfg, logger, auditLogger, rules, deps)
 	listener, err := deps.createServeListener(cfg)
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
@@ -152,7 +170,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	return nil
 }
 
-func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
+func buildServeHandler(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
 	clientProfiles, err := buildServeClientProfiles(cfg)
 	if err != nil {
 		logger.Error("invalid client profile config", "error", err)
@@ -160,7 +178,7 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 	}
 
 	handler := newServeUpstreamHandler(cfg, logger)
-	for _, layer := range buildServeHandlerLayers(cfg, logger, rules, deps, clientProfiles) {
+	for _, layer := range buildServeHandlerLayers(cfg, logger, auditLogger, rules, deps, clientProfiles) {
 		handler = layer.with(handler)
 	}
 	return handler
@@ -173,7 +191,7 @@ type serveHandlerLayer struct {
 
 func invalidClientProfileHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		logging.SetDenied(w, r, "client profile config invalid", filter.NormalizePath)
+		logging.SetDeniedWithCode(w, r, "client_profile_config_invalid", "client profile config invalid", filter.NormalizePath)
 		_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "client profile config invalid"})
 	})
 }
@@ -198,7 +216,7 @@ func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handl
 	})
 }
 
-func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy) []serveHandlerLayer {
+func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy) []serveHandlerLayer {
 	layers := []serveHandlerLayer{
 		namedServeHandlerLayer("withHijack", withHijack(cfg, logger)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, logger)),
@@ -212,6 +230,9 @@ func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, rules []*f
 		namedServeHandlerLayer("withClientACL", withClientACL(cfg, logger)),
 		namedServeHandlerLayer("withRequestID", withRequestID()),
 	)
+	if cfg.Log.Audit.Enabled && auditLogger != nil {
+		layers = append(layers, namedServeHandlerLayer("withAuditLog", withAuditLog(auditLogger, cfg)))
+	}
 	if cfg.Log.AccessLog {
 		layers = append(layers, namedServeHandlerLayer("withAccessLog", withAccessLog(logger)))
 	}
@@ -268,6 +289,13 @@ func withRequestID() func(http.Handler) http.Handler {
 
 func withAccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 	return logging.AccessLogMiddleware(logger)
+}
+
+func withAuditLog(auditLogger *logging.AuditLogger, cfg *config.Config) func(http.Handler) http.Handler {
+	return logging.AuditLogMiddleware(auditLogger, logging.AuditOptions{
+		OwnershipOwner:    cfg.Ownership.Owner,
+		OwnershipLabelKey: cfg.Ownership.LabelKey,
+	})
 }
 
 func serveResponseFilterOptions(cfg *config.Config) responsefilter.Options {
