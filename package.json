@@ -19,6 +19,15 @@
     "lefthook": "^2.1.5",
     "turbo": "^2.9.6"
   },
+  "overrides": {
+    "postcss": "$postcss",
+    "next": {
+      "postcss": "$postcss"
+    }
+  },
+  "dependencies": {
+    "postcss": "^8.5.9"
+  },
   "packageManager": "npm@11.9.0",
   "engines": {
     "node": ">=22.0.0"
