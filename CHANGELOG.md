@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added regression coverage for `denyWithReasonCode` normalized-path metadata population and audit logger construction against `stdout`/`stderr` sinks.
 - Added regression coverage for audit startup error handling, audit output close warnings, audit output-path validation, health-check in-flight deduplication, and nil audit middleware pass-through.
 - Added reason-code regression coverage for filter middleware decisions so `matched_allow_rule`, `matched_deny_rule`, `no_matching_allow_rule`, `request_body_policy_denied`, and `request_body_too_large` mappings cannot be accidentally swapped without a failing test.
 - Added regression coverage for streamed build contexts, exec/attach stream interruption, and full-chain upstream socket failure handling. The Go test suite now exercises gradual `/build` tar uploads over a live TCP connection, verifies interrupted request bodies still flow through the filter layer for `POST /exec/*/start` and `POST /containers/*/attach`, and covers end-to-end `502` behavior plus correlated logging when the upstream Docker socket is missing or permission-denied.

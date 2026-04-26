@@ -487,6 +487,33 @@ func TestMiddlewareWritesMeta(t *testing.T) {
 	}
 }
 
+func TestDenyWithReasonCodePopulatesEmptyNormPath(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
+	meta := &logging.RequestMeta{}
+	req := httptest.NewRequest(http.MethodGet, "/v1.45/containers/%2e%2e/images/json", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+
+	denyWithReasonCode(rec, req, logger, reasonCodeClientPolicyProfileUnresolved, "profile not found", DenyResponseVerbosityMinimal)
+
+	if meta.Decision != string(ActionDeny) {
+		t.Fatalf("meta.Decision = %q, want deny", meta.Decision)
+	}
+	if meta.ReasonCode != reasonCodeClientPolicyProfileUnresolved {
+		t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeClientPolicyProfileUnresolved)
+	}
+	if meta.Reason != "profile not found" {
+		t.Fatalf("meta.Reason = %q, want profile not found", meta.Reason)
+	}
+	if meta.NormPath != "/images/json" {
+		t.Fatalf("meta.NormPath = %q, want /images/json", meta.NormPath)
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
 func TestMiddlewareConcurrentRequestMetaIsolation(t *testing.T) {
 	allowRule, _ := CompileRule(Rule{Methods: []string{http.MethodGet}, Pattern: "/allowed/**", Action: ActionAllow, Index: 0})
 	denyRule, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})

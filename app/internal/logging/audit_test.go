@@ -283,6 +283,26 @@ func TestNewAuditCreatesJSONFileSink(t *testing.T) {
 	}
 }
 
+func TestNewAuditCreatesStandardStreamSinks(t *testing.T) {
+	for _, output := range []string{"stdout", "stderr"} {
+		t.Run(output, func(t *testing.T) {
+			auditLogger, closer, err := NewAudit("json", output)
+			if err != nil {
+				t.Fatalf("NewAudit() error = %v", err)
+			}
+			if auditLogger == nil {
+				t.Fatal("NewAudit() logger = nil")
+			}
+			if closer == nil {
+				t.Fatal("NewAudit() closer = nil")
+			}
+			if err := closer.Close(); err != nil {
+				t.Fatalf("audit closer Close() error = %v", err)
+			}
+		})
+	}
+}
+
 func TestNewAuditRejectsUnsupportedFormat(t *testing.T) {
 	auditLogger, closer, err := NewAudit("text", "stderr")
 	if err == nil {
