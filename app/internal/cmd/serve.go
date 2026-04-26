@@ -293,9 +293,17 @@ func withAccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
 
 func withAuditLog(auditLogger *logging.AuditLogger, cfg *config.Config) func(http.Handler) http.Handler {
 	return logging.AuditLogMiddleware(auditLogger, logging.AuditOptions{
+		Listener:          auditListener(cfg),
 		OwnershipOwner:    cfg.Ownership.Owner,
 		OwnershipLabelKey: cfg.Ownership.LabelKey,
 	})
+}
+
+func auditListener(cfg *config.Config) string {
+	if cfg != nil && cfg.Listen.Socket != "" {
+		return "unix"
+	}
+	return "tcp"
 }
 
 func serveResponseFilterOptions(cfg *config.Config) responsefilter.Options {
@@ -316,73 +324,10 @@ func serveFilterOptions(cfg *config.Config, clientProfiles map[string]filter.Pol
 }
 
 func servePolicyConfig(cfg *config.Config) filter.PolicyConfig {
-	return filter.PolicyConfig{
-		DenyResponseVerbosity: filter.ParseDenyResponseVerbosity(cfg.Response.DenyVerbosity),
-		ContainerCreate: filter.ContainerCreateOptions{
-			AllowPrivileged:   cfg.RequestBody.ContainerCreate.AllowPrivileged,
-			AllowHostNetwork:  cfg.RequestBody.ContainerCreate.AllowHostNetwork,
-			AllowedBindMounts: cfg.RequestBody.ContainerCreate.AllowedBindMounts,
-		},
-		Exec: filter.ExecOptions{
-			AllowPrivileged: cfg.RequestBody.Exec.AllowPrivileged,
-			AllowRootUser:   cfg.RequestBody.Exec.AllowRootUser,
-			AllowedCommands: cfg.RequestBody.Exec.AllowedCommands,
-			InspectStart:    filter.NewDockerExecInspector(cfg.Upstream.Socket),
-		},
-		ImagePull: filter.ImagePullOptions{
-			AllowImports:       cfg.RequestBody.ImagePull.AllowImports,
-			AllowAllRegistries: cfg.RequestBody.ImagePull.AllowAllRegistries,
-			AllowOfficial:      cfg.RequestBody.ImagePull.AllowOfficial,
-			AllowedRegistries:  cfg.RequestBody.ImagePull.AllowedRegistries,
-		},
-		Build: filter.BuildOptions{
-			AllowRemoteContext:   cfg.RequestBody.Build.AllowRemoteContext,
-			AllowHostNetwork:     cfg.RequestBody.Build.AllowHostNetwork,
-			AllowRunInstructions: cfg.RequestBody.Build.AllowRunInstructions,
-		},
-		Volume: filter.VolumeOptions{
-			AllowCustomDrivers: cfg.RequestBody.Volume.AllowCustomDrivers,
-			AllowDriverOpts:    cfg.RequestBody.Volume.AllowDriverOpts,
-		},
-		Secret: filter.SecretOptions{
-			AllowCustomDrivers:   cfg.RequestBody.Secret.AllowCustomDrivers,
-			AllowTemplateDrivers: cfg.RequestBody.Secret.AllowTemplateDrivers,
-		},
-		Config: filter.ConfigOptions{
-			AllowCustomDrivers:   cfg.RequestBody.Config.AllowCustomDrivers,
-			AllowTemplateDrivers: cfg.RequestBody.Config.AllowTemplateDrivers,
-		},
-		Service: filter.ServiceOptions{
-			AllowHostNetwork:   cfg.RequestBody.Service.AllowHostNetwork,
-			AllowedBindMounts:  cfg.RequestBody.Service.AllowedBindMounts,
-			AllowAllRegistries: cfg.RequestBody.Service.AllowAllRegistries,
-			AllowOfficial:      cfg.RequestBody.Service.AllowOfficial,
-			AllowedRegistries:  cfg.RequestBody.Service.AllowedRegistries,
-		},
-		Swarm: filter.SwarmOptions{
-			AllowForceNewCluster:          cfg.RequestBody.Swarm.AllowForceNewCluster,
-			AllowExternalCA:               cfg.RequestBody.Swarm.AllowExternalCA,
-			AllowedJoinRemoteAddrs:        cfg.RequestBody.Swarm.AllowedJoinRemoteAddrs,
-			AllowTokenRotation:            cfg.RequestBody.Swarm.AllowTokenRotation,
-			AllowManagerUnlockKeyRotation: cfg.RequestBody.Swarm.AllowManagerUnlockKeyRotation,
-			AllowAutoLockManagers:         cfg.RequestBody.Swarm.AllowAutoLockManagers,
-			AllowSigningCAUpdate:          cfg.RequestBody.Swarm.AllowSigningCAUpdate,
-		},
-		Plugin: filter.PluginOptions{
-			AllowHostNetwork:      cfg.RequestBody.Plugin.AllowHostNetwork,
-			AllowIPCHost:          cfg.RequestBody.Plugin.AllowIPCHost,
-			AllowPIDHost:          cfg.RequestBody.Plugin.AllowPIDHost,
-			AllowAllDevices:       cfg.RequestBody.Plugin.AllowAllDevices,
-			AllowedBindMounts:     cfg.RequestBody.Plugin.AllowedBindMounts,
-			AllowedDevices:        cfg.RequestBody.Plugin.AllowedDevices,
-			AllowAllCapabilities:  cfg.RequestBody.Plugin.AllowAllCapabilities,
-			AllowedCapabilities:   cfg.RequestBody.Plugin.AllowedCapabilities,
-			AllowAllRegistries:    cfg.RequestBody.Plugin.AllowAllRegistries,
-			AllowOfficial:         cfg.RequestBody.Plugin.AllowOfficial,
-			AllowedRegistries:     cfg.RequestBody.Plugin.AllowedRegistries,
-			AllowedSetEnvPrefixes: cfg.RequestBody.Plugin.AllowedSetEnvPrefixes,
-		},
-	}
+	policy := cfg.RequestBody.ToFilterOptions()
+	policy.DenyResponseVerbosity = filter.ParseDenyResponseVerbosity(cfg.Response.DenyVerbosity)
+	policy.Exec.InspectStart = filter.NewDockerExecInspector(cfg.Upstream.Socket)
+	return policy
 }
 
 func serveClientACLOptions(cfg *config.Config) clientacl.Options {

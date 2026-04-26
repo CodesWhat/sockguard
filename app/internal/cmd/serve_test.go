@@ -43,6 +43,13 @@ func shortSocketPath(t *testing.T, label string) string {
 	return path
 }
 
+func closeAuditLoggerForTest(t *testing.T, logger *logging.AuditLogger) {
+	t.Helper()
+	if err := logger.Close(); err != nil {
+		t.Fatalf("audit logger close: %v", err)
+	}
+}
+
 func TestIsAddrInUse(t *testing.T) {
 	if !isAddrInUse(syscall.EADDRINUSE) {
 		t.Fatal("expected EADDRINUSE to be detected")
@@ -67,6 +74,33 @@ func TestRuleCompilationUsesConfigValidate(t *testing.T) {
 
 	if got != want {
 		t.Fatalf("config validation entry point = %s, want %s", got, want)
+	}
+}
+
+func TestServePolicyConfigAddsRuntimeFilterOptions(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Response.DenyVerbosity = "verbose"
+	cfg.Upstream.Socket = "/tmp/docker.sock"
+	cfg.RequestBody.ContainerCreate.AllowPrivileged = true
+	cfg.RequestBody.Exec.AllowRootUser = true
+	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/bin/id"}}
+
+	got := servePolicyConfig(&cfg)
+
+	if got.DenyResponseVerbosity != filter.DenyResponseVerbosityVerbose {
+		t.Fatalf("DenyResponseVerbosity = %q, want %q", got.DenyResponseVerbosity, filter.DenyResponseVerbosityVerbose)
+	}
+	if !got.ContainerCreate.AllowPrivileged {
+		t.Fatal("ContainerCreate.AllowPrivileged = false, want true")
+	}
+	if !got.Exec.AllowRootUser {
+		t.Fatal("Exec.AllowRootUser = false, want true")
+	}
+	if !reflect.DeepEqual(got.Exec.AllowedCommands, [][]string{{"/usr/bin/id"}}) {
+		t.Fatalf("Exec.AllowedCommands = %#v, want [[/usr/bin/id]]", got.Exec.AllowedCommands)
+	}
+	if got.Exec.InspectStart == nil {
+		t.Fatal("Exec.InspectStart is nil, want runtime inspector")
 	}
 }
 
@@ -1070,6 +1104,7 @@ func TestBuildServeHandlerEmitsAuditEventWhenEnabled(t *testing.T) {
 	req.Header.Set("X-Request-ID", "client-123")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
+	closeAuditLoggerForTest(t, auditLogger)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
@@ -1091,6 +1126,9 @@ func TestBuildServeHandlerEmitsAuditEventWhenEnabled(t *testing.T) {
 	if got := event["client_request_id"]; got != "client-123" {
 		t.Fatalf("client_request_id = %#v, want %q", got, "client-123")
 	}
+	if got := event["transport_listener"]; got != "tcp" {
+		t.Fatalf("transport_listener = %#v, want %q", got, "tcp")
+	}
 	requestID, _ := event["request_id"].(string)
 	if requestID == "" || requestID == "client-123" {
 		t.Fatalf("request_id = %#v, want generated canonical id", event["request_id"])
@@ -1101,6 +1139,32 @@ func TestBuildServeHandlerEmitsAuditEventWhenEnabled(t *testing.T) {
 	}
 	if got := ownership["owner"]; got != "ci-job-123" {
 		t.Fatalf("ownership.owner = %#v, want %q", got, "ci-job-123")
+	}
+}
+
+func TestWithAuditLogUsesConfiguredUnixListener(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Listen.Socket = "/var/run/sockguard.sock"
+	cfg.Listen.Address = ""
+	cfg.Log.Audit.Enabled = true
+
+	var auditBuf bytes.Buffer
+	auditLogger := logging.NewAuditLogger(&auditBuf)
+	handler := withAuditLog(auditLogger, &cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.RemoteAddr = "198.51.100.10:4444"
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	closeAuditLoggerForTest(t, auditLogger)
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+		t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+	}
+	if got := event["transport_listener"]; got != "unix" {
+		t.Fatalf("transport_listener = %#v, want %q", got, "unix")
 	}
 }
 
@@ -1143,12 +1207,14 @@ func TestBuildServeHandlerAuditEventIncludesSelectedProfile(t *testing.T) {
 	}
 
 	var auditBuf bytes.Buffer
-	handler := buildServeHandler(&cfg, newDiscardLogger(), logging.NewAuditLogger(&auditBuf), rules, newServeTestDeps())
+	auditLogger := logging.NewAuditLogger(&auditBuf)
+	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
+	closeAuditLoggerForTest(t, auditLogger)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
@@ -1186,12 +1252,14 @@ func TestBuildServeHandlerAuditEventCapturesMalformedOwnershipRequest(t *testing
 	}
 
 	var auditBuf bytes.Buffer
-	handler := buildServeHandler(&cfg, newDiscardLogger(), logging.NewAuditLogger(&auditBuf), rules, newServeTestDeps())
+	auditLogger := logging.NewAuditLogger(&auditBuf)
+	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1.45/containers/create", strings.NewReader("{"))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
+	closeAuditLoggerForTest(t, auditLogger)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
@@ -1228,11 +1296,13 @@ func TestBuildServeHandlerAuditEventCapturesUpstreamFailure(t *testing.T) {
 	}
 
 	var auditBuf bytes.Buffer
-	handler := buildServeHandler(&cfg, newDiscardLogger(), logging.NewAuditLogger(&auditBuf), rules, newServeTestDeps())
+	auditLogger := logging.NewAuditLogger(&auditBuf)
+	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
+	closeAuditLoggerForTest(t, auditLogger)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadGateway, rec.Body.String())
@@ -1259,7 +1329,10 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 	cfg.Log.AccessLog = true
 	cfg.Log.Audit.Enabled = true
 
-	got := serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), logging.NewAuditLogger(io.Discard), nil, newServeTestDeps(), nil))
+	auditLogger := logging.NewAuditLogger(io.Discard)
+	t.Cleanup(func() { _ = auditLogger.Close() })
+
+	got := serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), auditLogger, nil, newServeTestDeps(), nil))
 	want := []string{
 		"withHijack",
 		"withOwnership",

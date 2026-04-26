@@ -243,72 +243,8 @@ func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error)
 			return nil, err
 		}
 		profiles[profile.Name] = filter.Policy{
-			Rules: compiledRules,
-			PolicyConfig: filter.PolicyConfig{
-				ContainerCreate: filter.ContainerCreateOptions{
-					AllowPrivileged:   profile.RequestBody.ContainerCreate.AllowPrivileged,
-					AllowHostNetwork:  profile.RequestBody.ContainerCreate.AllowHostNetwork,
-					AllowedBindMounts: profile.RequestBody.ContainerCreate.AllowedBindMounts,
-				},
-				Exec: filter.ExecOptions{
-					AllowPrivileged: profile.RequestBody.Exec.AllowPrivileged,
-					AllowRootUser:   profile.RequestBody.Exec.AllowRootUser,
-					AllowedCommands: profile.RequestBody.Exec.AllowedCommands,
-				},
-				ImagePull: filter.ImagePullOptions{
-					AllowImports:       profile.RequestBody.ImagePull.AllowImports,
-					AllowAllRegistries: profile.RequestBody.ImagePull.AllowAllRegistries,
-					AllowOfficial:      profile.RequestBody.ImagePull.AllowOfficial,
-					AllowedRegistries:  profile.RequestBody.ImagePull.AllowedRegistries,
-				},
-				Build: filter.BuildOptions{
-					AllowRemoteContext:   profile.RequestBody.Build.AllowRemoteContext,
-					AllowHostNetwork:     profile.RequestBody.Build.AllowHostNetwork,
-					AllowRunInstructions: profile.RequestBody.Build.AllowRunInstructions,
-				},
-				Volume: filter.VolumeOptions{
-					AllowCustomDrivers: profile.RequestBody.Volume.AllowCustomDrivers,
-					AllowDriverOpts:    profile.RequestBody.Volume.AllowDriverOpts,
-				},
-				Secret: filter.SecretOptions{
-					AllowCustomDrivers:   profile.RequestBody.Secret.AllowCustomDrivers,
-					AllowTemplateDrivers: profile.RequestBody.Secret.AllowTemplateDrivers,
-				},
-				Config: filter.ConfigOptions{
-					AllowCustomDrivers:   profile.RequestBody.Config.AllowCustomDrivers,
-					AllowTemplateDrivers: profile.RequestBody.Config.AllowTemplateDrivers,
-				},
-				Service: filter.ServiceOptions{
-					AllowHostNetwork:   profile.RequestBody.Service.AllowHostNetwork,
-					AllowedBindMounts:  profile.RequestBody.Service.AllowedBindMounts,
-					AllowAllRegistries: profile.RequestBody.Service.AllowAllRegistries,
-					AllowOfficial:      profile.RequestBody.Service.AllowOfficial,
-					AllowedRegistries:  profile.RequestBody.Service.AllowedRegistries,
-				},
-				Swarm: filter.SwarmOptions{
-					AllowForceNewCluster:          profile.RequestBody.Swarm.AllowForceNewCluster,
-					AllowExternalCA:               profile.RequestBody.Swarm.AllowExternalCA,
-					AllowedJoinRemoteAddrs:        profile.RequestBody.Swarm.AllowedJoinRemoteAddrs,
-					AllowTokenRotation:            profile.RequestBody.Swarm.AllowTokenRotation,
-					AllowManagerUnlockKeyRotation: profile.RequestBody.Swarm.AllowManagerUnlockKeyRotation,
-					AllowAutoLockManagers:         profile.RequestBody.Swarm.AllowAutoLockManagers,
-					AllowSigningCAUpdate:          profile.RequestBody.Swarm.AllowSigningCAUpdate,
-				},
-				Plugin: filter.PluginOptions{
-					AllowHostNetwork:      profile.RequestBody.Plugin.AllowHostNetwork,
-					AllowIPCHost:          profile.RequestBody.Plugin.AllowIPCHost,
-					AllowPIDHost:          profile.RequestBody.Plugin.AllowPIDHost,
-					AllowAllDevices:       profile.RequestBody.Plugin.AllowAllDevices,
-					AllowedBindMounts:     profile.RequestBody.Plugin.AllowedBindMounts,
-					AllowedDevices:        profile.RequestBody.Plugin.AllowedDevices,
-					AllowAllCapabilities:  profile.RequestBody.Plugin.AllowAllCapabilities,
-					AllowedCapabilities:   profile.RequestBody.Plugin.AllowedCapabilities,
-					AllowAllRegistries:    profile.RequestBody.Plugin.AllowAllRegistries,
-					AllowOfficial:         profile.RequestBody.Plugin.AllowOfficial,
-					AllowedRegistries:     profile.RequestBody.Plugin.AllowedRegistries,
-					AllowedSetEnvPrefixes: profile.RequestBody.Plugin.AllowedSetEnvPrefixes,
-				},
-			},
+			Rules:        compiledRules,
+			PolicyConfig: profile.RequestBody.ToFilterOptions(),
 		}
 	}
 	return profiles, nil

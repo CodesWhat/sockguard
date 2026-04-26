@@ -90,6 +90,18 @@ func (c *serveTestCloser) Close() error {
 	return c.err
 }
 
+type serveTestAuditCloser struct {
+	logger *logging.AuditLogger
+	err    error
+}
+
+func (c *serveTestAuditCloser) Close() error {
+	if c.logger != nil {
+		_ = c.logger.Close()
+	}
+	return c.err
+}
+
 type serveTestFileInfo struct {
 	mode os.FileMode
 }
@@ -406,6 +418,23 @@ func TestRunServeErrorPaths(t *testing.T) {
 		}
 	})
 
+	t.Run("audit logger", func(t *testing.T) {
+		deps := newRunServeDeps()
+		cfg := testServeConfig()
+		cfg.Log.Audit.Enabled = true
+		deps.loadConfig = func(string) (*config.Config, error) {
+			return cfg, nil
+		}
+		deps.newAuditLogger = func(format, output string) (*logging.AuditLogger, io.Closer, error) {
+			return nil, nil, errors.New("audit boom")
+		}
+
+		err := runServeWithDeps(newServeCommand(), nil, deps)
+		if err == nil || !strings.Contains(err.Error(), "audit logger: audit boom") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
 	t.Run("validate and close log output", func(t *testing.T) {
 		deps := newRunServeDeps()
 		var errOut strings.Builder
@@ -428,6 +457,44 @@ func TestRunServeErrorPaths(t *testing.T) {
 		}
 	})
 
+	t.Run("close audit log output", func(t *testing.T) {
+		deps := newRunServeDeps()
+		cfg := testServeConfig()
+		cfg.Log.Audit.Enabled = true
+		deps.loadConfig = func(string) (*config.Config, error) {
+			return cfg, nil
+		}
+
+		var errOut strings.Builder
+		cmd := newServeCommand()
+		cmd.SetErr(&errOut)
+
+		deps.newAuditLogger = func(format, output string) (*logging.AuditLogger, io.Closer, error) {
+			auditLogger := logging.NewAuditLogger(io.Discard)
+			return auditLogger, &serveTestAuditCloser{logger: auditLogger, err: errors.New("audit close boom")}, nil
+		}
+		deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+			return &serveTestConn{}, nil
+		}
+		deps.createServeListener = func(*config.Config) (net.Listener, error) {
+			return &serveTestListener{}, nil
+		}
+		deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {
+			errCh <- http.ErrServerClosed
+		}
+		deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
+		deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
+			return nil
+		}
+
+		if err := runServeWithDeps(cmd, nil, deps); err != nil {
+			t.Fatalf("runServeWithDeps() error = %v, want nil", err)
+		}
+		if !strings.Contains(errOut.String(), "failed to close audit log output: audit close boom") {
+			t.Fatalf("expected audit log output close warning, got: %q", errOut.String())
+		}
+	})
+
 	t.Run("audit log pipeline", func(t *testing.T) {
 		deps := newRunServeDeps()
 		cfg := testServeConfig()
@@ -438,7 +505,8 @@ func TestRunServeErrorPaths(t *testing.T) {
 
 		var auditBuf bytes.Buffer
 		deps.newAuditLogger = func(format, output string) (*logging.AuditLogger, io.Closer, error) {
-			return logging.NewAuditLogger(&auditBuf), nil, nil
+			auditLogger := logging.NewAuditLogger(&auditBuf)
+			return auditLogger, auditLogger, nil
 		}
 		deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
 			return &serveTestConn{}, nil
