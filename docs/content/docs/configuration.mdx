@@ -116,7 +116,7 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - `listen.tls.client_ca_file` still defines the issuing trust root. To avoid trusting every cert that CA can mint, optionally narrow the accepted verified client leaf with the selectors described under [mTLS Client Selectors](#mtls-client-selectors) below. Different selector fields are ANDed, while entries inside one field are ORed.
 - Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`. That mode is only for legacy compatibility on a private, trusted network.
 - `POST /containers/create` bodies are inspected by default. Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, and bind mount sources outside `request_body.container_create.allowed_bind_mounts`. Named volumes still work without allowlist entries because they are not host bind mounts.
-- `POST /containers/*/exec` and `POST /exec/*/start` are inspected when `request_body.exec.allowed_commands` is non-empty. Sockguard denies argv vectors outside that allowlist, denies privileged exec unless `allow_privileged: true`, denies root-user exec unless `allow_root_user: true`, and re-checks `POST /exec/*/start` against Docker's stored exec metadata before execution.
+- `POST /containers/*/exec` and `POST /exec/*/start` are inspected when `request_body.exec.allowed_commands` is non-empty. Sockguard denies argv vectors outside that allowlist, denies privileged exec unless `allow_privileged: true`, denies root-user exec unless `allow_root_user: true`, and re-checks `POST /exec/*/start` against Docker's stored exec metadata before execution. Docker exposes exec inspect and exec start as separate API calls, so this start-time check has an unavoidable time-of-check/time-of-use window; keep exec allowlists and client profile assignments narrow.
 - `POST /images/create` is inspected by default. Sockguard blocks `fromSrc` imports unless `request_body.image_pull.allow_imports: true` and only allows Docker Hub official images unless you set `allow_all_registries: true` or list explicit `allowed_registries`.
 - `POST /build` is inspected by default. Sockguard blocks remote contexts, `networkmode=host`, and Dockerfiles that contain `RUN` instructions unless you explicitly allow those behaviors under `request_body.build.*`.
 - `POST /volumes/create` is inspected by default. Sockguard blocks non-local volume drivers and driver options unless you explicitly allow them under `request_body.volume.*`.
@@ -255,12 +255,16 @@ Unlabeled nodes and swarm state are denied on reads once ownership is enabled. T
 Sockguard has two operator-facing logging streams:
 
 - `log.access_log` (default `true`) controls the structured request log written through the normal logger output.
-- `log.audit.enabled` (default `false`) enables a dedicated JSON audit stream with a stable schema: request ID, client request ID, raw and normalized path, decision, `reason_code`, reason, matched rule, selected profile, actor identity, transport identity, ownership context, and final HTTP status.
+- `log.audit.enabled` (default `false`) enables a dedicated JSON audit stream with a stable schema: request ID, client request ID, raw and normalized path, decision, `reason_code`, reason, matched rule, selected profile, flattened actor and transport identity fields, ownership context, and final HTTP status.
+
+Access logs intentionally carry both `path` and `normalized_path`. `path` is the raw client URL path as received, including any Docker API version prefix, percent-encoded separators, or other client-controlled shape; keep it for forensic replay. `normalized_path` is the canonical path after Sockguard's policy normalization and is the field to use for SIEM grouping, alerting, rule dashboards, and allow/deny analysis. Audit events use the same split as `raw_path` and `normalized_path`.
 
 Audit logs use a separate sink from the access logger:
 
 - `log.audit.format`: currently only `json` is accepted.
 - `log.audit.output`: same sink options as the main logger (`stderr`, `stdout`, or `file:/absolute/path`).
+
+Every audit event includes an `ownership` object with `enabled`, `owner`, and `label_key`. When `ownership.owner` is set, that owner identifier appears in every audit event, including requests that do not touch owned resources. Treat it as an operator-visible tenant or workload identifier, not a secret.
 
 Audit events intentionally preserve both the proxy-generated canonical `request_id` and any caller-supplied `client_request_id`. Upstream proxy failures rewrite the audit `reason_code` to bounded terminal values such as `upstream_socket_unreachable` or `upstream_response_rejected_by_policy` so the final outcome is explicit even after a request was policy-allowed.
 

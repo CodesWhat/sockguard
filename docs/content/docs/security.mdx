@@ -42,6 +42,8 @@ Allow or deny specific Docker API endpoint paths using glob patterns. Before mat
 
 `POST /containers/*/exec` and `POST /exec/*/start` can also be inspected now. When `request_body.exec.allowed_commands` is configured, Sockguard denies argv vectors outside that allowlist, denies privileged exec unless explicitly allowed, denies root-user exec unless explicitly allowed, and re-inspects `POST /exec/*/start` against Docker's stored exec metadata before the command runs.
 
+The exec-start re-inspection is necessarily best effort: Docker exposes metadata inspection and exec start as separate API calls, so Sockguard cannot make the check atomic with the eventual start operation. Treat this as a narrow TOCTOU window inherent to Docker's API shape, and prefer tight exec allowlists plus conservative per-client profile assignment for clients that do not need interactive command execution.
+
 `POST /images/create` is inspected by default. Sockguard blocks `fromSrc` imports unless explicitly allowed and constrains pulls to Docker Hub official images unless the operator opts into `allow_all_registries` or an explicit registry allowlist.
 
 `POST /build` is inspected by default. Sockguard blocks remote build contexts, `networkmode=host`, and Dockerfiles containing `RUN` instructions unless those behaviors are explicitly allowed.
@@ -88,9 +90,13 @@ Future read-side visibility / redaction additions still tracked for the next tie
 - Per-resource-type visibility controls for resource families that do not expose Docker label selectors cleanly
 
 ### Layer 8: Structured Access And Audit Logging
-Every request is stamped with a proxy-generated canonical `X-Request-Id` and logged with method, path, decision, matched rule index, selected client profile when present, latency, request ID, and client metadata. If the caller supplied its own request ID, Sockguard preserves it separately as `client_request_id` in logs instead of trusting it as the canonical correlation key.
+Every request is stamped with a proxy-generated canonical `X-Request-Id` and logged with method, raw `path`, `normalized_path`, decision, matched rule index, selected client profile when present, latency, request ID, and client metadata. If the caller supplied its own request ID, Sockguard preserves it separately as `client_request_id` in logs instead of trusting it as the canonical correlation key.
 
-When `log.audit.enabled` is true, Sockguard also emits a dedicated JSON audit event with a stable schema: request ID, client request ID, raw and normalized path, decision, machine-readable `reason_code`, human-readable reason, matched rule, selected profile, actor identity, transport identity, ownership context, and final HTTP status. Upstream reverse-proxy errors overwrite the audit reason code with bounded values such as `upstream_socket_unreachable` or `upstream_response_rejected_by_policy`, so the terminal result remains explicit even after an allow decision has already been made.
+`path` is the client-controlled URL path exactly as received and is retained for forensic replay. Detection logic, SIEM grouping, and policy analysis should use `normalized_path`, which is the canonical path after Sockguard strips Docker API version prefixes, decodes escaped separators, and resolves dot segments before rule evaluation.
+
+When `log.audit.enabled` is true, Sockguard also emits a dedicated JSON audit event with a stable schema: request ID, client request ID, raw and normalized path, decision, machine-readable `reason_code`, human-readable reason, matched rule, selected profile, flattened actor and transport identity fields, ownership context, and final HTTP status. Upstream reverse-proxy errors overwrite the audit reason code with bounded values such as `upstream_socket_unreachable` or `upstream_response_rejected_by_policy`, so the terminal result remains explicit even after an allow decision has already been made.
+
+The audit `ownership` object is emitted on every event. If `ownership.owner` is configured, that owner identifier is repeated in every audit record, not only resource ownership decisions, so it should be a non-secret tenant/workload label suitable for the audit sink.
 
 Prometheus metrics remain planned operator-observability work, but dedicated audit events and explicit deny reason codes are current runtime behavior.
 
