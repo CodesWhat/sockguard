@@ -34,7 +34,7 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "IP/hostname + labels",
-    sockguard: "CIDR + labels + cert (CN/SAN/SPKI pin) + unix peer",
+    sockguard: "CIDR + labels + cert selectors + unix peer",
   },
   {
     feature: "Resource owner labels",
@@ -51,11 +51,11 @@ export const comparisonRows: ComparisonRow[] = [
     sockguard: "Yes (TLS 1.3)",
   },
   {
-    feature: "Response filtering",
+    feature: "Read-side visibility / redaction",
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
-    sockguard: "Yes (visibility + redaction + export guardrail)",
+    sockguard: "Yes (visibility + expanded redaction)",
   },
   {
     feature: "Structured access logs",
@@ -69,7 +69,7 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
-    sockguard: "Roadmap",
+    sockguard: "Yes (JSON schema + reason codes)",
   },
   {
     feature: "YAML config",

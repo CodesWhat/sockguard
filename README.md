@@ -231,10 +231,10 @@ How sockguard stacks up against other Docker socket proxies:
 | Method + path filtering | ✅ | ✅ | ✅ (regex) | ✅ |
 | Granular container write ops | ❌ | Partial (`ALLOW_*`) | Via regex | ✅ |
 | Request body inspection | ❌ | ❌ | Partial (bind-mount source restrictions) | ✅ (`create`, `exec`, `volume`, `secret`, `config`, `service`, `swarm`, `plugin`, `pull`, `build`) |
-| Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ✅ (CIDR + labels + SAN/SPIFFE cert selectors + unix peer profiles) |
+| Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ✅ (CIDR + labels + cert selectors + unix peer profiles) |
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | ✅ (visibility + expanded redaction) |
 | Structured access logs | ❌ | ❌ | ✅ (JSON option) | ✅ |
-| Dedicated audit log schema | ❌ | ❌ | ❌ | 🕒 roadmap |
+| Dedicated audit log schema | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
 | YAML config | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ✅ |
 
@@ -436,7 +436,7 @@ Set `ownership.owner` to turn on per-proxy resource ownership isolation. Sockgua
 
 `response.deny_verbosity` defaults to `minimal` so `403` responses carry only a generic deny message and never leak the request method, path, or matched rule reason back to the caller. Set it to `verbose` explicitly during rule authoring if you need to see which rule denied a request — verbose is still useful in dev but should never run in production because it echoes request details in the response body. Even in `verbose` mode, Sockguard redacts denied `/secrets/*` and `/swarm/unlockkey` paths before returning them.
 
-`response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` all default to `true`. Sockguard now redacts workload env arrays across container/service/task/plugin reads, redacts host-path-bearing mount and device metadata across container/volume/task/service/plugin/system-usage reads, strips container/network/swarm/node topology from container/network/service/task/node/swarm/info/system-usage responses, and redacts higher-risk payload material such as config `Spec.Data`, service secret/config references, plugin env values, swarm join/unlock material, and swarm/node TLS metadata. Disable those toggles only for trusted admin clients that genuinely need raw Docker metadata.
+`response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` all default to `true`. Sockguard now redacts workload env arrays across container/service/task/plugin reads, redacts host-path-bearing mount and device metadata across container/volume/task/service/plugin/system-usage reads, strips container/network/swarm/node topology from container/network/service/task/node/swarm/info/system-usage responses, and redacts higher-risk payload material such as config `Spec.Data`, service secret/config references, swarm join/unlock material, and swarm/node TLS metadata. Disable those toggles only for trusted admin clients that genuinely need raw Docker metadata.
 
 Preset configs included for [drydock](app/configs/drydock.yaml), [Traefik](app/configs/traefik.yaml), [Portainer](app/configs/portainer.yaml), [Watchtower](app/configs/watchtower.yaml), [Homepage](app/configs/homepage.yaml), [Homarr](app/configs/homarr.yaml), [Diun](app/configs/diun.yaml), [Autoheal](app/configs/autoheal.yaml), and [read-only](app/configs/readonly.yaml).
 
@@ -490,7 +490,7 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
 | **0.2.0** | mTLS for remote TCP, TLS 1.3 minimum, loopback-by-default listener, body-blind write guardrail | ✅ shipped |
 | **0.3.0** | Body inspection for create/exec/service/swarm/pull/build, owner labels, per-client profiles, visibility/redaction | ✅ shipped |
 | **0.4.0** | Hardening pass — canonical percent-decoded path matching, mTLS client admission selectors (CN/DNS/IP/URI SAN + SHA-256 SPKI pins), 413 on oversize bounded bodies, multipart plugin-create inspection, and profile-resolution memoization | ✅ shipped |
-| **0.5.0** | Operator auditability — Prometheus metrics, dedicated audit log schema, and explicit deny reason codes | 🕒 planned |
+| **0.5.0** | Feature completion pass — SPKI profile selectors, remaining body-sensitive write inspectors, broader response-side controls, and Prometheus metrics | 🕒 planned |
 | **0.6.0** | Secure container enforcement — readonly rootfs, non-root/no-new-privilege rails, resource limits, approved seccomp/AppArmor/SELinux, restricted CapAdd/Devices, image signatures plus attestations | 🕒 planned |
 | **0.7.0** | Abuse controls — per-client rate limits, burst budgets, concurrency caps, expensive-endpoint quotas | 🕒 planned |
 | **0.8.0** | Dynamic policy delivery — signed bundles, long-poll/hot reload, audit/warn/enforce rollout modes, admin API, policy versioning | 🕒 planned |

@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: Configure sockguard via YAML or environment variables — listeners, TLS, request-body inspection, client profiles, ownership, and structured access logging.
+description: Configure sockguard via YAML or environment variables — listeners, TLS, request-body inspection, client profiles, ownership, and structured access plus audit logging.
 ---
 
 Sockguard supports two configuration methods: YAML config files and environment variables.
@@ -127,7 +127,7 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - Bounded JSON writes (`POST /containers/create`, `/volumes/create`, `/secrets/create`, `/configs/create`) and plugin tar uploads that exceed their per-endpoint byte caps are rejected with `413 Payload Too Large` before the inspector decodes them, so a misbehaving or hostile client cannot tie up the filter or the Docker daemon with oversized payloads.
 - `insecure_allow_body_blind_writes` is now reserved for the body-bearing writes Sockguard still cannot safely constrain, chiefly arbitrary exec without an `allowed_commands` allowlist plus other uninspected paths such as network create/connect/disconnect, image load, container update/archive, swarm unlock, and node update.
 - `insecure_allow_read_exfiltration` stays `false` by default and must be set explicitly before broad read rules can expose raw archive/export or stream-style endpoints such as `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, or `GET /images/*/get`.
-- `response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` default to `true`. Sockguard redacts workload env arrays across container/service/task/plugin reads, redacts host-path-bearing mount and device metadata across container/volume/task/service/plugin/system-usage reads, strips container/network/swarm/node topology from container/network/service/task/node/swarm/info/system-usage responses, and redacts higher-risk payload material such as config `Spec.Data`, service secret/config references, plugin env values, swarm join/unlock material, and swarm/node TLS metadata. Disable them only for trusted admin clients that truly need Docker's raw metadata.
+- `response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` default to `true`. Sockguard redacts workload env arrays across container/service/task/plugin reads, redacts host-path-bearing mount and device metadata across container/volume/task/service/plugin/system-usage reads, strips container/network/swarm/node topology from container/network/service/task/node/swarm/info/system-usage responses, and redacts higher-risk payload material such as config `Spec.Data`, service secret/config references, swarm join/unlock material, and swarm/node TLS metadata. Disable them only for trusted admin clients that truly need Docker's raw metadata.
 
 ## mTLS Client Selectors
 
@@ -250,6 +250,20 @@ Unlabeled nodes and swarm state are denied on reads once ownership is enabled. T
 
 `allow_unowned_images` defaults to `true` so shared base images can still be pulled and inspected without relabeling. Set it to `false` in tighter multi-tenant setups.
 
+## Logging And Audit
+
+Sockguard has two operator-facing logging streams:
+
+- `log.access_log` (default `true`) controls the structured request log written through the normal logger output.
+- `log.audit.enabled` (default `false`) enables a dedicated JSON audit stream with a stable schema: request ID, client request ID, raw and normalized path, decision, `reason_code`, reason, matched rule, selected profile, actor identity, transport identity, ownership context, and final HTTP status.
+
+Audit logs use a separate sink from the access logger:
+
+- `log.audit.format`: currently only `json` is accepted.
+- `log.audit.output`: same sink options as the main logger (`stderr`, `stdout`, or `file:/absolute/path`).
+
+Audit events intentionally preserve both the proxy-generated canonical `request_id` and any caller-supplied `client_request_id`. Upstream proxy failures rewrite the audit `reason_code` to bounded terminal values such as `upstream_socket_unreachable` or `upstream_response_rejected_by_policy` so the final outcome is explicit even after a request was policy-allowed.
+
 ## Rule Matching
 
 Rules are evaluated in order. **First match wins.** If no rule matches, the request is denied.
@@ -285,6 +299,10 @@ SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES=false
 SOCKGUARD_UPSTREAM_SOCKET=/var/run/docker.sock
 SOCKGUARD_LOG_LEVEL=debug
 SOCKGUARD_LOG_FORMAT=json
+SOCKGUARD_LOG_ACCESS_LOG=true
+SOCKGUARD_LOG_AUDIT_ENABLED=true
+SOCKGUARD_LOG_AUDIT_FORMAT=json
+SOCKGUARD_LOG_AUDIT_OUTPUT=stderr
 SOCKGUARD_RESPONSE_DENY_VERBOSITY=minimal
 SOCKGUARD_RESPONSE_REDACT_CONTAINER_ENV=true
 SOCKGUARD_RESPONSE_REDACT_MOUNT_PATHS=true
@@ -315,12 +333,12 @@ SOCKGUARD_OWNERSHIP_ALLOW_UNOWNED_IMAGES=true
 - `minimal` (default): returns only the generic `message`. Never echoes the request method, path, or matched rule reason.
 - `verbose`: returns `message`, `method`, `path` (with `/secrets/*` and `/swarm/unlockkey` paths redacted), and `reason`. Intended for rule authoring and dev work only — never a production default because it can leak request details to denied callers.
 
-`response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` control response filtering on successful Docker read calls:
+`response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` control read-side redaction on successful Docker read calls:
 
 - `redact_container_env` (default `true`): replaces workload env arrays with empty arrays on container, service, task, and plugin reads.
 - `redact_mount_paths` (default `true`): redacts mount and host-device source paths on container, volume, task, service, plugin, and `/system/df` reads.
 - `redact_network_topology` (default `true`): redacts container, network, task, service, node, swarm, `/info`, and `/system/df` topology details such as network IDs, attached addresses, remote managers, and node reachability addresses.
-- `redact_sensitive_data` (default `true`): redacts config payload material, service secret/config references, plugin env values, swarm join/unlock and CA material, and node/swarm TLS metadata.
+- `redact_sensitive_data` (default `true`): redacts config payload material, service secret/config references, swarm join/unlock and CA material, and node/swarm TLS metadata.
 
 ## Tecnativa Compatibility
 

@@ -1,6 +1,6 @@
 ---
 title: Security Model
-description: Sockguard's defense-in-depth model — transport admission, client admission, method/path filtering, request-body inspection, ownership isolation, visibility-controlled reads, and structured access logging.
+description: Sockguard's defense-in-depth model — transport admission, client admission, method/path filtering, request-body inspection, ownership isolation, visibility-controlled reads, and structured access plus audit logging.
 ---
 
 ## Why Socket Proxying Matters
@@ -83,14 +83,16 @@ Sockguard now filters successful Docker read responses and narrows read visibili
 
 These controls are on by default where they are pure redaction because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout.
 
-Future response-filtering additions still tracked for the next tier:
+Future read-side visibility / redaction additions still tracked for the next tier:
 - Name/image pattern visibility controls beyond label selectors
 - Per-resource-type visibility controls for resource families that do not expose Docker label selectors cleanly
 
-### Layer 8: Structured Access Logging And Correlation
-Every request is stamped with a proxy-generated canonical `X-Request-Id` and logged with method, path, decision, matched rule index, selected client profile when present, latency, request ID, and client metadata. If the caller supplied its own request ID, Sockguard preserves it separately as `client_request_id` in logs instead of trusting it as the canonical correlation key. Upstream reverse-proxy errors are correlated with the outer access-log entry by that same canonical request ID.
+### Layer 8: Structured Access And Audit Logging
+Every request is stamped with a proxy-generated canonical `X-Request-Id` and logged with method, path, decision, matched rule index, selected client profile when present, latency, request ID, and client metadata. If the caller supplied its own request ID, Sockguard preserves it separately as `client_request_id` in logs instead of trusting it as the canonical correlation key.
 
-Sockguard does not yet ship a separate audit pipeline. Prometheus metrics, a dedicated audit schema, and explicit deny reason codes remain planned operator-auditability work rather than current runtime behavior.
+When `log.audit.enabled` is true, Sockguard also emits a dedicated JSON audit event with a stable schema: request ID, client request ID, raw and normalized path, decision, machine-readable `reason_code`, human-readable reason, matched rule, selected profile, actor identity, transport identity, ownership context, and final HTTP status. Upstream reverse-proxy errors overwrite the audit reason code with bounded values such as `upstream_socket_unreachable` or `upstream_response_rejected_by_policy`, so the terminal result remains explicit even after an allow decision has already been made.
+
+Prometheus metrics remain planned operator-observability work, but dedicated audit events and explicit deny reason codes are current runtime behavior.
 
 ## Dangerous Docker API Endpoints
 

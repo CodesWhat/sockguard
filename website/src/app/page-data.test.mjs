@@ -43,11 +43,12 @@ test("website comparison rows live in extracted data modules", () => {
 
   const perClientRow = comparisonRows.find((row) => row.feature === "Per-client policies");
   assert.ok(perClientRow);
-  assert.equal(perClientRow.sockguard, "CIDR + labels + cert (CN/SAN/SPKI pin) + unix peer");
+  assert.equal(perClientRow.sockguard, "CIDR + labels + cert selectors + unix peer");
   assert.equal(perClientRow.wollomatic, "IP/hostname + labels");
 
   assert.ok(comparisonRows.find((row) => row.feature === "Resource owner labels"));
   assert.ok(comparisonRows.find((row) => row.feature === "Remote TCP mTLS"));
+  assert.ok(comparisonRows.find((row) => row.feature === "Read-side visibility / redaction"));
   assert.ok(comparisonRows.find((row) => row.feature === "Structured access logs"));
   assert.ok(comparisonRows.find((row) => row.feature === "Dedicated audit log schema"));
 
