@@ -221,12 +221,10 @@ func TestMatchClientCertificateProfile_NilFingerprintCert(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.TLS = &tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{
-			// Raw is nil so fingerprinting is skipped.
-			{Subject: pkix.Name{CommonName: "test-cn"}},
-		},
-	}
+	req.TLS = verifiedClientTLS(&x509.Certificate{
+		// Raw is nil so fingerprinting is skipped.
+		Subject: pkix.Name{CommonName: "test-cn"},
+	})
 
 	profile, ok := matchClientCertificateProfile(req, compiled.clientCertProfiles, compiled.clientCertProfileIndex)
 	if !ok || profile != "p" {
@@ -420,11 +418,10 @@ func TestMatchClientCertificateProfile_CachedMiss(t *testing.T) {
 
 	// First call with a cert that has a fingerprint but doesn't match — stores miss in index.
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.TLS = &tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{
-			{Raw: []byte("cert-bytes"), Subject: pkix.Name{CommonName: "other-cn"}},
-		},
-	}
+	req.TLS = verifiedClientTLS(&x509.Certificate{
+		Raw:     []byte("cert-bytes"),
+		Subject: pkix.Name{CommonName: "other-cn"},
+	})
 	profile, ok := matchClientCertificateProfile(req, compiled.clientCertProfiles, compiled.clientCertProfileIndex)
 	if ok || profile != "" {
 		t.Fatalf("matchClientCertificateProfile(miss) = (%q, %v), want (\"\", false)", profile, ok)

@@ -25,12 +25,12 @@ import (
 const DefaultLabelPrefix = "com.sockguard.allow."
 
 const (
-	reasonCodeClientACLMisconfigured        = "client_acl_misconfigured"
-	reasonCodeClientIPNotAllowed            = "client_ip_not_allowed"
-	reasonCodeClientIdentityLookupFailed    = "client_identity_lookup_failed"
-	reasonCodeClientLabelACLLookupFailed    = "client_label_acl_lookup_failed"
-	reasonCodeClientLabelACLEvalFailed      = "client_label_acl_evaluation_failed"
-	reasonCodeClientLabelPolicyDenied       = "client_label_policy_denied_request"
+	reasonCodeClientACLMisconfigured     = "client_acl_misconfigured"
+	reasonCodeClientIPNotAllowed         = "client_ip_not_allowed"
+	reasonCodeClientIdentityLookupFailed = "client_identity_lookup_failed"
+	reasonCodeClientLabelACLLookupFailed = "client_label_acl_lookup_failed"
+	reasonCodeClientLabelACLEvalFailed   = "client_label_acl_evaluation_failed"
+	reasonCodeClientLabelPolicyDenied    = "client_label_policy_denied_request"
 )
 
 // Options configures client admission and per-client container-label ACLs.
@@ -193,13 +193,13 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 	compiled, err := compileOptions(opts)
 	if err != nil {
 		logger.Error("invalid client ACL config", "error", err)
-			return func(http.Handler) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					logging.SetDeniedWithCode(w, r, reasonCodeClientACLMisconfigured, "client ACL misconfigured", filter.NormalizePath)
-					_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "client ACL misconfigured"})
-				})
-			}
+		return func(http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				logging.SetDeniedWithCode(w, r, reasonCodeClientACLMisconfigured, "client ACL misconfigured", filter.NormalizePath)
+				_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "client ACL misconfigured"})
+			})
 		}
+	}
 
 	if len(compiled.allowedCIDRs) == 0 && !compiled.labelsOn && !compiled.hasProfileSelection() {
 		return func(next http.Handler) http.Handler { return next }
@@ -515,9 +515,6 @@ func clientCertificateLeaf(r *http.Request) *x509.Certificate {
 	}
 	if len(r.TLS.VerifiedChains) > 0 && len(r.TLS.VerifiedChains[0]) > 0 {
 		return r.TLS.VerifiedChains[0][0]
-	}
-	if len(r.TLS.PeerCertificates) > 0 {
-		return r.TLS.PeerCertificates[0]
 	}
 	return nil
 }

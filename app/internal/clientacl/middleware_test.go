@@ -43,6 +43,13 @@ func (f fakeResolver) deps() aclDeps {
 	}
 }
 
+func verifiedClientTLS(cert *x509.Certificate) *tls.ConnectionState {
+	return &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+		VerifiedChains:   [][]*x509.Certificate{{cert}},
+	}
+}
+
 func TestMiddlewareDeniesRemoteIPOutsideAllowedCIDRs(t *testing.T) {
 	handler := middlewareWithDeps(testLogger(), Options{
 		AllowedCIDRs: []string{"10.0.0.0/8"},
@@ -113,6 +120,30 @@ func TestMiddlewareAssignsProfileFromClientCertificate(t *testing.T) {
 		profile, ok := RequestProfile(r)
 		if !ok || profile != "portainer" {
 			t.Fatalf("RequestProfile() = (%q, %v), want (portainer, true)", profile, ok)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.TLS = verifiedClientTLS(&x509.Certificate{Subject: pkix.Name{CommonName: "portainer-admin"}})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareIgnoresUnverifiedPeerCertificateForProfileSelection(t *testing.T) {
+	handler := middlewareWithDeps(testLogger(), Options{
+		Profiles: ProfileOptions{
+			ClientCertificates: []ClientCertificateProfileAssignment{
+				{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
+			},
+		},
+	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if profile, ok := RequestProfile(r); ok {
+			t.Fatalf("RequestProfile() = (%q, true), want no profile from unverified peer certificate", profile)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -280,9 +311,7 @@ func TestMiddlewareAssignsProfileFromClientCertificateExtendedSelectors(t *testi
 			}))
 
 			req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
-			req.TLS = &tls.ConnectionState{
-				PeerCertificates: []*x509.Certificate{tt.cert},
-			}
+			req.TLS = verifiedClientTLS(tt.cert)
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
@@ -403,9 +432,7 @@ func TestMatchClientCertificateProfileSelectorSemantics(t *testing.T) {
 			}
 
 			req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
-			req.TLS = &tls.ConnectionState{
-				PeerCertificates: []*x509.Certificate{tt.cert},
-			}
+			req.TLS = verifiedClientTLS(tt.cert)
 
 			profile, ok := matchClientCertificateProfile(req, compiled.clientCertProfiles, compiled.clientCertProfileIndex)
 			if ok != tt.wantOK {
@@ -443,14 +470,10 @@ func TestProfileLookupIndexesCacheSourceIPAndClientCertificateMatches(t *testing
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
-	req.TLS = &tls.ConnectionState{
-		PeerCertificates: []*x509.Certificate{
-			{
-				Raw:     []byte("client-cert-raw"),
-				Subject: pkix.Name{CommonName: "portainer-admin"},
-			},
-		},
-	}
+	req.TLS = verifiedClientTLS(&x509.Certificate{
+		Raw:     []byte("client-cert-raw"),
+		Subject: pkix.Name{CommonName: "portainer-admin"},
+	})
 
 	profile, ok = matchClientCertificateProfile(req, compiled.clientCertProfiles, compiled.clientCertProfileIndex)
 	if !ok || profile != "portainer" {
@@ -488,9 +511,7 @@ func TestSelectProfileReturnsMatchStrategy(t *testing.T) {
 			},
 			request: func() *http.Request {
 				req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
-				req.TLS = &tls.ConnectionState{
-					PeerCertificates: []*x509.Certificate{{Subject: pkix.Name{CommonName: "portainer-admin"}}},
-				}
+				req.TLS = verifiedClientTLS(&x509.Certificate{Subject: pkix.Name{CommonName: "portainer-admin"}})
 				return req
 			}(),
 			wantProfile:  "portainer",
