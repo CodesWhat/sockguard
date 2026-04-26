@@ -228,6 +228,23 @@ func TestValidateRejectsInvalidAuditLogFormat(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidAuditLogOutput(t *testing.T) {
+	cfg := Defaults()
+	cfg.Log.Audit.Enabled = true
+	cfg.Log.Audit.Output = "../audit.log"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid audit log output")
+	}
+	if !strings.Contains(err.Error(), "log.audit.output") {
+		t.Fatalf("error should mention log.audit.output, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "local file path") {
+		t.Fatalf("error should mention local path validation, got: %v", err)
+	}
+}
+
 func TestValidateEmptyRules(t *testing.T) {
 	cfg := Defaults()
 	cfg.Rules = nil
