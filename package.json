@@ -20,13 +20,7 @@
     "turbo": "^2.9.6"
   },
   "overrides": {
-    "postcss": "$postcss",
-    "next": {
-      "postcss": "$postcss"
-    }
-  },
-  "dependencies": {
-    "postcss": "^8.5.9"
+    "postcss": "^8.5.10"
   },
   "packageManager": "npm@11.9.0",
   "engines": {
