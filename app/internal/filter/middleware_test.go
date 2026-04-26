@@ -242,35 +242,50 @@ func TestMiddlewareDeniedMinimalVerbosity(t *testing.T) {
 }
 
 func TestMiddlewareRejectsOversizedBoundedRequestBodiesWith413(t *testing.T) {
-	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/volumes/create", Action: ActionAllow, Index: 0})
-	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
-	rules := []*CompiledRule{r1, r2}
-
-	reached := false
-	handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		reached = true
-	}))
-
-	req := httptest.NewRequest(http.MethodPost, "/volumes/create", bytes.NewReader(bytes.Repeat([]byte{'x'}, maxVolumeBodyBytes+1)))
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if reached {
-		t.Fatal("expected oversized request to NOT reach inner handler")
-	}
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+	tests := []struct {
+		name       string
+		path       string
+		limit      int
+		wantPrefix string
+	}{
+		{name: "container create", path: "/containers/create", limit: maxContainerCreateBodyBytes, wantPrefix: "container create denied: request body exceeds"},
+		{name: "service create", path: "/services/create", limit: maxServiceBodyBytes, wantPrefix: "service denied: request body exceeds"},
+		{name: "volume create", path: "/volumes/create", limit: maxVolumeBodyBytes, wantPrefix: "volume create denied: request body exceeds"},
 	}
 
-	var body DenialResponse
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if body.Message != "request denied by sockguard policy" {
-		t.Fatalf("message = %q, want %q", body.Message, "request denied by sockguard policy")
-	}
-	if !strings.HasPrefix(body.Reason, "volume create denied: request body exceeds") {
-		t.Fatalf("reason = %q, want oversize denial", body.Reason)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			allowRule, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: tt.path, Action: ActionAllow, Index: 0})
+			denyRule, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+			rules := []*CompiledRule{allowRule, denyRule}
+
+			reached := false
+			handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				reached = true
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, tt.path, bytes.NewReader(bytes.Repeat([]byte{'x'}, tt.limit+1)))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if reached {
+				t.Fatal("expected oversized request to NOT reach inner handler")
+			}
+			if rec.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
+			}
+
+			var body DenialResponse
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if body.Message != "request denied by sockguard policy" {
+				t.Fatalf("message = %q, want %q", body.Message, "request denied by sockguard policy")
+			}
+			if !strings.HasPrefix(body.Reason, tt.wantPrefix) {
+				t.Fatalf("reason = %q, want prefix %q", body.Reason, tt.wantPrefix)
+			}
+		})
 	}
 }
 
@@ -315,6 +330,69 @@ func TestInspectAllowedRequestPrefersHighestSeverityMatch(t *testing.T) {
 	}
 	if got, want := strings.Join(called, ","), "critical"; got != want {
 		t.Fatalf("called = %q, want %q", got, want)
+	}
+}
+
+func TestInspectAllowedRequestNoMatchAllocatesNothing(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	neverMatches := func(*http.Request, string) bool { return false }
+	policy := runtimePolicy{
+		inspectPolicies: []requestInspectPolicy{
+			{matches: neverMatches, severity: inspectSeverityMedium},
+			{matches: neverMatches, severity: inspectSeverityHigh},
+			{matches: neverMatches, severity: inspectSeverityCritical},
+		},
+	}
+
+	allocs := testing.AllocsPerRun(1000, func() {
+		reason, reasonCode, status := policy.inspectAllowedRequest(nil, req, "/containers/json")
+		if reason != "" || reasonCode != "" || status != 0 {
+			t.Fatalf("inspectAllowedRequest() = (%q, %q, %d), want empty result", reason, reasonCode, status)
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("inspectAllowedRequest() allocations = %.0f, want 0", allocs)
+	}
+}
+
+func TestRuleDecisionReasonCode(t *testing.T) {
+	tests := []struct {
+		name   string
+		action Action
+		reason string
+		want   string
+	}{
+		{name: "allow", action: ActionAllow, want: reasonCodeMatchedAllowRule},
+		{name: "deny no matching allow rule", action: ActionDeny, reason: "no matching allow rule", want: reasonCodeNoMatchingAllowRule},
+		{name: "deny matched deny rule", action: ActionDeny, reason: "deny all", want: reasonCodeMatchedDenyRule},
+		{name: "unknown action", action: Action("audit"), want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ruleDecisionReasonCode(tt.action, tt.reason); got != tt.want {
+				t.Fatalf("ruleDecisionReasonCode(%q, %q) = %q, want %q", tt.action, tt.reason, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRequestRejectionReasonCode(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{name: "request body too large", status: http.StatusRequestEntityTooLarge, want: reasonCodeRequestBodyTooLarge},
+		{name: "request body policy denied", status: http.StatusForbidden, want: reasonCodeRequestBodyPolicyDenied},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := requestRejectionReasonCode(tt.status); got != tt.want {
+				t.Fatalf("requestRejectionReasonCode(%d) = %q, want %q", tt.status, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -939,10 +1017,7 @@ func TestMiddlewareDeniesWhenExecInspectionFails(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", nil)
-	req.Body = &erroringReadCloser{
-		Reader:   strings.NewReader(`{}`),
-		closeErr: errors.New("close failed"),
-	}
+	req.Body = &readErrorReadCloser{readErr: errors.New("read failed")}
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -1087,66 +1162,6 @@ func TestMiddlewareWrapperDenies(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-}
-
-// TestDenyWithReasonWritesMeta verifies denyWithReason populates RequestMeta.
-func TestDenyWithReasonWritesMeta(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	meta := &logging.RequestMeta{}
-	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
-	req = req.WithContext(logging.WithMeta(req.Context(), meta))
-	rec := httptest.NewRecorder()
-
-	denyWithReason(rec, req, logger, "test denial", DenyResponseVerbosityMinimal)
-
-	if meta.Decision != "deny" {
-		t.Errorf("meta.Decision = %q, want deny", meta.Decision)
-	}
-	if meta.Reason != "test denial" {
-		t.Errorf("meta.Reason = %q, want %q", meta.Reason, "test denial")
-	}
-	if meta.NormPath != "/containers/json" {
-		t.Errorf("meta.NormPath = %q, want /containers/json", meta.NormPath)
-	}
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
-	}
-}
-
-// TestDenyWithReasonWithPresetNormPath verifies denyWithReason does not
-// overwrite an already-set NormPath on the meta.
-func TestDenyWithReasonWithPresetNormPath(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	meta := &logging.RequestMeta{NormPath: "/already/set"}
-	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
-	req = req.WithContext(logging.WithMeta(req.Context(), meta))
-	rec := httptest.NewRecorder()
-
-	denyWithReason(rec, req, logger, "profile not found", DenyResponseVerbosityMinimal)
-
-	// NormPath was already set, so denyWithReason should NOT overwrite it.
-	if meta.NormPath != "/already/set" {
-		t.Errorf("meta.NormPath = %q, want /already/set", meta.NormPath)
-	}
-}
-
-// TestDenyWithReasonLogsEncodeError covers the error-logging branch when
-// the response writer fails to write the JSON denial body.
-func TestDenyWithReasonLogsEncodeError(t *testing.T) {
-	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError}))
-
-	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
-	w := &failingResponseWriter{}
-	denyWithReason(w, req, logger, "some reason", DenyResponseVerbosityVerbose)
-
-	if !strings.Contains(logBuf.String(), "failed to encode denial response") {
-		t.Errorf("expected encode-error log, got %q", logBuf.String())
 	}
 }
 

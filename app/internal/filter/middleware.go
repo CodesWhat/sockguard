@@ -358,7 +358,8 @@ func matchesPluginInspection(r *http.Request, normalizedPath string) bool {
 
 func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int) {
 	bestSeverity := inspectSeverity(-1)
-	matchingPolicies := make([]requestInspectPolicy, 0, len(p.inspectPolicies))
+	var matchingPolicyBuf [11]requestInspectPolicy
+	matchingPolicies := matchingPolicyBuf[:0]
 	for _, policy := range p.inspectPolicies {
 		if policy.matches != nil && !policy.matches(r, normalizedPath) {
 			continue
@@ -386,10 +387,6 @@ func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Reques
 		}
 	}
 	return "", "", 0
-}
-
-func denyWithReason(w http.ResponseWriter, r *http.Request, logger *slog.Logger, reason string, verbosity DenyResponseVerbosity) {
-	denyWithReasonCode(w, r, logger, "", reason, verbosity)
 }
 
 func denyWithReasonCode(w http.ResponseWriter, r *http.Request, logger *slog.Logger, reasonCode, reason string, verbosity DenyResponseVerbosity) {
