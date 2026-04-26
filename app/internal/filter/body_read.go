@@ -23,7 +23,8 @@ func isBodyTooLargeError(err error) bool {
 
 // readBoundedBody reads up to max+1 bytes, rejecting oversized payloads before
 // the request can be forwarded while still restoring safe-sized bodies for
-// downstream use.
+// downstream use. Once the body has been successfully buffered, Close errors
+// are ignored because forwarding can safely continue from the restored copy.
 func readBoundedBody(r *http.Request, max int64) ([]byte, error) {
 	if r == nil || r.Body == nil {
 		return nil, nil
@@ -36,9 +37,7 @@ func readBoundedBody(r *http.Request, max int64) ([]byte, error) {
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, max+1))
-	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
+	_ = r.Body.Close()
 	if err != nil {
 		return nil, err
 	}

@@ -1,9 +1,7 @@
 package filter
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"slices"
@@ -72,19 +70,13 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 		return "", nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxServiceBodyBytes+1))
-	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
+	body, err := readBoundedBody(r, maxServiceBodyBytes)
 	if err != nil {
+		if isBodyTooLargeError(err) {
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("service denied: request body exceeds %d byte limit", maxServiceBodyBytes))
+		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
-	if int64(len(body)) > maxServiceBodyBytes {
-		return fmt.Sprintf("service denied: request body exceeds %d byte limit", maxServiceBodyBytes), nil
-	}
-
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
 
 	if len(body) == 0 {
 		return "", nil
@@ -111,7 +103,7 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 			continue
 		}
 		source, ok := normalizeContainerCreateBindMount(mount.Source)
-		if !ok || p.bindMountAllowed(source) {
+		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
 		return fmt.Sprintf("service denied: bind mount source %q is not allowlisted", source), nil
@@ -122,15 +114,6 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 	}
 
 	return "", nil
-}
-
-func (p servicePolicy) bindMountAllowed(source string) bool {
-	for _, allowed := range p.allowedBindMounts {
-		if allowed == "/" || source == allowed || strings.HasPrefix(source, allowed+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 func isServiceWritePath(normalizedPath string) bool {

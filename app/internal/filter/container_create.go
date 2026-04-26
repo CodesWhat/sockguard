@@ -1,10 +1,8 @@
 package filter
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"path"
@@ -70,22 +68,17 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if r == nil || r.Method != http.MethodPost || normalizedPath != "/containers/create" || r.Body == nil {
 		return "", nil
 	}
+	if p.allowsAllContainerCreateBodies() {
+		return "", nil
+	}
 
-	defer func() { _ = r.Body.Close() }()
-
-	// Read one byte past the limit so we can distinguish an at-limit payload
-	// from an over-limit one without giving the client room to OOM the proxy.
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxContainerCreateBodyBytes+1))
+	body, err := readBoundedBody(r, maxContainerCreateBodyBytes)
 	if err != nil {
+		if isBodyTooLargeError(err) {
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("container create denied: request body exceeds %d byte limit", maxContainerCreateBodyBytes))
+		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
-
-	if int64(len(body)) > maxContainerCreateBodyBytes {
-		return fmt.Sprintf("container create denied: request body exceeds %d byte limit", maxContainerCreateBodyBytes), nil
-	}
-
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
 
 	if len(body) == 0 {
 		return "", nil
@@ -114,10 +107,14 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	return "", nil
 }
 
+func (p containerCreatePolicy) allowsAllContainerCreateBodies() bool {
+	return p.allowPrivileged && p.allowHostNetwork && bindPathAllowed("/", p.allowedBindMounts)
+}
+
 func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHostConfig) string {
 	for _, bind := range hostConfig.Binds {
 		source, ok := extractAndValidateBindSource(bind, containerCreateMount{})
-		if !ok || p.bindMountAllowed(source) {
+		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
 		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
@@ -125,7 +122,7 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 
 	for _, mount := range hostConfig.Mounts {
 		source, ok := extractAndValidateBindSource("", mount)
-		if !ok || p.bindMountAllowed(source) {
+		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
 		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
@@ -134,8 +131,8 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 	return ""
 }
 
-func (p containerCreatePolicy) bindMountAllowed(source string) bool {
-	for _, allowed := range p.allowedBindMounts {
+func bindPathAllowed(source string, allowedPaths []string) bool {
+	for _, allowed := range allowedPaths {
 		if allowed == "/" || source == allowed || strings.HasPrefix(source, allowed+"/") {
 			return true
 		}

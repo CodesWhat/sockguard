@@ -3,7 +3,6 @@ package filter
 import (
 	"archive/tar"
 	"bufio"
-	"bytes"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -146,19 +145,13 @@ func (p pluginPolicy) inspectPrivileges(logger *slog.Logger, r *http.Request, su
 		return "", nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxPluginBodyBytes+1))
-	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
+	body, err := readBoundedBody(r, maxPluginBodyBytes)
 	if err != nil {
+		if isBodyTooLargeError(err) {
+			return fmt.Sprintf("%s denied: request body exceeds %d byte limit", subject, maxPluginBodyBytes), nil
+		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
-	if int64(len(body)) > maxPluginBodyBytes {
-		return fmt.Sprintf("%s denied: request body exceeds %d byte limit", subject, maxPluginBodyBytes), nil
-	}
-
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
 
 	if len(body) == 0 {
 		return "", nil
@@ -180,19 +173,13 @@ func (p pluginPolicy) inspectPluginSet(logger *slog.Logger, r *http.Request) (st
 		return "", nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxPluginBodyBytes+1))
-	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
+	body, err := readBoundedBody(r, maxPluginBodyBytes)
 	if err != nil {
+		if isBodyTooLargeError(err) {
+			return fmt.Sprintf("plugin set denied: request body exceeds %d byte limit", maxPluginBodyBytes), nil
+		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
-	if int64(len(body)) > maxPluginBodyBytes {
-		return fmt.Sprintf("plugin set denied: request body exceeds %d byte limit", maxPluginBodyBytes), nil
-	}
-
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
 
 	if len(body) == 0 {
 		return "", nil
@@ -214,7 +201,7 @@ func (p pluginPolicy) inspectPluginSet(logger *slog.Logger, r *http.Request) (st
 		if kind, normalized, matched := parsePluginSetting(key, value); matched {
 			switch kind {
 			case pluginSettingMount:
-				if !p.bindMountAllowed(normalized) {
+				if !bindPathAllowed(normalized, p.allowedBindMounts) {
 					return fmt.Sprintf("plugin set denied: bind mount source %q is not allowlisted", normalized), nil
 				}
 			case pluginSettingDevice:
@@ -349,7 +336,7 @@ func (p pluginPolicy) denyBindMounts(propagatedMount string, mounts []struct {
 }) string {
 	if propagatedMount != "" {
 		source, ok := normalizeContainerCreateBindMount(propagatedMount)
-		if !ok || !p.bindMountAllowed(source) {
+		if !ok || !bindPathAllowed(source, p.allowedBindMounts) {
 			if ok {
 				return fmt.Sprintf("plugin create denied: bind mount source %q is not allowlisted", source)
 			}
@@ -358,7 +345,7 @@ func (p pluginPolicy) denyBindMounts(propagatedMount string, mounts []struct {
 
 	for _, mount := range mounts {
 		source, ok := normalizeContainerCreateBindMount(mount.Source)
-		if !ok || p.bindMountAllowed(source) {
+		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
 		return fmt.Sprintf("plugin create denied: bind mount source %q is not allowlisted", source)
@@ -370,7 +357,7 @@ func (p pluginPolicy) denyBindMounts(propagatedMount string, mounts []struct {
 func (p pluginPolicy) denyBindMountValues(subject string, values []string) string {
 	for _, value := range values {
 		source, ok := normalizeContainerCreateBindMount(value)
-		if !ok || p.bindMountAllowed(source) {
+		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
 		return fmt.Sprintf("%s denied: bind mount source %q is not allowlisted", subject, source)
@@ -400,15 +387,6 @@ func (p pluginPolicy) denyCapabilities(capabilities []string) string {
 		return fmt.Sprintf("plugin create denied: capability %q is not allowlisted", normalized)
 	}
 	return ""
-}
-
-func (p pluginPolicy) bindMountAllowed(source string) bool {
-	for _, allowed := range p.allowedBindMounts {
-		if allowed == "/" || source == allowed || strings.HasPrefix(source, allowed+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 func (p pluginPolicy) deviceAllowed(devicePath string) bool {

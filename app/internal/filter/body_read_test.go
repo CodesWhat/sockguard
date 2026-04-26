@@ -2,9 +2,11 @@ package filter
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -61,6 +63,28 @@ func TestReadBoundedBodyContentLengthFastPathCloseError(t *testing.T) {
 	}
 }
 
+func TestReadBoundedBodyIgnoresCloseErrorAfterSuccessfulRead(t *testing.T) {
+	payload := []byte(`{"Name":"cache"}`)
+	req := httptest.NewRequest(http.MethodPost, "/volumes/create", nil)
+	req.Body = &erroringReadCloser{Reader: bytes.NewReader(payload), closeErr: io.ErrClosedPipe}
+
+	body, err := readBoundedBody(req, int64(len(payload)))
+	if err != nil {
+		t.Fatalf("readBoundedBody() error = %v, want nil", err)
+	}
+	if !bytes.Equal(body, payload) {
+		t.Fatalf("readBoundedBody() body = %q, want %q", string(body), string(payload))
+	}
+
+	resetBody, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if !bytes.Equal(resetBody, payload) {
+		t.Fatalf("reset body = %q, want %q", string(resetBody), string(payload))
+	}
+}
+
 func TestReadBoundedBodyRejectsWhenContentLengthExceedsMax(t *testing.T) {
 	// Exercises the ContentLength fast-path branch (r.ContentLength > max).
 	const maxBodyBytes = 4
@@ -73,6 +97,102 @@ func TestReadBoundedBodyRejectsWhenContentLengthExceedsMax(t *testing.T) {
 	}
 	if !isBodyTooLargeError(err) {
 		t.Fatalf("readBoundedBody() error = %v, want body-too-large error", err)
+	}
+}
+
+func TestInspectorsUseBoundedBodyContentLengthFastPath(t *testing.T) {
+	readErr := errors.New("body read should not happen")
+
+	tests := []struct {
+		name       string
+		path       string
+		max        int64
+		inspect    func(*http.Request) (string, error)
+		wantPrefix string
+		wantStatus int
+	}{
+		{
+			name: "exec create",
+			path: "/containers/abc/exec",
+			max:  maxExecBodyBytes,
+			inspect: func(req *http.Request) (string, error) {
+				return newExecPolicy(ExecOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
+			},
+			wantPrefix: "exec denied: request body exceeds",
+		},
+		{
+			name: "container create",
+			path: "/containers/create",
+			max:  maxContainerCreateBodyBytes,
+			inspect: func(req *http.Request) (string, error) {
+				return newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
+			},
+			wantPrefix: "container create denied: request body exceeds",
+			wantStatus: http.StatusRequestEntityTooLarge,
+		},
+		{
+			name: "plugin pull privileges",
+			path: "/plugins/pull",
+			max:  maxPluginBodyBytes,
+			inspect: func(req *http.Request) (string, error) {
+				return newPluginPolicy(PluginOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
+			},
+			wantPrefix: "plugin pull denied: request body exceeds",
+		},
+		{
+			name: "plugin set",
+			path: "/plugins/acme/set",
+			max:  maxPluginBodyBytes,
+			inspect: func(req *http.Request) (string, error) {
+				return newPluginPolicy(PluginOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
+			},
+			wantPrefix: "plugin set denied: request body exceeds",
+		},
+		{
+			name: "service create",
+			path: "/services/create",
+			max:  maxServiceBodyBytes,
+			inspect: func(req *http.Request) (string, error) {
+				return newServicePolicy(ServiceOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
+			},
+			wantPrefix: "service denied: request body exceeds",
+			wantStatus: http.StatusRequestEntityTooLarge,
+		},
+		{
+			name: "swarm join",
+			path: "/swarm/join",
+			max:  maxSwarmBodyBytes,
+			inspect: func(req *http.Request) (string, error) {
+				return newSwarmPolicy(SwarmOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
+			},
+			wantPrefix: "swarm join denied: request body exceeds",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, tt.path, nil)
+			req.Body = &readErrorReadCloser{readErr: readErr}
+			req.ContentLength = tt.max + 1
+
+			reason, err := tt.inspect(req)
+			if tt.wantStatus != 0 {
+				rejection, ok := requestRejectionFromError(err)
+				if !ok {
+					t.Fatalf("inspect() error = %v, want request rejection", err)
+				}
+				if rejection.status != tt.wantStatus {
+					t.Fatalf("rejection status = %d, want %d", rejection.status, tt.wantStatus)
+				}
+				reason = rejection.reason
+			} else if err != nil {
+				t.Fatalf("inspect() error = %v, want nil", err)
+			}
+
+			if !strings.HasPrefix(reason, tt.wantPrefix) {
+				t.Fatalf("reason = %q, want prefix %q", reason, tt.wantPrefix)
+			}
+		})
 	}
 }
 

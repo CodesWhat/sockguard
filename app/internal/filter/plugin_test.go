@@ -990,14 +990,16 @@ func TestInspectPrivilegesBodyReadError(t *testing.T) {
 	}
 }
 
-func TestInspectPrivilegesBodyCloseError(t *testing.T) {
-	// Exercises lines 150-152: closeErr propagates when Read succeeds but Close fails.
+func TestInspectPrivilegesIgnoresBodyCloseErrorAfterRead(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{})
 	req := httptest.NewRequest(http.MethodPost, "/plugins/acme/json", nil)
 	req.Body = &erroringReadCloser{Reader: strings.NewReader(`[]`), closeErr: io.ErrClosedPipe}
-	_, err := policy.inspectPrivileges(nil, req, "test subject")
-	if err == nil {
-		t.Fatal("expected close error to propagate from inspectPrivileges")
+	reason, err := policy.inspectPrivileges(nil, req, "test subject")
+	if err != nil {
+		t.Fatalf("inspectPrivileges() error = %v, want nil", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
 	}
 }
 
@@ -1029,14 +1031,16 @@ func TestInspectPluginSetBodyReadError(t *testing.T) {
 	}
 }
 
-func TestInspectPluginSetBodyCloseError(t *testing.T) {
-	// Exercises lines 184-186: closeErr propagates when Read succeeds but Close fails.
+func TestInspectPluginSetIgnoresBodyCloseErrorAfterRead(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{})
 	req := httptest.NewRequest(http.MethodPost, "/plugins/acme/set", nil)
 	req.Body = &erroringReadCloser{Reader: strings.NewReader(`[]`), closeErr: io.ErrClosedPipe}
-	_, err := policy.inspectPluginSet(nil, req)
-	if err == nil {
-		t.Fatal("expected close error to propagate from inspectPluginSet")
+	reason, err := policy.inspectPluginSet(nil, req)
+	if err != nil {
+		t.Fatalf("inspectPluginSet() error = %v, want nil", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
 	}
 }
 

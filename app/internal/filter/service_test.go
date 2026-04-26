@@ -134,11 +134,18 @@ func TestServiceInspectOversizedBodyDenied(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(payload))
 
 	reason, err := policy.inspect(nil, req, "/services/create")
-	if err != nil {
-		t.Fatalf("inspect() error = %v", err)
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
 	}
-	if reason == "" {
-		t.Fatal("expected oversized body to be denied")
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspect() error = %v, want request rejection", err)
+	}
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
+	}
+	if !strings.HasPrefix(rejection.reason, "service denied: request body exceeds") {
+		t.Fatalf("rejection reason = %q, want oversize denial", rejection.reason)
 	}
 }
 
@@ -152,15 +159,16 @@ func TestNewServicePolicyDeduplicatesBindMounts(t *testing.T) {
 	}
 }
 
-func TestServiceInspectBodyCloseErrorPropagates(t *testing.T) {
-	// Exercises the closeErr branch in service inspect (lines 76-78).
+func TestServiceInspectIgnoresBodyCloseErrorAfterRead(t *testing.T) {
 	policy := newServicePolicy(ServiceOptions{})
-	sentinel := io.ErrClosedPipe
 	req := httptest.NewRequest(http.MethodPost, "/services/create", nil)
-	req.Body = &erroringReadCloser{Reader: strings.NewReader(`{"TaskTemplate":{}}`), closeErr: sentinel}
-	_, err := policy.inspect(nil, req, "/services/create")
-	if err == nil {
-		t.Fatal("expected close error to propagate")
+	req.Body = &erroringReadCloser{Reader: strings.NewReader(`{"TaskTemplate":{}}`), closeErr: io.ErrClosedPipe}
+	reason, err := policy.inspect(nil, req, "/services/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v, want nil", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
 	}
 }
 

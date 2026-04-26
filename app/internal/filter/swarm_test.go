@@ -345,22 +345,6 @@ func TestSwarmInspectUpdateDeniesManagerTokenRotation(t *testing.T) {
 	}
 }
 
-func TestReadSwarmBodyTooLargeReturnsFlag(t *testing.T) {
-	payload := bytes.Repeat([]byte("x"), maxSwarmBodyBytes+1)
-	req := httptest.NewRequest(http.MethodPost, "/swarm/join", bytes.NewReader(payload))
-
-	body, tooLarge, err := readSwarmBody(req)
-	if err != nil {
-		t.Fatalf("readSwarmBody() error = %v", err)
-	}
-	if !tooLarge {
-		t.Fatal("expected tooLarge = true")
-	}
-	if len(body) == 0 {
-		t.Fatal("expected body to be populated even when tooLarge")
-	}
-}
-
 func TestNormalizeSwarmRemoteAddrsDeduplicates(t *testing.T) {
 	input := []string{"10.0.0.1:2377", "  10.0.0.1:2377  ", "10.0.0.2:2377"}
 	got := normalizeSwarmRemoteAddrs(input)
@@ -374,19 +358,6 @@ func TestNormalizeSwarmRemoteAddrsSkipsEmpty(t *testing.T) {
 	got := normalizeSwarmRemoteAddrs(input)
 	if len(got) != 1 || got[0] != "10.0.0.1:2377" {
 		t.Fatalf("normalizeSwarmRemoteAddrs() = %v, want [10.0.0.1:2377]", got)
-	}
-}
-
-func TestContainsString(t *testing.T) {
-	values := []string{"alpha", "beta", "gamma"}
-	if !containsString(values, "beta") {
-		t.Fatal("containsString() = false for present element")
-	}
-	if containsString(values, "delta") {
-		t.Fatal("containsString() = true for absent element")
-	}
-	if containsString(nil, "alpha") {
-		t.Fatal("containsString(nil) = true, want false")
 	}
 }
 
@@ -492,55 +463,27 @@ func TestSwarmInspectJoinAllowsEmptyRemoteAddrs(t *testing.T) {
 	}
 }
 
-func TestReadSwarmBodyReadError(t *testing.T) {
-	// Exercises readSwarmBody when io.ReadAll returns an error (lines 210-215).
-	sentinel := io.ErrUnexpectedEOF
-	req := httptest.NewRequest(http.MethodPost, "/swarm/init", nil)
-	req.Body = &readErrorReadCloser{readErr: sentinel}
-	_, tooLarge, err := readSwarmBody(req)
-	if err == nil {
-		t.Fatal("expected read error to propagate")
-	}
-	if tooLarge {
-		t.Fatal("tooLarge should be false on error")
-	}
-}
-
-func TestReadSwarmBodyCloseError(t *testing.T) {
-	// Exercises the closeErr branch in readSwarmBody (line 210-212).
-	sentinel := io.ErrClosedPipe
-	req := httptest.NewRequest(http.MethodPost, "/swarm/init", nil)
-	req.Body = &erroringReadCloser{Reader: bytes.NewReader([]byte(`{}`)), closeErr: sentinel}
-	_, _, err := readSwarmBody(req)
-	if err == nil {
-		t.Fatal("expected close error to propagate")
-	}
-}
-
 func TestSwarmInspectInitReadBodyError(t *testing.T) {
-	// Exercises lines 98-100: readSwarmBody returning an error in inspectInit.
 	policy := newSwarmPolicy(SwarmOptions{})
 	req := httptest.NewRequest(http.MethodPost, "/swarm/init", nil)
 	req.Body = &readErrorReadCloser{readErr: io.ErrUnexpectedEOF}
 	_, err := policy.inspectInit(nil, req)
 	if err == nil {
-		t.Fatal("expected error from inspectInit when readSwarmBody fails")
+		t.Fatal("expected error from inspectInit when bounded body read fails")
 	}
 }
 
 func TestSwarmInspectJoinReadBodyError(t *testing.T) {
-	// Exercises lines 133-135: readSwarmBody returning an error in inspectJoin.
 	policy := newSwarmPolicy(SwarmOptions{})
 	req := httptest.NewRequest(http.MethodPost, "/swarm/join", nil)
 	req.Body = &readErrorReadCloser{readErr: io.ErrUnexpectedEOF}
 	_, err := policy.inspectJoin(nil, req)
 	if err == nil {
-		t.Fatal("expected error from inspectJoin when readSwarmBody fails")
+		t.Fatal("expected error from inspectJoin when bounded body read fails")
 	}
 }
 
 func TestSwarmInspectJoinOversizedBody(t *testing.T) {
-	// Exercises lines 136-138: tooLarge branch in inspectJoin.
 	policy := newSwarmPolicy(SwarmOptions{})
 	payload := strings.Repeat("x", maxSwarmBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/swarm/join", strings.NewReader(payload))
@@ -554,18 +497,16 @@ func TestSwarmInspectJoinOversizedBody(t *testing.T) {
 }
 
 func TestSwarmInspectUpdateReadBodyError(t *testing.T) {
-	// Exercises lines 166-168: readSwarmBody returning an error in inspectUpdate.
 	policy := newSwarmPolicy(SwarmOptions{})
 	req := httptest.NewRequest(http.MethodPost, "/swarm/update", nil)
 	req.Body = &readErrorReadCloser{readErr: io.ErrUnexpectedEOF}
 	_, err := policy.inspectUpdate(nil, req)
 	if err == nil {
-		t.Fatal("expected error from inspectUpdate when readSwarmBody fails")
+		t.Fatal("expected error from inspectUpdate when bounded body read fails")
 	}
 }
 
 func TestSwarmInspectUpdateOversizedBody(t *testing.T) {
-	// Exercises lines 169-171: tooLarge branch in inspectUpdate.
 	policy := newSwarmPolicy(SwarmOptions{})
 	payload := strings.Repeat("x", maxSwarmBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/swarm/update", strings.NewReader(payload))

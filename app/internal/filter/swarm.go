@@ -1,12 +1,11 @@
 package filter
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -94,14 +93,13 @@ func (p swarmPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPat
 }
 
 func (p swarmPolicy) inspectInit(logger *slog.Logger, r *http.Request) (string, error) {
-	body, tooLarge, err := readSwarmBody(r)
+	body, err := readBoundedBody(r, maxSwarmBodyBytes)
 	if err != nil {
-		return "", err
+		if isBodyTooLargeError(err) {
+			return fmt.Sprintf("swarm init denied: request body exceeds %d byte limit", maxSwarmBodyBytes), nil
+		}
+		return "", fmt.Errorf("read body: %w", err)
 	}
-	if tooLarge {
-		return fmt.Sprintf("swarm init denied: request body exceeds %d byte limit", maxSwarmBodyBytes), nil
-	}
-	defer restoreSwarmBody(r, body)
 
 	if len(body) == 0 {
 		return "", nil
@@ -129,14 +127,13 @@ func (p swarmPolicy) inspectInit(logger *slog.Logger, r *http.Request) (string, 
 }
 
 func (p swarmPolicy) inspectJoin(logger *slog.Logger, r *http.Request) (string, error) {
-	body, tooLarge, err := readSwarmBody(r)
+	body, err := readBoundedBody(r, maxSwarmBodyBytes)
 	if err != nil {
-		return "", err
+		if isBodyTooLargeError(err) {
+			return fmt.Sprintf("swarm join denied: request body exceeds %d byte limit", maxSwarmBodyBytes), nil
+		}
+		return "", fmt.Errorf("read body: %w", err)
 	}
-	if tooLarge {
-		return fmt.Sprintf("swarm join denied: request body exceeds %d byte limit", maxSwarmBodyBytes), nil
-	}
-	defer restoreSwarmBody(r, body)
 
 	if len(body) == 0 {
 		return "", nil
@@ -162,14 +159,13 @@ func (p swarmPolicy) inspectJoin(logger *slog.Logger, r *http.Request) (string, 
 }
 
 func (p swarmPolicy) inspectUpdate(logger *slog.Logger, r *http.Request) (string, error) {
-	body, tooLarge, err := readSwarmBody(r)
+	body, err := readBoundedBody(r, maxSwarmBodyBytes)
 	if err != nil {
-		return "", err
+		if isBodyTooLargeError(err) {
+			return fmt.Sprintf("swarm update denied: request body exceeds %d byte limit", maxSwarmBodyBytes), nil
+		}
+		return "", fmt.Errorf("read body: %w", err)
 	}
-	if tooLarge {
-		return fmt.Sprintf("swarm update denied: request body exceeds %d byte limit", maxSwarmBodyBytes), nil
-	}
-	defer restoreSwarmBody(r, body)
 
 	if len(body) == 0 {
 		return "", nil
@@ -205,30 +201,11 @@ func (p swarmPolicy) inspectUpdate(logger *slog.Logger, r *http.Request) (string
 	return "", nil
 }
 
-func readSwarmBody(r *http.Request) ([]byte, bool, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxSwarmBodyBytes+1))
-	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
-	if err != nil {
-		return nil, false, fmt.Errorf("read body: %w", err)
-	}
-	if int64(len(body)) > maxSwarmBodyBytes {
-		return body, true, nil
-	}
-	return body, false, nil
-}
-
-func restoreSwarmBody(r *http.Request, body []byte) {
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-}
-
 func normalizeSwarmRemoteAddrs(values []string) []string {
 	normalized := make([]string, 0, len(values))
 	for _, value := range values {
 		trimmed := normalizeSwarmRemoteAddr(value)
-		if trimmed == "" || containsString(normalized, trimmed) {
+		if trimmed == "" || slices.Contains(normalized, trimmed) {
 			continue
 		}
 		normalized = append(normalized, trimmed)
@@ -241,12 +218,7 @@ func normalizeSwarmRemoteAddr(value string) string {
 }
 
 func (p swarmPolicy) joinRemoteAddrAllowed(remoteAddr string) bool {
-	for _, allowed := range p.allowedJoinRemoteAddrs {
-		if remoteAddr == allowed {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(p.allowedJoinRemoteAddrs, remoteAddr)
 }
 
 func hasSwarmSigningCAUpdate(cfg swarmCAConfig) bool {
@@ -261,13 +233,4 @@ func queryBool(r *http.Request, name string) bool {
 	default:
 		return false
 	}
-}
-
-func containsString(values []string, candidate string) bool {
-	for _, value := range values {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
 }

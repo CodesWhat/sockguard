@@ -1,12 +1,10 @@
 package filter
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -102,19 +100,13 @@ func (p execPolicy) inspectCreate(logger *slog.Logger, r *http.Request) (string,
 		return "", nil
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxExecBodyBytes+1))
-	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
-		err = closeErr
-	}
+	body, err := readBoundedBody(r, maxExecBodyBytes)
 	if err != nil {
+		if isBodyTooLargeError(err) {
+			return fmt.Sprintf("exec denied: request body exceeds %d byte limit", maxExecBodyBytes), nil
+		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
-	if int64(len(body)) > maxExecBodyBytes {
-		return fmt.Sprintf("exec denied: request body exceeds %d byte limit", maxExecBodyBytes), nil
-	}
-
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
 
 	if len(body) == 0 {
 		return "", nil
@@ -152,6 +144,8 @@ func (p execPolicy) inspectExisting(ctx context.Context, normalizedPath string) 
 		return "exec start denied: no exec inspection configured", nil
 	}
 
+	// Docker exposes exec inspect and exec start as separate API calls, so this
+	// check cannot be atomic with the eventual start request.
 	result, found, err := p.inspectStart(ctx, execID)
 	if err != nil {
 		return "", fmt.Errorf("inspect exec %q: %w", execID, err)

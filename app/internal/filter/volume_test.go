@@ -131,7 +131,7 @@ type volumeCloseErrorReadCloser struct {
 
 func (r *volumeCloseErrorReadCloser) Close() error { return r.closeErr }
 
-func TestVolumeInspectReturnsCloseError(t *testing.T) {
+func TestVolumeInspectIgnoresBodyCloseErrorAfterRead(t *testing.T) {
 	policy := newVolumePolicy(VolumeOptions{})
 	req := &http.Request{
 		Method: http.MethodPost,
@@ -145,8 +145,8 @@ func TestVolumeInspectReturnsCloseError(t *testing.T) {
 	if reason != "" {
 		t.Fatalf("inspect() reason = %q, want empty", reason)
 	}
-	if err == nil || err.Error() != "read body: close failed" {
-		t.Fatalf("inspect() error = %v, want read body close failure", err)
+	if err != nil {
+		t.Fatalf("inspect() error = %v, want nil", err)
 	}
 }
 
