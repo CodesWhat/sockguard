@@ -332,7 +332,10 @@ func writeNonUpgradeHijackResponse(
 	logger *slog.Logger,
 	path string,
 ) {
-	closeConn(logger, upstreamConn, "upstream connection", path)
+	// Closing upstreamConn before draining resp.Body truncates chunked or
+	// otherwise-unbuffered responses — the bufio.Reader has only the bytes
+	// it happened to prefetch when headers were parsed.
+	defer closeConn(logger, upstreamConn, "upstream connection", path)
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			w.Header().Add(k, v)
