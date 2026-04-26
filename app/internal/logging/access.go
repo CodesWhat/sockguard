@@ -300,6 +300,8 @@ func appendCorrelationAttrs(attrs []slog.Attr, r *http.Request, meta *RequestMet
 		return attrs
 	}
 
+	// path intentionally preserves the raw client URL path for forensic replay.
+	// Policy decisions use meta.NormPath, emitted below as normalized_path.
 	attrs = append(attrs,
 		slog.String("method", r.Method),
 		slog.String("path", r.URL.Path),
