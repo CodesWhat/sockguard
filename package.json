@@ -14,9 +14,9 @@
     "prepare": "test -d .git && lefthook install || true"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.11",
-    "knip": "6.4.1",
-    "lefthook": "^2.1.5",
+    "@biomejs/biome": "^2.4.13",
+    "knip": "6.7.0",
+    "lefthook": "^2.1.6",
     "turbo": "^2.9.6"
   },
   "packageManager": "npm@11.9.0",
