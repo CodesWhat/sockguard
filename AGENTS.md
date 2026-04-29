@@ -60,7 +60,7 @@ rules:
     action: allow
 ```
 
-Path patterns use glob syntax. Docker API version prefixes (`/v1.45/`) are stripped before matching.
+Path patterns use glob syntax. Before matching, Sockguard canonicalizes policy paths by percent-decoding escaped separators and dot segments, cleaning dot segments with Go's `path.Clean`, and stripping Docker API version prefixes such as `/v1.45/`.
 
 Rules evaluate in order — first match wins. No match = deny (default-deny).
 
@@ -98,7 +98,7 @@ Gitmoji + Conventional Commits: `<emoji> <type>(<scope>): <description>`
 
 ## Pre-push Checks (Lefthook)
 
-Runs piped (sequential, fail-fast): go-lint → go-test → biome → build.
+See `lefthook.yml` for exact commands. The pre-push pipeline is piped (sequential, fail-fast): clean-tree, GoReleaser snapshot dry-run, `golangci-lint`, `go test -race`, fuzz smoke, `npm dedupe --dry-run`, knip, biome, `npm test`, `turbo build`, and zizmor.
 
 ## Key Constraints
 

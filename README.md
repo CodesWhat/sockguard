@@ -525,6 +525,8 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Issues, ideas, and pull requests welcome.
 
+For local fuzz triage, run `scripts/local-fuzz.sh --suite ci --fuzztime 2m`. Add `--docker --platform linux/amd64` when you want closer GitHub Actions parity.
+
 <hr>
 
 <h2 align="center" id="security">🔒 Security</h2>

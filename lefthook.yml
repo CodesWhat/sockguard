@@ -101,7 +101,41 @@ pre-push:
     lockfile-dedupe:
       run: |
         out=$(npm dedupe --dry-run --json 2>&1)
-        if echo "$out" | grep -qE '"(added|removed|changed)":[[:space:]]*[1-9]'; then
+        if ! printf '%s\n' "$out" | node -e '
+          const fs = require("node:fs");
+          const out = fs.readFileSync(0, "utf8");
+          const jsonStart = out.indexOf("{");
+          if (jsonStart === -1) process.exit(1);
+
+          const report = JSON.parse(out.slice(jsonStart));
+          const postcssOverridePath = "/node_modules/next/node_modules/postcss";
+          const workspacePostcssPaths = [
+            "/docs/node_modules/postcss",
+            "/website/node_modules/postcss",
+          ];
+          const isIgnoredPostcssOverrideDrift = (entry) => {
+            const from = entry.from ?? entry;
+            const to = entry.to ?? entry;
+            const isNextOverrideDowngrade = from.name === "postcss" &&
+              to.name === "postcss" &&
+              from.path?.endsWith(postcssOverridePath) &&
+              to.path?.endsWith(postcssOverridePath) &&
+              from.version === "8.5.10" &&
+              to.version === "8.4.31";
+            const isWorkspacePostcssHoist = entry.name === "postcss" &&
+              entry.version === "8.5.10" &&
+              workspacePostcssPaths.some((path) => entry.path?.endsWith(path));
+            return isNextOverrideDowngrade || isWorkspacePostcssHoist;
+          };
+
+          const drift = [
+            ...(report.add ?? []).filter((entry) => !isIgnoredPostcssOverrideDrift(entry)),
+            ...(report.remove ?? []).filter((entry) => !isIgnoredPostcssOverrideDrift(entry)),
+            ...(report.change ?? []).filter((entry) => !isIgnoredPostcssOverrideDrift(entry)),
+          ];
+
+          process.exit(drift.length === 0 ? 0 : 1);
+        '; then
           echo "Lockfile drift detected — run 'npm dedupe' and commit the result:"
           echo "$out"
           exit 1

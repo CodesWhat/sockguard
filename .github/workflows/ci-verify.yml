@@ -102,7 +102,8 @@ jobs:
     name: "📦 Dependency Review"
     # Dependency Review requires GitHub Advanced Security on private repos.
     # Gated on public visibility so it auto-activates when the repo goes public.
-    if: github.event.repository.visibility == 'public' && github.event_name == 'pull_request'
+    # Disabled until the repository Dependency Graph setting is enabled.
+    if: ${{ false && github.event.repository.visibility == 'public' && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

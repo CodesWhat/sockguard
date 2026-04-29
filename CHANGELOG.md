@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-26
+
 ### Added
 
+- Added `scripts/local-fuzz.sh`, a local fuzz-triage runner that executes selected fuzzer suites in isolated repository copies, supports Docker/Linux parity runs, collects logs and failing corpora under `.fuzz-artifacts/`, and replays saved inputs to distinguish deterministic crashes from nondeterministic harness failures.
 - Added regression coverage for `denyWithReasonCode` normalized-path metadata population and audit logger construction against `stdout`/`stderr` sinks.
 - Added regression coverage for audit startup error handling, audit output close warnings, audit output-path validation, health-check in-flight deduplication, and nil audit middleware pass-through.
 - Added reason-code regression coverage for filter middleware decisions so `matched_allow_rule`, `matched_deny_rule`, `no_matching_allow_rule`, `request_body_policy_denied`, and `request_body_too_large` mappings cannot be accidentally swapped without a failing test.
@@ -88,6 +91,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Bounded fuzz-generated proxy header names and values in the proxy fuzz harness so nightly deep-fuzz runs keep exercising forwarding semantics without drifting into oversized HTTP metadata cases that produce non-replayable minimizer EOFs.
 - Stopped treating a post-read `Close()` failure on `POST /containers/create` as an inspection failure. The container-create inspector now defers closing the original request body, preserves the successfully buffered payload for downstream reuse, and only surfaces actual read failures as `read body: ...` errors.
 - Tightened remote mTLS client admission so `listen.tls` no longer trusts every certificate that chains to the configured `client_ca_file`. Operators can now narrow the accepted verified client leaf with `listen.tls.allowed_common_names`, `allowed_dns_names`, `allowed_ip_addresses`, `allowed_uri_sans`, and/or `allowed_public_key_sha256_pins`; startup validation rejects malformed selectors and the listener handshake now fails closed when a CA-issued client cert does not match the configured allowlist or SPKI pin set.
 - Oversized bounded JSON request bodies now fail with `413 Payload Too Large` instead of being flattened into ordinary `403` policy denials. The shared `internal/filter/body_read.go` helper rejects oversize bodies directly, and the container-create, service, volume, secret, and config write inspectors preserve that status through filter middleware so those requests are stopped before proxying with the correct HTTP semantics.

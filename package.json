@@ -20,6 +20,10 @@
     "turbo": "^2.9.6"
   },
   "overrides": {
+    "next@16.2.3": {
+      ".": "16.2.3",
+      "postcss": "8.5.10"
+    },
     "postcss": "^8.5.10"
   },
   "packageManager": "npm@11.9.0",

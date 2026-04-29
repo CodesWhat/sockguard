@@ -24,7 +24,7 @@
     "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "19.2.3",
-    "postcss": "8.5.9",
+    "postcss": "^8.5.10",
     "postcss-load-config": "6.0.1",
     "tailwindcss": "4.2.2",
     "typescript": "^6.0.2"
