@@ -15,6 +15,9 @@ health:
   enabled: true
   path: /health
 
+# Preserve broad Traefik read compatibility, including raw archive/export and log/attach stream paths.
+insecure_allow_read_exfiltration: true
+
 rules:
   - match: { method: GET, path: "/_ping" }
     action: allow

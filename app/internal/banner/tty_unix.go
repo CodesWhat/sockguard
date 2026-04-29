@@ -9,6 +9,16 @@ import (
 	"unsafe"
 )
 
+var ioctlGetWinsize = func(fd uintptr, ws *winsize) syscall.Errno {
+	_, _, errno := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		fd,
+		uintptr(syscall.TIOCGWINSZ),
+		uintptr(unsafe.Pointer(ws)), //nolint:gosec // G103: unsafe.Pointer required by SYS_IOCTL
+	)
+	return errno
+}
+
 // winsize mirrors struct winsize from <sys/ioctl.h>. Only Col is
 // used; the other fields are present so the kernel fills the layout
 // the ioctl expects.
@@ -39,12 +49,7 @@ func terminalCols(w io.Writer) int {
 	// documents for this pattern, and the write only ever lands in
 	// the local `ws` struct above.
 	//nolint:gosec // G103: intentional unsafe.Pointer for ioctl(TIOCGWINSZ)
-	_, _, errno := syscall.Syscall(
-		syscall.SYS_IOCTL,
-		f.Fd(),
-		uintptr(syscall.TIOCGWINSZ),
-		uintptr(unsafe.Pointer(&ws)),
-	)
+	errno := ioctlGetWinsize(f.Fd(), &ws)
 	if errno != 0 {
 		return 0
 	}

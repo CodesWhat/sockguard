@@ -2,6 +2,7 @@ package filter
 
 import (
 	"net/http"
+	"net/url"
 	"path"
 	"regexp"
 	"slices"
@@ -80,16 +81,27 @@ type CompiledRule struct {
 }
 
 // NormalizePath sanitizes and strips the Docker API version prefix from a path.
-// It resolves ".." and "." segments and collapses redundant slashes before
-// stripping the version prefix, preventing path traversal bypasses.
+// It decodes one additional layer of path escaping, resolves ".." and "."
+// segments, and collapses redundant slashes before stripping the version
+// prefix so encoded separators cannot bypass path-based policy checks.
 func NormalizePath(p string) string {
 	if p == "" {
 		return ""
 	}
+	return stripVersionPrefix(canonicalizePath(p))
+}
+
+func canonicalizePath(p string) string {
+	if strings.IndexByte(p, '%') >= 0 {
+		unescaped, err := url.PathUnescape(p)
+		if err == nil {
+			p = unescaped
+		}
+	}
 	if pathNeedsClean(p) {
 		p = path.Clean(p)
 	}
-	return stripVersionPrefix(p)
+	return p
 }
 
 // pathNeedsClean is a zero-allocation fast path in front of path.Clean so
@@ -336,7 +348,6 @@ func upperHTTPMethodASCII(method string) string {
 	}
 	return string(buf)
 }
-
 
 func isTrailingDoubleStarPattern(pattern string) bool {
 	return strings.HasSuffix(pattern, "/**") && !strings.Contains(pattern[:len(pattern)-3], "*")

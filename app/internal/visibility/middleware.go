@@ -11,9 +11,11 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
+	"github.com/codeswhat/sockguard/internal/inspectcache"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -24,6 +26,20 @@ const (
 	resourceKindImage     resourceKind = "images"
 	resourceKindNetwork   resourceKind = "networks"
 	resourceKindVolume    resourceKind = "volumes"
+	resourceKindService   resourceKind = "services"
+	resourceKindTask      resourceKind = "tasks"
+	resourceKindSecret    resourceKind = "secrets"
+	resourceKindConfig    resourceKind = "configs"
+	resourceKindNode      resourceKind = "nodes"
+	resourceKindSwarm     resourceKind = "swarm"
+)
+
+const (
+	reasonCodeVisibilityPolicyMisconfigured = "visibility_policy_misconfigured"
+	reasonCodeVisibilityProfileUnresolved   = "visibility_profile_unresolved"
+	reasonCodeVisibilityFilterInvalid       = "visibility_filter_invalid"
+	reasonCodeVisibilityPolicyLookupFailed  = "visibility_policy_lookup_failed"
+	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 )
 
 // Options configures label-based visibility control on Docker read endpoints.
@@ -70,7 +86,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 		logger.Error("invalid visibility config", "error", err)
 		return func(http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				logging.SetDenied(w, r, "visibility policy misconfigured", filter.NormalizePath)
+				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyMisconfigured, "visibility policy misconfigured", filter.NormalizePath)
 				_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility policy misconfigured"})
 			})
 		}
@@ -83,7 +99,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			logger.Error("invalid visibility profile config", "profile", name, "error", err)
 			return func(http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					logging.SetDenied(w, r, "visibility policy misconfigured", filter.NormalizePath)
+					logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyMisconfigured, "visibility policy misconfigured", filter.NormalizePath)
 					_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility policy misconfigured"})
 				})
 			}
@@ -102,7 +118,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 				if profileName, ok := opts.ResolveProfile(r); ok && profileName != "" {
 					profile, found := profilePolicies[profileName]
 					if !found {
-						logging.SetDenied(w, r, "visibility profile could not be resolved", filter.NormalizePath)
+						logging.SetDeniedWithCode(w, r, reasonCodeVisibilityProfileUnresolved, "visibility profile could not be resolved", filter.NormalizePath)
 						_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility profile could not be resolved"})
 						return
 					}
@@ -121,8 +137,8 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 
 			normPath := normalizedPathForRequest(w, r)
 			if needsVisibilityLabelFilter(normPath) {
-				if err := addVisibilityLabelFilters(r, selectors); err != nil {
-					logging.SetDenied(w, r, err.Error(), nil)
+				if err := addVisibilityLabelFilters(r, normPath, selectors); err != nil {
+					logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
 					_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 					return
 				}
@@ -133,12 +149,12 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			visible, err := requestVisible(r.Context(), normPath, selectors, deps)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "visibility policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
-				logging.SetDenied(w, r, "visibility policy lookup failed", nil)
+				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility policy lookup failed", nil)
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility policy lookup failed"})
 				return
 			}
 			if !visible {
-				logging.SetDenied(w, r, "visibility policy hid resource", nil)
+				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyHidResource, "visibility policy hid resource", nil)
 				_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "resource not found"})
 				return
 			}
@@ -157,9 +173,19 @@ func newVisibilityDeps(upstreamSocket string) visibilityDeps {
 	inspector := upstreamInspector{
 		client: &http.Client{Transport: transport},
 	}
+	cache := inspectcache.New(
+		inspectcache.DefaultTTL,
+		inspectcache.DefaultMaxSize,
+		time.Now,
+		func(ctx context.Context, kind, identifier string) (map[string]string, bool, error) {
+			return inspector.inspectResource(ctx, resourceKind(kind), identifier)
+		},
+	)
 	return visibilityDeps{
-		inspectResource: inspector.inspectResource,
-		inspectExec:     inspector.inspectExec,
+		inspectResource: func(ctx context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
+			return cache.Lookup(ctx, string(kind), identifier)
+		},
+		inspectExec: inspector.inspectExec,
 	}
 }
 
@@ -206,32 +232,45 @@ func normalizedPathForRequest(w http.ResponseWriter, r *http.Request) string {
 
 func needsVisibilityLabelFilter(normPath string) bool {
 	switch normPath {
-	case "/events", "/containers/json", "/images/json", "/networks", "/volumes":
+	case "/events", "/containers/json", "/images/json", "/networks", "/volumes", "/services", "/tasks", "/secrets", "/configs", "/nodes":
 		return true
 	default:
 		return false
 	}
 }
 
-func addVisibilityLabelFilters(r *http.Request, selectors []compiledSelector) error {
+func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []compiledSelector) error {
 	query := r.URL.Query()
 	filters, err := decodeDockerFilters(query.Get("filters"))
 	if err != nil {
 		return err
 	}
+	filterKey := visibilityLabelFilterKey(normPath)
+	changed := false
 	for _, selector := range selectors {
 		value := selector.key
 		if selector.hasValue {
 			value += "=" + selector.value
 		}
-		if !slices.Contains(filters["label"], value) {
-			filters["label"] = append(filters["label"], value)
+		if !slices.Contains(filters[filterKey], value) {
+			filters[filterKey] = append(filters[filterKey], value)
+			changed = true
 		}
+	}
+	if !changed {
+		return nil
 	}
 	encoded, _ := json.Marshal(filters)
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
 	return nil
+}
+
+func visibilityLabelFilterKey(normPath string) string {
+	if normPath == "/nodes" {
+		return "node.label"
+	}
+	return "label"
 }
 
 func requestVisible(ctx context.Context, normPath string, selectors []compiledSelector, deps visibilityDeps) (bool, error) {
@@ -249,6 +288,30 @@ func requestVisible(ctx context.Context, normPath string, selectors []compiledSe
 	}
 	if identifier, ok := volumeInspectIdentifier(normPath); ok {
 		return resourceVisible(ctx, deps, resourceKindVolume, identifier, selectors)
+	}
+	if identifier, ok := serviceInspectIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, resourceKindService, identifier, selectors)
+	}
+	if identifier, ok := serviceLogsIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, resourceKindService, identifier, selectors)
+	}
+	if identifier, ok := taskInspectIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, resourceKindTask, identifier, selectors)
+	}
+	if identifier, ok := taskLogsIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, resourceKindTask, identifier, selectors)
+	}
+	if identifier, ok := secretInspectIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, resourceKindSecret, identifier, selectors)
+	}
+	if identifier, ok := configInspectIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, resourceKindConfig, identifier, selectors)
+	}
+	if identifier, ok := nodeInspectIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, resourceKindNode, identifier, selectors)
+	}
+	if isSwarmInspectPath(normPath) {
+		return resourceVisible(ctx, deps, resourceKindSwarm, "", selectors)
 	}
 	if execID, ok := execInspectIdentifier(normPath); ok {
 		containerID, found, err := deps.inspectExec(ctx, execID)
@@ -352,6 +415,98 @@ func execInspectIdentifier(normPath string) (string, bool) {
 	return identifier, ok && identifier != "" && tail == "json"
 }
 
+func serviceInspectIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/services/") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(normPath, "/services/")
+	if rest == "" || strings.Contains(rest, "/") {
+		return "", false
+	}
+	switch rest {
+	case "create":
+		return "", false
+	default:
+		return rest, true
+	}
+}
+
+func serviceLogsIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/services/") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(normPath, "/services/")
+	identifier, tail, ok := strings.Cut(rest, "/")
+	return identifier, ok && identifier != "" && tail == "logs"
+}
+
+func taskInspectIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/tasks/") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(normPath, "/tasks/")
+	if rest == "" || strings.Contains(rest, "/") {
+		return "", false
+	}
+	return rest, true
+}
+
+func taskLogsIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/tasks/") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(normPath, "/tasks/")
+	identifier, tail, ok := strings.Cut(rest, "/")
+	return identifier, ok && identifier != "" && tail == "logs"
+}
+
+func secretInspectIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/secrets/") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(normPath, "/secrets/")
+	if rest == "" || strings.Contains(rest, "/") {
+		return "", false
+	}
+	switch rest {
+	case "create":
+		return "", false
+	default:
+		return rest, true
+	}
+}
+
+func configInspectIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/configs/") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(normPath, "/configs/")
+	if rest == "" || strings.Contains(rest, "/") {
+		return "", false
+	}
+	switch rest {
+	case "create":
+		return "", false
+	default:
+		return rest, true
+	}
+}
+
+func nodeInspectIdentifier(normPath string) (string, bool) {
+	if !strings.HasPrefix(normPath, "/nodes/") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(normPath, "/nodes/")
+	if rest == "" || strings.Contains(rest, "/") {
+		return "", false
+	}
+	return rest, true
+}
+
+func isSwarmInspectPath(normPath string) bool {
+	return normPath == "/swarm"
+}
+
 func decodeDockerFilters(encoded string) (map[string][]string, error) {
 	filters := make(map[string][]string)
 	if encoded == "" {
@@ -380,6 +535,7 @@ func decodeDockerFilters(encoded string) (map[string][]string, error) {
 			for item := range typed {
 				values = append(values, item)
 			}
+			slices.Sort(values)
 			filters[key] = values
 		default:
 			return nil, fmt.Errorf("decode filters: unexpected %s filter type %T", key, value)
@@ -400,6 +556,18 @@ func (i upstreamInspector) inspectResource(ctx context.Context, kind resourceKin
 		requestPath = "/networks/" + url.PathEscape(identifier)
 	case resourceKindVolume:
 		requestPath = "/volumes/" + url.PathEscape(identifier)
+	case resourceKindService:
+		requestPath = "/services/" + url.PathEscape(identifier)
+	case resourceKindTask:
+		requestPath = "/tasks/" + url.PathEscape(identifier)
+	case resourceKindSecret:
+		requestPath = "/secrets/" + url.PathEscape(identifier)
+	case resourceKindConfig:
+		requestPath = "/configs/" + url.PathEscape(identifier)
+	case resourceKindNode:
+		requestPath = "/nodes/" + url.PathEscape(identifier)
+	case resourceKindSwarm:
+		requestPath = "/swarm"
 	default:
 		return nil, false, fmt.Errorf("unsupported resource kind %q", kind)
 	}
@@ -494,6 +662,32 @@ func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string,
 			return nil, err
 		}
 		return payload.Labels, nil
+	case resourceKindService, resourceKindSecret, resourceKindConfig, resourceKindNode, resourceKindSwarm:
+		var payload struct {
+			Spec struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Spec"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		return payload.Spec.Labels, nil
+	case resourceKindTask:
+		var payload struct {
+			Labels map[string]string `json:"Labels"`
+			Spec   struct {
+				ContainerSpec struct {
+					Labels map[string]string `json:"Labels"`
+				} `json:"ContainerSpec"`
+			} `json:"Spec"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		if len(payload.Labels) > 0 {
+			return payload.Labels, nil
+		}
+		return payload.Spec.ContainerSpec.Labels, nil
 	default:
 		return nil, fmt.Errorf("unsupported resource kind %q", kind)
 	}

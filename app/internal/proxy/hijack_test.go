@@ -772,6 +772,64 @@ func TestHandleHijack_StripsHopByHopHeadersBeforeForwarding(t *testing.T) {
 	}
 }
 
+func TestHandleHijack_RebuildsUpstreamRequestTargetFromNormalizedPath(t *testing.T) {
+	deps := newHijackDeps()
+
+	var rawRequest bytes.Buffer
+	deps.dialUpstream = func(network, address string) (net.Conn, error) {
+		return &funcConn{
+			writeFn: func(p []byte) (int, error) {
+				return rawRequest.Write(p)
+			},
+		}, nil
+	}
+	deps.readResponse = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"message":"bad request"}`)),
+		}, nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "http://client.example/v1.45/containers/abc/attach?stream=1&stderr=1", nil)
+	req.Host = "client.example"
+
+	rec := httptest.NewRecorder()
+	handleHijackWithDeps(rec, req, "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)), deps)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+
+	gotReq, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(rawRequest.Bytes())))
+	if err != nil {
+		t.Fatalf("read forwarded request: %v", err)
+	}
+	defer gotReq.Body.Close()
+
+	if gotReq.Host != "docker" {
+		t.Fatalf("Host = %q, want %q", gotReq.Host, "docker")
+	}
+	if gotReq.URL.Path != "/containers/abc/attach" {
+		t.Fatalf("URL.Path = %q, want %q", gotReq.URL.Path, "/containers/abc/attach")
+	}
+	if gotReq.URL.RawQuery != "stderr=1&stream=1" {
+		t.Fatalf("URL.RawQuery = %q, want %q", gotReq.URL.RawQuery, "stderr=1&stream=1")
+	}
+
+	rawForwarded := rawRequest.String()
+	if !strings.Contains(rawForwarded, "POST /containers/abc/attach?stderr=1&stream=1 HTTP/1.1") {
+		t.Fatalf("forwarded request target was not rebuilt from normalized path and canonical query:\n%s", rawForwarded)
+	}
+	for _, disallowed := range []string{"client.example", "/v1.45/", "?stream=1&stderr=1"} {
+		if strings.Contains(rawForwarded, disallowed) {
+			t.Fatalf("forwarded request leaked %q:\n%s", disallowed, rawForwarded)
+		}
+	}
+}
+
 func TestNewUpstreamHijackRequest_BuildsMinimalOutboundRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/containers/abc/attach?stream=1", strings.NewReader("stdin"))
 	req.RequestURI = "/containers/abc/attach?stream=1"
@@ -784,7 +842,7 @@ func TestNewUpstreamHijackRequest_BuildsMinimalOutboundRequest(t *testing.T) {
 	req.Header.Set("Upgrade", "websocket")
 	req.Header.Set("X-Test", "ok")
 
-	upstreamReq := newUpstreamHijackRequest(req)
+	upstreamReq := newUpstreamHijackRequest(req, "/containers/abc/attach")
 
 	if upstreamReq == req {
 		t.Fatal("expected a distinct request")
@@ -800,6 +858,18 @@ func TestNewUpstreamHijackRequest_BuildsMinimalOutboundRequest(t *testing.T) {
 	}
 	if upstreamReq.Response != nil {
 		t.Fatalf("Response = %#v, want nil", upstreamReq.Response)
+	}
+	if upstreamReq.Host != "docker" {
+		t.Fatalf("Host = %q, want %q", upstreamReq.Host, "docker")
+	}
+	if upstreamReq.URL.Host != "docker" {
+		t.Fatalf("URL.Host = %q, want %q", upstreamReq.URL.Host, "docker")
+	}
+	if upstreamReq.URL.Path != "/containers/abc/attach" {
+		t.Fatalf("URL.Path = %q, want %q", upstreamReq.URL.Path, "/containers/abc/attach")
+	}
+	if upstreamReq.URL.RawQuery != "stream=1" {
+		t.Fatalf("URL.RawQuery = %q, want %q", upstreamReq.URL.RawQuery, "stream=1")
 	}
 	if got := upstreamReq.Header.Get("X-Test"); got != "ok" {
 		t.Fatalf("X-Test = %q, want %q", got, "ok")

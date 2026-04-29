@@ -26,7 +26,7 @@ function commitReleaseLevel(commit) {
     if (/\bBREAKING[ -]CHANGE:/iu.test(message)) {
       releaseLevel = 'major';
     } else {
-      const subject = message.split(/\r?\n/u, 1)[0] ?? '';
+      const subject = message.split(/\r?\n/u, 1)[0];
       const match = subject.match(conventionalSubjectRegex);
       if (match?.groups) {
         if (match.groups.breakingA === '!' || match.groups.breakingB === '!') {
@@ -117,6 +117,10 @@ function getCommitMessages(fromRef, toRef) {
     .filter(Boolean);
 }
 
+export function formatCLIError(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const bump = args.bump ?? 'auto';
@@ -149,7 +153,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     main();
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(formatCLIError(error));
     process.exit(1);
   }
 }

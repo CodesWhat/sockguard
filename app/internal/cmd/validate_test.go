@@ -139,6 +139,7 @@ log:
 	}
 
 	t.Setenv("CONTAINERS", "1")
+	t.Setenv("SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION", "true")
 
 	oldCfgFile := cfgFile
 	cfgFile = cfgPath

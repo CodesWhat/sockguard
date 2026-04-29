@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -82,7 +83,40 @@ func TestAccessLogDenied(t *testing.T) {
 	}
 }
 
-func TestAccessLogIncludesRequestID(t *testing.T) {
+func TestAccessLogGeneratesTrustedRequestID(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	var seenHeader string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m := MetaFromResponseWriter(w); m != nil {
+			m.Decision = "allow"
+			m.NormPath = "/info"
+		}
+		seenHeader = r.Header.Get("X-Request-ID")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AccessLogMiddleware(logger)(RequestIDMiddleware()(inner))
+
+	req := httptest.NewRequest(http.MethodGet, "/info", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if seenHeader == "" {
+		t.Fatal("expected trusted request id to be injected before downstream handler")
+	}
+	if got := rec.Header().Get("X-Request-Id"); got != seenHeader {
+		t.Fatalf("response X-Request-Id = %q, want %q", got, seenHeader)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, `"request_id":"`+seenHeader+`"`) {
+		t.Fatalf("expected generated request_id in access log, got: %s", logOutput)
+	}
+}
+
+func TestAccessLogReplacesCallerSuppliedRequestID(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -91,10 +125,13 @@ func TestAccessLogIncludesRequestID(t *testing.T) {
 			m.Decision = "allow"
 			m.NormPath = "/info"
 		}
+		if got := r.Header.Get("X-Request-ID"); got == "" || got == "req-123" {
+			t.Fatalf("trusted request id = %q, want non-empty generated value distinct from caller header", got)
+		}
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := AccessLogMiddleware(logger)(inner)
+	handler := AccessLogMiddleware(logger)(RequestIDMiddleware()(inner))
 
 	req := httptest.NewRequest(http.MethodGet, "/info", nil)
 	req.Header.Set("X-Request-ID", "req-123")
@@ -102,8 +139,11 @@ func TestAccessLogIncludesRequestID(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	logOutput := buf.String()
-	if !strings.Contains(logOutput, `"request_id":"req-123"`) {
-		t.Fatalf("expected request_id in access log, got: %s", logOutput)
+	if strings.Contains(logOutput, `"request_id":"req-123"`) {
+		t.Fatalf("expected canonical request_id to replace caller value, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"client_request_id":"req-123"`) {
+		t.Fatalf("expected client_request_id in access log, got: %s", logOutput)
 	}
 }
 
@@ -132,7 +172,7 @@ func TestAccessLogIncludesSelectedProfile(t *testing.T) {
 	}
 }
 
-func TestAccessLogEscapesCRLFInRequestID(t *testing.T) {
+func TestAccessLogEscapesCRLFInClientRequestID(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
@@ -144,7 +184,7 @@ func TestAccessLogEscapesCRLFInRequestID(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := AccessLogMiddleware(logger)(inner)
+	handler := AccessLogMiddleware(logger)(RequestIDMiddleware()(inner))
 
 	req := httptest.NewRequest(http.MethodGet, "/info", nil)
 	// httptest lets us set values containing CRLF that a real HTTP parser
@@ -165,8 +205,8 @@ func TestAccessLogEscapesCRLFInRequestID(t *testing.T) {
 		t.Fatalf("log output contains raw CR: %q", logOutput)
 	}
 	// slog's JSON encoder escapes CR/LF as \r and \n within the string value.
-	if !strings.Contains(logOutput, `"request_id":"legit\r\nmsg=\"spoofed\""`) {
-		t.Fatalf("expected CRLF-escaped request_id in log, got: %s", logOutput)
+	if !strings.Contains(logOutput, `"client_request_id":"legit\r\nmsg=\"spoofed\""`) {
+		t.Fatalf("expected CRLF-escaped client_request_id in log, got: %s", logOutput)
 	}
 }
 
@@ -188,6 +228,65 @@ func TestResponseCaptureTracksStatusAndBytes(t *testing.T) {
 	}
 	if rc.bytes != 11 {
 		t.Errorf("bytes = %d, want 11", rc.bytes)
+	}
+}
+
+func TestRequestIDMiddlewareGeneratesCanonicalIDWithoutAccessLog(t *testing.T) {
+	var seenHeader string
+	handler := RequestIDMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenHeader = r.Header.Get(requestIDHeader)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if seenHeader == "" {
+		t.Fatal("expected request id in downstream request header")
+	}
+	if got := rec.Header().Get(requestIDHeader); got != seenHeader {
+		t.Fatalf("response %s = %q, want %q", requestIDHeader, got, seenHeader)
+	}
+}
+
+func TestRequestIDGeneratorBatchesEntropyReads(t *testing.T) {
+	var fillCalls atomic.Int32
+	gen := newRequestIDGenerator(8, 1, func(dst []byte) (int, error) {
+		fillCalls.Add(1)
+		for i := range dst {
+			dst[i] = byte(i + 1)
+		}
+		return len(dst), nil
+	})
+	defer gen.close()
+
+	gen.refillSync()
+
+	for range 4 {
+		got := gen.Next()
+		if len(got) != 32 {
+			t.Fatalf("Next() len = %d, want 32", len(got))
+		}
+	}
+
+	if got := fillCalls.Load(); got != 1 {
+		t.Fatalf("entropy fill calls = %d, want 1 for four generated IDs", got)
+	}
+}
+
+func TestRequestIDGeneratorFallsBackWhenPoolEmpty(t *testing.T) {
+	gen := newRequestIDGenerator(4, 1, func([]byte) (int, error) {
+		return 0, errors.New("entropy unavailable")
+	})
+	defer gen.close()
+
+	got := gen.Next()
+	if len(got) != 32 {
+		t.Fatalf("Next() len = %d, want 32", len(got))
+	}
+	if got == strings.Repeat("0", 32) {
+		t.Fatal("Next() returned all-zero request id, want fallback entropy")
 	}
 }
 
@@ -407,7 +506,7 @@ func TestMetaForRequest(t *testing.T) {
 
 func TestAppendCorrelationAttrsForResponseWriter(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
-	req.Header.Set(requestIDHeader, "req-123")
+	req.Header.Set(requestIDHeader, "trusted-456")
 	req = req.WithContext(WithMeta(req.Context(), &RequestMeta{
 		Decision: "deny",
 		Rule:     4,
@@ -416,11 +515,12 @@ func TestAppendCorrelationAttrsForResponseWriter(t *testing.T) {
 	}))
 
 	attrs := AppendCorrelationAttrsForResponseWriter(nil, req, &responseCapture{meta: &RequestMeta{
-		Decision: "allow",
-		Rule:     2,
-		Reason:   "writer reason",
-		NormPath: "/writer/path",
-		Profile:  "watchtower",
+		Decision:        "allow",
+		Rule:            2,
+		Reason:          "writer reason",
+		NormPath:        "/writer/path",
+		Profile:         "watchtower",
+		ClientRequestID: "client-123",
 	}})
 
 	got := make(map[string]any, len(attrs))
@@ -428,8 +528,11 @@ func TestAppendCorrelationAttrsForResponseWriter(t *testing.T) {
 		got[attr.Key] = attr.Value.Any()
 	}
 
-	if got["request_id"] != "req-123" {
-		t.Fatalf("request_id = %#v, want req-123", got["request_id"])
+	if got["request_id"] != "trusted-456" {
+		t.Fatalf("request_id = %#v, want trusted-456", got["request_id"])
+	}
+	if got["client_request_id"] != "client-123" {
+		t.Fatalf("client_request_id = %#v, want client-123", got["client_request_id"])
 	}
 	if got["normalized_path"] != "/writer/path" {
 		t.Fatalf("normalized_path = %#v, want /writer/path", got["normalized_path"])
@@ -472,6 +575,9 @@ func TestAppendCorrelationAttrsOmitsEmptyRequestIDAndReason(t *testing.T) {
 	for _, attr := range attrs {
 		if attr.Key == "request_id" {
 			t.Fatalf("unexpected request_id attr: %#v", attr)
+		}
+		if attr.Key == "client_request_id" {
+			t.Fatalf("unexpected client_request_id attr: %#v", attr)
 		}
 		if attr.Key == "reason" {
 			t.Fatalf("unexpected reason attr: %#v", attr)

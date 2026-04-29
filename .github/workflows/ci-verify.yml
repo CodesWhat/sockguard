@@ -22,6 +22,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  GORELEASER_VERSION: v2.15.3
+
 jobs:
   zizmor:
     name: "🔒 Workflow Security"
@@ -99,7 +102,8 @@ jobs:
     name: "📦 Dependency Review"
     # Dependency Review requires GitHub Advanced Security on private repos.
     # Gated on public visibility so it auto-activates when the repo goes public.
-    if: github.event.repository.visibility == 'public' && github.event_name == 'pull_request'
+    # Disabled until the repository Dependency Graph setting is enabled.
+    if: ${{ false && github.event.repository.visibility == 'public' && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -183,7 +187,7 @@ jobs:
         uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29  # v7.0.0
         with:
           distribution: goreleaser
-          version: latest
+          version: ${{ env.GORELEASER_VERSION }}
           args: check
           workdir: app
 

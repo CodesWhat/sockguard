@@ -43,6 +43,13 @@ func shortSocketPath(t *testing.T, label string) string {
 	return path
 }
 
+func closeAuditLoggerForTest(t *testing.T, logger *logging.AuditLogger) {
+	t.Helper()
+	if err := logger.Close(); err != nil {
+		t.Fatalf("audit logger close: %v", err)
+	}
+}
+
 func TestIsAddrInUse(t *testing.T) {
 	if !isAddrInUse(syscall.EADDRINUSE) {
 		t.Fatal("expected EADDRINUSE to be detected")
@@ -70,10 +77,37 @@ func TestRuleCompilationUsesConfigValidate(t *testing.T) {
 	}
 }
 
+func TestServePolicyConfigAddsRuntimeFilterOptions(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Response.DenyVerbosity = "verbose"
+	cfg.Upstream.Socket = "/tmp/docker.sock"
+	cfg.RequestBody.ContainerCreate.AllowPrivileged = true
+	cfg.RequestBody.Exec.AllowRootUser = true
+	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/bin/id"}}
+
+	got := servePolicyConfig(&cfg)
+
+	if got.DenyResponseVerbosity != filter.DenyResponseVerbosityVerbose {
+		t.Fatalf("DenyResponseVerbosity = %q, want %q", got.DenyResponseVerbosity, filter.DenyResponseVerbosityVerbose)
+	}
+	if !got.ContainerCreate.AllowPrivileged {
+		t.Fatal("ContainerCreate.AllowPrivileged = false, want true")
+	}
+	if !got.Exec.AllowRootUser {
+		t.Fatal("Exec.AllowRootUser = false, want true")
+	}
+	if !reflect.DeepEqual(got.Exec.AllowedCommands, [][]string{{"/usr/bin/id"}}) {
+		t.Fatalf("Exec.AllowedCommands = %#v, want [[/usr/bin/id]]", got.Exec.AllowedCommands)
+	}
+	if got.Exec.InspectStart == nil {
+		t.Fatal("Exec.InspectStart is nil, want runtime inspector")
+	}
+}
+
 func TestListenUnixSocketCreatesNewSocket(t *testing.T) {
 	path := shortSocketPath(t, "new")
 
-	ln, err := newServeDeps().listenUnixSocket(path, 0o600)
+	ln, err := newServeDeps().listenUnixSocket(path)
 	if err != nil {
 		t.Fatalf("listenUnixSocket() error = %v", err)
 	}
@@ -97,7 +131,7 @@ func TestListenUnixSocketReplacesStaleSocket(t *testing.T) {
 	}
 	original.Close()
 
-	ln, err := newServeDeps().listenUnixSocket(path, 0o600)
+	ln, err := newServeDeps().listenUnixSocket(path)
 	if err != nil {
 		t.Fatalf("listenUnixSocket() with stale socket error = %v", err)
 	}
@@ -110,7 +144,7 @@ func TestListenUnixSocketRejectsNonSocketPath(t *testing.T) {
 		t.Fatalf("write non-socket path: %v", err)
 	}
 
-	_, err := newServeDeps().listenUnixSocket(path, 0o600)
+	_, err := newServeDeps().listenUnixSocket(path)
 	if err == nil {
 		t.Fatal("expected error for non-socket path")
 	}
@@ -271,9 +305,10 @@ func TestCreateListenerTCPWithMutualTLS(t *testing.T) {
 		Listen: config.ListenConfig{
 			Address: "127.0.0.1:0",
 			TLS: config.ListenTLSConfig{
-				CertFile:     bundle.ServerCertFile,
-				KeyFile:      bundle.ServerKeyFile,
-				ClientCAFile: bundle.CAFile,
+				CertFile:           bundle.ServerCertFile,
+				KeyFile:            bundle.ServerKeyFile,
+				ClientCAFile:       bundle.CAFile,
+				AllowedCommonNames: []string{"sockguard-test-client"},
 			},
 		},
 	}
@@ -372,6 +407,60 @@ func TestCreateListenerTCPWithMutualTLSRejectsMissingClientCertificate(t *testin
 	}
 }
 
+func TestCreateListenerTCPWithMutualTLSRejectsDisallowedClientCertificateIdentity(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("WriteMutualTLSBundle: %v", err)
+	}
+
+	cfg := &config.Config{
+		Listen: config.ListenConfig{
+			Address: "127.0.0.1:0",
+			TLS: config.ListenTLSConfig{
+				CertFile:           bundle.ServerCertFile,
+				KeyFile:            bundle.ServerKeyFile,
+				ClientCAFile:       bundle.CAFile,
+				AllowedCommonNames: []string{"different-client"},
+			},
+		},
+	}
+
+	ln, err := newServeDeps().createListener(cfg)
+	if err != nil {
+		t.Fatalf("createListener() error = %v", err)
+	}
+	defer ln.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if tlsConn, ok := conn.(*tls.Conn); ok {
+			err = tlsConn.Handshake()
+		}
+		_ = conn.Close()
+		errCh <- err
+	}()
+
+	clientTLS, err := testcert.ClientTLSConfig(bundle, "127.0.0.1")
+	if err != nil {
+		t.Fatalf("ClientTLSConfig: %v", err)
+	}
+
+	clientConn, err := tls.Dial(ln.Addr().Network(), ln.Addr().String(), clientTLS)
+	if err == nil {
+		_ = clientConn.Close()
+	}
+
+	if err := <-errCh; err == nil {
+		t.Fatal("expected listener handshake to fail for disallowed client certificate identity")
+	}
+}
+
 func TestCreateListenerTCPWithMutualTLSClosesBaseListenerOnTLSConfigError(t *testing.T) {
 	deps := newServeTestDeps()
 	baseListener := &serveTestListener{}
@@ -416,8 +505,30 @@ func TestCreateListenerInvalidSocketMode(t *testing.T) {
 		ln.Close()
 		t.Fatal("expected createListener() to fail for invalid socket_mode")
 	}
-	if !strings.Contains(err.Error(), "invalid socket_mode") {
-		t.Fatalf("expected invalid socket_mode error, got: %v", err)
+	if !strings.Contains(err.Error(), "listen.socket_mode") {
+		t.Fatalf("expected listen.socket_mode error, got: %v", err)
+	}
+}
+
+func TestCreateListenerRejectsSocketModeOtherThan0600(t *testing.T) {
+	socketPath := shortSocketPath(t, "badperm")
+	cfg := &config.Config{
+		Listen: config.ListenConfig{
+			Socket:     socketPath,
+			SocketMode: "0660",
+		},
+	}
+
+	ln, err := newServeDeps().createListener(cfg)
+	if err == nil {
+		ln.Close()
+		t.Fatal("expected createListener() to fail for unsupported socket_mode")
+	}
+	if !strings.Contains(err.Error(), "listen.socket_mode") {
+		t.Fatalf("expected listen.socket_mode error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), `"0600"`) {
+		t.Fatalf("expected hardened mode hint, got: %v", err)
 	}
 }
 
@@ -681,7 +792,7 @@ func TestBuildServeHandlerFiltersHijackEndpointsBeforeHijackHandler(t *testing.T
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1.45/containers/abc/attach?stream=1", nil)
 	rec := httptest.NewRecorder()
@@ -709,7 +820,7 @@ func TestBuildServeHandlerClientACLWrapsHealthInterceptor(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -754,7 +865,7 @@ func TestBuildServeHandlerRedactsProtectedResponsesByDefault(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc123/json", nil)
 	rec := httptest.NewRecorder()
@@ -829,7 +940,7 @@ func TestBuildServeHandlerAppliesAssignedClientProfile(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -892,7 +1003,7 @@ func TestBuildServeHandlerAppliesAssignedClientVisibilityProfile(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -904,6 +1015,354 @@ func TestBuildServeHandlerAppliesAssignedClientVisibilityProfile(t *testing.T) {
 	}
 	if rec.Body.String() != "[]" {
 		t.Fatalf("body = %q, want %q", rec.Body.String(), "[]")
+	}
+}
+
+func TestBuildServeHandlerGeneratesTrustedRequestIDWithoutAccessLog(t *testing.T) {
+	socketPath := shortSocketPath(t, "request-id-upstream")
+	_ = os.Remove(socketPath)
+
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"request_id":"`+r.Header.Get("X-Request-ID")+`"}`)
+	}))
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/info"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/info", nil)
+	req.Header.Set("X-Request-ID", "client-123")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nbody: %s", err, rec.Body.String())
+	}
+
+	generatedID := body["request_id"]
+	if generatedID == "" {
+		t.Fatal("expected generated request id upstream, got empty string")
+	}
+	if generatedID == "client-123" {
+		t.Fatalf("expected generated request id to replace caller header, got %q", generatedID)
+	}
+	if got := rec.Header().Get("X-Request-Id"); got != generatedID {
+		t.Fatalf("response X-Request-Id = %q, want %q", got, generatedID)
+	}
+}
+
+func TestBuildServeHandlerEmitsAuditEventWhenEnabled(t *testing.T) {
+	socketPath := shortSocketPath(t, "audit-upstream")
+	_ = os.Remove(socketPath)
+
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Log.Audit.Enabled = true
+	cfg.Ownership.Owner = "ci-job-123"
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/info"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	var auditBuf bytes.Buffer
+	auditLogger := logging.NewAuditLogger(&auditBuf)
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.45/info", nil)
+	req.RemoteAddr = "198.51.100.10:4444"
+	req.Header.Set("X-Request-ID", "client-123")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	closeAuditLoggerForTest(t, auditLogger)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+		t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+	}
+	if got := event["decision"]; got != "allow" {
+		t.Fatalf("decision = %#v, want %q", got, "allow")
+	}
+	if got := event["normalized_path"]; got != "/info" {
+		t.Fatalf("normalized_path = %#v, want %q", got, "/info")
+	}
+	if got := event["status"]; got != float64(http.StatusOK) {
+		t.Fatalf("status = %#v, want %d", got, http.StatusOK)
+	}
+	if got := event["client_request_id"]; got != "client-123" {
+		t.Fatalf("client_request_id = %#v, want %q", got, "client-123")
+	}
+	if got := event["transport_listener"]; got != "tcp" {
+		t.Fatalf("transport_listener = %#v, want %q", got, "tcp")
+	}
+	requestID, _ := event["request_id"].(string)
+	if requestID == "" || requestID == "client-123" {
+		t.Fatalf("request_id = %#v, want generated canonical id", event["request_id"])
+	}
+	ownership, ok := event["ownership"].(map[string]any)
+	if !ok {
+		t.Fatalf("ownership = %#v, want object", event["ownership"])
+	}
+	if got := ownership["owner"]; got != "ci-job-123" {
+		t.Fatalf("ownership.owner = %#v, want %q", got, "ci-job-123")
+	}
+}
+
+func TestWithAuditLogUsesConfiguredUnixListener(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Listen.Socket = "/var/run/sockguard.sock"
+	cfg.Listen.Address = ""
+	cfg.Log.Audit.Enabled = true
+
+	var auditBuf bytes.Buffer
+	auditLogger := logging.NewAuditLogger(&auditBuf)
+	handler := withAuditLog(auditLogger, &cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.RemoteAddr = "198.51.100.10:4444"
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	closeAuditLoggerForTest(t, auditLogger)
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+		t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+	}
+	if got := event["transport_listener"]; got != "unix" {
+		t.Fatalf("transport_listener = %#v, want %q", got, "unix")
+	}
+}
+
+func TestBuildServeHandlerAuditEventIncludesSelectedProfile(t *testing.T) {
+	socketPath := shortSocketPath(t, "audit-profile-upstream")
+	_ = os.Remove(socketPath)
+
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_ping" {
+			t.Fatalf("path = %q, want /_ping", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "OK")
+	}))
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Log.Audit.Enabled = true
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	}
+	cfg.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name: "readonly",
+			Rules: []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "profile deny"},
+			},
+		},
+	}
+	cfg.Clients.SourceIPProfiles = []config.ClientSourceIPProfileAssignmentConfig{
+		{Profile: "readonly", CIDRs: []string{"192.0.2.0/24"}},
+	}
+
+	rules, err := compileRuleConfigsForTest(cfg.Rules)
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	var auditBuf bytes.Buffer
+	auditLogger := logging.NewAuditLogger(&auditBuf)
+	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	closeAuditLoggerForTest(t, auditLogger)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+		t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+	}
+	if got := event["selected_profile"]; got != "readonly" {
+		t.Fatalf("selected_profile = %#v, want %q", got, "readonly")
+	}
+	if got := event["reason_code"]; got != "matched_allow_rule" {
+		t.Fatalf("reason_code = %#v, want %q", got, "matched_allow_rule")
+	}
+	if got := event["status"]; got != float64(http.StatusOK) {
+		t.Fatalf("status = %#v, want %d", got, http.StatusOK)
+	}
+}
+
+func TestBuildServeHandlerAuditEventCapturesMalformedOwnershipRequest(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "audit-malformed-upstream")
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Log.Audit.Enabled = true
+	cfg.Ownership.Owner = "ci-job-123"
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	var auditBuf bytes.Buffer
+	auditLogger := logging.NewAuditLogger(&auditBuf)
+	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodPost, "/v1.45/containers/create", strings.NewReader("{"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	closeAuditLoggerForTest(t, auditLogger)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+		t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+	}
+	if got := event["decision"]; got != "deny" {
+		t.Fatalf("decision = %#v, want %q", got, "deny")
+	}
+	if got := event["reason_code"]; got != "owner_request_invalid" {
+		t.Fatalf("reason_code = %#v, want %q", got, "owner_request_invalid")
+	}
+	if got := event["status"]; got != float64(http.StatusBadRequest) {
+		t.Fatalf("status = %#v, want %d", got, http.StatusBadRequest)
+	}
+}
+
+func TestBuildServeHandlerAuditEventCapturesUpstreamFailure(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "audit-upstream-missing")
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Log.Audit.Enabled = true
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	var auditBuf bytes.Buffer
+	auditLogger := logging.NewAuditLogger(&auditBuf)
+	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	closeAuditLoggerForTest(t, auditLogger)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+		t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+	}
+	if got := event["decision"]; got != "allow" {
+		t.Fatalf("decision = %#v, want %q", got, "allow")
+	}
+	if got := event["reason_code"]; got != "upstream_socket_unreachable" {
+		t.Fatalf("reason_code = %#v, want %q", got, "upstream_socket_unreachable")
+	}
+	if got := event["status"]; got != float64(http.StatusBadGateway) {
+		t.Fatalf("status = %#v, want %d", got, http.StatusBadGateway)
+	}
+}
+
+func TestBuildServeHandlerLayers(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Health.Enabled = true
+	cfg.Log.AccessLog = true
+	cfg.Log.Audit.Enabled = true
+
+	auditLogger := logging.NewAuditLogger(io.Discard)
+	t.Cleanup(func() { _ = auditLogger.Close() })
+
+	got := serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), auditLogger, nil, newServeTestDeps(), nil))
+	want := []string{
+		"withHijack",
+		"withOwnership",
+		"withVisibility",
+		"withFilter",
+		"withHealth",
+		"withClientACL",
+		"withRequestID",
+		"withAuditLog",
+		"withAccessLog",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("layer names = %#v, want %#v", got, want)
+	}
+
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Log.Audit.Enabled = false
+
+	got = serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), nil, nil, newServeTestDeps(), nil))
+	want = []string{
+		"withHijack",
+		"withOwnership",
+		"withVisibility",
+		"withFilter",
+		"withClientACL",
+		"withRequestID",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("layer names without optional middleware = %#v, want %#v", got, want)
 	}
 }
 
@@ -926,6 +1385,14 @@ func TestListenerAddr(t *testing.T) {
 	if got := listenerAddr(withTCP); got != "tcp://127.0.0.1:2375" {
 		t.Fatalf("listenerAddr(withTCP) = %q, want %q", got, "tcp://127.0.0.1:2375")
 	}
+}
+
+func serveHandlerLayerNames(layers []serveHandlerLayer) []string {
+	names := make([]string, 0, len(layers))
+	for _, layer := range layers {
+		names = append(names, layer.name)
+	}
+	return names
 }
 
 func TestFullMiddlewareChainIntegration(t *testing.T) {
@@ -969,6 +1436,7 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 	var handler http.Handler = upstream
 	handler = filter.Middleware(rules, logger)(handler)
 	handler = healthInterceptor("/health", healthHandler, handler)
+	handler = logging.RequestIDMiddleware()(handler)
 	handler = logging.AccessLogMiddleware(logger)(handler)
 
 	healthReq := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -1039,6 +1507,9 @@ func TestNewHTTPServerSetsTimeouts(t *testing.T) {
 	}
 	if server.MaxHeaderBytes != maxHeaderBytes {
 		t.Fatalf("MaxHeaderBytes = %d, want %d", server.MaxHeaderBytes, maxHeaderBytes)
+	}
+	if server.ConnContext == nil {
+		t.Fatal("ConnContext is nil, want client identity capture hook")
 	}
 }
 

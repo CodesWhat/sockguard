@@ -1,16 +1,24 @@
 package filter
 
 import (
+	"net/url"
 	pathpkg "path"
 	"regexp"
+	"strings"
 	"testing"
 )
 
 var legacyVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+)?/`)
 
-func legacyNormalizePath(p string) string {
+func referenceNormalizePath(p string) string {
 	if p == "" {
 		return ""
+	}
+	if strings.IndexByte(p, '%') >= 0 {
+		unescaped, err := url.PathUnescape(p)
+		if err == nil {
+			p = unescaped
+		}
 	}
 	return legacyVersionPrefix.ReplaceAllString(pathpkg.Clean(p), "/")
 }
@@ -37,6 +45,12 @@ func FuzzPathMatch(f *testing.F) {
 		{"GET", "/../../etc/passwd"},
 		{"GET", "//containers///json"},
 		{"GET", "/v1.45/../containers/json"},
+		{"GET", "/containers%2Fjson"},
+		{"GET", "/containers%252Fjson"},
+		{"GET", "/containers/%2e%2e/images/json"},
+		{"GET", "/containers/%252e%252e/images/json"},
+		{"GET", "/v1.45%2Fcontainers/json"},
+		{"POST", "/containers%252Fcreate"},
 	}
 	for _, s := range seeds {
 		f.Add(s.method, s.path)
@@ -139,8 +153,8 @@ func FuzzGlobToRegex(f *testing.F) {
 }
 
 // FuzzNormalizePath fuzzes path normalization in isolation. The result must
-// stay equivalent to the legacy regex-based version-prefix stripping logic
-// after path cleaning.
+// stay equivalent to a reference implementation that percent-decodes once
+// before path cleaning and version-prefix stripping.
 func FuzzNormalizePath(f *testing.F) {
 	seeds := []string{
 		"/containers/json",
@@ -161,6 +175,12 @@ func FuzzNormalizePath(f *testing.F) {
 		"/../../etc/passwd",     // escape attempt
 		"//containers///json",   // redundant slashes
 		"/containers/./json",    // dot segment
+		"/containers%2Fjson",
+		"/containers%252Fjson",
+		"/containers/%2e%2e/images/json",
+		"/containers/%252e%252e/images/json",
+		"/v1.45%2Fcontainers/json",
+		"/v1.45/%252e%252e/containers/json",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -168,9 +188,9 @@ func FuzzNormalizePath(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, path string) {
 		normalized := NormalizePath(path)
-		want := legacyNormalizePath(path)
+		want := referenceNormalizePath(path)
 		if normalized != want {
-			t.Errorf("NormalizePath(%q) = %q, want legacy-normalized %q", path, normalized, want)
+			t.Errorf("NormalizePath(%q) = %q, want reference-normalized %q", path, normalized, want)
 		}
 	})
 }

@@ -22,6 +22,8 @@ import (
 )
 
 const maxFuzzBodyBytes = 4096
+const maxFuzzHeaderNameSuffixBytes = 64
+const maxFuzzHeaderValueBytes = 512
 const maxFuzzStreamBytes = (2 * hijackBufSize) + 1024
 
 type fuzzEchoResponse struct {
@@ -275,6 +277,26 @@ func FuzzHijackBidirectionalStream(f *testing.F) {
 	})
 }
 
+func TestFuzzHeaderNameIsBounded(t *testing.T) {
+	got := fuzzHeaderName(strings.Repeat("z", maxFuzzHeaderNameSuffixBytes*4))
+	if len(got) > len("X-Fuzz-")+maxFuzzHeaderNameSuffixBytes {
+		t.Fatalf("header name len = %d, want <= %d", len(got), len("X-Fuzz-")+maxFuzzHeaderNameSuffixBytes)
+	}
+	if got != "X-Fuzz-"+strings.Repeat("Z", maxFuzzHeaderNameSuffixBytes) {
+		t.Fatalf("header name = %q", got)
+	}
+}
+
+func TestSanitizeHeaderValueIsBounded(t *testing.T) {
+	got := sanitizeHeaderValue(strings.Repeat("Z", maxFuzzHeaderValueBytes*4))
+	if len(got) > maxFuzzHeaderValueBytes {
+		t.Fatalf("header value len = %d, want <= %d", len(got), maxFuzzHeaderValueBytes)
+	}
+	if got != strings.Repeat("Z", maxFuzzHeaderValueBytes) {
+		t.Fatalf("header value = %q", got)
+	}
+}
+
 func startFuzzEchoUpstream(f *testing.F) string {
 	f.Helper()
 
@@ -362,7 +384,11 @@ func truncateFuzzBytes(data []byte, max int) []byte {
 
 func fuzzHeaderName(s string) string {
 	var b strings.Builder
+	b.Grow(maxFuzzHeaderNameSuffixBytes)
 	for _, r := range s {
+		if b.Len() >= maxFuzzHeaderNameSuffixBytes {
+			break
+		}
 		switch {
 		case r >= 'a' && r <= 'z':
 			b.WriteRune(r - ('a' - 'A'))
@@ -380,7 +406,11 @@ func fuzzHeaderName(s string) string {
 
 func sanitizeHeaderValue(s string) string {
 	var b strings.Builder
+	b.Grow(maxFuzzHeaderValueBytes)
 	for _, r := range s {
+		if b.Len() >= maxFuzzHeaderValueBytes {
+			break
+		}
 		switch {
 		case r == '\t' || r == ' ':
 			b.WriteRune(r)

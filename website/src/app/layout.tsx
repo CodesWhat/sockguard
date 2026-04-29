@@ -18,12 +18,12 @@ const ibmPlexMono = IBM_Plex_Mono({
 export const metadata: Metadata = {
   title: "Sockguard - Docker Socket Proxy",
   description:
-    "Control what gets through. A Docker socket proxy that filters by method, path, and request body. Default-deny posture with structured audit logging.",
+    "Control what gets through. A Docker socket proxy that filters by method, path, and request body. Default-deny posture with structured access logging.",
   metadataBase: new URL("https://getsockguard.com"),
   openGraph: {
     title: "Sockguard - Docker Socket Proxy",
     description:
-      "Control what gets through. A Docker socket proxy that filters by method, path, and request body. Default-deny posture with structured audit logging.",
+      "Control what gets through. A Docker socket proxy that filters by method, path, and request body. Default-deny posture with structured access logging.",
     url: "https://getsockguard.com",
     siteName: "Sockguard",
     locale: "en_US",

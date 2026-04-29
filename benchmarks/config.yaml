@@ -1,6 +1,6 @@
 listen:
   socket: /tmp/sg-bench-proxy.sock
-  socket_mode: "0666"
+  socket_mode: "0600"
 
 upstream:
   socket: /tmp/sg-bench-mock.sock

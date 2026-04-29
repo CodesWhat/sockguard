@@ -99,7 +99,7 @@ jobs:
           go-version-file: app/go.mod
 
       - name: Restore fuzz corpus cache
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: app/internal/**/testdata/fuzz
           key: fuzz-corpus-${{ matrix.target }}-${{ github.ref_name }}
@@ -109,7 +109,14 @@ jobs:
       - name: Run extended fuzz (5 minutes)
         working-directory: app
         run: |
-          go test -fuzz=${{ matrix.target }} -fuzztime=5m -timeout=10m ${{ matrix.package }}
+          # Keep the monthly extended-fuzz invocation aligned with the other
+          # fuzz tiers: skip normal tests and let the job timeout, not the test
+          # binary's default timeout, be the real ceiling.
+          go test -run='^$' \
+            -fuzz="^${{ matrix.target }}$" \
+            -fuzztime=5m \
+            -timeout=0 \
+            "${{ matrix.package }}"
 
       - name: Upload fuzz corpus
         if: always()

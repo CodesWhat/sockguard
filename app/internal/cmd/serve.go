@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -74,6 +75,23 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		}
 	}()
 
+	var auditLogger *logging.AuditLogger
+	var auditLogOutputCloser io.Closer
+	if cfg.Log.Audit.Enabled {
+		auditLogger, auditLogOutputCloser, err = deps.newAuditLogger(cfg.Log.Audit.Format, cfg.Log.Audit.Output)
+		if err != nil {
+			return fmt.Errorf("audit logger: %w", err)
+		}
+		defer func() {
+			if auditLogOutputCloser == nil {
+				return
+			}
+			if closeErr := auditLogOutputCloser.Close(); closeErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "failed to close audit log output: %v\n", closeErr)
+			}
+		}()
+	}
+
 	// Tecnativa compatibility mode expands legacy env vars like CONTAINERS=1
 	// into explicit allow/deny rules before normal validation and compilation.
 	config.ApplyCompat(cfg, logger)
@@ -86,7 +104,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return err
 	}
 
-	handler := buildServeHandler(cfg, logger, rules, deps)
+	handler := buildServeHandler(cfg, logger, auditLogger, rules, deps)
 	listener, err := deps.createServeListener(cfg)
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
@@ -152,14 +170,36 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	return nil
 }
 
-func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
-	clientProfiles, err := compileClientProfiles(cfg)
+func buildServeHandler(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
+	clientProfiles, err := buildServeClientProfiles(cfg)
 	if err != nil {
 		logger.Error("invalid client profile config", "error", err)
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			logging.SetDenied(w, r, "client profile config invalid", filter.NormalizePath)
-			_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "client profile config invalid"})
-		})
+		return invalidClientProfileHandler()
+	}
+
+	handler := newServeUpstreamHandler(cfg, logger)
+	for _, layer := range buildServeHandlerLayers(cfg, logger, auditLogger, rules, deps, clientProfiles) {
+		handler = layer.with(handler)
+	}
+	return handler
+}
+
+type serveHandlerLayer struct {
+	name string
+	with func(http.Handler) http.Handler
+}
+
+func invalidClientProfileHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logging.SetDeniedWithCode(w, r, "client_profile_config_invalid", "client profile config invalid", filter.NormalizePath)
+		_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "client profile config invalid"})
+	})
+}
+
+func buildServeClientProfiles(cfg *config.Config) (map[string]filter.Policy, error) {
+	clientProfiles, err := compileClientProfiles(cfg)
+	if err != nil {
+		return nil, err
 	}
 	for name, profile := range clientProfiles {
 		exec := profile.Exec
@@ -167,67 +207,131 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 		profile.Exec = exec
 		clientProfiles[name] = profile
 	}
+	return clientProfiles, nil
+}
 
-	upstream := proxy.NewWithOptions(cfg.Upstream.Socket, logger, proxy.Options{
-		ModifyResponse: responsefilter.New(responsefilter.Options{
-			RedactContainerEnv:    cfg.Response.RedactContainerEnv,
-			RedactMountPaths:      cfg.Response.RedactMountPaths,
-			RedactNetworkTopology: cfg.Response.RedactNetworkTopology,
-		}).ModifyResponse,
+func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handler {
+	return proxy.NewWithOptions(cfg.Upstream.Socket, logger, proxy.Options{
+		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
 	})
-	var handler http.Handler = upstream
+}
 
-	// Hijack handler: intercepts attach/exec endpoints for native bidirectional
-	// streaming with optimized buffers and TCP half-close signaling.
-	handler = proxy.HijackHandler(cfg.Upstream.Socket, logger, handler)
+func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy) []serveHandlerLayer {
+	layers := []serveHandlerLayer{
+		namedServeHandlerLayer("withHijack", withHijack(cfg, logger)),
+		namedServeHandlerLayer("withOwnership", withOwnership(cfg, logger)),
+		namedServeHandlerLayer("withVisibility", withVisibility(cfg, logger)),
+		namedServeHandlerLayer("withFilter", withFilter(cfg, logger, rules, clientProfiles)),
+	}
+	if cfg.Health.Enabled {
+		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, logger, deps)))
+	}
+	layers = append(layers,
+		namedServeHandlerLayer("withClientACL", withClientACL(cfg, logger)),
+		namedServeHandlerLayer("withRequestID", withRequestID()),
+	)
+	if cfg.Log.Audit.Enabled && auditLogger != nil {
+		layers = append(layers, namedServeHandlerLayer("withAuditLog", withAuditLog(auditLogger, cfg)))
+	}
+	if cfg.Log.AccessLog {
+		layers = append(layers, namedServeHandlerLayer("withAccessLog", withAccessLog(logger)))
+	}
+	return layers
+}
 
-	handler = ownership.Middleware(cfg.Upstream.Socket, logger, ownership.Options{
+func namedServeHandlerLayer(name string, with func(http.Handler) http.Handler) serveHandlerLayer {
+	return serveHandlerLayer{name: name, with: with}
+}
+
+func withHijack(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		// Hijack handler: intercepts attach/exec endpoints for native bidirectional
+		// streaming with optimized buffers and TCP half-close signaling.
+		return proxy.HijackHandler(cfg.Upstream.Socket, logger, next)
+	}
+}
+
+func withOwnership(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+	return ownership.Middleware(cfg.Upstream.Socket, logger, ownership.Options{
 		Owner:              cfg.Ownership.Owner,
 		LabelKey:           cfg.Ownership.LabelKey,
 		AllowUnownedImages: cfg.Ownership.AllowUnownedImages,
-	})(handler)
+	})
+}
 
-	handler = visibility.Middleware(cfg.Upstream.Socket, logger, visibility.Options{
+func withVisibility(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+	return visibility.Middleware(cfg.Upstream.Socket, logger, visibility.Options{
 		VisibleResourceLabels: cfg.Response.VisibleResourceLabels,
 		Profiles:              clientVisibilityProfiles(cfg.Clients.Profiles),
 		ResolveProfile:        clientacl.RequestProfile,
-	})(handler)
+	})
+}
 
-	handler = filter.MiddlewareWithOptions(rules, logger, filter.Options{
-		DenyResponseVerbosity: filter.ParseDenyResponseVerbosity(cfg.Response.DenyVerbosity),
-		ContainerCreate: filter.ContainerCreateOptions{
-			AllowPrivileged:   cfg.RequestBody.ContainerCreate.AllowPrivileged,
-			AllowHostNetwork:  cfg.RequestBody.ContainerCreate.AllowHostNetwork,
-			AllowedBindMounts: cfg.RequestBody.ContainerCreate.AllowedBindMounts,
-		},
-		Exec: filter.ExecOptions{
-			AllowPrivileged: cfg.RequestBody.Exec.AllowPrivileged,
-			AllowRootUser:   cfg.RequestBody.Exec.AllowRootUser,
-			AllowedCommands: cfg.RequestBody.Exec.AllowedCommands,
-			InspectStart:    filter.NewDockerExecInspector(cfg.Upstream.Socket),
-		},
-		ImagePull: filter.ImagePullOptions{
-			AllowImports:       cfg.RequestBody.ImagePull.AllowImports,
-			AllowAllRegistries: cfg.RequestBody.ImagePull.AllowAllRegistries,
-			AllowOfficial:      cfg.RequestBody.ImagePull.AllowOfficial,
-			AllowedRegistries:  cfg.RequestBody.ImagePull.AllowedRegistries,
-		},
-		Build: filter.BuildOptions{
-			AllowRemoteContext:   cfg.RequestBody.Build.AllowRemoteContext,
-			AllowHostNetwork:     cfg.RequestBody.Build.AllowHostNetwork,
-			AllowRunInstructions: cfg.RequestBody.Build.AllowRunInstructions,
-		},
+func withFilter(cfg *config.Config, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy) func(http.Handler) http.Handler {
+	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, clientProfiles))
+}
+
+func withHealth(cfg *config.Config, logger *slog.Logger, deps *serveDeps) func(http.Handler) http.Handler {
+	startTime := deps.now()
+	healthHandler := health.Handler(cfg.Upstream.Socket, startTime, logger)
+	return func(next http.Handler) http.Handler {
+		return healthInterceptor(cfg.Health.Path, healthHandler, next)
+	}
+}
+
+func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+	return clientacl.Middleware(cfg.Upstream.Socket, logger, serveClientACLOptions(cfg))
+}
+
+func withRequestID() func(http.Handler) http.Handler {
+	return logging.RequestIDMiddleware()
+}
+
+func withAccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
+	return logging.AccessLogMiddleware(logger)
+}
+
+func withAuditLog(auditLogger *logging.AuditLogger, cfg *config.Config) func(http.Handler) http.Handler {
+	return logging.AuditLogMiddleware(auditLogger, logging.AuditOptions{
+		Listener:          auditListener(cfg),
+		OwnershipOwner:    cfg.Ownership.Owner,
+		OwnershipLabelKey: cfg.Ownership.LabelKey,
+	})
+}
+
+func auditListener(cfg *config.Config) string {
+	if cfg != nil && cfg.Listen.Socket != "" {
+		return "unix"
+	}
+	return "tcp"
+}
+
+func serveResponseFilterOptions(cfg *config.Config) responsefilter.Options {
+	return responsefilter.Options{
+		RedactContainerEnv:    cfg.Response.RedactContainerEnv,
+		RedactMountPaths:      cfg.Response.RedactMountPaths,
+		RedactNetworkTopology: cfg.Response.RedactNetworkTopology,
+		RedactSensitiveData:   cfg.Response.RedactSensitiveData,
+	}
+}
+
+func serveFilterOptions(cfg *config.Config, clientProfiles map[string]filter.Policy) filter.Options {
+	return filter.Options{
+		PolicyConfig:   servePolicyConfig(cfg),
 		Profiles:       clientProfiles,
 		ResolveProfile: clientacl.RequestProfile,
-	})(handler)
-
-	if cfg.Health.Enabled {
-		startTime := deps.now()
-		healthHandler := health.Handler(cfg.Upstream.Socket, startTime, logger)
-		handler = healthInterceptor(cfg.Health.Path, healthHandler, handler)
 	}
+}
 
-	handler = clientacl.Middleware(cfg.Upstream.Socket, logger, clientacl.Options{
+func servePolicyConfig(cfg *config.Config) filter.PolicyConfig {
+	policy := cfg.RequestBody.ToFilterOptions()
+	policy.DenyResponseVerbosity = filter.ParseDenyResponseVerbosity(cfg.Response.DenyVerbosity)
+	policy.Exec.InspectStart = filter.NewDockerExecInspector(cfg.Upstream.Socket)
+	return policy
+}
+
+func serveClientACLOptions(cfg *config.Config) clientacl.Options {
+	return clientacl.Options{
 		AllowedCIDRs: cfg.Clients.AllowedCIDRs,
 		ContainerLabels: clientacl.ContainerLabelOptions{
 			Enabled:     cfg.Clients.ContainerLabels.Enabled,
@@ -239,14 +343,9 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, rules []*filter.
 			ClientCertificates: clientCertificateProfiles(
 				cfg.Clients.ClientCertificateProfiles,
 			),
+			UnixPeers: clientUnixPeerProfiles(cfg.Clients.UnixPeerProfiles),
 		},
-	})(handler)
-
-	if cfg.Log.AccessLog {
-		handler = logging.AccessLogMiddleware(logger)(handler)
 	}
-
-	return handler
 }
 
 func clientSourceIPProfiles(values []config.ClientSourceIPProfileAssignmentConfig) []clientacl.SourceIPProfileAssignment {
@@ -266,6 +365,23 @@ func clientCertificateProfiles(values []config.ClientCertificateProfileAssignmen
 		assignments = append(assignments, clientacl.ClientCertificateProfileAssignment{
 			Profile:     value.Profile,
 			CommonNames: value.CommonNames,
+			DNSNames:    value.DNSNames,
+			IPAddresses: value.IPAddresses,
+			URISANs:     value.URISANs,
+			SPIFFEIDs:   value.SPIFFEIDs,
+		})
+	}
+	return assignments
+}
+
+func clientUnixPeerProfiles(values []config.ClientUnixPeerProfileAssignmentConfig) []clientacl.UnixPeerProfileAssignment {
+	assignments := make([]clientacl.UnixPeerProfileAssignment, 0, len(values))
+	for _, value := range values {
+		assignments = append(assignments, clientacl.UnixPeerProfileAssignment{
+			Profile: value.Profile,
+			UIDs:    value.UIDs,
+			GIDs:    value.GIDs,
+			PIDs:    value.PIDs,
 		})
 	}
 	return assignments
@@ -283,7 +399,8 @@ func clientVisibilityProfiles(values []config.ClientProfileConfig) map[string]vi
 
 func newHTTPServer(handler http.Handler) *http.Server {
 	return &http.Server{
-		Handler: handler,
+		Handler:     handler,
+		ConnContext: clientacl.ConnContext,
 		// Docker attach/logs/events can hold request/response bodies open for long periods.
 		// A non-zero ReadTimeout breaks those streaming APIs, so we intentionally leave it disabled.
 		// WriteTimeout stays disabled for the same reason: long-lived streamed responses and hijacked

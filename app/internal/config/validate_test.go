@@ -60,6 +60,42 @@ func TestValidateRejectsIncompleteMutualTLSConfig(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMutualTLSClientIdentitySelectorsWithoutCertificates(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Address = ":2376"
+	cfg.Listen.Socket = ""
+	cfg.Listen.TLS.AllowedCommonNames = []string{"portainer"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for incomplete listen.tls config with identity selectors")
+	}
+	if !strings.Contains(err.Error(), "listen.tls") {
+		t.Fatalf("expected listen.tls error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cert_file, key_file, and client_ca_file together") {
+		t.Fatalf("expected listen.tls completeness hint, got: %v", err)
+	}
+}
+
+func TestValidateRejectsUnixSocketModeOtherThan0600(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Socket = "/tmp/sockguard.sock"
+	cfg.Listen.Address = ""
+	cfg.Listen.SocketMode = "0660"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for unsupported listen.socket_mode")
+	}
+	if !strings.Contains(err.Error(), "listen.socket_mode") {
+		t.Fatalf("expected listen.socket_mode in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), `"0600"`) {
+		t.Fatalf("expected hardened mode hint in error, got: %v", err)
+	}
+}
+
 func TestValidateAcceptsNonLoopbackTCPWithMutualTLS(t *testing.T) {
 	dir := t.TempDir()
 	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
@@ -136,8 +172,8 @@ func TestValidateInvalidLogLevel(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid log level")
 	}
-	if !strings.Contains(err.Error(), "log level") {
-		t.Errorf("error should mention log level, got: %v", err)
+	if !strings.Contains(err.Error(), `log.level must be debug, info, warn, or error, got "verbose"`) {
+		t.Errorf("error should use normalized log.level phrasing, got: %v", err)
 	}
 }
 
@@ -148,8 +184,8 @@ func TestValidateInvalidLogFormat(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid log format")
 	}
-	if !strings.Contains(err.Error(), "log format") {
-		t.Errorf("error should mention log format, got: %v", err)
+	if !strings.Contains(err.Error(), `log.format must be json or text, got "xml"`) {
+		t.Errorf("error should use normalized log.format phrasing, got: %v", err)
 	}
 }
 
@@ -178,6 +214,37 @@ func TestValidateRejectsNonLocalLogOutputPath(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidAuditLogFormat(t *testing.T) {
+	cfg := Defaults()
+	cfg.Log.Audit.Enabled = true
+	cfg.Log.Audit.Format = "text"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid audit log format")
+	}
+	if !strings.Contains(err.Error(), `log.audit.format must be json, got "text"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidAuditLogOutput(t *testing.T) {
+	cfg := Defaults()
+	cfg.Log.Audit.Enabled = true
+	cfg.Log.Audit.Output = "../audit.log"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid audit log output")
+	}
+	if !strings.Contains(err.Error(), "log.audit.output") {
+		t.Fatalf("error should mention log.audit.output, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "local file path") {
+		t.Fatalf("error should mention local path validation, got: %v", err)
+	}
+}
+
 func TestValidateEmptyRules(t *testing.T) {
 	cfg := Defaults()
 	cfg.Rules = nil
@@ -198,8 +265,8 @@ func TestValidateInvalidAction(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid action")
 	}
-	if !strings.Contains(err.Error(), "invalid action") {
-		t.Errorf("error should mention invalid action, got: %v", err)
+	if !strings.Contains(err.Error(), `rule 1: action must be allow or deny, got "permit"`) {
+		t.Errorf("error should use normalized action phrasing, got: %v", err)
 	}
 }
 
@@ -226,8 +293,8 @@ func TestValidateInvalidHealthPath(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid health path")
 	}
-	if !strings.Contains(err.Error(), "health path") {
-		t.Errorf("error should mention health path, got: %v", err)
+	if !strings.Contains(err.Error(), `health.path must start with /, got "health"`) {
+		t.Errorf("error should use normalized health.path phrasing, got: %v", err)
 	}
 }
 
@@ -239,8 +306,8 @@ func TestValidateInvalidDenyResponseVerbosity(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid deny response verbosity")
 	}
-	if !strings.Contains(err.Error(), "deny response verbosity") {
-		t.Errorf("error should mention deny response verbosity, got: %v", err)
+	if !strings.Contains(err.Error(), `response.deny_verbosity must be minimal or verbose, got "chatty"`) {
+		t.Errorf("error should use normalized response.deny_verbosity phrasing, got: %v", err)
 	}
 }
 
@@ -300,6 +367,14 @@ func TestValidateAllowsExecCommandAndImageRegistryAllowlists(t *testing.T) {
 	cfg := Defaults()
 	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/local/bin/pre-update", "--check"}}
 	cfg.RequestBody.ImagePull.AllowedRegistries = []string{"ghcr.io", "registry.example.com:5000"}
+	cfg.RequestBody.Service.AllowedBindMounts = []string{"/srv/services"}
+	cfg.RequestBody.Service.AllowedRegistries = []string{"ghcr.io", "registry.example.com:5000"}
+	cfg.RequestBody.Swarm.AllowedJoinRemoteAddrs = []string{"manager.internal:2377"}
+	cfg.RequestBody.Plugin.AllowedBindMounts = []string{"/var/lib/plugins"}
+	cfg.RequestBody.Plugin.AllowedDevices = []string{"/dev/fuse"}
+	cfg.RequestBody.Plugin.AllowedRegistries = []string{"plugins.example.com"}
+	cfg.RequestBody.Plugin.AllowedCapabilities = []string{"CAP_SYS_ADMIN"}
+	cfg.RequestBody.Plugin.AllowedSetEnvPrefixes = []string{"DEBUG=", "LOG_LEVEL="}
 
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("Validate() error = %v, want nil", err)
@@ -329,6 +404,84 @@ func TestValidateRejectsInvalidImageRegistryAllowlistEntry(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "request_body.image_pull.allowed_registries") {
 		t.Fatalf("expected request_body.image_pull.allowed_registries in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsRelativeServiceBindMountAllowlist(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Service.AllowedBindMounts = []string{"srv/services"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for relative service bind mount allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.service.allowed_bind_mounts") {
+		t.Fatalf("expected request_body.service.allowed_bind_mounts in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidServiceRegistryAllowlistEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Service.AllowedRegistries = []string{"https://ghcr.io/acme"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid service registry allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.service.allowed_registries") {
+		t.Fatalf("expected request_body.service.allowed_registries in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidPluginDeviceAllowlistEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Plugin.AllowedDevices = []string{"dev/fuse"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid plugin device allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.plugin.allowed_devices") {
+		t.Fatalf("expected request_body.plugin.allowed_devices in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidPluginRegistryAllowlistEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Plugin.AllowedRegistries = []string{"https://plugins.example.com/acme"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid plugin registry allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.plugin.allowed_registries") {
+		t.Fatalf("expected request_body.plugin.allowed_registries in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsEmptySwarmJoinRemoteAddrAllowlistEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Swarm.AllowedJoinRemoteAddrs = []string{""}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for empty swarm join remote address entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.swarm.allowed_join_remote_addrs") {
+		t.Fatalf("expected request_body.swarm.allowed_join_remote_addrs in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsEmptyPluginSetEnvPrefixEntry(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Plugin.AllowedSetEnvPrefixes = []string{""}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for empty plugin set env prefix entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.plugin.allowed_set_env_prefixes") {
+		t.Fatalf("expected request_body.plugin.allowed_set_env_prefixes in error, got: %v", err)
 	}
 }
 
@@ -461,8 +614,42 @@ func TestValidateRejectsUnknownClientProfileReference(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown profile reference")
 	}
-	if !strings.Contains(err.Error(), "clients.default_profile") {
-		t.Fatalf("expected clients.default_profile in error, got: %v", err)
+	if !strings.Contains(err.Error(), `clients.default_profile must match a configured client profile, got "missing"`) {
+		t.Fatalf("expected normalized clients.default_profile error, got: %v", err)
+	}
+}
+
+func TestValidateNormalizesClientProfileCollectionErrors(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{
+			Name:  "readonly",
+			Rules: []RuleConfig{{Match: MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"}},
+		},
+		{
+			Name:  "readonly",
+			Rules: nil,
+		},
+	}
+	cfg.Clients.SourceIPProfiles = []ClientSourceIPProfileAssignmentConfig{
+		{Profile: "missing"},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid client profile collection config")
+	}
+	if !strings.Contains(err.Error(), `clients.profiles[1].name must be unique, got duplicate "readonly"`) {
+		t.Fatalf("expected normalized duplicate-profile error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.profiles[1].rules must contain at least one rule") {
+		t.Fatalf("expected normalized empty-rules error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), `clients.source_ip_profiles[0].profile must match a configured client profile, got "missing"`) {
+		t.Fatalf("expected normalized profile reference error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.source_ip_profiles[0].cidrs must contain at least one CIDR") {
+		t.Fatalf("expected normalized empty-cidrs error, got: %v", err)
 	}
 }
 
@@ -481,6 +668,63 @@ func TestValidateRejectsClientCertificateProfilesWithoutMutualTLS(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "clients.client_certificate_profiles") {
 		t.Fatalf("expected clients.client_certificate_profiles in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidExtendedClientIdentitySelectors(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Address = "127.0.0.1:2376"
+	cfg.Listen.TLS.CertFile = "/certs/server.pem"
+	cfg.Listen.TLS.KeyFile = "/certs/server-key.pem"
+	cfg.Listen.TLS.ClientCAFile = "/certs/ca.pem"
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "readonly", Rules: []RuleConfig{{Match: MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"}}},
+	}
+	cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
+		{
+			Profile:     "readonly",
+			DNSNames:    []string{" "},
+			IPAddresses: []string{"not-an-ip"},
+			URISANs:     []string{":"},
+			SPIFFEIDs:   []string{"https://not-spiffe.example/test"},
+		},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid extended client identity selectors")
+	}
+	if !strings.Contains(err.Error(), "clients.client_certificate_profiles[0].dns_names") {
+		t.Fatalf("expected dns_names validation error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.client_certificate_profiles[0].ip_addresses") {
+		t.Fatalf("expected ip_addresses validation error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.client_certificate_profiles[0].uri_sans") {
+		t.Fatalf("expected uri_sans validation error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.client_certificate_profiles[0].spiffe_ids") {
+		t.Fatalf("expected spiffe_ids validation error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsInvalidUnixPeerProfileSelectors(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Socket = ""
+	cfg.Listen.Address = "127.0.0.1:2376"
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "readonly", Rules: []RuleConfig{{Match: MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"}}},
+	}
+	cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{
+		{Profile: "readonly"},
+	}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid unix peer profile selectors")
+	}
+	if !strings.Contains(err.Error(), "clients.unix_peer_profiles") {
+		t.Fatalf("expected clients.unix_peer_profiles in error, got: %v", err)
 	}
 }
 

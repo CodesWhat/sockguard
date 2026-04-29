@@ -1,6 +1,6 @@
 ---
 title: Configuration
-description: Configure sockguard via YAML or environment variables — listeners, TLS, request-body inspection, client profiles, ownership, and audit logging.
+description: Configure sockguard via YAML or environment variables — listeners, TLS, request-body inspection, client profiles, ownership, and structured access plus audit logging.
 ---
 
 Sockguard supports two configuration methods: YAML config files and environment variables.
@@ -15,8 +15,13 @@ listen:
     cert_file: /run/secrets/sockguard/server-cert.pem
     key_file: /run/secrets/sockguard/server-key.pem
     client_ca_file: /run/secrets/sockguard/client-ca.pem
+    allowed_dns_names:
+      - portainer.internal
+    allowed_uri_sans:
+      - spiffe://sockguard.test/workload/portainer
 
 insecure_allow_body_blind_writes: false
+insecure_allow_read_exfiltration: false
 
 upstream:
   socket: /var/run/docker.sock
@@ -32,6 +37,7 @@ response:
   redact_container_env: true
   redact_mount_paths: true
   redact_network_topology: true
+  redact_sensitive_data: true
 
 request_body:
   container_create:
@@ -55,6 +61,16 @@ request_body:
     allow_remote_context: false
     allow_host_network: false
     allow_run_instructions: false
+  service:
+    allow_host_network: false
+    allowed_bind_mounts:
+      - /srv/services
+    allow_official: true
+    allowed_registries:
+      - ghcr.io
+  swarm:
+    allow_force_new_cluster: false
+    allow_external_ca: false
 
 clients:
   allowed_cidrs:                  # coarse TCP admission; empty means all allowed
@@ -64,7 +80,7 @@ clients:
     label_prefix: com.sockguard.allow.
 
 ownership:
-  owner: ci-job-123               # when set, stamps owner labels and denies cross-owner access
+  owner: ci-job-123               # when set, stamps owner labels and denies cross-owner access on owned resources
   label_key: com.sockguard.owner
   allow_unowned_images: true
 
@@ -82,7 +98,9 @@ rules:
   - match: { method: GET, path: "/events" }
     action: allow
 
-  - match: { method: GET, path: "/containers/**" }
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
     action: allow
 
   - match: { method: "*", path: "/**" }
@@ -93,14 +111,49 @@ rules:
 The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker API proxy off the network unless you explicitly choose otherwise.
 
 - For the safest deployment, use `listen.socket` and share a unix socket.
+- Sockguard hardens the unix socket to `0600` owner-only permissions. `listen.socket_mode` must stay `0600`; broader modes are rejected at startup.
 - For remote or container-network TCP, configure `listen.tls` so Sockguard requires mutual TLS. Sockguard's mTLS server minimum is TLS 1.3, so callers must support TLS 1.3.
+- `listen.tls.client_ca_file` still defines the issuing trust root. To avoid trusting every cert that CA can mint, optionally narrow the accepted verified client leaf with the selectors described under [mTLS Client Selectors](#mtls-client-selectors) below. Different selector fields are ANDed, while entries inside one field are ORed.
 - Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`. That mode is only for legacy compatibility on a private, trusted network.
 - `POST /containers/create` bodies are inspected by default. Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, and bind mount sources outside `request_body.container_create.allowed_bind_mounts`. Named volumes still work without allowlist entries because they are not host bind mounts.
-- `POST /containers/*/exec` and `POST /exec/*/start` are inspected when `request_body.exec.allowed_commands` is non-empty. Sockguard denies argv vectors outside that allowlist, denies privileged exec unless `allow_privileged: true`, denies root-user exec unless `allow_root_user: true`, and re-checks `POST /exec/*/start` against Docker's stored exec metadata before execution.
+- `POST /containers/*/exec` and `POST /exec/*/start` are inspected when `request_body.exec.allowed_commands` is non-empty. Sockguard denies argv vectors outside that allowlist, denies privileged exec unless `allow_privileged: true`, denies root-user exec unless `allow_root_user: true`, and re-checks `POST /exec/*/start` against Docker's stored exec metadata before execution. Docker exposes exec inspect and exec start as separate API calls, so this start-time check has an unavoidable time-of-check/time-of-use window; keep exec allowlists and client profile assignments narrow.
 - `POST /images/create` is inspected by default. Sockguard blocks `fromSrc` imports unless `request_body.image_pull.allow_imports: true` and only allows Docker Hub official images unless you set `allow_all_registries: true` or list explicit `allowed_registries`.
 - `POST /build` is inspected by default. Sockguard blocks remote contexts, `networkmode=host`, and Dockerfiles that contain `RUN` instructions unless you explicitly allow those behaviors under `request_body.build.*`.
-- `insecure_allow_body_blind_writes` is now reserved for the writes Sockguard still cannot safely constrain, such as arbitrary exec without an `allowed_commands` allowlist and Swarm service management endpoints.
-- `response.redact_container_env`, `response.redact_mount_paths`, and `response.redact_network_topology` default to `true`. Sockguard redacts `Config.Env` on `GET /containers/*/json`, redacts container `HostConfig.Binds` host paths plus `Mounts[*].Source` on `GET /containers/json` and inspect responses, redacts volume `Mountpoint` on `GET /volumes` and `GET /volumes/*`, and strips container/network address topology from `GET /containers/json`, `GET /containers/*/json`, `GET /networks`, and `GET /networks/*`. Disable them only for trusted admin clients that truly need Docker's raw metadata.
+- `POST /volumes/create` is inspected by default. Sockguard blocks non-local volume drivers and driver options unless you explicitly allow them under `request_body.volume.*`.
+- `POST /secrets/create` and `POST /configs/create` are inspected by default. Sockguard blocks custom and template drivers unless you explicitly allow them under `request_body.secret.*` and `request_body.config.*`.
+- `POST /services/create` and `POST /services/*/update` are inspected by default. Sockguard blocks services that attach the `host` network, blocks bind mounts outside `request_body.service.allowed_bind_mounts`, and constrains service images to Docker Hub official images unless you set `request_body.service.allow_all_registries: true` or list explicit `request_body.service.allowed_registries`.
+- `POST /swarm/init`, `POST /swarm/join`, and `POST /swarm/update` are inspected by default. Sockguard blocks `ForceNewCluster`, external CA configuration, non-allowlisted join targets, token rotations, manager unlock-key rotations, manager autolock, and signing-CA updates unless you explicitly allow them under `request_body.swarm.*`.
+- `POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains plugin registries, privileges, assignment prefixes, local tar `config.json`, host mounts, device exposure, and capabilities unless you explicitly allow them under `request_body.plugin.*`. `POST /plugins/create` is inspected whether the upload arrives as a raw tar body or a `multipart/form-data` envelope — the multipart stream is parsed and the embedded `config.json` is extracted before policy evaluation.
+- Bounded JSON writes (`POST /containers/create`, `/volumes/create`, `/secrets/create`, `/configs/create`) and plugin tar uploads that exceed their per-endpoint byte caps are rejected with `413 Payload Too Large` before the inspector decodes them, so a misbehaving or hostile client cannot tie up the filter or the Docker daemon with oversized payloads.
+- `insecure_allow_body_blind_writes` is now reserved for the body-bearing writes Sockguard still cannot safely constrain, chiefly arbitrary exec without an `allowed_commands` allowlist plus other uninspected paths such as network create/connect/disconnect, image load, container update/archive, swarm unlock, and node update.
+- `insecure_allow_read_exfiltration` stays `false` by default and must be set explicitly before broad read rules can expose raw archive/export or stream-style endpoints such as `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, or `GET /images/*/get`.
+- `response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` default to `true`. Sockguard redacts workload env arrays across container/service/task/plugin reads, redacts host-path-bearing mount and device metadata across container/volume/task/service/plugin/system-usage reads, strips container/network/swarm/node topology from container/network/service/task/node/swarm/info/system-usage responses, and redacts higher-risk payload material such as config `Spec.Data`, service secret/config references, swarm join/unlock material, and swarm/node TLS metadata. Disable them only for trusted admin clients that truly need Docker's raw metadata.
+
+## mTLS Client Selectors
+
+`listen.tls.client_ca_file` is the issuing trust root. To avoid trusting every leaf that CA can mint, narrow admission with one or more of the selector fields below. Different fields are ANDed; entries inside one field are ORed. An empty selector means "any verified client certificate issued by the configured CA is accepted".
+
+| Field | Type | Matches |
+| --- | --- | --- |
+| `allowed_common_names` | `[]string` | Exact CN on the verified leaf certificate |
+| `allowed_dns_names` | `[]string` | DNS SAN entries on the verified leaf |
+| `allowed_ip_addresses` | `[]string` | IP SAN entries on the verified leaf (not the TCP source IP) |
+| `allowed_uri_sans` | `[]string` | URI SAN entries on the verified leaf (for example `spiffe://...`) |
+| `allowed_public_key_sha256_pins` | `[]string` | Lowercase hex SHA-256 of the leaf `SubjectPublicKeyInfo`, optionally prefixed with `sha256:` |
+
+```yaml
+listen:
+  tls:
+    client_ca_file: /run/secrets/sockguard/client-ca.pem
+    allowed_common_names: ["portainer"]
+    allowed_dns_names: ["portainer.internal"]
+    allowed_ip_addresses: ["10.0.5.12"]
+    allowed_uri_sans: ["spiffe://sockguard.test/workload/portainer"]
+    allowed_public_key_sha256_pins:
+      - 3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b
+```
+
+Malformed selectors (invalid IPs, malformed URIs, non-hex SPKI pins, pins that are not 32 bytes) are rejected at startup. The TLS handshake fails closed with no upstream connection when a CA-issued client certificate does not match the configured allowlist.
 
 ## Per-Client ACLs And Profiles
 
@@ -109,7 +162,7 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 When `clients.container_labels.enabled` is `true`, Sockguard resolves bridge-network callers by source IP through the Docker API and looks for per-client allow labels on the calling container. Each `clients.container_labels.label_prefix + <method>` label is interpreted as a comma-separated Sockguard glob allowlist for that HTTP method:
 
 ```
-com.sockguard.allow.get=/containers/**,/events
+com.sockguard.allow.get=/containers/json,/containers/*/json,/events
 com.sockguard.allow.post=/containers/*/restart
 ```
 
@@ -126,15 +179,23 @@ clients:
         - 172.18.0.0/16
   client_certificate_profiles:
     - profile: portainer
-      common_names:
-        - portainer-admin
+      dns_names:
+        - portainer.internal
+      spiffe_ids:
+        - spiffe://sockguard.test/workload/portainer
+  unix_peer_profiles:
+    - profile: readonly
+      uids:
+        - 501
   profiles:
     - name: readonly
       response:
         visible_resource_labels:
           - com.sockguard.visible=true
       rules:
-        - match: { method: GET, path: "/containers/**" }
+        - match: { method: GET, path: "/containers/json" }
+          action: allow
+        - match: { method: GET, path: "/containers/*/json" }
           action: allow
         - match: { method: GET, path: "/events" }
           action: allow
@@ -151,7 +212,9 @@ clients:
           allowed_commands:
             - ["/usr/local/bin/pre-update"]
       rules:
-        - match: { method: GET, path: "/containers/**" }
+        - match: { method: GET, path: "/containers/json" }
+          action: allow
+        - match: { method: GET, path: "/containers/*/json" }
           action: allow
         - match: { method: POST, path: "/containers/*/exec" }
           action: allow
@@ -164,23 +227,46 @@ clients:
 ```
 
 - `clients.source_ip_profiles` matches the caller's remote IP against CIDRs in config order.
-- `clients.client_certificate_profiles` matches the verified mTLS leaf certificate common name in config order and takes precedence over source-IP assignment.
+- `clients.client_certificate_profiles` matches the verified mTLS leaf certificate in config order. Each assignment can match `common_names`, `dns_names`, `ip_addresses`, `uri_sans`, and `spiffe_ids`; different selector fields on the same assignment are ANDed, while entries inside one field are ORed.
+- `clients.unix_peer_profiles` matches unix-socket callers by peer `uids`, `gids`, and `pids`. Different selector fields on the same assignment are ANDed, while entries inside one field are ORed.
 - `clients.default_profile` is the fallback when no specific assignment matches.
 - Each profile has its own `rules` and `request_body` policy, so one proxy can safely host a read-only dashboard, a container updater, and an admin UI at the same time.
 - `clients.client_certificate_profiles` requires `listen.tls` mutual TLS.
-- `response.visible_resource_labels` and `clients.profiles[].response.visible_resource_labels` enforce read-side visibility on list/events/inspect paths. Selectors use Docker label syntax (`key` or `key=value`), are ANDed together, and profile selectors are additive with the root response selectors.
-- Hidden resources disappear from `GET /containers/json`, `/images/json`, `/networks`, `/volumes`, and `/events`, while inspect-style reads for hidden targets return `404` instead of exposing a policy-specific deny body.
+- `clients.unix_peer_profiles` requires `listen.socket`.
+- `response.visible_resource_labels` and `clients.profiles[].response.visible_resource_labels` enforce read-side visibility on labeled list/events/inspect/log paths. Selectors use Docker label syntax (`key` or `key=value`), are ANDed together, and profile selectors are additive with the root response selectors.
+- Hidden resources disappear from `GET /containers/json`, `/images/json`, `/networks`, `/volumes`, `/services`, `/tasks`, `/secrets`, `/configs`, `/nodes`, and `GET /events`, while hidden inspect/log-style targets such as `GET /services/*`, `GET /services/*/logs`, `GET /tasks/*`, `GET /tasks/*/logs`, `GET /secrets/*`, `GET /configs/*`, `GET /nodes/*`, and `GET /swarm` return `404` instead of exposing a policy-specific deny body.
 
 ## Owner Label Isolation
 
 Setting `ownership.owner` turns on per-proxy resource ownership isolation. Sockguard will:
 
-- Add `ownership.label_key=ownership.owner` to `POST /containers/create`, `/networks/create`, and `/volumes/create` request bodies
-- Add the same label to `POST /build` via the `labels` query parameter
-- Inject `label=<owner>` filters into list, prune, and events requests so responses only reveal resources owned by this proxy instance
-- Inspect target resources on individual `GET`, `POST`, `PUT`, and `DELETE` paths and deny access to resources owned by a different identity
+- Add `ownership.label_key=ownership.owner` to `POST /containers/create`, `/networks/create`, `/volumes/create`, `/services/create`, `/services/*/update`, `/secrets/create`, `/configs/create`, `/nodes/*/update`, and `/swarm/update`
+- Stamp service writes at both `Labels` and `TaskTemplate.ContainerSpec.Labels` so downstream tasks inherit the same owner identity
+- Add the same label to `POST /build` via the `labels` query parameter so build-produced images can carry the owner identity too
+- Inject `label=<owner>` filters into list, prune, and events requests, including `/services`, `/tasks`, `/secrets`, `/configs`, and `/nodes` (`node.label=<owner>` there), so responses only reveal resources owned by this proxy instance
+- Inspect target resources on individual `GET`, `POST`, `PUT`, and `DELETE` paths and deny cross-owner access to owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state
+
+Unlabeled nodes and swarm state are denied on reads once ownership is enabled. They can still be claimed through `POST /nodes/*/update` and `POST /swarm/update`, where Sockguard stamps the current owner label into the outgoing update body before forwarding it to Docker.
 
 `allow_unowned_images` defaults to `true` so shared base images can still be pulled and inspected without relabeling. Set it to `false` in tighter multi-tenant setups.
+
+## Logging And Audit
+
+Sockguard has two operator-facing logging streams:
+
+- `log.access_log` (default `true`) controls the structured request log written through the normal logger output.
+- `log.audit.enabled` (default `false`) enables a dedicated JSON audit stream with a stable schema: request ID, client request ID, raw and normalized path, decision, `reason_code`, reason, matched rule, selected profile, flattened actor and transport identity fields, ownership context, and final HTTP status.
+
+Access logs intentionally carry both `path` and `normalized_path`. `path` is the raw client URL path as received, including any Docker API version prefix, percent-encoded separators, or other client-controlled shape; keep it for forensic replay. `normalized_path` is the canonical path after Sockguard's policy normalization and is the field to use for SIEM grouping, alerting, rule dashboards, and allow/deny analysis. Audit events use the same split as `raw_path` and `normalized_path`.
+
+Audit logs use a separate sink from the access logger:
+
+- `log.audit.format`: currently only `json` is accepted.
+- `log.audit.output`: same sink options as the main logger (`stderr`, `stdout`, or `file:/absolute/path`).
+
+Every audit event includes an `ownership` object with `enabled`, `owner`, and `label_key`. When `ownership.owner` is set, that owner identifier appears in every audit event, including requests that do not touch owned resources. Treat it as an operator-visible tenant or workload identifier, not a secret.
+
+Audit events intentionally preserve both the proxy-generated canonical `request_id` and any caller-supplied `client_request_id`. Upstream proxy failures rewrite the audit `reason_code` to bounded terminal values such as `upstream_socket_unreachable` or `upstream_response_rejected_by_policy` so the final outcome is explicit even after a request was policy-allowed.
 
 ## Rule Matching
 
@@ -195,7 +281,7 @@ Rules are evaluated in order. **First match wins.** If no rule matches, the requ
 | `/containers/**` | `/containers/json`, `/containers/abc/start`, `/containers/abc/logs/stream` | `/images/json` |
 | `/**` | Everything | Nothing |
 
-Docker API version prefixes (`/v1.45/`) are stripped before matching.
+Before rule evaluation, Sockguard canonicalizes the request path: it strips any `/vN.NN/` Docker API version prefix, percent-decodes the path (so `%2F`, `%2E`, and mixed-case escapes cannot smuggle separators past a literal allowlist), and resolves `.` / `..` segments via `path.Clean`. A request for `/v1.45/containers/%2e%2e/images/json` therefore matches as `/images/json`.
 
 ### Methods
 
@@ -217,10 +303,15 @@ SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES=false
 SOCKGUARD_UPSTREAM_SOCKET=/var/run/docker.sock
 SOCKGUARD_LOG_LEVEL=debug
 SOCKGUARD_LOG_FORMAT=json
+SOCKGUARD_LOG_ACCESS_LOG=true
+SOCKGUARD_LOG_AUDIT_ENABLED=true
+SOCKGUARD_LOG_AUDIT_FORMAT=json
+SOCKGUARD_LOG_AUDIT_OUTPUT=stderr
 SOCKGUARD_RESPONSE_DENY_VERBOSITY=minimal
 SOCKGUARD_RESPONSE_REDACT_CONTAINER_ENV=true
 SOCKGUARD_RESPONSE_REDACT_MOUNT_PATHS=true
 SOCKGUARD_RESPONSE_REDACT_NETWORK_TOPOLOGY=true
+SOCKGUARD_RESPONSE_REDACT_SENSITIVE_DATA=true
 SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_PRIVILEGED=false
 SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_NETWORK=false
 SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_BIND_MOUNTS=/srv/containers,/var/lib/app-data
@@ -246,40 +337,47 @@ SOCKGUARD_OWNERSHIP_ALLOW_UNOWNED_IMAGES=true
 - `minimal` (default): returns only the generic `message`. Never echoes the request method, path, or matched rule reason.
 - `verbose`: returns `message`, `method`, `path` (with `/secrets/*` and `/swarm/unlockkey` paths redacted), and `reason`. Intended for rule authoring and dev work only — never a production default because it can leak request details to denied callers.
 
-`response.redact_container_env`, `response.redact_mount_paths`, and `response.redact_network_topology` control response filtering on successful Docker read calls:
+`response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` control read-side redaction on successful Docker read calls:
 
-- `redact_container_env` (default `true`): replaces `Config.Env` with an empty array on `GET /containers/*/json`.
-- `redact_mount_paths` (default `true`): redacts container mount `Source` paths, host bind sources inside `HostConfig.Binds`, and volume `Mountpoint` fields on the Docker read endpoints Sockguard currently understands.
-- `redact_network_topology` (default `true`): redacts container and network address topology on container/network list and inspect endpoints, including `HostConfig.NetworkMode`, container `NetworkSettings`, network `IPAM.Config`, connected `Containers`, and `Peers`.
+- `redact_container_env` (default `true`): replaces workload env arrays with empty arrays on container, service, task, and plugin reads.
+- `redact_mount_paths` (default `true`): redacts mount and host-device source paths on container, volume, task, service, plugin, and `/system/df` reads.
+- `redact_network_topology` (default `true`): redacts container, network, task, service, node, swarm, `/info`, and `/system/df` topology details such as network IDs, attached addresses, remote managers, and node reachability addresses.
+- `redact_sensitive_data` (default `true`): redacts config payload material, service secret/config references, swarm join/unlock and CA material, and node/swarm TLS metadata.
 
 ## Tecnativa Compatibility
 
 For drop-in migration, sockguard accepts Tecnativa-style env vars:
 
 ```bash
-CONTAINERS=1      # Allow GET /containers/**
-IMAGES=1           # Allow GET /images/**
-NETWORKS=0         # Deny /networks/**
-VOLUMES=0          # Deny /volumes/**
-EVENTS=1           # Allow GET /events (default)
-PING=1             # Allow GET /_ping (default)
-VERSION=1          # Allow GET /version (default)
-POST=0             # Deny all write operations (default)
+CONTAINERS=1      # Allow /containers/** (GET/HEAD when POST=0)
+IMAGES=1          # Allow /images/** (GET/HEAD when POST=0)
+SERVICES=1        # Allow /services/** (GET/HEAD when POST=0)
+SECRETS=0         # Deny /secrets/**
+EVENTS=1          # Allow /events (default)
+PING=1            # Allow /_ping (default)
+VERSION=1         # Allow /version (default)
+POST=0            # Read-only mode for section vars (default)
+SOCKET_PATH=/var/run/docker.sock
+LOG_LEVEL=warning
 ```
 
 Compat env vars only generate rules when no explicit `rules:` are configured. If `rules:` is present in YAML, those rules take precedence even when they are identical to Sockguard's built-in defaults.
 
+Broad compat reads such as `CONTAINERS=1`, `IMAGES=1`, or `POST=0` with section-wide `GET` access require `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` if you intentionally want raw archive/export or log/attach streaming parity. Safer YAML configs should allow only the list/inspect endpoints a client needs.
+
 ### Granular Operations (LinuxServer compatible)
 
-When `POST=1` is set:
+Granular container-write flags still work even when `POST=0`:
 
 ```bash
 ALLOW_START=1      # Allow POST /containers/{id}/start
 ALLOW_STOP=1       # Allow POST /containers/{id}/stop
-ALLOW_RESTART=1    # Allow POST /containers/{id}/restart
+ALLOW_RESTARTS=1   # Allow POST /containers/{id}/stop|restart|kill
 ALLOW_CREATE=0     # Deny POST /containers/create (default)
 ALLOW_EXEC=0       # Deny POST /containers/{id}/exec (default)
 ```
+
+Sockguard also accepts the legacy singular `ALLOW_RESTART=1` alias, but `ALLOW_RESTARTS` is the upstream Tecnativa/LinuxServer name.
 
 ## Precedence
 

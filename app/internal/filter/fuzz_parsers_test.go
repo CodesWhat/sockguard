@@ -42,6 +42,31 @@ func FuzzBuild(f *testing.F) {
 	})
 }
 
+func FuzzContainerCreate(f *testing.F) {
+	f.Add([]byte(`{"Image":"busybox:1.37","HostConfig":{"Privileged":true}}`))
+	f.Add([]byte(`{"Image":"busybox:1.37","HostConfig":{"NetworkMode":"host"}}`))
+	f.Add([]byte(`{"Image":"busybox:1.37","HostConfig":{"Binds":["/srv/unsafe:/data:rw"],"Mounts":[{"Type":"bind","Source":"/srv/also-unsafe","Target":"/config"}]}}`))
+	f.Add([]byte(`{"Image":"busybox:1.37","HostConfig":{"Binds":["/srv/sockguard/data:/data:rw","named-cache:/cache"],"Mounts":[{"Type":"bind","Source":"/srv/sockguard/config","Target":"/config"},{"Type":"volume","Source":"build-cache","Target":"/var/cache"}]}}`))
+	f.Add([]byte(`{"HostConfig":`))
+	f.Add(bytes.Repeat([]byte("a"), maxContainerCreateBodyBytes+1))
+
+	policy := newContainerCreatePolicy(ContainerCreateOptions{
+		AllowedBindMounts: []string{"/srv/sockguard"},
+	})
+
+	f.Fuzz(func(t *testing.T, body []byte) {
+		body = truncateParserFuzzBytes(body, maxContainerCreateBodyBytes+1024)
+
+		req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(body))
+		_, _ = policy.inspect(nil, req, "/containers/create")
+
+		if req.Body != nil {
+			_, _ = io.Copy(io.Discard, req.Body)
+			_ = req.Body.Close()
+		}
+	})
+}
+
 func FuzzExec(f *testing.F) {
 	f.Add([]byte(`{"Cmd":["/usr/local/bin/pre-update","--check"]}`))
 	f.Add([]byte(`{"Cmd":"/bin/sh -c id","Privileged":true}`))
@@ -58,7 +83,7 @@ func FuzzExec(f *testing.F) {
 		body = truncateParserFuzzBytes(body, maxParserFuzzBytes)
 
 		req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", bytes.NewReader(body))
-		_, _ = policy.inspect(req, "/containers/abc123/exec")
+		_, _ = policy.inspect(nil, req, "/containers/abc123/exec")
 
 		if req.Body != nil {
 			_, _ = io.Copy(io.Discard, req.Body)

@@ -11,15 +11,15 @@ The Docker socket (`/var/run/docker.sock`) is effectively root access to your ho
 Any container with socket access can create privileged containers, mount the host
 filesystem, and escape containment entirely.
 
-Existing proxies filter by URL path only. Sockguard goes further:
+Most existing proxies stop at method/path or regex filtering. Sockguard goes further:
 
 - **Request body inspection** — `POST /containers/create` bodies are parsed to block privileged containers, host networking, and non-allowlisted bind mounts before Docker sees the request
-- **Owner label isolation** — stamp created containers, networks, volumes, and build images with an owner label, auto-filter list/prune, deny cross-owner access
-- **Per-client ACLs** — gate callers by source CIDR and enforce per-client allowlists resolved from calling container labels
+- **Owner label isolation** — stamp label-capable creates and build images with an owner label, auto-filter labeled list/prune, deny cross-owner access across workload and control-plane resources
+- **Per-client policies** — gate callers by source CIDR, certificate selectors, unix peer credentials, or calling container labels, then apply named profiles
 - **mTLS for remote TCP** — non-loopback TCP requires mutual TLS 1.3 by default, plaintext TCP is an explicit legacy opt-in
-- **Structured audit logging** — JSON logs with method, path, decision, matched rule, latency, request ID
+- **Structured access logging** — JSON logs with method, raw path, normalized policy path, decision, matched rule, latency, canonical request ID, and preserved client request ID when present
 - **Default-deny** — everything blocked unless explicitly allowed
-- **Tecnativa compatible** — drop-in replacement using the same environment variables
+- **Tecnativa compatible** — drop-in replacement for the current Tecnativa environment-variable surface
 
 ## Quick Start
 
@@ -38,6 +38,7 @@ services:
       - sockguard-socket:/var/run/sockguard
     environment:
       - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+      - SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true
       - CONTAINERS=1
       - IMAGES=1
       - EVENTS=1
@@ -55,5 +56,7 @@ volumes:
 ```
 
 > The published image runs as root inside the container by default so it can open `/var/run/docker.sock` on stock Docker hosts without `user` or `group_add` overrides. The meaningful hardening levers are the proxy policy, `read_only`, dropped capabilities, `no-new-privileges`, and your runtime's seccomp/AppArmor/SELinux defaults.
+
+> `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` is only there to preserve broad `CONTAINERS=1` / `IMAGES=1` compatibility, including raw archive/export and log/attach streaming endpoints. Remove it once you switch to tighter YAML list/inspect rules.
 
 > If you choose TCP instead of a unix socket, Sockguard only allows loopback TCP by default. Non-loopback TCP requires mutual TLS unless you explicitly opt into legacy plaintext mode with `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true`.

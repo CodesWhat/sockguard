@@ -15,6 +15,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GREMLINS_VERSION: v0.6.0
+
 concurrency:
   group: mutation-testing-${{ github.workflow }}
   cancel-in-progress: true
@@ -30,17 +33,17 @@ jobs:
       matrix:
         include:
           - name: filter
-            package: ./internal/filter/...
+            package: ./internal/filter
           - name: proxy
-            package: ./internal/proxy/...
+            package: ./internal/proxy
           - name: config
-            package: ./internal/config/...
+            package: ./internal/config
           - name: httpjson
-            package: ./internal/httpjson/...
+            package: ./internal/httpjson
           - name: logging
-            package: ./internal/logging/...
+            package: ./internal/logging
           - name: cmd
-            package: ./internal/cmd/...
+            package: ./internal/cmd
 
     steps:
       - name: Harden Runner
@@ -59,12 +62,12 @@ jobs:
           go-version-file: app/go.mod
 
       - name: Install Gremlins
-        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@latest
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@${GREMLINS_VERSION}
 
       - name: Run Gremlins mutation testing
         working-directory: app
         run: |
-          gremlins unleash --tags="" --timeout=90m ${{ matrix.package }} 2>&1 | tee mutation-report.txt
+          gremlins unleash --tags="" ${{ matrix.package }} 2>&1 | tee mutation-report.txt
         env:
           GOFLAGS: ""
 
@@ -74,6 +77,7 @@ jobs:
           {
             echo "### Mutation Testing: ${{ matrix.name }}"
             echo "- Tool: Gremlins (Go mutation tester)"
+            echo "- Version: ${GREMLINS_VERSION}"
             echo "- Mode: ADVISORY (non-blocking)"
             echo "- Package: ${{ matrix.package }}"
             echo ""

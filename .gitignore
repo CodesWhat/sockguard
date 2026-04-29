@@ -39,6 +39,9 @@ bin/
 # Playwright MCP scratch dir
 .playwright-mcp/
 
+# Local fuzz runner artifacts
+.fuzz-artifacts/
+
 # QLTY runtime state
 .qlty/*
 !.qlty/qlty.toml

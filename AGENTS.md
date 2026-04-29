@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## What is Sockguard?
 
-Sockguard is a Docker socket proxy written in Go. It sits between Docker API consumers (Traefik, drydock, Portainer, etc.) and the Docker socket, filtering requests by HTTP method, path, and request body content (container-create, exec, image pull, and build are all inspected; Swarm writes remain behind the blind-write opt-in). Default-deny posture, structured logging, per-client policy profiles, and read-side visibility/redaction make it the most comprehensive Docker socket security layer available.
+Sockguard is a Docker socket proxy written in Go. It sits between Docker API consumers (Traefik, drydock, Portainer, etc.) and the Docker socket, filtering requests by HTTP method, path, and request body content on `POST /containers/create`, exec create/start, image pull, build, `POST /volumes/create`, `POST /secrets/create`, `POST /configs/create`, service create/update, swarm init/join/update, and plugin pull/upgrade/set/create. Any remaining body-bearing write path that Sockguard still cannot safely constrain stays behind the blind-write opt-in instead of being silently allowed. Default-deny posture, structured logging, per-client policy profiles, owner-label isolation, and read-side visibility/redaction make it the most comprehensive Docker socket security layer available.
 
 ## Repository Structure
 
@@ -60,7 +60,7 @@ rules:
     action: allow
 ```
 
-Path patterns use glob syntax. Docker API version prefixes (`/v1.45/`) are stripped before matching.
+Path patterns use glob syntax. Before matching, Sockguard canonicalizes policy paths by percent-decoding escaped separators and dot segments, cleaning dot segments with Go's `path.Clean`, and stripping Docker API version prefixes such as `/v1.45/`.
 
 Rules evaluate in order — first match wins. No match = deny (default-deny).
 
@@ -98,7 +98,7 @@ Gitmoji + Conventional Commits: `<emoji> <type>(<scope>): <description>`
 
 ## Pre-push Checks (Lefthook)
 
-Runs piped (sequential, fail-fast): go-lint → go-test → biome → build.
+See `lefthook.yml` for exact commands. The pre-push pipeline is piped (sequential, fail-fast): clean-tree, GoReleaser snapshot dry-run, `golangci-lint`, `go test -race`, fuzz smoke, `npm dedupe --dry-run`, knip, biome, `npm test`, `turbo build`, and zizmor.
 
 ## Key Constraints
 

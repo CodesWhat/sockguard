@@ -2,6 +2,8 @@ package clientacl
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,8 +11,10 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/filter"
@@ -19,6 +23,15 @@ import (
 )
 
 const DefaultLabelPrefix = "com.sockguard.allow."
+
+const (
+	reasonCodeClientACLMisconfigured     = "client_acl_misconfigured"
+	reasonCodeClientIPNotAllowed         = "client_ip_not_allowed"
+	reasonCodeClientIdentityLookupFailed = "client_identity_lookup_failed"
+	reasonCodeClientLabelACLLookupFailed = "client_label_acl_lookup_failed"
+	reasonCodeClientLabelACLEvalFailed   = "client_label_acl_evaluation_failed"
+	reasonCodeClientLabelPolicyDenied    = "client_label_policy_denied_request"
+)
 
 // Options configures client admission and per-client container-label ACLs.
 type Options struct {
@@ -39,6 +52,7 @@ type ProfileOptions struct {
 	DefaultProfile     string
 	SourceIPs          []SourceIPProfileAssignment
 	ClientCertificates []ClientCertificateProfileAssignment
+	UnixPeers          []UnixPeerProfileAssignment
 }
 
 // SourceIPProfileAssignment maps one or more source CIDRs to a named profile.
@@ -52,6 +66,18 @@ type SourceIPProfileAssignment struct {
 type ClientCertificateProfileAssignment struct {
 	Profile     string
 	CommonNames []string
+	DNSNames    []string
+	IPAddresses []string
+	URISANs     []string
+	SPIFFEIDs   []string
+}
+
+// UnixPeerProfileAssignment maps unix peer credentials to a named profile.
+type UnixPeerProfileAssignment struct {
+	Profile string
+	UIDs    []uint32
+	GIDs    []uint32
+	PIDs    []int32
 }
 
 type aclDeps struct {
@@ -65,12 +91,43 @@ type resolvedClient struct {
 }
 
 type compiledOptions struct {
-	allowedCIDRs       []netip.Prefix
-	labelPrefix        string
-	labelsOn           bool
-	defaultProfile     string
-	sourceIPProfiles   []compiledSourceIPProfileAssignment
-	clientCertProfiles []compiledClientCertificateProfileAssignment
+	allowedCIDRs           []netip.Prefix
+	labelPrefix            string
+	labelsOn               bool
+	defaultProfile         string
+	sourceIPProfiles       []compiledSourceIPProfileAssignment
+	sourceIPProfileIndex   *sourceIPProfileIndex
+	clientCertProfiles     []compiledClientCertificateProfileAssignment
+	clientCertProfileIndex *clientCertificateProfileIndex
+	unixPeerProfiles       []compiledUnixPeerProfileAssignment
+}
+
+type profileMatchStrategy string
+
+const (
+	profileMatchStrategyClientCertificate profileMatchStrategy = "client_certificate"
+	profileMatchStrategyUnixPeer          profileMatchStrategy = "unix_peer"
+	profileMatchStrategySourceIP          profileMatchStrategy = "source_ip"
+	profileMatchStrategyDefaultProfile    profileMatchStrategy = "default_profile"
+)
+
+type profileLookupResult struct {
+	profile string
+	ok      bool
+}
+
+// These per-process runtime indexes avoid re-scanning the configured profile
+// assignments on every request for the same concrete client IP or certificate.
+// Selection semantics stay the same: the first lookup for a key still walks the
+// assignment list in config order, then memoizes that first-match-wins result.
+type sourceIPProfileIndex struct {
+	mu    sync.RWMutex
+	cache map[netip.Addr]profileLookupResult
+}
+
+type clientCertificateProfileIndex struct {
+	mu    sync.RWMutex
+	cache map[[sha256.Size]byte]profileLookupResult
 }
 
 type compiledSourceIPProfileAssignment struct {
@@ -81,10 +138,21 @@ type compiledSourceIPProfileAssignment struct {
 type compiledClientCertificateProfileAssignment struct {
 	profile     string
 	commonNames []string
+	dnsNames    []string
+	ipAddresses []netip.Addr
+	uriSANs     []string
+	spiffeIDs   []string
+}
+
+type compiledUnixPeerProfileAssignment struct {
+	profile string
+	uids    []uint32
+	gids    []uint32
+	pids    []int32
 }
 
 func (c compiledOptions) hasProfileSelection() bool {
-	return c.defaultProfile != "" || len(c.sourceIPProfiles) > 0 || len(c.clientCertProfiles) > 0
+	return c.defaultProfile != "" || len(c.sourceIPProfiles) > 0 || len(c.clientCertProfiles) > 0 || len(c.unixPeerProfiles) > 0
 }
 
 type listedContainer struct {
@@ -105,7 +173,15 @@ type upstreamResolver struct {
 
 type contextKey int
 
-const contextKeyProfile contextKey = iota
+const (
+	contextKeyProfile contextKey = iota
+	contextKeyConnectionIdentity
+)
+
+type connectionIdentity struct {
+	unixPeer    *unixPeerCredentials
+	unixPeerErr error
+}
 
 // Middleware applies client CIDR admission checks and optional per-client
 // label ACLs resolved from the caller container's source IP.
@@ -119,7 +195,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 		logger.Error("invalid client ACL config", "error", err)
 		return func(http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				logging.SetDenied(w, r, "client ACL misconfigured", filter.NormalizePath)
+				logging.SetDeniedWithCode(w, r, reasonCodeClientACLMisconfigured, "client ACL misconfigured", filter.NormalizePath)
 				_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "client ACL misconfigured"})
 			})
 		}
@@ -134,13 +210,21 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 			clientIP, ipOK := remoteIP(r.RemoteAddr)
 			if len(compiled.allowedCIDRs) > 0 {
 				if !ipOK || !ipAllowed(clientIP, compiled.allowedCIDRs) {
-					logging.SetDenied(w, r, "client IP not allowed", filter.NormalizePath)
+					logging.SetDeniedWithCode(w, r, reasonCodeClientIPNotAllowed, "client IP not allowed", filter.NormalizePath)
 					_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: "client IP not allowed"})
 					return
 				}
 			}
 
-			if profile, ok := selectProfile(r, clientIP, ipOK, compiled); ok {
+			profile, strategy, ok, err := selectProfile(r, clientIP, ipOK, compiled)
+			if err != nil {
+				logger.ErrorContext(r.Context(), "client identity lookup failed", "error", err)
+				logging.SetDeniedWithCode(w, r, reasonCodeClientIdentityLookupFailed, "client identity lookup failed", filter.NormalizePath)
+				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client identity lookup failed"})
+				return
+			}
+			if ok {
+				logger.DebugContext(r.Context(), "client ACL profile matched", "profile", profile, "strategy", strategy)
 				if meta := logging.MetaForRequest(w, r); meta != nil {
 					meta.Profile = profile
 				}
@@ -155,7 +239,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 			client, found, err := deps.resolveClient(r.Context(), clientIP)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "client label ACL lookup failed", "error", err, "client_ip", clientIP.String())
-				logging.SetDenied(w, r, "client label ACL lookup failed", filter.NormalizePath)
+				logging.SetDeniedWithCode(w, r, reasonCodeClientLabelACLLookupFailed, "client label ACL lookup failed", filter.NormalizePath)
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client label ACL lookup failed"})
 				return
 			}
@@ -173,7 +257,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 					"client_ip", clientIP.String(),
 					"client_container", clientName(client),
 				)
-				logging.SetDenied(w, r, "client label ACL evaluation failed", filter.NormalizePath)
+				logging.SetDeniedWithCode(w, r, reasonCodeClientLabelACLEvalFailed, "client label ACL evaluation failed", filter.NormalizePath)
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client label ACL evaluation failed"})
 				return
 			}
@@ -188,7 +272,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 				return
 			}
 
-			logging.SetDenied(w, r, "client label policy denied request", filter.NormalizePath)
+			logging.SetDeniedWithCode(w, r, reasonCodeClientLabelPolicyDenied, "client label policy denied request", filter.NormalizePath)
 			_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: "client label policy denied request"})
 		})
 	}
@@ -249,6 +333,10 @@ func compileOptions(opts Options) (compiledOptions, error) {
 		compiledAssignment := compiledClientCertificateProfileAssignment{
 			profile:     strings.TrimSpace(assignment.Profile),
 			commonNames: make([]string, 0, len(assignment.CommonNames)),
+			dnsNames:    make([]string, 0, len(assignment.DNSNames)),
+			ipAddresses: make([]netip.Addr, 0, len(assignment.IPAddresses)),
+			uriSANs:     make([]string, 0, len(assignment.URISANs)),
+			spiffeIDs:   make([]string, 0, len(assignment.SPIFFEIDs)),
 		}
 		for _, value := range assignment.CommonNames {
 			trimmed := strings.TrimSpace(value)
@@ -257,7 +345,56 @@ func compileOptions(opts Options) (compiledOptions, error) {
 			}
 			compiledAssignment.commonNames = append(compiledAssignment.commonNames, trimmed)
 		}
+		for _, value := range assignment.DNSNames {
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" {
+				continue
+			}
+			compiledAssignment.dnsNames = append(compiledAssignment.dnsNames, trimmed)
+		}
+		for _, value := range assignment.IPAddresses {
+			addr, err := netip.ParseAddr(strings.TrimSpace(value))
+			if err != nil {
+				return compiled, fmt.Errorf("parse client certificate IP SAN %q: %w", value, err)
+			}
+			compiledAssignment.ipAddresses = append(compiledAssignment.ipAddresses, addr.Unmap())
+		}
+		for _, value := range assignment.URISANs {
+			parsed, err := url.Parse(strings.TrimSpace(value))
+			if err != nil {
+				return compiled, fmt.Errorf("parse client certificate URI SAN %q: %w", value, err)
+			}
+			compiledAssignment.uriSANs = append(compiledAssignment.uriSANs, parsed.String())
+		}
+		for _, value := range assignment.SPIFFEIDs {
+			parsed, err := url.Parse(strings.TrimSpace(value))
+			if err != nil {
+				return compiled, fmt.Errorf("parse client certificate SPIFFE ID %q: %w", value, err)
+			}
+			compiledAssignment.spiffeIDs = append(compiledAssignment.spiffeIDs, parsed.String())
+		}
 		compiled.clientCertProfiles = append(compiled.clientCertProfiles, compiledAssignment)
+	}
+
+	compiled.unixPeerProfiles = make([]compiledUnixPeerProfileAssignment, 0, len(opts.Profiles.UnixPeers))
+	for _, assignment := range opts.Profiles.UnixPeers {
+		compiled.unixPeerProfiles = append(compiled.unixPeerProfiles, compiledUnixPeerProfileAssignment{
+			profile: strings.TrimSpace(assignment.Profile),
+			uids:    append([]uint32(nil), assignment.UIDs...),
+			gids:    append([]uint32(nil), assignment.GIDs...),
+			pids:    append([]int32(nil), assignment.PIDs...),
+		})
+	}
+
+	if len(compiled.sourceIPProfiles) > 0 {
+		compiled.sourceIPProfileIndex = &sourceIPProfileIndex{
+			cache: make(map[netip.Addr]profileLookupResult),
+		}
+	}
+	if len(compiled.clientCertProfiles) > 0 {
+		compiled.clientCertProfileIndex = &clientCertificateProfileIndex{
+			cache: make(map[[sha256.Size]byte]profileLookupResult),
+		}
 	}
 
 	return compiled, nil
@@ -265,6 +402,35 @@ func compileOptions(opts Options) (compiledOptions, error) {
 
 func withProfile(ctx context.Context, profile string) context.Context {
 	return context.WithValue(ctx, contextKeyProfile, profile)
+}
+
+func withConnectionIdentity(ctx context.Context, identity connectionIdentity) context.Context {
+	return context.WithValue(ctx, contextKeyConnectionIdentity, identity)
+}
+
+func withUnixPeerCredentials(ctx context.Context, creds unixPeerCredentials) context.Context {
+	return withConnectionIdentity(ctx, connectionIdentity{unixPeer: &creds})
+}
+
+func unixPeerCredentialsFromContext(ctx context.Context) (unixPeerCredentials, bool) {
+	identity, _ := ctx.Value(contextKeyConnectionIdentity).(connectionIdentity)
+	if identity.unixPeer == nil {
+		return unixPeerCredentials{}, false
+	}
+	return *identity.unixPeer, true
+}
+
+// ConnContext captures per-connection client identity selectors so request
+// handlers can evaluate unix peer credentials alongside TLS identities.
+func ConnContext(ctx context.Context, conn net.Conn) context.Context {
+	creds, ok, err := peerCredentialsFromConn(conn)
+	if err != nil {
+		return withConnectionIdentity(ctx, connectionIdentity{unixPeerErr: err})
+	}
+	if !ok {
+		return ctx
+	}
+	return withUnixPeerCredentials(ctx, creds)
 }
 
 // RequestProfile returns the named policy profile selected for the request.
@@ -276,48 +442,259 @@ func RequestProfile(r *http.Request) (string, bool) {
 	return value, value != ""
 }
 
-func selectProfile(r *http.Request, clientIP netip.Addr, ipOK bool, compiled compiledOptions) (string, bool) {
-	if profile, ok := matchClientCertificateProfile(r, compiled.clientCertProfiles); ok {
-		return profile, true
+func selectProfile(r *http.Request, clientIP netip.Addr, ipOK bool, compiled compiledOptions) (string, profileMatchStrategy, bool, error) {
+	if profile, ok := matchClientCertificateProfile(r, compiled.clientCertProfiles, compiled.clientCertProfileIndex); ok {
+		return profile, profileMatchStrategyClientCertificate, true, nil
+	}
+	if profile, ok, err := matchUnixPeerProfile(r, compiled.unixPeerProfiles); ok || err != nil {
+		return profile, profileMatchStrategyUnixPeer, ok, err
 	}
 	if ipOK {
-		if profile, ok := matchSourceIPProfile(clientIP, compiled.sourceIPProfiles); ok {
-			return profile, true
+		if profile, ok := matchSourceIPProfile(clientIP, compiled.sourceIPProfiles, compiled.sourceIPProfileIndex); ok {
+			return profile, profileMatchStrategySourceIP, true, nil
 		}
 	}
 	if compiled.defaultProfile != "" {
-		return compiled.defaultProfile, true
+		return compiled.defaultProfile, profileMatchStrategyDefaultProfile, true, nil
 	}
-	return "", false
+	return "", "", false, nil
 }
 
-func matchSourceIPProfile(addr netip.Addr, assignments []compiledSourceIPProfileAssignment) (string, bool) {
+func matchSourceIPProfile(addr netip.Addr, assignments []compiledSourceIPProfileAssignment, index *sourceIPProfileIndex) (string, bool) {
+	if cached, found := index.lookup(addr); found {
+		return cached.profile, cached.ok
+	}
+
+	result := profileLookupResult{}
 	for _, assignment := range assignments {
 		for _, prefix := range assignment.cidrs {
 			if prefix.Contains(addr) {
-				return assignment.profile, true
+				result = profileLookupResult{profile: assignment.profile, ok: true}
+				index.store(addr, result)
+				return result.profile, result.ok
 			}
 		}
+	}
+
+	index.store(addr, result)
+	return "", false
+}
+
+func matchClientCertificateProfile(r *http.Request, assignments []compiledClientCertificateProfileAssignment, index *clientCertificateProfileIndex) (string, bool) {
+	leaf := clientCertificateLeaf(r)
+	if leaf == nil {
+		return "", false
+	}
+
+	fingerprint, fingerprintOK := clientCertificateFingerprint(leaf)
+	if fingerprintOK {
+		if cached, found := index.lookup(fingerprint); found {
+			return cached.profile, cached.ok
+		}
+	}
+
+	result := profileLookupResult{}
+	for _, assignment := range assignments {
+		if assignment.matches(leaf) {
+			result = profileLookupResult{profile: assignment.profile, ok: true}
+			if fingerprintOK {
+				index.store(fingerprint, result)
+			}
+			return result.profile, result.ok
+		}
+	}
+	if fingerprintOK {
+		index.store(fingerprint, result)
 	}
 	return "", false
 }
 
-func matchClientCertificateProfile(r *http.Request, assignments []compiledClientCertificateProfileAssignment) (string, bool) {
-	if r == nil || r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		return "", false
+func clientCertificateLeaf(r *http.Request) *x509.Certificate {
+	if r == nil || r.TLS == nil {
+		return nil
 	}
-	commonName := strings.TrimSpace(r.TLS.PeerCertificates[0].Subject.CommonName)
-	if commonName == "" {
-		return "", false
+	if len(r.TLS.VerifiedChains) > 0 && len(r.TLS.VerifiedChains[0]) > 0 {
+		return r.TLS.VerifiedChains[0][0]
+	}
+	return nil
+}
+
+func matchUnixPeerProfile(r *http.Request, assignments []compiledUnixPeerProfileAssignment) (string, bool, error) {
+	if len(assignments) == 0 {
+		return "", false, nil
+	}
+	identity, _ := r.Context().Value(contextKeyConnectionIdentity).(connectionIdentity)
+	if identity.unixPeerErr != nil {
+		return "", false, identity.unixPeerErr
+	}
+	creds, ok := unixPeerCredentialsFromContext(r.Context())
+	if !ok {
+		return "", false, nil
 	}
 	for _, assignment := range assignments {
-		for _, allowed := range assignment.commonNames {
-			if commonName == allowed {
-				return assignment.profile, true
+		if assignment.matches(creds) {
+			return assignment.profile, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (a compiledUnixPeerProfileAssignment) matches(creds unixPeerCredentials) bool {
+	if !a.hasSelectors() {
+		return false
+	}
+	if len(a.uids) > 0 && !containsUint32(a.uids, creds.UID) {
+		return false
+	}
+	if len(a.gids) > 0 && !containsUint32(a.gids, creds.GID) {
+		return false
+	}
+	if len(a.pids) > 0 && !containsInt32(a.pids, creds.PID) {
+		return false
+	}
+	return true
+}
+
+func (a compiledUnixPeerProfileAssignment) hasSelectors() bool {
+	return len(a.uids) > 0 || len(a.gids) > 0 || len(a.pids) > 0
+}
+
+func containsUint32(values []uint32, want uint32) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsInt32(values []int32, want int32) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (a compiledClientCertificateProfileAssignment) matches(cert *x509.Certificate) bool {
+	if cert == nil || !a.hasSelectors() {
+		return false
+	}
+	if len(a.commonNames) > 0 && !containsExact(a.commonNames, strings.TrimSpace(cert.Subject.CommonName)) {
+		return false
+	}
+	if len(a.dnsNames) > 0 && !intersectsStrings(a.dnsNames, cert.DNSNames) {
+		return false
+	}
+	if len(a.ipAddresses) > 0 && !intersectsIPAddrs(a.ipAddresses, cert.IPAddresses) {
+		return false
+	}
+	uriSANs := certificateURIStrings(cert)
+	if len(a.uriSANs) > 0 && !intersectsStrings(a.uriSANs, uriSANs) {
+		return false
+	}
+	if len(a.spiffeIDs) > 0 && !intersectsStrings(a.spiffeIDs, uriSANs) {
+		return false
+	}
+	return true
+}
+
+func (a compiledClientCertificateProfileAssignment) hasSelectors() bool {
+	return len(a.commonNames) > 0 || len(a.dnsNames) > 0 || len(a.ipAddresses) > 0 || len(a.uriSANs) > 0 || len(a.spiffeIDs) > 0
+}
+
+func containsExact(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func intersectsStrings(allowed []string, actual []string) bool {
+	for _, candidate := range actual {
+		if containsExact(allowed, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func intersectsIPAddrs(allowed []netip.Addr, actual []net.IP) bool {
+	for _, candidate := range actual {
+		addr, ok := netip.AddrFromSlice(candidate)
+		if !ok {
+			continue
+		}
+		addr = addr.Unmap()
+		for _, allowedAddr := range allowed {
+			if allowedAddr == addr {
+				return true
 			}
 		}
 	}
-	return "", false
+	return false
+}
+
+func certificateURIStrings(cert *x509.Certificate) []string {
+	if cert == nil || len(cert.URIs) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(cert.URIs))
+	for _, value := range cert.URIs {
+		if value == nil {
+			continue
+		}
+		values = append(values, value.String())
+	}
+	return values
+}
+
+func clientCertificateFingerprint(cert *x509.Certificate) ([sha256.Size]byte, bool) {
+	if cert == nil || len(cert.Raw) == 0 {
+		return [sha256.Size]byte{}, false
+	}
+	return sha256.Sum256(cert.Raw), true
+}
+
+func (i *sourceIPProfileIndex) lookup(addr netip.Addr) (profileLookupResult, bool) {
+	if i == nil {
+		return profileLookupResult{}, false
+	}
+	i.mu.RLock()
+	result, ok := i.cache[addr]
+	i.mu.RUnlock()
+	return result, ok
+}
+
+func (i *sourceIPProfileIndex) store(addr netip.Addr, result profileLookupResult) {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	i.cache[addr] = result
+	i.mu.Unlock()
+}
+
+func (i *clientCertificateProfileIndex) lookup(fingerprint [sha256.Size]byte) (profileLookupResult, bool) {
+	if i == nil {
+		return profileLookupResult{}, false
+	}
+	i.mu.RLock()
+	result, ok := i.cache[fingerprint]
+	i.mu.RUnlock()
+	return result, ok
+}
+
+func (i *clientCertificateProfileIndex) store(fingerprint [sha256.Size]byte, result profileLookupResult) {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	i.cache[fingerprint] = result
+	i.mu.Unlock()
 }
 
 func remoteIP(remoteAddr string) (netip.Addr, bool) {
@@ -449,10 +826,7 @@ func splitLabelPatterns(value string) []string {
 }
 
 func (r upstreamResolver) resolveClient(ctx context.Context, addr netip.Addr) (resolvedClient, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/json", nil)
-	if err != nil {
-		return resolvedClient{}, false, err
-	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/json", nil)
 
 	resp, err := r.client.Do(req)
 	if err != nil {

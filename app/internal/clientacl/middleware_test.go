@@ -1,6 +1,7 @@
 package clientacl
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,6 +40,13 @@ func (f fakeResolver) deps() aclDeps {
 		resolveClient: func(context.Context, netip.Addr) (resolvedClient, bool, error) {
 			return f.client, f.found, f.err
 		},
+	}
+}
+
+func verifiedClientTLS(cert *x509.Certificate) *tls.ConnectionState {
+	return &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{cert},
+		VerifiedChains:   [][]*x509.Certificate{{cert}},
 	}
 }
 
@@ -116,6 +125,30 @@ func TestMiddlewareAssignsProfileFromClientCertificate(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.TLS = verifiedClientTLS(&x509.Certificate{Subject: pkix.Name{CommonName: "portainer-admin"}})
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareIgnoresUnverifiedPeerCertificateForProfileSelection(t *testing.T) {
+	handler := middlewareWithDeps(testLogger(), Options{
+		Profiles: ProfileOptions{
+			ClientCertificates: []ClientCertificateProfileAssignment{
+				{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
+			},
+		},
+	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if profile, ok := RequestProfile(r); ok {
+			t.Fatalf("RequestProfile() = (%q, true), want no profile from unverified peer certificate", profile)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	req.TLS = &tls.ConnectionState{
 		PeerCertificates: []*x509.Certificate{
 			{Subject: pkix.Name{CommonName: "portainer-admin"}},
@@ -126,6 +159,600 @@ func TestMiddlewareAssignsProfileFromClientCertificate(t *testing.T) {
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareLogsMatchedProfileStrategyAtDebugLevel(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := middlewareWithDeps(logger, Options{
+		Profiles: ProfileOptions{
+			SourceIPs: []SourceIPProfileAssignment{
+				{Profile: "watchtower", CIDRs: []string{"192.0.2.0/24"}},
+			},
+		},
+	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "client ACL profile matched") {
+		t.Fatalf("expected profile match log, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "strategy=source_ip") {
+		t.Fatalf("expected source_ip strategy in log, got %q", logOutput)
+	}
+	if !strings.Contains(logOutput, "profile=watchtower") {
+		t.Fatalf("expected matched profile in log, got %q", logOutput)
+	}
+}
+
+func TestMiddlewarePrefersVerifiedClientCertificateChain(t *testing.T) {
+	handler := middlewareWithDeps(testLogger(), Options{
+		Profiles: ProfileOptions{
+			ClientCertificates: []ClientCertificateProfileAssignment{
+				{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
+			},
+		},
+	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		profile, ok := RequestProfile(r)
+		if !ok || profile != "portainer" {
+			t.Fatalf("RequestProfile() = (%q, %v), want (portainer, true)", profile, ok)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.TLS = &tls.ConnectionState{
+		PeerCertificates: []*x509.Certificate{
+			{Subject: pkix.Name{CommonName: "unverified-client"}},
+		},
+		VerifiedChains: [][]*x509.Certificate{
+			{
+				{Subject: pkix.Name{CommonName: "portainer-admin"}},
+			},
+		},
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareAssignsProfileFromClientCertificateExtendedSelectors(t *testing.T) {
+	spiffeURI, err := url.Parse("spiffe://sockguard.test/workload/portainer")
+	if err != nil {
+		t.Fatalf("Parse SPIFFE URI: %v", err)
+	}
+	uriSAN, err := url.Parse("urn:example:sockguard:test")
+	if err != nil {
+		t.Fatalf("Parse URI SAN: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		assignments []ClientCertificateProfileAssignment
+		cert        *x509.Certificate
+		wantProfile string
+	}{
+		{
+			name: "dns san",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "dashboard", DNSNames: []string{"dashboard.internal"}},
+			},
+			cert:        &x509.Certificate{DNSNames: []string{"dashboard.internal"}},
+			wantProfile: "dashboard",
+		},
+		{
+			name: "ip san",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "agent", IPAddresses: []string{"192.0.2.44"}},
+			},
+			cert:        &x509.Certificate{IPAddresses: []net.IP{net.ParseIP("192.0.2.44")}},
+			wantProfile: "agent",
+		},
+		{
+			name: "uri san",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "uri-client", URISANs: []string{"urn:example:sockguard:test"}},
+			},
+			cert:        &x509.Certificate{URIs: []*url.URL{uriSAN}},
+			wantProfile: "uri-client",
+		},
+		{
+			name: "spiffe id",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "spiffe-client", SPIFFEIDs: []string{"spiffe://sockguard.test/workload/portainer"}},
+			},
+			cert:        &x509.Certificate{URIs: []*url.URL{spiffeURI}},
+			wantProfile: "spiffe-client",
+		},
+		{
+			name: "multiple selectors on one assignment are anded",
+			assignments: []ClientCertificateProfileAssignment{
+				{
+					Profile:   "strict-client",
+					DNSNames:  []string{"dashboard.internal"},
+					SPIFFEIDs: []string{"spiffe://sockguard.test/workload/portainer"},
+				},
+			},
+			cert: &x509.Certificate{
+				DNSNames: []string{"dashboard.internal"},
+				URIs:     []*url.URL{spiffeURI},
+			},
+			wantProfile: "strict-client",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := middlewareWithDeps(testLogger(), Options{
+				Profiles: ProfileOptions{
+					ClientCertificates: tt.assignments,
+				},
+			}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				profile, ok := RequestProfile(r)
+				if !ok || profile != tt.wantProfile {
+					t.Fatalf("RequestProfile() = (%q, %v), want (%s, true)", profile, ok, tt.wantProfile)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+			req.TLS = verifiedClientTLS(tt.cert)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+			}
+		})
+	}
+}
+
+func TestMatchClientCertificateProfileSelectorSemantics(t *testing.T) {
+	uriOne, err := url.Parse("urn:example:sockguard:first")
+	if err != nil {
+		t.Fatalf("Parse URI SAN: %v", err)
+	}
+	uriTwo, err := url.Parse("urn:example:sockguard:second")
+	if err != nil {
+		t.Fatalf("Parse URI SAN: %v", err)
+	}
+	spiffeOne, err := url.Parse("spiffe://sockguard.test/workload/one")
+	if err != nil {
+		t.Fatalf("Parse SPIFFE URI: %v", err)
+	}
+	spiffeTwo, err := url.Parse("spiffe://sockguard.test/workload/two")
+	if err != nil {
+		t.Fatalf("Parse SPIFFE URI: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		assignments []ClientCertificateProfileAssignment
+		cert        *x509.Certificate
+		wantProfile string
+		wantOK      bool
+	}{
+		{
+			name: "dns names are ORed within a selector field",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "dns-client", DNSNames: []string{"api.internal", "dashboard.internal"}},
+			},
+			cert:        &x509.Certificate{DNSNames: []string{"dashboard.internal"}},
+			wantProfile: "dns-client",
+			wantOK:      true,
+		},
+		{
+			name: "ip addresses are ORed within a selector field",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "ip-client", IPAddresses: []string{"192.0.2.10", "192.0.2.44"}},
+			},
+			cert:        &x509.Certificate{IPAddresses: []net.IP{net.ParseIP("192.0.2.44")}},
+			wantProfile: "ip-client",
+			wantOK:      true,
+		},
+		{
+			name: "uri sans are ORed within a selector field",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "uri-client", URISANs: []string{"urn:example:sockguard:first", "urn:example:sockguard:second"}},
+			},
+			cert:        &x509.Certificate{URIs: []*url.URL{uriTwo}},
+			wantProfile: "uri-client",
+			wantOK:      true,
+		},
+		{
+			name: "spiffe ids are ORed within a selector field",
+			assignments: []ClientCertificateProfileAssignment{
+				{Profile: "spiffe-client", SPIFFEIDs: []string{"spiffe://sockguard.test/workload/one", "spiffe://sockguard.test/workload/two"}},
+			},
+			cert:        &x509.Certificate{URIs: []*url.URL{spiffeTwo}},
+			wantProfile: "spiffe-client",
+			wantOK:      true,
+		},
+		{
+			name: "different certificate selector fields are ANDed together",
+			assignments: []ClientCertificateProfileAssignment{
+				{
+					Profile:     "strict-client",
+					DNSNames:    []string{"api.internal", "dashboard.internal"},
+					IPAddresses: []string{"192.0.2.10", "192.0.2.44"},
+					URISANs:     []string{"urn:example:sockguard:first", "urn:example:sockguard:second"},
+					SPIFFEIDs:   []string{"spiffe://sockguard.test/workload/one", "spiffe://sockguard.test/workload/two"},
+				},
+			},
+			cert: &x509.Certificate{
+				DNSNames:    []string{"dashboard.internal"},
+				IPAddresses: []net.IP{net.ParseIP("192.0.2.44")},
+				URIs:        []*url.URL{uriOne, spiffeTwo},
+			},
+			wantProfile: "strict-client",
+			wantOK:      true,
+		},
+		{
+			name: "different certificate selector fields fail when one populated field misses",
+			assignments: []ClientCertificateProfileAssignment{
+				{
+					Profile:     "strict-client",
+					DNSNames:    []string{"dashboard.internal"},
+					IPAddresses: []string{"192.0.2.44"},
+					URISANs:     []string{"urn:example:sockguard:first"},
+					SPIFFEIDs:   []string{"spiffe://sockguard.test/workload/two"},
+				},
+			},
+			cert: &x509.Certificate{
+				DNSNames:    []string{"dashboard.internal"},
+				IPAddresses: []net.IP{net.ParseIP("192.0.2.44")},
+				URIs:        []*url.URL{uriOne, spiffeOne},
+			},
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			compiled, err := compileOptions(Options{
+				Profiles: ProfileOptions{ClientCertificates: tt.assignments},
+			})
+			if err != nil {
+				t.Fatalf("compileOptions() error = %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+			req.TLS = verifiedClientTLS(tt.cert)
+
+			profile, ok := matchClientCertificateProfile(req, compiled.clientCertProfiles, compiled.clientCertProfileIndex)
+			if ok != tt.wantOK {
+				t.Fatalf("matchClientCertificateProfile() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if profile != tt.wantProfile {
+				t.Fatalf("matchClientCertificateProfile() profile = %q, want %q", profile, tt.wantProfile)
+			}
+		})
+	}
+}
+
+func TestProfileLookupIndexesCacheSourceIPAndClientCertificateMatches(t *testing.T) {
+	compiled, err := compileOptions(Options{
+		Profiles: ProfileOptions{
+			SourceIPs: []SourceIPProfileAssignment{
+				{Profile: "watchtower", CIDRs: []string{"192.0.2.0/24"}},
+			},
+			ClientCertificates: []ClientCertificateProfileAssignment{
+				{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compileOptions() error = %v", err)
+	}
+
+	addr := netip.MustParseAddr("192.0.2.10")
+	profile, ok := matchSourceIPProfile(addr, compiled.sourceIPProfiles, compiled.sourceIPProfileIndex)
+	if !ok || profile != "watchtower" {
+		t.Fatalf("matchSourceIPProfile() = (%q, %v), want (watchtower, true)", profile, ok)
+	}
+	if cached, found := compiled.sourceIPProfileIndex.lookup(addr); !found || !cached.ok || cached.profile != "watchtower" {
+		t.Fatalf("source IP cache = (%#v, %v), want watchtower hit", cached, found)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req.TLS = verifiedClientTLS(&x509.Certificate{
+		Raw:     []byte("client-cert-raw"),
+		Subject: pkix.Name{CommonName: "portainer-admin"},
+	})
+
+	profile, ok = matchClientCertificateProfile(req, compiled.clientCertProfiles, compiled.clientCertProfileIndex)
+	if !ok || profile != "portainer" {
+		t.Fatalf("matchClientCertificateProfile() = (%q, %v), want (portainer, true)", profile, ok)
+	}
+
+	fingerprint, fingerprintOK := clientCertificateFingerprint(req.TLS.PeerCertificates[0])
+	if !fingerprintOK {
+		t.Fatal("clientCertificateFingerprint() ok = false, want true")
+	}
+	if cached, found := compiled.clientCertProfileIndex.lookup(fingerprint); !found || !cached.ok || cached.profile != "portainer" {
+		t.Fatalf("client certificate cache = (%#v, %v), want portainer hit", cached, found)
+	}
+}
+
+func TestSelectProfileReturnsMatchStrategy(t *testing.T) {
+	tests := []struct {
+		name         string
+		options      Options
+		request      *http.Request
+		clientIP     netip.Addr
+		ipOK         bool
+		wantProfile  string
+		wantStrategy profileMatchStrategy
+		wantOK       bool
+	}{
+		{
+			name: "client certificate",
+			options: Options{
+				Profiles: ProfileOptions{
+					ClientCertificates: []ClientCertificateProfileAssignment{
+						{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
+					},
+				},
+			},
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+				req.TLS = verifiedClientTLS(&x509.Certificate{Subject: pkix.Name{CommonName: "portainer-admin"}})
+				return req
+			}(),
+			wantProfile:  "portainer",
+			wantStrategy: profileMatchStrategyClientCertificate,
+			wantOK:       true,
+		},
+		{
+			name: "unix peer",
+			options: Options{
+				Profiles: ProfileOptions{
+					UnixPeers: []UnixPeerProfileAssignment{
+						{Profile: "local-admin", UIDs: []uint32{1001}},
+					},
+				},
+			},
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+				return req.WithContext(withUnixPeerCredentials(req.Context(), unixPeerCredentials{UID: 1001}))
+			}(),
+			wantProfile:  "local-admin",
+			wantStrategy: profileMatchStrategyUnixPeer,
+			wantOK:       true,
+		},
+		{
+			name: "source ip",
+			options: Options{
+				Profiles: ProfileOptions{
+					SourceIPs: []SourceIPProfileAssignment{
+						{Profile: "watchtower", CIDRs: []string{"192.0.2.0/24"}},
+					},
+				},
+			},
+			request:      httptest.NewRequest(http.MethodGet, "/_ping", nil),
+			clientIP:     netip.MustParseAddr("192.0.2.10"),
+			ipOK:         true,
+			wantProfile:  "watchtower",
+			wantStrategy: profileMatchStrategySourceIP,
+			wantOK:       true,
+		},
+		{
+			name: "default profile",
+			options: Options{
+				Profiles: ProfileOptions{
+					DefaultProfile: "readonly",
+				},
+			},
+			request:      httptest.NewRequest(http.MethodGet, "/_ping", nil),
+			wantProfile:  "readonly",
+			wantStrategy: profileMatchStrategyDefaultProfile,
+			wantOK:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			compiled, err := compileOptions(tt.options)
+			if err != nil {
+				t.Fatalf("compileOptions() error = %v", err)
+			}
+
+			profile, strategy, ok, err := selectProfile(tt.request, tt.clientIP, tt.ipOK, compiled)
+			if err != nil {
+				t.Fatalf("selectProfile() error = %v", err)
+			}
+			if ok != tt.wantOK {
+				t.Fatalf("selectProfile() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if profile != tt.wantProfile {
+				t.Fatalf("selectProfile() profile = %q, want %q", profile, tt.wantProfile)
+			}
+			if strategy != tt.wantStrategy {
+				t.Fatalf("selectProfile() strategy = %q, want %q", strategy, tt.wantStrategy)
+			}
+		})
+	}
+}
+
+func TestMiddlewareAssignsProfileFromUnixPeerCredentials(t *testing.T) {
+	handler := middlewareWithDeps(testLogger(), Options{
+		Profiles: ProfileOptions{
+			UnixPeers: []UnixPeerProfileAssignment{
+				{
+					Profile: "local-admin",
+					UIDs:    []uint32{1001},
+					GIDs:    []uint32{1002},
+					PIDs:    []int32{4242},
+				},
+			},
+		},
+	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		profile, ok := RequestProfile(r)
+		if !ok || profile != "local-admin" {
+			t.Fatalf("RequestProfile() = (%q, %v), want (local-admin, true)", profile, ok)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	req = req.WithContext(withUnixPeerCredentials(req.Context(), unixPeerCredentials{
+		UID: 1001,
+		GID: 1002,
+		PID: 4242,
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMatchUnixPeerProfileSelectorSemantics(t *testing.T) {
+	tests := []struct {
+		name        string
+		assignments []UnixPeerProfileAssignment
+		creds       unixPeerCredentials
+		wantProfile string
+		wantOK      bool
+	}{
+		{
+			name: "uids are ORed within a selector field",
+			assignments: []UnixPeerProfileAssignment{
+				{Profile: "uid-client", UIDs: []uint32{1001, 1002}},
+			},
+			creds:       unixPeerCredentials{UID: 1002, GID: 2000, PID: 3000},
+			wantProfile: "uid-client",
+			wantOK:      true,
+		},
+		{
+			name: "gids are ORed within a selector field",
+			assignments: []UnixPeerProfileAssignment{
+				{Profile: "gid-client", GIDs: []uint32{2001, 2002}},
+			},
+			creds:       unixPeerCredentials{UID: 1000, GID: 2002, PID: 3000},
+			wantProfile: "gid-client",
+			wantOK:      true,
+		},
+		{
+			name: "pids are ORed within a selector field",
+			assignments: []UnixPeerProfileAssignment{
+				{Profile: "pid-client", PIDs: []int32{3001, 3002}},
+			},
+			creds:       unixPeerCredentials{UID: 1000, GID: 2000, PID: 3002},
+			wantProfile: "pid-client",
+			wantOK:      true,
+		},
+		{
+			name: "different unix peer selector fields are ANDed together",
+			assignments: []UnixPeerProfileAssignment{
+				{Profile: "strict-peer", UIDs: []uint32{1001, 1002}, GIDs: []uint32{2001, 2002}, PIDs: []int32{3001, 3002}},
+			},
+			creds:       unixPeerCredentials{UID: 1002, GID: 2002, PID: 3002},
+			wantProfile: "strict-peer",
+			wantOK:      true,
+		},
+		{
+			name: "different unix peer selector fields fail when one populated field misses",
+			assignments: []UnixPeerProfileAssignment{
+				{Profile: "strict-peer", UIDs: []uint32{1001, 1002}, GIDs: []uint32{2001, 2002}, PIDs: []int32{3001, 3002}},
+			},
+			creds:  unixPeerCredentials{UID: 1002, GID: 2999, PID: 3002},
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			compiled, err := compileOptions(Options{
+				Profiles: ProfileOptions{UnixPeers: tt.assignments},
+			})
+			if err != nil {
+				t.Fatalf("compileOptions() error = %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+			req = req.WithContext(withUnixPeerCredentials(req.Context(), tt.creds))
+
+			profile, ok, err := matchUnixPeerProfile(req, compiled.unixPeerProfiles)
+			if err != nil {
+				t.Fatalf("matchUnixPeerProfile() error = %v", err)
+			}
+			if ok != tt.wantOK {
+				t.Fatalf("matchUnixPeerProfile() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if profile != tt.wantProfile {
+				t.Fatalf("matchUnixPeerProfile() profile = %q, want %q", profile, tt.wantProfile)
+			}
+		})
+	}
+}
+
+func TestConnContextCapturesUnixPeerCredentials(t *testing.T) {
+	socketPath := filepath.Join("/tmp", "sockguard-clientacl-peer-"+strconvTime()+".sock")
+	_ = os.Remove(socketPath)
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	defer func() {
+		_ = ln.Close()
+		_ = os.Remove(socketPath)
+	}()
+
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+
+	client, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial unix: %v", err)
+	}
+	defer client.Close()
+
+	var serverConn net.Conn
+	select {
+	case err := <-acceptErr:
+		t.Fatalf("accept unix: %v", err)
+	case serverConn = <-accepted:
+	}
+	defer serverConn.Close()
+
+	ctx := ConnContext(context.Background(), serverConn)
+	creds, ok := unixPeerCredentialsFromContext(ctx)
+	if !ok {
+		t.Fatal("expected unix peer credentials in context")
+	}
+	if creds.UID != uint32(os.Getuid()) {
+		t.Fatalf("UID = %d, want %d", creds.UID, os.Getuid())
+	}
+	if creds.GID != uint32(os.Getgid()) {
+		t.Fatalf("GID = %d, want %d", creds.GID, os.Getgid())
+	}
+	if creds.PID <= 0 {
+		t.Fatalf("PID = %d, want > 0", creds.PID)
 	}
 }
 

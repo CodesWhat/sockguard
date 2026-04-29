@@ -116,6 +116,8 @@ Allows GET access to all Docker API endpoints. Denies all write operations.
 # Denies: all POST, PUT, DELETE
 ```
 
+This preset intentionally includes raw archive/export and log/attach stream reads, so it sets `insecure_allow_read_exfiltration: true`. Tighten it if your client only needs list/inspect endpoints.
+
 ## Using a Preset
 
 Mount the preset as your config file:
@@ -131,3 +133,5 @@ services:
 ```
 
 All preset configs are bundled in the image at `/etc/sockguard/`.
+
+Presets that keep broad container/image read compatibility also carry explicit `insecure_allow_read_exfiltration: true` acknowledgements so they continue to validate honestly under the read-side export guardrail.

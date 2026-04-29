@@ -1,6 +1,13 @@
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { inferReleaseLevel, bumpSemver } from './release-next-version.mjs';
+import { inferReleaseLevel, bumpSemver, formatCLIError } from './release-next-version.mjs';
+
+const scriptPath = fileURLToPath(new URL('./release-next-version.mjs', import.meta.url));
 
 describe('inferReleaseLevel', () => {
   it('returns null for empty commit list', () => {
@@ -147,3 +154,133 @@ describe('bumpSemver', () => {
     assert.throws(() => bumpSemver('1.0.0-beta.1', 'patch'), /Invalid current version/);
   });
 });
+
+describe('release-next-version CLI', () => {
+  it('prints a manual bump result', () => {
+    const result = spawnSync(process.execPath, [scriptPath, 'ignored', '--current', '1.2.3', '--bump', 'minor'], {
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /release_level=minor/);
+    assert.match(result.stdout, /next_version=1\.3\.0/);
+  });
+
+  it('fails when a CLI flag is missing its value', () => {
+    const result = spawnSync(process.execPath, [scriptPath, '--current'], {
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Missing value for argument: --current/);
+  });
+
+  it('fails when a CLI flag is followed by another flag', () => {
+    const result = spawnSync(process.execPath, [scriptPath, '--current', '--bump', 'patch'], {
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Missing value for argument: --current/);
+  });
+
+  it('fails when current version is missing', () => {
+    const result = spawnSync(process.execPath, [scriptPath, '--bump', 'patch'], {
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--current is required/);
+  });
+
+  it('fails when auto bump is missing the from ref', () => {
+    const result = spawnSync(process.execPath, [scriptPath, '--current', '1.2.3'], {
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--from is required when --bump auto/);
+  });
+
+  it('computes an auto bump from git history', () => {
+    const repoDir = createTempGitRepo();
+    writeFileSync(path.join(repoDir, 'README.md'), 'initial\n', 'utf8');
+    git(repoDir, ['add', 'README.md']);
+    git(repoDir, ['commit', '-m', 'chore: initial']);
+    const fromRef = git(repoDir, ['rev-parse', 'HEAD']).trim();
+
+    writeFileSync(path.join(repoDir, 'README.md'), 'initial\nfix\n', 'utf8');
+    git(repoDir, ['add', 'README.md']);
+    git(repoDir, ['commit', '-m', '🐛 fix: patch release']);
+
+    const result = spawnSync(process.execPath, [scriptPath, '--current', '1.2.3', '--from', fromRef], {
+      cwd: repoDir,
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /release_level=patch/);
+    assert.match(result.stdout, /next_version=1\.2\.4/);
+  });
+
+  it('computes an auto bump with an explicit to ref', () => {
+    const repoDir = createTempGitRepo();
+    writeFileSync(path.join(repoDir, 'README.md'), 'initial\n', 'utf8');
+    git(repoDir, ['add', 'README.md']);
+    git(repoDir, ['commit', '-m', 'chore: initial']);
+    const fromRef = git(repoDir, ['rev-parse', 'HEAD']).trim();
+
+    writeFileSync(path.join(repoDir, 'README.md'), 'initial\nfeature\n', 'utf8');
+    git(repoDir, ['add', 'README.md']);
+    git(repoDir, ['commit', '-m', '✨ feat: minor release']);
+    const toRef = git(repoDir, ['rev-parse', 'HEAD']).trim();
+
+    const result = spawnSync(process.execPath, [scriptPath, '--current', '1.2.3', '--from', fromRef, '--to', toRef], {
+      cwd: repoDir,
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /release_level=minor/);
+    assert.match(result.stdout, /next_version=1\.3\.0/);
+  });
+
+  it('fails when auto bump finds no releasable commits', () => {
+    const repoDir = createTempGitRepo();
+    writeFileSync(path.join(repoDir, 'README.md'), 'initial\n', 'utf8');
+    git(repoDir, ['add', 'README.md']);
+    git(repoDir, ['commit', '-m', 'chore: initial']);
+    const fromRef = git(repoDir, ['rev-parse', 'HEAD']).trim();
+
+    writeFileSync(path.join(repoDir, 'README.md'), 'initial\nnoise\n', 'utf8');
+    git(repoDir, ['add', 'README.md']);
+    git(repoDir, ['commit', '-m', 'merge branch main']);
+
+    const result = spawnSync(process.execPath, [scriptPath, '--current', '1.2.3', '--from', fromRef], {
+      cwd: repoDir,
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /No releasable commits found between refs/);
+  });
+
+  it('formats non-Error CLI failures', () => {
+    assert.equal(formatCLIError('plain failure'), 'plain failure');
+  });
+});
+
+function createTempGitRepo() {
+  const repoDir = mkdtempSync(path.join(os.tmpdir(), 'sockguard-release-'));
+  git(repoDir, ['init']);
+  git(repoDir, ['config', 'user.name', 'Sockguard Tests']);
+  git(repoDir, ['config', 'user.email', 'sockguard-tests@example.com']);
+  return repoDir;
+}
+
+function git(cwd, args) {
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+  });
+}

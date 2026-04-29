@@ -58,21 +58,32 @@ func (p imagePullPolicy) inspect(r *http.Request, normalizedPath string) (string
 		return "", nil
 	}
 
-	ref, ok := parseImageReference(fromImage)
-	if !ok {
-		return "", nil
+	if denyReason := p.denyReasonForReference(fromImage, "image pull"); denyReason != "" {
+		return denyReason, nil
 	}
-	if p.allowAllRegistries {
-		return "", nil
-	}
-	if p.allowOfficial && ref.official {
-		return "", nil
-	}
-	if slices.Contains(p.allowedRegistries, ref.registry) {
-		return "", nil
+	return "", nil
+}
+
+func (p imagePullPolicy) denyReasonForReference(fromImage, subject string) string {
+	if fromImage == "" {
+		return ""
 	}
 
-	return fmt.Sprintf("image pull denied: registry %q is not allowlisted", ref.registry), nil
+	ref, ok := parseImageReference(fromImage)
+	if !ok {
+		return ""
+	}
+	if p.allowAllRegistries {
+		return ""
+	}
+	if p.allowOfficial && ref.official {
+		return ""
+	}
+	if slices.Contains(p.allowedRegistries, ref.registry) {
+		return ""
+	}
+
+	return fmt.Sprintf("%s denied: registry %q is not allowlisted", subject, ref.registry)
 }
 
 type parsedImageReference struct {
@@ -97,22 +108,17 @@ func parseImageReference(value string) (parsedImageReference, bool) {
 	}
 
 	parts := strings.Split(ref, "/")
-	if len(parts) == 0 {
-		return parsedImageReference{}, false
-	}
 
 	registry := "docker.io"
 	repository := parts
 	if len(parts) > 1 && looksLikeRegistryComponent(parts[0]) {
-		normalized, ok := normalizeRegistryHost(parts[0])
-		if !ok {
-			return parsedImageReference{}, false
-		}
-		registry = normalized
+		registry, _ = normalizeRegistryHost(parts[0])
 		repository = parts[1:]
 	}
-	if len(repository) == 0 {
-		return parsedImageReference{}, false
+	for _, segment := range repository {
+		if strings.TrimSpace(segment) == "" {
+			return parsedImageReference{}, false
+		}
 	}
 
 	official := registry == "docker.io" && (len(repository) == 1 || (len(repository) == 2 && repository[0] == "library"))

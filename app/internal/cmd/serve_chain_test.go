@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -75,6 +77,46 @@ func TestFullProxyChainHTTPIntegration(t *testing.T) {
 	}
 }
 
+func TestFullProxyChainErrorHandling_SocketDown(t *testing.T) {
+	socketPath := shortSocketPath(t, "chain-socket-down")
+
+	handler, logBuf := newBuildServeChainHandler(t, socketPath)
+
+	assertFullProxyChainUpstreamError(t, handler, logBuf, socketPath, "")
+}
+
+func TestFullProxyChainErrorHandling_PermissionDenied(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "dp-chain-perm-*")
+	if err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	socketPath := filepath.Join(dir, "docker.sock")
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("unexpected-upstream-ok"))
+	}))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatalf("chmod upstream dir: %v", err)
+	}
+
+	probeConn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
+	if err == nil {
+		_ = probeConn.Close()
+		t.Skip("permission-denied socket setup did not block unix dial on this platform")
+	}
+	if !errors.Is(err, os.ErrPermission) && !strings.Contains(strings.ToLower(err.Error()), "permission denied") {
+		t.Skipf("permission-denied socket setup yielded %v, want permission denied", err)
+	}
+
+	handler, logBuf := newBuildServeChainHandler(t, socketPath)
+
+	assertFullProxyChainUpstreamError(t, handler, logBuf, socketPath, "permission denied")
+}
+
 func TestFullProxyChainHijackIntegration(t *testing.T) {
 	socketPath := shortSocketPath(t, "chain-hijack")
 	_ = os.Remove(socketPath)
@@ -84,7 +126,12 @@ func TestFullProxyChainHijackIntegration(t *testing.T) {
 		echoPayload = "hello from upstream"
 	)
 
-	upstreamPath := make(chan string, 1)
+	type upstreamHijackRequest struct {
+		host     string
+		path     string
+		rawQuery string
+	}
+	upstreamRequest := make(chan upstreamHijackRequest, 1)
 	upstreamDone := make(chan struct{})
 
 	ln, err := net.Listen("unix", socketPath)
@@ -111,7 +158,11 @@ func TestFullProxyChainHijackIntegration(t *testing.T) {
 			t.Errorf("upstream read request: %v", err)
 			return
 		}
-		upstreamPath <- req.URL.Path
+		upstreamRequest <- upstreamHijackRequest{
+			host:     req.Host,
+			path:     req.URL.Path,
+			rawQuery: req.URL.RawQuery,
+		}
 		if req.Body != nil {
 			_ = req.Body.Close()
 		}
@@ -212,9 +263,15 @@ func TestFullProxyChainHijackIntegration(t *testing.T) {
 	}
 
 	select {
-	case got := <-upstreamPath:
-		if got != "/v1.45/containers/abc/attach" {
-			t.Fatalf("upstream path = %q, want %q", got, "/v1.45/containers/abc/attach")
+	case got := <-upstreamRequest:
+		if got.host != "docker" {
+			t.Fatalf("upstream host = %q, want %q", got.host, "docker")
+		}
+		if got.path != "/containers/abc/attach" {
+			t.Fatalf("upstream path = %q, want %q", got.path, "/containers/abc/attach")
+		}
+		if got.rawQuery != "stream=1" {
+			t.Fatalf("upstream raw query = %q, want %q", got.rawQuery, "stream=1")
 		}
 	default:
 		t.Fatal("expected upstream hijack request")
@@ -349,7 +406,7 @@ func TestBuildServeHandlerExercisesClientACLVisibilityFilterAndResponseFilter(t 
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), rules, newServeTestDeps())
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 	addr, waitForRequest := startProxyChainServer(t, handler)
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -413,6 +470,252 @@ func TestBuildServeHandlerExercisesClientACLVisibilityFilterAndResponseFilter(t 
 	}
 	if gotVersioned != 1 {
 		t.Fatalf("proxied inspect hits = %d, want 1", gotVersioned)
+	}
+}
+
+func TestBuildServeHandlerExercisesOwnershipForNodesAndSwarm(t *testing.T) {
+	socketPath := shortSocketPath(t, "chain-ownership")
+	_ = os.Remove(socketPath)
+
+	var mu sync.Mutex
+	upstreamHits := make(map[string]int)
+	var gotNodeUpdateBody map[string]any
+	var gotSwarmUpdateBody map[string]any
+
+	startUnixHTTPUpstream(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		upstreamHits[r.URL.Path]++
+		mu.Unlock()
+
+		switch r.URL.Path {
+		case "/nodes/node-owned":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"Spec":{"Labels":{"com.sockguard.owner":"job-123"}}}`)
+		case "/v1.45/nodes/node-owned":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"ID":"node-owned","Spec":{"Labels":{"com.sockguard.owner":"job-123"}}}`)
+		case "/nodes/node-claim":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"Spec":{"Labels":{}}}`)
+		case "/v1.45/nodes/node-claim/update":
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewDecoder(r.Body).Decode(&gotNodeUpdateBody); err != nil {
+				t.Fatalf("decode node update body: %v", err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case "/swarm":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"Spec":{"Labels":{}}}`)
+		case "/v1.45/swarm/update":
+			w.Header().Set("Content-Type", "application/json")
+			if err := json.NewDecoder(r.Body).Decode(&gotSwarmUpdateBody); err != nil {
+				t.Fatalf("decode swarm update body: %v", err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected upstream path %q", r.URL.Path)
+		}
+	}))
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = false
+	cfg.Ownership.Owner = "job-123"
+	cfg.Ownership.LabelKey = "com.sockguard.owner"
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/nodes/*"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/nodes/*/update"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/swarm/update"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	}
+
+	rules, err := compileRuleConfigsForTest(cfg.Rules)
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	addr, waitForRequest := startProxyChainServer(t, handler)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.Get("http://" + addr + "/v1.45/nodes/node-owned")
+	if err != nil {
+		t.Fatalf("proxy GET /nodes/node-owned: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read node inspect body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("node inspect status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, string(body))
+	}
+
+	waitForRequest()
+
+	nodeReq, err := http.NewRequest(http.MethodPost, "http://"+addr+"/v1.45/nodes/node-claim/update?version=42", strings.NewReader(`{"Name":"node-claim"}`))
+	if err != nil {
+		t.Fatalf("new node update request: %v", err)
+	}
+	nodeReq.Header.Set("Content-Type", "application/json")
+	nodeResp, err := client.Do(nodeReq)
+	if err != nil {
+		t.Fatalf("proxy POST /nodes/node-claim/update: %v", err)
+	}
+	defer nodeResp.Body.Close()
+	if nodeResp.StatusCode != http.StatusNoContent {
+		nodeBody, _ := io.ReadAll(nodeResp.Body)
+		t.Fatalf("node update status = %d, want %d; body: %s", nodeResp.StatusCode, http.StatusNoContent, string(nodeBody))
+	}
+
+	swarmReq, err := http.NewRequest(http.MethodPost, "http://"+addr+"/v1.45/swarm/update?version=42", strings.NewReader(`{"Name":"cluster-1"}`))
+	if err != nil {
+		t.Fatalf("new swarm update request: %v", err)
+	}
+	swarmReq.Header.Set("Content-Type", "application/json")
+	swarmResp, err := client.Do(swarmReq)
+	if err != nil {
+		t.Fatalf("proxy POST /swarm/update: %v", err)
+	}
+	defer swarmResp.Body.Close()
+	if swarmResp.StatusCode != http.StatusNoContent {
+		swarmBody, _ := io.ReadAll(swarmResp.Body)
+		t.Fatalf("swarm update status = %d, want %d; body: %s", swarmResp.StatusCode, http.StatusNoContent, string(swarmBody))
+	}
+
+	nodeLabels, _ := gotNodeUpdateBody["Labels"].(map[string]any)
+	if got := nodeLabels["com.sockguard.owner"]; got != "job-123" {
+		t.Fatalf("node update owner label = %#v, want job-123", got)
+	}
+	if got := gotNodeUpdateBody["Name"]; got != "node-claim" {
+		t.Fatalf("node update Name = %#v, want node-claim", got)
+	}
+
+	swarmLabels, _ := gotSwarmUpdateBody["Labels"].(map[string]any)
+	if got := swarmLabels["com.sockguard.owner"]; got != "job-123" {
+		t.Fatalf("swarm update owner label = %#v, want job-123", got)
+	}
+	if got := gotSwarmUpdateBody["Name"]; got != "cluster-1" {
+		t.Fatalf("swarm update Name = %#v, want cluster-1", got)
+	}
+
+	mu.Lock()
+	gotNodeInspect := upstreamHits["/nodes/node-owned"]
+	gotVersionedNodeInspect := upstreamHits["/v1.45/nodes/node-owned"]
+	gotNodeClaimInspect := upstreamHits["/nodes/node-claim"]
+	gotNodeClaimUpdate := upstreamHits["/v1.45/nodes/node-claim/update"]
+	gotSwarmInspect := upstreamHits["/swarm"]
+	gotSwarmUpdate := upstreamHits["/v1.45/swarm/update"]
+	mu.Unlock()
+
+	if gotNodeInspect != 1 || gotVersionedNodeInspect != 1 {
+		t.Fatalf("node inspect hits = (%d inspect, %d proxied), want 1/1", gotNodeInspect, gotVersionedNodeInspect)
+	}
+	if gotNodeClaimInspect != 1 || gotNodeClaimUpdate != 1 {
+		t.Fatalf("node claim hits = (%d inspect, %d proxied), want 1/1", gotNodeClaimInspect, gotNodeClaimUpdate)
+	}
+	if gotSwarmInspect != 1 || gotSwarmUpdate != 1 {
+		t.Fatalf("swarm hits = (%d inspect, %d proxied), want 1/1", gotSwarmInspect, gotSwarmUpdate)
+	}
+}
+
+func newBuildServeChainHandler(t *testing.T, socketPath string) (http.Handler, *bytes.Buffer) {
+	t.Helper()
+
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = socketPath
+	cfg.Health.Enabled = false
+	cfg.Log.AccessLog = true
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	return buildServeHandler(&cfg, logger, nil, rules, newServeTestDeps()), &logBuf
+}
+
+func assertFullProxyChainUpstreamError(
+	t *testing.T,
+	handler http.Handler,
+	logBuf *bytes.Buffer,
+	upstreamSocket string,
+	wantLogFragment string,
+) {
+	t.Helper()
+
+	addr, waitForRequest := startProxyChainServer(t, handler)
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/v1.45/_ping", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("X-Request-ID", "client-123")
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("proxy GET /_ping: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read proxy response: %v", err)
+	}
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusBadGateway, string(body))
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content type = %q, want %q", ct, "application/json")
+	}
+
+	requestID := resp.Header.Get("X-Request-Id")
+	if requestID == "" {
+		t.Fatal("expected generated X-Request-Id response header")
+	}
+	if requestID == "client-123" {
+		t.Fatalf("expected proxy-generated request id, got caller id %q", requestID)
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("json.Unmarshal: %v\nbody: %s", err, string(body))
+	}
+	if got := payload["message"]; got != "upstream Docker socket unreachable" {
+		t.Fatalf("message = %q, want %q", got, "upstream Docker socket unreachable")
+	}
+	if strings.Contains(string(body), upstreamSocket) {
+		t.Fatalf("response leaked upstream socket path: %s", string(body))
+	}
+
+	waitForRequest()
+
+	logOutput := logBuf.String()
+	for _, fragment := range []string{
+		`"msg":"upstream request failed"`,
+		`"msg":"request"`,
+		`"request_id":"` + requestID + `"`,
+		`"client_request_id":"client-123"`,
+		`"normalized_path":"/_ping"`,
+		`"decision":"allow"`,
+		`"rule":0`,
+		`"status":502`,
+	} {
+		if !strings.Contains(logOutput, fragment) {
+			t.Fatalf("expected %q in log output, got: %s", fragment, logOutput)
+		}
+	}
+	if wantLogFragment != "" && !strings.Contains(strings.ToLower(logOutput), wantLogFragment) {
+		t.Fatalf("expected %q in log output, got: %s", wantLogFragment, logOutput)
 	}
 }
 

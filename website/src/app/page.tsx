@@ -116,8 +116,9 @@ export default function Home() {
               </h1>
 
               <p className="mx-auto mb-10 max-w-2xl text-lg text-neutral-600 sm:text-xl dark:text-neutral-400">
-                Control what gets through. Filter Docker API requests by method and path with
-                default-deny posture, structured audit logging, and drop-in Tecnativa compatibility.
+                Control what gets through. Filter Docker API requests by method, path, and request
+                body with default-deny posture, structured access logging, and drop-in Tecnativa
+                compatibility.
               </p>
 
               <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">

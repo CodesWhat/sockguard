@@ -69,6 +69,24 @@ func TestValidateAndCompileRulesAllowsBodySensitiveWriteRulesWithExplicitOptIn(t
 	}
 }
 
+func TestValidateAndCompileRulesAllowsRawReadExfiltrationWithExplicitOptIn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/images/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
 func TestValidateAndCompileRulesAllowsExecWithConfiguredBodyInspection(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{
@@ -116,6 +134,212 @@ func TestValidateAndCompileRulesAllowsBuildWithRequestBodyInspection(t *testing.
 	}
 	if len(compiled) != len(cfg.Rules) {
 		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsServiceWritesWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/services/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/services/*/update"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	cfg.RequestBody.Service.AllowOfficial = true
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsSwarmInitWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/swarm/init"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsVolumeSecretAndConfigWritesWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/volumes/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/secrets/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/configs/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	cfg.RequestBody.Secret.AllowTemplateDrivers = true
+	cfg.RequestBody.Config.AllowTemplateDrivers = true
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsSwarmJoinAndUpdateWithConfiguredInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/swarm/join"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/swarm/update"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	cfg.RequestBody.Swarm.AllowedJoinRemoteAddrs = []string{"manager.internal:2377"}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsPluginWritesWithConfiguredInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/plugins/pull"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/plugins/*/upgrade"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/plugins/*/set"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/plugins/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	cfg.RequestBody.Plugin.AllowedRegistries = []string{"plugins.example.com"}
+	cfg.RequestBody.Plugin.AllowedBindMounts = []string{"/var/lib/plugins"}
+	cfg.RequestBody.Plugin.AllowedDevices = []string{"/dev/fuse"}
+	cfg.RequestBody.Plugin.AllowedCapabilities = []string{"CAP_SYS_ADMIN"}
+	cfg.RequestBody.Plugin.AllowedSetEnvPrefixes = []string{"DEBUG=", "LOG_LEVEL="}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesRejectsSwarmJoinWithoutConfiguredRemoteAllowlist(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/swarm/join"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected swarm join blind-write validation to fail")
+	}
+	if !strings.Contains(err.Error(), "POST /swarm/join") {
+		t.Fatalf("expected swarm join endpoint in error, got: %v", err)
+	}
+}
+
+func TestValidateAndCompileRulesRejectsPluginSetWithoutAllowedEnvPrefixes(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/plugins/*/set"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected plugin set blind-write validation to fail")
+	}
+	if !strings.Contains(err.Error(), "POST /plugins/sockguard-test/set") {
+		t.Fatalf("expected plugin set endpoint in error, got: %v", err)
+	}
+}
+
+func TestValidateAndCompileRulesRejectsOtherUninspectedBodyWritesWithoutOptIn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/networks/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/images/load"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/swarm/unlock"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected uninspected body-write validation to fail")
+	}
+	for _, endpoint := range []string{
+		"POST /networks/create",
+		"POST /images/load",
+		"POST /swarm/unlock",
+	} {
+		if !strings.Contains(err.Error(), endpoint) {
+			t.Fatalf("expected %s in error, got: %v", endpoint, err)
+		}
+	}
+}
+
+func TestValidateAndCompileRulesRejectsRawReadExfiltrationRulesWithoutExplicitOptIn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/services/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/tasks/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/attach"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/images/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected raw read exfiltration validation to fail")
+	}
+	for _, endpoint := range []string{
+		"GET /containers/sockguard-test/archive",
+		"GET /containers/sockguard-test/export",
+		"GET /containers/sockguard-test/logs",
+		"GET /containers/sockguard-test/attach/ws",
+		"GET /services/sockguard-test/logs",
+		"GET /tasks/sockguard-test/logs",
+		"POST /containers/sockguard-test/attach",
+		"GET /images/get",
+		"GET /images/sockguard-test/get",
+	} {
+		if !strings.Contains(err.Error(), endpoint) {
+			t.Fatalf("expected %s in error, got: %v", endpoint, err)
+		}
+	}
+	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration=true") {
+		t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
+	}
+}
+
+func TestValidateAndCompileRulesRejectsContainerArchiveRuleWithoutReadExfiltrationOptIn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/*/archive"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected container archive read exfiltration validation to fail")
+	}
+	if !strings.Contains(err.Error(), "GET /containers/sockguard-test/archive") {
+		t.Fatalf("expected guarded container archive endpoint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration=true") {
+		t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
 	}
 }
 
@@ -171,6 +395,46 @@ func TestValidateAndCompileRulesRejectsNamedClientProfileBlindWrites(t *testing.
 	}
 	if !strings.Contains(err.Error(), "watchtower") {
 		t.Fatalf("expected profile name in error, got: %v", err)
+	}
+}
+
+func TestValidateAndCompileRulesRejectsNamedClientProfileReadExfiltration(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	cfg.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name: "backup-agent",
+			Rules: []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/**"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/services/**"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/tasks/**"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/attach"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/images/**"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			},
+		},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected named client profile raw read exfiltration validation to fail")
+	}
+	if !strings.Contains(err.Error(), "backup-agent") {
+		t.Fatalf("expected profile name in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "GET /containers/sockguard-test/archive") {
+		t.Fatalf("expected guarded raw read endpoint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "POST /containers/sockguard-test/attach") {
+		t.Fatalf("expected guarded attach endpoint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "GET /containers/sockguard-test/attach/ws") {
+		t.Fatalf("expected guarded websocket attach endpoint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "GET /services/sockguard-test/logs") {
+		t.Fatalf("expected guarded service logs endpoint in error, got: %v", err)
 	}
 }
 

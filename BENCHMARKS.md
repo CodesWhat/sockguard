@@ -17,7 +17,7 @@ underneath. HAProxy is a 20-year-old C event loop that will beat any Go
 reverse proxy on raw RPS and tail latency, and that comparison doesn't tell
 you anything useful about a security-focused proxy. Sockguard's value is in
 what it filters (request body inspection, per-owner isolation, per-client
-ACLs, structured audit logs) not in how many requests per second it can push
+ACLs, structured access logs) not in how many requests per second it can push
 through a fast path.
 
 ## Setup

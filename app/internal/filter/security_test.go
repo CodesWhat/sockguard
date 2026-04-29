@@ -3,6 +3,7 @@ package filter
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -37,9 +38,9 @@ func TestNormalizePathAdversarialEncodings(t *testing.T) {
 			want:    "/containers/json",
 		},
 		{
-			name:    "double encoded slash remains encoded after normalization",
+			name:    "double encoded slash canonicalizes before normalization",
 			rawPath: "/containers%252Fjson",
-			want:    "/containers%2Fjson",
+			want:    "/containers/json",
 		},
 		{
 			name:    "single encoded dot-dot collapses after one decode",
@@ -47,9 +48,43 @@ func TestNormalizePathAdversarialEncodings(t *testing.T) {
 			want:    "/images/json",
 		},
 		{
-			name:    "double encoded dot-dot does not collapse via double decoding",
+			name:    "double encoded dot-dot collapses before normalization",
 			rawPath: "/containers/%252e%252e/images/json",
-			want:    "/containers/%2e%2e/images/json",
+			want:    "/images/json",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := newParsedRequest(t, http.MethodGet, tt.rawPath)
+			got := NormalizePath(req.URL.Path)
+			if got != tt.want {
+				t.Fatalf("NormalizePath(parsed %q) = %q, want %q", tt.rawPath, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizePathUnicodeEncoding(t *testing.T) {
+	tests := []struct {
+		name    string
+		rawPath string
+		want    string
+	}{
+		{
+			name:    "single encoded cjk segment stays decoded",
+			rawPath: "/%E6%97%A5%E6%9C%AC/containers/json",
+			want:    "/日本/containers/json",
+		},
+		{
+			name:    "double encoded cyrillic segment canonicalizes before normalization",
+			rawPath: "/%25D1%2582%25D0%25B5%25D1%2581%25D1%2582/images/json",
+			want:    "/тест/images/json",
+		},
+		{
+			name:    "versioned double encoded arabic segment strips prefix after decode",
+			rawPath: "/v1.45/%25D9%2585%25D8%25B1%25D8%25AD%25D8%25A8%25D8%25A7/json",
+			want:    "/مرحبا/json",
 		},
 	}
 
@@ -89,11 +124,11 @@ func TestEvaluateEncodedPathBypassResistance(t *testing.T) {
 			wantIndex:  0,
 		},
 		{
-			name:       "double encoded slash does not bypass into the containers allow rule",
+			name:       "double encoded slash canonicalizes into the containers allow rule",
 			rules:      containerRules,
 			rawPath:    "/containers%252Fjson",
-			wantAction: ActionDeny,
-			wantIndex:  1,
+			wantAction: ActionAllow,
+			wantIndex:  0,
 		},
 		{
 			name:       "single encoded dot-dot normalizes to the actual target path once",
@@ -103,11 +138,11 @@ func TestEvaluateEncodedPathBypassResistance(t *testing.T) {
 			wantIndex:  0,
 		},
 		{
-			name:       "double encoded dot-dot does not bypass into the images allow rule",
+			name:       "double encoded dot-dot canonicalizes into the target allow rule",
 			rules:      imageRules,
 			rawPath:    "/containers/%252e%252e/images/json",
-			wantAction: ActionDeny,
-			wantIndex:  1,
+			wantAction: ActionAllow,
+			wantIndex:  0,
 		},
 	}
 
@@ -122,6 +157,23 @@ func TestEvaluateEncodedPathBypassResistance(t *testing.T) {
 				t.Fatalf("Evaluate(%q) index = %d, want %d", tt.rawPath, index, tt.wantIndex)
 			}
 		})
+	}
+}
+
+func TestContainerCreatePolicyInspectCanonicalizesDoubleEncodedPath(t *testing.T) {
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"http://example.com/containers%252Fcreate",
+		strings.NewReader(`{"HostConfig":{"Privileged":true}}`),
+	)
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "container create denied: privileged containers are not allowed" {
+		t.Fatalf("inspect() reason = %q, want privileged denial", reason)
 	}
 }
 

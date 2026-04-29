@@ -1,5 +1,6 @@
 import {
   ArrowRight,
+  EyeOff,
   FileText,
   LockKeyhole,
   type LucideIcon,
@@ -9,6 +10,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Tag,
+  UsersRound,
   Zap,
 } from "lucide-react";
 
@@ -29,7 +31,8 @@ export const features: Feature[] = [
     title: "Default-Deny Posture",
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
-    description: "Everything blocked unless explicitly allowed. No match means deny.",
+    description:
+      "Everything blocked unless explicitly allowed. Request paths are percent-decoded and canonicalized before matching, so `%2e%2e` and encoded-separator tricks cannot slip past an allowlist.",
     category: "security",
   },
   {
@@ -38,7 +41,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "POST /containers/create bodies are parsed to block privileged containers, host networking, and non-allowlisted bind mounts before Docker ever sees the request.",
+      "Container, volume, secret, config, service, swarm, image-pull, build, and plugin writes are parsed to block host-bound workloads, non-allowlisted mounts, devices, commands, and remotes, unsafe swarm rotations, and remote build contexts. Multipart plugin uploads are inspected too, and oversized bounded bodies are rejected with 413 before the inspector runs.",
     category: "security",
   },
   {
@@ -56,7 +59,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Stamp containers, networks, volumes, and build images with an owner label. List and prune calls are auto-filtered, and cross-owner access is denied.",
+      "Stamp label-capable creates, node/swarm claim updates, and build images with an owner label. Labeled list, prune, and event reads are auto-filtered, and cross-owner access is denied across workload and control-plane resources.",
     category: "control",
   },
   {
@@ -65,7 +68,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Gate callers by source CIDR and enforce per-client allowlists resolved from the calling container's labels over the bridge network.",
+      "Gate callers by source CIDR, bridge-network container labels, mTLS certificate selectors (CN, DNS/IP/URI SAN, SHA-256 SPKI pin), and unix peer credentials before the global policy runs.",
     category: "control",
   },
   {
@@ -79,11 +82,11 @@ export const features: Feature[] = [
   },
   {
     icon: Zap,
-    title: "Structured Logging",
+    title: "Structured Access Logging",
     color: "text-emerald-500 dark:text-emerald-400",
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
-      "JSON access logs with method, path, decision, matched rule index, latency, and client info.",
+      "JSON access logs with method, path, decision, matched rule index, latency, canonical request_id, and client info.",
     category: "operations",
   },
   {
@@ -101,7 +104,7 @@ export const features: Feature[] = [
     color: "text-emerald-500 dark:text-emerald-400",
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
-      "Drop-in replacement using the same env vars. CONTAINERS=1, POST=0, ALLOW_START=1 all work.",
+      "Drop-in replacement for the current Tecnativa env surface, including section vars, ALLOW_RESTARTS, SOCKET_PATH, and LOG_LEVEL.",
     category: "operations",
   },
   {
@@ -109,7 +112,25 @@ export const features: Feature[] = [
     title: "Minimal Attack Surface",
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
-    description: "Wolfi-based image, ~12MB. Cosign-signed with SBOM and build provenance.",
+    description: "Wolfi-based image. Cosign-signed with SBOM and build provenance.",
     category: "security",
+  },
+  {
+    icon: EyeOff,
+    title: "Visibility-Controlled Reads",
+    color: "text-rose-500 dark:text-rose-400",
+    bg: "bg-rose-100 dark:bg-rose-900/50",
+    description:
+      "Label selectors hide labeled list, inspect, and log reads for non-matching resources, env/mount/network/config/plugin/swarm-sensitive metadata is redacted by default, and raw archive/export reads stay behind explicit opt-in.",
+    category: "security",
+  },
+  {
+    icon: UsersRound,
+    title: "Named Client Profiles",
+    color: "text-blue-500 dark:text-blue-400",
+    bg: "bg-blue-100 dark:bg-blue-900/50",
+    description:
+      "Route callers to named profiles with their own rules and request-body policy by source CIDR or mTLS client certificate, with a configurable default fallback.",
+    category: "control",
   },
 ];

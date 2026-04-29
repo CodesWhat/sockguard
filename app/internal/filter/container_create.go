@@ -1,10 +1,9 @@
 package filter
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
+	"log/slog"
 	"net/http"
 	"path"
 	"slices"
@@ -65,27 +64,21 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	}
 }
 
-func (p containerCreatePolicy) inspect(r *http.Request, normalizedPath string) (string, error) {
+func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodPost || normalizedPath != "/containers/create" || r.Body == nil {
 		return "", nil
 	}
-
-	// Read one byte past the limit so we can distinguish an at-limit payload
-	// from an over-limit one without giving the client room to OOM the proxy.
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxContainerCreateBodyBytes+1))
-	if closeErr := r.Body.Close(); err == nil && closeErr != nil {
-		err = closeErr
+	if p.allowsAllContainerCreateBodies() {
+		return "", nil
 	}
+
+	body, err := readBoundedBody(r, maxContainerCreateBodyBytes)
 	if err != nil {
+		if isBodyTooLargeError(err) {
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("container create denied: request body exceeds %d byte limit", maxContainerCreateBodyBytes))
+		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
-
-	if int64(len(body)) > maxContainerCreateBodyBytes {
-		return fmt.Sprintf("container create denied: request body exceeds %d byte limit", maxContainerCreateBodyBytes), nil
-	}
-
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
 
 	if len(body) == 0 {
 		return "", nil
@@ -95,6 +88,9 @@ func (p containerCreatePolicy) inspect(r *http.Request, normalizedPath string) (
 	if err := json.Unmarshal(body, &createReq); err != nil {
 		// Let Docker return its native validation error when the create payload
 		// is malformed; Sockguard only overrides known-dangerous valid requests.
+		if logger != nil {
+			logger.DebugContext(r.Context(), "container create request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+		}
 		return "", nil
 	}
 
@@ -111,21 +107,22 @@ func (p containerCreatePolicy) inspect(r *http.Request, normalizedPath string) (
 	return "", nil
 }
 
+func (p containerCreatePolicy) allowsAllContainerCreateBodies() bool {
+	return p.allowPrivileged && p.allowHostNetwork && bindPathAllowed("/", p.allowedBindMounts)
+}
+
 func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHostConfig) string {
 	for _, bind := range hostConfig.Binds {
-		source, ok := containerCreateBindSource(bind)
-		if !ok || p.bindMountAllowed(source) {
+		source, ok := extractAndValidateBindSource(bind, containerCreateMount{})
+		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
 		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
 	}
 
 	for _, mount := range hostConfig.Mounts {
-		if !strings.EqualFold(mount.Type, "bind") {
-			continue
-		}
-		source, ok := normalizeContainerCreateBindMount(mount.Source)
-		if !ok || p.bindMountAllowed(source) {
+		source, ok := extractAndValidateBindSource("", mount)
+		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
 		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
@@ -134,8 +131,8 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 	return ""
 }
 
-func (p containerCreatePolicy) bindMountAllowed(source string) bool {
-	for _, allowed := range p.allowedBindMounts {
+func bindPathAllowed(source string, allowedPaths []string) bool {
+	for _, allowed := range allowedPaths {
 		if allowed == "/" || source == allowed || strings.HasPrefix(source, allowed+"/") {
 			return true
 		}
@@ -144,11 +141,23 @@ func (p containerCreatePolicy) bindMountAllowed(source string) bool {
 }
 
 func containerCreateBindSource(bind string) (string, bool) {
-	source, _, ok := strings.Cut(bind, ":")
-	if !ok {
+	return extractAndValidateBindSource(bind, containerCreateMount{})
+}
+
+func extractAndValidateBindSource(bind string, mount containerCreateMount) (string, bool) {
+	if bind != "" {
+		source, _, ok := strings.Cut(bind, ":")
+		if !ok {
+			return "", false
+		}
+		return normalizeContainerCreateBindMount(source)
+	}
+
+	if !strings.EqualFold(mount.Type, "bind") {
 		return "", false
 	}
-	return normalizeContainerCreateBindMount(source)
+
+	return normalizeContainerCreateBindMount(mount.Source)
 }
 
 func normalizeContainerCreateBindMount(value string) (string, bool) {

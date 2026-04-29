@@ -150,6 +150,94 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 	}
 }
 
+func TestMiddlewareInjectsOwnerFilterIntoExpandedControlPlaneLists(t *testing.T) {
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+
+	tests := []struct {
+		name          string
+		target        string
+		wantFilterKey string
+	}{
+		{name: "services", target: "/services", wantFilterKey: "label"},
+		{name: "tasks", target: "/tasks", wantFilterKey: "label"},
+		{name: "secrets", target: "/secrets", wantFilterKey: "label"},
+		{name: "configs", target: "/configs", wantFilterKey: "label"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				filtersJSON := r.URL.Query().Get("filters")
+				if filtersJSON == "" {
+					t.Fatal("expected filters query")
+				}
+				var filters map[string]any
+				if err := json.NewDecoder(strings.NewReader(filtersJSON)).Decode(&filters); err != nil {
+					t.Fatalf("decode filters: %v", err)
+				}
+				values, ok := filters[tt.wantFilterKey].([]any)
+				if !ok {
+					t.Fatalf("%s filters = %#v, want array", tt.wantFilterKey, filters[tt.wantFilterKey])
+				}
+				got := make([]string, 0, len(values))
+				for _, value := range values {
+					got = append(got, value.(string))
+				}
+				if !slices.Contains(got, "com.sockguard.owner=job-123") {
+					t.Fatalf("%s filters = %#v, want owner label", tt.wantFilterKey, got)
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+		})
+	}
+}
+
+func TestMiddlewareInjectsOwnerFilterIntoNodesListWithNodeLabel(t *testing.T) {
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+
+	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		filtersJSON := r.URL.Query().Get("filters")
+		if filtersJSON == "" {
+			t.Fatal("expected filters query")
+		}
+		var filters map[string]any
+		if err := json.NewDecoder(strings.NewReader(filtersJSON)).Decode(&filters); err != nil {
+			t.Fatalf("decode filters: %v", err)
+		}
+		values, ok := filters["node.label"].([]any)
+		if !ok {
+			t.Fatalf("node.label filters = %#v, want array", filters["node.label"])
+		}
+		got := make([]string, 0, len(values))
+		for _, value := range values {
+			got = append(got, value.(string))
+		}
+		if !slices.Contains(got, "com.sockguard.owner=job-123") {
+			t.Fatalf("node.label filters = %#v, want owner label", got)
+		}
+		if _, ok := filters["label"]; ok {
+			t.Fatalf("unexpected generic label filter for /nodes: %#v", filters["label"])
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/nodes", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
 func TestMiddlewareReturnsBadRequestForInvalidMutationInput(t *testing.T) {
 	t.Run("invalid labels object", func(t *testing.T) {
 		handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fakeInspector{}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -222,6 +310,170 @@ func TestMiddlewareAllowsOwnedContainerAccess(t *testing.T) {
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareDeniesCrossOwnerExpandedControlPlaneAccess(t *testing.T) {
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+
+	tests := []struct {
+		name       string
+		target     string
+		kind       string
+		identifier string
+	}{
+		{name: "service inspect", target: "/services/web", kind: "services", identifier: "web"},
+		{name: "service logs", target: "/services/web/logs", kind: "services", identifier: "web"},
+		{name: "task inspect", target: "/tasks/task-1", kind: "tasks", identifier: "task-1"},
+		{name: "task logs", target: "/tasks/task-1/logs", kind: "tasks", identifier: "task-1"},
+		{name: "secret inspect", target: "/secrets/secret-1", kind: "secrets", identifier: "secret-1"},
+		{name: "config inspect", target: "/configs/config-1", kind: "configs", identifier: "config-1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					tt.kind: {
+						tt.identifier: {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+					},
+				},
+			}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("expected cross-owner access to be denied")
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "owner policy denied access") {
+				t.Fatalf("deny body = %q, want owner policy denial", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesCrossOwnerNodeAndSwarmReads(t *testing.T) {
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+
+	tests := []struct {
+		name       string
+		target     string
+		kind       string
+		identifier string
+	}{
+		{name: "node inspect", target: "/nodes/node-1", kind: "nodes", identifier: "node-1"},
+		{name: "swarm inspect", target: "/swarm", kind: "swarm", identifier: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					tt.kind: {
+						tt.identifier: {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+					},
+				},
+			}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("expected cross-owner access to be denied")
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "owner policy denied access") {
+				t.Fatalf("deny body = %q, want owner policy denial", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareClaimsUnownedNodeAndSwarmUpdates(t *testing.T) {
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+
+	tests := []struct {
+		name       string
+		target     string
+		kind       string
+		identifier string
+		body       string
+	}{
+		{name: "node update", target: "/nodes/node-1/update?version=42", kind: "nodes", identifier: "node-1", body: `{"Availability":"active"}`},
+		{name: "swarm update", target: "/swarm/update?version=42", kind: "swarm", identifier: "", body: `{"Name":"cluster"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					tt.kind: {
+						tt.identifier: {labels: map[string]string{}, found: true},
+					},
+				},
+			}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				labels := nestedMapAnyForTest(t, body, "Labels")
+				if got := labels["com.sockguard.owner"]; got != "job-123" {
+					t.Fatalf("owner label = %#v, want job-123", got)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tt.target, strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesCrossOwnerNodeAndSwarmUpdates(t *testing.T) {
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+
+	tests := []struct {
+		name       string
+		target     string
+		kind       string
+		identifier string
+		body       string
+	}{
+		{name: "node update", target: "/nodes/node-1/update?version=42", kind: "nodes", identifier: "node-1", body: `{"Labels":{"com.sockguard.owner":"job-123"}}`},
+		{name: "swarm update", target: "/swarm/update?version=42", kind: "swarm", identifier: "", body: `{"Labels":{"com.sockguard.owner":"job-123"}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					tt.kind: {
+						tt.identifier: {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+					},
+				},
+			}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("expected cross-owner update to be denied")
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tt.target, strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+		})
 	}
 }
 
@@ -361,6 +613,119 @@ func TestMutateOwnershipRequest(t *testing.T) {
 			t.Fatalf("mutateOwnershipRequest(noop) error = %v", err)
 		}
 	})
+
+	t.Run("service create", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{"Name":"web"}`))
+		if err := mutateOwnershipRequest(req, "/services/create", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+			t.Fatalf("mutateOwnershipRequest(service create) error = %v", err)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		labels := nestedMapAnyForTest(t, body, "Labels")
+		if got := labels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("service Labels owner = %#v, want job-123", got)
+		}
+		containerLabels := nestedMapAnyForTest(t, body, "TaskTemplate", "ContainerSpec", "Labels")
+		if got := containerLabels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("service TaskTemplate.ContainerSpec.Labels owner = %#v, want job-123", got)
+		}
+	})
+
+	t.Run("service update preserves existing labels", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/services/web/update", strings.NewReader(`{
+			"Labels":{"existing":"value"},
+			"TaskTemplate":{"ContainerSpec":{"Labels":{"workload":"api"}}}
+		}`))
+		if err := mutateOwnershipRequest(req, "/services/web/update", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+			t.Fatalf("mutateOwnershipRequest(service update) error = %v", err)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		labels := nestedMapAnyForTest(t, body, "Labels")
+		if got := labels["existing"]; got != "value" {
+			t.Fatalf("service Labels existing = %#v, want value", got)
+		}
+		if got := labels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("service Labels owner = %#v, want job-123", got)
+		}
+		containerLabels := nestedMapAnyForTest(t, body, "TaskTemplate", "ContainerSpec", "Labels")
+		if got := containerLabels["workload"]; got != "api" {
+			t.Fatalf("service TaskTemplate.ContainerSpec.Labels workload = %#v, want api", got)
+		}
+		if got := containerLabels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("service TaskTemplate.ContainerSpec.Labels owner = %#v, want job-123", got)
+		}
+	})
+
+	t.Run("node update", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/nodes/node-1/update?version=42", strings.NewReader(`{"Name":"node-1"}`))
+		if err := mutateOwnershipRequest(req, "/nodes/node-1/update", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+			t.Fatalf("mutateOwnershipRequest(node update) error = %v", err)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		labels := nestedMapAnyForTest(t, body, "Labels")
+		if got := labels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("node Labels owner = %#v, want job-123", got)
+		}
+		if got := body["Name"]; got != "node-1" {
+			t.Fatalf("node Name = %#v, want node-1", got)
+		}
+	})
+
+	t.Run("swarm update", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/swarm/update?version=42", strings.NewReader(`{"Name":"cluster-1"}`))
+		if err := mutateOwnershipRequest(req, "/swarm/update", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+			t.Fatalf("mutateOwnershipRequest(swarm update) error = %v", err)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		labels := nestedMapAnyForTest(t, body, "Labels")
+		if got := labels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("swarm Labels owner = %#v, want job-123", got)
+		}
+		if got := body["Name"]; got != "cluster-1" {
+			t.Fatalf("swarm Name = %#v, want cluster-1", got)
+		}
+	})
+
+	t.Run("secret create", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/secrets/create", strings.NewReader(`{"Name":"db-password"}`))
+		if err := mutateOwnershipRequest(req, "/secrets/create", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+			t.Fatalf("mutateOwnershipRequest(secret create) error = %v", err)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		labels := nestedMapAnyForTest(t, body, "Labels")
+		if got := labels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("secret Labels owner = %#v, want job-123", got)
+		}
+	})
+
+	t.Run("config create", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/configs/create", strings.NewReader(`{"Name":"app-config"}`))
+		if err := mutateOwnershipRequest(req, "/configs/create", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+			t.Fatalf("mutateOwnershipRequest(config create) error = %v", err)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		labels := nestedMapAnyForTest(t, body, "Labels")
+		if got := labels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("config Labels owner = %#v, want job-123", got)
+		}
+	})
 }
 
 func TestAllowOwnershipRequest(t *testing.T) {
@@ -370,6 +735,10 @@ func TestAllowOwnershipRequest(t *testing.T) {
 			"networks": {"net-1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
 			"volumes":  {"vol-1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
 			"images":   {"busybox:latest": {labels: map[string]string{}, found: true}},
+			"services": {"svc-1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
+			"tasks":    {"task-1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
+			"secrets":  {"sec-1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
+			"configs":  {"cfg-1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
 		},
 	}.deps()
 
@@ -381,6 +750,38 @@ func TestAllowOwnershipRequest(t *testing.T) {
 	}
 	if verdict, _, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", opts, deps); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(image) = (%v, %v), want verdictAllow/nil", verdict, err)
+	}
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/services/svc-1", opts, deps); err != nil || verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequest(service) = (%v, %v), want verdictAllow/nil", verdict, err)
+	}
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/services/svc-1/logs", opts, deps); err != nil || verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequest(service logs) = (%v, %v), want verdictAllow/nil", verdict, err)
+	}
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/tasks/task-1", opts, deps); err != nil || verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequest(task) = (%v, %v), want verdictAllow/nil", verdict, err)
+	}
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/tasks/task-1/logs", opts, deps); err != nil || verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequest(task logs) = (%v, %v), want verdictAllow/nil", verdict, err)
+	}
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/secrets/sec-1", opts, deps); err != nil || verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequest(secret) = (%v, %v), want verdictAllow/nil", verdict, err)
+	}
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/configs/cfg-1", opts, deps); err != nil || verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequest(config) = (%v, %v), want verdictAllow/nil", verdict, err)
+	}
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/nodes/node-1", opts, fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"nodes": {"node-1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
+		},
+	}.deps()); err != nil || verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequest(node) = (%v, %v), want verdictAllow/nil", verdict, err)
+	}
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/swarm", opts, fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"swarm": {"": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
+		},
+	}.deps()); err != nil || verdict != verdictAllow {
+		t.Fatalf("allowOwnershipRequest(swarm) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
 	if verdict, reason, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, deps); err != nil || verdict != verdictDeny || !strings.Contains(reason, "owner policy denied access to image") {
 		t.Fatalf("allowOwnershipRequest(image deny) = (%v, %q, %v), want verdictDeny/image denial/nil", verdict, reason, err)
@@ -427,6 +828,24 @@ func TestOwnerHelpers(t *testing.T) {
 	}
 	if got := singularResource(resourceKindVolume); got != "volume" {
 		t.Fatalf("singularResource(volume) = %q, want volume", got)
+	}
+	if got := singularResource(resourceKind("services")); got != "service" {
+		t.Fatalf("singularResource(services) = %q, want service", got)
+	}
+	if got := singularResource(resourceKind("tasks")); got != "task" {
+		t.Fatalf("singularResource(tasks) = %q, want task", got)
+	}
+	if got := singularResource(resourceKind("secrets")); got != "secret" {
+		t.Fatalf("singularResource(secrets) = %q, want secret", got)
+	}
+	if got := singularResource(resourceKind("configs")); got != "config" {
+		t.Fatalf("singularResource(configs) = %q, want config", got)
+	}
+	if got := singularResource(resourceKind("nodes")); got != "node" {
+		t.Fatalf("singularResource(nodes) = %q, want node", got)
+	}
+	if got := singularResource(resourceKind("swarm")); got != "swarm" {
+		t.Fatalf("singularResource(swarm) = %q, want swarm", got)
 	}
 	if got := singularResource(resourceKind("other")); got != "other" {
 		t.Fatalf("singularResource(other) = %q, want other", got)
@@ -476,6 +895,45 @@ func TestIdentifierHelpers(t *testing.T) {
 	if _, ok := execIdentifier("/exec/"); ok {
 		t.Fatal("expected empty exec identifier to be excluded")
 	}
+	if id, ok := serviceIdentifier("/services/web"); !ok || id != "web" {
+		t.Fatalf("serviceIdentifier() = (%q, %v), want (web, true)", id, ok)
+	}
+	if id, ok := serviceIdentifier("/services/web/logs"); !ok || id != "web" {
+		t.Fatalf("serviceIdentifier(logs) = (%q, %v), want (web, true)", id, ok)
+	}
+	if _, ok := serviceIdentifier("/services/create"); ok {
+		t.Fatal("expected /services/create to be excluded")
+	}
+	if id, ok := taskIdentifier("/tasks/task-1"); !ok || id != "task-1" {
+		t.Fatalf("taskIdentifier() = (%q, %v), want (task-1, true)", id, ok)
+	}
+	if id, ok := taskIdentifier("/tasks/task-1/logs"); !ok || id != "task-1" {
+		t.Fatalf("taskIdentifier(logs) = (%q, %v), want (task-1, true)", id, ok)
+	}
+	if id, ok := secretIdentifier("/secrets/sec-1"); !ok || id != "sec-1" {
+		t.Fatalf("secretIdentifier() = (%q, %v), want (sec-1, true)", id, ok)
+	}
+	if _, ok := secretIdentifier("/secrets/create"); ok {
+		t.Fatal("expected /secrets/create to be excluded")
+	}
+	if id, ok := configIdentifier("/configs/cfg-1"); !ok || id != "cfg-1" {
+		t.Fatalf("configIdentifier() = (%q, %v), want (cfg-1, true)", id, ok)
+	}
+	if _, ok := configIdentifier("/configs/create"); ok {
+		t.Fatal("expected /configs/create to be excluded")
+	}
+	if id, ok := nodeIdentifier("/nodes/node-1"); !ok || id != "node-1" {
+		t.Fatalf("nodeIdentifier() = (%q, %v), want (node-1, true)", id, ok)
+	}
+	if _, ok := nodeIdentifier("/nodes"); ok {
+		t.Fatal("expected /nodes to be excluded")
+	}
+	if !isSwarmPath("/swarm") {
+		t.Fatal("expected /swarm to match swarm path")
+	}
+	if isSwarmPath("/swarm/update") {
+		t.Fatal("expected /swarm/update to be excluded from swarm inspect path")
+	}
 }
 
 func TestAddOwnerLabelToBuildQuery(t *testing.T) {
@@ -514,6 +972,21 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 		t.Fatal("expected invalid labels object error")
 	}
 
+	serviceReq := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{"Name":"web"}`))
+	if err := addOwnerLabelToServiceBody(serviceReq, "com.sockguard.owner", "job-123"); err != nil {
+		t.Fatalf("addOwnerLabelToServiceBody() error = %v", err)
+	}
+	var serviceBody map[string]any
+	if err := json.NewDecoder(serviceReq.Body).Decode(&serviceBody); err != nil {
+		t.Fatalf("decode mutated service body: %v", err)
+	}
+	if nestedMapAnyForTest(t, serviceBody, "Labels")["com.sockguard.owner"] != "job-123" {
+		t.Fatalf("service Labels = %#v, want owner label", serviceBody["Labels"])
+	}
+	if nestedMapAnyForTest(t, serviceBody, "TaskTemplate", "ContainerSpec", "Labels")["com.sockguard.owner"] != "job-123" {
+		t.Fatalf("service TaskTemplate.ContainerSpec.Labels = %#v, want owner label", nestedMapAnyForTest(t, serviceBody, "TaskTemplate", "ContainerSpec", "Labels"))
+	}
+
 	filterReq := httptest.NewRequest(http.MethodGet, "/containers/json?filters=%7B%22label%22%3A%5B%22com.sockguard.owner%3Djob-123%22%5D%7D", nil)
 	if err := addOwnerLabelFilter(filterReq, "com.sockguard.owner", "job-123"); err != nil {
 		t.Fatalf("addOwnerLabelFilter() error = %v", err)
@@ -529,6 +1002,33 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 	badFilterReq := httptest.NewRequest(http.MethodGet, "/containers/json?filters=%7B%22label%22%3A%22bad%22%7D", nil)
 	if err := addOwnerLabelFilter(badFilterReq, "com.sockguard.owner", "job-123"); err == nil {
 		t.Fatal("expected invalid filters error")
+	}
+
+	taskFilterReq := httptest.NewRequest(http.MethodGet, "/tasks", nil)
+	if err := addOwnerLabelFilter(taskFilterReq, "com.sockguard.owner", "job-123"); err != nil {
+		t.Fatalf("addOwnerLabelFilter(task) error = %v", err)
+	}
+	var taskFilters map[string][]string
+	if err := json.NewDecoder(strings.NewReader(taskFilterReq.URL.Query().Get("filters"))).Decode(&taskFilters); err != nil {
+		t.Fatalf("decode task filters: %v", err)
+	}
+	if len(taskFilters["label"]) != 1 || taskFilters["label"][0] != "com.sockguard.owner=job-123" {
+		t.Fatalf("task label filters = %#v, want owner label", taskFilters["label"])
+	}
+
+	nodeFilterReq := httptest.NewRequest(http.MethodGet, "/nodes", nil)
+	if err := addOwnerLabelFilter(nodeFilterReq, "com.sockguard.owner", "job-123"); err != nil {
+		t.Fatalf("addOwnerLabelFilter(nodes) error = %v", err)
+	}
+	var nodeFilters map[string][]string
+	if err := json.NewDecoder(strings.NewReader(nodeFilterReq.URL.Query().Get("filters"))).Decode(&nodeFilters); err != nil {
+		t.Fatalf("decode node filters: %v", err)
+	}
+	if len(nodeFilters["node.label"]) != 1 || nodeFilters["node.label"][0] != "com.sockguard.owner=job-123" {
+		t.Fatalf("node.label filters = %#v, want owner label", nodeFilters["node.label"])
+	}
+	if _, ok := nodeFilters["label"]; ok {
+		t.Fatalf("unexpected generic label filters for nodes: %#v", nodeFilters["label"])
 	}
 }
 
@@ -702,6 +1202,12 @@ func TestUpstreamInspectorInspectResource(t *testing.T) {
 			_, _ = w.Write([]byte(`{"Config":{"Labels":{"com.sockguard.owner":"job-123"}}}`))
 		case "/networks/net-1", "/volumes/vol-1":
 			_, _ = w.Write([]byte(`{"Labels":{"com.sockguard.owner":"job-123"}}`))
+		case "/services/svc-1", "/secrets/secret-1", "/configs/config-1":
+			_, _ = w.Write([]byte(`{"Spec":{"Labels":{"com.sockguard.owner":"job-123"}}}`))
+		case "/tasks/task-1":
+			_, _ = w.Write([]byte(`{"Labels":{"com.sockguard.owner":"job-123"}}`))
+		case "/nodes/node-1", "/swarm":
+			_, _ = w.Write([]byte(`{"Spec":{"Labels":{"com.sockguard.owner":"job-123"}}}`))
 		case "/containers/missing/json":
 			http.NotFound(w, r)
 		case "/containers/bad-status/json":
@@ -735,6 +1241,29 @@ func TestUpstreamInspectorInspectResource(t *testing.T) {
 		}
 	}
 
+	for _, kind := range []resourceKind{resourceKind("services"), resourceKind("tasks"), resourceKind("secrets"), resourceKind("configs")} {
+		identifier := map[resourceKind]string{
+			resourceKind("services"): "svc-1",
+			resourceKind("tasks"):    "task-1",
+			resourceKind("secrets"):  "secret-1",
+			resourceKind("configs"):  "config-1",
+		}[kind]
+		labels, found, err := inspector.inspectResource(context.Background(), kind, identifier)
+		if err != nil || !found || labels["com.sockguard.owner"] != "job-123" {
+			t.Fatalf("inspectResource(%s) = (%#v, %v, %v), want owner labels", kind, labels, found, err)
+		}
+	}
+	for _, kind := range []resourceKind{resourceKind("nodes"), resourceKind("swarm")} {
+		identifier := map[resourceKind]string{
+			resourceKind("nodes"): "node-1",
+			resourceKind("swarm"): "",
+		}[kind]
+		labels, found, err := inspector.inspectResource(context.Background(), kind, identifier)
+		if err != nil || !found || labels["com.sockguard.owner"] != "job-123" {
+			t.Fatalf("inspectResource(%s) = (%#v, %v, %v), want owner labels", kind, labels, found, err)
+		}
+	}
+
 	if _, found, err := inspector.inspectResource(context.Background(), resourceKindContainer, "missing"); err != nil || found {
 		t.Fatalf("inspectResource(missing) = found %v err %v, want false nil", found, err)
 	}
@@ -760,6 +1289,23 @@ func TestUpstreamInspectorInspectResource(t *testing.T) {
 	if _, _, err := inspector.inspectResource(context.Background(), resourceKind("other"), "id"); err == nil {
 		t.Fatal("expected unsupported kind error")
 	}
+}
+
+func nestedMapAnyForTest(t *testing.T, payload map[string]any, keys ...string) map[string]any {
+	t.Helper()
+	current := payload
+	for _, key := range keys {
+		value, ok := current[key]
+		if !ok {
+			t.Fatalf("missing key %q in %#v", key, current)
+		}
+		next, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("%q = %#v, want object", key, value)
+		}
+		current = next
+	}
+	return current
 }
 
 func TestUpstreamInspectorInspectExec(t *testing.T) {

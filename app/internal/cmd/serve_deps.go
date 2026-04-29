@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -21,9 +21,12 @@ import (
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
+const hardenedListenSocketMode = os.FileMode(0o600)
+
 type serveDeps struct {
 	loadConfig          func(string) (*config.Config, error)
 	newLogger           func(string, string, string) (*slog.Logger, io.Closer, error)
+	newAuditLogger      func(string, string) (*logging.AuditLogger, io.Closer, error)
 	validateRules       func(*config.Config) ([]*filter.CompiledRule, error)
 	dialUpstream        func(string, string, time.Duration) (net.Conn, error)
 	listenNetwork       func(string, string) (net.Listener, error)
@@ -46,6 +49,7 @@ func newServeDeps() *serveDeps {
 	deps := &serveDeps{
 		loadConfig:          config.Load,
 		newLogger:           logging.New,
+		newAuditLogger:      logging.NewAudit,
 		validateRules:       validateAndCompileRules,
 		dialUpstream:        net.DialTimeout,
 		listenNetwork:       net.Listen,
@@ -99,12 +103,11 @@ func (d *serveDeps) createListener(cfg *config.Config) (net.Listener, error) {
 }
 
 func (d *serveDeps) createSocketListener(path, modeValue string) (net.Listener, error) {
-	mode, err := strconv.ParseUint(modeValue, 8, 32)
-	if err != nil {
-		return nil, fmt.Errorf("invalid socket_mode %q: %w", modeValue, err)
+	if strings.TrimSpace(modeValue) != config.HardenedListenSocketMode {
+		return nil, fmt.Errorf("listen.socket_mode must be %q because unix listeners are created with owner-only permissions", config.HardenedListenSocketMode)
 	}
 
-	return d.listenUnixSocket(path, os.FileMode(mode))
+	return d.listenUnixSocket(path)
 }
 
 func (d *serveDeps) createTCPListener(address string, tlsCfg config.ListenTLSConfig) (net.Listener, error) {
@@ -129,8 +132,8 @@ func (d *serveDeps) wrapListenerWithTLS(ln net.Listener, tlsCfg config.ListenTLS
 	return tls.NewListener(ln, tlsConfig), nil
 }
 
-func (d *serveDeps) listenUnixSocket(path string, mode os.FileMode) (net.Listener, error) {
-	return d.withUmask(socketCreateUmask(mode), func() (net.Listener, error) {
+func (d *serveDeps) listenUnixSocket(path string) (net.Listener, error) {
+	return d.withUmask(socketCreateUmask(hardenedListenSocketMode), func() (net.Listener, error) {
 		ln, err := d.listenNetwork("unix", path)
 		if err == nil {
 			return ln, nil

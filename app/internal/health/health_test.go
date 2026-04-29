@@ -421,6 +421,79 @@ func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
 	}
 }
 
+func TestHealthCheckerWaitsForInFlightCheck(t *testing.T) {
+	releaseDial := make(chan struct{})
+	dialEntered := make(chan struct{}, 2)
+	results := make(chan struct {
+		status string
+		err    error
+	}, 2)
+	var dialCalls atomic.Int32
+
+	checker := newUpstreamHealthChecker(
+		0,
+		time.Second,
+		time.Now,
+		func(context.Context, string, string) (net.Conn, error) {
+			dialCalls.Add(1)
+			dialEntered <- struct{}{}
+			<-releaseDial
+			return noopConn{}, nil
+		},
+	)
+	checker.failureTTL = 0
+
+	go func() {
+		status, err := checker.check(context.Background(), "/tmp/upstream.sock")
+		results <- struct {
+			status string
+			err    error
+		}{status: status, err: err}
+	}()
+
+	select {
+	case <-dialEntered:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected leader health check to dial upstream")
+	}
+
+	secondStarted := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		status, err := checker.check(context.Background(), "/tmp/upstream.sock")
+		results <- struct {
+			status string
+			err    error
+		}{status: status, err: err}
+	}()
+	<-secondStarted
+
+	time.Sleep(25 * time.Millisecond)
+	if dialCalls.Load() != 1 {
+		t.Fatalf("dial calls while first check is in flight = %d, want 1", dialCalls.Load())
+	}
+	select {
+	case <-dialEntered:
+		t.Fatal("second health check started a duplicate upstream dial")
+	default:
+	}
+
+	close(releaseDial)
+	for i := 0; i < 2; i++ {
+		select {
+		case result := <-results:
+			if result.status != "connected" || result.err != nil {
+				t.Fatalf("check = (%q, %v), want connected with nil error", result.status, result.err)
+			}
+		case <-time.After(250 * time.Millisecond):
+			t.Fatal("timed out waiting for health check result")
+		}
+	}
+	if dialCalls.Load() != 1 {
+		t.Fatalf("final dial calls = %d, want 1", dialCalls.Load())
+	}
+}
+
 type failingWriter struct {
 	header http.Header
 	status int

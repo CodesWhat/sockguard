@@ -1,6 +1,13 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { extractChangelogEntry } from './extract-changelog-entry.mjs';
+import { extractChangelogEntry, formatCLIError } from './extract-changelog-entry.mjs';
+
+const scriptPath = fileURLToPath(new URL('./extract-changelog-entry.mjs', import.meta.url));
 
 const SAMPLE_CHANGELOG = `# Changelog
 
@@ -121,5 +128,67 @@ describe('extractChangelogEntry', () => {
   it('returns trimmed content', () => {
     const entry = extractChangelogEntry(SAMPLE_CHANGELOG, '1.2.0');
     assert.equal(entry, entry.trim());
+  });
+
+  it('prints an entry from the CLI', () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'sockguard-changelog-'));
+    const changelogPath = path.join(tempDir, 'CHANGELOG.md');
+    writeFileSync(changelogPath, SAMPLE_CHANGELOG, 'utf8');
+
+    const result = spawnSync(process.execPath, [scriptPath, 'ignored', '--file', changelogPath, '--version', '1.1.0'], {
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /## \[1\.1\.0\] - 2026-03-10/);
+    assert.match(result.stdout, /Feature D/);
+  });
+
+  it('fails from the CLI when a flag is missing its value', () => {
+    const result = spawnSync(process.execPath, [scriptPath, '--file'], {
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Missing value for argument: --file/);
+  });
+
+  it('fails from the CLI when a flag is followed by another flag', () => {
+    const result = spawnSync(process.execPath, [scriptPath, '--file', '--version', '1.2.0'], {
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Missing value for argument: --file/);
+  });
+
+  it('fails from the CLI when version is missing', () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'sockguard-changelog-'));
+    const changelogPath = path.join(tempDir, 'CHANGELOG.md');
+    writeFileSync(changelogPath, SAMPLE_CHANGELOG, 'utf8');
+
+    const result = spawnSync(process.execPath, [scriptPath, '--file', changelogPath], {
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--version is required/);
+  });
+
+  it('uses CHANGELOG.md by default from the working directory', () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), 'sockguard-changelog-'));
+    writeFileSync(path.join(tempDir, 'CHANGELOG.md'), SAMPLE_CHANGELOG, 'utf8');
+
+    const result = spawnSync(process.execPath, [scriptPath, '--version', '1.0.0'], {
+      cwd: tempDir,
+      encoding: 'utf8',
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /## \[1\.0\.0\] - 2026-01-01/);
+  });
+
+  it('formats non-Error CLI failures', () => {
+    assert.equal(formatCLIError('plain failure'), 'plain failure');
   });
 });

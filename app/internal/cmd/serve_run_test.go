@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +23,7 @@ import (
 
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/logging"
 )
 
 type serveTestConn struct {
@@ -83,6 +87,18 @@ type serveTestCloser struct {
 }
 
 func (c *serveTestCloser) Close() error {
+	return c.err
+}
+
+type serveTestAuditCloser struct {
+	logger *logging.AuditLogger
+	err    error
+}
+
+func (c *serveTestAuditCloser) Close() error {
+	if c.logger != nil {
+		_ = c.logger.Close()
+	}
 	return c.err
 }
 
@@ -247,7 +263,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 			return nil, errors.New("boom")
 		}
 
-		_, err := deps.listenUnixSocket("/tmp/test.sock", 0o600)
+		_, err := deps.listenUnixSocket("/tmp/test.sock")
 		if err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Fatalf("expected direct listen error, got: %v", err)
 		}
@@ -265,7 +281,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 			return nil, errors.New("stat failed")
 		}
 
-		_, err := deps.listenUnixSocket("/tmp/test.sock", 0o600)
+		_, err := deps.listenUnixSocket("/tmp/test.sock")
 		if err == nil || !strings.Contains(err.Error(), "could not inspect") {
 			t.Fatalf("expected stat error, got: %v", err)
 		}
@@ -287,7 +303,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 			return errors.New("remove failed")
 		}
 
-		_, err := deps.listenUnixSocket("/tmp/test.sock", 0o600)
+		_, err := deps.listenUnixSocket("/tmp/test.sock")
 		if err == nil {
 			t.Fatal("expected listenUnixSocket() to fail")
 		}
@@ -314,7 +330,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 			return os.ErrNotExist
 		}
 
-		ln, err := deps.listenUnixSocket("/tmp/test.sock", 0o600)
+		ln, err := deps.listenUnixSocket("/tmp/test.sock")
 		if err != nil {
 			t.Fatalf("expected success, got: %v", err)
 		}
@@ -342,7 +358,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 			return nil
 		}
 
-		_, err := deps.listenUnixSocket("/tmp/test.sock", 0o600)
+		_, err := deps.listenUnixSocket("/tmp/test.sock")
 		if err == nil || !strings.Contains(err.Error(), "second boom") {
 			t.Fatalf("expected second listen error, got: %v", err)
 		}
@@ -402,6 +418,23 @@ func TestRunServeErrorPaths(t *testing.T) {
 		}
 	})
 
+	t.Run("audit logger", func(t *testing.T) {
+		deps := newRunServeDeps()
+		cfg := testServeConfig()
+		cfg.Log.Audit.Enabled = true
+		deps.loadConfig = func(string) (*config.Config, error) {
+			return cfg, nil
+		}
+		deps.newAuditLogger = func(format, output string) (*logging.AuditLogger, io.Closer, error) {
+			return nil, nil, errors.New("audit boom")
+		}
+
+		err := runServeWithDeps(newServeCommand(), nil, deps)
+		if err == nil || !strings.Contains(err.Error(), "audit logger: audit boom") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
 	t.Run("validate and close log output", func(t *testing.T) {
 		deps := newRunServeDeps()
 		var errOut strings.Builder
@@ -421,6 +454,94 @@ func TestRunServeErrorPaths(t *testing.T) {
 		}
 		if !strings.Contains(errOut.String(), "failed to close log output: close boom") {
 			t.Fatalf("expected log output close warning, got: %q", errOut.String())
+		}
+	})
+
+	t.Run("close audit log output", func(t *testing.T) {
+		deps := newRunServeDeps()
+		cfg := testServeConfig()
+		cfg.Log.Audit.Enabled = true
+		deps.loadConfig = func(string) (*config.Config, error) {
+			return cfg, nil
+		}
+
+		var errOut strings.Builder
+		cmd := newServeCommand()
+		cmd.SetErr(&errOut)
+
+		deps.newAuditLogger = func(format, output string) (*logging.AuditLogger, io.Closer, error) {
+			auditLogger := logging.NewAuditLogger(io.Discard)
+			return auditLogger, &serveTestAuditCloser{logger: auditLogger, err: errors.New("audit close boom")}, nil
+		}
+		deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+			return &serveTestConn{}, nil
+		}
+		deps.createServeListener = func(*config.Config) (net.Listener, error) {
+			return &serveTestListener{}, nil
+		}
+		deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {
+			errCh <- http.ErrServerClosed
+		}
+		deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
+		deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
+			return nil
+		}
+
+		if err := runServeWithDeps(cmd, nil, deps); err != nil {
+			t.Fatalf("runServeWithDeps() error = %v, want nil", err)
+		}
+		if !strings.Contains(errOut.String(), "failed to close audit log output: audit close boom") {
+			t.Fatalf("expected audit log output close warning, got: %q", errOut.String())
+		}
+	})
+
+	t.Run("audit log pipeline", func(t *testing.T) {
+		deps := newRunServeDeps()
+		cfg := testServeConfig()
+		cfg.Log.Audit.Enabled = true
+		deps.loadConfig = func(string) (*config.Config, error) {
+			return cfg, nil
+		}
+
+		var auditBuf bytes.Buffer
+		deps.newAuditLogger = func(format, output string) (*logging.AuditLogger, io.Closer, error) {
+			auditLogger := logging.NewAuditLogger(&auditBuf)
+			return auditLogger, auditLogger, nil
+		}
+		deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+			return &serveTestConn{}, nil
+		}
+		deps.createServeListener = func(*config.Config) (net.Listener, error) {
+			return &serveTestListener{addr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 2375}}, nil
+		}
+		deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {
+			req := httptest.NewRequest(http.MethodGet, "/v1.45/denied", nil)
+			req.RemoteAddr = "198.51.100.10:4444"
+			req.Header.Set("X-Request-ID", "client-123")
+			rec := httptest.NewRecorder()
+			server.Handler.ServeHTTP(rec, req)
+			errCh <- http.ErrServerClosed
+		}
+
+		if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
+			t.Fatalf("runServeWithDeps() error = %v, want nil", err)
+		}
+
+		var event map[string]any
+		if err := json.Unmarshal(bytes.TrimSpace(auditBuf.Bytes()), &event); err != nil {
+			t.Fatalf("json.Unmarshal(audit event): %v\nbody: %s", err, auditBuf.String())
+		}
+		if got := event["decision"]; got != "deny" {
+			t.Fatalf("decision = %#v, want %q", got, "deny")
+		}
+		if got := event["normalized_path"]; got != "/denied" {
+			t.Fatalf("normalized_path = %#v, want %q", got, "/denied")
+		}
+		if got := event["reason_code"]; got != "no_matching_allow_rule" {
+			t.Fatalf("reason_code = %#v, want %q", got, "no_matching_allow_rule")
+		}
+		if got := event["client_request_id"]; got != "client-123" {
+			t.Fatalf("client_request_id = %#v, want %q", got, "client-123")
 		}
 	})
 
