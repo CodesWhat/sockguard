@@ -10,23 +10,23 @@
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
-    "fumadocs-core": "^16.8.4",
-    "fumadocs-mdx": "^14.2.14",
-    "fumadocs-ui": "^16.8.4",
-    "lucide-react": "0.577.0",
-    "next": "16.2.3",
+    "fumadocs-core": "^16.8.5",
+    "fumadocs-mdx": "^14.3.2",
+    "fumadocs-ui": "^16.8.5",
+    "lucide-react": "1.14.0",
+    "next": "16.2.4",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "4.2.2",
+    "@tailwindcss/postcss": "4.2.4",
     "@types/mdx": "2.0.13",
     "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "19.2.3",
-    "postcss": "^8.5.10",
+    "postcss": "^8.5.12",
     "postcss-load-config": "6.0.1",
-    "tailwindcss": "4.2.2",
-    "typescript": "^6.0.2"
+    "tailwindcss": "4.2.4",
+    "typescript": "^6.0.3"
   }
 }

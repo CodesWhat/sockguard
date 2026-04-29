@@ -14,19 +14,19 @@
     "prepare": "test -d .git && lefthook install || true"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.12",
-    "knip": "6.4.1",
-    "lefthook": "^2.1.5",
+    "@biomejs/biome": "^2.4.13",
+    "knip": "6.9.0",
+    "lefthook": "^2.1.6",
     "turbo": "^2.9.6"
   },
   "overrides": {
-    "next@16.2.3": {
-      ".": "16.2.3",
-      "postcss": "8.5.10"
+    "next@16.2.4": {
+      ".": "16.2.4",
+      "postcss": "8.5.12"
     },
-    "postcss": "^8.5.10"
+    "postcss": "^8.5.12"
   },
-  "packageManager": "npm@11.9.0",
+  "packageManager": "npm@11.13.0",
   "engines": {
     "node": ">=22.0.0"
   }
