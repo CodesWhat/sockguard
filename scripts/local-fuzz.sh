@@ -10,8 +10,11 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 FUZZTIME="2m"
+TEST_TIMEOUT=""
 SUITE="ci"
 JOBS="0"
+GO_PARALLEL=""
+GO_BIN=""
 USE_DOCKER="0"
 DOCKER_IMAGE="golang:1.26.2"
 PLATFORM=""
@@ -19,15 +22,20 @@ ARTIFACT_ROOT=""
 KEEP_WORK="0"
 DRY_RUN="0"
 
+# shellcheck source=scripts/fuzz-duration.sh
+source "$REPO_ROOT/scripts/fuzz-duration.sh"
+
 usage() {
   cat <<'EOF'
 Usage: scripts/local-fuzz.sh [options]
 
 Options:
-  --suite NAME       Fuzzer suite: ci, proxy, filter, config, response, all (default: ci)
+  --suite NAME       Fuzzer suite: ci, proxy, filter, config, response, all, ultra (default: ci)
   --fuzztime DURATION
                      Per-fuzzer budget passed to go test -fuzztime (default: 2m)
+  --timeout DURATION Go test watchdog. Defaults to fuzztime + 10m.
   --jobs N           Number of fuzzers to run in parallel (default: min(fuzzers, 4))
+  --parallel N       Workers per go test fuzz process (default: Go test default)
   --docker           Run each fuzzer inside a golang Docker image
   --platform VALUE   Docker platform, for example linux/amd64
   --image VALUE      Docker image to use with --docker (default: golang:1.26.2)
@@ -39,13 +47,28 @@ Options:
 Examples:
   scripts/local-fuzz.sh --suite proxy --fuzztime 5m
   scripts/local-fuzz.sh --docker --platform linux/amd64 --suite ci --fuzztime 15m
-  scripts/local-fuzz.sh --suite all --fuzztime 1m --jobs 4
+  scripts/local-fuzz.sh --suite ultra --fuzztime 1h --timeout 1h15m --jobs 1
 EOF
 }
 
 die() {
   echo "error: $*" >&2
   exit 1
+}
+
+find_go() {
+  local candidate
+  if candidate="$(command -v go 2>/dev/null)"; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  for candidate in /opt/homebrew/bin/go /usr/local/go/bin/go /usr/local/bin/go; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
 }
 
 while [[ $# -gt 0 ]]; do
@@ -60,9 +83,19 @@ while [[ $# -gt 0 ]]; do
       FUZZTIME="$2"
       shift 2
       ;;
+    --timeout)
+      [[ $# -ge 2 ]] || die "--timeout requires a value"
+      TEST_TIMEOUT="$2"
+      shift 2
+      ;;
     --jobs)
       [[ $# -ge 2 ]] || die "--jobs requires a value"
       JOBS="$2"
+      shift 2
+      ;;
+    --parallel)
+      [[ $# -ge 2 ]] || die "--parallel requires a value"
+      GO_PARALLEL="$2"
       shift 2
       ;;
     --docker)
@@ -105,6 +138,24 @@ done
 case "$JOBS" in
   ''|*[!0-9]*) die "--jobs must be a positive integer" ;;
 esac
+
+if [[ -n "$GO_PARALLEL" ]]; then
+  case "$GO_PARALLEL" in
+    ''|*[!0-9]*) die "--parallel must be a positive integer" ;;
+  esac
+  if [[ "$GO_PARALLEL" -lt 1 ]]; then
+    die "--parallel must be a positive integer"
+  fi
+fi
+
+if ! fuzz_duration_to_seconds "$FUZZTIME" >/dev/null; then
+  die "--fuzztime must use h/m/s components, for example 60s, 15m, or 1h30m"
+fi
+if [[ -z "$TEST_TIMEOUT" ]]; then
+  TEST_TIMEOUT="$(fuzz_timeout_for_budget "$FUZZTIME")" || die "failed to derive --timeout from --fuzztime"
+elif ! fuzz_duration_to_seconds "$TEST_TIMEOUT" >/dev/null; then
+  die "--timeout must use h/m/s components, for example 10m, 1h15m, or 2h"
+fi
 
 declare -a ENTRIES=()
 
@@ -162,7 +213,7 @@ case "$SUITE" in
   response)
     add_entry "FuzzFilterModifyResponse" "./internal/responsefilter/"
     ;;
-  all)
+  all|ultra)
     add_filter_entries
     add_entry "FuzzLoadYAML" "./internal/config/"
     add_proxy_entries
@@ -187,7 +238,11 @@ fi
 native_command_text() {
   local fuzzer="$1"
   local pkg="$2"
-  printf "go test -run='^$' -fuzz='^%s$' -fuzztime=%s -timeout=0 %s" "$fuzzer" "$FUZZTIME" "$pkg"
+  printf "go test -run='^$' -fuzz='^%s$' -fuzztime=%s -timeout=%s" "$fuzzer" "$FUZZTIME" "$TEST_TIMEOUT"
+  if [[ -n "$GO_PARALLEL" ]]; then
+    printf " -parallel=%s" "$GO_PARALLEL"
+  fi
+  printf " %s" "$pkg"
 }
 
 docker_command_text() {
@@ -205,16 +260,24 @@ docker_command_text() {
   printf " -v '%s:/src' -w /src/app -e GOTOOLCHAIN=local %s sh -lc " \
     "$repo_path" \
     "$DOCKER_IMAGE"
-  printf "\"/usr/local/go/bin/go test -run='^$' -fuzz='^%s$' -fuzztime='%s' -timeout=0 '%s'\"" \
+  printf "\"/usr/local/go/bin/go test -run='^$' -fuzz='^%s$' -fuzztime='%s' -timeout='%s'" \
     "$fuzzer" \
     "$FUZZTIME" \
-    "$pkg"
+    "$TEST_TIMEOUT"
+  if [[ -n "$GO_PARALLEL" ]]; then
+    printf " -parallel='%s'" "$GO_PARALLEL"
+  fi
+  printf " '%s'\"" "$pkg"
 }
 
 if [[ "$DRY_RUN" = "1" ]]; then
   echo "suite: $SUITE"
   echo "fuzztime: $FUZZTIME"
+  echo "timeout: $TEST_TIMEOUT"
   echo "jobs: $JOBS"
+  if [[ -n "$GO_PARALLEL" ]]; then
+    echo "parallel: $GO_PARALLEL"
+  fi
   echo "runner: $([[ "$USE_DOCKER" = "1" ]] && echo docker || echo native)"
   echo
   for entry in "${ENTRIES[@]}"; do
@@ -234,7 +297,7 @@ fi
 if [[ "$USE_DOCKER" = "1" ]]; then
   command -v docker >/dev/null 2>&1 || die "docker is required for --docker"
 else
-  command -v go >/dev/null 2>&1 || die "go is required for native fuzzing"
+  GO_BIN="$(find_go)" || die "go is required for native fuzzing"
 fi
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -292,7 +355,13 @@ run_native_fuzzer() {
       GOMODCACHE="$repo/.gomodcache" \
       GOTMPDIR="$repo/.gotmp" \
       GOFLAGS="-mod=readonly" \
-      go test -run='^$' -fuzz="^${fuzzer}$" -fuzztime="$FUZZTIME" -timeout=0 "$pkg"
+      "$GO_BIN" test \
+        -run='^$' \
+        -fuzz="^${fuzzer}$" \
+        -fuzztime="$FUZZTIME" \
+        -timeout="$TEST_TIMEOUT" \
+        ${GO_PARALLEL:+-parallel="$GO_PARALLEL"} \
+        "$pkg"
   )
 }
 
@@ -306,14 +375,14 @@ run_docker_fuzzer() {
       -w /src/app \
       -e GOTOOLCHAIN=local \
       "$DOCKER_IMAGE" \
-      sh -lc "mkdir -p /tmp/sockguard-fuzz-cache && /usr/local/go/bin/go test -run='^$' -fuzz='^${fuzzer}$' -fuzztime='${FUZZTIME}' -timeout=0 '${pkg}'"
+      sh -lc "mkdir -p /tmp/sockguard-fuzz-cache && /usr/local/go/bin/go test -run='^$' -fuzz='^${fuzzer}$' -fuzztime='${FUZZTIME}' -timeout='${TEST_TIMEOUT}' ${GO_PARALLEL:+-parallel='${GO_PARALLEL}'} '${pkg}'"
   else
     docker run --rm \
       -v "$repo:/src" \
       -w /src/app \
       -e GOTOOLCHAIN=local \
       "$DOCKER_IMAGE" \
-      sh -lc "mkdir -p /tmp/sockguard-fuzz-cache && /usr/local/go/bin/go test -run='^$' -fuzz='^${fuzzer}$' -fuzztime='${FUZZTIME}' -timeout=0 '${pkg}'"
+      sh -lc "mkdir -p /tmp/sockguard-fuzz-cache && /usr/local/go/bin/go test -run='^$' -fuzz='^${fuzzer}$' -fuzztime='${FUZZTIME}' -timeout='${TEST_TIMEOUT}' ${GO_PARALLEL:+-parallel='${GO_PARALLEL}'} '${pkg}'"
   fi
 }
 
@@ -324,7 +393,7 @@ replay_native_input() {
   local input="$4"
   (
     cd "$repo/app"
-    env GOFLAGS="-mod=readonly" go test -run="^${fuzzer}/$(basename "$input")$" "$pkg" -count=1 -v
+    env GOFLAGS="-mod=readonly" "$GO_BIN" test -run="^${fuzzer}/$(basename "$input")$" "$pkg" -count=1 -v
   )
 }
 
@@ -404,7 +473,11 @@ run_one() {
     echo "fuzzer: $fuzzer"
     echo "package: $pkg"
     echo "fuzztime: $FUZZTIME"
+    echo "timeout: $TEST_TIMEOUT"
     echo "runner: $([[ "$USE_DOCKER" = "1" ]] && echo docker || echo native)"
+    if [[ -n "$GO_PARALLEL" ]]; then
+      echo "parallel: $GO_PARALLEL"
+    fi
     if [[ "$USE_DOCKER" = "1" && -n "$PLATFORM" ]]; then
       echo "platform: $PLATFORM"
     fi
@@ -446,7 +519,11 @@ echo "Artifacts: $ARTIFACT_ROOT"
 echo "Work root:  $WORK_ROOT"
 echo "Suite:      $SUITE (${#ENTRIES[@]} fuzzers)"
 echo "Fuzztime:   $FUZZTIME"
+echo "Timeout:    $TEST_TIMEOUT"
 echo "Jobs:       $JOBS"
+if [[ -n "$GO_PARALLEL" ]]; then
+  echo "Parallel:   $GO_PARALLEL"
+fi
 echo "Runner:     $([[ "$USE_DOCKER" = "1" ]] && echo docker || echo native)"
 echo
 
@@ -475,8 +552,12 @@ done
   echo
   echo "- Suite: $SUITE"
   echo "- Fuzztime: $FUZZTIME"
+  echo "- Timeout: $TEST_TIMEOUT"
   echo "- Runner: $([[ "$USE_DOCKER" = "1" ]] && echo docker || echo native)"
   echo "- Jobs: $JOBS"
+  if [[ -n "$GO_PARALLEL" ]]; then
+    echo "- Parallel: $GO_PARALLEL"
+  fi
   echo
   for dir in "$ARTIFACT_ROOT"/*; do
     [[ -d "$dir" ]] || continue

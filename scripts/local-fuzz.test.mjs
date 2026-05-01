@@ -17,13 +17,26 @@ function runLocalFuzz(args) {
 
 describe('local-fuzz.sh', () => {
   it('prints CI-suite native fuzz commands in dry-run mode', () => {
-    const result = runLocalFuzz(['--dry-run', '--suite', 'ci', '--fuzztime', '1s', '--jobs', '2']);
+    const result = runLocalFuzz([
+      '--dry-run',
+      '--suite',
+      'ci',
+      '--fuzztime',
+      '1s',
+      '--timeout',
+      '5m',
+      '--parallel',
+      '2',
+      '--jobs',
+      '2',
+    ]);
 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /FuzzHijackHeadersAndBody/);
     assert.ok(result.stdout.includes("go test -run='^$'"));
     assert.match(result.stdout, /-fuzztime=1s/);
-    assert.match(result.stdout, /-timeout=0/);
+    assert.match(result.stdout, /-timeout=5m/);
+    assert.match(result.stdout, /-parallel=2/);
   });
 
   it('prints Docker Linux fuzz commands in dry-run mode', () => {
@@ -42,6 +55,7 @@ describe('local-fuzz.sh', () => {
     assert.match(result.stdout, /docker run --rm --platform linux\/amd64/);
     assert.match(result.stdout, /golang:1\.26\.2/);
     assert.match(result.stdout, /\/usr\/local\/go\/bin\/go test/);
+    assert.match(result.stdout, /-timeout='10m1s'/);
     assert.match(result.stdout, /FuzzHijackBidirectionalStream/);
   });
 
@@ -59,5 +73,13 @@ describe('local-fuzz.sh', () => {
 
     const fuzzerLines = result.stdout.split('\n').filter((line) => line.startsWith('[Fuzz'));
     assert.equal(new Set(fuzzerLines).size, fuzzerLines.length);
+  });
+
+  it('supports ultra as an alias for the full suite', () => {
+    const result = runLocalFuzz(['--dry-run', '--suite', 'ultra', '--fuzztime', '1s']);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /FuzzFilterModifyResponse/);
+    assert.match(result.stdout, /FuzzHijackBidirectionalStream/);
   });
 });

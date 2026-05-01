@@ -110,12 +110,12 @@ jobs:
         working-directory: app
         run: |
           # Keep the monthly extended-fuzz invocation aligned with the other
-          # fuzz tiers: skip normal tests and let the job timeout, not the test
-          # binary's default timeout, be the real ceiling.
+          # fuzz tiers: skip normal tests, but keep a finite Go watchdog so
+          # hung inputs fail with a stack dump.
           go test -run='^$' \
             -fuzz="^${{ matrix.target }}$" \
             -fuzztime=5m \
-            -timeout=0 \
+            -timeout=15m \
             "${{ matrix.package }}"
 
       - name: Upload fuzz corpus

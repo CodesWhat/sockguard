@@ -47,9 +47,10 @@ jobs:
     name: "🔀 Fuzz ${{ matrix.fuzzer.name }}"
     runs-on: ubuntu-latest
     # Job-level cap is the hard ceiling regardless of what -fuzztime asks
-    # for. Keep it comfortably above the default 15m + setup overhead, and
-    # document the ceiling in the workflow_dispatch input description.
-    timeout-minutes: 60
+    # for. Keep it comfortably above the default 15m + setup overhead and
+    # above the longest documented manual budget plus the fuzz watchdog
+    # cushion.
+    timeout-minutes: 75
 
     strategy:
       fail-fast: false
@@ -87,8 +88,11 @@ jobs:
           INPUT_FUZZTIME: ${{ github.event.inputs.fuzztime }}
         run: |
           FUZZTIME="${INPUT_FUZZTIME:-15m}"
+          source scripts/fuzz-duration.sh
+          TEST_TIMEOUT="$(fuzz_timeout_for_budget "${FUZZTIME}" 600)"
           echo "fuzztime=${FUZZTIME}" >> "$GITHUB_OUTPUT"
-          echo "Running ${{ matrix.fuzzer.name }} for ${FUZZTIME}"
+          echo "test_timeout=${TEST_TIMEOUT}" >> "$GITHUB_OUTPUT"
+          echo "Running ${{ matrix.fuzzer.name }} for ${FUZZTIME} with ${TEST_TIMEOUT} watchdog"
 
       - name: Fuzz ${{ matrix.fuzzer.name }}
         working-directory: app
@@ -96,15 +100,15 @@ jobs:
           FUZZER: ${{ matrix.fuzzer.name }}
           PKG: ${{ matrix.fuzzer.pkg }}
           FUZZTIME: ${{ steps.budget.outputs.fuzztime }}
+          TEST_TIMEOUT: ${{ steps.budget.outputs.test_timeout }}
         run: |
           # -run=^$ skips normal unit tests in the package so only the fuzz
-          # driver runs. -timeout=0 disables the test binary's default 10-min
-          # timeout, which would otherwise silently abort any fuzztime ≥10m.
-          # The job `timeout-minutes` above is the real ceiling.
+          # driver runs. TEST_TIMEOUT is FUZZTIME plus a cushion, so hangs
+          # produce Go's goroutine dump before the job-level ceiling fires.
           go test -run='^$' \
             -fuzz="^${FUZZER}\$" \
             -fuzztime="${FUZZTIME}" \
-            -timeout=0 \
+            -timeout="${TEST_TIMEOUT}" \
             "${PKG}"
 
       - name: Upload fuzz corpus on failure
@@ -122,6 +126,7 @@ jobs:
           FUZZER: ${{ matrix.fuzzer.name }}
           PKG: ${{ matrix.fuzzer.pkg }}
           FUZZTIME: ${{ steps.budget.outputs.fuzztime }}
+          TEST_TIMEOUT: ${{ steps.budget.outputs.test_timeout }}
           STATUS: ${{ job.status }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -130,6 +135,7 @@ jobs:
             echo ""
             echo "- Package: \`${PKG}\`"
             echo "- Budget:  ${FUZZTIME}"
+            echo "- Timeout: ${TEST_TIMEOUT}"
             echo "- Result:  ${STATUS}"
             echo ""
             if [ "${STATUS}" = "failure" ]; then

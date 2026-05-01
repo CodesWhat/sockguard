@@ -74,8 +74,8 @@ pre-push:
     # strategy: catches broken fuzz drivers and stale seed corpora before
     # the push leaves the machine. Real coverage (60 s, 15 min, 1 h)
     # happens in the ci-verify + quality-fuzz-{nightly,monthly} workflows.
-    # -timeout=0 disables the test binary's default 10-min timeout so
-    # fuzztime is the only budget knob; fail-fast is inherent from set -e.
+    # Keep a finite Go watchdog above the tiny smoke budget so a hung input
+    # fails with a stack dump instead of consuming the hook timeout.
     go-fuzz:
       run: |
         cd app && set -e
@@ -89,7 +89,7 @@ pre-push:
           "FuzzHijackHeadersAndBody ./internal/proxy/" \
           "FuzzHijackBidirectionalStream ./internal/proxy/"; do
           set -- $entry
-          go test -run='^$' -fuzz="^$1\$" -fuzztime=5s -timeout=0 "$2"
+          go test -run='^$' -fuzz="^$1\$" -fuzztime=5s -timeout=1m "$2"
         done
       priority: 4
       timeout: 2m
