@@ -18,13 +18,12 @@ responsibly.
 **Do not open a public GitHub issue for security vulnerabilities.**
 
 Instead, use
-[GitHub's private vulnerability reporting](https://github.com/CodesWhat/sockguard/security/advisories/new).
-That keeps report details private and ties disclosure to the advisory and
-fix workflow.
+[GitHub's private vulnerability reporting](https://github.com/CodesWhat/sockguard/security/advisories/new)
+or email **<security@getsockguard.com>**. GitHub private reports are
+preferred because they keep report details private and tie disclosure to
+the advisory and fix workflow.
 
-If the private reporting form is unavailable, open a public issue that
-only says you need a private security contact. Do not include vulnerability
-details in that public issue.
+For non-security contact, email **<hello@getsockguard.com>**.
 
 You can expect:
 
