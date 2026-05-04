@@ -66,6 +66,26 @@ describe('local-fuzz.sh', () => {
     assert.match(result.stderr, /unknown suite "missing"/);
   });
 
+  it('rejects invalid fuzztime syntax', () => {
+    const result = runLocalFuzz(['--dry-run', '--fuzztime', '10minutes']);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /--fuzztime must use h\/m\/s components/);
+  });
+
+  it('rejects invalid timeout syntax', () => {
+    const result = runLocalFuzz([
+      '--dry-run',
+      '--fuzztime',
+      '1s',
+      '--timeout',
+      'five-minutes',
+    ]);
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /--timeout must use h\/m\/s components/);
+  });
+
   it('does not duplicate fuzzers in the all suite', () => {
     const result = runLocalFuzz(['--dry-run', '--suite', 'all', '--fuzztime', '1s']);
 
