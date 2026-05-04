@@ -722,11 +722,11 @@ func TestInspectExecReturnsContainerID(t *testing.T) {
 
 func TestDecodeResourceLabelsAllKinds(t *testing.T) {
 	tests := []struct {
-		name   string
-		kind   resourceKind
-		body   string
-		wantK  string
-		wantV  string
+		name  string
+		kind  resourceKind
+		body  string
+		wantK string
+		wantV string
 	}{
 		{
 			name:  "container",

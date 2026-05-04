@@ -93,71 +93,91 @@ func BenchmarkInspectPolicies(b *testing.B) {
 		inspect     func(*http.Request, string) (string, error)
 	}{
 		{
-			name:        "volume_create",
-			makeRequest: func() *http.Request { return newBenchmarkInspectorRequest(http.MethodPost, "/volumes/create", volumeBody) },
+			name: "volume_create",
+			makeRequest: func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, "/volumes/create", volumeBody)
+			},
 			inspect: func(req *http.Request, normalizedPath string) (string, error) {
 				return volumePolicy.inspect(nil, req, normalizedPath)
 			},
 		},
 		{
-			name:        "secret_create",
-			makeRequest: func() *http.Request { return newBenchmarkInspectorRequest(http.MethodPost, "/secrets/create", secretBody) },
+			name: "secret_create",
+			makeRequest: func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, "/secrets/create", secretBody)
+			},
 			inspect: func(req *http.Request, normalizedPath string) (string, error) {
 				return secretPolicy.inspect(nil, req, normalizedPath)
 			},
 		},
 		{
-			name:        "config_create",
-			makeRequest: func() *http.Request { return newBenchmarkInspectorRequest(http.MethodPost, "/configs/create", configBody) },
+			name: "config_create",
+			makeRequest: func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, "/configs/create", configBody)
+			},
 			inspect: func(req *http.Request, normalizedPath string) (string, error) {
 				return configPolicy.inspect(nil, req, normalizedPath)
 			},
 		},
 		{
-			name:        "service_create",
-			makeRequest: func() *http.Request { return newBenchmarkInspectorRequest(http.MethodPost, "/services/create", serviceBody) },
+			name: "service_create",
+			makeRequest: func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, "/services/create", serviceBody)
+			},
 			inspect: func(req *http.Request, normalizedPath string) (string, error) {
 				return servicePolicy.inspect(nil, req, normalizedPath)
 			},
 		},
 		{
-			name:        "swarm_init",
-			makeRequest: func() *http.Request { return newBenchmarkInspectorRequest(http.MethodPost, "/swarm/init", swarmInitBody) },
+			name: "swarm_init",
+			makeRequest: func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, "/swarm/init", swarmInitBody)
+			},
 			inspect: func(req *http.Request, normalizedPath string) (string, error) {
 				return swarmPolicy.inspect(nil, req, normalizedPath)
 			},
 		},
 		{
-			name:        "swarm_join",
-			makeRequest: func() *http.Request { return newBenchmarkInspectorRequest(http.MethodPost, "/swarm/join", swarmJoinBody) },
+			name: "swarm_join",
+			makeRequest: func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, "/swarm/join", swarmJoinBody)
+			},
 			inspect: func(req *http.Request, normalizedPath string) (string, error) {
 				return swarmPolicy.inspect(nil, req, normalizedPath)
 			},
 		},
 		{
-			name:        "swarm_update",
-			makeRequest: func() *http.Request { return newBenchmarkInspectorRequest(http.MethodPost, "/swarm/update?version=42", swarmUpdateBody) },
+			name: "swarm_update",
+			makeRequest: func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, "/swarm/update?version=42", swarmUpdateBody)
+			},
 			inspect: func(req *http.Request, normalizedPath string) (string, error) {
 				return swarmPolicy.inspect(nil, req, normalizedPath)
 			},
 		},
 		{
-			name:        "plugin_pull",
-			makeRequest: func() *http.Request { return newBenchmarkInspectorRequest(http.MethodPost, "/plugins/pull?remote=registry.example.com/acme/plugin:1.0&name=acme/plugin", pluginPrivilegesBody) },
+			name: "plugin_pull",
+			makeRequest: func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, "/plugins/pull?remote=registry.example.com/acme/plugin:1.0&name=acme/plugin", pluginPrivilegesBody)
+			},
 			inspect: func(req *http.Request, normalizedPath string) (string, error) {
 				return pluginPolicy.inspect(nil, req, normalizedPath)
 			},
 		},
 		{
-			name:        "plugin_set",
-			makeRequest: func() *http.Request { return newBenchmarkInspectorRequest(http.MethodPost, "/plugins/acme/set", pluginSetBody) },
+			name: "plugin_set",
+			makeRequest: func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, "/plugins/acme/set", pluginSetBody)
+			},
 			inspect: func(req *http.Request, normalizedPath string) (string, error) {
 				return pluginPolicy.inspect(nil, req, normalizedPath)
 			},
 		},
 		{
-			name:        "plugin_create_gzip",
-			makeRequest: func() *http.Request { return newBenchmarkInspectorRequest(http.MethodPost, "/plugins/create?name=acme/plugin", pluginCreateBody) },
+			name: "plugin_create_gzip",
+			makeRequest: func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, "/plugins/create?name=acme/plugin", pluginCreateBody)
+			},
 			inspect: func(req *http.Request, normalizedPath string) (string, error) {
 				return pluginPolicy.inspect(nil, req, normalizedPath)
 			},

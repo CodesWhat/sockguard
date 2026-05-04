@@ -46,8 +46,8 @@ var readPeerXUCred = func(fd int, rawCreds *xucred) error {
 		uintptr(fd),
 		uintptr(solLocal),
 		uintptr(localPeercredOption),
-		uintptr(unsafe.Pointer(rawCreds)),  //nolint:gosec // G103: unsafe.Pointer required by SYS_GETSOCKOPT
-		uintptr(unsafe.Pointer(&size)),     //nolint:gosec // G103: unsafe.Pointer required by SYS_GETSOCKOPT
+		uintptr(unsafe.Pointer(rawCreds)), //nolint:gosec // G103: unsafe.Pointer required by SYS_GETSOCKOPT
+		uintptr(unsafe.Pointer(&size)),    //nolint:gosec // G103: unsafe.Pointer required by SYS_GETSOCKOPT
 		0,
 	)
 	if errno != 0 {
