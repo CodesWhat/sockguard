@@ -84,7 +84,7 @@ jobs:
         run: |
           FUZZTIME="${INPUT_FUZZTIME:-1h}"
           source scripts/fuzz-duration.sh
-          TEST_TIMEOUT="$(fuzz_timeout_for_budget "${FUZZTIME}" 600)"
+          TEST_TIMEOUT="$(fuzz_timeout_for_budget "${FUZZTIME}" 600)" || exit 1
           echo "fuzztime=${FUZZTIME}" >> "$GITHUB_OUTPUT"
           echo "test_timeout=${TEST_TIMEOUT}" >> "$GITHUB_OUTPUT"
           echo "Running ${{ matrix.fuzzer.name }} for ${FUZZTIME} with ${TEST_TIMEOUT} watchdog"
