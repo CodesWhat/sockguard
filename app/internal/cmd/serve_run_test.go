@@ -200,6 +200,41 @@ func TestRunServeWithDepsRejectsMissingExplicitConfig(t *testing.T) {
 	}
 }
 
+func TestRunServeWithDepsRejectsEmptyExplicitConfig(t *testing.T) {
+	originalCfgFile := cfgFile
+	cfgFile = ""
+	t.Cleanup(func() {
+		cfgFile = originalCfgFile
+	})
+
+	cmd := newServeCommand()
+	cmd.Flags().String("config", "", "")
+	if err := cmd.Flags().Set("config", ""); err != nil {
+		t.Fatalf("set config flag: %v", err)
+	}
+
+	loadCalled := false
+	deps := newServeDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		loadCalled = true
+		return nil, errors.New("load should not be called")
+	}
+
+	err := runServeWithDeps(cmd, nil, deps)
+	if err == nil {
+		t.Fatal("expected runServeWithDeps() to fail when explicit config file is empty")
+	}
+	if !strings.Contains(err.Error(), "config preflight:") {
+		t.Fatalf("expected config preflight error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("expected empty config guidance, got: %v", err)
+	}
+	if loadCalled {
+		t.Fatal("expected explicit config preflight to fail before loading config")
+	}
+}
+
 func TestRunServeWithDepsLoadsExistingExplicitConfig(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "sockguard.yaml")
 	if err := os.WriteFile(cfgPath, []byte("upstream:\n  socket: /var/run/docker.sock\n"), 0o600); err != nil {

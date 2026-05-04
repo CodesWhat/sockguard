@@ -207,6 +207,24 @@ func TestExecuteMatchCommandRejectsMissingConfig(t *testing.T) {
 	}
 }
 
+func TestExecuteMatchCommandRejectsEmptyExplicitConfig(t *testing.T) {
+	_, _, err := executeRootCommand(t,
+		"-c", "",
+		"match",
+		"--method", "GET",
+		"--path", "/_ping",
+	)
+	if err == nil {
+		t.Fatal("expected match to fail when explicit config file is empty")
+	}
+	if !strings.Contains(err.Error(), "config preflight:") {
+		t.Fatalf("error = %v, want config preflight failure", err)
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("error = %v, want empty config guidance", err)
+	}
+}
+
 func TestExecuteMatchCommandRejectsNonAbsolutePath(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "sockguard.yaml")

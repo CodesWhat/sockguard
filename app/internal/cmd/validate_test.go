@@ -165,6 +165,46 @@ func TestRunValidateRejectsMissingExplicitConfig(t *testing.T) {
 	}
 }
 
+func TestRunValidateRejectsEmptyExplicitConfig(t *testing.T) {
+	oldCfgFile := cfgFile
+	cfgFile = ""
+	t.Cleanup(func() { cfgFile = oldCfgFile })
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	command := &cobra.Command{Use: "validate"}
+	command.Flags().String("config", "", "")
+	if err := command.Flags().Set("config", ""); err != nil {
+		t.Fatalf("set config flag: %v", err)
+	}
+	command.SetOut(&out)
+	command.SetErr(&errOut)
+
+	err := runValidate(command, nil)
+	if err == nil {
+		t.Fatal("expected runValidate() to fail when explicit config file is empty")
+	}
+	if !strings.Contains(err.Error(), "config preflight:") {
+		t.Fatalf("expected config preflight error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("expected empty config guidance, got: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("expected no stdout output on preflight failure, got:\n%s", out.String())
+	}
+	stderr := errOut.String()
+	if !strings.Contains(stderr, "validation failed") {
+		t.Fatalf("expected validation failure output, got:\n%s", errOut.String())
+	}
+	if !strings.Contains(stderr, "config preflight:") {
+		t.Fatalf("expected preflight error in validation output, got:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "empty") {
+		t.Fatalf("expected empty config guidance in validation output, got:\n%s", stderr)
+	}
+}
+
 func TestRunValidateLoadsExistingExplicitConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "sockguard.yaml")
