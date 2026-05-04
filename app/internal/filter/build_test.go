@@ -882,6 +882,21 @@ func TestBuildPolicyDeniesRemoteContextWithHostNetwork(t *testing.T) {
 	}
 }
 
+func TestBuildPolicyDeniesHostNetworkBeforeDisallowedRemoteContext(t *testing.T) {
+	p := buildPolicy{allowRemoteContext: false, allowRunInstructions: true}
+	req := httptest.NewRequest(http.MethodPost, "/build?remote=https://github.com/acme/app&networkmode=host", nil)
+	reason, err := p.inspect(req, "/build")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if !strings.Contains(reason, "host network") {
+		t.Fatalf("reason = %q, want host-network denial", reason)
+	}
+	if strings.Contains(reason, "remote build context") {
+		t.Fatalf("reason = %q, want host-network denial to take precedence over remote-context denial", reason)
+	}
+}
+
 func TestBuildPolicyDeniesRemoteContextWithRunRestriction(t *testing.T) {
 	// Remote context + allowRemoteContext=true but allowRunInstructions=false.
 	p := buildPolicy{allowRemoteContext: true, allowRunInstructions: false}
