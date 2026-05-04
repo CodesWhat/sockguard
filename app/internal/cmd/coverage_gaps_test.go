@@ -128,12 +128,13 @@ func TestBuildServeClientProfiles_Error(t *testing.T) {
 func TestClientCertificateProfiles_NonEmpty(t *testing.T) {
 	input := []config.ClientCertificateProfileAssignmentConfig{
 		{
-			Profile:     "cert-profile",
-			CommonNames: []string{"client-1"},
-			DNSNames:    []string{"client.internal"},
-			IPAddresses: []string{"10.0.0.1"},
-			URISANs:     []string{"urn:example:client"},
-			SPIFFEIDs:   []string{"spiffe://example.com/client"},
+			Profile:             "cert-profile",
+			CommonNames:         []string{"client-1"},
+			DNSNames:            []string{"client.internal"},
+			IPAddresses:         []string{"10.0.0.1"},
+			URISANs:             []string{"urn:example:client"},
+			SPIFFEIDs:           []string{"spiffe://example.com/client"},
+			PublicKeySHA256Pins: []string{strings.Repeat("a", 64)},
 		},
 	}
 
@@ -150,6 +151,9 @@ func TestClientCertificateProfiles_NonEmpty(t *testing.T) {
 	}
 	if len(a.IPAddresses) != 1 || a.IPAddresses[0] != "10.0.0.1" {
 		t.Fatalf("IPAddresses = %v, want [10.0.0.1]", a.IPAddresses)
+	}
+	if len(a.PublicKeySHA256Pins) != 1 || a.PublicKeySHA256Pins[0] != strings.Repeat("a", 64) {
+		t.Fatalf("PublicKeySHA256Pins = %v, want configured pin", a.PublicKeySHA256Pins)
 	}
 }
 

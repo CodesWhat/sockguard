@@ -367,12 +367,13 @@ func clientCertificateProfiles(values []config.ClientCertificateProfileAssignmen
 	assignments := make([]clientacl.ClientCertificateProfileAssignment, 0, len(values))
 	for _, value := range values {
 		assignments = append(assignments, clientacl.ClientCertificateProfileAssignment{
-			Profile:     value.Profile,
-			CommonNames: value.CommonNames,
-			DNSNames:    value.DNSNames,
-			IPAddresses: value.IPAddresses,
-			URISANs:     value.URISANs,
-			SPIFFEIDs:   value.SPIFFEIDs,
+			Profile:             value.Profile,
+			CommonNames:         value.CommonNames,
+			DNSNames:            value.DNSNames,
+			IPAddresses:         value.IPAddresses,
+			URISANs:             value.URISANs,
+			SPIFFEIDs:           value.SPIFFEIDs,
+			PublicKeySHA256Pins: value.PublicKeySHA256Pins,
 		})
 	}
 	return assignments

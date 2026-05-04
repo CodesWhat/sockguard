@@ -344,6 +344,7 @@ func TestValidateCommaSeparatedMethods(t *testing.T) {
 func TestValidateAllowsAbsoluteContainerCreateBindMountAllowlist(t *testing.T) {
 	cfg := Defaults()
 	cfg.RequestBody.ContainerCreate.AllowedBindMounts = []string{"/srv/data", "/var/lib/sockguard"}
+	cfg.RequestBody.ContainerCreate.AllowedDevices = []string{"/dev/kvm", "/dev/dri"}
 
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("Validate() error = %v, want nil", err)
@@ -360,6 +361,19 @@ func TestValidateRejectsRelativeContainerCreateBindMountAllowlist(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "request_body.container_create.allowed_bind_mounts") {
 		t.Fatalf("expected request_body.container_create.allowed_bind_mounts in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsRelativeContainerCreateDeviceAllowlist(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.ContainerCreate.AllowedDevices = []string{"dev/kvm"}
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for relative device allowlist entry")
+	}
+	if !strings.Contains(err.Error(), "request_body.container_create.allowed_devices") {
+		t.Fatalf("expected request_body.container_create.allowed_devices in error, got: %v", err)
 	}
 }
 
@@ -567,7 +581,7 @@ func TestValidateAllowsNamedClientProfiles(t *testing.T) {
 		{Profile: "watchtower", CIDRs: []string{"172.18.0.0/16"}},
 	}
 	cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
-		{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
+		{Profile: "portainer", CommonNames: []string{"portainer-admin"}, PublicKeySHA256Pins: []string{strings.Repeat("a", 64)}},
 	}
 	cfg.Clients.Profiles = []ClientProfileConfig{
 		{
@@ -682,11 +696,12 @@ func TestValidateRejectsInvalidExtendedClientIdentitySelectors(t *testing.T) {
 	}
 	cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
 		{
-			Profile:     "readonly",
-			DNSNames:    []string{" "},
-			IPAddresses: []string{"not-an-ip"},
-			URISANs:     []string{":"},
-			SPIFFEIDs:   []string{"https://not-spiffe.example/test"},
+			Profile:             "readonly",
+			DNSNames:            []string{" "},
+			IPAddresses:         []string{"not-an-ip"},
+			URISANs:             []string{":"},
+			SPIFFEIDs:           []string{"https://not-spiffe.example/test"},
+			PublicKeySHA256Pins: []string{"not-a-pin"},
 		},
 	}
 
@@ -705,6 +720,9 @@ func TestValidateRejectsInvalidExtendedClientIdentitySelectors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "clients.client_certificate_profiles[0].spiffe_ids") {
 		t.Fatalf("expected spiffe_ids validation error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "clients.client_certificate_profiles[0].public_key_sha256_pins") {
+		t.Fatalf("expected public_key_sha256_pins validation error, got: %v", err)
 	}
 }
 

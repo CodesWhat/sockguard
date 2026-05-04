@@ -20,6 +20,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/pkipin"
 )
 
 const DefaultLabelPrefix = "com.sockguard.allow."
@@ -64,12 +65,13 @@ type SourceIPProfileAssignment struct {
 // ClientCertificateProfileAssignment maps one or more client-certificate common
 // names to a named profile.
 type ClientCertificateProfileAssignment struct {
-	Profile     string
-	CommonNames []string
-	DNSNames    []string
-	IPAddresses []string
-	URISANs     []string
-	SPIFFEIDs   []string
+	Profile             string
+	CommonNames         []string
+	DNSNames            []string
+	IPAddresses         []string
+	URISANs             []string
+	SPIFFEIDs           []string
+	PublicKeySHA256Pins []string
 }
 
 // UnixPeerProfileAssignment maps unix peer credentials to a named profile.
@@ -136,12 +138,13 @@ type compiledSourceIPProfileAssignment struct {
 }
 
 type compiledClientCertificateProfileAssignment struct {
-	profile     string
-	commonNames []string
-	dnsNames    []string
-	ipAddresses []netip.Addr
-	uriSANs     []string
-	spiffeIDs   []string
+	profile             string
+	commonNames         []string
+	dnsNames            []string
+	ipAddresses         []netip.Addr
+	uriSANs             []string
+	spiffeIDs           []string
+	publicKeySHA256Pins []string
 }
 
 type compiledUnixPeerProfileAssignment struct {
@@ -331,12 +334,13 @@ func compileOptions(opts Options) (compiledOptions, error) {
 	compiled.clientCertProfiles = make([]compiledClientCertificateProfileAssignment, 0, len(opts.Profiles.ClientCertificates))
 	for _, assignment := range opts.Profiles.ClientCertificates {
 		compiledAssignment := compiledClientCertificateProfileAssignment{
-			profile:     strings.TrimSpace(assignment.Profile),
-			commonNames: make([]string, 0, len(assignment.CommonNames)),
-			dnsNames:    make([]string, 0, len(assignment.DNSNames)),
-			ipAddresses: make([]netip.Addr, 0, len(assignment.IPAddresses)),
-			uriSANs:     make([]string, 0, len(assignment.URISANs)),
-			spiffeIDs:   make([]string, 0, len(assignment.SPIFFEIDs)),
+			profile:             strings.TrimSpace(assignment.Profile),
+			commonNames:         make([]string, 0, len(assignment.CommonNames)),
+			dnsNames:            make([]string, 0, len(assignment.DNSNames)),
+			ipAddresses:         make([]netip.Addr, 0, len(assignment.IPAddresses)),
+			uriSANs:             make([]string, 0, len(assignment.URISANs)),
+			spiffeIDs:           make([]string, 0, len(assignment.SPIFFEIDs)),
+			publicKeySHA256Pins: make([]string, 0, len(assignment.PublicKeySHA256Pins)),
 		}
 		for _, value := range assignment.CommonNames {
 			trimmed := strings.TrimSpace(value)
@@ -372,6 +376,13 @@ func compileOptions(opts Options) (compiledOptions, error) {
 				return compiled, fmt.Errorf("parse client certificate SPIFFE ID %q: %w", value, err)
 			}
 			compiledAssignment.spiffeIDs = append(compiledAssignment.spiffeIDs, parsed.String())
+		}
+		for _, value := range assignment.PublicKeySHA256Pins {
+			pin, err := pkipin.NormalizeSubjectPublicKeySHA256Pin(value)
+			if err != nil {
+				return compiled, fmt.Errorf("parse client certificate public_key_sha256_pins entry %q: %w", value, err)
+			}
+			compiledAssignment.publicKeySHA256Pins = append(compiledAssignment.publicKeySHA256Pins, pin)
 		}
 		compiled.clientCertProfiles = append(compiled.clientCertProfiles, compiledAssignment)
 	}
@@ -597,11 +608,19 @@ func (a compiledClientCertificateProfileAssignment) matches(cert *x509.Certifica
 	if len(a.spiffeIDs) > 0 && !intersectsStrings(a.spiffeIDs, uriSANs) {
 		return false
 	}
+	if len(a.publicKeySHA256Pins) > 0 && !containsExact(a.publicKeySHA256Pins, pkipin.SubjectPublicKeySHA256Hex(cert)) {
+		return false
+	}
 	return true
 }
 
 func (a compiledClientCertificateProfileAssignment) hasSelectors() bool {
-	return len(a.commonNames) > 0 || len(a.dnsNames) > 0 || len(a.ipAddresses) > 0 || len(a.uriSANs) > 0 || len(a.spiffeIDs) > 0
+	return len(a.commonNames) > 0 ||
+		len(a.dnsNames) > 0 ||
+		len(a.ipAddresses) > 0 ||
+		len(a.uriSANs) > 0 ||
+		len(a.spiffeIDs) > 0 ||
+		len(a.publicKeySHA256Pins) > 0
 }
 
 func containsExact(values []string, want string) bool {

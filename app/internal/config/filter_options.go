@@ -7,24 +7,35 @@ import "github.com/codeswhat/sockguard/internal/filter"
 // intentionally left for the caller to attach.
 func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 	return filter.PolicyConfig{
-		ContainerCreate: c.ContainerCreate.ToFilterOptions(),
-		Exec:            c.Exec.ToFilterOptions(),
-		ImagePull:       c.ImagePull.ToFilterOptions(),
-		Build:           c.Build.ToFilterOptions(),
-		Volume:          c.Volume.ToFilterOptions(),
-		Secret:          c.Secret.ToFilterOptions(),
-		Config:          c.Config.ToFilterOptions(),
-		Service:         c.Service.ToFilterOptions(),
-		Swarm:           c.Swarm.ToFilterOptions(),
-		Plugin:          c.Plugin.ToFilterOptions(),
+		ContainerCreate:  c.ContainerCreate.ToFilterOptions(),
+		Exec:             c.Exec.ToFilterOptions(),
+		ImagePull:        c.ImagePull.ToFilterOptions(),
+		Build:            c.Build.ToFilterOptions(),
+		ContainerUpdate:  c.ContainerUpdate.ToFilterOptions(),
+		ContainerArchive: c.ContainerArchive.ToFilterOptions(),
+		ImageLoad:        c.ImageLoad.ToFilterOptions(),
+		Volume:           c.Volume.ToFilterOptions(),
+		Network:          c.Network.ToFilterOptions(),
+		Secret:           c.Secret.ToFilterOptions(),
+		Config:           c.Config.ToFilterOptions(),
+		Service:          c.Service.ToFilterOptions(),
+		Swarm:            c.Swarm.ToFilterOptions(),
+		Node:             c.Node.ToFilterOptions(),
+		Plugin:           c.Plugin.ToFilterOptions(),
 	}
 }
 
 func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCreateOptions {
 	return filter.ContainerCreateOptions{
-		AllowPrivileged:   c.AllowPrivileged,
-		AllowHostNetwork:  c.AllowHostNetwork,
-		AllowedBindMounts: c.AllowedBindMounts,
+		AllowPrivileged:        c.AllowPrivileged,
+		AllowHostNetwork:       c.AllowHostNetwork,
+		AllowHostPID:           c.AllowHostPID,
+		AllowHostIPC:           c.AllowHostIPC,
+		AllowedBindMounts:      c.AllowedBindMounts,
+		AllowAllDevices:        c.AllowAllDevices,
+		AllowedDevices:         c.AllowedDevices,
+		AllowDeviceRequests:    c.AllowDeviceRequests,
+		AllowDeviceCgroupRules: c.AllowDeviceCgroupRules,
 	}
 }
 
@@ -53,10 +64,55 @@ func (c BuildRequestBodyConfig) ToFilterOptions() filter.BuildOptions {
 	}
 }
 
+func (c ContainerUpdateRequestBodyConfig) ToFilterOptions() filter.ContainerUpdateOptions {
+	return filter.ContainerUpdateOptions{
+		AllowPrivileged:      c.AllowPrivileged,
+		AllowDevices:         c.AllowDevices,
+		AllowCapabilities:    c.AllowCapabilities,
+		AllowResourceUpdates: c.AllowResourceUpdates,
+		AllowRestartPolicy:   c.AllowRestartPolicy,
+	}
+}
+
+func (c ContainerArchiveRequestBodyConfig) ToFilterOptions() filter.ContainerArchiveOptions {
+	return filter.ContainerArchiveOptions{
+		AllowedPaths:       c.AllowedPaths,
+		AllowSetID:         c.AllowSetID,
+		AllowDeviceNodes:   c.AllowDeviceNodes,
+		AllowEscapingLinks: c.AllowEscapingLinks,
+	}
+}
+
+func (c ImageLoadRequestBodyConfig) ToFilterOptions() filter.ImageLoadOptions {
+	return filter.ImageLoadOptions{
+		AllowAllRegistries: c.AllowAllRegistries,
+		AllowOfficial:      c.AllowOfficial,
+		AllowedRegistries:  c.AllowedRegistries,
+		AllowUntagged:      c.AllowUntagged,
+	}
+}
+
 func (c VolumeRequestBodyConfig) ToFilterOptions() filter.VolumeOptions {
 	return filter.VolumeOptions{
 		AllowCustomDrivers: c.AllowCustomDrivers,
 		AllowDriverOpts:    c.AllowDriverOpts,
+	}
+}
+
+func (c NetworkRequestBodyConfig) ToFilterOptions() filter.NetworkOptions {
+	return filter.NetworkOptions{
+		AllowCustomDrivers:     c.AllowCustomDrivers,
+		AllowSwarmScope:        c.AllowSwarmScope,
+		AllowIngress:           c.AllowIngress,
+		AllowAttachable:        c.AllowAttachable,
+		AllowConfigOnly:        c.AllowConfigOnly,
+		AllowConfigFrom:        c.AllowConfigFrom,
+		AllowCustomIPAMDrivers: c.AllowCustomIPAMDrivers,
+		AllowCustomIPAMConfig:  c.AllowCustomIPAMConfig,
+		AllowIPAMOptions:       c.AllowIPAMOptions,
+		AllowDriverOptions:     c.AllowDriverOptions,
+		AllowEndpointConfig:    c.AllowEndpointConfig,
+		AllowDisconnectForce:   c.AllowDisconnectForce,
 	}
 }
 
@@ -93,6 +149,17 @@ func (c SwarmRequestBodyConfig) ToFilterOptions() filter.SwarmOptions {
 		AllowManagerUnlockKeyRotation: c.AllowManagerUnlockKeyRotation,
 		AllowAutoLockManagers:         c.AllowAutoLockManagers,
 		AllowSigningCAUpdate:          c.AllowSigningCAUpdate,
+		AllowUnlock:                   c.AllowUnlock,
+	}
+}
+
+func (c NodeRequestBodyConfig) ToFilterOptions() filter.NodeOptions {
+	return filter.NodeOptions{
+		AllowNameChange:         c.AllowNameChange,
+		AllowRoleChange:         c.AllowRoleChange,
+		AllowAvailabilityChange: c.AllowAvailabilityChange,
+		AllowLabelMutation:      c.AllowLabelMutation,
+		AllowedLabelKeys:        c.AllowedLabelKeys,
 	}
 }
 

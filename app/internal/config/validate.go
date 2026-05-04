@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"path"
 	"strings"
+
+	"github.com/codeswhat/sockguard/internal/pkipin"
 )
 
 // ValidationError holds multiple validation errors.
@@ -262,6 +264,13 @@ func validateRequestBody(cfg *Config) []string {
 			}
 			selectorCount++
 		}
+		for _, value := range assignment.PublicKeySHA256Pins {
+			if _, err := pkipin.NormalizeSubjectPublicKeySHA256Pin(value); err != nil {
+				errs = append(errs, fmt.Sprintf("%s.public_key_sha256_pins entries must be hex SHA-256 SPKI pins, got %q", prefix, value))
+				continue
+			}
+			selectorCount++
+		}
 		if selectorCount == 0 {
 			errs = append(errs, containsAtLeastOneError(prefix, "client certificate identity selector"))
 		}
@@ -331,6 +340,20 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 			errs,
 			fmt.Sprintf(
 				"%s.container_create.allowed_bind_mounts entries must be absolute host paths, got %q",
+				prefix,
+				rawPath,
+			),
+		)
+	}
+
+	for _, rawPath := range cfg.ContainerCreate.AllowedDevices {
+		if _, ok := normalizeAllowedBindMount(rawPath); ok {
+			continue
+		}
+		errs = append(
+			errs,
+			fmt.Sprintf(
+				"%s.container_create.allowed_devices entries must be absolute host paths, got %q",
 				prefix,
 				rawPath,
 			),

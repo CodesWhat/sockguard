@@ -191,6 +191,43 @@ func TestValidateAndCompileRulesAllowsVolumeSecretAndConfigWritesWithRequestBody
 	}
 }
 
+func TestValidateAndCompileRulesAllowsNetworkWritesWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/networks/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/networks/*/connect"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/networks/*/disconnect"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsContainerUpdateArchiveAndImageLoadWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/update"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPut, Path: "/containers/*/archive"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/images/load"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	cfg.RequestBody.ContainerArchive.AllowedPaths = []string{"/tmp/uploads"}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
 func TestValidateAndCompileRulesAllowsSwarmJoinAndUpdateWithConfiguredInspection(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{
@@ -199,6 +236,23 @@ func TestValidateAndCompileRulesAllowsSwarmJoinAndUpdateWithConfiguredInspection
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 	}
 	cfg.RequestBody.Swarm.AllowedJoinRemoteAddrs = []string{"manager.internal:2377"}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsSwarmUnlockAndNodeUpdateWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/swarm/unlock"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/nodes/*/update"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
 
 	compiled, err := validateAndCompileRules(&cfg)
 	if err != nil {
@@ -265,26 +319,31 @@ func TestValidateAndCompileRulesRejectsPluginSetWithoutAllowedEnvPrefixes(t *tes
 	}
 }
 
-func TestValidateAndCompileRulesRejectsOtherUninspectedBodyWritesWithoutOptIn(t *testing.T) {
+func TestValidateAndCompileRulesRejectsOnlyExecAndPluginSetWhenTheirRequiredPolicyIsMissing(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/exec"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/exec/*/start"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/networks/create"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/images/load"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/swarm/unlock"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/plugins/*/set"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 	}
 
 	_, err := validateAndCompileRules(&cfg)
 	if err == nil {
-		t.Fatal("expected uninspected body-write validation to fail")
+		t.Fatal("expected missing required policy validation to fail")
 	}
-	for _, endpoint := range []string{
-		"POST /networks/create",
-		"POST /images/load",
-		"POST /swarm/unlock",
-	} {
-		if !strings.Contains(err.Error(), endpoint) {
-			t.Fatalf("expected %s in error, got: %v", endpoint, err)
+	if !strings.Contains(err.Error(), "POST /containers/sockguard-test/exec") {
+		t.Fatalf("expected exec endpoint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "POST /plugins/sockguard-test/set") {
+		t.Fatalf("expected plugin set endpoint in error, got: %v", err)
+	}
+	for _, endpoint := range []string{"POST /networks/create", "POST /images/load", "POST /swarm/unlock"} {
+		if strings.Contains(err.Error(), endpoint) {
+			t.Fatalf("did not expect inspected endpoint %s in error, got: %v", endpoint, err)
 		}
 	}
 }

@@ -523,6 +523,7 @@ func TestBuildServeHandlerExercisesOwnershipForNodesAndSwarm(t *testing.T) {
 	cfg.Log.AccessLog = false
 	cfg.Ownership.Owner = "job-123"
 	cfg.Ownership.LabelKey = "com.sockguard.owner"
+	cfg.RequestBody.Node.AllowNameChange = true
 	cfg.Rules = []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/nodes/*"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/nodes/*/update"}, Action: "allow"},

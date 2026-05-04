@@ -3,6 +3,7 @@ package filter
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -225,6 +226,140 @@ func TestSwarmInspectUpdateDeniesSigningCAUpdate(t *testing.T) {
 	}
 	if denyReason != "swarm update denied: signing CA updates are not allowed" {
 		t.Fatalf("denyReason = %q", denyReason)
+	}
+}
+
+func TestSwarmInspectUnlockDeniedByDefaultAndPreservesBody(t *testing.T) {
+	policy := newSwarmPolicy(SwarmOptions{})
+	const unlockKey = "SWMKEY-1-secret"
+	payload := []byte(`{"UnlockKey":"` + unlockKey + `"}`)
+	req := httptest.NewRequest(http.MethodPost, "/swarm/unlock", bytes.NewReader(payload))
+
+	denyReason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if denyReason != "swarm unlock denied: swarm unlock is not allowed" {
+		t.Fatalf("denyReason = %q, want unlock denial", denyReason)
+	}
+	if strings.Contains(denyReason, unlockKey) {
+		t.Fatalf("denyReason leaks unlock key: %q", denyReason)
+	}
+
+	body, readErr := io.ReadAll(req.Body)
+	if readErr != nil {
+		t.Fatalf("ReadAll() error = %v", readErr)
+	}
+	if !bytes.Equal(body, payload) {
+		t.Fatalf("body = %q, want %q", string(body), string(payload))
+	}
+}
+
+func TestSwarmInspectUnlockAllowsWhenConfigured(t *testing.T) {
+	policy := newSwarmPolicy(SwarmOptions{AllowUnlock: true})
+	payload := []byte(`{"UnlockKey":"SWMKEY-1-secret"}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1.54/swarm/unlock", bytes.NewReader(payload))
+
+	denyReason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if denyReason != "" {
+		t.Fatalf("denyReason = %q, want allow", denyReason)
+	}
+
+	body, readErr := io.ReadAll(req.Body)
+	if readErr != nil {
+		t.Fatalf("ReadAll() error = %v", readErr)
+	}
+	if !bytes.Equal(body, payload) {
+		t.Fatalf("body = %q, want %q", string(body), string(payload))
+	}
+}
+
+func TestSwarmInspectUnlockMalformedJSONDefersWithoutLoggingKey(t *testing.T) {
+	logs := &collectingHandler{}
+	logger := slog.New(logs)
+	policy := newSwarmPolicy(SwarmOptions{})
+	const unlockKey = "SWMKEY-1-secret"
+
+	req := httptest.NewRequest(http.MethodPost, "/swarm/unlock", strings.NewReader(`{"UnlockKey":"`+unlockKey+`",`))
+	reason, err := policy.inspect(logger, req, "/swarm/unlock")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty (deferred to Docker)", reason)
+	}
+
+	records := logs.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("log records = %d, want 1", len(records))
+	}
+	recordText := records[0].message
+	for key, value := range records[0].attrs {
+		recordText += " " + key + "=" + fmt.Sprint(value)
+	}
+	if strings.Contains(recordText, unlockKey) {
+		t.Fatalf("debug log leaks unlock key: %q", recordText)
+	}
+}
+
+func TestMiddlewareDeniesSwarmUnlockByDefaultWhenRuleAllows(t *testing.T) {
+	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/swarm/unlock", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	handler := verboseMiddleware([]*CompiledRule{rule}, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected swarm unlock to be denied before reaching inner handler")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/swarm/unlock", strings.NewReader(`{"UnlockKey":"SWMKEY-1-secret"}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Reason != "swarm unlock denied: swarm unlock is not allowed" {
+		t.Fatalf("reason = %q, want unlock denial", body.Reason)
+	}
+	if strings.Contains(rec.Body.String(), "SWMKEY-1-secret") {
+		t.Fatalf("response leaks unlock key: %q", rec.Body.String())
+	}
+}
+
+func TestMiddlewareAllowsSwarmUnlockWhenConfigured(t *testing.T) {
+	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/swarm/unlock", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("CompileRule failed: %v", err)
+	}
+
+	reached := false
+	handler := MiddlewareWithOptions([]*CompiledRule{rule}, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			Swarm: SwarmOptions{AllowUnlock: true},
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/swarm/unlock", strings.NewReader(`{"UnlockKey":"SWMKEY-1-secret"}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if !reached {
+		t.Fatal("inner handler was not reached")
 	}
 }
 

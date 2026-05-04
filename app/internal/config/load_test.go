@@ -314,9 +314,16 @@ response:
 request_body:
   container_create:
     allow_host_network: true
+    allow_host_pid: true
+    allow_host_ipc: true
     allowed_bind_mounts:
       - /srv/data
       - /var/lib/sockguard
+    allow_all_devices: true
+    allowed_devices:
+      - /dev/kvm
+    allow_device_requests: true
+    allow_device_cgroup_rules: true
   exec:
     allow_root_user: true
     allowed_commands:
@@ -425,8 +432,26 @@ rules:
 	if !cfg.RequestBody.ContainerCreate.AllowHostNetwork {
 		t.Errorf("RequestBody.ContainerCreate.AllowHostNetwork = %v, want true", cfg.RequestBody.ContainerCreate.AllowHostNetwork)
 	}
+	if !cfg.RequestBody.ContainerCreate.AllowHostPID {
+		t.Errorf("RequestBody.ContainerCreate.AllowHostPID = %v, want true", cfg.RequestBody.ContainerCreate.AllowHostPID)
+	}
+	if !cfg.RequestBody.ContainerCreate.AllowHostIPC {
+		t.Errorf("RequestBody.ContainerCreate.AllowHostIPC = %v, want true", cfg.RequestBody.ContainerCreate.AllowHostIPC)
+	}
 	if got := cfg.RequestBody.ContainerCreate.AllowedBindMounts; len(got) != 2 || got[0] != "/srv/data" || got[1] != "/var/lib/sockguard" {
 		t.Errorf("RequestBody.ContainerCreate.AllowedBindMounts = %#v, want [/srv/data /var/lib/sockguard]", got)
+	}
+	if !cfg.RequestBody.ContainerCreate.AllowAllDevices {
+		t.Errorf("RequestBody.ContainerCreate.AllowAllDevices = %v, want true", cfg.RequestBody.ContainerCreate.AllowAllDevices)
+	}
+	if got := cfg.RequestBody.ContainerCreate.AllowedDevices; len(got) != 1 || got[0] != "/dev/kvm" {
+		t.Errorf("RequestBody.ContainerCreate.AllowedDevices = %#v, want [/dev/kvm]", got)
+	}
+	if !cfg.RequestBody.ContainerCreate.AllowDeviceRequests {
+		t.Errorf("RequestBody.ContainerCreate.AllowDeviceRequests = %v, want true", cfg.RequestBody.ContainerCreate.AllowDeviceRequests)
+	}
+	if !cfg.RequestBody.ContainerCreate.AllowDeviceCgroupRules {
+		t.Errorf("RequestBody.ContainerCreate.AllowDeviceCgroupRules = %v, want true", cfg.RequestBody.ContainerCreate.AllowDeviceCgroupRules)
 	}
 	if !cfg.RequestBody.Exec.AllowRootUser {
 		t.Errorf("RequestBody.Exec.AllowRootUser = %v, want true", cfg.RequestBody.Exec.AllowRootUser)
@@ -603,6 +628,8 @@ clients:
         - urn:example:sockguard:test
       spiffe_ids:
         - spiffe://sockguard.test/workload/portainer
+      public_key_sha256_pins:
+        - 7f83b1657ff1fc53b92dc18148a1d65dfa135014fbf4f5e7d68b5b2f5d7f2e2c
   unix_peer_profiles:
     - profile: readonly
       uids:
@@ -678,6 +705,9 @@ clients:
 	}
 	if got := cfg.Clients.ClientCertificateProfiles[0].SPIFFEIDs; len(got) != 1 || got[0] != "spiffe://sockguard.test/workload/portainer" {
 		t.Fatalf("Clients.ClientCertificateProfiles[0].SPIFFEIDs = %#v, want [spiffe://sockguard.test/workload/portainer]", got)
+	}
+	if got := cfg.Clients.ClientCertificateProfiles[0].PublicKeySHA256Pins; len(got) != 1 || got[0] != "7f83b1657ff1fc53b92dc18148a1d65dfa135014fbf4f5e7d68b5b2f5d7f2e2c" {
+		t.Fatalf("Clients.ClientCertificateProfiles[0].PublicKeySHA256Pins = %#v, want configured pin", got)
 	}
 	if got := cfg.Clients.UnixPeerProfiles; len(got) != 1 || got[0].Profile != "readonly" {
 		t.Fatalf("Clients.UnixPeerProfiles = %#v, want readonly unix peer assignment", got)
@@ -773,6 +803,14 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION", "true")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_PRIVILEGED", "true")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_NETWORK", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_PID", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_IPC", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_ALL_DEVICES", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_CGROUP_RULES", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_UPDATE_ALLOW_RESTART_POLICY", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_NETWORK_ALLOW_ENDPOINT_CONFIG", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_SWARM_ALLOW_UNLOCK", "true")
 	t.Setenv("SOCKGUARD_OWNERSHIP_OWNER", "ci-job-456")
 	t.Setenv("SOCKGUARD_OWNERSHIP_LABEL_KEY", "com.example.owner")
 	t.Setenv("SOCKGUARD_OWNERSHIP_ALLOW_UNOWNED_IMAGES", "false")
@@ -826,6 +864,30 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 	if !cfg.RequestBody.ContainerCreate.AllowHostNetwork {
 		t.Errorf("RequestBody.ContainerCreate.AllowHostNetwork = %v, want true", cfg.RequestBody.ContainerCreate.AllowHostNetwork)
+	}
+	if !cfg.RequestBody.ContainerCreate.AllowHostPID {
+		t.Errorf("RequestBody.ContainerCreate.AllowHostPID = %v, want true", cfg.RequestBody.ContainerCreate.AllowHostPID)
+	}
+	if !cfg.RequestBody.ContainerCreate.AllowHostIPC {
+		t.Errorf("RequestBody.ContainerCreate.AllowHostIPC = %v, want true", cfg.RequestBody.ContainerCreate.AllowHostIPC)
+	}
+	if !cfg.RequestBody.ContainerCreate.AllowAllDevices {
+		t.Errorf("RequestBody.ContainerCreate.AllowAllDevices = %v, want true", cfg.RequestBody.ContainerCreate.AllowAllDevices)
+	}
+	if !cfg.RequestBody.ContainerCreate.AllowDeviceRequests {
+		t.Errorf("RequestBody.ContainerCreate.AllowDeviceRequests = %v, want true", cfg.RequestBody.ContainerCreate.AllowDeviceRequests)
+	}
+	if !cfg.RequestBody.ContainerCreate.AllowDeviceCgroupRules {
+		t.Errorf("RequestBody.ContainerCreate.AllowDeviceCgroupRules = %v, want true", cfg.RequestBody.ContainerCreate.AllowDeviceCgroupRules)
+	}
+	if !cfg.RequestBody.ContainerUpdate.AllowRestartPolicy {
+		t.Errorf("RequestBody.ContainerUpdate.AllowRestartPolicy = %v, want true", cfg.RequestBody.ContainerUpdate.AllowRestartPolicy)
+	}
+	if !cfg.RequestBody.Network.AllowEndpointConfig {
+		t.Errorf("RequestBody.Network.AllowEndpointConfig = %v, want true", cfg.RequestBody.Network.AllowEndpointConfig)
+	}
+	if !cfg.RequestBody.Swarm.AllowUnlock {
+		t.Errorf("RequestBody.Swarm.AllowUnlock = %v, want true", cfg.RequestBody.Swarm.AllowUnlock)
 	}
 	if cfg.Ownership.Owner != "ci-job-456" {
 		t.Errorf("Ownership.Owner = %q, want ci-job-456", cfg.Ownership.Owner)

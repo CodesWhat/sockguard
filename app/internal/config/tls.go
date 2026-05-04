@@ -1,16 +1,16 @@
 package config
 
 import (
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"net/netip"
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/codeswhat/sockguard/internal/pkipin"
 )
 
 // Enabled reports whether any listen.tls setting has been configured.
@@ -186,19 +186,7 @@ func normalizeNonEmptyStrings(field string, values []string) ([]string, error) {
 }
 
 func normalizeSubjectPublicKeySHA256Pin(raw string) (string, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return "", fmt.Errorf("empty pin")
-	}
-	normalized := strings.ToLower(trimmed)
-	normalized = strings.TrimPrefix(normalized, "sha256:")
-	if len(normalized) != sha256.Size*2 {
-		return "", fmt.Errorf("invalid pin length")
-	}
-	if _, err := hex.DecodeString(normalized); err != nil {
-		return "", err
-	}
-	return normalized, nil
+	return pkipin.NormalizeSubjectPublicKeySHA256Pin(raw)
 }
 
 func containsExactString(values []string, want string) bool {
@@ -250,11 +238,7 @@ func certificateURIStrings(cert *x509.Certificate) []string {
 }
 
 func subjectPublicKeySHA256Hex(cert *x509.Certificate) string {
-	if cert == nil {
-		return ""
-	}
-	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
-	return hex.EncodeToString(sum[:])
+	return pkipin.SubjectPublicKeySHA256Hex(cert)
 }
 
 // IsLoopbackTCPAddress reports whether address resolves to a loopback TCP host.

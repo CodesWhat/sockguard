@@ -30,7 +30,7 @@ type Options struct {
 	RedactSensitiveData   bool
 }
 
-// Filter applies response redactions to selected Docker read endpoints.
+// Filter applies response redactions to selected Docker JSON response shapes.
 type Filter struct {
 	opts Options
 }
@@ -48,12 +48,12 @@ func (f *Filter) Enabled() bool {
 	return f.opts.RedactContainerEnv || f.opts.RedactMountPaths || f.opts.RedactNetworkTopology || f.opts.RedactSensitiveData
 }
 
-// ModifyResponse rewrites supported Docker JSON responses in place.
+// ModifyResponse rewrites supported successful Docker JSON responses in place.
 func (f *Filter) ModifyResponse(resp *http.Response) error {
 	if !f.Enabled() || resp == nil || resp.Request == nil {
 		return nil
 	}
-	if resp.Request.Method != http.MethodGet || resp.StatusCode != http.StatusOK {
+	if resp.Request.Method == http.MethodHead || !isSuccessfulBodyResponse(resp.StatusCode) {
 		return nil
 	}
 
@@ -107,6 +107,13 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 	default:
 		return nil
 	}
+}
+
+func isSuccessfulBodyResponse(statusCode int) bool {
+	if statusCode < http.StatusOK || statusCode >= http.StatusMultipleChoices {
+		return false
+	}
+	return statusCode != http.StatusNoContent && statusCode != http.StatusResetContent
 }
 
 func (f *Filter) modifyContainerInspect(resp *http.Response) error {

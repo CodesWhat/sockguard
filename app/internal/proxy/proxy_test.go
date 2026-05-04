@@ -320,6 +320,41 @@ func TestNewWithOptions_RedactsProtectedResponses(t *testing.T) {
 	}
 }
 
+func TestNewWithOptions_SkipsHeadProtectedResponses(t *testing.T) {
+	socketPath := tempSocketPath(t, "response-filter-head")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	rp := NewWithOptions(socketPath, testLogger(), Options{
+		ModifyResponse: responsefilter.New(responsefilter.Options{
+			RedactContainerEnv: true,
+		}).ModifyResponse,
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodHead, "/v1.53/containers/abc123/json", nil)
+	rp.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Body.Len() != 0 {
+		t.Fatalf("body len = %d, want 0", rec.Body.Len())
+	}
+}
+
 func TestNewWithOptions_RejectsProtectedResponsesThatCannotBeSanitized(t *testing.T) {
 	socketPath := tempSocketPath(t, "response-reject")
 
