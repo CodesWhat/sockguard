@@ -71,6 +71,31 @@ func TestMiddlewareDeniesBuildWithHostNetworkByDefault(t *testing.T) {
 	}
 }
 
+func TestMiddlewareAllowsBuildWithHostNetworkWhenConfigured(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			Build: BuildOptions{
+				AllowHostNetwork: true,
+			},
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/build?networkmode=host", bytes.NewReader(mustBuildContextTar(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
 func TestMiddlewareDeniesBuildWithRunInstructionByDefault(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
