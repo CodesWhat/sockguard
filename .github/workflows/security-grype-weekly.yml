@@ -42,7 +42,7 @@ jobs:
           go-version-file: app/go.mod
 
       - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}
+        run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
 
       - name: Run govulncheck
         working-directory: app
@@ -168,11 +168,10 @@ jobs:
       - name: Run Gosec
         uses: securego/gosec@4a3bd8af174872c778439083ded7adbf3747e770  # v2.26.1
         with:
-          args: -fmt sarif -out gosec-results.sarif ./...
-          working-directory: app
+          args: -fmt sarif -out gosec-results.sarif ./app/...
 
       - name: Upload Gosec SARIF
         if: always() && github.event.repository.visibility == 'public'
         uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225  # v4.35.2
         with:
-          sarif_file: app/gosec-results.sarif
+          sarif_file: gosec-results.sarif
