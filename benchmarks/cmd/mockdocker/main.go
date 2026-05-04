@@ -110,9 +110,6 @@ func logRequest(r *http.Request) {
 }
 
 func sanitizeLogField(s string) string {
-	s = strings.ReplaceAll(s, "\n", "")
-	s = strings.ReplaceAll(s, "\r", "")
-
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return -1
