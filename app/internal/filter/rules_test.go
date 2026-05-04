@@ -147,6 +147,7 @@ func TestPathNeedsClean(t *testing.T) {
 	}{
 		{name: "clean absolute path", path: "/containers/json", want: false},
 		{name: "clean versioned path", path: "/v1.45/containers/json", want: false},
+		{name: "empty string", path: "", want: false},
 		{name: "root path", path: "/", want: false},
 		{name: "double slash", path: "//containers/json", want: true},
 		{name: "dot segment", path: "/containers/./json", want: true},
