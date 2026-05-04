@@ -46,6 +46,9 @@ func (p buildPolicy) inspect(r *http.Request, normalizedPath string) (string, er
 	}
 
 	query := r.URL.Query()
+	// WHY: Host-network builds are denied even when the request also uses a
+	// remote context, so this must run before the remote-context branch returns
+	// its own denial or allow decision.
 	if !p.allowHostNetwork && strings.EqualFold(strings.TrimSpace(query.Get("networkmode")), "host") {
 		return "build denied: host network mode is not allowed", nil
 	}

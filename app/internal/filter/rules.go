@@ -147,6 +147,9 @@ func pathSegmentNeedsClean(p string, start, end int, absolutePath, hasNormalSegm
 
 	segmentLen := end - start
 	if segmentLen == 1 && p[start] == '.' {
+		// WHY: A lone relative "." is already clean because path.Clean(".") == ".".
+		// Only dotted segments that would collapse with surrounding path context
+		// should take the allocation-heavy Clean path.
 		if start == 0 && !absolutePath && !hasMoreSegments {
 			return false, false
 		}
