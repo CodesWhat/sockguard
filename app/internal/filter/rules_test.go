@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	pathpkg "path"
 	"regexp"
 	"strings"
 	"testing"
@@ -146,6 +147,7 @@ func TestPathNeedsClean(t *testing.T) {
 	}{
 		{name: "clean absolute path", path: "/containers/json", want: false},
 		{name: "clean versioned path", path: "/v1.45/containers/json", want: false},
+		{name: "empty string", path: "", want: false},
 		{name: "root path", path: "/", want: false},
 		{name: "double slash", path: "//containers/json", want: true},
 		{name: "dot segment", path: "/containers/./json", want: true},
@@ -157,6 +159,37 @@ func TestPathNeedsClean(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if got := pathNeedsClean(tt.path); got != tt.want {
+				t.Fatalf("pathNeedsClean(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPathNeedsCleanRelativeDotPaths(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "standalone dot", path: ".", want: false},
+		{name: "standalone dot dot", path: "..", want: false},
+		{name: "leading relative dot dot", path: "../containers", want: false},
+		{name: "repeated leading relative dot dot", path: "../../containers", want: false},
+		{name: "only leading relative dot dots", path: "../..", want: false},
+		{name: "leading relative dot", path: "./containers", want: true},
+		{name: "relative dot dot cancels previous segment", path: "containers/..", want: true},
+		{name: "relative dot dot cancels after leading dot dot", path: "../containers/..", want: true},
+		{name: "rooted dot dot", path: "/..", want: true},
+		{name: "rooted leading dot dot", path: "/../containers", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleaned := pathpkg.Clean(tt.path)
+			if (cleaned != tt.path) != tt.want {
+				t.Fatalf("bad test case: path.Clean(%q) = %q", tt.path, cleaned)
+			}
 			if got := pathNeedsClean(tt.path); got != tt.want {
 				t.Fatalf("pathNeedsClean(%q) = %v, want %v", tt.path, got, tt.want)
 			}

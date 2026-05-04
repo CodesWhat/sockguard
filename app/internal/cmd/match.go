@@ -86,6 +86,10 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("path must start with %q", "/")
 	}
 
+	if err := requireExplicitConfigFile(cmd, cfgFile); err != nil {
+		return fmt.Errorf("config preflight: %w", err)
+	}
+
 	// config.Load treats a missing file as "use defaults" to keep the
 	// serve path flexible, but match is a check tool: if the user
 	// pointed us at a file that doesn't exist, evaluating against the

@@ -10,9 +10,15 @@ import (
 func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 	cfg := RequestBodyConfig{
 		ContainerCreate: ContainerCreateRequestBodyConfig{
-			AllowPrivileged:   true,
-			AllowHostNetwork:  true,
-			AllowedBindMounts: []string{"/srv/data", "/var/lib/sockguard"},
+			AllowPrivileged:        true,
+			AllowHostNetwork:       true,
+			AllowHostPID:           true,
+			AllowHostIPC:           true,
+			AllowedBindMounts:      []string{"/srv/data", "/var/lib/sockguard"},
+			AllowAllDevices:        true,
+			AllowedDevices:         []string{"/dev/kvm", "/dev/dri"},
+			AllowDeviceRequests:    true,
+			AllowDeviceCgroupRules: true,
 		},
 		Exec: ExecRequestBodyConfig{
 			AllowPrivileged: true,
@@ -30,9 +36,42 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowHostNetwork:     true,
 			AllowRunInstructions: true,
 		},
+		ContainerUpdate: ContainerUpdateRequestBodyConfig{
+			AllowPrivileged:      true,
+			AllowDevices:         true,
+			AllowCapabilities:    true,
+			AllowResourceUpdates: true,
+			AllowRestartPolicy:   true,
+		},
+		ContainerArchive: ContainerArchiveRequestBodyConfig{
+			AllowedPaths:       []string{"/tmp/uploads", "/var/lib/app"},
+			AllowSetID:         true,
+			AllowDeviceNodes:   true,
+			AllowEscapingLinks: true,
+		},
+		ImageLoad: ImageLoadRequestBodyConfig{
+			AllowAllRegistries: true,
+			AllowOfficial:      false,
+			AllowedRegistries:  []string{"registry.example.com"},
+			AllowUntagged:      true,
+		},
 		Volume: VolumeRequestBodyConfig{
 			AllowCustomDrivers: true,
 			AllowDriverOpts:    true,
+		},
+		Network: NetworkRequestBodyConfig{
+			AllowCustomDrivers:     true,
+			AllowSwarmScope:        true,
+			AllowIngress:           true,
+			AllowAttachable:        true,
+			AllowConfigOnly:        true,
+			AllowConfigFrom:        true,
+			AllowCustomIPAMDrivers: true,
+			AllowCustomIPAMConfig:  true,
+			AllowIPAMOptions:       true,
+			AllowDriverOptions:     true,
+			AllowEndpointConfig:    true,
+			AllowDisconnectForce:   true,
 		},
 		Secret: SecretRequestBodyConfig{
 			AllowCustomDrivers:   true,
@@ -57,6 +96,14 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowManagerUnlockKeyRotation: true,
 			AllowAutoLockManagers:         true,
 			AllowSigningCAUpdate:          true,
+			AllowUnlock:                   true,
+		},
+		Node: NodeRequestBodyConfig{
+			AllowNameChange:         true,
+			AllowRoleChange:         true,
+			AllowAvailabilityChange: true,
+			AllowLabelMutation:      true,
+			AllowedLabelKeys:        []string{"com.example.safe"},
 		},
 		Plugin: PluginRequestBodyConfig{
 			AllowHostNetwork:      true,
@@ -77,9 +124,15 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 	got := cfg.ToFilterOptions()
 	want := filter.PolicyConfig{
 		ContainerCreate: filter.ContainerCreateOptions{
-			AllowPrivileged:   true,
-			AllowHostNetwork:  true,
-			AllowedBindMounts: []string{"/srv/data", "/var/lib/sockguard"},
+			AllowPrivileged:        true,
+			AllowHostNetwork:       true,
+			AllowHostPID:           true,
+			AllowHostIPC:           true,
+			AllowedBindMounts:      []string{"/srv/data", "/var/lib/sockguard"},
+			AllowAllDevices:        true,
+			AllowedDevices:         []string{"/dev/kvm", "/dev/dri"},
+			AllowDeviceRequests:    true,
+			AllowDeviceCgroupRules: true,
 		},
 		Exec: filter.ExecOptions{
 			AllowPrivileged: true,
@@ -97,9 +150,42 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowHostNetwork:     true,
 			AllowRunInstructions: true,
 		},
+		ContainerUpdate: filter.ContainerUpdateOptions{
+			AllowPrivileged:      true,
+			AllowDevices:         true,
+			AllowCapabilities:    true,
+			AllowResourceUpdates: true,
+			AllowRestartPolicy:   true,
+		},
+		ContainerArchive: filter.ContainerArchiveOptions{
+			AllowedPaths:       []string{"/tmp/uploads", "/var/lib/app"},
+			AllowSetID:         true,
+			AllowDeviceNodes:   true,
+			AllowEscapingLinks: true,
+		},
+		ImageLoad: filter.ImageLoadOptions{
+			AllowAllRegistries: true,
+			AllowOfficial:      false,
+			AllowedRegistries:  []string{"registry.example.com"},
+			AllowUntagged:      true,
+		},
 		Volume: filter.VolumeOptions{
 			AllowCustomDrivers: true,
 			AllowDriverOpts:    true,
+		},
+		Network: filter.NetworkOptions{
+			AllowCustomDrivers:     true,
+			AllowSwarmScope:        true,
+			AllowIngress:           true,
+			AllowAttachable:        true,
+			AllowConfigOnly:        true,
+			AllowConfigFrom:        true,
+			AllowCustomIPAMDrivers: true,
+			AllowCustomIPAMConfig:  true,
+			AllowIPAMOptions:       true,
+			AllowDriverOptions:     true,
+			AllowEndpointConfig:    true,
+			AllowDisconnectForce:   true,
 		},
 		Secret: filter.SecretOptions{
 			AllowCustomDrivers:   true,
@@ -124,6 +210,14 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowManagerUnlockKeyRotation: true,
 			AllowAutoLockManagers:         true,
 			AllowSigningCAUpdate:          true,
+			AllowUnlock:                   true,
+		},
+		Node: filter.NodeOptions{
+			AllowNameChange:         true,
+			AllowRoleChange:         true,
+			AllowAvailabilityChange: true,
+			AllowLabelMutation:      true,
+			AllowedLabelKeys:        []string{"com.example.safe"},
 		},
 		Plugin: filter.PluginOptions{
 			AllowHostNetwork:      true,

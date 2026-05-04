@@ -49,10 +49,9 @@ func TestModifyResponse_NilReturns(t *testing.T) {
 	}
 }
 
-func TestModifyResponse_SkipsNonGetAndNon200(t *testing.T) {
+func TestModifyResponse_RedactsSuccessfulProtectedResponsesAcrossMethodsAnd2xxStatuses(t *testing.T) {
 	f := New(Options{RedactContainerEnv: true})
 
-	// POST request — must not be modified
 	req, _ := http.NewRequest(http.MethodPost, "http://x/containers/abc/json", nil)
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -62,8 +61,12 @@ func TestModifyResponse_SkipsNonGetAndNon200(t *testing.T) {
 	if err := f.ModifyResponse(resp); err != nil {
 		t.Fatalf("POST: %v", err)
 	}
+	got := decodeBodyForTest(t, resp)
+	config, _ := got["Config"].(map[string]any)
+	if env, _ := config["Env"].([]any); len(env) != 0 {
+		t.Fatalf("POST Config.Env = %#v, want empty redacted array", config["Env"])
+	}
 
-	// 201 response — must not be modified
 	req2, _ := http.NewRequest(http.MethodGet, "http://x/containers/abc/json", nil)
 	resp2 := &http.Response{
 		StatusCode: 201,
@@ -72,6 +75,88 @@ func TestModifyResponse_SkipsNonGetAndNon200(t *testing.T) {
 	}
 	if err := f.ModifyResponse(resp2); err != nil {
 		t.Fatalf("201: %v", err)
+	}
+	got = decodeBodyForTest(t, resp2)
+	config, _ = got["Config"].(map[string]any)
+	if env, _ := config["Env"].([]any); len(env) != 0 {
+		t.Fatalf("201 Config.Env = %#v, want empty redacted array", config["Env"])
+	}
+
+	req3, _ := http.NewRequest(http.MethodPut, "http://x/containers/abc/json", nil)
+	resp3 := &http.Response{
+		StatusCode: http.StatusAccepted,
+		Request:    req3,
+		Body:       io.NopCloser(strings.NewReader(`{"Config":{"Env":["X=Y"]}}`)),
+	}
+	if err := f.ModifyResponse(resp3); err != nil {
+		t.Fatalf("202: %v", err)
+	}
+	got = decodeBodyForTest(t, resp3)
+	config, _ = got["Config"].(map[string]any)
+	if env, _ := config["Env"].([]any); len(env) != 0 {
+		t.Fatalf("202 Config.Env = %#v, want empty redacted array", config["Env"])
+	}
+}
+
+func TestModifyResponse_SkipsHeadProtectedResponses(t *testing.T) {
+	f := New(Options{RedactContainerEnv: true})
+
+	req, _ := http.NewRequest(http.MethodHead, "http://x/containers/abc/json", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Request:    req,
+		Body:       io.NopCloser(strings.NewReader("")),
+	}
+	if err := f.ModifyResponse(resp); err != nil {
+		t.Fatalf("HEAD: %v", err)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if string(body) != "" {
+		t.Fatalf("HEAD body = %q, want empty", string(body))
+	}
+}
+
+func TestModifyResponse_SkipsNonSuccessfulProtectedResponses(t *testing.T) {
+	f := New(Options{RedactContainerEnv: true})
+
+	req, _ := http.NewRequest(http.MethodGet, "http://x/containers/abc/json", nil)
+	resp := &http.Response{
+		StatusCode: http.StatusNotFound,
+		Request:    req,
+		Body:       io.NopCloser(strings.NewReader(`{"message":"No such container: abc"}`)),
+	}
+	if err := f.ModifyResponse(resp); err != nil {
+		t.Fatalf("404: %v", err)
+	}
+}
+
+func TestModifyResponse_SkipsNoBodySuccessStatuses(t *testing.T) {
+	f := New(Options{RedactContainerEnv: true})
+
+	tests := []struct {
+		name   string
+		status int
+	}{
+		{name: "204", status: http.StatusNoContent},
+		{name: "205", status: http.StatusResetContent},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, "http://x/containers/abc/json", nil)
+			resp := &http.Response{
+				StatusCode: tt.status,
+				Request:    req,
+				Body:       io.NopCloser(strings.NewReader(`{"Config":`)),
+			}
+			if err := f.ModifyResponse(resp); err != nil {
+				t.Fatalf("ModifyResponse() error = %v, want nil", err)
+			}
+		})
 	}
 }
 

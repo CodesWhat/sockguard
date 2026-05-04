@@ -163,6 +163,121 @@ func TestRunServeWrapperPropagatesConfigLoadError(t *testing.T) {
 	}
 }
 
+func TestRunServeWithDepsRejectsMissingExplicitConfig(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+
+	originalCfgFile := cfgFile
+	cfgFile = missing
+	t.Cleanup(func() {
+		cfgFile = originalCfgFile
+	})
+
+	cmd := newServeCommand()
+	cmd.Flags().String("config", "", "")
+	if err := cmd.Flags().Set("config", missing); err != nil {
+		t.Fatalf("set config flag: %v", err)
+	}
+
+	loadCalled := false
+	deps := newServeDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		loadCalled = true
+		return nil, errors.New("load should not be called")
+	}
+
+	err := runServeWithDeps(cmd, nil, deps)
+	if err == nil {
+		t.Fatal("expected runServeWithDeps() to fail when explicit config file is missing")
+	}
+	if !strings.Contains(err.Error(), "config preflight:") {
+		t.Fatalf("expected config preflight error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "config load:") {
+		t.Fatalf("expected preflight error not to be reported as config load, got: %v", err)
+	}
+	if loadCalled {
+		t.Fatal("expected explicit config preflight to fail before loading config")
+	}
+}
+
+func TestRunServeWithDepsRejectsEmptyExplicitConfig(t *testing.T) {
+	originalCfgFile := cfgFile
+	cfgFile = ""
+	t.Cleanup(func() {
+		cfgFile = originalCfgFile
+	})
+
+	cmd := newServeCommand()
+	cmd.Flags().String("config", "", "")
+	if err := cmd.Flags().Set("config", ""); err != nil {
+		t.Fatalf("set config flag: %v", err)
+	}
+
+	loadCalled := false
+	deps := newServeDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		loadCalled = true
+		return nil, errors.New("load should not be called")
+	}
+
+	err := runServeWithDeps(cmd, nil, deps)
+	if err == nil {
+		t.Fatal("expected runServeWithDeps() to fail when explicit config file is empty")
+	}
+	if !strings.Contains(err.Error(), "config preflight:") {
+		t.Fatalf("expected config preflight error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("expected empty config guidance, got: %v", err)
+	}
+	if loadCalled {
+		t.Fatal("expected explicit config preflight to fail before loading config")
+	}
+}
+
+func TestRunServeWithDepsLoadsExistingExplicitConfig(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "sockguard.yaml")
+	if err := os.WriteFile(cfgPath, []byte("upstream:\n  socket: /var/run/docker.sock\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	originalCfgFile := cfgFile
+	cfgFile = cfgPath
+	t.Cleanup(func() {
+		cfgFile = originalCfgFile
+	})
+
+	cmd := newServeCommand()
+	cmd.Flags().String("config", "", "")
+	if err := cmd.Flags().Set("config", cfgPath); err != nil {
+		t.Fatalf("set config flag: %v", err)
+	}
+
+	stopErr := errors.New("load reached")
+	loadCalled := false
+	var loadedPath string
+	deps := newServeDeps()
+	deps.loadConfig = func(path string) (*config.Config, error) {
+		loadCalled = true
+		loadedPath = path
+		return nil, stopErr
+	}
+
+	err := runServeWithDeps(cmd, nil, deps)
+	if !errors.Is(err, stopErr) {
+		t.Fatalf("runServeWithDeps() error = %v, want wrapped %v", err, stopErr)
+	}
+	if !loadCalled {
+		t.Fatal("expected existing explicit config file to proceed to config loading")
+	}
+	if loadedPath != cfgPath {
+		t.Fatalf("loaded config path = %q, want %q", loadedPath, cfgPath)
+	}
+	if strings.Contains(err.Error(), "config preflight:") {
+		t.Fatalf("expected load error not to be reported as preflight, got: %v", err)
+	}
+}
+
 func captureMergedServeConfig(t *testing.T, deps *serveDeps, cmd *cobra.Command, configPath string) *config.Config {
 	t.Helper()
 
@@ -492,6 +607,31 @@ func TestRunServeErrorPaths(t *testing.T) {
 		}
 		if !strings.Contains(errOut.String(), "failed to close audit log output: audit close boom") {
 			t.Fatalf("expected audit log output close warning, got: %q", errOut.String())
+		}
+	})
+
+	t.Run("nil audit log closer", func(t *testing.T) {
+		deps := newRunServeDeps()
+		cfg := testServeConfig()
+		cfg.Log.Audit.Enabled = true
+		deps.loadConfig = func(string) (*config.Config, error) {
+			return cfg, nil
+		}
+
+		auditLogger := logging.NewAuditLogger(io.Discard)
+		t.Cleanup(func() {
+			_ = auditLogger.Close()
+		})
+		deps.newAuditLogger = func(format, output string) (*logging.AuditLogger, io.Closer, error) {
+			return auditLogger, nil, nil
+		}
+		deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+			return nil, errors.New("validation boom")
+		}
+
+		err := runServeWithDeps(newServeCommand(), nil, deps)
+		if err == nil || !strings.Contains(err.Error(), "config validation: validation boom") {
+			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 

@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       fuzztime:
-        description: "Per-fuzzer coverage budget (Go duration, e.g. 1h, 3h). Hard-capped by the job's 6-hour timeout."
+        description: "Per-fuzzer coverage budget (Go duration, e.g. 1h, 3h). Max ≈5h45m before the job timeout trims it."
         required: false
         default: "1h"
   schedule:
@@ -83,8 +83,11 @@ jobs:
           INPUT_FUZZTIME: ${{ github.event.inputs.fuzztime }}
         run: |
           FUZZTIME="${INPUT_FUZZTIME:-1h}"
+          source scripts/fuzz-duration.sh
+          TEST_TIMEOUT="$(fuzz_timeout_for_budget "${FUZZTIME}" 600)" || exit 1
           echo "fuzztime=${FUZZTIME}" >> "$GITHUB_OUTPUT"
-          echo "Running ${{ matrix.fuzzer.name }} for ${FUZZTIME}"
+          echo "test_timeout=${TEST_TIMEOUT}" >> "$GITHUB_OUTPUT"
+          echo "Running ${{ matrix.fuzzer.name }} for ${FUZZTIME} with ${TEST_TIMEOUT} watchdog"
 
       - name: Fuzz ${{ matrix.fuzzer.name }}
         working-directory: app
@@ -92,14 +95,14 @@ jobs:
           FUZZER: ${{ matrix.fuzzer.name }}
           PKG: ${{ matrix.fuzzer.pkg }}
           FUZZTIME: ${{ steps.budget.outputs.fuzztime }}
+          TEST_TIMEOUT: ${{ steps.budget.outputs.test_timeout }}
         run: |
-          # -timeout=0 disables the test binary's default 10-min timeout so
-          # fuzz can actually run for the full configured budget. The job-
-          # level `timeout-minutes` above is the real ceiling.
+          # TEST_TIMEOUT is FUZZTIME plus a cushion, so hung inputs produce
+          # Go's goroutine dump before the job-level ceiling fires.
           go test -run='^$' \
             -fuzz="^${FUZZER}\$" \
             -fuzztime="${FUZZTIME}" \
-            -timeout=0 \
+            -timeout="${TEST_TIMEOUT}" \
             "${PKG}"
 
       - name: Upload fuzz corpus on failure
@@ -117,6 +120,7 @@ jobs:
           FUZZER: ${{ matrix.fuzzer.name }}
           PKG: ${{ matrix.fuzzer.pkg }}
           FUZZTIME: ${{ steps.budget.outputs.fuzztime }}
+          TEST_TIMEOUT: ${{ steps.budget.outputs.test_timeout }}
           STATUS: ${{ job.status }}
           RUN_ID: ${{ github.run_id }}
         run: |
@@ -125,6 +129,7 @@ jobs:
             echo ""
             echo "- Package: \`${PKG}\`"
             echo "- Budget:  ${FUZZTIME}"
+            echo "- Timeout: ${TEST_TIMEOUT}"
             echo "- Result:  ${STATUS}"
             echo ""
             if [ "${STATUS}" = "failure" ]; then

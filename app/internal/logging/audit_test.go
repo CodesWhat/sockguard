@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -227,6 +228,75 @@ func TestAuditLogMiddlewareNilLoggerIsNoop(t *testing.T) {
 	}
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+	}
+}
+
+func TestAuditLoggerLogAndCloseEdgeBranches(t *testing.T) {
+	var nilLogger *AuditLogger
+	nilLogger.log(auditEvent{EventType: "nil_logger"})
+	if err := nilLogger.Close(); err != nil {
+		t.Fatalf("nil AuditLogger Close() error = %v, want nil", err)
+	}
+
+	closedLogger := NewAuditLogger(&bytes.Buffer{})
+	closeAuditLogger(t, closedLogger)
+	closedLogger.log(auditEvent{EventType: "after_close"})
+
+	fullQueueLogger := &AuditLogger{
+		events: make(chan auditEvent, 1),
+		done:   make(chan struct{}),
+	}
+	fullQueueLogger.events <- auditEvent{EventType: "queued"}
+	fullQueueLogger.log(auditEvent{EventType: "dropped"})
+}
+
+func TestAuditLoggerDrainWritesQueuedEvents(t *testing.T) {
+	var buf bytes.Buffer
+	logger := &AuditLogger{
+		events: make(chan auditEvent, 1),
+		enc:    json.NewEncoder(&buf),
+	}
+	logger.events <- auditEvent{EventType: "drained"}
+
+	logger.drain()
+
+	var event map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &event); err != nil {
+		t.Fatalf("json.Unmarshal(drained event): %v\nbody: %s", err, buf.String())
+	}
+	if got := event["event_type"]; got != "drained" {
+		t.Fatalf("event_type = %#v, want drained", got)
+	}
+}
+
+func TestAuditRequestHelpersHandleNilAndTLS(t *testing.T) {
+	if got := requestIDFromRequest(nil); got != "" {
+		t.Fatalf("requestIDFromRequest(nil) = %q, want empty", got)
+	}
+	if got := requestMethod(nil); got != "" {
+		t.Fatalf("requestMethod(nil) = %q, want empty", got)
+	}
+	if got := requestPath(nil); got != "" {
+		t.Fatalf("requestPath(nil) = %q, want empty", got)
+	}
+	if got := requestPath(&http.Request{}); got != "" {
+		t.Fatalf("requestPath(request without URL) = %q, want empty", got)
+	}
+	if remoteAddr, sourceIP := auditActorIdentity(nil); remoteAddr != "" || sourceIP != "" {
+		t.Fatalf("auditActorIdentity(nil) = (%q, %q), want empty", remoteAddr, sourceIP)
+	}
+
+	listener, scheme, protocol := auditTransportIdentity(nil, "unix")
+	if listener != "unix" || scheme != "http" || protocol != "" {
+		t.Fatalf("auditTransportIdentity(nil) = (%q, %q, %q), want unix/http/empty", listener, scheme, protocol)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.test/_ping", nil)
+	req.Proto = "HTTP/2.0"
+	req.TLS = &tls.ConnectionState{}
+	listener, scheme, protocol = auditTransportIdentity(req, "tcp")
+	if listener != "tcp" || scheme != "https" || protocol != "HTTP/2.0" {
+		t.Fatalf("auditTransportIdentity(TLS) = (%q, %q, %q), want tcp/https/HTTP/2.0", listener, scheme, protocol)
 	}
 }
 

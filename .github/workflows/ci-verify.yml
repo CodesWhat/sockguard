@@ -264,9 +264,9 @@ jobs:
     #
     # `fail-fast: false` lets every fuzzer complete even if a sibling finds
     # a crash, so one failure surfaces alongside the other fuzzers' state
-    # instead of aborting the run early. `-timeout=0` disables the test
-    # binary's default 10-min timeout so a future longer fuzztime on main
-    # doesn't silently abort before the fuzzer hits its budget.
+    # instead of aborting the run early. The Go test timeout stays above
+    # the fuzz budget so a hung input produces a stack dump instead of
+    # tying up the runner until the job-level ceiling fires.
     name: "🔀 Go Fuzz (${{ matrix.fuzzer.name }})"
     if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
@@ -302,11 +302,14 @@ jobs:
 
       - name: Fuzz ${{ matrix.fuzzer.name }}
         working-directory: app
+        env:
+          FUZZTIME: 60s
+          TEST_TIMEOUT: 5m
         run: |
           go test -run=^$ \
             -fuzz=^${{ matrix.fuzzer.name }}$ \
-            -fuzztime=60s \
-            -timeout=0 \
+            -fuzztime="${FUZZTIME}" \
+            -timeout="${TEST_TIMEOUT}" \
             ${{ matrix.fuzzer.pkg }}
 
       - name: Upload fuzz corpus on failure

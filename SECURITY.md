@@ -7,8 +7,8 @@ Sockguard is pre-1.0 and we ship fixes on the latest minor line only. Once
 
 | Version        | Supported          |
 | -------------- | ------------------ |
-| 0.3.x (latest) | :white_check_mark: |
-| < 0.3          | :x:                |
+| 0.4.x (latest) | :white_check_mark: |
+| < 0.4          | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -17,8 +17,13 @@ responsibly.
 
 **Do not open a public GitHub issue for security vulnerabilities.**
 
-Instead, email **<80784472+s-b-e-n-s-o-n@users.noreply.github.com>** or use
-[GitHub's private vulnerability reporting](https://github.com/CodesWhat/sockguard/security/advisories/new).
+Instead, use
+[GitHub's private vulnerability reporting](https://github.com/CodesWhat/sockguard/security/advisories/new)
+or email **<security@getsockguard.com>**. GitHub private reports are
+preferred because they keep report details private and tie disclosure to
+the advisory and fix workflow.
+
+For non-security contact, email **<hello@getsockguard.com>**.
 
 You can expect:
 

@@ -72,9 +72,14 @@ func TestNewContainerCreatePolicyNormalizesAndDeduplicatesAllowedBindMounts(t *t
 
 func TestContainerCreatePolicyInspectSkipsBodyWhenPermissive(t *testing.T) {
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
-		AllowPrivileged:   true,
-		AllowHostNetwork:  true,
-		AllowedBindMounts: []string{"/"},
+		AllowPrivileged:        true,
+		AllowHostNetwork:       true,
+		AllowHostPID:           true,
+		AllowHostIPC:           true,
+		AllowedBindMounts:      []string{"/"},
+		AllowAllDevices:        true,
+		AllowDeviceRequests:    true,
+		AllowDeviceCgroupRules: true,
 	})
 	body := []byte(`{"HostConfig":{"Privileged":true,"NetworkMode":"host","Binds":["/var/run:/host/run"]}}`)
 	tracker := &trackingReadCloser{reader: bytes.NewReader(body)}
@@ -191,6 +196,146 @@ func TestContainerCreatePolicyInspectHandlesBodyEdgeCases(t *testing.T) {
 			t.Fatalf("reset body = %q, want %q", string(body), "{}")
 		}
 	})
+}
+
+func TestContainerCreatePolicyInspectDeniesHostNamespaces(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "pid host",
+			body:       `{"HostConfig":{"PidMode":"host"}}`,
+			wantReason: "container create denied: host PID mode is not allowed",
+		},
+		{
+			name:       "ipc host",
+			body:       `{"HostConfig":{"IpcMode":"host"}}`,
+			wantReason: "container create denied: host IPC mode is not allowed",
+		},
+		{
+			name:       "pid host case insensitive",
+			body:       `{"HostConfig":{"PidMode":"HOST"}}`,
+			wantReason: "container create denied: host PID mode is not allowed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+
+			reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestContainerCreatePolicyInspectAllowsHostNamespacesWhenConfigured(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{
+		AllowHostPID: true,
+		AllowHostIPC: true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(`{"HostConfig":{"PidMode":"host","IpcMode":"host"}}`))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+func TestContainerCreatePolicyInspectDeniesNonAllowlistedDevices(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "device path",
+			body:       `{"HostConfig":{"Devices":[{"PathOnHost":"/dev/kvm","PathInContainer":"/dev/kvm","CgroupPermissions":"rwm"}]}}`,
+			wantReason: `container create denied: device "/dev/kvm" is not allowlisted`,
+		},
+		{
+			name:       "device request",
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: "container create denied: device requests are not allowed",
+		},
+		{
+			name:       "device cgroup rule",
+			body:       `{"HostConfig":{"DeviceCgroupRules":["c 10:* rwm"]}}`,
+			wantReason: "container create denied: device cgroup rules are not allowed",
+		},
+		{
+			name:       "relative device path",
+			body:       `{"HostConfig":{"Devices":[{"PathOnHost":"dev/kvm"}]}}`,
+			wantReason: `container create denied: device "dev/kvm" is not allowlisted`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+
+			reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestContainerCreatePolicyInspectAllowsConfiguredDevices(t *testing.T) {
+	tests := []struct {
+		name string
+		opts ContainerCreateOptions
+		body string
+	}{
+		{
+			name: "allowed device path",
+			opts: ContainerCreateOptions{AllowedDevices: []string{"/dev/dri"}},
+			body: `{"HostConfig":{"Devices":[{"PathOnHost":"/dev/dri/renderD128"}]}}`,
+		},
+		{
+			name: "allow all devices",
+			opts: ContainerCreateOptions{AllowAllDevices: true},
+			body: `{"HostConfig":{"Devices":[{"PathOnHost":"/dev/kvm"}]}}`,
+		},
+		{
+			name: "allow device requests",
+			opts: ContainerCreateOptions{AllowDeviceRequests: true},
+			body: `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu"]]}]}}`,
+		},
+		{
+			name: "allow device cgroup rules",
+			opts: ContainerCreateOptions{AllowDeviceCgroupRules: true},
+			body: `{"HostConfig":{"DeviceCgroupRules":["c 10:* rwm"]}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != "" {
+				t.Fatalf("inspect() reason = %q, want empty", reason)
+			}
+		})
+	}
 }
 
 func TestContainerCreatePolicyDenyBindMountReasonRejectsBindMountSource(t *testing.T) {

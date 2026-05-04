@@ -28,6 +28,12 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	stdoutP := ui.New(out)
 	stderrP := ui.New(errOut)
 
+	if err := requireExplicitConfigFile(cmd, cfgFile); err != nil {
+		wrapped := fmt.Errorf("config preflight: %w", err)
+		printValidationFailure(errOut, stderrP, wrapped)
+		return wrapped
+	}
+
 	cfg, err := config.Load(cfgFile)
 	if err != nil {
 		wrapped := fmt.Errorf("config load: %w", err)

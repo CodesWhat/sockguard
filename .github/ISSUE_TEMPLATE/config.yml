@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Report a Security Vulnerability
+    url: mailto:security@getsockguard.com?subject=Sockguard%20security%20report
+    about: Privately report a security issue without opening a public issue
+  - name: General Contact
+    url: mailto:hello@getsockguard.com?subject=Sockguard%20contact
+    about: Contact CodesWhat for non-security questions that do not fit Discussions
   - name: Feature Request
     url: https://github.com/CodesWhat/sockguard/discussions/categories/ideas
     about: Suggest a new feature or improvement in Discussions

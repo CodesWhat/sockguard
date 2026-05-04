@@ -120,27 +120,46 @@ func pathNeedsClean(p string) bool {
 		return true
 	}
 
+	absolutePath := strings.HasPrefix(p, "/")
+	hasNormalSegment := false
 	segmentStart := 0
-	for i := 0; i <= len(p); i++ {
-		if i < len(p) && p[i] != '/' {
+	for i := 0; i < len(p); i++ {
+		if p[i] != '/' {
 			continue
 		}
-		if i == segmentStart {
-			if i == 0 {
-				segmentStart = 1
-				continue
-			}
-			return true
-		}
 
-		switch p[segmentStart:i] {
-		case ".", "..":
+		needsClean, normalSegment := pathSegmentNeedsClean(p, segmentStart, i, absolutePath, hasNormalSegment, true)
+		if needsClean {
 			return true
 		}
+		hasNormalSegment = hasNormalSegment || normalSegment
 		segmentStart = i + 1
 	}
 
-	return false
+	needsClean, _ := pathSegmentNeedsClean(p, segmentStart, len(p), absolutePath, hasNormalSegment, false)
+	return needsClean
+}
+
+func pathSegmentNeedsClean(p string, start, end int, absolutePath, hasNormalSegment, hasMoreSegments bool) (needsClean bool, normalSegment bool) {
+	if end == start {
+		return start != 0, false
+	}
+
+	segmentLen := end - start
+	if segmentLen == 1 && p[start] == '.' {
+		// WHY: A lone relative "." is already clean because path.Clean(".") == ".".
+		// Only dotted segments that would collapse with surrounding path context
+		// should take the allocation-heavy Clean path.
+		if start == 0 && !absolutePath && !hasMoreSegments {
+			return false, false
+		}
+		return true, false
+	}
+	if segmentLen == 2 && p[start] == '.' && p[start+1] == '.' {
+		return absolutePath || hasNormalSegment, false
+	}
+
+	return false, true
 }
 
 // stripVersionPrefix removes a leading /vN.N/ or /vN/ prefix, returning the

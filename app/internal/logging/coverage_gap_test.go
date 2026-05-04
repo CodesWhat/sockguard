@@ -107,6 +107,16 @@ func TestSetDeniedNilRequest(t *testing.T) {
 	}
 }
 
+func TestEnsureRequestMetaNilCapture(t *testing.T) {
+	meta, owned := ensureRequestMeta(nil)
+	if meta != nil {
+		t.Fatalf("ensureRequestMeta(nil) meta = %#v, want nil", meta)
+	}
+	if owned {
+		t.Fatal("ensureRequestMeta(nil) owned = true, want false")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // access.go: newRequestIDGenerator — boundary clamping branches
 // ---------------------------------------------------------------------------

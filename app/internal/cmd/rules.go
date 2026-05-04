@@ -212,13 +212,13 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 	switch endpoint.path {
 	case "/containers/sockguard-test/exec", "/exec/sockguard-test/start":
 		return len(requestBody.Exec.AllowedCommands) > 0
-	case "/images/create", "/build":
+	case "/containers/sockguard-test/update", "/containers/sockguard-test/archive", "/images/create", "/images/load", "/build":
 		return true
-	case "/volumes/create", "/secrets/create", "/configs/create", "/services/create", "/services/sockguard-test/update", "/swarm/init", "/plugins/pull", "/plugins/sockguard-test/upgrade":
+	case "/volumes/create", "/networks/create", "/networks/sockguard-test/connect", "/networks/sockguard-test/disconnect", "/secrets/create", "/configs/create", "/services/create", "/services/sockguard-test/update", "/swarm/init", "/plugins/pull", "/plugins/sockguard-test/upgrade":
 		return true
 	case "/swarm/join":
 		return len(requestBody.Swarm.AllowedJoinRemoteAddrs) > 0
-	case "/swarm/update":
+	case "/swarm/update", "/swarm/unlock", "/nodes/sockguard-test/update":
 		return true
 	case "/plugins/sockguard-test/set":
 		return len(requestBody.Plugin.AllowedSetEnvPrefixes) > 0

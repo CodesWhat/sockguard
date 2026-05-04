@@ -54,6 +54,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 }
 
 func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error {
+	if err := requireExplicitConfigFile(cmd, cfgFile); err != nil {
+		return fmt.Errorf("config preflight: %w", err)
+	}
+
 	cfg, err := deps.loadConfig(cfgFile)
 	if err != nil {
 		return fmt.Errorf("config load: %w", err)
@@ -363,12 +367,13 @@ func clientCertificateProfiles(values []config.ClientCertificateProfileAssignmen
 	assignments := make([]clientacl.ClientCertificateProfileAssignment, 0, len(values))
 	for _, value := range values {
 		assignments = append(assignments, clientacl.ClientCertificateProfileAssignment{
-			Profile:     value.Profile,
-			CommonNames: value.CommonNames,
-			DNSNames:    value.DNSNames,
-			IPAddresses: value.IPAddresses,
-			URISANs:     value.URISANs,
-			SPIFFEIDs:   value.SPIFFEIDs,
+			Profile:             value.Profile,
+			CommonNames:         value.CommonNames,
+			DNSNames:            value.DNSNames,
+			IPAddresses:         value.IPAddresses,
+			URISANs:             value.URISANs,
+			SPIFFEIDs:           value.SPIFFEIDs,
+			PublicKeySHA256Pins: value.PublicKeySHA256Pins,
 		})
 	}
 	return assignments

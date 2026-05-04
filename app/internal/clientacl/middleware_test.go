@@ -3,9 +3,11 @@ package clientacl
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -48,6 +50,11 @@ func verifiedClientTLS(cert *x509.Certificate) *tls.ConnectionState {
 		PeerCertificates: []*x509.Certificate{cert},
 		VerifiedChains:   [][]*x509.Certificate{{cert}},
 	}
+}
+
+func testSubjectPublicKeySHA256Hex(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return hex.EncodeToString(sum[:])
 }
 
 func TestMiddlewareDeniesRemoteIPOutsideAllowedCIDRs(t *testing.T) {
@@ -280,6 +287,23 @@ func TestMiddlewareAssignsProfileFromClientCertificateExtendedSelectors(t *testi
 			wantProfile: "spiffe-client",
 		},
 		{
+			name: "spki pin",
+			assignments: []ClientCertificateProfileAssignment{
+				{
+					Profile: "pinned-client",
+					PublicKeySHA256Pins: []string{
+						"sha256:" + strings.ToUpper(testSubjectPublicKeySHA256Hex(&x509.Certificate{
+							RawSubjectPublicKeyInfo: []byte("pinned-client-key"),
+						})),
+					},
+				},
+			},
+			cert: &x509.Certificate{
+				RawSubjectPublicKeyInfo: []byte("pinned-client-key"),
+			},
+			wantProfile: "pinned-client",
+		},
+		{
 			name: "multiple selectors on one assignment are anded",
 			assignments: []ClientCertificateProfileAssignment{
 				{
@@ -384,20 +408,39 @@ func TestMatchClientCertificateProfileSelectorSemantics(t *testing.T) {
 			wantOK:      true,
 		},
 		{
-			name: "different certificate selector fields are ANDed together",
+			name: "spki pins are ORed within a selector field",
 			assignments: []ClientCertificateProfileAssignment{
 				{
-					Profile:     "strict-client",
-					DNSNames:    []string{"api.internal", "dashboard.internal"},
-					IPAddresses: []string{"192.0.2.10", "192.0.2.44"},
-					URISANs:     []string{"urn:example:sockguard:first", "urn:example:sockguard:second"},
-					SPIFFEIDs:   []string{"spiffe://sockguard.test/workload/one", "spiffe://sockguard.test/workload/two"},
+					Profile: "pinned-client",
+					PublicKeySHA256Pins: []string{
+						strings.Repeat("a", 64),
+						"sha256:" + strings.ToUpper(testSubjectPublicKeySHA256Hex(&x509.Certificate{RawSubjectPublicKeyInfo: []byte("second-key")})),
+					},
 				},
 			},
 			cert: &x509.Certificate{
-				DNSNames:    []string{"dashboard.internal"},
-				IPAddresses: []net.IP{net.ParseIP("192.0.2.44")},
-				URIs:        []*url.URL{uriOne, spiffeTwo},
+				RawSubjectPublicKeyInfo: []byte("second-key"),
+			},
+			wantProfile: "pinned-client",
+			wantOK:      true,
+		},
+		{
+			name: "different certificate selector fields are ANDed together",
+			assignments: []ClientCertificateProfileAssignment{
+				{
+					Profile:             "strict-client",
+					DNSNames:            []string{"api.internal", "dashboard.internal"},
+					IPAddresses:         []string{"192.0.2.10", "192.0.2.44"},
+					URISANs:             []string{"urn:example:sockguard:first", "urn:example:sockguard:second"},
+					SPIFFEIDs:           []string{"spiffe://sockguard.test/workload/one", "spiffe://sockguard.test/workload/two"},
+					PublicKeySHA256Pins: []string{testSubjectPublicKeySHA256Hex(&x509.Certificate{RawSubjectPublicKeyInfo: []byte("strict-key")})},
+				},
+			},
+			cert: &x509.Certificate{
+				DNSNames:                []string{"dashboard.internal"},
+				IPAddresses:             []net.IP{net.ParseIP("192.0.2.44")},
+				URIs:                    []*url.URL{uriOne, spiffeTwo},
+				RawSubjectPublicKeyInfo: []byte("strict-key"),
 			},
 			wantProfile: "strict-client",
 			wantOK:      true,
@@ -406,17 +449,19 @@ func TestMatchClientCertificateProfileSelectorSemantics(t *testing.T) {
 			name: "different certificate selector fields fail when one populated field misses",
 			assignments: []ClientCertificateProfileAssignment{
 				{
-					Profile:     "strict-client",
-					DNSNames:    []string{"dashboard.internal"},
-					IPAddresses: []string{"192.0.2.44"},
-					URISANs:     []string{"urn:example:sockguard:first"},
-					SPIFFEIDs:   []string{"spiffe://sockguard.test/workload/two"},
+					Profile:             "strict-client",
+					DNSNames:            []string{"dashboard.internal"},
+					IPAddresses:         []string{"192.0.2.44"},
+					URISANs:             []string{"urn:example:sockguard:first"},
+					SPIFFEIDs:           []string{"spiffe://sockguard.test/workload/two"},
+					PublicKeySHA256Pins: []string{testSubjectPublicKeySHA256Hex(&x509.Certificate{RawSubjectPublicKeyInfo: []byte("strict-key")})},
 				},
 			},
 			cert: &x509.Certificate{
-				DNSNames:    []string{"dashboard.internal"},
-				IPAddresses: []net.IP{net.ParseIP("192.0.2.44")},
-				URIs:        []*url.URL{uriOne, spiffeOne},
+				DNSNames:                []string{"dashboard.internal"},
+				IPAddresses:             []net.IP{net.ParseIP("192.0.2.44")},
+				URIs:                    []*url.URL{uriOne, spiffeOne},
+				RawSubjectPublicKeyInfo: []byte("strict-key"),
 			},
 			wantOK: false,
 		},
@@ -1019,6 +1064,16 @@ func TestCompileOptions(t *testing.T) {
 
 	if _, err := compileOptions(Options{AllowedCIDRs: []string{"bad"}}); err == nil {
 		t.Fatal("expected invalid CIDR error")
+	}
+
+	if _, err := compileOptions(Options{
+		Profiles: ProfileOptions{
+			ClientCertificates: []ClientCertificateProfileAssignment{
+				{Profile: "bad-pin-client", PublicKeySHA256Pins: []string{"not-a-pin"}},
+			},
+		},
+	}); err == nil || !strings.Contains(err.Error(), "public_key_sha256_pins") {
+		t.Fatalf("expected invalid public_key_sha256_pins error, got: %v", err)
 	}
 }
 

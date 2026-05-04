@@ -20,15 +20,27 @@ const maxContainerCreateBodyBytes = 1 << 20 // 1 MiB
 // ContainerCreateOptions configures request-body policy checks for
 // POST /containers/create.
 type ContainerCreateOptions struct {
-	AllowPrivileged   bool
-	AllowHostNetwork  bool
-	AllowedBindMounts []string
+	AllowPrivileged        bool
+	AllowHostNetwork       bool
+	AllowHostPID           bool
+	AllowHostIPC           bool
+	AllowedBindMounts      []string
+	AllowAllDevices        bool
+	AllowedDevices         []string
+	AllowDeviceRequests    bool
+	AllowDeviceCgroupRules bool
 }
 
 type containerCreatePolicy struct {
-	allowPrivileged   bool
-	allowHostNetwork  bool
-	allowedBindMounts []string
+	allowPrivileged        bool
+	allowHostNetwork       bool
+	allowHostPID           bool
+	allowHostIPC           bool
+	allowedBindMounts      []string
+	allowAllDevices        bool
+	allowedDevices         []string
+	allowDeviceRequests    bool
+	allowDeviceCgroupRules bool
 }
 
 type containerCreateRequest struct {
@@ -36,15 +48,24 @@ type containerCreateRequest struct {
 }
 
 type containerCreateHostConfig struct {
-	Privileged  bool                   `json:"Privileged"`
-	NetworkMode string                 `json:"NetworkMode"`
-	Binds       []string               `json:"Binds"`
-	Mounts      []containerCreateMount `json:"Mounts"`
+	Privileged        bool                    `json:"Privileged"`
+	NetworkMode       string                  `json:"NetworkMode"`
+	PidMode           string                  `json:"PidMode"`
+	IpcMode           string                  `json:"IpcMode"`
+	Binds             []string                `json:"Binds"`
+	Mounts            []containerCreateMount  `json:"Mounts"`
+	Devices           []containerCreateDevice `json:"Devices"`
+	DeviceRequests    []json.RawMessage       `json:"DeviceRequests"`
+	DeviceCgroupRules []string                `json:"DeviceCgroupRules"`
 }
 
 type containerCreateMount struct {
 	Type   string `json:"Type"`
 	Source string `json:"Source"`
+}
+
+type containerCreateDevice struct {
+	PathOnHost string `json:"PathOnHost"`
 }
 
 func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy {
@@ -57,10 +78,25 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowed = append(allowed, normalized)
 	}
 
+	allowedDevices := make([]string, 0, len(opts.AllowedDevices))
+	for _, device := range opts.AllowedDevices {
+		normalized, ok := normalizeContainerCreateDevicePath(device)
+		if !ok || slices.Contains(allowedDevices, normalized) {
+			continue
+		}
+		allowedDevices = append(allowedDevices, normalized)
+	}
+
 	return containerCreatePolicy{
-		allowPrivileged:   opts.AllowPrivileged,
-		allowHostNetwork:  opts.AllowHostNetwork,
-		allowedBindMounts: allowed,
+		allowPrivileged:        opts.AllowPrivileged,
+		allowHostNetwork:       opts.AllowHostNetwork,
+		allowHostPID:           opts.AllowHostPID,
+		allowHostIPC:           opts.AllowHostIPC,
+		allowedBindMounts:      allowed,
+		allowAllDevices:        opts.AllowAllDevices,
+		allowedDevices:         allowedDevices,
+		allowDeviceRequests:    opts.AllowDeviceRequests,
+		allowDeviceCgroupRules: opts.AllowDeviceCgroupRules,
 	}
 }
 
@@ -97,8 +133,17 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if !p.allowPrivileged && createReq.HostConfig.Privileged {
 		return "container create denied: privileged containers are not allowed", nil
 	}
-	if !p.allowHostNetwork && strings.EqualFold(createReq.HostConfig.NetworkMode, "host") {
+	if !p.allowHostNetwork && isHostNamespaceMode(createReq.HostConfig.NetworkMode) {
 		return "container create denied: host network mode is not allowed", nil
+	}
+	if !p.allowHostPID && isHostNamespaceMode(createReq.HostConfig.PidMode) {
+		return "container create denied: host PID mode is not allowed", nil
+	}
+	if !p.allowHostIPC && isHostNamespaceMode(createReq.HostConfig.IpcMode) {
+		return "container create denied: host IPC mode is not allowed", nil
+	}
+	if denyReason := p.denyDeviceReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
 	}
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
@@ -108,7 +153,38 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 }
 
 func (p containerCreatePolicy) allowsAllContainerCreateBodies() bool {
-	return p.allowPrivileged && p.allowHostNetwork && bindPathAllowed("/", p.allowedBindMounts)
+	return p.allowPrivileged &&
+		p.allowHostNetwork &&
+		p.allowHostPID &&
+		p.allowHostIPC &&
+		bindPathAllowed("/", p.allowedBindMounts) &&
+		(p.allowAllDevices || bindPathAllowed("/", p.allowedDevices)) &&
+		p.allowDeviceRequests &&
+		p.allowDeviceCgroupRules
+}
+
+func isHostNamespaceMode(value string) bool {
+	return strings.EqualFold(strings.TrimSpace(value), "host")
+}
+
+func (p containerCreatePolicy) denyDeviceReason(hostConfig containerCreateHostConfig) string {
+	if !p.allowDeviceRequests && len(hostConfig.DeviceRequests) > 0 {
+		return "container create denied: device requests are not allowed"
+	}
+	if !p.allowDeviceCgroupRules && len(hostConfig.DeviceCgroupRules) > 0 {
+		return "container create denied: device cgroup rules are not allowed"
+	}
+	if p.allowAllDevices {
+		return ""
+	}
+	for _, device := range hostConfig.Devices {
+		rawPath := strings.TrimSpace(device.PathOnHost)
+		hostPath, ok := normalizeContainerCreateDevicePath(rawPath)
+		if !ok || !bindPathAllowed(hostPath, p.allowedDevices) {
+			return fmt.Sprintf("container create denied: device %q is not allowlisted", rawPath)
+		}
+	}
+	return ""
 }
 
 func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHostConfig) string {
@@ -161,6 +237,13 @@ func extractAndValidateBindSource(bind string, mount containerCreateMount) (stri
 }
 
 func normalizeContainerCreateBindMount(value string) (string, bool) {
+	if value == "" || !strings.HasPrefix(value, "/") {
+		return "", false
+	}
+	return path.Clean(value), true
+}
+
+func normalizeContainerCreateDevicePath(value string) (string, bool) {
 	if value == "" || !strings.HasPrefix(value, "/") {
 		return "", false
 	}

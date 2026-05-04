@@ -20,6 +20,7 @@ type SwarmOptions struct {
 	AllowManagerUnlockKeyRotation bool
 	AllowAutoLockManagers         bool
 	AllowSigningCAUpdate          bool
+	AllowUnlock                   bool
 }
 
 type swarmPolicy struct {
@@ -30,6 +31,7 @@ type swarmPolicy struct {
 	allowManagerUnlockKeyRotation bool
 	allowAutoLockManagers         bool
 	allowSigningCAUpdate          bool
+	allowUnlock                   bool
 }
 
 type swarmInitRequest struct {
@@ -52,6 +54,10 @@ type swarmUpdateRequest struct {
 	} `json:"EncryptionConfig"`
 }
 
+type swarmUnlockRequest struct {
+	UnlockKey string `json:"UnlockKey"`
+}
+
 type swarmSpecConfig struct {
 	CAConfig swarmCAConfig `json:"CAConfig"`
 }
@@ -72,6 +78,7 @@ func newSwarmPolicy(opts SwarmOptions) swarmPolicy {
 		allowManagerUnlockKeyRotation: opts.AllowManagerUnlockKeyRotation,
 		allowAutoLockManagers:         opts.AllowAutoLockManagers,
 		allowSigningCAUpdate:          opts.AllowSigningCAUpdate,
+		allowUnlock:                   opts.AllowUnlock,
 	}
 }
 
@@ -87,6 +94,8 @@ func (p swarmPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPat
 		return p.inspectJoin(logger, r)
 	case "/swarm/update":
 		return p.inspectUpdate(logger, r)
+	case "/swarm/unlock":
+		return p.inspectUnlock(logger, r)
 	default:
 		return "", nil
 	}
@@ -196,6 +205,34 @@ func (p swarmPolicy) inspectUpdate(logger *slog.Logger, r *http.Request) (string
 	}
 	if !p.allowManagerUnlockKeyRotation && queryBool(r, "rotateManagerUnlockKey") {
 		return "swarm update denied: manager unlock key rotation is not allowed", nil
+	}
+
+	return "", nil
+}
+
+func (p swarmPolicy) inspectUnlock(logger *slog.Logger, r *http.Request) (string, error) {
+	body, err := readBoundedBody(r, maxSwarmBodyBytes)
+	if err != nil {
+		if isBodyTooLargeError(err) {
+			return fmt.Sprintf("swarm unlock denied: request body exceeds %d byte limit", maxSwarmBodyBytes), nil
+		}
+		return "", fmt.Errorf("read body: %w", err)
+	}
+
+	if len(body) == 0 {
+		return "", nil
+	}
+
+	var req swarmUnlockRequest
+	if err := decodePolicySubsetJSON(body, &req); err != nil {
+		if logger != nil {
+			logger.DebugContext(r.Context(), "swarm unlock request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+		}
+		return "", nil
+	}
+
+	if !p.allowUnlock {
+		return "swarm unlock denied: swarm unlock is not allowed", nil
 	}
 
 	return "", nil

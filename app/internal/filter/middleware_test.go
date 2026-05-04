@@ -514,6 +514,26 @@ func TestDenyWithReasonCodePopulatesEmptyNormPath(t *testing.T) {
 	}
 }
 
+func TestDenyWithReasonCodeLogsEncodeError(t *testing.T) {
+	collector := &collectingHandler{}
+	logger := slog.New(collector)
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	rec := &failingResponseWriter{}
+
+	denyWithReasonCode(rec, req, logger, reasonCodeClientPolicyProfileUnresolved, "profile not found", DenyResponseVerbosityMinimal)
+
+	if rec.status != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.status, http.StatusForbidden)
+	}
+	records := collector.snapshot()
+	if len(records) != 1 {
+		t.Fatalf("log records = %d, want 1", len(records))
+	}
+	if records[0].message != "failed to encode denial response" {
+		t.Fatalf("log message = %q, want encode failure", records[0].message)
+	}
+}
+
 func TestMiddlewareConcurrentRequestMetaIsolation(t *testing.T) {
 	allowRule, _ := CompileRule(Rule{Methods: []string{http.MethodGet}, Pattern: "/allowed/**", Action: ActionAllow, Index: 0})
 	denyRule, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})

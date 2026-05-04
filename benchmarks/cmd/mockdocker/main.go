@@ -22,7 +22,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"unicode"
 )
 
 type mockContainer struct {
@@ -44,6 +46,8 @@ var fakeContainers = []mockContainer{
 
 func main() {
 	socket := flag.String("socket", "/tmp/sg-bench-mock.sock", "unix socket path")
+	// Debug-only: per-request sanitization and log formatting currently add
+	// about six allocations per request, so leave this off for measurements.
 	verbose := flag.Bool("log", false, "log every request")
 	flag.Parse()
 
@@ -64,21 +68,21 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/_ping", func(w http.ResponseWriter, r *http.Request) {
 		if *verbose {
-			log.Printf("%s %s", r.Method, r.URL.Path)
+			logRequest(r)
 		}
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io.WriteString(w, "OK")
 	})
 	mux.HandleFunc("/containers/json", func(w http.ResponseWriter, r *http.Request) {
 		if *verbose {
-			log.Printf("%s %s", r.Method, r.URL.Path)
+			logRequest(r)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(containersPayload)
 	})
 	mux.HandleFunc("/exec/", func(w http.ResponseWriter, r *http.Request) {
 		if *verbose {
-			log.Printf("%s %s", r.Method, r.URL.Path)
+			logRequest(r)
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -101,4 +105,17 @@ func main() {
 	_ = srv.Close()
 	<-done
 	_ = os.Remove(*socket)
+}
+
+func logRequest(r *http.Request) {
+	log.Printf("method=%q path=%q", sanitizeLogField(r.Method), sanitizeLogField(r.URL.Path))
+}
+
+func sanitizeLogField(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }

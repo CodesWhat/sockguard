@@ -32,10 +32,11 @@
 
 <p align="center">
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="https://goreportcard.com/report/github.com/CodesWhat/sockguard"><img src="https://goreportcard.com/badge/github.com/CodesWhat/sockguard" alt="Go Report Card"></a>
+  <a href="https://goreportcard.com/report/github.com/CodesWhat/sockguard/app"><img src="https://goreportcard.com/badge/github.com/CodesWhat/sockguard/app" alt="Go Report Card"></a>
   <a href="https://pkg.go.dev/github.com/CodesWhat/sockguard"><img src="https://pkg.go.dev/badge/github.com/CodesWhat/sockguard.svg" alt="Go Reference"></a>
   <br>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/CodesWhat/sockguard"><img src="https://img.shields.io/ossf-scorecard/github.com/CodesWhat/sockguard?label=openssf+scorecard&style=flat" alt="OpenSSF Scorecard"></a>
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-mutation-monthly.yml"><img src="https://img.shields.io/badge/mutation%20score-89%25-brightgreen?logo=go&logoColor=white" alt="Mutation score"></a>
 </p>
 
 <hr>
@@ -208,12 +209,12 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 10 bundled presets. |
 | 📊 | **Structured Access Logging** | JSON access logs with method, raw path, normalized path, decision, matched rule, latency, canonical request ID, and client info. Use `normalized_path` for SIEM correlation and policy analysis; raw `path` is preserved for forensic replay. Canonical request IDs are generated from a buffered pool so request logging does not block on a fresh entropy read per request. |
 | 🔐 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
-| 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks, client-container label ACLs, certificate selectors, and unix peer credentials let one proxy differentiate callers before the global rule set runs. When mTLS is enabled, certificate selectors follow the verified client leaf certificate rather than an unverified peer slice entry. |
+| 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks, client-container label ACLs, certificate selectors (CN/DNS/IP/URI/SPIFFE/SPKI), and unix peer credentials let one proxy differentiate callers before the global rule set runs. When mTLS is enabled, certificate selectors follow the verified client leaf certificate rather than an unverified peer slice entry. |
 | 🗃️ | **Bounded Inspect Cache** | Ownership and visibility checks reuse a short-lived singleflight cache for upstream Docker inspect metadata so bursts of repeated reads do not fan out into duplicate synchronous inspect calls. |
-| 🔍 | **Request Body Inspection** | `POST /containers/create`, `/containers/*/exec`, `/exec/*/start`, `/images/create`, `/build`, `/volumes/create`, `/secrets/create`, `/configs/create`, `/services/create`, `/services/*/update`, `/swarm/init`, `/swarm/join`, `/swarm/update`, `/plugins/pull`, `/plugins/*/upgrade`, `/plugins/*/set`, and `/plugins/create` are inspected to block privileged or host-bound workloads, non-allowlisted mounts/devices/commands/remotes, unsafe swarm bootstrap or rotation changes, and remote build contexts before Docker sees the request. `POST /plugins/create` is inspected whether the tar upload arrives as a raw body or `multipart/form-data`. Oversized bounded bodies on `/containers/create`, `/volumes/create`, `/secrets/create`, `/configs/create`, and `/plugins/create` are rejected with `413 Payload Too Large` before any upstream call. These inspectors intentionally decode the policy-relevant subset of Docker's schema and still defer full-schema validation to Docker itself. |
+| 🔍 | **Request Body Inspection** | `POST /containers/create`, `/containers/*/update`, `/containers/*/exec`, `/exec/*/start`, `PUT /containers/*/archive`, `/images/create`, `/images/load`, `/build`, `/volumes/create`, `/networks/create`, `/networks/*/connect`, `/networks/*/disconnect`, `/secrets/create`, `/configs/create`, `/services/create`, `/services/*/update`, `/swarm/init`, `/swarm/join`, `/swarm/update`, `/swarm/unlock`, `/nodes/*/update`, `/plugins/pull`, `/plugins/*/upgrade`, `/plugins/*/set`, and `/plugins/create` are inspected before Docker sees the request. Sockguard blocks privileged or host-bound workloads, non-allowlisted mounts/devices/commands/remotes, unsafe network/service/swarm/node controls, image archive imports outside registry policy, and unsafe container filesystem archives. `POST /plugins/create` is inspected whether the tar upload arrives as a raw body or `multipart/form-data`. Oversized bounded JSON/tar bodies are rejected with `413 Payload Too Large` before any upstream call. These inspectors intentionally decode the policy-relevant subset of Docker's schema and still defer full-schema validation to Docker itself. |
 | 🏷️ | **Owner Label Isolation** | A proxy instance can stamp label-capable creates plus build-produced images with an owner label, auto-filter labeled list/prune/events calls, and deny cross-owner access across containers, images, networks, volumes, services, tasks, secrets, and configs. |
-| 🫥 | **Visibility-Controlled Reads** | Redacts env, mount, network, config, plugin, and swarm-sensitive metadata by default, can hide labeled list/inspect/log reads behind per-client visibility rules, and keeps raw archive/export and stream-style reads behind explicit opt-in. |
-| 🧱 | **Body-Blind Write Guardrail** | Any remaining write Sockguard cannot safely constrain stays behind explicit `insecure_allow_body_blind_writes` opt-in instead of being silently exposed. Today that guardrail chiefly covers arbitrary exec without `request_body.exec.allowed_commands`, plus other body-bearing control-plane writes that still lack dedicated inspectors. |
+| 🫥 | **Visibility-Controlled Reads** | Redacts env, mount, network, config, plugin, and swarm-sensitive metadata by default, can hide labeled list/inspect plus selected service/task log reads behind per-client visibility rules, and keeps raw archive/export and stream-style reads behind explicit opt-in. |
+| 🧱 | **Body-Blind Write Guardrail** | Any remaining write Sockguard cannot safely constrain stays behind explicit `insecure_allow_body_blind_writes` opt-in instead of being silently exposed. Today that guardrail chiefly covers arbitrary exec without `request_body.exec.allowed_commands` and plugin setting writes without explicit allowed assignment prefixes. |
 | 🔄 | **Tecnativa Compatible** | Drop-in replacement for the current Tecnativa env surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. |
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image. Cosign-signed with SBOM and build provenance. |
 | ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
@@ -230,15 +231,15 @@ How sockguard stacks up against other Docker socket proxies:
 |---------|:---------:|:-----------:|:----------:|:-------------:|
 | Method + path filtering | ✅ | ✅ | ✅ (regex) | ✅ |
 | Granular container write ops | ❌ | Partial (`ALLOW_*`) | Via regex | ✅ |
-| Request body inspection | ❌ | ❌ | Partial (bind-mount source restrictions) | ✅ (`create`, `exec`, `volume`, `secret`, `config`, `service`, `swarm`, `plugin`, `pull`, `build`) |
-| Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ✅ (CIDR + labels + cert selectors + unix peer profiles) |
-| Read-side visibility / redaction | ❌ | ❌ | ❌ | ✅ (visibility + expanded redaction) |
+| Request body inspection | ❌ | ❌ | Partial (bind-mount source restrictions) | ✅ (`container` create/update/exec/archive, `image` pull/load, `build`, `volume`, `network` create/connect/disconnect, `secret`, `config`, `service`, `swarm` init/join/update/unlock, `node` update, `plugin`) |
+| Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
+| Read-side visibility / redaction | ❌ | ❌ | ❌ | ✅ (visibility + protected JSON redaction) |
 | Structured access logs | ❌ | ❌ | ✅ (JSON option) | ✅ |
 | Dedicated audit log schema | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
 | YAML config | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ✅ |
 
-Wollomatic deserves more credit than earlier versions of this README gave it. Current releases already support hostname/IP admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, and a filtered unix-socket endpoint. Sockguard's current lead is in exec/pull/build inspection, named profiles, ownership isolation, and read-side visibility/redaction.
+Wollomatic deserves more credit than earlier versions of this README gave it. Current releases already support hostname/IP admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, and a filtered unix-socket endpoint. Sockguard's current lead is in body inspection breadth (every body-bearing Docker write path Sockguard can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction.
 
 <hr>
 
@@ -294,9 +295,18 @@ response:
 
 request_body:
   container_create:
+    allow_privileged: false
+    allow_host_network: false
+    allow_host_pid: false
+    allow_host_ipc: false
     allowed_bind_mounts:
       - /srv/containers
       - /var/lib/app-data
+    allow_all_devices: false
+    allowed_devices:
+      - /dev/dri
+    allow_device_requests: false
+    allow_device_cgroup_rules: false
   exec:
     allowed_commands:
       - ["/usr/local/bin/pre-update", "--check"]
@@ -348,7 +358,7 @@ Trailing `/**` matches both the base path and any deeper path. For example, `/co
 
 `listen.tls` is only needed when you expose Sockguard on non-loopback TCP. Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`, which is intended only for legacy compatibility on a private, trusted network. `listen.tls.client_ca_file` still defines the issuing trust root, and the optional `listen.tls.allowed_common_names`, `allowed_dns_names`, `allowed_ip_addresses`, `allowed_uri_sans`, and `allowed_public_key_sha256_pins` fields let you narrow that trust to specific verified client leaves. Different selector fields are ANDed, while entries inside one field are ORed.
 
-Allowed `POST /containers/create` requests are inspected by default. Unless you opt out, Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, and any bind mount source outside `request_body.container_create.allowed_bind_mounts`. Named volumes still work without allowlist entries because they are not host bind mounts.
+Allowed `POST /containers/create` requests are inspected by default. Unless you opt out, Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, `HostConfig.PidMode=host`, `HostConfig.IpcMode=host`, any bind mount source outside `request_body.container_create.allowed_bind_mounts`, any `HostConfig.Devices` host path outside `request_body.container_create.allowed_devices`, `HostConfig.DeviceRequests`, and `HostConfig.DeviceCgroupRules`. Named volumes still work without allowlist entries because they are not host bind mounts.
 
 Allowed `POST /containers/*/exec` and `POST /exec/*/start` requests are inspected when `request_body.exec.allowed_commands` is non-empty. Sockguard denies non-allowlisted argv vectors, denies privileged execs unless `request_body.exec.allow_privileged: true`, denies root-user execs unless `request_body.exec.allow_root_user: true`, and re-inspects `POST /exec/*/start` against Docker's stored exec metadata before letting it run.
 
@@ -381,6 +391,8 @@ clients:
         - portainer.internal
       spiffe_ids:
         - spiffe://sockguard.test/workload/portainer
+      public_key_sha256_pins:
+        - 3a7bd3e2360a3d29eea436fcfb7e44c735d117c42d1c1835420b6b9942dd4f1b
   unix_peer_profiles:
     - profile: readonly
       uids:
@@ -424,7 +436,7 @@ clients:
           action: deny
 ```
 
-`clients.source_ip_profiles` match the caller's remote IP against CIDRs in config order. `clients.client_certificate_profiles` match the verified mTLS leaf certificate in config order and can use `common_names`, `dns_names`, `ip_addresses`, `uri_sans`, and `spiffe_ids`. `clients.unix_peer_profiles` match unix-socket callers by peer `uids`, `gids`, and `pids`. Different selector fields on one assignment are ANDed, while entries within one field are ORed. `clients.default_profile` remains the fallback when no specific assignment matches.
+`clients.source_ip_profiles` match the caller's remote IP against CIDRs in config order. `clients.client_certificate_profiles` match the verified mTLS leaf certificate in config order and can use `common_names`, `dns_names`, `ip_addresses`, `uri_sans`, `spiffe_ids`, and `public_key_sha256_pins`. `clients.unix_peer_profiles` match unix-socket callers by peer `uids`, `gids`, and `pids`. Different selector fields on one assignment are ANDed, while entries within one field are ORed. `clients.default_profile` remains the fallback when no specific assignment matches.
 
 Client-certificate profile assignment requires `listen.tls` mutual TLS, and unix-peer profile assignment requires `listen.socket`. Profile rules and request-body policies are compiled and validated at startup just like the root policy, and `sockguard validate` now prints the configured client-profile sections too.
 
@@ -432,7 +444,7 @@ Client-certificate profile assignment requires `listen.tls` mutual TLS, and unix
 
 Set `ownership.owner` to turn on per-proxy resource ownership isolation. Sockguard will add `ownership.label_key=ownership.owner` labels to `POST /containers/create`, `/networks/create`, `/volumes/create`, `/services/create`, `/services/*/update`, `/secrets/create`, `/configs/create`, `/nodes/*/update`, and `/swarm/update`, add the same label to `POST /build`, inject owner label filters into list/prune/events requests including `/services`, `/tasks`, `/secrets`, `/configs`, and `/nodes` (using Docker's `node.label` filter key there), and deny direct access to owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state from some other proxy identity. Service writes are stamped both at `Labels` and `TaskTemplate.ContainerSpec.Labels` so downstream tasks inherit the same owner identity. Unlabeled nodes and swarm state are fail-closed on reads once ownership is enabled, but they can still be claimed through `/nodes/*/update` and `/swarm/update` because Sockguard stamps the current owner label onto those update bodies before forwarding. Unowned images are still readable by default so shared base images can be pulled and inspected without relabeling.
 
-`insecure_allow_body_blind_writes` is off by default. Validation still fails unless you explicitly set it to `true` when your rules allow body-sensitive writes Sockguard cannot safely constrain yet, chiefly arbitrary `POST /containers/*/exec` / `POST /exec/*/start` without a `request_body.exec.allowed_commands` allowlist.
+`insecure_allow_body_blind_writes` is off by default. Validation still fails unless you explicitly set it to `true` when your rules allow body-sensitive writes Sockguard cannot safely constrain yet, chiefly arbitrary `POST /containers/*/exec` / `POST /exec/*/start` without a `request_body.exec.allowed_commands` allowlist, or `POST /plugins/*/set` without explicit allowed assignment prefixes.
 
 `insecure_allow_read_exfiltration` is also off by default. Validation fails unless you explicitly set it to `true` when your rules allow raw archive/export or stream-oriented read surfaces such as `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, or `GET /images/*/get`. The rule compiler only sees method + path, so `/containers/*/logs` is treated conservatively whether or not the caller also sets `follow=1`. This is mainly for full Tecnativa-style section parity or intentionally broad backup/export clients; most dashboards and controllers should allow only the specific list/inspect endpoints they need instead.
 
@@ -442,7 +454,7 @@ Access and audit logs deliberately preserve both raw and canonical path fields. 
 
 Audit events always include an `ownership` object. When `ownership.owner` is configured, that owner identifier appears in every audit event, not only resource ownership decisions, so use a non-secret tenant/workload label suitable for your audit sink.
 
-`response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` all default to `true`. Sockguard now redacts workload env arrays across container/service/task/plugin reads, redacts host-path-bearing mount and device metadata across container/volume/task/service/plugin/system-usage reads, strips container/network/swarm/node topology from container/network/service/task/node/swarm/info/system-usage responses, and redacts higher-risk payload material such as config `Spec.Data`, service secret/config references, swarm join/unlock material, and swarm/node TLS metadata. Disable those toggles only for trusted admin clients that genuinely need raw Docker metadata.
+`response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` all default to `true`. Sockguard redacts protected successful Docker JSON response shapes across methods and body-bearing 2xx statuses: workload env arrays across container/service/task/plugin payloads, host-path-bearing mount and device metadata across container/volume/task/service/plugin/system-usage payloads, container/network/swarm/node topology from container/network/service/task/node/swarm/info/system-usage responses, and higher-risk payload material such as config `Spec.Data`, service secret/config references, swarm join/unlock material, and swarm/node TLS metadata. Disable those toggles only for trusted admin clients that genuinely need raw Docker metadata.
 
 Preset configs included for [drydock](app/configs/drydock.yaml), [Traefik](app/configs/traefik.yaml), [Portainer](app/configs/portainer.yaml), [Watchtower](app/configs/watchtower.yaml), [Homepage](app/configs/homepage.yaml), [Homarr](app/configs/homarr.yaml), [Diun](app/configs/diun.yaml), [Autoheal](app/configs/autoheal.yaml), and [read-only](app/configs/readonly.yaml).
 
@@ -495,9 +507,9 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
 | **0.1.0** | MVP — drop-in replacement with granular control, YAML config, structured access logging | ✅ shipped |
 | **0.2.0** | mTLS for remote TCP, TLS 1.3 minimum, loopback-by-default listener, body-blind write guardrail | ✅ shipped |
 | **0.3.0** | Body inspection for create/exec/service/swarm/pull/build, owner labels, per-client profiles, visibility/redaction | ✅ shipped |
-| **0.4.0** | Hardening pass — canonical percent-decoded path matching, mTLS client admission selectors (CN/DNS/IP/URI SAN + SHA-256 SPKI pins), 413 on oversize bounded bodies, multipart plugin-create inspection, and profile-resolution memoization | ✅ shipped |
-| **0.5.0** | Feature completion pass — SPKI profile selectors, remaining body-sensitive write inspectors, broader response-side controls, and Prometheus metrics | 🕒 planned |
-| **0.6.0** | Secure container enforcement — readonly rootfs, non-root/no-new-privilege rails, resource limits, approved seccomp/AppArmor/SELinux, restricted CapAdd/Devices, image signatures plus attestations | 🕒 planned |
+| **0.4.0** | Hardening + body-inspection completion pass — canonical percent-decoded path matching; mTLS client admission selectors (CN/DNS/IP/URI SAN + SPIFFE + SHA-256 SPKI pins) at both listener and per-profile level; 413 on oversize bounded bodies; multipart plugin-create inspection; container-create policy now blocks `Privileged`, `NetworkMode=host`, `PidMode=host`, `IpcMode=host`, non-allowlisted bind sources, non-allowlisted devices, `DeviceRequests`, and `DeviceCgroupRules` by default; new body inspectors close the remaining blind-write gaps for `containers/*/update`, `containers/*/archive`, `images/load`, `networks/create`/`*/connect`/`*/disconnect`, `swarm/unlock`, and `nodes/*/update`; profile-resolution memoization; build host-network denied regardless of opt-in combinations; config preflight rejects explicit empty/missing `--config`; fuzz watchdogs replace `-timeout=0`; `scripts/local-fuzz.sh` gains `--timeout`/`--parallel`/`--suite ultra`; private vuln reporting enabled with published disclosure inboxes | ✅ shipped |
+| **0.5.0** | Operator observability — Prometheus `/metrics`, OpenTelemetry traces, active upstream socket watchdog | 🕒 planned |
+| **0.6.0** | Secure container enforcement — readonly rootfs, non-root/no-new-privilege rails, resource limits, approved seccomp/AppArmor/SELinux, broader capability/device runtime policy, image signatures plus attestations | 🕒 planned |
 | **0.7.0** | Abuse controls — per-client rate limits, burst budgets, concurrency caps, expensive-endpoint quotas | 🕒 planned |
 | **0.8.0** | Dynamic policy delivery — signed bundles, long-poll/hot reload, audit/warn/enforce rollout modes, admin API, policy versioning | 🕒 planned |
 
@@ -525,7 +537,7 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Issues, ideas, and pull requests welcome.
 
-For local fuzz triage, run `scripts/local-fuzz.sh --suite ci --fuzztime 2m`. Add `--docker --platform linux/amd64` when you want closer GitHub Actions parity.
+For local fuzz triage, run `scripts/local-fuzz.sh --suite ci --fuzztime 2m`. Use `--suite ultra` for every fuzzer, `--timeout` to set the Go watchdog explicitly, and `--docker --platform linux/amd64` when you want closer GitHub Actions parity.
 
 <hr>
 

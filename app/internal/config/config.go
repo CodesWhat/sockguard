@@ -46,10 +46,10 @@ type UpstreamConfig struct {
 
 // LogConfig configures logging.
 type LogConfig struct {
-	Level     string `mapstructure:"level"`
-	Format    string `mapstructure:"format"`
-	Output    string `mapstructure:"output"`
-	AccessLog bool   `mapstructure:"access_log"`
+	Level     string         `mapstructure:"level"`
+	Format    string         `mapstructure:"format"`
+	Output    string         `mapstructure:"output"`
+	AccessLog bool           `mapstructure:"access_log"`
 	Audit     AuditLogConfig `mapstructure:"audit"`
 }
 
@@ -72,24 +72,35 @@ type ResponseConfig struct {
 
 // RequestBodyConfig configures request-body inspection policies.
 type RequestBodyConfig struct {
-	ContainerCreate ContainerCreateRequestBodyConfig `mapstructure:"container_create"`
-	Exec            ExecRequestBodyConfig            `mapstructure:"exec"`
-	ImagePull       ImagePullRequestBodyConfig       `mapstructure:"image_pull"`
-	Build           BuildRequestBodyConfig           `mapstructure:"build"`
-	Volume          VolumeRequestBodyConfig          `mapstructure:"volume"`
-	Secret          SecretRequestBodyConfig          `mapstructure:"secret"`
-	Config          ConfigRequestBodyConfig          `mapstructure:"config"`
-	Service         ServiceRequestBodyConfig         `mapstructure:"service"`
-	Swarm           SwarmRequestBodyConfig           `mapstructure:"swarm"`
-	Plugin          PluginRequestBodyConfig          `mapstructure:"plugin"`
+	ContainerCreate  ContainerCreateRequestBodyConfig  `mapstructure:"container_create"`
+	Exec             ExecRequestBodyConfig             `mapstructure:"exec"`
+	ImagePull        ImagePullRequestBodyConfig        `mapstructure:"image_pull"`
+	Build            BuildRequestBodyConfig            `mapstructure:"build"`
+	ContainerUpdate  ContainerUpdateRequestBodyConfig  `mapstructure:"container_update"`
+	ContainerArchive ContainerArchiveRequestBodyConfig `mapstructure:"container_archive"`
+	ImageLoad        ImageLoadRequestBodyConfig        `mapstructure:"image_load"`
+	Volume           VolumeRequestBodyConfig           `mapstructure:"volume"`
+	Network          NetworkRequestBodyConfig          `mapstructure:"network"`
+	Secret           SecretRequestBodyConfig           `mapstructure:"secret"`
+	Config           ConfigRequestBodyConfig           `mapstructure:"config"`
+	Service          ServiceRequestBodyConfig          `mapstructure:"service"`
+	Swarm            SwarmRequestBodyConfig            `mapstructure:"swarm"`
+	Node             NodeRequestBodyConfig             `mapstructure:"node"`
+	Plugin           PluginRequestBodyConfig           `mapstructure:"plugin"`
 }
 
 // ContainerCreateRequestBodyConfig configures body inspection for
 // POST /containers/create requests.
 type ContainerCreateRequestBodyConfig struct {
-	AllowPrivileged   bool     `mapstructure:"allow_privileged"`
-	AllowHostNetwork  bool     `mapstructure:"allow_host_network"`
-	AllowedBindMounts []string `mapstructure:"allowed_bind_mounts"`
+	AllowPrivileged        bool     `mapstructure:"allow_privileged"`
+	AllowHostNetwork       bool     `mapstructure:"allow_host_network"`
+	AllowHostPID           bool     `mapstructure:"allow_host_pid"`
+	AllowHostIPC           bool     `mapstructure:"allow_host_ipc"`
+	AllowedBindMounts      []string `mapstructure:"allowed_bind_mounts"`
+	AllowAllDevices        bool     `mapstructure:"allow_all_devices"`
+	AllowedDevices         []string `mapstructure:"allowed_devices"`
+	AllowDeviceRequests    bool     `mapstructure:"allow_device_requests"`
+	AllowDeviceCgroupRules bool     `mapstructure:"allow_device_cgroup_rules"`
 }
 
 // ExecRequestBodyConfig configures body inspection for exec creation/start.
@@ -114,10 +125,53 @@ type BuildRequestBodyConfig struct {
 	AllowRunInstructions bool `mapstructure:"allow_run_instructions"`
 }
 
+// ContainerUpdateRequestBodyConfig configures inspection for
+// POST /containers/*/update.
+type ContainerUpdateRequestBodyConfig struct {
+	AllowPrivileged      bool `mapstructure:"allow_privileged"`
+	AllowDevices         bool `mapstructure:"allow_devices"`
+	AllowCapabilities    bool `mapstructure:"allow_capabilities"`
+	AllowResourceUpdates bool `mapstructure:"allow_resource_updates"`
+	AllowRestartPolicy   bool `mapstructure:"allow_restart_policy"`
+}
+
+// ContainerArchiveRequestBodyConfig configures inspection for
+// PUT /containers/*/archive.
+type ContainerArchiveRequestBodyConfig struct {
+	AllowedPaths       []string `mapstructure:"allowed_paths"`
+	AllowSetID         bool     `mapstructure:"allow_setid"`
+	AllowDeviceNodes   bool     `mapstructure:"allow_device_nodes"`
+	AllowEscapingLinks bool     `mapstructure:"allow_escaping_links"`
+}
+
+// ImageLoadRequestBodyConfig configures inspection for POST /images/load.
+type ImageLoadRequestBodyConfig struct {
+	AllowAllRegistries bool     `mapstructure:"allow_all_registries"`
+	AllowOfficial      bool     `mapstructure:"allow_official"`
+	AllowedRegistries  []string `mapstructure:"allowed_registries"`
+	AllowUntagged      bool     `mapstructure:"allow_untagged"`
+}
+
 // VolumeRequestBodyConfig configures inspection for POST /volumes/create.
 type VolumeRequestBodyConfig struct {
 	AllowCustomDrivers bool `mapstructure:"allow_custom_drivers"`
 	AllowDriverOpts    bool `mapstructure:"allow_driver_opts"`
+}
+
+// NetworkRequestBodyConfig configures inspection for network write endpoints.
+type NetworkRequestBodyConfig struct {
+	AllowCustomDrivers     bool `mapstructure:"allow_custom_drivers"`
+	AllowSwarmScope        bool `mapstructure:"allow_swarm_scope"`
+	AllowIngress           bool `mapstructure:"allow_ingress"`
+	AllowAttachable        bool `mapstructure:"allow_attachable"`
+	AllowConfigOnly        bool `mapstructure:"allow_config_only"`
+	AllowConfigFrom        bool `mapstructure:"allow_config_from"`
+	AllowCustomIPAMDrivers bool `mapstructure:"allow_custom_ipam_drivers"`
+	AllowCustomIPAMConfig  bool `mapstructure:"allow_custom_ipam_config"`
+	AllowIPAMOptions       bool `mapstructure:"allow_ipam_options"`
+	AllowDriverOptions     bool `mapstructure:"allow_driver_options"`
+	AllowEndpointConfig    bool `mapstructure:"allow_endpoint_config"`
+	AllowDisconnectForce   bool `mapstructure:"allow_disconnect_force"`
 }
 
 // SecretRequestBodyConfig configures inspection for POST /secrets/create.
@@ -141,7 +195,7 @@ type ServiceRequestBodyConfig struct {
 	AllowedRegistries  []string `mapstructure:"allowed_registries"`
 }
 
-// SwarmRequestBodyConfig configures inspection for swarm init.
+// SwarmRequestBodyConfig configures inspection for swarm writes.
 type SwarmRequestBodyConfig struct {
 	AllowForceNewCluster          bool     `mapstructure:"allow_force_new_cluster"`
 	AllowExternalCA               bool     `mapstructure:"allow_external_ca"`
@@ -150,6 +204,16 @@ type SwarmRequestBodyConfig struct {
 	AllowManagerUnlockKeyRotation bool     `mapstructure:"allow_manager_unlock_key_rotation"`
 	AllowAutoLockManagers         bool     `mapstructure:"allow_auto_lock_managers"`
 	AllowSigningCAUpdate          bool     `mapstructure:"allow_signing_ca_update"`
+	AllowUnlock                   bool     `mapstructure:"allow_unlock"`
+}
+
+// NodeRequestBodyConfig configures inspection for POST /nodes/*/update.
+type NodeRequestBodyConfig struct {
+	AllowNameChange         bool     `mapstructure:"allow_name_change"`
+	AllowRoleChange         bool     `mapstructure:"allow_role_change"`
+	AllowAvailabilityChange bool     `mapstructure:"allow_availability_change"`
+	AllowLabelMutation      bool     `mapstructure:"allow_label_mutation"`
+	AllowedLabelKeys        []string `mapstructure:"allowed_label_keys"`
 }
 
 // PluginRequestBodyConfig configures inspection for plugin write endpoints.
@@ -196,12 +260,13 @@ type ClientSourceIPProfileAssignmentConfig struct {
 // ClientCertificateProfileAssignmentConfig maps one or more mTLS client
 // certificate common names to a named client profile.
 type ClientCertificateProfileAssignmentConfig struct {
-	Profile     string   `mapstructure:"profile"`
-	CommonNames []string `mapstructure:"common_names"`
-	DNSNames    []string `mapstructure:"dns_names"`
-	IPAddresses []string `mapstructure:"ip_addresses"`
-	URISANs     []string `mapstructure:"uri_sans"`
-	SPIFFEIDs   []string `mapstructure:"spiffe_ids"`
+	Profile             string   `mapstructure:"profile"`
+	CommonNames         []string `mapstructure:"common_names"`
+	DNSNames            []string `mapstructure:"dns_names"`
+	IPAddresses         []string `mapstructure:"ip_addresses"`
+	URISANs             []string `mapstructure:"uri_sans"`
+	SPIFFEIDs           []string `mapstructure:"spiffe_ids"`
+	PublicKeySHA256Pins []string `mapstructure:"public_key_sha256_pins"`
 }
 
 // ClientUnixPeerProfileAssignmentConfig maps one or more unix peer
@@ -297,6 +362,9 @@ func Defaults() Config {
 		RequestBody: RequestBodyConfig{
 			ContainerCreate: ContainerCreateRequestBodyConfig{},
 			ImagePull: ImagePullRequestBodyConfig{
+				AllowOfficial: true,
+			},
+			ImageLoad: ImageLoadRequestBodyConfig{
 				AllowOfficial: true,
 			},
 			Service: ServiceRequestBodyConfig{

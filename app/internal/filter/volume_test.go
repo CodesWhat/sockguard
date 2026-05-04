@@ -150,6 +150,24 @@ func TestVolumeInspectIgnoresBodyCloseErrorAfterRead(t *testing.T) {
 	}
 }
 
+func TestVolumeInspectWrapsBodyReadError(t *testing.T) {
+	sentinel := errors.New("read failed")
+	policy := newVolumePolicy(VolumeOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/volumes/create", nil)
+	req.Body = &readErrorReadCloser{readErr: sentinel}
+
+	reason, err := policy.inspect(nil, req, "/volumes/create")
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("inspect() error = %v, want wrapped %v", err, sentinel)
+	}
+	if !strings.Contains(err.Error(), "read body") {
+		t.Fatalf("inspect() error = %q, want read body context", err)
+	}
+}
+
 func TestVolumeInspectMalformedJSONWithLogger(t *testing.T) {
 	// Exercises the logger debug branch when JSON decode fails (lines 55-57).
 	policy := newVolumePolicy(VolumeOptions{})

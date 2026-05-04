@@ -52,16 +52,28 @@ type PolicyConfig struct {
 	ImagePull ImagePullOptions
 	// Build configures request-body/query inspection for POST /build.
 	Build BuildOptions
+	// ContainerUpdate configures request-body inspection for
+	// POST /containers/*/update.
+	ContainerUpdate ContainerUpdateOptions
+	// ContainerArchive configures request-body inspection for
+	// PUT /containers/*/archive.
+	ContainerArchive ContainerArchiveOptions
+	// ImageLoad configures request-body inspection for POST /images/load.
+	ImageLoad ImageLoadOptions
 	// Volume configures request-body inspection for POST /volumes/create.
 	Volume VolumeOptions
+	// Network configures request-body inspection for network writes.
+	Network NetworkOptions
 	// Secret configures request-body inspection for POST /secrets/create.
 	Secret SecretOptions
 	// Config configures request-body inspection for POST /configs/create.
 	Config ConfigOptions
 	// Service configures request-body inspection for service create/update.
 	Service ServiceOptions
-	// Swarm configures request-body inspection for swarm init.
+	// Swarm configures request-body inspection for swarm writes.
 	Swarm SwarmOptions
+	// Node configures request-body inspection for node update.
+	Node NodeOptions
 	// Plugin configures request-body inspection for plugin write endpoints.
 	Plugin PluginOptions
 }
@@ -216,11 +228,16 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy
 	exec := newExecPolicy(cfg.Exec)
 	imagePull := newImagePullPolicy(cfg.ImagePull)
 	build := newBuildPolicy(cfg.Build)
+	containerUpdate := newContainerUpdatePolicy(cfg.ContainerUpdate)
+	containerArchive := newContainerArchivePolicy(cfg.ContainerArchive)
+	imageLoad := newImageLoadPolicy(cfg.ImageLoad)
 	volume := newVolumePolicy(cfg.Volume)
+	network := newNetworkPolicy(cfg.Network)
 	secret := newSecretPolicy(cfg.Secret)
 	configPolicy := newConfigPolicy(cfg.Config)
 	service := newServicePolicy(cfg.Service)
 	swarm := newSwarmPolicy(cfg.Swarm)
+	node := newNodePolicy(cfg.Node)
 	plugin := newPluginPolicy(cfg.Plugin)
 
 	return runtimePolicy{
@@ -260,6 +277,27 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy
 				denyReasonOnError: "unable to inspect build request",
 			},
 			{
+				matches:           matchesContainerUpdateInspection,
+				severity:          inspectSeverityHigh,
+				inspect:           containerUpdate.inspect,
+				errorLogMessage:   "failed to inspect container update request body",
+				denyReasonOnError: "unable to inspect container update request body",
+			},
+			{
+				matches:           matchesContainerArchiveInspection,
+				severity:          inspectSeverityHigh,
+				inspect:           containerArchive.inspect,
+				errorLogMessage:   "failed to inspect container archive request body",
+				denyReasonOnError: "unable to inspect container archive request body",
+			},
+			{
+				matches:           matchesImageLoadInspection,
+				severity:          inspectSeverityHigh,
+				inspect:           imageLoad.inspect,
+				errorLogMessage:   "failed to inspect image load request body",
+				denyReasonOnError: "unable to inspect image load request body",
+			},
+			{
 				matches:  matchesVolumeInspection,
 				severity: inspectSeverityMedium,
 				inspect: func(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
@@ -267,6 +305,13 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy
 				},
 				errorLogMessage:   "failed to inspect volume create request body",
 				denyReasonOnError: "unable to inspect volume create request body",
+			},
+			{
+				matches:           matchesNetworkInspection,
+				severity:          inspectSeverityHigh,
+				inspect:           network.inspect,
+				errorLogMessage:   "failed to inspect network request body",
+				denyReasonOnError: "unable to inspect network request body",
 			},
 			{
 				matches:           matchesSecretInspection,
@@ -293,8 +338,15 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy
 				matches:           matchesSwarmInspection,
 				severity:          inspectSeverityCritical,
 				inspect:           swarm.inspect,
-				errorLogMessage:   "failed to inspect swarm init request body",
-				denyReasonOnError: "unable to inspect swarm init request body",
+				errorLogMessage:   "failed to inspect swarm request body",
+				denyReasonOnError: "unable to inspect swarm request body",
+			},
+			{
+				matches:           matchesNodeInspection,
+				severity:          inspectSeverityHigh,
+				inspect:           node.inspect,
+				errorLogMessage:   "failed to inspect node update request body",
+				denyReasonOnError: "unable to inspect node update request body",
 			},
 			{
 				matches:           matchesPluginInspection,
@@ -323,8 +375,24 @@ func matchesBuildInspection(r *http.Request, normalizedPath string) bool {
 	return r != nil && r.Method == http.MethodPost && normalizedPath == "/build"
 }
 
+func matchesContainerUpdateInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && isContainerUpdatePath(normalizedPath)
+}
+
+func matchesContainerArchiveInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPut && isContainerArchivePath(normalizedPath)
+}
+
+func matchesImageLoadInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && normalizedPath == "/images/load"
+}
+
 func matchesVolumeInspection(r *http.Request, normalizedPath string) bool {
 	return r != nil && r.Method == http.MethodPost && normalizedPath == "/volumes/create"
+}
+
+func matchesNetworkInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && isNetworkWritePath(normalizedPath)
 }
 
 func matchesSecretInspection(r *http.Request, normalizedPath string) bool {
@@ -344,11 +412,15 @@ func matchesSwarmInspection(r *http.Request, normalizedPath string) bool {
 		return false
 	}
 	switch normalizedPath {
-	case "/swarm/init", "/swarm/join", "/swarm/update":
+	case "/swarm/init", "/swarm/join", "/swarm/update", "/swarm/unlock":
 		return true
 	default:
 		return false
 	}
+}
+
+func matchesNodeInspection(r *http.Request, normalizedPath string) bool {
+	return r != nil && r.Method == http.MethodPost && isNodeUpdatePath(normalizedPath)
 }
 
 func matchesPluginInspection(r *http.Request, normalizedPath string) bool {
