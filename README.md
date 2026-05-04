@@ -32,7 +32,7 @@
 
 <p align="center">
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="https://goreportcard.com/report/github.com/CodesWhat/sockguard"><img src="https://goreportcard.com/badge/github.com/CodesWhat/sockguard" alt="Go Report Card"></a>
+  <a href="https://goreportcard.com/report/github.com/CodesWhat/sockguard/app"><img src="https://goreportcard.com/badge/github.com/CodesWhat/sockguard/app" alt="Go Report Card"></a>
   <a href="https://pkg.go.dev/github.com/CodesWhat/sockguard"><img src="https://pkg.go.dev/badge/github.com/CodesWhat/sockguard.svg" alt="Go Reference"></a>
   <br>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/CodesWhat/sockguard"><img src="https://img.shields.io/ossf-scorecard/github.com/CodesWhat/sockguard?label=openssf+scorecard&style=flat" alt="OpenSSF Scorecard"></a>
