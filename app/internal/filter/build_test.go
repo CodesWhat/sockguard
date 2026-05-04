@@ -907,6 +907,23 @@ func TestBuildPolicyDeniesRemoteContextWithHostNetwork(t *testing.T) {
 	}
 }
 
+func TestBuildPolicyDeniesHostNetworkCaseInsensitive(t *testing.T) {
+	p := buildPolicy{allowRunInstructions: true}
+
+	for _, networkMode := range []string{"HOST", "Host"} {
+		t.Run(networkMode, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/build?networkmode="+networkMode, nil)
+			reason, err := p.inspect(req, "/build")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if !strings.Contains(reason, "host network") {
+				t.Fatalf("reason = %q, want host-network denial", reason)
+			}
+		})
+	}
+}
+
 func TestBuildPolicyDeniesHostNetworkBeforeDisallowedRemoteContext(t *testing.T) {
 	p := buildPolicy{allowRemoteContext: false, allowRunInstructions: true}
 	req := httptest.NewRequest(http.MethodPost, "/build?remote=https://github.com/acme/app&networkmode=host", nil)
