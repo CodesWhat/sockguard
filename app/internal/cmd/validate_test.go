@@ -144,14 +144,24 @@ func TestRunValidateRejectsMissingExplicitConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected runValidate() to fail when explicit config file is missing")
 	}
-	if !strings.Contains(err.Error(), "config file") {
-		t.Fatalf("expected config file error, got: %v", err)
+	if !strings.Contains(err.Error(), "config preflight:") {
+		t.Fatalf("expected config preflight error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "config load:") {
+		t.Fatalf("expected preflight error not to be reported as config load, got: %v", err)
 	}
 	if out.Len() != 0 {
 		t.Fatalf("expected no stdout output on load failure, got:\n%s", out.String())
 	}
-	if !strings.Contains(errOut.String(), "validation failed") {
+	stderr := errOut.String()
+	if !strings.Contains(stderr, "validation failed") {
 		t.Fatalf("expected validation failure output, got:\n%s", errOut.String())
+	}
+	if !strings.Contains(stderr, "config preflight:") {
+		t.Fatalf("expected preflight error in validation output, got:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "config load:") {
+		t.Fatalf("expected validation output not to report preflight as config load, got:\n%s", stderr)
 	}
 }
 

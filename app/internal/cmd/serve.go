@@ -55,7 +55,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error {
 	if err := requireExplicitConfigFile(cmd, cfgFile); err != nil {
-		return fmt.Errorf("config load: %w", err)
+		return fmt.Errorf("config preflight: %w", err)
 	}
 
 	cfg, err := deps.loadConfig(cfgFile)

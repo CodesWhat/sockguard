@@ -189,8 +189,11 @@ func TestRunServeWithDepsRejectsMissingExplicitConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected runServeWithDeps() to fail when explicit config file is missing")
 	}
-	if !strings.Contains(err.Error(), "config file") {
-		t.Fatalf("expected config file error, got: %v", err)
+	if !strings.Contains(err.Error(), "config preflight:") {
+		t.Fatalf("expected config preflight error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "config load:") {
+		t.Fatalf("expected preflight error not to be reported as config load, got: %v", err)
 	}
 	if loadCalled {
 		t.Fatal("expected explicit config preflight to fail before loading config")
