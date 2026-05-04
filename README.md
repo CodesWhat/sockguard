@@ -36,6 +36,7 @@
   <a href="https://pkg.go.dev/github.com/CodesWhat/sockguard"><img src="https://pkg.go.dev/badge/github.com/CodesWhat/sockguard.svg" alt="Go Reference"></a>
   <br>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/CodesWhat/sockguard"><img src="https://img.shields.io/ossf-scorecard/github.com/CodesWhat/sockguard?label=openssf+scorecard&style=flat" alt="OpenSSF Scorecard"></a>
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-mutation-monthly.yml"><img src="https://img.shields.io/badge/mutation%20score-89%25-brightgreen?logo=go&logoColor=white" alt="Mutation score"></a>
 </p>
 
 <hr>
