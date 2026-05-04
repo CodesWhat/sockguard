@@ -41,7 +41,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "Container, volume, secret, config, service, swarm, image-pull, build, and plugin writes are parsed to block host-bound workloads, non-allowlisted mounts, devices, commands, and remotes, unsafe swarm rotations, and remote build contexts. Multipart plugin uploads are inspected too, and oversized bounded bodies are rejected with 413 before the inspector runs.",
+      "Container, image, build, volume, network, secret, config, service, swarm, node, and plugin writes are parsed to block privileged or host-namespace workloads, non-allowlisted mounts/devices, device requests, device cgroup rules, commands, remotes, unsafe network/swarm/node controls, archive writes, and tar imports. Multipart plugin uploads are inspected too, and oversized bounded bodies are rejected with 413 before the inspector runs.",
     category: "security",
   },
   {
@@ -121,7 +121,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "Label selectors hide labeled list, inspect, and log reads for non-matching resources, env/mount/network/config/plugin/swarm-sensitive metadata is redacted by default, and raw archive/export reads stay behind explicit opt-in.",
+      "Label selectors hide labeled list, inspect, and selected service/task log reads for non-matching resources, env/mount/network/config/plugin/swarm-sensitive metadata is redacted by default, and raw archive/export reads stay behind explicit opt-in.",
     category: "security",
   },
   {
@@ -130,7 +130,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Route callers to named profiles with their own rules and request-body policy by source CIDR or mTLS client certificate, with a configurable default fallback.",
+      "Route callers to named profiles with their own rules and request-body policy by source CIDR, mTLS client certificate selectors including SPKI pins, or unix peer credentials, with a configurable default fallback.",
     category: "control",
   },
 ];

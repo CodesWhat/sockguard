@@ -27,14 +27,15 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "Partial (bind-mount restrictions)",
-    sockguard: "Yes (create, exec, volume, secret, config, service, swarm, plugin, pull, build)",
+    sockguard:
+      "Yes (container, image, build, volume, network, secret, config, service, swarm, node, plugin)",
   },
   {
     feature: "Per-client policies",
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "IP/hostname + labels",
-    sockguard: "CIDR + labels + cert selectors + unix peer",
+    sockguard: "CIDR + labels + cert selectors incl. SPKI + unix peer",
   },
   {
     feature: "Resource owner labels",
@@ -55,7 +56,7 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
-    sockguard: "Yes (visibility + expanded redaction)",
+    sockguard: "Yes (visibility + protected JSON redaction)",
   },
   {
     feature: "Structured access logs",

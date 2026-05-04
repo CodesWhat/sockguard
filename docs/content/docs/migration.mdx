@@ -59,7 +59,7 @@ wollomatic already does more than a basic path gate: regex allowlists per method
 | `-allowGET "^/(v[0-9.]+/)?events$"` | `{ method: GET, path: "/events" }` |
 | `-allowPOST "^/(v[0-9.]+/)?containers/[a-z0-9]+/start$"` | `{ method: POST, path: "/containers/*/start" }` |
 | `-allowfrom=172.18.0.0/16` | `clients.allowed_cidrs: ["172.18.0.0/16"]` |
-| `-allowfrom=traefik` | Use `clients.client_certificate_profiles` with `dns_names` / `spiffe_ids`, `clients.allowed_cidrs`, or unix peer profiles depending on how the caller reaches Sockguard. |
+| `-allowfrom=traefik` | Use `clients.client_certificate_profiles` with `dns_names` / `spiffe_ids` / `public_key_sha256_pins`, `clients.allowed_cidrs`, or unix peer profiles depending on how the caller reaches Sockguard. |
 | `socket-proxy.allow.get=.*` | `clients.container_labels.label_prefix: socket-proxy.allow.` |
 | `-allowbindmountfrom=/srv/data,/var/log` | `request_body.container_create.allowed_bind_mounts: ["/srv/data", "/var/log"]` |
 | `-proxysocketendpoint=/tmp/filtered.sock` | `listen.socket: /tmp/filtered.sock` |
