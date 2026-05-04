@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `sockguard validate` and `sockguard serve` now fail fast when `--config` explicitly points to a missing file instead of silently continuing with built-in defaults. The absent built-in default path remains allowed when the flag is not provided.
+- Enabled GitHub private vulnerability reporting, removed the invalid GitHub noreply disclosure contact from `SECURITY.md`, and added a security vulnerability contact link to the issue chooser.
 - Cleared local code-scanning findings by refactoring the path-clean fast path away from an off-by-one loop shape, sanitizing benchmark mock-Docker request logs, and scoping the release-cut workflow's write token permission to the tag-push job.
 - Fixed the weekly security workflow's Gosec SARIF upload by removing the unsupported `working-directory` input from the Docker action, scanning `./app/...` explicitly, and uploading the SARIF file from the path Gosec actually writes.
 

@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Report a Security Vulnerability
+    url: https://github.com/CodesWhat/sockguard/security/advisories/new
+    about: Privately report a security issue without opening a public issue
   - name: Feature Request
     url: https://github.com/CodesWhat/sockguard/discussions/categories/ideas
     about: Suggest a new feature or improvement in Discussions
