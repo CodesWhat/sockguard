@@ -265,7 +265,7 @@ docker_command_text() {
     "$FUZZTIME" \
     "$TEST_TIMEOUT"
   if [[ -n "$GO_PARALLEL" ]]; then
-    printf " -parallel='%s'" "$GO_PARALLEL"
+    printf " -parallel=%s" "$GO_PARALLEL"
   fi
   printf " '%s'\"" "$pkg"
 }

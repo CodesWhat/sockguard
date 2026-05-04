@@ -50,6 +50,8 @@ describe('local-fuzz.sh', () => {
       'proxy',
       '--fuzztime',
       '1s',
+      '--parallel',
+      '2',
     ]);
 
     assert.equal(result.status, 0, result.stderr);
@@ -57,6 +59,8 @@ describe('local-fuzz.sh', () => {
     assert.match(result.stdout, /golang:1\.26\.2/);
     assert.match(result.stdout, /\/usr\/local\/go\/bin\/go test/);
     assert.match(result.stdout, /-timeout='10m1s'/);
+    assert.match(result.stdout, /-parallel=2/);
+    assert.doesNotMatch(result.stdout, /-parallel='2'/);
     assert.match(result.stdout, /FuzzHijackBidirectionalStream/);
   });
 
