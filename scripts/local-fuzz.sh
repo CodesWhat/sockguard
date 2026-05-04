@@ -369,21 +369,12 @@ run_docker_fuzzer() {
   local repo="$1"
   local fuzzer="$2"
   local pkg="$3"
-  if [[ -n "$PLATFORM" ]]; then
-    docker run --rm --platform "$PLATFORM" \
-      -v "$repo:/src" \
-      -w /src/app \
-      -e GOTOOLCHAIN=local \
-      "$DOCKER_IMAGE" \
-      sh -lc "mkdir -p /tmp/sockguard-fuzz-cache && /usr/local/go/bin/go test -run='^$' -fuzz='^${fuzzer}$' -fuzztime='${FUZZTIME}' -timeout='${TEST_TIMEOUT}' ${GO_PARALLEL:+-parallel='${GO_PARALLEL}'} '${pkg}'"
-  else
-    docker run --rm \
-      -v "$repo:/src" \
-      -w /src/app \
-      -e GOTOOLCHAIN=local \
-      "$DOCKER_IMAGE" \
-      sh -lc "mkdir -p /tmp/sockguard-fuzz-cache && /usr/local/go/bin/go test -run='^$' -fuzz='^${fuzzer}$' -fuzztime='${FUZZTIME}' -timeout='${TEST_TIMEOUT}' ${GO_PARALLEL:+-parallel='${GO_PARALLEL}'} '${pkg}'"
-  fi
+  docker run --rm ${PLATFORM:+--platform "$PLATFORM"} \
+    -v "$repo:/src" \
+    -w /src/app \
+    -e GOTOOLCHAIN=local \
+    "$DOCKER_IMAGE" \
+    sh -lc "mkdir -p /tmp/sockguard-fuzz-cache && /usr/local/go/bin/go test -run='^$' -fuzz='^${fuzzer}$' -fuzztime='${FUZZTIME}' -timeout='${TEST_TIMEOUT}' ${GO_PARALLEL:+-parallel='${GO_PARALLEL}'} '${pkg}'"
 }
 
 replay_native_input() {

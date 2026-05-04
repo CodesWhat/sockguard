@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -101,5 +102,14 @@ describe('local-fuzz.sh', () => {
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /FuzzFilterModifyResponse/);
     assert.match(result.stdout, /FuzzHijackBidirectionalStream/);
+  });
+
+  it('keeps the Docker fuzzer runtime command in a single branch', () => {
+    const source = readFileSync(scriptPath, 'utf8');
+    const [, body] = source.match(/run_docker_fuzzer\(\) \{([\s\S]*?)\n\}/) ?? [];
+
+    assert.ok(body, 'run_docker_fuzzer body not found');
+    assert.equal(body.match(/docker run --rm/g)?.length, 1);
+    assert.equal(body.match(/sh -lc "mkdir -p \/tmp\/sockguard-fuzz-cache/g)?.length, 1);
   });
 });
