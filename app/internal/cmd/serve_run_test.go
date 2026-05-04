@@ -163,6 +163,40 @@ func TestRunServeWrapperPropagatesConfigLoadError(t *testing.T) {
 	}
 }
 
+func TestRunServeWithDepsRejectsMissingExplicitConfig(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+
+	originalCfgFile := cfgFile
+	cfgFile = missing
+	t.Cleanup(func() {
+		cfgFile = originalCfgFile
+	})
+
+	cmd := newServeCommand()
+	cmd.Flags().String("config", "", "")
+	if err := cmd.Flags().Set("config", missing); err != nil {
+		t.Fatalf("set config flag: %v", err)
+	}
+
+	loadCalled := false
+	deps := newServeDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		loadCalled = true
+		return nil, errors.New("load should not be called")
+	}
+
+	err := runServeWithDeps(cmd, nil, deps)
+	if err == nil {
+		t.Fatal("expected runServeWithDeps() to fail when explicit config file is missing")
+	}
+	if !strings.Contains(err.Error(), "config file") {
+		t.Fatalf("expected config file error, got: %v", err)
+	}
+	if loadCalled {
+		t.Fatal("expected explicit config preflight to fail before loading config")
+	}
+}
+
 func captureMergedServeConfig(t *testing.T, deps *serveDeps, cmd *cobra.Command, configPath string) *config.Config {
 	t.Helper()
 

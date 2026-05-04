@@ -123,6 +123,38 @@ func TestRunValidateLoadError(t *testing.T) {
 	}
 }
 
+func TestRunValidateRejectsMissingExplicitConfig(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.yaml")
+
+	oldCfgFile := cfgFile
+	cfgFile = missing
+	t.Cleanup(func() { cfgFile = oldCfgFile })
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	command := &cobra.Command{Use: "validate"}
+	command.Flags().String("config", "", "")
+	if err := command.Flags().Set("config", missing); err != nil {
+		t.Fatalf("set config flag: %v", err)
+	}
+	command.SetOut(&out)
+	command.SetErr(&errOut)
+
+	err := runValidate(command, nil)
+	if err == nil {
+		t.Fatal("expected runValidate() to fail when explicit config file is missing")
+	}
+	if !strings.Contains(err.Error(), "config file") {
+		t.Fatalf("expected config file error, got: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("expected no stdout output on load failure, got:\n%s", out.String())
+	}
+	if !strings.Contains(errOut.String(), "validation failed") {
+		t.Fatalf("expected validation failure output, got:\n%s", errOut.String())
+	}
+}
+
 func TestRunValidateCompatModeOutput(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "sockguard.yaml")

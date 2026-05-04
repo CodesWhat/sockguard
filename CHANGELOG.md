@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Replaced `-timeout=0` fuzz invocations with finite Go test watchdogs across pre-push, PR, nightly, monthly, and extended-fuzz tiers so a hung fuzz input fails with a goroutine dump instead of tying up the runner until GitHub loses the job. `scripts/local-fuzz.sh` now supports `--timeout`, `--parallel`, and `--suite ultra`, and root-level native runs resolve common Go install paths when `go` is not already on `PATH`.
 
+### Fixed
+
+- `sockguard validate` and `sockguard serve` now fail fast when `--config` explicitly points to a missing file instead of silently continuing with built-in defaults. The absent built-in default path remains allowed when the flag is not provided.
+
 ## [0.4.0] - 2026-04-26
 
 ### Added
