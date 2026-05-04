@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-04
+
 ### Changed
 
 - Replaced `-timeout=0` fuzz invocations with finite Go test watchdogs across pre-push, PR, nightly, monthly, and extended-fuzz tiers so a hung fuzz input fails with a goroutine dump instead of tying up the runner until GitHub loses the job. `scripts/local-fuzz.sh` now supports `--timeout`, `--parallel`, and `--suite ultra`, and root-level native runs resolve common Go install paths when `go` is not already on `PATH`.
@@ -19,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enabled GitHub private vulnerability reporting, replaced the invalid GitHub noreply disclosure contact with `security@getsockguard.com`, and added `security@getsockguard.com` plus `hello@getsockguard.com` contact links to the issue chooser.
 - Cleared local code-scanning findings by refactoring the path-clean fast path away from an off-by-one loop shape, sanitizing benchmark mock-Docker request logs, and scoping the release-cut workflow's write token permission to the tag-push job.
 - Fixed the weekly security workflow's Gosec SARIF upload by removing the unsupported `working-directory` input from the Docker action, scanning `./app/...` explicitly, and uploading the SARIF file from the path Gosec actually writes.
+- Fixed three `scripts/local-fuzz.sh` and CI workflow regressions introduced alongside the watchdog work: the Docker dry-run branch now passes `--parallel` correctly, `fuzz-duration.sh` no longer rejects a zero-second duration (valid when a caller omits an optional budget), and the nightly/monthly workflow fuzz-budget output steps are now guarded so a missing budget variable does not fail the step before the matrix summary runs. Deduplicated the root `package-lock.json` as a follow-on cleanup.
 
 ## [0.4.0] - 2026-04-26
 
