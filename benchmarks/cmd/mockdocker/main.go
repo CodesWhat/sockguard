@@ -46,6 +46,8 @@ var fakeContainers = []mockContainer{
 
 func main() {
 	socket := flag.String("socket", "/tmp/sg-bench-mock.sock", "unix socket path")
+	// Debug-only: per-request sanitization and log formatting currently add
+	// about six allocations per request, so leave this off for measurements.
 	verbose := flag.Bool("log", false, "log every request")
 	flag.Parse()
 
