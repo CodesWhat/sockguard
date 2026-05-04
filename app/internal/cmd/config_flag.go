@@ -8,7 +8,8 @@ import (
 )
 
 func requireExplicitConfigFile(cmd *cobra.Command, configPath string) error {
-	if !configFlagChanged(cmd) || configPath == "" {
+	flag := cmd.Flag("config")
+	if flag == nil || !flag.Changed || configPath == "" {
 		return nil
 	}
 
@@ -16,13 +17,4 @@ func requireExplicitConfigFile(cmd *cobra.Command, configPath string) error {
 		return fmt.Errorf("config file: %w", err)
 	}
 	return nil
-}
-
-func configFlagChanged(cmd *cobra.Command) bool {
-	if cmd == nil {
-		return false
-	}
-
-	flag := cmd.Flag("config")
-	return flag != nil && flag.Changed
 }
