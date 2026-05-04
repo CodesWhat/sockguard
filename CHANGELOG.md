@@ -9,9 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.4.0] - 2026-05-04
 
+### Added
+
+- Extended request-body inspection across the remaining guarded write gaps: network create/connect/disconnect, container update/archive, image load, swarm unlock, and node update. These inspectors add bounded JSON/tar reads, request-body preservation for safe requests, endpoint-specific policy options, and startup validation updates so those paths no longer require `insecure_allow_body_blind_writes`.
+- Added `clients.client_certificate_profiles[].public_key_sha256_pins` so verified mTLS client certificates can be routed to named profiles by SHA-256 SPKI pin, using the same normalization as listener-level `listen.tls.allowed_public_key_sha256_pins`.
+- Added container-create host namespace enforcement for `HostConfig.PidMode=host` and `HostConfig.IpcMode=host`, both denied by default with explicit `request_body.container_create.allow_host_pid` and `allow_host_ipc` opt-ins.
+- Added container-create device policy enforcement: `HostConfig.Devices` now requires `request_body.container_create.allowed_devices` or `allow_all_devices`, while `HostConfig.DeviceRequests` and `HostConfig.DeviceCgroupRules` are denied unless their explicit create-time opt-ins are set.
+
 ### Changed
 
 - Replaced `-timeout=0` fuzz invocations with finite Go test watchdogs across pre-push, PR, nightly, monthly, and extended-fuzz tiers so a hung fuzz input fails with a goroutine dump instead of tying up the runner until GitHub loses the job. `scripts/local-fuzz.sh` now supports `--timeout`, `--parallel`, and `--suite ultra`, and root-level native runs resolve common Go install paths when `go` is not already on `PATH`.
+- Updated README, docs, website comparison copy, and the Drydock preset to reflect the expanded inspection and profile-selector surface. The blind-write guardrail now primarily covers arbitrary exec without an allowlist and plugin setting writes without allowed assignment prefixes.
+- Expanded response-side redaction dispatch beyond `GET 200`: protected successful Docker JSON response shapes are now mediated across request methods and body-bearing 2xx statuses, while non-success, no-body, and streaming responses remain outside response rewriting.
 
 ### Fixed
 
