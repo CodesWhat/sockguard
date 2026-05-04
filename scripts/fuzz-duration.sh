@@ -38,9 +38,6 @@ fuzz_seconds_to_go_duration() {
   case "$seconds" in
     ''|*[!0-9]*) return 1 ;;
   esac
-  if [[ "$seconds" -lt 1 ]]; then
-    return 1
-  fi
 
   hours=$((seconds / 3600))
   remainder=$((seconds % 3600))
