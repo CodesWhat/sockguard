@@ -200,6 +200,49 @@ func TestRunServeWithDepsRejectsMissingExplicitConfig(t *testing.T) {
 	}
 }
 
+func TestRunServeWithDepsLoadsExistingExplicitConfig(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "sockguard.yaml")
+	if err := os.WriteFile(cfgPath, []byte("upstream:\n  socket: /var/run/docker.sock\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	originalCfgFile := cfgFile
+	cfgFile = cfgPath
+	t.Cleanup(func() {
+		cfgFile = originalCfgFile
+	})
+
+	cmd := newServeCommand()
+	cmd.Flags().String("config", "", "")
+	if err := cmd.Flags().Set("config", cfgPath); err != nil {
+		t.Fatalf("set config flag: %v", err)
+	}
+
+	stopErr := errors.New("load reached")
+	loadCalled := false
+	var loadedPath string
+	deps := newServeDeps()
+	deps.loadConfig = func(path string) (*config.Config, error) {
+		loadCalled = true
+		loadedPath = path
+		return nil, stopErr
+	}
+
+	err := runServeWithDeps(cmd, nil, deps)
+	if !errors.Is(err, stopErr) {
+		t.Fatalf("runServeWithDeps() error = %v, want wrapped %v", err, stopErr)
+	}
+	if !loadCalled {
+		t.Fatal("expected existing explicit config file to proceed to config loading")
+	}
+	if loadedPath != cfgPath {
+		t.Fatalf("loaded config path = %q, want %q", loadedPath, cfgPath)
+	}
+	if strings.Contains(err.Error(), "config preflight:") {
+		t.Fatalf("expected load error not to be reported as preflight, got: %v", err)
+	}
+}
+
 func captureMergedServeConfig(t *testing.T, deps *serveDeps, cmd *cobra.Command, configPath string) *config.Config {
 	t.Helper()
 

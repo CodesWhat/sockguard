@@ -165,6 +165,51 @@ func TestRunValidateRejectsMissingExplicitConfig(t *testing.T) {
 	}
 }
 
+func TestRunValidateLoadsExistingExplicitConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sockguard.yaml")
+	yaml := `
+upstream:
+  socket: /var/run/docker.sock
+log:
+  level: info
+  format: json
+  output: stderr
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	oldCfgFile := cfgFile
+	cfgFile = cfgPath
+	t.Cleanup(func() { cfgFile = oldCfgFile })
+
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	command := &cobra.Command{Use: "validate"}
+	command.Flags().String("config", "", "")
+	if err := command.Flags().Set("config", cfgPath); err != nil {
+		t.Fatalf("set config flag: %v", err)
+	}
+	command.SetOut(&out)
+	command.SetErr(&errOut)
+
+	if err := runValidate(command, nil); err != nil {
+		t.Fatalf("runValidate() error = %v", err)
+	}
+	if !strings.Contains(out.String(), "validation passed") || !strings.Contains(out.String(), cfgPath) {
+		t.Fatalf("expected validation success for explicit config, got:\n%s", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("expected no stderr output, got:\n%s", errOut.String())
+	}
+}
+
 func TestRunValidateCompatModeOutput(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "sockguard.yaml")
