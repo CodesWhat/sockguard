@@ -46,6 +46,10 @@ func (p buildPolicy) inspect(r *http.Request, normalizedPath string) (string, er
 	}
 
 	query := r.URL.Query()
+	if !p.allowHostNetwork && strings.EqualFold(strings.TrimSpace(query.Get("networkmode")), "host") {
+		return "build denied: host network mode is not allowed", nil
+	}
+
 	if remote := strings.TrimSpace(query.Get("remote")); remote != "" {
 		if p.allowRemoteContext {
 			if p.allowRunInstructions {
@@ -54,10 +58,6 @@ func (p buildPolicy) inspect(r *http.Request, normalizedPath string) (string, er
 			return "build denied: remote build contexts cannot be inspected while RUN instructions are restricted", nil
 		}
 		return fmt.Sprintf("build denied: remote build context %q is not allowed", remote), nil
-	}
-
-	if !p.allowHostNetwork && strings.EqualFold(strings.TrimSpace(query.Get("networkmode")), "host") {
-		return "build denied: host network mode is not allowed", nil
 	}
 
 	if p.allowRunInstructions || r.Body == nil {

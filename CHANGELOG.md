@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Fixed `POST /build` policy ordering so `networkmode=host` is still denied when remote build contexts and Dockerfile `RUN` instructions are both explicitly allowed.
 - `sockguard validate` and `sockguard serve` now fail fast when `--config` explicitly points to a missing file instead of silently continuing with built-in defaults. The absent built-in default path remains allowed when the flag is not provided.
 - Enabled GitHub private vulnerability reporting, replaced the invalid GitHub noreply disclosure contact with `security@getsockguard.com`, and added `security@getsockguard.com` plus `hello@getsockguard.com` contact links to the issue chooser.
 - Cleared local code-scanning findings by refactoring the path-clean fast path away from an off-by-one loop shape, sanitizing benchmark mock-Docker request logs, and scoping the release-cut workflow's write token permission to the tag-push job.
