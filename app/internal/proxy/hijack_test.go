@@ -882,6 +882,19 @@ func TestNewUpstreamHijackRequest_BuildsMinimalOutboundRequest(t *testing.T) {
 	}
 }
 
+func TestNewUpstreamHijackRequestNormalizesWhenPathMissing(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/v1.45/exec/abc/../abc/start?detach=0", nil)
+
+	upstreamReq := newUpstreamHijackRequest(req, "")
+
+	if upstreamReq.URL.Path != "/exec/abc/start" {
+		t.Fatalf("URL.Path = %q, want normalized exec path", upstreamReq.URL.Path)
+	}
+	if upstreamReq.URL.RawQuery != "detach=0" {
+		t.Fatalf("URL.RawQuery = %q, want detach=0", upstreamReq.URL.RawQuery)
+	}
+}
+
 func TestHandleHijack_ErrorResponseEncodingFailures(t *testing.T) {
 	t.Run("dial failure", func(t *testing.T) {
 		writer := &erroringResponseWriter{}

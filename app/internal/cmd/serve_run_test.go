@@ -610,6 +610,31 @@ func TestRunServeErrorPaths(t *testing.T) {
 		}
 	})
 
+	t.Run("nil audit log closer", func(t *testing.T) {
+		deps := newRunServeDeps()
+		cfg := testServeConfig()
+		cfg.Log.Audit.Enabled = true
+		deps.loadConfig = func(string) (*config.Config, error) {
+			return cfg, nil
+		}
+
+		auditLogger := logging.NewAuditLogger(io.Discard)
+		t.Cleanup(func() {
+			_ = auditLogger.Close()
+		})
+		deps.newAuditLogger = func(format, output string) (*logging.AuditLogger, io.Closer, error) {
+			return auditLogger, nil, nil
+		}
+		deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+			return nil, errors.New("validation boom")
+		}
+
+		err := runServeWithDeps(newServeCommand(), nil, deps)
+		if err == nil || !strings.Contains(err.Error(), "config validation: validation boom") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
 	t.Run("audit log pipeline", func(t *testing.T) {
 		deps := newRunServeDeps()
 		cfg := testServeConfig()

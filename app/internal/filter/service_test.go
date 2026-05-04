@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -169,6 +170,24 @@ func TestServiceInspectIgnoresBodyCloseErrorAfterRead(t *testing.T) {
 	}
 	if reason != "" {
 		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+func TestServiceInspectWrapsBodyReadError(t *testing.T) {
+	sentinel := errors.New("read failed")
+	policy := newServicePolicy(ServiceOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", nil)
+	req.Body = &readErrorReadCloser{readErr: sentinel}
+
+	reason, err := policy.inspect(nil, req, "/services/create")
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("inspect() error = %v, want wrapped %v", err, sentinel)
+	}
+	if !strings.Contains(err.Error(), "read body") {
+		t.Fatalf("inspect() error = %q, want read body context", err)
 	}
 }
 

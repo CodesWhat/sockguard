@@ -452,6 +452,31 @@ func TestRunMatch_ConfigLoadError(t *testing.T) {
 	}
 }
 
+func TestRunMatch_MissingConfigWithoutChangedFlag(t *testing.T) {
+	oldCfgFile := cfgFile
+	oldMethod, oldPath, oldOutput := matchMethod, matchPath, matchOutput
+	t.Cleanup(func() {
+		cfgFile = oldCfgFile
+		matchMethod, matchPath, matchOutput = oldMethod, oldPath, oldOutput
+	})
+
+	cfgFile = filepath.Join(t.TempDir(), "missing.yaml")
+	matchMethod = "GET"
+	matchPath = "/_ping"
+	matchOutput = "text"
+
+	cmd := &cobra.Command{Use: "match"}
+	cmd.SetOut(io.Discard)
+
+	err := runMatch(cmd, nil)
+	if err == nil {
+		t.Fatal("expected runMatch() to fail for missing config")
+	}
+	if !strings.Contains(err.Error(), "config file:") {
+		t.Fatalf("error = %v, want config file stat error", err)
+	}
+}
+
 func TestRunMatch_ValidateAndCompileError(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "sockguard.yaml")
