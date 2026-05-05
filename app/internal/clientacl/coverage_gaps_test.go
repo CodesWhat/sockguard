@@ -339,6 +339,19 @@ func TestCompiledCertProfileMatches_SPIFFEIDMatchAndMiss(t *testing.T) {
 	}
 }
 
+func TestCompiledCertProfileMatches_PublicKeyPinMiss(t *testing.T) {
+	a := compiledClientCertificateProfileAssignment{
+		profile: "p",
+		publicKeySHA256Pins: []string{
+			testSubjectPublicKeySHA256Hex(&x509.Certificate{RawSubjectPublicKeyInfo: []byte("allowed-key")}),
+		},
+	}
+
+	if a.matches(&x509.Certificate{RawSubjectPublicKeyInfo: []byte("other-key")}) {
+		t.Fatal("expected matches=false for public key SHA256 pin miss")
+	}
+}
+
 // ---- intersectsIPAddrs: invalid IP slice (AddrFromSlice fails)
 
 func TestIntersectsIPAddrs_InvalidSlice(t *testing.T) {

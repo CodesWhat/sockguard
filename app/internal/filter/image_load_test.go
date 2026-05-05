@@ -1,12 +1,15 @@
 package filter
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 )
@@ -89,6 +92,187 @@ func TestImageLoadOversizedBodyReturnsRequestEntityTooLargeWhenAllowed(t *testin
 	}
 	if !strings.HasPrefix(rejection.reason, "image load denied: request body exceeds") {
 		t.Fatalf("reason = %q", rejection.reason)
+	}
+}
+
+func TestImageLoadSkipsNonLoadRequestsAndNilBody(t *testing.T) {
+	policy := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true})
+
+	tests := []struct {
+		name           string
+		req            *http.Request
+		normalizedPath string
+	}{
+		{name: "nil request", req: nil, normalizedPath: "/images/load"},
+		{name: "wrong path", req: httptest.NewRequest(http.MethodPost, "/images/create", strings.NewReader("image tar")), normalizedPath: "/images/create"},
+		{name: "wrong method", req: httptest.NewRequest(http.MethodGet, "/images/load", strings.NewReader("image tar")), normalizedPath: "/images/load"},
+		{name: "nil body", req: func() *http.Request {
+			req := httptest.NewRequest(http.MethodPost, "/images/load", nil)
+			req.Body = nil
+			return req
+		}(), normalizedPath: "/images/load"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, err := policy.inspect(nil, tt.req, tt.normalizedPath)
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != "" {
+				t.Fatalf("reason = %q, want empty", reason)
+			}
+		})
+	}
+}
+
+func TestImageLoadEmptyBodyAllowedReturnsEmpty(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/images/load", strings.NewReader(""))
+
+	reason, err := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true}).inspect(nil, req, "/images/load")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestImageLoadReadErrorPropagates(t *testing.T) {
+	sentinel := errors.New("read failed")
+	req := httptest.NewRequest(http.MethodPost, "/images/load", nil)
+	req.Body = &readErrorReadCloser{readErr: sentinel}
+
+	reason, err := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true}).inspect(nil, req, "/images/load")
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("inspect() error = %v, want wrapped %v", err, sentinel)
+	}
+}
+
+func TestImageLoadInvalidArchiveReturnsInspectionError(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/images/load", bytes.NewReader([]byte("not a tar archive")))
+
+	reason, err := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true}).inspect(nil, req, "/images/load")
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+	if err == nil || !strings.Contains(err.Error(), "inspect image load manifest") {
+		t.Fatalf("inspect() error = %v, want manifest inspection error", err)
+	}
+}
+
+func TestImageLoadDeniesMissingManifestUnlessUntaggedAllowed(t *testing.T) {
+	payload := mustContainerArchiveTar(t, containerArchiveTestEntry{name: "sha256/layer.tar", body: "layer"})
+	req := httptest.NewRequest(http.MethodPost, "/images/load", bytes.NewReader(payload))
+
+	reason, err := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true}).inspect(nil, req, "/images/load")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "image load denied: image manifest is not inspectable" {
+		t.Fatalf("reason = %q", reason)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/images/load", bytes.NewReader(payload))
+	reason, err = newImageLoadPolicy(ImageLoadOptions{AllowUntagged: true}).inspect(nil, req, "/images/load")
+	if err != nil {
+		t.Fatalf("inspect() with AllowUntagged error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason with AllowUntagged = %q, want empty", reason)
+	}
+}
+
+func TestImageLoadRewindErrorAfterInspection(t *testing.T) {
+	restoreFilterIODeps(t)
+	sentinel := errors.New("rewind failed")
+	oldSeekToStart := seekToStart
+	seekCalls := 0
+	seekToStart = func(file *os.File) error {
+		seekCalls++
+		if seekCalls == 2 {
+			return sentinel
+		}
+		return oldSeekToStart(file)
+	}
+
+	payload := mustImageLoadTar(t, `[{"RepoTags":["registry.example.com/acme/app:latest"]}]`)
+	req := httptest.NewRequest(http.MethodPost, "/images/load", bytes.NewReader(payload))
+
+	reason, err := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true}).inspect(nil, req, "/images/load")
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("inspect() error = %v, want wrapped %v", err, sentinel)
+	}
+}
+
+func TestImageLoadDenyReasonForTagEdgeCases(t *testing.T) {
+	if got := newImageLoadPolicy(ImageLoadOptions{}).denyReasonForTag(" <none>:<none> "); got != "image load denied: untagged images are not allowed" {
+		t.Fatalf("denyReasonForTag(<none>) = %q", got)
+	}
+	if got := newImageLoadPolicy(ImageLoadOptions{AllowUntagged: true}).denyReasonForTag(" "); got != "" {
+		t.Fatalf("denyReasonForTag(blank) with AllowUntagged = %q, want empty", got)
+	}
+
+	got := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true}).denyReasonForTag("registry.example.com//app:latest")
+	if got != `image load denied: image reference "registry.example.com//app:latest" could not be inspected` {
+		t.Fatalf("denyReasonForTag(invalid) = %q", got)
+	}
+}
+
+func TestExtractImageLoadRepoTagsManifestErrors(t *testing.T) {
+	t.Run("read manifest error", func(t *testing.T) {
+		restoreFilterIODeps(t)
+		sentinel := errors.New("read manifest failed")
+		readAllLimited = func(io.Reader, int64) ([]byte, error) {
+			return nil, sentinel
+		}
+
+		_, _, err := extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `[]`)))
+		if !errors.Is(err, sentinel) {
+			t.Fatalf("extractImageLoadRepoTags() error = %v, want wrapped %v", err, sentinel)
+		}
+	})
+
+	t.Run("manifest too large", func(t *testing.T) {
+		restoreFilterIODeps(t)
+		readAllLimited = func(io.Reader, int64) ([]byte, error) {
+			return bytes.Repeat([]byte{'x'}, maxImageLoadManifestBytes+1), nil
+		}
+
+		_, _, err := extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `[]`)))
+		if err == nil || !strings.Contains(err.Error(), "manifest.json exceeds") {
+			t.Fatalf("extractImageLoadRepoTags() error = %v, want manifest size error", err)
+		}
+	})
+
+	t.Run("decode manifest error", func(t *testing.T) {
+		_, _, err := extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `{`)))
+		if err == nil || !strings.Contains(err.Error(), "decode manifest.json") {
+			t.Fatalf("extractImageLoadRepoTags() error = %v, want decode error", err)
+		}
+	})
+}
+
+func TestNormalizeImageLoadArchivePath(t *testing.T) {
+	tests := []struct {
+		value string
+		want  string
+	}{
+		{value: "  ", want: ""},
+		{value: "/", want: ""},
+		{value: "/manifest.json", want: "manifest.json"},
+	}
+
+	for _, tt := range tests {
+		if got := normalizeImageLoadArchivePath(tt.value); got != tt.want {
+			t.Fatalf("normalizeImageLoadArchivePath(%q) = %q, want %q", tt.value, got, tt.want)
+		}
 	}
 }
 

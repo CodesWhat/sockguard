@@ -319,6 +319,28 @@ func TestValidateAndCompileRulesRejectsPluginSetWithoutAllowedEnvPrefixes(t *tes
 	}
 }
 
+func TestBodyInspectionConfiguredForEndpointRejectsUnknownEndpoint(t *testing.T) {
+	requestBody := config.RequestBodyConfig{
+		Exec: config.ExecRequestBodyConfig{
+			AllowedCommands: [][]string{{"/bin/true"}},
+		},
+		Swarm: config.SwarmRequestBodyConfig{
+			AllowedJoinRemoteAddrs: []string{"manager.internal:2377"},
+		},
+		Plugin: config.PluginRequestBodyConfig{
+			AllowedSetEnvPrefixes: []string{"DEBUG="},
+		},
+	}
+	endpoint := bodySensitiveWriteEndpoint{
+		method: http.MethodPost,
+		path:   "/future/body-sensitive",
+	}
+
+	if bodyInspectionConfiguredForEndpoint(requestBody, endpoint) {
+		t.Fatal("expected unknown endpoint to be treated as not body-inspected")
+	}
+}
+
 func TestValidateAndCompileRulesRejectsOnlyExecAndPluginSetWhenTheirRequiredPolicyIsMissing(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{

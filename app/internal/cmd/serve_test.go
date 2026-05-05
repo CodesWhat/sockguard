@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -18,12 +19,15 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/health"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/metrics"
 	"github.com/codeswhat/sockguard/internal/testcert"
 )
 
@@ -1489,6 +1493,105 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 	}
 }
 
+func TestNewServeRuntimeBuildsEnabledObservability(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "runtime-upstream")
+	cfg.Health.Enabled = true
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Metrics.Enabled = true
+
+	runtime := newServeRuntime(&cfg, newDiscardLogger(), newServeTestDeps())
+	if runtime.metrics == nil {
+		t.Fatal("metrics registry is nil, want enabled registry")
+	}
+	if runtime.health == nil {
+		t.Fatal("health monitor is nil, want enabled monitor")
+	}
+
+	cfg.Health.Enabled = false
+	cfg.Health.Watchdog.Enabled = false
+	cfg.Metrics.Enabled = false
+	runtime = newServeRuntime(&cfg, newDiscardLogger(), newServeTestDeps())
+	if runtime.metrics != nil {
+		t.Fatal("metrics registry is non-nil, want disabled registry")
+	}
+	if runtime.health != nil {
+		t.Fatal("health monitor is non-nil, want disabled monitor")
+	}
+}
+
+func TestServeRuntimeStartWatchdogNoopBranches(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "watchdog-noop-upstream")
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "1s"
+
+	var nilRuntime *serveRuntime
+	nilRuntime.startWatchdog(context.Background(), &cfg)()
+
+	(&serveRuntime{}).startWatchdog(context.Background(), &cfg)()
+
+	runtime := &serveRuntime{
+		health: health.NewMonitor(cfg.Upstream.Socket, time.Now(), newDiscardLogger()),
+	}
+	cfg.Health.Watchdog.Enabled = false
+	runtime.startWatchdog(context.Background(), &cfg)()
+
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "soon"
+	runtime.startWatchdog(context.Background(), &cfg)()
+
+	cfg.Health.Watchdog.Interval = "0s"
+	runtime.startWatchdog(context.Background(), &cfg)()
+}
+
+func TestServeRuntimeStartWatchdogFeedsMetrics(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "watchdog-metrics-upstream")
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "1h"
+
+	runtime := &serveRuntime{
+		metrics: metrics.NewRegistry(),
+		health:  health.NewMonitor(cfg.Upstream.Socket, time.Now(), newDiscardLogger()),
+	}
+	stop := runtime.startWatchdog(context.Background(), &cfg)
+	t.Cleanup(stop)
+
+	eventually(t, func() bool {
+		state, ok := runtime.health.State()
+		return ok && !state.Up && state.Status == "unreachable"
+	})
+
+	rec := httptest.NewRecorder()
+	runtime.metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "sockguard_upstream_socket_up 0") {
+		t.Fatalf("metrics body missing upstream socket gauge:\n%s", body)
+	}
+	if !strings.Contains(body, `sockguard_upstream_watchdog_checks_total{result="unreachable"} 1`) {
+		t.Fatalf("metrics body missing watchdog unreachable counter:\n%s", body)
+	}
+}
+
+func TestServeRuntimeStartWatchdogWithoutMetricsStillStoresState(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "watchdog-health-upstream")
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "1h"
+
+	runtime := &serveRuntime{
+		health: health.NewMonitor(cfg.Upstream.Socket, time.Now(), newDiscardLogger()),
+	}
+	stop := runtime.startWatchdog(context.Background(), &cfg)
+	t.Cleanup(stop)
+
+	eventually(t, func() bool {
+		state, ok := runtime.health.State()
+		return ok && !state.Up && state.Status == "unreachable"
+	})
+}
+
 func TestListenerAddr(t *testing.T) {
 	withSocket := &config.Config{
 		Listen: config.ListenConfig{
@@ -1516,6 +1619,22 @@ func serveHandlerLayerNames(layers []serveHandlerLayer) []string {
 		names = append(names, layer.name)
 	}
 	return names
+}
+
+func eventually(t *testing.T, ok func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ok() {
+		return
+	}
+	t.Fatal("condition was not met before timeout")
 }
 
 func TestFullMiddlewareChainIntegration(t *testing.T) {

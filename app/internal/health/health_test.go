@@ -1,6 +1,7 @@
 package health
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,6 +39,10 @@ func (noopConn) SetWriteDeadline(time.Time) error { return nil }
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError + 1}))
+}
+
+func testBufferLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 type headerCallTrackingWriter struct {
@@ -526,6 +531,96 @@ func TestMonitorWatchdogReportsStateChanges(t *testing.T) {
 	}
 	if !second.Up || second.Status != "connected" || second.Err != nil {
 		t.Fatalf("second watchdog state = %#v, want connected with nil error", second)
+	}
+}
+
+func TestMonitorDefaultsNilLogger(t *testing.T) {
+	checker := newUpstreamHealthChecker(
+		0,
+		time.Second,
+		time.Now,
+		func(context.Context, string, string) (net.Conn, error) {
+			return noopConn{}, nil
+		},
+	)
+
+	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), nil, checker)
+
+	if monitor.logger == nil {
+		t.Fatal("logger is nil, want default logger")
+	}
+	state := monitor.check(context.Background())
+	if !state.Up || state.Status != "connected" || state.Err != nil {
+		t.Fatalf("state = %#v, want connected upstream", state)
+	}
+}
+
+func TestNilMonitorStateAndStartWatchdogAreNoops(t *testing.T) {
+	var monitor *Monitor
+
+	if state, ok := monitor.State(); ok || state != (WatchdogState{}) {
+		t.Fatalf("nil monitor State() = (%#v, %v), want zero state and false", state, ok)
+	}
+
+	monitor.StartWatchdog(context.Background(), time.Millisecond, func(WatchdogState) {
+		t.Fatal("nil monitor should not observe watchdog states")
+	})
+}
+
+func TestMonitorStartWatchdogIgnoresNonPositiveInterval(t *testing.T) {
+	checker := newUpstreamHealthChecker(
+		0,
+		time.Second,
+		time.Now,
+		func(context.Context, string, string) (net.Conn, error) {
+			t.Fatal("watchdog should not dial with a non-positive interval")
+			return nil, errors.New("unexpected dial")
+		},
+	)
+	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), testLogger(), checker)
+
+	observed := make(chan WatchdogState, 1)
+	monitor.StartWatchdog(context.Background(), 0, func(state WatchdogState) {
+		observed <- state
+	})
+
+	select {
+	case state := <-observed:
+		t.Fatalf("unexpected watchdog state = %#v", state)
+	case <-time.After(25 * time.Millisecond):
+	}
+}
+
+func TestMonitorEmitWatchdogCheckLogsUnhealthyChange(t *testing.T) {
+	var logs bytes.Buffer
+	checkErr := errors.New("upstream down")
+	checker := newUpstreamHealthChecker(
+		0,
+		time.Second,
+		time.Now,
+		func(context.Context, string, string) (net.Conn, error) {
+			return nil, checkErr
+		},
+	)
+	checker.failureTTL = 0
+	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), testBufferLogger(&logs), checker)
+	monitor.storeState("connected", nil)
+
+	observed := make(chan WatchdogState, 1)
+	monitor.emitWatchdogCheck(context.Background(), func(state WatchdogState) {
+		observed <- state
+	})
+
+	state := readWatchdogState(t, observed)
+	if !state.Changed || state.Up || state.Status != "unreachable" || !errors.Is(state.Err, checkErr) {
+		t.Fatalf("watchdog state = %#v, want changed unhealthy state", state)
+	}
+	logText := logs.String()
+	if !strings.Contains(logText, "level=WARN") {
+		t.Fatalf("log = %q, want WARN level", logText)
+	}
+	if !strings.Contains(logText, "error=\"upstream down\"") {
+		t.Fatalf("log = %q, want upstream error attribute", logText)
 	}
 }
 

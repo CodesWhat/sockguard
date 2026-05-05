@@ -14,6 +14,8 @@ const (
 	traceFlagsNone = "00"
 )
 
+var traceRandRead = rand.Read
+
 // TraceContextMiddleware participates in W3C trace context propagation without
 // exporting spans. It preserves a valid incoming trace ID, replaces the parent
 // ID with a proxy-local span ID, and records the IDs in RequestMeta for logs.
@@ -141,7 +143,7 @@ func newTraceSpanID() string {
 
 func fillRandomNonZero(dst []byte) bool {
 	for range 3 {
-		n, err := rand.Read(dst)
+		n, err := traceRandRead(dst)
 		if err == nil && n == len(dst) && !allZero(dst) {
 			return true
 		}

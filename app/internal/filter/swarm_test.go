@@ -653,3 +653,44 @@ func TestSwarmInspectUpdateOversizedBody(t *testing.T) {
 		t.Fatal("expected oversized body denial")
 	}
 }
+
+func TestSwarmInspectUnlockEmptyBodyReturnsEmpty(t *testing.T) {
+	policy := newSwarmPolicy(SwarmOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/swarm/unlock", strings.NewReader(""))
+
+	reason, err := policy.inspectUnlock(nil, req)
+	if err != nil {
+		t.Fatalf("inspectUnlock() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestSwarmInspectUnlockReadBodyError(t *testing.T) {
+	policy := newSwarmPolicy(SwarmOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/swarm/unlock", nil)
+	req.Body = &readErrorReadCloser{readErr: io.ErrUnexpectedEOF}
+
+	reason, err := policy.inspectUnlock(nil, req)
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+	if err == nil || !strings.Contains(err.Error(), "read body") {
+		t.Fatalf("inspectUnlock() error = %v, want read body error", err)
+	}
+}
+
+func TestSwarmInspectUnlockOversizedBody(t *testing.T) {
+	policy := newSwarmPolicy(SwarmOptions{})
+	payload := strings.Repeat("x", maxSwarmBodyBytes+1)
+	req := httptest.NewRequest(http.MethodPost, "/swarm/unlock", strings.NewReader(payload))
+
+	reason, err := policy.inspectUnlock(nil, req)
+	if err != nil {
+		t.Fatalf("inspectUnlock() error = %v", err)
+	}
+	if !strings.HasPrefix(reason, "swarm unlock denied: request body exceeds") {
+		t.Fatalf("reason = %q, want oversized body denial", reason)
+	}
+}

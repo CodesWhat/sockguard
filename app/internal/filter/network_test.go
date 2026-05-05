@@ -309,6 +309,107 @@ func TestNetworkInspectMalformedJSONWithLogger(t *testing.T) {
 	}
 }
 
+func TestNetworkInspectSkipsNonWriteRequestsAndNilBody(t *testing.T) {
+	policy := newNetworkPolicy(NetworkOptions{})
+
+	tests := []struct {
+		name           string
+		req            *http.Request
+		normalizedPath string
+	}{
+		{name: "nil request", req: nil, normalizedPath: "/networks/create"},
+		{name: "wrong method", req: httptest.NewRequest(http.MethodGet, "/networks/create", strings.NewReader(`{"Driver":"weave"}`)), normalizedPath: "/networks/create"},
+		{name: "wrong path", req: httptest.NewRequest(http.MethodPost, "/networks/app", strings.NewReader(`{"Driver":"weave"}`)), normalizedPath: "/networks/app"},
+		{name: "nil body", req: func() *http.Request {
+			req := httptest.NewRequest(http.MethodPost, "/networks/create", nil)
+			req.Body = nil
+			return req
+		}(), normalizedPath: "/networks/create"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, err := policy.inspect(nil, tt.req, tt.normalizedPath)
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != "" {
+				t.Fatalf("reason = %q, want empty", reason)
+			}
+		})
+	}
+}
+
+func TestNetworkInspectEmptyBodyReturnsEmpty(t *testing.T) {
+	policy := newNetworkPolicy(NetworkOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/networks/create", strings.NewReader(""))
+
+	reason, err := policy.inspect(nil, req, "/networks/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestNetworkInspectConnectMalformedJSONDefers(t *testing.T) {
+	policy := newNetworkPolicy(NetworkOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/networks/app/connect", strings.NewReader("{bad json"))
+
+	reason, err := policy.inspect(nil, req, "/networks/app/connect")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestNetworkInspectDisconnectMalformedJSONDefers(t *testing.T) {
+	policy := newNetworkPolicy(NetworkOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/networks/app/disconnect", strings.NewReader("{bad json"))
+
+	reason, err := policy.inspect(nil, req, "/networks/app/disconnect")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestNetworkInspectConnectAllowsEmptyEndpointConfig(t *testing.T) {
+	policy := newNetworkPolicy(NetworkOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/networks/app/connect", strings.NewReader(`{"EndpointConfig":{}}`))
+
+	reason, err := policy.inspect(nil, req, "/networks/app/connect")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestNetworkInspectCreateAllowsBuiltinIPAMDrivers(t *testing.T) {
+	policy := newNetworkPolicy(NetworkOptions{})
+
+	for _, driver := range []string{"default", "NULL"} {
+		t.Run(driver, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/networks/create", strings.NewReader(`{"IPAM":{"Driver":"`+driver+`"}}`))
+
+			reason, err := policy.inspect(nil, req, "/networks/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != "" {
+				t.Fatalf("reason = %q, want empty", reason)
+			}
+		})
+	}
+}
+
 type networkReadErrorReadCloser struct {
 	readErr error
 }
