@@ -113,7 +113,7 @@ When `log.audit.enabled` is true, Sockguard also emits a dedicated JSON audit ev
 
 The audit `ownership` object is emitted on every event. If `ownership.owner` is configured, that owner identifier is repeated in every audit record, not only resource ownership decisions, so it should be a non-secret tenant/workload label suitable for the audit sink.
 
-Prometheus metrics remain planned operator-observability work, but dedicated audit events and explicit deny reason codes are current runtime behavior.
+When `metrics.enabled` is true, Sockguard serves Prometheus text metrics from `/metrics` by default. The scrape endpoint is local to Sockguard, is never forwarded to Docker, bypasses Docker API allow rules like `/health`, and remains behind listener security plus client ACLs.
 
 ## Dangerous Docker API Endpoints
 

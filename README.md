@@ -219,6 +219,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image. Cosign-signed with SBOM and build provenance. |
 | ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
 | 🩺 | **Health Check** | `/health` endpoint with cached upstream reachability probes. |
+| 📈 | **Prometheus Metrics** | Opt-in `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, and active request gauge. |
 | 🧪 | **Battle-Tested** | ~99% statement coverage, race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
 
 <hr>
@@ -372,7 +373,7 @@ Allowed `POST /services/create` and `POST /services/*/update` requests are inspe
 
 Allowed `POST /swarm/init` requests are inspected by default. Sockguard denies `ForceNewCluster` and external CA configuration unless you explicitly allow them under `request_body.swarm.*`.
 
-`clients.allowed_cidrs` is a coarse TCP-client gate. Requests whose source IP falls outside every configured CIDR are denied before `/health` or the global rule set runs.
+`clients.allowed_cidrs` is a coarse TCP-client gate. Requests whose source IP falls outside every configured CIDR are denied before `/health`, `/metrics`, or the global rule set runs.
 
 When `clients.container_labels.enabled` is true, Sockguard resolves bridge-network callers by source IP through the Docker API and looks for per-client allow labels on the calling container. Each `clients.container_labels.label_prefix + <method>` label is interpreted as a comma-separated Sockguard glob allowlist for that HTTP method. For example, `com.sockguard.allow.get=/containers/json,/containers/*/json,/events` allows only container list/inspect reads plus `GET /events` for that client. If you are migrating from wollomatic, set `clients.container_labels.label_prefix: socket-proxy.allow.` to reuse existing labels.
 

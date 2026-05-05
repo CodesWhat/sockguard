@@ -108,6 +108,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Log.Audit.Output != defaults.Log.Audit.Output {
 		t.Errorf("Log.Audit.Output = %q, want %q", cfg.Log.Audit.Output, defaults.Log.Audit.Output)
 	}
+	if cfg.Metrics.Enabled != defaults.Metrics.Enabled {
+		t.Errorf("Metrics.Enabled = %v, want %v", cfg.Metrics.Enabled, defaults.Metrics.Enabled)
+	}
+	if cfg.Metrics.Path != defaults.Metrics.Path {
+		t.Errorf("Metrics.Path = %q, want %q", cfg.Metrics.Path, defaults.Metrics.Path)
+	}
 	if cfg.Response.DenyVerbosity != defaults.Response.DenyVerbosity {
 		t.Errorf("Response.DenyVerbosity = %q, want %q", cfg.Response.DenyVerbosity, defaults.Response.DenyVerbosity)
 	}
@@ -303,6 +309,9 @@ upstream:
   socket: /custom/docker.sock
 log:
   level: debug
+metrics:
+  enabled: true
+  path: /custom-metrics
 response:
   deny_verbosity: minimal
   redact_container_env: false
@@ -410,6 +419,12 @@ rules:
 	}
 	if cfg.Log.Level != "debug" {
 		t.Errorf("Log.Level = %q, want debug", cfg.Log.Level)
+	}
+	if !cfg.Metrics.Enabled {
+		t.Errorf("Metrics.Enabled = %v, want true", cfg.Metrics.Enabled)
+	}
+	if cfg.Metrics.Path != "/custom-metrics" {
+		t.Errorf("Metrics.Path = %q, want /custom-metrics", cfg.Metrics.Path)
 	}
 	if cfg.Response.DenyVerbosity != "minimal" {
 		t.Errorf("Response.DenyVerbosity = %q, want minimal", cfg.Response.DenyVerbosity)
@@ -793,6 +808,8 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("SOCKGUARD_UPSTREAM_SOCKET", "/env/docker.sock")
 	t.Setenv("SOCKGUARD_LOG_LEVEL", "warn")
 	t.Setenv("SOCKGUARD_LOG_OUTPUT", "stdout")
+	t.Setenv("SOCKGUARD_METRICS_ENABLED", "true")
+	t.Setenv("SOCKGUARD_METRICS_PATH", "/env-metrics")
 	t.Setenv("SOCKGUARD_RESPONSE_DENY_VERBOSITY", "minimal")
 	t.Setenv("SOCKGUARD_RESPONSE_REDACT_SENSITIVE_DATA", "false")
 	t.Setenv("SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP", "true")
@@ -834,6 +851,12 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 	if cfg.Log.Output != "stdout" {
 		t.Errorf("Log.Output = %q, want stdout", cfg.Log.Output)
+	}
+	if !cfg.Metrics.Enabled {
+		t.Errorf("Metrics.Enabled = %v, want true", cfg.Metrics.Enabled)
+	}
+	if cfg.Metrics.Path != "/env-metrics" {
+		t.Errorf("Metrics.Path = %q, want /env-metrics", cfg.Metrics.Path)
 	}
 	if cfg.Response.DenyVerbosity != "minimal" {
 		t.Errorf("Response.DenyVerbosity = %q, want minimal", cfg.Response.DenyVerbosity)

@@ -18,6 +18,11 @@ health:
   path: /health
   # /health caches upstream reachability for 2s to reduce probe-induced dial churn.
 
+metrics:
+  enabled: false
+  path: /metrics
+  # Opt-in Prometheus text metrics. Served locally and never forwarded to Docker.
+
 rules:
   # Always safe — health probes
   - match: { method: GET, path: "/_ping" }

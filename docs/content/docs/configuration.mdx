@@ -95,6 +95,10 @@ health:
   enabled: true
   path: /health
 
+metrics:
+  enabled: false
+  path: /metrics
+
 rules:
   - match: { method: GET, path: "/_ping" }
     action: allow
@@ -122,6 +126,7 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - For remote or container-network TCP, configure `listen.tls` so Sockguard requires mutual TLS. Sockguard's mTLS server minimum is TLS 1.3, so callers must support TLS 1.3.
 - `listen.tls.client_ca_file` still defines the issuing trust root. To avoid trusting every cert that CA can mint, optionally narrow the accepted verified client leaf with the selectors described under [mTLS Client Selectors](#mtls-client-selectors) below. Different selector fields are ANDed, while entries inside one field are ORed.
 - Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`. That mode is only for legacy compatibility on a private, trusted network.
+- `metrics.enabled` is opt-in and serves Prometheus text metrics at `metrics.path` on the same listener. The endpoint is local to Sockguard, is never forwarded to Docker, bypasses Docker API allow rules like `/health`, and remains behind listener security plus `clients.allowed_cidrs`.
 - `POST /containers/create` bodies are inspected by default. Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, `HostConfig.PidMode=host`, `HostConfig.IpcMode=host`, bind mount sources outside `request_body.container_create.allowed_bind_mounts`, `HostConfig.Devices` host paths outside `request_body.container_create.allowed_devices`, `HostConfig.DeviceRequests`, and `HostConfig.DeviceCgroupRules`. Named volumes still work without allowlist entries because they are not host bind mounts.
 - `POST /containers/*/exec` and `POST /exec/*/start` are inspected when `request_body.exec.allowed_commands` is non-empty. Sockguard denies argv vectors outside that allowlist, denies privileged exec unless `allow_privileged: true`, denies root-user exec unless `allow_root_user: true`, and re-checks `POST /exec/*/start` against Docker's stored exec metadata before execution. Docker exposes exec inspect and exec start as separate API calls, so this start-time check has an unavoidable time-of-check/time-of-use window; keep exec allowlists and client profile assignments narrow.
 - `POST /images/create` is inspected by default. Sockguard blocks `fromSrc` imports unless `request_body.image_pull.allow_imports: true` and only allows Docker Hub official images unless you set `allow_all_registries: true` or list explicit `allowed_registries`.
@@ -343,6 +348,8 @@ SOCKGUARD_LOG_ACCESS_LOG=true
 SOCKGUARD_LOG_AUDIT_ENABLED=true
 SOCKGUARD_LOG_AUDIT_FORMAT=json
 SOCKGUARD_LOG_AUDIT_OUTPUT=stderr
+SOCKGUARD_METRICS_ENABLED=false
+SOCKGUARD_METRICS_PATH=/metrics
 SOCKGUARD_RESPONSE_DENY_VERBOSITY=minimal
 SOCKGUARD_RESPONSE_REDACT_CONTAINER_ENV=true
 SOCKGUARD_RESPONSE_REDACT_MOUNT_PATHS=true

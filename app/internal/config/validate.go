@@ -94,6 +94,12 @@ func validateBasic(cfg *Config) []string {
 	if cfg.Health.Enabled && !strings.HasPrefix(cfg.Health.Path, "/") {
 		errs = append(errs, fmt.Sprintf("health.path must start with /, got %q", cfg.Health.Path))
 	}
+	if cfg.Metrics.Enabled && !strings.HasPrefix(cfg.Metrics.Path, "/") {
+		errs = append(errs, fmt.Sprintf("metrics.path must start with /, got %q", cfg.Metrics.Path))
+	}
+	if cfg.Health.Enabled && cfg.Metrics.Enabled && cfg.Health.Path == cfg.Metrics.Path {
+		errs = append(errs, fmt.Sprintf("metrics.path must not equal health.path when both endpoints are enabled, got %q", cfg.Metrics.Path))
+	}
 
 	errs = append(errs, validateRequestBody(cfg)...)
 

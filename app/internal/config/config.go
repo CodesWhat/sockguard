@@ -13,6 +13,7 @@ type Config struct {
 	Clients                       ClientsConfig     `mapstructure:"clients"`
 	Ownership                     OwnershipConfig   `mapstructure:"ownership"`
 	Health                        HealthConfig      `mapstructure:"health"`
+	Metrics                       MetricsConfig     `mapstructure:"metrics"`
 	Rules                         []RuleConfig      `mapstructure:"rules"`
 	InsecureAllowBodyBlindWrites  bool              `mapstructure:"insecure_allow_body_blind_writes"`
 	InsecureAllowReadExfiltration bool              `mapstructure:"insecure_allow_read_exfiltration"`
@@ -306,6 +307,12 @@ type HealthConfig struct {
 	Path    string `mapstructure:"path"`
 }
 
+// MetricsConfig configures the Prometheus metrics endpoint.
+type MetricsConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Path    string `mapstructure:"path"`
+}
+
 // RuleConfig represents a single access control rule in config.
 type RuleConfig struct {
 	Match  MatchConfig `mapstructure:"match"`
@@ -386,6 +393,10 @@ func Defaults() Config {
 		Health: HealthConfig{
 			Enabled: true,
 			Path:    "/health",
+		},
+		Metrics: MetricsConfig{
+			Enabled: false,
+			Path:    "/metrics",
 		},
 		Rules: []RuleConfig{
 			{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},

@@ -138,6 +138,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("ownership.allow_unowned_images", defaults.Ownership.AllowUnownedImages)
 	v.SetDefault("health.enabled", defaults.Health.Enabled)
 	v.SetDefault("health.path", defaults.Health.Path)
+	v.SetDefault("metrics.enabled", defaults.Metrics.Enabled)
+	v.SetDefault("metrics.path", defaults.Metrics.Path)
 	v.SetDefault("insecure_allow_body_blind_writes", defaults.InsecureAllowBodyBlindWrites)
 	v.SetDefault("insecure_allow_read_exfiltration", defaults.InsecureAllowReadExfiltration)
 

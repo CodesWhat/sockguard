@@ -21,6 +21,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/health"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/metrics"
 	"github.com/codeswhat/sockguard/internal/ownership"
 	"github.com/codeswhat/sockguard/internal/proxy"
 	"github.com/codeswhat/sockguard/internal/responsefilter"
@@ -221,6 +222,11 @@ func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handl
 }
 
 func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy) []serveHandlerLayer {
+	var metricsRegistry *metrics.Registry
+	if cfg.Metrics.Enabled {
+		metricsRegistry = metrics.NewRegistry()
+	}
+
 	layers := []serveHandlerLayer{
 		namedServeHandlerLayer("withHijack", withHijack(cfg, logger)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, logger)),
@@ -230,10 +236,16 @@ func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogge
 	if cfg.Health.Enabled {
 		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, logger, deps)))
 	}
+	if metricsRegistry != nil {
+		layers = append(layers, namedServeHandlerLayer("withMetricsEndpoint", withMetricsEndpoint(cfg, metricsRegistry)))
+	}
 	layers = append(layers,
 		namedServeHandlerLayer("withClientACL", withClientACL(cfg, logger)),
-		namedServeHandlerLayer("withRequestID", withRequestID()),
 	)
+	if metricsRegistry != nil {
+		layers = append(layers, namedServeHandlerLayer("withMetrics", withMetrics(metricsRegistry)))
+	}
+	layers = append(layers, namedServeHandlerLayer("withRequestID", withRequestID()))
 	if cfg.Log.Audit.Enabled && auditLogger != nil {
 		layers = append(layers, namedServeHandlerLayer("withAuditLog", withAuditLog(auditLogger, cfg)))
 	}
@@ -281,6 +293,17 @@ func withHealth(cfg *config.Config, logger *slog.Logger, deps *serveDeps) func(h
 	return func(next http.Handler) http.Handler {
 		return healthInterceptor(cfg.Health.Path, healthHandler, next)
 	}
+}
+
+func withMetricsEndpoint(cfg *config.Config, registry *metrics.Registry) func(http.Handler) http.Handler {
+	metricsHandler := registry.Handler()
+	return func(next http.Handler) http.Handler {
+		return metricsInterceptor(cfg.Metrics.Path, metricsHandler, next)
+	}
+}
+
+func withMetrics(registry *metrics.Registry) func(http.Handler) http.Handler {
+	return registry.Middleware()
 }
 
 func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
@@ -505,6 +528,17 @@ func healthInterceptor(path string, healthHandler http.Handler, next http.Handle
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == path {
 			healthHandler.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// metricsInterceptor short-circuits metrics scrape requests before they hit Docker API filtering.
+func metricsInterceptor(path string, metricsHandler http.Handler, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == path {
+			metricsHandler.ServeHTTP(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)
