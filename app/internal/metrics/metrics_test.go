@@ -73,6 +73,20 @@ func TestHandlerWritesPrometheusTextFormat(t *testing.T) {
 	assertContains(t, body, "# TYPE sockguard_http_requests_active gauge")
 }
 
+func TestRegistryRecordsUpstreamWatchdogState(t *testing.T) {
+	registry := NewRegistry()
+
+	registry.ObserveUpstreamWatchdog(false)
+	registry.SetUpstreamSocketState(false)
+	registry.ObserveUpstreamWatchdog(true)
+	registry.SetUpstreamSocketState(true)
+
+	out := renderMetrics(t, registry)
+	assertContains(t, out, "sockguard_upstream_socket_up 1")
+	assertContains(t, out, `sockguard_upstream_watchdog_checks_total{result="unreachable"} 1`)
+	assertContains(t, out, `sockguard_upstream_watchdog_checks_total{result="connected"} 1`)
+}
+
 func renderMetrics(t *testing.T, registry *Registry) string {
 	t.Helper()
 

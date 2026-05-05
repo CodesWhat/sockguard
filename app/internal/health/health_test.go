@@ -494,6 +494,53 @@ func TestHealthCheckerWaitsForInFlightCheck(t *testing.T) {
 	}
 }
 
+func TestMonitorWatchdogReportsStateChanges(t *testing.T) {
+	var dialCalls atomic.Int32
+	checker := newUpstreamHealthChecker(
+		0,
+		50*time.Millisecond,
+		time.Now,
+		func(context.Context, string, string) (net.Conn, error) {
+			if dialCalls.Add(1) == 1 {
+				return nil, errors.New("upstream down")
+			}
+			return noopConn{}, nil
+		},
+	)
+	checker.failureTTL = 0
+	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), testLogger(), checker)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	states := make(chan WatchdogState, 4)
+	monitor.StartWatchdog(ctx, 5*time.Millisecond, func(state WatchdogState) {
+		states <- state
+	})
+
+	first := readWatchdogState(t, states)
+	second := readWatchdogState(t, states)
+
+	if first.Up || first.Status != "unreachable" || first.Err == nil {
+		t.Fatalf("first watchdog state = %#v, want unreachable with error", first)
+	}
+	if !second.Up || second.Status != "connected" || second.Err != nil {
+		t.Fatalf("second watchdog state = %#v, want connected with nil error", second)
+	}
+}
+
+func readWatchdogState(t *testing.T, states <-chan WatchdogState) WatchdogState {
+	t.Helper()
+
+	select {
+	case state := <-states:
+		return state
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for watchdog state")
+		return WatchdogState{}
+	}
+}
+
 type failingWriter struct {
 	header http.Header
 	status int

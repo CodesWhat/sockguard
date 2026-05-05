@@ -326,6 +326,34 @@ func TestValidateMetricsHealthPathConflict(t *testing.T) {
 	}
 }
 
+func TestValidateInvalidHealthWatchdogInterval(t *testing.T) {
+	cfg := Defaults()
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "soon"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid health watchdog interval")
+	}
+	if !strings.Contains(err.Error(), `health.watchdog.interval must be a positive duration, got "soon"`) {
+		t.Errorf("error should mention health.watchdog.interval, got: %v", err)
+	}
+}
+
+func TestValidateNonPositiveHealthWatchdogInterval(t *testing.T) {
+	cfg := Defaults()
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "0s"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for non-positive health watchdog interval")
+	}
+	if !strings.Contains(err.Error(), `health.watchdog.interval must be a positive duration, got "0s"`) {
+		t.Errorf("error should mention positive health.watchdog.interval, got: %v", err)
+	}
+}
+
 func TestValidateInvalidDenyResponseVerbosity(t *testing.T) {
 	cfg := Defaults()
 	cfg.Response.DenyVerbosity = "chatty"

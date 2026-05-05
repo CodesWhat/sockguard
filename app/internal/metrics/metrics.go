@@ -23,11 +23,14 @@ var defaultDurationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
 // Registry stores in-process Prometheus metrics for the proxy.
 type Registry struct {
 	activeRequests atomic.Int64
+	upstreamKnown  atomic.Bool
+	upstreamUp     atomic.Int64
 
 	mu       sync.Mutex
 	requests map[requestLabels]uint64
 	denies   map[denyLabels]uint64
 	duration map[durationLabels]*histogram
+	upstream map[upstreamWatchdogLabels]uint64
 }
 
 type requestLabels struct {
@@ -52,6 +55,10 @@ type durationLabels struct {
 	route    string
 }
 
+type upstreamWatchdogLabels struct {
+	result string
+}
+
 type histogram struct {
 	buckets []uint64
 	count   uint64
@@ -64,6 +71,7 @@ func NewRegistry() *Registry {
 		requests: make(map[requestLabels]uint64),
 		denies:   make(map[denyLabels]uint64),
 		duration: make(map[durationLabels]*histogram),
+		upstream: make(map[upstreamWatchdogLabels]uint64),
 	}
 }
 
@@ -97,6 +105,34 @@ func (r *Registry) Handler() http.Handler {
 
 		r.writePrometheus(w)
 	})
+}
+
+// ObserveUpstreamWatchdog records one active upstream watchdog check result.
+func (r *Registry) ObserveUpstreamWatchdog(up bool) {
+	if r == nil {
+		return
+	}
+	result := "unreachable"
+	if up {
+		result = "connected"
+	}
+
+	r.mu.Lock()
+	r.upstream[upstreamWatchdogLabels{result: result}]++
+	r.mu.Unlock()
+}
+
+// SetUpstreamSocketState updates the current active upstream socket state.
+func (r *Registry) SetUpstreamSocketState(up bool) {
+	if r == nil {
+		return
+	}
+	if up {
+		r.upstreamUp.Store(1)
+	} else {
+		r.upstreamUp.Store(0)
+	}
+	r.upstreamKnown.Store(true)
 }
 
 func (r *Registry) observe(req *http.Request, meta *logging.RequestMeta, status int, seconds float64) {
@@ -155,7 +191,10 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	requests := cloneMap(r.requests)
 	denies := cloneMap(r.denies)
 	durations := cloneHistograms(r.duration)
+	upstream := cloneMap(r.upstream)
 	active := r.activeRequests.Load()
+	upstreamKnown := r.upstreamKnown.Load()
+	upstreamUp := r.upstreamUp.Load()
 	r.mu.Unlock()
 
 	fmt.Fprintln(w, "# HELP sockguard_http_requests_total Total HTTP requests handled by Sockguard.")
@@ -191,6 +230,18 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	fmt.Fprintln(w, "# HELP sockguard_http_requests_active Currently active HTTP requests.")
 	fmt.Fprintln(w, "# TYPE sockguard_http_requests_active gauge")
 	fmt.Fprintf(w, "sockguard_http_requests_active %d\n", active)
+
+	if upstreamKnown {
+		fmt.Fprintln(w, "# HELP sockguard_upstream_socket_up Whether the active upstream Docker socket watchdog currently reports the socket as reachable.")
+		fmt.Fprintln(w, "# TYPE sockguard_upstream_socket_up gauge")
+		fmt.Fprintf(w, "sockguard_upstream_socket_up %d\n", upstreamUp)
+	}
+
+	fmt.Fprintln(w, "# HELP sockguard_upstream_watchdog_checks_total Total active upstream socket watchdog checks.")
+	fmt.Fprintln(w, "# TYPE sockguard_upstream_watchdog_checks_total counter")
+	for _, key := range sortedUpstreamWatchdogLabels(upstream) {
+		fmt.Fprintf(w, "sockguard_upstream_watchdog_checks_total{result=%s} %d\n", labelValue(key.result), upstream[key])
+	}
 }
 
 func cloneMap[K comparable](src map[K]uint64) map[K]uint64 {
@@ -243,6 +294,17 @@ func sortedDurationLabels(values map[durationLabels]*histogram) []durationLabels
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		return durationLabelSortKey(keys[i]) < durationLabelSortKey(keys[j])
+	})
+	return keys
+}
+
+func sortedUpstreamWatchdogLabels(values map[upstreamWatchdogLabels]uint64) []upstreamWatchdogLabels {
+	keys := make([]upstreamWatchdogLabels, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].result < keys[j].result
 	})
 	return keys
 }

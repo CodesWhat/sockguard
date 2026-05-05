@@ -16,7 +16,11 @@ log:
 health:
   enabled: true
   path: /health
+  watchdog:
+    enabled: false
+    interval: 5s
   # /health caches upstream reachability for 2s to reduce probe-induced dial churn.
+  # The optional watchdog actively probes Docker, logs state transitions, and warms /health.
 
 metrics:
   enabled: false

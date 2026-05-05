@@ -303,8 +303,15 @@ type OwnershipConfig struct {
 
 // HealthConfig configures the health check endpoint.
 type HealthConfig struct {
-	Enabled bool   `mapstructure:"enabled"`
-	Path    string `mapstructure:"path"`
+	Enabled  bool                 `mapstructure:"enabled"`
+	Path     string               `mapstructure:"path"`
+	Watchdog HealthWatchdogConfig `mapstructure:"watchdog"`
+}
+
+// HealthWatchdogConfig configures active upstream socket monitoring.
+type HealthWatchdogConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	Interval string `mapstructure:"interval"`
 }
 
 // MetricsConfig configures the Prometheus metrics endpoint.
@@ -393,6 +400,10 @@ func Defaults() Config {
 		Health: HealthConfig{
 			Enabled: true,
 			Path:    "/health",
+			Watchdog: HealthWatchdogConfig{
+				Enabled:  false,
+				Interval: "5s",
+			},
 		},
 		Metrics: MetricsConfig{
 			Enabled: false,
