@@ -1,4 +1,5 @@
 import {
+  Activity,
   ArrowRight,
   EyeOff,
   FileText,
@@ -86,7 +87,16 @@ export const features: Feature[] = [
     color: "text-emerald-500 dark:text-emerald-400",
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
-      "JSON access logs with method, path, decision, matched rule index, latency, canonical request_id, and client info.",
+      "JSON access logs with method, raw and normalized paths, decision, matched rule index, latency, canonical request_id, preserved client request IDs, and W3C trace correlation fields.",
+    category: "operations",
+  },
+  {
+    icon: Activity,
+    title: "Operator Observability",
+    color: "text-emerald-500 dark:text-emerald-400",
+    bg: "bg-emerald-100 dark:bg-emerald-900/50",
+    description:
+      "Opt-in Prometheus metrics expose request totals, deny counts, latency buckets, active requests, and watchdog state. The active Docker socket watchdog feeds /health and logs state transitions, while trace/log correlation works without an OTLP exporter.",
     category: "operations",
   },
   {
@@ -95,7 +105,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Declarative rules in YAML. Glob patterns for paths, first-match-wins evaluation, 10 bundled presets.",
+      "Declarative rules in YAML. Glob patterns for paths, first-match-wins evaluation, and 9 bundled workload presets plus the default config.",
     category: "control",
   },
   {

@@ -63,7 +63,7 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "Yes (JSON option)",
-    sockguard: "Yes",
+    sockguard: "Yes (request + trace correlation)",
   },
   {
     feature: "Dedicated audit log schema",
@@ -71,6 +71,27 @@ export const comparisonRows: ComparisonRow[] = [
     linuxserver: "No",
     wollomatic: "No",
     sockguard: "Yes (JSON schema + reason codes)",
+  },
+  {
+    feature: "Prometheus metrics",
+    tecnativa: "HAProxy stats",
+    linuxserver: "nginx status",
+    wollomatic: "No",
+    sockguard: "Yes (socket-proxy metrics)",
+  },
+  {
+    feature: "Active upstream watchdog",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "Yes",
+    sockguard: "Yes (+ /health + metrics)",
+  },
+  {
+    feature: "Trace/log correlation",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    sockguard: "Yes (W3C traceparent)",
   },
   {
     feature: "YAML config",
