@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Reconciled README, docs, verification guidance, and internal planning docs with the shipped 0.4.0 surface before starting 0.5.0 observability work.
+- Narrowed the 0.5.0 observability roadmap to Prometheus metrics, an active upstream watchdog, and trace/log correlation without committing to an OTLP exporter.
+
 ## [0.4.0] - 2026-05-04
 
 ### Added
@@ -141,7 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Realigned the public-facing surfaces with the feature set that actually shipped in this Unreleased cycle. `README.md`, `docs/content/docs/configuration.mdx`, `docs/content/docs/security.mdx`, and `.planning/VISION.md` now describe the broader read-side visibility/redaction coverage accurately, including the new default-on `response.redact_sensitive_data` toggle and the widened service/task/secret/config/node/swarm visibility scope. `website/src/app/data/features.ts` and `website/src/app/data/comparison-rows.ts` were updated to describe expanded read-side redaction rather than the earlier container/network-only story. Before this pass the public docs were still underselling the real protected read surface even after the runtime had moved beyond the first response-filtering cut.
 - Expanded `SECURITY.md` with an explicit `Scope` section listing what's in-scope (the Go proxy at `app/`, the published `ghcr.io/codeswhat/sockguard` image, release binaries) and what's not (the marketing site, the docs site, the browser-only rule-tester demo, third-party deployments), plus a "What to include in a report" checklist for reproducer, version/digest, impact assessment, and disclosure timeline. The email address and response SLAs are unchanged.
 - Fixed a copy-paste discrepancy in `website/src/app/data/comparison-rows.ts:36`: the "Per-client policies" row claimed wollomatic supports "IP only", but `README.md` correctly describes it as "CIDR + client labels" and upstream wollomatic v1.11.4 supports both (`-allowfrom` CIDR lists + `socket-proxy.allow.` per-container labels). TS and Markdown tables are now consistent with upstream reality. No other cells in the comparison matrix were stale.
-- Added a new `docs/src/content/verification.mdx` page with the canonical `cosign verify` invocation for `ghcr.io/codeswhat/sockguard:<tag>`, derived directly from the release-from-tag workflow so the `certificate-identity-regexp` and `certificate-oidc-issuer` values track the actual signer. Covers a one-liner verify, digest-pinned verify, a "what to do if it fails" triage checklist, and `cosign verify-blob` for the signed release tarballs. Linked from `README.md` Security and from `docs/src/content/security.mdx`.
+- Added a new `docs/content/docs/verification.mdx` page with the canonical `cosign verify` invocation for `ghcr.io/codeswhat/sockguard:<tag>`, derived directly from the release-from-tag workflow so the `certificate-identity-regexp` and `certificate-oidc-issuer` values track the actual signer. Covers a one-liner verify, digest-pinned verify, a "what to do if it fails" triage checklist, and `cosign verify-blob` for the signed release tarballs. Linked from `README.md` Security and from `docs/content/docs/security.mdx`.
 - Documented the Docker filter decoder shape in `internal/ownership/middleware.go:decodeDockerFilters`: the two supported wire formats (array-of-strings and object-with-keys), why `label!=value` negation is transparent (the `!=` lives inside the string value), and why unknown shapes are fail-fast rather than silently dropped. Paired with new `TestDecodeDockerFilters` cases locking in negation pass-through and rejection of numeric/bool filter values.
 
 ## [0.3.1] - 2026-04-13

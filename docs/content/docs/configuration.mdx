@@ -136,10 +136,31 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - `POST /images/load` is inspected by default. Sockguard denies image archive imports unless their `manifest.json` repo tags satisfy `request_body.image_load.*` registry policy, or untagged imports are explicitly allowed.
 - `POST /swarm/unlock` and `POST /nodes/*/update` are inspected by default. Swarm unlock is denied unless `request_body.swarm.allow_unlock: true`; node updates block role, availability, name, and unapproved label mutations unless allowed under `request_body.node.*`.
 - `POST /plugins/pull`, `POST /plugins/*/upgrade`, `POST /plugins/*/set`, and `POST /plugins/create` are inspected by default. Sockguard constrains plugin registries, privileges, assignment prefixes, local tar `config.json`, host mounts, device exposure, and capabilities unless you explicitly allow them under `request_body.plugin.*`. `POST /plugins/create` is inspected whether the upload arrives as a raw tar body or a `multipart/form-data` envelope — the multipart stream is parsed and the embedded `config.json` is extracted before policy evaluation.
-- Bounded JSON writes (`POST /containers/create`, `/volumes/create`, `/secrets/create`, `/configs/create`) and plugin tar uploads that exceed their per-endpoint byte caps are rejected with `413 Payload Too Large` before the inspector decodes them, so a misbehaving or hostile client cannot tie up the filter or the Docker daemon with oversized payloads.
-- `insecure_allow_body_blind_writes` is now reserved for the body-bearing writes Sockguard still cannot safely constrain, chiefly arbitrary exec without an `allowed_commands` allowlist and plugin setting writes without allowed assignment prefixes.
+- Oversized bodies on bounded JSON/tar inspectors are rejected with `413 Payload Too Large` before the inspector decodes them, so a misbehaving or hostile client cannot tie up the filter or the Docker daemon with oversized payloads.
+- `insecure_allow_body_blind_writes` is now reserved for the body-bearing writes Sockguard still cannot safely constrain, chiefly arbitrary exec without an `allowed_commands` allowlist, `POST /swarm/join` without `request_body.swarm.allowed_join_remote_addrs`, and plugin setting writes without allowed assignment prefixes.
 - `insecure_allow_read_exfiltration` stays `false` by default and must be set explicitly before broad read rules can expose raw archive/export or stream-style endpoints such as `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, or `GET /images/*/get`.
 - `response.redact_container_env`, `response.redact_mount_paths`, `response.redact_network_topology`, and `response.redact_sensitive_data` default to `true`. Sockguard redacts workload env arrays across container/service/task/plugin reads, redacts host-path-bearing mount and device metadata across container/volume/task/service/plugin/system-usage reads, strips container/network/swarm/node topology from container/network/service/task/node/swarm/info/system-usage responses, and redacts higher-risk payload material such as config `Spec.Data`, service secret/config references, swarm join/unlock material, and swarm/node TLS metadata. Disable them only for trusted admin clients that truly need Docker's raw metadata.
+
+## Request Body Policy Reference
+
+All request-body policy fields default to the safest value unless noted. List fields default to empty lists.
+
+| Group | Fields | Default behavior |
+| --- | --- | --- |
+| `container_create` | `allow_privileged`, `allow_host_network`, `allow_host_pid`, `allow_host_ipc`, `allowed_bind_mounts`, `allow_all_devices`, `allowed_devices`, `allow_device_requests`, `allow_device_cgroup_rules` | Denies privileged containers, host network/PID/IPC namespaces, non-allowlisted bind sources, non-allowlisted device mappings, device requests, and device cgroup rules. |
+| `exec` | `allow_privileged`, `allow_root_user`, `allowed_commands` | Denies privileged/root exec and requires an argv allowlist before broad exec rules pass blind-write validation. |
+| `image_pull` | `allow_imports`, `allow_all_registries`, `allow_official`, `allowed_registries` | Denies `fromSrc` imports and allows Docker Hub official images by default (`allow_official: true`). |
+| `build` | `allow_remote_context`, `allow_host_network`, `allow_run_instructions` | Denies remote contexts, host-network builds, and Dockerfiles containing `RUN`. |
+| `container_update` | `allow_privileged`, `allow_devices`, `allow_capabilities`, `allow_resource_updates`, `allow_restart_policy` | Denies privileged/device/capability-like edits, resource-control changes, and restart-policy changes. |
+| `container_archive` | `allowed_paths`, `allow_setid`, `allow_device_nodes`, `allow_escaping_links` | Denies unsafe target paths, tar traversal, setuid/setgid entries, device nodes, and escaping links. |
+| `image_load` | `allow_all_registries`, `allow_official`, `allowed_registries`, `allow_untagged` | Allows Docker Hub official image tags by default (`allow_official: true`) and denies untagged archives unless opted in. |
+| `volume` | `allow_custom_drivers`, `allow_driver_opts` | Denies non-local drivers and driver options. |
+| `network` | `allow_custom_drivers`, `allow_swarm_scope`, `allow_ingress`, `allow_attachable`, `allow_config_only`, `allow_config_from`, `allow_custom_ipam_drivers`, `allow_custom_ipam_config`, `allow_ipam_options`, `allow_driver_options`, `allow_endpoint_config`, `allow_disconnect_force` | Denies custom drivers, swarm/ingress/attachable/config-only controls, custom IPAM, driver options, endpoint static config, and forced disconnects. |
+| `secret` / `config` | `allow_custom_drivers`, `allow_template_drivers` | Denies custom and template drivers. |
+| `service` | `allow_host_network`, `allowed_bind_mounts`, `allow_all_registries`, `allow_official`, `allowed_registries` | Denies host-network services and non-allowlisted bind mounts; allows Docker Hub official images by default (`allow_official: true`). |
+| `swarm` | `allow_force_new_cluster`, `allow_external_ca`, `allowed_join_remote_addrs`, `allow_token_rotation`, `allow_manager_unlock_key_rotation`, `allow_auto_lock_managers`, `allow_signing_ca_update`, `allow_unlock` | Denies unsafe init/join/update controls and swarm unlock. `POST /swarm/join` needs `allowed_join_remote_addrs` before broad join rules pass blind-write validation. |
+| `node` | `allow_name_change`, `allow_role_change`, `allow_availability_change`, `allow_label_mutation`, `allowed_label_keys` | Denies name, role, availability, and arbitrary label mutations while allowing the configured owner-label key for controlled claims. |
+| `plugin` | `allow_host_network`, `allow_ipc_host`, `allow_pid_host`, `allow_all_devices`, `allowed_bind_mounts`, `allowed_devices`, `allow_all_capabilities`, `allowed_capabilities`, `allow_all_registries`, `allow_official`, `allowed_registries`, `allowed_set_env_prefixes` | Denies host namespaces, non-allowlisted mounts/devices/capabilities, and non-official registries by default (`allow_official: true`). `POST /plugins/*/set` needs `allowed_set_env_prefixes` before broad set rules pass blind-write validation. |
 
 ## mTLS Client Selectors
 
@@ -314,6 +335,7 @@ SOCKGUARD_LISTEN_TLS_KEY_FILE=/run/secrets/sockguard/server-key.pem
 SOCKGUARD_LISTEN_TLS_CLIENT_CA_FILE=/run/secrets/sockguard/client-ca.pem
 SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard.sock
 SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES=false
+SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=false
 SOCKGUARD_UPSTREAM_SOCKET=/var/run/docker.sock
 SOCKGUARD_LOG_LEVEL=debug
 SOCKGUARD_LOG_FORMAT=json
@@ -344,6 +366,17 @@ SOCKGUARD_REQUEST_BODY_IMAGE_PULL_ALLOWED_REGISTRIES=ghcr.io,quay.io
 SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_REMOTE_CONTEXT=false
 SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_HOST_NETWORK=false
 SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_RUN_INSTRUCTIONS=false
+SOCKGUARD_REQUEST_BODY_CONTAINER_UPDATE_ALLOW_RESTART_POLICY=false
+SOCKGUARD_REQUEST_BODY_CONTAINER_ARCHIVE_ALLOWED_PATHS=/app/data,/tmp/import
+SOCKGUARD_REQUEST_BODY_IMAGE_LOAD_ALLOW_UNTAGGED=false
+SOCKGUARD_REQUEST_BODY_VOLUME_ALLOW_DRIVER_OPTS=false
+SOCKGUARD_REQUEST_BODY_NETWORK_ALLOW_ENDPOINT_CONFIG=false
+SOCKGUARD_REQUEST_BODY_SECRET_ALLOW_TEMPLATE_DRIVERS=false
+SOCKGUARD_REQUEST_BODY_CONFIG_ALLOW_TEMPLATE_DRIVERS=false
+SOCKGUARD_REQUEST_BODY_SERVICE_ALLOWED_BIND_MOUNTS=/srv/services
+SOCKGUARD_REQUEST_BODY_SWARM_ALLOWED_JOIN_REMOTE_ADDRS=manager.internal:2377
+SOCKGUARD_REQUEST_BODY_NODE_ALLOWED_LABEL_KEYS=com.sockguard.owner,team
+SOCKGUARD_REQUEST_BODY_PLUGIN_ALLOWED_SET_ENV_PREFIXES=DEBUG=,LOG_LEVEL=
 SOCKGUARD_CLIENTS_ALLOWED_CIDRS=172.18.0.0/16,10.0.0.0/24
 SOCKGUARD_CLIENTS_CONTAINER_LABELS_ENABLED=true
 SOCKGUARD_CLIENTS_CONTAINER_LABELS_LABEL_PREFIX=com.sockguard.allow.

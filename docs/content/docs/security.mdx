@@ -69,11 +69,11 @@ The exec-start re-inspection is necessarily best effort: Docker exposes metadata
 
 `POST /swarm/unlock` and `POST /nodes/*/update` are inspected by default. Swarm unlock is denied unless explicitly allowed, and node updates block role, availability, name, and arbitrary label mutations unless the corresponding node policy permits them. The default owner-label key remains allowed for controlled node claims.
 
-Each inspector reads its request body under a per-endpoint byte cap and returns `413 Payload Too Large` when the cap is exceeded, instead of streaming unbounded bodies into memory. A malformed or hostile client cannot tie up the filter or the Docker daemon with oversized payloads — the bounded reader short-circuits before the JSON decode or tar parse even begins.
+Bounded JSON/tar inspectors read request bodies under per-endpoint byte caps and return `413 Payload Too Large` when those caps are exceeded, instead of streaming unbounded bodies into memory. A malformed or hostile client cannot tie up the filter or the Docker daemon with oversized payloads — the bounded reader short-circuits before the JSON decode or tar parse even begins.
 
 These inspectors intentionally decode only the Docker request fields Sockguard actually enforces. They are not full Docker-schema validators, so full payload validation still belongs to Docker once Sockguard has checked the policy-relevant subset.
 
-The remaining blind-write guardrail covers body-bearing writes Sockguard still cannot constrain safely, chiefly arbitrary exec without an allowlist and plugin setting writes without allowed assignment prefixes. Validation refuses to start with those rules allowed unless you explicitly set `insecure_allow_body_blind_writes: true`, to keep the enforcement boundary honest.
+The remaining blind-write guardrail covers body-bearing writes Sockguard still cannot constrain safely, chiefly arbitrary exec without an allowlist, `POST /swarm/join` without configured `allowed_join_remote_addrs`, and plugin setting writes without allowed assignment prefixes. Validation refuses to start with those rules allowed unless you explicitly set `insecure_allow_body_blind_writes: true`, to keep the enforcement boundary honest.
 
 Sockguard now applies the same honesty rule to raw archive/export and log/attach streaming reads. Validation refuses to start broad read rules that would expose `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, or `GET /images/*/get` unless you explicitly set `insecure_allow_read_exfiltration: true`. Because this validation layer only sees method + path, `/containers/*/logs` is treated conservatively whether or not the caller also sets `follow=1`. That keeps backup/export and raw-stream use cases possible without letting a casual `GET /containers/**` or Tecnativa-style section gate silently include filesystem or log stream exfiltration.
 
@@ -119,16 +119,16 @@ Prometheus metrics remain planned operator-observability work, but dedicated aud
 
 | Risk Level | Endpoints |
 |-----------|-----------|
-| **Critical** | `POST /containers/create`, `POST /containers/{id}/exec`, `POST /exec/{id}/start` |
-| **High** | `POST /images/create` (pull), `POST /build`, `POST /swarm/*`, `POST /plugins/install` |
-| **Medium** | `POST /volumes/create`, `POST /networks/create`, `DELETE /containers/{id}` |
+| **Critical** | `POST /containers/create`, `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `PUT /containers/{id}/archive` |
+| **High** | `POST /images/create`, `POST /images/load`, `POST /build`, `POST /services/create`, `POST /services/{id}/update`, `POST /swarm/init`, `POST /swarm/join`, `POST /swarm/update`, `POST /swarm/unlock`, `POST /nodes/{id}/update`, `POST /plugins/pull`, `POST /plugins/{name}/upgrade`, `POST /plugins/{name}/set`, `POST /plugins/create` |
+| **Medium** | `POST /containers/{id}/update`, `POST /volumes/create`, `POST /networks/create`, `POST /networks/{id}/connect`, `POST /networks/{id}/disconnect`, `POST /secrets/create`, `POST /configs/create`, `DELETE /containers/{id}` |
 | **Low** | `GET /containers/json`, `GET /events`, `GET /version`, `GET /_ping` |
 
 ## Image Security
 
 Sockguard's container image is built on [Wolfi](https://www.chainguard.dev/chainguard-images) (Chainguard):
 - Near-zero CVEs in the base image
-- Built-in SBOM and SLSA provenance
+- Built-in SBOM output and build provenance when release visibility supports attestations
 - Cosign-signed for verification — see the [image verification guide](/verification) for the canonical `cosign verify` invocation
 - No shell, no package manager in production image
 
