@@ -17,7 +17,7 @@
     "@biomejs/biome": "^2.4.13",
     "knip": "6.11.0",
     "lefthook": "^2.1.6",
-    "turbo": "^2.9.6"
+    "turbo": "^2.9.9"
   },
   "overrides": {
     "next": {
