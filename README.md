@@ -207,7 +207,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | 🛡️ | **Default-Deny Posture** | Everything blocked unless explicitly allowed. No match means deny. |
 | 🎛️ | **Granular Control** | Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching. |
 | 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 9 bundled workload presets plus the default config. |
-| 📊 | **Structured Access Logging** | JSON access logs with method, raw path, normalized path, decision, matched rule, latency, canonical request ID, and client info. Use `normalized_path` for SIEM correlation and policy analysis; raw `path` is preserved for forensic replay. Canonical request IDs are generated from a buffered pool so request logging does not block on a fresh entropy read per request. |
+| 📊 | **Structured Access Logging** | JSON access logs with method, raw path, normalized path, decision, matched rule, latency, canonical request ID, W3C `traceparent` correlation fields, and client info. Use `normalized_path` for SIEM correlation and policy analysis; raw `path` is preserved for forensic replay. Canonical request IDs are generated from a buffered pool so request logging does not block on a fresh entropy read per request. |
 | 🔐 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
 | 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks, client-container label ACLs, listener certificate selectors (CN/DNS/IP/URI SAN/SPKI), profile certificate selectors (CN/DNS/IP/URI/SPIFFE/SPKI), and unix peer credentials let one proxy differentiate callers before the global rule set runs. When mTLS is enabled, certificate selectors follow the verified client leaf certificate rather than an unverified peer slice entry. |
 | 🗃️ | **Bounded Inspect Cache** | Ownership and visibility checks reuse a short-lived singleflight cache for upstream Docker inspect metadata so bursts of repeated reads do not fan out into duplicate synchronous inspect calls. |
@@ -220,7 +220,8 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
 | 🩺 | **Health Check + Watchdog** | `/health` endpoint with cached upstream reachability probes and an opt-in active Docker socket watchdog that logs state transitions. |
 | 📈 | **Prometheus Metrics** | Opt-in `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, active request gauge, and upstream watchdog state/check metrics. |
-| 🧪 | **Battle-Tested** | ~99% statement coverage, race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
+| 🔗 | **Trace/Log Correlation** | Preserves valid W3C `traceparent` context or generates local context, forwards a proxy-local span ID, and records trace fields in access, audit, and upstream error logs without an OTLP exporter. |
+| 🧪 | **Battle-Tested** | 96%+ statement coverage, race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
 
 <hr>
 
@@ -235,7 +236,7 @@ How sockguard stacks up against other Docker socket proxies:
 | Request body inspection | ❌ | ❌ | Partial (bind-mount source restrictions) | ✅ (`container` create/update/exec/archive, `image` pull/load, `build`, `volume`, `network` create/connect/disconnect, `secret`, `config`, `service`, `swarm` init/join/update/unlock, `node` update, `plugin`) |
 | Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | ✅ (visibility + protected JSON redaction) |
-| Structured access logs | ❌ | ❌ | ✅ (JSON option) | ✅ |
+| Structured access logs | ❌ | ❌ | ✅ (JSON option) | ✅ (request + trace correlation) |
 | Dedicated audit log schema | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
 | YAML config | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ✅ |
@@ -509,7 +510,7 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
 | **0.2.0** | mTLS for remote TCP, TLS 1.3 minimum, loopback-by-default listener, body-blind write guardrail | ✅ shipped |
 | **0.3.0** | Body inspection for create/exec/service/swarm/pull/build, owner labels, per-client profiles, visibility/redaction | ✅ shipped |
 | **0.4.0** | Hardening + body-inspection completion pass — canonical percent-decoded path matching; mTLS listener selectors (CN/DNS/IP/URI SAN + SHA-256 SPKI pins) and per-profile certificate selectors (CN/DNS/IP/URI/SPIFFE + SHA-256 SPKI pins); 413 on oversize bounded JSON/tar inspectors; multipart plugin-create inspection; container-create policy now blocks `Privileged`, `NetworkMode=host`, `PidMode=host`, `IpcMode=host`, non-allowlisted bind sources, non-allowlisted devices, `DeviceRequests`, and `DeviceCgroupRules` by default; new body inspectors close the remaining blind-write gaps for `containers/*/update`, `containers/*/archive`, `images/load`, `networks/create`/`*/connect`/`*/disconnect`, `swarm/unlock`, and `nodes/*/update`; profile-resolution memoization; build host-network denied regardless of opt-in combinations; config preflight rejects explicit empty/missing `--config`; fuzz watchdogs replace `-timeout=0`; `scripts/local-fuzz.sh` gains `--timeout`/`--parallel`/`--suite ultra`; private vuln reporting enabled with published disclosure inboxes | ✅ shipped |
-| **0.5.0** | Operator observability — Prometheus `/metrics`, active upstream socket watchdog, trace/log correlation without an OTLP exporter | 🕒 planned |
+| **0.5.0** | Operator observability — Prometheus `/metrics`, active upstream socket watchdog, trace/log correlation without an OTLP exporter | ✅ shipped |
 | **0.6.0** | Secure container enforcement — readonly rootfs, non-root/no-new-privilege rails, resource limits, approved seccomp/AppArmor/SELinux, broader capability/device runtime policy, image signatures plus attestations | 🕒 planned |
 | **0.7.0** | Abuse controls — per-client rate limits, burst budgets, concurrency caps, expensive-endpoint quotas | 🕒 planned |
 | **0.8.0** | Dynamic policy delivery — signed bundles, long-poll/hot reload, audit/warn/enforce rollout modes, admin API, policy versioning | 🕒 planned |

@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added an opt-in Prometheus text-format `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, and an active request gauge.
 - Added an opt-in active upstream socket watchdog that probes Docker on an interval, logs reachability state transitions, feeds `/health`, and exports upstream state/check metrics when Prometheus metrics are enabled.
+- Added W3C `traceparent` correlation across access logs, audit events, upstream reverse-proxy error logs, forwarded requests, and responses without enabling an OTLP span exporter.
 
 ### Changed
 

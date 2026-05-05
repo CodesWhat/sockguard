@@ -288,7 +288,10 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 	if runtime != nil && runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetrics", withMetrics(runtime.metrics)))
 	}
-	layers = append(layers, namedServeHandlerLayer("withRequestID", withRequestID()))
+	layers = append(layers,
+		namedServeHandlerLayer("withTraceContext", withTraceContext()),
+		namedServeHandlerLayer("withRequestID", withRequestID()),
+	)
 	if cfg.Log.Audit.Enabled && auditLogger != nil {
 		layers = append(layers, namedServeHandlerLayer("withAuditLog", withAuditLog(auditLogger, cfg)))
 	}
@@ -358,6 +361,10 @@ func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) h
 
 func withRequestID() func(http.Handler) http.Handler {
 	return logging.RequestIDMiddleware()
+}
+
+func withTraceContext() func(http.Handler) http.Handler {
+	return logging.TraceContextMiddleware()
 }
 
 func withAccessLog(logger *slog.Logger) func(http.Handler) http.Handler {

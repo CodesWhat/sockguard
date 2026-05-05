@@ -1460,6 +1460,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 		"withMetricsEndpoint",
 		"withClientACL",
 		"withMetrics",
+		"withTraceContext",
 		"withRequestID",
 		"withAuditLog",
 		"withAccessLog",
@@ -1480,6 +1481,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 		"withVisibility",
 		"withFilter",
 		"withClientACL",
+		"withTraceContext",
 		"withRequestID",
 	}
 	if !reflect.DeepEqual(got, want) {
