@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-05
+
 ### Added
 
 - Added an opt-in Prometheus text-format `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, and an active request gauge.
