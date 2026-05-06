@@ -6,6 +6,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/version"
 )
 
 const contentTypePrometheusText = "text/plain; version=0.0.4; charset=utf-8"
@@ -25,6 +27,8 @@ type Registry struct {
 	activeRequests atomic.Int64
 	upstreamKnown  atomic.Bool
 	upstreamUp     atomic.Int64
+
+	startedAt time.Time
 
 	mu       sync.Mutex
 	requests map[requestLabels]uint64
@@ -68,10 +72,11 @@ type histogram struct {
 // NewRegistry constructs an empty metrics registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		requests: make(map[requestLabels]uint64),
-		denies:   make(map[denyLabels]uint64),
-		duration: make(map[durationLabels]*histogram),
-		upstream: make(map[upstreamWatchdogLabels]uint64),
+		startedAt: time.Now(),
+		requests:  make(map[requestLabels]uint64),
+		denies:    make(map[denyLabels]uint64),
+		duration:  make(map[durationLabels]*histogram),
+		upstream:  make(map[upstreamWatchdogLabels]uint64),
 	}
 }
 
@@ -196,6 +201,15 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	upstreamKnown := r.upstreamKnown.Load()
 	upstreamUp := r.upstreamUp.Load()
 	r.mu.Unlock()
+
+	fmt.Fprintln(w, "# HELP sockguard_build_info Sockguard build metadata exposed as constant labels.")
+	fmt.Fprintln(w, "# TYPE sockguard_build_info gauge")
+	fmt.Fprintf(w, "sockguard_build_info{version=%s,commit=%s,build_date=%s,go_version=%s} 1\n",
+		labelValue(version.Version), labelValue(version.Commit), labelValue(version.BuildDate), labelValue(runtime.Version()))
+
+	fmt.Fprintln(w, "# HELP sockguard_start_time_seconds Unix timestamp at which the metrics registry was created.")
+	fmt.Fprintln(w, "# TYPE sockguard_start_time_seconds gauge")
+	fmt.Fprintf(w, "sockguard_start_time_seconds %s\n", strconv.FormatFloat(float64(r.startedAt.UnixNano())/1e9, 'f', -1, 64))
 
 	fmt.Fprintln(w, "# HELP sockguard_http_requests_total Total HTTP requests handled by Sockguard.")
 	fmt.Fprintln(w, "# TYPE sockguard_http_requests_total counter")
@@ -517,7 +531,12 @@ func routeWithID(prefix string, segments []string) string {
 	if len(segments) == 2 {
 		return "/" + prefix + "/{id}"
 	}
-	return "/" + prefix + "/{id}/" + segments[2]
+	// Docker image names may contain slashes (registry/owner/repo:tag), so
+	// the {id} slot has to swallow every segment between the prefix and the
+	// trailing action verb. Without this, /images/owner/repo:tag/json would
+	// expose "owner" as the id and drop the /json action — every distinct
+	// image becomes its own timeseries.
+	return "/" + prefix + "/{id}/" + segments[len(segments)-1]
 }
 
 type responseWriter struct {

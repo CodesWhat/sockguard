@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/logging"
 )
@@ -77,6 +79,39 @@ func TestHandlerWritesPrometheusTextFormat(t *testing.T) {
 	body := rec.Body.String()
 	assertContains(t, body, "# HELP sockguard_http_requests_total Total HTTP requests handled by Sockguard.")
 	assertContains(t, body, "# TYPE sockguard_http_requests_active gauge")
+}
+
+func TestRegistryEmitsBuildInfoAndStartTime(t *testing.T) {
+	before := float64(time.Now().UnixNano()) / 1e9
+	registry := NewRegistry()
+	after := float64(time.Now().UnixNano()) / 1e9
+
+	out := renderMetrics(t, registry)
+	assertContains(t, out, "# HELP sockguard_build_info")
+	assertContains(t, out, "# TYPE sockguard_build_info gauge")
+	assertContains(t, out, `sockguard_build_info{version=`)
+	assertContains(t, out, "go_version=") // runtime version always non-empty
+	assertContains(t, out, "} 1\n")
+
+	assertContains(t, out, "# TYPE sockguard_start_time_seconds gauge")
+
+	prefix := "\nsockguard_start_time_seconds "
+	idx := strings.Index(out, prefix)
+	if idx < 0 {
+		t.Fatalf("missing sockguard_start_time_seconds gauge: %s", out)
+	}
+	rest := out[idx+len(prefix):]
+	end := strings.IndexByte(rest, '\n')
+	if end < 0 {
+		t.Fatalf("malformed start_time line: %s", rest)
+	}
+	val, err := strconv.ParseFloat(rest[:end], 64)
+	if err != nil {
+		t.Fatalf("start_time not a float: %v", err)
+	}
+	if val < before || val > after {
+		t.Fatalf("start_time %f outside [%f, %f]", val, before, after)
+	}
 }
 
 func TestRegistryRecordsUpstreamWatchdogState(t *testing.T) {
@@ -190,6 +225,9 @@ func TestRouteCategoryCoversDockerRouteFamiliesAndPathEdges(t *testing.T) {
 		{name: "image collection", path: "/images", want: "/images"},
 		{name: "image static", path: "/images/search", want: "/images/search"},
 		{name: "image id", path: "/images/alpine/json", want: "/images/{id}/json"},
+		{name: "image namespaced id", path: "/images/linuxserver/qbittorrent:latest/json", want: "/images/{id}/json"},
+		{name: "image registry-namespaced id", path: "/images/ghcr.io/seerr-team/seerr:latest/json", want: "/images/{id}/json"},
+		{name: "image namespaced history", path: "/images/codeswhat/drydock:1.5.0-rc.9/history", want: "/images/{id}/history"},
 		{name: "volume collection", path: "/volumes", want: "/volumes"},
 		{name: "secret static", path: "/secrets/create", want: "/secrets/create"},
 		{name: "config static", path: "/configs/create", want: "/configs/create"},
