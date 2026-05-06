@@ -337,69 +337,123 @@ Before rule evaluation, Sockguard canonicalizes the request path: it strips any 
 
 ## Environment Variables
 
-Every config field can be set via env var with `SOCKGUARD_` prefix:
+Every YAML field can be set via env var by prefixing with `SOCKGUARD_` and
+replacing dots with underscores (`metrics.enabled` → `SOCKGUARD_METRICS_ENABLED`).
+List-typed values accept comma-separated entries. Precedence is CLI flags >
+env vars > YAML > built-in defaults.
 
-```bash
-SOCKGUARD_LISTEN_ADDRESS=127.0.0.1:2375
-SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=false
-SOCKGUARD_LISTEN_TLS_CERT_FILE=/run/secrets/sockguard/server-cert.pem
-SOCKGUARD_LISTEN_TLS_KEY_FILE=/run/secrets/sockguard/server-key.pem
-SOCKGUARD_LISTEN_TLS_CLIENT_CA_FILE=/run/secrets/sockguard/client-ca.pem
-SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard.sock
-SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES=false
-SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=false
-SOCKGUARD_UPSTREAM_SOCKET=/var/run/docker.sock
-SOCKGUARD_LOG_LEVEL=debug
-SOCKGUARD_LOG_FORMAT=json
-SOCKGUARD_LOG_ACCESS_LOG=true
-SOCKGUARD_LOG_AUDIT_ENABLED=true
-SOCKGUARD_LOG_AUDIT_FORMAT=json
-SOCKGUARD_LOG_AUDIT_OUTPUT=stderr
-SOCKGUARD_HEALTH_WATCHDOG_ENABLED=false
-SOCKGUARD_HEALTH_WATCHDOG_INTERVAL=5s
-SOCKGUARD_METRICS_ENABLED=false
-SOCKGUARD_METRICS_PATH=/metrics
-SOCKGUARD_RESPONSE_DENY_VERBOSITY=minimal
-SOCKGUARD_RESPONSE_REDACT_CONTAINER_ENV=true
-SOCKGUARD_RESPONSE_REDACT_MOUNT_PATHS=true
-SOCKGUARD_RESPONSE_REDACT_NETWORK_TOPOLOGY=true
-SOCKGUARD_RESPONSE_REDACT_SENSITIVE_DATA=true
-SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_PRIVILEGED=false
-SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_NETWORK=false
-SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_PID=false
-SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_IPC=false
-SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_BIND_MOUNTS=/srv/containers,/var/lib/app-data
-SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_ALL_DEVICES=false
-SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_DEVICES=/dev/dri,/dev/kvm
-SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS=false
-SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_CGROUP_RULES=false
-SOCKGUARD_REQUEST_BODY_EXEC_ALLOW_PRIVILEGED=false
-SOCKGUARD_REQUEST_BODY_EXEC_ALLOW_ROOT_USER=false
-SOCKGUARD_REQUEST_BODY_IMAGE_PULL_ALLOW_IMPORTS=false
-SOCKGUARD_REQUEST_BODY_IMAGE_PULL_ALLOW_ALL_REGISTRIES=false
-SOCKGUARD_REQUEST_BODY_IMAGE_PULL_ALLOW_OFFICIAL=true
-SOCKGUARD_REQUEST_BODY_IMAGE_PULL_ALLOWED_REGISTRIES=ghcr.io,quay.io
-SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_REMOTE_CONTEXT=false
-SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_HOST_NETWORK=false
-SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_RUN_INSTRUCTIONS=false
-SOCKGUARD_REQUEST_BODY_CONTAINER_UPDATE_ALLOW_RESTART_POLICY=false
-SOCKGUARD_REQUEST_BODY_CONTAINER_ARCHIVE_ALLOWED_PATHS=/app/data,/tmp/import
-SOCKGUARD_REQUEST_BODY_IMAGE_LOAD_ALLOW_UNTAGGED=false
-SOCKGUARD_REQUEST_BODY_VOLUME_ALLOW_DRIVER_OPTS=false
-SOCKGUARD_REQUEST_BODY_NETWORK_ALLOW_ENDPOINT_CONFIG=false
-SOCKGUARD_REQUEST_BODY_SECRET_ALLOW_TEMPLATE_DRIVERS=false
-SOCKGUARD_REQUEST_BODY_CONFIG_ALLOW_TEMPLATE_DRIVERS=false
-SOCKGUARD_REQUEST_BODY_SERVICE_ALLOWED_BIND_MOUNTS=/srv/services
-SOCKGUARD_REQUEST_BODY_SWARM_ALLOWED_JOIN_REMOTE_ADDRS=manager.internal:2377
-SOCKGUARD_REQUEST_BODY_NODE_ALLOWED_LABEL_KEYS=com.sockguard.owner,team
-SOCKGUARD_REQUEST_BODY_PLUGIN_ALLOWED_SET_ENV_PREFIXES=DEBUG=,LOG_LEVEL=
-SOCKGUARD_CLIENTS_ALLOWED_CIDRS=172.18.0.0/16,10.0.0.0/24
-SOCKGUARD_CLIENTS_CONTAINER_LABELS_ENABLED=true
-SOCKGUARD_CLIENTS_CONTAINER_LABELS_LABEL_PREFIX=com.sockguard.allow.
-SOCKGUARD_OWNERSHIP_OWNER=ci-job-123
-SOCKGUARD_OWNERSHIP_LABEL_KEY=com.sockguard.owner
-SOCKGUARD_OWNERSHIP_ALLOW_UNOWNED_IMAGES=true
-```
+The table below covers the most commonly used variables. See the YAML config
+section above for the full schema; every nested field has an env-var equivalent
+even when not enumerated here.
+
+### Listener and upstream
+
+| Variable                                       | YAML field                            | Default                         | Description                                                                                                  |
+| ---------------------------------------------- | ------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `SOCKGUARD_LISTEN_ADDRESS`                     | `listen.address`                      | `127.0.0.1:2375`                | TCP listener address. Loopback is allowed plaintext; non-loopback requires `listen.tls` or the legacy opt-in. |
+| `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP`    | `listen.insecure_allow_plain_tcp`     | `false`                         | Opt-in to plaintext non-loopback TCP. Use only on private trusted networks; never expose to the host or Internet. |
+| `SOCKGUARD_LISTEN_TLS_CERT_FILE`               | `listen.tls.cert_file`                | _(unset)_                       | Path to the listener certificate. Required to enable mTLS.                                                   |
+| `SOCKGUARD_LISTEN_TLS_KEY_FILE`                | `listen.tls.key_file`                 | _(unset)_                       | Path to the listener private key. Required to enable mTLS.                                                   |
+| `SOCKGUARD_LISTEN_TLS_CLIENT_CA_FILE`          | `listen.tls.client_ca_file`           | _(unset)_                       | CA bundle that verifies client certificates. Pair with selectors under `listen.tls.allowed_*` to narrow trust. |
+| `SOCKGUARD_LISTEN_SOCKET`                      | `listen.socket`                       | _(unset)_                       | Switches to a unix socket listener. Sockguard hardens the socket to mode `0600` and rejects broader modes.  |
+| `SOCKGUARD_UPSTREAM_SOCKET`                    | `upstream.socket`                     | `/var/run/docker.sock`          | Path to the real Docker daemon socket Sockguard proxies to.                                                  |
+
+### Logging
+
+| Variable                                       | YAML field                            | Default                         | Description                                                                                                  |
+| ---------------------------------------------- | ------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `SOCKGUARD_LOG_LEVEL`                          | `log.level`                           | `info`                          | Operational log level: `debug`, `info`, `warn`, `error`.                                                     |
+| `SOCKGUARD_LOG_FORMAT`                         | `log.format`                          | `json`                          | Operational log format: `json` or `text`.                                                                    |
+| `SOCKGUARD_LOG_ACCESS_LOG`                     | `log.access_log`                      | `true`                          | Emit one structured access-log line per request with method, path, decision, latency, and trace fields.     |
+| `SOCKGUARD_LOG_AUDIT_ENABLED`                  | `log.audit.enabled`                   | `false`                         | Emit dedicated audit events with stable schema, separate from the operational log.                           |
+| `SOCKGUARD_LOG_AUDIT_FORMAT`                   | `log.audit.format`                    | `json`                          | Audit event format. JSON is required for SIEM ingestion; `text` exists for local debug only.                 |
+| `SOCKGUARD_LOG_AUDIT_OUTPUT`                   | `log.audit.output`                    | `stderr`                        | Audit sink: `stderr`, `stdout`, or a file path. File paths must already exist with writable permissions.    |
+
+### Health and observability
+
+| Variable                                       | YAML field                            | Default                         | Description                                                                                                  |
+| ---------------------------------------------- | ------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `SOCKGUARD_HEALTH_WATCHDOG_ENABLED`            | `health.watchdog.enabled`             | `false`                         | Start an active upstream socket monitor. Logs reachable/unreachable transitions and feeds `/health`.         |
+| `SOCKGUARD_HEALTH_WATCHDOG_INTERVAL`           | `health.watchdog.interval`            | `5s`                            | Watchdog probe interval. Must be a positive Go duration; 1s–30s is typical.                                  |
+| `SOCKGUARD_METRICS_ENABLED`                    | `metrics.enabled`                     | `false`                         | Serve Prometheus text metrics on the proxy listener. See the [Observability page](./observability) for the full metric reference. |
+| `SOCKGUARD_METRICS_PATH`                       | `metrics.path`                        | `/metrics`                      | Scrape path. Must start with `/` and differ from `health.path` when both endpoints are enabled.              |
+
+### Response controls
+
+| Variable                                       | YAML field                            | Default                         | Description                                                                                                  |
+| ---------------------------------------------- | ------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `SOCKGUARD_RESPONSE_DENY_VERBOSITY`            | `response.deny_verbosity`             | `minimal`                       | `minimal` returns only the generic deny message. `verbose` echoes method, path, and reason — dev only.       |
+| `SOCKGUARD_RESPONSE_REDACT_CONTAINER_ENV`      | `response.redact_container_env`       | `true`                          | Replace workload env arrays with empty arrays on container/service/task/plugin reads.                        |
+| `SOCKGUARD_RESPONSE_REDACT_MOUNT_PATHS`        | `response.redact_mount_paths`         | `true`                          | Redact mount and host-device source paths on container/volume/task/service/plugin/`/system/df` reads.        |
+| `SOCKGUARD_RESPONSE_REDACT_NETWORK_TOPOLOGY`   | `response.redact_network_topology`    | `true`                          | Redact network IDs, attached addresses, remote managers, and node reachability on relevant reads.            |
+| `SOCKGUARD_RESPONSE_REDACT_SENSITIVE_DATA`     | `response.redact_sensitive_data`      | `true`                          | Redact config payloads, swarm join/unlock and CA material, and node/swarm TLS metadata.                      |
+
+### Insecure opt-ins
+
+These flags loosen Sockguard's defaults. Do not enable them without an explicit
+operational reason and a plan to revisit.
+
+| Variable                                       | YAML field                            | Default                         | Description                                                                                                  |
+| ---------------------------------------------- | ------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES`   | `insecure_allow_body_blind_writes`    | `false`                         | Allow POST endpoints whose bodies Sockguard cannot inspect (currently arbitrary exec without an allowlist and plugin set without allowed prefixes). |
+| `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION`   | `insecure_allow_read_exfiltration`    | `false`                         | Allow rules that match raw archive/export, log/attach, and image-tarball-get endpoints. Tighten the rules instead whenever possible. |
+
+### Container-create body inspection
+
+`POST /containers/create` is inspected by default; bodies that violate any of
+the gates below are denied before the request reaches Docker.
+
+| Variable                                                              | YAML field                                                | Default | Description                                                                          |
+| --------------------------------------------------------------------- | --------------------------------------------------------- | ------- | ------------------------------------------------------------------------------------ |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_PRIVILEGED`            | `request_body.container_create.allow_privileged`          | `false` | Allow `HostConfig.Privileged=true`.                                                  |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_NETWORK`          | `request_body.container_create.allow_host_network`        | `false` | Allow `HostConfig.NetworkMode=host`.                                                 |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_PID`              | `request_body.container_create.allow_host_pid`            | `false` | Allow `HostConfig.PidMode=host`.                                                     |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_IPC`              | `request_body.container_create.allow_host_ipc`            | `false` | Allow `HostConfig.IpcMode=host`.                                                     |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_BIND_MOUNTS`         | `request_body.container_create.allowed_bind_mounts`       | _empty_ | Comma-separated host-path prefixes allowed as bind sources. Named volumes always allowed. |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_ALL_DEVICES`           | `request_body.container_create.allow_all_devices`         | `false` | Allow any `HostConfig.Devices` host path. Prefer the allowlist below instead.        |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_DEVICES`             | `request_body.container_create.allowed_devices`           | _empty_ | Comma-separated host device paths allowed for `HostConfig.Devices`.                  |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS`       | `request_body.container_create.allow_device_requests`     | `false` | Allow `HostConfig.DeviceRequests` (GPU passthrough, etc.).                           |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_CGROUP_RULES`   | `request_body.container_create.allow_device_cgroup_rules` | `false` | Allow `HostConfig.DeviceCgroupRules` (raw cgroup device entries).                    |
+
+### Other request-body inspectors
+
+Comma-separated list values (`ALLOWED_*`, `ALLOWED_BIND_MOUNTS`, etc.) accept
+multiple entries via the env var; e.g.
+`SOCKGUARD_REQUEST_BODY_IMAGE_PULL_ALLOWED_REGISTRIES=ghcr.io,quay.io`.
+
+| Variable                                                       | YAML field                                              | Default | Description                                                                  |
+| -------------------------------------------------------------- | ------------------------------------------------------- | ------- | ---------------------------------------------------------------------------- |
+| `SOCKGUARD_REQUEST_BODY_EXEC_ALLOW_PRIVILEGED`                 | `request_body.exec.allow_privileged`                    | `false` | Allow privileged exec sessions.                                              |
+| `SOCKGUARD_REQUEST_BODY_EXEC_ALLOW_ROOT_USER`                  | `request_body.exec.allow_root_user`                     | `false` | Allow exec sessions running as root.                                         |
+| `SOCKGUARD_REQUEST_BODY_IMAGE_PULL_ALLOW_IMPORTS`              | `request_body.image_pull.allow_imports`                 | `false` | Allow `fromSrc` image imports.                                               |
+| `SOCKGUARD_REQUEST_BODY_IMAGE_PULL_ALLOW_ALL_REGISTRIES`       | `request_body.image_pull.allow_all_registries`          | `false` | Allow image pulls from any registry. Prefer `ALLOWED_REGISTRIES` instead.    |
+| `SOCKGUARD_REQUEST_BODY_IMAGE_PULL_ALLOW_OFFICIAL`             | `request_body.image_pull.allow_official`                | `true`  | Allow Docker Hub official images (single-segment names).                     |
+| `SOCKGUARD_REQUEST_BODY_IMAGE_PULL_ALLOWED_REGISTRIES`         | `request_body.image_pull.allowed_registries`            | _empty_ | Comma-separated allowed pull registries.                                     |
+| `SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_REMOTE_CONTEXT`            | `request_body.build.allow_remote_context`               | `false` | Allow `POST /build` with a remote context URL.                               |
+| `SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_HOST_NETWORK`              | `request_body.build.allow_host_network`                 | `false` | Allow `POST /build` with `networkmode=host`.                                 |
+| `SOCKGUARD_REQUEST_BODY_BUILD_ALLOW_RUN_INSTRUCTIONS`          | `request_body.build.allow_run_instructions`             | `false` | Allow Dockerfiles containing `RUN` instructions.                             |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_UPDATE_ALLOW_RESTART_POLICY` | `request_body.container_update.allow_restart_policy`    | `false` | Allow `POST /containers/*/update` to change the restart policy.              |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_ARCHIVE_ALLOWED_PATHS`       | `request_body.container_archive.allowed_paths`          | _empty_ | Comma-separated container paths allowed for `PUT /containers/*/archive`.     |
+| `SOCKGUARD_REQUEST_BODY_IMAGE_LOAD_ALLOW_UNTAGGED`             | `request_body.image_load.allow_untagged`                | `false` | Allow `POST /images/load` for tarballs containing untagged images.           |
+| `SOCKGUARD_REQUEST_BODY_VOLUME_ALLOW_DRIVER_OPTS`              | `request_body.volume.allow_driver_opts`                 | `false` | Allow `POST /volumes/create` with custom `DriverOpts`.                       |
+| `SOCKGUARD_REQUEST_BODY_NETWORK_ALLOW_ENDPOINT_CONFIG`         | `request_body.network.allow_endpoint_config`            | `false` | Allow `POST /networks/*/connect` with non-empty endpoint config.             |
+| `SOCKGUARD_REQUEST_BODY_SECRET_ALLOW_TEMPLATE_DRIVERS`         | `request_body.secret.allow_template_drivers`            | `false` | Allow `POST /secrets/create` with a template driver.                         |
+| `SOCKGUARD_REQUEST_BODY_CONFIG_ALLOW_TEMPLATE_DRIVERS`         | `request_body.config.allow_template_drivers`            | `false` | Allow `POST /configs/create` with a template driver.                         |
+| `SOCKGUARD_REQUEST_BODY_SERVICE_ALLOWED_BIND_MOUNTS`           | `request_body.service.allowed_bind_mounts`              | _empty_ | Comma-separated host-path prefixes allowed as bind sources for `POST /services/create`. |
+| `SOCKGUARD_REQUEST_BODY_SWARM_ALLOWED_JOIN_REMOTE_ADDRS`       | `request_body.swarm.allowed_join_remote_addrs`          | _empty_ | Comma-separated `host:port` join targets allowed for `POST /swarm/join`.     |
+| `SOCKGUARD_REQUEST_BODY_NODE_ALLOWED_LABEL_KEYS`               | `request_body.node.allowed_label_keys`                  | _empty_ | Comma-separated label keys allowed in `POST /nodes/*/update`.                |
+| `SOCKGUARD_REQUEST_BODY_PLUGIN_ALLOWED_SET_ENV_PREFIXES`       | `request_body.plugin.allowed_set_env_prefixes`          | _empty_ | Comma-separated `KEY=` prefixes allowed for `POST /plugins/*/set`.           |
+
+### Clients and ownership
+
+| Variable                                       | YAML field                                | Default                | Description                                                                            |
+| ---------------------------------------------- | ----------------------------------------- | ---------------------- | -------------------------------------------------------------------------------------- |
+| `SOCKGUARD_CLIENTS_ALLOWED_CIDRS`              | `clients.allowed_cidrs`                   | _empty_                | Comma-separated CIDR allowlist applied to all client transports including `/metrics`.  |
+| `SOCKGUARD_CLIENTS_CONTAINER_LABELS_ENABLED`   | `clients.container_labels.enabled`        | `false`                | Resolve client containers' labels via the upstream Docker socket for label-driven rules. |
+| `SOCKGUARD_CLIENTS_CONTAINER_LABELS_LABEL_PREFIX` | `clients.container_labels.label_prefix` | `com.sockguard.allow.` | Label-key prefix Sockguard considers when matching container-label rules.              |
+| `SOCKGUARD_OWNERSHIP_OWNER`                    | `ownership.owner`                         | _empty_                | Owner identifier stamped onto every audit event and used for ownership-scoped rules.   |
+| `SOCKGUARD_OWNERSHIP_LABEL_KEY`                | `ownership.label_key`                     | `com.sockguard.owner`  | Label key Sockguard reads from container/image metadata to determine ownership.        |
+| `SOCKGUARD_OWNERSHIP_ALLOW_UNOWNED_IMAGES`     | `ownership.allow_unowned_images`          | `true`                 | Allow operations on images that lack the ownership label.                              |
 
 `response.deny_verbosity` controls how much metadata Sockguard includes in its own `403` JSON deny responses:
 
