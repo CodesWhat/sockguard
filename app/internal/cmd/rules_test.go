@@ -400,7 +400,7 @@ func TestValidateAndCompileRulesRejectsRawReadExfiltrationRulesWithoutExplicitOp
 			t.Fatalf("expected %s in error, got: %v", endpoint, err)
 		}
 	}
-	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration=true") {
+	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
 		t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
 	}
 }
@@ -419,7 +419,7 @@ func TestValidateAndCompileRulesRejectsContainerArchiveRuleWithoutReadExfiltrati
 	if !strings.Contains(err.Error(), "GET /containers/sockguard-test/archive") {
 		t.Fatalf("expected guarded container archive endpoint in error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration=true") {
+	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
 		t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
 	}
 }
