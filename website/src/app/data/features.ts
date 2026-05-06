@@ -96,7 +96,7 @@ export const features: Feature[] = [
     color: "text-emerald-500 dark:text-emerald-400",
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
-      "Opt-in Prometheus metrics expose request totals, deny counts, latency buckets, active requests, and watchdog state. The active Docker socket watchdog feeds /health and logs state transitions, while trace/log correlation works without an OTLP exporter.",
+      "Opt-in Prometheus metrics expose request totals, deny counts, latency buckets, active requests, watchdog state, plus build_info and start_time gauges for version panels and uptime alerts. The active Docker socket watchdog feeds /health and logs state transitions, while trace/log correlation works without an OTLP exporter.",
     category: "operations",
   },
   {

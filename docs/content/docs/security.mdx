@@ -115,7 +115,7 @@ The audit `ownership` object is emitted on every event. If `ownership.owner` is 
 
 Sockguard preserves valid W3C `traceparent` trace IDs and sampled flags, forwards a proxy-local span ID, and includes `trace_id`, `trace_parent_id`, `trace_span_id`, and `trace_sampled` in access, audit, and upstream reverse-proxy error logs. Invalid or absent trace context starts a fresh local trace without enabling any OTLP span exporter.
 
-When `health.watchdog.enabled` is true, Sockguard actively probes the upstream Docker socket, logs reachable/unreachable state transitions, and lets `/health` reflect the latest watchdog state. When `metrics.enabled` is true, Sockguard serves Prometheus text metrics from `/metrics` by default, including watchdog state and check counters if the watchdog is enabled. The scrape endpoint is local to Sockguard, is never forwarded to Docker, bypasses Docker API allow rules like `/health`, and remains behind listener security plus client ACLs.
+When `health.watchdog.enabled` is true, Sockguard actively probes the upstream Docker socket, logs reachable/unreachable state transitions, and lets `/health` reflect the latest watchdog state. When `metrics.enabled` is true, Sockguard serves Prometheus text metrics from `/metrics` by default, including a `sockguard_build_info{version,commit,build_date,go_version}` gauge, a `sockguard_start_time_seconds` gauge, and watchdog state and check counters if the watchdog is enabled. The scrape endpoint is local to Sockguard, is never forwarded to Docker, bypasses Docker API allow rules like `/health`, and remains behind listener security plus client ACLs.
 
 ## Dangerous Docker API Endpoints
 

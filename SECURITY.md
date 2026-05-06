@@ -7,8 +7,8 @@ Sockguard is pre-1.0 and we ship fixes on the latest minor line only. Once
 
 | Version        | Supported          |
 | -------------- | ------------------ |
-| 0.4.x (latest) | :white_check_mark: |
-| < 0.4          | :x:                |
+| 0.5.x (latest) | :white_check_mark: |
+| < 0.5          | :x:                |
 
 ## Reporting a Vulnerability
 

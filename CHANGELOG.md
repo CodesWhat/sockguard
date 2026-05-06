@@ -12,12 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added an opt-in Prometheus text-format `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, and an active request gauge.
 - Added an opt-in active upstream socket watchdog that probes Docker on an interval, logs reachability state transitions, feeds `/health`, and exports upstream state/check metrics when Prometheus metrics are enabled.
 - Added W3C `traceparent` correlation across access logs, audit events, upstream reverse-proxy error logs, forwarded requests, and responses without enabling an OTLP span exporter.
+- Added `sockguard_build_info{version,commit,build_date,go_version}` and `sockguard_start_time_seconds` gauges so Prometheus consumers can build version panels and uptime alerts without a separate exporter.
 - Added focused regression coverage across the 0.5.0 observability helpers and the 0.4.0 request-body inspectors so the CI race-mode coverage profile remains at 100.0%.
 
 ### Changed
 
 - Reconciled README, docs, verification guidance, and internal planning docs with the shipped 0.4.0 surface before starting 0.5.0 observability work.
 - Narrowed the 0.5.0 observability roadmap to Prometheus metrics, an active upstream watchdog, and trace/log correlation without committing to an OTLP exporter.
+- Tightened the published drydock preset (`app/configs/drydock.yaml`) to enumerate the inspect/list/history paths drydock actually uses, removing the broad `/containers/**`, `/images/**`, and `/services/**` allow-globs and the `insecure_allow_read_exfiltration: true` opt-in. Image rules now use `/images/**/json` and `/images/**/history` so registry-namespaced references (e.g. `linuxserver/qbittorrent:latest`) match without re-opening the raw tarball/log/attach exfiltration paths.
+- Rewrote the read-exfiltration validator's error message to explain why the streaming endpoints are dangerous, present rule-tightening as the preferred fix, and emit the suggested opt-in in YAML form (`insecure_allow_read_exfiltration: true`) so it can be pasted directly into a config.
+
+### Fixed
+
+- Fixed a metrics cardinality leak where `/images/<owner>/<repo>:<tag>/json` requests collapsed to one timeseries per image instead of `/images/{id}/json`. The `routeWithID` templating now swallows multi-segment paths into the `{id}` slot and preserves the trailing action verb, so namespaced image inspects no longer balloon Prometheus storage.
 
 ## [0.4.0] - 2026-05-04
 
