@@ -1,0 +1,264 @@
+---
+title: Observability
+description: Prometheus metrics, the active upstream watchdog, and W3C trace correlation. Wire Sockguard into Prometheus, Grafana, and your existing tracing pipeline without an OTLP exporter.
+---
+
+Sockguard exposes three observability surfaces, all opt-in or always-on with zero
+external dependencies:
+
+1. **Prometheus `/metrics`** — request counters, deny counters, latency
+   histograms, active-request gauge, build/start gauges, and watchdog state.
+   Opt-in via `metrics.enabled`.
+2. **Active upstream watchdog** — periodically dials the Docker socket, logs
+   reachable/unreachable transitions, exports state via `/health` and metrics.
+   Opt-in via `health.watchdog.enabled`.
+3. **Trace/log correlation** — preserves valid W3C `traceparent` context or
+   generates a fresh local trace, forwards a proxy-local span ID to Docker,
+   and tags access, audit, and upstream-error logs with `trace_id`,
+   `trace_span_id`, `trace_parent_id`, and `trace_sampled`. Always on, no
+   knob, no OTLP dependency.
+
+## Enable the metrics endpoint
+
+The metrics endpoint is local to Sockguard, is never forwarded to Docker,
+bypasses Docker API allow rules like `/health`, and remains behind listener
+security plus `clients.allowed_cidrs`.
+
+```yaml filename="sockguard.yaml"
+metrics:
+  enabled: true
+  path: /metrics      # default; must start with /, must differ from health.path
+
+health:
+  enabled: true
+  path: /health
+  watchdog:
+    enabled: true
+    interval: 5s      # positive duration; 1s–30s is typical
+```
+
+Equivalent environment variables:
+
+```bash
+SOCKGUARD_METRICS_ENABLED=true
+SOCKGUARD_METRICS_PATH=/metrics
+SOCKGUARD_HEALTH_WATCHDOG_ENABLED=true
+SOCKGUARD_HEALTH_WATCHDOG_INTERVAL=5s
+```
+
+`metrics.enabled` and `health.watchdog.enabled` default to `false`, so existing
+deployments stay quiet until you opt in.
+
+## Metric reference
+
+| Metric                                       | Type      | Labels                                                  | Notes                                                                                              |
+| -------------------------------------------- | --------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `sockguard_build_info`                       | gauge     | `version`, `commit`, `build_date`, `go_version`         | Constant `1`. Use for version panels and Grafana annotations.                                      |
+| `sockguard_start_time_seconds`               | gauge     | —                                                       | Unix epoch when the metrics registry was created. Use for `time() - sockguard_start_time_seconds`. |
+| `sockguard_http_requests_total`              | counter   | `decision`, `method`, `profile`, `route`, `status`      | One per completed request. `decision` ∈ `{allow, deny}`.                                           |
+| `sockguard_http_denied_requests_total`       | counter   | `profile`, `reason_code`, `route`, `rule`               | Only deny-decision rows. `rule` is the matched rule index. Use for policy-violation alerts.        |
+| `sockguard_http_request_duration_seconds`    | histogram | `decision`, `method`, `profile`, `route`                | Buckets: `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10` seconds.                        |
+| `sockguard_http_requests_active`             | gauge     | —                                                       | Currently in-flight requests. Spikes during streaming endpoints (logs/attach/events).              |
+| `sockguard_upstream_socket_up`               | gauge     | —                                                       | `1` reachable, `0` unreachable. Only emitted when `health.watchdog.enabled` is true.               |
+| `sockguard_upstream_watchdog_checks_total`   | counter   | `result`                                                | `result` ∈ `{connected, unreachable}`. Increments every interval; ratio is your error budget.      |
+
+### Label cardinality
+
+`route` is templated to bound cardinality: container/image IDs collapse to
+`{id}`, and namespaced image references like
+`/images/linuxserver/qbittorrent:latest/json` collapse to
+`/images/{id}/json`. Profile names come from `clients.client_certificate_profiles`
+or `clients.client_ip_profiles`; if neither matches, requests are tagged
+`profile="default"`.
+
+`reason_code` is a bounded enum: `matched_deny_rule`, `no_matching_allow_rule`,
+`request_body_policy_denied`, `request_body_too_large`,
+`upstream_socket_unreachable`, `upstream_response_rejected_by_policy`. New
+codes are added rarely and follow the same naming scheme.
+
+## Example scrape config
+
+Sockguard's metrics endpoint serves the Prometheus 0.0.4 text format:
+
+```yaml filename="prometheus.yml"
+scrape_configs:
+  - job_name: sockguard
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['sockguard:2375']
+```
+
+If Sockguard is behind mTLS, point Prometheus at the same TLS material:
+
+```yaml filename="prometheus.yml"
+scrape_configs:
+  - job_name: sockguard
+    metrics_path: /metrics
+    scheme: https
+    tls_config:
+      ca_file:   /etc/prometheus/sockguard-ca.pem
+      cert_file: /etc/prometheus/scraper.pem
+      key_file:  /etc/prometheus/scraper-key.pem
+    static_configs:
+      - targets: ['sockguard:2375']
+```
+
+The scraper certificate must be presented to satisfy `listen.tls`'s mTLS
+requirement; client selectors apply just like any other Sockguard caller.
+
+## Useful PromQL
+
+**Upstream socket down for more than two scrapes:**
+
+```text
+sockguard_upstream_socket_up == 0
+```
+
+Wire this to Alertmanager with `for: 30s` so a momentary blip during a
+restart doesn't page.
+
+**Deny rate by reason in the last 5 minutes:**
+
+```text
+sum by (reason_code) (rate(sockguard_http_denied_requests_total[5m]))
+```
+
+A sustained increase in `matched_deny_rule` usually means a client started
+making API calls that the policy was never expected to allow — investigate
+before relaxing the rule.
+
+**95th-percentile latency by route:**
+
+```text
+histogram_quantile(
+  0.95,
+  sum by (route, le) (rate(sockguard_http_request_duration_seconds_bucket[5m]))
+)
+```
+
+**Watchdog reachability ratio (last 1h):**
+
+```text
+sum(rate(sockguard_upstream_watchdog_checks_total{result="connected"}[1h]))
+/
+sum(rate(sockguard_upstream_watchdog_checks_total[1h]))
+```
+
+A value below `1.0` means the upstream socket flapped during the window even
+if it currently reads `up=1`.
+
+## Active upstream watchdog
+
+By default `/health` answers from a cached upstream probe taken when a real
+request comes through. That's enough for liveness, but it can lag by minutes
+when traffic is sparse. Enabling the watchdog flips Sockguard to active
+monitoring:
+
+- A goroutine dials the upstream socket every `health.watchdog.interval` and
+  records the result.
+- State transitions are logged at `WARN` (unreachable) and `INFO` (recovered)
+  with `upstream_socket`, `upstream_status`, `up`, and `error` fields. Steady
+  state produces no log noise.
+- `/health` returns the latest watchdog snapshot. Reachable: HTTP 200,
+  `{"status":"healthy","upstream":"connected",...}`. Unreachable: HTTP 503,
+  `{"status":"unhealthy","upstream":"unreachable","error":"...",...}`.
+- When `metrics.enabled` is also true, Sockguard exports
+  `sockguard_upstream_socket_up` (gauge) and
+  `sockguard_upstream_watchdog_checks_total{result=...}` (counter).
+
+### Example watchdog log lines
+
+```text filename="state-change-down.log"
+{"time":"...","level":"WARN","msg":"upstream socket watchdog state changed","upstream_socket":"/var/run/docker.sock","upstream_status":"unreachable","up":false,"error":"dial unix /var/run/docker.sock: connect: no such file or directory"}
+```
+
+```text filename="state-change-up.log"
+{"time":"...","level":"INFO","msg":"upstream socket watchdog state changed","upstream_socket":"/var/run/docker.sock","upstream_status":"connected","up":true}
+```
+
+State-change semantics are once-per-edge: the watchdog logs only when the
+reachability flips, not on every interval, so log volume scales with outages
+rather than with the configured interval.
+
+## Trace and log correlation
+
+Sockguard implements just enough of the W3C
+[Trace Context](https://www.w3.org/TR/trace-context/) spec to correlate logs
+with whatever upstream tracing system you already run. There is no config
+knob, no OTLP exporter, and no required dependency — Sockguard reads the
+`traceparent` header on the way in and writes one on the way out.
+
+### Field reference
+
+Every access log line, audit event, and upstream-error log carries:
+
+| Field             | When emitted                            | Meaning                                                                                  |
+| ----------------- | --------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `request_id`      | Always                                  | 16-byte hex Sockguard-generated request identifier. Independent of W3C trace context.    |
+| `trace_id`        | Always                                  | 32-hex W3C trace ID. Inherited from a valid incoming `traceparent`, otherwise generated. |
+| `trace_span_id`   | Always                                  | 16-hex span ID Sockguard generates for the proxied request. Always proxy-local.          |
+| `trace_parent_id` | Only when incoming `traceparent` valid  | The span ID Sockguard's span is parented to.                                             |
+| `trace_sampled`   | Always (boolean)                        | Inherited sampled flag from the incoming `traceparent`. Defaults to `false`.             |
+
+### Example: caller sends valid traceparent
+
+```bash
+curl -H 'traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01' \
+     http://sockguard:2375/version
+```
+
+Resulting access log line:
+
+```json
+{
+  "msg": "request",
+  "method": "GET",
+  "path": "/version",
+  "request_id": "9b90579488e330dc064063912617ac8f",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "trace_parent_id": "00f067aa0ba902b7",
+  "trace_span_id": "f169285fbea26125",
+  "trace_sampled": true,
+  "status": 200
+}
+```
+
+The forwarded request to Docker carries
+`traceparent: 00-4bf92f3577b34da6a3ce929d0e0e4736-f169285fbea26125-01`, so
+Docker access logs that include trace context (or a sidecar that captures
+them) join cleanly to the caller's trace.
+
+### Example: no inbound trace context
+
+When the caller doesn't send `traceparent` (or sends a malformed one), Sockguard
+generates a fresh local trace:
+
+```json
+{
+  "msg": "request",
+  "method": "GET",
+  "path": "/containers/json",
+  "request_id": "ae3e66f51bef4de76bc87a472d3a01c9",
+  "trace_id": "51f8b14be5fc5e2b3c83e9a28c098ac6",
+  "trace_span_id": "3f09e482729e5949",
+  "trace_sampled": false,
+  "status": 200
+}
+```
+
+`trace_parent_id` is omitted in this case because there is no parent span.
+
+## Production checklist
+
+- Set `metrics.enabled: true` on every deployment that has a Prometheus
+  scraper. The endpoint costs almost nothing when idle and gives you a
+  per-route deny breakdown the moment something starts misbehaving.
+- Set `health.watchdog.enabled: true` whenever the proxy can outlive a
+  Docker daemon restart (i.e. always). The 5-second default is fine; lower
+  it only if you expect sub-5s detection requirements.
+- Wire `sockguard_upstream_socket_up == 0 for 30s` into Alertmanager.
+- Send Sockguard's structured logs to your existing log pipeline; the
+  `trace_id` field joins them to whatever tracing system the caller uses.
+- If the same listener serves clients and Prometheus, gate the metrics path
+  with `clients.allowed_cidrs` so a misbehaving caller can't poll your
+  cardinality budget into oblivion.

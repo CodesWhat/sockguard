@@ -50,6 +50,7 @@
 - [✨ Features](#features)
 - [⚖️ Comparison](#comparison)
 - [⚙️ Configuration](#configuration)
+- [📈 Observability](https://getsockguard.com/docs/observability)
 - [🔧 CLI](#cli)
 - [🔄 Migrating from Tecnativa](#migrating-from-tecnativa)
 - [🗺️ Roadmap](#roadmap)
