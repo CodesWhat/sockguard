@@ -1,6 +1,6 @@
 ---
 title: Image Verification
-description: Verify sockguard images and release tarballs with cosign — keyless GitHub Actions OIDC signatures, SBOM, and SLSA build provenance.
+description: Verify sockguard images and release tarballs with cosign keyless GitHub Actions OIDC signatures.
 ---
 
 Every sockguard release is signed with [cosign](https://github.com/sigstore/cosign)
@@ -11,15 +11,20 @@ actually published.
 
 ## What cosign verifies
 
-The `cosign verify` command below checks three things at once:
+The `cosign verify` command below verifies the image signature:
 
-1. **Signature** — the image digest was signed by a workflow whose OIDC
-   identity matches the release pipeline in this repo.
-2. **SBOM attestation** — a software bill of materials was attached at
-   build time so you can audit what's inside the image.
-3. **Build provenance** — a [SLSA](https://slsa.dev) provenance
-   attestation links the image back to the specific workflow run, Git
-   SHA, and builder that produced it.
+- The image digest was signed by a workflow whose OIDC identity matches
+  the release pipeline in this repo.
+- The signature is present in Sigstore transparency metadata.
+- The certificate chains to the expected GitHub Actions OIDC issuer.
+
+The release pipeline also requests SBOM output during image build and
+publishes GitHub build-provenance attestations when repository visibility
+supports them. Treat those as separate supply-chain artifacts: validate
+the image or release tarball signature first, then inspect SBOM/provenance
+with your registry or GitHub attestation tooling when you need that extra
+evidence. A successful `cosign verify` alone does not prove SBOM or
+provenance contents.
 
 The signing identity is the full GitHub Actions workflow reference:
 
@@ -48,7 +53,7 @@ sudo mv cosign /usr/local/bin/
 ## One-liner verify
 
 Replace `<TAG>` with the release tag you're pulling (for example
-`0.3.1`, `0.3`, or `latest`):
+`0.5.0`, `0.5`, or `latest`):
 
 ```bash
 cosign verify \
@@ -81,7 +86,7 @@ digest rather than by tag — a tag can be re-pointed, a digest cannot.
 ```bash
 # Resolve the current digest for a tag
 digest=$(docker buildx imagetools inspect \
-  ghcr.io/codeswhat/sockguard:0.3.1 --format '{{json .Manifest.Digest}}' \
+  ghcr.io/codeswhat/sockguard:0.5.0 --format '{{json .Manifest.Digest}}' \
   | tr -d '"')
 
 # Verify against the digest
@@ -119,12 +124,16 @@ cosign-signed. The release workflow uploads a detached signature
 
 ```bash
 cosign verify-blob \
-  --certificate "sockguard-v0.3.1.tar.gz.pem" \
-  --signature   "sockguard-v0.3.1.tar.gz.sig" \
+  --certificate "sockguard-v0.5.0.tar.gz.pem" \
+  --signature   "sockguard-v0.5.0.tar.gz.sig" \
   --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  "sockguard-v0.3.1.tar.gz"
+  "sockguard-v0.5.0.tar.gz"
 ```
 
 Same interpretation as the image verify: a clean exit code is a
 passing signature, anything else means stop and investigate.
+
+When release provenance is published, the release also includes
+`sockguard-v<TAG>.tar.gz.intoto.jsonl`. Verify that attestation separately
+from the detached tarball signature before relying on it for SLSA evidence.

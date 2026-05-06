@@ -13,11 +13,12 @@ filesystem, and escape containment entirely.
 
 Most existing proxies stop at method/path or regex filtering. Sockguard goes further:
 
-- **Request body inspection** — `POST /containers/create` bodies are parsed to block privileged containers, host networking, and non-allowlisted bind mounts before Docker sees the request
+- **Request body inspection** — Docker write bodies across container create/update/exec/archive, image pull/load/build, volume/network/secret/config/service/swarm/node, and plugin endpoints are inspected before Docker sees the request
 - **Owner label isolation** — stamp label-capable creates and build images with an owner label, auto-filter labeled list/prune, deny cross-owner access across workload and control-plane resources
 - **Per-client policies** — gate callers by source CIDR, certificate selectors including SPKI pins, unix peer credentials, or calling container labels, then apply named profiles
 - **mTLS for remote TCP** — non-loopback TCP requires mutual TLS 1.3 by default, plaintext TCP is an explicit legacy opt-in
-- **Structured access logging** — JSON logs with method, raw path, normalized policy path, decision, matched rule, latency, canonical request ID, and preserved client request ID when present
+- **Structured access logging** — JSON logs with method, raw path, normalized policy path, decision, matched rule, latency, canonical request ID, preserved client request ID when present, and W3C trace correlation fields
+- **Operator observability** — opt-in `/metrics` scrape endpoint, active upstream watchdog signals for Docker socket reachability, and trace/log correlation without an OTLP exporter
 - **Default-deny** — everything blocked unless explicitly allowed
 - **Tecnativa compatible** — drop-in replacement for the current Tecnativa environment-variable surface
 

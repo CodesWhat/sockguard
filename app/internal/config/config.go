@@ -13,6 +13,7 @@ type Config struct {
 	Clients                       ClientsConfig     `mapstructure:"clients"`
 	Ownership                     OwnershipConfig   `mapstructure:"ownership"`
 	Health                        HealthConfig      `mapstructure:"health"`
+	Metrics                       MetricsConfig     `mapstructure:"metrics"`
 	Rules                         []RuleConfig      `mapstructure:"rules"`
 	InsecureAllowBodyBlindWrites  bool              `mapstructure:"insecure_allow_body_blind_writes"`
 	InsecureAllowReadExfiltration bool              `mapstructure:"insecure_allow_read_exfiltration"`
@@ -302,6 +303,19 @@ type OwnershipConfig struct {
 
 // HealthConfig configures the health check endpoint.
 type HealthConfig struct {
+	Enabled  bool                 `mapstructure:"enabled"`
+	Path     string               `mapstructure:"path"`
+	Watchdog HealthWatchdogConfig `mapstructure:"watchdog"`
+}
+
+// HealthWatchdogConfig configures active upstream socket monitoring.
+type HealthWatchdogConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	Interval string `mapstructure:"interval"`
+}
+
+// MetricsConfig configures the Prometheus metrics endpoint.
+type MetricsConfig struct {
 	Enabled bool   `mapstructure:"enabled"`
 	Path    string `mapstructure:"path"`
 }
@@ -386,6 +400,14 @@ func Defaults() Config {
 		Health: HealthConfig{
 			Enabled: true,
 			Path:    "/health",
+			Watchdog: HealthWatchdogConfig{
+				Enabled:  false,
+				Interval: "5s",
+			},
+		},
+		Metrics: MetricsConfig{
+			Enabled: false,
+			Path:    "/metrics",
 		},
 		Rules: []RuleConfig{
 			{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},

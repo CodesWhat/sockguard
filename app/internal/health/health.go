@@ -49,6 +49,27 @@ type healthCheckCall struct {
 	err    error
 }
 
+// WatchdogState reports one active upstream socket watchdog observation.
+type WatchdogState struct {
+	Status    string
+	Up        bool
+	Err       error
+	CheckedAt time.Time
+	Changed   bool
+}
+
+// Monitor owns upstream health checks shared by /health and the active watchdog.
+type Monitor struct {
+	upstreamSocket string
+	startTime      time.Time
+	logger         *slog.Logger
+	checker        *upstreamHealthChecker
+
+	mu       sync.RWMutex
+	last     WatchdogState
+	hasState bool
+}
+
 func newUpstreamHealthChecker(ttl, timeout time.Duration, now func() time.Time, dial dialContextFunc) *upstreamHealthChecker {
 	return &upstreamHealthChecker{
 		ttl:        ttl,
@@ -56,6 +77,28 @@ func newUpstreamHealthChecker(ttl, timeout time.Duration, now func() time.Time, 
 		timeout:    timeout,
 		now:        now,
 		dial:       dial,
+	}
+}
+
+// NewMonitor constructs a monitor for upstream Docker socket reachability.
+func NewMonitor(upstreamSocket string, startTime time.Time, logger *slog.Logger) *Monitor {
+	return newMonitorWithChecker(
+		upstreamSocket,
+		startTime,
+		logger,
+		newUpstreamHealthChecker(healthCacheTTL, healthDialTimeout, time.Now, (&net.Dialer{}).DialContext),
+	)
+}
+
+func newMonitorWithChecker(upstreamSocket string, startTime time.Time, logger *slog.Logger, checker *upstreamHealthChecker) *Monitor {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Monitor{
+		upstreamSocket: upstreamSocket,
+		startTime:      startTime,
+		logger:         logger,
+		checker:        checker,
 	}
 }
 
@@ -128,26 +171,27 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 }
 
 // Handler returns an HTTP handler for the /health endpoint.
-func Handler(upstreamSocket string, startTime time.Time, logger *slog.Logger) http.HandlerFunc {
-	checker := newUpstreamHealthChecker(healthCacheTTL, healthDialTimeout, time.Now, (&net.Dialer{}).DialContext)
-
+func (m *Monitor) Handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		uptime := time.Since(startTime).Seconds()
+		uptime := time.Since(m.startTime).Seconds()
 
-		upstreamStatus, err := checker.check(r.Context(), upstreamSocket)
-		if err != nil {
-			logger.WarnContext(r.Context(), "health check failed: upstream unreachable",
-				"error", err,
-				"upstream_socket", upstreamSocket,
+		state, ok := m.State()
+		if !ok {
+			state = m.check(r.Context())
+		}
+		if state.Err != nil {
+			m.logger.WarnContext(r.Context(), "health check failed: upstream unreachable",
+				"error", state.Err,
+				"upstream_socket", m.upstreamSocket,
 			)
 			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
 				Status:        "unhealthy",
-				Upstream:      upstreamStatus,
+				Upstream:      state.Status,
 				Error:         "upstream unreachable",
 				Version:       version.Version,
 				UptimeSeconds: int(uptime),
 			}); encErr != nil {
-				logger.WarnContext(r.Context(), "failed to encode unhealthy response",
+				m.logger.WarnContext(r.Context(), "failed to encode unhealthy response",
 					"error", encErr,
 				)
 			}
@@ -156,13 +200,98 @@ func Handler(upstreamSocket string, startTime time.Time, logger *slog.Logger) ht
 
 		if encErr := httpjson.Write(w, http.StatusOK, HealthResponse{
 			Status:        "healthy",
-			Upstream:      upstreamStatus,
+			Upstream:      state.Status,
 			Version:       version.Version,
 			UptimeSeconds: int(uptime),
 		}); encErr != nil {
-			logger.WarnContext(r.Context(), "failed to encode healthy response",
+			m.logger.WarnContext(r.Context(), "failed to encode healthy response",
 				"error", encErr,
 			)
 		}
 	}
+}
+
+// State returns the latest known upstream watchdog or health-check state.
+func (m *Monitor) State() (WatchdogState, bool) {
+	if m == nil {
+		return WatchdogState{}, false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.last, m.hasState
+}
+
+// StartWatchdog starts active upstream polling until ctx is canceled. The first
+// check runs immediately so operators do not need to wait a full interval for
+// /health and metrics to reflect an upstream outage.
+func (m *Monitor) StartWatchdog(ctx context.Context, interval time.Duration, observe func(WatchdogState)) {
+	if m == nil || interval <= 0 {
+		return
+	}
+	go m.runWatchdog(ctx, interval, observe)
+}
+
+func (m *Monitor) runWatchdog(ctx context.Context, interval time.Duration, observe func(WatchdogState)) {
+	m.emitWatchdogCheck(ctx, observe)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.emitWatchdogCheck(ctx, observe)
+		}
+	}
+}
+
+func (m *Monitor) emitWatchdogCheck(ctx context.Context, observe func(WatchdogState)) {
+	state := m.check(ctx)
+	if observe != nil {
+		observe(state)
+	}
+	if !state.Changed {
+		return
+	}
+	level := slog.LevelInfo
+	if !state.Up {
+		level = slog.LevelWarn
+	}
+	attrs := []slog.Attr{
+		slog.String("upstream_socket", m.upstreamSocket),
+		slog.String("upstream_status", state.Status),
+		slog.Bool("up", state.Up),
+	}
+	if state.Err != nil {
+		attrs = append(attrs, slog.String("error", state.Err.Error()))
+	}
+	m.logger.LogAttrs(ctx, level, "upstream socket watchdog state changed", attrs...)
+}
+
+func (m *Monitor) check(ctx context.Context) WatchdogState {
+	status, err := m.checker.check(ctx, m.upstreamSocket)
+	return m.storeState(status, err)
+}
+
+func (m *Monitor) storeState(status string, err error) WatchdogState {
+	state := WatchdogState{
+		Status:    status,
+		Up:        err == nil,
+		Err:       err,
+		CheckedAt: time.Now(),
+	}
+
+	m.mu.Lock()
+	state.Changed = m.hasState && m.last.Up != state.Up
+	m.last = state
+	m.hasState = true
+	m.mu.Unlock()
+
+	return state
+}
+
+// Handler returns an HTTP handler for the /health endpoint.
+func Handler(upstreamSocket string, startTime time.Time, logger *slog.Logger) http.HandlerFunc {
+	return NewMonitor(upstreamSocket, startTime, logger).Handler()
 }

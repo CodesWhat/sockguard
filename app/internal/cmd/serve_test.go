@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -18,12 +19,15 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/health"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/metrics"
 	"github.com/codeswhat/sockguard/internal/testcert"
 )
 
@@ -778,6 +782,66 @@ func TestHealthInterceptorFallsThrough(t *testing.T) {
 	}
 }
 
+func TestMetricsInterceptor(t *testing.T) {
+	metricsReached := false
+	nextReached := false
+
+	metricsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		metricsReached = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextReached = true
+		w.WriteHeader(http.StatusTeapot)
+	})
+
+	handler := metricsInterceptor("/metrics", metricsHandler, nextHandler)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !metricsReached {
+		t.Fatal("expected metrics handler to be reached")
+	}
+	if nextReached {
+		t.Fatal("did not expect next handler to be reached")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMetricsInterceptorFallsThrough(t *testing.T) {
+	metricsReached := false
+	nextReached := false
+
+	metricsHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		metricsReached = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextReached = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := metricsInterceptor("/metrics", metricsHandler, nextHandler)
+
+	req := httptest.NewRequest(http.MethodPost, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if metricsReached {
+		t.Fatal("did not expect metrics handler to be reached")
+	}
+	if !nextReached {
+		t.Fatal("expected next handler to be reached")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
 func TestBuildServeHandlerFiltersHijackEndpointsBeforeHijackHandler(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Upstream.Socket = shortSocketPath(t, "missing-hijack-upstream")
@@ -823,6 +887,63 @@ func TestBuildServeHandlerClientACLWrapsHealthInterceptor(t *testing.T) {
 	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.RemoteAddr = "192.0.2.10:12345"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "client IP not allowed") {
+		t.Fatalf("expected client ACL denial body, got: %s", rec.Body.String())
+	}
+}
+
+func TestBuildServeHandlerMetricsEndpointBypassesDockerRules(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "missing-metrics-upstream")
+	cfg.Metrics.Enabled = true
+	cfg.Log.AccessLog = false
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "sockguard_http_requests_total") {
+		t.Fatalf("expected Prometheus metrics body, got: %s", rec.Body.String())
+	}
+}
+
+func TestBuildServeHandlerClientACLWrapsMetricsInterceptor(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "missing-metrics-acl-upstream")
+	cfg.Metrics.Enabled = true
+	cfg.Log.AccessLog = false
+	cfg.Clients.AllowedCIDRs = []string{"10.0.0.0/8"}
+
+	rules, err := compileRuleConfigsForTest([]config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
+	})
+	if err != nil {
+		t.Fatalf("compile rules: %v", err)
+	}
+
+	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -1326,6 +1447,7 @@ func TestBuildServeHandlerAuditEventCapturesUpstreamFailure(t *testing.T) {
 func TestBuildServeHandlerLayers(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Health.Enabled = true
+	cfg.Metrics.Enabled = true
 	cfg.Log.AccessLog = true
 	cfg.Log.Audit.Enabled = true
 
@@ -1339,7 +1461,10 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 		"withVisibility",
 		"withFilter",
 		"withHealth",
+		"withMetricsEndpoint",
 		"withClientACL",
+		"withMetrics",
+		"withTraceContext",
 		"withRequestID",
 		"withAuditLog",
 		"withAccessLog",
@@ -1349,6 +1474,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 	}
 
 	cfg.Health.Enabled = false
+	cfg.Metrics.Enabled = false
 	cfg.Log.AccessLog = false
 	cfg.Log.Audit.Enabled = false
 
@@ -1359,11 +1485,111 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 		"withVisibility",
 		"withFilter",
 		"withClientACL",
+		"withTraceContext",
 		"withRequestID",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("layer names without optional middleware = %#v, want %#v", got, want)
 	}
+}
+
+func TestNewServeRuntimeBuildsEnabledObservability(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "runtime-upstream")
+	cfg.Health.Enabled = true
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Metrics.Enabled = true
+
+	runtime := newServeRuntime(&cfg, newDiscardLogger(), newServeTestDeps())
+	if runtime.metrics == nil {
+		t.Fatal("metrics registry is nil, want enabled registry")
+	}
+	if runtime.health == nil {
+		t.Fatal("health monitor is nil, want enabled monitor")
+	}
+
+	cfg.Health.Enabled = false
+	cfg.Health.Watchdog.Enabled = false
+	cfg.Metrics.Enabled = false
+	runtime = newServeRuntime(&cfg, newDiscardLogger(), newServeTestDeps())
+	if runtime.metrics != nil {
+		t.Fatal("metrics registry is non-nil, want disabled registry")
+	}
+	if runtime.health != nil {
+		t.Fatal("health monitor is non-nil, want disabled monitor")
+	}
+}
+
+func TestServeRuntimeStartWatchdogNoopBranches(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "watchdog-noop-upstream")
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "1s"
+
+	var nilRuntime *serveRuntime
+	nilRuntime.startWatchdog(context.Background(), &cfg)()
+
+	(&serveRuntime{}).startWatchdog(context.Background(), &cfg)()
+
+	runtime := &serveRuntime{
+		health: health.NewMonitor(cfg.Upstream.Socket, time.Now(), newDiscardLogger()),
+	}
+	cfg.Health.Watchdog.Enabled = false
+	runtime.startWatchdog(context.Background(), &cfg)()
+
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "soon"
+	runtime.startWatchdog(context.Background(), &cfg)()
+
+	cfg.Health.Watchdog.Interval = "0s"
+	runtime.startWatchdog(context.Background(), &cfg)()
+}
+
+func TestServeRuntimeStartWatchdogFeedsMetrics(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "watchdog-metrics-upstream")
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "1h"
+
+	runtime := &serveRuntime{
+		metrics: metrics.NewRegistry(),
+		health:  health.NewMonitor(cfg.Upstream.Socket, time.Now(), newDiscardLogger()),
+	}
+	stop := runtime.startWatchdog(context.Background(), &cfg)
+	t.Cleanup(stop)
+
+	eventually(t, func() bool {
+		state, ok := runtime.health.State()
+		return ok && !state.Up && state.Status == "unreachable"
+	})
+
+	rec := httptest.NewRecorder()
+	runtime.metrics.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "sockguard_upstream_socket_up 0") {
+		t.Fatalf("metrics body missing upstream socket gauge:\n%s", body)
+	}
+	if !strings.Contains(body, `sockguard_upstream_watchdog_checks_total{result="unreachable"} 1`) {
+		t.Fatalf("metrics body missing watchdog unreachable counter:\n%s", body)
+	}
+}
+
+func TestServeRuntimeStartWatchdogWithoutMetricsStillStoresState(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "watchdog-health-upstream")
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "1h"
+
+	runtime := &serveRuntime{
+		health: health.NewMonitor(cfg.Upstream.Socket, time.Now(), newDiscardLogger()),
+	}
+	stop := runtime.startWatchdog(context.Background(), &cfg)
+	t.Cleanup(stop)
+
+	eventually(t, func() bool {
+		state, ok := runtime.health.State()
+		return ok && !state.Up && state.Status == "unreachable"
+	})
 }
 
 func TestListenerAddr(t *testing.T) {
@@ -1393,6 +1619,22 @@ func serveHandlerLayerNames(layers []serveHandlerLayer) []string {
 		names = append(names, layer.name)
 	}
 	return names
+}
+
+func eventually(t *testing.T, ok func() bool) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ok() {
+		return
+	}
+	t.Fatal("condition was not met before timeout")
 }
 
 func TestFullMiddlewareChainIntegration(t *testing.T) {

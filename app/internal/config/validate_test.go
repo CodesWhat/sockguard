@@ -298,6 +298,62 @@ func TestValidateInvalidHealthPath(t *testing.T) {
 	}
 }
 
+func TestValidateInvalidMetricsPath(t *testing.T) {
+	cfg := Defaults()
+	cfg.Metrics.Enabled = true
+	cfg.Metrics.Path = "metrics"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid metrics path")
+	}
+	if !strings.Contains(err.Error(), `metrics.path must start with /, got "metrics"`) {
+		t.Errorf("error should mention metrics.path, got: %v", err)
+	}
+}
+
+func TestValidateMetricsHealthPathConflict(t *testing.T) {
+	cfg := Defaults()
+	cfg.Metrics.Enabled = true
+	cfg.Metrics.Path = cfg.Health.Path
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for metrics and health path conflict")
+	}
+	if !strings.Contains(err.Error(), `metrics.path must not equal health.path when both endpoints are enabled, got "/health"`) {
+		t.Errorf("error should mention metrics/health path conflict, got: %v", err)
+	}
+}
+
+func TestValidateInvalidHealthWatchdogInterval(t *testing.T) {
+	cfg := Defaults()
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "soon"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid health watchdog interval")
+	}
+	if !strings.Contains(err.Error(), `health.watchdog.interval must be a positive duration, got "soon"`) {
+		t.Errorf("error should mention health.watchdog.interval, got: %v", err)
+	}
+}
+
+func TestValidateNonPositiveHealthWatchdogInterval(t *testing.T) {
+	cfg := Defaults()
+	cfg.Health.Watchdog.Enabled = true
+	cfg.Health.Watchdog.Interval = "0s"
+
+	err := Validate(&cfg)
+	if err == nil {
+		t.Fatal("expected error for non-positive health watchdog interval")
+	}
+	if !strings.Contains(err.Error(), `health.watchdog.interval must be a positive duration, got "0s"`) {
+		t.Errorf("error should mention positive health.watchdog.interval, got: %v", err)
+	}
+}
+
 func TestValidateInvalidDenyResponseVerbosity(t *testing.T) {
 	cfg := Defaults()
 	cfg.Response.DenyVerbosity = "chatty"

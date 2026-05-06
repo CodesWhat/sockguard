@@ -24,7 +24,7 @@ func TestAuditLogMiddlewareEmitsDedicatedEventSchema(t *testing.T) {
 	handler := AuditLogMiddleware(auditLogger, AuditOptions{
 		OwnershipOwner:    "ci-job-123",
 		OwnershipLabelKey: "com.sockguard.owner",
-	})(RequestIDMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	})(RequestIDMiddleware()(TraceContextMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		meta := MetaFromResponseWriter(w)
 		if meta == nil {
 			t.Fatal("expected request meta on wrapped response writer")
@@ -37,11 +37,12 @@ func TestAuditLogMiddlewareEmitsDedicatedEventSchema(t *testing.T) {
 		meta.Profile = "watchtower"
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"message":"denied"}`))
-	})))
+	}))))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1.45/_ping", nil)
 	req.RemoteAddr = "203.0.113.10:4444"
 	req.Header.Set(requestIDHeader, "client-123")
+	req.Header.Set(traceparentHeader, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -92,6 +93,18 @@ func TestAuditLogMiddlewareEmitsDedicatedEventSchema(t *testing.T) {
 	}
 	if got := event["client_request_id"]; got != "client-123" {
 		t.Fatalf("client_request_id = %#v, want %q", got, "client-123")
+	}
+	if got := event["trace_id"]; got != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Fatalf("trace_id = %#v, want W3C trace id", got)
+	}
+	if got := event["trace_parent_id"]; got != "00f067aa0ba902b7" {
+		t.Fatalf("trace_parent_id = %#v, want incoming parent id", got)
+	}
+	if got := event["trace_span_id"]; got == "" || got == "00f067aa0ba902b7" {
+		t.Fatalf("trace_span_id = %#v, want generated proxy span id", got)
+	}
+	if got := event["trace_sampled"]; got != true {
+		t.Fatalf("trace_sampled = %#v, want true", got)
 	}
 
 	if got := event["actor_remote_addr"]; got != "203.0.113.10:4444" {

@@ -319,6 +319,28 @@ func TestValidateAndCompileRulesRejectsPluginSetWithoutAllowedEnvPrefixes(t *tes
 	}
 }
 
+func TestBodyInspectionConfiguredForEndpointRejectsUnknownEndpoint(t *testing.T) {
+	requestBody := config.RequestBodyConfig{
+		Exec: config.ExecRequestBodyConfig{
+			AllowedCommands: [][]string{{"/bin/true"}},
+		},
+		Swarm: config.SwarmRequestBodyConfig{
+			AllowedJoinRemoteAddrs: []string{"manager.internal:2377"},
+		},
+		Plugin: config.PluginRequestBodyConfig{
+			AllowedSetEnvPrefixes: []string{"DEBUG="},
+		},
+	}
+	endpoint := bodySensitiveWriteEndpoint{
+		method: http.MethodPost,
+		path:   "/future/body-sensitive",
+	}
+
+	if bodyInspectionConfiguredForEndpoint(requestBody, endpoint) {
+		t.Fatal("expected unknown endpoint to be treated as not body-inspected")
+	}
+}
+
 func TestValidateAndCompileRulesRejectsOnlyExecAndPluginSetWhenTheirRequiredPolicyIsMissing(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{
@@ -378,7 +400,7 @@ func TestValidateAndCompileRulesRejectsRawReadExfiltrationRulesWithoutExplicitOp
 			t.Fatalf("expected %s in error, got: %v", endpoint, err)
 		}
 	}
-	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration=true") {
+	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
 		t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
 	}
 }
@@ -397,7 +419,7 @@ func TestValidateAndCompileRulesRejectsContainerArchiveRuleWithoutReadExfiltrati
 	if !strings.Contains(err.Error(), "GET /containers/sockguard-test/archive") {
 		t.Fatalf("expected guarded container archive endpoint in error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration=true") {
+	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
 		t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
 	}
 }

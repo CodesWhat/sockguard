@@ -21,6 +21,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/health"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/metrics"
 	"github.com/codeswhat/sockguard/internal/ownership"
 	"github.com/codeswhat/sockguard/internal/proxy"
 	"github.com/codeswhat/sockguard/internal/responsefilter"
@@ -108,7 +109,8 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return err
 	}
 
-	handler := buildServeHandler(cfg, logger, auditLogger, rules, deps)
+	runtime := newServeRuntime(cfg, logger, deps)
+	handler := buildServeHandlerWithRuntime(cfg, logger, auditLogger, rules, deps, runtime)
 	listener, err := deps.createServeListener(cfg)
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
@@ -145,6 +147,8 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	)
 
 	errCh := make(chan error, 1)
+	stopWatchdog := runtime.startWatchdog(context.Background(), cfg)
+	defer stopWatchdog()
 	go deps.startServing(server, listener, errCh)
 
 	sigCh := make(chan os.Signal, 1)
@@ -158,6 +162,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 			return fmt.Errorf("server error: %w", err)
 		}
 	}
+	stopWatchdog()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), deps.shutdownGracePeriod)
 	defer cancel()
@@ -175,6 +180,10 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 }
 
 func buildServeHandler(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
+	return buildServeHandlerWithRuntime(cfg, logger, auditLogger, rules, deps, newServeRuntime(cfg, logger, deps))
+}
+
+func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime) http.Handler {
 	clientProfiles, err := buildServeClientProfiles(cfg)
 	if err != nil {
 		logger.Error("invalid client profile config", "error", err)
@@ -182,10 +191,46 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, auditLogger *log
 	}
 
 	handler := newServeUpstreamHandler(cfg, logger)
-	for _, layer := range buildServeHandlerLayers(cfg, logger, auditLogger, rules, deps, clientProfiles) {
+	for _, layer := range buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, runtime) {
 		handler = layer.with(handler)
 	}
 	return handler
+}
+
+type serveRuntime struct {
+	metrics *metrics.Registry
+	health  *health.Monitor
+}
+
+func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) *serveRuntime {
+	runtime := &serveRuntime{}
+	if cfg.Metrics.Enabled {
+		runtime.metrics = metrics.NewRegistry()
+	}
+	if cfg.Health.Enabled || cfg.Health.Watchdog.Enabled {
+		runtime.health = health.NewMonitor(cfg.Upstream.Socket, deps.now(), logger)
+	}
+	return runtime
+}
+
+func (r *serveRuntime) startWatchdog(ctx context.Context, cfg *config.Config) func() {
+	if r == nil || r.health == nil || !cfg.Health.Watchdog.Enabled {
+		return func() {}
+	}
+	interval, err := time.ParseDuration(cfg.Health.Watchdog.Interval)
+	if err != nil || interval <= 0 {
+		return func() {}
+	}
+
+	watchdogCtx, cancel := context.WithCancel(ctx)
+	r.health.StartWatchdog(watchdogCtx, interval, func(state health.WatchdogState) {
+		if r.metrics == nil {
+			return
+		}
+		r.metrics.ObserveUpstreamWatchdog(state.Up)
+		r.metrics.SetUpstreamSocketState(state.Up)
+	})
+	return cancel
 }
 
 type serveHandlerLayer struct {
@@ -221,6 +266,10 @@ func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handl
 }
 
 func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy) []serveHandlerLayer {
+	return buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, newServeRuntime(cfg, logger, deps))
+}
+
+func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy, runtime *serveRuntime) []serveHandlerLayer {
 	layers := []serveHandlerLayer{
 		namedServeHandlerLayer("withHijack", withHijack(cfg, logger)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, logger)),
@@ -228,10 +277,19 @@ func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogge
 		namedServeHandlerLayer("withFilter", withFilter(cfg, logger, rules, clientProfiles)),
 	}
 	if cfg.Health.Enabled {
-		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, logger, deps)))
+		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, logger, deps, runtime)))
+	}
+	if runtime != nil && runtime.metrics != nil {
+		layers = append(layers, namedServeHandlerLayer("withMetricsEndpoint", withMetricsEndpoint(cfg, runtime.metrics)))
 	}
 	layers = append(layers,
 		namedServeHandlerLayer("withClientACL", withClientACL(cfg, logger)),
+	)
+	if runtime != nil && runtime.metrics != nil {
+		layers = append(layers, namedServeHandlerLayer("withMetrics", withMetrics(runtime.metrics)))
+	}
+	layers = append(layers,
+		namedServeHandlerLayer("withTraceContext", withTraceContext()),
 		namedServeHandlerLayer("withRequestID", withRequestID()),
 	)
 	if cfg.Log.Audit.Enabled && auditLogger != nil {
@@ -275,12 +333,26 @@ func withFilter(cfg *config.Config, logger *slog.Logger, rules []*filter.Compile
 	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, clientProfiles))
 }
 
-func withHealth(cfg *config.Config, logger *slog.Logger, deps *serveDeps) func(http.Handler) http.Handler {
-	startTime := deps.now()
-	healthHandler := health.Handler(cfg.Upstream.Socket, startTime, logger)
+func withHealth(cfg *config.Config, logger *slog.Logger, deps *serveDeps, runtime *serveRuntime) func(http.Handler) http.Handler {
+	monitor := health.NewMonitor(cfg.Upstream.Socket, deps.now(), logger)
+	if runtime != nil && runtime.health != nil {
+		monitor = runtime.health
+	}
+	healthHandler := monitor.Handler()
 	return func(next http.Handler) http.Handler {
 		return healthInterceptor(cfg.Health.Path, healthHandler, next)
 	}
+}
+
+func withMetricsEndpoint(cfg *config.Config, registry *metrics.Registry) func(http.Handler) http.Handler {
+	metricsHandler := registry.Handler()
+	return func(next http.Handler) http.Handler {
+		return metricsInterceptor(cfg.Metrics.Path, metricsHandler, next)
+	}
+}
+
+func withMetrics(registry *metrics.Registry) func(http.Handler) http.Handler {
+	return registry.Middleware()
 }
 
 func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
@@ -289,6 +361,10 @@ func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) h
 
 func withRequestID() func(http.Handler) http.Handler {
 	return logging.RequestIDMiddleware()
+}
+
+func withTraceContext() func(http.Handler) http.Handler {
+	return logging.TraceContextMiddleware()
 }
 
 func withAccessLog(logger *slog.Logger) func(http.Handler) http.Handler {
@@ -505,6 +581,17 @@ func healthInterceptor(path string, healthHandler http.Handler, next http.Handle
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == path {
 			healthHandler.ServeHTTP(w, r)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// metricsInterceptor short-circuits metrics scrape requests before they hit Docker API filtering.
+func metricsInterceptor(path string, metricsHandler http.Handler, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == path {
+			metricsHandler.ServeHTTP(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)

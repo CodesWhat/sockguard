@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/pkipin"
 )
@@ -93,6 +94,18 @@ func validateBasic(cfg *Config) []string {
 	// Health path starts with /
 	if cfg.Health.Enabled && !strings.HasPrefix(cfg.Health.Path, "/") {
 		errs = append(errs, fmt.Sprintf("health.path must start with /, got %q", cfg.Health.Path))
+	}
+	if cfg.Health.Watchdog.Enabled {
+		interval, err := time.ParseDuration(cfg.Health.Watchdog.Interval)
+		if err != nil || interval <= 0 {
+			errs = append(errs, fmt.Sprintf("health.watchdog.interval must be a positive duration, got %q", cfg.Health.Watchdog.Interval))
+		}
+	}
+	if cfg.Metrics.Enabled && !strings.HasPrefix(cfg.Metrics.Path, "/") {
+		errs = append(errs, fmt.Sprintf("metrics.path must start with /, got %q", cfg.Metrics.Path))
+	}
+	if cfg.Health.Enabled && cfg.Metrics.Enabled && cfg.Health.Path == cfg.Metrics.Path {
+		errs = append(errs, fmt.Sprintf("metrics.path must not equal health.path when both endpoints are enabled, got %q", cfg.Metrics.Path))
 	}
 
 	errs = append(errs, validateRequestBody(cfg)...)

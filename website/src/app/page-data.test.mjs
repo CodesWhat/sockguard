@@ -5,7 +5,7 @@ import { comparisonRows } from "./data/comparison-rows.ts";
 import { features } from "./data/features.ts";
 
 test("website features live in extracted data modules", () => {
-  assert.equal(features.length, 12);
+  assert.equal(features.length, 13);
   assert.deepEqual(
     features.map((feature) => feature.title),
     [
@@ -16,6 +16,7 @@ test("website features live in extracted data modules", () => {
       "Client ACL Primitives",
       "Granular Control",
       "Structured Access Logging",
+      "Operator Observability",
       "YAML Configuration",
       "Tecnativa Compatible",
       "Minimal Attack Surface",
@@ -30,7 +31,7 @@ test("website features live in extracted data modules", () => {
 });
 
 test("website comparison rows live in extracted data modules", () => {
-  assert.equal(comparisonRows.length, 10);
+  assert.equal(comparisonRows.length, 13);
 
   const requestBodyRow = comparisonRows.find((row) => row.feature === "Request body inspection");
   assert.ok(requestBodyRow);
@@ -51,6 +52,9 @@ test("website comparison rows live in extracted data modules", () => {
   assert.ok(comparisonRows.find((row) => row.feature === "Read-side visibility / redaction"));
   assert.ok(comparisonRows.find((row) => row.feature === "Structured access logs"));
   assert.ok(comparisonRows.find((row) => row.feature === "Dedicated audit log schema"));
+  assert.ok(comparisonRows.find((row) => row.feature === "Prometheus metrics"));
+  assert.ok(comparisonRows.find((row) => row.feature === "Active upstream watchdog"));
+  assert.ok(comparisonRows.find((row) => row.feature === "Trace/log correlation"));
 
   assert.equal(comparisonRows.at(-1)?.feature, "YAML config");
 });

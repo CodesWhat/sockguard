@@ -40,6 +40,10 @@ type RequestMeta struct {
 	NormPath        string
 	Profile         string
 	ClientRequestID string
+	TraceID         string
+	TraceParentID   string
+	TraceSpanID     string
+	TraceFlags      string
 }
 
 type requestMetaCarrier interface {
@@ -328,6 +332,18 @@ func appendCorrelationAttrs(attrs []slog.Attr, r *http.Request, meta *RequestMet
 		}
 		if meta.Reason != "" {
 			attrs = append(attrs, slog.String("reason", meta.Reason))
+		}
+		if meta.TraceID != "" {
+			attrs = append(attrs, slog.String("trace_id", meta.TraceID))
+		}
+		if meta.TraceParentID != "" {
+			attrs = append(attrs, slog.String("trace_parent_id", meta.TraceParentID))
+		}
+		if meta.TraceSpanID != "" {
+			attrs = append(attrs, slog.String("trace_span_id", meta.TraceSpanID))
+		}
+		if meta.TraceFlags != "" {
+			attrs = append(attrs, slog.Bool("trace_sampled", traceSampled(meta.TraceFlags)))
 		}
 	}
 

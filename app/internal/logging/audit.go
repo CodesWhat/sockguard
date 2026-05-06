@@ -85,6 +85,10 @@ type auditEvent struct {
 	Timestamp         string                `json:"timestamp"`
 	RequestID         string                `json:"request_id"`
 	ClientRequestID   string                `json:"client_request_id"`
+	TraceID           string                `json:"trace_id"`
+	TraceParentID     string                `json:"trace_parent_id"`
+	TraceSpanID       string                `json:"trace_span_id"`
+	TraceSampled      bool                  `json:"trace_sampled"`
 	Method            string                `json:"method"`
 	RawPath           string                `json:"raw_path"`        // Raw client URL path, for forensic replay.
 	NormalizedPath    string                `json:"normalized_path"` // Canonical policy path, for SIEM correlation.
@@ -141,6 +145,10 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 				Timestamp:         logger.now(),
 				RequestID:         requestIDFromRequest(r),
 				ClientRequestID:   clientRequestIDForRequest(r, meta),
+				TraceID:           meta.TraceID,
+				TraceParentID:     meta.TraceParentID,
+				TraceSpanID:       meta.TraceSpanID,
+				TraceSampled:      traceSampled(meta.TraceFlags),
 				Method:            requestMethod(r),
 				RawPath:           requestPath(r),
 				NormalizedPath:    meta.NormPath,

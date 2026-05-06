@@ -51,7 +51,7 @@ ALLOW_RESTARTS=1
 
 ## From wollomatic/socket-proxy
 
-wollomatic already does more than a basic path gate: regex allowlists per method, IP or hostname admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, and a filtered unix-socket endpoint. Sockguard's migration story is mostly direct, but not every concept is a 1:1 swap yet.
+wollomatic already does more than a basic path gate: regex allowlists per method, IP or hostname admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, active upstream watchdog checks, and a filtered unix-socket endpoint. Sockguard's migration story is mostly direct: body policy, named profiles, mTLS selectors, owner isolation, Prometheus metrics, trace/log correlation, and read-side visibility are the main upgrades; hostname admission maps best to mTLS DNS/URI selectors, CIDRs, unix peers, or container labels.
 
 | wollomatic | sockguard |
 |-----------|-----------|

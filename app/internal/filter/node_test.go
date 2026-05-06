@@ -245,6 +245,80 @@ func TestNodeInspectOversizedBody(t *testing.T) {
 	}
 }
 
+func TestNodeInspectEmptyBodyReturnsEmpty(t *testing.T) {
+	policy := newNodePolicy(NodeOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/nodes/node-1/update", strings.NewReader(""))
+
+	reason, err := policy.inspect(nil, req, "/nodes/node-1/update")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestNodeInspectFieldDecodeErrorsDeferToDocker(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "role", body: `{"Role":42}`},
+		{name: "availability", body: `{"Availability":42}`},
+		{name: "name", body: `{"Name":42}`},
+		{name: "labels", body: `{"Labels":[]}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := &collectingHandler{}
+			logger := slog.New(logs)
+			policy := newNodePolicy(NodeOptions{})
+			req := httptest.NewRequest(http.MethodPost, "/nodes/node-1/update", strings.NewReader(tt.body))
+
+			reason, err := policy.inspect(logger, req, "/nodes/node-1/update")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != "" {
+				t.Fatalf("reason = %q, want empty", reason)
+			}
+			if records := logs.snapshot(); len(records) != 1 {
+				t.Fatalf("log records = %d, want 1", len(records))
+			}
+		})
+	}
+}
+
+func TestNodeConfiguredLabelOnlyEdgeCases(t *testing.T) {
+	policy := newNodePolicy(NodeOptions{})
+	if policy.allowsConfiguredLabelOnly(nil) {
+		t.Fatal("allowsConfiguredLabelOnly(nil) = true, want false")
+	}
+	if policy.allowsConfiguredLabelOnly(map[string]string{defaultOwnerLabelKey: ""}) {
+		t.Fatal("allowsConfiguredLabelOnly(empty owner label) = true, want false")
+	}
+}
+
+func TestNodeFieldHelpersCoverNullAndInvalidValues(t *testing.T) {
+	if value, present, err := nodeStringField(json.RawMessage("null")); err != nil || present || value != "" {
+		t.Fatalf("nodeStringField(null) = %q, %v, %v; want empty, false, nil", value, present, err)
+	}
+	if value, present, err := nodeStringField(json.RawMessage("42")); err == nil || !present || value != "" {
+		t.Fatalf("nodeStringField(number) = %q, %v, %v; want empty, true, error", value, present, err)
+	}
+
+	if labels, present, err := nodeLabelsField(nil); err != nil || present || labels != nil {
+		t.Fatalf("nodeLabelsField(nil) = %#v, %v, %v; want nil, false, nil", labels, present, err)
+	}
+	if labels, present, err := nodeLabelsField(json.RawMessage("null")); err != nil || !present || labels != nil {
+		t.Fatalf("nodeLabelsField(null) = %#v, %v, %v; want nil, true, nil", labels, present, err)
+	}
+	if labels, present, err := nodeLabelsField(json.RawMessage("[]")); err == nil || !present || labels != nil {
+		t.Fatalf("nodeLabelsField(array) = %#v, %v, %v; want nil, true, error", labels, present, err)
+	}
+}
+
 func TestMiddlewareDeniesNodeUpdateNameChangeWhenRuleAllows(t *testing.T) {
 	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/nodes/*/update", Action: ActionAllow, Index: 0})
 	if err != nil {

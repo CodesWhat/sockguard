@@ -108,6 +108,18 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.Log.Audit.Output != defaults.Log.Audit.Output {
 		t.Errorf("Log.Audit.Output = %q, want %q", cfg.Log.Audit.Output, defaults.Log.Audit.Output)
 	}
+	if cfg.Health.Watchdog.Enabled != defaults.Health.Watchdog.Enabled {
+		t.Errorf("Health.Watchdog.Enabled = %v, want %v", cfg.Health.Watchdog.Enabled, defaults.Health.Watchdog.Enabled)
+	}
+	if cfg.Health.Watchdog.Interval != defaults.Health.Watchdog.Interval {
+		t.Errorf("Health.Watchdog.Interval = %q, want %q", cfg.Health.Watchdog.Interval, defaults.Health.Watchdog.Interval)
+	}
+	if cfg.Metrics.Enabled != defaults.Metrics.Enabled {
+		t.Errorf("Metrics.Enabled = %v, want %v", cfg.Metrics.Enabled, defaults.Metrics.Enabled)
+	}
+	if cfg.Metrics.Path != defaults.Metrics.Path {
+		t.Errorf("Metrics.Path = %q, want %q", cfg.Metrics.Path, defaults.Metrics.Path)
+	}
 	if cfg.Response.DenyVerbosity != defaults.Response.DenyVerbosity {
 		t.Errorf("Response.DenyVerbosity = %q, want %q", cfg.Response.DenyVerbosity, defaults.Response.DenyVerbosity)
 	}
@@ -303,6 +315,13 @@ upstream:
   socket: /custom/docker.sock
 log:
   level: debug
+health:
+  watchdog:
+    enabled: true
+    interval: 250ms
+metrics:
+  enabled: true
+  path: /custom-metrics
 response:
   deny_verbosity: minimal
   redact_container_env: false
@@ -410,6 +429,18 @@ rules:
 	}
 	if cfg.Log.Level != "debug" {
 		t.Errorf("Log.Level = %q, want debug", cfg.Log.Level)
+	}
+	if !cfg.Health.Watchdog.Enabled {
+		t.Errorf("Health.Watchdog.Enabled = %v, want true", cfg.Health.Watchdog.Enabled)
+	}
+	if cfg.Health.Watchdog.Interval != "250ms" {
+		t.Errorf("Health.Watchdog.Interval = %q, want 250ms", cfg.Health.Watchdog.Interval)
+	}
+	if !cfg.Metrics.Enabled {
+		t.Errorf("Metrics.Enabled = %v, want true", cfg.Metrics.Enabled)
+	}
+	if cfg.Metrics.Path != "/custom-metrics" {
+		t.Errorf("Metrics.Path = %q, want /custom-metrics", cfg.Metrics.Path)
 	}
 	if cfg.Response.DenyVerbosity != "minimal" {
 		t.Errorf("Response.DenyVerbosity = %q, want minimal", cfg.Response.DenyVerbosity)
@@ -793,6 +824,10 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("SOCKGUARD_UPSTREAM_SOCKET", "/env/docker.sock")
 	t.Setenv("SOCKGUARD_LOG_LEVEL", "warn")
 	t.Setenv("SOCKGUARD_LOG_OUTPUT", "stdout")
+	t.Setenv("SOCKGUARD_HEALTH_WATCHDOG_ENABLED", "true")
+	t.Setenv("SOCKGUARD_HEALTH_WATCHDOG_INTERVAL", "750ms")
+	t.Setenv("SOCKGUARD_METRICS_ENABLED", "true")
+	t.Setenv("SOCKGUARD_METRICS_PATH", "/env-metrics")
 	t.Setenv("SOCKGUARD_RESPONSE_DENY_VERBOSITY", "minimal")
 	t.Setenv("SOCKGUARD_RESPONSE_REDACT_SENSITIVE_DATA", "false")
 	t.Setenv("SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP", "true")
@@ -834,6 +869,18 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 	if cfg.Log.Output != "stdout" {
 		t.Errorf("Log.Output = %q, want stdout", cfg.Log.Output)
+	}
+	if !cfg.Health.Watchdog.Enabled {
+		t.Errorf("Health.Watchdog.Enabled = %v, want true", cfg.Health.Watchdog.Enabled)
+	}
+	if cfg.Health.Watchdog.Interval != "750ms" {
+		t.Errorf("Health.Watchdog.Interval = %q, want 750ms", cfg.Health.Watchdog.Interval)
+	}
+	if !cfg.Metrics.Enabled {
+		t.Errorf("Metrics.Enabled = %v, want true", cfg.Metrics.Enabled)
+	}
+	if cfg.Metrics.Path != "/env-metrics" {
+		t.Errorf("Metrics.Path = %q, want /env-metrics", cfg.Metrics.Path)
 	}
 	if cfg.Response.DenyVerbosity != "minimal" {
 		t.Errorf("Response.DenyVerbosity = %q, want minimal", cfg.Response.DenyVerbosity)

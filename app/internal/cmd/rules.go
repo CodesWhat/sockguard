@@ -167,13 +167,21 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 
 	if scope == "" {
 		return fmt.Errorf(
-			"rules allow raw archive/export or log/attach streaming endpoints; set insecure_allow_read_exfiltration=true to acknowledge this risk: %s",
+			"rules allow raw archive/export or log/attach streaming endpoints "+
+				"(these can exfiltrate container files, environment variables, and secrets); "+
+				"either tighten the allow rules to omit these paths or set "+
+				"insecure_allow_read_exfiltration: true to acknowledge the risk. "+
+				"Exposed endpoints: %s",
 			strings.Join(exposed, ", "),
 		)
 	}
 
 	return fmt.Errorf(
-		"client profile %q allows raw archive/export or log/attach streaming endpoints; set insecure_allow_read_exfiltration=true to acknowledge this risk: %s",
+		"client profile %q allows raw archive/export or log/attach streaming endpoints "+
+			"(these can exfiltrate container files, environment variables, and secrets); "+
+			"either tighten the profile's allow rules to omit these paths or set "+
+			"insecure_allow_read_exfiltration: true on the profile to acknowledge the risk. "+
+			"Exposed endpoints: %s",
 		scope,
 		strings.Join(exposed, ", "),
 	)

@@ -1,7 +1,10 @@
 package filter
 
 import (
+	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -138,5 +141,114 @@ func TestContainerUpdateInvalidJSONDefersToDockerAndPreservesBody(t *testing.T) 
 	}
 	if string(body) != "{" {
 		t.Fatalf("body = %q, want %q", string(body), "{")
+	}
+}
+
+func TestContainerUpdateInspectSkipsNonUpdateRequestsAndNilBody(t *testing.T) {
+	policy := newContainerUpdatePolicy(ContainerUpdateOptions{})
+
+	tests := []struct {
+		name           string
+		req            *http.Request
+		normalizedPath string
+	}{
+		{name: "nil request", req: nil, normalizedPath: "/containers/abc/update"},
+		{name: "wrong method", req: httptest.NewRequest(http.MethodGet, "/containers/abc/update", strings.NewReader(`{"Memory":0}`)), normalizedPath: "/containers/abc/update"},
+		{name: "wrong path", req: httptest.NewRequest(http.MethodPost, "/containers/abc/json", strings.NewReader(`{"Memory":0}`)), normalizedPath: "/containers/abc/json"},
+		{name: "nil body", req: func() *http.Request {
+			req := httptest.NewRequest(http.MethodPost, "/containers/abc/update", nil)
+			req.Body = nil
+			return req
+		}(), normalizedPath: "/containers/abc/update"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, err := policy.inspect(nil, tt.req, tt.normalizedPath)
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != "" {
+				t.Fatalf("reason = %q, want empty", reason)
+			}
+		})
+	}
+}
+
+func TestContainerUpdateReadBodyError(t *testing.T) {
+	sentinel := errors.New("read failed")
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/update", nil)
+	req.Body = &readErrorReadCloser{readErr: sentinel}
+
+	reason, err := newContainerUpdatePolicy(ContainerUpdateOptions{}).inspect(nil, req, "/containers/abc/update")
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("inspect() error = %v, want wrapped %v", err, sentinel)
+	}
+}
+
+func TestContainerUpdateEmptyBodyReturnsEmpty(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/update", strings.NewReader(""))
+
+	reason, err := newContainerUpdatePolicy(ContainerUpdateOptions{}).inspect(nil, req, "/containers/abc/update")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+}
+
+func TestContainerUpdateInvalidJSONWithLogger(t *testing.T) {
+	logs := &collectingHandler{}
+	logger := slog.New(logs)
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/update", strings.NewReader("{bad json"))
+
+	reason, err := newContainerUpdatePolicy(ContainerUpdateOptions{}).inspect(logger, req, "/containers/abc/update")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty", reason)
+	}
+	if records := logs.snapshot(); len(records) != 1 {
+		t.Fatalf("log records = %d, want 1", len(records))
+	}
+}
+
+func TestContainerUpdatePolicyObjectsIncludeHostConfigResources(t *testing.T) {
+	var root map[string]json.RawMessage
+	if err := decodePolicySubsetJSON([]byte(`{
+		"HostConfig": {
+			"Resources": {
+				"PidsLimit": 42
+			}
+		}
+	}`), &root); err != nil {
+		t.Fatalf("decodePolicySubsetJSON() error = %v", err)
+	}
+
+	objects := containerUpdatePolicyObjects(root)
+	if !containerUpdateHasAnyField(objects, "PidsLimit") {
+		t.Fatalf("containerUpdatePolicyObjects() = %#v, want nested HostConfig.Resources fields", objects)
+	}
+}
+
+func TestContainerUpdatePolicyObjectHelpersCoverEmptyAndInvalidNestedFields(t *testing.T) {
+	if got := containerUpdatePolicyObjects(nil); got != nil {
+		t.Fatalf("containerUpdatePolicyObjects(nil) = %#v, want nil", got)
+	}
+
+	root := map[string]json.RawMessage{
+		"HostConfig": json.RawMessage(`[]`),
+		"Resources":  json.RawMessage(`{}`),
+	}
+	if nested, ok := decodeContainerUpdateObjectField(root, "HostConfig"); ok || nested != nil {
+		t.Fatalf("decodeContainerUpdateObjectField(invalid) = %#v, %v; want nil, false", nested, ok)
+	}
+	if nested, ok := decodeContainerUpdateObjectField(root, "Resources"); ok || nested != nil {
+		t.Fatalf("decodeContainerUpdateObjectField(empty) = %#v, %v; want nil, false", nested, ok)
 	}
 }

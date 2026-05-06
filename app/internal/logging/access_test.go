@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -144,6 +145,100 @@ func TestAccessLogReplacesCallerSuppliedRequestID(t *testing.T) {
 	}
 	if !strings.Contains(logOutput, `"client_request_id":"req-123"`) {
 		t.Fatalf("expected client_request_id in access log, got: %s", logOutput)
+	}
+}
+
+func TestTraceContextMiddlewarePropagatesValidTraceparentAndLogsCorrelation(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	const incomingTraceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	var forwardedTraceparent string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwardedTraceparent = r.Header.Get(traceparentHeader)
+		if m := MetaFromResponseWriter(w); m != nil {
+			m.Decision = "allow"
+			m.NormPath = "/info"
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AccessLogMiddleware(logger)(RequestIDMiddleware()(TraceContextMiddleware()(inner)))
+
+	req := httptest.NewRequest(http.MethodGet, "/info", nil)
+	req.Header.Set(traceparentHeader, incomingTraceparent)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if forwardedTraceparent == incomingTraceparent {
+		t.Fatal("expected proxy-local traceparent span id to replace caller parent id")
+	}
+	if !strings.HasPrefix(forwardedTraceparent, "00-4bf92f3577b34da6a3ce929d0e0e4736-") {
+		t.Fatalf("forwarded traceparent = %q, want same trace id", forwardedTraceparent)
+	}
+	if !strings.HasSuffix(forwardedTraceparent, "-01") {
+		t.Fatalf("forwarded traceparent = %q, want sampled flag preserved", forwardedTraceparent)
+	}
+	if got := rec.Header().Get(traceparentHeader); got != forwardedTraceparent {
+		t.Fatalf("response traceparent = %q, want %q", got, forwardedTraceparent)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, `"trace_id":"4bf92f3577b34da6a3ce929d0e0e4736"`) {
+		t.Fatalf("expected trace_id in access log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"trace_parent_id":"00f067aa0ba902b7"`) {
+		t.Fatalf("expected trace_parent_id in access log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"trace_sampled":true`) {
+		t.Fatalf("expected trace_sampled=true in access log, got: %s", logOutput)
+	}
+}
+
+func TestTraceContextMiddlewareGeneratesTraceparentWhenMissing(t *testing.T) {
+	var seenTraceparent string
+	handler := TraceContextMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenTraceparent = r.Header.Get(traceparentHeader)
+		if m := MetaFromResponseWriter(w); m != nil {
+			t.Fatal("did not expect response-writer metadata without wrapper")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/info", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	traceparentPattern := regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-00$`)
+	if !traceparentPattern.MatchString(seenTraceparent) {
+		t.Fatalf("generated traceparent = %q, want W3C version 00 traceparent", seenTraceparent)
+	}
+	if got := rec.Header().Get(traceparentHeader); got != seenTraceparent {
+		t.Fatalf("response traceparent = %q, want %q", got, seenTraceparent)
+	}
+}
+
+func TestTraceContextMiddlewareRegeneratesInvalidTraceparentAndDropsTracestate(t *testing.T) {
+	var seenTraceparent string
+	var seenTracestate string
+	handler := TraceContextMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenTraceparent = r.Header.Get(traceparentHeader)
+		seenTracestate = r.Header.Get(tracestateHeader)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/info", nil)
+	req.Header.Set(traceparentHeader, "00-00000000000000000000000000000000-00f067aa0ba902b7-01")
+	req.Header.Set(tracestateHeader, "vendor=opaque")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	traceparentPattern := regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-00$`)
+	if !traceparentPattern.MatchString(seenTraceparent) {
+		t.Fatalf("regenerated traceparent = %q, want fresh W3C version 00 traceparent", seenTraceparent)
+	}
+	if seenTracestate != "" {
+		t.Fatalf("tracestate = %q, want discarded when traceparent is invalid", seenTracestate)
 	}
 }
 
@@ -521,6 +616,10 @@ func TestAppendCorrelationAttrsForResponseWriter(t *testing.T) {
 		NormPath:        "/writer/path",
 		Profile:         "watchtower",
 		ClientRequestID: "client-123",
+		TraceID:         "4bf92f3577b34da6a3ce929d0e0e4736",
+		TraceParentID:   "00f067aa0ba902b7",
+		TraceSpanID:     "b7ad6b7169203331",
+		TraceFlags:      "01",
 	}})
 
 	got := make(map[string]any, len(attrs))
@@ -533,6 +632,18 @@ func TestAppendCorrelationAttrsForResponseWriter(t *testing.T) {
 	}
 	if got["client_request_id"] != "client-123" {
 		t.Fatalf("client_request_id = %#v, want client-123", got["client_request_id"])
+	}
+	if got["trace_id"] != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Fatalf("trace_id = %#v, want W3C trace id", got["trace_id"])
+	}
+	if got["trace_parent_id"] != "00f067aa0ba902b7" {
+		t.Fatalf("trace_parent_id = %#v, want incoming parent id", got["trace_parent_id"])
+	}
+	if got["trace_span_id"] != "b7ad6b7169203331" {
+		t.Fatalf("trace_span_id = %#v, want proxy span id", got["trace_span_id"])
+	}
+	if got["trace_sampled"] != true {
+		t.Fatalf("trace_sampled = %#v, want true", got["trace_sampled"])
 	}
 	if got["normalized_path"] != "/writer/path" {
 		t.Fatalf("normalized_path = %#v, want /writer/path", got["normalized_path"])

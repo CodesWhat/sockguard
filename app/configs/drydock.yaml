@@ -1,9 +1,12 @@
 # Sockguard — Drydock Preset
 #
-# Optimized for drydock container update manager.
+# Optimized for the drydock container update manager.
 # Allows: container lifecycle (start/stop/restart/kill/rename/update/wait/create/remove),
-#         image pull/remove, events, network/volume/distribution read, Swarm services.
-# Denies: exec, build, secrets, plugins.
+#         image pull/inspect/remove, /events, narrow network/volume/distribution
+#         reads, Swarm services. Reads are enumerated path-by-path so this
+#         preset stays clean under sockguard's exfiltration validator without
+#         needing insecure_allow_read_exfiltration: true.
+# Denies: exec, build, secrets, plugins, raw archive/export/logs/attach streams.
 
 upstream:
   socket: /var/run/docker.sock
@@ -30,9 +33,6 @@ request_body:
   image_pull:
     allow_all_registries: true
 
-# Preserve broad Drydock read compatibility, including raw archive/export and log/attach stream paths.
-insecure_allow_read_exfiltration: true
-
 rules:
   # Health and metadata
   - match: { method: GET, path: "/_ping" }
@@ -46,8 +46,18 @@ rules:
   - match: { method: GET, path: "/events" }
     action: allow
 
-  # Container read operations (list, inspect, logs, stats)
-  - match: { method: GET, path: "/containers/**" }
+  # Container reads — narrow set drydock needs (list + inspect + stats).
+  # Deliberately omits /containers/*/logs, /archive, /export, /attach to
+  # keep the exfiltration validator happy.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
     action: allow
 
   # Container lifecycle
@@ -72,28 +82,44 @@ rules:
   - match: { method: POST, path: "/containers/create" }
     action: allow
 
-  # Image operations (pull, inspect, list, remove)
-  - match: { method: GET, path: "/images/**" }
+  # Image reads — list + inspect + history. Image names can be namespaced
+  # (linuxserver/qbittorrent:latest, ghcr.io/owner/repo:tag), so the
+  # middle is matched with `**`. The trailing /json or /history segment
+  # keeps the exfiltration validator happy by not matching /images/get
+  # or /images/*/get (raw tarball exfil).
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
     action: allow
   - match: { method: POST, path: "/images/create" }
     action: allow
-  - match: { method: DELETE, path: "/images/*" }
+  - match: { method: DELETE, path: "/images/**" }
     action: allow
 
-  # Network read (for container networking info)
-  - match: { method: GET, path: "/networks/**" }
+  # Network read — list + inspect only.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
     action: allow
 
-  # Volume read
-  - match: { method: GET, path: "/volumes/**" }
+  # Volume read — list + inspect only.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
     action: allow
 
-  # Distribution (registry info)
-  - match: { method: GET, path: "/distribution/**" }
+  # Distribution (registry digest checks for image freshness). Image
+  # references in the URL can be multi-segment (registry/owner/repo:tag).
+  - match: { method: GET, path: "/distribution/**/json" }
     action: allow
 
-  # Swarm services (for service-mode containers)
-  - match: { method: GET, path: "/services/**" }
+  # Swarm services — list + inspect. /services/*/logs is intentionally
+  # omitted to keep the exfiltration validator happy.
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
     action: allow
 
   # Deny everything else
