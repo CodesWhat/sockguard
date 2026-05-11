@@ -84,6 +84,50 @@ func TestNew_ErrorHandlerEncodeFailure(t *testing.T) {
 	}
 }
 
+// TestNew_ErrorHandlerDoesNotLogWarnOnSuccessfulEncode verifies that the warn
+// log "failed to encode error response" is only emitted when httpjson.Write
+// returns a non-nil error — i.e., the condition is "!= nil", not "== nil".
+// Kills mutant: CONDITIONALS_NEGATION proxy.go:68 ("encErr != nil" → "encErr == nil").
+func TestNew_ErrorHandlerDoesNotLogWarnOnSuccessfulEncode(t *testing.T) {
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	rp := New("/tmp/does-not-matter.sock", logger)
+
+	// Use a normal recorder — httpjson.Write succeeds, so encErr == nil.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rp.ErrorHandler(rec, req, errors.New("dial boom"))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+
+	// The warn log must NOT appear when encoding succeeds.
+	if strings.Contains(logBuf.String(), "failed to encode error response") {
+		t.Fatalf("unexpected warn log emitted on successful encode: %s", logBuf.String())
+	}
+}
+
+// TestNew_ErrorHandlerLogsWarnOnEncodeFailure confirms the opposite: warn IS
+// logged when httpjson.Write returns an error (encErr != nil path is exercised).
+// Together with TestNew_ErrorHandlerDoesNotLogWarnOnSuccessfulEncode this kills
+// the CONDITIONALS_NEGATION mutant by covering both outcomes of the condition.
+func TestNew_ErrorHandlerLogsWarnOnEncodeFailure(t *testing.T) {
+	var logBuf strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	rp := New("/tmp/does-not-matter.sock", logger)
+
+	// erroringResponseWriter.Write always returns io.ErrClosedPipe, causing
+	// httpjson.Write to return an error.
+	writer := &erroringResponseWriter{}
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	rp.ErrorHandler(writer, req, errors.New("dial boom"))
+
+	if !strings.Contains(logBuf.String(), "failed to encode error response") {
+		t.Fatalf("expected warn log on encode failure, got: %s", logBuf.String())
+	}
+}
+
 func TestNew_ErrorHandlerLogsRequestCorrelation(t *testing.T) {
 	var logBuf strings.Builder
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
