@@ -504,6 +504,31 @@ func TestGenerateSectionRules(t *testing.T) {
 	})
 }
 
+// TestCompatRuleIndexArithmetic kills the ARITHMETIC_BASE mutant at
+// compat.go:97:14 (i+1 in debug log). The debug log emits "index=<N>" for each
+// generated rule; if mutated to i-1 the first rule logs "index=-1" instead of
+// "index=1".
+func TestCompatRuleIndexArithmetic(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("PING", "1")
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	if !ApplyCompat(&cfg, logger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	logOutput := logBuf.String()
+	// The first rule must log index=1 (not index=0 or index=-1).
+	if !strings.Contains(logOutput, "index=1") {
+		t.Fatalf("expected 'index=1' in debug log (1-based), got: %s", logOutput)
+	}
+	if strings.Contains(logOutput, "index=0") || strings.Contains(logOutput, "index=-1") {
+		t.Fatalf("unexpected 0-based or negative index in debug log: %s", logOutput)
+	}
+}
+
 func TestGenerateGranularPostRules(t *testing.T) {
 	t.Run("restarts env allows stop restart and kill", func(t *testing.T) {
 		t.Setenv("ALLOW_RESTARTS", "1")

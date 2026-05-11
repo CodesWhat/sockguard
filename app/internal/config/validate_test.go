@@ -830,6 +830,269 @@ func TestValidateRejectsInvalidVisibleResourceLabels(t *testing.T) {
 	}
 }
 
+// TestMutantKills contains targeted tests that kill surviving mutation testing
+// survivors. Each subtest name references the mutant it targets.
+func TestMutantKills(t *testing.T) {
+	// ── ARITHMETIC_BASE validate.go:121:74 and 124:72 ──────────────────────────
+	// i+1 in rule error messages — if mutated to i-1, the first rule (i=0)
+	// would report "rule -1" instead of "rule 1".
+	t.Run("rule_index_arithmetic_first_rule_is_1", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Rules = []RuleConfig{
+			{Match: MatchConfig{Method: "", Path: ""}, Action: "allow"},
+		}
+		err := Validate(&cfg)
+		if err == nil {
+			t.Fatal("expected error for rule with empty method and path")
+		}
+		if !strings.Contains(err.Error(), "rule 1:") {
+			t.Fatalf("expected 'rule 1:' in error, got: %v", err)
+		}
+	})
+
+	// Verify third rule also uses correct 1-based index.
+	t.Run("rule_index_arithmetic_third_rule_is_3", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Rules = []RuleConfig{
+			{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},
+			{Match: MatchConfig{Method: "GET", Path: "/version"}, Action: "allow"},
+			{Match: MatchConfig{Method: "", Path: ""}, Action: "allow"},
+		}
+		err := Validate(&cfg)
+		if err == nil {
+			t.Fatal("expected error for third rule with empty fields")
+		}
+		if !strings.Contains(err.Error(), "rule 3:") {
+			t.Fatalf("expected 'rule 3:' in error (1-based), got: %v", err)
+		}
+		if strings.Contains(err.Error(), "rule 2:") || strings.Contains(err.Error(), "rule 1:") {
+			t.Fatalf("expected only 'rule 3:' error, got: %v", err)
+		}
+	})
+
+	// ── ARITHMETIC_BASE validate.go:382:122 ────────────────────────────────────
+	// i+1 in exec allowed_commands error message — first entry should say
+	// "entry 1" not "entry -1" or "entry 0".
+	t.Run("exec_allowed_commands_index_arithmetic", func(t *testing.T) {
+		dir := t.TempDir()
+		bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+		if err != nil {
+			t.Fatalf("WriteMutualTLSBundle: %v", err)
+		}
+		cfg := Defaults()
+		cfg.Listen.TLS.CertFile = bundle.ServerCertFile
+		cfg.Listen.TLS.KeyFile = bundle.ServerKeyFile
+		cfg.Listen.TLS.ClientCAFile = bundle.CAFile
+		cfg.Clients.DefaultProfile = "prof"
+		cfg.Clients.Profiles = []ClientProfileConfig{
+			{
+				Name: "prof",
+				RequestBody: RequestBodyConfig{
+					Exec: ExecRequestBodyConfig{
+						AllowedCommands: [][]string{{""}}, // invalid first entry
+					},
+				},
+				Rules: []RuleConfig{
+					{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				},
+			},
+		}
+		err = Validate(&cfg)
+		if err == nil {
+			t.Fatal("expected error for empty exec command entry")
+		}
+		if !strings.Contains(err.Error(), "entry 1") {
+			t.Fatalf("expected 'entry 1' in error (1-based), got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_NEGATION validate.go:100:10 ───────────────────────────────
+	// interval <= 0 guards against zero/negative watchdog interval.
+	// A negative duration must also be rejected.
+	t.Run("watchdog_negative_duration_rejected", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Health.Watchdog.Enabled = true
+		cfg.Health.Watchdog.Interval = "-1s"
+		err := Validate(&cfg)
+		if err == nil {
+			t.Fatal("expected error for negative watchdog interval")
+		}
+		if !strings.Contains(err.Error(), "health.watchdog.interval must be a positive duration") {
+			t.Fatalf("expected positive-duration error, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_NEGATION validate.go:193:23 ───────────────────────────────
+	// cfg.Listen.Socket != "" — container labels on unix socket should error.
+	// Complements the existing test: also verify no TCP-listener error on TCP.
+	t.Run("container_labels_allowed_on_tcp_listener", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Listen.Socket = ""
+		cfg.Listen.Address = "127.0.0.1:2376"
+		cfg.Listen.InsecureAllowPlainTCP = true
+		cfg.Clients.ContainerLabels.Enabled = true
+		cfg.Clients.ContainerLabels.LabelPrefix = "com.example"
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "clients.container_labels requires a TCP listener") {
+			t.Fatalf("unexpected container_labels TCP error on TCP listener: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_NEGATION validate.go:302:27 and 302:56 ───────────────────
+	// len(UIDs)==0 && len(GIDs)==0 — if one of these is negated, providing only
+	// UIDs or only GIDs would still incorrectly trigger the error.
+	t.Run("unix_peer_uids_only_is_sufficient", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Listen.Socket = "/tmp/sockguard.sock"
+		cfg.Listen.Address = ""
+		cfg.Clients.Profiles = []ClientProfileConfig{
+			{Name: "prof", Rules: []RuleConfig{{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}},
+		}
+		cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{
+			{Profile: "prof", UIDs: []uint32{1000}},
+		}
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "unix peer credential selector") {
+			t.Fatalf("expected UIDs alone to satisfy unix peer selector requirement, got: %v", err)
+		}
+	})
+
+	t.Run("unix_peer_gids_only_is_sufficient", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Listen.Socket = "/tmp/sockguard.sock"
+		cfg.Listen.Address = ""
+		cfg.Clients.Profiles = []ClientProfileConfig{
+			{Name: "prof", Rules: []RuleConfig{{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}},
+		}
+		cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{
+			{Profile: "prof", GIDs: []uint32{1000}},
+		}
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "unix peer credential selector") {
+			t.Fatalf("expected GIDs alone to satisfy unix peer selector requirement, got: %v", err)
+		}
+	})
+
+	// ── INCREMENT_DECREMENT validate.go:255/262/270/278 ────────────────────────
+	// selectorCount++ at each valid identity selector. If mutated to --, then
+	// N valid selectors would decrement from 0 to -N, and the selectorCount==0
+	// guard would fire incorrectly (or not at all). Test: one valid entry per
+	// field must NOT produce the "must contain at least one selector" error.
+	t.Run("cert_profile_single_dns_name_valid", func(t *testing.T) {
+		dir := t.TempDir()
+		bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+		if err != nil {
+			t.Fatalf("WriteMutualTLSBundle: %v", err)
+		}
+		cfg := Defaults()
+		cfg.Listen.TLS.CertFile = bundle.ServerCertFile
+		cfg.Listen.TLS.KeyFile = bundle.ServerKeyFile
+		cfg.Listen.TLS.ClientCAFile = bundle.CAFile
+		cfg.Clients.Profiles = []ClientProfileConfig{
+			{Name: "prof", Rules: []RuleConfig{{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}},
+		}
+		cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
+			{Profile: "prof", DNSNames: []string{"client.example.com"}},
+		}
+		err = Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "must contain at least one client certificate identity selector") {
+			t.Fatalf("single valid dns_name should count as a selector (selectorCount++), got: %v", err)
+		}
+	})
+
+	t.Run("cert_profile_single_ip_address_valid", func(t *testing.T) {
+		dir := t.TempDir()
+		bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+		if err != nil {
+			t.Fatalf("WriteMutualTLSBundle: %v", err)
+		}
+		cfg := Defaults()
+		cfg.Listen.TLS.CertFile = bundle.ServerCertFile
+		cfg.Listen.TLS.KeyFile = bundle.ServerKeyFile
+		cfg.Listen.TLS.ClientCAFile = bundle.CAFile
+		cfg.Clients.Profiles = []ClientProfileConfig{
+			{Name: "prof", Rules: []RuleConfig{{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}},
+		}
+		cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
+			{Profile: "prof", IPAddresses: []string{"10.0.0.1"}},
+		}
+		err = Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "must contain at least one client certificate identity selector") {
+			t.Fatalf("single valid ip_address should count as a selector (selectorCount++), got: %v", err)
+		}
+	})
+
+	t.Run("cert_profile_single_uri_san_valid", func(t *testing.T) {
+		dir := t.TempDir()
+		bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+		if err != nil {
+			t.Fatalf("WriteMutualTLSBundle: %v", err)
+		}
+		cfg := Defaults()
+		cfg.Listen.TLS.CertFile = bundle.ServerCertFile
+		cfg.Listen.TLS.KeyFile = bundle.ServerKeyFile
+		cfg.Listen.TLS.ClientCAFile = bundle.CAFile
+		cfg.Clients.Profiles = []ClientProfileConfig{
+			{Name: "prof", Rules: []RuleConfig{{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}},
+		}
+		cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
+			{Profile: "prof", URISANs: []string{"https://example.com/client"}},
+		}
+		err = Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "must contain at least one client certificate identity selector") {
+			t.Fatalf("single valid uri_san should count as a selector (selectorCount++), got: %v", err)
+		}
+	})
+
+	t.Run("cert_profile_single_spiffe_id_valid", func(t *testing.T) {
+		dir := t.TempDir()
+		bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+		if err != nil {
+			t.Fatalf("WriteMutualTLSBundle: %v", err)
+		}
+		cfg := Defaults()
+		cfg.Listen.TLS.CertFile = bundle.ServerCertFile
+		cfg.Listen.TLS.KeyFile = bundle.ServerKeyFile
+		cfg.Listen.TLS.ClientCAFile = bundle.CAFile
+		cfg.Clients.Profiles = []ClientProfileConfig{
+			{Name: "prof", Rules: []RuleConfig{{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}},
+		}
+		cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
+			{Profile: "prof", SPIFFEIDs: []string{"spiffe://example.org/service"}},
+		}
+		err = Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "must contain at least one client certificate identity selector") {
+			t.Fatalf("single valid spiffe_id should count as a selector (selectorCount++), got: %v", err)
+		}
+	})
+
+	// Empty cert profile (no selectors at all) must still error.
+	t.Run("cert_profile_no_selectors_errors", func(t *testing.T) {
+		dir := t.TempDir()
+		bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1")
+		if err != nil {
+			t.Fatalf("WriteMutualTLSBundle: %v", err)
+		}
+		cfg := Defaults()
+		cfg.Listen.TLS.CertFile = bundle.ServerCertFile
+		cfg.Listen.TLS.KeyFile = bundle.ServerKeyFile
+		cfg.Listen.TLS.ClientCAFile = bundle.CAFile
+		cfg.Clients.Profiles = []ClientProfileConfig{
+			{Name: "prof", Rules: []RuleConfig{{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"}}},
+		}
+		cfg.Clients.ClientCertificateProfiles = []ClientCertificateProfileAssignmentConfig{
+			{Profile: "prof"},
+		}
+		err = Validate(&cfg)
+		if err == nil {
+			t.Fatal("expected error for cert profile with no selectors")
+		}
+		if !strings.Contains(err.Error(), "must contain at least one client certificate identity selector") {
+			t.Fatalf("expected selector-required error, got: %v", err)
+		}
+	})
+}
+
 func TestNormalizeAllowedBindMount(t *testing.T) {
 	tests := []struct {
 		name  string

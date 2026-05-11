@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -174,6 +175,180 @@ func TestIsLoopbackTCPAddress(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCompiledConstraintsMatchesMutantKills exercises each boundary check in
+// compiledClientCertificateIdentityConstraints.matches to kill surviving
+// CONDITIONALS_BOUNDARY and CONDITIONALS_NEGATION mutants on lines 151-163.
+//
+// Each sub-test uses a constraint with exactly one populated selector field and
+// verifies that:
+//   (a) a matching cert is accepted (CONDITIONALS_NEGATION kill), and
+//   (b) a cert that only differs in that field is rejected.
+//
+// CONDITIONALS_BOUNDARY (`len(x) > 0` → `len(x) >= 0`):
+// When a slice is empty (len==0) the guard must be skipped. If mutated to >=
+// the empty slice would always enter the check and reject everything because
+// containsExactString([], ...) == false. The sub-tests named
+// *_empty_slice_does_not_reject verify this by building constraints where
+// that particular slice is empty but another is populated — the matching cert
+// must still be allowed.
+func TestCompiledConstraintsMatchesMutantKills(t *testing.T) {
+	// Shared certs used across sub-tests.
+	allowedLeaf := &x509.Certificate{
+		Subject:                 pkix.Name{CommonName: "allowed-cn"},
+		DNSNames:                []string{"allowed.example.com"},
+		IPAddresses:             []net.IP{net.ParseIP("10.0.0.1")},
+		URIs:                    []*url.URL{mustParseURL(t, "spiffe://sockguard/allowed")},
+		RawSubjectPublicKeyInfo: []byte("allowed-key"),
+	}
+	blockedLeaf := &x509.Certificate{
+		Subject:                 pkix.Name{CommonName: "blocked-cn"},
+		DNSNames:                []string{"blocked.example.com"},
+		IPAddresses:             []net.IP{net.ParseIP("10.0.0.2")},
+		URIs:                    []*url.URL{mustParseURL(t, "spiffe://sockguard/blocked")},
+		RawSubjectPublicKeyInfo: []byte("blocked-key"),
+	}
+
+	// ── CONDITIONALS_BOUNDARY + NEGATION tls.go:151 (commonNames) ─────────────
+	t.Run("common_name_match_allows", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			commonNames: []string{"allowed-cn"},
+		}
+		if !c.matches(allowedLeaf) {
+			t.Error("matches() = false for cert with matching common name, want true")
+		}
+	})
+	t.Run("common_name_mismatch_rejects", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			commonNames: []string{"allowed-cn"},
+		}
+		if c.matches(blockedLeaf) {
+			t.Error("matches() = true for cert with non-matching common name, want false")
+		}
+	})
+	// Empty commonNames must NOT filter — the cert is allowed by the other
+	// populated selector (dnsNames). Tests CONDITIONALS_BOUNDARY: len > 0 must
+	// not become len >= 0 (always-true).
+	t.Run("empty_common_names_slice_does_not_reject", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			commonNames: []string{},                    // empty — skip CN check
+			dnsNames:    []string{"allowed.example.com"}, // populated — use this
+		}
+		if !c.matches(allowedLeaf) {
+			t.Error("matches() = false when commonNames is empty and dnsNames matches, want true")
+		}
+	})
+
+	// ── CONDITIONALS_BOUNDARY tls.go:154 (dnsNames) ───────────────────────────
+	t.Run("dns_name_match_allows", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			dnsNames: []string{"allowed.example.com"},
+		}
+		if !c.matches(allowedLeaf) {
+			t.Error("matches() = false for cert with matching DNS SAN, want true")
+		}
+	})
+	t.Run("dns_name_mismatch_rejects", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			dnsNames: []string{"allowed.example.com"},
+		}
+		if c.matches(blockedLeaf) {
+			t.Error("matches() = true for cert without matching DNS SAN, want false")
+		}
+	})
+	t.Run("empty_dns_names_slice_does_not_reject", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			dnsNames:    []string{},            // empty — skip DNS check
+			commonNames: []string{"allowed-cn"}, // populated — use this
+		}
+		if !c.matches(allowedLeaf) {
+			t.Error("matches() = false when dnsNames is empty and commonNames matches, want true")
+		}
+	})
+
+	// ── CONDITIONALS_BOUNDARY tls.go:157 (ipAddresses) ────────────────────────
+	t.Run("ip_address_match_allows", func(t *testing.T) {
+		addr, _ := netip.ParseAddr("10.0.0.1")
+		c := compiledClientCertificateIdentityConstraints{
+			ipAddresses: []netip.Addr{addr},
+		}
+		if !c.matches(allowedLeaf) {
+			t.Error("matches() = false for cert with matching IP SAN, want true")
+		}
+	})
+	t.Run("ip_address_mismatch_rejects", func(t *testing.T) {
+		addr, _ := netip.ParseAddr("10.0.0.1")
+		c := compiledClientCertificateIdentityConstraints{
+			ipAddresses: []netip.Addr{addr},
+		}
+		if c.matches(blockedLeaf) {
+			t.Error("matches() = true for cert without matching IP SAN, want false")
+		}
+	})
+	t.Run("empty_ip_addresses_slice_does_not_reject", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			ipAddresses: []netip.Addr{},             // empty — skip IP check
+			commonNames: []string{"allowed-cn"}, // populated — use this
+		}
+		if !c.matches(allowedLeaf) {
+			t.Error("matches() = false when ipAddresses is empty and commonNames matches, want true")
+		}
+	})
+
+	// ── CONDITIONALS_BOUNDARY tls.go:160 (uriSANs) ────────────────────────────
+	t.Run("uri_san_match_allows", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			uriSANs: []string{"spiffe://sockguard/allowed"},
+		}
+		if !c.matches(allowedLeaf) {
+			t.Error("matches() = false for cert with matching URI SAN, want true")
+		}
+	})
+	t.Run("uri_san_mismatch_rejects", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			uriSANs: []string{"spiffe://sockguard/allowed"},
+		}
+		if c.matches(blockedLeaf) {
+			t.Error("matches() = true for cert without matching URI SAN, want false")
+		}
+	})
+	t.Run("empty_uri_sans_slice_does_not_reject", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			uriSANs:     []string{},              // empty — skip URI check
+			commonNames: []string{"allowed-cn"}, // populated — use this
+		}
+		if !c.matches(allowedLeaf) {
+			t.Error("matches() = false when uriSANs is empty and commonNames matches, want true")
+		}
+	})
+
+	// ── CONDITIONALS_BOUNDARY tls.go:163 (publicKeySHA256Pins) ───────────────
+	t.Run("public_key_pin_match_allows", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			publicKeySHA256Pins: []string{subjectPublicKeySHA256Hex(allowedLeaf)},
+		}
+		if !c.matches(allowedLeaf) {
+			t.Error("matches() = false for cert with matching public key pin, want true")
+		}
+	})
+	t.Run("public_key_pin_mismatch_rejects", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			publicKeySHA256Pins: []string{subjectPublicKeySHA256Hex(allowedLeaf)},
+		}
+		if c.matches(blockedLeaf) {
+			t.Error("matches() = true for cert with non-matching public key pin, want false")
+		}
+	})
+	t.Run("empty_public_key_pins_slice_does_not_reject", func(t *testing.T) {
+		c := compiledClientCertificateIdentityConstraints{
+			publicKeySHA256Pins: []string{},             // empty — skip pin check
+			commonNames:         []string{"allowed-cn"}, // populated — use this
+		}
+		if !c.matches(allowedLeaf) {
+			t.Error("matches() = false when publicKeySHA256Pins is empty and commonNames matches, want true")
+		}
+	})
 }
 
 func TestValidateLogOutputAcceptsStdoutAndLocalPath(t *testing.T) {
