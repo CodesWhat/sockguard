@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added the 0.6.0 secure-container enforcement rails on `POST /containers/create`. Each is off by default unless noted as a default-deny rollout below: `request_body.container_create.require_no_new_privileges` (require `HostConfig.SecurityOpt` to include `no-new-privileges:true`), `require_non_root_user` (require non-zero `Config.User`), `require_readonly_rootfs` (require `HostConfig.ReadonlyRootfs=true`), `require_drop_all_capabilities` (require `HostConfig.CapDrop` to contain `"ALL"`), `require_memory_limit` / `require_cpu_limit` / `require_pids_limit` (require positive memory, CPU, and PID budgets), `allowed_seccomp_profiles` + `deny_unconfined_seccomp` (seccomp profile allowlist plus a standalone unconfined kill switch), `allowed_apparmor_profiles` + `deny_unconfined_apparmor`, and `required_labels` (`Config.Labels` keys that must be present with non-empty values).
+- Added `request_body.container_create.allow_all_capabilities` and `allowed_capabilities` so operators can govern `HostConfig.CapAdd`. Capabilities are normalised case-insensitively with the `CAP_` prefix optional.
+- Added `request_body.container_create.allow_host_userns` so `HostConfig.UsernsMode=host` is denied by default, consistent with the existing host-namespace defaults for network/PID/IPC.
+
+### Changed
+
+- **Default deny for `HostConfig.CapAdd`** when no allowlist is configured. Previous releases left `CapAdd` uninspected on the container-create body inspector. To keep the previous behavior set `request_body.container_create.allow_all_capabilities: true` explicitly, or list the capabilities your workloads need under `allowed_capabilities`.
+- **Default deny for `HostConfig.UsernsMode=host`**. Set `request_body.container_create.allow_host_userns: true` to keep `userns_mode: host` working.
+
 ## [0.5.1] - 2026-05-11
 
 ### Security

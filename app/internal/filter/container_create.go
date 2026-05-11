@@ -29,6 +29,23 @@ type ContainerCreateOptions struct {
 	AllowedDevices         []string
 	AllowDeviceRequests    bool
 	AllowDeviceCgroupRules bool
+
+	// 0.6.0 secure-container rails.
+	RequireNoNewPrivileges     bool
+	RequireNonRootUser         bool
+	RequireReadonlyRootfs      bool
+	RequireDropAllCapabilities bool
+	AllowAllCapabilities       bool
+	AllowedCapabilities        []string
+	RequireMemoryLimit         bool
+	RequireCPULimit            bool
+	RequirePidsLimit           bool
+	AllowedSeccompProfiles     []string
+	DenyUnconfinedSeccomp      bool
+	AllowedAppArmorProfiles    []string
+	DenyUnconfinedAppArmor     bool
+	AllowHostUserNS            bool
+	RequiredLabels             []string
 }
 
 type containerCreatePolicy struct {
@@ -41,10 +58,28 @@ type containerCreatePolicy struct {
 	allowedDevices         []string
 	allowDeviceRequests    bool
 	allowDeviceCgroupRules bool
+
+	requireNoNewPrivileges     bool
+	requireNonRootUser         bool
+	requireReadonlyRootfs      bool
+	requireDropAllCapabilities bool
+	allowAllCapabilities       bool
+	allowedCapabilities        []string
+	requireMemoryLimit         bool
+	requireCPULimit            bool
+	requirePidsLimit           bool
+	allowedSeccompProfiles     []string
+	denyUnconfinedSeccomp      bool
+	allowedAppArmorProfiles    []string
+	denyUnconfinedAppArmor     bool
+	allowHostUserNS            bool
+	requiredLabels             []string
 }
 
 type containerCreateRequest struct {
 	HostConfig containerCreateHostConfig `json:"HostConfig"`
+	User       string                    `json:"User"`
+	Labels     map[string]string         `json:"Labels"`
 }
 
 type containerCreateHostConfig struct {
@@ -52,11 +87,23 @@ type containerCreateHostConfig struct {
 	NetworkMode       string                  `json:"NetworkMode"`
 	PidMode           string                  `json:"PidMode"`
 	IpcMode           string                  `json:"IpcMode"`
+	UsernsMode        string                  `json:"UsernsMode"`
 	Binds             []string                `json:"Binds"`
 	Mounts            []containerCreateMount  `json:"Mounts"`
 	Devices           []containerCreateDevice `json:"Devices"`
 	DeviceRequests    []json.RawMessage       `json:"DeviceRequests"`
 	DeviceCgroupRules []string                `json:"DeviceCgroupRules"`
+	SecurityOpt       []string                `json:"SecurityOpt"`
+	CapAdd            []string                `json:"CapAdd"`
+	CapDrop           []string                `json:"CapDrop"`
+	ReadonlyRootfs    bool                    `json:"ReadonlyRootfs"`
+	Memory            int64                   `json:"Memory"`
+	MemoryReservation int64                   `json:"MemoryReservation"`
+	NanoCpus          int64                   `json:"NanoCpus"`
+	CpuQuota          int64                   `json:"CpuQuota"`
+	CpuPeriod         int64                   `json:"CpuPeriod"`
+	CpuShares         int64                   `json:"CpuShares"`
+	PidsLimit         *int64                  `json:"PidsLimit"`
 }
 
 type containerCreateMount struct {
@@ -88,15 +135,30 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	}
 
 	return containerCreatePolicy{
-		allowPrivileged:        opts.AllowPrivileged,
-		allowHostNetwork:       opts.AllowHostNetwork,
-		allowHostPID:           opts.AllowHostPID,
-		allowHostIPC:           opts.AllowHostIPC,
-		allowedBindMounts:      allowed,
-		allowAllDevices:        opts.AllowAllDevices,
-		allowedDevices:         allowedDevices,
-		allowDeviceRequests:    opts.AllowDeviceRequests,
-		allowDeviceCgroupRules: opts.AllowDeviceCgroupRules,
+		allowPrivileged:            opts.AllowPrivileged,
+		allowHostNetwork:           opts.AllowHostNetwork,
+		allowHostPID:               opts.AllowHostPID,
+		allowHostIPC:               opts.AllowHostIPC,
+		allowedBindMounts:          allowed,
+		allowAllDevices:            opts.AllowAllDevices,
+		allowedDevices:             allowedDevices,
+		allowDeviceRequests:        opts.AllowDeviceRequests,
+		allowDeviceCgroupRules:     opts.AllowDeviceCgroupRules,
+		requireNoNewPrivileges:     opts.RequireNoNewPrivileges,
+		requireNonRootUser:         opts.RequireNonRootUser,
+		requireReadonlyRootfs:      opts.RequireReadonlyRootfs,
+		requireDropAllCapabilities: opts.RequireDropAllCapabilities,
+		allowAllCapabilities:       opts.AllowAllCapabilities,
+		allowedCapabilities:        normalizeCapabilityList(opts.AllowedCapabilities),
+		requireMemoryLimit:         opts.RequireMemoryLimit,
+		requireCPULimit:            opts.RequireCPULimit,
+		requirePidsLimit:           opts.RequirePidsLimit,
+		allowedSeccompProfiles:     normalizeProfileList(opts.AllowedSeccompProfiles),
+		denyUnconfinedSeccomp:      opts.DenyUnconfinedSeccomp,
+		allowedAppArmorProfiles:    normalizeProfileList(opts.AllowedAppArmorProfiles),
+		denyUnconfinedAppArmor:     opts.DenyUnconfinedAppArmor,
+		allowHostUserNS:            opts.AllowHostUserNS,
+		requiredLabels:             normalizeLabelKeyList(opts.RequiredLabels),
 	}
 }
 
@@ -142,10 +204,28 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if !p.allowHostIPC && isHostNamespaceMode(createReq.HostConfig.IpcMode) {
 		return "container create denied: host IPC mode is not allowed", nil
 	}
+	if !p.allowHostUserNS && isHostNamespaceMode(createReq.HostConfig.UsernsMode) {
+		return "container create denied: host user namespace mode is not allowed", nil
+	}
 	if denyReason := p.denyDeviceReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denySecurityOptReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyCapabilityReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyHardeningReason(createReq); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyResourceLimitReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyRequiredLabelsReason(createReq); denyReason != "" {
 		return denyReason, nil
 	}
 
@@ -153,10 +233,26 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 }
 
 func (p containerCreatePolicy) allowsAllContainerCreateBodies() bool {
+	if p.requireNoNewPrivileges ||
+		p.requireNonRootUser ||
+		p.requireReadonlyRootfs ||
+		p.requireDropAllCapabilities ||
+		p.requireMemoryLimit ||
+		p.requireCPULimit ||
+		p.requirePidsLimit ||
+		p.denyUnconfinedSeccomp ||
+		p.denyUnconfinedAppArmor ||
+		len(p.allowedSeccompProfiles) > 0 ||
+		len(p.allowedAppArmorProfiles) > 0 ||
+		len(p.requiredLabels) > 0 ||
+		!p.allowAllCapabilities {
+		return false
+	}
 	return p.allowPrivileged &&
 		p.allowHostNetwork &&
 		p.allowHostPID &&
 		p.allowHostIPC &&
+		p.allowHostUserNS &&
 		bindPathAllowed("/", p.allowedBindMounts) &&
 		(p.allowAllDevices || bindPathAllowed("/", p.allowedDevices)) &&
 		p.allowDeviceRequests &&
@@ -207,6 +303,115 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 	return ""
 }
 
+// denyHardeningReason enforces the simple boolean "rails": no-new-privileges,
+// non-root execution, and read-only root filesystem.
+func (p containerCreatePolicy) denyHardeningReason(req containerCreateRequest) string {
+	if p.requireNoNewPrivileges && !hasNoNewPrivileges(req.HostConfig.SecurityOpt) {
+		return "container create denied: no-new-privileges is required (set HostConfig.SecurityOpt to include \"no-new-privileges:true\")"
+	}
+	if p.requireNonRootUser && !isNonRootUser(req.User) {
+		return "container create denied: non-root user is required (set Config.User to a non-zero UID or non-root username)"
+	}
+	if p.requireReadonlyRootfs && !req.HostConfig.ReadonlyRootfs {
+		return "container create denied: read-only root filesystem is required (set HostConfig.ReadonlyRootfs to true)"
+	}
+	if p.requireDropAllCapabilities && !capDropContainsAll(req.HostConfig.CapDrop) {
+		return "container create denied: HostConfig.CapDrop must include \"ALL\""
+	}
+	return ""
+}
+
+// denyCapabilityReason enforces the CapAdd allowlist. RequireDropAll is
+// handled by denyHardeningReason.
+func (p containerCreatePolicy) denyCapabilityReason(hostConfig containerCreateHostConfig) string {
+	if p.allowAllCapabilities {
+		return ""
+	}
+	for _, raw := range hostConfig.CapAdd {
+		capability := normalizeCapability(raw)
+		if capability == "" {
+			continue
+		}
+		if !slices.Contains(p.allowedCapabilities, capability) {
+			return fmt.Sprintf("container create denied: capability %q is not in the allowed list", capability)
+		}
+	}
+	return ""
+}
+
+// denyResourceLimitReason enforces the resource limit requirements.
+func (p containerCreatePolicy) denyResourceLimitReason(hostConfig containerCreateHostConfig) string {
+	if p.requireMemoryLimit && hostConfig.Memory <= 0 {
+		return "container create denied: a memory limit is required (set HostConfig.Memory)"
+	}
+	if p.requireCPULimit && !hasCPULimit(hostConfig) {
+		return "container create denied: a CPU limit is required (set HostConfig.NanoCpus, CpuQuota, CpuPeriod, or CpuShares)"
+	}
+	if p.requirePidsLimit {
+		if hostConfig.PidsLimit == nil || *hostConfig.PidsLimit <= 0 {
+			return "container create denied: a PIDs limit is required (set HostConfig.PidsLimit to a positive value)"
+		}
+	}
+	return ""
+}
+
+// denySecurityOptReason inspects each HostConfig.SecurityOpt entry for
+// seccomp= / apparmor= / label= directives and enforces allowlists.
+func (p containerCreatePolicy) denySecurityOptReason(hostConfig containerCreateHostConfig) string {
+	seenSeccomp := false
+	seenAppArmor := false
+	for _, raw := range hostConfig.SecurityOpt {
+		kind, value, ok := parseSecurityOpt(raw)
+		if !ok {
+			continue
+		}
+		switch kind {
+		case "seccomp":
+			seenSeccomp = true
+			if len(p.allowedSeccompProfiles) > 0 {
+				if !slices.Contains(p.allowedSeccompProfiles, value) {
+					return fmt.Sprintf("container create denied: seccomp profile %q is not in the allowed list", value)
+				}
+			} else if p.denyUnconfinedSeccomp && strings.EqualFold(value, "unconfined") {
+				return "container create denied: unconfined seccomp profile is not allowed"
+			}
+		case "apparmor":
+			seenAppArmor = true
+			if len(p.allowedAppArmorProfiles) > 0 {
+				if !slices.Contains(p.allowedAppArmorProfiles, value) {
+					return fmt.Sprintf("container create denied: apparmor profile %q is not in the allowed list", value)
+				}
+			} else if p.denyUnconfinedAppArmor && strings.EqualFold(value, "unconfined") {
+				return "container create denied: unconfined apparmor profile is not allowed"
+			}
+		}
+	}
+
+	if len(p.allowedSeccompProfiles) > 0 && !seenSeccomp {
+		if !slices.Contains(p.allowedSeccompProfiles, "default") {
+			return "container create denied: a seccomp profile is required (set HostConfig.SecurityOpt to include seccomp=<profile>)"
+		}
+	}
+	if len(p.allowedAppArmorProfiles) > 0 && !seenAppArmor {
+		if !slices.Contains(p.allowedAppArmorProfiles, "default") &&
+			!slices.Contains(p.allowedAppArmorProfiles, "docker-default") &&
+			!slices.Contains(p.allowedAppArmorProfiles, "runtime/default") {
+			return "container create denied: an apparmor profile is required (set HostConfig.SecurityOpt to include apparmor=<profile>)"
+		}
+	}
+	return ""
+}
+
+func (p containerCreatePolicy) denyRequiredLabelsReason(req containerCreateRequest) string {
+	for _, key := range p.requiredLabels {
+		value, ok := req.Labels[key]
+		if !ok || strings.TrimSpace(value) == "" {
+			return fmt.Sprintf("container create denied: required label %q is missing or empty", key)
+		}
+	}
+	return ""
+}
+
 func bindPathAllowed(source string, allowedPaths []string) bool {
 	for _, allowed := range allowedPaths {
 		if allowed == "/" || source == allowed || strings.HasPrefix(source, allowed+"/") {
@@ -248,4 +453,136 @@ func normalizeContainerCreateDevicePath(value string) (string, bool) {
 		return "", false
 	}
 	return path.Clean(value), true
+}
+
+// hasNoNewPrivileges returns true when SecurityOpt contains an entry that
+// turns on Docker's no-new-privileges flag. Docker accepts both
+// "no-new-privileges" (treated as true) and "no-new-privileges:true".
+func hasNoNewPrivileges(securityOpt []string) bool {
+	for _, raw := range securityOpt {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		key, value, hasValue := splitSecurityOptKV(entry)
+		if !strings.EqualFold(key, "no-new-privileges") {
+			continue
+		}
+		if !hasValue {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(value), "true") {
+			return true
+		}
+	}
+	return false
+}
+
+// isNonRootUser returns true when the Config.User value clearly references a
+// non-root identity. Empty values default to the image's user, which Sockguard
+// treats as root for safety. Numeric "0" / "0:N" or the literal name "root"
+// are also rejected.
+func isNonRootUser(user string) bool {
+	trimmed := strings.TrimSpace(user)
+	if trimmed == "" {
+		return false
+	}
+	userPart, _, _ := strings.Cut(trimmed, ":")
+	userPart = strings.TrimSpace(userPart)
+	if userPart == "" {
+		return false
+	}
+	if strings.EqualFold(userPart, "root") {
+		return false
+	}
+	if userPart == "0" {
+		return false
+	}
+	return true
+}
+
+// capDropContainsAll returns true when CapDrop includes the literal "ALL"
+// token (case-insensitive). Docker treats "ALL" specially to drop every
+// default capability.
+func capDropContainsAll(capDrop []string) bool {
+	for _, raw := range capDrop {
+		if strings.EqualFold(strings.TrimSpace(raw), "ALL") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasCPULimit returns true when at least one of Docker's CPU-budget knobs is
+// set. NanoCpus, CpuQuota, and CpuPeriod each individually carve out a CFS
+// budget; CpuShares only sets relative weight, but operators sometimes use
+// it for the same purpose, so we accept it as evidence of intent.
+func hasCPULimit(h containerCreateHostConfig) bool {
+	return h.NanoCpus > 0 || h.CpuQuota > 0 || h.CpuPeriod > 0 || h.CpuShares > 0
+}
+
+// parseSecurityOpt extracts the (key, value) tuple from a Docker SecurityOpt
+// entry like "seccomp=unconfined" or "apparmor=docker-default". Returns ok=false
+// for entries that don't follow the key=value shape (e.g. "no-new-privileges"),
+// which the caller handles separately.
+func parseSecurityOpt(raw string) (kind, value string, ok bool) {
+	entry := strings.TrimSpace(raw)
+	if entry == "" {
+		return "", "", false
+	}
+	key, val, hasValue := splitSecurityOptKV(entry)
+	if !hasValue {
+		return "", "", false
+	}
+	return strings.ToLower(strings.TrimSpace(key)), strings.TrimSpace(val), true
+}
+
+// splitSecurityOptKV splits a SecurityOpt token on the first '=' or ':'
+// character. Docker accepts both separators in practice.
+func splitSecurityOptKV(entry string) (key, value string, hasValue bool) {
+	if idx := strings.IndexAny(entry, "=:"); idx >= 0 {
+		return entry[:idx], entry[idx+1:], true
+	}
+	return entry, "", false
+}
+
+func normalizeCapability(value string) string {
+	trimmed := strings.ToUpper(strings.TrimSpace(value))
+	return strings.TrimPrefix(trimmed, "CAP_")
+}
+
+func normalizeCapabilityList(values []string) []string {
+	allowed := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := normalizeCapability(value)
+		if normalized == "" || slices.Contains(allowed, normalized) {
+			continue
+		}
+		allowed = append(allowed, normalized)
+	}
+	return allowed
+}
+
+func normalizeProfileList(values []string) []string {
+	allowed := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := strings.TrimSpace(value)
+		if normalized == "" || slices.Contains(allowed, normalized) {
+			continue
+		}
+		allowed = append(allowed, normalized)
+	}
+	return allowed
+}
+
+func normalizeLabelKeyList(values []string) []string {
+	allowed := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := strings.TrimSpace(value)
+		if normalized == "" || slices.Contains(allowed, normalized) {
+			continue
+		}
+		allowed = append(allowed, normalized)
+	}
+	return allowed
 }
