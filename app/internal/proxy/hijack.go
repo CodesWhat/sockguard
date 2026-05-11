@@ -403,6 +403,11 @@ func startHijackCopy(
 		defer wg.Done()
 		buf := deps.getHijackBuffer()
 		defer deps.putHijackBuffer(buf)
+		// closeWrite must run even if the copy panics — otherwise the peer's
+		// read side never sees EOF and the bidirectional pair deadlocks. The
+		// recovered panic alone is not enough: the goroutine returns silently
+		// but its half-close signal never reaches the other end.
+		defer closeWrite(stream.closeConnOnEOF)
 		defer func() {
 			if v := recover(); v != nil {
 				logger.Error("hijack: panic in "+stream.direction+" copy", "panic", fmt.Sprint(v), "path", reqPath)
@@ -414,7 +419,6 @@ func startHijackCopy(
 		if _, err := deps.copyBuffer(writer, reader, buf); err != nil {
 			logger.Debug("hijack: "+stream.direction+" copy ended", "error", err, "path", reqPath)
 		}
-		closeWrite(stream.closeConnOnEOF)
 	}()
 }
 
