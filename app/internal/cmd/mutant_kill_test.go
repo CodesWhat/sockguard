@@ -775,4 +775,3 @@ func TestPrintClientProfiles_DenyActionDoesNotRenderAsAllow(t *testing.T) {
 //   cannot be killed by any test because both sides of the boundary produce
 //   the same string when len(c) == n.
 // ---------------------------------------------------------------------------
-

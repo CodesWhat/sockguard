@@ -571,7 +571,7 @@ func TestInspectAllowedRequest_MatchesFilterSkipsWrongPath(t *testing.T) {
 	handler := MiddlewareWithOptions(rules, testLogger(), Options{
 		PolicyConfig: PolicyConfig{
 			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
-			Volume: VolumeOptions{}, // restrictive by default
+			Volume:                VolumeOptions{}, // restrictive by default
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

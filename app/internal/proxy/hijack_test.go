@@ -2175,7 +2175,6 @@ func TestPutHijackBufferZeroesBufferBeforeReuse(t *testing.T) {
 	}
 }
 
-
 // TestGetHijackBufferAcceptsExactCapacityFromPool verifies that a buffer whose
 // capacity is exactly hijackBufSize is returned from the pool rather than
 // triggering a new allocation.

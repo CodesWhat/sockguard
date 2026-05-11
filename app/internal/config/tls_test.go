@@ -183,8 +183,9 @@ func TestIsLoopbackTCPAddress(t *testing.T) {
 //
 // Each sub-test uses a constraint with exactly one populated selector field and
 // verifies that:
-//   (a) a matching cert is accepted (CONDITIONALS_NEGATION kill), and
-//   (b) a cert that only differs in that field is rejected.
+//
+//	(a) a matching cert is accepted (CONDITIONALS_NEGATION kill), and
+//	(b) a cert that only differs in that field is rejected.
 //
 // CONDITIONALS_BOUNDARY (`len(x) > 0` → `len(x) >= 0`):
 // When a slice is empty (len==0) the guard must be skipped. If mutated to >=
@@ -232,7 +233,7 @@ func TestCompiledConstraintsMatchesMutantKills(t *testing.T) {
 	// not become len >= 0 (always-true).
 	t.Run("empty_common_names_slice_does_not_reject", func(t *testing.T) {
 		c := compiledClientCertificateIdentityConstraints{
-			commonNames: []string{},                    // empty — skip CN check
+			commonNames: []string{},                      // empty — skip CN check
 			dnsNames:    []string{"allowed.example.com"}, // populated — use this
 		}
 		if !c.matches(allowedLeaf) {
@@ -259,7 +260,7 @@ func TestCompiledConstraintsMatchesMutantKills(t *testing.T) {
 	})
 	t.Run("empty_dns_names_slice_does_not_reject", func(t *testing.T) {
 		c := compiledClientCertificateIdentityConstraints{
-			dnsNames:    []string{},            // empty — skip DNS check
+			dnsNames:    []string{},             // empty — skip DNS check
 			commonNames: []string{"allowed-cn"}, // populated — use this
 		}
 		if !c.matches(allowedLeaf) {
@@ -288,7 +289,7 @@ func TestCompiledConstraintsMatchesMutantKills(t *testing.T) {
 	})
 	t.Run("empty_ip_addresses_slice_does_not_reject", func(t *testing.T) {
 		c := compiledClientCertificateIdentityConstraints{
-			ipAddresses: []netip.Addr{},             // empty — skip IP check
+			ipAddresses: []netip.Addr{},         // empty — skip IP check
 			commonNames: []string{"allowed-cn"}, // populated — use this
 		}
 		if !c.matches(allowedLeaf) {
@@ -315,7 +316,7 @@ func TestCompiledConstraintsMatchesMutantKills(t *testing.T) {
 	})
 	t.Run("empty_uri_sans_slice_does_not_reject", func(t *testing.T) {
 		c := compiledClientCertificateIdentityConstraints{
-			uriSANs:     []string{},              // empty — skip URI check
+			uriSANs:     []string{},             // empty — skip URI check
 			commonNames: []string{"allowed-cn"}, // populated — use this
 		}
 		if !c.matches(allowedLeaf) {
