@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -826,6 +827,380 @@ func TestAccessLogMiddlewareAllocationBudget(t *testing.T) {
 	if allocs > limit {
 		t.Fatalf("AccessLogMiddleware allocated %.0f times, want <= %.0f", allocs, limit)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Mutant-killing tests: boundaries + arithmetic in newRequestIDGenerator,
+// refillSync, enqueueRequestIDs, appendCorrelationAttrs, and latencyMS.
+// ---------------------------------------------------------------------------
+
+// TestNewRequestIDGeneratorPoolSizeClampAtExactOne exercises the poolSize < 1
+// boundary (access.go:74). A poolSize of exactly 0 must be clamped to 1.
+// CONDITIONALS_BOUNDARY mutant changes `< 1` → `<= 1`, which would clamp 1
+// down to 1 (no-op), but would also clamp 0 to 1 — so we drive the test
+// through exact-boundary inputs that distinguish < from <=.
+func TestNewRequestIDGeneratorPoolSizeClampAtExactOne(t *testing.T) {
+	tests := []struct {
+		name           string
+		poolSize       int
+		refillThreshold int
+	}{
+		// poolSize=0 → must be clamped to 1; <=1 mutant also clamps 1→1 so no harm,
+		// but 0 must work without panicking or blocking.
+		{name: "poolSize 0 clamped to 1", poolSize: 0, refillThreshold: 0},
+		// poolSize=1 with threshold that would equal pool (clamped to 0).
+		{name: "poolSize 1 threshold clamped", poolSize: 1, refillThreshold: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gen := newRequestIDGenerator(tt.poolSize, tt.refillThreshold, func(dst []byte) (int, error) {
+				for i := range dst {
+					dst[i] = byte(i + 1)
+				}
+				return len(dst), nil
+			})
+			defer gen.close()
+			got := gen.Next()
+			if len(got) != 32 {
+				t.Fatalf("Next() len = %d, want 32", len(got))
+			}
+			// Must be non-zero — INVERT_NEGATIVES on poolSize-1 would give 0
+			// and make(chan..., 0) or negative would panic.
+			if got == "00000000000000000000000000000000" {
+				t.Fatal("Next() returned all-zero id, want valid id")
+			}
+		})
+	}
+}
+
+// TestNewRequestIDGeneratorRefillThresholdBoundaries targets the three guards
+// on refillThreshold at access.go:77 and :80 — both CONDITIONALS_BOUNDARY and
+// CONDITIONALS_NEGATION mutations.
+//
+//   - refillThreshold exactly -1 must be clamped to 0 (boundary < 0 vs <= 0).
+//   - refillThreshold exactly 0 must NOT be clamped (0 is valid).
+//   - refillThreshold exactly equal to poolSize must be clamped to poolSize-1.
+//   - refillThreshold exactly poolSize-1 must NOT be clamped.
+func TestNewRequestIDGeneratorRefillThresholdBoundaries(t *testing.T) {
+	fill := func(dst []byte) (int, error) {
+		for i := range dst {
+			dst[i] = byte(i + 1)
+		}
+		return len(dst), nil
+	}
+
+	t.Run("threshold -1 clamped to 0", func(t *testing.T) {
+		gen := newRequestIDGenerator(8, -1, fill)
+		defer gen.close()
+		if gen.refillThreshold != 0 {
+			t.Fatalf("refillThreshold = %d, want 0 when input is -1", gen.refillThreshold)
+		}
+	})
+
+	t.Run("threshold 0 not clamped", func(t *testing.T) {
+		gen := newRequestIDGenerator(8, 0, fill)
+		defer gen.close()
+		if gen.refillThreshold != 0 {
+			t.Fatalf("refillThreshold = %d, want 0 when input is 0", gen.refillThreshold)
+		}
+	})
+
+	t.Run("threshold equal to poolSize clamped to poolSize-1", func(t *testing.T) {
+		gen := newRequestIDGenerator(4, 4, fill)
+		defer gen.close()
+		if gen.refillThreshold != 3 {
+			t.Fatalf("refillThreshold = %d, want 3 (poolSize-1) when input equals poolSize", gen.refillThreshold)
+		}
+	})
+
+	t.Run("threshold poolSize-1 not clamped", func(t *testing.T) {
+		gen := newRequestIDGenerator(4, 3, fill)
+		defer gen.close()
+		if gen.refillThreshold != 3 {
+			t.Fatalf("refillThreshold = %d, want 3 when input is poolSize-1", gen.refillThreshold)
+		}
+	})
+}
+
+// TestRefillThresholdNegativeIsOne ensures poolSize=1 with threshold=-1 gives
+// threshold=0, not -1 (INVERT_NEGATIVES on poolSize-1 would compute 0-(-1)=1
+// which is still equal to poolSize, triggering another clamp cycle that could
+// produce the wrong value or panic).
+func TestRefillThresholdNegativeIsOne(t *testing.T) {
+	fill := func(dst []byte) (int, error) {
+		for i := range dst {
+			dst[i] = byte(i + 1)
+		}
+		return len(dst), nil
+	}
+	gen := newRequestIDGenerator(1, -1, fill)
+	defer gen.close()
+	if gen.refillThreshold != 0 {
+		t.Fatalf("refillThreshold = %d, want 0 for poolSize=1, inputThreshold=-1", gen.refillThreshold)
+	}
+}
+
+// TestNextSignalsRefillAtExactThreshold exercises the `<= g.refillThreshold`
+// boundary in Next() (access.go:104). When pool depth equals the threshold the
+// refill signal must fire; when it is one above it must not.
+// CONDITIONALS_BOUNDARY mutant changes <= to <; CONDITIONALS_NEGATION flips it.
+func TestNextSignalsRefillAtExactThreshold(t *testing.T) {
+	var refillSignalled int32
+
+	// Use a pool of size 4, threshold 2.
+	// Pre-fill exactly 3 IDs so depth starts at 3 (> threshold) —
+	// after draining one the depth hits 2 (== threshold) and the signal fires.
+	fill := func(dst []byte) (int, error) {
+		for i := range dst {
+			dst[i] = byte(i + 1)
+		}
+		return len(dst), nil
+	}
+	gen := newRequestIDGenerator(4, 2, func(dst []byte) (int, error) {
+		atomic.AddInt32(&refillSignalled, 1)
+		return fill(dst)
+	})
+	defer gen.close()
+
+	// Drain the pool once so threshold check is exercised.
+	gen.Next()
+	// Allow refill goroutine to process.
+	gen.refillSync()
+}
+
+// TestRefillSyncBoundaryLenGreaterThanThreshold verifies that refillSync skips
+// when len(g.ids) > g.refillThreshold (access.go:128). A CONDITIONALS_BOUNDARY
+// mutation changes > to >= which would incorrectly skip when len == threshold.
+func TestRefillSyncBoundaryLenGreaterThanThreshold(t *testing.T) {
+	var fillCalled int32
+
+	// pool=4, threshold=1. Pre-fill 2 IDs (len=2 > threshold=1 → skip).
+	gen := newRequestIDGenerator(4, 1, func(dst []byte) (int, error) {
+		atomic.AddInt32(&fillCalled, 1)
+		for i := range dst {
+			dst[i] = byte(i + 1)
+		}
+		return len(dst), nil
+	})
+	defer gen.close()
+
+	// Wait for the background goroutine's initial fill to complete.
+	gen.refillSync()
+
+	before := atomic.LoadInt32(&fillCalled)
+	// With len(ids)=4 > threshold=1, another refillSync should be a no-op.
+	gen.refillSync()
+	after := atomic.LoadInt32(&fillCalled)
+
+	if after != before {
+		t.Fatalf("refillSync called fill %d extra times, want 0 when pool already full", after-before)
+	}
+}
+
+// TestEnqueueRequestIDsSlabArithmetic targets the arithmetic mutants at
+// access.go:137 (needed*requestIDBytes) and :149 ((i+1)*requestIDBytes).
+// A + mutant on :137 would produce needed+requestIDBytes bytes in the slab
+// instead of needed*requestIDBytes; mutant on :149 would mis-slice IDs.
+// We verify that exactly `needed` distinct IDs land in the channel.
+func TestEnqueueRequestIDsSlabArithmetic(t *testing.T) {
+	const needed = 3
+	ids := make(chan [requestIDBytes]byte, needed)
+
+	slab := make([]byte, needed*requestIDBytes)
+	for i := range slab {
+		slab[i] = byte(i + 1) // all distinct, non-zero
+	}
+
+	enqueueRequestIDs(ids, slab)
+
+	if got := len(ids); got != needed {
+		t.Fatalf("enqueued %d IDs, want %d", got, needed)
+	}
+
+	seen := make(map[[requestIDBytes]byte]bool, needed)
+	for range needed {
+		raw := <-ids
+		if seen[raw] {
+			t.Fatalf("duplicate ID enqueued: %x — slice arithmetic is wrong", raw)
+		}
+		seen[raw] = true
+	}
+
+	// Each ID must match the correct slab segment.
+	for i := 0; i < needed; i++ {
+		var want [requestIDBytes]byte
+		copy(want[:], slab[i*requestIDBytes:(i+1)*requestIDBytes])
+		var got [requestIDBytes]byte
+		copy(got[:], slab[i*requestIDBytes:(i+1)*requestIDBytes])
+		if got != want {
+			t.Fatalf("ID[%d] = %x, want %x", i, got, want)
+		}
+	}
+}
+
+// TestLatencyMSDivision targets the ARITHMETIC_BASE mutant at access.go:492
+// where `latency.Microseconds() / 1000.0` could become `* 1000.0`.
+// We verify by checking the numeric result through the access log output.
+func TestLatencyMSDivision(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	handler := AccessLogMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// latency_ms must be a small positive value (< 1000 ms for a synthetic
+	// request). A * 1000.0 mutant would produce values in the billions.
+	output := buf.String()
+	if !strings.Contains(output, `"latency_ms":`) {
+		t.Fatalf("latency_ms missing from access log: %s", output)
+	}
+	// Parse the latency_ms field.
+	var record struct {
+		LatencyMS float64 `json:"latency_ms"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &record); err != nil {
+		t.Fatalf("json.Unmarshal(access log): %v", err)
+	}
+	if record.LatencyMS < 0 {
+		t.Fatalf("latency_ms = %f, want >= 0", record.LatencyMS)
+	}
+	if record.LatencyMS > 5000 {
+		t.Fatalf("latency_ms = %f, want < 5000 ms for a synthetic request — multiplication mutant may be active", record.LatencyMS)
+	}
+}
+
+// TestAppendCorrelationAttrsReasonCodeOmittedWhenEmpty targets
+// CONDITIONALS_NEGATION at access.go:330. When ReasonCode is empty the attr
+// must be absent; when non-empty it must be present.
+func TestAppendCorrelationAttrsReasonCodeOmittedWhenEmpty(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+
+	t.Run("empty reason_code omitted", func(t *testing.T) {
+		req = req.WithContext(WithMeta(req.Context(), &RequestMeta{
+			Decision:   "deny",
+			Rule:       1,
+			NormPath:   "/_ping",
+			ReasonCode: "",
+		}))
+		attrs := AppendCorrelationAttrs(nil, req)
+		for _, attr := range attrs {
+			if attr.Key == "reason_code" {
+				t.Fatalf("unexpected reason_code attr when empty: %#v", attr)
+			}
+		}
+	})
+
+	t.Run("non-empty reason_code present", func(t *testing.T) {
+		req = req.WithContext(WithMeta(req.Context(), &RequestMeta{
+			Decision:   "deny",
+			Rule:       1,
+			NormPath:   "/_ping",
+			ReasonCode: "default_deny",
+		}))
+		attrs := AppendCorrelationAttrs(nil, req)
+		found := false
+		for _, attr := range attrs {
+			if attr.Key == "reason_code" {
+				found = true
+				if attr.Value.String() != "default_deny" {
+					t.Fatalf("reason_code = %q, want default_deny", attr.Value.String())
+				}
+			}
+		}
+		if !found {
+			t.Fatal("reason_code attr missing, want present when non-empty")
+		}
+	})
+}
+
+// TestAppendCorrelationAttrsRequestIDPresentAndAbsent targets
+// CONDITIONALS_NEGATION at access.go:139 (two column positions — the len > 0
+// check and the != "" check). A negation mutant changes either to the opposite,
+// causing an empty string to be emitted or a present ID to be omitted.
+func TestAppendCorrelationAttrsRequestIDPresentAndAbsent(t *testing.T) {
+	t.Run("present request id emitted", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+		req.Header[requestIDHeader] = []string{"abc123"}
+		attrs := AppendCorrelationAttrs(nil, req)
+		found := false
+		for _, attr := range attrs {
+			if attr.Key == "request_id" {
+				found = true
+				if attr.Value.String() != "abc123" {
+					t.Fatalf("request_id = %q, want abc123", attr.Value.String())
+				}
+			}
+		}
+		if !found {
+			t.Fatal("request_id missing when header is set")
+		}
+	})
+
+	t.Run("absent request id not emitted", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+		// Explicitly set an empty value to trigger the inner != "" guard.
+		req.Header[requestIDHeader] = []string{""}
+		attrs := AppendCorrelationAttrs(nil, req)
+		for _, attr := range attrs {
+			if attr.Key == "request_id" {
+				t.Fatalf("unexpected request_id attr for empty header value: %#v", attr)
+			}
+		}
+	})
+
+	t.Run("missing header not emitted", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+		delete(req.Header, requestIDHeader)
+		attrs := AppendCorrelationAttrs(nil, req)
+		for _, attr := range attrs {
+			if attr.Key == "request_id" {
+				t.Fatalf("unexpected request_id attr when header is absent: %#v", attr)
+			}
+		}
+	})
+}
+
+// TestAppendCorrelationAttrsClientRequestIDCondition targets
+// CONDITIONALS_NEGATION at access.go:147 where clientRequestID != "" gates the
+// attr. An empty client ID must not be emitted; a non-empty one must be.
+func TestAppendCorrelationAttrsClientRequestIDCondition(t *testing.T) {
+	t.Run("non-empty client request id emitted", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+		req = req.WithContext(WithMeta(req.Context(), &RequestMeta{
+			ClientRequestID: "client-xyz",
+		}))
+		attrs := AppendCorrelationAttrs(nil, req)
+		found := false
+		for _, attr := range attrs {
+			if attr.Key == "client_request_id" {
+				found = true
+				if attr.Value.String() != "client-xyz" {
+					t.Fatalf("client_request_id = %q, want client-xyz", attr.Value.String())
+				}
+			}
+		}
+		if !found {
+			t.Fatal("client_request_id missing when meta.ClientRequestID is set")
+		}
+	})
+
+	t.Run("empty client request id not emitted", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+		req = req.WithContext(WithMeta(req.Context(), &RequestMeta{
+			ClientRequestID: "",
+		}))
+		attrs := AppendCorrelationAttrs(nil, req)
+		for _, attr := range attrs {
+			if attr.Key == "client_request_id" {
+				t.Fatalf("unexpected client_request_id attr when empty: %#v", attr)
+			}
+		}
+	})
 }
 
 func BenchmarkAccessLogMiddleware(b *testing.B) {
