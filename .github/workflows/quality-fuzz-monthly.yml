@@ -105,8 +105,11 @@ jobs:
             -timeout="${TEST_TIMEOUT}" \
             "${PKG}"
 
-      - name: Upload fuzz corpus on failure
-        if: failure()
+      - name: Upload fuzz corpus on failure or cancel
+        # `cancelled()` covers manual cancels and job-level timeout-minutes
+        # kills, both of which signal a wedged fuzzer whose corpus is worth
+        # preserving — same as a normal crash.
+        if: failure() || cancelled()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: fuzz-corpus-monthly-${{ matrix.fuzzer.name }}-${{ github.run_id }}
