@@ -237,10 +237,10 @@ func TestRequireExplicitConfigFile_FlagChangedDirectlyOnCmd(t *testing.T) {
 // ---------------------------------------------------------------------------
 // match.go:166:21 — CONDITIONALS_NEGATION: result.Decision == ActionAllow
 // match.go:176:32 — CONDITIONALS_NEGATION: result.MatchedRule.Action == ActionAllow
-// writeMatchText colours the decision/action green for allow, red otherwise.
-// Mutation flips == → !=, swapping the colours.
+// writeMatchText colors the decision/action green for allow, red otherwise.
+// Mutation flips == → !=, swapping the colors.
 // Kill: call writeMatchText with both allow and deny outcomes and assert the
-// correct label appears (the colour codes are stripped in no-color mode, but
+// correct label appears (the color codes are stripped in no-color mode, but
 // the text is stable).
 // ---------------------------------------------------------------------------
 
@@ -662,7 +662,7 @@ func TestWithHealth_RuntimeWithHealthUsesInjectedMonitor(t *testing.T) {
 // validate.go:80:13 — CONDITIONALS_NEGATION: r.Action == "deny" (printClientProfiles)
 // validate.go:103:16 — same for printRules
 // validate.go:108:14 — same for printClientProfiles
-// The glyph+action colour for allow vs deny must be correct.
+// The glyph+action color for allow vs deny must be correct.
 // Mutation flips == → !=: deny rules would be printed as "allow" and vice versa.
 // Kill: call printRules and printClientProfiles with known allow and deny
 // rules and assert each rule's text appears correctly in the output.

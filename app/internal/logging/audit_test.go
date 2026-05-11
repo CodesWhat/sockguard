@@ -29,6 +29,7 @@ func TestAuditLogMiddlewareEmitsDedicatedEventSchema(t *testing.T) {
 		meta := MetaFromResponseWriter(w)
 		if meta == nil {
 			t.Fatal("expected request meta on wrapped response writer")
+			return
 		}
 		meta.Decision = "deny"
 		meta.ReasonCode = "client_ip_not_allowed"
@@ -157,6 +158,7 @@ func TestAccessAndAuditLogMiddlewaresShareRequestMeta(t *testing.T) {
 			meta := MetaFromResponseWriter(w)
 			if meta == nil {
 				t.Fatal("expected shared request meta on wrapped response writer")
+				return
 			}
 			meta.Decision = "allow"
 			meta.ReasonCode = "matched_allow_rule"
@@ -448,7 +450,7 @@ func TestAuditLogCloserOutputErrorOnlyWhenLoggerOK(t *testing.T) {
 		output: closerFunc(func() error { return outputErr }),
 	}
 	err := c.Close()
-	if err != outputErr {
+	if !errors.Is(err, outputErr) {
 		t.Fatalf("Close() = %v, want output error %v when logger Close() succeeds", err, outputErr)
 	}
 }
@@ -476,7 +478,7 @@ func TestAuditLogCloserNilLoggerOutputError(t *testing.T) {
 		output: closerFunc(func() error { return outputErr }),
 	}
 	err := c.Close()
-	if err != outputErr {
+	if !errors.Is(err, outputErr) {
 		t.Fatalf("Close() = %v, want %v when logger is nil and output errors", err, outputErr)
 	}
 }

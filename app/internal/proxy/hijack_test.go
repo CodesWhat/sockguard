@@ -1093,6 +1093,7 @@ func TestUpgradeHijackConnectionReturnsReadySession(t *testing.T) {
 	}
 	if session == nil {
 		t.Fatal("expected non-nil hijack session")
+		return
 	}
 	if session.path != req.URL.Path {
 		t.Fatalf("session path = %q, want %q", session.path, req.URL.Path)

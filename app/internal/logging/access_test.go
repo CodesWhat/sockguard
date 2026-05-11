@@ -29,6 +29,7 @@ func TestAccessLogAllowed(t *testing.T) {
 		m := MetaFromResponseWriter(w)
 		if m == nil {
 			t.Fatal("expected meta on wrapped response writer")
+			return
 		}
 		m.Decision = "allow"
 		m.Rule = 0
@@ -422,6 +423,7 @@ func TestMetaRoundTrip(t *testing.T) {
 	got := Meta(ctx)
 	if got == nil {
 		t.Fatal("Meta() returned nil")
+		return
 	}
 	if got.Decision != "allow" {
 		t.Errorf("Decision = %q, want allow", got.Decision)
