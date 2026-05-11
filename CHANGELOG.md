@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-05-11
+
+### Security
+
+- Bumped the builder image to `golang:1.26.3-alpine3.23` so the published `sockguard` binary embeds Go 1.26.3, clearing eleven Grype findings against the stdlib in `go1.26.2` (CVE-2026-42501, CVE-2026-42499, CVE-2026-39836, CVE-2026-39820, CVE-2026-33814, CVE-2026-33811, CVE-2026-39826, CVE-2026-39825, CVE-2026-39823, CVE-2026-39819, CVE-2026-39817). No code changes to the proxy.
+
+### Fixed
+
+- Switched `release-cut.yml`'s tag push to use `secrets.RELEASE_PAT` so the resulting `v*` tag actually fires `release-from-tag.yml` under this repo's default workflow permissions, restoring the automatic build-and-publish chain.
+
 ## [0.5.0] - 2026-05-05
 
 ### Added
