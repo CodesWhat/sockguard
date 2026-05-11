@@ -34,6 +34,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: true
+          # GITHUB_TOKEN-pushed tags do not trigger downstream workflows under
+          # this repo's default_workflow_permissions. Use a PAT (Contents: RW)
+          # so the v* tag push fires release-from-tag.yml automatically.
+          token: ${{ secrets.RELEASE_PAT }}
 
       - name: Resolve target SHA
         id: target
