@@ -53,7 +53,7 @@ sudo mv cosign /usr/local/bin/
 ## One-liner verify
 
 Replace `<TAG>` with the release tag you're pulling (for example
-`0.5.0`, `0.5`, or `latest`):
+`0.5.1`, `0.5`, or `latest`):
 
 ```bash
 cosign verify \
@@ -86,7 +86,7 @@ digest rather than by tag — a tag can be re-pointed, a digest cannot.
 ```bash
 # Resolve the current digest for a tag
 digest=$(docker buildx imagetools inspect \
-  ghcr.io/codeswhat/sockguard:0.5.0 --format '{{json .Manifest.Digest}}' \
+  ghcr.io/codeswhat/sockguard:0.5.1 --format '{{json .Manifest.Digest}}' \
   | tr -d '"')
 
 # Verify against the digest
@@ -124,11 +124,11 @@ cosign-signed. The release workflow uploads a detached signature
 
 ```bash
 cosign verify-blob \
-  --certificate "sockguard-v0.5.0.tar.gz.pem" \
-  --signature   "sockguard-v0.5.0.tar.gz.sig" \
+  --certificate "sockguard-v0.5.1.tar.gz.pem" \
+  --signature   "sockguard-v0.5.1.tar.gz.sig" \
   --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  "sockguard-v0.5.0.tar.gz"
+  "sockguard-v0.5.1.tar.gz"
 ```
 
 Same interpretation as the image verify: a clean exit code is a
