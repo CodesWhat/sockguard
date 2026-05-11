@@ -1242,6 +1242,55 @@ func TestProxyHijackStreamsWrapperClosesConnections(t *testing.T) {
 	}
 }
 
+// TestProxyHijackStreamsHalfClosesOnCopyPanic regresses a fuzz-discovered
+// deadlock: when copyBuffer panicked, the deferred recover swallowed the
+// panic but the goroutine exited without signaling half-close to the peer.
+// The peer's read then blocked forever waiting for an EOF that never came,
+// wedging FuzzHijackBidirectionalStream past Go's -timeout watchdog.
+func TestProxyHijackStreamsHalfClosesOnCopyPanic(t *testing.T) {
+	deps := newHijackDeps()
+	deps.copyBuffer = func(io.Writer, io.Reader, []byte) (int64, error) {
+		panic("synthetic copy panic")
+	}
+
+	var logs safeBuffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	clientConn := &funcConn{}
+	upstreamConn := &funcConn{}
+
+	done := make(chan struct{})
+	go func() {
+		proxyHijackStreamsWithDeps(&hijackSession{
+			path:         "/containers/abc/attach",
+			upstreamConn: upstreamConn,
+			upstreamBuf:  bufio.NewReader(strings.NewReader("")),
+			clientConn:   clientConn,
+			clientBuf:    bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)),
+		}, logger, deps)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxyHijackStreams did not return after copy panic")
+	}
+
+	if clientConn.closeWriteCalls == 0 {
+		t.Fatal("client CloseWrite was not called after upstream→client copy panic — peer would deadlock")
+	}
+	if upstreamConn.closeWriteCalls == 0 {
+		t.Fatal("upstream CloseWrite was not called after client→upstream copy panic — peer would deadlock")
+	}
+	if !strings.Contains(logs.String(), "panic in upstream→client copy") {
+		t.Fatalf("expected upstream→client panic log, got %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "panic in client→upstream copy") {
+		t.Fatalf("expected client→upstream panic log, got %q", logs.String())
+	}
+}
+
 func TestInactivityDeadlineReaderReturnsDeadlineError(t *testing.T) {
 	wantErr := errors.New("deadline boom")
 	conn := &funcConn{
