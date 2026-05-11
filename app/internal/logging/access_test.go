@@ -843,8 +843,8 @@ func TestAccessLogMiddlewareAllocationBudget(t *testing.T) {
 // through exact-boundary inputs that distinguish < from <=.
 func TestNewRequestIDGeneratorPoolSizeClampAtExactOne(t *testing.T) {
 	tests := []struct {
-		name           string
-		poolSize       int
+		name            string
+		poolSize        int
 		refillThreshold int
 	}{
 		// poolSize=0 → must be clamped to 1; <=1 mutant also clamps 1→1 so no harm,

@@ -148,7 +148,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("go    ")} {"  "}go1.26.2
+            {dim("go    ")} {"  "}go1.26.3
           </>
         ),
       },
@@ -409,7 +409,7 @@ const RAW_FRAMES: RawFrame[] = [
           <>
             {"  "}
             {bold("sockguard")} v0.3.1{"  "}
-            {dim("(commit a8c742f, built 2026-04-13T21:18:11Z, go1.26.2)")}
+            {dim("(commit a8c742f, built 2026-04-13T21:18:11Z, go1.26.3)")}
           </>
         ),
       },
