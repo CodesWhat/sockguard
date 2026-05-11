@@ -459,6 +459,7 @@ func TestMiddlewareWritesMeta(t *testing.T) {
 		m := logging.MetaForRequest(w, r)
 		if m == nil {
 			t.Fatal("expected request meta")
+			return
 		}
 		if m.Decision != "allow" {
 			t.Errorf("Decision = %q, want allow", m.Decision)

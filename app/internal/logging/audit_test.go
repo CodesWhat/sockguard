@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,7 @@ func TestAuditLogMiddlewareEmitsDedicatedEventSchema(t *testing.T) {
 		meta := MetaFromResponseWriter(w)
 		if meta == nil {
 			t.Fatal("expected request meta on wrapped response writer")
+			return
 		}
 		meta.Decision = "deny"
 		meta.ReasonCode = "client_ip_not_allowed"
@@ -156,6 +158,7 @@ func TestAccessAndAuditLogMiddlewaresShareRequestMeta(t *testing.T) {
 			meta := MetaFromResponseWriter(w)
 			if meta == nil {
 				t.Fatal("expected shared request meta on wrapped response writer")
+				return
 			}
 			meta.Decision = "allow"
 			meta.ReasonCode = "matched_allow_rule"
@@ -425,6 +428,58 @@ func TestNewAuditRejectsInvalidOutput(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `open log output "missing/audit.log"`) {
 		t.Fatalf("NewAudit() error = %q, want invalid output path message", err.Error())
+	}
+}
+
+// closerFunc is an io.Closer backed by a function.
+type closerFunc func() error
+
+func (fn closerFunc) Close() error { return fn() }
+
+// TestAuditLogCloserOutputErrorOnlyWhenLoggerOK targets the CONDITIONALS_NEGATION
+// mutant at audit.go:76 (`err == nil`). The output closer's error should only be
+// stored when the logger Close succeeded (err == nil). If the mutant flips to
+// `err != nil`, a successful logger + failing output would return nil instead.
+func TestAuditLogCloserOutputErrorOnlyWhenLoggerOK(t *testing.T) {
+	var buf bytes.Buffer
+	realLogger := NewAuditLogger(&buf)
+
+	outputErr := errors.New("disk full")
+	c := auditLogCloser{
+		logger: realLogger,
+		output: closerFunc(func() error { return outputErr }),
+	}
+	err := c.Close()
+	if !errors.Is(err, outputErr) {
+		t.Fatalf("Close() = %v, want output error %v when logger Close() succeeds", err, outputErr)
+	}
+}
+
+// TestAuditLogCloserNilOutputIsSkipped ensures the nil-output guard works.
+func TestAuditLogCloserNilOutputIsSkipped(t *testing.T) {
+	var buf bytes.Buffer
+	realLogger := NewAuditLogger(&buf)
+	c := auditLogCloser{logger: realLogger, output: nil}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close() = %v, want nil when output is nil", err)
+	}
+}
+
+// TestAuditLogCloserOutputErrorNotStoredWhenLoggerFailed ensures that when
+// the logger returns an error, the output closer's distinct error is NOT
+// stored (the logger error is preserved). This is the other branch of audit.go:76.
+// Since AuditLogger.Close() always returns nil, we test the nil-logger path
+// plus an output that errors: the output error becomes the result because
+// err starts as nil (no logger).
+func TestAuditLogCloserNilLoggerOutputError(t *testing.T) {
+	outputErr := errors.New("write error")
+	c := auditLogCloser{
+		logger: nil,
+		output: closerFunc(func() error { return outputErr }),
+	}
+	err := c.Close()
+	if !errors.Is(err, outputErr) {
+		t.Fatalf("Close() = %v, want %v when logger is nil and output errors", err, outputErr)
 	}
 }
 

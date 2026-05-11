@@ -1093,6 +1093,7 @@ func TestUpgradeHijackConnectionReturnsReadySession(t *testing.T) {
 	}
 	if session == nil {
 		t.Fatal("expected non-nil hijack session")
+		return
 	}
 	if session.path != req.URL.Path {
 		t.Fatalf("session path = %q, want %q", session.path, req.URL.Path)
@@ -2171,6 +2172,33 @@ func TestPutHijackBufferZeroesBufferBeforeReuse(t *testing.T) {
 		if b != 0 {
 			t.Fatalf("pooled[%d] = %#x, want 0x00", i, b)
 		}
+	}
+}
+
+
+// TestGetHijackBufferAcceptsExactCapacityFromPool verifies that a buffer whose
+// capacity is exactly hijackBufSize is returned from the pool rather than
+// triggering a new allocation.
+// Kills mutant: CONDITIONALS_BOUNDARY hijack.go:527 ("cap < hijackBufSize" → "cap <= hijackBufSize").
+func TestGetHijackBufferAcceptsExactCapacityFromPool(t *testing.T) {
+	deps := newHijackDeps()
+	// Pool holds a buffer with cap == hijackBufSize (not one less, not one more).
+	exact := make([]byte, 0, hijackBufSize)
+	fakePool := &stubBufferPool{getValue: exact}
+	deps.bufferPool = fakePool
+
+	buf := deps.getHijackBuffer()
+
+	if len(buf) != hijackBufSize {
+		t.Fatalf("buffer length = %d, want %d", len(buf), hijackBufSize)
+	}
+	if cap(buf) != hijackBufSize {
+		t.Fatalf("buffer capacity = %d, want %d", cap(buf), hijackBufSize)
+	}
+	// The returned buffer must share the same backing array as the pooled slice,
+	// proving it was reused rather than freshly allocated.
+	if cap(buf) > 0 && cap(exact) > 0 && &buf[:cap(buf)][0] != &exact[:cap(exact)][0] {
+		t.Fatal("getHijackBuffer allocated a new buffer instead of reusing the exact-capacity pooled buffer")
 	}
 }
 

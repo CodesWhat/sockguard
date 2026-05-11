@@ -2,6 +2,7 @@ package logging
 
 import (
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -168,6 +169,69 @@ func TestLowerHexValue(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFillRandomNonZeroConditions targets the two CONDITIONALS_NEGATION mutants
+// at trace.go:147 (`err == nil` and `n == len(dst)`). The function must return
+// false when err != nil, false when n < len(dst), and true when both pass and
+// the buffer is non-zero.
+func TestFillRandomNonZeroConditions(t *testing.T) {
+	originalRead := traceRandRead
+	t.Cleanup(func() { traceRandRead = originalRead })
+
+	t.Run("returns false when fill errors", func(t *testing.T) {
+		traceRandRead = func(dst []byte) (int, error) {
+			for i := range dst {
+				dst[i] = 0xff // non-zero
+			}
+			return len(dst), errors.New("entropy unavailable")
+		}
+		dst := make([]byte, 8)
+		if got := fillRandomNonZero(dst); got {
+			t.Fatal("fillRandomNonZero() = true, want false when fill returns error")
+		}
+	})
+
+	t.Run("returns false when fill returns short read", func(t *testing.T) {
+		traceRandRead = func(dst []byte) (int, error) {
+			for i := range dst {
+				dst[i] = 0xff // non-zero
+			}
+			// Return fewer bytes than requested (n != len(dst)).
+			if len(dst) > 0 {
+				return len(dst) - 1, nil
+			}
+			return 0, nil
+		}
+		dst := make([]byte, 8)
+		if got := fillRandomNonZero(dst); got {
+			t.Fatal("fillRandomNonZero() = true, want false when fill returns short read")
+		}
+	})
+
+	t.Run("returns false when all bytes are zero", func(t *testing.T) {
+		traceRandRead = func(dst []byte) (int, error) {
+			clear(dst) // all zeros
+			return len(dst), nil
+		}
+		dst := make([]byte, 8)
+		if got := fillRandomNonZero(dst); got {
+			t.Fatal("fillRandomNonZero() = true, want false when all bytes are zero")
+		}
+	})
+
+	t.Run("returns true when fill succeeds with non-zero bytes", func(t *testing.T) {
+		traceRandRead = func(dst []byte) (int, error) {
+			for i := range dst {
+				dst[i] = 0xab
+			}
+			return len(dst), nil
+		}
+		dst := make([]byte, 8)
+		if got := fillRandomNonZero(dst); !got {
+			t.Fatal("fillRandomNonZero() = false, want true for valid non-zero fill")
+		}
+	})
 }
 
 func requireTraceIdentifier(t *testing.T, name, value string, wantLen int) {

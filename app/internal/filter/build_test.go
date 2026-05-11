@@ -872,6 +872,7 @@ func TestSpoolRequestBodyToTempFileHandlesTooLargeBody(t *testing.T) {
 	}
 	if spool == nil {
 		t.Fatal("spool = nil, want non-nil")
+		return
 	}
 	if !spool.tooLarge {
 		t.Fatal("spool.tooLarge = false, want true")

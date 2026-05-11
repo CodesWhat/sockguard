@@ -58,6 +58,7 @@ func readCertificateFromPEM(t *testing.T, path string) *x509.Certificate {
 	block, _ := pem.Decode(data)
 	if block == nil {
 		t.Fatalf("Decode(%s): no PEM block", path)
+		return nil
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
@@ -221,6 +222,7 @@ func TestWritePEM(t *testing.T) {
 	block, _ := pem.Decode(data)
 	if block == nil {
 		t.Fatal("Decode() returned nil block")
+		return
 	}
 	if block.Type != "CERTIFICATE" {
 		t.Fatalf("block type = %q, want CERTIFICATE", block.Type)

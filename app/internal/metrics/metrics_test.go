@@ -23,6 +23,7 @@ func TestMiddlewareRecordsRequestDecisionMetrics(t *testing.T) {
 		meta := logging.MetaForRequest(w, r)
 		if meta == nil {
 			t.Fatal("expected metrics middleware to expose request metadata")
+			return
 		}
 		meta.Decision = "deny"
 		meta.Rule = 2
