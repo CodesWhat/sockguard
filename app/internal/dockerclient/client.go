@@ -14,7 +14,7 @@ const (
 	defaultIdleConnTimeout       = 90 * time.Second
 )
 
-// Option customises the http.Client returned by New.
+// Option customizes the http.Client returned by New.
 type Option func(*config)
 
 type config struct {
