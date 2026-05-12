@@ -313,6 +313,26 @@ request_body:
     allowed_device_cgroup_rules:
       - "c 1:3 rwm"   # /dev/null
       - "c 226:* rwm" # /dev/dri/* GPU class
+    require_no_new_privileges: true
+    require_non_root_user: true
+    require_readonly_rootfs: true
+    require_drop_all_capabilities: true
+    allow_all_capabilities: false         # keep CapAdd allowlist enforced
+    allowed_capabilities:
+      - NET_BIND_SERVICE
+    require_memory_limit: true
+    require_cpu_limit: true
+    require_pids_limit: true
+    allowed_seccomp_profiles:
+      - runtime/default
+    deny_unconfined_seccomp: true         # deny seccomp=unconfined even without an allowlist
+    allowed_apparmor_profiles:
+      - runtime/default
+    deny_unconfined_apparmor: true        # deny apparmor=unconfined even without an allowlist
+    allow_host_userns: false              # deny UsernsMode=host (default-deny rollout; opt out to restore)
+    required_labels:
+      - com.example.team
+      - com.example.service
   exec:
     allowed_commands:
       - ["/usr/local/bin/pre-update", "--check"]
@@ -364,7 +384,7 @@ Trailing `/**` matches both the base path and any deeper path. For example, `/co
 
 `listen.tls` is only needed when you expose Sockguard on non-loopback TCP. Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`, which is intended only for legacy compatibility on a private, trusted network. `listen.tls.client_ca_file` still defines the issuing trust root, and the optional `listen.tls.allowed_common_names`, `allowed_dns_names`, `allowed_ip_addresses`, `allowed_uri_sans`, and `allowed_public_key_sha256_pins` fields let you narrow that trust to specific verified client leaves. Different selector fields are ANDed, while entries inside one field are ORed.
 
-Allowed `POST /containers/create` requests are inspected by default. Unless you opt out, Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, `HostConfig.PidMode=host`, `HostConfig.IpcMode=host`, any bind mount source outside `request_body.container_create.allowed_bind_mounts`, any `HostConfig.Devices` host path outside `request_body.container_create.allowed_devices`, `HostConfig.DeviceRequests`, and `HostConfig.DeviceCgroupRules`. Named volumes still work without allowlist entries because they are not host bind mounts.
+Allowed `POST /containers/create` requests are inspected by default. Unless you opt out, Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, `HostConfig.PidMode=host`, `HostConfig.IpcMode=host`, any bind mount source outside `allowed_bind_mounts`, any `HostConfig.Devices` host path outside `allowed_devices`, `HostConfig.DeviceRequests`, and `HostConfig.DeviceCgroupRules`. Named volumes still work without allowlist entries because they are not host bind mounts. Opt-in hardening rails enforce no-new-privileges, non-root user, read-only rootfs, dropped capabilities, and memory/CPU/PID resource limits via the `require_*` knobs. Capability additions are governed by `allowed_capabilities` (or bypassed with `allow_all_capabilities: true`). Seccomp and AppArmor profiles can be constrained to an explicit allowlist; `deny_unconfined_seccomp` and `deny_unconfined_apparmor` act as standalone kill switches when no allowlist is configured. `required_labels` enforces mandatory `Config.Labels` keys. **Breaking changes in this release:** `HostConfig.CapAdd` is now default-deny — set `allow_all_capabilities: true` or populate `allowed_capabilities` to restore previous behavior. `HostConfig.UsernsMode=host` is now denied by default — set `allow_host_userns: true` to opt back in.
 
 Allowed `POST /containers/*/exec` and `POST /exec/*/start` requests are inspected when `request_body.exec.allowed_commands` is non-empty. Sockguard denies non-allowlisted argv vectors, denies privileged execs unless `request_body.exec.allow_privileged: true`, denies root-user execs unless `request_body.exec.allow_root_user: true`, and re-inspects `POST /exec/*/start` against Docker's stored exec metadata before letting it run.
 
