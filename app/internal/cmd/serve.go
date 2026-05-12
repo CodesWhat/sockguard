@@ -323,6 +323,11 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 // configured. The second return value is the stop function for the sampler's
 // background goroutine; callers must call it on shutdown to prevent goroutine
 // leaks in tests and graceful shutdowns.
+//
+// ratelimit.Middleware can technically return a compile error if an
+// endpoint-cost path glob is malformed, but the config validator rejects
+// those at startup. If one slips through, we log and skip the middleware
+// rather than build a proxy with broken limits.
 func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *serveRuntime) (func(http.Handler) http.Handler, func()) {
 	profiles := make(map[string]ratelimit.ProfileOptions)
 	for _, profile := range cfg.Clients.Profiles {
@@ -341,10 +346,16 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 	}
 
 	sampler, stopSampler := ratelimit.NewAuditSampler()
-	mw := ratelimit.Middleware(logger, reg, sampler, ratelimit.MiddlewareOptions{
+	mw, err := ratelimit.Middleware(logger, reg, sampler, ratelimit.MiddlewareOptions{
 		Profiles:       profiles,
 		ResolveProfile: clientacl.RequestProfile,
 	})
+	if err != nil {
+		logger.Error("rate-limit middleware compile failed; validator should have caught this",
+			slog.String("error", err.Error()))
+		stopSampler()
+		return nil, nil
+	}
 	return mw, stopSampler
 }
 
@@ -358,9 +369,21 @@ func configLimitsToRateLimitOptions(cfg config.LimitsConfig) ratelimit.ProfileOp
 		if burst == 0 {
 			burst = cfg.Rate.TokensPerSecond
 		}
+		var costs []ratelimit.EndpointCost
+		if len(cfg.Rate.EndpointCosts) > 0 {
+			costs = make([]ratelimit.EndpointCost, 0, len(cfg.Rate.EndpointCosts))
+			for _, ec := range cfg.Rate.EndpointCosts {
+				costs = append(costs, ratelimit.EndpointCost{
+					PathGlob: ec.Path,
+					Methods:  ec.Methods,
+					Cost:     ec.Cost,
+				})
+			}
+		}
 		opts.Rate = &ratelimit.RateOptions{
 			TokensPerSecond: cfg.Rate.TokensPerSecond,
 			Burst:           burst,
+			EndpointCosts:   costs,
 		}
 	}
 	if cfg.Concurrency != nil {

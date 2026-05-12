@@ -382,6 +382,59 @@ clients:
 | CI agent | `100` | `200` | Build pipelines issue large batches at startup |
 | Read-only dashboard | `20` | `40` | Page loads trigger a handful of list calls together |
 
+### Endpoint cost weighting
+
+By default every request withdraws one token from the bucket. `limits.rate.endpoint_costs`
+lets you assign a higher per-request cost to expensive Docker operations
+(build, image pull, exec) so they consume the budget proportionally to the
+work they actually do. The base rate stays comfortable for normal traffic
+while abusive `POST /build` floods are bounded.
+
+Each entry has:
+
+- `path` (required): glob matched against the **normalized** request path
+  (Docker API version prefix is stripped). Same dialect as filter rules.
+- `methods` (optional): list of HTTP methods to restrict the rule to.
+  Case-insensitive. Empty matches all methods.
+- `cost` (required): number of tokens withdrawn on match. Must be `>= 1` and
+  `<= effective burst` (a cost greater than burst can never be satisfied;
+  startup fails closed if you misconfigure it).
+
+Rules are evaluated in declaration order; first match wins. Unmatched
+requests fall back to the default cost of `1`.
+
+```yaml
+clients:
+  profiles:
+    - name: ci-agent
+      limits:
+        rate:
+          tokens_per_second: 100
+          burst: 200
+          endpoint_costs:
+            # Image pull is the single most expensive operation Docker exposes;
+            # registry round-trips can pin upstream for minutes.
+            - path: /images/create
+              methods: [POST]
+              cost: 20
+            # Build context uploads + multi-stage assembly are similarly heavy.
+            - path: /build
+              methods: [POST]
+              cost: 10
+            # Exec creation is cheap but exec start spawns a process — tax it.
+            - path: /containers/*/exec
+              methods: [POST]
+              cost: 5
+      rules:
+        - match: { method: "*", path: "/**" }
+          action: allow
+```
+
+When a request is throttled because of its weighted cost, the structured
+audit record (sampled once per `(client, reason)` per second) carries the
+`cost` attribute alongside the existing rate-limit fields so operators can
+distinguish expensive-endpoint denials from base-rate denials.
+
 ### Concurrency caps
 
 `limits.concurrency.max_inflight` caps the number of simultaneously in-flight
@@ -429,6 +482,9 @@ violated (fail-closed, never silent-disable):
 
 - `limits.rate.tokens_per_second` must be `> 0`
 - `limits.rate.burst` must be `>= tokens_per_second` or `0` (default)
+- `limits.rate.endpoint_costs[].path` must be non-empty and compile as a valid glob
+- `limits.rate.endpoint_costs[].cost` must be `>= 1` and `<= effective burst`
+- `limits.rate.endpoint_costs[].methods[]` must not contain empty strings
 - `limits.concurrency.max_inflight` must be `> 0`
 
 ### Observability
