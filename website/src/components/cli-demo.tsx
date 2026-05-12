@@ -38,7 +38,7 @@ type Frame = Omit<RawFrame, "output"> & { output: FrameLine[] };
 // via TIOCGWINSZ and pads the banner to center the dog; this demo
 // mirrors that exact logic against a fixed 100-col target so the
 // visual result matches what a user running `sockguard serve` in a
-// 100×32 terminal would see. Bump this to match asciinema recordings.
+// 100×32 terminal would see. Bump this if the real CLI's banner padding ever changes width.
 const TERMINAL_COLS = 100;
 
 // padArt mirrors banner.centerArt from the Go side — left-pads every
