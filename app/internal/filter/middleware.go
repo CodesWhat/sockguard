@@ -428,36 +428,48 @@ func matchesPluginInspection(r *http.Request, normalizedPath string) bool {
 		(normalizedPath == "/plugins/pull" || normalizedPath == "/plugins/create" || isPluginUpgradePath(normalizedPath) || isPluginSetPath(normalizedPath))
 }
 
+// inspectBuckets holds matched policies grouped by severity for zero-alloc
+// single-pass triage in inspectAllowedRequest. The array is stack-allocated
+// because [3][16] fits on the frame and the slice backing p.inspectPolicies
+// caps out at ~15 entries.
+type inspectBuckets [3][16]*requestInspectPolicy
+
 func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int) {
-	bestSeverity := inspectSeverity(-1)
-	for _, policy := range p.inspectPolicies {
+	var buckets inspectBuckets
+	var counts [3]int
+
+	for i := range p.inspectPolicies {
+		policy := &p.inspectPolicies[i]
 		if policy.matches != nil && !policy.matches(r, normalizedPath) {
 			continue
 		}
-		if policy.severity > bestSeverity {
-			bestSeverity = policy.severity
+		sev := int(policy.severity)
+		if counts[sev] < len(buckets[sev]) {
+			buckets[sev][counts[sev]] = policy
+			counts[sev]++
 		}
 	}
 
-	if bestSeverity < 0 {
-		return "", "", 0
-	}
-
-	for _, policy := range p.inspectPolicies {
-		if policy.severity != bestSeverity || (policy.matches != nil && !policy.matches(r, normalizedPath)) {
+	// Walk severity buckets from highest to lowest; run inspect on the first
+	// non-empty bucket only.
+	for sev := len(buckets) - 1; sev >= 0; sev-- {
+		if counts[sev] == 0 {
 			continue
 		}
-		denyReason, err := policy.inspect(logger, r, normalizedPath)
-		if err != nil {
-			if rejection, ok := requestRejectionFromError(err); ok {
-				return rejection.reason, requestRejectionReasonCode(rejection.status), rejection.status
+		for _, policy := range buckets[sev][:counts[sev]] {
+			denyReason, err := policy.inspect(logger, r, normalizedPath)
+			if err != nil {
+				if rejection, ok := requestRejectionFromError(err); ok {
+					return rejection.reason, requestRejectionReasonCode(rejection.status), rejection.status
+				}
+				logger.ErrorContext(r.Context(), policy.errorLogMessage, "error", err, "method", r.Method, "path", r.URL.Path)
+				return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden
 			}
-			logger.ErrorContext(r.Context(), policy.errorLogMessage, "error", err, "method", r.Method, "path", r.URL.Path)
-			return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden
+			if denyReason != "" {
+				return denyReason, reasonCodeRequestBodyPolicyDenied, http.StatusForbidden
+			}
 		}
-		if denyReason != "" {
-			return denyReason, reasonCodeRequestBodyPolicyDenied, http.StatusForbidden
-		}
+		return "", "", 0
 	}
 	return "", "", 0
 }
