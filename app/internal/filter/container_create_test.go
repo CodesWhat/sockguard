@@ -76,10 +76,12 @@ func TestContainerCreatePolicyInspectSkipsBodyWhenPermissive(t *testing.T) {
 		AllowHostNetwork:       true,
 		AllowHostPID:           true,
 		AllowHostIPC:           true,
+		AllowHostUserNS:        true,
 		AllowedBindMounts:      []string{"/"},
 		AllowAllDevices:        true,
 		AllowDeviceRequests:    true,
 		AllowDeviceCgroupRules: true,
+		AllowAllCapabilities:   true,
 	})
 	body := []byte(`{"HostConfig":{"Privileged":true,"NetworkMode":"host","Binds":["/var/run:/host/run"]}}`)
 	tracker := &trackingReadCloser{reader: bytes.NewReader(body)}

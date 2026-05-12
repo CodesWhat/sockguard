@@ -102,6 +102,22 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowedDevices         []string `mapstructure:"allowed_devices"`
 	AllowDeviceRequests    bool     `mapstructure:"allow_device_requests"`
 	AllowDeviceCgroupRules bool     `mapstructure:"allow_device_cgroup_rules"`
+
+	RequireNoNewPrivileges     bool     `mapstructure:"require_no_new_privileges"`
+	RequireNonRootUser         bool     `mapstructure:"require_non_root_user"`
+	RequireReadonlyRootfs      bool     `mapstructure:"require_readonly_rootfs"`
+	RequireDropAllCapabilities bool     `mapstructure:"require_drop_all_capabilities"`
+	AllowAllCapabilities       bool     `mapstructure:"allow_all_capabilities"`
+	AllowedCapabilities        []string `mapstructure:"allowed_capabilities"`
+	RequireMemoryLimit         bool     `mapstructure:"require_memory_limit"`
+	RequireCPULimit            bool     `mapstructure:"require_cpu_limit"`
+	RequirePidsLimit           bool     `mapstructure:"require_pids_limit"`
+	AllowedSeccompProfiles     []string `mapstructure:"allowed_seccomp_profiles"`
+	DenyUnconfinedSeccomp      bool     `mapstructure:"deny_unconfined_seccomp"`
+	AllowedAppArmorProfiles    []string `mapstructure:"allowed_apparmor_profiles"`
+	DenyUnconfinedAppArmor     bool     `mapstructure:"deny_unconfined_apparmor"`
+	AllowHostUserNS            bool     `mapstructure:"allow_host_userns"`
+	RequiredLabels             []string `mapstructure:"required_labels"`
 }
 
 // ExecRequestBodyConfig configures body inspection for exec creation/start.

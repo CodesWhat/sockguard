@@ -53,6 +53,21 @@ request_body:
       - /dev/dri
     allow_device_requests: false  # deny HostConfig.DeviceRequests by default
     allow_device_cgroup_rules: false
+    require_no_new_privileges: false      # require HostConfig.SecurityOpt to include "no-new-privileges:true"
+    require_non_root_user: false          # require Config.User to be a non-zero UID / non-root name
+    require_readonly_rootfs: false        # require HostConfig.ReadonlyRootfs=true
+    require_drop_all_capabilities: false  # require HostConfig.CapDrop to contain "ALL"
+    allow_all_capabilities: false         # opt out of the CapAdd allowlist below (default-deny CapAdd entries)
+    allowed_capabilities: []              # CapAdd allowlist (CAP_ prefix stripped, case-insensitive)
+    require_memory_limit: false           # require HostConfig.Memory > 0
+    require_cpu_limit: false              # require one of NanoCpus, CpuQuota, CpuPeriod, CpuShares > 0
+    require_pids_limit: false             # require HostConfig.PidsLimit > 0
+    allowed_seccomp_profiles: []          # if non-empty, seccomp= profile must be in this list
+    deny_unconfined_seccomp: false        # standalone toggle: deny seccomp=unconfined when no allowlist is set
+    allowed_apparmor_profiles: []         # if non-empty, apparmor= profile must be in this list
+    deny_unconfined_apparmor: false       # standalone toggle: deny apparmor=unconfined when no allowlist is set
+    allow_host_userns: false              # deny HostConfig.UsernsMode=host (default)
+    required_labels: []                   # Config.Labels keys that must be present with non-empty values
   exec:
     allow_privileged: false
     allow_root_user: false
@@ -132,7 +147,7 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - `health.watchdog.enabled` starts an active upstream socket monitor that checks Docker every `health.watchdog.interval`, logs reachable/unreachable state transitions, and lets `/health` answer from the latest watchdog state instead of waiting for a scrape or probe to discover an outage.
 - `metrics.enabled` is opt-in and serves Prometheus text metrics at `metrics.path` on the same listener. The endpoint is local to Sockguard, is never forwarded to Docker, bypasses Docker API allow rules like `/health`, and remains behind listener security plus `clients.allowed_cidrs`. Every scrape also exports a `sockguard_build_info{version,commit,build_date,go_version}` gauge and a `sockguard_start_time_seconds` gauge for version panels and uptime alerts. When the active watchdog is enabled, metrics also include `sockguard_upstream_socket_up` and `sockguard_upstream_watchdog_checks_total`.
 - W3C trace/log correlation is always on and has no config knob. Sockguard preserves valid incoming `traceparent` trace IDs and sampled flags, replaces the parent span with a proxy-local span ID for the forwarded request, and generates fresh local context when the caller does not send valid trace context.
-- `POST /containers/create` bodies are inspected by default. Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, `HostConfig.PidMode=host`, `HostConfig.IpcMode=host`, bind mount sources outside `request_body.container_create.allowed_bind_mounts`, `HostConfig.Devices` host paths outside `request_body.container_create.allowed_devices`, `HostConfig.DeviceRequests`, and `HostConfig.DeviceCgroupRules`. Named volumes still work without allowlist entries because they are not host bind mounts.
+- `POST /containers/create` bodies are inspected by default. Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, `HostConfig.PidMode=host`, `HostConfig.IpcMode=host`, `HostConfig.UsernsMode=host`, bind mount sources outside `request_body.container_create.allowed_bind_mounts`, `HostConfig.Devices` host paths outside `request_body.container_create.allowed_devices`, `HostConfig.DeviceRequests`, `HostConfig.DeviceCgroupRules`, and any `HostConfig.CapAdd` entry that isn't covered by `allow_all_capabilities` or `allowed_capabilities`. Named volumes still work without allowlist entries because they are not host bind mounts. Optional opt-in rails enforce `no-new-privileges`, non-root `Config.User`, `HostConfig.ReadonlyRootfs=true`, `HostConfig.CapDrop=["ALL"]`, memory / CPU / PIDs limits, allowlisted seccomp and AppArmor profiles, and required `Config.Labels` keys — all default to off so an existing 0.5.x configuration keeps its behavior except for the CapAdd allowlist and host-userns default-deny noted above.
 - `POST /containers/*/exec` and `POST /exec/*/start` are inspected when `request_body.exec.allowed_commands` is non-empty. Sockguard denies argv vectors outside that allowlist, denies privileged exec unless `allow_privileged: true`, denies root-user exec unless `allow_root_user: true`, and re-checks `POST /exec/*/start` against Docker's stored exec metadata before execution. Docker exposes exec inspect and exec start as separate API calls, so this start-time check has an unavoidable time-of-check/time-of-use window; keep exec allowlists and client profile assignments narrow.
 - `POST /images/create` is inspected by default. Sockguard blocks `fromSrc` imports unless `request_body.image_pull.allow_imports: true` and only allows Docker Hub official images unless you set `allow_all_registries: true` or list explicit `allowed_registries`.
 - `POST /build` is inspected by default. Sockguard blocks remote contexts, `networkmode=host`, and Dockerfiles that contain `RUN` instructions unless you explicitly allow those behaviors under `request_body.build.*`.
@@ -157,7 +172,7 @@ All request-body policy fields default to the safest value unless noted. List fi
 
 | Group | Fields | Default behavior |
 | --- | --- | --- |
-| `container_create` | `allow_privileged`, `allow_host_network`, `allow_host_pid`, `allow_host_ipc`, `allowed_bind_mounts`, `allow_all_devices`, `allowed_devices`, `allow_device_requests`, `allow_device_cgroup_rules` | Denies privileged containers, host network/PID/IPC namespaces, non-allowlisted bind sources, non-allowlisted device mappings, device requests, and device cgroup rules. |
+| `container_create` | `allow_privileged`, `allow_host_network`, `allow_host_pid`, `allow_host_ipc`, `allowed_bind_mounts`, `allow_all_devices`, `allowed_devices`, `allow_device_requests`, `allow_device_cgroup_rules`, `require_no_new_privileges`, `require_non_root_user`, `require_readonly_rootfs`, `require_drop_all_capabilities`, `allow_all_capabilities`, `allowed_capabilities`, `require_memory_limit`, `require_cpu_limit`, `require_pids_limit`, `allowed_seccomp_profiles`, `deny_unconfined_seccomp`, `allowed_apparmor_profiles`, `deny_unconfined_apparmor`, `allow_host_userns`, `required_labels` | Denies privileged containers, host network/PID/IPC/user namespaces, non-allowlisted bind sources, non-allowlisted device mappings, device requests, device cgroup rules, and non-allowlisted `CapAdd` entries. Opt-in rails additionally require no-new-privileges, non-root execution, read-only rootfs, dropped capabilities, memory / CPU / PIDs limits, approved seccomp/AppArmor profiles, and required `Config.Labels` keys. |
 | `exec` | `allow_privileged`, `allow_root_user`, `allowed_commands` | Denies privileged/root exec and requires an argv allowlist before broad exec rules pass blind-write validation. |
 | `image_pull` | `allow_imports`, `allow_all_registries`, `allow_official`, `allowed_registries` | Denies `fromSrc` imports and allows Docker Hub official images by default (`allow_official: true`). |
 | `build` | `allow_remote_context`, `allow_host_network`, `allow_run_instructions` | Denies remote contexts, host-network builds, and Dockerfiles containing `RUN`. |
@@ -414,6 +429,21 @@ the gates below are denied before the request reaches Docker.
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_DEVICES`             | `request_body.container_create.allowed_devices`           | _empty_ | Comma-separated host device paths allowed for `HostConfig.Devices`.                  |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS`       | `request_body.container_create.allow_device_requests`     | `false` | Allow `HostConfig.DeviceRequests` (GPU passthrough, etc.).                           |
 | `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_CGROUP_RULES`   | `request_body.container_create.allow_device_cgroup_rules` | `false` | Allow `HostConfig.DeviceCgroupRules` (raw cgroup device entries).                    |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_NO_NEW_PRIVILEGES`   | `request_body.container_create.require_no_new_privileges` | `false` | Require `HostConfig.SecurityOpt` to include `no-new-privileges:true`.                |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_NON_ROOT_USER`       | `request_body.container_create.require_non_root_user`     | `false` | Require `Config.User` to be a non-zero UID or non-root username.                     |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_READONLY_ROOTFS`     | `request_body.container_create.require_readonly_rootfs`   | `false` | Require `HostConfig.ReadonlyRootfs=true`.                                            |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_DROP_ALL_CAPABILITIES` | `request_body.container_create.require_drop_all_capabilities` | `false` | Require `HostConfig.CapDrop` to contain `"ALL"`.                                |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_ALL_CAPABILITIES`      | `request_body.container_create.allow_all_capabilities`    | `false` | Skip the `HostConfig.CapAdd` allowlist. With this off, only entries in `allowed_capabilities` are permitted. |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_CAPABILITIES`        | `request_body.container_create.allowed_capabilities`      | _empty_ | `HostConfig.CapAdd` allowlist (case-insensitive, optional `CAP_` prefix).            |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_MEMORY_LIMIT`        | `request_body.container_create.require_memory_limit`      | `false` | Require `HostConfig.Memory > 0`.                                                     |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_CPU_LIMIT`           | `request_body.container_create.require_cpu_limit`         | `false` | Require one of `NanoCpus`, `CpuQuota`, `CpuPeriod`, `CpuShares` > 0.                  |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRE_PIDS_LIMIT`          | `request_body.container_create.require_pids_limit`        | `false` | Require `HostConfig.PidsLimit > 0`.                                                  |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_SECCOMP_PROFILES`    | `request_body.container_create.allowed_seccomp_profiles`  | _empty_ | If non-empty, `HostConfig.SecurityOpt` `seccomp=<profile>` must be in the list. Include `default` to allow the implicit Docker default. |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_DENY_UNCONFINED_SECCOMP`     | `request_body.container_create.deny_unconfined_seccomp`   | `false` | When no allowlist is set, deny `seccomp=unconfined` specifically.                    |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOWED_APPARMOR_PROFILES`   | `request_body.container_create.allowed_apparmor_profiles` | _empty_ | If non-empty, `HostConfig.SecurityOpt` `apparmor=<profile>` must be in the list. Include `docker-default` to accept the implicit default. |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_DENY_UNCONFINED_APPARMOR`    | `request_body.container_create.deny_unconfined_apparmor`  | `false` | When no allowlist is set, deny `apparmor=unconfined` specifically.                   |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_HOST_USERNS`           | `request_body.container_create.allow_host_userns`         | `false` | Allow `HostConfig.UsernsMode=host`.                                                  |
+| `SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_REQUIRED_LABELS`             | `request_body.container_create.required_labels`           | _empty_ | `Config.Labels` keys that must be present with a non-empty value.                    |
 
 ### Other request-body inspectors
 
