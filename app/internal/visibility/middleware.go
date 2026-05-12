@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/dockerclient"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/inspectcache"
@@ -165,13 +165,8 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 }
 
 func newVisibilityDeps(upstreamSocket string) visibilityDeps {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", upstreamSocket)
-		},
-	}
 	inspector := upstreamInspector{
-		client: &http.Client{Transport: transport},
+		client: dockerclient.New(upstreamSocket),
 	}
 	cache := inspectcache.New(
 		inspectcache.DefaultTTL,

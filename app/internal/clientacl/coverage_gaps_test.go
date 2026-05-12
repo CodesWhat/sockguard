@@ -583,7 +583,7 @@ func TestMiddlewareWithDeps_ProfileMatchedSetsLogMeta(t *testing.T) {
 				{Profile: "readonly", CIDRs: []string{"10.0.0.0/8"}},
 			},
 		},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -611,7 +611,7 @@ func TestMiddlewareWithDeps_CompileOptionsError(t *testing.T) {
 	// An invalid CIDR in AllowedCIDRs causes compileOptions to fail.
 	handler := middlewareWithDeps(testLogger(), Options{
 		AllowedCIDRs: []string{"not-a-cidr"},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("expected middleware to deny before reaching handler")
 	}))
 
@@ -635,7 +635,7 @@ func TestMiddlewareWithDeps_UnixPeerProfileError(t *testing.T) {
 				{Profile: "local", UIDs: []uint32{1001}},
 			},
 		},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected middleware to deny before reaching handler")
 	}))
 

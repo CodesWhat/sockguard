@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/dockerclient"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
@@ -82,9 +83,6 @@ type UnixPeerProfileAssignment struct {
 	PIDs    []int32
 }
 
-type aclDeps struct {
-	resolveClient func(context.Context, netip.Addr) (resolvedClient, bool, error)
-}
 
 type resolvedClient struct {
 	ID     string
@@ -189,10 +187,10 @@ type connectionIdentity struct {
 // Middleware applies client CIDR admission checks and optional per-client
 // label ACLs resolved from the caller container's source IP.
 func Middleware(upstreamSocket string, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {
-	return middlewareWithDeps(logger, opts, newACLDeps(upstreamSocket))
+	return middlewareWithDeps(logger, opts, newACLResolveClient(upstreamSocket))
 }
 
-func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(http.Handler) http.Handler {
+func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(context.Context, netip.Addr) (resolvedClient, bool, error)) func(http.Handler) http.Handler {
 	compiled, err := compileOptions(opts)
 	if err != nil {
 		logger.Error("invalid client ACL config", "error", err)
@@ -239,7 +237,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 				return
 			}
 
-			client, found, err := deps.resolveClient(r.Context(), clientIP)
+			client, found, err := resolveClient(r.Context(), clientIP)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "client label ACL lookup failed", "error", err, "client_ip", clientIP.String())
 				logging.SetDeniedWithCode(w, r, reasonCodeClientLabelACLLookupFailed, "client label ACL lookup failed", filter.NormalizePath)
@@ -281,19 +279,12 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 	}
 }
 
-func newACLDeps(upstreamSocket string) aclDeps {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", upstreamSocket)
-		},
-	}
+func newACLResolveClient(upstreamSocket string) func(context.Context, netip.Addr) (resolvedClient, bool, error) {
 	resolver := upstreamResolver{
-		client: &http.Client{Transport: transport},
+		client: dockerclient.New(upstreamSocket),
 	}
 	cache := newClientCache(clientCacheTTL, clientCacheMaxSize, time.Now, resolver.resolveClient)
-	return aclDeps{
-		resolveClient: cache.Lookup,
-	}
+	return cache.Lookup
 }
 
 func compileOptions(opts Options) (compiledOptions, error) {

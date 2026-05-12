@@ -10,15 +10,11 @@ import (
 	"unicode/utf8"
 )
 
-type ruleDeps struct {
-	regexpCompile func(string) (*regexp.Regexp, error)
-}
-
-func newRuleDeps() *ruleDeps {
-	return &ruleDeps{
-		regexpCompile: regexp.Compile,
-	}
-}
+// regexpCompileHook is the package-level hook for regexp compilation.
+// Tests can swap this to inject errors; production always uses regexp.Compile.
+// All tests in this package are sequential (no t.Parallel on tests that swap
+// the hook), so no additional synchronization is needed.
+var regexpCompileHook = regexp.Compile
 
 // Action represents the result of a rule evaluation.
 type Action string
@@ -197,10 +193,6 @@ func stripVersionPrefix(p string) string {
 
 // CompileRule compiles a Rule into a CompiledRule for efficient matching.
 func CompileRule(r Rule) (*CompiledRule, error) {
-	return compileRuleWithDeps(r, newRuleDeps())
-}
-
-func compileRuleWithDeps(r Rule, deps *ruleDeps) (*CompiledRule, error) {
 	var methodMask httpMethodMask
 	var unknownMethods []string
 	matchAllMethods := false
@@ -254,7 +246,7 @@ func compileRuleWithDeps(r Rule, deps *ruleDeps) (*CompiledRule, error) {
 
 	// Convert glob pattern to regex.
 	regexPattern := globToRegex(r.Pattern)
-	compiled, err := deps.regexpCompile("^" + regexPattern + "$")
+	compiled, err := regexpCompileHook("^" + regexPattern + "$")
 	if err != nil {
 		return nil, err
 	}

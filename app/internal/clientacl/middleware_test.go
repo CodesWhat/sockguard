@@ -37,12 +37,8 @@ type fakeResolver struct {
 	err    error
 }
 
-func (f fakeResolver) deps() aclDeps {
-	return aclDeps{
-		resolveClient: func(context.Context, netip.Addr) (resolvedClient, bool, error) {
-			return f.client, f.found, f.err
-		},
-	}
+func (f fakeResolver) resolveClient(_ context.Context, _ netip.Addr) (resolvedClient, bool, error) {
+	return f.client, f.found, f.err
 }
 
 func verifiedClientTLS(cert *x509.Certificate) *tls.ConnectionState {
@@ -60,7 +56,7 @@ func testSubjectPublicKeySHA256Hex(cert *x509.Certificate) string {
 func TestMiddlewareDeniesRemoteIPOutsideAllowedCIDRs(t *testing.T) {
 	handler := middlewareWithDeps(testLogger(), Options{
 		AllowedCIDRs: []string{"10.0.0.0/8"},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected request to be denied")
 	}))
 
@@ -77,7 +73,7 @@ func TestMiddlewareDeniesRemoteIPOutsideAllowedCIDRs(t *testing.T) {
 func TestMiddlewareAllowsRemoteIPWithinAllowedCIDRs(t *testing.T) {
 	handler := middlewareWithDeps(testLogger(), Options{
 		AllowedCIDRs: []string{"192.0.2.0/24"},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -98,7 +94,7 @@ func TestMiddlewareAssignsProfileFromSourceIP(t *testing.T) {
 				{Profile: "watchtower", CIDRs: []string{"192.0.2.0/24"}},
 			},
 		},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		profile, ok := RequestProfile(r)
 		if !ok || profile != "watchtower" {
 			t.Fatalf("RequestProfile() = (%q, %v), want (watchtower, true)", profile, ok)
@@ -123,7 +119,7 @@ func TestMiddlewareAssignsProfileFromClientCertificate(t *testing.T) {
 				{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
 			},
 		},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		profile, ok := RequestProfile(r)
 		if !ok || profile != "portainer" {
 			t.Fatalf("RequestProfile() = (%q, %v), want (portainer, true)", profile, ok)
@@ -148,7 +144,7 @@ func TestMiddlewareIgnoresUnverifiedPeerCertificateForProfileSelection(t *testin
 				{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
 			},
 		},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if profile, ok := RequestProfile(r); ok {
 			t.Fatalf("RequestProfile() = (%q, true), want no profile from unverified peer certificate", profile)
 		}
@@ -179,7 +175,7 @@ func TestMiddlewareLogsMatchedProfileStrategyAtDebugLevel(t *testing.T) {
 				{Profile: "watchtower", CIDRs: []string{"192.0.2.0/24"}},
 			},
 		},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
@@ -211,7 +207,7 @@ func TestMiddlewarePrefersVerifiedClientCertificateChain(t *testing.T) {
 				{Profile: "portainer", CommonNames: []string{"portainer-admin"}},
 			},
 		},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		profile, ok := RequestProfile(r)
 		if !ok || profile != "portainer" {
 			t.Fatalf("RequestProfile() = (%q, %v), want (portainer, true)", profile, ok)
@@ -326,7 +322,7 @@ func TestMiddlewareAssignsProfileFromClientCertificateExtendedSelectors(t *testi
 				Profiles: ProfileOptions{
 					ClientCertificates: tt.assignments,
 				},
-			}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				profile, ok := RequestProfile(r)
 				if !ok || profile != tt.wantProfile {
 					t.Fatalf("RequestProfile() = (%q, %v), want (%s, true)", profile, ok, tt.wantProfile)
@@ -646,7 +642,7 @@ func TestMiddlewareAssignsProfileFromUnixPeerCredentials(t *testing.T) {
 				},
 			},
 		},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		profile, ok := RequestProfile(r)
 		if !ok || profile != "local-admin" {
 			t.Fatalf("RequestProfile() = (%q, %v), want (local-admin, true)", profile, ok)
@@ -803,7 +799,7 @@ func TestConnContextCapturesUnixPeerCredentials(t *testing.T) {
 
 func TestMiddlewareNoOpWithoutConfiguredACLs(t *testing.T) {
 	reached := false
-	handler := middlewareWithDeps(testLogger(), Options{}, fakeResolver{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := middlewareWithDeps(testLogger(), Options{}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached = true
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -820,7 +816,7 @@ func TestMiddlewareNoOpWithoutConfiguredACLs(t *testing.T) {
 func TestMiddlewareDeniesWhenRemoteAddrMissingUnderCIDRPolicy(t *testing.T) {
 	handler := middlewareWithDeps(testLogger(), Options{
 		AllowedCIDRs: []string{"10.0.0.0/8"},
-	}, fakeResolver{}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	}, fakeResolver{}.resolveClient)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected request to be denied")
 	}))
 
@@ -847,7 +843,7 @@ func TestMiddlewareAllowsClientContainerLabelRuleMatch(t *testing.T) {
 				"com.sockguard.allow.get": "/containers/**,/events",
 			},
 		},
-	}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 
@@ -874,7 +870,7 @@ func TestMiddlewareDeniesClientContainerLabelRuleMiss(t *testing.T) {
 				"com.sockguard.allow.get": "/events",
 			},
 		},
-	}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	}.resolveClient)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected request to be denied")
 	}))
 
@@ -901,7 +897,7 @@ func TestMiddlewarePassesThroughWhenResolvedContainerHasNoACLLabels(t *testing.T
 				"com.example.other": "value",
 			},
 		},
-	}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -922,7 +918,7 @@ func TestMiddlewarePassesThroughWhenClientCannotBeResolved(t *testing.T) {
 			Enabled:     true,
 			LabelPrefix: DefaultLabelPrefix,
 		},
-	}, fakeResolver{found: false}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	}, fakeResolver{found: false}.resolveClient)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached = true
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -945,7 +941,7 @@ func TestMiddlewareReturnsBadGatewayWhenClientLookupFails(t *testing.T) {
 		},
 	}, fakeResolver{
 		err: errors.New("dial boom"),
-	}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	}.resolveClient)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected lookup failure to short-circuit request")
 	}))
 
@@ -972,7 +968,7 @@ func TestMiddlewareReturnsBadGatewayWhenResolvedClientHasInvalidACLLabel(t *test
 			ID:     "client-1",
 			Labels: map[string]string{DefaultLabelPrefix + "custom": "/containers/**"},
 		},
-	}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	}.resolveClient)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected invalid ACL label to short-circuit request")
 	}))
 
