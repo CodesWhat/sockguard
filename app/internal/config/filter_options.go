@@ -35,6 +35,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		AllowAllDevices:            c.AllowAllDevices,
 		AllowedDevices:             c.AllowedDevices,
 		AllowDeviceRequests:         c.AllowDeviceRequests,
+		AllowedDeviceRequests:       toFilterAllowedDeviceRequests(c.AllowedDeviceRequests),
 		AllowDeviceCgroupRules:      c.AllowDeviceCgroupRules,
 		AllowedDeviceCgroupRules:    c.AllowedDeviceCgroupRules,
 		RequireNoNewPrivileges:     c.RequireNoNewPrivileges,
@@ -52,6 +53,34 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenyUnconfinedAppArmor:     c.DenyUnconfinedAppArmor,
 		AllowHostUserNS:            c.AllowHostUserNS,
 		RequiredLabels:             c.RequiredLabels,
+		ImageTrust:                 c.ImageTrust.toFilterOptions(),
+	}
+}
+
+func (c ImageTrustConfig) toFilterOptions() filter.ImageTrustOptions {
+	var keys []filter.SigningKeyOptions
+	if len(c.AllowedSigningKeys) > 0 {
+		keys = make([]filter.SigningKeyOptions, 0, len(c.AllowedSigningKeys))
+		for _, k := range c.AllowedSigningKeys {
+			keys = append(keys, filter.SigningKeyOptions{PEM: k.PEM})
+		}
+	}
+	var kl []filter.KeylessOptions
+	if len(c.AllowedKeyless) > 0 {
+		kl = make([]filter.KeylessOptions, 0, len(c.AllowedKeyless))
+		for _, k := range c.AllowedKeyless {
+			kl = append(kl, filter.KeylessOptions{
+				Issuer:         k.Issuer,
+				SubjectPattern: k.SubjectPattern,
+			})
+		}
+	}
+	return filter.ImageTrustOptions{
+		Mode:                  c.Mode,
+		AllowedSigningKeys:    keys,
+		AllowedKeyless:        kl,
+		RequireRekorInclusion: c.RequireRekorInclusion,
+		VerifyTimeout:         c.VerifyTimeout,
 	}
 }
 
@@ -194,4 +223,23 @@ func (c PluginRequestBodyConfig) ToFilterOptions() filter.PluginOptions {
 		AllowedRegistries:     c.AllowedRegistries,
 		AllowedSetEnvPrefixes: c.AllowedSetEnvPrefixes,
 	}
+}
+
+// toFilterAllowedDeviceRequests converts config AllowedDeviceRequest slices to
+// the filter package's AllowedDeviceRequestEntry type. Returns nil when the
+// input is empty so reflect.DeepEqual comparisons against zero-value structs
+// remain correct.
+func toFilterAllowedDeviceRequests(entries []AllowedDeviceRequest) []filter.AllowedDeviceRequestEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]filter.AllowedDeviceRequestEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, filter.AllowedDeviceRequestEntry{
+			Driver:              e.Driver,
+			AllowedCapabilities: e.AllowedCapabilities,
+			MaxCount:            e.MaxCount,
+		})
+	}
+	return out
 }

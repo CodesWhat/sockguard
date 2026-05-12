@@ -2,11 +2,15 @@ package filter
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/codeswhat/sockguard/internal/imagetrust"
+	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
 type erroringReadCloser struct {
@@ -796,4 +800,396 @@ func TestNewContainerCreatePolicyNormalizesDeviceCgroupRules(t *testing.T) {
 			t.Fatalf("allowedDeviceCgroupRules[%d] = %q, want %q", i, policy.allowedDeviceCgroupRules[i], wantEntry)
 		}
 	}
+}
+
+// TestContainerCreatePolicyDenyDeviceRequestsReason exercises the full
+// end-to-end path from ContainerCreateOptions → inspect() → deny reason for
+// the allowed_device_requests structured allowlist.
+func TestContainerCreatePolicyDenyDeviceRequestsReason(t *testing.T) {
+	maxOne := 1
+	maxAllDevices := -1
+
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		{
+			// (a) default-deny: neither flag nor allowlist set
+			name:       "default deny when no flag and no allowlist",
+			opts:       ContainerCreateOptions{},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: "container create denied: device requests are not allowed",
+		},
+		{
+			// (b) allow_device_requests: true overrides allowlist entirely
+			name: "allow_device_requests true bypasses allowlist",
+			opts: ContainerCreateOptions{AllowDeviceRequests: true},
+			body: `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu","utility"]]}]}}`,
+		},
+		{
+			// (c) allowlist match: driver + capability subset → allowed
+			name: "single entry match allowed",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu", "compute"}}},
+				},
+			},
+			body: `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1,"Capabilities":[["gpu"]]}]}}`,
+		},
+		{
+			// (d) different driver → denied
+			name: "different driver denied",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"amd","Count":1,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: `container create denied: device request 0 (driver "amd") is not permitted by the allowlist`,
+		},
+		{
+			// (e) capability not in any allowlisted set → denied
+			name: "capability not in allowlisted sets denied",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1,"Capabilities":[["gpu","compute"]]}]}}`,
+			wantReason: `container create denied: device request 0 (driver "nvidia") is not permitted by the allowlist`,
+		},
+		{
+			// (f) multiple requests, second violates → denied
+			name: "multiple requests one violates",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1,"Capabilities":[["gpu"]]},{"Driver":"amd","Count":1,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: `container create denied: device request 1 (driver "amd") is not permitted by the allowlist`,
+		},
+		{
+			// (g) max_count enforcement: within cap → allowed
+			name: "max_count within cap allowed",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}, MaxCount: &maxOne},
+				},
+			},
+			body: `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1,"Capabilities":[["gpu"]]}]}}`,
+		},
+		{
+			// (h) max_count enforcement: exceeds cap → denied
+			name: "max_count exceeded denied",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}, MaxCount: &maxOne},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":4,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: `container create denied: device request 0 (driver "nvidia") is not permitted by the allowlist`,
+		},
+		{
+			// (i) max_count -1 allows Count=-1 (all devices)
+			name: "max_count -1 allows all devices",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}, MaxCount: &maxAllDevices},
+				},
+			},
+			body: `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu"]]}]}}`,
+		},
+		{
+			// (j) count -1 (all) denied when max_count is a positive cap
+			name: "count -1 denied when max_count is positive",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}, MaxCount: &maxOne},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: `container create denied: device request 0 (driver "nvidia") is not permitted by the allowlist`,
+		},
+		{
+			// (k) malformed request: empty Driver → denied
+			name: "empty driver denied",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"","Count":1,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: "container create denied: device request 0 has an empty Driver field",
+		},
+		{
+			// (l) driver case-insensitive matching
+			name: "driver match is case insensitive",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "NVIDIA", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body: `{"HostConfig":{"DeviceRequests":[{"Driver":"Nvidia","Count":1,"Capabilities":[["gpu"]]}]}}`,
+		},
+		{
+			// (m) no DeviceRequests in body → always allowed regardless of policy
+			name: "no device requests always allowed",
+			opts: ContainerCreateOptions{},
+			body: `{"HostConfig":{}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestNewContainerCreatePolicyNormalizesDeviceRequests verifies that allowlist
+// entries are canonicalized (driver lowercased, caps sorted/deduped) and that
+// invalid entries (empty driver) are skipped.
+func TestNewContainerCreatePolicyNormalizesDeviceRequests(t *testing.T) {
+	maxTwo := 2
+	policy := newContainerCreatePolicy(ContainerCreateOptions{
+		AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+			{Driver: "NVIDIA", AllowedCapabilities: [][]string{{"compute", "gpu", "gpu"}}, MaxCount: &maxTwo},
+			{Driver: "", AllowedCapabilities: [][]string{{"gpu"}}},                // invalid: empty driver, skipped
+			{Driver: "  amd  ", AllowedCapabilities: [][]string{{"gpu", "video"}}}, // whitespace stripped
+		},
+	})
+
+	if len(policy.allowedDeviceRequests) != 2 {
+		t.Fatalf("allowedDeviceRequests len = %d, want 2 (got %v)", len(policy.allowedDeviceRequests), policy.allowedDeviceRequests)
+	}
+
+	// First entry: driver lowercased, caps deduped and sorted
+	e0 := policy.allowedDeviceRequests[0]
+	if e0.driver != "nvidia" {
+		t.Fatalf("entry[0].driver = %q, want %q", e0.driver, "nvidia")
+	}
+	wantCaps0 := []string{"compute", "gpu"} // sorted, deduped
+	if len(e0.allowedCapabilities) != 1 || len(e0.allowedCapabilities[0]) != len(wantCaps0) {
+		t.Fatalf("entry[0].allowedCapabilities = %v, want [%v]", e0.allowedCapabilities, wantCaps0)
+	}
+	for i, c := range wantCaps0 {
+		if e0.allowedCapabilities[0][i] != c {
+			t.Fatalf("entry[0].allowedCapabilities[0][%d] = %q, want %q", i, e0.allowedCapabilities[0][i], c)
+		}
+	}
+	if e0.maxCount == nil || *e0.maxCount != maxTwo {
+		t.Fatalf("entry[0].maxCount = %v, want %d", e0.maxCount, maxTwo)
+	}
+
+	// Second entry: trimmed driver
+	e1 := policy.allowedDeviceRequests[1]
+	if e1.driver != "amd" {
+		t.Fatalf("entry[1].driver = %q, want %q", e1.driver, "amd")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Image trust filter tests
+// ---------------------------------------------------------------------------
+
+// mockImageVerifier is a test stub for the imageVerifier interface. It returns
+// the configured error (or nil) on every Verify call and records the last
+// imageRef it was called with.
+type mockImageVerifier struct {
+	err        error
+	lastCalled string
+}
+
+func (m *mockImageVerifier) Verify(_ context.Context, imageRef, _ string, _ verify.SignedEntity) error {
+	m.lastCalled = imageRef
+	return m.err
+}
+
+// makeInspectRequest builds a minimal POST /containers/create request with the
+// given JSON body string.
+func makeInspectRequest(t *testing.T, body string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+func TestImageTrust_NilVerifier_PassesThrough(t *testing.T) {
+	// When no verifier is configured the request must always be allowed.
+	policy := containerCreatePolicy{}
+	reason, err := policy.inspect(nil, makeInspectRequest(t, `{"Image":"docker.io/library/alpine:3.21"}`), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("expected empty deny reason, got %q", reason)
+	}
+}
+
+func TestImageTrust_Enforce_VerifierCalledWithImageRef(t *testing.T) {
+	mv := &mockImageVerifier{}
+	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
+	policy := containerCreatePolicy{
+		allowPrivileged:  true,
+		allowHostNetwork: true,
+		allowHostPID:     true,
+		allowHostIPC:     true,
+		allowHostUserNS:  true,
+		allowAllDevices:  true,
+		allowAllCapabilities: true,
+		allowDeviceRequests:  true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier: mv,
+		imageTrustCfg:      cfg,
+		imageTrustTimeout:  0,
+	}
+
+	body := `{"Image":"registry.example.com/myapp:v1.2.3","HostConfig":{}}`
+	reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("expected allow (verifier returns nil), got %q", reason)
+	}
+	if mv.lastCalled != "registry.example.com/myapp:v1.2.3" {
+		t.Fatalf("verifier called with %q, want %q", mv.lastCalled, "registry.example.com/myapp:v1.2.3")
+	}
+}
+
+func TestImageTrust_Enforce_DeniesOnVerifierError(t *testing.T) {
+	mv := &mockImageVerifier{err: errors.New("no valid signature found")}
+	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
+	policy := containerCreatePolicy{
+		allowPrivileged:  true,
+		allowHostNetwork: true,
+		allowHostPID:     true,
+		allowHostIPC:     true,
+		allowHostUserNS:  true,
+		allowAllDevices:  true,
+		allowAllCapabilities: true,
+		allowDeviceRequests:  true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier: mv,
+		imageTrustCfg:      cfg,
+	}
+
+	body := `{"Image":"registry.example.com/unsigned:latest","HostConfig":{}}`
+	reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason == "" {
+		t.Fatal("expected a deny reason, got empty string")
+	}
+	const wantSub = "image trust verification failed"
+	if !containsSubstring(reason, wantSub) {
+		t.Fatalf("deny reason %q does not contain %q", reason, wantSub)
+	}
+	if !containsSubstring(reason, "registry.example.com/unsigned:latest") {
+		t.Fatalf("deny reason %q does not contain image ref", reason)
+	}
+}
+
+func TestImageTrust_Warn_AllowsOnVerifierError(t *testing.T) {
+	mv := &mockImageVerifier{err: errors.New("no valid signature found")}
+	cfg := imagetrust.Config{Mode: imagetrust.ModeWarn}
+	policy := containerCreatePolicy{
+		allowPrivileged:  true,
+		allowHostNetwork: true,
+		allowHostPID:     true,
+		allowHostIPC:     true,
+		allowHostUserNS:  true,
+		allowAllDevices:  true,
+		allowAllCapabilities: true,
+		allowDeviceRequests:  true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier: mv,
+		imageTrustCfg:      cfg,
+	}
+
+	body := `{"Image":"registry.example.com/unsigned:latest","HostConfig":{}}`
+	reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("warn mode: expected allow despite failure, got deny reason %q", reason)
+	}
+}
+
+func TestImageTrust_EmptyImage_SkipsVerification(t *testing.T) {
+	// A body with no Image field (or empty Image) must skip the verifier entirely.
+	mv := &mockImageVerifier{err: errors.New("should not be called")}
+	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
+	policy := containerCreatePolicy{
+		allowPrivileged:  true,
+		allowHostNetwork: true,
+		allowHostPID:     true,
+		allowHostIPC:     true,
+		allowHostUserNS:  true,
+		allowAllDevices:  true,
+		allowAllCapabilities: true,
+		allowDeviceRequests:  true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier: mv,
+		imageTrustCfg:      cfg,
+	}
+
+	body := `{"Image":"","HostConfig":{}}`
+	reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("expected allow when Image is empty, got %q", reason)
+	}
+	if mv.lastCalled != "" {
+		t.Fatalf("verifier should not have been called, but lastCalled = %q", mv.lastCalled)
+	}
+}
+
+func TestImageTrust_AllowsAllBodiesFalseWhenVerifierPresent(t *testing.T) {
+	// Even with every flag permissive, a non-nil imageTrustVerifier must cause
+	// allowsAllContainerCreateBodies to return false so the body is inspected.
+	mv := &mockImageVerifier{}
+	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
+	policy := containerCreatePolicy{
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier:     mv,
+		imageTrustCfg:          cfg,
+	}
+	if policy.allowsAllContainerCreateBodies() {
+		t.Fatal("allowsAllContainerCreateBodies must be false when imageTrustVerifier is set")
+	}
+}
+
+// containsSubstring is a test helper to avoid importing strings in addition to bytes.
+func containsSubstring(s, sub string) bool {
+	return len(s) >= len(sub) && func() bool {
+		for i := 0; i <= len(s)-len(sub); i++ {
+			if s[i:i+len(sub)] == sub {
+				return true
+			}
+		}
+		return false
+	}()
 }

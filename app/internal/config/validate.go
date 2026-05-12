@@ -373,6 +373,28 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 		)
 	}
 
+	for i, entry := range cfg.ContainerCreate.AllowedDeviceRequests {
+		if strings.TrimSpace(entry.Driver) == "" {
+			errs = append(errs,
+				fmt.Sprintf("%s.container_create.allowed_device_requests[%d].driver is required", prefix, i),
+			)
+		}
+		for j, capSet := range entry.AllowedCapabilities {
+			if len(capSet) == 0 {
+				errs = append(errs,
+					fmt.Sprintf("%s.container_create.allowed_device_requests[%d].allowed_capabilities[%d] must be a non-empty capability set", prefix, i, j),
+				)
+			}
+		}
+		if entry.MaxCount != nil && *entry.MaxCount < -1 {
+			errs = append(errs,
+				fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount),
+			)
+		}
+	}
+
+	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ContainerCreate.ImageTrust)...)
+
 	for i, command := range cfg.Exec.AllowedCommands {
 		if validExecCommand(command) {
 			continue
@@ -596,6 +618,58 @@ func validPluginSetEnvPrefix(value string) bool {
 
 func validPluginCapability(value string) bool {
 	return strings.TrimSpace(value) != ""
+}
+
+func validateImageTrustConfig(prefix string, cfg ImageTrustConfig) []string {
+	switch cfg.Mode {
+	case "", "off":
+		// nothing to validate when feature is disabled
+		return nil
+	case "warn", "enforce":
+		// valid
+	default:
+		return []string{enumValueError(prefix+".mode", cfg.Mode, "off", "warn", "enforce")}
+	}
+
+	var errs []string
+
+	if len(cfg.AllowedSigningKeys) == 0 && len(cfg.AllowedKeyless) == 0 {
+		errs = append(errs,
+			prefix+": at least one allowed_signing_keys or allowed_keyless entry is required when mode is not off",
+		)
+	}
+
+	for i, k := range cfg.AllowedSigningKeys {
+		if strings.TrimSpace(k.PEM) == "" {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_signing_keys[%d].pem is required", prefix, i),
+			)
+		}
+	}
+
+	for i, kl := range cfg.AllowedKeyless {
+		if strings.TrimSpace(kl.Issuer) == "" {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_keyless[%d].issuer is required", prefix, i),
+			)
+		}
+		if strings.TrimSpace(kl.SubjectPattern) == "" {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern is required", prefix, i),
+			)
+		}
+	}
+
+	if cfg.VerifyTimeout != "" {
+		d, err := time.ParseDuration(cfg.VerifyTimeout)
+		if err != nil || d <= 0 {
+			errs = append(errs,
+				fmt.Sprintf("%s.verify_timeout must be a positive duration, got %q", prefix, cfg.VerifyTimeout),
+			)
+		}
+	}
+
+	return errs
 }
 
 func validateVisibleResourceLabels(prefix string, values []string) []string {
