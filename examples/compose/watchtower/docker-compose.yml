@@ -1,0 +1,43 @@
+# examples/compose/watchtower/docker-compose.yml
+#
+# Sockguard + Watchtower — TCP mode (plain, private Docker network only).
+# Watchtower does not natively support unix socket endpoints, so sockguard
+# listens on plaintext TCP :2375 restricted to the compose-internal network.
+# Set SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true only because the
+# listener is bound to the Docker compose bridge — never publish port 2375
+# to the host or the Internet.
+#
+# Watchtower needs: container list/inspect, lifecycle (create/start/stop/
+# kill/restart/rename/remove), exec lifecycle hooks, image pull/inspect/
+# list/remove, and network connect/disconnect to preserve attachments.
+# The watchtower preset covers all of these; exec hooks require the
+# insecure_allow_body_blind_writes opt-in unless you configure a fixed
+# allowed_commands allowlist.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+    environment:
+      - SOCKGUARD_LISTEN_ADDRESS=:2375
+      - SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true
+    # Do NOT expose port 2375 to the host — Watchtower reaches sockguard
+    # over the private compose network by service name.
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    environment:
+      - DOCKER_HOST=tcp://sockguard:2375
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=300

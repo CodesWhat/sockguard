@@ -1,0 +1,43 @@
+# examples/compose/drydock/docker-compose.yml
+#
+# Sockguard + drydock — unix-socket mode, drydock preset.
+# Sockguard writes a filtered unix socket into a shared named volume;
+# drydock reads that socket rather than mounting /var/run/docker.sock.
+#
+# drydock needs: container list/inspect/stats, lifecycle (start/stop/
+# restart/kill/rename/update/create/remove), image pull/inspect/remove,
+# /events, narrow network/volume/distribution reads, and Swarm service reads.
+# The drydock preset covers all of these without requiring
+# insecure_allow_read_exfiltration; exec, build, secrets, and raw log/
+# archive streams are denied by default.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  drydock:
+    image: codeswhat/drydock:latest
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    ports:
+      - "3000:3000"
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - DD_WATCHER_LOCAL_SOCKET=/var/run/sockguard/sockguard.sock
+
+volumes:
+  sockguard-socket:

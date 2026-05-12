@@ -1,0 +1,96 @@
+# Sockguard config for drydock — mirrors the shipped drydock preset.
+# Copy of app/configs/drydock.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+  image_pull:
+    allow_all_registries: true
+
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/update" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/**" }
+    action: allow
+
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+
+  - match: { method: GET, path: "/distribution/**/json" }
+    action: allow
+
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by drydock preset"

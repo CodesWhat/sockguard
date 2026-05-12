@@ -1,0 +1,92 @@
+# Sockguard config for Watchtower — mirrors the shipped watchtower preset.
+# Copy of app/configs/watchtower.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+#
+# If your Watchtower lifecycle hooks run fixed commands, replace
+# insecure_allow_body_blind_writes with request_body.exec.allowed_commands
+# and remove the unsafe opt-in for tighter exec policy.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+  image_pull:
+    allow_all_registries: true
+
+# Required for arbitrary exec lifecycle hooks.
+# Replace with request_body.exec.allowed_commands if hooks are fixed.
+insecure_allow_body_blind_writes: true
+# Required for Watchtower's broad container/image read compatibility.
+insecure_allow_read_exfiltration: true
+
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  - match: { method: GET, path: "/containers/**" }
+    action: allow
+
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  - match: { method: POST, path: "/containers/*/exec" }
+    action: allow
+  - match: { method: POST, path: "/exec/*/start" }
+    action: allow
+  - match: { method: GET, path: "/exec/*/json" }
+    action: allow
+
+  - match: { method: GET, path: "/images/**" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/*" }
+    action: allow
+
+  - match: { method: GET, path: "/networks/**" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+
+  - match: { method: GET, path: "/volumes/**" }
+    action: allow
+
+  - match: { method: GET, path: "/distribution/**" }
+    action: allow
+
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by watchtower preset"

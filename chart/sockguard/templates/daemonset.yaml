@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "sockguard.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "sockguard.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "sockguard.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "sockguard.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: sockguard
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          args:
+            - serve
+            - --config
+            - /etc/sockguard/sockguard.yaml
+          ports:
+            - name: proxy
+              containerPort: 2375
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: proxy
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: proxy
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+              readOnly: true
+            - name: config
+              mountPath: /etc/sockguard
+              readOnly: true
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+        - name: config
+          configMap:
+            name: {{ include "sockguard.fullname" . }}

@@ -1,0 +1,50 @@
+# examples/compose/portainer/docker-compose.yml
+#
+# Sockguard + Portainer — unix-socket mode, portainer preset.
+# Sockguard writes a filtered unix socket into a shared named volume;
+# Portainer reads that socket instead of /var/run/docker.sock directly.
+#
+# Portainer proxies the full Docker API, so this preset grants near-full
+# access. The sockguard layer still provides: structured audit logs,
+# container-create body inspection (blocks privileged/host-network by
+# default), image-pull registry constraints, and build body inspection.
+# Exec and arbitrary swarm writes require the insecure opt-ins below.
+#
+# Use client CIDR gates or mTLS client-certificate profiles to restrict
+# which containers can reach the sockguard socket if you run other
+# consumers on the same host.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  portainer:
+    image: portainer/portainer-ce:lts
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    command: --no-analytics
+    ports:
+      - "9000:9000"
+      - "9443:9443"
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+      - portainer-data:/data
+    environment:
+      - DOCKER_HOST=unix:///var/run/sockguard/sockguard.sock
+
+volumes:
+  sockguard-socket:
+  portainer-data:
