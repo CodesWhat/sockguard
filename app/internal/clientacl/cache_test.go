@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/codeswhat/sockguard/internal/testhelp"
 )
 
 func mustAddr(t *testing.T, s string) netip.Addr {
@@ -92,9 +94,9 @@ func TestClientCacheCoalescesConcurrentMissesPerIP(t *testing.T) {
 	ready.Wait()
 	close(start)
 
-	// Give the leader a moment to enter resolver; close release so the
-	// leader returns and the stragglers unblock on the in-flight call.
-	time.Sleep(20 * time.Millisecond)
+	// Wait until the leader goroutine has entered the resolver (it is now
+	// blocked on <-release), then release so all waiters can unblock.
+	testhelp.Eventually(t, func() bool { return calls.Load() >= 1 })
 	close(release)
 
 	wg.Wait()

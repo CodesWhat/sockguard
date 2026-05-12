@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/codeswhat/sockguard/internal/testhelp"
 )
 
 func TestCacheHitsWithinTTL(t *testing.T) {
@@ -80,7 +82,9 @@ func TestCacheCoalescesConcurrentMissesPerResource(t *testing.T) {
 
 	ready.Wait()
 	close(start)
-	time.Sleep(20 * time.Millisecond)
+	// Wait until at least one goroutine has entered the resolver (leader is
+	// blocked on <-release), then release so all waiters can unblock.
+	testhelp.Eventually(t, func() bool { return calls.Load() >= 1 })
 	close(release)
 
 	wg.Wait()
