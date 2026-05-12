@@ -511,3 +511,289 @@ func TestContainerCreatePolicyInspectCapsOversizedBody(t *testing.T) {
 		t.Fatalf("rejection reason = %q, want prefix %q", rejection.reason, wantPrefix)
 	}
 }
+
+// TestCanonicalizeDeviceCgroupRule verifies parsing, normalization, and
+// perm-sorting of Docker device cgroup rule strings.
+func TestCanonicalizeDeviceCgroupRule(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		want      string
+		wantOK    bool
+	}{
+		{name: "exact char device", raw: "c 1:3 rwm", want: "c 1:3 rwm", wantOK: true},
+		{name: "block device", raw: "b 8:0 rw", want: "b 8:0 rw", wantOK: true},
+		{name: "wildcard major", raw: "c *:3 rwm", want: "c *:3 rwm", wantOK: true},
+		{name: "wildcard minor", raw: "c 226:* rwm", want: "c 226:* rwm", wantOK: true},
+		{name: "both wildcards", raw: "c *:* rwm", want: "c *:* rwm", wantOK: true},
+		{name: "perms sorted mrw→rwm", raw: "c 1:3 mrw", want: "c 1:3 rwm", wantOK: true},
+		{name: "extra whitespace normalized", raw: "c  1:3  rwm", want: "c 1:3 rwm", wantOK: true},
+		{name: "perms out of order wm→mw", raw: "c 1:3 wm", want: "c 1:3 wm", wantOK: true},
+		{name: "all type", raw: "a *:* rwm", want: "a *:* rwm", wantOK: true},
+		{name: "empty string", raw: "", wantOK: false},
+		{name: "missing minor", raw: "c 1 rwm", wantOK: false},
+		{name: "bad type", raw: "x 1:3 rwm", wantOK: false},
+		{name: "bad perms char", raw: "c 1:3 rwx", wantOK: false},
+		{name: "empty perms", raw: "c 1:3 ", wantOK: false},
+		{name: "non-numeric major", raw: "c foo:3 rwm", wantOK: false},
+		{name: "non-numeric minor", raw: "c 1:bar rwm", wantOK: false},
+		{name: "too few fields", raw: "c 1:3", wantOK: false},
+		{name: "too many fields", raw: "c 1:3 rwm extra", wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := canonicalizeDeviceCgroupRule(tt.raw)
+			if ok != tt.wantOK {
+				t.Fatalf("canonicalizeDeviceCgroupRule(%q) ok = %v, want %v", tt.raw, ok, tt.wantOK)
+			}
+			if ok && got != tt.want {
+				t.Fatalf("canonicalizeDeviceCgroupRule(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSortDeviceCgroupPerms verifies that perms are sorted into r, w, m order
+// and duplicates are removed.
+func TestSortDeviceCgroupPerms(t *testing.T) {
+	tests := []struct {
+		raw  string
+		want string
+	}{
+		{"rwm", "rwm"},
+		{"mrw", "rwm"},
+		{"wmr", "rwm"},
+		{"r", "r"},
+		{"w", "w"},
+		{"m", "m"},
+		{"wm", "wm"},
+		{"rr", "r"},
+		{"rww", "rw"},
+		{"rrmm", "rm"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			got := sortDeviceCgroupPerms(tt.raw)
+			if got != tt.want {
+				t.Fatalf("sortDeviceCgroupPerms(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestDeviceCgroupRuleAllowed verifies the matching logic between request
+// rules and allowlist entries, including wildcard handling.
+func TestDeviceCgroupRuleAllowed(t *testing.T) {
+	tests := []struct {
+		name      string
+		canonical string
+		allowlist []string
+		want      bool
+	}{
+		{
+			name:      "exact match allowed",
+			canonical: "c 1:3 rwm",
+			allowlist: []string{"c 1:3 rwm"},
+			want:      true,
+		},
+		{
+			name:      "exact match denied when not in list",
+			canonical: "c 1:5 rwm",
+			allowlist: []string{"c 1:3 rwm"},
+			want:      false,
+		},
+		{
+			name:      "allowlist wildcard minor matches any minor",
+			canonical: "c 226:128 rwm",
+			allowlist: []string{"c 226:* rwm"},
+			want:      true,
+		},
+		{
+			name:      "allowlist wildcard major matches any major",
+			canonical: "c 10:200 rwm",
+			allowlist: []string{"c *:200 rwm"},
+			want:      true,
+		},
+		{
+			name:      "allowlist both wildcards matches numeric request",
+			canonical: "c 99:99 rwm",
+			allowlist: []string{"c *:* rwm"},
+			want:      true,
+		},
+		{
+			name:      "request wildcard minor denied against numeric allowlist",
+			canonical: "c 1:* rwm",
+			allowlist: []string{"c 1:3 rwm"},
+			want:      false,
+		},
+		{
+			name:      "request wildcard major denied against numeric allowlist",
+			canonical: "c *:3 rwm",
+			allowlist: []string{"c 1:3 rwm"},
+			want:      false,
+		},
+		{
+			name:      "request wildcard minor allowed when allowlist also wildcard minor",
+			canonical: "c 1:* rwm",
+			allowlist: []string{"c 1:* rwm"},
+			want:      true,
+		},
+		{
+			name:      "type mismatch denied",
+			canonical: "b 1:3 rwm",
+			allowlist: []string{"c 1:3 rwm"},
+			want:      false,
+		},
+		{
+			name:      "perms mismatch denied",
+			canonical: "c 1:3 rw",
+			allowlist: []string{"c 1:3 rwm"},
+			want:      false,
+		},
+		{
+			name:      "empty allowlist denies all",
+			canonical: "c 1:3 rwm",
+			allowlist: []string{},
+			want:      false,
+		},
+		{
+			name:      "first allowlist entry mismatch second match",
+			canonical: "c 1:3 rwm",
+			allowlist: []string{"c 226:* rwm", "c 1:3 rwm"},
+			want:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deviceCgroupRuleAllowed(tt.canonical, tt.allowlist)
+			if got != tt.want {
+				t.Fatalf("deviceCgroupRuleAllowed(%q, %v) = %v, want %v", tt.canonical, tt.allowlist, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestContainerCreatePolicyDenyDeviceCgroupRulesReason exercises the full
+// end-to-end path from ContainerCreateOptions → inspect() → deny reason.
+func TestContainerCreatePolicyDenyDeviceCgroupRulesReason(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		{
+			// (a) empty allowlist denies any rule
+			name:       "empty allowlist denies any rule",
+			opts:       ContainerCreateOptions{},
+			body:       `{"HostConfig":{"DeviceCgroupRules":["c 1:3 rwm"]}}`,
+			wantReason: "container create denied: device cgroup rules are not allowed",
+		},
+		{
+			// (b) exact-match allow
+			name: "exact match allow",
+			opts: ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 rwm"}},
+			body: `{"HostConfig":{"DeviceCgroupRules":["c 1:3 rwm"]}}`,
+		},
+		{
+			// (c) major-wildcard allowlist matches any minor
+			name: "major-wildcard allowlist allows matching minor",
+			opts: ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 226:* rwm"}},
+			body: `{"HostConfig":{"DeviceCgroupRules":["c 226:128 rwm"]}}`,
+		},
+		{
+			// (c) non-matching minor is denied
+			name:       "major-wildcard allowlist denies non-matching type",
+			opts:       ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 226:* rwm"}},
+			body:       `{"HostConfig":{"DeviceCgroupRules":["b 226:128 rwm"]}}`,
+			wantReason: `container create denied: device cgroup rule "b 226:128 rwm" is not in the allowed list`,
+		},
+		{
+			// (d) wildcard in request denied against non-wildcard allowlist
+			name:       "wildcard in request denied against numeric allowlist",
+			opts:       ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 rwm"}},
+			body:       `{"HostConfig":{"DeviceCgroupRules":["c 1:* rwm"]}}`,
+			wantReason: `container create denied: device cgroup rule "c 1:* rwm" is not in the allowed list`,
+		},
+		{
+			// (e) malformed rule in request → deny with malformed message
+			name:       "malformed rule in request denied",
+			opts:       ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 rwm"}},
+			body:       `{"HostConfig":{"DeviceCgroupRules":["z 1 bad"]}}`,
+			wantReason: `container create denied: device cgroup rule "z 1 bad" is malformed`,
+		},
+		{
+			// (f) allowlist canonicalization: whitespace normalization
+			name: "allowlist entry with extra whitespace canonicalized",
+			opts: ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c  1:3  rwm"}},
+			body: `{"HostConfig":{"DeviceCgroupRules":["c 1:3 rwm"]}}`,
+		},
+		{
+			// (f) allowlist canonicalization: perm order
+			name: "allowlist entry with unsorted perms canonicalized",
+			opts: ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 mrw"}},
+			body: `{"HostConfig":{"DeviceCgroupRules":["c 1:3 rwm"]}}`,
+		},
+		{
+			// allowDeviceCgroupRules true → blanket allow, overrides allowlist check
+			name: "allow_device_cgroup_rules true bypasses allowlist",
+			opts: ContainerCreateOptions{AllowDeviceCgroupRules: true},
+			body: `{"HostConfig":{"DeviceCgroupRules":["c 999:999 rwm"]}}`,
+		},
+		{
+			// Multiple rules: first passes, second fails
+			name: "multiple rules first passes second fails",
+			opts: ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 rwm"}},
+			body: `{"HostConfig":{"DeviceCgroupRules":["c 1:3 rwm","c 10:200 rwm"]}}`,
+			wantReason: `container create denied: device cgroup rule "c 10:200 rwm" is not in the allowed list`,
+		},
+		{
+			// /dev/null = c 1:3, /dev/dri GPU range c 226:* rwm
+			name: "dev/null and GPU range both allowed",
+			opts: ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 rwm", "c 226:* rwm"}},
+			body: `{"HostConfig":{"DeviceCgroupRules":["c 1:3 rwm","c 226:128 rwm"]}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestNewContainerCreatePolicyNormalizesDeviceCgroupRules verifies that the
+// allowlist is canonicalized and deduplicated during policy construction.
+func TestNewContainerCreatePolicyNormalizesDeviceCgroupRules(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{
+		AllowedDeviceCgroupRules: []string{
+			"c  1:3  rwm",  // extra whitespace
+			"c 1:3 mrw",   // unsorted perms (same as above after canon)
+			"c 226:* rwm", // unique entry
+			"z bad",       // invalid, should be skipped
+		},
+	})
+
+	// "c  1:3  rwm" and "c 1:3 mrw" both canonicalize to "c 1:3 rwm"
+	// "z bad" is invalid and skipped
+	// result should be ["c 1:3 rwm", "c 226:* rwm"]
+	want := []string{"c 1:3 rwm", "c 226:* rwm"}
+	if len(policy.allowedDeviceCgroupRules) != len(want) {
+		t.Fatalf("allowedDeviceCgroupRules = %v, want %v", policy.allowedDeviceCgroupRules, want)
+	}
+	for i, wantEntry := range want {
+		if policy.allowedDeviceCgroupRules[i] != wantEntry {
+			t.Fatalf("allowedDeviceCgroupRules[%d] = %q, want %q", i, policy.allowedDeviceCgroupRules[i], wantEntry)
+		}
+	}
+}
