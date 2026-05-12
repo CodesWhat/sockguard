@@ -72,6 +72,8 @@ func FuzzHijackHeadersAndBody(f *testing.F) {
 	f.Add("body", "tabs\tallowed", []byte("binary\x00payload"))
 
 	f.Fuzz(func(t *testing.T, headerSuffix, headerValue string, body []byte) {
+		startFuzzForensicsSampler(t, "FuzzHijackHeadersAndBody")
+
 		handler := HijackHandler(socketPath, testLogger(), http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			t.Fatal("next handler should not be called for hijack endpoints")
 		}))

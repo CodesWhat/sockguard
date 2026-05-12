@@ -68,3 +68,10 @@ website/public/docs/
 # Turborepo
 .turbo
 .vercel
+
+# Fuzz forensics dumps (per-worker memory/goroutine/FD samples written by
+# startFuzzForensicsSampler). Local triage only; CI uploads them as an
+# artifact on failure/cancel and they should never be committed.
+forensics/
+app/forensics/
+app/internal/**/forensics/
