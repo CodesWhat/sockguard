@@ -20,6 +20,19 @@ health:
   enabled: true
   path: /health
 
+# Drydock's update flow inspects the running container, then submits the
+# inspect payload back to dockerd via POST /containers/create. If sockguard
+# redacts HostConfig.Binds / Config.Env / NetworkSettings to "<redacted>" in
+# the inspect response, drydock faithfully forwards that placeholder string
+# into the create body and dockerd rejects it (400 "includes invalid
+# characters for a local volume name"). Disable all three response
+# redactions for this preset — they are mutually exclusive with the
+# auto-updater use case this preset is designed for.
+response:
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
+
 # Drydock needs container creation during update flows. Container-create bodies
 # are inspected by default, but bind-mounted workloads are denied until you
 # allowlist their host paths here. Image pulls are inspected too; this preset
