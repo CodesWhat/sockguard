@@ -475,6 +475,25 @@ Client-certificate profile assignment requires `listen.tls` mutual TLS, and unix
 
 `response.name_patterns` and `response.image_patterns` extend visibility filtering with glob-based axes that work alongside label selectors (AND semantics across axes, OR within each axis). `name_patterns` is matched against container `Names[0]` with the leading `/` stripped, and against each image `RepoTags` short name; `image_patterns` is matched against the container `Image` field and against each full `RepoTags` reference. Both knobs are also available per-profile via `clients.profiles[*].response.name_patterns` / `image_patterns`. Patterns use the same glob dialect as rule path patterns (`*` = no slash, `**` = any depth).
 
+Each named profile can carry a `limits` block with per-profile rate limiting and concurrency caps:
+
+```yaml
+clients:
+  profiles:
+    - name: ci-agent
+      limits:
+        rate:
+          tokens_per_second: 100   # sustained refill rate
+          burst: 200               # peak bucket capacity
+        concurrency:
+          max_inflight: 32         # simultaneous in-flight cap
+      rules:
+        - match: { method: "*", path: "/**" }
+          action: allow
+```
+
+`limits.rate` enforces a token-bucket rate limiter per profile: the bucket refills at `tokens_per_second` and caps at `burst` (defaults to `tokens_per_second` when unset). When the bucket is empty, sockguard returns `429 Too Many Requests` with a `Retry-After` header and `{"reason":"rate_limit_exceeded","retry_after_seconds":N}`. `limits.concurrency.max_inflight` caps simultaneous in-flight requests per profile; excess requests receive `429` with `{"reason":"concurrency_cap"}` immediately. Either sub-block can be omitted to disable just that mechanism; omitting `limits` entirely preserves pre-v0.7.0 behavior (no limiting). `tokens_per_second > 0`, `burst >= tokens_per_second` (or `0` for same-as-rate default), and `max_inflight > 0` are startup invariants — a misconfigured profile fails startup with a clear error. `sockguard_throttle_total{profile,reason}` and `sockguard_inflight_requests{profile}` are emitted when Prometheus metrics are enabled.
+
 Set `ownership.owner` to turn on per-proxy resource ownership isolation. Sockguard will add `ownership.label_key=ownership.owner` labels to `POST /containers/create`, `/networks/create`, `/volumes/create`, `/services/create`, `/services/*/update`, `/secrets/create`, `/configs/create`, `/nodes/*/update`, and `/swarm/update`, add the same label to `POST /build`, inject owner label filters into list/prune/events requests including `/services`, `/tasks`, `/secrets`, `/configs`, and `/nodes` (using Docker's `node.label` filter key there), and deny direct access to owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state from some other proxy identity. Service writes are stamped both at `Labels` and `TaskTemplate.ContainerSpec.Labels` so downstream tasks inherit the same owner identity. Unlabeled nodes and swarm state are fail-closed on reads once ownership is enabled, but they can still be claimed through `/nodes/*/update` and `/swarm/update` because Sockguard stamps the current owner label onto those update bodies before forwarding. Unowned images are still readable by default so shared base images can be pulled and inspected without relabeling.
 
 `insecure_allow_body_blind_writes` is off by default. Validation still fails unless you explicitly set it to `true` when your rules allow body-sensitive writes Sockguard cannot safely constrain yet, chiefly arbitrary `POST /containers/*/exec` / `POST /exec/*/start` without a `request_body.exec.allowed_commands` allowlist, `POST /swarm/join` without `request_body.swarm.allowed_join_remote_addrs`, or `POST /plugins/*/set` without explicit allowed assignment prefixes.
@@ -543,7 +562,7 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
 | **0.4.0** | Hardening + body-inspection completion pass — canonical percent-decoded path matching; mTLS listener selectors (CN/DNS/IP/URI SAN + SHA-256 SPKI pins) and per-profile certificate selectors (CN/DNS/IP/URI/SPIFFE + SHA-256 SPKI pins); 413 on oversize bounded JSON/tar inspectors; multipart plugin-create inspection; container-create policy now blocks `Privileged`, `NetworkMode=host`, `PidMode=host`, `IpcMode=host`, non-allowlisted bind sources, non-allowlisted devices, `DeviceRequests`, and `DeviceCgroupRules` by default; new body inspectors close the remaining blind-write gaps for `containers/*/update`, `containers/*/archive`, `images/load`, `networks/create`/`*/connect`/`*/disconnect`, `swarm/unlock`, and `nodes/*/update`; profile-resolution memoization; build host-network denied regardless of opt-in combinations; config preflight rejects explicit empty/missing `--config`; fuzz watchdogs replace `-timeout=0`; `scripts/local-fuzz.sh` gains `--timeout`/`--parallel`/`--suite ultra`; private vuln reporting enabled with published disclosure inboxes | ✅ shipped |
 | **0.5.0** | Operator observability — Prometheus `/metrics`, active upstream socket watchdog, trace/log correlation without an OTLP exporter | ✅ shipped |
 | **0.6.0** | Secure container enforcement — no-new-privileges, non-root, readonly rootfs, drop-all-capabilities and CapAdd allowlist rails on `POST /containers/create`, memory / CPU / PIDs limit requirements, seccomp + AppArmor profile allowlists, host-userns default-deny, required `Config.Labels`; default-deny for `CapAdd` and `UsernsMode=host`; structured `allowed_device_cgroup_rules` allowlist for cgroup device class policy; structured `allowed_device_requests` allowlist for GPU/device-request passthrough (driver, capability subsets, max_count); cosign signature verification (`image_trust`) with keyed (PEM public keys) and keyless (Fulcio + Rekor) modes, warn/enforce semantics, and per-profile configurability. | 🛠️ in progress |
-| **0.7.0** | Abuse controls — per-client rate limits, burst budgets, concurrency caps, expensive-endpoint quotas | 🕒 planned |
+| **0.7.0** | Abuse controls — per-client token-bucket rate limits, burst budgets, concurrency caps (expensive-endpoint quotas and priority/fairness are follow-up work) | 🛠️ in progress |
 | **0.8.0** | Dynamic policy delivery — signed bundles, long-poll/hot reload, audit/warn/enforce rollout modes, admin API, policy versioning | 🕒 planned |
 
 <hr>
