@@ -53,6 +53,34 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenyUnconfinedAppArmor:     c.DenyUnconfinedAppArmor,
 		AllowHostUserNS:            c.AllowHostUserNS,
 		RequiredLabels:             c.RequiredLabels,
+		ImageTrust:                 c.ImageTrust.toFilterOptions(),
+	}
+}
+
+func (c ImageTrustConfig) toFilterOptions() filter.ImageTrustOptions {
+	var keys []filter.SigningKeyOptions
+	if len(c.AllowedSigningKeys) > 0 {
+		keys = make([]filter.SigningKeyOptions, 0, len(c.AllowedSigningKeys))
+		for _, k := range c.AllowedSigningKeys {
+			keys = append(keys, filter.SigningKeyOptions{PEM: k.PEM})
+		}
+	}
+	var kl []filter.KeylessOptions
+	if len(c.AllowedKeyless) > 0 {
+		kl = make([]filter.KeylessOptions, 0, len(c.AllowedKeyless))
+		for _, k := range c.AllowedKeyless {
+			kl = append(kl, filter.KeylessOptions{
+				Issuer:         k.Issuer,
+				SubjectPattern: k.SubjectPattern,
+			})
+		}
+	}
+	return filter.ImageTrustOptions{
+		Mode:                  c.Mode,
+		AllowedSigningKeys:    keys,
+		AllowedKeyless:        kl,
+		RequireRekorInclusion: c.RequireRekorInclusion,
+		VerifyTimeout:         c.VerifyTimeout,
 	}
 }
 

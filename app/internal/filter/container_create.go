@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -9,6 +10,10 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
+
+	"github.com/codeswhat/sockguard/internal/imagetrust"
+	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
 // maxContainerCreateBodyBytes caps the request body Sockguard will read when
@@ -17,6 +22,38 @@ import (
 // generous while still preventing a malicious or misbehaving client from
 // OOMing the proxy with an unbounded body.
 const maxContainerCreateBodyBytes = 1 << 20 // 1 MiB
+
+// ImageTrustOptions configures cosign signature verification for images
+// referenced in POST /containers/create.
+type ImageTrustOptions struct {
+	// Mode is "off" | "warn" | "enforce". Default: off.
+	Mode string
+	// AllowedSigningKeys lists PEM-encoded public keys trusted to sign images.
+	AllowedSigningKeys []SigningKeyOptions
+	// AllowedKeyless lists Fulcio-backed identity patterns.
+	AllowedKeyless []KeylessOptions
+	// RequireRekorInclusion requires a Rekor tlog entry for keyless bundles.
+	RequireRekorInclusion bool
+	// VerifyTimeout overrides the default per-verification timeout.
+	VerifyTimeout string
+}
+
+// SigningKeyOptions is one allowed signing key entry.
+type SigningKeyOptions struct {
+	PEM string
+}
+
+// KeylessOptions is one allowed keyless identity entry.
+type KeylessOptions struct {
+	Issuer         string
+	SubjectPattern string
+}
+
+// imageVerifier is the narrow interface used by containerCreatePolicy so tests
+// can inject a stub without a real registry or Rekor connection.
+type imageVerifier interface {
+	Verify(ctx context.Context, imageRef, digestHex string, entity verify.SignedEntity) error
+}
 
 // ContainerCreateOptions configures request-body policy checks for
 // POST /containers/create.
@@ -49,6 +86,9 @@ type ContainerCreateOptions struct {
 	DenyUnconfinedAppArmor     bool
 	AllowHostUserNS            bool
 	RequiredLabels             []string
+
+	// ImageTrust configures cosign-backed signature verification.
+	ImageTrust ImageTrustOptions
 }
 
 type containerCreatePolicy struct {
@@ -79,6 +119,11 @@ type containerCreatePolicy struct {
 	denyUnconfinedAppArmor     bool
 	allowHostUserNS            bool
 	requiredLabels             []string
+
+	// Image trust — non-nil when mode != off.
+	imageTrustVerifier imageVerifier
+	imageTrustCfg      imagetrust.Config
+	imageTrustTimeout  time.Duration
 }
 
 // AllowedDeviceRequestEntry is the public form of a device request allowlist
@@ -107,6 +152,7 @@ type dockerDeviceRequest struct {
 }
 
 type containerCreateRequest struct {
+	Image      string                    `json:"Image"`
 	HostConfig containerCreateHostConfig `json:"HostConfig"`
 	User       string                    `json:"User"`
 	Labels     map[string]string         `json:"Labels"`
@@ -187,7 +233,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		})
 	}
 
-	return containerCreatePolicy{
+	p := containerCreatePolicy{
 		allowPrivileged:             opts.AllowPrivileged,
 		allowHostNetwork:            opts.AllowHostNetwork,
 		allowHostPID:                opts.AllowHostPID,
@@ -214,6 +260,45 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denyUnconfinedAppArmor:     opts.DenyUnconfinedAppArmor,
 		allowHostUserNS:            opts.AllowHostUserNS,
 		requiredLabels:             normalizeStringList(opts.RequiredLabels),
+	}
+
+	// Build image trust verifier (best-effort; startup validation catches
+	// misconfigured policies before the proxy starts serving).
+	if mode := imagetrust.Mode(opts.ImageTrust.Mode); mode != imagetrust.ModeOff && mode != "" {
+		raw := buildImageTrustRaw(opts.ImageTrust)
+		if cfg, err := imagetrust.BuildConfig(raw); err == nil {
+			if v, err := imagetrust.New(cfg); err == nil {
+				p.imageTrustVerifier = v
+				p.imageTrustCfg = cfg
+				p.imageTrustTimeout = cfg.VerifyTimeout
+				if p.imageTrustTimeout == 0 {
+					p.imageTrustTimeout = imagetrust.VerifyTimeout
+				}
+			}
+		}
+	}
+
+	return p
+}
+
+func buildImageTrustRaw(opts ImageTrustOptions) imagetrust.RawConfig {
+	keys := make([]imagetrust.SigningKeyConfig, 0, len(opts.AllowedSigningKeys))
+	for _, k := range opts.AllowedSigningKeys {
+		keys = append(keys, imagetrust.SigningKeyConfig{PEM: k.PEM})
+	}
+	kl := make([]imagetrust.KeylessConfig, 0, len(opts.AllowedKeyless))
+	for _, k := range opts.AllowedKeyless {
+		kl = append(kl, imagetrust.KeylessConfig{
+			Issuer:         k.Issuer,
+			SubjectPattern: k.SubjectPattern,
+		})
+	}
+	return imagetrust.RawConfig{
+		Mode:                  imagetrust.Mode(opts.Mode),
+		AllowedSigningKeys:    keys,
+		AllowedKeyless:        kl,
+		RequireRekorInclusion: opts.RequireRekorInclusion,
+		VerifyTimeoutStr:      opts.VerifyTimeout,
 	}
 }
 
@@ -284,6 +369,22 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return denyReason, nil
 	}
 
+	if p.imageTrustVerifier != nil {
+		imageRef := strings.TrimSpace(createReq.Image)
+		if imageRef != "" {
+			ctx := r.Context()
+			if p.imageTrustTimeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, p.imageTrustTimeout)
+				defer cancel()
+			}
+			outcome := imagetrust.VerifyWithMode(ctx, p.imageTrustVerifier, p.imageTrustCfg, logger, imageRef, "", nil)
+			if !outcome.Allowed {
+				return fmt.Sprintf("container create denied: image trust verification failed for %s: %s", imageRef, outcome.FailureMsg), nil
+			}
+		}
+	}
+
 	return "", nil
 }
 
@@ -302,7 +403,8 @@ func (p containerCreatePolicy) allowsAllContainerCreateBodies() bool {
 		len(p.requiredLabels) > 0 ||
 		len(p.allowedDeviceCgroupRules) > 0 ||
 		len(p.allowedDeviceRequests) > 0 ||
-		!p.allowAllCapabilities {
+		!p.allowAllCapabilities ||
+		p.imageTrustVerifier != nil {
 		return false
 	}
 	return p.allowPrivileged &&

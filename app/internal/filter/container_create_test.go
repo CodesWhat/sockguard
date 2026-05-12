@@ -2,11 +2,15 @@ package filter
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/codeswhat/sockguard/internal/imagetrust"
+	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 
 type erroringReadCloser struct {
@@ -992,4 +996,200 @@ func TestNewContainerCreatePolicyNormalizesDeviceRequests(t *testing.T) {
 	if e1.driver != "amd" {
 		t.Fatalf("entry[1].driver = %q, want %q", e1.driver, "amd")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Image trust filter tests
+// ---------------------------------------------------------------------------
+
+// mockImageVerifier is a test stub for the imageVerifier interface. It returns
+// the configured error (or nil) on every Verify call and records the last
+// imageRef it was called with.
+type mockImageVerifier struct {
+	err        error
+	lastCalled string
+}
+
+func (m *mockImageVerifier) Verify(_ context.Context, imageRef, _ string, _ verify.SignedEntity) error {
+	m.lastCalled = imageRef
+	return m.err
+}
+
+// makeInspectRequest builds a minimal POST /containers/create request with the
+// given JSON body string.
+func makeInspectRequest(t *testing.T, body string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+func TestImageTrust_NilVerifier_PassesThrough(t *testing.T) {
+	// When no verifier is configured the request must always be allowed.
+	policy := containerCreatePolicy{}
+	reason, err := policy.inspect(nil, makeInspectRequest(t, `{"Image":"docker.io/library/alpine:3.21"}`), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("expected empty deny reason, got %q", reason)
+	}
+}
+
+func TestImageTrust_Enforce_VerifierCalledWithImageRef(t *testing.T) {
+	mv := &mockImageVerifier{}
+	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
+	policy := containerCreatePolicy{
+		allowPrivileged:  true,
+		allowHostNetwork: true,
+		allowHostPID:     true,
+		allowHostIPC:     true,
+		allowHostUserNS:  true,
+		allowAllDevices:  true,
+		allowAllCapabilities: true,
+		allowDeviceRequests:  true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier: mv,
+		imageTrustCfg:      cfg,
+		imageTrustTimeout:  0,
+	}
+
+	body := `{"Image":"registry.example.com/myapp:v1.2.3","HostConfig":{}}`
+	reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("expected allow (verifier returns nil), got %q", reason)
+	}
+	if mv.lastCalled != "registry.example.com/myapp:v1.2.3" {
+		t.Fatalf("verifier called with %q, want %q", mv.lastCalled, "registry.example.com/myapp:v1.2.3")
+	}
+}
+
+func TestImageTrust_Enforce_DeniesOnVerifierError(t *testing.T) {
+	mv := &mockImageVerifier{err: errors.New("no valid signature found")}
+	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
+	policy := containerCreatePolicy{
+		allowPrivileged:  true,
+		allowHostNetwork: true,
+		allowHostPID:     true,
+		allowHostIPC:     true,
+		allowHostUserNS:  true,
+		allowAllDevices:  true,
+		allowAllCapabilities: true,
+		allowDeviceRequests:  true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier: mv,
+		imageTrustCfg:      cfg,
+	}
+
+	body := `{"Image":"registry.example.com/unsigned:latest","HostConfig":{}}`
+	reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason == "" {
+		t.Fatal("expected a deny reason, got empty string")
+	}
+	const wantSub = "image trust verification failed"
+	if !containsSubstring(reason, wantSub) {
+		t.Fatalf("deny reason %q does not contain %q", reason, wantSub)
+	}
+	if !containsSubstring(reason, "registry.example.com/unsigned:latest") {
+		t.Fatalf("deny reason %q does not contain image ref", reason)
+	}
+}
+
+func TestImageTrust_Warn_AllowsOnVerifierError(t *testing.T) {
+	mv := &mockImageVerifier{err: errors.New("no valid signature found")}
+	cfg := imagetrust.Config{Mode: imagetrust.ModeWarn}
+	policy := containerCreatePolicy{
+		allowPrivileged:  true,
+		allowHostNetwork: true,
+		allowHostPID:     true,
+		allowHostIPC:     true,
+		allowHostUserNS:  true,
+		allowAllDevices:  true,
+		allowAllCapabilities: true,
+		allowDeviceRequests:  true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier: mv,
+		imageTrustCfg:      cfg,
+	}
+
+	body := `{"Image":"registry.example.com/unsigned:latest","HostConfig":{}}`
+	reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("warn mode: expected allow despite failure, got deny reason %q", reason)
+	}
+}
+
+func TestImageTrust_EmptyImage_SkipsVerification(t *testing.T) {
+	// A body with no Image field (or empty Image) must skip the verifier entirely.
+	mv := &mockImageVerifier{err: errors.New("should not be called")}
+	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
+	policy := containerCreatePolicy{
+		allowPrivileged:  true,
+		allowHostNetwork: true,
+		allowHostPID:     true,
+		allowHostIPC:     true,
+		allowHostUserNS:  true,
+		allowAllDevices:  true,
+		allowAllCapabilities: true,
+		allowDeviceRequests:  true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier: mv,
+		imageTrustCfg:      cfg,
+	}
+
+	body := `{"Image":"","HostConfig":{}}`
+	reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("expected allow when Image is empty, got %q", reason)
+	}
+	if mv.lastCalled != "" {
+		t.Fatalf("verifier should not have been called, but lastCalled = %q", mv.lastCalled)
+	}
+}
+
+func TestImageTrust_AllowsAllBodiesFalseWhenVerifierPresent(t *testing.T) {
+	// Even with every flag permissive, a non-nil imageTrustVerifier must cause
+	// allowsAllContainerCreateBodies to return false so the body is inspected.
+	mv := &mockImageVerifier{}
+	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
+	policy := containerCreatePolicy{
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier:     mv,
+		imageTrustCfg:          cfg,
+	}
+	if policy.allowsAllContainerCreateBodies() {
+		t.Fatal("allowsAllContainerCreateBodies must be false when imageTrustVerifier is set")
+	}
+}
+
+// containsSubstring is a test helper to avoid importing strings in addition to bytes.
+func containsSubstring(s, sub string) bool {
+	return len(s) >= len(sub) && func() bool {
+		for i := 0; i <= len(s)-len(sub); i++ {
+			if s[i:i+len(sub)] == sub {
+				return true
+			}
+		}
+		return false
+	}()
 }

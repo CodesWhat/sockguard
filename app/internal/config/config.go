@@ -130,6 +130,39 @@ type ContainerCreateRequestBodyConfig struct {
 	DenyUnconfinedAppArmor     bool     `mapstructure:"deny_unconfined_apparmor"`
 	AllowHostUserNS            bool     `mapstructure:"allow_host_userns"`
 	RequiredLabels             []string `mapstructure:"required_labels"`
+	ImageTrust                 ImageTrustConfig `mapstructure:"image_trust"`
+}
+
+// ImageTrustConfig configures cosign signature verification for images
+// referenced in POST /containers/create.
+type ImageTrustConfig struct {
+	// Mode controls enforcement: off | warn | enforce. Default: off.
+	Mode string `mapstructure:"mode"`
+	// AllowedSigningKeys lists PEM-encoded public keys that are trusted to
+	// sign images. Keyed verification is attempted before keyless.
+	AllowedSigningKeys []SigningKeyConfig `mapstructure:"allowed_signing_keys"`
+	// AllowedKeyless lists Fulcio-issued OIDC identity patterns. Each entry
+	// must specify an exact issuer URL and a regex against the cert's SAN.
+	AllowedKeyless []KeylessConfig `mapstructure:"allowed_keyless"`
+	// RequireRekorInclusion requires a Rekor tlog inclusion proof for keyless
+	// verification. Default true.
+	RequireRekorInclusion bool `mapstructure:"require_rekor_inclusion"`
+	// VerifyTimeout overrides the default 10s per-verification timeout.
+	VerifyTimeout string `mapstructure:"verify_timeout"`
+}
+
+// SigningKeyConfig is one entry in image_trust.allowed_signing_keys.
+type SigningKeyConfig struct {
+	// PEM is the PEM-encoded public key (ECDSA, RSA, or ed25519).
+	PEM string `mapstructure:"pem"`
+}
+
+// KeylessConfig is one entry in image_trust.allowed_keyless.
+type KeylessConfig struct {
+	// Issuer is the exact OIDC issuer URL to match against the Fulcio cert.
+	Issuer string `mapstructure:"issuer"`
+	// SubjectPattern is a Go regexp matched against the cert's SAN.
+	SubjectPattern string `mapstructure:"subject_pattern"`
 }
 
 // AllowedDeviceRequest is a single entry in the allowed_device_requests allowlist.
