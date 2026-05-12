@@ -30,11 +30,13 @@ type Registry struct {
 
 	startedAt time.Time
 
-	mu       sync.Mutex
-	requests map[requestLabels]uint64
-	denies   map[denyLabels]uint64
-	duration map[durationLabels]*histogram
-	upstream map[upstreamWatchdogLabels]uint64
+	mu        sync.Mutex
+	requests  map[requestLabels]uint64
+	denies    map[denyLabels]uint64
+	duration  map[durationLabels]*histogram
+	upstream  map[upstreamWatchdogLabels]uint64
+	throttles map[throttleLabels]uint64
+	inflight  map[string]int64 // profile → current inflight count
 }
 
 type requestLabels struct {
@@ -63,6 +65,11 @@ type upstreamWatchdogLabels struct {
 	result string
 }
 
+type throttleLabels struct {
+	reason  string
+	profile string
+}
+
 type histogram struct {
 	buckets []uint64
 	count   uint64
@@ -77,7 +84,30 @@ func NewRegistry() *Registry {
 		denies:    make(map[denyLabels]uint64),
 		duration:  make(map[durationLabels]*histogram),
 		upstream:  make(map[upstreamWatchdogLabels]uint64),
+		throttles: make(map[throttleLabels]uint64),
+		inflight:  make(map[string]int64),
 	}
+}
+
+// ObserveThrottle increments the throttle counter for the given profile and
+// reason. This always fires — audit-log sampling is handled by the caller.
+func (r *Registry) ObserveThrottle(profile, reason string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.throttles[throttleLabels{reason: reason, profile: profile}]++
+	r.mu.Unlock()
+}
+
+// SetInflight updates the current in-flight count gauge for a profile.
+func (r *Registry) SetInflight(profile string, count int64) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.inflight[profile] = count
+	r.mu.Unlock()
 }
 
 // Middleware records one metrics observation for each completed HTTP request.
@@ -197,6 +227,8 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	denies := cloneMap(r.denies)
 	durations := cloneHistograms(r.duration)
 	upstream := cloneMap(r.upstream)
+	throttles := cloneMap(r.throttles)
+	inflight := cloneInflight(r.inflight)
 	active := r.activeRequests.Load()
 	upstreamKnown := r.upstreamKnown.Load()
 	upstreamUp := r.upstreamUp.Load()
@@ -256,6 +288,50 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	for _, key := range sortedUpstreamWatchdogLabels(upstream) {
 		fmt.Fprintf(w, "sockguard_upstream_watchdog_checks_total{result=%s} %d\n", labelValue(key.result), upstream[key])
 	}
+
+	fmt.Fprintln(w, "# HELP sockguard_throttle_total Total requests denied by rate limiting or concurrency caps.")
+	fmt.Fprintln(w, "# TYPE sockguard_throttle_total counter")
+	for _, key := range sortedThrottleLabels(throttles) {
+		fmt.Fprintf(w, "sockguard_throttle_total{profile=%s,reason=%s} %d\n",
+			labelValue(key.profile), labelValue(key.reason), throttles[key])
+	}
+
+	fmt.Fprintln(w, "# HELP sockguard_inflight_requests Current number of in-flight requests per profile under a concurrency cap.")
+	fmt.Fprintln(w, "# TYPE sockguard_inflight_requests gauge")
+	for _, profile := range sortedInflightKeys(inflight) {
+		fmt.Fprintf(w, "sockguard_inflight_requests{profile=%s} %d\n",
+			labelValue(profile), inflight[profile])
+	}
+}
+
+func cloneInflight(src map[string]int64) map[string]int64 {
+	dst := make(map[string]int64, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func sortedThrottleLabels(values map[throttleLabels]uint64) []throttleLabels {
+	keys := make([]throttleLabels, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		ki := keys[i].profile + "\x00" + keys[i].reason
+		kj := keys[j].profile + "\x00" + keys[j].reason
+		return ki < kj
+	})
+	return keys
+}
+
+func sortedInflightKeys(values map[string]int64) []string {
+	keys := make([]string, 0, len(values))
+	for k := range values {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func cloneMap[K comparable](src map[K]uint64) map[K]uint64 {
