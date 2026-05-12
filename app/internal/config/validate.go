@@ -373,6 +373,26 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 		)
 	}
 
+	for i, entry := range cfg.ContainerCreate.AllowedDeviceRequests {
+		if strings.TrimSpace(entry.Driver) == "" {
+			errs = append(errs,
+				fmt.Sprintf("%s.container_create.allowed_device_requests[%d].driver is required", prefix, i),
+			)
+		}
+		for j, capSet := range entry.AllowedCapabilities {
+			if len(capSet) == 0 {
+				errs = append(errs,
+					fmt.Sprintf("%s.container_create.allowed_device_requests[%d].allowed_capabilities[%d] must be a non-empty capability set", prefix, i, j),
+				)
+			}
+		}
+		if entry.MaxCount != nil && *entry.MaxCount < -1 {
+			errs = append(errs,
+				fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount),
+			)
+		}
+	}
+
 	for i, command := range cfg.Exec.AllowedCommands {
 		if validExecCommand(command) {
 			continue

@@ -797,3 +797,199 @@ func TestNewContainerCreatePolicyNormalizesDeviceCgroupRules(t *testing.T) {
 		}
 	}
 }
+
+// TestContainerCreatePolicyDenyDeviceRequestsReason exercises the full
+// end-to-end path from ContainerCreateOptions → inspect() → deny reason for
+// the allowed_device_requests structured allowlist.
+func TestContainerCreatePolicyDenyDeviceRequestsReason(t *testing.T) {
+	maxOne := 1
+	maxAllDevices := -1
+
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		{
+			// (a) default-deny: neither flag nor allowlist set
+			name:       "default deny when no flag and no allowlist",
+			opts:       ContainerCreateOptions{},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: "container create denied: device requests are not allowed",
+		},
+		{
+			// (b) allow_device_requests: true overrides allowlist entirely
+			name: "allow_device_requests true bypasses allowlist",
+			opts: ContainerCreateOptions{AllowDeviceRequests: true},
+			body: `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu","utility"]]}]}}`,
+		},
+		{
+			// (c) allowlist match: driver + capability subset → allowed
+			name: "single entry match allowed",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu", "compute"}}},
+				},
+			},
+			body: `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1,"Capabilities":[["gpu"]]}]}}`,
+		},
+		{
+			// (d) different driver → denied
+			name: "different driver denied",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"amd","Count":1,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: `container create denied: device request 0 (driver "amd") is not permitted by the allowlist`,
+		},
+		{
+			// (e) capability not in any allowlisted set → denied
+			name: "capability not in allowlisted sets denied",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1,"Capabilities":[["gpu","compute"]]}]}}`,
+			wantReason: `container create denied: device request 0 (driver "nvidia") is not permitted by the allowlist`,
+		},
+		{
+			// (f) multiple requests, second violates → denied
+			name: "multiple requests one violates",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1,"Capabilities":[["gpu"]]},{"Driver":"amd","Count":1,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: `container create denied: device request 1 (driver "amd") is not permitted by the allowlist`,
+		},
+		{
+			// (g) max_count enforcement: within cap → allowed
+			name: "max_count within cap allowed",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}, MaxCount: &maxOne},
+				},
+			},
+			body: `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1,"Capabilities":[["gpu"]]}]}}`,
+		},
+		{
+			// (h) max_count enforcement: exceeds cap → denied
+			name: "max_count exceeded denied",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}, MaxCount: &maxOne},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":4,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: `container create denied: device request 0 (driver "nvidia") is not permitted by the allowlist`,
+		},
+		{
+			// (i) max_count -1 allows Count=-1 (all devices)
+			name: "max_count -1 allows all devices",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}, MaxCount: &maxAllDevices},
+				},
+			},
+			body: `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu"]]}]}}`,
+		},
+		{
+			// (j) count -1 (all) denied when max_count is a positive cap
+			name: "count -1 denied when max_count is positive",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}, MaxCount: &maxOne},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":-1,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: `container create denied: device request 0 (driver "nvidia") is not permitted by the allowlist`,
+		},
+		{
+			// (k) malformed request: empty Driver → denied
+			name: "empty driver denied",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"","Count":1,"Capabilities":[["gpu"]]}]}}`,
+			wantReason: "container create denied: device request 0 has an empty Driver field",
+		},
+		{
+			// (l) driver case-insensitive matching
+			name: "driver match is case insensitive",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "NVIDIA", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body: `{"HostConfig":{"DeviceRequests":[{"Driver":"Nvidia","Count":1,"Capabilities":[["gpu"]]}]}}`,
+		},
+		{
+			// (m) no DeviceRequests in body → always allowed regardless of policy
+			name: "no device requests always allowed",
+			opts: ContainerCreateOptions{},
+			body: `{"HostConfig":{}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestNewContainerCreatePolicyNormalizesDeviceRequests verifies that allowlist
+// entries are canonicalized (driver lowercased, caps sorted/deduped) and that
+// invalid entries (empty driver) are skipped.
+func TestNewContainerCreatePolicyNormalizesDeviceRequests(t *testing.T) {
+	maxTwo := 2
+	policy := newContainerCreatePolicy(ContainerCreateOptions{
+		AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+			{Driver: "NVIDIA", AllowedCapabilities: [][]string{{"compute", "gpu", "gpu"}}, MaxCount: &maxTwo},
+			{Driver: "", AllowedCapabilities: [][]string{{"gpu"}}},                // invalid: empty driver, skipped
+			{Driver: "  amd  ", AllowedCapabilities: [][]string{{"gpu", "video"}}}, // whitespace stripped
+		},
+	})
+
+	if len(policy.allowedDeviceRequests) != 2 {
+		t.Fatalf("allowedDeviceRequests len = %d, want 2 (got %v)", len(policy.allowedDeviceRequests), policy.allowedDeviceRequests)
+	}
+
+	// First entry: driver lowercased, caps deduped and sorted
+	e0 := policy.allowedDeviceRequests[0]
+	if e0.driver != "nvidia" {
+		t.Fatalf("entry[0].driver = %q, want %q", e0.driver, "nvidia")
+	}
+	wantCaps0 := []string{"compute", "gpu"} // sorted, deduped
+	if len(e0.allowedCapabilities) != 1 || len(e0.allowedCapabilities[0]) != len(wantCaps0) {
+		t.Fatalf("entry[0].allowedCapabilities = %v, want [%v]", e0.allowedCapabilities, wantCaps0)
+	}
+	for i, c := range wantCaps0 {
+		if e0.allowedCapabilities[0][i] != c {
+			t.Fatalf("entry[0].allowedCapabilities[0][%d] = %q, want %q", i, e0.allowedCapabilities[0][i], c)
+		}
+	}
+	if e0.maxCount == nil || *e0.maxCount != maxTwo {
+		t.Fatalf("entry[0].maxCount = %v, want %d", e0.maxCount, maxTwo)
+	}
+
+	// Second entry: trimmed driver
+	e1 := policy.allowedDeviceRequests[1]
+	if e1.driver != "amd" {
+		t.Fatalf("entry[1].driver = %q, want %q", e1.driver, "amd")
+	}
+}

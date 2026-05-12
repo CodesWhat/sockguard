@@ -35,6 +35,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		AllowAllDevices:            c.AllowAllDevices,
 		AllowedDevices:             c.AllowedDevices,
 		AllowDeviceRequests:         c.AllowDeviceRequests,
+		AllowedDeviceRequests:       toFilterAllowedDeviceRequests(c.AllowedDeviceRequests),
 		AllowDeviceCgroupRules:      c.AllowDeviceCgroupRules,
 		AllowedDeviceCgroupRules:    c.AllowedDeviceCgroupRules,
 		RequireNoNewPrivileges:     c.RequireNoNewPrivileges,
@@ -194,4 +195,23 @@ func (c PluginRequestBodyConfig) ToFilterOptions() filter.PluginOptions {
 		AllowedRegistries:     c.AllowedRegistries,
 		AllowedSetEnvPrefixes: c.AllowedSetEnvPrefixes,
 	}
+}
+
+// toFilterAllowedDeviceRequests converts config AllowedDeviceRequest slices to
+// the filter package's AllowedDeviceRequestEntry type. Returns nil when the
+// input is empty so reflect.DeepEqual comparisons against zero-value structs
+// remain correct.
+func toFilterAllowedDeviceRequests(entries []AllowedDeviceRequest) []filter.AllowedDeviceRequestEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]filter.AllowedDeviceRequestEntry, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, filter.AllowedDeviceRequestEntry{
+			Driver:              e.Driver,
+			AllowedCapabilities: e.AllowedCapabilities,
+			MaxCount:            e.MaxCount,
+		})
+	}
+	return out
 }

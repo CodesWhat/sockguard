@@ -110,9 +110,10 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowedBindMounts      []string `mapstructure:"allowed_bind_mounts"`
 	AllowAllDevices        bool     `mapstructure:"allow_all_devices"`
 	AllowedDevices         []string `mapstructure:"allowed_devices"`
-	AllowDeviceRequests         bool     `mapstructure:"allow_device_requests"`
-	AllowDeviceCgroupRules      bool     `mapstructure:"allow_device_cgroup_rules"`
-	AllowedDeviceCgroupRules    []string `mapstructure:"allowed_device_cgroup_rules"`
+	AllowDeviceRequests         bool                   `mapstructure:"allow_device_requests"`
+	AllowedDeviceRequests       []AllowedDeviceRequest `mapstructure:"allowed_device_requests"`
+	AllowDeviceCgroupRules      bool                   `mapstructure:"allow_device_cgroup_rules"`
+	AllowedDeviceCgroupRules    []string               `mapstructure:"allowed_device_cgroup_rules"`
 
 	RequireNoNewPrivileges     bool     `mapstructure:"require_no_new_privileges"`
 	RequireNonRootUser         bool     `mapstructure:"require_non_root_user"`
@@ -129,6 +130,18 @@ type ContainerCreateRequestBodyConfig struct {
 	DenyUnconfinedAppArmor     bool     `mapstructure:"deny_unconfined_apparmor"`
 	AllowHostUserNS            bool     `mapstructure:"allow_host_userns"`
 	RequiredLabels             []string `mapstructure:"required_labels"`
+}
+
+// AllowedDeviceRequest is a single entry in the allowed_device_requests allowlist.
+// Driver is required and must exactly match the request's Driver field (after
+// lowercasing). AllowedCapabilities is a list of capability-sets; the request's
+// capability sets must each be a subset of at least one allowlisted set.
+// MaxCount, when non-nil, bounds the request Count; -1 means "all" and is only
+// permitted when MaxCount is also -1.
+type AllowedDeviceRequest struct {
+	Driver              string     `mapstructure:"driver"`
+	AllowedCapabilities [][]string `mapstructure:"allowed_capabilities"`
+	MaxCount            *int       `mapstructure:"max_count"`
 }
 
 // ExecRequestBodyConfig configures body inspection for exec creation/start.
