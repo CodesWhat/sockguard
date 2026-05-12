@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	requestfilter "github.com/codeswhat/sockguard/internal/filter"
 )
 
 type readFailAfterCloser struct {
@@ -191,7 +193,7 @@ func TestFilterRejectsOversizedResponse(t *testing.T) {
 		RedactContainerEnv: true,
 	})
 
-	body := `{"Config":{"Env":["` + strings.Repeat("A", maxResponseBodyBytes) + `"]}}`
+	body := `{"Config":{"Env":["` + strings.Repeat("A", requestfilter.MaxResponseBodyBytes) + `"]}}`
 	resp := newResponseForTest(t, http.MethodGet, "/v1.53/containers/abc123/json", body)
 
 	err := filter.ModifyResponse(resp)
@@ -211,7 +213,7 @@ func TestFilterRejectsOversizedSwarmInspectResponse(t *testing.T) {
 		RedactSensitiveData: true,
 	})
 
-	body := `{"JoinTokens":{"Worker":"` + strings.Repeat("A", maxResponseBodyBytes) + `"}}`
+	body := `{"JoinTokens":{"Worker":"` + strings.Repeat("A", requestfilter.MaxResponseBodyBytes) + `"}}`
 	resp := newResponseForTest(t, http.MethodGet, "/v1.53/swarm", body)
 
 	err := filter.ModifyResponse(resp)

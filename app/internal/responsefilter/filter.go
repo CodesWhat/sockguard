@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	maxResponseBodyBytes = 8 << 20
-	redactedValue        = "<redacted>"
+	redactedValue = "<redacted>"
 )
 
 // ErrResponseRejected indicates Sockguard intentionally rejected an upstream
@@ -863,13 +862,13 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 
 	defer func() { _ = resp.Body.Close() }()
 
-	reader := &io.LimitedReader{R: resp.Body, N: maxResponseBodyBytes + 1}
+	reader := &io.LimitedReader{R: resp.Body, N: requestfilter.MaxResponseBodyBytes + 1}
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(body)) > maxResponseBodyBytes {
-		return nil, fmt.Errorf("response body exceeds %d bytes", maxResponseBodyBytes)
+	if int64(len(body)) > requestfilter.MaxResponseBodyBytes {
+		return nil, fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes)
 	}
 	return body, nil
 }
