@@ -12,7 +12,7 @@ This is a monorepo with three workspaces:
 
 - **`app/`** — Go proxy (the core binary). Built with Go 1.26, uses stdlib `net/http/httputil.ReverseProxy` for proxying, Cobra+Viper for CLI/config.
 - **`website/`** — Next.js landing page at getsockguard.com. Hosts the benchmarks + feature pages.
-- **`docs/`** — Nextra documentation site served under `getsockguard.com/docs` (the `docs/` Next.js app is built with `basePath: "/docs"`, then `website/package.json`'s `prebuild` script copies its static export into `website/public/docs/` so the marketing site serves it as a subpath).
+- **`docs/`** — Fumadocs documentation site served under `getsockguard.com/docs` (the `docs/` Next.js app is built with `basePath: "/docs"`, then `website/package.json`'s `prebuild` script copies its static export into `website/public/docs/` so the marketing site serves it as a subpath).
 
 Turborepo orchestrates the TypeScript workspaces. The Go app is built independently.
 
@@ -108,6 +108,6 @@ Runs piped (sequential, fail-fast): go-lint → go-test → biome → build.
 - Go proxy core uses **zero external dependencies** beyond Cobra+Viper. Filtering, proxying, logging all use stdlib.
 - Container image is **Wolfi-based** (Chainguard) for near-zero CVEs and built-in SBOM/provenance.
 - Biome is a direct devDependency in the root workspace for TS/JS linting.
-- `.planning/` is gitignored — contains internal vision, roadmap, competitive analysis, threat model.
+- `.planning/` is gitignored — local-only working notes; never reference its contents in committed files.
 - CHANGELOG and README updates should be atomic with each logical change.
-- **Roadmap lives in two places only:** `.planning/VISION.md` (gitignored, canonical detail) and `README.md` (committed, summary table).
+- **Roadmap summary lives in `README.md`** (committed). Local-only longer-form notes live under `.planning/` and stay gitignored.

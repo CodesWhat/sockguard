@@ -60,7 +60,7 @@ out/
 *.tsbuildinfo
 
 # Generated at build time: docs/out/ is copied into website/public/docs/
-# by website/package.json's `build:docs-content` script so the Nextra
+# by website/package.json's `build:docs-content` script so the Fumadocs
 # pages land on getsockguard.com/docs/... during the website export.
 # Never commit the copy — it's always a build artifact.
 website/public/docs/

@@ -528,7 +528,7 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
   <img src="https://img.shields.io/badge/Cosign-FFC107?logo=sigstore&logoColor=black" alt="Cosign">
   <br>
   <img src="https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=white" alt="Next.js">
-  <img src="https://img.shields.io/badge/Nextra-000000?logo=nextdotjs&logoColor=white" alt="Nextra">
+  <img src="https://img.shields.io/badge/Fumadocs-000000?logo=nextdotjs&logoColor=white" alt="Fumadocs">
   <img src="https://img.shields.io/badge/Tailwind-06B6D4?logo=tailwindcss&logoColor=white" alt="Tailwind">
   <img src="https://img.shields.io/badge/Turborepo-EF4444?logo=turborepo&logoColor=white" alt="Turborepo">
   <img src="https://img.shields.io/badge/Biome-60A5FA?logo=biome&logoColor=white" alt="Biome">
