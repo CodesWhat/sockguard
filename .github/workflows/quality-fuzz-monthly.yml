@@ -123,6 +123,20 @@ jobs:
           retention-days: 180
           if-no-files-found: ignore
 
+      - name: Upload fuzz forensics on failure or cancel
+        # Per-worker memory/goroutine/FD samples written by
+        # startFuzzForensicsSampler (currently armed for
+        # FuzzHijackHeadersAndBody). The sampler appends to a file every
+        # 60s so even when the hosted runner OOMs mid-step we still get
+        # the growth curve up to the moment of death.
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: fuzz-forensics-monthly-${{ matrix.fuzzer.name }}-${{ github.run_id }}
+          path: app/internal/**/forensics/
+          retention-days: 180
+          if-no-files-found: ignore
+
       - name: Summarize
         if: always()
         env:
