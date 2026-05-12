@@ -166,12 +166,12 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		requireMemoryLimit:         opts.RequireMemoryLimit,
 		requireCPULimit:            opts.RequireCPULimit,
 		requirePidsLimit:           opts.RequirePidsLimit,
-		allowedSeccompProfiles:     normalizeProfileList(opts.AllowedSeccompProfiles),
+		allowedSeccompProfiles:     normalizeStringList(opts.AllowedSeccompProfiles),
 		denyUnconfinedSeccomp:      opts.DenyUnconfinedSeccomp,
-		allowedAppArmorProfiles:    normalizeProfileList(opts.AllowedAppArmorProfiles),
+		allowedAppArmorProfiles:    normalizeStringList(opts.AllowedAppArmorProfiles),
 		denyUnconfinedAppArmor:     opts.DenyUnconfinedAppArmor,
 		allowHostUserNS:            opts.AllowHostUserNS,
-		requiredLabels:             normalizeLabelKeyList(opts.RequiredLabels),
+		requiredLabels:             normalizeStringList(opts.RequiredLabels),
 	}
 }
 
@@ -761,19 +761,7 @@ func normalizeCapabilityList(values []string) []string {
 	return allowed
 }
 
-func normalizeProfileList(values []string) []string {
-	allowed := make([]string, 0, len(values))
-	for _, value := range values {
-		normalized := strings.TrimSpace(value)
-		if normalized == "" || slices.Contains(allowed, normalized) {
-			continue
-		}
-		allowed = append(allowed, normalized)
-	}
-	return allowed
-}
-
-func normalizeLabelKeyList(values []string) []string {
+func normalizeStringList(values []string) []string {
 	allowed := make([]string, 0, len(values))
 	for _, value := range values {
 		normalized := strings.TrimSpace(value)
