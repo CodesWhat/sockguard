@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -20,6 +21,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/proxy"
+	"github.com/codeswhat/sockguard/internal/testhelp"
 )
 
 func TestFullProxyChainHTTPIntegration(t *testing.T) {
@@ -33,7 +35,7 @@ func TestFullProxyChainHTTPIntegration(t *testing.T) {
 		_, _ = w.Write([]byte("upstream-ok"))
 	}))
 
-	handler, logBuf := newFullProxyChainHandler(t, socketPath, []config.RuleConfig{
+	handler, _, collector := newFullProxyChainHandler(t, socketPath, []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
 	})
@@ -68,21 +70,25 @@ func TestFullProxyChainHTTPIntegration(t *testing.T) {
 		t.Fatal("expected upstream request")
 	}
 
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, `"decision":"allow"`) {
-		t.Fatalf("expected allow decision in log output, got: %s", logOutput)
+	// Assert on structured log: expect a "request" access-log record with decision=allow and normalized_path=/_ping.
+	requestRecs := collector.FindMessage("request")
+	if len(requestRecs) == 0 {
+		t.Fatalf("no 'request' access-log record; all records: %#v", collector.Records())
 	}
-	if !strings.Contains(logOutput, `"normalized_path":"/_ping"`) {
-		t.Fatalf("expected normalized path in log output, got: %s", logOutput)
+	if got, _ := requestRecs[0].Attrs["decision"].(string); got != "allow" {
+		t.Fatalf("access log decision = %q, want %q", got, "allow")
+	}
+	if got, _ := requestRecs[0].Attrs["normalized_path"].(string); got != "/_ping" {
+		t.Fatalf("access log normalized_path = %q, want %q", got, "/_ping")
 	}
 }
 
 func TestFullProxyChainErrorHandling_SocketDown(t *testing.T) {
 	socketPath := shortSocketPath(t, "chain-socket-down")
 
-	handler, logBuf := newBuildServeChainHandler(t, socketPath)
+	handler, _, collector := newBuildServeChainHandler(t, socketPath)
 
-	assertFullProxyChainUpstreamError(t, handler, logBuf, socketPath, "")
+	assertFullProxyChainUpstreamError(t, handler, collector, socketPath, "")
 }
 
 func TestFullProxyChainErrorHandling_PermissionDenied(t *testing.T) {
@@ -112,9 +118,9 @@ func TestFullProxyChainErrorHandling_PermissionDenied(t *testing.T) {
 		t.Skipf("permission-denied socket setup yielded %v, want permission denied", err)
 	}
 
-	handler, logBuf := newBuildServeChainHandler(t, socketPath)
+	handler, _, collector := newBuildServeChainHandler(t, socketPath)
 
-	assertFullProxyChainUpstreamError(t, handler, logBuf, socketPath, "permission denied")
+	assertFullProxyChainUpstreamError(t, handler, collector, socketPath, "permission denied")
 }
 
 func TestFullProxyChainHijackIntegration(t *testing.T) {
@@ -196,7 +202,7 @@ func TestFullProxyChainHijackIntegration(t *testing.T) {
 		}
 	}()
 
-	handler, logBuf := newFullProxyChainHandler(t, socketPath, []config.RuleConfig{
+	handler, _, hijackCollector := newFullProxyChainHandler(t, socketPath, []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/attach"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
 	})
@@ -277,18 +283,22 @@ func TestFullProxyChainHijackIntegration(t *testing.T) {
 		t.Fatal("expected upstream hijack request")
 	}
 
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, `"decision":"allow"`) {
-		t.Fatalf("expected allow decision in log output, got: %s", logOutput)
+	// Assert on structured log: expect a "request" access-log record with decision=allow and normalized_path=/containers/abc/attach.
+	hijackRecs := hijackCollector.FindMessage("request")
+	if len(hijackRecs) == 0 {
+		t.Fatalf("no 'request' access-log record; all records: %#v", hijackCollector.Records())
 	}
-	if !strings.Contains(logOutput, `"normalized_path":"/containers/abc/attach"`) {
-		t.Fatalf("expected normalized path in log output, got: %s", logOutput)
+	if got, _ := hijackRecs[0].Attrs["decision"].(string); got != "allow" {
+		t.Fatalf("access log decision = %q, want %q", got, "allow")
+	}
+	if got, _ := hijackRecs[0].Attrs["normalized_path"].(string); got != "/containers/abc/attach" {
+		t.Fatalf("access log normalized_path = %q, want %q", got, "/containers/abc/attach")
 	}
 }
 
 func TestFullProxyChainHijackDenied(t *testing.T) {
 	socketPath := shortSocketPath(t, "chain-deny")
-	handler, logBuf := newFullProxyChainHandler(t, socketPath, []config.RuleConfig{
+	handler, _, collector := newFullProxyChainHandler(t, socketPath, []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/_ping"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
 	})
@@ -318,12 +328,13 @@ func TestFullProxyChainHijackDenied(t *testing.T) {
 
 	waitForRequest()
 
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, `"msg":"request_denied"`) {
-		t.Fatalf("expected request_denied log event, got: %s", logOutput)
+	// Assert on structured log: expect a "request_denied" record with normalized_path attr.
+	denied := collector.FindMessage("request_denied")
+	if len(denied) == 0 {
+		t.Fatalf("no request_denied log record; all records: %#v", collector.Records())
 	}
-	if !strings.Contains(logOutput, `"normalized_path":"/containers/abc/attach"`) {
-		t.Fatalf("expected normalized path in denied log, got: %s", logOutput)
+	if got, _ := denied[0].Attrs["normalized_path"].(string); got != "/containers/abc/attach" {
+		t.Fatalf("request_denied normalized_path = %q, want %q", denied[0].Attrs["normalized_path"], "/containers/abc/attach")
 	}
 }
 
@@ -622,7 +633,7 @@ func TestBuildServeHandlerExercisesOwnershipForNodesAndSwarm(t *testing.T) {
 	}
 }
 
-func newBuildServeChainHandler(t *testing.T, socketPath string) (http.Handler, *bytes.Buffer) {
+func newBuildServeChainHandler(t *testing.T, socketPath string) (http.Handler, *bytes.Buffer, *testhelp.CollectingHandler) {
 	t.Helper()
 
 	cfg := config.Defaults()
@@ -639,17 +650,18 @@ func newBuildServeChainHandler(t *testing.T, socketPath string) (http.Handler, *
 	}
 
 	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	collector := &testhelp.CollectingHandler{}
+	logger := testhelp.NewTeeLogger(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}), collector)
 
-	return buildServeHandler(&cfg, logger, nil, rules, newServeTestDeps()), &logBuf
+	return buildServeHandler(&cfg, logger, nil, rules, newServeTestDeps()), &logBuf, collector
 }
 
 func assertFullProxyChainUpstreamError(
 	t *testing.T,
 	handler http.Handler,
-	logBuf *bytes.Buffer,
+	collector *testhelp.CollectingHandler,
 	upstreamSocket string,
-	wantLogFragment string,
+	wantErrSubstring string,
 ) {
 	t.Helper()
 
@@ -700,27 +712,57 @@ func assertFullProxyChainUpstreamError(
 
 	waitForRequest()
 
-	logOutput := logBuf.String()
-	for _, fragment := range []string{
-		`"msg":"upstream request failed"`,
-		`"msg":"request"`,
-		`"request_id":"` + requestID + `"`,
-		`"client_request_id":"client-123"`,
-		`"normalized_path":"/_ping"`,
-		`"decision":"allow"`,
-		`"rule":0`,
-		`"status":502`,
-	} {
-		if !strings.Contains(logOutput, fragment) {
-			t.Fatalf("expected %q in log output, got: %s", fragment, logOutput)
-		}
+	// Assert on structured log records instead of parsing JSON text output.
+
+	// 1. "upstream request failed" record (from proxy error handler).
+	failedRecs := collector.FindMessage("upstream request failed")
+	if len(failedRecs) == 0 {
+		t.Fatalf("no 'upstream request failed' log record; all records: %#v", collector.Records())
 	}
-	if wantLogFragment != "" && !strings.Contains(strings.ToLower(logOutput), wantLogFragment) {
-		t.Fatalf("expected %q in log output, got: %s", wantLogFragment, logOutput)
+
+	// 2. "request" access-log record with correlation attrs.
+	requestRecs := collector.FindMessage("request")
+	if len(requestRecs) == 0 {
+		t.Fatalf("no 'request' access-log record; all records: %#v", collector.Records())
+	}
+	accessRec := requestRecs[0]
+	if got, _ := accessRec.Attrs["request_id"].(string); got != requestID {
+		t.Fatalf("access log request_id = %q, want %q", accessRec.Attrs["request_id"], requestID)
+	}
+	if got, _ := accessRec.Attrs["client_request_id"].(string); got != "client-123" {
+		t.Fatalf("access log client_request_id = %q, want %q", accessRec.Attrs["client_request_id"], "client-123")
+	}
+	if got, _ := accessRec.Attrs["normalized_path"].(string); got != "/_ping" {
+		t.Fatalf("access log normalized_path = %q, want %q", accessRec.Attrs["normalized_path"], "/_ping")
+	}
+	if got, _ := accessRec.Attrs["decision"].(string); got != "allow" {
+		t.Fatalf("access log decision = %q, want %q", accessRec.Attrs["decision"], "allow")
+	}
+	if got, _ := accessRec.Attrs["rule"].(int64); got != 0 {
+		t.Fatalf("access log rule = %v, want 0", accessRec.Attrs["rule"])
+	}
+	if got, _ := accessRec.Attrs["status"].(int64); got != 502 {
+		t.Fatalf("access log status = %v, want 502", accessRec.Attrs["status"])
+	}
+
+	// 3. If wantErrSubstring is non-empty, verify the upstream error record contains it.
+	if wantErrSubstring != "" {
+		var found bool
+		for _, r := range failedRecs {
+			if errVal, ok := r.Attrs["error"]; ok {
+				if strings.Contains(strings.ToLower(fmt.Sprintf("%v", errVal)), wantErrSubstring) {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("expected %q in upstream error; 'upstream request failed' records: %#v", wantErrSubstring, failedRecs)
+		}
 	}
 }
 
-func newFullProxyChainHandler(t *testing.T, socketPath string, rules []config.RuleConfig) (http.Handler, *bytes.Buffer) {
+func newFullProxyChainHandler(t *testing.T, socketPath string, rules []config.RuleConfig) (http.Handler, *bytes.Buffer, *testhelp.CollectingHandler) {
 	t.Helper()
 
 	compiled, err := compileRuleConfigsForTest(rules)
@@ -729,14 +771,15 @@ func newFullProxyChainHandler(t *testing.T, socketPath string, rules []config.Ru
 	}
 
 	var logBuf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	collector := &testhelp.CollectingHandler{}
+	logger := testhelp.NewTeeLogger(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}), collector)
 
 	var handler http.Handler = proxy.New(socketPath, logger)
 	handler = proxy.HijackHandler(socketPath, logger, handler)
 	handler = filter.Middleware(compiled, logger)(handler)
 	handler = logging.AccessLogMiddleware(logger)(handler)
 
-	return handler, &logBuf
+	return handler, &logBuf, collector
 }
 
 func compileRuleConfigsForTest(rules []config.RuleConfig) ([]*filter.CompiledRule, error) {
