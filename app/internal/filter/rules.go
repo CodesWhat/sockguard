@@ -464,6 +464,15 @@ func literalPrefixForPattern(pattern string) string {
 	return pattern
 }
 
+// GlobToRegexString converts a simple glob pattern to a regex string using the
+// same dialect used for path-rule matching. Callers that need to compile the
+// pattern into a *regexp.Regexp should wrap the result with "^" + ... + "$".
+// Exported so other packages (e.g. visibility) can reuse the same glob dialect
+// without importing a third-party glob library.
+func GlobToRegexString(pattern string) string {
+	return globToRegex(pattern)
+}
+
 // globToRegex converts a simple glob pattern to a regex string.
 // Supports * (single path segment) and ** (any path segments).
 // The sequence /** also matches the bare path without the trailing slash,

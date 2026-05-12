@@ -45,6 +45,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("response.redact_network_topology", defaults.Response.RedactNetworkTopology)
 	v.SetDefault("response.redact_sensitive_data", defaults.Response.RedactSensitiveData)
 	v.SetDefault("response.visible_resource_labels", defaults.Response.VisibleResourceLabels)
+	v.SetDefault("response.name_patterns", defaults.Response.NamePatterns)
+	v.SetDefault("response.image_patterns", defaults.Response.ImagePatterns)
 	v.SetDefault("request_body.container_create.allow_privileged", defaults.RequestBody.ContainerCreate.AllowPrivileged)
 	v.SetDefault("request_body.container_create.allow_host_network", defaults.RequestBody.ContainerCreate.AllowHostNetwork)
 	v.SetDefault("request_body.container_create.allow_host_pid", defaults.RequestBody.ContainerCreate.AllowHostPID)
