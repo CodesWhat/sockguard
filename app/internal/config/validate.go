@@ -5,9 +5,11 @@ import (
 	"net/netip"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/pkipin"
 )
 
@@ -363,6 +365,8 @@ func validateLimitsConfig(prefix string, cfg LimitsConfig) []string {
 		if cfg.Rate.Burst < 0 {
 			errs = append(errs, fmt.Sprintf("%s.burst must not be negative, got %v", ratePfx, cfg.Rate.Burst))
 		}
+
+		errs = append(errs, validateEndpointCosts(ratePfx+".endpoint_costs", cfg.Rate.EndpointCosts, effectiveBurst)...)
 	}
 
 	if cfg.Concurrency != nil {
@@ -371,6 +375,38 @@ func validateLimitsConfig(prefix string, cfg LimitsConfig) []string {
 		}
 	}
 
+	return errs
+}
+
+// validateEndpointCosts checks per-entry path/method/cost rules and confirms
+// each cost is <= effectiveBurst (a cost greater than burst is permanently
+// un-satisfiable, so we fail closed at startup rather than let the limiter
+// 429 forever).
+func validateEndpointCosts(prefix string, costs []EndpointCostConfig, effectiveBurst float64) []string {
+	var errs []string
+	for i, ec := range costs {
+		entryPfx := fmt.Sprintf("%s[%d]", prefix, i)
+		if strings.TrimSpace(ec.Path) == "" {
+			errs = append(errs, requiredFieldError(entryPfx+".path"))
+		} else {
+			regex := "^" + filter.GlobToRegexString(ec.Path) + "$"
+			if _, err := regexp.Compile(regex); err != nil {
+				errs = append(errs, fmt.Sprintf("%s.path %q is not a valid glob: %v", entryPfx, ec.Path, err))
+			}
+		}
+		if ec.Cost < 1 {
+			errs = append(errs, fmt.Sprintf("%s.cost must be >= 1, got %v", entryPfx, ec.Cost))
+		}
+		if effectiveBurst > 0 && ec.Cost > effectiveBurst {
+			errs = append(errs, fmt.Sprintf("%s.cost (%v) must not exceed effective burst (%v); requests would never succeed",
+				entryPfx, ec.Cost, effectiveBurst))
+		}
+		for j, m := range ec.Methods {
+			if strings.TrimSpace(m) == "" {
+				errs = append(errs, fmt.Sprintf("%s.methods[%d] must not be empty", entryPfx, j))
+			}
+		}
+	}
 	return errs
 }
 

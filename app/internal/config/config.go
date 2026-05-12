@@ -378,9 +378,29 @@ type LimitsConfig struct {
 // TokensPerSecond (smooth rate with no burst allowance). If Burst is less than
 // TokensPerSecond after the zero-default replacement it is invalid — startup
 // fails with a clear error.
+//
+// EndpointCosts optionally weights specific endpoints higher than the default
+// 1 token per request. Use it to apply tighter budgets to expensive Docker
+// operations such as build, image pull, and exec without lowering the base
+// rate for every endpoint.
 type RateLimitConfig struct {
-	TokensPerSecond float64 `mapstructure:"tokens_per_second"`
-	Burst           float64 `mapstructure:"burst"`
+	TokensPerSecond float64              `mapstructure:"tokens_per_second"`
+	Burst           float64              `mapstructure:"burst"`
+	EndpointCosts   []EndpointCostConfig `mapstructure:"endpoint_costs"`
+}
+
+// EndpointCostConfig assigns a per-request token cost to endpoints matching
+// the given path glob (and optional HTTP method set).
+//
+// Path uses the same glob dialect as filter rules and is matched against the
+// normalized request path (Docker API version prefix stripped). Methods is
+// optional; an empty slice matches all methods. Cost must be >= 1 and may
+// not exceed the effective burst capacity. First match in declaration order
+// wins; unmatched requests cost 1 token.
+type EndpointCostConfig struct {
+	Path    string   `mapstructure:"path"`
+	Methods []string `mapstructure:"methods"`
+	Cost    float64  `mapstructure:"cost"`
 }
 
 // ConcurrencyConfig configures the per-client concurrent-request cap.

@@ -1116,3 +1116,72 @@ func TestNormalizeAllowedBindMount(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateEndpointCosts(t *testing.T) {
+	tests := []struct {
+		name           string
+		costs          []EndpointCostConfig
+		effectiveBurst float64
+		wantSubstr     string // substring expected in the first error; empty = no error
+	}{
+		{
+			name:           "valid: single rule under burst",
+			costs:          []EndpointCostConfig{{Path: "/build", Cost: 5}},
+			effectiveBurst: 10,
+		},
+		{
+			name:           "valid: method-scoped rule",
+			costs:          []EndpointCostConfig{{Path: "/containers/create", Methods: []string{"POST"}, Cost: 3}},
+			effectiveBurst: 10,
+		},
+		{
+			name:           "invalid: empty path",
+			costs:          []EndpointCostConfig{{Path: "", Cost: 2}},
+			effectiveBurst: 10,
+			wantSubstr:     "path is required",
+		},
+		{
+			name:           "invalid: cost below 1",
+			costs:          []EndpointCostConfig{{Path: "/build", Cost: 0}},
+			effectiveBurst: 10,
+			wantSubstr:     "cost must be >= 1",
+		},
+		{
+			name:           "invalid: cost exceeds burst",
+			costs:          []EndpointCostConfig{{Path: "/build", Cost: 50}},
+			effectiveBurst: 10,
+			wantSubstr:     "must not exceed effective burst",
+		},
+		{
+			name:           "invalid: empty method string",
+			costs:          []EndpointCostConfig{{Path: "/build", Methods: []string{""}, Cost: 2}},
+			effectiveBurst: 10,
+			wantSubstr:     "methods[0] must not be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateEndpointCosts("clients.profiles[0].limits.rate.endpoint_costs", tt.costs, tt.effectiveBurst)
+			if tt.wantSubstr == "" {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got: %v", errs)
+				}
+				return
+			}
+			if len(errs) == 0 {
+				t.Fatalf("expected error containing %q, got none", tt.wantSubstr)
+			}
+			found := false
+			for _, e := range errs {
+				if strings.Contains(e, tt.wantSubstr) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected error containing %q, got: %v", tt.wantSubstr, errs)
+			}
+		})
+	}
+}
