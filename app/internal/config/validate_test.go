@@ -1117,6 +1117,95 @@ func TestNormalizeAllowedBindMount(t *testing.T) {
 	}
 }
 
+func TestValidateGlobalConcurrency(t *testing.T) {
+	tests := []struct {
+		name       string
+		gc         *GlobalConcurrencyConfig
+		wantSubstr string // empty = expect no error
+	}{
+		{name: "nil ok", gc: nil},
+		{name: "positive ok", gc: &GlobalConcurrencyConfig{MaxInflight: 100}},
+		{
+			name:       "zero rejected",
+			gc:         &GlobalConcurrencyConfig{MaxInflight: 0},
+			wantSubstr: "clients.global_concurrency.max_inflight must be > 0",
+		},
+		{
+			name:       "negative rejected",
+			gc:         &GlobalConcurrencyConfig{MaxInflight: -1},
+			wantSubstr: "clients.global_concurrency.max_inflight must be > 0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Clients.GlobalConcurrency = tt.gc
+			err := Validate(&cfg)
+			if tt.wantSubstr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantSubstr)
+			}
+			if !strings.Contains(err.Error(), tt.wantSubstr) {
+				t.Fatalf("expected error containing %q, got: %v", tt.wantSubstr, err)
+			}
+		})
+	}
+}
+
+func TestValidateLimitsConfig_Priority(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        LimitsConfig
+		wantSubstr string // empty = expect no error
+	}{
+		{name: "empty priority defaults", cfg: LimitsConfig{}},
+		{name: "low ok", cfg: LimitsConfig{Priority: "low"}},
+		{name: "normal ok", cfg: LimitsConfig{Priority: "normal"}},
+		{name: "high ok", cfg: LimitsConfig{Priority: "high"}},
+		{name: "case insensitive", cfg: LimitsConfig{Priority: "HIGH"}},
+		{name: "whitespace trimmed", cfg: LimitsConfig{Priority: "  low  "}},
+		{
+			name:       "invalid value",
+			cfg:        LimitsConfig{Priority: "emergency"},
+			wantSubstr: "priority must be one of low|normal|high",
+		},
+		{
+			name:       "invalid value: medium",
+			cfg:        LimitsConfig{Priority: "medium"},
+			wantSubstr: `got "medium"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateLimitsConfig("clients.profiles[0].limits", tt.cfg)
+			if tt.wantSubstr == "" {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got: %v", errs)
+				}
+				return
+			}
+			if len(errs) == 0 {
+				t.Fatalf("expected error containing %q, got none", tt.wantSubstr)
+			}
+			found := false
+			for _, e := range errs {
+				if strings.Contains(e, tt.wantSubstr) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected error containing %q, got: %v", tt.wantSubstr, errs)
+			}
+		})
+	}
+}
+
 func TestValidateEndpointCosts(t *testing.T) {
 	tests := []struct {
 		name           string

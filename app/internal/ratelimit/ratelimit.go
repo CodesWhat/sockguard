@@ -208,8 +208,13 @@ type ThrottleReason string
 const (
 	// ReasonRateLimit is emitted when a token-bucket limit is exceeded.
 	ReasonRateLimit ThrottleReason = "rate_limit_exceeded"
-	// ReasonConcurrency is emitted when a concurrency cap is exceeded.
+	// ReasonConcurrency is emitted when a per-profile concurrency cap is exceeded.
 	ReasonConcurrency ThrottleReason = "concurrency_cap"
+	// ReasonPriorityFloor is emitted when the global priority-aware floor is
+	// exceeded — total inflight crossed this profile's priority share of the
+	// global concurrency cap. Distinguished from ReasonConcurrency so operators
+	// can tune the global cap and per-profile caps independently.
+	ReasonPriorityFloor ThrottleReason = "priority_floor"
 )
 
 // clientReasonKey is the deduplication key for audit-event sampling.

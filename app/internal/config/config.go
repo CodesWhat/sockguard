@@ -315,6 +315,20 @@ type ClientsConfig struct {
 	ClientCertificateProfiles []ClientCertificateProfileAssignmentConfig `mapstructure:"client_certificate_profiles"`
 	UnixPeerProfiles          []ClientUnixPeerProfileAssignmentConfig    `mapstructure:"unix_peer_profiles"`
 	Profiles                  []ClientProfileConfig                      `mapstructure:"profiles"`
+	// GlobalConcurrency configures a system-wide priority-aware concurrency
+	// gate shared across all profiles. Nil disables it.
+	GlobalConcurrency *GlobalConcurrencyConfig `mapstructure:"global_concurrency"`
+}
+
+// GlobalConcurrencyConfig configures the system-wide concurrency cap that
+// gates admission via per-profile priority shares (low=50%, normal=80%,
+// high=100% of MaxInflight). Profiles below their priority's threshold are
+// admitted; above it they receive 429 with reason `priority_floor`. The
+// per-profile concurrency cap still applies on top of this gate.
+type GlobalConcurrencyConfig struct {
+	// MaxInflight is the system-wide ceiling on simultaneous in-flight
+	// requests. Must be > 0.
+	MaxInflight int64 `mapstructure:"max_inflight"`
 }
 
 // ClientContainerLabelsConfig configures opt-in per-client ACLs loaded from
@@ -369,6 +383,11 @@ type LimitsConfig struct {
 	Rate *RateLimitConfig `mapstructure:"rate"`
 	// Concurrency configures the simultaneous-request cap. Omit to disable.
 	Concurrency *ConcurrencyConfig `mapstructure:"concurrency"`
+	// Priority is the profile's tier for the system-wide priority-aware
+	// fairness gate (see clients.global_concurrency). One of "low", "normal",
+	// or "high"; empty defaults to "normal". The field is honored only when
+	// clients.global_concurrency is configured.
+	Priority string `mapstructure:"priority"`
 }
 
 // RateLimitConfig configures a token-bucket rate limiter.

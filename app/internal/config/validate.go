@@ -201,6 +201,12 @@ func validateRequestBody(cfg *Config) []string {
 		errs = append(errs, validateClientProfile(i, profile, profilesByName)...)
 	}
 
+	if cfg.Clients.GlobalConcurrency != nil {
+		if cfg.Clients.GlobalConcurrency.MaxInflight <= 0 {
+			errs = append(errs, fmt.Sprintf("clients.global_concurrency.max_inflight must be > 0, got %d", cfg.Clients.GlobalConcurrency.MaxInflight))
+		}
+	}
+
 	if cfg.Clients.DefaultProfile != "" {
 		if _, ok := profilesByName[cfg.Clients.DefaultProfile]; !ok {
 			errs = append(errs, configuredMatchError("clients.default_profile", "client profile", cfg.Clients.DefaultProfile))
@@ -347,6 +353,15 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 
 func validateLimitsConfig(prefix string, cfg LimitsConfig) []string {
 	var errs []string
+
+	if cfg.Priority != "" {
+		switch strings.ToLower(strings.TrimSpace(cfg.Priority)) {
+		case "low", "normal", "high":
+			// ok
+		default:
+			errs = append(errs, fmt.Sprintf("%s.priority must be one of low|normal|high, got %q", prefix, cfg.Priority))
+		}
+	}
 
 	if cfg.Rate != nil {
 		ratePfx := prefix + ".rate"
