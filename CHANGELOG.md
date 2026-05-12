@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Default deny for `HostConfig.CapAdd`** when no allowlist is configured. Previous releases left `CapAdd` uninspected on the container-create body inspector. To keep the previous behavior set `request_body.container_create.allow_all_capabilities: true` explicitly, or list the capabilities your workloads need under `allowed_capabilities`.
 - **Default deny for `HostConfig.UsernsMode=host`**. Set `request_body.container_create.allow_host_userns: true` to keep `userns_mode: host` working.
+- Extracted the duplicated Unix-socket `*http.Client` construction from `internal/clientacl` and `internal/ownership` into a shared `internal/dockerclient` package. No user-facing behavior change; both packages now call `dockerclient.New(socketPath)` with consistent transport defaults (`MaxIdleConns=10`, `IdleConnTimeout=90s`, `DialTimeout=5s`, `ResponseHeaderTimeout=10s`).
 
 ## [0.5.1] - 2026-05-11
 

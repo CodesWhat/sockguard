@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/dockerclient"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
@@ -282,14 +283,11 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps aclDeps) func(ht
 }
 
 func newACLDeps(upstreamSocket string) aclDeps {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", upstreamSocket)
-		},
+	client, err := dockerclient.New(upstreamSocket)
+	if err != nil {
+		panic("dockerclient.New: " + err.Error())
 	}
-	resolver := upstreamResolver{
-		client: &http.Client{Transport: transport},
-	}
+	resolver := upstreamResolver{client: client}
 	cache := newClientCache(clientCacheTTL, clientCacheMaxSize, time.Now, resolver.resolveClient)
 	return aclDeps{
 		resolveClient: cache.Lookup,
