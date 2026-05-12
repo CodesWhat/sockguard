@@ -338,6 +338,38 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels)...)
 	errs = append(errs, validateRequestBodyConfig(prefix+".request_body", profile.RequestBody)...)
 	errs = append(errs, validateRuleConfigs(profile.Rules, prefix+".rules")...)
+	errs = append(errs, validateLimitsConfig(prefix+".limits", profile.Limits)...)
+
+	return errs
+}
+
+func validateLimitsConfig(prefix string, cfg LimitsConfig) []string {
+	var errs []string
+
+	if cfg.Rate != nil {
+		ratePfx := prefix + ".rate"
+		if cfg.Rate.TokensPerSecond <= 0 {
+			errs = append(errs, fmt.Sprintf("%s.tokens_per_second must be > 0, got %v", ratePfx, cfg.Rate.TokensPerSecond))
+		}
+		effectiveBurst := cfg.Rate.Burst
+		if effectiveBurst == 0 {
+			// Default: burst equals tokens_per_second.
+			effectiveBurst = cfg.Rate.TokensPerSecond
+		}
+		if effectiveBurst < cfg.Rate.TokensPerSecond {
+			errs = append(errs, fmt.Sprintf("%s.burst must be >= tokens_per_second (%v) or 0 (default), got %v",
+				ratePfx, cfg.Rate.TokensPerSecond, cfg.Rate.Burst))
+		}
+		if cfg.Rate.Burst < 0 {
+			errs = append(errs, fmt.Sprintf("%s.burst must not be negative, got %v", ratePfx, cfg.Rate.Burst))
+		}
+	}
+
+	if cfg.Concurrency != nil {
+		if cfg.Concurrency.MaxInflight <= 0 {
+			errs = append(errs, fmt.Sprintf("%s.concurrency.max_inflight must be > 0, got %d", prefix, cfg.Concurrency.MaxInflight))
+		}
+	}
 
 	return errs
 }

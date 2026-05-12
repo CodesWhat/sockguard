@@ -330,6 +330,122 @@ clients:
 
 - Hidden resources disappear from `GET /containers/json`, `/images/json`, `/networks`, `/volumes`, `/services`, `/tasks`, `/secrets`, `/configs`, `/nodes`, and `GET /events`, while hidden inspect/log-style targets such as `GET /services/*`, `GET /services/*/logs`, `GET /tasks/*`, `GET /tasks/*/logs`, `GET /secrets/*`, `GET /configs/*`, `GET /nodes/*`, and `GET /swarm` return `404` instead of exposing a policy-specific deny body.
 
+## Rate Limiting and Concurrency Caps
+
+Each named profile can carry a `limits` block that enforces two independent
+mechanisms. Both are per-profile and disabled by default — omitting `limits`
+entirely (or omitting either sub-block) preserves pre-v0.7.0 behavior.
+
+### Token-bucket rate limiting
+
+`limits.rate` enforces a maximum sustained request rate using a token bucket.
+The bucket refills continuously at `tokens_per_second`; its capacity is `burst`
+(peak burst size). When the bucket is empty a request is denied immediately with
+`429 Too Many Requests`, a JSON body containing `retry_after_seconds`, and a
+`Retry-After` header.
+
+- `tokens_per_second` (required): refill rate; must be `> 0`.
+- `burst` (optional, default `= tokens_per_second`): bucket capacity. Must be
+  `>= tokens_per_second` when explicitly set. Set to `0` to accept the default
+  (no burst allowance beyond one token per interval).
+
+```yaml
+clients:
+  profiles:
+    - name: interactive-operator
+      limits:
+        rate:
+          tokens_per_second: 8
+          burst: 16          # allow short bursts; sustain at 8 req/s
+      rules:
+        - match: { method: GET, path: "/containers/**" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+
+    - name: ci-agent
+      limits:
+        rate:
+          tokens_per_second: 100
+          burst: 200         # CI workflows issue large list calls at startup
+      rules:
+        - match: { method: "*", path: "/**" }
+          action: allow
+```
+
+**Guidance on starting values:**
+
+| Consumer type | Suggested `tokens_per_second` | Suggested `burst` | Rationale |
+|---|---|---|---|
+| Interactive operator | `8` | `16` | Human clicks; a burst allows rapid multi-request workflows |
+| Monitoring / metrics scraper | `4` | `8` | Periodic polls; low sustained rate is sufficient |
+| CI agent | `100` | `200` | Build pipelines issue large batches at startup |
+| Read-only dashboard | `20` | `40` | Page loads trigger a handful of list calls together |
+
+### Concurrency caps
+
+`limits.concurrency.max_inflight` caps the number of simultaneously in-flight
+requests per client. Once the cap is reached, additional requests are denied
+immediately with `429 Too Many Requests` and a `{"reason":"concurrency_cap"}`
+body (no `Retry-After`, since release timing depends on concurrent traffic).
+The cap is decremented when the response completes or the connection is
+hijacked/closed — a request that is denied as rate-limited or by policy never
+counts against the cap.
+
+```yaml
+clients:
+  profiles:
+    - name: streaming-client
+      limits:
+        concurrency:
+          max_inflight: 16   # allow up to 16 simultaneous streaming connections
+      rules:
+        - match: { method: GET, path: "/events" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+```
+
+### Combining both mechanisms
+
+Rate limiting and concurrency caps can coexist on the same profile. The rate
+check runs first; a request that passes the rate check but hits the concurrency
+cap is denied with a concurrency reason (not a rate reason). A request denied
+by either mechanism is never counted as in-flight.
+
+```yaml
+limits:
+  rate:
+    tokens_per_second: 50
+    burst: 100
+  concurrency:
+    max_inflight: 32
+```
+
+### Validation
+
+Sockguard fails at startup with a clear error if any of these invariants are
+violated (fail-closed, never silent-disable):
+
+- `limits.rate.tokens_per_second` must be `> 0`
+- `limits.rate.burst` must be `>= tokens_per_second` or `0` (default)
+- `limits.concurrency.max_inflight` must be `> 0`
+
+### Observability
+
+When Prometheus metrics are enabled (`metrics.enabled: true`), two additional
+series appear:
+
+- `sockguard_throttle_total{profile, reason}` — counter incremented on every
+  denial by this subsystem. `reason` is one of `rate_limit_exceeded` or
+  `concurrency_cap`.
+- `sockguard_inflight_requests{profile}` — gauge tracking the current in-flight
+  count for profiles that have `max_inflight` configured.
+
+Audit log events for throttle denials are sampled to the first occurrence of
+each `(client, reason)` pair per second to avoid log-volume blowout under load.
+The Prometheus counters are not sampled.
+
 ## Owner Label Isolation
 
 Setting `ownership.owner` turns on per-proxy resource ownership isolation. Sockguard will:

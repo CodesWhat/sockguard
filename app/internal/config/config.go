@@ -358,6 +358,36 @@ type ClientProfileConfig struct {
 	Response    ClientProfileResponseConfig `mapstructure:"response"`
 	RequestBody RequestBodyConfig           `mapstructure:"request_body"`
 	Rules       []RuleConfig                `mapstructure:"rules"`
+	Limits      LimitsConfig                `mapstructure:"limits"`
+}
+
+// LimitsConfig groups per-profile rate-limit and concurrency-cap settings.
+// Both sub-blocks are optional; omitting both disables all limiting for the
+// profile, preserving backward compatibility with pre-v0.7.0 configurations.
+type LimitsConfig struct {
+	// Rate configures token-bucket rate limiting. Omit to disable.
+	Rate *RateLimitConfig `mapstructure:"rate"`
+	// Concurrency configures the simultaneous-request cap. Omit to disable.
+	Concurrency *ConcurrencyConfig `mapstructure:"concurrency"`
+}
+
+// RateLimitConfig configures a token-bucket rate limiter.
+//
+// TokensPerSecond is the continuous refill rate. Burst is the bucket capacity
+// (maximum tokens that may accumulate). If Burst is zero it defaults to
+// TokensPerSecond (smooth rate with no burst allowance). If Burst is less than
+// TokensPerSecond after the zero-default replacement it is invalid — startup
+// fails with a clear error.
+type RateLimitConfig struct {
+	TokensPerSecond float64 `mapstructure:"tokens_per_second"`
+	Burst           float64 `mapstructure:"burst"`
+}
+
+// ConcurrencyConfig configures the per-client concurrent-request cap.
+type ConcurrencyConfig struct {
+	// MaxInflight is the maximum number of simultaneous in-flight requests
+	// allowed for a single client. Must be > 0.
+	MaxInflight int64 `mapstructure:"max_inflight"`
 }
 
 // ClientProfileResponseConfig configures per-profile visibility control on

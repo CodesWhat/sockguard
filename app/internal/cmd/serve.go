@@ -24,6 +24,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/metrics"
 	"github.com/codeswhat/sockguard/internal/ownership"
 	"github.com/codeswhat/sockguard/internal/proxy"
+	"github.com/codeswhat/sockguard/internal/ratelimit"
 	"github.com/codeswhat/sockguard/internal/responsefilter"
 	"github.com/codeswhat/sockguard/internal/version"
 	"github.com/codeswhat/sockguard/internal/visibility"
@@ -111,6 +112,9 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 
 	runtime := newServeRuntime(cfg, logger, deps)
 	handler := buildServeHandlerWithRuntime(cfg, logger, auditLogger, rules, deps, runtime)
+	if runtime.stopRateLimit != nil {
+		defer runtime.stopRateLimit()
+	}
 	listener, err := deps.createServeListener(cfg)
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
@@ -198,8 +202,9 @@ func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, audit
 }
 
 type serveRuntime struct {
-	metrics *metrics.Registry
-	health  *health.Monitor
+	metrics       *metrics.Registry
+	health        *health.Monitor
+	stopRateLimit func()
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) *serveRuntime {
@@ -276,6 +281,18 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, logger)),
 		namedServeHandlerLayer("withFilter", withFilter(cfg, logger, rules, clientProfiles)),
 	}
+
+	// Rate limiting and concurrency caps sit after client identity is resolved
+	// (clientacl) but before rule evaluation (filter). The sampler stop
+	// function is stored on the runtime so the caller can clean it up on
+	// server shutdown.
+	if rlMiddleware, stopSampler := buildRateLimitMiddleware(cfg, logger, runtime); rlMiddleware != nil {
+		if runtime != nil {
+			runtime.stopRateLimit = stopSampler
+		}
+		layers = append(layers, namedServeHandlerLayer("withRateLimit", rlMiddleware))
+	}
+
 	if cfg.Health.Enabled {
 		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, logger, deps, runtime)))
 	}
@@ -299,6 +316,59 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 		layers = append(layers, namedServeHandlerLayer("withAccessLog", withAccessLog(logger)))
 	}
 	return layers
+}
+
+// buildRateLimitMiddleware constructs the per-profile rate-limit+concurrency
+// middleware and its audit sampler. Returns nil, nil if no profile has limits
+// configured. The second return value is the stop function for the sampler's
+// background goroutine; callers must call it on shutdown to prevent goroutine
+// leaks in tests and graceful shutdowns.
+func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *serveRuntime) (func(http.Handler) http.Handler, func()) {
+	profiles := make(map[string]ratelimit.ProfileOptions)
+	for _, profile := range cfg.Clients.Profiles {
+		opts := configLimitsToRateLimitOptions(profile.Limits)
+		if opts.Rate != nil || opts.Concurrency != nil {
+			profiles[profile.Name] = opts
+		}
+	}
+	if len(profiles) == 0 {
+		return nil, nil
+	}
+
+	var reg *metrics.Registry
+	if runtime != nil {
+		reg = runtime.metrics
+	}
+
+	sampler, stopSampler := ratelimit.NewAuditSampler()
+	mw := ratelimit.Middleware(logger, reg, sampler, ratelimit.MiddlewareOptions{
+		Profiles:       profiles,
+		ResolveProfile: clientacl.RequestProfile,
+	})
+	return mw, stopSampler
+}
+
+// configLimitsToRateLimitOptions converts a per-profile LimitsConfig to the
+// ratelimit package's ProfileOptions. Returns zero-valued options (both nil)
+// when no limits are configured.
+func configLimitsToRateLimitOptions(cfg config.LimitsConfig) ratelimit.ProfileOptions {
+	var opts ratelimit.ProfileOptions
+	if cfg.Rate != nil {
+		burst := cfg.Rate.Burst
+		if burst == 0 {
+			burst = cfg.Rate.TokensPerSecond
+		}
+		opts.Rate = &ratelimit.RateOptions{
+			TokensPerSecond: cfg.Rate.TokensPerSecond,
+			Burst:           burst,
+		}
+	}
+	if cfg.Concurrency != nil {
+		opts.Concurrency = &ratelimit.ConcurrencyOptions{
+			MaxInflight: cfg.Concurrency.MaxInflight,
+		}
+	}
+	return opts
 }
 
 func namedServeHandlerLayer(name string, with func(http.Handler) http.Handler) serveHandlerLayer {
