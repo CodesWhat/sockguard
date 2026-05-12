@@ -1,0 +1,56 @@
+# Sockguard config for Traefik — strict GET-only, no read-exfil opt-in.
+#
+# This is tighter than the bundled traefik preset (app/configs/traefik.yaml),
+# which carries insecure_allow_read_exfiltration: true for broad compatibility.
+# Here we enumerate only the specific paths Traefik's Docker provider needs
+# so the exfiltration validator passes without any insecure opt-in.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads — list + inspect only, no logs/archive/export/attach
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+
+  # Network reads — list + inspect
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+
+  # Service and task reads (for Swarm-mode Traefik)
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+  - match: { method: GET, path: "/tasks" }
+    action: allow
+  - match: { method: GET, path: "/tasks/*" }
+    action: allow
+
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by traefik strict preset"

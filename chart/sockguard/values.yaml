@@ -1,0 +1,71 @@
+# Default values for the sockguard Helm chart.
+# Override with --set or -f myvalues.yaml.
+
+image:
+  repository: codeswhat/sockguard
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Sockguard configuration — passed verbatim as sockguard.yaml via ConfigMap.
+# The upstream socket must be /var/run/docker.sock because the DaemonSet
+# mounts the host socket at that path.
+config: |
+  upstream:
+    socket: /var/run/docker.sock
+
+  log:
+    level: info
+    format: json
+    access_log: true
+
+  health:
+    enabled: true
+    path: /health
+
+  rules:
+    - match: { method: GET, path: "/_ping" }
+      action: allow
+    - match: { method: HEAD, path: "/_ping" }
+      action: allow
+    - match: { method: GET, path: "/version" }
+      action: allow
+    - match: { method: GET, path: "/events" }
+      action: allow
+    - match: { method: "*", path: "/**" }
+      action: deny
+      reason: "no matching allow rule — override config in values.yaml"
+
+# Service exposing sockguard within the cluster.
+service:
+  type: ClusterIP
+  port: 2375
+  # Sockguard listens on plaintext TCP :2375 by default inside the pod.
+  # For non-loopback TCP you must either set SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true
+  # (trusted cluster-internal traffic only) or configure listen.tls in config above.
+
+# Extra environment variables for the sockguard container.
+# Useful for SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP, log level overrides, etc.
+env:
+  - name: SOCKGUARD_LISTEN_ADDRESS
+    value: ":2375"
+  - name: SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP
+    value: "true"
+
+resources: {}
+  # Recommended starting point:
+  # requests:
+  #   cpu: 10m
+  #   memory: 32Mi
+  # limits:
+  #   cpu: 100m
+  #   memory: 64Mi
+
+# DaemonSet tolerations — tolerate control-plane nodes to proxy on every node.
+tolerations: []
+  # - key: node-role.kubernetes.io/control-plane
+  #   operator: Exists
+  #   effect: NoSchedule
+
+nodeSelector: {}
+
+affinity: {}

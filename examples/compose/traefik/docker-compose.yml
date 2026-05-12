@@ -1,0 +1,49 @@
+# examples/compose/traefik/docker-compose.yml
+#
+# Sockguard + Traefik — unix-socket mode, strict GET-only traefik preset.
+# Sockguard writes a filtered unix socket into a shared named volume;
+# Traefik reads that socket via the Docker provider endpoint config.
+#
+# Traefik needs: container list/inspect, network list, service/task list,
+# and /events — all GET/HEAD, zero writes. The locked-down config below
+# strips insecure_allow_read_exfiltration (present in the bundled preset)
+# and enumerates only the specific paths Traefik actually needs.
+#
+# IMPORTANT: Replace the traefik.http.routers.* labels with your real
+# domain and remove --certificatesresolvers if you don't use Let's Encrypt.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  traefik:
+    image: traefik:v3.4
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.endpoint=unix:///var/run/sockguard/sockguard.sock"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+
+volumes:
+  sockguard-socket:

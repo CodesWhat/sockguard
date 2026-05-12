@@ -1,0 +1,83 @@
+# Sockguard config for Portainer — mirrors the shipped portainer preset.
+# Copy of app/configs/portainer.yaml; embedded here so the compose stack
+# is self-contained. Update both files together if you change rules.
+#
+# WARNING: This preset grants near-full Docker socket access.
+# The insecure opt-ins below are required for Portainer's exec and swarm
+# management features. Remove them only if you don't use those features.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+  image_pull:
+    allow_all_registries: true
+  build:
+    allow_remote_context: true
+    allow_host_network: true
+    allow_run_instructions: true
+
+insecure_allow_body_blind_writes: true
+insecure_allow_read_exfiltration: true
+
+rules:
+  - match: { method: "*", path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  - match: { method: "*", path: "/containers/**" }
+    action: allow
+  - match: { method: "*", path: "/images/**" }
+    action: allow
+  - match: { method: "*", path: "/networks/**" }
+    action: allow
+  - match: { method: "*", path: "/volumes/**" }
+    action: allow
+  - match: { method: "*", path: "/exec/**" }
+    action: allow
+  - match: { method: GET, path: "/system/**" }
+    action: allow
+
+  - match: { method: POST, path: "/build" }
+    action: allow
+  - match: { method: POST, path: "/commit" }
+    action: allow
+  - match: { method: POST, path: "/auth" }
+    action: allow
+  - match: { method: GET, path: "/distribution/**" }
+    action: allow
+
+  - match: { method: "*", path: "/swarm/**" }
+    action: allow
+  - match: { method: "*", path: "/services/**" }
+    action: allow
+  - match: { method: GET, path: "/tasks/**" }
+    action: allow
+  - match: { method: "*", path: "/nodes/**" }
+    action: allow
+  - match: { method: "*", path: "/configs/**" }
+    action: allow
+  - match: { method: "*", path: "/secrets/**" }
+    action: allow
+  - match: { method: "*", path: "/plugins/**" }
+    action: allow
+
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by portainer preset"
