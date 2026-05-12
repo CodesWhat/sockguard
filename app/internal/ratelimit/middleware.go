@@ -1,8 +1,11 @@
 package ratelimit
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
@@ -34,6 +37,85 @@ type ProfileOptions struct {
 type RateOptions struct {
 	TokensPerSecond float64
 	Burst           float64
+	// EndpointCosts weights specific endpoints higher than the default 1 token
+	// per request. First match in declaration order wins; unmatched requests
+	// cost 1 token. Each entry's Cost must be >= 1 and <= the effective burst
+	// (enforced by config validation; a cost greater than burst is permanently
+	// un-satisfiable). PathGlob uses the same glob dialect as filter rules and
+	// matches the normalized path (Docker API version prefix stripped).
+	EndpointCosts []EndpointCost
+}
+
+// EndpointCost weights a specific endpoint pattern higher than the default
+// 1 token per request, letting operators apply tighter budgets to expensive
+// Docker operations such as build, image pull, and exec.
+type EndpointCost struct {
+	// PathGlob is matched against the normalized request path. Empty matches
+	// nothing (config validator rejects empty patterns).
+	PathGlob string
+	// Methods restricts the rule to specific HTTP methods (case-insensitive).
+	// Empty matches all methods.
+	Methods []string
+	// Cost is the number of tokens to withdraw on match. Must be >= 1.
+	Cost float64
+}
+
+// compiledEndpointCost is the runtime form of an EndpointCost.
+type compiledEndpointCost struct {
+	pathRE  *regexp.Regexp
+	methods map[string]struct{} // empty = match all
+	cost    float64
+}
+
+// compileEndpointCosts converts the public-API slice into the runtime matcher
+// table. It returns the first compile error encountered (typically an invalid
+// regex from a malformed glob); callers should report it at startup. A nil
+// input returns a nil slice (no per-endpoint weighting).
+func compileEndpointCosts(costs []EndpointCost) ([]compiledEndpointCost, error) {
+	if len(costs) == 0 {
+		return nil, nil
+	}
+	compiled := make([]compiledEndpointCost, 0, len(costs))
+	for i, ec := range costs {
+		regex := "^" + filter.GlobToRegexString(ec.PathGlob) + "$"
+		re, err := regexp.Compile(regex)
+		if err != nil {
+			return nil, fmt.Errorf("endpoint_costs[%d]: invalid path glob %q: %w", i, ec.PathGlob, err)
+		}
+		var methods map[string]struct{}
+		if len(ec.Methods) > 0 {
+			methods = make(map[string]struct{}, len(ec.Methods))
+			for _, m := range ec.Methods {
+				methods[strings.ToUpper(strings.TrimSpace(m))] = struct{}{}
+			}
+		}
+		compiled = append(compiled, compiledEndpointCost{
+			pathRE:  re,
+			methods: methods,
+			cost:    ec.Cost,
+		})
+	}
+	return compiled, nil
+}
+
+// costFor returns the configured token cost for r, or 1 if no rule matches.
+func (cp *compiledProfile) costFor(r *http.Request) float64 {
+	if len(cp.endpointCosts) == 0 {
+		return 1
+	}
+	path := filter.NormalizePath(r.URL.Path)
+	method := strings.ToUpper(r.Method)
+	for _, ec := range cp.endpointCosts {
+		if len(ec.methods) > 0 {
+			if _, ok := ec.methods[method]; !ok {
+				continue
+			}
+		}
+		if ec.pathRE.MatchString(path) {
+			return ec.cost
+		}
+	}
+	return 1
 }
 
 // ConcurrencyOptions configures the concurrency cap.
@@ -43,15 +125,16 @@ type ConcurrencyOptions struct {
 
 // compiledProfile holds the runtime state for a single profile's limits.
 type compiledProfile struct {
-	rate        *RateOptions
-	concurrency *ConcurrencyOptions
-	limiter     *Limiter
-	tracker     *InflightTracker
+	rate          *RateOptions
+	concurrency   *ConcurrencyOptions
+	limiter       *Limiter
+	tracker       *InflightTracker
+	endpointCosts []compiledEndpointCost
 }
 
-func compileProfile(opts ProfileOptions) *compiledProfile {
+func compileProfile(opts ProfileOptions) (*compiledProfile, error) {
 	if opts.Rate == nil && opts.Concurrency == nil {
-		return nil
+		return nil, nil
 	}
 	cp := &compiledProfile{
 		rate:        opts.Rate,
@@ -63,11 +146,17 @@ func compileProfile(opts ProfileOptions) *compiledProfile {
 			burst = opts.Rate.TokensPerSecond
 		}
 		cp.limiter = NewLimiter(opts.Rate.TokensPerSecond, burst)
+
+		compiled, err := compileEndpointCosts(opts.Rate.EndpointCosts)
+		if err != nil {
+			return nil, err
+		}
+		cp.endpointCosts = compiled
 	}
 	if opts.Concurrency != nil {
 		cp.tracker = &InflightTracker{}
 	}
-	return cp
+	return cp, nil
 }
 
 // MiddlewareOptions configures the multi-profile rate-limit middleware.
@@ -88,28 +177,35 @@ type MiddlewareOptions struct {
 //
 // auditSampler may be nil; when non-nil it gates the slog throttle record to
 // the first throttle of each (client, reason) tuple per second.
+//
+// An error is returned only when a profile's EndpointCost glob fails to compile
+// — the config validator catches this at startup, so under normal use the error
+// is nil.
 func Middleware(
 	logger *slog.Logger,
 	registry *metrics.Registry,
 	auditSampler *AuditSampler,
 	opts MiddlewareOptions,
-) func(http.Handler) http.Handler {
+) (func(http.Handler) http.Handler, error) {
 	if len(opts.Profiles) == 0 {
-		return func(next http.Handler) http.Handler { return next }
+		return func(next http.Handler) http.Handler { return next }, nil
 	}
 
 	// Pre-compile all profile limiters at middleware construction time.
 	compiled := make(map[string]*compiledProfile, len(opts.Profiles))
 	hasAny := false
 	for name, profileOpts := range opts.Profiles {
-		cp := compileProfile(profileOpts)
+		cp, err := compileProfile(profileOpts)
+		if err != nil {
+			return nil, fmt.Errorf("profile %q: %w", name, err)
+		}
 		if cp != nil {
 			compiled[name] = cp
 			hasAny = true
 		}
 	}
 	if !hasAny {
-		return func(next http.Handler) http.Handler { return next }
+		return func(next http.Handler) http.Handler { return next }, nil
 	}
 
 	resolveProfile := opts.ResolveProfile
@@ -138,7 +234,8 @@ func Middleware(
 
 			// --- Rate limit check ---
 			if cp.limiter != nil {
-				ok, retryAfter := cp.limiter.Allow(effectiveID)
+				cost := cp.costFor(r)
+				ok, retryAfter := cp.limiter.AllowN(effectiveID, cost)
 				if !ok {
 					registry.ObserveThrottle(effectiveID, string(ReasonRateLimit))
 					if auditSampler != nil && auditSampler.ShouldEmit(effectiveID, ReasonRateLimit) {
@@ -148,6 +245,7 @@ func Middleware(
 							slog.String("reason", string(ReasonRateLimit)),
 							slog.Float64("tokens_per_second", cp.rate.TokensPerSecond),
 							slog.Float64("burst", cp.rate.Burst),
+							slog.Float64("cost", cost),
 						)
 						logger.InfoContext(r.Context(), "throttle",
 							slog.Group("throttle", attrsToAny(attrs)...))
@@ -197,7 +295,7 @@ func Middleware(
 
 			next.ServeHTTP(w, r)
 		})
-	}
+	}, nil
 }
 
 func attrsToAny(attrs []slog.Attr) []any {

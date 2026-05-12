@@ -44,10 +44,24 @@ func newBucket(tokensPerSecond, burst float64, now nowFn) *bucket {
 	}
 }
 
-// Allow checks whether the request may proceed. Returns true and the wait
-// duration 0 on success. On failure returns false and the ceiling of seconds
-// until the next token becomes available.
+// Allow is shorthand for AllowN(1) — withdraws a single token.
 func (b *bucket) Allow() (ok bool, retryAfter int) {
+	return b.AllowN(1)
+}
+
+// AllowN withdraws cost tokens from the bucket. cost < 1 is clamped to 1 so a
+// misconfigured zero cost cannot let a client bypass the limiter entirely.
+// Returns (true, 0) on success. On failure returns (false, retry-after seconds)
+// computed as the ceiling of (cost − current_tokens) / tokensPerSecond.
+//
+// cost greater than burst is permanently un-satisfiable; the validator in
+// internal/config rejects that configuration at startup. AllowN does not
+// re-check it here — defensive logic in a hot path would just hide config bugs.
+func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
+	if cost < 1 {
+		cost = 1
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -58,13 +72,12 @@ func (b *bucket) Allow() (ok bool, retryAfter int) {
 		b.lastRefill = now
 	}
 
-	if b.tokens >= 1 {
-		b.tokens--
+	if b.tokens >= cost {
+		b.tokens -= cost
 		return true, 0
 	}
 
-	// Compute how many seconds until the bucket refills to 1 token.
-	deficit := 1.0 - b.tokens
+	deficit := cost - b.tokens
 	waitSeconds := deficit / b.tokensPerSecond
 	return false, int(math.Ceil(waitSeconds))
 }
@@ -93,9 +106,14 @@ func newLimiterWithClock(tokensPerSecond, burst float64, now nowFn) *Limiter {
 	}
 }
 
-// Allow checks whether the given clientID may proceed. If clientID is empty
-// the request is bucketed under AnonymousClientID.
+// Allow is shorthand for AllowN(clientID, 1) — withdraws a single token.
 func (l *Limiter) Allow(clientID string) (ok bool, retryAfter int) {
+	return l.AllowN(clientID, 1)
+}
+
+// AllowN checks whether clientID may proceed at the given token cost.
+// If clientID is empty the request is bucketed under AnonymousClientID.
+func (l *Limiter) AllowN(clientID string, cost float64) (ok bool, retryAfter int) {
 	if clientID == "" {
 		clientID = AnonymousClientID
 	}
@@ -108,7 +126,7 @@ func (l *Limiter) Allow(clientID string) (ok bool, retryAfter int) {
 	}
 	l.mu.Unlock()
 
-	return b.Allow()
+	return b.AllowN(cost)
 }
 
 // InflightTracker maintains per-client in-flight request counts. It is safe

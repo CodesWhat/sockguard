@@ -368,6 +368,66 @@ func TestAuditSampler_Eviction(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// bucket: cost-weighted withdrawals via AllowN
+// ---------------------------------------------------------------------------
+
+func TestBucket_AllowN_ConsumesNTokens(t *testing.T) {
+	clk := newFixedClock(time.Unix(0, 0))
+	b := newBucket(100, 10, clk.Now) // burst 10
+
+	// Cost-5 withdrawals should succeed twice and deny the third.
+	for i := range 2 {
+		ok, _ := b.AllowN(5)
+		if !ok {
+			t.Fatalf("expected AllowN(5) = true on call %d (burst=10)", i+1)
+		}
+	}
+	ok, retryAfter := b.AllowN(5)
+	if ok {
+		t.Fatal("expected AllowN(5) = false after 2 cost-5 withdrawals from burst=10")
+	}
+	if retryAfter <= 0 {
+		t.Fatalf("expected retryAfter > 0 on denial, got %d", retryAfter)
+	}
+}
+
+func TestBucket_AllowN_RetryAfterScalesWithCost(t *testing.T) {
+	clk := newFixedClock(time.Unix(0, 0))
+	b := newBucket(1, 10, clk.Now) // 1 token/s, burst 10
+
+	// Drain completely.
+	for range 10 {
+		b.Allow() //nolint:errcheck
+	}
+
+	// Cost-5 denial should compute retryAfter = ceil(5 / 1) = 5s.
+	ok, retryAfter := b.AllowN(5)
+	if ok {
+		t.Fatal("expected AllowN(5) = false on empty bucket")
+	}
+	if retryAfter != 5 {
+		t.Fatalf("expected retryAfter = 5 for cost=5 at 1 token/s, got %d", retryAfter)
+	}
+}
+
+func TestBucket_AllowN_ClampsCostBelowOne(t *testing.T) {
+	clk := newFixedClock(time.Unix(0, 0))
+	b := newBucket(10, 10, clk.Now)
+
+	// cost=0 should behave like cost=1 (otherwise a misconfig could bypass).
+	for range 10 {
+		ok, _ := b.AllowN(0)
+		if !ok {
+			t.Fatal("AllowN(0) should clamp to AllowN(1) and succeed within burst")
+		}
+	}
+	ok, _ := b.AllowN(0)
+	if ok {
+		t.Fatal("AllowN(0) should be denied after the bucket is empty")
+	}
+}
+
 // TestAuditSampler_Race verifies the sampler is safe under concurrent access.
 func TestAuditSampler_Race(t *testing.T) {
 	clk := newFixedClock(time.Unix(0, 0))
