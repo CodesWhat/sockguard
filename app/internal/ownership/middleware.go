@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/dockerclient"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/inspectcache"
@@ -76,11 +76,6 @@ type Options struct {
 	AllowUnownedImages bool
 }
 
-type ownerDeps struct {
-	inspectResource func(context.Context, resourceKind, string) (map[string]string, bool, error)
-	inspectExec     func(context.Context, string) (string, bool, error)
-}
-
 type upstreamInspector struct {
 	client *http.Client
 }
@@ -88,10 +83,29 @@ type upstreamInspector struct {
 // Middleware applies owner-label mutation and enforcement for a single proxy
 // identity. When Owner is empty, it is a no-op.
 func Middleware(upstreamSocket string, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {
-	return middlewareWithDeps(logger, opts, newOwnerDeps(upstreamSocket))
+	inspector := upstreamInspector{
+		client: dockerclient.New(upstreamSocket),
+	}
+	cache := inspectcache.New(
+		inspectcache.DefaultTTL,
+		inspectcache.DefaultMaxSize,
+		time.Now,
+		func(ctx context.Context, kind, identifier string) (map[string]string, bool, error) {
+			return inspector.inspectResource(ctx, resourceKind(kind), identifier)
+		},
+	)
+	inspectResource := func(ctx context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
+		return cache.Lookup(ctx, string(kind), identifier)
+	}
+	return middlewareWithDeps(logger, opts, inspectResource, inspector.inspectExec)
 }
 
-func middlewareWithDeps(logger *slog.Logger, opts Options, deps ownerDeps) func(http.Handler) http.Handler {
+func middlewareWithDeps(
+	logger *slog.Logger,
+	opts Options,
+	inspectResource func(context.Context, resourceKind, string) (map[string]string, bool, error),
+	inspectExec func(context.Context, string) (string, bool, error),
+) func(http.Handler) http.Handler {
 	opts = opts.normalized()
 	if opts.Owner == "" {
 		return func(next http.Handler) http.Handler { return next }
@@ -116,7 +130,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps ownerDeps) func(
 				return
 			}
 
-			verdict, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, deps)
+			verdict, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, inspectResource, inspectExec)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyLookupFailed, "owner policy lookup failed", nil)
@@ -131,31 +145,6 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps ownerDeps) func(
 			logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, reason, nil)
 			_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 		})
-	}
-}
-
-func newOwnerDeps(upstreamSocket string) ownerDeps {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", upstreamSocket)
-		},
-	}
-	inspector := upstreamInspector{
-		client: &http.Client{Transport: transport},
-	}
-	cache := inspectcache.New(
-		inspectcache.DefaultTTL,
-		inspectcache.DefaultMaxSize,
-		time.Now,
-		func(ctx context.Context, kind, identifier string) (map[string]string, bool, error) {
-			return inspector.inspectResource(ctx, resourceKind(kind), identifier)
-		},
-	)
-	return ownerDeps{
-		inspectResource: func(ctx context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
-			return cache.Lookup(ctx, string(kind), identifier)
-		},
-		inspectExec: inspector.inspectExec,
 	}
 }
 
@@ -183,52 +172,58 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) erro
 	}
 }
 
-func allowOwnershipRequest(ctx context.Context, normPath string, opts Options, deps ownerDeps) (ownershipVerdict, string, error) {
+func allowOwnershipRequest(
+	ctx context.Context,
+	normPath string,
+	opts Options,
+	inspectResource func(context.Context, resourceKind, string) (map[string]string, bool, error),
+	inspectExec func(context.Context, string) (string, bool, error),
+) (ownershipVerdict, string, error) {
 	if identifier, ok := containerIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, deps, resourceKindContainer, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, resourceKindContainer, identifier, opts, false)
 	}
 	if execID, ok := execIdentifier(normPath); ok {
-		containerID, found, err := deps.inspectExec(ctx, execID)
+		containerID, found, err := inspectExec(ctx, execID)
 		if err != nil {
 			return verdictPassThrough, "", err
 		}
 		if !found {
 			return verdictPassThrough, "", nil
 		}
-		return checkOwnedResource(ctx, deps, resourceKindContainer, containerID, opts, false)
+		return checkOwnedResource(ctx, inspectResource, resourceKindContainer, containerID, opts, false)
 	}
 	if identifier, ok := networkIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, deps, resourceKindNetwork, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, resourceKindNetwork, identifier, opts, false)
 	}
 	if identifier, ok := volumeIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, deps, resourceKindVolume, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, resourceKindVolume, identifier, opts, false)
 	}
 	if identifier, ok := imageIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, deps, resourceKindImage, identifier, opts, opts.AllowUnownedImages)
+		return checkOwnedResource(ctx, inspectResource, resourceKindImage, identifier, opts, opts.AllowUnownedImages)
 	}
 	if identifier, ok := serviceIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, deps, resourceKindService, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, resourceKindService, identifier, opts, false)
 	}
 	if identifier, ok := taskIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, deps, resourceKindTask, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, resourceKindTask, identifier, opts, false)
 	}
 	if identifier, ok := secretIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, deps, resourceKindSecret, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, resourceKindSecret, identifier, opts, false)
 	}
 	if identifier, ok := configIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, deps, resourceKindConfig, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, resourceKindConfig, identifier, opts, false)
 	}
 	if identifier, ok := nodeIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, deps, resourceKindNode, identifier, opts, isNodeUpdatePath(normPath))
+		return checkOwnedResource(ctx, inspectResource, resourceKindNode, identifier, opts, isNodeUpdatePath(normPath))
 	}
 	if isSwarmPath(normPath) || isSwarmUpdatePath(normPath) {
-		return checkOwnedResource(ctx, deps, resourceKindSwarm, "", opts, isSwarmUpdatePath(normPath))
+		return checkOwnedResource(ctx, inspectResource, resourceKindSwarm, "", opts, isSwarmUpdatePath(normPath))
 	}
 	return verdictPassThrough, "", nil
 }
 
-func checkOwnedResource(ctx context.Context, deps ownerDeps, kind resourceKind, identifier string, opts Options, allowUnowned bool) (ownershipVerdict, string, error) {
-	labels, found, err := deps.inspectResource(ctx, kind, identifier)
+func checkOwnedResource(ctx context.Context, inspectResource func(context.Context, resourceKind, string) (map[string]string, bool, error), kind resourceKind, identifier string, opts Options, allowUnowned bool) (ownershipVerdict, string, error) {
+	labels, found, err := inspectResource(ctx, kind, identifier)
 	if err != nil {
 		return verdictPassThrough, "", err
 	}

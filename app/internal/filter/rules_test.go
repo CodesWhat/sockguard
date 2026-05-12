@@ -509,16 +509,17 @@ func TestCompileRuleMultiSegmentSingleStarUsesFastPath(t *testing.T) {
 }
 
 func TestCompileRuleRegexCompileError(t *testing.T) {
-	deps := newRuleDeps()
-	deps.regexpCompile = func(string) (*regexp.Regexp, error) {
+	orig := regexpCompileHook
+	regexpCompileHook = func(string) (*regexp.Regexp, error) {
 		return nil, errors.New("boom")
 	}
+	t.Cleanup(func() { regexpCompileHook = orig })
 
-	_, err := compileRuleWithDeps(Rule{
+	_, err := CompileRule(Rule{
 		Methods: []string{"GET"},
 		Pattern: "/**/x/**/y/**",
 		Action:  ActionAllow,
-	}, deps)
+	})
 	if err == nil {
 		t.Fatal("expected CompileRule() to fail when regexp compilation fails")
 	}

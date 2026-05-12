@@ -67,6 +67,40 @@ func readCertificateFromPEM(t *testing.T, path string) *x509.Certificate {
 	return cert
 }
 
+// restoreTestcertHooks saves all 12 package-level hook vars and restores them
+// via t.Cleanup, so each test starts from a known good state.
+func restoreTestcertHooks(t *testing.T) {
+	t.Helper()
+
+	savedNewCA := newCertificateAuthorityHook
+	savedNewServer := newServerCertificateHook
+	savedNewClient := newClientCertificateHook
+	savedWriteBundle := writeBundleFilesHook
+	savedGenerateKey := generateKeyHook
+	savedCertTemplate := certificateTemplateHook
+	savedCreateCert := createCertificateHook
+	savedParseCert := parseCertificateHook
+	savedWritePEM := writePEMHook
+	savedWriteECKey := writeECPrivateKeyHook
+	savedOpenFile := openFileHook
+	savedEncodePEM := encodePEMHook
+
+	t.Cleanup(func() {
+		newCertificateAuthorityHook = savedNewCA
+		newServerCertificateHook = savedNewServer
+		newClientCertificateHook = savedNewClient
+		writeBundleFilesHook = savedWriteBundle
+		generateKeyHook = savedGenerateKey
+		certificateTemplateHook = savedCertTemplate
+		createCertificateHook = savedCreateCert
+		parseCertificateHook = savedParseCert
+		writePEMHook = savedWritePEM
+		writeECPrivateKeyHook = savedWriteECKey
+		openFileHook = savedOpenFile
+		encodePEMHook = savedEncodePEM
+	})
+}
+
 func TestWriteMutualTLSBundleWritesExpectedFilesAndDefaultHosts(t *testing.T) {
 	dir := t.TempDir()
 
@@ -265,7 +299,7 @@ func TestWriteECPrivateKey(t *testing.T) {
 	}
 }
 
-func TestWriteMutualTLSBundleWithDepsReturnsDependencyErrors(t *testing.T) {
+func TestWriteMutualTLSBundleReturnsDependencyErrors(t *testing.T) {
 	caErr := errors.New("ca failed")
 	serverErr := errors.New("server failed")
 	clientErr := errors.New("client failed")
@@ -276,40 +310,50 @@ func TestWriteMutualTLSBundleWithDepsReturnsDependencyErrors(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		deps    bundleDeps
+		setup   func()
 		wantErr error
 	}{
 		{
 			name: "certificate authority error",
-			deps: bundleDeps{
-				newCertificateAuthority: func() (issuedCertificate, error) { return issuedCertificate{}, caErr },
+			setup: func() {
+				newCertificateAuthorityHook = func() (issuedCertificate, error) { return issuedCertificate{}, caErr }
 			},
 			wantErr: caErr,
 		},
 		{
 			name: "server certificate error",
-			deps: bundleDeps{
-				newCertificateAuthority: func() (issuedCertificate, error) { return validCA, nil },
-				newServerCertificate:    func([]string, issuedCertificate) (issuedCertificate, error) { return issuedCertificate{}, serverErr },
+			setup: func() {
+				newCertificateAuthorityHook = func() (issuedCertificate, error) { return validCA, nil }
+				newServerCertificateHook = func([]string, issuedCertificate) (issuedCertificate, error) {
+					return issuedCertificate{}, serverErr
+				}
 			},
 			wantErr: serverErr,
 		},
 		{
 			name: "client certificate error",
-			deps: bundleDeps{
-				newCertificateAuthority: func() (issuedCertificate, error) { return validCA, nil },
-				newServerCertificate:    func([]string, issuedCertificate) (issuedCertificate, error) { return validLeaf, nil },
-				newClientCertificate:    func(issuedCertificate) (issuedCertificate, error) { return issuedCertificate{}, clientErr },
+			setup: func() {
+				newCertificateAuthorityHook = func() (issuedCertificate, error) { return validCA, nil }
+				newServerCertificateHook = func([]string, issuedCertificate) (issuedCertificate, error) {
+					return validLeaf, nil
+				}
+				newClientCertificateHook = func(issuedCertificate) (issuedCertificate, error) {
+					return issuedCertificate{}, clientErr
+				}
 			},
 			wantErr: clientErr,
 		},
 		{
 			name: "bundle write error",
-			deps: bundleDeps{
-				newCertificateAuthority: func() (issuedCertificate, error) { return validCA, nil },
-				newServerCertificate:    func([]string, issuedCertificate) (issuedCertificate, error) { return validLeaf, nil },
-				newClientCertificate:    func(issuedCertificate) (issuedCertificate, error) { return validLeaf, nil },
-				writeBundleFiles:        func(Bundle, issuedCertificate, issuedCertificate, issuedCertificate) error { return writeErr },
+			setup: func() {
+				newCertificateAuthorityHook = func() (issuedCertificate, error) { return validCA, nil }
+				newServerCertificateHook = func([]string, issuedCertificate) (issuedCertificate, error) {
+					return validLeaf, nil
+				}
+				newClientCertificateHook = func(issuedCertificate) (issuedCertificate, error) { return validLeaf, nil }
+				writeBundleFilesHook = func(Bundle, issuedCertificate, issuedCertificate, issuedCertificate) error {
+					return writeErr
+				}
 			},
 			wantErr: writeErr,
 		},
@@ -317,7 +361,9 @@ func TestWriteMutualTLSBundleWithDepsReturnsDependencyErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := writeMutualTLSBundleWithDeps(t.TempDir(), tt.deps)
+			restoreTestcertHooks(t)
+			tt.setup()
+			_, err := WriteMutualTLSBundle(t.TempDir())
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("error = %v, want %v", err, tt.wantErr)
 			}
@@ -325,7 +371,7 @@ func TestWriteMutualTLSBundleWithDepsReturnsDependencyErrors(t *testing.T) {
 	}
 }
 
-func TestNewCertificateAuthorityWithDepsReturnsDependencyErrors(t *testing.T) {
+func TestNewCertificateAuthorityReturnsDependencyErrors(t *testing.T) {
 	keyErr := errors.New("generate key failed")
 	templateErr := errors.New("template failed")
 	createErr := errors.New("create cert failed")
@@ -336,40 +382,44 @@ func TestNewCertificateAuthorityWithDepsReturnsDependencyErrors(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		deps    certDeps
+		setup   func()
 		wantErr error
 	}{
 		{
 			name: "key generation error",
-			deps: certDeps{
-				generateKey: func() (*ecdsa.PrivateKey, error) { return nil, keyErr },
+			setup: func() {
+				generateKeyHook = func() (*ecdsa.PrivateKey, error) { return nil, keyErr }
 			},
 			wantErr: keyErr,
 		},
 		{
 			name: "template error",
-			deps: certDeps{
-				generateKey:         func() (*ecdsa.PrivateKey, error) { return key, nil },
-				certificateTemplate: func(string) (*x509.Certificate, error) { return nil, templateErr },
+			setup: func() {
+				generateKeyHook = func() (*ecdsa.PrivateKey, error) { return key, nil }
+				certificateTemplateHook = func(string) (*x509.Certificate, error) { return nil, templateErr }
 			},
 			wantErr: templateErr,
 		},
 		{
 			name: "certificate creation error",
-			deps: certDeps{
-				generateKey:         func() (*ecdsa.PrivateKey, error) { return key, nil },
-				certificateTemplate: func(string) (*x509.Certificate, error) { return template, nil },
-				createCertificate:   func(*x509.Certificate, *x509.Certificate, any, any) ([]byte, error) { return nil, createErr },
+			setup: func() {
+				generateKeyHook = func() (*ecdsa.PrivateKey, error) { return key, nil }
+				certificateTemplateHook = func(string) (*x509.Certificate, error) { return template, nil }
+				createCertificateHook = func(*x509.Certificate, *x509.Certificate, any, any) ([]byte, error) {
+					return nil, createErr
+				}
 			},
 			wantErr: createErr,
 		},
 		{
 			name: "certificate parse error",
-			deps: certDeps{
-				generateKey:         func() (*ecdsa.PrivateKey, error) { return key, nil },
-				certificateTemplate: func(string) (*x509.Certificate, error) { return template, nil },
-				createCertificate:   func(*x509.Certificate, *x509.Certificate, any, any) ([]byte, error) { return []byte("bad"), nil },
-				parseCertificate:    func([]byte) (*x509.Certificate, error) { return nil, parseErr },
+			setup: func() {
+				generateKeyHook = func() (*ecdsa.PrivateKey, error) { return key, nil }
+				certificateTemplateHook = func(string) (*x509.Certificate, error) { return template, nil }
+				createCertificateHook = func(*x509.Certificate, *x509.Certificate, any, any) ([]byte, error) {
+					return []byte("bad"), nil
+				}
+				parseCertificateHook = func([]byte) (*x509.Certificate, error) { return nil, parseErr }
 			},
 			wantErr: parseErr,
 		},
@@ -377,7 +427,9 @@ func TestNewCertificateAuthorityWithDepsReturnsDependencyErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := newCertificateAuthorityWithDeps(tt.deps)
+			restoreTestcertHooks(t)
+			tt.setup()
+			_, err := newCertificateAuthority()
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("error = %v, want %v", err, tt.wantErr)
 			}
@@ -385,7 +437,7 @@ func TestNewCertificateAuthorityWithDepsReturnsDependencyErrors(t *testing.T) {
 	}
 }
 
-func TestNewLeafCertificateWithDepsReturnsDependencyErrors(t *testing.T) {
+func TestNewLeafCertificateReturnsDependencyErrors(t *testing.T) {
 	keyErr := errors.New("generate key failed")
 	templateErr := errors.New("template failed")
 	createErr := errors.New("create cert failed")
@@ -396,30 +448,32 @@ func TestNewLeafCertificateWithDepsReturnsDependencyErrors(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		deps    certDeps
+		setup   func()
 		wantErr error
 	}{
 		{
 			name: "key generation error",
-			deps: certDeps{
-				generateKey: func() (*ecdsa.PrivateKey, error) { return nil, keyErr },
+			setup: func() {
+				generateKeyHook = func() (*ecdsa.PrivateKey, error) { return nil, keyErr }
 			},
 			wantErr: keyErr,
 		},
 		{
 			name: "template error",
-			deps: certDeps{
-				generateKey:         func() (*ecdsa.PrivateKey, error) { return key, nil },
-				certificateTemplate: func(string) (*x509.Certificate, error) { return nil, templateErr },
+			setup: func() {
+				generateKeyHook = func() (*ecdsa.PrivateKey, error) { return key, nil }
+				certificateTemplateHook = func(string) (*x509.Certificate, error) { return nil, templateErr }
 			},
 			wantErr: templateErr,
 		},
 		{
 			name: "certificate creation error",
-			deps: certDeps{
-				generateKey:         func() (*ecdsa.PrivateKey, error) { return key, nil },
-				certificateTemplate: func(string) (*x509.Certificate, error) { return template, nil },
-				createCertificate:   func(*x509.Certificate, *x509.Certificate, any, any) ([]byte, error) { return nil, createErr },
+			setup: func() {
+				generateKeyHook = func() (*ecdsa.PrivateKey, error) { return key, nil }
+				certificateTemplateHook = func(string) (*x509.Certificate, error) { return template, nil }
+				createCertificateHook = func(*x509.Certificate, *x509.Certificate, any, any) ([]byte, error) {
+					return nil, createErr
+				}
 			},
 			wantErr: createErr,
 		},
@@ -427,7 +481,9 @@ func TestNewLeafCertificateWithDepsReturnsDependencyErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := newLeafCertificateWithDeps("sockguard-test", x509.ExtKeyUsageClientAuth, ca, nil, tt.deps)
+			restoreTestcertHooks(t)
+			tt.setup()
+			_, err := newLeafCertificate("sockguard-test", x509.ExtKeyUsageClientAuth, ca, nil)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("error = %v, want %v", err, tt.wantErr)
 			}
@@ -435,7 +491,7 @@ func TestNewLeafCertificateWithDepsReturnsDependencyErrors(t *testing.T) {
 	}
 }
 
-func TestWriteBundleFilesWithDepsReturnsDependencyErrors(t *testing.T) {
+func TestWriteBundleFilesReturnsDependencyErrors(t *testing.T) {
 	pemErr := errors.New("write pem failed")
 	keyErr := errors.New("write key failed")
 
@@ -445,46 +501,51 @@ func TestWriteBundleFilesWithDepsReturnsDependencyErrors(t *testing.T) {
 	client := issuedCertificate{der: []byte("client"), key: mustGenerateECDSAKey(t)}
 
 	t.Run("certificate write error", func(t *testing.T) {
-		err := writeBundleFilesWithDeps(bundle, ca, server, client, bundleWriteDeps{
-			writePEM:          func(string, string, []byte) error { return pemErr },
-			writeECPrivateKey: func(string, *ecdsa.PrivateKey) error { t.Fatal("unexpected key write"); return nil },
-		})
+		restoreTestcertHooks(t)
+		writePEMHook = func(string, string, []byte) error { return pemErr }
+		writeECPrivateKeyHook = func(string, *ecdsa.PrivateKey) error {
+			t.Fatal("unexpected key write")
+			return nil
+		}
+		err := writeBundleFiles(bundle, ca, server, client)
 		if !errors.Is(err, pemErr) {
 			t.Fatalf("error = %v, want %v", err, pemErr)
 		}
 	})
 
 	t.Run("key write error", func(t *testing.T) {
-		err := writeBundleFilesWithDeps(bundle, ca, server, client, bundleWriteDeps{
-			writePEM:          func(string, string, []byte) error { return nil },
-			writeECPrivateKey: func(string, *ecdsa.PrivateKey) error { return keyErr },
-		})
+		restoreTestcertHooks(t)
+		writePEMHook = func(string, string, []byte) error { return nil }
+		writeECPrivateKeyHook = func(string, *ecdsa.PrivateKey) error { return keyErr }
+		err := writeBundleFiles(bundle, ca, server, client)
 		if !errors.Is(err, keyErr) {
 			t.Fatalf("error = %v, want %v", err, keyErr)
 		}
 	})
 }
 
-func TestWritePEMWithDepsReturnsEncodeAndCloseErrors(t *testing.T) {
+func TestWritePEMReturnsEncodeAndCloseErrors(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cert.pem")
 	encodeErr := errors.New("encode failed")
 	closeErr := errors.New("close failed")
 
 	t.Run("encode error", func(t *testing.T) {
-		err := writePEMWithDeps(path, "CERTIFICATE", []byte("payload"), writePEMDeps{
-			openFile:  func(string) (io.WriteCloser, error) { return &closeErrorWriteCloser{}, nil },
-			encodePEM: func(io.Writer, *pem.Block) error { return encodeErr },
-		})
+		restoreTestcertHooks(t)
+		openFileHook = func(string) (io.WriteCloser, error) { return &closeErrorWriteCloser{}, nil }
+		encodePEMHook = func(io.Writer, *pem.Block) error { return encodeErr }
+		err := writePEM(path, "CERTIFICATE", []byte("payload"))
 		if !errors.Is(err, encodeErr) {
 			t.Fatalf("error = %v, want %v", err, encodeErr)
 		}
 	})
 
 	t.Run("close error", func(t *testing.T) {
-		err := writePEMWithDeps(path, "CERTIFICATE", []byte("payload"), writePEMDeps{
-			openFile:  func(string) (io.WriteCloser, error) { return &closeErrorWriteCloser{closeErr: closeErr}, nil },
-			encodePEM: func(io.Writer, *pem.Block) error { return nil },
-		})
+		restoreTestcertHooks(t)
+		openFileHook = func(string) (io.WriteCloser, error) {
+			return &closeErrorWriteCloser{closeErr: closeErr}, nil
+		}
+		encodePEMHook = func(io.Writer, *pem.Block) error { return nil }
+		err := writePEM(path, "CERTIFICATE", []byte("payload"))
 		if !errors.Is(err, closeErr) {
 			t.Fatalf("error = %v, want %v", err, closeErr)
 		}

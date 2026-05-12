@@ -21,15 +21,15 @@ import (
 
 func TestMiddlewareWithDepsOwnerLookupError(t *testing.T) {
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
-	deps := fakeInspector{
+	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
 			"containers": {
 				"abc": {err: errors.New("upstream error"), found: true},
 			},
 		},
-	}.deps()
+	}
 
-	handler := middlewareWithDeps(testLogger(), opts, deps)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected handler not to be reached")
 	}))
 
@@ -49,7 +49,8 @@ func TestMiddlewareWithDepsOwnerLookupError(t *testing.T) {
 func TestMiddlewareWithDepsNormPathFallback(t *testing.T) {
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	reached := false
-	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.deps())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	fi := fakeInspector{}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached = true
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -67,13 +68,14 @@ func TestMiddlewareWithDepsNormPathFallback(t *testing.T) {
 
 func TestMiddlewareWithDepsUsesPrecomputedNormPath(t *testing.T) {
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
-	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{
+	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
 			"containers": {
 				"abc": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
 			},
 		},
-	}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected precomputed normalized path to drive owner lookup")
 	}))
 
@@ -94,7 +96,8 @@ func TestMiddlewareWithDepsUsesPrecomputedNormPath(t *testing.T) {
 
 func TestMiddlewareWithDepsMutateError(t *testing.T) {
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
-	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.deps())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	fi := fakeInspector{}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("expected handler not to be reached")
 	}))
 
@@ -114,13 +117,13 @@ func TestMiddlewareWithDepsMutateError(t *testing.T) {
 
 func TestAllowOwnershipRequestSwarmUpdate(t *testing.T) {
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
-	deps := fakeInspector{
+	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
 			"swarm": {"": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true}},
 		},
-	}.deps()
+	}
 
-	verdict, _, err := allowOwnershipRequest(context.Background(), "/swarm/update", opts, deps)
+	verdict, _, err := allowOwnershipRequest(context.Background(), "/swarm/update", opts, fi.inspectResource, fi.inspectExec)
 	if err != nil {
 		t.Fatalf("allowOwnershipRequest(swarm update) error = %v", err)
 	}
@@ -211,13 +214,13 @@ func TestDecodeResourceLabelsUnsupportedKind(t *testing.T) {
 
 func TestAllowOwnershipRequestExecError(t *testing.T) {
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
-	deps := fakeInspector{
+	fi := fakeInspector{
 		execs: map[string]execResult{
 			"exec-bad": {err: errors.New("exec lookup failed")},
 		},
-	}.deps()
+	}
 
-	_, _, err := allowOwnershipRequest(context.Background(), "/exec/exec-bad/start", opts, deps)
+	_, _, err := allowOwnershipRequest(context.Background(), "/exec/exec-bad/start", opts, fi.inspectResource, fi.inspectExec)
 	if err == nil {
 		t.Fatal("expected error from exec lookup failure")
 	}

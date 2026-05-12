@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Default deny for `HostConfig.CapAdd`** when no allowlist is configured. Previous releases left `CapAdd` uninspected on the container-create body inspector. To keep the previous behavior set `request_body.container_create.allow_all_capabilities: true` explicitly, or list the capabilities your workloads need under `allowed_capabilities`.
 - **Default deny for `HostConfig.UsernsMode=host`**. Set `request_body.container_create.allow_host_userns: true` to keep `userns_mode: host` working.
+- Consolidated the three side-channel Docker socket callers (`internal/ownership`, `internal/clientacl`, `internal/visibility`) into a shared `internal/dockerclient` package so transport configuration is defined in one place.
+- Collapsed `*WithDeps`/`*Deps` injection-struct pattern across `filter`, `testcert`, `clientacl`, `ownership`, and `proxy` packages: replaced with package-level `var <name>Hook = <realImpl>` declarations (proxy/filter) or direct function parameters (clientacl/ownership); no public API change.
+
+### Fixed
+
+- Fixed a connection-leak regression in `ownership`, `clientacl`, and `visibility` middleware: all three previously re-dialed the Docker Unix socket on every request because their inline `http.Transport` did not set `MaxIdleConnsPerHost` or `IdleConnTimeout`. They now share the `dockerclient.New` factory, which sets `MaxIdleConnsPerHost: 10` and `IdleConnTimeout: 90s`, matching the main reverse-proxy transport and enabling idle-connection reuse.
 
 ## [0.5.1] - 2026-05-11
 

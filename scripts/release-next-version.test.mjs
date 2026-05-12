@@ -9,6 +9,12 @@ import { inferReleaseLevel, bumpSemver, formatCLIError } from './release-next-ve
 
 const scriptPath = fileURLToPath(new URL('./release-next-version.mjs', import.meta.url));
 
+// Strip git plumbing env vars so that test-spawned git processes and the
+// script-under-test operate on the temp repo, not on the host repository.
+const cleanEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) => k !== 'GIT_DIR' && k !== 'GIT_WORK_TREE'),
+);
+
 describe('inferReleaseLevel', () => {
   it('returns null for empty commit list', () => {
     assert.equal(inferReleaseLevel([]), null);
@@ -159,6 +165,7 @@ describe('release-next-version CLI', () => {
   it('prints a manual bump result', () => {
     const result = spawnSync(process.execPath, [scriptPath, 'ignored', '--current', '1.2.3', '--bump', 'minor'], {
       encoding: 'utf8',
+      env: cleanEnv,
     });
 
     assert.equal(result.status, 0, result.stderr);
@@ -169,6 +176,7 @@ describe('release-next-version CLI', () => {
   it('fails when a CLI flag is missing its value', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--current'], {
       encoding: 'utf8',
+      env: cleanEnv,
     });
 
     assert.equal(result.status, 1);
@@ -178,6 +186,7 @@ describe('release-next-version CLI', () => {
   it('fails when a CLI flag is followed by another flag', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--current', '--bump', 'patch'], {
       encoding: 'utf8',
+      env: cleanEnv,
     });
 
     assert.equal(result.status, 1);
@@ -187,6 +196,7 @@ describe('release-next-version CLI', () => {
   it('fails when current version is missing', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--bump', 'patch'], {
       encoding: 'utf8',
+      env: cleanEnv,
     });
 
     assert.equal(result.status, 1);
@@ -196,6 +206,7 @@ describe('release-next-version CLI', () => {
   it('fails when auto bump is missing the from ref', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--current', '1.2.3'], {
       encoding: 'utf8',
+      env: cleanEnv,
     });
 
     assert.equal(result.status, 1);
@@ -216,6 +227,7 @@ describe('release-next-version CLI', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--current', '1.2.3', '--from', fromRef], {
       cwd: repoDir,
       encoding: 'utf8',
+      env: cleanEnv,
     });
 
     assert.equal(result.status, 0, result.stderr);
@@ -238,6 +250,7 @@ describe('release-next-version CLI', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--current', '1.2.3', '--from', fromRef, '--to', toRef], {
       cwd: repoDir,
       encoding: 'utf8',
+      env: cleanEnv,
     });
 
     assert.equal(result.status, 0, result.stderr);
@@ -259,6 +272,7 @@ describe('release-next-version CLI', () => {
     const result = spawnSync(process.execPath, [scriptPath, '--current', '1.2.3', '--from', fromRef], {
       cwd: repoDir,
       encoding: 'utf8',
+      env: cleanEnv,
     });
 
     assert.equal(result.status, 1);
@@ -281,6 +295,7 @@ function createTempGitRepo() {
 function git(cwd, args) {
   return execFileSync('git', args, {
     cwd,
+    env: cleanEnv,
     encoding: 'utf8',
   });
 }
