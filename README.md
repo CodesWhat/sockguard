@@ -1,2 +1,1 @@
 initial
-noise
