@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"Image\":\"busybox:1.37\",\"HostConfig\":{\"Privileged\":true}}")

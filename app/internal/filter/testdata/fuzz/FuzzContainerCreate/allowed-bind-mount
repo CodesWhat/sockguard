@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"Image\":\"busybox:1.37\",\"HostConfig\":{\"Binds\":[\"/srv/sockguard/data:/data:rw\",\"named-cache:/cache\"],\"Mounts\":[{\"Type\":\"bind\",\"Source\":\"/srv/sockguard/config\",\"Target\":\"/config\"},{\"Type\":\"volume\",\"Source\":\"build-cache\",\"Target\":\"/var/cache\"}]}}")

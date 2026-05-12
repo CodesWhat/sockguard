@@ -1,0 +1,4 @@
+go test fuzz v1
+string("remote=https%3A%2F%2Fgithub.com%2Facme%2Fapp.git")
+string("")
+[]byte("ignored")

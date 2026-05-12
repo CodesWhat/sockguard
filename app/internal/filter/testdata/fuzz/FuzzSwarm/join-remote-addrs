@@ -1,0 +1,4 @@
+go test fuzz v1
+string("/swarm/join")
+string("")
+[]byte("{\"RemoteAddrs\":[\"manager.internal:2377\",\"other.internal:2377\"]}")
