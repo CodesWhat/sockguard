@@ -63,6 +63,10 @@ func New(
 
 // Lookup returns cached labels for a resource when they are still fresh and
 // shares any in-flight miss with concurrent callers. Errors are never cached.
+//
+// The returned map is owned by the caller; it is a defensive copy of the
+// cached entry so callers may not mutate it without risk of corrupting
+// subsequent cache hits.
 func (c *Cache) Lookup(ctx context.Context, kind, identifier string) (map[string]string, bool, error) {
 	now := c.now()
 	cacheKey := key{kind: kind, identifier: identifier}
@@ -82,6 +86,10 @@ func (c *Cache) Lookup(ctx context.Context, kind, identifier string) (map[string
 	c.mu.Unlock()
 
 	labels, found, err := c.resolve(ctx, kind, identifier)
+	// Clone labels once for the cache entry (and in-flight waiters). The
+	// original resolver map is returned directly to this goroutine's caller
+	// so we avoid a second allocation — the resolver always returns a fresh
+	// map from JSON decode, and the cache's copy is independent of it.
 	cached := cloneLabels(labels)
 
 	c.mu.Lock()
@@ -95,7 +103,7 @@ func (c *Cache) Lookup(ctx context.Context, kind, identifier string) (map[string
 	close(call.done)
 	c.mu.Unlock()
 
-	return cloneLabels(cached), found, err
+	return labels, found, err
 }
 
 func (c *Cache) storeLocked(cacheKey key, labels map[string]string, found bool, at time.Time) {
@@ -121,10 +129,9 @@ func (c *Cache) storeLocked(cacheKey key, labels map[string]string, found bool, 
 	c.entries[cacheKey] = entry{labels: labels, found: found, at: at}
 }
 
-// cloneLabels intentionally returns a defensive copy before exposing cached
-// resolver output to callers. The ownership and visibility paths treat label
-// maps as ordinary mutable Go maps, so sharing the cached backing map across
-// requests would let one caller corrupt later cache hits.
+// cloneLabels returns a defensive copy of a label map. It is used when storing
+// resolver output into the cache entry (and in-flight lookup) so the cache's
+// backing map is never the same pointer as anything returned to a caller.
 func cloneLabels(labels map[string]string) map[string]string {
 	if labels == nil {
 		return nil

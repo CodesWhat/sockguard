@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	maxJSONInspectorFuzzBytes   = maxServiceBodyBytes + 1024
-	maxSwarmInspectorFuzzBytes  = maxSwarmBodyBytes + 1024
-	maxPluginInspectorFuzzBytes = maxPluginConfigBytes + (8 << 10)
+	maxJSONInspectorFuzzBytes    = maxServiceBodyBytes + 1024
+	maxSwarmInspectorFuzzBytes   = maxSwarmBodyBytes + 1024
+	maxPluginInspectorFuzzBytes  = maxPluginConfigBytes + (8 << 10)
+	maxNetworkInspectorFuzzBytes = maxNetworkBodyBytes + 1024
 )
 
 func FuzzVolume(f *testing.F) {
@@ -143,6 +144,38 @@ func FuzzPlugin(f *testing.F) {
 		body = truncateParserFuzzBytes(body, maxPluginInspectorFuzzBytes)
 
 		req := newJSONInspectorFuzzRequest(http.MethodPost, path, rawQuery, body)
+		_, _ = policy.inspect(nil, req, NormalizePath(path))
+		drainFuzzRequestBody(req)
+	})
+}
+
+func FuzzNetwork(f *testing.F) {
+	f.Add("/networks/create", []byte(`{"Driver":"bridge","Name":"app-net"}`))
+	f.Add("/networks/create", []byte(`{"Driver":"custom","Scope":"swarm","Ingress":true,"Attachable":true,"ConfigOnly":true,"ConfigFrom":{"Network":"base"},"IPAM":{"Driver":"custom","Config":[{}],"Options":{"foo":"bar"}},"Options":{"opt":"val"}}`))
+	f.Add("/networks/net-1/connect", []byte(`{"EndpointConfig":{"IPAMConfig":{"IPv4Address":"10.0.0.5"},"MacAddress":"02:42:ac:11:00:05","Aliases":["web"],"DriverOpts":{"x":"y"}}}`))
+	f.Add("/networks/net-1/disconnect", []byte(`{"Force":true}`))
+	f.Add("/networks/create", []byte(`{`))
+	f.Add("/v1.54/networks/create", bytes.Repeat([]byte("a"), maxNetworkBodyBytes+1))
+
+	policy := newNetworkPolicy(NetworkOptions{
+		AllowCustomDrivers:     true,
+		AllowSwarmScope:        true,
+		AllowIngress:           true,
+		AllowAttachable:        true,
+		AllowConfigOnly:        true,
+		AllowConfigFrom:        true,
+		AllowCustomIPAMDrivers: true,
+		AllowCustomIPAMConfig:  true,
+		AllowIPAMOptions:       true,
+		AllowDriverOptions:     true,
+		AllowEndpointConfig:    true,
+		AllowDisconnectForce:   true,
+	})
+
+	f.Fuzz(func(t *testing.T, path string, body []byte) {
+		body = truncateParserFuzzBytes(body, maxNetworkInspectorFuzzBytes)
+
+		req := newJSONInspectorFuzzRequest(http.MethodPost, path, "", body)
 		_, _ = policy.inspect(nil, req, NormalizePath(path))
 		drainFuzzRequestBody(req)
 	})

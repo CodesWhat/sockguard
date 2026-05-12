@@ -222,139 +222,35 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 	}
 }
 
+// adaptNoLogger wraps an inspect func that has no logger parameter into the
+// standard (*slog.Logger, *http.Request, string) → (string, error) signature.
+func adaptNoLogger(fn func(*http.Request, string) (string, error)) func(*slog.Logger, *http.Request, string) (string, error) {
+	return func(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
+		return fn(r, normalizedPath)
+	}
+}
+
 func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy {
 	cfg = cfg.normalized()
-	containerCreate := newContainerCreatePolicy(cfg.ContainerCreate)
-	exec := newExecPolicy(cfg.Exec)
-	imagePull := newImagePullPolicy(cfg.ImagePull)
-	build := newBuildPolicy(cfg.Build)
-	containerUpdate := newContainerUpdatePolicy(cfg.ContainerUpdate)
-	containerArchive := newContainerArchivePolicy(cfg.ContainerArchive)
-	imageLoad := newImageLoadPolicy(cfg.ImageLoad)
-	volume := newVolumePolicy(cfg.Volume)
-	network := newNetworkPolicy(cfg.Network)
-	secret := newSecretPolicy(cfg.Secret)
-	configPolicy := newConfigPolicy(cfg.Config)
-	service := newServicePolicy(cfg.Service)
-	swarm := newSwarmPolicy(cfg.Swarm)
-	node := newNodePolicy(cfg.Node)
-	plugin := newPluginPolicy(cfg.Plugin)
-
 	return runtimePolicy{
 		rules:                 rules,
 		denyResponseVerbosity: cfg.DenyResponseVerbosity,
 		inspectPolicies: []requestInspectPolicy{
-			{
-				matches:           matchesContainerCreateInspection,
-				severity:          inspectSeverityCritical,
-				inspect:           containerCreate.inspect,
-				errorLogMessage:   "failed to inspect container create request body",
-				denyReasonOnError: "unable to inspect container create request body",
-			},
-			{
-				matches:           matchesExecInspection,
-				severity:          inspectSeverityHigh,
-				inspect:           exec.inspect,
-				errorLogMessage:   "failed to inspect exec request body",
-				denyReasonOnError: "unable to inspect exec request body",
-			},
-			{
-				matches:  matchesImagePullInspection,
-				severity: inspectSeverityHigh,
-				inspect: func(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-					return imagePull.inspect(r, normalizedPath)
-				},
-				errorLogMessage:   "failed to inspect image pull request",
-				denyReasonOnError: "unable to inspect image pull request",
-			},
-			{
-				matches:  matchesBuildInspection,
-				severity: inspectSeverityCritical,
-				inspect: func(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-					return build.inspect(r, normalizedPath)
-				},
-				errorLogMessage:   "failed to inspect build request",
-				denyReasonOnError: "unable to inspect build request",
-			},
-			{
-				matches:           matchesContainerUpdateInspection,
-				severity:          inspectSeverityHigh,
-				inspect:           containerUpdate.inspect,
-				errorLogMessage:   "failed to inspect container update request body",
-				denyReasonOnError: "unable to inspect container update request body",
-			},
-			{
-				matches:           matchesContainerArchiveInspection,
-				severity:          inspectSeverityHigh,
-				inspect:           containerArchive.inspect,
-				errorLogMessage:   "failed to inspect container archive request body",
-				denyReasonOnError: "unable to inspect container archive request body",
-			},
-			{
-				matches:           matchesImageLoadInspection,
-				severity:          inspectSeverityHigh,
-				inspect:           imageLoad.inspect,
-				errorLogMessage:   "failed to inspect image load request body",
-				denyReasonOnError: "unable to inspect image load request body",
-			},
-			{
-				matches:  matchesVolumeInspection,
-				severity: inspectSeverityMedium,
-				inspect: func(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-					return volume.inspect(logger, r, normalizedPath)
-				},
-				errorLogMessage:   "failed to inspect volume create request body",
-				denyReasonOnError: "unable to inspect volume create request body",
-			},
-			{
-				matches:           matchesNetworkInspection,
-				severity:          inspectSeverityHigh,
-				inspect:           network.inspect,
-				errorLogMessage:   "failed to inspect network request body",
-				denyReasonOnError: "unable to inspect network request body",
-			},
-			{
-				matches:           matchesSecretInspection,
-				severity:          inspectSeverityMedium,
-				inspect:           secret.inspect,
-				errorLogMessage:   "failed to inspect secret create request body",
-				denyReasonOnError: "unable to inspect secret create request body",
-			},
-			{
-				matches:           matchesConfigInspection,
-				severity:          inspectSeverityMedium,
-				inspect:           configPolicy.inspect,
-				errorLogMessage:   "failed to inspect config create request body",
-				denyReasonOnError: "unable to inspect config create request body",
-			},
-			{
-				matches:           matchesServiceInspection,
-				severity:          inspectSeverityCritical,
-				inspect:           service.inspect,
-				errorLogMessage:   "failed to inspect service request body",
-				denyReasonOnError: "unable to inspect service request body",
-			},
-			{
-				matches:           matchesSwarmInspection,
-				severity:          inspectSeverityCritical,
-				inspect:           swarm.inspect,
-				errorLogMessage:   "failed to inspect swarm request body",
-				denyReasonOnError: "unable to inspect swarm request body",
-			},
-			{
-				matches:           matchesNodeInspection,
-				severity:          inspectSeverityHigh,
-				inspect:           node.inspect,
-				errorLogMessage:   "failed to inspect node update request body",
-				denyReasonOnError: "unable to inspect node update request body",
-			},
-			{
-				matches:           matchesPluginInspection,
-				severity:          inspectSeverityCritical,
-				inspect:           plugin.inspect,
-				errorLogMessage:   "failed to inspect plugin request body",
-				denyReasonOnError: "unable to inspect plugin request body",
-			},
+			{matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreatePolicy(cfg.ContainerCreate).inspect, "failed to inspect container create request body", "unable to inspect container create request body"},
+			{matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
+			{matchesImagePullInspection, inspectSeverityHigh, adaptNoLogger(newImagePullPolicy(cfg.ImagePull).inspect), "failed to inspect image pull request", "unable to inspect image pull request"},
+			{matchesBuildInspection, inspectSeverityCritical, adaptNoLogger(newBuildPolicy(cfg.Build).inspect), "failed to inspect build request", "unable to inspect build request"},
+			{matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
+			{matchesContainerArchiveInspection, inspectSeverityHigh, newContainerArchivePolicy(cfg.ContainerArchive).inspect, "failed to inspect container archive request body", "unable to inspect container archive request body"},
+			{matchesImageLoadInspection, inspectSeverityHigh, newImageLoadPolicy(cfg.ImageLoad).inspect, "failed to inspect image load request body", "unable to inspect image load request body"},
+			{matchesVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.Volume).inspect, "failed to inspect volume create request body", "unable to inspect volume create request body"},
+			{matchesNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.Network).inspect, "failed to inspect network request body", "unable to inspect network request body"},
+			{matchesSecretInspection, inspectSeverityMedium, newSecretPolicy(cfg.Secret).inspect, "failed to inspect secret create request body", "unable to inspect secret create request body"},
+			{matchesConfigInspection, inspectSeverityMedium, newConfigPolicy(cfg.Config).inspect, "failed to inspect config create request body", "unable to inspect config create request body"},
+			{matchesServiceInspection, inspectSeverityCritical, newServicePolicy(cfg.Service).inspect, "failed to inspect service request body", "unable to inspect service request body"},
+			{matchesSwarmInspection, inspectSeverityCritical, newSwarmPolicy(cfg.Swarm).inspect, "failed to inspect swarm request body", "unable to inspect swarm request body"},
+			{matchesNodeInspection, inspectSeverityHigh, newNodePolicy(cfg.Node).inspect, "failed to inspect node update request body", "unable to inspect node update request body"},
+			{matchesPluginInspection, inspectSeverityCritical, newPluginPolicy(cfg.Plugin).inspect, "failed to inspect plugin request body", "unable to inspect plugin request body"},
 		},
 	}
 }
@@ -428,36 +324,48 @@ func matchesPluginInspection(r *http.Request, normalizedPath string) bool {
 		(normalizedPath == "/plugins/pull" || normalizedPath == "/plugins/create" || isPluginUpgradePath(normalizedPath) || isPluginSetPath(normalizedPath))
 }
 
+// inspectBuckets holds matched policies grouped by severity for zero-alloc
+// single-pass triage in inspectAllowedRequest. The array is stack-allocated
+// because [3][16] fits on the frame and the slice backing p.inspectPolicies
+// caps out at ~15 entries.
+type inspectBuckets [3][16]*requestInspectPolicy
+
 func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int) {
-	bestSeverity := inspectSeverity(-1)
-	for _, policy := range p.inspectPolicies {
+	var buckets inspectBuckets
+	var counts [3]int
+
+	for i := range p.inspectPolicies {
+		policy := &p.inspectPolicies[i]
 		if policy.matches != nil && !policy.matches(r, normalizedPath) {
 			continue
 		}
-		if policy.severity > bestSeverity {
-			bestSeverity = policy.severity
+		sev := int(policy.severity)
+		if counts[sev] < len(buckets[sev]) {
+			buckets[sev][counts[sev]] = policy
+			counts[sev]++
 		}
 	}
 
-	if bestSeverity < 0 {
-		return "", "", 0
-	}
-
-	for _, policy := range p.inspectPolicies {
-		if policy.severity != bestSeverity || (policy.matches != nil && !policy.matches(r, normalizedPath)) {
+	// Walk severity buckets from highest to lowest; run inspect on the first
+	// non-empty bucket only.
+	for sev := len(buckets) - 1; sev >= 0; sev-- {
+		if counts[sev] == 0 {
 			continue
 		}
-		denyReason, err := policy.inspect(logger, r, normalizedPath)
-		if err != nil {
-			if rejection, ok := requestRejectionFromError(err); ok {
-				return rejection.reason, requestRejectionReasonCode(rejection.status), rejection.status
+		for _, policy := range buckets[sev][:counts[sev]] {
+			denyReason, err := policy.inspect(logger, r, normalizedPath)
+			if err != nil {
+				if rejection, ok := requestRejectionFromError(err); ok {
+					return rejection.reason, requestRejectionReasonCode(rejection.status), rejection.status
+				}
+				logger.ErrorContext(r.Context(), policy.errorLogMessage, "error", err, "method", r.Method, "path", r.URL.Path)
+				return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden
 			}
-			logger.ErrorContext(r.Context(), policy.errorLogMessage, "error", err, "method", r.Method, "path", r.URL.Path)
-			return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden
+			if denyReason != "" {
+				return denyReason, reasonCodeRequestBodyPolicyDenied, http.StatusForbidden
+			}
 		}
-		if denyReason != "" {
-			return denyReason, reasonCodeRequestBodyPolicyDenied, http.StatusForbidden
-		}
+		return "", "", 0
 	}
 	return "", "", 0
 }

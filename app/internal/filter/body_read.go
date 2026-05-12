@@ -8,6 +8,11 @@ import (
 	"net/http"
 )
 
+// MaxResponseBodyBytes is the upper bound for Docker API response bodies that
+// sockguard inspects and optionally redacts. Responses larger than this limit
+// are rejected to avoid unbounded memory allocation.
+const MaxResponseBodyBytes = 8 << 20 // 8 MiB
+
 type bodyTooLargeError struct {
 	limit int64
 }

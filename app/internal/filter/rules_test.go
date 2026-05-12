@@ -581,6 +581,55 @@ func TestEvaluate(t *testing.T) {
 	}
 }
 
+// TestEvaluateRuleOrder asserts the first-match-wins invariant that underpins
+// the default-deny security posture: a deny at index 0 must beat an allow at
+// index 1 for the same path, and vice-versa.
+func TestEvaluateRuleOrder(t *testing.T) {
+	denyFirst, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/secret", Action: ActionDeny, Index: 0})
+	allowSecond, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/secret", Action: ActionAllow, Index: 1})
+
+	allowFirst, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/public", Action: ActionAllow, Index: 0})
+	denySecond, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/public", Action: ActionDeny, Index: 1})
+
+	tests := []struct {
+		name       string
+		rules      []*CompiledRule
+		path       string
+		wantAction Action
+		wantIndex  int
+	}{
+		{
+			// Security-critical invariant: deny-at-0 must beat allow-at-1 for the same path.
+			name:       "deny before allow is denied",
+			rules:      []*CompiledRule{denyFirst, allowSecond},
+			path:       "/secret",
+			wantAction: ActionDeny,
+			wantIndex:  0,
+		},
+		{
+			// Symmetric inverse: allow-at-0 beats deny-at-1 for the same path.
+			name:       "allow before deny is allowed",
+			rules:      []*CompiledRule{allowFirst, denySecond},
+			path:       "/public",
+			wantAction: ActionAllow,
+			wantIndex:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			action, index, _ := Evaluate(tt.rules, req)
+			if action != tt.wantAction {
+				t.Errorf("action = %v, want %v", action, tt.wantAction)
+			}
+			if index != tt.wantIndex {
+				t.Errorf("index = %d, want %d", index, tt.wantIndex)
+			}
+		})
+	}
+}
+
 func TestMethodEdgeCases(t *testing.T) {
 	rule, err := CompileRule(Rule{
 		Methods: []string{"GET"},

@@ -1,0 +1,4 @@
+go test fuzz v1
+string("/v1.54/swarm/update")
+string("")
+[]byte("{")

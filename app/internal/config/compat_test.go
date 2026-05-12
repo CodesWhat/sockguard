@@ -529,6 +529,65 @@ func TestCompatRuleIndexArithmetic(t *testing.T) {
 	}
 }
 
+func TestCompatAllowPruneDeleteKillGeneratedRules(t *testing.T) {
+	tests := []struct {
+		name      string
+		envKey    string
+		wantRules []struct{ method, path string }
+	}{
+		{
+			name:   "ALLOW_PRUNE",
+			envKey: "ALLOW_PRUNE",
+			wantRules: []struct{ method, path string }{
+				{"POST", "/containers/prune"},
+			},
+		},
+		{
+			name:   "ALLOW_DELETE",
+			envKey: "ALLOW_DELETE",
+			wantRules: []struct{ method, path string }{
+				{"DELETE", "/containers/*"},
+			},
+		},
+		{
+			name:   "ALLOW_KILL",
+			envKey: "ALLOW_KILL",
+			wantRules: []struct{ method, path string }{
+				{"POST", "/containers/*/kill"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			t.Setenv(tt.envKey, "1")
+
+			if !ApplyCompat(&cfg, discardLogger) {
+				t.Fatal("expected compat to activate")
+			}
+
+			for _, want := range tt.wantRules {
+				found := false
+				for _, r := range cfg.Rules {
+					if r.Match.Method == want.method && r.Match.Path == want.path && r.Action == "allow" {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("expected allow rule %s %s not found in rules: %+v", want.method, want.path, cfg.Rules)
+				}
+			}
+
+			last := cfg.Rules[len(cfg.Rules)-1]
+			if last.Action != "deny" || last.Match.Method != "*" {
+				t.Error("expected catch-all deny as last rule")
+			}
+		})
+	}
+}
+
 func TestGenerateGranularPostRules(t *testing.T) {
 	t.Run("restarts env allows stop restart and kill", func(t *testing.T) {
 		t.Setenv("ALLOW_RESTARTS", "1")

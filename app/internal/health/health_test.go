@@ -1,7 +1,6 @@
 package health
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/testhelp"
 	"github.com/codeswhat/sockguard/internal/version"
 )
 
@@ -41,9 +41,6 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 }
 
-func testBufferLogger(buf *bytes.Buffer) *slog.Logger {
-	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-}
 
 type headerCallTrackingWriter struct {
 	*httptest.ResponseRecorder
@@ -592,7 +589,7 @@ func TestMonitorStartWatchdogIgnoresNonPositiveInterval(t *testing.T) {
 }
 
 func TestMonitorEmitWatchdogCheckLogsUnhealthyChange(t *testing.T) {
-	var logs bytes.Buffer
+	collector := &testhelp.CollectingHandler{}
 	checkErr := errors.New("upstream down")
 	checker := newUpstreamHealthChecker(
 		0,
@@ -603,7 +600,7 @@ func TestMonitorEmitWatchdogCheckLogsUnhealthyChange(t *testing.T) {
 		},
 	)
 	checker.failureTTL = 0
-	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), testBufferLogger(&logs), checker)
+	monitor := newMonitorWithChecker("/tmp/upstream.sock", time.Now(), collector.Logger(), checker)
 	monitor.storeState("connected", nil)
 
 	observed := make(chan WatchdogState, 1)
@@ -615,12 +612,23 @@ func TestMonitorEmitWatchdogCheckLogsUnhealthyChange(t *testing.T) {
 	if !state.Changed || state.Up || state.Status != "unreachable" || !errors.Is(state.Err, checkErr) {
 		t.Fatalf("watchdog state = %#v, want changed unhealthy state", state)
 	}
-	logText := logs.String()
-	if !strings.Contains(logText, "level=WARN") {
-		t.Fatalf("log = %q, want WARN level", logText)
+
+	// Assert on structured records: expect a WARN record with error attr == checkErr.Error().
+	// The production code logs via slog.String("error", err.Error()), so the attr is a string.
+	var foundWarn bool
+	var gotErrAttr string
+	for _, r := range collector.Records() {
+		if r.Level == slog.LevelWarn {
+			gotErrAttr, _ = r.Attrs["error"].(string)
+			foundWarn = true
+			break
+		}
 	}
-	if !strings.Contains(logText, "error=\"upstream down\"") {
-		t.Fatalf("log = %q, want upstream error attribute", logText)
+	if !foundWarn {
+		t.Fatalf("no WARN record logged; all records: %#v", collector.Records())
+	}
+	if gotErrAttr != checkErr.Error() {
+		t.Fatalf("WARN record error attr = %q, want %q", gotErrAttr, checkErr.Error())
 	}
 }
 

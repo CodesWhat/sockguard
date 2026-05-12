@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"Image\":\"busybox:1.37\",\"HostConfig\":{\"Binds\":[\"/srv/unsafe:/data:rw\"],\"Mounts\":[{\"Type\":\"bind\",\"Source\":\"/srv/also-unsafe\",\"Target\":\"/config\"}]}}")

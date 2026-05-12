@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	maxResponseBodyBytes = 8 << 20
-	redactedValue        = "<redacted>"
+	redactedValue = "<redacted>"
 )
 
 // ErrResponseRejected indicates Sockguard intentionally rejected an upstream
@@ -59,19 +58,12 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 
 	normPath := requestfilter.NormalizePath(resp.Request.URL.Path)
 
+	// Bespoke handlers (non-uniform guard or body shape).
 	switch {
 	case isContainerInspectPath(normPath):
 		return f.modifyContainerInspect(resp)
 	case normPath == "/containers/json":
 		return f.modifyContainerList(resp)
-	case normPath == "/services":
-		return f.modifyServiceList(resp)
-	case isServiceInspectPath(normPath):
-		return f.modifyServiceInspect(resp)
-	case normPath == "/tasks":
-		return f.modifyTaskList(resp)
-	case isTaskInspectPath(normPath):
-		return f.modifyTaskInspect(resp)
 	case normPath == "/networks":
 		return f.modifyNetworkList(resp)
 	case isNetworkInspectPath(normPath):
@@ -80,33 +72,16 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifyVolumeList(resp)
 	case isVolumeInspectPath(normPath):
 		return f.modifyVolumeInspect(resp)
-	case normPath == "/secrets":
-		return f.modifySecretList(resp)
-	case isSecretInspectPath(normPath):
-		return f.modifySecretInspect(resp)
-	case normPath == "/configs":
-		return f.modifyConfigList(resp)
-	case isConfigInspectPath(normPath):
-		return f.modifyConfigInspect(resp)
-	case normPath == "/plugins":
-		return f.modifyPluginList(resp)
-	case isPluginInspectPath(normPath):
-		return f.modifyPluginInspect(resp)
-	case normPath == "/nodes":
-		return f.modifyNodeList(resp)
-	case isNodeInspectPath(normPath):
-		return f.modifyNodeInspect(resp)
-	case normPath == "/swarm":
-		return f.modifySwarmInspect(resp)
 	case normPath == "/swarm/unlockkey":
 		return f.modifySwarmUnlockKey(resp)
 	case normPath == "/info":
 		return f.modifyInfo(resp)
 	case normPath == "/system/df":
 		return f.modifySystemDataUsage(resp)
-	default:
-		return nil
 	}
+
+	// Table-driven list/inspect pairs (uniform guard + modifyListResponse / modifyMapResponse).
+	return f.dispatchTableEntry(normPath, resp)
 }
 
 func isSuccessfulBodyResponse(statusCode int) bool {
@@ -278,95 +253,129 @@ func (f *Filter) modifyVolumeInspect(resp *http.Response) error {
 	return writeResponseBody(resp, payload)
 }
 
-func (f *Filter) modifyServiceList(resp *http.Response) error {
-	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
-		return nil
-	}
-	return modifyListResponse(resp, f.redactServicePayload)
+// tableEntry describes one list or inspect endpoint that follows the uniform
+// guard-then-delegate pattern: if active(opts) is false, skip; otherwise
+// call modifyListResponse (isList=true) or modifyMapResponse (isList=false).
+type tableEntry struct {
+	// path is the exact normalized path (e.g. "/services") or "" for
+	// inspect paths matched by an isXInspectPath predicate.
+	path    string
+	inspect func(string) bool // non-nil for inspect-path entries; nil for exact-match list entries
+	isList  bool
+	active  func(*Options) bool
+	mutate  func(*Filter) func(map[string]any) error
 }
 
-func (f *Filter) modifyServiceInspect(resp *http.Response) error {
-	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
-		return nil
-	}
-	return modifyMapResponse(resp, f.redactServicePayload)
+// responseTable covers the six list/inspect pairs whose guard + dispatch are uniform.
+// Each resource appears as two consecutive entries: list then inspect.
+var responseTable = []tableEntry{
+	{
+		path:   "/services",
+		isList: true,
+		active: func(o *Options) bool {
+			return o.RedactContainerEnv || o.RedactMountPaths || o.RedactNetworkTopology || o.RedactSensitiveData
+		},
+		mutate: func(f *Filter) func(map[string]any) error { return f.redactServicePayload },
+	},
+	{
+		inspect: isServiceInspectPath,
+		isList:  false,
+		active: func(o *Options) bool {
+			return o.RedactContainerEnv || o.RedactMountPaths || o.RedactNetworkTopology || o.RedactSensitiveData
+		},
+		mutate: func(f *Filter) func(map[string]any) error { return f.redactServicePayload },
+	},
+	{
+		path:   "/tasks",
+		isList: true,
+		active: func(o *Options) bool {
+			return o.RedactContainerEnv || o.RedactMountPaths || o.RedactNetworkTopology || o.RedactSensitiveData
+		},
+		mutate: func(f *Filter) func(map[string]any) error { return f.redactTaskPayload },
+	},
+	{
+		inspect: isTaskInspectPath,
+		isList:  false,
+		active: func(o *Options) bool {
+			return o.RedactContainerEnv || o.RedactMountPaths || o.RedactNetworkTopology || o.RedactSensitiveData
+		},
+		mutate: func(f *Filter) func(map[string]any) error { return f.redactTaskPayload },
+	},
+	{
+		path:   "/secrets",
+		isList: true,
+		active: func(o *Options) bool { return o.RedactSensitiveData },
+		mutate: func(*Filter) func(map[string]any) error { return redactSecretPayload },
+	},
+	{
+		inspect: isSecretInspectPath,
+		isList:  false,
+		active:  func(o *Options) bool { return o.RedactSensitiveData },
+		mutate:  func(*Filter) func(map[string]any) error { return redactSecretPayload },
+	},
+	{
+		path:   "/configs",
+		isList: true,
+		active: func(o *Options) bool { return o.RedactSensitiveData },
+		mutate: func(*Filter) func(map[string]any) error { return redactConfigPayload },
+	},
+	{
+		inspect: isConfigInspectPath,
+		isList:  false,
+		active:  func(o *Options) bool { return o.RedactSensitiveData },
+		mutate:  func(*Filter) func(map[string]any) error { return redactConfigPayload },
+	},
+	{
+		path:   "/plugins",
+		isList: true,
+		active: func(o *Options) bool { return o.RedactContainerEnv || o.RedactMountPaths },
+		mutate: func(f *Filter) func(map[string]any) error { return f.redactPluginPayload },
+	},
+	{
+		inspect: isPluginInspectPath,
+		isList:  false,
+		active:  func(o *Options) bool { return o.RedactContainerEnv || o.RedactMountPaths },
+		mutate:  func(f *Filter) func(map[string]any) error { return f.redactPluginPayload },
+	},
+	{
+		path:   "/nodes",
+		isList: true,
+		active: func(o *Options) bool { return o.RedactNetworkTopology || o.RedactSensitiveData },
+		mutate: func(f *Filter) func(map[string]any) error { return f.redactNodePayload },
+	},
+	{
+		inspect: isNodeInspectPath,
+		isList:  false,
+		active:  func(o *Options) bool { return o.RedactNetworkTopology || o.RedactSensitiveData },
+		mutate:  func(f *Filter) func(map[string]any) error { return f.redactNodePayload },
+	},
+	{
+		path:   "/swarm",
+		isList: false,
+		active: func(o *Options) bool { return o.RedactNetworkTopology || o.RedactSensitiveData },
+		mutate: func(f *Filter) func(map[string]any) error { return f.redactSwarmPayload },
+	},
 }
 
-func (f *Filter) modifyTaskList(resp *http.Response) error {
-	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
-		return nil
+// dispatchTableEntry walks responseTable and calls the appropriate modify function
+// for the first entry whose path/inspect predicate matches normPath.
+func (f *Filter) dispatchTableEntry(normPath string, resp *http.Response) error {
+	for _, e := range responseTable {
+		matched := (e.path != "" && normPath == e.path) ||
+			(e.inspect != nil && e.inspect(normPath))
+		if !matched {
+			continue
+		}
+		if !e.active(&f.opts) {
+			return nil
+		}
+		mutate := e.mutate(f)
+		if e.isList {
+			return modifyListResponse(resp, mutate)
+		}
+		return modifyMapResponse(resp, mutate)
 	}
-	return modifyListResponse(resp, f.redactTaskPayload)
-}
-
-func (f *Filter) modifyTaskInspect(resp *http.Response) error {
-	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
-		return nil
-	}
-	return modifyMapResponse(resp, f.redactTaskPayload)
-}
-
-func (f *Filter) modifySecretList(resp *http.Response) error {
-	if !f.opts.RedactSensitiveData {
-		return nil
-	}
-	return modifyListResponse(resp, redactSecretPayload)
-}
-
-func (f *Filter) modifySecretInspect(resp *http.Response) error {
-	if !f.opts.RedactSensitiveData {
-		return nil
-	}
-	return modifyMapResponse(resp, redactSecretPayload)
-}
-
-func (f *Filter) modifyConfigList(resp *http.Response) error {
-	if !f.opts.RedactSensitiveData {
-		return nil
-	}
-	return modifyListResponse(resp, redactConfigPayload)
-}
-
-func (f *Filter) modifyConfigInspect(resp *http.Response) error {
-	if !f.opts.RedactSensitiveData {
-		return nil
-	}
-	return modifyMapResponse(resp, redactConfigPayload)
-}
-
-func (f *Filter) modifyPluginList(resp *http.Response) error {
-	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths {
-		return nil
-	}
-	return modifyListResponse(resp, f.redactPluginPayload)
-}
-
-func (f *Filter) modifyPluginInspect(resp *http.Response) error {
-	if !f.opts.RedactContainerEnv && !f.opts.RedactMountPaths {
-		return nil
-	}
-	return modifyMapResponse(resp, f.redactPluginPayload)
-}
-
-func (f *Filter) modifyNodeList(resp *http.Response) error {
-	if !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
-		return nil
-	}
-	return modifyListResponse(resp, f.redactNodePayload)
-}
-
-func (f *Filter) modifyNodeInspect(resp *http.Response) error {
-	if !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
-		return nil
-	}
-	return modifyMapResponse(resp, f.redactNodePayload)
-}
-
-func (f *Filter) modifySwarmInspect(resp *http.Response) error {
-	if !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
-		return nil
-	}
-	return modifyMapResponse(resp, f.redactSwarmPayload)
+	return nil
 }
 
 func (f *Filter) modifySwarmUnlockKey(resp *http.Response) error {
@@ -863,13 +872,13 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 
 	defer func() { _ = resp.Body.Close() }()
 
-	reader := &io.LimitedReader{R: resp.Body, N: maxResponseBodyBytes + 1}
+	reader := &io.LimitedReader{R: resp.Body, N: requestfilter.MaxResponseBodyBytes + 1}
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(body)) > maxResponseBodyBytes {
-		return nil, fmt.Errorf("response body exceeds %d bytes", maxResponseBodyBytes)
+	if int64(len(body)) > requestfilter.MaxResponseBodyBytes {
+		return nil, fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes)
 	}
 	return body, nil
 }
