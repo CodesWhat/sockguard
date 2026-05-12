@@ -310,6 +310,9 @@ request_body:
       - /dev/dri
     allow_device_requests: false
     allow_device_cgroup_rules: false
+    allowed_device_cgroup_rules:
+      - "c 1:3 rwm"   # /dev/null
+      - "c 226:* rwm" # /dev/dri/* GPU class
   exec:
     allowed_commands:
       - ["/usr/local/bin/pre-update", "--check"]
@@ -512,7 +515,7 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
 | **0.3.0** | Body inspection for create/exec/service/swarm/pull/build, owner labels, per-client profiles, visibility/redaction | ✅ shipped |
 | **0.4.0** | Hardening + body-inspection completion pass — canonical percent-decoded path matching; mTLS listener selectors (CN/DNS/IP/URI SAN + SHA-256 SPKI pins) and per-profile certificate selectors (CN/DNS/IP/URI/SPIFFE + SHA-256 SPKI pins); 413 on oversize bounded JSON/tar inspectors; multipart plugin-create inspection; container-create policy now blocks `Privileged`, `NetworkMode=host`, `PidMode=host`, `IpcMode=host`, non-allowlisted bind sources, non-allowlisted devices, `DeviceRequests`, and `DeviceCgroupRules` by default; new body inspectors close the remaining blind-write gaps for `containers/*/update`, `containers/*/archive`, `images/load`, `networks/create`/`*/connect`/`*/disconnect`, `swarm/unlock`, and `nodes/*/update`; profile-resolution memoization; build host-network denied regardless of opt-in combinations; config preflight rejects explicit empty/missing `--config`; fuzz watchdogs replace `-timeout=0`; `scripts/local-fuzz.sh` gains `--timeout`/`--parallel`/`--suite ultra`; private vuln reporting enabled with published disclosure inboxes | ✅ shipped |
 | **0.5.0** | Operator observability — Prometheus `/metrics`, active upstream socket watchdog, trace/log correlation without an OTLP exporter | ✅ shipped |
-| **0.6.0** | Secure container enforcement — no-new-privileges, non-root, readonly rootfs, drop-all-capabilities and CapAdd allowlist rails on `POST /containers/create`, memory / CPU / PIDs limit requirements, seccomp + AppArmor profile allowlists, host-userns default-deny, required `Config.Labels`; default-deny for `CapAdd` and `UsernsMode=host`. Image signature/attestation verification and runtime cgroup device policy remain follow-up work. | 🛠️ in progress |
+| **0.6.0** | Secure container enforcement — no-new-privileges, non-root, readonly rootfs, drop-all-capabilities and CapAdd allowlist rails on `POST /containers/create`, memory / CPU / PIDs limit requirements, seccomp + AppArmor profile allowlists, host-userns default-deny, required `Config.Labels`; default-deny for `CapAdd` and `UsernsMode=host`; structured `allowed_device_cgroup_rules` allowlist for cgroup device class policy. Image signature/attestation verification remains follow-up work. | 🛠️ in progress |
 | **0.7.0** | Abuse controls — per-client rate limits, burst budgets, concurrency caps, expensive-endpoint quotas | 🕒 planned |
 | **0.8.0** | Dynamic policy delivery — signed bundles, long-poll/hot reload, audit/warn/enforce rollout modes, admin API, policy versioning | 🕒 planned |
 

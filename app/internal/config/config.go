@@ -100,8 +100,9 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowedBindMounts      []string `mapstructure:"allowed_bind_mounts"`
 	AllowAllDevices        bool     `mapstructure:"allow_all_devices"`
 	AllowedDevices         []string `mapstructure:"allowed_devices"`
-	AllowDeviceRequests    bool     `mapstructure:"allow_device_requests"`
-	AllowDeviceCgroupRules bool     `mapstructure:"allow_device_cgroup_rules"`
+	AllowDeviceRequests         bool     `mapstructure:"allow_device_requests"`
+	AllowDeviceCgroupRules      bool     `mapstructure:"allow_device_cgroup_rules"`
+	AllowedDeviceCgroupRules    []string `mapstructure:"allowed_device_cgroup_rules"`
 
 	RequireNoNewPrivileges     bool     `mapstructure:"require_no_new_privileges"`
 	RequireNonRootUser         bool     `mapstructure:"require_non_root_user"`

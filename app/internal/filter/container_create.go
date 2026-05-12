@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"path"
 	"slices"
+	"sort"
 	"strings"
 )
 
@@ -27,8 +28,9 @@ type ContainerCreateOptions struct {
 	AllowedBindMounts      []string
 	AllowAllDevices        bool
 	AllowedDevices         []string
-	AllowDeviceRequests    bool
-	AllowDeviceCgroupRules bool
+	AllowDeviceRequests         bool
+	AllowDeviceCgroupRules      bool
+	AllowedDeviceCgroupRules    []string
 
 	// 0.6.0 secure-container rails.
 	RequireNoNewPrivileges     bool
@@ -56,8 +58,9 @@ type containerCreatePolicy struct {
 	allowedBindMounts      []string
 	allowAllDevices        bool
 	allowedDevices         []string
-	allowDeviceRequests    bool
-	allowDeviceCgroupRules bool
+	allowDeviceRequests         bool
+	allowDeviceCgroupRules      bool
+	allowedDeviceCgroupRules    []string
 
 	requireNoNewPrivileges     bool
 	requireNonRootUser         bool
@@ -134,16 +137,26 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowedDevices = append(allowedDevices, normalized)
 	}
 
+	allowedDeviceCgroupRules := make([]string, 0, len(opts.AllowedDeviceCgroupRules))
+	for _, rule := range opts.AllowedDeviceCgroupRules {
+		canonical, ok := canonicalizeDeviceCgroupRule(rule)
+		if !ok || slices.Contains(allowedDeviceCgroupRules, canonical) {
+			continue
+		}
+		allowedDeviceCgroupRules = append(allowedDeviceCgroupRules, canonical)
+	}
+
 	return containerCreatePolicy{
-		allowPrivileged:            opts.AllowPrivileged,
-		allowHostNetwork:           opts.AllowHostNetwork,
-		allowHostPID:               opts.AllowHostPID,
-		allowHostIPC:               opts.AllowHostIPC,
-		allowedBindMounts:          allowed,
-		allowAllDevices:            opts.AllowAllDevices,
-		allowedDevices:             allowedDevices,
-		allowDeviceRequests:        opts.AllowDeviceRequests,
-		allowDeviceCgroupRules:     opts.AllowDeviceCgroupRules,
+		allowPrivileged:             opts.AllowPrivileged,
+		allowHostNetwork:            opts.AllowHostNetwork,
+		allowHostPID:                opts.AllowHostPID,
+		allowHostIPC:                opts.AllowHostIPC,
+		allowedBindMounts:           allowed,
+		allowAllDevices:             opts.AllowAllDevices,
+		allowedDevices:              allowedDevices,
+		allowDeviceRequests:         opts.AllowDeviceRequests,
+		allowDeviceCgroupRules:      opts.AllowDeviceCgroupRules,
+		allowedDeviceCgroupRules:    allowedDeviceCgroupRules,
 		requireNoNewPrivileges:     opts.RequireNoNewPrivileges,
 		requireNonRootUser:         opts.RequireNonRootUser,
 		requireReadonlyRootfs:      opts.RequireReadonlyRootfs,
@@ -245,6 +258,7 @@ func (p containerCreatePolicy) allowsAllContainerCreateBodies() bool {
 		len(p.allowedSeccompProfiles) > 0 ||
 		len(p.allowedAppArmorProfiles) > 0 ||
 		len(p.requiredLabels) > 0 ||
+		len(p.allowedDeviceCgroupRules) > 0 ||
 		!p.allowAllCapabilities {
 		return false
 	}
@@ -267,8 +281,10 @@ func (p containerCreatePolicy) denyDeviceReason(hostConfig containerCreateHostCo
 	if !p.allowDeviceRequests && len(hostConfig.DeviceRequests) > 0 {
 		return "container create denied: device requests are not allowed"
 	}
-	if !p.allowDeviceCgroupRules && len(hostConfig.DeviceCgroupRules) > 0 {
-		return "container create denied: device cgroup rules are not allowed"
+	if len(hostConfig.DeviceCgroupRules) > 0 {
+		if denyReason := p.denyCgroupRulesReason(hostConfig.DeviceCgroupRules); denyReason != "" {
+			return denyReason
+		}
 	}
 	if p.allowAllDevices {
 		return ""
@@ -281,6 +297,188 @@ func (p containerCreatePolicy) denyDeviceReason(hostConfig containerCreateHostCo
 		}
 	}
 	return ""
+}
+
+// denyCgroupRulesReason checks each requested DeviceCgroupRule against the
+// policy. If allowDeviceCgroupRules is true, all rules are allowed without
+// inspection. If allowedDeviceCgroupRules is non-empty, each rule must
+// canonicalize successfully and match an entry in the allowlist. Otherwise all
+// rules are denied.
+func (p containerCreatePolicy) denyCgroupRulesReason(rules []string) string {
+	if p.allowDeviceCgroupRules {
+		return ""
+	}
+	if len(p.allowedDeviceCgroupRules) == 0 {
+		return "container create denied: device cgroup rules are not allowed"
+	}
+	for _, raw := range rules {
+		canonical, ok := canonicalizeDeviceCgroupRule(raw)
+		if !ok {
+			return fmt.Sprintf("container create denied: device cgroup rule %q is malformed", raw)
+		}
+		if !deviceCgroupRuleAllowed(canonical, p.allowedDeviceCgroupRules) {
+			return fmt.Sprintf("container create denied: device cgroup rule %q is not in the allowed list", raw)
+		}
+	}
+	return ""
+}
+
+// deviceCgroupRuleAllowed reports whether the canonicalized request rule is
+// permitted by at least one entry in the allowlist. Each allowlist entry is
+// already in canonical form. Wildcards in the allowlist match any numeric
+// value; wildcards in the request rule are only permitted when the matching
+// allowlist entry also uses a wildcard at the same position.
+func deviceCgroupRuleAllowed(canonical string, allowlist []string) bool {
+	reqType, reqMajor, reqMinor, reqPerms, ok := splitDeviceCgroupRule(canonical)
+	if !ok {
+		return false
+	}
+	for _, allowEntry := range allowlist {
+		alType, alMajor, alMinor, alPerms, alOK := splitDeviceCgroupRule(allowEntry)
+		if !alOK {
+			continue
+		}
+		if alType != reqType {
+			continue
+		}
+		if alPerms != reqPerms {
+			continue
+		}
+		// Major matching: allowlist wildcard accepts any request value (numeric
+		// or wildcard). Request wildcard only allowed if allowlist is also wildcard.
+		if !cgroupFieldMatches(alMajor, reqMajor) {
+			continue
+		}
+		if !cgroupFieldMatches(alMinor, reqMinor) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// cgroupFieldMatches reports whether a request field value is permitted by an
+// allowlist field value. Allowlist "*" matches any request value. Request "*"
+// is only accepted when the allowlist is also "*".
+func cgroupFieldMatches(allowlistField, requestField string) bool {
+	if allowlistField == "*" {
+		return true // wildcard in allowlist matches anything
+	}
+	if requestField == "*" {
+		return false // wildcard in request denied unless allowlist is also wildcard
+	}
+	return allowlistField == requestField
+}
+
+// canonicalizeDeviceCgroupRule parses and normalises a Docker cgroup device
+// rule string. Docker's canonical form is "<type> <major>:<minor> <perms>"
+// where type is one of 'a', 'b', or 'c'; major and minor are decimal numbers
+// or '*'; and perms is a non-empty subset of 'r', 'w', 'm'. Canonicalization
+// normalizes whitespace and sorts the permission characters so that "rwm",
+// "mrw", etc. all produce the same canonical string.
+func canonicalizeDeviceCgroupRule(raw string) (string, bool) {
+	fields := strings.Fields(raw)
+	if len(fields) != 3 {
+		return "", false
+	}
+	devType := fields[0]
+	if devType != "a" && devType != "b" && devType != "c" {
+		return "", false
+	}
+	majorMinor := fields[1]
+	major, minor, cut := strings.Cut(majorMinor, ":")
+	if !cut {
+		return "", false
+	}
+	if !isDeviceCgroupNumber(major) || !isDeviceCgroupNumber(minor) {
+		return "", false
+	}
+	perms := fields[2]
+	if !isValidDeviceCgroupPerms(perms) {
+		return "", false
+	}
+	sortedPerms := sortDeviceCgroupPerms(perms)
+	return fmt.Sprintf("%s %s:%s %s", devType, major, minor, sortedPerms), true
+}
+
+// splitDeviceCgroupRule splits a canonical cgroup rule into its components.
+func splitDeviceCgroupRule(canonical string) (devType, major, minor, perms string, ok bool) {
+	fields := strings.Fields(canonical)
+	if len(fields) != 3 {
+		return "", "", "", "", false
+	}
+	devType = fields[0]
+	majorMinor := fields[1]
+	var cut bool
+	major, minor, cut = strings.Cut(majorMinor, ":")
+	if !cut {
+		return "", "", "", "", false
+	}
+	perms = fields[2]
+	return devType, major, minor, perms, true
+}
+
+// isDeviceCgroupNumber reports whether s is a valid major/minor number: a
+// sequence of decimal digits or the wildcard '*'.
+func isDeviceCgroupNumber(s string) bool {
+	if s == "*" {
+		return true
+	}
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidDeviceCgroupPerms reports whether perms is a non-empty string
+// consisting only of 'r', 'w', and 'm' characters.
+func isValidDeviceCgroupPerms(perms string) bool {
+	if perms == "" {
+		return false
+	}
+	for _, c := range perms {
+		if c != 'r' && c != 'w' && c != 'm' {
+			return false
+		}
+	}
+	return true
+}
+
+// sortDeviceCgroupPerms returns the permission characters in canonical order:
+// r, w, m (deduplicated). This ensures "mrw" and "rwm" both produce "rwm".
+func sortDeviceCgroupPerms(perms string) string {
+	chars := []byte(perms)
+	sort.Slice(chars, func(i, j int) bool {
+		return cgroupPermOrder(chars[i]) < cgroupPermOrder(chars[j])
+	})
+	// deduplicate
+	deduped := chars[:0]
+	seen := make(map[byte]bool)
+	for _, c := range chars {
+		if !seen[c] {
+			seen[c] = true
+			deduped = append(deduped, c)
+		}
+	}
+	return string(deduped)
+}
+
+func cgroupPermOrder(c byte) int {
+	switch c {
+	case 'r':
+		return 0
+	case 'w':
+		return 1
+	case 'm':
+		return 2
+	default:
+		return 3
+	}
 }
 
 func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHostConfig) string {
