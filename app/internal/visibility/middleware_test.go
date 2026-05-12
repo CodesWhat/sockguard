@@ -2,6 +2,7 @@ package visibility
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -1396,5 +1397,566 @@ func TestMiddlewareReturnsNotFoundForInvisibleExpandedReadTargets(t *testing.T) 
 				t.Fatalf("inspectResource kind/id = %s/%s, want %s/%s", gotKind, gotIdentifier, tt.kind, tt.identifier)
 			}
 		})
+	}
+}
+
+// ---- name_patterns and image_patterns: container list filtering ----
+
+// containerListHandler builds a handler that returns a JSON array of Docker-style
+// container list items, each with Names and Image fields.
+func containerListHandler(items []map[string]any) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(items)
+	}
+}
+
+// imageListHandler returns a JSON array of Docker-style image list items.
+func imageListHandler(items []map[string]any) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(items)
+	}
+}
+
+func TestNamePatternHidesContainerFromList(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Upstream returns two containers; only "traefik" should match the pattern.
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		containerListHandler([]map[string]any{
+			{"Names": []string{"/traefik"}, "Image": "traefik:latest"},
+			{"Names": []string{"/portainer"}, "Image": "portainer/portainer:latest"},
+		}).ServeHTTP(w, r)
+	})
+
+	handler := middlewareWithDeps(logger, Options{
+		NamePatterns: []string{"traefik"},
+	}, visibilityDeps{})(upstream)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var got []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d containers, want 1; items = %v", len(got), got)
+	}
+	names, _ := got[0]["Names"].([]any)
+	if len(names) == 0 || names[0] != "/traefik" {
+		t.Fatalf("unexpected container: %v", got[0])
+	}
+}
+
+func TestImagePatternHidesContainerFromList(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		containerListHandler([]map[string]any{
+			{"Names": []string{"/traefik"}, "Image": "traefik:latest"},
+			{"Names": []string{"/redis"}, "Image": "redis:7"},
+		}).ServeHTTP(w, r)
+	})
+
+	handler := middlewareWithDeps(logger, Options{
+		ImagePatterns: []string{"redis:*"},
+	}, visibilityDeps{})(upstream)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var got []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d containers, want 1; items = %v", len(got), got)
+	}
+	if got[0]["Image"] != "redis:7" {
+		t.Fatalf("unexpected container image: %v", got[0]["Image"])
+	}
+}
+
+func TestNameAndLabelANDSemanticsContainerList(t *testing.T) {
+	// Both name pattern AND label selector must pass.
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	// Two containers both named "traefik" but one has the wrong label.
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Label filter is injected into the query; we serve all items and let the
+		// pattern filter handle the name axis.
+		containerListHandler([]map[string]any{
+			{"Names": []string{"/traefik"}, "Image": "traefik:latest"},
+			{"Names": []string{"/portainer"}, "Image": "portainer/portainer:latest"},
+		}).ServeHTTP(w, r)
+	})
+
+	handler := middlewareWithDeps(logger, Options{
+		VisibleResourceLabels: []string{"com.example.team=platform"},
+		NamePatterns:          []string{"traefik"},
+	}, visibilityDeps{})(upstream)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// Label filter is injected into the upstream query.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var got []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	// Pattern axis filtered to only traefik from the upstream response.
+	if len(got) != 1 {
+		t.Fatalf("got %d containers, want 1; items = %v", len(got), got)
+	}
+	names, _ := got[0]["Names"].([]any)
+	if len(names) == 0 || names[0] != "/traefik" {
+		t.Fatalf("unexpected container: %v", got[0])
+	}
+}
+
+func TestEmptyPatternsPassthroughContainerList(t *testing.T) {
+	// No patterns configured → all containers pass through.
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		containerListHandler([]map[string]any{
+			{"Names": []string{"/traefik"}, "Image": "traefik:latest"},
+			{"Names": []string{"/portainer"}, "Image": "portainer/portainer:latest"},
+		}).ServeHTTP(w, r)
+	})
+
+	// No patterns set → middleware is a no-op.
+	handler := middlewareWithDeps(logger, Options{}, visibilityDeps{})(upstream)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var got []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d containers, want 2 (passthrough); items = %v", len(got), got)
+	}
+}
+
+func TestInvalidPatternFailsFastAtConfigLoad(t *testing.T) {
+	// An empty pattern string is invalid and causes compilePolicy to error, which
+	// causes middlewareWithDeps to return a 500-only handler (no panic, no serve).
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	mw := middlewareWithDeps(logger, Options{
+		NamePatterns: []string{""},
+	}, visibilityDeps{})
+
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	rec := httptest.NewRecorder()
+	mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("should not reach next handler with invalid pattern")
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d for invalid (empty) pattern", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+// ---- name_patterns and image_patterns: image list filtering ----
+
+func TestNamePatternHidesImageFromList(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		imageListHandler([]map[string]any{
+			{"RepoTags": []string{"traefik:latest"}},
+			{"RepoTags": []string{"redis:7"}},
+		}).ServeHTTP(w, r)
+	})
+
+	// Short name "traefik" matched via imageShortName — "traefik:latest" → "traefik:latest".
+	handler := middlewareWithDeps(logger, Options{
+		NamePatterns: []string{"traefik:*"},
+	}, visibilityDeps{})(upstream)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/images/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var got []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d images, want 1; items = %v", len(got), got)
+	}
+	tags, _ := got[0]["RepoTags"].([]any)
+	if len(tags) == 0 || tags[0] != "traefik:latest" {
+		t.Fatalf("unexpected image tags: %v", got[0])
+	}
+}
+
+func TestImagePatternHidesImageFromList(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		imageListHandler([]map[string]any{
+			{"RepoTags": []string{"ghcr.io/org/traefik:v2"}},
+			{"RepoTags": []string{"redis:7"}},
+		}).ServeHTTP(w, r)
+	})
+
+	// Full-ref image pattern — only "ghcr.io/org/traefik:v2" should match.
+	handler := middlewareWithDeps(logger, Options{
+		ImagePatterns: []string{"ghcr.io/org/**"},
+	}, visibilityDeps{})(upstream)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/images/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var got []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d images, want 1; items = %v", len(got), got)
+	}
+}
+
+// ---- name_patterns and image_patterns: container inspect ----
+
+func TestNamePatternHidesContainerInspect(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	nextCalled := false
+
+	handler := middlewareWithDeps(logger, Options{
+		NamePatterns: []string{"traefik"},
+	}, visibilityDeps{
+		inspectResourceMeta: func(_ context.Context, kind resourceKind, id string) (*resourceMeta, bool, error) {
+			return &resourceMeta{names: []string{"/portainer"}, image: "portainer/portainer:latest"}, true, nil
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if nextCalled {
+		t.Fatal("container with non-matching name should be hidden by name pattern")
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestImagePatternHidesContainerInspect(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	nextCalled := false
+
+	handler := middlewareWithDeps(logger, Options{
+		ImagePatterns: []string{"traefik:*"},
+	}, visibilityDeps{
+		inspectResourceMeta: func(_ context.Context, kind resourceKind, id string) (*resourceMeta, bool, error) {
+			return &resourceMeta{names: []string{"/portainer"}, image: "portainer/portainer:latest"}, true, nil
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if nextCalled {
+		t.Fatal("container with non-matching image should be hidden by image pattern")
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestNamePatternAllowsContainerInspect(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	nextCalled := false
+
+	handler := middlewareWithDeps(logger, Options{
+		NamePatterns: []string{"traefik"},
+	}, visibilityDeps{
+		inspectResourceMeta: func(_ context.Context, kind resourceKind, id string) (*resourceMeta, bool, error) {
+			return &resourceMeta{names: []string{"/traefik"}, image: "traefik:latest"}, true, nil
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !nextCalled {
+		t.Fatal("container with matching name should be visible")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+// ---- name_patterns and image_patterns: image inspect ----
+
+func TestNamePatternHidesImageInspect(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	nextCalled := false
+
+	handler := middlewareWithDeps(logger, Options{
+		NamePatterns: []string{"traefik:*"},
+	}, visibilityDeps{
+		inspectResourceMeta: func(_ context.Context, kind resourceKind, id string) (*resourceMeta, bool, error) {
+			return &resourceMeta{repoTags: []string{"redis:7"}}, true, nil
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/images/sha256:abc/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if nextCalled {
+		t.Fatal("image with non-matching name should be hidden by name pattern")
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestImagePatternHidesImageInspect(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	nextCalled := false
+
+	handler := middlewareWithDeps(logger, Options{
+		ImagePatterns: []string{"ghcr.io/org/**"},
+	}, visibilityDeps{
+		inspectResourceMeta: func(_ context.Context, kind resourceKind, id string) (*resourceMeta, bool, error) {
+			return &resourceMeta{repoTags: []string{"redis:7"}}, true, nil
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/images/sha256:abc/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if nextCalled {
+		t.Fatal("image with non-matching image pattern should be hidden")
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// ---- inspectResourceMeta via httptest mock ----
+
+func TestInspectResourceMetaContainerNotFound(t *testing.T) {
+	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	meta, found, err := ins.inspectResourceMeta(context.Background(), resourceKindContainer, "missing")
+	if err != nil || found || meta != nil {
+		t.Fatalf("err=%v found=%v meta=%v, want nil/false/nil", err, found, meta)
+	}
+}
+
+func TestInspectResourceMetaContainerNon200(t *testing.T) {
+	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	_, _, err := ins.inspectResourceMeta(context.Background(), resourceKindContainer, "abc")
+	if err == nil || !strings.Contains(err.Error(), "returned status") {
+		t.Fatalf("err = %v, want 'returned status'", err)
+	}
+}
+
+func TestInspectResourceMetaContainerDecodes(t *testing.T) {
+	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"Name":"/traefik","Image":"traefik:latest"}`)
+	}))
+	meta, found, err := ins.inspectResourceMeta(context.Background(), resourceKindContainer, "abc")
+	if err != nil || !found {
+		t.Fatalf("err=%v found=%v", err, found)
+	}
+	if len(meta.names) == 0 || meta.names[0] != "/traefik" {
+		t.Fatalf("names = %v, want [/traefik]", meta.names)
+	}
+	if meta.image != "traefik:latest" {
+		t.Fatalf("image = %q, want traefik:latest", meta.image)
+	}
+}
+
+func TestInspectResourceMetaImageDecodes(t *testing.T) {
+	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"RepoTags":["traefik:latest","traefik:v2"]}`)
+	}))
+	meta, found, err := ins.inspectResourceMeta(context.Background(), resourceKindImage, "sha256:abc")
+	if err != nil || !found {
+		t.Fatalf("err=%v found=%v", err, found)
+	}
+	if len(meta.repoTags) != 2 {
+		t.Fatalf("repoTags = %v, want [traefik:latest traefik:v2]", meta.repoTags)
+	}
+}
+
+func TestInspectResourceMetaUnsupportedKind(t *testing.T) {
+	ins := upstreamInspector{client: &http.Client{}}
+	_, _, err := ins.inspectResourceMeta(context.Background(), resourceKindNetwork, "net-1")
+	if err == nil || !strings.Contains(err.Error(), "unsupported resource kind") {
+		t.Fatalf("err = %v, want unsupported resource kind", err)
+	}
+}
+
+// ---- decodeResourceMeta ----
+
+func TestDecodeResourceMetaContainerUsesNamesWhenPresent(t *testing.T) {
+	body := strings.NewReader(`{"Name":"/single","Names":["/multi"],"Image":"img:tag"}`)
+	meta, err := decodeResourceMeta(body, resourceKindContainer)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	// Names takes priority over Name when present.
+	if len(meta.names) != 1 || meta.names[0] != "/multi" {
+		t.Fatalf("names = %v, want [/multi]", meta.names)
+	}
+}
+
+func TestDecodeResourceMetaContainerFallsBackToName(t *testing.T) {
+	body := strings.NewReader(`{"Name":"/solo","Names":[],"Image":"img:tag"}`)
+	meta, err := decodeResourceMeta(body, resourceKindContainer)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(meta.names) != 1 || meta.names[0] != "/solo" {
+		t.Fatalf("names = %v, want [/solo]", meta.names)
+	}
+}
+
+func TestDecodeResourceMetaUnsupportedKind(t *testing.T) {
+	_, err := decodeResourceMeta(strings.NewReader(`{}`), resourceKindNetwork)
+	if err == nil || !strings.Contains(err.Error(), "unsupported resource kind") {
+		t.Fatalf("err = %v, want unsupported resource kind", err)
+	}
+}
+
+func TestDecodeResourceMetaDecodeError(t *testing.T) {
+	_, err := decodeResourceMeta(strings.NewReader(`not-json`), resourceKindContainer)
+	if err == nil {
+		t.Fatal("expected decode error for invalid JSON body")
+	}
+}
+
+// ---- compilePatterns ----
+
+func TestCompilePatternsEmptyGlob(t *testing.T) {
+	_, err := compilePatterns([]string{""})
+	if err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("err = %v, want 'must not be empty'", err)
+	}
+}
+
+func TestCompilePatternsInvalidEmptyPattern(t *testing.T) {
+	// The glob-to-regex converter escapes all special regex characters, so the
+	// only way to produce an invalid pattern is an empty string.
+	_, err := compilePatterns([]string{"valid", ""})
+	if err == nil || !strings.Contains(err.Error(), "must not be empty") {
+		t.Fatalf("err = %v, want 'must not be empty'", err)
+	}
+}
+
+func TestCompilePatternsHappyPath(t *testing.T) {
+	patterns, err := compilePatterns([]string{"traefik", "redis:*"})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(patterns) != 2 {
+		t.Fatalf("len = %d, want 2", len(patterns))
+	}
+}
+
+// ---- matchesAnyPattern ----
+
+func TestMatchesAnyPatternEmptyPatternsAlwaysTrue(t *testing.T) {
+	if !matchesAnyPattern("anything", nil) {
+		t.Fatal("empty patterns should always return true")
+	}
+}
+
+func TestMatchesAnyPatternNoMatch(t *testing.T) {
+	patterns, _ := compilePatterns([]string{"traefik"})
+	if matchesAnyPattern("portainer", patterns) {
+		t.Fatal("portainer should not match traefik pattern")
+	}
+}
+
+func TestMatchesAnyPatternMatch(t *testing.T) {
+	patterns, _ := compilePatterns([]string{"redis:*"})
+	if !matchesAnyPattern("redis:7", patterns) {
+		t.Fatal("redis:7 should match redis:* pattern")
+	}
+}
+
+// ---- containerNameFromNames and imageShortName ----
+
+func TestContainerNameFromNamesEmpty(t *testing.T) {
+	if got := containerNameFromNames(nil); got != "" {
+		t.Fatalf("got %q, want empty string", got)
+	}
+}
+
+func TestContainerNameFromNamesStripsLeadingSlash(t *testing.T) {
+	if got := containerNameFromNames([]string{"/traefik"}); got != "traefik" {
+		t.Fatalf("got %q, want traefik", got)
+	}
+}
+
+func TestImageShortNameNoSlash(t *testing.T) {
+	if got := imageShortName("traefik:latest"); got != "traefik:latest" {
+		t.Fatalf("got %q, want traefik:latest", got)
+	}
+}
+
+func TestImageShortNameWithRegistry(t *testing.T) {
+	if got := imageShortName("ghcr.io/org/traefik:v2"); got != "traefik:v2" {
+		t.Fatalf("got %q, want traefik:v2", got)
 	}
 }

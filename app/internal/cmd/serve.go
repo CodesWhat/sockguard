@@ -324,6 +324,8 @@ func withOwnership(cfg *config.Config, logger *slog.Logger) func(http.Handler) h
 func withVisibility(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
 	return visibility.Middleware(cfg.Upstream.Socket, logger, visibility.Options{
 		VisibleResourceLabels: cfg.Response.VisibleResourceLabels,
+		NamePatterns:          cfg.Response.NamePatterns,
+		ImagePatterns:         cfg.Response.ImagePatterns,
 		Profiles:              clientVisibilityProfiles(cfg.Clients.Profiles),
 		ResolveProfile:        clientacl.RequestProfile,
 	})
@@ -473,6 +475,8 @@ func clientVisibilityProfiles(values []config.ClientProfileConfig) map[string]vi
 	for _, value := range values {
 		profiles[value.Name] = visibility.Policy{
 			VisibleResourceLabels: value.Response.VisibleResourceLabels,
+			NamePatterns:          value.Response.NamePatterns,
+			ImagePatterns:         value.Response.ImagePatterns,
 		}
 	}
 	return profiles

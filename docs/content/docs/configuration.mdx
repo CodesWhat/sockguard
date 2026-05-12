@@ -297,6 +297,20 @@ clients:
 - `clients.client_certificate_profiles` requires `listen.tls` mutual TLS.
 - `clients.unix_peer_profiles` requires `listen.socket`.
 - `response.visible_resource_labels` and `clients.profiles[].response.visible_resource_labels` enforce read-side visibility on labeled list/events/inspect paths plus selected service/task log paths. Selectors use Docker label syntax (`key` or `key=value`), are ANDed together, and profile selectors are additive with the root response selectors.
+- `response.name_patterns` and `response.image_patterns` add glob-based selector axes that operate alongside label selectors (AND semantics across all axes). Within each axis, at least one pattern must match (OR semantics). `name_patterns` is matched against `Names[0]` with the leading `/` stripped for containers, and against each `RepoTags` short name (the part after the last `/`) for images. `image_patterns` is matched against the container's `Image` field and against each full `RepoTags` reference for images. Patterns use the same glob dialect as rule path patterns (`*` = no slash, `**` = any depth). Both knobs are supported at the per-profile level via `clients.profiles[*].response.name_patterns` / `image_patterns`. Example — expose only traefik containers and images from a private registry to a specific client profile:
+
+  ```yaml
+  response:
+    name_patterns:
+      - "traefik"
+  clients:
+    profiles:
+      - name: registry-reader
+        response:
+          image_patterns:
+            - "ghcr.io/myorg/**"
+  ```
+
 - Hidden resources disappear from `GET /containers/json`, `/images/json`, `/networks`, `/volumes`, `/services`, `/tasks`, `/secrets`, `/configs`, `/nodes`, and `GET /events`, while hidden inspect/log-style targets such as `GET /services/*`, `GET /services/*/logs`, `GET /tasks/*`, `GET /tasks/*/logs`, `GET /secrets/*`, `GET /configs/*`, `GET /nodes/*`, and `GET /swarm` return `404` instead of exposing a policy-specific deny body.
 
 ## Owner Label Isolation
