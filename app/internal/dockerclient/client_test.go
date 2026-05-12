@@ -137,6 +137,26 @@ func TestNewConcurrentFanOut(t *testing.T) {
 	}
 }
 
+func TestNewTransportValues(t *testing.T) {
+	socketPath := tempSocketPath(t)
+
+	client, err := dockerclient.New(socketPath)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport is %T, want *http.Transport", client.Transport)
+	}
+	if tr.MaxIdleConnsPerHost != 10 {
+		t.Errorf("MaxIdleConnsPerHost = %d, want 10", tr.MaxIdleConnsPerHost)
+	}
+	if tr.IdleConnTimeout != 90*time.Second {
+		t.Errorf("IdleConnTimeout = %v, want 90s", tr.IdleConnTimeout)
+	}
+}
+
 func TestNewReturnsIndependentClients(t *testing.T) {
 	socketPath := tempSocketPath(t)
 	startUnixServer(t, socketPath, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

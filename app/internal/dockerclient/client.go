@@ -10,7 +10,7 @@ import (
 const (
 	defaultDialTimeout           = 5 * time.Second
 	defaultResponseHeaderTimeout = 10 * time.Second
-	defaultMaxIdleConns          = 10
+	defaultMaxIdleConnsPerHost   = 10
 	defaultIdleConnTimeout       = 90 * time.Second
 )
 
@@ -20,7 +20,7 @@ type Option func(*config)
 type config struct {
 	dialTimeout           time.Duration
 	responseHeaderTimeout time.Duration
-	maxIdleConns          int
+	maxIdleConnsPerHost   int
 	idleConnTimeout       time.Duration
 }
 
@@ -28,7 +28,7 @@ func defaults() config {
 	return config{
 		dialTimeout:           defaultDialTimeout,
 		responseHeaderTimeout: defaultResponseHeaderTimeout,
-		maxIdleConns:          defaultMaxIdleConns,
+		maxIdleConnsPerHost:   defaultMaxIdleConnsPerHost,
 		idleConnTimeout:       defaultIdleConnTimeout,
 	}
 }
@@ -61,7 +61,7 @@ func New(socketPath string, opts ...Option) (*http.Client, error) {
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return dialer.DialContext(ctx, "unix", socketPath)
 		},
-		MaxIdleConns:          cfg.maxIdleConns,
+		MaxIdleConnsPerHost:   cfg.maxIdleConnsPerHost,
 		IdleConnTimeout:       cfg.idleConnTimeout,
 		ResponseHeaderTimeout: cfg.responseHeaderTimeout,
 	}
