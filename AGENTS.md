@@ -105,6 +105,6 @@ See `lefthook.yml` for exact commands. The pre-push pipeline is piped (sequentia
 - Go proxy core uses **zero external dependencies** beyond Cobra+Viper. Filtering, proxying, logging all use stdlib.
 - Container image is **Wolfi-based** (Chainguard) for near-zero CVEs and built-in SBOM/provenance.
 - Biome is a direct devDependency in the root workspace for TS/JS linting.
-- `.planning/` is gitignored — contains internal vision, roadmap, competitive analysis, threat model.
+- `.planning/` is gitignored — local-only working notes; never reference its contents in committed files.
 - CHANGELOG and README updates should be atomic with each logical change.
-- **Roadmap lives in two places only:** `.planning/VISION.md` (gitignored, canonical detail) and `README.md` (committed, summary table).
+- **Roadmap summary lives in `README.md`** (committed). Local-only longer-form notes live under `.planning/` and stay gitignored.
