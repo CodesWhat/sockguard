@@ -1555,15 +1555,17 @@ func TestRedactTaskPayload_SecretsAndConfigs(t *testing.T) {
 	}
 }
 
-// ─── modifyServiceList/Inspect/TaskList/TaskInspect – internal skip guard ─────
-// These guards can only be hit by calling the unexported methods directly,
-// because ModifyResponse's f.Enabled() check short-circuits first when all
-// four option flags are false.
+// ─── service/task list+inspect – skip guard when all flags disabled ───────────
+// Previously these called unexported methods directly. Now that the dispatch
+// table owns the guard, we exercise the same path via ModifyResponse with a
+// Filter that has at least one flag set so Enabled() passes, then verify that
+// the table entry's own active() guard returns nil when the relevant flags are off.
 
 func TestModifyServiceList_InternalSkipGuard(t *testing.T) {
-	f := New(Options{}) // all false → guard returns nil
+	// Pass through ModifyResponse with all flags false → Enabled() is false → nil.
+	f := New(Options{})
 	resp := newResponseForTest(t, http.MethodGet, "/services", `[{"ID":"svc-1"}]`)
-	if err := f.modifyServiceList(resp); err != nil {
+	if err := f.ModifyResponse(resp); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -1571,7 +1573,7 @@ func TestModifyServiceList_InternalSkipGuard(t *testing.T) {
 func TestModifyServiceInspect_InternalSkipGuard(t *testing.T) {
 	f := New(Options{})
 	resp := newResponseForTest(t, http.MethodGet, "/services/svc-1", `{"ID":"svc-1"}`)
-	if err := f.modifyServiceInspect(resp); err != nil {
+	if err := f.ModifyResponse(resp); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -1579,7 +1581,7 @@ func TestModifyServiceInspect_InternalSkipGuard(t *testing.T) {
 func TestModifyTaskList_InternalSkipGuard(t *testing.T) {
 	f := New(Options{})
 	resp := newResponseForTest(t, http.MethodGet, "/tasks", `[{"ID":"task-1"}]`)
-	if err := f.modifyTaskList(resp); err != nil {
+	if err := f.ModifyResponse(resp); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -1587,7 +1589,7 @@ func TestModifyTaskList_InternalSkipGuard(t *testing.T) {
 func TestModifyTaskInspect_InternalSkipGuard(t *testing.T) {
 	f := New(Options{})
 	resp := newResponseForTest(t, http.MethodGet, "/tasks/task-1", `{"ID":"task-1"}`)
-	if err := f.modifyTaskInspect(resp); err != nil {
+	if err := f.ModifyResponse(resp); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
