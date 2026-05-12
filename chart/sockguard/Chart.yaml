@@ -1,0 +1,17 @@
+apiVersion: v2
+name: sockguard
+description: A security-first Docker socket proxy — filters Docker API requests before they reach the daemon.
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - docker
+  - socket-proxy
+  - security
+home: https://getsockguard.com
+sources:
+  - https://github.com/CodesWhat/sockguard
+maintainers:
+  - name: CodesWhat
+    url: https://github.com/CodesWhat
+icon: https://raw.githubusercontent.com/CodesWhat/sockguard/main/sockguard-logo.png

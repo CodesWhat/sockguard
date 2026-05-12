@@ -69,6 +69,16 @@ type ResponseConfig struct {
 	RedactNetworkTopology bool     `mapstructure:"redact_network_topology"`
 	RedactSensitiveData   bool     `mapstructure:"redact_sensitive_data"`
 	VisibleResourceLabels []string `mapstructure:"visible_resource_labels"`
+	// NamePatterns is a list of glob patterns matched against container Names[0]
+	// (leading "/" stripped) and image RepoTags short names. Resources whose
+	// name does not match at least one pattern are hidden. Empty means no
+	// name-based filtering.
+	NamePatterns []string `mapstructure:"name_patterns"`
+	// ImagePatterns is a list of glob patterns matched against container Image
+	// field and image RepoTags full references. Resources whose image reference
+	// does not match at least one pattern are hidden. Empty means no image-based
+	// filtering.
+	ImagePatterns []string `mapstructure:"image_patterns"`
 }
 
 // RequestBodyConfig configures request-body inspection policies.
@@ -100,8 +110,9 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowedBindMounts      []string `mapstructure:"allowed_bind_mounts"`
 	AllowAllDevices        bool     `mapstructure:"allow_all_devices"`
 	AllowedDevices         []string `mapstructure:"allowed_devices"`
-	AllowDeviceRequests    bool     `mapstructure:"allow_device_requests"`
-	AllowDeviceCgroupRules bool     `mapstructure:"allow_device_cgroup_rules"`
+	AllowDeviceRequests         bool     `mapstructure:"allow_device_requests"`
+	AllowDeviceCgroupRules      bool     `mapstructure:"allow_device_cgroup_rules"`
+	AllowedDeviceCgroupRules    []string `mapstructure:"allowed_device_cgroup_rules"`
 
 	RequireNoNewPrivileges     bool     `mapstructure:"require_no_new_privileges"`
 	RequireNonRootUser         bool     `mapstructure:"require_non_root_user"`
@@ -307,6 +318,12 @@ type ClientProfileConfig struct {
 // Docker read endpoints.
 type ClientProfileResponseConfig struct {
 	VisibleResourceLabels []string `mapstructure:"visible_resource_labels"`
+	// NamePatterns is a per-profile glob pattern list matched against container
+	// names and image short names. See ResponseConfig.NamePatterns.
+	NamePatterns []string `mapstructure:"name_patterns"`
+	// ImagePatterns is a per-profile glob pattern list matched against container
+	// Image fields and image RepoTags. See ResponseConfig.ImagePatterns.
+	ImagePatterns []string `mapstructure:"image_patterns"`
 }
 
 // OwnershipConfig configures per-proxy resource ownership labeling and

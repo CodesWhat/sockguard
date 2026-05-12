@@ -4,6 +4,7 @@
 # Go
 sockguard
 !app/cmd/sockguard/
+!chart/sockguard/
 *.exe
 *.test
 *.out

@@ -1,0 +1,18 @@
+Sockguard has been deployed as a DaemonSet — one proxy pod per node, mounting
+the host Docker socket read-only at /var/run/docker.sock.
+
+The filtered Docker API is available within the cluster at:
+
+  tcp://{{ include "sockguard.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+Point your Docker API consumers at that address (e.g. DOCKER_HOST environment
+variable) rather than the raw socket.
+
+Default policy: DENY ALL except /_ping, /version, and /events.
+Override 'config' in values.yaml to define your allow rules.
+
+Health check:
+  kubectl port-forward daemonset/{{ include "sockguard.fullname" . }} 2375:2375
+  curl http://localhost:2375/health
+
+Documentation: https://getsockguard.com/docs
