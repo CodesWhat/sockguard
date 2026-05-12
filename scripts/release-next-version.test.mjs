@@ -279,8 +279,12 @@ function createTempGitRepo() {
 }
 
 function git(cwd, args) {
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
   return execFileSync('git', args, {
     cwd,
+    env,
     encoding: 'utf8',
   });
 }
