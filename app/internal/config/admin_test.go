@@ -16,6 +16,54 @@ func TestDefaultsIncludesAdminBlock(t *testing.T) {
 	if d.Admin.MaxBodyBytes <= 0 {
 		t.Fatalf("Admin.MaxBodyBytes = %d, want > 0", d.Admin.MaxBodyBytes)
 	}
+	if d.Admin.PolicyVersionPath != "/admin/policy/version" {
+		t.Fatalf("Admin.PolicyVersionPath = %q, want %q", d.Admin.PolicyVersionPath, "/admin/policy/version")
+	}
+}
+
+func TestValidateAdminRejectsRelativePolicyVersionPath(t *testing.T) {
+	cfg := Defaults()
+	cfg.Admin.Enabled = true
+	cfg.Admin.PolicyVersionPath = "admin/policy/version"
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "admin.policy_version_path must start with /") {
+		t.Fatalf("Validate() = %v, want policy_version_path slash error", err)
+	}
+}
+
+func TestValidateAdminRejectsPolicyVersionPathEqualsAdminPath(t *testing.T) {
+	cfg := Defaults()
+	cfg.Admin.Enabled = true
+	cfg.Admin.PolicyVersionPath = cfg.Admin.Path
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "admin.policy_version_path must not equal admin.path") {
+		t.Fatalf("Validate() = %v, want policy_version_path/admin.path collision error", err)
+	}
+}
+
+func TestValidateAdminRejectsPolicyVersionPathConflictWithHealth(t *testing.T) {
+	cfg := Defaults()
+	cfg.Admin.Enabled = true
+	cfg.Admin.PolicyVersionPath = cfg.Health.Path
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "admin.policy_version_path must not equal health.path") {
+		t.Fatalf("Validate() = %v, want policy_version_path/health collision error", err)
+	}
+}
+
+func TestValidateAdminRejectsPolicyVersionPathConflictWithMetrics(t *testing.T) {
+	cfg := Defaults()
+	cfg.Admin.Enabled = true
+	cfg.Metrics.Enabled = true
+	cfg.Admin.PolicyVersionPath = cfg.Metrics.Path
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "admin.policy_version_path must not equal metrics.path") {
+		t.Fatalf("Validate() = %v, want policy_version_path/metrics collision error", err)
+	}
 }
 
 func TestValidateAdminRejectsRelativePath(t *testing.T) {

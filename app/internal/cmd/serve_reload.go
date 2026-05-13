@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/admin"
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/metrics"
@@ -40,6 +41,11 @@ type reloadCoordinator struct {
 	deps        *serveDeps
 	runtime     *serveRuntime
 	registry    *metrics.Registry
+	// versioner is shared with the admin policy-version handler. Updating it
+	// after a successful swap is what makes the new generation visible to
+	// GET /admin/policy/version and to sockguard_policy_version. Nil-safe so
+	// tests can construct a coordinator without one.
+	versioner *admin.PolicyVersioner
 }
 
 // newReloadCoordinator returns a coordinator wired up with the initial
@@ -54,6 +60,7 @@ func newReloadCoordinator(
 	auditLogger *logging.AuditLogger,
 	deps *serveDeps,
 	runtime *serveRuntime,
+	versioner *admin.PolicyVersioner,
 ) *reloadCoordinator {
 	if initialTeardown == nil {
 		initialTeardown = func() {}
@@ -68,6 +75,7 @@ func newReloadCoordinator(
 		deps:          deps,
 		runtime:       runtime,
 		registry:      runtime.metrics,
+		versioner:     versioner,
 	}
 }
 
@@ -123,7 +131,7 @@ func (c *reloadCoordinator) reload() {
 	// the operator's real reload signal; the compat-active state is
 	// reflected in the candidate's rules, which validation will judge.
 	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
-	config.ApplyCompat(newCfg, discard)
+	compatActive := config.ApplyCompat(newCfg, discard)
 
 	newRules, err := c.deps.validateRules(newCfg)
 	if err != nil {
@@ -136,7 +144,7 @@ func (c *reloadCoordinator) reload() {
 	}
 
 	newHandler, newTeardown := buildServeHandlerChainWithRuntime(
-		newCfg, c.logger, c.auditLogger, newRules, c.deps, c.runtime,
+		newCfg, c.logger, c.auditLogger, newRules, c.deps, c.runtime, c.versioner,
 	)
 
 	oldTeardown := c.chainTeardown
@@ -152,10 +160,29 @@ func (c *reloadCoordinator) reload() {
 	c.swappable.Swap(newHandler)
 	oldTeardown()
 
+	// Publish the new generation AFTER the swap so an admin GET to
+	// /admin/policy/version that races with a reload either sees the
+	// pre-reload version (handler still pointing at the old chain) or
+	// the post-reload version (handler is the new chain) — never a half
+	// state where the version ticked but the active handler is stale.
+	var newVersion int64
+	if c.versioner != nil {
+		newVersion = c.versioner.Update(admin.PolicySnapshot{
+			LoadedAt:     c.deps.now(),
+			Rules:        len(newRules),
+			Profiles:     len(newCfg.Clients.Profiles),
+			CompatActive: compatActive,
+			Source:       "reload",
+			ConfigSHA256: policyConfigHash(newCfg),
+		})
+		c.registry.SetPolicyVersion(newVersion)
+	}
+
 	c.logger.Info("config reload applied",
 		"path", c.cfgFile,
 		"rules", len(newRules),
 		"profiles", len(newCfg.Clients.Profiles),
+		"policy_version", newVersion,
 	)
 	c.registry.ObserveConfigReload("ok")
 }

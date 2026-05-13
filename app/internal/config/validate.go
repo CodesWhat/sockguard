@@ -123,6 +123,18 @@ func validateBasic(cfg *Config) []string {
 		if cfg.Metrics.Enabled && cfg.Admin.Path == cfg.Metrics.Path {
 			errs = append(errs, fmt.Sprintf("admin.path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.Path))
 		}
+		if !strings.HasPrefix(cfg.Admin.PolicyVersionPath, "/") {
+			errs = append(errs, fmt.Sprintf("admin.policy_version_path must start with /, got %q", cfg.Admin.PolicyVersionPath))
+		}
+		if cfg.Admin.PolicyVersionPath == cfg.Admin.Path {
+			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal admin.path, got %q", cfg.Admin.PolicyVersionPath))
+		}
+		if cfg.Health.Enabled && cfg.Admin.PolicyVersionPath == cfg.Health.Path {
+			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
+		}
+		if cfg.Metrics.Enabled && cfg.Admin.PolicyVersionPath == cfg.Metrics.Path {
+			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
+		}
 	}
 
 	if cfg.Reload.Enabled && cfg.Reload.DebounceMs < 0 {

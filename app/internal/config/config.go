@@ -484,6 +484,13 @@ type AdminConfig struct {
 	Enabled      bool   `mapstructure:"enabled"`
 	Path         string `mapstructure:"path"`
 	MaxBodyBytes int64  `mapstructure:"max_body_bytes"`
+	// PolicyVersionPath is the GET endpoint that reports the active policy
+	// generation counter and metadata (rules / profiles / compat-active /
+	// content hash). It shares the admin layer with Path, so it inherits the
+	// listener CIDR allowlist, mTLS, and rate-limit posture. Default
+	// /admin/policy/version. Must differ from Path, health.path, and
+	// metrics.path when those endpoints are enabled.
+	PolicyVersionPath string `mapstructure:"policy_version_path"`
 }
 
 // ReloadConfig configures the hot-reload pipeline.
@@ -598,9 +605,10 @@ func Defaults() Config {
 			Path:    "/metrics",
 		},
 		Admin: AdminConfig{
-			Enabled:      false,
-			Path:         "/admin/validate",
-			MaxBodyBytes: 524288,
+			Enabled:           false,
+			Path:              "/admin/validate",
+			MaxBodyBytes:      524288,
+			PolicyVersionPath: "/admin/policy/version",
 		},
 		Reload: ReloadConfig{
 			Enabled:    false,

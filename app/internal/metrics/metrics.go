@@ -35,6 +35,12 @@ type Registry struct {
 	configReloadLastSecondsKnown atomic.Bool
 	configReloadLastSeconds      atomic.Uint64
 
+	// policyVersionKnown gates emission of sockguard_policy_version so the
+	// gauge stays absent until the reload coordinator (or startup wiring)
+	// publishes a first snapshot. Counter is monotonic per process.
+	policyVersionKnown atomic.Bool
+	policyVersion      atomic.Int64
+
 	startedAt time.Time
 
 	// inflight tracks current per-profile in-flight request counts under a
@@ -134,6 +140,19 @@ func (r *Registry) ObserveConfigReload(result string) {
 		r.configReloadLastSeconds.Store(uint64(ts))
 		r.configReloadLastSecondsKnown.Store(true)
 	}
+}
+
+// SetPolicyVersion publishes the current monotonic policy generation
+// counter to the metrics scrape surface. Called once at startup (after the
+// initial snapshot is built) and once per successful hot reload. n is the
+// value returned by admin.PolicyVersioner.Update — the registry does not
+// own counter assignment, only its visibility.
+func (r *Registry) SetPolicyVersion(n int64) {
+	if r == nil {
+		return
+	}
+	r.policyVersion.Store(n)
+	r.policyVersionKnown.Store(true)
 }
 
 // ObserveThrottle increments the throttle counter for the given profile,
@@ -291,6 +310,8 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	upstreamUp := r.upstreamUp.Load()
 	reloadLastKnown := r.configReloadLastSecondsKnown.Load()
 	reloadLastNanos := r.configReloadLastSeconds.Load()
+	policyVersionKnown := r.policyVersionKnown.Load()
+	policyVersion := r.policyVersion.Load()
 	r.mu.Unlock()
 
 	inflight := snapshotInflight(&r.inflight)
@@ -376,6 +397,12 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 		fmt.Fprintln(w, "# TYPE sockguard_config_reload_last_success_timestamp_seconds gauge")
 		fmt.Fprintf(w, "sockguard_config_reload_last_success_timestamp_seconds %s\n",
 			strconv.FormatFloat(float64(reloadLastNanos)/1e9, 'f', -1, 64))
+	}
+
+	if policyVersionKnown {
+		fmt.Fprintln(w, "# HELP sockguard_policy_version Monotonic counter of the active policy generation. Starts at 1 on first publish; ticks on every successful hot reload. A stable value across scrapes means the running policy did not move. Omitted until the first publish.")
+		fmt.Fprintln(w, "# TYPE sockguard_policy_version gauge")
+		fmt.Fprintf(w, "sockguard_policy_version %d\n", policyVersion)
 	}
 }
 

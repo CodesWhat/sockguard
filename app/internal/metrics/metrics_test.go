@@ -149,6 +149,29 @@ func TestRegistryEmitsBuildInfoAndStartTime(t *testing.T) {
 	}
 }
 
+func TestRegistryOmitsPolicyVersionUntilSet(t *testing.T) {
+	registry := NewRegistry()
+	out := renderMetrics(t, registry)
+	if strings.Contains(out, "sockguard_policy_version") {
+		t.Fatalf("policy_version gauge present before SetPolicyVersion: %s", out)
+	}
+}
+
+func TestRegistryEmitsPolicyVersionAfterSet(t *testing.T) {
+	registry := NewRegistry()
+	registry.SetPolicyVersion(1)
+	registry.SetPolicyVersion(7) // monotonic in production; test the latest-wins behavior
+
+	out := renderMetrics(t, registry)
+	assertContains(t, out, "# TYPE sockguard_policy_version gauge")
+	assertContains(t, out, "\nsockguard_policy_version 7\n")
+}
+
+func TestNilRegistrySetPolicyVersionIsNoop(t *testing.T) {
+	var registry *Registry
+	registry.SetPolicyVersion(42) // must not panic
+}
+
 func TestRegistryRecordsUpstreamWatchdogState(t *testing.T) {
 	registry := NewRegistry()
 

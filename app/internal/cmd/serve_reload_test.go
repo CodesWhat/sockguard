@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/codeswhat/sockguard/internal/admin"
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/metrics"
@@ -23,6 +24,7 @@ type reloadCoordinatorFixture struct {
 	coordinator *reloadCoordinator
 	swappable   *reload.SwappableHandler
 	registry    *metrics.Registry
+	versioner   *admin.PolicyVersioner
 	cfgPath     string
 	loadErr     error
 	loadCfg     *config.Config
@@ -40,11 +42,13 @@ func newReloadCoordinatorFixture(t *testing.T, initial *config.Config) *reloadCo
 
 	registry := metrics.NewRegistry()
 	runtime := &serveRuntime{metrics: registry}
+	versioner := admin.NewPolicyVersioner()
 
 	deps := newServeTestDeps()
 	fixture := &reloadCoordinatorFixture{
-		registry: registry,
-		cfgPath:  cfgPath,
+		registry:  registry,
+		versioner: versioner,
+		cfgPath:   cfgPath,
 	}
 	deps.loadConfig = func(_ string) (*config.Config, error) {
 		if fixture.loadErr != nil {
@@ -79,6 +83,7 @@ func newReloadCoordinatorFixture(t *testing.T, initial *config.Config) *reloadCo
 		nil,
 		deps,
 		runtime,
+		versioner,
 	)
 	return fixture
 }
@@ -211,5 +216,85 @@ func TestReloadCoordinatorReloadAfterStopIsNoop(t *testing.T) {
 		if got := f.reloadCount(result); got != 0 {
 			t.Fatalf("reload after stop bumped %s = %d, want 0", result, got)
 		}
+	}
+}
+
+func TestReloadCoordinatorBumpsPolicyVersionOnSuccess(t *testing.T) {
+	initial := config.Defaults()
+	initial.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"}}
+	f := newReloadCoordinatorFixture(t, &initial)
+
+	// Seed the versioner with a startup snapshot so the test reload becomes
+	// version 2 — matching the production wiring in runServeWithDeps.
+	f.versioner.Update(admin.PolicySnapshot{Source: "startup", Rules: len(initial.Rules)})
+
+	clone := initial
+	f.loadCfg = &clone
+	f.coordinator.reload()
+
+	snap := f.versioner.Snapshot()
+	if snap == nil {
+		t.Fatalf("Snapshot() = nil after successful reload")
+	}
+	if snap.Version != 2 {
+		t.Fatalf("Version = %d, want 2 (startup=1, reload=2)", snap.Version)
+	}
+	if snap.Source != "reload" {
+		t.Fatalf("Source = %q, want reload", snap.Source)
+	}
+
+	// Metrics registry should also reflect the bump.
+	rec := httptest.NewRecorder()
+	f.registry.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if idx := indexAfter(rec.Body.String(), "sockguard_policy_version "); idx < 0 {
+		t.Fatalf("sockguard_policy_version gauge not emitted: %s", rec.Body.String())
+	}
+}
+
+func TestReloadCoordinatorPreservesPolicyVersionOnReject(t *testing.T) {
+	cases := []struct {
+		name string
+		set  func(f *reloadCoordinatorFixture, initial config.Config)
+	}{
+		{
+			name: "reject_load",
+			set: func(f *reloadCoordinatorFixture, _ config.Config) {
+				f.loadErr = errors.New("simulated parse error")
+			},
+		},
+		{
+			name: "reject_validation",
+			set: func(f *reloadCoordinatorFixture, _ config.Config) {
+				f.validateErr = errors.New("rule 2 is malformed")
+			},
+		},
+		{
+			name: "reject_immutable",
+			set: func(f *reloadCoordinatorFixture, initial config.Config) {
+				changed := initial
+				changed.Listen.Address = "0.0.0.0:1234"
+				f.loadCfg = &changed
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			initial := config.Defaults()
+			initial.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"}}
+			f := newReloadCoordinatorFixture(t, &initial)
+
+			// Seed startup snapshot.
+			startVersion := f.versioner.Update(admin.PolicySnapshot{Source: "startup", Rules: len(initial.Rules)})
+
+			tc.set(f, initial)
+			f.coordinator.reload()
+
+			if got := f.versioner.Snapshot().Version; got != startVersion {
+				t.Fatalf("Version = %d after %s, want startup version %d preserved", got, tc.name, startVersion)
+			}
+			if got := f.versioner.Snapshot().Source; got != "startup" {
+				t.Fatalf("Source = %q after %s, want startup preserved", got, tc.name)
+			}
+		})
 	}
 }

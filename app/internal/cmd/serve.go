@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -102,7 +105,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 
 	// Tecnativa compatibility mode expands legacy env vars like CONTAINERS=1
 	// into explicit allow/deny rules before normal validation and compilation.
-	config.ApplyCompat(cfg, logger)
+	compatActive := config.ApplyCompat(cfg, logger)
 
 	rules, err := deps.validateRules(cfg)
 	if err != nil {
@@ -112,10 +115,24 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return err
 	}
 
+	// Versioner publishes the initial generation BEFORE the chain is built so
+	// the admin policy-version endpoint and the sockguard_policy_version
+	// gauge are populated as soon as the server starts taking traffic.
+	versioner := admin.NewPolicyVersioner()
+	initialVersion := versioner.Update(admin.PolicySnapshot{
+		LoadedAt:     deps.now(),
+		Rules:        len(rules),
+		Profiles:     len(cfg.Clients.Profiles),
+		CompatActive: compatActive,
+		Source:       "startup",
+		ConfigSHA256: policyConfigHash(cfg),
+	})
+
 	runtime := newServeRuntime(cfg, logger, deps)
-	handler, chainTeardown := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime)
+	runtime.metrics.SetPolicyVersion(initialVersion)
+	handler, chainTeardown := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, versioner)
 	swappable := reload.NewSwappableHandler(handler)
-	coordinator := newReloadCoordinator(cfg, cfgFile, swappable, chainTeardown, logger, auditLogger, deps, runtime)
+	coordinator := newReloadCoordinator(cfg, cfgFile, swappable, chainTeardown, logger, auditLogger, deps, runtime, versioner)
 	defer coordinator.stop()
 
 	listener, err := deps.createServeListener(cfg)
@@ -209,7 +226,7 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, auditLogger *log
 }
 
 func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime) http.Handler {
-	handler, _ := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime)
+	handler, _ := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, nil)
 	return handler
 }
 
@@ -220,10 +237,16 @@ func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, audit
 // the handler is replaced (hot reload) or when the server shuts down,
 // otherwise the rate-limit goroutines tied to the previous chain leak.
 //
+// The versioner is process-scoped (its pointer is captured into the admin
+// policy-version handler), so reloads pass the SAME versioner used at
+// startup — the snapshot it returns is whatever the reload coordinator
+// last published. Tests that don't care about the policy-version endpoint
+// pass nil; in that case the layer is skipped.
+//
 // Tests that don't care about teardown should continue calling
 // buildServeHandler / buildServeHandlerWithRuntime which discard it — the
 // goroutines die with the test process anyway.
-func buildServeHandlerChainWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime) (http.Handler, func()) {
+func buildServeHandlerChainWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime, versioner *admin.PolicyVersioner) (http.Handler, func()) {
 	clientProfiles, err := buildServeClientProfiles(cfg)
 	if err != nil {
 		logger.Error("invalid client profile config", "error", err)
@@ -231,7 +254,7 @@ func buildServeHandlerChainWithRuntime(cfg *config.Config, logger *slog.Logger, 
 	}
 
 	handler := newServeUpstreamHandler(cfg, logger)
-	layers, teardown := buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, runtime)
+	layers, teardown := buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, runtime, versioner)
 	for _, layer := range layers {
 		handler = layer.with(handler)
 	}
@@ -313,11 +336,11 @@ func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handl
 }
 
 func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy) []serveHandlerLayer {
-	layers, _ := buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, newServeRuntime(cfg, logger, deps))
+	layers, _ := buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, newServeRuntime(cfg, logger, deps), nil)
 	return layers
 }
 
-func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy, runtime *serveRuntime) ([]serveHandlerLayer, func()) {
+func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy, runtime *serveRuntime, versioner *admin.PolicyVersioner) ([]serveHandlerLayer, func()) {
 	layers := []serveHandlerLayer{
 		namedServeHandlerLayer("withHijack", withHijack(cfg, logger)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, logger)),
@@ -325,13 +348,22 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 		namedServeHandlerLayer("withFilter", withFilter(cfg, logger, rules, clientProfiles)),
 	}
 
-	// Admin endpoint sits inside filter (so the filter never sees admin paths)
+	// Admin endpoints sit inside filter (so the filter never sees admin paths)
 	// but outside rate-limit and clientacl (so CIDR allowlists and per-profile
 	// limits still apply to /admin/* callers — they are not exempt from abuse
 	// controls). Layers earlier in this slice are wrapped by layers added
 	// later, so an admin layer appended here runs AFTER ratelimit / clientacl
 	// in the request flow but BEFORE filter.
+	//
+	// The policy-version endpoint is appended before the validate endpoint so
+	// a GET to /admin/policy/version is matched first; method-mismatched
+	// requests still fall through to the next admin interceptor (which sees
+	// a different path), and ultimately to filter where unrelated traffic
+	// continues normally.
 	if cfg.Admin.Enabled {
+		if versioner != nil {
+			layers = append(layers, namedServeHandlerLayer("withPolicyVersionEndpoint", withPolicyVersionEndpoint(cfg, logger, versioner)))
+		}
 		layers = append(layers, namedServeHandlerLayer("withAdminEndpoint", withAdminEndpoint(cfg, logger)))
 	}
 
@@ -559,6 +591,37 @@ func withAdminEndpoint(cfg *config.Config, logger *slog.Logger) func(http.Handle
 		Validate:     buildAdminValidator(logger),
 		Logger:       logger,
 	})
+}
+
+// withPolicyVersionEndpoint mounts the read-only GET admin.policy_version_path
+// handler. The versioner pointer is captured by reference so updates the
+// reload coordinator publishes after a successful swap are observable to the
+// next caller without re-wrapping the chain.
+func withPolicyVersionEndpoint(cfg *config.Config, logger *slog.Logger, versioner *admin.PolicyVersioner) func(http.Handler) http.Handler {
+	return admin.NewPolicyVersionInterceptor(admin.PolicyVersionOptions{
+		Path:   cfg.Admin.PolicyVersionPath,
+		Source: versioner.Snapshot,
+		Logger: logger,
+	})
+}
+
+// policyConfigHash returns a hex SHA-256 of the JSON encoding of the
+// effective config. JSON marshaling of our config structs is deterministic
+// because field order is fixed and no map[string]any leaks into the shape;
+// that makes the hash a stable fingerprint operators can compare across
+// scrapes to confirm two snapshots really represent the same config. An
+// encoding failure is non-fatal — we return the empty string so the rest
+// of the snapshot still publishes.
+func policyConfigHash(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // buildAdminValidator returns the parse+validate+compile callback wired into
