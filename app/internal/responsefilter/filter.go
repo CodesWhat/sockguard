@@ -48,6 +48,10 @@ func (f *Filter) Enabled() bool {
 }
 
 // ModifyResponse rewrites supported successful Docker JSON responses in place.
+//
+// Hijacked streams (exec output, container attach) bypass this method entirely:
+// the proxy performs a raw bidirectional copy for those endpoints, so secrets
+// appearing in exec output are passed through regardless of RedactSensitiveData.
 func (f *Filter) ModifyResponse(resp *http.Response) error {
 	if !f.Enabled() || resp == nil || resp.Request == nil {
 		return nil

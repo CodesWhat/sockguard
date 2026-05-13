@@ -244,6 +244,10 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(co
 				return
 			}
 
+			// IP→label resolution is inherently race-prone: container teardown followed
+			// by IP recycling creates a window where labels from a new container may be
+			// applied to a request from the old one. Operators that need strong isolation
+			// should prefer UID/GID unix-peer profile assignment over IP/label ACLs.
 			client, found, err := resolveClient(r.Context(), clientIP)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "client label ACL lookup failed", "error", err, "client_ip", clientIP.String())

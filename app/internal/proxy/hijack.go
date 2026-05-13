@@ -44,14 +44,18 @@ var hijackBufferPool bytePool = &sync.Pool{
 	},
 }
 
+// Test hook — do not use t.Parallel() in tests that swap this.
 var dialUpstreamWithTimeoutHook func(string, string, time.Duration) (net.Conn, error) = net.DialTimeout
 
+// Test hook — do not use t.Parallel() in tests that swap this.
 var dialUpstreamHook = func(network, address string) (net.Conn, error) {
 	return dialUpstreamWithTimeoutHook(network, address, hijackDialTimeout)
 }
 
+// Test hook — do not use t.Parallel() in tests that swap this.
 var readResponseHook func(*bufio.Reader, *http.Request) (*http.Response, error) = http.ReadResponse
 
+// Test hook — do not use t.Parallel() in tests that swap this.
 var copyBufferHook func(io.Writer, io.Reader, []byte) (int64, error) = io.CopyBuffer
 
 var hopByHopHeaders = []string{

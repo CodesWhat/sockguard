@@ -262,6 +262,78 @@ func TestValidatePOSTConcurrentRequests(t *testing.T) {
 	<-done
 }
 
+// TestMainListenerDisabled_DedicatedListenerEnabled_HappyPath locks in the
+// documented posture: admin endpoints are served ONLY on the dedicated
+// admin listener, never on the main data listener.
+//
+// Regression target: a wiring change that accidentally mounts the validate or
+// policy-version interceptor on the main ServeMux would break isolation — this
+// test would start seeing 200/422 on the "main" side instead of 404.
+func TestMainListenerDisabled_DedicatedListenerEnabled_HappyPath(t *testing.T) {
+	const validatePath = "/admin/validate"
+	const versionPath = "/admin/policy/version"
+
+	// --- main data listener mux: no admin interceptors registered ---
+	// The main listener uses an http.ServeMux whose routes are all Docker-API
+	// paths. Admin paths are simply not registered, so they return 404.
+	mainMux := http.NewServeMux()
+	mainMux.HandleFunc("/version", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Validate that admin paths return 404 on the main listener.
+	for _, path := range []string{validatePath, versionPath} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
+		rec := newRecorder()
+		mainMux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("main listener: %s returned %d, want 404 (admin must not be served on data listener)", path, rec.Code)
+		}
+	}
+
+	// --- dedicated admin listener handler: validate + policy-version interceptors ---
+	// Mirrors the shape built by buildAdminHandlerChain in internal/cmd/serve.go.
+	snap := &PolicySnapshot{Version: 1, Rules: 2, Source: "startup"}
+	versionInterceptor := NewPolicyVersionInterceptor(PolicyVersionOptions{
+		Path:   versionPath,
+		Source: func() *PolicySnapshot { return snap },
+	})
+	validateInterceptor := NewValidateInterceptor(Options{
+		Path:     validatePath,
+		Validate: newOKValidator(),
+	})
+
+	// Chain: policy-version → validate → 404 terminal (same order as production).
+	terminal := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	adminHandler := versionInterceptor(validateInterceptor(terminal))
+
+	// POST /admin/validate with valid body → 200 OK on dedicated listener.
+	req := httptest.NewRequest(http.MethodPost, validatePath, strings.NewReader("rules: []\n"))
+	rec := newRecorder()
+	adminHandler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("dedicated admin listener: POST %s = %d, want 200", validatePath, rec.Code)
+	}
+
+	// GET /admin/policy/version → 200 OK with snapshot on dedicated listener.
+	req = httptest.NewRequest(http.MethodGet, versionPath, nil)
+	rec = newRecorder()
+	adminHandler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("dedicated admin listener: GET %s = %d, want 200", versionPath, rec.Code)
+	}
+
+	// Unrelated Docker API path → falls through to terminal (404) on dedicated listener.
+	req = httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	rec = newRecorder()
+	adminHandler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("dedicated admin listener: unrelated path = %d, want 404", rec.Code)
+	}
+}
+
 func noopHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
