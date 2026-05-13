@@ -145,10 +145,10 @@ func TestPolicyBundleReload_AcceptsSignedYAML(t *testing.T) {
 
 	f.coordinator.reload()
 
-	if got := metricsReloadCount(t, f.registry, "ok"); got != 1 {
-		t.Fatalf("ok count = %d, want 1", got)
+	if got, ok := metricsReloadCount(t, f.registry, "ok"); !ok || got != 1 {
+		t.Fatalf("ok count = %d (found=%v), want 1", got, ok)
 	}
-	if got := metricsReloadCount(t, f.registry, "reject_signature"); got != 0 {
+	if got, ok := metricsReloadCount(t, f.registry, "reject_signature"); ok && got != 0 {
 		t.Fatalf("reject_signature count = %d, want 0", got)
 	}
 	snap := f.versioner.Snapshot()
@@ -169,10 +169,10 @@ func TestPolicyBundleReload_RejectsBadSignature(t *testing.T) {
 
 	f.coordinator.reload()
 
-	if got := metricsReloadCount(t, f.registry, "reject_signature"); got != 1 {
-		t.Fatalf("reject_signature count = %d, want 1", got)
+	if got, ok := metricsReloadCount(t, f.registry, "reject_signature"); !ok || got != 1 {
+		t.Fatalf("reject_signature count = %d (found=%v), want 1", got, ok)
 	}
-	if got := metricsReloadCount(t, f.registry, "ok"); got != 0 {
+	if got, ok := metricsReloadCount(t, f.registry, "ok"); ok && got != 0 {
 		t.Fatalf("ok count = %d, want 0 (rejected reload must not record success)", got)
 	}
 	if snap := f.versioner.Snapshot(); snap != nil {
@@ -189,10 +189,10 @@ func TestPolicyBundleReload_SkipsWhenDisabled(t *testing.T) {
 
 	f.coordinator.reload()
 
-	if got := metricsReloadCount(t, f.registry, "ok"); got != 1 {
-		t.Fatalf("ok count = %d, want 1 (disabled bundle must not block reload)", got)
+	if got, ok := metricsReloadCount(t, f.registry, "ok"); !ok || got != 1 {
+		t.Fatalf("ok count = %d (found=%v), want 1 (disabled bundle must not block reload)", got, ok)
 	}
-	if got := metricsReloadCount(t, f.registry, "reject_signature"); got != 0 {
+	if got, ok := metricsReloadCount(t, f.registry, "reject_signature"); ok && got != 0 {
 		t.Fatalf("reject_signature count = %d, want 0", got)
 	}
 	if snap := f.versioner.Snapshot(); snap != nil && snap.BundleSigner != "" {
@@ -216,12 +216,16 @@ func TestPolicyBundleReload_VerifyRunsBeforeConfigLoad(t *testing.T) {
 	if loadCalled {
 		t.Fatal("loadConfig must not be called after a failed signature verification")
 	}
-	if got := metricsReloadCount(t, f.registry, "reject_signature"); got != 1 {
-		t.Fatalf("reject_signature count = %d, want 1", got)
+	if got, ok := metricsReloadCount(t, f.registry, "reject_signature"); !ok || got != 1 {
+		t.Fatalf("reject_signature count = %d (found=%v), want 1", got, ok)
 	}
 }
 
-func metricsReloadCount(t *testing.T, r *metrics.Registry, result string) uint64 {
+// metricsReloadCount returns the value of sockguard_config_reload_total{result}
+// and a boolean indicating whether the metric line was present. The boolean
+// guards against the silent-zero ambiguity: a missing metric line is (0, false)
+// while a genuine zero counter is (0, true).
+func metricsReloadCount(t *testing.T, r *metrics.Registry, result string) (uint64, bool) {
 	t.Helper()
 	rec := httptest.NewRecorder()
 	r.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
@@ -229,11 +233,11 @@ func metricsReloadCount(t *testing.T, r *metrics.Registry, result string) uint64
 	needle := fmt.Sprintf("sockguard_config_reload_total{result=\"%s\"} ", result)
 	idx := indexAfter(body, needle)
 	if idx < 0 {
-		return 0
+		return 0, false
 	}
 	var value uint64
 	if _, err := fmt.Sscanf(body[idx:], "%d", &value); err != nil {
-		return 0
+		return 0, false
 	}
-	return value
+	return value, true
 }

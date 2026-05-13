@@ -89,20 +89,24 @@ func newReloadCoordinatorFixture(t *testing.T, initial *config.Config) *reloadCo
 	return fixture
 }
 
-func (f *reloadCoordinatorFixture) reloadCount(result string) uint64 {
+// reloadCount returns the value of sockguard_config_reload_total{result} and
+// a boolean indicating whether the metric line was present in the output. The
+// boolean guards against the silent-zero ambiguity: a missing metric line
+// returns (0, false) while a genuine zero counter returns (0, true).
+func (f *reloadCoordinatorFixture) reloadCount(result string) (uint64, bool) {
 	rec := httptest.NewRecorder()
 	f.registry.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()
 	needle := fmt.Sprintf("sockguard_config_reload_total{result=\"%s\"} ", result)
 	idx := indexAfter(body, needle)
 	if idx < 0 {
-		return 0
+		return 0, false
 	}
 	var value uint64
 	if _, err := fmt.Sscanf(body[idx:], "%d", &value); err != nil {
-		return 0
+		return 0, false
 	}
-	return value
+	return value, true
 }
 
 func indexAfter(s, sub string) int {
@@ -122,10 +126,10 @@ func TestReloadCoordinatorRejectsLoadError(t *testing.T) {
 	f.loadErr = errors.New("simulated parse error")
 	f.coordinator.reload()
 
-	if got := f.reloadCount("reject_load"); got != 1 {
-		t.Fatalf("reject_load count = %d, want 1", got)
+	if got, ok := f.reloadCount("reject_load"); !ok || got != 1 {
+		t.Fatalf("reject_load count = %d (found=%v), want 1", got, ok)
 	}
-	if got := f.reloadCount("ok"); got != 0 {
+	if got, ok := f.reloadCount("ok"); ok && got != 0 {
 		t.Fatalf("ok count = %d, want 0 after rejected reload", got)
 	}
 }
@@ -141,10 +145,10 @@ func TestReloadCoordinatorRejectsImmutableChange(t *testing.T) {
 
 	f.coordinator.reload()
 
-	if got := f.reloadCount("reject_immutable"); got != 1 {
-		t.Fatalf("reject_immutable count = %d, want 1", got)
+	if got, ok := f.reloadCount("reject_immutable"); !ok || got != 1 {
+		t.Fatalf("reject_immutable count = %d (found=%v), want 1", got, ok)
 	}
-	if got := f.reloadCount("ok"); got != 0 {
+	if got, ok := f.reloadCount("ok"); ok && got != 0 {
 		t.Fatalf("ok count = %d, want 0", got)
 	}
 }
@@ -157,8 +161,8 @@ func TestReloadCoordinatorRejectsValidationError(t *testing.T) {
 	f.validateErr = errors.New("rule 2 is malformed")
 	f.coordinator.reload()
 
-	if got := f.reloadCount("reject_validation"); got != 1 {
-		t.Fatalf("reject_validation count = %d, want 1", got)
+	if got, ok := f.reloadCount("reject_validation"); !ok || got != 1 {
+		t.Fatalf("reject_validation count = %d (found=%v), want 1", got, ok)
 	}
 }
 
@@ -178,8 +182,8 @@ func TestReloadCoordinatorSwapsOnSuccess(t *testing.T) {
 
 	f.coordinator.reload()
 
-	if got := f.reloadCount("ok"); got != 1 {
-		t.Fatalf("ok count = %d, want 1", got)
+	if got, ok := f.reloadCount("ok"); !ok || got != 1 {
+		t.Fatalf("ok count = %d (found=%v), want 1", got, ok)
 	}
 
 	postReloadIdentity := fmt.Sprintf("%p", f.swappable.Current())
@@ -214,7 +218,7 @@ func TestReloadCoordinatorReloadAfterStopIsNoop(t *testing.T) {
 	f.coordinator.reload()
 
 	for _, result := range []string{"ok", "reject_load", "reject_validation", "reject_immutable"} {
-		if got := f.reloadCount(result); got != 0 {
+		if got, ok := f.reloadCount(result); ok && got != 0 {
 			t.Fatalf("reload after stop bumped %s = %d, want 0", result, got)
 		}
 	}
