@@ -73,8 +73,8 @@ func TestMiddleware_RateLimit_AllowAndDeny(t *testing.T) {
 		t.Fatalf("expected 429, got %d", rec.Code)
 	}
 
-	// Body should decode to RateLimitResponse.
-	var body RateLimitResponse
+	// Body should decode to a ThrottleResponse with rate-limit fields populated.
+	var body ThrottleResponse
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
@@ -136,12 +136,15 @@ func TestMiddleware_ConcurrencyCap_AllowAndDeny(t *testing.T) {
 		t.Fatalf("expected 429, got %d", rec.Code)
 	}
 
-	var body ConcurrencyLimitResponse
+	var body ThrottleResponse
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
 	if body.Reason != string(ReasonConcurrency) {
 		t.Fatalf("expected reason=%q, got %q", ReasonConcurrency, body.Reason)
+	}
+	if body.RetryAfterSeconds != 0 {
+		t.Fatalf("concurrency 429 should omit retry_after_seconds, got %d", body.RetryAfterSeconds)
 	}
 
 	// Release the first request and wait for it to finish.
@@ -312,6 +315,7 @@ func TestMiddleware_ConcurrentUnderRace(t *testing.T) {
 
 func TestMiddleware_EndpointCost_WeightsExpensiveEndpoint(t *testing.T) {
 	reg := metrics.NewRegistry()
+	clk := newFixedClock(time.Unix(0, 0))
 
 	opts := MiddlewareOptions{
 		Profiles: map[string]ProfileOptions{
@@ -326,6 +330,7 @@ func TestMiddleware_EndpointCost_WeightsExpensiveEndpoint(t *testing.T) {
 			},
 		},
 		ResolveProfile: resolveProfileFn("ci"),
+		Now:            clk.Now, // frozen — no refill between requests
 	}
 	h := mustMiddleware(t, newTestLogger(), reg, nil, opts)(okHandler)
 
@@ -338,9 +343,7 @@ func TestMiddleware_EndpointCost_WeightsExpensiveEndpoint(t *testing.T) {
 		}
 	}
 
-	// Third build is denied — bucket is empty (and refill hasn't ticked in this
-	// real-clock test, but the rate is high enough that this should still 429
-	// because the call happens within a microsecond).
+	// Third build is denied: frozen clock means no refill since burst was drained.
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/build", nil))
 	if rec.Code != http.StatusTooManyRequests {
@@ -523,14 +526,11 @@ func newTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
-// mustMiddleware constructs Middleware and fails the test on a compile error.
-// All happy-path tests use well-formed configs; this helper keeps the assertion
-// boilerplate from drowning out the actual test logic.
+// mustMiddleware constructs Middleware and registers its Limiter stop function
+// with t.Cleanup so per-profile eviction goroutines exit at test end.
 func mustMiddleware(t *testing.T, logger *slog.Logger, reg *metrics.Registry, sampler *AuditSampler, opts MiddlewareOptions) func(http.Handler) http.Handler {
 	t.Helper()
-	mw, err := Middleware(logger, reg, sampler, opts)
-	if err != nil {
-		t.Fatalf("Middleware: unexpected compile error: %v", err)
-	}
+	mw, stop := Middleware(logger, reg, sampler, opts)
+	t.Cleanup(stop)
 	return mw
 }

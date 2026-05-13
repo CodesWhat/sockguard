@@ -252,7 +252,7 @@ func TestMiddleware_GlobalConcurrency_LowProfileHitsPriorityFloor(t *testing.T) 
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429, got %d", rec.Code)
 	}
-	var body ConcurrencyLimitResponse
+	var body ThrottleResponse
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}

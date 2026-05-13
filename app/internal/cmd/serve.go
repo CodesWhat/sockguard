@@ -112,9 +112,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 
 	runtime := newServeRuntime(cfg, logger, deps)
 	handler := buildServeHandlerWithRuntime(cfg, logger, auditLogger, rules, deps, runtime)
-	if runtime.stopRateLimit != nil {
-		defer runtime.stopRateLimit()
-	}
+	defer runtime.stopAll()
 	listener, err := deps.createServeListener(cfg)
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
@@ -207,6 +205,16 @@ type serveRuntime struct {
 	stopRateLimit func()
 }
 
+// stopAll cleans up runtime-owned background goroutines (rate-limit sampler
+// and per-profile Limiter eviction loops). Safe to call multiple times.
+func (r *serveRuntime) stopAll() {
+	if r == nil || r.stopRateLimit == nil {
+		return
+	}
+	r.stopRateLimit()
+	r.stopRateLimit = nil
+}
+
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) *serveRuntime {
 	runtime := &serveRuntime{}
 	if cfg.Metrics.Enabled {
@@ -283,26 +291,26 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 	}
 
 	// Rate limiting and concurrency caps sit after client identity is resolved
-	// (clientacl) but before rule evaluation (filter). The sampler stop
-	// function is stored on the runtime so the caller can clean it up on
+	// (clientacl) but before rule evaluation (filter), so a request denied by
+	// the filter still consumes its rate-limit quota — rule-probing cannot
+	// happen at line rate. The stop function (sampler + Limiter eviction
+	// goroutines) is stored on the runtime so the caller cleans it up on
 	// server shutdown.
-	if rlMiddleware, stopSampler := buildRateLimitMiddleware(cfg, logger, runtime); rlMiddleware != nil {
-		if runtime != nil {
-			runtime.stopRateLimit = stopSampler
-		}
+	if rlMiddleware, stop := buildRateLimitMiddleware(cfg, logger, runtime); rlMiddleware != nil {
+		runtime.stopRateLimit = stop
 		layers = append(layers, namedServeHandlerLayer("withRateLimit", rlMiddleware))
 	}
 
 	if cfg.Health.Enabled {
 		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, logger, deps, runtime)))
 	}
-	if runtime != nil && runtime.metrics != nil {
+	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetricsEndpoint", withMetricsEndpoint(cfg, runtime.metrics)))
 	}
 	layers = append(layers,
 		namedServeHandlerLayer("withClientACL", withClientACL(cfg, logger)),
 	)
-	if runtime != nil && runtime.metrics != nil {
+	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetrics", withMetrics(runtime.metrics)))
 	}
 	layers = append(layers,
@@ -319,15 +327,10 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 }
 
 // buildRateLimitMiddleware constructs the per-profile rate-limit+concurrency
-// middleware and its audit sampler. Returns nil, nil if no profile has limits
-// configured. The second return value is the stop function for the sampler's
-// background goroutine; callers must call it on shutdown to prevent goroutine
-// leaks in tests and graceful shutdowns.
-//
-// ratelimit.Middleware can technically return a compile error if an
-// endpoint-cost path glob is malformed, but the config validator rejects
-// those at startup. If one slips through, we log and skip the middleware
-// rather than build a proxy with broken limits.
+// middleware and its audit sampler. Returns (nil, nil) when no profile has
+// limits and no global concurrency cap is configured. The second return value
+// is a stop function that halts the sampler eviction goroutine and every
+// per-profile Limiter eviction goroutine; callers must call it on shutdown.
 func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *serveRuntime) (func(http.Handler) http.Handler, func()) {
 	profiles := make(map[string]ratelimit.ProfileOptions)
 	for _, profile := range cfg.Clients.Profiles {
@@ -348,24 +351,58 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 		return nil, nil
 	}
 
-	var reg *metrics.Registry
-	if runtime != nil {
-		reg = runtime.metrics
-	}
+	warnAssignedProfilesWithoutLimits(cfg, profiles, logger)
 
 	sampler, stopSampler := ratelimit.NewAuditSampler()
-	mw, err := ratelimit.Middleware(logger, reg, sampler, ratelimit.MiddlewareOptions{
+	mw, stopLimiters := ratelimit.Middleware(logger, runtime.metrics, sampler, ratelimit.MiddlewareOptions{
 		Profiles:          profiles,
 		ResolveProfile:    clientacl.RequestProfile,
 		GlobalConcurrency: globalConc,
 	})
-	if err != nil {
-		logger.Error("rate-limit middleware compile failed; validator should have caught this",
-			slog.String("error", err.Error()))
+	stop := func() {
+		stopLimiters()
 		stopSampler()
-		return nil, nil
 	}
-	return mw, stopSampler
+	return mw, stop
+}
+
+// warnAssignedProfilesWithoutLimits flags profiles that operators bound to a
+// caller identity (mTLS, source IP, unix peer, default) but did not give any
+// rate or concurrency configuration. Once any profile has limits configured,
+// an unlimited assigned profile is almost always a config oversight, not an
+// intentional carve-out — surface it at startup so operators notice before
+// the proxy ships traffic.
+func warnAssignedProfilesWithoutLimits(cfg *config.Config, limitedProfiles map[string]ratelimit.ProfileOptions, logger *slog.Logger) {
+	assigned := make(map[string]struct{})
+	if cfg.Clients.DefaultProfile != "" {
+		assigned[cfg.Clients.DefaultProfile] = struct{}{}
+	}
+	for _, a := range cfg.Clients.SourceIPProfiles {
+		if a.Profile != "" {
+			assigned[a.Profile] = struct{}{}
+		}
+	}
+	for _, a := range cfg.Clients.ClientCertificateProfiles {
+		if a.Profile != "" {
+			assigned[a.Profile] = struct{}{}
+		}
+	}
+	for _, a := range cfg.Clients.UnixPeerProfiles {
+		if a.Profile != "" {
+			assigned[a.Profile] = struct{}{}
+		}
+	}
+	for name := range assigned {
+		if _, ok := limitedProfiles[name]; ok {
+			continue
+		}
+		logger.Warn(
+			"client profile is assigned to callers but has no rate or concurrency limits configured",
+			slog.String("profile", name),
+			slog.String("recommendation",
+				"add clients.profiles[...].limits.rate, .concurrency, or .priority — or remove the assignment if unlimited access is intended"),
+		)
+	}
 }
 
 // configLimitsToRateLimitOptions converts a per-profile LimitsConfig to the
@@ -445,7 +482,7 @@ func withFilter(cfg *config.Config, logger *slog.Logger, rules []*filter.Compile
 
 func withHealth(cfg *config.Config, logger *slog.Logger, deps *serveDeps, runtime *serveRuntime) func(http.Handler) http.Handler {
 	monitor := health.NewMonitor(cfg.Upstream.Socket, deps.now(), logger)
-	if runtime != nil && runtime.health != nil {
+	if runtime.health != nil {
 		monitor = runtime.health
 	}
 	healthHandler := monitor.Handler()

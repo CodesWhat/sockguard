@@ -1,11 +1,12 @@
 package ratelimit
 
 import (
-	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
@@ -13,15 +14,13 @@ import (
 	"github.com/codeswhat/sockguard/internal/metrics"
 )
 
-// RateLimitResponse is the JSON body returned on a 429 for rate-limit denial.
-type RateLimitResponse struct {
+// ThrottleResponse is the JSON body returned on every 429 throttle response.
+// RetryAfterSeconds is included only for rate-limit denials (where the bucket
+// math yields a meaningful wait time); concurrency and priority-floor denials
+// omit it because the available capacity depends on other clients finishing.
+type ThrottleResponse struct {
 	Reason            string `json:"reason"`
-	RetryAfterSeconds int    `json:"retry_after_seconds"`
-}
-
-// ConcurrencyLimitResponse is the JSON body returned on a 429 for concurrency denial.
-type ConcurrencyLimitResponse struct {
-	Reason string `json:"reason"`
+	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
 }
 
 // ProfileOptions configures rate limiting and concurrency caps for a single
@@ -82,20 +81,22 @@ type compiledEndpointCost struct {
 }
 
 // compileEndpointCosts converts the public-API slice into the runtime matcher
-// table. It returns the first compile error encountered (typically an invalid
-// regex from a malformed glob); callers should report it at startup. A nil
-// input returns a nil slice (no per-endpoint weighting).
-func compileEndpointCosts(costs []EndpointCost) ([]compiledEndpointCost, error) {
+// table. A nil input returns a nil slice (no per-endpoint weighting).
+//
+// Compilation uses regexp.MustCompile: filter.GlobToRegexString output is
+// always valid regex (every input character is either an explicit glob token
+// or regexp.QuoteMeta'd), so a Compile failure here means globToRegex has a
+// programming bug and the proxy must fail-fast at startup rather than silently
+// run without rate limiting. The config validator already rejects malformed
+// user input via regexp.Compile, so untrusted globs never reach this path.
+func compileEndpointCosts(costs []EndpointCost) []compiledEndpointCost {
 	if len(costs) == 0 {
-		return nil, nil
+		return nil
 	}
 	compiled := make([]compiledEndpointCost, 0, len(costs))
-	for i, ec := range costs {
+	for _, ec := range costs {
 		regex := "^" + filter.GlobToRegexString(ec.PathGlob) + "$"
-		re, err := regexp.Compile(regex)
-		if err != nil {
-			return nil, fmt.Errorf("endpoint_costs[%d]: invalid path glob %q: %w", i, ec.PathGlob, err)
-		}
+		re := regexp.MustCompile(regex)
 		var methods map[string]struct{}
 		if len(ec.Methods) > 0 {
 			methods = make(map[string]struct{}, len(ec.Methods))
@@ -109,23 +110,24 @@ func compileEndpointCosts(costs []EndpointCost) ([]compiledEndpointCost, error) 
 			cost:    ec.Cost,
 		})
 	}
-	return compiled, nil
+	return compiled
 }
 
-// costFor returns the configured token cost for r, or 1 if no rule matches.
-func (cp *compiledProfile) costFor(r *http.Request) float64 {
+// costFor returns the configured token cost for r against the pre-normalized
+// path, or 1 if no rule matches. The caller normalizes once per request and
+// reuses the result for cost lookup, audit logging, and the deny path.
+func (cp *compiledProfile) costFor(method, normPath string) float64 {
 	if len(cp.endpointCosts) == 0 {
 		return 1
 	}
-	path := filter.NormalizePath(r.URL.Path)
-	method := strings.ToUpper(r.Method)
+	method = strings.ToUpper(method)
 	for _, ec := range cp.endpointCosts {
 		if len(ec.methods) > 0 {
 			if _, ok := ec.methods[method]; !ok {
 				continue
 			}
 		}
-		if ec.pathRE.MatchString(path) {
+		if ec.pathRE.MatchString(normPath) {
 			return ec.cost
 		}
 	}
@@ -147,9 +149,9 @@ type compiledProfile struct {
 	priority      Priority
 }
 
-func compileProfile(opts ProfileOptions) (*compiledProfile, error) {
+func compileProfile(opts ProfileOptions, now func() time.Time) *compiledProfile {
 	if opts.Rate == nil && opts.Concurrency == nil && opts.Priority == PriorityNormal {
-		return nil, nil
+		return nil
 	}
 	cp := &compiledProfile{
 		rate:        opts.Rate,
@@ -161,18 +163,13 @@ func compileProfile(opts ProfileOptions) (*compiledProfile, error) {
 		if burst == 0 {
 			burst = opts.Rate.TokensPerSecond
 		}
-		cp.limiter = NewLimiter(opts.Rate.TokensPerSecond, burst)
-
-		compiled, err := compileEndpointCosts(opts.Rate.EndpointCosts)
-		if err != nil {
-			return nil, err
-		}
-		cp.endpointCosts = compiled
+		cp.limiter = newLimiterWithClock(opts.Rate.TokensPerSecond, burst, now)
+		cp.endpointCosts = compileEndpointCosts(opts.Rate.EndpointCosts)
 	}
 	if opts.Concurrency != nil {
 		cp.tracker = &InflightTracker{}
 	}
-	return cp, nil
+	return cp
 }
 
 // MiddlewareOptions configures the multi-profile rate-limit middleware.
@@ -187,49 +184,65 @@ type MiddlewareOptions struct {
 	// GlobalConcurrency enables the system-wide priority-aware fairness gate.
 	// Nil disables it, in which case per-profile priorities have no effect.
 	GlobalConcurrency *GlobalConcurrencyOptions
+	// Now overrides the time source for every per-profile Limiter created by
+	// this Middleware. Tests that need deterministic refill behavior inject a
+	// fixed-clock function; production code leaves this nil to use time.Now.
+	Now func() time.Time
 }
 
 // Middleware returns an HTTP middleware that enforces per-profile rate limiting
-// and concurrency caps. It returns 429 when a request is denied.
+// and concurrency caps, plus a stop function that halts every per-profile
+// Limiter eviction goroutine started during compilation. It returns 429 when a
+// request is denied.
 //
 // registry may be nil when Prometheus metrics are disabled.
 //
 // auditSampler may be nil; when non-nil it gates the slog throttle record to
 // the first throttle of each (client, reason) tuple per second.
 //
-// An error is returned only when a profile's EndpointCost glob fails to compile
-// — the config validator catches this at startup, so under normal use the error
-// is nil.
+// Callers MUST invoke the returned stop function on shutdown to avoid leaking
+// background goroutines. Calling stop is safe even when no Limiter was started
+// (no profile has rate limiting): it is a no-op in that case.
 func Middleware(
 	logger *slog.Logger,
 	registry *metrics.Registry,
 	auditSampler *AuditSampler,
 	opts MiddlewareOptions,
-) (func(http.Handler) http.Handler, error) {
+) (mw func(http.Handler) http.Handler, stop func()) {
 	var globalMax int64
 	if opts.GlobalConcurrency != nil {
 		globalMax = opts.GlobalConcurrency.MaxInflight
 	}
 
+	noop := func(next http.Handler) http.Handler { return next }
+	noopStop := func() {}
+
 	if len(opts.Profiles) == 0 && globalMax <= 0 {
-		return func(next http.Handler) http.Handler { return next }, nil
+		return noop, noopStop
+	}
+
+	now := opts.Now
+	if now == nil {
+		now = time.Now
 	}
 
 	// Pre-compile all profile limiters at middleware construction time.
 	compiled := make(map[string]*compiledProfile, len(opts.Profiles))
+	var limiters []*Limiter
 	hasAny := false
 	for name, profileOpts := range opts.Profiles {
-		cp, err := compileProfile(profileOpts)
-		if err != nil {
-			return nil, fmt.Errorf("profile %q: %w", name, err)
+		cp := compileProfile(profileOpts, now)
+		if cp == nil {
+			continue
 		}
-		if cp != nil {
-			compiled[name] = cp
-			hasAny = true
+		compiled[name] = cp
+		hasAny = true
+		if cp.limiter != nil {
+			limiters = append(limiters, cp.limiter)
 		}
 	}
 	if !hasAny && globalMax <= 0 {
-		return func(next http.Handler) http.Handler { return next }, nil
+		return noop, noopStop
 	}
 
 	var globalTracker *GlobalInflightTracker
@@ -237,131 +250,183 @@ func Middleware(
 		globalTracker = &GlobalInflightTracker{}
 	}
 
-	resolveProfile := opts.ResolveProfile
+	h := &throttleHandler{
+		logger:        logger,
+		registry:      registry,
+		auditSampler:  auditSampler,
+		compiled:      compiled,
+		globalTracker: globalTracker,
+		globalMax:     globalMax,
+		resolve:       opts.ResolveProfile,
+	}
 
-	return func(next http.Handler) http.Handler {
+	mw = func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			profile := ""
-			if resolveProfile != nil {
-				profile, _ = resolveProfile(r)
-			}
-
-			// Requests with no resolved profile are bucketed under
-			// AnonymousClientID so they cannot bypass limits by skipping
-			// identification.
-			effectiveID := profile
-			if effectiveID == "" {
-				effectiveID = AnonymousClientID
-			}
-
-			cp := compiled[effectiveID]
-			if cp == nil && globalTracker == nil {
-				// No per-profile limits and no global gate; pass through.
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// --- Rate limit check ---
-			if cp != nil && cp.limiter != nil {
-				cost := cp.costFor(r)
-				ok, retryAfter := cp.limiter.AllowN(effectiveID, cost)
-				if !ok {
-					registry.ObserveThrottle(effectiveID, string(ReasonRateLimit))
-					if auditSampler != nil && auditSampler.ShouldEmit(effectiveID, ReasonRateLimit) {
-						attrs := logging.AppendCorrelationAttrs(nil, r)
-						attrs = append(attrs,
-							slog.String("client_id", effectiveID),
-							slog.String("reason", string(ReasonRateLimit)),
-							slog.Float64("tokens_per_second", cp.rate.TokensPerSecond),
-							slog.Float64("burst", cp.rate.Burst),
-							slog.Float64("cost", cost),
-						)
-						logger.InfoContext(r.Context(), "throttle",
-							slog.Group("throttle", attrsToAny(attrs)...))
-					}
-					logging.SetDeniedWithCode(w, r, string(ReasonRateLimit), "rate limit exceeded", filter.NormalizePath)
-					w.Header().Set("Retry-After", itoa(retryAfter))
-					_ = httpjson.Write(w, http.StatusTooManyRequests, RateLimitResponse{
-						Reason:            string(ReasonRateLimit),
-						RetryAfterSeconds: retryAfter,
-					})
-					return
-				}
-			}
-
-			// --- Global priority-aware fairness gate ---
-			// Checked before the per-profile concurrency cap so a low-priority
-			// caller hitting the gate cannot consume a per-profile slot. A 429
-			// here does NOT increment any inflight counter. Profiles with no
-			// compiled limits (cp == nil) still pass through this gate with
-			// PriorityNormal so a single client cannot evade it by skipping
-			// per-profile config.
-			if globalTracker != nil {
-				priority := PriorityNormal
-				if cp != nil {
-					priority = cp.priority
-				}
-				ok, current, threshold := globalTracker.Acquire(priority, globalMax)
-				if !ok {
-					registry.ObserveThrottle(effectiveID, string(ReasonPriorityFloor))
-					if auditSampler != nil && auditSampler.ShouldEmit(effectiveID, ReasonPriorityFloor) {
-						attrs := logging.AppendCorrelationAttrs(nil, r)
-						attrs = append(attrs,
-							slog.String("client_id", effectiveID),
-							slog.String("reason", string(ReasonPriorityFloor)),
-							slog.String("priority", priority.String()),
-							slog.Int64("current_global_inflight", current),
-							slog.Int64("priority_threshold", threshold),
-							slog.Int64("global_max_inflight", globalMax),
-						)
-						logger.InfoContext(r.Context(), "throttle",
-							slog.Group("throttle", attrsToAny(attrs)...))
-					}
-					logging.SetDeniedWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", filter.NormalizePath)
-					_ = httpjson.Write(w, http.StatusTooManyRequests, ConcurrencyLimitResponse{
-						Reason: string(ReasonPriorityFloor),
-					})
-					return
-				}
-				defer globalTracker.Release()
-			}
-
-			// --- Per-profile concurrency cap check ---
-			// A 429 denial does NOT increment the inflight counter — we check
-			// before acquiring so throttled requests are never counted as
-			// in-flight.
-			if cp != nil && cp.tracker != nil {
-				ok, current := cp.tracker.Acquire(effectiveID, cp.concurrency.MaxInflight)
-				if !ok {
-					registry.ObserveThrottle(effectiveID, string(ReasonConcurrency))
-					if auditSampler != nil && auditSampler.ShouldEmit(effectiveID, ReasonConcurrency) {
-						attrs := logging.AppendCorrelationAttrs(nil, r)
-						attrs = append(attrs,
-							slog.String("client_id", effectiveID),
-							slog.String("reason", string(ReasonConcurrency)),
-							slog.Int64("current_inflight", current),
-							slog.Int64("max_inflight", cp.concurrency.MaxInflight),
-						)
-						logger.InfoContext(r.Context(), "throttle",
-							slog.Group("throttle", attrsToAny(attrs)...))
-					}
-					logging.SetDeniedWithCode(w, r, string(ReasonConcurrency), "concurrency cap exceeded", filter.NormalizePath)
-					_ = httpjson.Write(w, http.StatusTooManyRequests, ConcurrencyLimitResponse{
-						Reason: string(ReasonConcurrency),
-					})
-					return
-				}
-				// Release the in-flight counter on handler return, including panic.
-				defer func() {
-					cp.tracker.Release(effectiveID)
-					registry.SetInflight(effectiveID, cp.tracker.Current(effectiveID))
-				}()
-				registry.SetInflight(effectiveID, current)
-			}
-
-			next.ServeHTTP(w, r)
+			h.serve(w, r, next)
 		})
-	}, nil
+	}
+	stop = func() {
+		for _, l := range limiters {
+			l.Stop()
+		}
+	}
+	return mw, stop
+}
+
+// throttleHandler holds the precompiled state shared across requests.
+type throttleHandler struct {
+	logger        *slog.Logger
+	registry      *metrics.Registry
+	auditSampler  *AuditSampler
+	compiled      map[string]*compiledProfile
+	globalTracker *GlobalInflightTracker
+	globalMax     int64
+	resolve       func(*http.Request) (string, bool)
+}
+
+func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next http.Handler) {
+	profile := ""
+	if h.resolve != nil {
+		profile, _ = h.resolve(r)
+	}
+
+	// Requests with no resolved profile are bucketed under AnonymousClientID
+	// so they cannot bypass limits by skipping identification.
+	effectiveID := profile
+	if effectiveID == "" {
+		effectiveID = AnonymousClientID
+	}
+
+	cp := h.compiled[effectiveID]
+	if cp == nil && h.globalTracker == nil {
+		// No per-profile limits and no global gate; pass through.
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	// Normalize the request path once. Reused for endpoint-cost lookup, the
+	// throttle audit record, and the deny path's metrics label.
+	normPath := filter.NormalizePath(r.URL.Path)
+
+	if h.checkRateLimit(w, r, cp, effectiveID, normPath) {
+		return
+	}
+	if releaseGlobal, ok := h.checkGlobalPriority(w, r, cp, effectiveID, normPath); !ok {
+		return
+	} else if releaseGlobal != nil {
+		defer releaseGlobal()
+	}
+	if releaseProfile, ok := h.checkProfileConcurrency(w, r, cp, effectiveID, normPath); !ok {
+		return
+	} else if releaseProfile != nil {
+		defer releaseProfile()
+	}
+
+	next.ServeHTTP(w, r)
+}
+
+// checkRateLimit applies the token-bucket gate. Returns true when the request
+// was denied (handler should stop), false to continue.
+func (h *throttleHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (denied bool) {
+	if cp == nil || cp.limiter == nil {
+		return false
+	}
+	cost := cp.costFor(r.Method, normPath)
+	ok, retryAfter := cp.limiter.AllowN(clientID, cost)
+	if ok {
+		return false
+	}
+	h.registry.ObserveThrottle(clientID, string(ReasonRateLimit))
+	h.emitThrottleAudit(r, clientID, ReasonRateLimit, normPath,
+		slog.Float64("tokens_per_second", cp.rate.TokensPerSecond),
+		slog.Float64("burst", cp.rate.Burst),
+		slog.Float64("cost", cost),
+	)
+	logging.SetDeniedWithCode(w, r, string(ReasonRateLimit), "rate limit exceeded", filter.NormalizePath)
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
+		Reason:            string(ReasonRateLimit),
+		RetryAfterSeconds: retryAfter,
+	})
+	return true
+}
+
+// checkGlobalPriority applies the system-wide priority-aware fairness gate.
+// Returns (release, true) when admitted (caller defers release), (nil, false)
+// when denied. Profiles with no compiled limits (cp == nil) still pass through
+// this gate as PriorityNormal so a single client cannot evade it by skipping
+// per-profile config.
+func (h *throttleHandler) checkGlobalPriority(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (release func(), ok bool) {
+	if h.globalTracker == nil {
+		return nil, true
+	}
+	priority := PriorityNormal
+	if cp != nil {
+		priority = cp.priority
+	}
+	admitted, current, threshold := h.globalTracker.Acquire(priority, h.globalMax)
+	if admitted {
+		return h.globalTracker.Release, true
+	}
+	h.registry.ObserveThrottle(clientID, string(ReasonPriorityFloor))
+	h.emitThrottleAudit(r, clientID, ReasonPriorityFloor, normPath,
+		slog.String("priority", priority.String()),
+		slog.Int64("current_global_inflight", current),
+		slog.Int64("priority_threshold", threshold),
+		slog.Int64("global_max_inflight", h.globalMax),
+	)
+	logging.SetDeniedWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", filter.NormalizePath)
+	_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
+		Reason: string(ReasonPriorityFloor),
+	})
+	return nil, false
+}
+
+// checkProfileConcurrency applies the per-profile concurrency cap. A denial
+// does NOT increment the inflight counter — Acquire returns admit before
+// counting, so throttled requests are never counted as in-flight. Returns
+// (release, true) on admit, (nil, false) on denial.
+func (h *throttleHandler) checkProfileConcurrency(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (release func(), ok bool) {
+	if cp == nil || cp.tracker == nil {
+		return nil, true
+	}
+	admitted, current := cp.tracker.Acquire(clientID, cp.concurrency.MaxInflight)
+	if !admitted {
+		h.registry.ObserveThrottle(clientID, string(ReasonConcurrency))
+		h.emitThrottleAudit(r, clientID, ReasonConcurrency, normPath,
+			slog.Int64("current_inflight", current),
+			slog.Int64("max_inflight", cp.concurrency.MaxInflight),
+		)
+		logging.SetDeniedWithCode(w, r, string(ReasonConcurrency), "concurrency cap exceeded", filter.NormalizePath)
+		_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
+			Reason: string(ReasonConcurrency),
+		})
+		return nil, false
+	}
+	h.registry.SetInflight(clientID, current)
+	return func() {
+		cp.tracker.Release(clientID)
+		h.registry.SetInflight(clientID, cp.tracker.Current(clientID))
+	}, true
+}
+
+// emitThrottleAudit writes one throttle record through the sampler. The
+// sampler suppresses repeats within a 1-second window per (client, reason)
+// so the slog volume can't blow out under attack; the Prometheus counter
+// fires unconditionally in the caller.
+func (h *throttleHandler) emitThrottleAudit(r *http.Request, clientID string, reason ThrottleReason, normPath string, extras ...slog.Attr) {
+	if h.auditSampler == nil || !h.auditSampler.ShouldEmit(clientID, reason) {
+		return
+	}
+	attrs := logging.AppendCorrelationAttrs(nil, r)
+	attrs = append(attrs,
+		slog.String("client_id", clientID),
+		slog.String("reason", string(reason)),
+		slog.String("path", normPath),
+	)
+	attrs = append(attrs, extras...)
+	h.logger.InfoContext(r.Context(), "throttle",
+		slog.Group("throttle", attrsToAny(attrs)...))
 }
 
 func attrsToAny(attrs []slog.Attr) []any {
@@ -370,29 +435,4 @@ func attrsToAny(attrs []slog.Attr) []any {
 		result[i] = a
 	}
 	return result
-}
-
-// itoa converts an int to its decimal string representation without importing
-// strconv at the call site.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	buf := make([]byte, 0, 10)
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	for n > 0 {
-		buf = append(buf, byte('0'+n%10))
-		n /= 10
-	}
-	if neg {
-		buf = append(buf, '-')
-	}
-	// Reverse.
-	for i, j := 0, len(buf)-1; i < j; i, j = i+1, j-1 {
-		buf[i], buf[j] = buf[j], buf[i]
-	}
-	return string(buf)
 }
