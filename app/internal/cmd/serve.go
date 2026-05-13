@@ -332,11 +332,19 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 	profiles := make(map[string]ratelimit.ProfileOptions)
 	for _, profile := range cfg.Clients.Profiles {
 		opts := configLimitsToRateLimitOptions(profile.Limits)
-		if opts.Rate != nil || opts.Concurrency != nil {
+		if opts.Rate != nil || opts.Concurrency != nil || opts.Priority != ratelimit.PriorityNormal {
 			profiles[profile.Name] = opts
 		}
 	}
-	if len(profiles) == 0 {
+
+	var globalConc *ratelimit.GlobalConcurrencyOptions
+	if cfg.Clients.GlobalConcurrency != nil && cfg.Clients.GlobalConcurrency.MaxInflight > 0 {
+		globalConc = &ratelimit.GlobalConcurrencyOptions{
+			MaxInflight: cfg.Clients.GlobalConcurrency.MaxInflight,
+		}
+	}
+
+	if len(profiles) == 0 && globalConc == nil {
 		return nil, nil
 	}
 
@@ -347,8 +355,9 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 
 	sampler, stopSampler := ratelimit.NewAuditSampler()
 	mw, err := ratelimit.Middleware(logger, reg, sampler, ratelimit.MiddlewareOptions{
-		Profiles:       profiles,
-		ResolveProfile: clientacl.RequestProfile,
+		Profiles:          profiles,
+		ResolveProfile:    clientacl.RequestProfile,
+		GlobalConcurrency: globalConc,
 	})
 	if err != nil {
 		logger.Error("rate-limit middleware compile failed; validator should have caught this",
@@ -364,6 +373,12 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 // when no limits are configured.
 func configLimitsToRateLimitOptions(cfg config.LimitsConfig) ratelimit.ProfileOptions {
 	var opts ratelimit.ProfileOptions
+	if cfg.Priority != "" {
+		// Unknown values were rejected by the validator; ignore the ok flag
+		// here so a config that slipped past validation falls back to normal
+		// rather than panicking the proxy at runtime.
+		opts.Priority, _ = ratelimit.ParsePriority(cfg.Priority)
+	}
 	if cfg.Rate != nil {
 		burst := cfg.Rate.Burst
 		if burst == 0 {

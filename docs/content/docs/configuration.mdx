@@ -475,6 +475,57 @@ limits:
     max_inflight: 32
 ```
 
+### Priority / fairness controls
+
+A noisy low-priority client can saturate the per-profile concurrency cap on
+its own profile, but it should not be able to starve unrelated higher-priority
+profiles. The system-wide priority-aware fairness gate solves this.
+
+Enable it by setting a global cap and tagging each profile with a priority
+tier:
+
+```yaml
+clients:
+  global_concurrency:
+    max_inflight: 100        # system-wide ceiling, shared across all profiles
+  profiles:
+    - name: admin
+      limits:
+        priority: high       # admits up to 100% of the global cap
+        concurrency:
+          max_inflight: 50
+    - name: ci
+      limits:
+        priority: normal     # admits up to 80% of the global cap (default)
+        concurrency:
+          max_inflight: 30
+    - name: scraper
+      limits:
+        priority: low        # admits up to 50% of the global cap
+        concurrency:
+          max_inflight: 20
+```
+
+Each priority tier has a hardcoded share of the global cap:
+
+| Priority | Share | Floor at `max_inflight: 100` |
+|----------|-------|------------------------------|
+| `low` | 50% | denied above 50 in-flight |
+| `normal` (default) | 80% | denied above 80 in-flight |
+| `high` | 100% | denied above 100 in-flight |
+
+When total in-flight crosses the floor for a request's priority, the request
+is denied with `429 Too Many Requests` and `{"reason":"priority_floor"}`.
+Per-profile concurrency caps still apply on top — a `low` profile with
+`max_inflight: 20` is bounded by both its own cap and the 50% global floor.
+
+The gate is checked before the per-profile concurrency cap, so a low-priority
+request that hits the global floor never occupies a per-profile slot. Profiles
+configured without `limits.priority` or without any `limits` block default to
+`normal`, so a single client cannot evade the gate by skipping per-profile
+configuration. `priority` is only honored when `clients.global_concurrency` is
+set; otherwise it has no effect.
+
 ### Validation
 
 Sockguard fails at startup with a clear error if any of these invariants are
@@ -486,6 +537,8 @@ violated (fail-closed, never silent-disable):
 - `limits.rate.endpoint_costs[].cost` must be `>= 1` and `<= effective burst`
 - `limits.rate.endpoint_costs[].methods[]` must not contain empty strings
 - `limits.concurrency.max_inflight` must be `> 0`
+- `clients.global_concurrency.max_inflight` must be `> 0` when set
+- `limits.priority` must be one of `low`, `normal`, or `high`
 
 ### Observability
 
@@ -493,14 +546,16 @@ When Prometheus metrics are enabled (`metrics.enabled: true`), two additional
 series appear:
 
 - `sockguard_throttle_total{profile, reason}` — counter incremented on every
-  denial by this subsystem. `reason` is one of `rate_limit_exceeded` or
-  `concurrency_cap`.
+  denial by this subsystem. `reason` is one of `rate_limit_exceeded`,
+  `concurrency_cap`, or `priority_floor`.
 - `sockguard_inflight_requests{profile}` — gauge tracking the current in-flight
   count for profiles that have `max_inflight` configured.
 
 Audit log events for throttle denials are sampled to the first occurrence of
 each `(client, reason)` pair per second to avoid log-volume blowout under load.
-The Prometheus counters are not sampled.
+The Prometheus counters are not sampled. `priority_floor` audit records
+additionally carry `priority`, `current_global_inflight`, `priority_threshold`,
+and `global_max_inflight` so operators can attribute denials to specific tiers.
 
 ## Owner Label Isolation
 

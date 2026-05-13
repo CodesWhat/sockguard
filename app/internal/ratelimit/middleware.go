@@ -31,6 +31,20 @@ type ProfileOptions struct {
 	Rate *RateOptions
 	// Concurrency enables per-client inflight caps. Nil disables it.
 	Concurrency *ConcurrencyOptions
+	// Priority is the profile's tier for the global priority-aware fairness
+	// gate. Ignored when MiddlewareOptions.GlobalConcurrency is nil. Zero
+	// value (PriorityNormal) preserves prior behavior.
+	Priority Priority
+}
+
+// GlobalConcurrencyOptions configures a system-wide concurrency cap shared
+// across all profiles. When set, each profile is admitted only if total
+// inflight is below its priority share of MaxInflight (low=50%, normal=80%,
+// high=100%). Per-profile concurrency caps still apply on top of this gate.
+type GlobalConcurrencyOptions struct {
+	// MaxInflight is the system-wide ceiling on simultaneous in-flight
+	// requests. Must be > 0; zero disables the gate.
+	MaxInflight int64
 }
 
 // RateOptions configures token-bucket parameters.
@@ -130,15 +144,17 @@ type compiledProfile struct {
 	limiter       *Limiter
 	tracker       *InflightTracker
 	endpointCosts []compiledEndpointCost
+	priority      Priority
 }
 
 func compileProfile(opts ProfileOptions) (*compiledProfile, error) {
-	if opts.Rate == nil && opts.Concurrency == nil {
+	if opts.Rate == nil && opts.Concurrency == nil && opts.Priority == PriorityNormal {
 		return nil, nil
 	}
 	cp := &compiledProfile{
 		rate:        opts.Rate,
 		concurrency: opts.Concurrency,
+		priority:    opts.Priority,
 	}
 	if opts.Rate != nil {
 		burst := opts.Rate.Burst
@@ -168,6 +184,9 @@ type MiddlewareOptions struct {
 	// When the profile is empty the request is bucketed under AnonymousClientID
 	// in any applicable default profile entry.
 	ResolveProfile func(*http.Request) (string, bool)
+	// GlobalConcurrency enables the system-wide priority-aware fairness gate.
+	// Nil disables it, in which case per-profile priorities have no effect.
+	GlobalConcurrency *GlobalConcurrencyOptions
 }
 
 // Middleware returns an HTTP middleware that enforces per-profile rate limiting
@@ -187,7 +206,12 @@ func Middleware(
 	auditSampler *AuditSampler,
 	opts MiddlewareOptions,
 ) (func(http.Handler) http.Handler, error) {
-	if len(opts.Profiles) == 0 {
+	var globalMax int64
+	if opts.GlobalConcurrency != nil {
+		globalMax = opts.GlobalConcurrency.MaxInflight
+	}
+
+	if len(opts.Profiles) == 0 && globalMax <= 0 {
 		return func(next http.Handler) http.Handler { return next }, nil
 	}
 
@@ -204,8 +228,13 @@ func Middleware(
 			hasAny = true
 		}
 	}
-	if !hasAny {
+	if !hasAny && globalMax <= 0 {
 		return func(next http.Handler) http.Handler { return next }, nil
+	}
+
+	var globalTracker *GlobalInflightTracker
+	if globalMax > 0 {
+		globalTracker = &GlobalInflightTracker{}
 	}
 
 	resolveProfile := opts.ResolveProfile
@@ -226,14 +255,14 @@ func Middleware(
 			}
 
 			cp := compiled[effectiveID]
-			if cp == nil {
-				// No limits for this profile; pass through.
+			if cp == nil && globalTracker == nil {
+				// No per-profile limits and no global gate; pass through.
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			// --- Rate limit check ---
-			if cp.limiter != nil {
+			if cp != nil && cp.limiter != nil {
 				cost := cp.costFor(r)
 				ok, retryAfter := cp.limiter.AllowN(effectiveID, cost)
 				if !ok {
@@ -260,11 +289,48 @@ func Middleware(
 				}
 			}
 
-			// --- Concurrency cap check ---
+			// --- Global priority-aware fairness gate ---
+			// Checked before the per-profile concurrency cap so a low-priority
+			// caller hitting the gate cannot consume a per-profile slot. A 429
+			// here does NOT increment any inflight counter. Profiles with no
+			// compiled limits (cp == nil) still pass through this gate with
+			// PriorityNormal so a single client cannot evade it by skipping
+			// per-profile config.
+			if globalTracker != nil {
+				priority := PriorityNormal
+				if cp != nil {
+					priority = cp.priority
+				}
+				ok, current, threshold := globalTracker.Acquire(priority, globalMax)
+				if !ok {
+					registry.ObserveThrottle(effectiveID, string(ReasonPriorityFloor))
+					if auditSampler != nil && auditSampler.ShouldEmit(effectiveID, ReasonPriorityFloor) {
+						attrs := logging.AppendCorrelationAttrs(nil, r)
+						attrs = append(attrs,
+							slog.String("client_id", effectiveID),
+							slog.String("reason", string(ReasonPriorityFloor)),
+							slog.String("priority", priority.String()),
+							slog.Int64("current_global_inflight", current),
+							slog.Int64("priority_threshold", threshold),
+							slog.Int64("global_max_inflight", globalMax),
+						)
+						logger.InfoContext(r.Context(), "throttle",
+							slog.Group("throttle", attrsToAny(attrs)...))
+					}
+					logging.SetDeniedWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", filter.NormalizePath)
+					_ = httpjson.Write(w, http.StatusTooManyRequests, ConcurrencyLimitResponse{
+						Reason: string(ReasonPriorityFloor),
+					})
+					return
+				}
+				defer globalTracker.Release()
+			}
+
+			// --- Per-profile concurrency cap check ---
 			// A 429 denial does NOT increment the inflight counter — we check
 			// before acquiring so throttled requests are never counted as
 			// in-flight.
-			if cp.tracker != nil {
+			if cp != nil && cp.tracker != nil {
 				ok, current := cp.tracker.Acquire(effectiveID, cp.concurrency.MaxInflight)
 				if !ok {
 					registry.ObserveThrottle(effectiveID, string(ReasonConcurrency))
