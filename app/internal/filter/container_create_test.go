@@ -164,10 +164,13 @@ func TestContainerCreatePolicyInspectHandlesBodyEdgeCases(t *testing.T) {
 		if err != nil {
 			t.Fatalf("inspect() error = %v", err)
 		}
-		if reason != "" {
-			t.Fatalf("inspect() reason = %q, want empty", reason)
+		// Malformed JSON must be denied (fail-closed), not silently passed to Docker.
+		const wantReason = "container create denied: malformed JSON request body"
+		if reason != wantReason {
+			t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
 		}
 
+		// Body must still be readable after inspect (readBoundedBody restores it).
 		body, readErr := io.ReadAll(req.Body)
 		if readErr != nil {
 			t.Fatalf("ReadAll() error = %v", readErr)
@@ -1128,8 +1131,9 @@ func TestImageTrust_Warn_AllowsOnVerifierError(t *testing.T) {
 	}
 }
 
-func TestImageTrust_EmptyImage_SkipsVerification(t *testing.T) {
-	// A body with no Image field (or empty Image) must skip the verifier entirely.
+func TestImageTrust_EmptyImage_DeniedWhenVerifierConfigured(t *testing.T) {
+	// When image trust is configured, an empty Image field must be denied
+	// explicitly rather than silently skipping verification (fail-closed).
 	mv := &mockImageVerifier{err: errors.New("should not be called")}
 	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
 	policy := containerCreatePolicy{
@@ -1151,8 +1155,9 @@ func TestImageTrust_EmptyImage_SkipsVerification(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("expected allow when Image is empty, got %q", reason)
+	const wantReason = "container create denied: image field is required when image trust is configured"
+	if reason != wantReason {
+		t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
 	}
 	if mv.lastCalled != "" {
 		t.Fatalf("verifier should not have been called, but lastCalled = %q", mv.lastCalled)

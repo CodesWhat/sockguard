@@ -1168,7 +1168,9 @@ func TestMiddlewareDeniesWhenExecInspectionFails(t *testing.T) {
 	}
 }
 
-func TestMiddlewareLogsDebugForMalformedContainerCreateBody(t *testing.T) {
+func TestMiddlewareDeniesMalformedContainerCreateBody(t *testing.T) {
+	// Malformed JSON must now be denied (fail-closed) rather than passed
+	// through to Docker. The debug log message is still emitted.
 	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/create", Action: ActionAllow, Index: 0})
 	if err != nil {
 		t.Fatalf("CompileRule failed: %v", err)
@@ -1185,11 +1187,11 @@ func TestMiddlewareLogsDebugForMalformedContainerCreateBody(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if !reached {
-		t.Fatal("expected malformed container create body to pass through to Docker")
+	if reached {
+		t.Fatal("malformed container create body must be denied, not passed through to Docker")
 	}
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 
 	records := logs.snapshot()
@@ -1199,7 +1201,7 @@ func TestMiddlewareLogsDebugForMalformedContainerCreateBody(t *testing.T) {
 	if records[0].level != slog.LevelDebug {
 		t.Fatalf("level = %v, want %v", records[0].level, slog.LevelDebug)
 	}
-	if records[0].message != "container create request body is not valid JSON; deferring to Docker validation" {
+	if records[0].message != "container create request body is not valid JSON; denying" {
 		t.Fatalf("message = %q, want malformed JSON debug log", records[0].message)
 	}
 }
