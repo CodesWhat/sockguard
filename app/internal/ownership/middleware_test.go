@@ -1469,3 +1469,34 @@ func TestMutateJSONBodyRejectsOversizedBody(t *testing.T) {
 		t.Fatalf("mutateJSONBody() err = %v, want contains 'exceeds'", err)
 	}
 }
+
+func TestMiddlewareOverwritesClientSuppliedOwnerLabel(t *testing.T) {
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		labels, ok := body["Labels"].(map[string]any)
+		if !ok {
+			t.Fatalf("Labels = %#v, want object", body["Labels"])
+		}
+		if got := labels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("owner label = %#v, want job-123 (attacker-supplied value must be overwritten)", got)
+		}
+		if got := labels["com.example.team"]; got != "data" {
+			t.Fatalf("unrelated label = %#v, want data (must be preserved untouched)", got)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+
+	body := `{"Image":"busybox:1.37","Labels":{"com.sockguard.owner":"attacker","com.example.team":"data"}}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+}

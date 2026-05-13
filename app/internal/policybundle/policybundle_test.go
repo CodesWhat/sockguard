@@ -382,3 +382,85 @@ func TestLoadBundle_MissingPathReturnsError(t *testing.T) {
 		t.Fatal("expected error for missing bundle file")
 	}
 }
+
+// --- RequireRekorInclusion=false paths ---
+
+// TestVerify_RekorNotRequired_AcceptsBundle verifies that setting
+// RequireRekorInclusion=false does not prevent an otherwise-valid bundle from
+// passing. VirtualSigstore embeds a tlog entry in every entity it produces,
+// so this test confirms we don't FAIL when the log-presence requirement is
+// relaxed — i.e. the flag only disables a mandatory check, not the whole
+// keyless path.
+func TestVerify_RekorNotRequired_AcceptsBundle(t *testing.T) {
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	const issuer = "https://github.com/login/oauth"
+	const subject = "ops@example.com"
+	yaml := []byte("rules: []\n")
+
+	entity, err := vs.Sign(subject, issuer, yaml)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+
+	cfg := Config{
+		Enabled:               true,
+		TrustedMaterial:       vs,
+		RequireRekorInclusion: false,
+		VerifyTimeout:         VerifyTimeout,
+		AllowedKeyless: []KeylessIdentity{
+			{IssuerExact: issuer, SubjectPattern: regexp.MustCompile(`^ops@example\.com$`)},
+		},
+	}
+	v, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	res, err := v.Verify(context.Background(), yaml, entity)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if res.Signer == "" {
+		t.Fatal("Signer must be populated on success")
+	}
+}
+
+// TestVerify_RekorNotRequired_StillRejectsBadIdentity is the security-relevant
+// assertion: relaxing RequireRekorInclusion must NOT relax identity binding.
+// A certificate whose issuer or SAN does not match AllowedKeyless must still
+// be rejected even when the transparency-log requirement is off.
+func TestVerify_RekorNotRequired_StillRejectsBadIdentity(t *testing.T) {
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	const issuer = "https://github.com/login/oauth"
+	yaml := []byte("rules: []\n")
+
+	// Sign with a subject that does NOT match the configured AllowedKeyless pattern.
+	entity, err := vs.Sign("attacker@evil.com", issuer, yaml)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+
+	cfg := Config{
+		Enabled:               true,
+		TrustedMaterial:       vs,
+		RequireRekorInclusion: false,
+		VerifyTimeout:         VerifyTimeout,
+		AllowedKeyless: []KeylessIdentity{
+			{IssuerExact: issuer, SubjectPattern: regexp.MustCompile(`^ops@example\.com$`)},
+		},
+	}
+	v, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := v.Verify(context.Background(), yaml, entity); err == nil {
+		t.Fatal("expected SAN mismatch to fail even when RequireRekorInclusion=false")
+	}
+}

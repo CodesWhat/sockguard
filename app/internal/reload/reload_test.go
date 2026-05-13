@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -442,6 +443,23 @@ func TestContextCancelExitsCleanly(t *testing.T) {
 	}
 }
 
+// watchReadyWatcher wraps a real fsnotify Watcher and closes a ready
+// channel the first time Add succeeds, giving tests a clean signal that
+// the watch is active before they mutate the filesystem.
+type watchReadyWatcher struct {
+	Watcher
+	once  sync.Once
+	ready chan struct{}
+}
+
+func (w *watchReadyWatcher) Add(path string) error {
+	err := w.Watcher.Add(path)
+	if err == nil {
+		w.once.Do(func() { close(w.ready) })
+	}
+	return err
+}
+
 // TestRealFsnotifyEndToEnd is a smoke test against the real fsnotify
 // watcher. Touching the file should trigger a reload. Skipped on
 // platforms where filesystem notifications are not available.
@@ -452,11 +470,73 @@ func TestRealFsnotifyEndToEnd(t *testing.T) {
 		t.Fatalf("write cfg: %v", err)
 	}
 
+	watchReady := make(chan struct{})
 	fired := make(chan struct{}, 4)
 	r, err := New(Options{
 		Path:         cfgPath,
 		Debounce:     30 * time.Millisecond,
 		Logger:       discardLogger(),
+		SignalNotify: func(c chan<- os.Signal, _ ...os.Signal) {},
+		SignalStop:   func(chan<- os.Signal) {},
+		OnReload:     func() { fired <- struct{}{} },
+		NewWatcher: func() (Watcher, error) {
+			w, err := fsnotify.NewWatcher()
+			if err != nil {
+				return nil, err
+			}
+			return &watchReadyWatcher{
+				Watcher: &fsnotifyWatcher{w: w},
+				ready:   watchReady,
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = r.Run(ctx) }()
+
+	// Wait for fsnotify to register the watch before mutating the file.
+	select {
+	case <-watchReady:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fsnotify watch was never registered")
+	}
+
+	if err := os.WriteFile(cfgPath, []byte("rules: [{match: {method: GET, path: /foo}, action: allow}]\n"), 0o600); err != nil {
+		t.Fatalf("rewrite cfg: %v", err)
+	}
+
+	select {
+	case <-fired:
+	case <-time.After(3 * time.Second):
+		t.Fatal("OnReload did not fire after real file write")
+	}
+	cancel()
+	<-done
+}
+
+// TestRenameEventTriggersReload verifies that an fsnotify.Rename event
+// targeting the config file arms the debounce and fires OnReload. Atomic
+// rename (mv tempfile → cfg.yaml) is the dominant safe-write pattern used
+// by editors, Ansible, kustomize, and Helm.
+func TestRenameEventTriggersReload(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	fw := newFakeWatcher()
+	fired := make(chan struct{}, 4)
+
+	r, err := New(Options{
+		Path:         cfgPath,
+		Debounce:     30 * time.Millisecond,
+		Logger:       discardLogger(),
+		NewWatcher:   func() (Watcher, error) { return fw, nil },
 		SignalNotify: func(c chan<- os.Signal, _ ...os.Signal) {},
 		SignalStop:   func(chan<- os.Signal) {},
 		OnReload:     func() { fired <- struct{}{} },
@@ -469,17 +549,189 @@ func TestRealFsnotifyEndToEnd(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = r.Run(ctx) }()
 
-	// Tiny pause so fsnotify can set up the watch before we mutate.
-	time.Sleep(50 * time.Millisecond)
-	if err := os.WriteFile(cfgPath, []byte("rules: [{match: {method: GET, path: /foo}, action: allow}]\n"), 0o600); err != nil {
-		t.Fatalf("rewrite cfg: %v", err)
-	}
+	fw.emit(fsnotify.Event{Name: cfgPath, Op: fsnotify.Rename})
 
 	select {
 	case <-fired:
-	case <-time.After(3 * time.Second):
-		t.Fatal("OnReload did not fire after real file write")
+	case <-time.After(time.Second):
+		t.Fatal("OnReload did not fire after fsnotify.Rename event")
 	}
 	cancel()
 	<-done
+}
+
+// TestCreateEventTriggersReload verifies that a standalone fsnotify.Create
+// event fires OnReload. This matches the "file first appears" scenario and
+// the second half of an atomic-rename sequence on macOS kqueue.
+func TestCreateEventTriggersReload(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	fw := newFakeWatcher()
+	fired := make(chan struct{}, 4)
+
+	r, err := New(Options{
+		Path:         cfgPath,
+		Debounce:     30 * time.Millisecond,
+		Logger:       discardLogger(),
+		NewWatcher:   func() (Watcher, error) { return fw, nil },
+		SignalNotify: func(c chan<- os.Signal, _ ...os.Signal) {},
+		SignalStop:   func(chan<- os.Signal) {},
+		OnReload:     func() { fired <- struct{}{} },
+	})
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = r.Run(ctx) }()
+
+	fw.emit(fsnotify.Event{Name: cfgPath, Op: fsnotify.Create})
+
+	select {
+	case <-fired:
+	case <-time.After(time.Second):
+		t.Fatal("OnReload did not fire after fsnotify.Create event")
+	}
+	cancel()
+	<-done
+}
+
+// TestRemoveThenCreateEventSequenceTriggersReload verifies that a Remove
+// followed by a Create on the same path (the macOS kqueue atomic-rename
+// teardown-and-restore sequence) debounces into exactly one OnReload call.
+func TestRemoveThenCreateEventSequenceTriggersReload(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	fw := newFakeWatcher()
+	reloadCount := atomic.Int64{}
+	fired := make(chan struct{}, 8)
+
+	r, err := New(Options{
+		Path:     cfgPath,
+		Debounce: 30 * time.Millisecond,
+		Logger:   discardLogger(),
+		NewWatcher: func() (Watcher, error) {
+			return fw, nil
+		},
+		SignalNotify: func(c chan<- os.Signal, _ ...os.Signal) {},
+		SignalStop:   func(chan<- os.Signal) {},
+		OnReload: func() {
+			reloadCount.Add(1)
+			fired <- struct{}{}
+		},
+	})
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = r.Run(ctx) }()
+
+	// Emit Remove then Create in quick succession — should coalesce.
+	fw.emit(fsnotify.Event{Name: cfgPath, Op: fsnotify.Remove})
+	fw.emit(fsnotify.Event{Name: cfgPath, Op: fsnotify.Create})
+
+	select {
+	case <-fired:
+	case <-time.After(time.Second):
+		t.Fatal("OnReload did not fire after Remove+Create sequence")
+	}
+
+	// Allow time for a second spurious fire to surface before asserting count.
+	select {
+	case <-fired:
+		t.Fatal("OnReload fired a second time — Remove+Create was not debounced")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+	<-done
+	if got := reloadCount.Load(); got != 1 {
+		t.Fatalf("OnReload count = %d, want 1 (debounced)", got)
+	}
+}
+
+// TestContextCancelReleasesSignalHandler verifies that canceling the
+// context causes Run to exit and releases the goroutines it started
+// (the event loop and the signal handler). The goroutine count after
+// shutdown must return to the pre-Run baseline within a small tolerance.
+func TestContextCancelReleasesSignalHandler(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	fw := newFakeWatcher()
+
+	// Capture the signal channel so we can verify stop is called, but
+	// keep a no-op implementation to avoid touching real OS signals.
+	stopCalled := make(chan struct{}, 1)
+	r, err := New(Options{
+		Path:         cfgPath,
+		Debounce:     time.Millisecond,
+		Logger:       discardLogger(),
+		NewWatcher:   func() (Watcher, error) { return fw, nil },
+		SignalNotify: func(c chan<- os.Signal, _ ...os.Signal) {},
+		SignalStop: func(c chan<- os.Signal) {
+			select {
+			case stopCalled <- struct{}{}:
+			default:
+			}
+		},
+		OnReload: func() {},
+	})
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+
+	// Allow any background runtime goroutines to settle before we baseline.
+	runtime.Gosched()
+	baseline := runtime.NumGoroutine()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx) }()
+
+	// Cancel and wait for Run to return.
+	cancel()
+	select {
+	case runErr := <-done:
+		if runErr != nil {
+			t.Fatalf("Run() = %v, want nil", runErr)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() did not return after context cancel")
+	}
+
+	// Confirm signal handler was stopped.
+	select {
+	case <-stopCalled:
+	case <-time.After(time.Second):
+		t.Fatal("SignalStop was not called after context cancel")
+	}
+
+	// Poll until goroutine count settles back to baseline (±1 to tolerate
+	// transient runtime goroutines), up to a 2-second deadline.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		current := runtime.NumGoroutine()
+		if current <= baseline+1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutine leak: started with %d, now have %d after Run exit", baseline, current)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }

@@ -1960,3 +1960,64 @@ func TestImageShortNameWithRegistry(t *testing.T) {
 		t.Fatalf("got %q, want traefik:v2", got)
 	}
 }
+
+func TestFilterWriterWriteHeaderCapturesCode(t *testing.T) {
+	// Drive patternFilterWriter via a fake upstream that returns 404 with a
+	// plain-text body. The middleware must record the status via WriteHeader,
+	// then pass the 404 through the non-2xx flush path without attempting JSON
+	// parsing or pattern filtering.
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	const notFoundBody = "No such container"
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(notFoundBody))
+	})
+
+	handler := middlewareWithDeps(logger, Options{
+		NamePatterns: []string{"traefik"},
+	}, visibilityDeps{})(upstream)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d (non-2xx must pass through with original status)", rec.Code, http.StatusNotFound)
+	}
+	if got := rec.Body.String(); got != notFoundBody {
+		t.Fatalf("body = %q, want %q (non-2xx body must be forwarded unchanged)", got, notFoundBody)
+	}
+}
+
+func TestFilterWriterFlushFilteredPassesThroughNon2xx(t *testing.T) {
+	// Drive patternFilterWriter via a fake upstream that returns 500 with a
+	// plain-text (non-JSON) error body. The middleware must forward the 500
+	// status and body byte-for-byte without attempting to filter it.
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	const errBody = "internal server error"
+
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(errBody))
+	})
+
+	handler := middlewareWithDeps(logger, Options{
+		NamePatterns: []string{"traefik"},
+	}, visibilityDeps{})(upstream)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/json", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d (non-2xx must pass through)", rec.Code, http.StatusInternalServerError)
+	}
+	if got := rec.Body.String(); got != errBody {
+		t.Fatalf("body = %q, want %q (body must be forwarded byte-for-byte)", got, errBody)
+	}
+}

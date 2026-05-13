@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log/slog"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -450,4 +451,114 @@ func TestBuildConfigTimeout(t *testing.T) {
 			t.Fatal("expected error for malformed duration")
 		}
 	})
+}
+
+// --- multi-verifier fallback chain ---
+
+// TestVerify_KeyedFallsBackToKeyless checks that when all keyed verifiers fail
+// the sigstoreVerifier falls through to the keyless list and succeeds if a
+// keyless identity matches.
+func TestVerify_KeyedFallsBackToKeyless(t *testing.T) {
+	artifact := []byte("fallback-chain artifact payload")
+	digestHex := artDigest(artifact)
+
+	// Generate a random ECDSA key for the keyed policy entry. The keyless
+	// entity signed by VirtualSigstore won't match this key, so keyed
+	// verification must fail and the verifier must fall through.
+	_, privA := generateECDSAKey(t)
+	verifierA, err := sigsig.LoadECDSAVerifier(&privA.PublicKey, crypto.SHA256)
+	if err != nil {
+		t.Fatalf("LoadECDSAVerifier: %v", err)
+	}
+
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+
+	const issuer = "https://github.com/login/oauth"
+	const subject = "ci-bot@example.com"
+
+	entity, err := vs.Sign(subject, issuer, artifact)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+
+	cfg := Config{
+		Mode: ModeEnforce,
+		// Wrong key — keyed verification will fail.
+		AllowedSigningKeys: []KeyedVerifier{
+			{verifier: verifierA, fingerprint: "wrongkey"},
+		},
+		// Correct keyless identity — keyless verification must succeed.
+		AllowedKeyless: []KeylessIdentity{
+			{
+				IssuerExact:    issuer,
+				SubjectPattern: regexp.MustCompile(`^ci-bot@example\.com$`),
+			},
+		},
+		TrustedMaterial:       vs,
+		RequireRekorInclusion: true,
+		VerifyTimeout:         VerifyTimeout,
+	}
+
+	sv := &sigstoreVerifier{cfg: cfg}
+	if err := sv.Verify(context.Background(), "example.com/img@sha256:"+digestHex, digestHex, entity); err != nil {
+		t.Fatalf("expected keyed→keyless fallback to succeed, got: %v", err)
+	}
+}
+
+// TestVerify_AllVerifiersFail_CompositeError checks that when both keyed and
+// keyless verification fail the returned error contains both "keyed:" and
+// "keyless:" substrings so operators can diagnose which leg(s) failed.
+func TestVerify_AllVerifiersFail_CompositeError(t *testing.T) {
+	artifact := []byte("composite error artifact payload")
+	digestHex := artDigest(artifact)
+
+	_, privA := generateECDSAKey(t)
+	verifierA, err := sigsig.LoadECDSAVerifier(&privA.PublicKey, crypto.SHA256)
+	if err != nil {
+		t.Fatalf("LoadECDSAVerifier: %v", err)
+	}
+
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+
+	// Sign with one issuer, but policy only trusts a different issuer.
+	entity, err := vs.Sign("ci-bot@example.com", "https://github.com/login/oauth", artifact)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+
+	cfg := Config{
+		Mode: ModeEnforce,
+		// Wrong key — keyed verification fails.
+		AllowedSigningKeys: []KeyedVerifier{
+			{verifier: verifierA, fingerprint: "wrongkey2"},
+		},
+		// Wrong issuer — keyless verification also fails.
+		AllowedKeyless: []KeylessIdentity{
+			{
+				IssuerExact:    "https://accounts.google.com",
+				SubjectPattern: regexp.MustCompile(`.*`),
+			},
+		},
+		TrustedMaterial:       vs,
+		RequireRekorInclusion: true,
+		VerifyTimeout:         VerifyTimeout,
+	}
+
+	sv := &sigstoreVerifier{cfg: cfg}
+	verifyErr := sv.Verify(context.Background(), "example.com/img@sha256:"+digestHex, digestHex, entity)
+	if verifyErr == nil {
+		t.Fatal("expected both verifiers to fail, got nil error")
+	}
+	if !strings.Contains(verifyErr.Error(), "keyed:") {
+		t.Fatalf("error should contain 'keyed:' substring, got: %v", verifyErr)
+	}
+	if !strings.Contains(verifyErr.Error(), "keyless:") {
+		t.Fatalf("error should contain 'keyless:' substring, got: %v", verifyErr)
+	}
 }
