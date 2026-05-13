@@ -26,6 +26,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/ownership"
 	"github.com/codeswhat/sockguard/internal/proxy"
 	"github.com/codeswhat/sockguard/internal/ratelimit"
+	"github.com/codeswhat/sockguard/internal/reload"
 	"github.com/codeswhat/sockguard/internal/responsefilter"
 	"github.com/codeswhat/sockguard/internal/version"
 	"github.com/codeswhat/sockguard/internal/visibility"
@@ -112,8 +113,11 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 
 	runtime := newServeRuntime(cfg, logger, deps)
-	handler := buildServeHandlerWithRuntime(cfg, logger, auditLogger, rules, deps, runtime)
-	defer runtime.stopAll()
+	handler, chainTeardown := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime)
+	swappable := reload.NewSwappableHandler(handler)
+	coordinator := newReloadCoordinator(cfg, cfgFile, swappable, chainTeardown, logger, auditLogger, deps, runtime)
+	defer coordinator.stop()
+
 	listener, err := deps.createServeListener(cfg)
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
@@ -130,7 +134,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		logger.Warn("failed to close listener", "error", closeErr)
 	}()
 
-	server := newHTTPServer(handler)
+	server := newHTTPServer(swappable)
 	listen := listenerAddr(cfg)
 	warnOnInsecureRemoteTCPBind(logger, cfg)
 	banner.Render(cmd.ErrOrStderr(), banner.Info{
@@ -153,6 +157,24 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	stopWatchdog := runtime.startWatchdog(context.Background(), cfg)
 	defer stopWatchdog()
 	go deps.startServing(server, listener, errCh)
+
+	stopReload := func() {}
+	if cfg.Reload.Enabled && cfgFile != "" {
+		debounce := time.Duration(cfg.Reload.DebounceMs) * time.Millisecond
+		if cfg.Reload.DebounceMs == 0 {
+			debounce = reload.DefaultDebounce
+		}
+		var startErr error
+		stopReload, startErr = startReloader(context.Background(), cfgFile, debounce, coordinator, logger)
+		if startErr != nil {
+			logger.Error("config hot-reload disabled: failed to start watcher",
+				"error", startErr,
+				"path", cfgFile,
+			)
+			stopReload = func() {}
+		}
+	}
+	defer stopReload()
 
 	sigCh := make(chan os.Signal, 1)
 	deps.notifySignals(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -187,33 +209,44 @@ func buildServeHandler(cfg *config.Config, logger *slog.Logger, auditLogger *log
 }
 
 func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime) http.Handler {
-	clientProfiles, err := buildServeClientProfiles(cfg)
-	if err != nil {
-		logger.Error("invalid client profile config", "error", err)
-		return invalidClientProfileHandler()
-	}
-
-	handler := newServeUpstreamHandler(cfg, logger)
-	for _, layer := range buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, runtime) {
-		handler = layer.with(handler)
-	}
+	handler, _ := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime)
 	return handler
 }
 
-type serveRuntime struct {
-	metrics       *metrics.Registry
-	health        *health.Monitor
-	stopRateLimit func()
+// buildServeHandlerChainWithRuntime is the production / reload entry point:
+// it returns both the composed http.Handler and a teardown closure that stops
+// every chain-scoped goroutine (the rate-limit sampler and per-profile
+// Limiter eviction loops). Callers must invoke the returned teardown when
+// the handler is replaced (hot reload) or when the server shuts down,
+// otherwise the rate-limit goroutines tied to the previous chain leak.
+//
+// Tests that don't care about teardown should continue calling
+// buildServeHandler / buildServeHandlerWithRuntime which discard it — the
+// goroutines die with the test process anyway.
+func buildServeHandlerChainWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime) (http.Handler, func()) {
+	clientProfiles, err := buildServeClientProfiles(cfg)
+	if err != nil {
+		logger.Error("invalid client profile config", "error", err)
+		return invalidClientProfileHandler(), func() {}
+	}
+
+	handler := newServeUpstreamHandler(cfg, logger)
+	layers, teardown := buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, runtime)
+	for _, layer := range layers {
+		handler = layer.with(handler)
+	}
+	return handler, teardown
 }
 
-// stopAll cleans up runtime-owned background goroutines (rate-limit sampler
-// and per-profile Limiter eviction loops). Safe to call multiple times.
-func (r *serveRuntime) stopAll() {
-	if r == nil || r.stopRateLimit == nil {
-		return
-	}
-	r.stopRateLimit()
-	r.stopRateLimit = nil
+// serveRuntime holds process-scoped objects whose lifetime spans the whole
+// run: the metrics registry and the upstream-health monitor. Both survive
+// hot reloads — they are tied to immutable config fields, so a reload that
+// would change them is rejected by the immutable-field gate before any
+// rebuild happens. Chain-scoped goroutines (rate-limit sampler, per-profile
+// Limiter eviction) are tracked separately by reloadCoordinator.
+type serveRuntime struct {
+	metrics *metrics.Registry
+	health  *health.Monitor
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) *serveRuntime {
@@ -280,10 +313,11 @@ func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handl
 }
 
 func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy) []serveHandlerLayer {
-	return buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, newServeRuntime(cfg, logger, deps))
+	layers, _ := buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, newServeRuntime(cfg, logger, deps))
+	return layers
 }
 
-func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy, runtime *serveRuntime) []serveHandlerLayer {
+func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy, runtime *serveRuntime) ([]serveHandlerLayer, func()) {
 	layers := []serveHandlerLayer{
 		namedServeHandlerLayer("withHijack", withHijack(cfg, logger)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, logger)),
@@ -304,11 +338,12 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 	// Rate limiting and concurrency caps sit after client identity is resolved
 	// (clientacl) but before rule evaluation (filter), so a request denied by
 	// the filter still consumes its rate-limit quota — rule-probing cannot
-	// happen at line rate. The stop function (sampler + Limiter eviction
-	// goroutines) is stored on the runtime so the caller cleans it up on
-	// server shutdown.
+	// happen at line rate. The teardown closure halts the sampler + Limiter
+	// eviction goroutines bound to this chain — callers must invoke it when
+	// the chain is replaced (hot reload) or torn down at shutdown.
+	teardown := func() {}
 	if rlMiddleware, stop := buildRateLimitMiddleware(cfg, logger, runtime); rlMiddleware != nil {
-		runtime.stopRateLimit = stop
+		teardown = stop
 		layers = append(layers, namedServeHandlerLayer("withRateLimit", rlMiddleware))
 	}
 
@@ -334,7 +369,7 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 	if cfg.Log.AccessLog {
 		layers = append(layers, namedServeHandlerLayer("withAccessLog", withAccessLog(logger)))
 	}
-	return layers
+	return layers, teardown
 }
 
 // buildRateLimitMiddleware constructs the per-profile rate-limit+concurrency

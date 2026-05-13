@@ -15,6 +15,7 @@ type Config struct {
 	Health                        HealthConfig      `mapstructure:"health"`
 	Metrics                       MetricsConfig     `mapstructure:"metrics"`
 	Admin                         AdminConfig       `mapstructure:"admin"`
+	Reload                        ReloadConfig      `mapstructure:"reload"`
 	Rules                         []RuleConfig      `mapstructure:"rules"`
 	InsecureAllowBodyBlindWrites  bool              `mapstructure:"insecure_allow_body_blind_writes"`
 	InsecureAllowReadExfiltration bool              `mapstructure:"insecure_allow_read_exfiltration"`
@@ -485,6 +486,28 @@ type AdminConfig struct {
 	MaxBodyBytes int64  `mapstructure:"max_body_bytes"`
 }
 
+// ReloadConfig configures the hot-reload pipeline.
+//
+// When Enabled, sockguard watches the config file via fsnotify and reloads
+// on SIGHUP. A reload that mutates any immutable field — listen.*,
+// upstream.socket, log.*, health.*, metrics.*, admin.* — is rejected; the
+// running config is preserved and the operator must restart sockguard to
+// pick the new values up.
+//
+// DebounceMs collapses bursts of filesystem events (editors commonly emit
+// chmod + write + rename + create per save) into a single reload trigger.
+// Default 250ms.
+//
+// Reload is opt-in because enabling it changes the meaning of SIGHUP:
+// historically SIGHUP terminated sockguard; with reload enabled, SIGHUP
+// triggers a config reload and never terminates the process. Operators
+// that script around the old behavior must update their tooling before
+// flipping this on.
+type ReloadConfig struct {
+	Enabled    bool `mapstructure:"enabled"`
+	DebounceMs int  `mapstructure:"debounce_ms"`
+}
+
 // RuleConfig represents a single access control rule in config.
 type RuleConfig struct {
 	Match  MatchConfig `mapstructure:"match"`
@@ -578,6 +601,10 @@ func Defaults() Config {
 			Enabled:      false,
 			Path:         "/admin/validate",
 			MaxBodyBytes: 524288,
+		},
+		Reload: ReloadConfig{
+			Enabled:    false,
+			DebounceMs: 250,
 		},
 		Rules: []RuleConfig{
 			{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},

@@ -28,6 +28,13 @@ type Registry struct {
 	upstreamKnown  atomic.Bool
 	upstreamUp     atomic.Int64
 
+	// configReloadLastSecondsKnown distinguishes "never reloaded" (still 0)
+	// from "reloaded successfully at the start of the Unix epoch", so the
+	// gauge can be omitted from scrape output until the first successful
+	// reload lands.
+	configReloadLastSecondsKnown atomic.Bool
+	configReloadLastSeconds      atomic.Uint64
+
 	startedAt time.Time
 
 	// inflight tracks current per-profile in-flight request counts under a
@@ -37,12 +44,13 @@ type Registry struct {
 	// per-profile *atomic.Int64 lets SetInflight be lock-free under contention.
 	inflight sync.Map // map[string]*atomic.Int64
 
-	mu        sync.Mutex
-	requests  map[requestLabels]uint64
-	denies    map[denyLabels]uint64
-	duration  map[durationLabels]*histogram
-	upstream  map[upstreamWatchdogLabels]uint64
-	throttles map[throttleLabels]uint64
+	mu             sync.Mutex
+	requests       map[requestLabels]uint64
+	denies         map[denyLabels]uint64
+	duration       map[durationLabels]*histogram
+	upstream       map[upstreamWatchdogLabels]uint64
+	throttles      map[throttleLabels]uint64
+	configReloads  map[configReloadLabels]uint64
 }
 
 type requestLabels struct {
@@ -82,6 +90,10 @@ type throttleLabels struct {
 	mode    string
 }
 
+type configReloadLabels struct {
+	result string
+}
+
 type histogram struct {
 	buckets []uint64
 	count   uint64
@@ -91,12 +103,36 @@ type histogram struct {
 // NewRegistry constructs an empty metrics registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		startedAt: time.Now(),
-		requests:  make(map[requestLabels]uint64),
-		denies:    make(map[denyLabels]uint64),
-		duration:  make(map[durationLabels]*histogram),
-		upstream:  make(map[upstreamWatchdogLabels]uint64),
-		throttles: make(map[throttleLabels]uint64),
+		startedAt:     time.Now(),
+		requests:      make(map[requestLabels]uint64),
+		denies:        make(map[denyLabels]uint64),
+		duration:      make(map[durationLabels]*histogram),
+		upstream:      make(map[upstreamWatchdogLabels]uint64),
+		throttles:     make(map[throttleLabels]uint64),
+		configReloads: make(map[configReloadLabels]uint64),
+	}
+}
+
+// ObserveConfigReload increments the config reload counter for the given
+// outcome. result is one of "ok", "reject_load", "reject_validation",
+// "reject_immutable" — see internal/cmd reload pipeline for the canonical
+// list. When result is "ok" the registry also stamps the last-success
+// timestamp gauge for scrape-side visibility.
+func (r *Registry) ObserveConfigReload(result string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.configReloads[configReloadLabels{result: result}]++
+	r.mu.Unlock()
+
+	if result == "ok" {
+		ts := time.Now().UnixNano()
+		if ts < 0 {
+			return
+		}
+		r.configReloadLastSeconds.Store(uint64(ts))
+		r.configReloadLastSecondsKnown.Store(true)
 	}
 }
 
@@ -249,9 +285,12 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	durations := cloneHistograms(r.duration)
 	upstream := cloneMap(r.upstream)
 	throttles := cloneMap(r.throttles)
+	reloads := cloneMap(r.configReloads)
 	active := r.activeRequests.Load()
 	upstreamKnown := r.upstreamKnown.Load()
 	upstreamUp := r.upstreamUp.Load()
+	reloadLastKnown := r.configReloadLastSecondsKnown.Load()
+	reloadLastNanos := r.configReloadLastSeconds.Load()
 	r.mu.Unlock()
 
 	inflight := snapshotInflight(&r.inflight)
@@ -324,6 +363,31 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 		fmt.Fprintf(w, "sockguard_inflight_requests{profile=%s} %d\n",
 			labelValue(profile), inflight[profile])
 	}
+
+	fmt.Fprintln(w, "# HELP sockguard_config_reload_total Total hot-reload attempts since startup. result is ok (applied), reject_load (file read or parse failed), reject_validation (validator rejected the candidate config), or reject_immutable (an immutable field changed and the reload was refused).")
+	fmt.Fprintln(w, "# TYPE sockguard_config_reload_total counter")
+	for _, key := range sortedConfigReloadLabels(reloads) {
+		fmt.Fprintf(w, "sockguard_config_reload_total{result=%s} %d\n",
+			labelValue(key.result), reloads[key])
+	}
+
+	if reloadLastKnown {
+		fmt.Fprintln(w, "# HELP sockguard_config_reload_last_success_timestamp_seconds Unix timestamp at which the most recent reload was successfully applied. Omitted until the first successful reload.")
+		fmt.Fprintln(w, "# TYPE sockguard_config_reload_last_success_timestamp_seconds gauge")
+		fmt.Fprintf(w, "sockguard_config_reload_last_success_timestamp_seconds %s\n",
+			strconv.FormatFloat(float64(reloadLastNanos)/1e9, 'f', -1, 64))
+	}
+}
+
+func sortedConfigReloadLabels(values map[configReloadLabels]uint64) []configReloadLabels {
+	keys := make([]configReloadLabels, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].result < keys[j].result
+	})
+	return keys
 }
 
 // snapshotInflight reads the lock-free inflight sync.Map into a plain map for

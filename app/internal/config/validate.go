@@ -125,6 +125,10 @@ func validateBasic(cfg *Config) []string {
 		}
 	}
 
+	if cfg.Reload.Enabled && cfg.Reload.DebounceMs < 0 {
+		errs = append(errs, fmt.Sprintf("reload.debounce_ms must be >= 0, got %d", cfg.Reload.DebounceMs))
+	}
+
 	errs = append(errs, validateRequestBody(cfg)...)
 
 	// At least one rule

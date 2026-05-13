@@ -36,6 +36,17 @@ admin:
   # rate-limit caps all apply to admin callers. Useful as a CI gate:
   #   curl --data-binary @candidate.yaml http://127.0.0.1:2375/admin/validate
 
+reload:
+  enabled: false                 # Opt-in: hot-reload policy on file change + SIGHUP
+  debounce_ms: 250               # Coalesce a burst of fsnotify events into one reload
+  # When enabled, sockguard watches THIS file via fsnotify and reloads on SIGHUP.
+  # A reload that would mutate any IMMUTABLE field — listen.*, upstream.socket,
+  # log.*, health.*, metrics.*, admin.* — is rejected; restart sockguard to apply
+  # those. Everything else (rules, clients.profiles, response.*, request_body.*,
+  # ownership.*) is rebuilt and atomically swapped without dropping in-flight
+  # requests. NOTE: enabling this changes SIGHUP semantics — historically SIGHUP
+  # terminated sockguard; with reload on it triggers a reload and never exits.
+
 rules:
   # Always safe — health probes
   - match: { method: GET, path: "/_ping" }

@@ -198,6 +198,8 @@ func setLoadDefaults(v *viper.Viper, defaults Config) {
 	v.SetDefault("admin.enabled", defaults.Admin.Enabled)
 	v.SetDefault("admin.path", defaults.Admin.Path)
 	v.SetDefault("admin.max_body_bytes", defaults.Admin.MaxBodyBytes)
+	v.SetDefault("reload.enabled", defaults.Reload.Enabled)
+	v.SetDefault("reload.debounce_ms", defaults.Reload.DebounceMs)
 	v.SetDefault("insecure_allow_body_blind_writes", defaults.InsecureAllowBodyBlindWrites)
 	v.SetDefault("insecure_allow_read_exfiltration", defaults.InsecureAllowReadExfiltration)
 }
