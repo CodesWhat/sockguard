@@ -27,6 +27,15 @@ metrics:
   path: /metrics
   # Opt-in Prometheus text metrics. Served locally and never forwarded to Docker.
 
+admin:
+  enabled: false                 # Opt-in: POST <path> validates a candidate YAML config
+  path: /admin/validate          # Must not collide with health.path or metrics.path
+  max_body_bytes: 524288         # Hard cap on candidate-config size (default 512 KiB)
+  # Running policy is NEVER mutated by the admin endpoint. The handler shares the
+  # main listener, so the listener's CIDR allowlist, mTLS posture, and per-profile
+  # rate-limit caps all apply to admin callers. Useful as a CI gate:
+  #   curl --data-binary @candidate.yaml http://127.0.0.1:2375/admin/validate
+
 rules:
   # Always safe — health probes
   - match: { method: GET, path: "/_ping" }

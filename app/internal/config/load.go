@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"strings"
 
@@ -17,8 +18,43 @@ func Load(configPath string) (*Config, error) {
 	// 2. SOCKGUARD_* environment variables (handled below by Viper)
 	// 3. YAML config file values
 	// 4. Built-in defaults
-	// Set defaults from Defaults()
 	defaults := Defaults()
+	setLoadDefaults(v, defaults)
+
+	// Read YAML file if it exists
+	if configPath != "" {
+		v.SetConfigFile(configPath)
+		if err := v.ReadInConfig(); err != nil {
+			if _, statErr := os.Stat(configPath); statErr != nil && os.IsNotExist(statErr) {
+				// File doesn't exist — that's fine, use defaults
+			} else {
+				return nil, err
+			}
+		}
+	}
+
+	v.SetEnvPrefix("SOCKGUARD")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		return nil, err
+	}
+
+	applyCompatEnvAliases(&cfg)
+
+	if len(cfg.Rules) == 0 {
+		cfg.Rules = defaults.Rules
+	}
+
+	return &cfg, nil
+}
+
+// setLoadDefaults registers every default value with the Viper instance.
+// Shared by Load (file-based, with env overlay) and LoadBytes (in-memory,
+// no env overlay) so the two paths cannot drift as the schema grows.
+func setLoadDefaults(v *viper.Viper, defaults Config) {
 	v.SetDefault("listen.socket", defaults.Listen.Socket)
 	v.SetDefault("listen.socket_mode", defaults.Listen.SocketMode)
 	v.SetDefault("listen.address", defaults.Listen.Address)
@@ -159,36 +195,39 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("health.watchdog.interval", defaults.Health.Watchdog.Interval)
 	v.SetDefault("metrics.enabled", defaults.Metrics.Enabled)
 	v.SetDefault("metrics.path", defaults.Metrics.Path)
+	v.SetDefault("admin.enabled", defaults.Admin.Enabled)
+	v.SetDefault("admin.path", defaults.Admin.Path)
+	v.SetDefault("admin.max_body_bytes", defaults.Admin.MaxBodyBytes)
 	v.SetDefault("insecure_allow_body_blind_writes", defaults.InsecureAllowBodyBlindWrites)
 	v.SetDefault("insecure_allow_read_exfiltration", defaults.InsecureAllowReadExfiltration)
+}
 
-	// Read YAML file if it exists
-	if configPath != "" {
-		v.SetConfigFile(configPath)
-		if err := v.ReadInConfig(); err != nil {
-			// Missing file is OK; parse errors are not
-			if _, statErr := os.Stat(configPath); statErr != nil && os.IsNotExist(statErr) {
-				// File doesn't exist — that's fine, use defaults
-			} else {
-				// Any other error means the config path exists but couldn't be read or parsed.
-				return nil, err
-			}
+// LoadBytes parses YAML config from the provided bytes and returns the merged
+// Config with defaults applied. Unlike Load, env-var overrides are NOT applied:
+// the admin /admin/validate endpoint validates a candidate YAML body in
+// isolation, so the result depends only on what the caller submitted.
+//
+// An empty body returns the built-in defaults — useful for CI pipelines that
+// want to confirm the proxy's defaults still validate. Malformed YAML returns
+// an error.
+func LoadBytes(data []byte) (*Config, error) {
+	v := viper.New()
+	v.SetConfigType("yaml")
+
+	defaults := Defaults()
+	setLoadDefaults(v, defaults)
+
+	if len(data) > 0 {
+		if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
+			return nil, err
 		}
 	}
-
-	// Env var overrides: SOCKGUARD_LISTEN_SOCKET, etc.
-	v.SetEnvPrefix("SOCKGUARD")
-	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	v.AutomaticEnv()
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
 	}
 
-	applyCompatEnvAliases(&cfg)
-
-	// If no rules came from YAML, use defaults
 	if len(cfg.Rules) == 0 {
 		cfg.Rules = defaults.Rules
 	}

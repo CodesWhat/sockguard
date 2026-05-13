@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added an opt-in `POST <admin.path>` (default `/admin/validate`) endpoint that accepts a candidate YAML config in the request body, runs the same parse/validate/compile pipeline as the offline `sockguard validate` command, and returns a structured JSON report (`{"ok": bool, "rules": int, "profiles": int, "compat_active": bool, "errors": [...]?}`). The endpoint is disabled by default (`admin.enabled: false`); when enabled it rides the main listener and inherits the listener's CIDR allowlist, mTLS posture, and per-profile rate-limit / concurrency caps. The handler hard-caps request bodies at `admin.max_body_bytes` (default 512 KiB), returns `405` with `Allow: POST` on non-POST methods, `413` on oversize bodies, `422` with the validation errors on a failing candidate, and `200` on success. Running policy is never mutated. Useful as a CI gate (`curl --data-binary @candidate.yaml http://sockguard/admin/validate`) before promoting a config to production. Companion `config.LoadBytes` helper parses YAML bytes without applying `SOCKGUARD_*` env overlays so the verdict reflects exactly what was submitted.
+- Added `admin.path` / `admin.max_body_bytes` config validation: `path` must start with `/` and must not collide with `health.path` or `metrics.path` when those endpoints are also enabled; `max_body_bytes` must be `> 0`.
+
 ## [0.7.0] - 2026-05-13
 
 ### Added

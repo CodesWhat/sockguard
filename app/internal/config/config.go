@@ -14,6 +14,7 @@ type Config struct {
 	Ownership                     OwnershipConfig   `mapstructure:"ownership"`
 	Health                        HealthConfig      `mapstructure:"health"`
 	Metrics                       MetricsConfig     `mapstructure:"metrics"`
+	Admin                         AdminConfig       `mapstructure:"admin"`
 	Rules                         []RuleConfig      `mapstructure:"rules"`
 	InsecureAllowBodyBlindWrites  bool              `mapstructure:"insecure_allow_body_blind_writes"`
 	InsecureAllowReadExfiltration bool              `mapstructure:"insecure_allow_read_exfiltration"`
@@ -472,6 +473,18 @@ type MetricsConfig struct {
 	Path    string `mapstructure:"path"`
 }
 
+// AdminConfig configures the in-band admin HTTP endpoints (currently
+// POST <path> for candidate-config validation). The admin endpoint shares
+// the main listener and therefore inherits its CIDR allowlist, mTLS, and
+// rate-limit posture. It is opt-in because a misconfigured admin path on a
+// network-reachable listener would otherwise let any client submit YAML for
+// parsing.
+type AdminConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	Path         string `mapstructure:"path"`
+	MaxBodyBytes int64  `mapstructure:"max_body_bytes"`
+}
+
 // RuleConfig represents a single access control rule in config.
 type RuleConfig struct {
 	Match  MatchConfig `mapstructure:"match"`
@@ -560,6 +573,11 @@ func Defaults() Config {
 		Metrics: MetricsConfig{
 			Enabled: false,
 			Path:    "/metrics",
+		},
+		Admin: AdminConfig{
+			Enabled:      false,
+			Path:         "/admin/validate",
+			MaxBodyBytes: 524288,
 		},
 		Rules: []RuleConfig{
 			{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},

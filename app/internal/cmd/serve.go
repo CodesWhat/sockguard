@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/codeswhat/sockguard/internal/admin"
 	"github.com/codeswhat/sockguard/internal/banner"
 	"github.com/codeswhat/sockguard/internal/clientacl"
 	"github.com/codeswhat/sockguard/internal/config"
@@ -290,6 +291,16 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 		namedServeHandlerLayer("withFilter", withFilter(cfg, logger, rules, clientProfiles)),
 	}
 
+	// Admin endpoint sits inside filter (so the filter never sees admin paths)
+	// but outside rate-limit and clientacl (so CIDR allowlists and per-profile
+	// limits still apply to /admin/* callers — they are not exempt from abuse
+	// controls). Layers earlier in this slice are wrapped by layers added
+	// later, so an admin layer appended here runs AFTER ratelimit / clientacl
+	// in the request flow but BEFORE filter.
+	if cfg.Admin.Enabled {
+		layers = append(layers, namedServeHandlerLayer("withAdminEndpoint", withAdminEndpoint(cfg, logger)))
+	}
+
 	// Rate limiting and concurrency caps sit after client identity is resolved
 	// (clientacl) but before rule evaluation (filter), so a request denied by
 	// the filter still consumes its rate-limit quota — rule-probing cannot
@@ -504,6 +515,67 @@ func withMetrics(registry *metrics.Registry) func(http.Handler) http.Handler {
 
 func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
 	return clientacl.Middleware(cfg.Upstream.Socket, logger, serveClientACLOptions(cfg))
+}
+
+func withAdminEndpoint(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+	return admin.NewValidateInterceptor(admin.Options{
+		Path:         cfg.Admin.Path,
+		MaxBodyBytes: cfg.Admin.MaxBodyBytes,
+		Validate:     buildAdminValidator(logger),
+		Logger:       logger,
+	})
+}
+
+// buildAdminValidator returns the parse+validate+compile callback wired into
+// the admin /admin/validate endpoint. It mirrors the offline `sockguard
+// validate` command's pipeline (config.LoadBytes → ApplyCompat →
+// validateAndCompileRules → compileClientProfiles) so an operator's CI gate
+// and the running proxy reach the same verdict for the same YAML.
+//
+// ApplyCompat uses a discard logger here because compat-expansion log noise
+// belongs to the proxy's own startup, not to a candidate-config validation
+// request. The returned response still carries CompatActive so callers see
+// whether legacy env aliases would have fired.
+func buildAdminValidator(parentLogger *slog.Logger) admin.Validator {
+	return func(yamlBody []byte) admin.ValidateResponse {
+		cfg, err := config.LoadBytes(yamlBody)
+		if err != nil {
+			return admin.ValidateResponse{OK: false, Errors: []string{"parse: " + err.Error()}}
+		}
+
+		discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		compatActive := config.ApplyCompat(cfg, discardLogger)
+
+		compiled, compileErr := newServeDeps().validateRules(cfg)
+		if compileErr != nil {
+			return admin.ValidateResponse{
+				OK:           false,
+				Errors:       splitValidationError(compileErr),
+				CompatActive: compatActive,
+			}
+		}
+
+		return admin.ValidateResponse{
+			OK:           true,
+			Rules:        len(compiled),
+			Profiles:     len(cfg.Clients.Profiles),
+			CompatActive: compatActive,
+		}
+	}
+}
+
+// splitValidationError unwraps a *config.ValidationError into its
+// per-issue lines so the admin endpoint can return a structured list
+// instead of one wrapped string. Non-validation errors (e.g. rule-compile
+// failures from filter.CompileRule) fall through as a single-element slice.
+func splitValidationError(err error) []string {
+	var vErr *config.ValidationError
+	if errors.As(err, &vErr) {
+		out := make([]string, 0, len(vErr.Errors))
+		out = append(out, vErr.Errors...)
+		return out
+	}
+	return []string{err.Error()}
 }
 
 func withRequestID() func(http.Handler) http.Handler {

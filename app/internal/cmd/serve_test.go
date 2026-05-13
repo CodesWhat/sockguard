@@ -1450,6 +1450,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 	cfg.Metrics.Enabled = true
 	cfg.Log.AccessLog = true
 	cfg.Log.Audit.Enabled = true
+	cfg.Admin.Enabled = true
 
 	auditLogger := logging.NewAuditLogger(io.Discard)
 	t.Cleanup(func() { _ = auditLogger.Close() })
@@ -1460,6 +1461,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 		"withOwnership",
 		"withVisibility",
 		"withFilter",
+		"withAdminEndpoint",
 		"withHealth",
 		"withMetricsEndpoint",
 		"withClientACL",
@@ -1477,6 +1479,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 	cfg.Metrics.Enabled = false
 	cfg.Log.AccessLog = false
 	cfg.Log.Audit.Enabled = false
+	cfg.Admin.Enabled = false
 
 	got = serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), nil, nil, newServeTestDeps(), nil))
 	want = []string{

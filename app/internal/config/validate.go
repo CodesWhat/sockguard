@@ -110,6 +110,21 @@ func validateBasic(cfg *Config) []string {
 		errs = append(errs, fmt.Sprintf("metrics.path must not equal health.path when both endpoints are enabled, got %q", cfg.Metrics.Path))
 	}
 
+	if cfg.Admin.Enabled {
+		if !strings.HasPrefix(cfg.Admin.Path, "/") {
+			errs = append(errs, fmt.Sprintf("admin.path must start with /, got %q", cfg.Admin.Path))
+		}
+		if cfg.Admin.MaxBodyBytes <= 0 {
+			errs = append(errs, fmt.Sprintf("admin.max_body_bytes must be > 0, got %d", cfg.Admin.MaxBodyBytes))
+		}
+		if cfg.Health.Enabled && cfg.Admin.Path == cfg.Health.Path {
+			errs = append(errs, fmt.Sprintf("admin.path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.Path))
+		}
+		if cfg.Metrics.Enabled && cfg.Admin.Path == cfg.Metrics.Path {
+			errs = append(errs, fmt.Sprintf("admin.path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.Path))
+		}
+	}
+
 	errs = append(errs, validateRequestBody(cfg)...)
 
 	// At least one rule
