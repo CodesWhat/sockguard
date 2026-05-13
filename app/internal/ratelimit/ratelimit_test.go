@@ -520,10 +520,8 @@ func TestLimiter_EvictsIdleBuckets(t *testing.T) {
 	clk.Advance(8 * time.Minute) // alice accessed 8 min ago, bob 13 min ago
 	l.evict(10 * time.Minute)    // only bob exceeds 10-minute idle TTL
 
-	l.mu.Lock()
-	_, aliceExists := l.buckets["alice"]
-	_, bobExists := l.buckets["bob"]
-	l.mu.Unlock()
+	_, aliceExists := l.buckets.Load("alice")
+	_, bobExists := l.buckets.Load("bob")
 
 	if !aliceExists {
 		t.Fatal("alice's bucket should still exist after evict (recently accessed)")

@@ -127,9 +127,12 @@ func (b *bucket) idleSince(now time.Time) time.Duration {
 // is bounded by configured profile names (low cardinality), but eviction is
 // wired in as defense-in-depth so future changes to the key space cannot
 // create an OOM vector via attacker-influenced identities.
+//
+// Hot-path design: AllowN uses sync.Map so the steady-state bucket lookup
+// (Load only) is lock-free after warm-up. New bucket creation uses
+// LoadOrStore to avoid a separate mutex without introducing a TOCTOU window.
 type Limiter struct {
-	mu              sync.Mutex
-	buckets         map[string]*bucket
+	buckets         sync.Map // map[string]*bucket; lock-free reads on warm path
 	tokensPerSecond float64
 	burst           float64
 	now             nowFn
@@ -147,7 +150,6 @@ func NewLimiter(tokensPerSecond, burst float64) *Limiter {
 
 func newLimiterWithClock(tokensPerSecond, burst float64, now nowFn) *Limiter {
 	l := &Limiter{
-		buckets:         make(map[string]*bucket),
 		tokensPerSecond: tokensPerSecond,
 		burst:           burst,
 		now:             now,
@@ -187,13 +189,13 @@ func (l *Limiter) Stop() {
 // evict removes buckets idle for longer than ttl. Exposed for tests.
 func (l *Limiter) evict(ttl time.Duration) {
 	now := l.now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	for key, b := range l.buckets {
+	l.buckets.Range(func(key, val any) bool {
+		b := val.(*bucket)
 		if b.idleSince(now) > ttl {
-			delete(l.buckets, key)
+			l.buckets.Delete(key)
 		}
-	}
+		return true
+	})
 }
 
 // Allow is shorthand for AllowN(clientID, 1) — withdraws a single token.
@@ -203,20 +205,25 @@ func (l *Limiter) Allow(clientID string) (ok bool, retryAfter int) {
 
 // AllowN checks whether clientID may proceed at the given token cost.
 // If clientID is empty the request is bucketed under AnonymousClientID.
+//
+// Hot path: Load is lock-free for existing buckets (sync.Map read-path).
+// Cold path (new client): LoadOrStore races to store a fresh bucket; if two
+// goroutines race, one wins and the other discards its candidate — both use
+// the winner's bucket thereafter.
 func (l *Limiter) AllowN(clientID string, cost float64) (ok bool, retryAfter int) {
 	if clientID == "" {
 		clientID = AnonymousClientID
 	}
 
-	l.mu.Lock()
-	b, exists := l.buckets[clientID]
-	if !exists {
-		b = newBucket(l.tokensPerSecond, l.burst, l.now)
-		l.buckets[clientID] = b
+	// Optimistic load: no allocation on warm path.
+	if val, hit := l.buckets.Load(clientID); hit {
+		return val.(*bucket).AllowN(cost)
 	}
-	l.mu.Unlock()
 
-	return b.AllowN(cost)
+	// Cold path: create a candidate and race to store it.
+	candidate := newBucket(l.tokensPerSecond, l.burst, l.now)
+	actual, _ := l.buckets.LoadOrStore(clientID, candidate)
+	return actual.(*bucket).AllowN(cost)
 }
 
 // InflightTracker maintains per-client in-flight request counts. It is safe

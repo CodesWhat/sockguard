@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/filter"
@@ -13,6 +14,43 @@ import (
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/metrics"
 )
+
+// profileReleaser is a zero-alloc handle for releasing a per-profile
+// concurrency slot. It is pooled via profileReleaserPool so the per-request
+// cost of an admitted concurrency-capped request amortises to ~0.
+//
+// Callers must call Done() exactly once and then return the struct to the
+// pool via put(). The idiomatic pattern is:
+//
+//	rel := getProfileReleaser(cp, clientID, reg)
+//	defer rel.done()
+type profileReleaser struct {
+	tracker  *InflightTracker
+	registry *metrics.Registry
+	clientID string
+}
+
+var profileReleaserPool = sync.Pool{
+	New: func() any { return new(profileReleaser) },
+}
+
+func getProfileReleaser(cp *compiledProfile, clientID string, registry *metrics.Registry) *profileReleaser {
+	r := profileReleaserPool.Get().(*profileReleaser)
+	r.tracker = cp.tracker
+	r.registry = registry
+	r.clientID = clientID
+	return r
+}
+
+func (r *profileReleaser) done() {
+	r.tracker.Release(r.clientID)
+	r.registry.SetInflight(r.clientID, r.tracker.Current(r.clientID))
+	// Zero fields before returning to pool to prevent accidental reuse.
+	r.tracker = nil
+	r.registry = nil
+	r.clientID = ""
+	profileReleaserPool.Put(r)
+}
 
 // ThrottleResponse is the JSON body returned on every 429 throttle response.
 // RetryAfterSeconds is included only for rate-limit denials (where the bucket
@@ -311,15 +349,28 @@ func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next htt
 	if h.checkRateLimit(w, r, cp, effectiveID, normPath) {
 		return
 	}
-	if releaseGlobal, ok := h.checkGlobalPriority(w, r, cp, effectiveID, normPath); !ok {
+
+	// Global priority gate. Returns (admitted, needsRelease): when admitted
+	// and needsRelease is true, the global counter was incremented and must be
+	// decremented on exit. We call h.globalTracker.Release() directly rather
+	// than storing a func() method value to avoid the heap alloc.
+	globalAdmitted, globalNeedsRelease := h.checkGlobalPriority(w, r, cp, effectiveID, normPath)
+	if !globalAdmitted {
 		return
-	} else if releaseGlobal != nil {
-		defer releaseGlobal()
 	}
-	if releaseProfile, ok := h.checkProfileConcurrency(w, r, cp, effectiveID, normPath); !ok {
+	if globalNeedsRelease {
+		defer h.globalTracker.Release()
+	}
+
+	// Per-profile concurrency gate. profileRel is non-nil when admitted under
+	// a concurrency cap; nil when the profile has no cap (pass-through).
+	// profileReleaser is pooled to keep the per-request alloc cost near zero.
+	profileRel, ok := h.checkProfileConcurrency(w, r, cp, effectiveID, normPath)
+	if !ok {
 		return
-	} else if releaseProfile != nil {
-		defer releaseProfile()
+	}
+	if profileRel != nil {
+		defer profileRel.done()
 	}
 
 	next.ServeHTTP(w, r)
@@ -362,21 +413,28 @@ func (h *throttleHandler) checkRateLimit(w http.ResponseWriter, r *http.Request,
 }
 
 // checkGlobalPriority applies the system-wide priority-aware fairness gate.
-// Returns (release, true) when admitted (caller defers release), (nil, false)
-// when denied. Profiles with no compiled limits (cp == nil) still pass through
-// this gate as PriorityNormal so a single client cannot evade it by skipping
-// per-profile config.
-func (h *throttleHandler) checkGlobalPriority(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (release func(), ok bool) {
+// Returns (admitted=true, needsRelease=true) when the request was admitted and
+// the caller must call h.globalTracker.Release() on completion. Returns
+// (admitted=true, needsRelease=false) when there is no global gate. Returns
+// (admitted=false, _) when the request is denied and the caller must stop.
+//
+// Profiles with no compiled limits (cp == nil) still pass through this gate
+// as PriorityNormal so a single client cannot evade it by skipping per-profile
+// config.
+//
+// Returning a plain bool pair instead of a func() release eliminates the
+// heap allocation a method-value closure would incur per admitted request.
+func (h *throttleHandler) checkGlobalPriority(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (admitted bool, needsRelease bool) {
 	if h.globalTracker == nil {
-		return nil, true
+		return true, false
 	}
 	priority := PriorityNormal
 	if cp != nil {
 		priority = cp.priority
 	}
-	admitted, current, threshold := h.globalTracker.Acquire(priority, h.globalMax)
-	if admitted {
-		return h.globalTracker.Release, true
+	ok, current, threshold := h.globalTracker.Acquire(priority, h.globalMax)
+	if ok {
+		return true, true
 	}
 	meta := logging.MetaForRequest(w, r)
 	h.registry.ObserveThrottle(clientID, string(ReasonPriorityFloor), rolloutModeOf(meta))
@@ -391,22 +449,26 @@ func (h *throttleHandler) checkGlobalPriority(w http.ResponseWriter, r *http.Req
 		// warn / audit rollout posture so it must still reach upstream. We
 		// increment the global gauge anyway so operators can correctly observe
 		// real concurrency while sizing a new global cap from dashboard data.
-		release := h.globalTracker.AcquirePassThrough()
+		h.globalTracker.AcquirePassThrough() // increments; caller defers Release via needsRelease=true
 		logging.SetWouldDenyWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", filter.NormalizePath)
-		return release, true
+		return true, true
 	}
 	logging.SetDeniedWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", filter.NormalizePath)
 	_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
 		Reason: string(ReasonPriorityFloor),
 	})
-	return nil, false
+	return false, false
 }
 
 // checkProfileConcurrency applies the per-profile concurrency cap. A denial
 // does NOT increment the inflight counter — Acquire returns admit before
 // counting, so throttled requests are never counted as in-flight. Returns
-// (release, true) on admit, (nil, false) on denial.
-func (h *throttleHandler) checkProfileConcurrency(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (release func(), ok bool) {
+// (releaser, true) on admit (caller must call releaser.done()), (nil, true)
+// when there is no cap, and (nil, false) on denial.
+//
+// The returned *profileReleaser is drawn from a sync.Pool so the per-request
+// cost of an admitted request under a concurrency cap amortises to ~0.
+func (h *throttleHandler) checkProfileConcurrency(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (rel *profileReleaser, ok bool) {
 	if cp == nil || cp.tracker == nil {
 		return nil, true
 	}
@@ -429,10 +491,7 @@ func (h *throttleHandler) checkProfileConcurrency(w http.ResponseWriter, r *http
 		return nil, false
 	}
 	h.registry.SetInflight(clientID, current)
-	return func() {
-		cp.tracker.Release(clientID)
-		h.registry.SetInflight(clientID, cp.tracker.Current(clientID))
-	}, true
+	return getProfileReleaser(cp, clientID, h.registry), true
 }
 
 // emitThrottleAudit writes one throttle record through the sampler. The
