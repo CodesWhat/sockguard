@@ -369,16 +369,15 @@ func validateLimitsConfig(prefix string, cfg LimitsConfig) []string {
 			errs = append(errs, fmt.Sprintf("%s.tokens_per_second must be > 0, got %v", ratePfx, cfg.Rate.TokensPerSecond))
 		}
 		effectiveBurst := cfg.Rate.Burst
-		if effectiveBurst == 0 {
+		switch {
+		case cfg.Rate.Burst < 0:
+			errs = append(errs, fmt.Sprintf("%s.burst must not be negative, got %v", ratePfx, cfg.Rate.Burst))
+		case effectiveBurst == 0:
 			// Default: burst equals tokens_per_second.
 			effectiveBurst = cfg.Rate.TokensPerSecond
-		}
-		if effectiveBurst < cfg.Rate.TokensPerSecond {
+		case effectiveBurst < cfg.Rate.TokensPerSecond:
 			errs = append(errs, fmt.Sprintf("%s.burst must be >= tokens_per_second (%v) or 0 (default), got %v",
 				ratePfx, cfg.Rate.TokensPerSecond, cfg.Rate.Burst))
-		}
-		if cfg.Rate.Burst < 0 {
-			errs = append(errs, fmt.Sprintf("%s.burst must not be negative, got %v", ratePfx, cfg.Rate.Burst))
 		}
 
 		errs = append(errs, validateEndpointCosts(ratePfx+".endpoint_costs", cfg.Rate.EndpointCosts, effectiveBurst)...)
