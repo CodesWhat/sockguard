@@ -894,6 +894,10 @@ func validateImageTrustConfig(prefix string, cfg ImageTrustConfig) []string {
 			errs = append(errs,
 				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern is required", prefix, i),
 			)
+		} else if _, err := regexp.Compile(kl.SubjectPattern); err != nil {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern: %v", prefix, i, err),
+			)
 		}
 	}
 

@@ -91,11 +91,9 @@ func TestValidateImageTrustConfig_EmptyPEM(t *testing.T) {
 	}
 }
 
-// TestValidateImageTrustConfig_InvalidSubjectPattern documents that the current
-// validateImageTrustConfig implementation does NOT compile the SubjectPattern
-// regex — it only checks for emptiness. An invalid pattern like "[unclosed"
-// therefore passes validation. This test pins the current behavior; the gap
-// (no compile-time regex check) is a known coverage finding.
+// TestValidateImageTrustConfig_InvalidSubjectPattern checks that a
+// syntactically invalid SubjectPattern regex in an allowed_keyless entry is
+// caught at validation time and not silently deferred to BuildConfig / New.
 func TestValidateImageTrustConfig_InvalidSubjectPattern(t *testing.T) {
 	cfg := Defaults()
 	cfg.RequestBody.ContainerCreate.ImageTrust = ImageTrustConfig{
@@ -103,16 +101,16 @@ func TestValidateImageTrustConfig_InvalidSubjectPattern(t *testing.T) {
 		AllowedKeyless: []KeylessConfig{
 			{
 				Issuer:         "https://accounts.google.com",
-				SubjectPattern: "[unclosed",
+				SubjectPattern: "(*invalid",
 			},
 		},
 	}
 
-	// validateImageTrustConfig only checks for an empty subject_pattern; it does
-	// NOT compile the regex. A syntactically invalid pattern passes validation and
-	// would only fail later at BuildConfig / New time.
 	err := Validate(&cfg)
-	if err != nil {
-		t.Fatalf("current validator does not check regex syntax: unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error for invalid subject_pattern regex, got nil")
+	}
+	if !strings.Contains(err.Error(), "subject_pattern") {
+		t.Fatalf("error should mention subject_pattern, got: %v", err)
 	}
 }
