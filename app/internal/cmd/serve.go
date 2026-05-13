@@ -27,6 +27,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/metrics"
 	"github.com/codeswhat/sockguard/internal/ownership"
+	"github.com/codeswhat/sockguard/internal/policybundle"
 	"github.com/codeswhat/sockguard/internal/proxy"
 	"github.com/codeswhat/sockguard/internal/ratelimit"
 	"github.com/codeswhat/sockguard/internal/reload"
@@ -115,24 +116,45 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return err
 	}
 
+	// Bundle verification, when configured, runs BEFORE the proxy starts
+	// taking traffic. A startup that cannot verify the signature is fatal:
+	// sockguard would otherwise be serving rules an attacker may have
+	// tampered with on disk. The verifier itself is reload-immutable
+	// (trust material is in [[reload-immutable-fields]]) so the same
+	// instance is reused for SIGHUP/fsnotify reloads.
+	bundleVerifier, err := deps.buildBundleVerifier(cfg.PolicyBundle)
+	if err != nil {
+		return fmt.Errorf("policy bundle verifier: %w", err)
+	}
+	bundleResult, err := verifyPolicyBundleAtStartup(cfg, cfgFile, deps, bundleVerifier, logger)
+	if err != nil {
+		return fmt.Errorf("policy bundle: %w", err)
+	}
+
 	// Versioner publishes the initial generation BEFORE the chain is built so
 	// the admin policy-version endpoint and the sockguard_policy_version
 	// gauge are populated as soon as the server starts taking traffic.
 	versioner := admin.NewPolicyVersioner()
-	initialVersion := versioner.Update(admin.PolicySnapshot{
+	initialSnapshot := admin.PolicySnapshot{
 		LoadedAt:     deps.now(),
 		Rules:        len(rules),
 		Profiles:     len(cfg.Clients.Profiles),
 		CompatActive: compatActive,
 		Source:       "startup",
 		ConfigSHA256: policyConfigHash(cfg),
-	})
+	}
+	if bundleResult != nil {
+		initialSnapshot.BundleSource = cfg.PolicyBundle.SignaturePath
+		initialSnapshot.BundleSigner = bundleResult.Signer
+		initialSnapshot.BundleDigest = bundleResult.DigestHex
+	}
+	initialVersion := versioner.Update(initialSnapshot)
 
 	runtime := newServeRuntime(cfg, logger, deps)
 	runtime.metrics.SetPolicyVersion(initialVersion)
 	handler, chainTeardown := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, versioner)
 	swappable := reload.NewSwappableHandler(handler)
-	coordinator := newReloadCoordinator(cfg, cfgFile, swappable, chainTeardown, logger, auditLogger, deps, runtime, versioner)
+	coordinator := newReloadCoordinator(cfg, cfgFile, swappable, chainTeardown, logger, auditLogger, deps, runtime, versioner, bundleVerifier)
 	defer coordinator.stop()
 
 	listener, err := deps.createServeListener(cfg)
@@ -685,6 +707,68 @@ func withPolicyVersionEndpoint(cfg *config.Config, logger *slog.Logger, versione
 		Source: versioner.Snapshot,
 		Logger: logger,
 	})
+}
+
+// verifyPolicyBundleAtStartup runs the bundle verifier against the raw
+// YAML bytes of the on-disk config file. Returns (nil, nil) when
+// policy_bundle is disabled so the caller can skip stamping bundle
+// metadata onto the initial snapshot. Otherwise returns (*VerifyResult,
+// nil) on success or (nil, err) on any failure — startup must abort in
+// that case because the trust gate is the whole point of the feature.
+func verifyPolicyBundleAtStartup(
+	cfg *config.Config,
+	cfgFile string,
+	deps *serveDeps,
+	verifier policybundle.Verifier,
+	logger *slog.Logger,
+) (*policybundle.VerifyResult, error) {
+	if !cfg.PolicyBundle.Enabled {
+		return nil, nil
+	}
+	if cfgFile == "" {
+		return nil, errors.New("policy_bundle.enabled=true but no --config file was supplied; sockguard cannot verify an in-memory default")
+	}
+	if cfg.PolicyBundle.SignaturePath == "" {
+		return nil, errors.New("policy_bundle.signature_path is required when policy_bundle.enabled=true")
+	}
+
+	yamlBytes, err := deps.readConfigBytes(cfgFile)
+	if err != nil {
+		return nil, fmt.Errorf("read config YAML for verification: %w", err)
+	}
+	entity, err := deps.loadBundleEntity(cfg.PolicyBundle.SignaturePath)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), bundleVerifyDeadline(cfg.PolicyBundle))
+	defer cancel()
+	result, err := verifier.Verify(ctx, yamlBytes, entity)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("policy bundle verified",
+		"signature_path", cfg.PolicyBundle.SignaturePath,
+		"signer", result.Signer,
+		"digest", result.DigestHex,
+		"elapsed_ms", result.ElapsedMS,
+	)
+	return &result, nil
+}
+
+// bundleVerifyDeadline returns the wall-clock budget for one verification
+// attempt. The policybundle.BuildConfig parser is the authoritative source
+// for the timeout but this helper avoids a second parse at the call site
+// and degrades to the package default if the value is unset.
+func bundleVerifyDeadline(pb config.PolicyBundleConfig) time.Duration {
+	if pb.VerifyTimeout == "" {
+		return policybundle.VerifyTimeout
+	}
+	d, err := time.ParseDuration(pb.VerifyTimeout)
+	if err != nil || d <= 0 {
+		return policybundle.VerifyTimeout
+	}
+	return d
 }
 
 // policyConfigHash returns a hex SHA-256 of the JSON encoding of the

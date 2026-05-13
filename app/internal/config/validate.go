@@ -142,6 +142,8 @@ func validateBasic(cfg *Config) []string {
 		errs = append(errs, fmt.Sprintf("reload.debounce_ms must be >= 0, got %d", cfg.Reload.DebounceMs))
 	}
 
+	errs = append(errs, validatePolicyBundle(cfg)...)
+
 	errs = append(errs, validateRequestBody(cfg)...)
 
 	// At least one rule
@@ -254,6 +256,65 @@ func validateTCPListenerSecurity(cfg *Config) []string {
 		errs = append(errs,
 			fmt.Sprintf("non-loopback TCP listener %q requires listen.tls mTLS config or listen.insecure_allow_plain_tcp=true", cfg.Listen.Address),
 		)
+	}
+
+	return errs
+}
+
+// validatePolicyBundle validates the policy_bundle sub-block. The verifier
+// itself enforces deeper structural checks (PEM parsing, regex compilation,
+// etc.) at startup; here we only catch the cases the operator can fix from
+// the config file alone.
+func validatePolicyBundle(cfg *Config) []string {
+	pb := cfg.PolicyBundle
+	if !pb.Enabled {
+		return nil
+	}
+
+	var errs []string
+
+	if strings.TrimSpace(pb.SignaturePath) == "" {
+		errs = append(errs, requiredFieldError("policy_bundle.signature_path"))
+	}
+
+	if len(pb.AllowedSigningKeys) == 0 && len(pb.AllowedKeyless) == 0 {
+		errs = append(errs,
+			"policy_bundle: enabled=true requires at least one allowed_signing_keys or allowed_keyless entry",
+		)
+	}
+
+	for i, k := range pb.AllowedSigningKeys {
+		if strings.TrimSpace(k.PEM) == "" {
+			errs = append(errs,
+				fmt.Sprintf("policy_bundle.allowed_signing_keys[%d].pem is required", i),
+			)
+		}
+	}
+
+	for i, kl := range pb.AllowedKeyless {
+		if strings.TrimSpace(kl.Issuer) == "" {
+			errs = append(errs,
+				fmt.Sprintf("policy_bundle.allowed_keyless[%d].issuer is required", i),
+			)
+		}
+		if strings.TrimSpace(kl.SubjectPattern) == "" {
+			errs = append(errs,
+				fmt.Sprintf("policy_bundle.allowed_keyless[%d].subject_pattern is required", i),
+			)
+		} else if _, err := regexp.Compile(kl.SubjectPattern); err != nil {
+			errs = append(errs,
+				fmt.Sprintf("policy_bundle.allowed_keyless[%d].subject_pattern: %v", i, err),
+			)
+		}
+	}
+
+	if pb.VerifyTimeout != "" {
+		d, err := time.ParseDuration(pb.VerifyTimeout)
+		if err != nil || d <= 0 {
+			errs = append(errs,
+				fmt.Sprintf("policy_bundle.verify_timeout must be a positive duration, got %q", pb.VerifyTimeout),
+			)
+		}
 	}
 
 	return errs

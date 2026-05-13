@@ -76,6 +76,69 @@ func TestImmutableDiffDetectsAdminChange(t *testing.T) {
 	}
 }
 
+func TestImmutableDiffDetectsPolicyBundleEnableChange(t *testing.T) {
+	a := config.Defaults()
+	b := a
+	b.PolicyBundle.Enabled = true
+	got := ImmutableDiff(&a, &b)
+	if !equalUnordered(got, []string{"policy_bundle.enabled"}) {
+		t.Fatalf("ImmutableDiff(policy_bundle.enabled change) = %v", got)
+	}
+}
+
+func TestImmutableDiffDetectsPolicyBundleTrustChange(t *testing.T) {
+	a := config.Defaults()
+	b := a
+	b.PolicyBundle.AllowedSigningKeys = []config.PolicyBundleSigningKey{{PEM: "new-key"}}
+	got := ImmutableDiff(&a, &b)
+	if !equalUnordered(got, []string{"policy_bundle.allowed_signing_keys"}) {
+		t.Fatalf("ImmutableDiff(allowed_signing_keys change) = %v", got)
+	}
+}
+
+func TestImmutableDiffDetectsPolicyBundleKeylessChange(t *testing.T) {
+	a := config.Defaults()
+	b := a
+	b.PolicyBundle.AllowedKeyless = []config.PolicyBundleKeyless{
+		{Issuer: "https://example.com", SubjectPattern: ".*"},
+	}
+	got := ImmutableDiff(&a, &b)
+	if !equalUnordered(got, []string{"policy_bundle.allowed_keyless"}) {
+		t.Fatalf("ImmutableDiff(allowed_keyless change) = %v", got)
+	}
+}
+
+func TestImmutableDiffDetectsPolicyBundleRekorChange(t *testing.T) {
+	a := config.Defaults()
+	b := a
+	b.PolicyBundle.RequireRekorInclusion = !a.PolicyBundle.RequireRekorInclusion
+	got := ImmutableDiff(&a, &b)
+	if !equalUnordered(got, []string{"policy_bundle.require_rekor_inclusion"}) {
+		t.Fatalf("ImmutableDiff(require_rekor_inclusion change) = %v", got)
+	}
+}
+
+func TestImmutableDiffDetectsPolicyBundleTimeoutChange(t *testing.T) {
+	a := config.Defaults()
+	b := a
+	b.PolicyBundle.VerifyTimeout = "42s"
+	got := ImmutableDiff(&a, &b)
+	if !equalUnordered(got, []string{"policy_bundle.verify_timeout"}) {
+		t.Fatalf("ImmutableDiff(verify_timeout change) = %v", got)
+	}
+}
+
+// SignaturePath is intentionally mutable so an operator can re-sign the
+// same YAML without restart.
+func TestImmutableDiffIgnoresPolicyBundleSignaturePath(t *testing.T) {
+	a := config.Defaults()
+	b := a
+	b.PolicyBundle.SignaturePath = "/etc/sockguard/cfg.bundle.json.new"
+	if diff := ImmutableDiff(&a, &b); len(diff) != 0 {
+		t.Fatalf("ImmutableDiff(signature_path change) = %v, want empty (mutable)", diff)
+	}
+}
+
 // Reloadable fields must not register as a change — these are exactly the
 // surface hot-reload exists to update.
 func TestImmutableDiffIgnoresReloadableFields(t *testing.T) {

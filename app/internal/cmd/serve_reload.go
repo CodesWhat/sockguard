@@ -13,6 +13,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/metrics"
+	"github.com/codeswhat/sockguard/internal/policybundle"
 	"github.com/codeswhat/sockguard/internal/reload"
 )
 
@@ -46,6 +47,13 @@ type reloadCoordinator struct {
 	// GET /admin/policy/version and to sockguard_policy_version. Nil-safe so
 	// tests can construct a coordinator without one.
 	versioner *admin.PolicyVersioner
+	// bundleVerifier is the reload-immutable signed-bundle verifier. Nil
+	// means policy_bundle.enabled=false; the reload path skips verification
+	// in that case. When non-nil and policy_bundle.enabled=true, every
+	// reload must clear the verifier before any other work — otherwise the
+	// trust gate would be bypassable by anyone with write access to the
+	// YAML file.
+	bundleVerifier policybundle.Verifier
 }
 
 // newReloadCoordinator returns a coordinator wired up with the initial
@@ -61,21 +69,23 @@ func newReloadCoordinator(
 	deps *serveDeps,
 	runtime *serveRuntime,
 	versioner *admin.PolicyVersioner,
+	bundleVerifier policybundle.Verifier,
 ) *reloadCoordinator {
 	if initialTeardown == nil {
 		initialTeardown = func() {}
 	}
 	return &reloadCoordinator{
-		chainTeardown: initialTeardown,
-		activeCfg:     cfg,
-		swappable:     swappable,
-		cfgFile:       cfgFile,
-		logger:        logger,
-		auditLogger:   auditLogger,
-		deps:          deps,
-		runtime:       runtime,
-		registry:      runtime.metrics,
-		versioner:     versioner,
+		chainTeardown:  initialTeardown,
+		activeCfg:      cfg,
+		swappable:      swappable,
+		cfgFile:        cfgFile,
+		logger:         logger,
+		auditLogger:    auditLogger,
+		deps:           deps,
+		runtime:        runtime,
+		registry:       runtime.metrics,
+		versioner:      versioner,
+		bundleVerifier: bundleVerifier,
 	}
 }
 
@@ -104,6 +114,21 @@ func (c *reloadCoordinator) reload() {
 
 	if c.chainTeardown == nil {
 		// stop() already ran — process is shutting down; ignore.
+		return
+	}
+
+	// Bundle verification runs FIRST so an unsigned or tampered YAML can
+	// never reach the config parser. The verifier was bound at startup
+	// from reload-immutable trust material; an enabled gate at startup is
+	// an enabled gate forever.
+	bundleResult, err := c.verifyBundle()
+	if err != nil {
+		c.logger.Warn("config reload rejected: signature verification failed",
+			"path", c.cfgFile,
+			"signature_path", c.activeCfg.PolicyBundle.SignaturePath,
+			"error", err.Error(),
+		)
+		c.registry.ObserveConfigReload("reject_signature")
 		return
 	}
 
@@ -167,14 +192,20 @@ func (c *reloadCoordinator) reload() {
 	// state where the version ticked but the active handler is stale.
 	var newVersion int64
 	if c.versioner != nil {
-		newVersion = c.versioner.Update(admin.PolicySnapshot{
+		snap := admin.PolicySnapshot{
 			LoadedAt:     c.deps.now(),
 			Rules:        len(newRules),
 			Profiles:     len(newCfg.Clients.Profiles),
 			CompatActive: compatActive,
 			Source:       "reload",
 			ConfigSHA256: policyConfigHash(newCfg),
-		})
+		}
+		if bundleResult != nil {
+			snap.BundleSource = newCfg.PolicyBundle.SignaturePath
+			snap.BundleSigner = bundleResult.Signer
+			snap.BundleDigest = bundleResult.DigestHex
+		}
+		newVersion = c.versioner.Update(snap)
 		c.registry.SetPolicyVersion(newVersion)
 	}
 
@@ -185,6 +216,35 @@ func (c *reloadCoordinator) reload() {
 		"policy_version", newVersion,
 	)
 	c.registry.ObserveConfigReload("ok")
+}
+
+// verifyBundle returns (nil, nil) when bundle verification is disabled,
+// (*VerifyResult, nil) on a clean accept, or (nil, err) on any failure
+// (missing file, malformed bundle, signature mismatch). The bound verifier
+// is the same instance produced at startup and reused across every reload
+// because policy_bundle's trust material is reload-immutable.
+func (c *reloadCoordinator) verifyBundle() (*policybundle.VerifyResult, error) {
+	if c.bundleVerifier == nil || !c.activeCfg.PolicyBundle.Enabled {
+		return nil, nil
+	}
+	if c.activeCfg.PolicyBundle.SignaturePath == "" {
+		return nil, errors.New("policy_bundle.signature_path is empty")
+	}
+	yamlBytes, err := c.deps.readConfigBytes(c.cfgFile)
+	if err != nil {
+		return nil, err
+	}
+	entity, err := c.deps.loadBundleEntity(c.activeCfg.PolicyBundle.SignaturePath)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), bundleVerifyDeadline(c.activeCfg.PolicyBundle))
+	defer cancel()
+	res, err := c.bundleVerifier.Verify(ctx, yamlBytes, entity)
+	if err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
 // startReloader wires the coordinator into a reload.Reloader and runs it

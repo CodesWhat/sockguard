@@ -121,9 +121,9 @@ func NewRegistry() *Registry {
 
 // ObserveConfigReload increments the config reload counter for the given
 // outcome. result is one of "ok", "reject_load", "reject_validation",
-// "reject_immutable" — see internal/cmd reload pipeline for the canonical
-// list. When result is "ok" the registry also stamps the last-success
-// timestamp gauge for scrape-side visibility.
+// "reject_immutable", "reject_signature" — see internal/cmd reload
+// pipeline for the canonical list. When result is "ok" the registry also
+// stamps the last-success timestamp gauge for scrape-side visibility.
 func (r *Registry) ObserveConfigReload(result string) {
 	if r == nil {
 		return

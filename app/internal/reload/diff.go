@@ -23,6 +23,11 @@ var ImmutableFields = []string{
 	"health",
 	"metrics",
 	"admin",
+	"policy_bundle.enabled",
+	"policy_bundle.allowed_signing_keys",
+	"policy_bundle.allowed_keyless",
+	"policy_bundle.require_rekor_inclusion",
+	"policy_bundle.verify_timeout",
 }
 
 // ImmutableDiff returns the names of immutable config fields whose values
@@ -56,6 +61,26 @@ func ImmutableDiff(oldCfg, newCfg *config.Config) []string {
 	}
 	if !reflect.DeepEqual(oldCfg.Admin, newCfg.Admin) {
 		changed = append(changed, "admin")
+	}
+	// SignaturePath is intentionally mutable so an operator can re-sign the
+	// same YAML and bump only the sibling sigstore-bundle path. Everything
+	// else under policy_bundle changes the trust root and therefore must
+	// pin to startup so a reload cannot silently widen the set of accepted
+	// signers.
+	if oldCfg.PolicyBundle.Enabled != newCfg.PolicyBundle.Enabled {
+		changed = append(changed, "policy_bundle.enabled")
+	}
+	if !reflect.DeepEqual(oldCfg.PolicyBundle.AllowedSigningKeys, newCfg.PolicyBundle.AllowedSigningKeys) {
+		changed = append(changed, "policy_bundle.allowed_signing_keys")
+	}
+	if !reflect.DeepEqual(oldCfg.PolicyBundle.AllowedKeyless, newCfg.PolicyBundle.AllowedKeyless) {
+		changed = append(changed, "policy_bundle.allowed_keyless")
+	}
+	if oldCfg.PolicyBundle.RequireRekorInclusion != newCfg.PolicyBundle.RequireRekorInclusion {
+		changed = append(changed, "policy_bundle.require_rekor_inclusion")
+	}
+	if oldCfg.PolicyBundle.VerifyTimeout != newCfg.PolicyBundle.VerifyTimeout {
+		changed = append(changed, "policy_bundle.verify_timeout")
 	}
 	return changed
 }

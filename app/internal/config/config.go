@@ -16,6 +16,7 @@ type Config struct {
 	Metrics                       MetricsConfig     `mapstructure:"metrics"`
 	Admin                         AdminConfig       `mapstructure:"admin"`
 	Reload                        ReloadConfig      `mapstructure:"reload"`
+	PolicyBundle                  PolicyBundleConfig `mapstructure:"policy_bundle"`
 	Rules                         []RuleConfig      `mapstructure:"rules"`
 	InsecureAllowBodyBlindWrites  bool              `mapstructure:"insecure_allow_body_blind_writes"`
 	InsecureAllowReadExfiltration bool              `mapstructure:"insecure_allow_read_exfiltration"`
@@ -553,6 +554,46 @@ type ReloadConfig struct {
 	DebounceMs int  `mapstructure:"debounce_ms"`
 }
 
+// PolicyBundleConfig configures verification of signed policy bundles.
+//
+// When Enabled, sockguard reads the YAML config file bytes and the sigstore
+// bundle JSON at SignaturePath, then asks the policybundle verifier to
+// confirm the bundle signs the YAML's sha256 digest under one of the
+// configured trust paths (AllowedSigningKeys or AllowedKeyless). Both
+// startup load and SIGHUP / fsnotify-driven reloads consult the verifier;
+// an unsigned or invalid bundle fails startup and rejects reloads with the
+// reject_signature metrics reason. The verified signer fingerprint or
+// identity is published on GET /admin/policy/version so operators can
+// confirm exactly who vouched for the running policy.
+//
+// SignaturePath is reload-mutable so an operator can re-sign without
+// rotating the YAML; the other fields (enable / trust material / Rekor
+// requirement / timeout) are reload-immutable for the same reasons as the
+// listener / TLS material: changing the trust root mid-reload would
+// silently expand the set of accepted signers.
+type PolicyBundleConfig struct {
+	Enabled               bool                        `mapstructure:"enabled"`
+	SignaturePath         string                      `mapstructure:"signature_path"`
+	AllowedSigningKeys    []PolicyBundleSigningKey    `mapstructure:"allowed_signing_keys"`
+	AllowedKeyless        []PolicyBundleKeyless       `mapstructure:"allowed_keyless"`
+	RequireRekorInclusion bool                        `mapstructure:"require_rekor_inclusion"`
+	VerifyTimeout         string                      `mapstructure:"verify_timeout"`
+}
+
+// PolicyBundleSigningKey is one entry in policy_bundle.allowed_signing_keys.
+type PolicyBundleSigningKey struct {
+	// PEM is the PEM-encoded public key (ECDSA, RSA, or ed25519).
+	PEM string `mapstructure:"pem"`
+}
+
+// PolicyBundleKeyless is one entry in policy_bundle.allowed_keyless.
+type PolicyBundleKeyless struct {
+	// Issuer is the exact OIDC issuer URL to match against the Fulcio cert.
+	Issuer string `mapstructure:"issuer"`
+	// SubjectPattern is a Go regexp matched against the cert's SAN.
+	SubjectPattern string `mapstructure:"subject_pattern"`
+}
+
 // RuleConfig represents a single access control rule in config.
 type RuleConfig struct {
 	Match  MatchConfig `mapstructure:"match"`
@@ -659,6 +700,10 @@ func Defaults() Config {
 		Reload: ReloadConfig{
 			Enabled:    false,
 			DebounceMs: 250,
+		},
+		PolicyBundle: PolicyBundleConfig{
+			Enabled:               false,
+			RequireRekorInclusion: true,
 		},
 		Rules: []RuleConfig{
 			{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},

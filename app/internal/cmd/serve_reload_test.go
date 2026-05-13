@@ -84,6 +84,7 @@ func newReloadCoordinatorFixture(t *testing.T, initial *config.Config) *reloadCo
 		deps,
 		runtime,
 		versioner,
+		nil, // bundleVerifier — fixture covers the policy_bundle.enabled=false path
 	)
 	return fixture
 }

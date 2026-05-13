@@ -16,32 +16,38 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sigstore/sigstore-go/pkg/verify"
+
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/policybundle"
 )
 
 const hardenedListenSocketMode = os.FileMode(0o600)
 
 type serveDeps struct {
-	loadConfig          func(string) (*config.Config, error)
-	newLogger           func(string, string, string) (*slog.Logger, io.Closer, error)
-	newAuditLogger      func(string, string) (*logging.AuditLogger, io.Closer, error)
-	validateRules       func(*config.Config) ([]*filter.CompiledRule, error)
-	dialUpstream        func(string, string, time.Duration) (net.Conn, error)
-	listenNetwork       func(string, string) (net.Listener, error)
-	lstatPath           func(string) (os.FileInfo, error)
-	isAddrInUse         func(error) bool
-	createServeListener func(*config.Config) (net.Listener, error)
-	createAdminListener func(*config.Config) (net.Listener, error)
-	notifySignals       func(chan<- os.Signal, ...os.Signal)
-	startServing        func(*http.Server, net.Listener, chan<- error)
-	shutdownServer      func(*http.Server, context.Context) error
-	removePath          func(string) error
-	now                 func() time.Time
-	shutdownGracePeriod time.Duration
-	umask               func(int) int
-	umaskMu             *sync.Mutex
+	loadConfig           func(string) (*config.Config, error)
+	readConfigBytes      func(string) ([]byte, error)
+	newLogger            func(string, string, string) (*slog.Logger, io.Closer, error)
+	newAuditLogger       func(string, string) (*logging.AuditLogger, io.Closer, error)
+	validateRules        func(*config.Config) ([]*filter.CompiledRule, error)
+	dialUpstream         func(string, string, time.Duration) (net.Conn, error)
+	listenNetwork        func(string, string) (net.Listener, error)
+	lstatPath            func(string) (os.FileInfo, error)
+	isAddrInUse          func(error) bool
+	createServeListener  func(*config.Config) (net.Listener, error)
+	createAdminListener  func(*config.Config) (net.Listener, error)
+	buildBundleVerifier  func(config.PolicyBundleConfig) (policybundle.Verifier, error)
+	loadBundleEntity     func(string) (verify.SignedEntity, error)
+	notifySignals        func(chan<- os.Signal, ...os.Signal)
+	startServing         func(*http.Server, net.Listener, chan<- error)
+	shutdownServer       func(*http.Server, context.Context) error
+	removePath           func(string) error
+	now                  func() time.Time
+	shutdownGracePeriod  time.Duration
+	umask                func(int) int
+	umaskMu              *sync.Mutex
 }
 
 var processUmaskMu sync.Mutex
@@ -49,6 +55,7 @@ var processUmaskMu sync.Mutex
 func newServeDeps() *serveDeps {
 	deps := &serveDeps{
 		loadConfig:          config.Load,
+		readConfigBytes:     os.ReadFile,
 		newLogger:           logging.New,
 		newAuditLogger:      logging.NewAudit,
 		validateRules:       validateAndCompileRules,
@@ -56,6 +63,8 @@ func newServeDeps() *serveDeps {
 		listenNetwork:       net.Listen,
 		lstatPath:           os.Lstat,
 		isAddrInUse:         isAddrInUse,
+		buildBundleVerifier: defaultBuildBundleVerifier,
+		loadBundleEntity:    policybundle.LoadBundle,
 		notifySignals:       signal.Notify,
 		startServing:        defaultServeStart,
 		shutdownServer:      defaultServeShutdown,
@@ -68,6 +77,42 @@ func newServeDeps() *serveDeps {
 	deps.createServeListener = deps.createListener
 	deps.createAdminListener = deps.createAdminListenerImpl
 	return deps
+}
+
+// defaultBuildBundleVerifier compiles a policy_bundle config into a
+// runtime Verifier. The result is bound at startup and reused across every
+// reload because policy_bundle's trust material is reload-immutable.
+//
+// When pb.Enabled=false the returned Verifier rejects calls — wiring code
+// must guard on Enabled before invoking Verify.
+func defaultBuildBundleVerifier(pb config.PolicyBundleConfig) (policybundle.Verifier, error) {
+	raw := policybundle.RawConfig{
+		Enabled:               pb.Enabled,
+		RequireRekorInclusion: pb.RequireRekorInclusion,
+		VerifyTimeoutStr:      pb.VerifyTimeout,
+	}
+	for _, k := range pb.AllowedSigningKeys {
+		raw.AllowedSigningKeys = append(raw.AllowedSigningKeys, policybundle.SigningKeyConfig{PEM: k.PEM})
+	}
+	for _, kl := range pb.AllowedKeyless {
+		raw.AllowedKeyless = append(raw.AllowedKeyless, policybundle.KeylessConfig{
+			Issuer:         kl.Issuer,
+			SubjectPattern: kl.SubjectPattern,
+		})
+	}
+	cfg, err := policybundle.BuildConfig(raw)
+	if err != nil {
+		return nil, err
+	}
+	// Keyless verification against the public sigstore TUF roots is not yet
+	// wired; if the operator configured keyless identities we surface a
+	// clear error rather than silently falling back to "no trust material".
+	// Production TUF wiring is a follow-up; for now keyed is fully
+	// supported and keyless paths live behind tests using VirtualSigstore.
+	if len(cfg.AllowedKeyless) > 0 && cfg.TrustedMaterial == nil {
+		return nil, errors.New("policy_bundle.allowed_keyless is configured but the production TUF trust root is not yet wired; configure allowed_signing_keys for now")
+	}
+	return policybundle.New(cfg)
 }
 
 func defaultServeStart(server *http.Server, ln net.Listener, errCh chan<- error) {

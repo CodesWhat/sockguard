@@ -27,6 +27,18 @@ type PolicySnapshot struct {
 	CompatActive bool      `json:"compat_active"`
 	Source       string    `json:"source"` // "startup" or "reload"
 	ConfigSHA256 string    `json:"config_sha256,omitempty"`
+	// BundleSource is the on-disk path to the sigstore bundle that vouched
+	// for the running policy, or "" when policy_bundle.enabled=false.
+	BundleSource string `json:"bundle_source,omitempty"`
+	// BundleSigner is a stable identifier of the accepting trust path:
+	// "keyed:<spki-fingerprint>" or "keyless:<issuer>:<san-pattern>".
+	// Empty when policy_bundle is disabled.
+	BundleSigner string `json:"bundle_signer,omitempty"`
+	// BundleDigest is the sha256 hex digest of the YAML bytes verified
+	// against the bundle. Empty when policy_bundle is disabled. This is the
+	// same digest the bundle signs over, so it doubles as proof that the
+	// YAML on disk matches what the operator published.
+	BundleDigest string `json:"bundle_digest,omitempty"`
 }
 
 // PolicyVersioner publishes the active policy snapshot. The store side
