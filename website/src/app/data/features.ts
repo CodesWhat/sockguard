@@ -1,11 +1,14 @@
 import {
   Activity,
   ArrowRight,
+  BadgeCheck,
   EyeOff,
   FileText,
+  Gauge,
   LockKeyhole,
   type LucideIcon,
   Network,
+  RefreshCw,
   ScanSearch,
   Shield,
   ShieldCheck,
@@ -126,6 +129,15 @@ export const features: Feature[] = [
     category: "security",
   },
   {
+    icon: BadgeCheck,
+    title: "Signed Policy Bundles",
+    color: "text-rose-500 dark:text-rose-400",
+    bg: "bg-rose-100 dark:bg-rose-900/50",
+    description:
+      "Treat the on-disk YAML config as untrusted until a cosign / sigstore bundle confirms it. Supports keyed (PEM ECDSA/RSA/ed25519) and keyless (Fulcio + Rekor) verification. Bundle is checked at startup and on every hot reload — a bad signature rejects the reload and leaves the running policy untouched.",
+    category: "security",
+  },
+  {
     icon: EyeOff,
     title: "Visibility-Controlled Reads",
     color: "text-rose-500 dark:text-rose-400",
@@ -142,5 +154,23 @@ export const features: Feature[] = [
     description:
       "Route callers to named profiles with their own rules and request-body policy by source CIDR, mTLS client certificate selectors including SPKI pins, or unix peer credentials, with a configurable default fallback.",
     category: "control",
+  },
+  {
+    icon: Gauge,
+    title: "Per-Profile Rollout Modes",
+    color: "text-blue-500 dark:text-blue-400",
+    bg: "bg-blue-100 dark:bg-blue-900/50",
+    description:
+      "Stage policy changes without blocking traffic. Set a profile to `warn` or `audit` to serve requests while logging `decision=would_deny` audit records — then compare blocked vs. would-have-been-blocked in your dashboards before flipping to `enforce`. Pre-auth gates (CIDR allowlist, identity failures) always stay in enforce regardless of profile mode.",
+    category: "control",
+  },
+  {
+    icon: RefreshCw,
+    title: "Hot-Reload + Admin API",
+    color: "text-emerald-500 dark:text-emerald-400",
+    bg: "bg-emerald-100 dark:bg-emerald-900/50",
+    description:
+      "fsnotify file watch and SIGHUP reload with immutable-field gating — listener, upstream socket, and trust-material fields require a restart. `POST /admin/validate` dry-runs a candidate config without touching the running policy. `GET /admin/policy/version` returns the generation counter, config SHA-256, and verified bundle signer. Optionally binds the admin API to a dedicated listener so admin traffic never traverses the Docker-API filter chain.",
+    category: "operations",
   },
 ];
