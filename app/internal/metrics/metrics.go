@@ -58,6 +58,11 @@ type denyLabels struct {
 	reasonCode string
 	route      string
 	rule       string
+	// mode is the rollout posture in effect when the deny was decided:
+	// enforce (request blocked), warn or audit (request passed through to
+	// upstream but the gate said deny). Dashboards filter by mode to
+	// distinguish real denies from dry-run signal.
+	mode string
 }
 
 type durationLabels struct {
@@ -74,6 +79,7 @@ type upstreamWatchdogLabels struct {
 type throttleLabels struct {
 	reason  string
 	profile string
+	mode    string
 }
 
 type histogram struct {
@@ -94,14 +100,19 @@ func NewRegistry() *Registry {
 	}
 }
 
-// ObserveThrottle increments the throttle counter for the given profile and
-// reason. This always fires — audit-log sampling is handled by the caller.
-func (r *Registry) ObserveThrottle(profile, reason string) {
+// ObserveThrottle increments the throttle counter for the given profile,
+// reason, and rollout mode. This always fires — audit-log sampling is handled
+// by the caller. mode is one of enforce / warn / audit; an empty string is
+// normalized to enforce.
+func (r *Registry) ObserveThrottle(profile, reason, mode string) {
 	if r == nil {
 		return
 	}
+	if mode == "" {
+		mode = "enforce"
+	}
 	r.mu.Lock()
-	r.throttles[throttleLabels{reason: reason, profile: profile}]++
+	r.throttles[throttleLabels{reason: reason, profile: profile, mode: mode}]++
 	r.mu.Unlock()
 }
 
@@ -202,12 +213,16 @@ func (r *Registry) observe(req *http.Request, meta *logging.RequestMeta, status 
 
 	r.requests[requestKey]++
 	r.observeDurationLocked(durationKey, seconds)
-	if decision == "deny" {
+	// Both real denies (enforce mode) and would-be-denies (warn / audit) are
+	// counted here; the mode label distinguishes them so dashboards can
+	// compare "blocked" vs "would-have-been-blocked" volume.
+	if decision == "deny" || decision == logging.DecisionWouldDeny {
 		r.denies[denyLabels{
 			profile:    profile,
 			reasonCode: reasonCodeLabel(meta),
 			route:      route,
 			rule:       ruleLabel(meta),
+			mode:       rolloutModeLabel(meta),
 		}]++
 	}
 }
@@ -257,11 +272,11 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 			labelValue(key.decision), labelValue(key.method), labelValue(key.profile), labelValue(key.route), labelValue(key.status), requests[key])
 	}
 
-	fmt.Fprintln(w, "# HELP sockguard_http_denied_requests_total Total requests denied by Sockguard policy or admission checks.")
+	fmt.Fprintln(w, "# HELP sockguard_http_denied_requests_total Total requests denied by Sockguard policy or admission checks. mode is enforce (request was blocked) or warn / audit (request would have been blocked, passed through under rollout mode).")
 	fmt.Fprintln(w, "# TYPE sockguard_http_denied_requests_total counter")
 	for _, key := range sortedDenyLabels(denies) {
-		fmt.Fprintf(w, "sockguard_http_denied_requests_total{profile=%s,reason_code=%s,route=%s,rule=%s} %d\n",
-			labelValue(key.profile), labelValue(key.reasonCode), labelValue(key.route), labelValue(key.rule), denies[key])
+		fmt.Fprintf(w, "sockguard_http_denied_requests_total{mode=%s,profile=%s,reason_code=%s,route=%s,rule=%s} %d\n",
+			labelValue(key.mode), labelValue(key.profile), labelValue(key.reasonCode), labelValue(key.route), labelValue(key.rule), denies[key])
 	}
 
 	fmt.Fprintln(w, "# HELP sockguard_http_request_duration_seconds HTTP request latency in seconds.")
@@ -296,11 +311,11 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 		fmt.Fprintf(w, "sockguard_upstream_watchdog_checks_total{result=%s} %d\n", labelValue(key.result), upstream[key])
 	}
 
-	fmt.Fprintln(w, "# HELP sockguard_throttle_total Total requests denied by rate limiting or concurrency caps.")
+	fmt.Fprintln(w, "# HELP sockguard_throttle_total Total requests denied by rate limiting or concurrency caps. mode is enforce (request was blocked with 429) or warn / audit (passed through under rollout mode).")
 	fmt.Fprintln(w, "# TYPE sockguard_throttle_total counter")
 	for _, key := range sortedThrottleLabels(throttles) {
-		fmt.Fprintf(w, "sockguard_throttle_total{profile=%s,reason=%s} %d\n",
-			labelValue(key.profile), labelValue(key.reason), throttles[key])
+		fmt.Fprintf(w, "sockguard_throttle_total{mode=%s,profile=%s,reason=%s} %d\n",
+			labelValue(key.mode), labelValue(key.profile), labelValue(key.reason), throttles[key])
 	}
 
 	fmt.Fprintln(w, "# HELP sockguard_inflight_requests Current number of in-flight requests per profile under a concurrency cap.")
@@ -328,8 +343,8 @@ func sortedThrottleLabels(values map[throttleLabels]uint64) []throttleLabels {
 		keys = append(keys, key)
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		ki := keys[i].profile + "\x00" + keys[i].reason
-		kj := keys[j].profile + "\x00" + keys[j].reason
+		ki := keys[i].mode + "\x00" + keys[i].profile + "\x00" + keys[i].reason
+		kj := keys[j].mode + "\x00" + keys[j].profile + "\x00" + keys[j].reason
 		return ki < kj
 	})
 	return keys
@@ -414,7 +429,7 @@ func requestLabelSortKey(key requestLabels) string {
 }
 
 func denyLabelSortKey(key denyLabels) string {
-	return strings.Join([]string{key.profile, key.reasonCode, key.route, key.rule}, "\x00")
+	return strings.Join([]string{key.mode, key.profile, key.reasonCode, key.route, key.rule}, "\x00")
 }
 
 func durationLabelSortKey(key durationLabels) string {
@@ -473,6 +488,16 @@ func ruleLabel(meta *logging.RequestMeta) string {
 		return "-1"
 	}
 	return strconv.Itoa(meta.Rule)
+}
+
+// rolloutModeLabel returns the rollout posture in effect for the request,
+// normalizing empty (unconfigured) to "enforce" so the label cardinality
+// matches the dashboarded set {enforce, warn, audit}.
+func rolloutModeLabel(meta *logging.RequestMeta) string {
+	if meta != nil && meta.RolloutMode != "" {
+		return meta.RolloutMode
+	}
+	return "enforce"
 }
 
 func routeLabel(req *http.Request, meta *logging.RequestMeta) string {

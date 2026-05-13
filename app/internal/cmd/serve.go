@@ -572,7 +572,25 @@ func serveClientACLOptions(cfg *config.Config) clientacl.Options {
 			),
 			UnixPeers: clientUnixPeerProfiles(cfg.Clients.UnixPeerProfiles),
 		},
+		ProfileModes: clientProfileModes(cfg.Clients.Profiles),
 	}
+}
+
+// clientProfileModes flattens cfg.Clients.Profiles into the
+// (profileName -> rolloutMode) map clientacl uses to stamp meta.RolloutMode
+// when a profile is selected. Modes that fail to parse fall back to enforce;
+// the config validator already rejects unknown values at startup, so the
+// fallback is a defense-in-depth no-op under normal operation.
+func clientProfileModes(profiles []config.ClientProfileConfig) map[string]string {
+	if len(profiles) == 0 {
+		return nil
+	}
+	modes := make(map[string]string, len(profiles))
+	for _, p := range profiles {
+		mode, _ := config.ParseRolloutMode(p.Mode)
+		modes[p.Name] = mode.String()
+	}
+	return modes
 }
 
 func clientSourceIPProfiles(values []config.ClientSourceIPProfileAssignmentConfig) []clientacl.SourceIPProfileAssignment {

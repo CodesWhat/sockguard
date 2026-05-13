@@ -201,6 +201,60 @@ func TestMiddlewareDenied(t *testing.T) {
 	}
 }
 
+func TestMiddlewareRolloutMode(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	cases := []struct {
+		mode             string
+		wantReachInner   bool
+		wantStatus       int
+		wantDecision     string
+		wantReasonCode   string
+		wantPassThroughResponseEmpty bool
+	}{
+		{mode: "", wantReachInner: false, wantStatus: http.StatusForbidden, wantDecision: "deny", wantReasonCode: reasonCodeMatchedDenyRule},
+		{mode: "enforce", wantReachInner: false, wantStatus: http.StatusForbidden, wantDecision: "deny", wantReasonCode: reasonCodeMatchedDenyRule},
+		{mode: "warn", wantReachInner: true, wantStatus: http.StatusTeapot, wantDecision: logging.DecisionWouldDeny, wantReasonCode: reasonCodeMatchedDenyRule, wantPassThroughResponseEmpty: true},
+		{mode: "audit", wantReachInner: true, wantStatus: http.StatusTeapot, wantDecision: logging.DecisionWouldDeny, wantReasonCode: reasonCodeMatchedDenyRule, wantPassThroughResponseEmpty: true},
+	}
+
+	for _, tc := range cases {
+		t.Run("mode="+tc.mode, func(t *testing.T) {
+			reached := false
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusTeapot)
+			})
+
+			handler := verboseMiddleware(rules, testLogger())(inner)
+			req := httptest.NewRequest("POST", "/containers/create", nil)
+
+			meta := &logging.RequestMeta{RolloutMode: tc.mode}
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if reached != tc.wantReachInner {
+				t.Fatalf("inner reached=%v, want %v", reached, tc.wantReachInner)
+			}
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			if meta.Decision != tc.wantDecision {
+				t.Errorf("meta.Decision = %q, want %q", meta.Decision, tc.wantDecision)
+			}
+			if meta.ReasonCode != tc.wantReasonCode {
+				t.Errorf("meta.ReasonCode = %q, want %q", meta.ReasonCode, tc.wantReasonCode)
+			}
+			if tc.wantPassThroughResponseEmpty && rec.Body.Len() != 0 {
+				t.Errorf("expected empty body for pass-through, got %q", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestMiddlewareDeniedMinimalVerbosity(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})

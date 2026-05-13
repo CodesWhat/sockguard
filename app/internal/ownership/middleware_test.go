@@ -286,6 +286,45 @@ func TestMiddlewareDeniesCrossOwnerContainerAccess(t *testing.T) {
 	}
 }
 
+func TestMiddlewareRolloutModePassesOwnershipDenyThrough(t *testing.T) {
+	for _, mode := range []string{"warn", "audit"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			fi := fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					"containers": {
+						"abc123": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+					},
+				},
+			}
+			reached := false
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			meta := &logging.RequestMeta{RolloutMode: mode}
+			req := httptest.NewRequest(http.MethodPost, "/containers/abc123/attach", nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if !reached {
+				t.Fatalf("expected inner handler to be reached under mode=%s", mode)
+			}
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204 (inner write) under mode=%s", rec.Code, mode)
+			}
+			if meta.Decision != logging.DecisionWouldDeny {
+				t.Fatalf("meta.Decision = %q, want would_deny", meta.Decision)
+			}
+			if meta.ReasonCode != reasonCodeOwnerPolicyDeniedAccess {
+				t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeOwnerPolicyDeniedAccess)
+			}
+		})
+	}
+}
+
 func TestMiddlewareAllowsOwnedContainerAccess(t *testing.T) {
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	fi := fakeInspector{

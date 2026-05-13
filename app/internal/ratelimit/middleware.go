@@ -327,6 +327,11 @@ func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next htt
 
 // checkRateLimit applies the token-bucket gate. Returns true when the request
 // was denied (handler should stop), false to continue.
+//
+// When the resolved profile's rollout mode permits pass-through (warn /
+// audit), the throttle counter and audit record still fire (operators need
+// "what would have been blocked" data even during dry-runs), but the request
+// is admitted and the access log decision becomes would_deny instead of deny.
 func (h *throttleHandler) checkRateLimit(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (denied bool) {
 	if cp == nil || cp.limiter == nil {
 		return false
@@ -336,12 +341,17 @@ func (h *throttleHandler) checkRateLimit(w http.ResponseWriter, r *http.Request,
 	if ok {
 		return false
 	}
-	h.registry.ObserveThrottle(clientID, string(ReasonRateLimit))
+	meta := logging.MetaForRequest(w, r)
+	h.registry.ObserveThrottle(clientID, string(ReasonRateLimit), rolloutModeOf(meta))
 	h.emitThrottleAudit(r, clientID, ReasonRateLimit, normPath,
 		slog.Float64("tokens_per_second", cp.rate.TokensPerSecond),
 		slog.Float64("burst", cp.rate.Burst),
 		slog.Float64("cost", cost),
 	)
+	if meta.AllowsPassThrough() {
+		logging.SetWouldDenyWithCode(w, r, string(ReasonRateLimit), "rate limit exceeded", filter.NormalizePath)
+		return false
+	}
 	logging.SetDeniedWithCode(w, r, string(ReasonRateLimit), "rate limit exceeded", filter.NormalizePath)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
@@ -368,13 +378,18 @@ func (h *throttleHandler) checkGlobalPriority(w http.ResponseWriter, r *http.Req
 	if admitted {
 		return h.globalTracker.Release, true
 	}
-	h.registry.ObserveThrottle(clientID, string(ReasonPriorityFloor))
+	meta := logging.MetaForRequest(w, r)
+	h.registry.ObserveThrottle(clientID, string(ReasonPriorityFloor), rolloutModeOf(meta))
 	h.emitThrottleAudit(r, clientID, ReasonPriorityFloor, normPath,
 		slog.String("priority", priority.String()),
 		slog.Int64("current_global_inflight", current),
 		slog.Int64("priority_threshold", threshold),
 		slog.Int64("global_max_inflight", h.globalMax),
 	)
+	if meta.AllowsPassThrough() {
+		logging.SetWouldDenyWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", filter.NormalizePath)
+		return nil, true
+	}
 	logging.SetDeniedWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", filter.NormalizePath)
 	_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
 		Reason: string(ReasonPriorityFloor),
@@ -392,11 +407,16 @@ func (h *throttleHandler) checkProfileConcurrency(w http.ResponseWriter, r *http
 	}
 	admitted, current := cp.tracker.Acquire(clientID, cp.concurrency.MaxInflight)
 	if !admitted {
-		h.registry.ObserveThrottle(clientID, string(ReasonConcurrency))
+		meta := logging.MetaForRequest(w, r)
+		h.registry.ObserveThrottle(clientID, string(ReasonConcurrency), rolloutModeOf(meta))
 		h.emitThrottleAudit(r, clientID, ReasonConcurrency, normPath,
 			slog.Int64("current_inflight", current),
 			slog.Int64("max_inflight", cp.concurrency.MaxInflight),
 		)
+		if meta.AllowsPassThrough() {
+			logging.SetWouldDenyWithCode(w, r, string(ReasonConcurrency), "concurrency cap exceeded", filter.NormalizePath)
+			return nil, true
+		}
 		logging.SetDeniedWithCode(w, r, string(ReasonConcurrency), "concurrency cap exceeded", filter.NormalizePath)
 		_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{
 			Reason: string(ReasonConcurrency),
@@ -435,4 +455,14 @@ func attrsToAny(attrs []slog.Attr) []any {
 		result[i] = a
 	}
 	return result
+}
+
+// rolloutModeOf returns the rollout mode label for the request's resolved
+// profile, normalizing empty / nil to "enforce" so the metrics label is
+// always one of the documented {enforce, warn, audit} values.
+func rolloutModeOf(meta *logging.RequestMeta) string {
+	if meta == nil || meta.RolloutMode == "" {
+		return "enforce"
+	}
+	return meta.RolloutMode
 }

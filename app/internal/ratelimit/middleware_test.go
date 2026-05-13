@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/metrics"
 )
 
@@ -519,6 +521,117 @@ func (b *threadSafeBuffer) String() string {
 }
 
 // ---------------------------------------------------------------------------
+// Rollout mode: warn / audit pass deny decisions through with a would_deny
+// audit marker. The throttle counter must still fire with the matching mode
+// label so dashboards can compare warn / audit volume against enforce.
+// ---------------------------------------------------------------------------
+
+func TestMiddleware_RolloutMode_RateLimitPassesThrough(t *testing.T) {
+	for _, mode := range []string{"warn", "audit"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			reg := metrics.NewRegistry()
+			sampler, stop := NewAuditSampler()
+			defer stop()
+
+			opts := MiddlewareOptions{
+				Profiles: map[string]ProfileOptions{
+					"ci": {Rate: &RateOptions{TokensPerSecond: 100, Burst: 1}},
+				},
+				ResolveProfile: resolveProfileFn("ci"),
+			}
+			reached := 0
+			h := mustMiddleware(t, newTestLogger(), reg, sampler, opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached++
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			// Burst 1: first request consumes the token.
+			rec1 := httptest.NewRecorder()
+			req1 := withRolloutMode(httptest.NewRequest(http.MethodGet, "/containers/json", nil), mode)
+			h.ServeHTTP(rec1, req1)
+			if rec1.Code != http.StatusOK {
+				t.Fatalf("first request: expected 200, got %d", rec1.Code)
+			}
+
+			// Second request would normally be rate-limited (429). Under
+			// warn / audit it must pass through to the inner handler.
+			rec2 := httptest.NewRecorder()
+			meta2 := metaWithRolloutMode(mode)
+			req2 := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+			req2 = req2.WithContext(metaContext(req2, meta2))
+			h.ServeHTTP(rec2, req2)
+			if rec2.Code != http.StatusOK {
+				t.Fatalf("rate-limited request under mode=%s should pass through, got %d (body %q)", mode, rec2.Code, rec2.Body.String())
+			}
+			if reached != 2 {
+				t.Fatalf("inner handler reach count = %d, want 2 (both requests should pass through under mode=%s)", reached, mode)
+			}
+			if meta2.Decision != "would_deny" {
+				t.Fatalf("expected meta.Decision=would_deny on throttled-but-passed request, got %q", meta2.Decision)
+			}
+		})
+	}
+}
+
+func TestMiddleware_RolloutMode_ConcurrencyPassesThrough(t *testing.T) {
+	reg := metrics.NewRegistry()
+	sampler, stop := NewAuditSampler()
+	defer stop()
+
+	opts := MiddlewareOptions{
+		Profiles: map[string]ProfileOptions{
+			"ci": {Concurrency: &ConcurrencyOptions{MaxInflight: 1}},
+		},
+		ResolveProfile: resolveProfileFn("ci"),
+	}
+	block := make(chan struct{})
+	release := make(chan struct{})
+	reached := 0
+	var mu sync.Mutex
+	h := mustMiddleware(t, newTestLogger(), reg, sampler, opts)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reached++
+		mu.Unlock()
+		if r.URL.RawQuery == "hold=1" {
+			close(block)
+			<-release
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// First request occupies the single inflight slot.
+	done := make(chan struct{})
+	go func() {
+		rec := httptest.NewRecorder()
+		req := withRolloutMode(httptest.NewRequest(http.MethodGet, "/containers/json?hold=1", nil), "warn")
+		h.ServeHTTP(rec, req)
+		close(done)
+	}()
+	<-block
+
+	// Second request hits the cap. Under warn it must pass through.
+	rec := httptest.NewRecorder()
+	meta := metaWithRolloutMode("warn")
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	req = req.WithContext(metaContext(req, meta))
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("concurrency-capped request under warn should pass through, got %d", rec.Code)
+	}
+	if meta.Decision != "would_deny" {
+		t.Fatalf("expected meta.Decision=would_deny on capped-but-passed request, got %q", meta.Decision)
+	}
+
+	close(release)
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if reached != 2 {
+		t.Fatalf("inner reach count = %d, want 2", reached)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -533,4 +646,23 @@ func mustMiddleware(t *testing.T, logger *slog.Logger, reg *metrics.Registry, sa
 	mw, stop := Middleware(logger, reg, sampler, opts)
 	t.Cleanup(stop)
 	return mw
+}
+
+// metaWithRolloutMode returns a fresh RequestMeta carrying the rollout posture
+// the deny gates read to decide between enforce and pass-through.
+func metaWithRolloutMode(mode string) *logging.RequestMeta {
+	return &logging.RequestMeta{RolloutMode: mode}
+}
+
+// metaContext attaches a RequestMeta to the request context. ratelimit reads
+// it via logging.MetaForRequest.
+func metaContext(r *http.Request, meta *logging.RequestMeta) context.Context {
+	return logging.WithMeta(r.Context(), meta)
+}
+
+// withRolloutMode is a convenience that builds a request-with-context for the
+// happy-path "first request consumes the bucket" cases where the test does
+// not need a handle to the meta afterwards.
+func withRolloutMode(r *http.Request, mode string) *http.Request {
+	return r.WithContext(logging.WithMeta(r.Context(), metaWithRolloutMode(mode)))
 }

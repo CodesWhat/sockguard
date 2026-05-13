@@ -1336,6 +1336,47 @@ func TestValidateLimitsConfig_Concurrency(t *testing.T) {
 	}
 }
 
+func TestValidateClientProfile_Mode(t *testing.T) {
+	rules := []RuleConfig{
+		{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	tests := []struct {
+		name       string
+		mode       string
+		wantSubstr string // empty = expect no mode error
+	}{
+		{name: "empty defaults to enforce", mode: ""},
+		{name: "enforce explicit", mode: "enforce"},
+		{name: "warn", mode: "warn"},
+		{name: "audit", mode: "audit"},
+		{name: "uppercase accepted", mode: "Audit"},
+		{name: "unknown rejected", mode: "observe", wantSubstr: "mode must be one of enforce|warn|audit"},
+		{name: "bool-like rejected", mode: "true", wantSubstr: "mode must be one of enforce|warn|audit"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := ClientProfileConfig{Name: "p", Mode: tt.mode, Rules: rules}
+			errs := validateClientProfile(0, profile, map[string]struct{}{})
+			matched := false
+			for _, e := range errs {
+				if tt.wantSubstr != "" && strings.Contains(e, tt.wantSubstr) {
+					matched = true
+				}
+			}
+			switch {
+			case tt.wantSubstr == "":
+				for _, e := range errs {
+					if strings.Contains(e, "mode must be") {
+						t.Fatalf("unexpected mode error: %v", e)
+					}
+				}
+			case !matched:
+				t.Fatalf("expected mode error containing %q, got: %v", tt.wantSubstr, errs)
+			}
+		})
+	}
+}
+
 func TestValidateEndpointCosts(t *testing.T) {
 	tests := []struct {
 		name           string

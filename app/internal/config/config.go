@@ -367,8 +367,12 @@ type ClientUnixPeerProfileAssignmentConfig struct {
 }
 
 // ClientProfileConfig defines a named per-client request policy profile.
+//
+// Mode is the rollout posture for the profile's deny decisions. One of
+// "enforce" (default), "warn", or "audit". See RolloutMode for semantics.
 type ClientProfileConfig struct {
 	Name        string                      `mapstructure:"name"`
+	Mode        string                      `mapstructure:"mode"`
 	Response    ClientProfileResponseConfig `mapstructure:"response"`
 	RequestBody RequestBodyConfig           `mapstructure:"request_body"`
 	Rules       []RuleConfig                `mapstructure:"rules"`

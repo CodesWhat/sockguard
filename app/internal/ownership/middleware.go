@@ -142,6 +142,12 @@ func middlewareWithDeps(
 				return
 			}
 
+			meta := logging.MetaForRequest(w, r)
+			if meta.AllowsPassThrough() {
+				logging.SetWouldDenyWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, reason, nil)
+				next.ServeHTTP(w, r)
+				return
+			}
 			logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyDeniedAccess, reason, nil)
 			_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 		})

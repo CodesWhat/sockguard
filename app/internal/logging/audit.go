@@ -97,6 +97,7 @@ type auditEvent struct {
 	Reason            string                `json:"reason"`
 	MatchedRule       int                   `json:"matched_rule"`
 	SelectedProfile   string                `json:"selected_profile"`
+	RolloutMode       string                `json:"rollout_mode,omitempty"`
 	Status            int                   `json:"status"`
 	ActorRemoteAddr   string                `json:"actor_remote_addr"`
 	ActorSourceIP     string                `json:"actor_source_ip"`
@@ -157,6 +158,7 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 				Reason:            meta.Reason,
 				MatchedRule:       meta.Rule,
 				SelectedProfile:   meta.Profile,
+				RolloutMode:       meta.RolloutMode,
 				Status:            rc.status,
 				ActorRemoteAddr:   actorRemoteAddr,
 				ActorSourceIP:     actorSourceIP,

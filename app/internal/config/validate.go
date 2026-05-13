@@ -343,6 +343,10 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 		errs = append(errs, containsAtLeastOneError(prefix+".rules", "rule"))
 	}
 
+	if _, ok := ParseRolloutMode(profile.Mode); !ok {
+		errs = append(errs, fmt.Sprintf("%s.mode must be one of enforce|warn|audit, got %q", prefix, profile.Mode))
+	}
+
 	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels)...)
 	errs = append(errs, validateRequestBodyConfig(prefix+".request_body", profile.RequestBody)...)
 	errs = append(errs, validateRuleConfigs(profile.Rules, prefix+".rules")...)

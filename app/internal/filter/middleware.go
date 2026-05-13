@@ -211,6 +211,12 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			if action == ActionDeny {
+				meta := logging.MetaForRequest(w, r)
+				if meta.AllowsPassThrough() {
+					meta.Decision = logging.DecisionWouldDeny
+					next.ServeHTTP(w, r)
+					return
+				}
 				if err := httpjson.Write(w, denyStatus, denyResponse(r, reason, activePolicy.denyResponseVerbosity)); err != nil {
 					logger.ErrorContext(r.Context(), "failed to encode denial response", "error", err, "method", r.Method, "path", r.URL.Path)
 				}
