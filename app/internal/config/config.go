@@ -474,10 +474,21 @@ type MetricsConfig struct {
 	Path    string `mapstructure:"path"`
 }
 
-// AdminConfig configures the in-band admin HTTP endpoints (currently
-// POST <path> for candidate-config validation). The admin endpoint shares
-// the main listener and therefore inherits its CIDR allowlist, mTLS, and
-// rate-limit posture. It is opt-in because a misconfigured admin path on a
+// AdminConfig configures the admin HTTP endpoints (POST <path> for
+// candidate-config validation, GET <policy_version_path> for the active
+// policy generation counter).
+//
+// By default the admin endpoints ride the main listener and therefore
+// inherit its CIDR allowlist, mTLS, and rate-limit posture. When Listen is
+// configured (Listen.Socket OR Listen.Address set), sockguard starts a
+// dedicated http.Server on that address that serves ONLY the admin
+// endpoints. The main Docker-API listener never sees admin traffic in that
+// mode, and admin traffic never sees the Docker-API filter chain. Operators
+// running production traffic alongside an automation/CI control plane
+// should prefer the dedicated listener so the two surfaces are isolated
+// at the OS/socket layer.
+//
+// Enabled is opt-in because a misconfigured admin path on a
 // network-reachable listener would otherwise let any client submit YAML for
 // parsing.
 type AdminConfig struct {
@@ -491,6 +502,33 @@ type AdminConfig struct {
 	// /admin/policy/version. Must differ from Path, health.path, and
 	// metrics.path when those endpoints are enabled.
 	PolicyVersionPath string `mapstructure:"policy_version_path"`
+	// Listen optionally moves the admin endpoints to a dedicated listener
+	// instead of sharing the main proxy listener. Configure either Socket
+	// (unix) or Address (TCP, optionally wrapped in TLS). When unset, the
+	// admin endpoints continue to ride the main listener.
+	Listen AdminListenConfig `mapstructure:"listen"`
+}
+
+// AdminListenConfig configures the dedicated admin listener. Its shape
+// mirrors ListenConfig so operators have a single mental model for the
+// two listeners; the behavioral differences are limited to defaults and
+// the fact that the admin listener never carries Docker-API traffic.
+//
+// Configured reports whether a dedicated admin listener has been requested.
+// When false the admin endpoints fall back to riding the main listener.
+type AdminListenConfig struct {
+	Socket                string          `mapstructure:"socket"`
+	SocketMode            string          `mapstructure:"socket_mode"`
+	Address               string          `mapstructure:"address"`
+	InsecureAllowPlainTCP bool            `mapstructure:"insecure_allow_plain_tcp"`
+	TLS                   ListenTLSConfig `mapstructure:"tls"`
+}
+
+// Configured reports whether an admin listener address has been requested.
+// It is the single source of truth used by both validation and serve wiring
+// to decide whether to spin up the dedicated admin http.Server.
+func (cfg AdminListenConfig) Configured() bool {
+	return cfg.Socket != "" || cfg.Address != ""
 }
 
 // ReloadConfig configures the hot-reload pipeline.
@@ -609,6 +647,14 @@ func Defaults() Config {
 			Path:              "/admin/validate",
 			MaxBodyBytes:      524288,
 			PolicyVersionPath: "/admin/policy/version",
+			Listen: AdminListenConfig{
+				// Socket and Address both default to "" so the admin endpoints
+				// ride the main listener until the operator opts in. SocketMode
+				// still defaults to the hardened mode so that an operator who
+				// only sets admin.listen.socket gets owner-only permissions
+				// without needing to repeat the boilerplate.
+				SocketMode: HardenedListenSocketMode,
+			},
 		},
 		Reload: ReloadConfig{
 			Enabled:    false,

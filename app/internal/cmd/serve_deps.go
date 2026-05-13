@@ -33,6 +33,7 @@ type serveDeps struct {
 	lstatPath           func(string) (os.FileInfo, error)
 	isAddrInUse         func(error) bool
 	createServeListener func(*config.Config) (net.Listener, error)
+	createAdminListener func(*config.Config) (net.Listener, error)
 	notifySignals       func(chan<- os.Signal, ...os.Signal)
 	startServing        func(*http.Server, net.Listener, chan<- error)
 	shutdownServer      func(*http.Server, context.Context) error
@@ -65,6 +66,7 @@ func newServeDeps() *serveDeps {
 		umaskMu:             &processUmaskMu,
 	}
 	deps.createServeListener = deps.createListener
+	deps.createAdminListener = deps.createAdminListenerImpl
 	return deps
 }
 
@@ -100,6 +102,23 @@ func (d *serveDeps) createListener(cfg *config.Config) (net.Listener, error) {
 	}
 
 	return d.createTCPListener(cfg.Listen.Address, cfg.Listen.TLS)
+}
+
+// createAdminListenerImpl builds the dedicated admin listener described by
+// cfg.Admin.Listen. It reuses createSocketListener / createTCPListener so the
+// hardened socket-mode and mTLS posture stays in lockstep with the main
+// listener — the only difference is which config sub-block feeds the inputs.
+// Callers must guard with cfg.Admin.Listen.Configured(); calling this with
+// an unconfigured Listen returns an error rather than silently binding 0.0.0.0.
+func (d *serveDeps) createAdminListenerImpl(cfg *config.Config) (net.Listener, error) {
+	listen := cfg.Admin.Listen
+	if !listen.Configured() {
+		return nil, fmt.Errorf("admin listener not configured")
+	}
+	if listen.Socket != "" {
+		return d.createSocketListener(listen.Socket, listen.SocketMode)
+	}
+	return d.createTCPListener(listen.Address, listen.TLS)
 }
 
 func (d *serveDeps) createSocketListener(path, modeValue string) (net.Listener, error) {

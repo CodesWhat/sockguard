@@ -135,6 +135,7 @@ func validateBasic(cfg *Config) []string {
 		if cfg.Metrics.Enabled && cfg.Admin.PolicyVersionPath == cfg.Metrics.Path {
 			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
 		}
+		errs = append(errs, validateAdminListener(cfg)...)
 	}
 
 	if cfg.Reload.Enabled && cfg.Reload.DebounceMs < 0 {
@@ -175,6 +176,64 @@ func validateUnixSocketListenerSecurity(cfg *Config) []string {
 	return []string{
 		fmt.Sprintf("listen.socket_mode must be %q because unix listeners are created with owner-only permissions", HardenedListenSocketMode),
 	}
+}
+
+// validateAdminListener validates the optional dedicated admin listener. It
+// only runs when cfg.Admin.Enabled is true; an unconfigured Listen sub-block
+// (Socket == "" && Address == "") is the documented "ride the main listener"
+// mode and is intentionally a no-op here.
+//
+// Errors mirror the main-listener validators: a socket listener must use the
+// hardened owner-only socket mode, a partially-configured TLS block is
+// rejected, a complete TLS block is constructively validated by loading the
+// material, and a non-loopback plaintext TCP listener requires the same
+// explicit opt-in (admin.listen.insecure_allow_plain_tcp=true) that the main
+// listener requires. The admin listener must also point at a different
+// socket/address than the main listener — otherwise the two http.Servers
+// would race for the same bind and the dedicated-listener model would be a
+// silent lie.
+func validateAdminListener(cfg *Config) []string {
+	listen := cfg.Admin.Listen
+	if !listen.Configured() {
+		return nil
+	}
+
+	var errs []string
+
+	if listen.Socket != "" && listen.Address != "" {
+		errs = append(errs, "admin.listen.socket and admin.listen.address are mutually exclusive; configure one")
+	}
+
+	if listen.Socket != "" {
+		if strings.TrimSpace(listen.SocketMode) != HardenedListenSocketMode {
+			errs = append(errs, fmt.Sprintf("admin.listen.socket_mode must be %q because unix listeners are created with owner-only permissions", HardenedListenSocketMode))
+		}
+		if cfg.Listen.Socket != "" && cfg.Listen.Socket == listen.Socket {
+			errs = append(errs, fmt.Sprintf("admin.listen.socket must differ from listen.socket, got %q", listen.Socket))
+		}
+	}
+
+	if listen.Address != "" {
+		if listen.TLS.Enabled() && !listen.TLS.Complete() {
+			errs = append(errs, requiresError("admin.listen.tls", "cert_file, key_file, and client_ca_file together"))
+		} else if listen.TLS.Complete() {
+			if _, err := BuildMutualTLSServerConfig(listen.TLS); err != nil {
+				errs = append(errs, strings.Replace(err.Error(), "listen.tls", "admin.listen.tls", 1))
+			}
+		}
+
+		if IsNonLoopbackTCPAddress(listen.Address) && !listen.InsecureAllowPlainTCP && !listen.TLS.Complete() {
+			errs = append(errs,
+				fmt.Sprintf("non-loopback TCP admin listener %q requires admin.listen.tls mTLS config or admin.listen.insecure_allow_plain_tcp=true", listen.Address),
+			)
+		}
+
+		if cfg.Listen.Address != "" && cfg.Listen.Socket == "" && cfg.Listen.Address == listen.Address {
+			errs = append(errs, fmt.Sprintf("admin.listen.address must differ from listen.address, got %q", listen.Address))
+		}
+	}
+
+	return errs
 }
 
 func validateTCPListenerSecurity(cfg *Config) []string {

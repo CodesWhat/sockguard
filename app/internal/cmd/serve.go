@@ -175,6 +175,12 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	defer stopWatchdog()
 	go deps.startServing(server, listener, errCh)
 
+	adminServer, adminErrCh, stopAdmin, err := startAdminServer(cfg, logger, auditLogger, versioner, deps)
+	if err != nil {
+		return err
+	}
+	defer stopAdmin()
+
 	stopReload := func() {}
 	if cfg.Reload.Enabled && cfgFile != "" {
 		debounce := time.Duration(cfg.Reload.DebounceMs) * time.Millisecond
@@ -203,12 +209,25 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("server error: %w", err)
 		}
+	case err := <-adminErrCh:
+		// An admin Serve() return is always fatal: the operator enabled
+		// admin.listen specifically so they could rely on the admin
+		// endpoints, so a silent admin-only outage would be worse than
+		// taking the whole proxy down and surfacing the cause.
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("admin server error: %w", err)
+		}
 	}
 	stopWatchdog()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), deps.shutdownGracePeriod)
 	defer cancel()
 
+	if adminServer != nil {
+		if err := deps.shutdownServer(adminServer, shutdownCtx); err != nil {
+			logger.Error("admin shutdown error", "error", err)
+		}
+	}
 	if err := deps.shutdownServer(server, shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}
@@ -217,8 +236,66 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 			logger.Error("remove socket error", "socket", cfg.Listen.Socket, "error", err)
 		}
 	}
+	if cfg.Admin.Enabled && cfg.Admin.Listen.Socket != "" {
+		if err := deps.removePath(cfg.Admin.Listen.Socket); err != nil && !os.IsNotExist(err) {
+			logger.Error("remove admin socket error", "socket", cfg.Admin.Listen.Socket, "error", err)
+		}
+	}
 	logger.Info("sockguard stopped")
 	return nil
+}
+
+// startAdminServer brings up the dedicated admin http.Server when
+// admin.listen is configured. Returns the server (so the caller can
+// Shutdown it), an error channel that yields the Serve return value, and
+// a stop function the caller must defer to close the admin listener.
+//
+// When admin.listen is unconfigured the function is a no-op: it returns
+// (nil, a permanently-blocked channel, no-op stop, nil) so the caller's
+// select still has an entry to read from without having to special-case
+// the unconfigured path.
+//
+// An adminErrCh receive of a non-nil error other than http.ErrServerClosed
+// is a fatal condition the caller surfaces as a process-exit error — see
+// the comment in runServeWithDeps.
+func startAdminServer(
+	cfg *config.Config,
+	logger *slog.Logger,
+	auditLogger *logging.AuditLogger,
+	versioner *admin.PolicyVersioner,
+	deps *serveDeps,
+) (*http.Server, <-chan error, func(), error) {
+	if !cfg.Admin.Enabled || !cfg.Admin.Listen.Configured() {
+		// A nil-returning channel would block forever in select; that is
+		// exactly what we want when there's no admin server to watch.
+		return nil, make(chan error), func() {}, nil
+	}
+
+	adminListener, err := deps.createAdminListener(cfg)
+	if err != nil {
+		return nil, nil, func() {}, fmt.Errorf("admin listener: %w", err)
+	}
+
+	adminHandler := buildAdminHandlerChain(cfg, logger, auditLogger, versioner)
+	adminServer := newAdminHTTPServer(adminHandler)
+	adminErrCh := make(chan error, 1)
+
+	go deps.startServing(adminServer, adminListener, adminErrCh)
+
+	logger.Info("admin listener started",
+		"listen", adminListenerAddr(cfg),
+		"validate_path", cfg.Admin.Path,
+		"policy_version_path", cfg.Admin.PolicyVersionPath,
+	)
+
+	stop := func() {
+		closeErr := adminListener.Close()
+		if closeErr == nil || errors.Is(closeErr, net.ErrClosed) {
+			return
+		}
+		logger.Warn("failed to close admin listener", "error", closeErr)
+	}
+	return adminServer, adminErrCh, stop, nil
 }
 
 func buildServeHandler(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
@@ -360,7 +437,12 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 	// requests still fall through to the next admin interceptor (which sees
 	// a different path), and ultimately to filter where unrelated traffic
 	// continues normally.
-	if cfg.Admin.Enabled {
+	//
+	// When admin.listen is configured the admin endpoints move to a dedicated
+	// http.Server (see startAdminServer); the main chain must NOT also mount
+	// them, otherwise the same path resolves on both listeners and operators
+	// lose the isolation they explicitly opted in to.
+	if cfg.Admin.Enabled && !cfg.Admin.Listen.Configured() {
 		if versioner != nil {
 			layers = append(layers, namedServeHandlerLayer("withPolicyVersionEndpoint", withPolicyVersionEndpoint(cfg, logger, versioner)))
 		}
@@ -813,6 +895,73 @@ func clientVisibilityProfiles(values []config.ClientProfileConfig) map[string]vi
 		}
 	}
 	return profiles
+}
+
+// buildAdminHandlerChain composes the http.Handler used by the dedicated
+// admin listener (admin.listen configured). It mounts the validate and
+// policy-version interceptors over a 404 terminator and wraps the result in
+// the observability layers (request-id, trace context, optional audit log,
+// optional access log) so the admin surface still emits the same kind of
+// telemetry as the main listener.
+//
+// Note: rate-limit, client ACL, ownership, visibility, hijack, and the
+// Docker-API filter are intentionally NOT applied — the admin listener is a
+// distinct trust boundary whose access control is the bind target plus
+// admin.listen.tls, not the per-profile policy that gates Docker-API
+// traffic on the main listener.
+func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, versioner *admin.PolicyVersioner) http.Handler {
+	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Any request on the dedicated admin listener that did not match an
+		// admin path lands here. We surface it as a 404 with the same
+		// SetDeniedWithCode call used elsewhere so the access/audit logs
+		// carry a consistent reason_code.
+		logging.SetDeniedWithCode(w, r, "admin_unknown_path", "unknown admin path", nil)
+		_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "not found"})
+	})
+
+	var h http.Handler = terminal
+	h = withAdminEndpoint(cfg, logger)(h)
+	if versioner != nil {
+		h = withPolicyVersionEndpoint(cfg, logger, versioner)(h)
+	}
+	if cfg.Log.Audit.Enabled && auditLogger != nil {
+		h = withAuditLog(auditLogger, cfg)(h)
+	}
+	h = withRequestID()(h)
+	h = withTraceContext()(h)
+	if cfg.Log.AccessLog {
+		h = withAccessLog(logger)(h)
+	}
+	return h
+}
+
+// newAdminHTTPServer returns the http.Server for the dedicated admin
+// listener. Unlike the main server it sets explicit Read/Write timeouts:
+// admin endpoints never stream and never hijack, so a runaway client cannot
+// be allowed to hold a goroutine open forever. The timeout has to be generous
+// enough that the validator (which compiles regex/glob inputs and parses TLS
+// material) still finishes on a contented box — 30s is comfortably above
+// observed validation latencies.
+func newAdminHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ConnContext:       clientacl.ConnContext,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
+	}
+}
+
+// adminListenerAddr returns a human-readable address for the dedicated admin
+// listener so logging can show operators where the admin endpoints are
+// bound. Mirrors listenerAddr.
+func adminListenerAddr(cfg *config.Config) string {
+	if cfg.Admin.Listen.Socket != "" {
+		return "unix:" + cfg.Admin.Listen.Socket
+	}
+	return "tcp://" + cfg.Admin.Listen.Address
 }
 
 func newHTTPServer(handler http.Handler) *http.Server {
