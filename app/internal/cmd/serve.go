@@ -802,7 +802,7 @@ func buildAdminValidator(parentLogger *slog.Logger) admin.Validator {
 		discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		compatActive := config.ApplyCompat(cfg, discardLogger)
 
-		compiled, compileErr := newServeDeps().validateRules(cfg)
+		compiled, compileErr := validateAndCompileRules(cfg)
 		if compileErr != nil {
 			return admin.ValidateResponse{
 				OK:           false,

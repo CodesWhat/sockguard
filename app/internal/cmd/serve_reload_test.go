@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codeswhat/sockguard/internal/admin"
@@ -96,26 +97,19 @@ func newReloadCoordinatorFixture(t *testing.T, initial *config.Config) *reloadCo
 func (f *reloadCoordinatorFixture) reloadCount(result string) (uint64, bool) {
 	rec := httptest.NewRecorder()
 	f.registry.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	body := rec.Body.String()
-	needle := fmt.Sprintf("sockguard_config_reload_total{result=\"%s\"} ", result)
-	idx := indexAfter(body, needle)
-	if idx < 0 {
-		return 0, false
-	}
-	var value uint64
-	if _, err := fmt.Sscanf(body[idx:], "%d", &value); err != nil {
-		return 0, false
-	}
-	return value, true
-}
-
-func indexAfter(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i + len(sub)
+	needle := fmt.Sprintf("sockguard_config_reload_total{result=%q} ", result)
+	for _, line := range strings.Split(rec.Body.String(), "\n") {
+		if !strings.HasPrefix(line, needle) {
+			continue
 		}
+		rest := strings.TrimPrefix(line, needle)
+		var value uint64
+		if _, err := fmt.Sscanf(rest, "%d", &value); err != nil {
+			return 0, false
+		}
+		return value, true
 	}
-	return -1
+	return 0, false
 }
 
 func TestReloadCoordinatorRejectsLoadError(t *testing.T) {

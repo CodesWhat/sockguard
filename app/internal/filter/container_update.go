@@ -40,7 +40,7 @@ func newContainerUpdatePolicy(opts ContainerUpdateOptions) containerUpdatePolicy
 }
 
 func (p containerUpdatePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-	if !matchesContainerUpdateInspection(r, normalizedPath) || r.Body == nil {
+	if !matchesContainerUpdateInspection(normalizedPath) || r.Body == nil {
 		return "", nil
 	}
 
