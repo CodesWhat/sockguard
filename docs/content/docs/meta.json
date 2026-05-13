@@ -6,6 +6,7 @@
     "configuration",
     "presets",
     "observability",
+    "admin",
     "migration",
     "security",
     "verification"

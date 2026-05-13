@@ -61,6 +61,12 @@ deployments stay quiet until you opt in.
 | `sockguard_http_requests_active`             | gauge     | —                                                       | Currently in-flight requests. Spikes during streaming endpoints (logs/attach/events).              |
 | `sockguard_upstream_socket_up`               | gauge     | —                                                       | `1` reachable, `0` unreachable. Only emitted when `health.watchdog.enabled` is true.               |
 | `sockguard_upstream_watchdog_checks_total`   | counter   | `result`                                                | `result` ∈ `{connected, unreachable}`. Increments every interval; ratio is your error budget.      |
+| `sockguard_throttle_total`                   | counter   | `profile`, `reason`                                     | Throttle denials. `reason` ∈ `{rate_limit_exceeded, concurrency_cap, priority_floor}`. |
+| `sockguard_inflight_requests`                | gauge     | `profile`                                               | In-flight count for profiles with `max_inflight` configured. Reflects real concurrency, including `warn`/`audit`-mode requests that would have been denied. |
+| `sockguard_ratelimit_global_inflight`        | gauge     | —                                                       | Total in-flight count across all profiles when `clients.global_concurrency` is set. |
+| `sockguard_policy_version`                   | gauge     | —                                                       | Monotonic policy generation counter. Ticks once at startup and once per successful hot reload. Matches the `version` field in `GET /admin/policy/version`. |
+| `sockguard_config_reload_total`              | counter   | `result`                                                | Hot-reload outcomes. `result` ∈ `{ok, reject_load, reject_validation, reject_immutable, reject_signature}`. |
+| `sockguard_config_reload_last_success_timestamp_seconds` | gauge | —                                          | Unix timestamp of the last successful reload. Omitted from scrape output until the first successful reload. |
 
 ### Label cardinality
 
@@ -146,6 +152,46 @@ sum(rate(sockguard_upstream_watchdog_checks_total[1h]))
 
 A value below `1.0` means the upstream socket flapped during the window even
 if it currently reads `up=1`.
+
+**Throttle rate by profile and reason:**
+
+```text
+sum by (profile, reason) (rate(sockguard_throttle_total[5m]))
+```
+
+`priority_floor` denials under a sustained load usually indicate that a
+`low`-priority profile is consuming more than its fair share of capacity.
+Raise its priority tier, lower its `max_inflight`, or reduce its token budget.
+
+**Would-deny rate for profiles in warn/audit mode:**
+
+```text
+sum by (profile) (
+  rate(sockguard_http_denied_requests_total{mode=~"warn|audit"}[5m])
+)
+```
+
+A would-deny rate that approaches zero over time means the policy is safe to
+promote from `warn` to `enforce`.
+
+**Policy version drift (detect config change without confirmation):**
+
+```text
+changes(sockguard_policy_version[10m])
+```
+
+A value of `0` over the expected reload window means a SIGHUP or fsnotify
+event did not produce a successful reload — check
+`sockguard_config_reload_total{result!="ok"}`.
+
+**Reload rejection breakdown:**
+
+```text
+sum by (result) (rate(sockguard_config_reload_total[1h]))
+```
+
+`reject_signature` means the cosign bundle verification failed; `reject_immutable`
+means an operator tried to change a listener or TLS field without restarting.
 
 ## Active upstream watchdog
 
@@ -262,3 +308,10 @@ generates a fresh local trace:
 - If the same listener serves clients and Prometheus, gate the metrics path
   with `clients.allowed_cidrs` so a misbehaving caller can't poll your
   cardinality budget into oblivion.
+- Enable `admin.enabled: true` and configure a dedicated `admin.listen.socket`
+  to get `GET /admin/policy/version` without exposing admin endpoints to
+  containers that have socket access. The `sockguard_policy_version` gauge gives
+  you the same counter for alerting, but the endpoint's `bundle_signer` and
+  `config_sha256` fields are only available via the HTTP response.
+- Alert on `sockguard_config_reload_total{result!="ok"}` so failed hot reloads
+  surface immediately rather than silently running stale policy.
