@@ -217,6 +217,10 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | 🫥 | **Visibility-Controlled Reads** | Redacts env, mount, network, config, plugin, and swarm-sensitive metadata by default, can hide labeled list/inspect plus selected service/task log reads behind per-client visibility rules, and keeps raw archive/export and stream-style reads behind explicit opt-in. |
 | 🧱 | **Body-Blind Write Guardrail** | Any remaining write Sockguard cannot safely constrain stays behind explicit `insecure_allow_body_blind_writes` opt-in instead of being silently exposed. Today that guardrail chiefly covers arbitrary exec without `request_body.exec.allowed_commands`, `POST /swarm/join` without `request_body.swarm.allowed_join_remote_addrs`, and plugin setting writes without explicit allowed assignment prefixes. |
 | 🔄 | **Tecnativa Compatible** | Drop-in replacement for the current Tecnativa env surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. |
+| 🎚️ | **Rollout Modes** | Per-profile `mode: enforce\|warn\|audit` lets operators stage a tighter policy without breaking callers. `warn`/`audit` pass-through with `decision=would_deny` on the audit record and a `mode` label on the deny/throttle counters, so dashboards compare blocked vs. would-have-been-blocked volume side by side. |
+| 🔁 | **Hot-Reload + Policy Versioning** | `reload.enabled: true` watches the config file via fsnotify (Linux inotify / macOS kqueue) and accepts `SIGHUP`. The new policy goes through the full validator + rule compiler and is atomically swapped behind the running handler; immutable fields (listeners, log, health, metrics, admin, policy-bundle trust material) refuse the reload. A monotonic generation counter is exposed at `GET /admin/policy/version` and via the `sockguard_policy_version` gauge. |
+| 🧪 | **Admin API** | Opt-in `POST /admin/validate` accepts a candidate YAML body and returns the same verdict the offline `sockguard validate` command would — perfect for a CI gate before promoting a config. `GET /admin/policy/version` reports `{version, loaded_at, rules, profiles, source, config_sha256, bundle_signer?}`. Both endpoints can ride the main listener or move to a dedicated `admin.listen.*` (socket or TCP, mTLS-aware) firewalled from Docker-API consumers. |
+| ✍️ | **Signed Policy Bundles** | `policy_bundle.enabled: true` requires a cosign sigstore bundle to vouch for the YAML config bytes. Keyed (PEM) and keyless (Fulcio + Rekor) trust paths reuse the same sigstore-go stack as image trust. Verification runs at startup before any rule compiles and again on every hot reload — unsigned or tampered bundles abort startup and reject reloads with `reject_signature` on `sockguard_config_reload_total`. The verified signer and YAML digest are stamped on the policy-version snapshot. |
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image. Cosign-signed with SBOM and build provenance. |
 | ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
 | 🩺 | **Health Check + Watchdog** | `/health` endpoint with cached upstream reachability probes and an opt-in active Docker socket watchdog that logs state transitions. |
@@ -239,6 +243,10 @@ How sockguard stacks up against other Docker socket proxies:
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | ✅ (visibility + protected JSON redaction) |
 | Structured access logs | ❌ | ❌ | ✅ (JSON option) | ✅ (request + trace correlation) |
 | Dedicated audit log schema | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
+| Rate limits / concurrency caps | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
+| Rollout modes (audit/warn/enforce) | ❌ | ❌ | ❌ | ✅ (per-profile shadow + would_deny audit) |
+| Hot-reload + policy versioning | ❌ | ❌ | ❌ | ✅ (fsnotify + SIGHUP, `/admin/policy/version`) |
+| Signed policy bundles | ❌ | ❌ | ❌ | ✅ (sigstore keyed + keyless) |
 | YAML config | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ✅ |
 
@@ -430,6 +438,7 @@ clients:
         - 501
   profiles:
     - name: readonly
+      mode: enforce        # enforce | warn | audit (default enforce); warn/audit emit would_deny audits and let traffic pass
       response:
         visible_resource_labels:
           - com.sockguard.visible=true
@@ -497,6 +506,53 @@ clients:
 `limits.rate.endpoint_costs` weights specific endpoints higher than the default 1 token per request, letting operators apply tighter budgets to expensive Docker operations (image pull, build, exec) without lowering the base rate for every endpoint. Each entry has a `path` glob (same dialect as filter rules, matched against the normalized path), an optional case-insensitive `methods` list, and a `cost` (`>= 1`, `<= effective burst`). Rules evaluate in declaration order — first match wins — and unmatched requests fall back to `cost: 1`. Cost-weighted denials carry the `cost` attribute on the sampled audit record alongside the existing rate-limit fields. Startup validation rejects empty paths, malformed globs, costs below `1`, and costs that exceed effective burst (otherwise the bucket could never serve the request).
 
 `clients.global_concurrency.max_inflight` plus per-profile `limits.priority` (`low`, `normal`, `high`; default `normal`) enables a system-wide priority-aware fairness gate so a noisy low-priority profile cannot starve unrelated higher-priority ones. When `global_concurrency` is set, each request is admitted only while total in-flight is below its priority's share of the global cap: `low=50%`, `normal=80%`, `high=100%`. Denials return `429` with `{"reason":"priority_floor"}` and feed a new `priority_floor` reason value into `sockguard_throttle_total` and the sampled throttle audit. Per-profile `concurrency.max_inflight` still applies on top; the global gate runs first, so a denied low-priority request never occupies a per-profile slot. Profiles without `limits.priority` configured default to `normal`, so a single client cannot evade the gate by skipping per-profile config.
+
+#### Dynamic policy delivery (v0.8.0)
+
+Sockguard ships a four-piece control plane so operators can stage, distribute, and verify policy changes without a restart.
+
+```yaml
+clients:
+  profiles:
+    - name: ci-agent
+      mode: warn            # enforce | warn | audit — see "Rollout modes" below
+      rules: [...]
+
+reload:
+  enabled: true             # fsnotify watch on the config file + SIGHUP trigger
+  debounce_ms: 250          # coalesce burst-of-events single saves into one reload
+
+admin:
+  enabled: true             # POST /admin/validate (CI gate) + GET /admin/policy/version
+  path: /admin/validate
+  max_body_bytes: 524288
+  policy_version_path: /admin/policy/version
+  listen:                   # OPTIONAL — when set, admin endpoints move off the main listener
+    socket: /run/sockguard/admin.sock
+    socket_mode: "0600"
+
+policy_bundle:
+  enabled: true                                    # gate the YAML on a cosign signature
+  signature_path: /etc/sockguard/sockguard.bundle  # cosign sign-blob --bundle output
+  require_rekor_inclusion: true
+  allowed_signing_keys:
+    - pem: |
+        -----BEGIN PUBLIC KEY-----
+        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...
+        -----END PUBLIC KEY-----
+  # OR keyless (Fulcio identities — issuer must be exact, subject is a Go regexp):
+  # allowed_keyless:
+  #   - issuer: https://token.actions.githubusercontent.com
+  #     subject_pattern: '^https://github\.com/example/ops/\.github/workflows/.+@.+$'
+```
+
+**Rollout modes.** `clients.profiles[*].mode` defaults to `enforce` (default-deny still returns `403`). In `warn` and `audit`, every deny gate — filter rules and the request-body inspectors, ownership label isolation, client-ACL label policy, and the three rate-limit / concurrency / priority throttle gates — instead lets the request through and stamps `decision=would_deny` on the structured audit record. The deny / throttle counters carry a new `mode` label so dashboards compare blocked vs. would-have-been-blocked volume side by side. Pre-auth admission gates (CIDR allowlist, identity-lookup failures) stay `enforce` regardless.
+
+**Hot-reload.** When `reload.enabled: true`, sockguard watches the loaded config via fsnotify (Linux inotify, macOS kqueue) and accepts `SIGHUP`. A reload runs the full validator + rule compiler against the new bytes and atomically swaps the running handler chain on success. Failures preserve the running policy and emit a structured warning. A rebuild that would mutate an immutable field — `listen.*`, `upstream.socket`, `log.*`, `health.*`, `metrics.*`, `admin.*`, or the `policy_bundle.*` trust material — is rejected. `sockguard_config_reload_total{result="ok|reject_load|reject_validation|reject_immutable|reject_signature"}` and `sockguard_config_reload_last_success_timestamp_seconds` surface the outcome. With `reload.enabled: true`, `SIGHUP` triggers a reload instead of terminating the process.
+
+**Admin API.** `POST /admin/validate` (opt-in via `admin.enabled: true`) accepts a YAML body and returns `{ok, errors, rules, profiles, compat_active}` — the same verdict the offline `sockguard validate` command would, suitable for a CI gate (`curl --data-binary @candidate.yaml http://sockguard/admin/validate`). `GET /admin/policy/version` returns the active policy generation `{version, loaded_at, rules, profiles, source: "startup"|"reload", config_sha256, bundle_source?, bundle_signer?, bundle_digest?}` and the same counter is mirrored as `sockguard_policy_version`. By default both endpoints ride the main listener (and inherit its CIDR allowlist + mTLS + rate-limit posture). Set `admin.listen.socket` or `admin.listen.address` (with the same hardened socket-mode / mTLS / SPKI-pin posture as `listen.*`) to move them onto a dedicated `http.Server` firewalled off from Docker-API consumers.
+
+**Signed policy bundles.** When `policy_bundle.enabled: true`, sockguard treats the on-disk YAML as untrusted until a cosign sigstore bundle confirms it. Operators sign the YAML with `cosign sign-blob --bundle <out.bundle> <cfg.yaml>` and point sockguard at the resulting `<out.bundle>` via `policy_bundle.signature_path`. Trust paths reuse the same sigstore-go stack already powering image trust — `allowed_signing_keys[]` holds PEM-encoded ECDSA/RSA/ed25519 public keys; `allowed_keyless[]` holds `(issuer, subject_pattern)` constraints for Fulcio keyless verification with `require_rekor_inclusion` (default `true`) demanding a transparency-log entry. Verification runs at startup before any rule compiles — a missing, malformed, or wrong-key bundle aborts the process — and again on every reload, where a failure rejects the reload with `reject_signature` and never touches the running policy. The verified signer (`keyed:<spki-fingerprint>` or `keyless:<issuer>:<san>`) and YAML SHA-256 digest are stamped on the policy-version snapshot so `GET /admin/policy/version` answers "who signed the policy I'm running, and over what bytes?". Trust material is reload-immutable so a SIGHUP cannot widen the set of accepted signers; only `signature_path` is reload-mutable.
 
 Set `ownership.owner` to turn on per-proxy resource ownership isolation. Sockguard will add `ownership.label_key=ownership.owner` labels to `POST /containers/create`, `/networks/create`, `/volumes/create`, `/services/create`, `/services/*/update`, `/secrets/create`, `/configs/create`, `/nodes/*/update`, and `/swarm/update`, add the same label to `POST /build`, inject owner label filters into list/prune/events requests including `/services`, `/tasks`, `/secrets`, `/configs`, and `/nodes` (using Docker's `node.label` filter key there), and deny direct access to owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state from some other proxy identity. Service writes are stamped both at `Labels` and `TaskTemplate.ContainerSpec.Labels` so downstream tasks inherit the same owner identity. Unlabeled nodes and swarm state are fail-closed on reads once ownership is enabled, but they can still be claimed through `/nodes/*/update` and `/swarm/update` because Sockguard stamps the current owner label onto those update bodies before forwarding. Unowned images are still readable by default so shared base images can be pulled and inspected without relabeling.
 
@@ -567,7 +623,7 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
 | **0.5.0** | Operator observability — Prometheus `/metrics`, active upstream socket watchdog, trace/log correlation without an OTLP exporter | ✅ shipped |
 | **0.6.0** | Secure container enforcement — no-new-privileges, non-root, readonly rootfs, drop-all-capabilities and CapAdd allowlist rails on `POST /containers/create`, memory / CPU / PIDs limit requirements, seccomp + AppArmor profile allowlists, host-userns default-deny, required `Config.Labels`; default-deny for `CapAdd` and `UsernsMode=host`; structured `allowed_device_cgroup_rules` allowlist for cgroup device class policy; structured `allowed_device_requests` allowlist for GPU/device-request passthrough (driver, capability subsets, max_count); cosign signature verification (`image_trust`) with keyed (PEM public keys) and keyless (Fulcio + Rekor) modes, warn/enforce semantics, and per-profile configurability. (Folded into the v0.7.0 release; no separate v0.6.0 tag was cut.) | ✅ shipped |
 | **0.7.0** | Abuse controls — per-client token-bucket rate limits, burst budgets, concurrency caps, per-endpoint cost weighting for expensive Docker operations, and a system-wide priority-aware fairness gate (`low`/`normal`/`high` profiles claim 50%/80%/100% of `clients.global_concurrency.max_inflight`) | ✅ shipped |
-| **0.8.0** | Dynamic policy delivery — signed bundles, long-poll/hot reload, audit/warn/enforce rollout modes, admin API, policy versioning | 🕒 planned |
+| **0.8.0** | Dynamic policy delivery — per-profile `audit/warn/enforce` rollout modes, opt-in `POST /admin/validate` CI gate, fsnotify+SIGHUP hot reload with immutable-field gate, monotonic policy versioning (`GET /admin/policy/version` + `sockguard_policy_version` gauge), optional dedicated admin listener (`admin.listen.*`), and cosign-signed policy bundles (`policy_bundle.*`, sigstore-go keyed + keyless verification at startup and reload) | ✅ shipped |
 
 <hr>
 
