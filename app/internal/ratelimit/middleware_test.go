@@ -666,3 +666,83 @@ func metaContext(r *http.Request, meta *logging.RequestMeta) context.Context {
 func withRolloutMode(r *http.Request, mode string) *http.Request {
 	return r.WithContext(logging.WithMeta(r.Context(), metaWithRolloutMode(mode)))
 }
+
+// ---------------------------------------------------------------------------
+// Global inflight gauge counts warn / audit pass-throughs.
+// ---------------------------------------------------------------------------
+
+// TestGlobalInflight_CountsPassThroughInWarnMode verifies that a request
+// denied by the priority floor under warn (or audit) rollout mode is still
+// counted in the global in-flight gauge for the duration of the request.
+// Without the fix, the gauge stayed at 0 during the pass-through, giving
+// operators misleading numbers when sizing a new global cap via dashboards.
+func TestGlobalInflight_CountsPassThroughInWarnMode(t *testing.T) {
+	for _, mode := range []string{"warn", "audit"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			// Use a GlobalInflightTracker directly so we can assert Current()
+			// while a request is in flight through the throttleHandler.
+			tracker := &GlobalInflightTracker{}
+
+			enter := make(chan struct{})
+			leave := make(chan struct{})
+
+			// Inner handler signals entry and blocks until the test releases it.
+			blocking := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				close(enter)
+				<-leave
+				w.WriteHeader(http.StatusOK)
+			})
+
+			reg := metrics.NewRegistry()
+			h := &throttleHandler{
+				logger:   newTestLogger(),
+				registry: reg,
+				compiled: map[string]*compiledProfile{
+					"scraper": {priority: PriorityLow},
+				},
+				// globalMax=1, low priority threshold = floor(1*0.5) = 0, so ANY
+				// in-flight request already exceeds the low floor and the gate denies.
+				globalTracker: tracker,
+				globalMax:     1,
+				resolve:       resolveProfileFn("scraper"),
+			}
+
+			meta := metaWithRolloutMode(mode)
+			req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+			req = req.WithContext(metaContext(req, meta))
+			rec := httptest.NewRecorder()
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				h.serve(rec, req, blocking)
+			}()
+
+			// Wait until the inner handler is executing — the pass-through
+			// request is in-flight at this point.
+			<-enter
+
+			// The global gauge MUST be 1 during the pass-through.
+			if got := tracker.Current(); got != 1 {
+				t.Errorf("mode=%s: global inflight during pass-through = %d, want 1", mode, got)
+			}
+
+			// Release the handler and wait for the goroutine to finish.
+			close(leave)
+			<-done
+
+			// After the request completes the gauge must return to 0.
+			if got := tracker.Current(); got != 0 {
+				t.Errorf("mode=%s: global inflight after completion = %d, want 0", mode, got)
+			}
+
+			// The request should have passed through (200) with a would_deny decision.
+			if rec.Code != http.StatusOK {
+				t.Errorf("mode=%s: expected 200 pass-through, got %d", mode, rec.Code)
+			}
+			if meta.Decision != logging.DecisionWouldDeny {
+				t.Errorf("mode=%s: expected decision=%q, got %q", mode, logging.DecisionWouldDeny, meta.Decision)
+			}
+		})
+	}
+}

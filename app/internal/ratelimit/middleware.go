@@ -387,8 +387,13 @@ func (h *throttleHandler) checkGlobalPriority(w http.ResponseWriter, r *http.Req
 		slog.Int64("global_max_inflight", h.globalMax),
 	)
 	if meta.AllowsPassThrough() {
+		// The request would be denied under enforce mode, but the profile is in
+		// warn / audit rollout posture so it must still reach upstream. We
+		// increment the global gauge anyway so operators can correctly observe
+		// real concurrency while sizing a new global cap from dashboard data.
+		release := h.globalTracker.AcquirePassThrough()
 		logging.SetWouldDenyWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", filter.NormalizePath)
-		return nil, true
+		return release, true
 	}
 	logging.SetDeniedWithCode(w, r, string(ReasonPriorityFloor), "priority floor exceeded", filter.NormalizePath)
 	_ = httpjson.Write(w, http.StatusTooManyRequests, ThrottleResponse{

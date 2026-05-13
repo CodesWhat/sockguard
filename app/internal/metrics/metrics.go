@@ -22,6 +22,16 @@ const contentTypePrometheusText = "text/plain; version=0.0.4; charset=utf-8"
 
 var defaultDurationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
+// prometheusLabelEscaper escapes the three characters that would break
+// Prometheus text-format label values: backslash, newline, and double-quote.
+// Hoisted to a package-level var so it is allocated once at init time rather
+// than once per labelValue call (observe calls labelValue 5+ times per request).
+var prometheusLabelEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	"\n", `\n`,
+	`"`, `\"`,
+)
+
 // Registry stores in-process Prometheus metrics for the proxy.
 type Registry struct {
 	activeRequests atomic.Int64
@@ -535,12 +545,7 @@ func formatBucket(bucket float64) string {
 }
 
 func labelValue(value string) string {
-	escaped := strings.NewReplacer(
-		`\`, `\\`,
-		"\n", `\n`,
-		`"`, `\"`,
-	).Replace(value)
-	return `"` + escaped + `"`
+	return `"` + prometheusLabelEscaper.Replace(value) + `"`
 }
 
 func decisionLabel(meta *logging.RequestMeta, status int) string {

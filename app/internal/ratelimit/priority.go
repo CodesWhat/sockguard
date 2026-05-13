@@ -124,6 +124,16 @@ func (t *GlobalInflightTracker) Acquire(p Priority, globalMax int64) (ok bool, c
 	}
 }
 
+// AcquirePassThrough unconditionally increments the global in-flight counter
+// and returns a release function. It is used for requests that were denied by
+// the priority gate but are allowed to pass through under warn / audit rollout
+// mode. The gauge must reflect the real concurrency during staged rollouts so
+// operators can correctly size the global cap from dashboard data.
+func (t *GlobalInflightTracker) AcquirePassThrough() func() {
+	t.current.Add(1)
+	return t.Release
+}
+
 // Release decrements the global in-flight counter. Safe to call multiple
 // times only as paired releases for successful Acquire calls; underflow is
 // clamped at zero to guard against bookkeeping errors.
