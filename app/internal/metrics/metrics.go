@@ -30,13 +30,19 @@ type Registry struct {
 
 	startedAt time.Time
 
+	// inflight tracks current per-profile in-flight request counts under a
+	// concurrency cap. Kept off the shared `mu` mutex because SetInflight is
+	// called twice per admitted request on the rate-limit hot path, while
+	// `mu` also serializes request/deny/duration/throttle observations. Using
+	// per-profile *atomic.Int64 lets SetInflight be lock-free under contention.
+	inflight sync.Map // map[string]*atomic.Int64
+
 	mu        sync.Mutex
 	requests  map[requestLabels]uint64
 	denies    map[denyLabels]uint64
 	duration  map[durationLabels]*histogram
 	upstream  map[upstreamWatchdogLabels]uint64
 	throttles map[throttleLabels]uint64
-	inflight  map[string]int64 // profile → current inflight count
 }
 
 type requestLabels struct {
@@ -85,7 +91,6 @@ func NewRegistry() *Registry {
 		duration:  make(map[durationLabels]*histogram),
 		upstream:  make(map[upstreamWatchdogLabels]uint64),
 		throttles: make(map[throttleLabels]uint64),
-		inflight:  make(map[string]int64),
 	}
 }
 
@@ -101,13 +106,14 @@ func (r *Registry) ObserveThrottle(profile, reason string) {
 }
 
 // SetInflight updates the current in-flight count gauge for a profile.
+// Lock-free: per-profile counters are stored in a sync.Map keyed by profile
+// name; the call writes one atomic.Int64 without touching the registry mutex.
 func (r *Registry) SetInflight(profile string, count int64) {
 	if r == nil {
 		return
 	}
-	r.mu.Lock()
-	r.inflight[profile] = count
-	r.mu.Unlock()
+	val, _ := r.inflight.LoadOrStore(profile, &atomic.Int64{})
+	val.(*atomic.Int64).Store(count)
 }
 
 // Middleware records one metrics observation for each completed HTTP request.
@@ -228,11 +234,12 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	durations := cloneHistograms(r.duration)
 	upstream := cloneMap(r.upstream)
 	throttles := cloneMap(r.throttles)
-	inflight := cloneInflight(r.inflight)
 	active := r.activeRequests.Load()
 	upstreamKnown := r.upstreamKnown.Load()
 	upstreamUp := r.upstreamUp.Load()
 	r.mu.Unlock()
+
+	inflight := snapshotInflight(&r.inflight)
 
 	fmt.Fprintln(w, "# HELP sockguard_build_info Sockguard build metadata exposed as constant labels.")
 	fmt.Fprintln(w, "# TYPE sockguard_build_info gauge")
@@ -304,11 +311,14 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	}
 }
 
-func cloneInflight(src map[string]int64) map[string]int64 {
-	dst := make(map[string]int64, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
+// snapshotInflight reads the lock-free inflight sync.Map into a plain map for
+// stable sorted iteration during Prometheus exposition.
+func snapshotInflight(m *sync.Map) map[string]int64 {
+	dst := make(map[string]int64)
+	m.Range(func(key, value any) bool {
+		dst[key.(string)] = value.(*atomic.Int64).Load()
+		return true
+	})
 	return dst
 }
 
