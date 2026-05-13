@@ -17,7 +17,7 @@ import (
 
 // profileReleaser is a zero-alloc handle for releasing a per-profile
 // concurrency slot. It is pooled via profileReleaserPool so the per-request
-// cost of an admitted concurrency-capped request amortises to ~0.
+// cost of an admitted concurrency-capped request amortizes to ~0.
 //
 // Callers must call Done() exactly once and then return the struct to the
 // pool via put(). The idiomatic pattern is:
@@ -467,7 +467,7 @@ func (h *throttleHandler) checkGlobalPriority(w http.ResponseWriter, r *http.Req
 // when there is no cap, and (nil, false) on denial.
 //
 // The returned *profileReleaser is drawn from a sync.Pool so the per-request
-// cost of an admitted request under a concurrency cap amortises to ~0.
+// cost of an admitted request under a concurrency cap amortizes to ~0.
 func (h *throttleHandler) checkProfileConcurrency(w http.ResponseWriter, r *http.Request, cp *compiledProfile, clientID, normPath string) (rel *profileReleaser, ok bool) {
 	if cp == nil || cp.tracker == nil {
 		return nil, true

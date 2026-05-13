@@ -16,7 +16,7 @@ import (
 //   - empty struct (disabled path)
 //   - both keyed and keyless empty (no-trust-entries error)
 func FuzzBuildConfig(f *testing.F) {
-	// Seed: valid PEM block (synthesised — fuzz engine will mutate it).
+	// Seed: valid PEM block (synthesized — fuzz engine will mutate it).
 	validPEMSeed := string(pem.EncodeToMemory(&pem.Block{
 		Type:  "PUBLIC KEY",
 		Bytes: []byte("fake-der-bytes"),
