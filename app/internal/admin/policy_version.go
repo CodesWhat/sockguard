@@ -27,8 +27,11 @@ type PolicySnapshot struct {
 	CompatActive bool      `json:"compat_active"`
 	Source       string    `json:"source"` // "startup" or "reload"
 	ConfigSHA256 string    `json:"config_sha256,omitempty"`
-	// BundleSource is the on-disk path to the sigstore bundle that vouched
-	// for the running policy, or "" when policy_bundle.enabled=false.
+	// BundleSource is the basename (filename only, no directory component) of
+	// the sigstore bundle file that vouched for the running policy, or ""
+	// when policy_bundle.enabled=false. The basename is sufficient to tell
+	// operators which bundle was loaded without leaking the host's filesystem
+	// layout to Docker API callers on the main listener.
 	BundleSource string `json:"bundle_source,omitempty"`
 	// BundleSigner is a stable identifier of the accepting trust path:
 	// "keyed:<spki-fingerprint>" or "keyless:<issuer>:<san-pattern>".
@@ -113,7 +116,7 @@ func NewPolicyVersionInterceptor(opts PolicyVersionOptions) func(http.Handler) h
 		opts.Logger = slog.Default()
 	}
 	if opts.Source == nil {
-		return serviceUnavailableMiddleware("admin policy versioner not configured", opts.Logger)
+		return serviceUnavailableMiddleware(opts.Path, "admin policy versioner not configured", opts.Logger)
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

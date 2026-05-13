@@ -77,7 +77,9 @@ func NewValidateInterceptor(opts Options) func(http.Handler) http.Handler {
 		// A nil validator is a programmer error; fail closed at construction
 		// time would be ideal, but the existing layer plumbing returns a
 		// middleware unconditionally — so degrade safely to a 503 instead.
-		return serviceUnavailableMiddleware("admin validator not configured", opts.Logger)
+		// The 503 is scoped to opts.Path so unrelated Docker API traffic
+		// still flows through to next.
+		return serviceUnavailableMiddleware(opts.Path, "admin validator not configured", opts.Logger)
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -129,9 +131,17 @@ func handlePOST(w http.ResponseWriter, r *http.Request, opts Options) {
 	}
 }
 
-func serviceUnavailableMiddleware(reason string, logger *slog.Logger) func(http.Handler) http.Handler {
+// serviceUnavailableMiddleware returns a middleware that responds 503 for
+// requests whose path matches path and passes all other requests through to
+// next. Scoping the 503 to a specific path prevents a misconfigured admin
+// endpoint from blocking unrelated Docker API traffic on the same listener.
+func serviceUnavailableMiddleware(path, reason string, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != path {
+				next.ServeHTTP(w, r)
+				return
+			}
 			logger.ErrorContext(r.Context(), "admin endpoint misconfigured", "reason", reason)
 			_ = httpjson.Write(w, http.StatusServiceUnavailable, httpjson.ErrorResponse{Message: reason})
 		})

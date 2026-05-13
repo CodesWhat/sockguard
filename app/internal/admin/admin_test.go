@@ -3,6 +3,7 @@ package admin
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -165,6 +166,100 @@ func TestInterceptorSurfacesCompatActive(t *testing.T) {
 	if !decodeResponse(t, rec.Body.Bytes()).CompatActive {
 		t.Fatalf("compat_active = false, want true")
 	}
+}
+
+func TestNilValidatorMiddleware_FallsThroughForUnrelatedPaths(t *testing.T) {
+	// When Validate is nil the middleware must NOT 503 every request — only
+	// requests to the configured admin path should fail closed. Docker API
+	// traffic hitting an unrelated path must still reach next.
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := NewValidateInterceptor(Options{Path: testPath, Validate: nil})(next)
+
+	// Unrelated path → should fall through to next.
+	req := httptest.NewRequest(http.MethodPost, "/foo", nil)
+	rec := newRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Fatalf("next handler not called for unrelated path when Validate is nil")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unrelated path status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Admin path → should still return 503.
+	called = false
+	req2 := httptest.NewRequest(http.MethodPost, testPath, nil)
+	rec2 := newRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if called {
+		t.Fatalf("next handler must not be called for admin path when Validate is nil")
+	}
+	if rec2.Code != http.StatusServiceUnavailable {
+		t.Fatalf("admin path status = %d, want 503 when Validate is nil", rec2.Code)
+	}
+}
+
+func TestValidatePOSTAcceptsAnyContentType(t *testing.T) {
+	// The endpoint uses config.LoadBytes which handles both YAML and JSON
+	// (YAML is a superset of JSON). We intentionally do NOT gate on
+	// Content-Type so operators can POST application/json without friction;
+	// this test locks in that behavior.
+	handler := NewValidateInterceptor(Options{Path: testPath, Validate: newOKValidator()})(noopHandler())
+
+	req := httptest.NewRequest(http.MethodPost, testPath, strings.NewReader("rules: []\n"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := newRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for application/json Content-Type", rec.Code)
+	}
+}
+
+func TestValidatePOSTConcurrentRequests(t *testing.T) {
+	// Fire 10 goroutines concurrently to detect data races and goroutine-
+	// safety regressions in the validate handler.
+	const workers = 10
+	handler := NewValidateInterceptor(Options{
+		Path: testPath,
+		Validate: func(_ []byte) ValidateResponse {
+			return ValidateResponse{OK: true, Rules: 1}
+		},
+	})(noopHandler())
+
+	errs := make(chan string, workers)
+	done := make(chan struct{})
+	start := make(chan struct{})
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			<-start
+			body := strings.NewReader("rules: []\n")
+			req := httptest.NewRequest(http.MethodPost, testPath, body)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				errs <- fmt.Sprintf("status = %d, want 200", rec.Code)
+			} else {
+				errs <- ""
+			}
+		}()
+	}
+	close(start)
+	go func() {
+		for i := 0; i < workers; i++ {
+			<-errs
+		}
+		close(done)
+	}()
+	<-done
 }
 
 func noopHandler() http.Handler {

@@ -213,3 +213,69 @@ func TestPolicyVersionInterceptorReturns503WhenSourceNil(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
+
+func TestNilPolicyVersionSource_FallsThroughForUnrelatedPaths(t *testing.T) {
+	// When Source is nil the middleware must NOT 503 every request — only
+	// requests to the configured policy-version path should fail closed.
+	// Docker API traffic on an unrelated path must still reach next.
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := NewPolicyVersionInterceptor(PolicyVersionOptions{
+		Path:   testPolicyVersionPath,
+		Source: nil,
+	})(next)
+
+	// Unrelated path → must fall through to next.
+	req := httptest.NewRequest(http.MethodGet, "/foo", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if !called {
+		t.Fatalf("next handler not called for unrelated path when Source is nil")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unrelated path status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Policy-version path → still must return 503.
+	called = false
+	req2 := httptest.NewRequest(http.MethodGet, testPolicyVersionPath, nil)
+	rec2 := httptest.NewRecorder()
+	handler.ServeHTTP(rec2, req2)
+
+	if called {
+		t.Fatalf("next must not be called for policy-version path when Source is nil")
+	}
+	if rec2.Code != http.StatusServiceUnavailable {
+		t.Fatalf("policy-version path status = %d, want 503 when Source is nil", rec2.Code)
+	}
+}
+
+func TestPolicySnapshot_BundleSourceIsBasenameOnly(t *testing.T) {
+	// BundleSource must be the file basename only — no directory component —
+	// so that GET /admin/policy/version does not leak the host filesystem
+	// layout to Docker API callers.
+	snap := PolicySnapshot{
+		Version:      1,
+		Source:       "startup",
+		BundleSource: "sockguard.bundle",
+	}
+
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	var got PolicySnapshot
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	if got.BundleSource != "sockguard.bundle" {
+		t.Fatalf("BundleSource = %q, want %q", got.BundleSource, "sockguard.bundle")
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -144,7 +145,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		ConfigSHA256: policyConfigHash(cfg),
 	}
 	if bundleResult != nil {
-		initialSnapshot.BundleSource = cfg.PolicyBundle.SignaturePath
+		initialSnapshot.BundleSource = filepath.Base(cfg.PolicyBundle.SignaturePath)
 		initialSnapshot.BundleSigner = bundleResult.Signer
 		initialSnapshot.BundleDigest = bundleResult.DigestHex
 	}
@@ -320,10 +321,6 @@ func startAdminServer(
 	return adminServer, adminErrCh, stop, nil
 }
 
-func buildServeHandler(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
-	return buildServeHandlerWithRuntime(cfg, logger, auditLogger, rules, deps, newServeRuntime(cfg, logger, deps))
-}
-
 func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime) http.Handler {
 	handler, _ := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, nil)
 	return handler
@@ -432,11 +429,6 @@ func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handl
 	return proxy.NewWithOptions(cfg.Upstream.Socket, logger, proxy.Options{
 		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
 	})
-}
-
-func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy) []serveHandlerLayer {
-	layers, _ := buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, newServeRuntime(cfg, logger, deps), nil)
-	return layers
 }
 
 func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy, runtime *serveRuntime, versioner *admin.PolicyVersioner) ([]serveHandlerLayer, func()) {
@@ -1147,6 +1139,12 @@ func isAddrInUse(err error) bool {
 }
 
 // healthInterceptor short-circuits health check requests before they hit the filter.
+//
+// /health intentionally runs before the CIDR allowlist so external uptime
+// probes (Kubernetes liveness, load-balancer health checks) can reach it
+// without being added to clients.allowed_cidrs. Treat health as
+// always-public. Operators who need authenticated health checks should disable
+// health.enabled and use /metrics behind the listener's mTLS instead.
 func healthInterceptor(path string, healthHandler http.Handler, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == path {

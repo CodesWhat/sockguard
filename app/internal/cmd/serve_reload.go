@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -201,7 +202,7 @@ func (c *reloadCoordinator) reload() {
 			ConfigSHA256: policyConfigHash(newCfg),
 		}
 		if bundleResult != nil {
-			snap.BundleSource = newCfg.PolicyBundle.SignaturePath
+			snap.BundleSource = filepath.Base(newCfg.PolicyBundle.SignaturePath)
 			snap.BundleSigner = bundleResult.Signer
 			snap.BundleDigest = bundleResult.DigestHex
 		}
