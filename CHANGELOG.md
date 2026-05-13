@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-13
+
 ### Added
 
 - Added `request_body.container_create.allowed_device_requests` — a structured opt-in for `HostConfig.DeviceRequests` that lets operators allowlist specific device request drivers (e.g. nvidia, amd) with fine-grained capability and count controls, without granting the blanket `allow_device_requests: true` escape hatch. Each allowlist entry specifies a required `driver` field (case-insensitive exact match), an `allowed_capabilities` list of capability sets (each capability set in the request must be a subset of at least one allowlisted set), and an optional `max_count` bound (`-1` = all devices; request `Count: -1` is only permitted when `max_count` is also `-1`). Driver names and capability strings are canonicalized at load time (lowercased, capability sets sorted and deduplicated). Entries with an empty driver are skipped. Malformed requests (empty Driver field) are denied with a 400-style message. If `allow_device_requests: true` is set, the structured allowlist is bypassed entirely (escape hatch wins). If neither is set, all `HostConfig.DeviceRequests` are denied by default (preserving existing behavior).
