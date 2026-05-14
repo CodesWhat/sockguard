@@ -708,6 +708,64 @@ func TestRunServe_ShutdownErrorLogs(t *testing.T) {
 	}
 }
 
+// TestRunServe_AdminShutdownErrorLogs pins the CONDITIONALS_NEGATION mutant at
+// serve.go:266 (`err != nil` → `==` on the admin shutdownServer call). The
+// mutant would silently swallow a failed admin server graceful-shutdown.
+// We enable the admin listener, force shutdownServer to return an error only
+// when invoked with the admin *http.Server (i.e. the first call — serve.go
+// shuts admin down before the regular server), and assert the structured
+// "admin shutdown error" record is in the collected log.
+func TestRunServe_AdminShutdownErrorLogs(t *testing.T) {
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		cfg := testServeConfig()
+		cfg.Listen.Address = "127.0.0.1:0"
+		cfg.Admin.Enabled = true
+		cfg.Admin.Listen.Address = "127.0.0.1:0"
+		return cfg, nil
+	}
+
+	collector := &testhelp.CollectingHandler{}
+	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
+		return collector.Logger(), nil, nil
+	}
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		return stubCompiledRules(), nil
+	}
+	deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return &serveTestConn{}, nil
+	}
+	deps.createServeListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.createAdminListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {}
+	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) { c <- syscall.SIGINT }
+
+	// serve.go shuts the admin server down first (line 266), then the regular
+	// server (line 270). Discriminate by call order so we only return an
+	// error for the admin call — that isolates the kill to serve.go:266 and
+	// avoids triggering the regular-shutdown "shutdown error" log too.
+	var shutdownCalls int
+	deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
+		shutdownCalls++
+		if shutdownCalls == 1 {
+			return errors.New("admin shutdown boom")
+		}
+		return nil
+	}
+	deps.removePath = func(string) error { return nil }
+
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
+		t.Fatalf("runServeWithDeps() error = %v", err)
+	}
+	if !collector.HasMessage("admin shutdown error") {
+		t.Fatalf("expected 'admin shutdown error' log; records: %#v", collector.Records())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // serve.go: CONDITIONALS_NEGATION: runtime.health != nil
 // withHealth should use runtime.health when set, otherwise fall back to a
