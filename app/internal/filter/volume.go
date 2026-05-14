@@ -55,7 +55,7 @@ func (p volumePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 		if logger != nil {
 			logger.DebugContext(r.Context(), "volume create request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "volume create denied: request body could not be inspected", nil
 	}
 
 	if driver := strings.TrimSpace(req.Driver); driver != "" && !strings.EqualFold(driver, "local") && !p.allowCustomDrivers {

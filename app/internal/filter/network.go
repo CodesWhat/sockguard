@@ -139,7 +139,7 @@ func (p networkPolicy) inspectCreate(logger *slog.Logger, r *http.Request, body 
 	var req networkCreateRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		logDeferredNetworkValidation(logger, r, err)
-		return "", nil
+		return "network create denied: request body could not be inspected", nil
 	}
 
 	if driver := strings.TrimSpace(req.Driver); driver != "" && !isBuiltinNetworkDriver(driver) && !p.allowCustomDrivers {
@@ -190,7 +190,7 @@ func (p networkPolicy) inspectConnect(logger *slog.Logger, r *http.Request, body
 	var req networkConnectRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		logDeferredNetworkValidation(logger, r, err)
-		return "", nil
+		return "network connect denied: request body could not be inspected", nil
 	}
 
 	if p.allowEndpointConfig || req.EndpointConfig == nil {
@@ -216,7 +216,7 @@ func (p networkPolicy) inspectDisconnect(logger *slog.Logger, r *http.Request, b
 	var req networkDisconnectRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		logDeferredNetworkValidation(logger, r, err)
-		return "", nil
+		return "network disconnect denied: request body could not be inspected", nil
 	}
 
 	if !p.allowDisconnectForce && req.Force {

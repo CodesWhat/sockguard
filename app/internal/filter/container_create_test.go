@@ -81,6 +81,7 @@ func TestContainerCreatePolicyInspectSkipsBodyWhenPermissive(t *testing.T) {
 		AllowHostPID:           true,
 		AllowHostIPC:           true,
 		AllowHostUserNS:        true,
+		AllowSysctls:           true,
 		AllowedBindMounts:      []string{"/"},
 		AllowAllDevices:        true,
 		AllowDeviceRequests:    true,
@@ -1184,6 +1185,51 @@ func TestImageTrust_AllowsAllBodiesFalseWhenVerifierPresent(t *testing.T) {
 	}
 	if policy.allowsAllContainerCreateBodies() {
 		t.Fatal("allowsAllContainerCreateBodies must be false when imageTrustVerifier is set")
+	}
+}
+
+func TestContainerCreatePolicySysctls(t *testing.T) {
+	tests := []struct {
+		name         string
+		opts         ContainerCreateOptions
+		body         string
+		wantReason   string
+	}{
+		{
+			name:       "sysctls present AllowSysctls=false → deny",
+			opts:       ContainerCreateOptions{},
+			body:       `{"HostConfig":{"Sysctls":{"net.ipv4.ip_forward":"1"}}}`,
+			wantReason: "container create denied: setting sysctls is not allowed",
+		},
+		{
+			name: "sysctls present AllowSysctls=true → allow",
+			opts: ContainerCreateOptions{AllowSysctls: true},
+			body: `{"HostConfig":{"Sysctls":{"net.ipv4.ip_forward":"1"}}}`,
+		},
+		{
+			name: "sysctls absent → allow (unaffected)",
+			opts: ContainerCreateOptions{},
+			body: `{"HostConfig":{}}`,
+		},
+		{
+			name: "empty sysctls map → allow (unaffected)",
+			opts: ContainerCreateOptions{},
+			body: `{"HostConfig":{"Sysctls":{}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newContainerCreatePolicy(tt.opts)
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+			reason, err := policy.inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
 	}
 }
 

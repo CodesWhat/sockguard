@@ -192,7 +192,7 @@ func TestServiceInspectWrapsBodyReadError(t *testing.T) {
 }
 
 func TestServiceInspectMalformedJSONWithLogger(t *testing.T) {
-	// Exercises the logger debug branch when JSON decode fails.
+	// Exercises the logger debug branch when JSON decode fails; must deny (fail-closed).
 	policy := newServicePolicy(ServiceOptions{AllowOfficial: true})
 	logs := &collectingHandler{}
 	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader("{bad json}"))
@@ -200,8 +200,9 @@ func TestServiceInspectMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	const wantReason = "service denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))

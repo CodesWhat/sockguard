@@ -124,23 +124,17 @@ func TestContainerUpdateOversizedBodyReturnsRequestEntityTooLarge(t *testing.T) 
 	}
 }
 
-func TestContainerUpdateInvalidJSONDefersToDockerAndPreservesBody(t *testing.T) {
+func TestContainerUpdateInvalidJSONDeniesFailClosed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/containers/abc/update", strings.NewReader("{"))
 
 	reason, err := newContainerUpdatePolicy(ContainerUpdateOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty", reason)
-	}
-
-	body, err := io.ReadAll(req.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	if string(body) != "{" {
-		t.Fatalf("body = %q, want %q", string(body), "{")
+	// Malformed JSON must be denied (fail-closed).
+	const wantReason = "container update denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 }
 
@@ -208,8 +202,10 @@ func TestContainerUpdateInvalidJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty", reason)
+	// Malformed JSON must be denied (fail-closed).
+	const wantReason = "container update denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	if records := logs.snapshot(); len(records) != 1 {
 		t.Fatalf("log records = %d, want 1", len(records))

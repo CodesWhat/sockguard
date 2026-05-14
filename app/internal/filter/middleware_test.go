@@ -1213,28 +1213,23 @@ func TestMiddlewareDeniesMalformedContainerCreateBody(t *testing.T) {
 	}
 }
 
-func TestMiddlewareLogsDebugForMalformedExecBody(t *testing.T) {
+func TestMiddlewareDeniesOnMalformedExecBody(t *testing.T) {
 	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/exec", Action: ActionAllow, Index: 0})
 	if err != nil {
 		t.Fatalf("CompileRule failed: %v", err)
 	}
 
 	logs := &collectingHandler{}
-	reached := false
 	handler := verboseMiddleware([]*CompiledRule{rule}, slog.New(logs))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		reached = true
-		w.WriteHeader(http.StatusNoContent)
+		t.Fatal("expected malformed exec body to be denied, not reach Docker")
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", strings.NewReader(`{"Cmd":`))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if !reached {
-		t.Fatal("expected malformed exec body to pass through to Docker")
-	}
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 
 	records := logs.snapshot()

@@ -117,7 +117,7 @@ func (p execPolicy) inspectCreate(logger *slog.Logger, r *http.Request) (string,
 		if logger != nil {
 			logger.DebugContext(r.Context(), "exec request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "exec denied: request body could not be inspected", nil
 	}
 
 	command, err := decodeExecCommand(req.Cmd)

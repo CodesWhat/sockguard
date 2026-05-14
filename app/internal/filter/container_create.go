@@ -87,6 +87,10 @@ type ContainerCreateOptions struct {
 	AllowHostUserNS            bool
 	RequiredLabels             []string
 
+	// AllowSysctls permits setting kernel parameters via HostConfig.Sysctls.
+	// Default false: any non-empty Sysctls map is denied.
+	AllowSysctls bool
+
 	// ImageTrust configures cosign-backed signature verification.
 	ImageTrust ImageTrustOptions
 }
@@ -119,6 +123,7 @@ type containerCreatePolicy struct {
 	denyUnconfinedAppArmor     bool
 	allowHostUserNS            bool
 	requiredLabels             []string
+	allowSysctls               bool
 
 	// Image trust — non-nil when mode != off.
 	imageTrustVerifier imageVerifier
@@ -185,6 +190,7 @@ type containerCreateHostConfig struct {
 	CpuPeriod         int64                   `json:"CpuPeriod"`
 	CpuShares         int64                   `json:"CpuShares"`
 	PidsLimit         *int64                  `json:"PidsLimit"`
+	Sysctls           map[string]string       `json:"Sysctls"`
 }
 
 type containerCreateMount struct {
@@ -265,6 +271,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denyUnconfinedAppArmor:     opts.DenyUnconfinedAppArmor,
 		allowHostUserNS:            opts.AllowHostUserNS,
 		requiredLabels:             normalizeStringList(opts.RequiredLabels),
+		allowSysctls:               opts.AllowSysctls,
 	}
 
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so
@@ -365,6 +372,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if !p.allowHostUserNS && isHostNamespaceMode(createReq.HostConfig.UsernsMode) {
 		return "container create denied: host user namespace mode is not allowed", nil
 	}
+	if !p.allowSysctls && len(createReq.HostConfig.Sysctls) > 0 {
+		return "container create denied: setting sysctls is not allowed", nil
+	}
 	if denyReason := p.denyDeviceReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
@@ -435,6 +445,7 @@ func (p containerCreatePolicy) allowsAllContainerCreateBodies() bool {
 		p.allowHostPID &&
 		p.allowHostIPC &&
 		p.allowHostUserNS &&
+		p.allowSysctls &&
 		bindPathAllowed("/", p.allowedBindMounts) &&
 		(p.allowAllDevices || bindPathAllowed("/", p.allowedDevices)) &&
 		p.allowDeviceRequests &&

@@ -497,7 +497,7 @@ func TestNormalizeSwarmRemoteAddrsSkipsEmpty(t *testing.T) {
 }
 
 func TestSwarmInspectInitMalformedJSONWithLogger(t *testing.T) {
-	// Exercises the logger != nil branch in inspectInit decode error path.
+	// Exercises the logger != nil branch in inspectInit decode error path; must deny (fail-closed).
 	policy := newSwarmPolicy(SwarmOptions{})
 	logs := &collectingHandler{}
 	logger := slog.New(logs)
@@ -507,8 +507,9 @@ func TestSwarmInspectInitMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred to Docker)", reason)
+	const wantReason = "swarm init denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 
 	records := logs.snapshot()
@@ -530,8 +531,9 @@ func TestSwarmInspectJoinMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty", reason)
+	const wantReason = "swarm join denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	records := logs.snapshot()
 	if len(records) != 1 {
@@ -549,8 +551,9 @@ func TestSwarmInspectUpdateMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty", reason)
+	const wantReason = "swarm update denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	records := logs.snapshot()
 	if len(records) != 1 {

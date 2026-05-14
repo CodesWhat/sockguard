@@ -61,7 +61,7 @@ func (p containerUpdatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		if logger != nil {
 			logger.DebugContext(r.Context(), "container update request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "container update denied: request body could not be inspected", nil
 	}
 
 	objects := containerUpdatePolicyObjects(root)

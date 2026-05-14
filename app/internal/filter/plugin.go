@@ -162,7 +162,7 @@ func (p pluginPolicy) inspectPrivileges(logger *slog.Logger, r *http.Request, su
 		if logger != nil {
 			logger.DebugContext(r.Context(), "plugin privilege body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "plugin denied: request body could not be inspected", nil
 	}
 
 	return p.denyReasonForPrivileges(subject, privileges), nil

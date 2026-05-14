@@ -19,6 +19,12 @@ func referenceNormalizePath(p string) string {
 		if err == nil {
 			p = unescaped
 		}
+		// Second pass: handle double-encoded sequences like %252F → %2F → /.
+		if strings.IndexByte(p, '%') >= 0 {
+			if again, err2 := url.PathUnescape(p); err2 == nil {
+				p = again
+			}
+		}
 	}
 	return legacyVersionPrefix.ReplaceAllString(pathpkg.Clean(p), "/")
 }

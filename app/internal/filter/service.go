@@ -87,7 +87,7 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 		if logger != nil {
 			logger.DebugContext(r.Context(), "service request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "service denied: request body could not be inspected", nil
 	}
 
 	if !p.allowHostNetwork {

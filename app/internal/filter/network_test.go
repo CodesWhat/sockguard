@@ -3,7 +3,6 @@ package filter
 import (
 	"bytes"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -240,16 +239,10 @@ func TestNetworkInspectMalformedJSONPreservesBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("inspect() reason = %q, want empty", reason)
-	}
-
-	body, readErr := io.ReadAll(req.Body)
-	if readErr != nil {
-		t.Fatalf("ReadAll() error = %v", readErr)
-	}
-	if string(body) != "{" {
-		t.Fatalf("reset body = %q, want %q", string(body), "{")
+	// Malformed JSON must be denied (fail-closed).
+	const wantReason = "network create denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
 	}
 }
 
@@ -301,8 +294,10 @@ func TestNetworkInspectMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	// Malformed JSON must be denied (fail-closed).
+	const wantReason = "network create denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	if logs.Len() == 0 {
 		t.Fatal("log buffer is empty, want malformed JSON debug log")
@@ -361,8 +356,10 @@ func TestNetworkInspectConnectMalformedJSONDefers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty", reason)
+	// Malformed JSON must be denied (fail-closed).
+	const wantReason = "network connect denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 }
 
@@ -374,8 +371,10 @@ func TestNetworkInspectDisconnectMalformedJSONDefers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty", reason)
+	// Malformed JSON must be denied (fail-closed).
+	const wantReason = "network disconnect denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 }
 

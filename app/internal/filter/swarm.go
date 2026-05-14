@@ -119,7 +119,7 @@ func (p swarmPolicy) inspectInit(logger *slog.Logger, r *http.Request) (string, 
 		if logger != nil {
 			logger.DebugContext(r.Context(), "swarm init request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "swarm init denied: request body could not be inspected", nil
 	}
 
 	if !p.allowForceNewCluster && req.ForceNewCluster {
@@ -153,7 +153,7 @@ func (p swarmPolicy) inspectJoin(logger *slog.Logger, r *http.Request) (string, 
 		if logger != nil {
 			logger.DebugContext(r.Context(), "swarm join request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "swarm join denied: request body could not be inspected", nil
 	}
 
 	for _, remoteAddr := range req.RemoteAddrs {
@@ -185,7 +185,7 @@ func (p swarmPolicy) inspectUpdate(logger *slog.Logger, r *http.Request) (string
 		if logger != nil {
 			logger.DebugContext(r.Context(), "swarm update request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "swarm update denied: request body could not be inspected", nil
 	}
 
 	if !p.allowExternalCA && len(req.CAConfig.ExternalCAs) > 0 {

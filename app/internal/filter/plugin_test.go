@@ -1004,7 +1004,7 @@ func TestInspectPrivilegesIgnoresBodyCloseErrorAfterRead(t *testing.T) {
 }
 
 func TestInspectPrivilegesMalformedJSONWithLogger(t *testing.T) {
-	// Exercises lines 168-172: logger debug when privilege JSON cannot be decoded.
+	// Exercises the logger debug branch when privilege JSON cannot be decoded; must deny (fail-closed).
 	policy := newPluginPolicy(PluginOptions{})
 	logs := &collectingHandler{}
 	req := httptest.NewRequest(http.MethodPost, "/plugins/acme/json", strings.NewReader("{not json}"))
@@ -1012,8 +1012,9 @@ func TestInspectPrivilegesMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspectPrivileges() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	const wantReason = "plugin denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))

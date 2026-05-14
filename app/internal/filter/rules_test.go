@@ -127,6 +127,9 @@ func TestNormalizePath(t *testing.T) {
 		{"encoded dot-dot collapses after unescape", "/containers/%2e%2e/images/json", "/images/json"},
 		{"encoded version separator strips prefix", "/v1.45%2Fcontainers/json", "/containers/json"},
 		{"empty string", "", ""},
+		// Fix F-3: double-encoded sequences must be fully decoded.
+		{"double-encoded slash in containers/create", "%252Fcontainers%252Fcreate", "/containers/create"},
+		{"double-encoded path traversal collapses", "/containers%252F..%252Fimages/json", "/images/json"},
 	}
 
 	for _, tt := range tests {

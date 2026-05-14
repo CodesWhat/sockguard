@@ -696,8 +696,10 @@ func TestInspectCreateMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspectCreate() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	// Malformed JSON must be denied (fail-closed).
+	const wantReason = "exec denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))

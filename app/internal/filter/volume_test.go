@@ -54,16 +54,10 @@ func TestVolumeInspectHandlesMalformedJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("inspect() reason = %q, want empty", reason)
-	}
-
-	body, readErr := io.ReadAll(req.Body)
-	if readErr != nil {
-		t.Fatalf("ReadAll() error = %v", readErr)
-	}
-	if string(body) != "{" {
-		t.Fatalf("reset body = %q, want %q", string(body), "{")
+	// Malformed JSON must be denied (fail-closed).
+	const wantReason = "volume create denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
 	}
 }
 
@@ -169,7 +163,7 @@ func TestVolumeInspectWrapsBodyReadError(t *testing.T) {
 }
 
 func TestVolumeInspectMalformedJSONWithLogger(t *testing.T) {
-	// Exercises the logger debug branch when JSON decode fails (lines 55-57).
+	// Exercises the logger debug branch when JSON decode fails; must deny (fail-closed).
 	policy := newVolumePolicy(VolumeOptions{})
 	logs := &collectingHandler{}
 	req := httptest.NewRequest(http.MethodPost, "/volumes/create", strings.NewReader("{bad json}"))
@@ -177,8 +171,9 @@ func TestVolumeInspectMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	const wantReason = "volume create denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
