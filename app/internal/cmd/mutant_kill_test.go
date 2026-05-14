@@ -22,6 +22,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/health"
+	"github.com/codeswhat/sockguard/internal/testhelp"
 	"github.com/codeswhat/sockguard/internal/ui"
 )
 
@@ -324,9 +325,9 @@ func TestRunServe_DeferredListenerCloseNilErrorNoWarn(t *testing.T) {
 		return cfg, nil
 	}
 
-	var logBuf strings.Builder
+	collector := &testhelp.CollectingHandler{}
 	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
+		return collector.Logger(), nil, nil
 	}
 	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
@@ -349,8 +350,8 @@ func TestRunServe_DeferredListenerCloseNilErrorNoWarn(t *testing.T) {
 		t.Fatalf("runServeWithDeps() error = %v", err)
 	}
 
-	if strings.Contains(logBuf.String(), `"msg":"failed to close listener"`) {
-		t.Fatalf("unexpected listener-close warning when Close returns nil: %s", logBuf.String())
+	if collector.HasMessage("failed to close listener") {
+		t.Fatalf("unexpected listener-close warning when Close returns nil; records: %#v", collector.Records())
 	}
 }
 
@@ -366,9 +367,9 @@ func TestRunServe_DeferredListenerCloseUnexpectedErrorWarns(t *testing.T) {
 		return cfg, nil
 	}
 
-	var logBuf strings.Builder
+	collector := &testhelp.CollectingHandler{}
 	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
+		return collector.Logger(), nil, nil
 	}
 	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
@@ -396,8 +397,8 @@ func TestRunServe_DeferredListenerCloseUnexpectedErrorWarns(t *testing.T) {
 	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
 		t.Fatalf("runServeWithDeps() error = %v", err)
 	}
-	if !strings.Contains(logBuf.String(), `"msg":"failed to close listener"`) {
-		t.Fatalf("expected listener-close warning for unexpected error, got: %s", logBuf.String())
+	if !collector.HasMessage("failed to close listener") {
+		t.Fatalf("expected listener-close warning for unexpected error; records: %#v", collector.Records())
 	}
 }
 
@@ -509,9 +510,9 @@ func TestRunServe_SocketRemoveNotExistIgnored(t *testing.T) {
 		return cfg, nil
 	}
 
-	var logBuf strings.Builder
+	collector := &testhelp.CollectingHandler{}
 	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
+		return collector.Logger(), nil, nil
 	}
 	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
@@ -532,8 +533,8 @@ func TestRunServe_SocketRemoveNotExistIgnored(t *testing.T) {
 	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
 		t.Fatalf("runServeWithDeps() error = %v", err)
 	}
-	if strings.Contains(logBuf.String(), "remove socket error") {
-		t.Fatalf("unexpected remove-socket error log for ErrNotExist: %s", logBuf.String())
+	if collector.HasMessage("remove socket error") {
+		t.Fatalf("unexpected remove-socket error log for ErrNotExist; records: %#v", collector.Records())
 	}
 }
 
@@ -546,9 +547,9 @@ func TestRunServe_SocketRemoveOtherErrorLogs(t *testing.T) {
 		return cfg, nil
 	}
 
-	var logBuf strings.Builder
+	collector := &testhelp.CollectingHandler{}
 	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
+		return collector.Logger(), nil, nil
 	}
 	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
@@ -569,8 +570,8 @@ func TestRunServe_SocketRemoveOtherErrorLogs(t *testing.T) {
 	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
 		t.Fatalf("runServeWithDeps() error = %v", err)
 	}
-	if !strings.Contains(logBuf.String(), "remove socket error") {
-		t.Fatalf("expected remove socket error log, got: %s", logBuf.String())
+	if !collector.HasMessage("remove socket error") {
+		t.Fatalf("expected remove socket error log; records: %#v", collector.Records())
 	}
 }
 
