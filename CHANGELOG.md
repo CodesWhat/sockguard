@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed (planned for 0.8.1)
+
+- Reload pipeline silently keeps the old value when an immutable field (`listen.*`, `upstream.socket`, `log.*`, `health.*`, `metrics.*`, `admin.*`, `policy_bundle` trust material) is mutated in the on-disk YAML, but still logs `config reload applied` and ticks `policy_version`. Production safety is intact — the running config keeps serving the old value — but operators can't tell the change was rejected. Surfaced during the v0.8.0 NAS smoke test by mutating `admin.path` from `/admin/validate` to `/admin/check`: the reload was reported as applied, `policy_version` ticked up, but `/admin/check` still returned 403 (catch-all deny) while `/admin/validate` kept serving 200. Fix: emit `reject_immutable` to logs and `sockguard_config_reload_total`, do not bump `policy_version`, and surface the rejected field name in the structured log.
+- `fsnotify` file-watch can miss `IN_MODIFY` events on Synology / btrfs bind-mounts. The watcher inside the container watches the bind-mounted path, but inotify events on the host's underlying file don't always propagate to the container. `SIGHUP` reload works as a reliable fallback. Operator docs should call out `SIGHUP` as the canonical DSM reload trigger; optional reload-path hardening — also watch the parent directory and re-arm the file watch on `IN_ATTRIB` so atomic-rename editors (vim, kustomize, helm) on flaky propagation backends still trigger a reload.
+
+## [0.8.0] - 2026-05-14
+
 ### Added
 
 - Added per-profile rollout modes via `clients.profiles[*].mode: enforce|warn|audit`. The default `enforce` preserves the existing default-deny behavior — a denied request returns `403`. `warn` and `audit` let an operator stage a tighter policy without breaking callers: every deny gate (filter rules + the request-body inspectors, ownership label isolation, client-ACL label policy, and the three rate-limit / concurrency / priority throttle gates) consults `meta.RolloutMode`. In `warn` / `audit` the request is still served upstream, the structured audit record carries `decision=would_deny`, and the deny / throttle counters fire either way with a new `mode` label so dashboards can compare blocked vs. would-have-been-blocked volume side by side. Pre-auth admission gates (CIDR allowlist, identity-lookup failures) stay `enforce` regardless of the profile's mode — those are unsafe to relax. Add the field to one profile to dry-run a change; flip back to `enforce` once the would-deny rate is what you expect.
