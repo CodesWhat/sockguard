@@ -47,7 +47,7 @@ type serviceNetwork struct {
 func newServicePolicy(opts ServiceOptions) servicePolicy {
 	allowed := make([]string, 0, len(opts.AllowedBindMounts))
 	for _, bindMount := range opts.AllowedBindMounts {
-		normalized, ok := normalizeContainerCreateBindMount(bindMount)
+		normalized, ok := normalizeBindMount(bindMount)
 		if !ok || slices.Contains(allowed, normalized) {
 			continue
 		}
@@ -102,7 +102,7 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 		if !strings.EqualFold(mount.Type, "bind") {
 			continue
 		}
-		source, ok := normalizeContainerCreateBindMount(mount.Source)
+		source, ok := normalizeBindMount(mount.Source)
 		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}

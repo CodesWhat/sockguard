@@ -27,6 +27,7 @@ type containerArchivePolicy struct {
 	allowSetID         bool
 	allowDeviceNodes   bool
 	allowEscapingLinks bool
+	io                 ioDeps
 }
 
 func newContainerArchivePolicy(opts ContainerArchiveOptions) containerArchivePolicy {
@@ -35,12 +36,16 @@ func newContainerArchivePolicy(opts ContainerArchiveOptions) containerArchivePol
 		allowSetID:         opts.AllowSetID,
 		allowDeviceNodes:   opts.AllowDeviceNodes,
 		allowEscapingLinks: opts.AllowEscapingLinks,
+		io:                 defaultIODeps(),
 	}
 }
 
 func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if !matchesContainerArchiveInspection(normalizedPath) || r.Body == nil {
 		return "", nil
+	}
+	if p.io.CreateTempFile == nil {
+		p.io = defaultIODeps()
 	}
 
 	targetPath, ok := normalizeContainerArchiveTargetPath(r.URL.Query().Get("path"))
@@ -51,7 +56,7 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 		return fmt.Sprintf("container archive denied: target path %q is not allowlisted", targetPath), nil
 	}
 
-	spool, size, err := spoolRequestBodyForInspection(r, "sockguard-container-archive-", maxContainerArchiveBodyBytes)
+	spool, size, err := p.io.spoolRequestBodyForInspection(r, "sockguard-container-archive-", maxContainerArchiveBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
 			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("container archive denied: request body exceeds %d byte limit", maxContainerArchiveBodyBytes))
@@ -75,7 +80,7 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 		return denyReason, nil
 	}
 
-	if err := seekToStart(spool.file); err != nil {
+	if err := p.io.SeekToStart(spool.file); err != nil {
 		spool.closeAndRemove()
 		return "", fmt.Errorf("rewind archive body: %w", err)
 	}
@@ -236,7 +241,7 @@ func containerArchiveHardlinkTargetIsSafe(linkName string) bool {
 	return ok
 }
 
-func spoolRequestBodyForInspection(r *http.Request, prefix string, maxBytes int64) (*spooledRequestBody, int64, error) {
+func (io_ ioDeps) spoolRequestBodyForInspection(r *http.Request, prefix string, maxBytes int64) (*spooledRequestBody, int64, error) {
 	if r == nil || r.Body == nil {
 		return nil, 0, nil
 	}
@@ -247,7 +252,7 @@ func spoolRequestBodyForInspection(r *http.Request, prefix string, maxBytes int6
 		return nil, 0, &bodyTooLargeError{limit: maxBytes}
 	}
 
-	spool, size, err := spoolRequestBodyToTempFile(r, prefix, maxBytes)
+	spool, size, err := io_.spoolRequestBodyToTempFile(r, prefix, maxBytes)
 	if err != nil {
 		return nil, 0, err
 	}

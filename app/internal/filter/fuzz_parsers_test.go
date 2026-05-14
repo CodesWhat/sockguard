@@ -33,7 +33,7 @@ func FuzzBuild(f *testing.F) {
 			req.Header.Set("Content-Type", contentType)
 		}
 
-		_, _ = policy.inspect(req, "/build")
+		_, _ = policy.inspect(nil, req, "/build")
 
 		if req.Body != nil {
 			_, _ = io.Copy(io.Discard, req.Body)
@@ -107,7 +107,7 @@ func FuzzImagePull(f *testing.F) {
 	f.Fuzz(func(t *testing.T, rawQuery string) {
 		req := httptest.NewRequest(http.MethodPost, "/images/create", nil)
 		req.URL = &url.URL{Path: "/images/create", RawQuery: rawQuery}
-		_, _ = policy.inspect(req, "/images/create")
+		_, _ = policy.inspect(nil, req, "/images/create")
 	})
 }
 

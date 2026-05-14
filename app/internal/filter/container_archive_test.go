@@ -234,11 +234,11 @@ func TestContainerArchiveInvalidTarReturnsInspectionError(t *testing.T) {
 }
 
 func TestContainerArchiveRewindErrorAfterInspection(t *testing.T) {
-	restoreFilterIODeps(t)
 	sentinel := errors.New("rewind failed")
-	oldSeekToStart := seekToStart
+	p := newContainerArchivePolicy(ContainerArchiveOptions{})
+	oldSeekToStart := p.io.SeekToStart
 	seekCalls := 0
-	seekToStart = func(file *os.File) error {
+	p.io.SeekToStart = func(file *os.File) error {
 		seekCalls++
 		if seekCalls == 2 {
 			return sentinel
@@ -249,7 +249,7 @@ func TestContainerArchiveRewindErrorAfterInspection(t *testing.T) {
 	payload := mustContainerArchiveTar(t, containerArchiveTestEntry{name: "file.txt", body: "ok"})
 	req := httptest.NewRequest(http.MethodPut, "/containers/abc/archive?path=app", bytes.NewReader(payload))
 
-	reason, err := newContainerArchivePolicy(ContainerArchiveOptions{}).inspect(nil, req, "/containers/abc/archive")
+	reason, err := p.inspect(nil, req, "/containers/abc/archive")
 	if reason != "" {
 		t.Fatalf("reason = %q, want empty", reason)
 	}
@@ -299,7 +299,8 @@ func TestContainerArchiveLinkHelpersCoverEmptyAndAbsoluteTargets(t *testing.T) {
 }
 
 func TestSpoolRequestBodyForInspectionEdgeCases(t *testing.T) {
-	spool, size, err := spoolRequestBodyForInspection(nil, "sockguard-test-", 4)
+	iod := defaultIODeps()
+	spool, size, err := iod.spoolRequestBodyForInspection(nil, "sockguard-test-", 4)
 	if err != nil {
 		t.Fatalf("spoolRequestBodyForInspection(nil) error = %v", err)
 	}
@@ -311,14 +312,14 @@ func TestSpoolRequestBodyForInspectionEdgeCases(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/containers/abc/archive", nil)
 	req.Body = &readErrorReadCloser{closeErr: sentinel}
 	req.ContentLength = 5
-	_, _, err = spoolRequestBodyForInspection(req, "sockguard-test-", 4)
+	_, _, err = iod.spoolRequestBodyForInspection(req, "sockguard-test-", 4)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("spoolRequestBodyForInspection(close error) = %v, want %v", err, sentinel)
 	}
 
 	req = httptest.NewRequest(http.MethodPut, "/containers/abc/archive", strings.NewReader("12345"))
 	req.ContentLength = -1
-	_, size, err = spoolRequestBodyForInspection(req, "sockguard-test-", 4)
+	_, size, err = iod.spoolRequestBodyForInspection(req, "sockguard-test-", 4)
 	if !isBodyTooLargeError(err) {
 		t.Fatalf("spoolRequestBodyForInspection(too large) error = %v, want bodyTooLargeError", err)
 	}

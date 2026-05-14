@@ -456,7 +456,7 @@ func TestNormalizeContainerCreateBindMount(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := normalizeContainerCreateBindMount(tt.value)
+			got, ok := normalizeBindMount(tt.value)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}

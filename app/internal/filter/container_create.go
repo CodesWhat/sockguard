@@ -138,74 +138,10 @@ type containerCreatePolicy struct {
 
 // AllowedDeviceRequestEntry is the public form of a device request allowlist
 // entry, used in ContainerCreateOptions.
-type AllowedDeviceRequestEntry struct {
-	Driver              string
-	AllowedCapabilities [][]string
-	MaxCount            *int
-}
-
-// allowedDeviceRequestEntry is the pre-processed form stored in
-// containerCreatePolicy after canonicalization.
-type allowedDeviceRequestEntry struct {
-	driver              string     // lowercase
-	allowedCapabilities [][]string // each inner slice sorted + deduped
-	maxCount            *int
-}
-
-// dockerDeviceRequest mirrors the Docker API HostConfig.DeviceRequests element.
-type dockerDeviceRequest struct {
-	Driver       string            `json:"Driver"`
-	Count        int               `json:"Count"`
-	DeviceIDs    []string          `json:"DeviceIDs"`
-	Capabilities [][]string        `json:"Capabilities"`
-	Options      map[string]string `json:"Options"`
-}
-
-type containerCreateRequest struct {
-	Image      string                    `json:"Image"`
-	HostConfig containerCreateHostConfig `json:"HostConfig"`
-	User       string                    `json:"User"`
-	Labels     map[string]string         `json:"Labels"`
-}
-
-type containerCreateHostConfig struct {
-	Privileged        bool                    `json:"Privileged"`
-	NetworkMode       string                  `json:"NetworkMode"`
-	PidMode           string                  `json:"PidMode"`
-	IpcMode           string                  `json:"IpcMode"`
-	UsernsMode        string                  `json:"UsernsMode"`
-	Binds             []string                `json:"Binds"`
-	Mounts            []containerCreateMount  `json:"Mounts"`
-	Devices           []containerCreateDevice `json:"Devices"`
-	DeviceRequests    []dockerDeviceRequest   `json:"DeviceRequests"`
-	DeviceCgroupRules []string                `json:"DeviceCgroupRules"`
-	SecurityOpt       []string                `json:"SecurityOpt"`
-	CapAdd            []string                `json:"CapAdd"`
-	CapDrop           []string                `json:"CapDrop"`
-	ReadonlyRootfs    bool                    `json:"ReadonlyRootfs"`
-	Memory            int64                   `json:"Memory"`
-	MemoryReservation int64                   `json:"MemoryReservation"`
-	NanoCpus          int64                   `json:"NanoCpus"`
-	CpuQuota          int64                   `json:"CpuQuota"`
-	CpuPeriod         int64                   `json:"CpuPeriod"`
-	CpuShares         int64                   `json:"CpuShares"`
-	PidsLimit         *int64                  `json:"PidsLimit"`
-	Sysctls           map[string]string       `json:"Sysctls"`
-}
-
-type containerCreateMount struct {
-	Type   string `json:"Type"`
-	Source string `json:"Source"`
-}
-
-type containerCreateDevice struct {
-	PathOnHost string `json:"PathOnHost"`
-}
-
 func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy {
 	allowed := make([]string, 0, len(opts.AllowedBindMounts))
 	for _, bindMount := range opts.AllowedBindMounts {
-		normalized, ok := normalizeContainerCreateBindMount(bindMount)
+		normalized, ok := normalizeBindMount(bindMount)
 		if !ok || slices.Contains(allowed, normalized) {
 			continue
 		}
@@ -927,21 +863,14 @@ func extractAndValidateBindSource(bind string, mount containerCreateMount) (stri
 		if !ok {
 			return "", false
 		}
-		return normalizeContainerCreateBindMount(source)
+		return normalizeBindMount(source)
 	}
 
 	if !strings.EqualFold(mount.Type, "bind") {
 		return "", false
 	}
 
-	return normalizeContainerCreateBindMount(mount.Source)
-}
-
-func normalizeContainerCreateBindMount(value string) (string, bool) {
-	if value == "" || !strings.HasPrefix(value, "/") {
-		return "", false
-	}
-	return path.Clean(value), true
+	return normalizeBindMount(mount.Source)
 }
 
 func normalizeContainerCreateDevicePath(value string) (string, bool) {
@@ -1042,6 +971,11 @@ func splitSecurityOptKV(entry string) (key, value string, hasValue bool) {
 	return entry, "", false
 }
 
+// normalizeCapability canonicalizes a Linux capability name into the form
+// HostConfig.CapAdd/CapDrop uses on the wire. Docker accepts both "NET_ADMIN"
+// and "CAP_NET_ADMIN" and treats them identically; sockguard strips the
+// "CAP_" prefix so a single allowlist entry covers both. Plugin manifest
+// capabilities follow a different namespace — see normalizePluginCapability.
 func normalizeCapability(value string) string {
 	trimmed := strings.ToUpper(strings.TrimSpace(value))
 	return strings.TrimPrefix(trimmed, "CAP_")

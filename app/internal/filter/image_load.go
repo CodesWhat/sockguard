@@ -25,6 +25,7 @@ type ImageLoadOptions struct {
 type imageLoadPolicy struct {
 	allowUntagged bool
 	imagePolicy   imagePullPolicy
+	io            ioDeps
 }
 
 func newImageLoadPolicy(opts ImageLoadOptions) imageLoadPolicy {
@@ -35,6 +36,7 @@ func newImageLoadPolicy(opts ImageLoadOptions) imageLoadPolicy {
 			AllowOfficial:      opts.AllowOfficial,
 			AllowedRegistries:  opts.AllowedRegistries,
 		}),
+		io: defaultIODeps(),
 	}
 }
 
@@ -48,8 +50,11 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 	if r.Body == nil {
 		return "", nil
 	}
+	if p.io.CreateTempFile == nil {
+		p.io = defaultIODeps()
+	}
 
-	spool, size, err := spoolRequestBodyForInspection(r, "sockguard-image-load-", maxImageLoadBodyBytes)
+	spool, size, err := p.io.spoolRequestBodyForInspection(r, "sockguard-image-load-", maxImageLoadBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
 			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("image load denied: request body exceeds %d byte limit", maxImageLoadBodyBytes))
@@ -63,7 +68,7 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		return "", nil
 	}
 
-	tags, foundManifest, err := extractImageLoadRepoTags(spool.file)
+	tags, foundManifest, err := p.io.extractImageLoadRepoTags(spool.file)
 	if err != nil {
 		spool.closeAndRemove()
 		return "", fmt.Errorf("inspect image load manifest: %w", err)
@@ -86,7 +91,7 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		}
 	}
 
-	if err := seekToStart(spool.file); err != nil {
+	if err := p.io.SeekToStart(spool.file); err != nil {
 		spool.closeAndRemove()
 		return "", fmt.Errorf("rewind image load body: %w", err)
 	}
@@ -117,7 +122,7 @@ type imageLoadManifestEntry struct {
 	RepoTags []string `json:"RepoTags"`
 }
 
-func extractImageLoadRepoTags(reader io.Reader) ([]string, bool, error) {
+func (io_ ioDeps) extractImageLoadRepoTags(reader io.Reader) ([]string, bool, error) {
 	tr := tar.NewReader(reader)
 	var tags []string
 	found := false
@@ -134,7 +139,7 @@ func extractImageLoadRepoTags(reader io.Reader) ([]string, bool, error) {
 			continue
 		}
 
-		body, err := readAllLimited(tr, maxImageLoadManifestBytes+1)
+		body, err := io_.ReadAllLimited(tr, maxImageLoadManifestBytes+1)
 		if err != nil {
 			return nil, false, fmt.Errorf("read manifest.json: %w", err)
 		}

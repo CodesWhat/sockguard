@@ -48,6 +48,7 @@ type pluginPolicy struct {
 	allowedCapabilities   []string
 	allowedSetEnvPrefixes []string
 	imagePolicy           imagePullPolicy
+	io                    ioDeps
 }
 
 type pluginPrivilege struct {
@@ -96,12 +97,16 @@ func newPluginPolicy(opts PluginOptions) pluginPolicy {
 			AllowOfficial:      opts.AllowOfficial,
 			AllowedRegistries:  opts.AllowedRegistries,
 		}),
+		io: defaultIODeps(),
 	}
 }
 
 func (p pluginPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodPost {
 		return "", nil
+	}
+	if p.io.CreateTempFile == nil {
+		p.io = defaultIODeps()
 	}
 
 	switch {
@@ -224,7 +229,7 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 		return "", nil
 	}
 
-	spool, size, err := spoolRequestBodyToTempFile(r, "sockguard-plugin-", maxPluginBodyBytes)
+	spool, size, err := p.io.spoolRequestBodyToTempFile(r, "sockguard-plugin-", maxPluginBodyBytes)
 	if err != nil {
 		return "", err
 	}
@@ -237,7 +242,7 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 		return "", nil
 	}
 
-	configBytes, ok, err := extractPluginConfig(spool.file, r.Header.Get("Content-Type"))
+	configBytes, ok, err := p.io.extractPluginConfig(spool.file, r.Header.Get("Content-Type"))
 	if err != nil {
 		spool.closeAndRemove()
 		return "", fmt.Errorf("extract plugin config: %w", err)
@@ -254,7 +259,7 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 		}
 	}
 
-	if err := seekToStart(spool.file); err != nil {
+	if err := p.io.SeekToStart(spool.file); err != nil {
 		spool.closeAndRemove()
 		return "", fmt.Errorf("rewind plugin body: %w", err)
 	}
@@ -308,7 +313,7 @@ func (p pluginPolicy) denyReasonForPrivileges(subject string, privileges []plugi
 		case "device":
 			if !p.allowAllDevices {
 				for _, value := range privilege.Value {
-					path, ok := normalizeContainerCreateBindMount(value)
+					path, ok := normalizeBindMount(value)
 					if !ok || p.deviceAllowed(path) {
 						continue
 					}
@@ -335,7 +340,7 @@ func (p pluginPolicy) denyBindMounts(propagatedMount string, mounts []struct {
 	Source string `json:"Source"`
 }) string {
 	if propagatedMount != "" {
-		source, ok := normalizeContainerCreateBindMount(propagatedMount)
+		source, ok := normalizeBindMount(propagatedMount)
 		if !ok || !bindPathAllowed(source, p.allowedBindMounts) {
 			if ok {
 				return fmt.Sprintf("plugin create denied: bind mount source %q is not allowlisted", source)
@@ -344,7 +349,7 @@ func (p pluginPolicy) denyBindMounts(propagatedMount string, mounts []struct {
 	}
 
 	for _, mount := range mounts {
-		source, ok := normalizeContainerCreateBindMount(mount.Source)
+		source, ok := normalizeBindMount(mount.Source)
 		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
@@ -356,7 +361,7 @@ func (p pluginPolicy) denyBindMounts(propagatedMount string, mounts []struct {
 
 func (p pluginPolicy) denyBindMountValues(subject string, values []string) string {
 	for _, value := range values {
-		source, ok := normalizeContainerCreateBindMount(value)
+		source, ok := normalizeBindMount(value)
 		if !ok || bindPathAllowed(source, p.allowedBindMounts) {
 			continue
 		}
@@ -369,7 +374,7 @@ func (p pluginPolicy) denyDevices(devices []struct {
 	Path string `json:"Path"`
 }) string {
 	for _, device := range devices {
-		path, ok := normalizeContainerCreateBindMount(device.Path)
+		path, ok := normalizeBindMount(device.Path)
 		if !ok || p.deviceAllowed(path) {
 			continue
 		}
@@ -411,32 +416,32 @@ func (p pluginPolicy) setEnvAllowed(setting string) bool {
 	return false
 }
 
-func extractPluginConfig(file *os.File, contentType string) ([]byte, bool, error) {
+func (io_ ioDeps) extractPluginConfig(file *os.File, contentType string) ([]byte, bool, error) {
 	if mediaType, params, err := mime.ParseMediaType(contentType); err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
 		boundary := strings.TrimSpace(params["boundary"])
 		if boundary == "" {
 			return nil, false, nil
 		}
-		if err := seekToStart(file); err != nil {
+		if err := io_.SeekToStart(file); err != nil {
 			return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
 		}
-		return extractPluginConfigFromMultipart(file, boundary)
+		return io_.extractPluginConfigFromMultipart(file, boundary)
 	}
 
-	if err := seekToStart(file); err != nil {
+	if err := io_.SeekToStart(file); err != nil {
 		return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
 	}
 
-	if config, ok, err := extractPluginConfigFromGzipTar(file); ok || err != nil {
+	if config, ok, err := io_.extractPluginConfigFromGzipTar(file); ok || err != nil {
 		return config, ok, err
 	}
-	if err := seekToStart(file); err != nil {
+	if err := io_.SeekToStart(file); err != nil {
 		return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
 	}
-	return extractPluginConfigFromTar(file)
+	return io_.extractPluginConfigFromTar(file)
 }
 
-func extractPluginConfigFromMultipart(file *os.File, boundary string) ([]byte, bool, error) {
+func (io_ ioDeps) extractPluginConfigFromMultipart(file *os.File, boundary string) ([]byte, bool, error) {
 	reader := multipart.NewReader(file, boundary)
 	for {
 		part, err := reader.NextPart()
@@ -447,7 +452,7 @@ func extractPluginConfigFromMultipart(file *os.File, boundary string) ([]byte, b
 			return nil, false, fmt.Errorf("read multipart part: %w", err)
 		}
 
-		config, ok, err := extractPluginConfigFromArchiveReader(part)
+		config, ok, err := io_.extractPluginConfigFromArchiveReader(part)
 		if err != nil {
 			return nil, false, err
 		}
@@ -457,30 +462,30 @@ func extractPluginConfigFromMultipart(file *os.File, boundary string) ([]byte, b
 	}
 }
 
-func extractPluginConfigFromGzipTar(file *os.File) ([]byte, bool, error) {
-	return extractPluginConfigFromGzipReader(file)
+func (io_ ioDeps) extractPluginConfigFromGzipTar(file *os.File) ([]byte, bool, error) {
+	return io_.extractPluginConfigFromGzipReader(file)
 }
 
-func extractPluginConfigFromTar(file *os.File) ([]byte, bool, error) {
-	return extractPluginConfigFromTarReader(tar.NewReader(file))
+func (io_ ioDeps) extractPluginConfigFromTar(file *os.File) ([]byte, bool, error) {
+	return io_.extractPluginConfigFromTarReader(tar.NewReader(file))
 }
 
-func extractPluginConfigFromArchiveReader(reader io.Reader) ([]byte, bool, error) {
+func (io_ ioDeps) extractPluginConfigFromArchiveReader(reader io.Reader) ([]byte, bool, error) {
 	buffered := bufio.NewReader(reader)
 	header, err := buffered.Peek(512)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, false, fmt.Errorf("peek archive header: %w", err)
 	}
 	if looksLikeGzipHeader(header) {
-		return extractPluginConfigFromGzipReader(buffered)
+		return io_.extractPluginConfigFromGzipReader(buffered)
 	}
 	if !looksLikeTarHeader(header) {
 		return nil, false, nil
 	}
-	return extractPluginConfigFromTarReader(tar.NewReader(buffered))
+	return io_.extractPluginConfigFromTarReader(tar.NewReader(buffered))
 }
 
-func extractPluginConfigFromGzipReader(reader io.Reader) ([]byte, bool, error) {
+func (io_ ioDeps) extractPluginConfigFromGzipReader(reader io.Reader) ([]byte, bool, error) {
 	gzr, err := gzip.NewReader(reader)
 	if err != nil {
 		if errors.Is(err, gzip.ErrHeader) {
@@ -489,19 +494,19 @@ func extractPluginConfigFromGzipReader(reader io.Reader) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("create gzip reader: %w", err)
 	}
 
-	config, ok, err := extractPluginConfigFromTarReader(tar.NewReader(gzr))
+	config, ok, err := io_.extractPluginConfigFromTarReader(tar.NewReader(gzr))
 	if err == nil {
-		if drainErr := drainReader(gzr); drainErr != nil {
+		if drainErr := io_.DrainReader(gzr); drainErr != nil {
 			err = fmt.Errorf("drain gzip stream: %w", drainErr)
 		}
 	}
-	if closeErr := closeReadCloser(gzr); err == nil && closeErr != nil {
+	if closeErr := io_.CloseReadCloser(gzr); err == nil && closeErr != nil {
 		err = fmt.Errorf("close gzip reader: %w", closeErr)
 	}
 	return config, ok, err
 }
 
-func extractPluginConfigFromTarReader(tr *tar.Reader) ([]byte, bool, error) {
+func (io_ ioDeps) extractPluginConfigFromTarReader(tr *tar.Reader) ([]byte, bool, error) {
 	var config []byte
 	found := false
 
@@ -524,7 +529,7 @@ func extractPluginConfigFromTarReader(tr *tar.Reader) ([]byte, bool, error) {
 			continue
 		}
 
-		body, err := readAllLimited(tr, maxPluginConfigBytes+1)
+		body, err := io_.ReadAllLimited(tr, maxPluginConfigBytes+1)
 		if err != nil {
 			return nil, false, fmt.Errorf("read plugin config entry: %w", err)
 		}
@@ -588,12 +593,12 @@ func parsePluginSetting(key, value string) (pluginSettingType, string, bool) {
 	lowerKey := strings.ToLower(trimmedKey)
 	switch {
 	case strings.HasSuffix(lowerKey, ".source"):
-		if source, ok := normalizeContainerCreateBindMount(trimmedValue); ok {
+		if source, ok := normalizeBindMount(trimmedValue); ok {
 			return pluginSettingMount, source, true
 		}
 		return pluginSettingUnknown, "", false
 	case strings.HasSuffix(lowerKey, ".path"):
-		if device, ok := normalizeContainerCreateBindMount(trimmedValue); ok {
+		if device, ok := normalizeBindMount(trimmedValue); ok {
 			return pluginSettingDevice, device, true
 		}
 		return pluginSettingUnknown, "", false
@@ -605,11 +610,11 @@ func parsePluginSetting(key, value string) (pluginSettingType, string, bool) {
 
 	switch {
 	case strings.HasPrefix(trimmedValue, "/dev/"):
-		if device, ok := normalizeContainerCreateBindMount(trimmedValue); ok {
+		if device, ok := normalizeBindMount(trimmedValue); ok {
 			return pluginSettingDevice, device, true
 		}
 	case strings.HasPrefix(trimmedValue, "/"):
-		if source, ok := normalizeContainerCreateBindMount(trimmedValue); ok {
+		if source, ok := normalizeBindMount(trimmedValue); ok {
 			return pluginSettingMount, source, true
 		}
 	}
@@ -620,7 +625,7 @@ func parsePluginSetting(key, value string) (pluginSettingType, string, bool) {
 func normalizePluginPaths(values []string) []string {
 	allowed := make([]string, 0, len(values))
 	for _, value := range values {
-		normalized, ok := normalizeContainerCreateBindMount(value)
+		normalized, ok := normalizeBindMount(value)
 		if !ok || slices.Contains(allowed, normalized) {
 			continue
 		}
@@ -641,6 +646,13 @@ func normalizePluginCapabilities(values []string) []string {
 	return allowed
 }
 
+// normalizePluginCapability differs from normalizeCapability deliberately: it
+// does NOT strip a "CAP_" prefix. Docker plugin privileges arrive in their
+// own namespace (e.g. "network", "mount: /var/run/docker.sock", "device:
+// /dev/nvidia0") rather than as Linux capability names; values that happen to
+// look like capabilities — for instance an allowlist that lists "CAP_NET_ADMIN"
+// — must match the plugin manifest verbatim instead of being collapsed to
+// "NET_ADMIN". Use normalizeCapability when matching HostConfig.CapAdd/CapDrop.
 func normalizePluginCapability(value string) string {
 	return strings.ToUpper(strings.TrimSpace(value))
 }

@@ -1,23 +1,7 @@
 package filter
 
-import "testing"
-
-func restoreFilterIODeps(t *testing.T) {
-	t.Helper()
-
-	oldCreateTempFile := createTempFile
-	oldRemoveFilePath := removeFilePath
-	oldSeekToStart := seekToStart
-	oldReadAllLimited := readAllLimited
-	oldDrainReader := drainReader
-	oldCloseReadCloser := closeReadCloser
-
-	t.Cleanup(func() {
-		createTempFile = oldCreateTempFile
-		removeFilePath = oldRemoveFilePath
-		seekToStart = oldSeekToStart
-		readAllLimited = oldReadAllLimited
-		drainReader = oldDrainReader
-		closeReadCloser = oldCloseReadCloser
-	})
-}
+// testdeps_test.go used to swap package-level IO function vars. The struct
+// refactor (see io_deps.go) removed those globals, so tests now construct
+// their own ioDeps and inject it directly into the policy or method receiver.
+// This file is intentionally empty; it remains as a marker that no shared IO
+// dependency state exists in the package.

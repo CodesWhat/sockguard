@@ -2,6 +2,7 @@ package filter
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -40,7 +41,7 @@ func newImagePullPolicy(opts ImagePullOptions) imagePullPolicy {
 	}
 }
 
-func (p imagePullPolicy) inspect(r *http.Request, normalizedPath string) (string, error) {
+func (p imagePullPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if r == nil || r.Method != http.MethodPost || normalizedPath != "/images/create" {
 		return "", nil
 	}

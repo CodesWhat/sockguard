@@ -141,11 +141,17 @@ const (
 var _ [1]struct{} = [inspectSeverityCritical - inspectSeverityHigh]struct{}{}
 var _ [1]struct{} = [inspectSeverityHigh - inspectSeverityMedium]struct{}{}
 
+// inspectorFunc is the common signature for request-body / query inspectors
+// dispatched by the filter middleware. Inspectors that don't log anything
+// receive the logger but ignore it; that keeps the bucket walk in
+// inspectAllowedRequest monomorphic instead of paying for a per-policy bridge.
+type inspectorFunc func(*slog.Logger, *http.Request, string) (string, error)
+
 type requestInspectPolicy struct {
 	method            string
 	matches           func(string) bool
 	severity          inspectSeverity
-	inspect           func(*slog.Logger, *http.Request, string) (string, error)
+	inspect           inspectorFunc
 	errorLogMessage   string
 	denyReasonOnError string
 }
@@ -173,10 +179,16 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Resolve the request meta once: subsequent decision stamps, deny
+			// pass-through checks, and profile/rule annotations all read or
+			// write the same pointer, so paying for the type assertion plus
+			// context fallback once per request is the minimal correct cost.
+			meta := logging.MetaForRequest(w, r)
+
 			activePolicy := defaultPolicy
 			if opts.ResolveProfile != nil {
 				if profileName, ok := opts.ResolveProfile(r); ok {
-					if meta := logging.MetaForRequest(w, r); meta != nil && profileName != "" {
+					if meta != nil && profileName != "" {
 						meta.Profile = profileName
 					}
 					profile, found := profilePolicies[profileName]
@@ -189,8 +201,8 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			var normPath string
-			if m := logging.MetaForRequest(w, r); m != nil && m.NormPath != "" {
-				normPath = m.NormPath
+			if meta != nil && meta.NormPath != "" {
+				normPath = meta.NormPath
 			} else {
 				normPath = NormalizePath(r.URL.Path)
 			}
@@ -199,12 +211,12 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			reasonCode := ruleDecisionReasonCode(action, reason)
 
 			// Write decision to shared RequestMeta (created by access log middleware).
-			if m := logging.MetaForRequest(w, r); m != nil {
-				m.Decision = string(action)
-				m.Rule = ruleIndex
-				m.ReasonCode = reasonCode
-				m.Reason = reason
-				m.NormPath = normPath
+			if meta != nil {
+				meta.Decision = string(action)
+				meta.Rule = ruleIndex
+				meta.ReasonCode = reasonCode
+				meta.Reason = reason
+				meta.NormPath = normPath
 			}
 
 			if action == ActionAllow {
@@ -216,16 +228,15 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 					if status != 0 {
 						denyStatus = status
 					}
-					if m := logging.MetaForRequest(w, r); m != nil {
-						m.Decision = string(action)
-						m.ReasonCode = reasonCode
-						m.Reason = reason
+					if meta != nil {
+						meta.Decision = string(action)
+						meta.ReasonCode = reasonCode
+						meta.Reason = reason
 					}
 				}
 			}
 
 			if action == ActionDeny {
-				meta := logging.MetaForRequest(w, r)
 				if meta.AllowsPassThrough() {
 					meta.Decision = logging.DecisionWouldDeny
 					next.ServeHTTP(w, r)
@@ -242,21 +253,13 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 	}
 }
 
-// adaptNoLogger wraps an inspect func that has no logger parameter into the
-// standard (*slog.Logger, *http.Request, string) → (string, error) signature.
-func adaptNoLogger(fn func(*http.Request, string) (string, error)) func(*slog.Logger, *http.Request, string) (string, error) {
-	return func(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-		return fn(r, normalizedPath)
-	}
-}
-
 func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy {
 	cfg = cfg.normalized()
 	all := []requestInspectPolicy{
 		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreatePolicy(cfg.ContainerCreate).inspect, "failed to inspect container create request body", "unable to inspect container create request body"},
 		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
-		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, adaptNoLogger(newImagePullPolicy(cfg.ImagePull).inspect), "failed to inspect image pull request", "unable to inspect image pull request"},
-		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, adaptNoLogger(newBuildPolicy(cfg.Build).inspect), "failed to inspect build request", "unable to inspect build request"},
+		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
+		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
 		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
 		{http.MethodPut, matchesContainerArchiveInspection, inspectSeverityHigh, newContainerArchivePolicy(cfg.ContainerArchive).inspect, "failed to inspect container archive request body", "unable to inspect container archive request body"},
 		{http.MethodPost, matchesImageLoadInspection, inspectSeverityHigh, newImageLoadPolicy(cfg.ImageLoad).inspect, "failed to inspect image load request body", "unable to inspect image load request body"},

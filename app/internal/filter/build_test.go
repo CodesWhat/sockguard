@@ -340,7 +340,7 @@ func TestSpoolRequestBodyToTempFileWrapsCopyError(t *testing.T) {
 		closeErr: sentinel,
 	}
 
-	spool, size, err := spoolRequestBodyToTempFile(req, "sockguard-build-test-", 1024)
+	spool, size, err := defaultIODeps().spoolRequestBodyToTempFile(req, "sockguard-build-test-", 1024)
 	if err == nil {
 		t.Fatal("expected spoolRequestBodyToTempFile() to fail")
 	}
@@ -359,26 +359,24 @@ func TestSpoolRequestBodyToTempFileWrapsCopyError(t *testing.T) {
 }
 
 func TestSpoolRequestBodyToTempFileCreateTempError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	sentinel := errors.New("create temp failed")
-	createTempFile = func(string, string) (*os.File, error) { return nil, sentinel }
+	iod := defaultIODeps()
+	iod.CreateTempFile = func(string, string) (*os.File, error) { return nil, sentinel }
 
 	req := httptest.NewRequest(http.MethodPost, "/build", strings.NewReader("FROM busybox\n"))
-	_, _, err := spoolRequestBodyToTempFile(req, "sockguard-build-test-", 1024)
+	_, _, err := iod.spoolRequestBodyToTempFile(req, "sockguard-build-test-", 1024)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("spoolRequestBodyToTempFile() error = %v, want %v", err, sentinel)
 	}
 }
 
 func TestSpoolRequestBodyToTempFileRewindError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	sentinel := errors.New("seek failed")
-	seekToStart = func(*os.File) error { return sentinel }
+	iod := defaultIODeps()
+	iod.SeekToStart = func(*os.File) error { return sentinel }
 
 	req := httptest.NewRequest(http.MethodPost, "/build", strings.NewReader("FROM busybox\n"))
-	_, _, err := spoolRequestBodyToTempFile(req, "sockguard-build-test-", 1024)
+	_, _, err := iod.spoolRequestBodyToTempFile(req, "sockguard-build-test-", 1024)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("spoolRequestBodyToTempFile() error = %v, want %v", err, sentinel)
 	}
@@ -417,7 +415,7 @@ func TestExtractBuildDockerfileWrapsTooLargeError(t *testing.T) {
 				t.Fatalf("Write: %v", err)
 			}
 
-			_, _, err = extractBuildDockerfile(file, tt.contentType, "Dockerfile")
+			_, _, err = defaultIODeps().extractBuildDockerfile(file, tt.contentType, "Dockerfile")
 			if err == nil {
 				t.Fatal("expected extractBuildDockerfile() to fail")
 			}
@@ -432,15 +430,14 @@ func TestExtractBuildDockerfileWrapsTooLargeError(t *testing.T) {
 }
 
 func TestBuildPolicyInspectRewindBuildBodyError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	payload := mustBuildContextTar(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")
 	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(payload))
 
-	realSeekToStart := seekToStart
+	p := newBuildPolicy(BuildOptions{})
+	realSeekToStart := p.io.SeekToStart
 	var seekCalls int
 	sentinel := errors.New("rewind build body failed")
-	seekToStart = func(file *os.File) error {
+	p.io.SeekToStart = func(file *os.File) error {
 		seekCalls++
 		if seekCalls == 4 {
 			return sentinel
@@ -448,7 +445,7 @@ func TestBuildPolicyInspectRewindBuildBodyError(t *testing.T) {
 		return realSeekToStart(file)
 	}
 
-	_, err := buildPolicy{}.inspect(req, "/build")
+	_, err := p.inspect(nil, req, "/build")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("inspect() error = %v, want %v", err, sentinel)
 	}
@@ -653,7 +650,7 @@ func TestExtractBuildDockerfileFromRawDockerfileTextPlain(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, ok, err := extractBuildDockerfile(file, "application/gzip", "Dockerfile")
+	got, ok, err := defaultIODeps().extractBuildDockerfile(file, "application/gzip", "Dockerfile")
 	if err != nil {
 		t.Fatalf("extractBuildDockerfile() error = %v", err)
 	}
@@ -680,7 +677,7 @@ func TestExtractBuildDockerfileFromTarNotFoundReturnsNotOK(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, ok, err := extractBuildDockerfile(file, "application/x-tar", "Dockerfile")
+	got, ok, err := defaultIODeps().extractBuildDockerfile(file, "application/x-tar", "Dockerfile")
 	if err != nil {
 		t.Fatalf("extractBuildDockerfile() error = %v, want nil", err)
 	}
@@ -700,15 +697,13 @@ func TestExtractBuildDockerfileInitialRewindError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Remove(name) })
 
-	_, _, err = extractBuildDockerfile(file, "text/plain", "Dockerfile")
+	_, _, err = defaultIODeps().extractBuildDockerfile(file, "text/plain", "Dockerfile")
 	if err == nil || !strings.Contains(err.Error(), "rewind Dockerfile reader") {
 		t.Fatalf("extractBuildDockerfile() error = %v, want rewind Dockerfile reader failure", err)
 	}
 }
 
 func TestExtractBuildDockerfileRewindAfterGzipProbeError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	file, err := os.CreateTemp("", "sockguard-build-rewind-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -721,10 +716,11 @@ func TestExtractBuildDockerfileRewindAfterGzipProbeError(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	realSeekToStart := seekToStart
+	iod := defaultIODeps()
+	realSeekToStart := iod.SeekToStart
 	var seekCalls int
 	sentinel := errors.New("second rewind failed")
-	seekToStart = func(file *os.File) error {
+	iod.SeekToStart = func(file *os.File) error {
 		seekCalls++
 		if seekCalls == 2 {
 			return sentinel
@@ -732,15 +728,13 @@ func TestExtractBuildDockerfileRewindAfterGzipProbeError(t *testing.T) {
 		return realSeekToStart(file)
 	}
 
-	_, _, err = extractBuildDockerfile(file, "application/x-tar", "Dockerfile")
+	_, _, err = iod.extractBuildDockerfile(file, "application/x-tar", "Dockerfile")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractBuildDockerfile() error = %v, want %v", err, sentinel)
 	}
 }
 
 func TestExtractBuildDockerfileRewindAfterTarProbeError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	file, err := os.CreateTemp("", "sockguard-build-rewind-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -753,10 +747,11 @@ func TestExtractBuildDockerfileRewindAfterTarProbeError(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	realSeekToStart := seekToStart
+	iod := defaultIODeps()
+	realSeekToStart := iod.SeekToStart
 	var seekCalls int
 	sentinel := errors.New("third rewind failed")
-	seekToStart = func(file *os.File) error {
+	iod.SeekToStart = func(file *os.File) error {
 		seekCalls++
 		if seekCalls == 3 {
 			return sentinel
@@ -764,15 +759,13 @@ func TestExtractBuildDockerfileRewindAfterTarProbeError(t *testing.T) {
 		return realSeekToStart(file)
 	}
 
-	_, _, err = extractBuildDockerfile(file, "", "Dockerfile")
+	_, _, err = iod.extractBuildDockerfile(file, "", "Dockerfile")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractBuildDockerfile() error = %v, want %v", err, sentinel)
 	}
 }
 
 func TestExtractBuildDockerfileRawReadError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	file, err := os.CreateTemp("", "sockguard-build-raw-read-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -786,9 +779,10 @@ func TestExtractBuildDockerfileRawReadError(t *testing.T) {
 	}
 
 	sentinel := errors.New("raw read failed")
-	readAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
+	iod := defaultIODeps()
+	iod.ReadAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
 
-	_, _, err = extractBuildDockerfile(file, "text/plain", "Dockerfile")
+	_, _, err = iod.extractBuildDockerfile(file, "text/plain", "Dockerfile")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractBuildDockerfile() error = %v, want %v", err, sentinel)
 	}
@@ -801,7 +795,7 @@ func TestTempFileBodyCloseRemovesFile(t *testing.T) {
 	}
 	name := file.Name()
 
-	body := &tempFileBody{file: file, path: name}
+	body := &tempFileBody{file: file, path: name, io: defaultIODeps()}
 	if err := body.Close(); err != nil {
 		t.Fatalf("Close() error = %v", err)
 	}
@@ -821,24 +815,23 @@ func TestTempFileBodyCloseIdempotentOnAlreadyRemoved(t *testing.T) {
 		t.Fatalf("Remove: %v", err)
 	}
 
-	body := &tempFileBody{file: file, path: name}
+	body := &tempFileBody{file: file, path: name, io: defaultIODeps()}
 	// Close will fail on the file descriptor (already closed? no, we didn't
 	// close it yet) but Remove should return IsNotExist which is ignored.
 	_ = body.Close() // tolerate either outcome; just must not panic
 }
 
 func TestTempFileBodyCloseReturnsRemoveError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	file, err := os.CreateTemp("", "sockguard-tempclose-error-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
 	}
 	sentinel := errors.New("remove failed")
-	removeFilePath = func(string) error { return sentinel }
+	iod := defaultIODeps()
+	iod.RemoveFilePath = func(string) error { return sentinel }
 	t.Cleanup(func() { _ = file.Close() })
 
-	body := &tempFileBody{file: file, path: file.Name()}
+	body := &tempFileBody{file: file, path: file.Name(), io: iod}
 	if err := body.Close(); !errors.Is(err, sentinel) {
 		t.Fatalf("Close() error = %v, want %v", err, sentinel)
 	}
@@ -853,7 +846,7 @@ func TestTempFileBodyCloseReturnsCloseError(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	body := &tempFileBody{file: file, path: file.Name()}
+	body := &tempFileBody{file: file, path: file.Name(), io: defaultIODeps()}
 	if err := body.Close(); err == nil {
 		t.Fatal("Close() error = nil, want file close error")
 	}
@@ -865,7 +858,7 @@ func TestSpoolRequestBodyToTempFileHandlesTooLargeBody(t *testing.T) {
 	payload := bytes.Repeat([]byte("x"), max+1)
 	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(payload))
 
-	spool, size, err := spoolRequestBodyToTempFile(req, "sockguard-test-", max)
+	spool, size, err := defaultIODeps().spoolRequestBodyToTempFile(req, "sockguard-test-", max)
 	if err != nil {
 		t.Fatalf("spoolRequestBodyToTempFile() error = %v", err)
 	}
@@ -886,7 +879,7 @@ func TestBuildPolicyAllowsRemoteContextWhenRunInstructionsAllowed(t *testing.T) 
 	// Remote context + allowRunInstructions = pass-through (no body inspection).
 	p := buildPolicy{allowRemoteContext: true, allowRunInstructions: true}
 	req := httptest.NewRequest(http.MethodPost, "/build?remote=https://github.com/acme/app", nil)
-	reason, err := p.inspect(req, "/build")
+	reason, err := p.inspect(nil, req, "/build")
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
@@ -898,7 +891,7 @@ func TestBuildPolicyAllowsRemoteContextWhenRunInstructionsAllowed(t *testing.T) 
 func TestBuildPolicyDeniesRemoteContextWithHostNetwork(t *testing.T) {
 	p := buildPolicy{allowRemoteContext: true, allowRunInstructions: true}
 	req := httptest.NewRequest(http.MethodPost, "/build?remote=https://github.com/acme/app&networkmode=host", nil)
-	reason, err := p.inspect(req, "/build")
+	reason, err := p.inspect(nil, req, "/build")
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
@@ -913,7 +906,7 @@ func TestBuildPolicyDeniesHostNetworkCaseInsensitive(t *testing.T) {
 	for _, networkMode := range []string{"HOST", "Host"} {
 		t.Run(networkMode, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/build?networkmode="+networkMode, nil)
-			reason, err := p.inspect(req, "/build")
+			reason, err := p.inspect(nil, req, "/build")
 			if err != nil {
 				t.Fatalf("inspect() error = %v", err)
 			}
@@ -927,7 +920,7 @@ func TestBuildPolicyDeniesHostNetworkCaseInsensitive(t *testing.T) {
 func TestBuildPolicyDeniesHostNetworkBeforeDisallowedRemoteContext(t *testing.T) {
 	p := buildPolicy{allowRemoteContext: false, allowRunInstructions: true}
 	req := httptest.NewRequest(http.MethodPost, "/build?remote=https://github.com/acme/app&networkmode=host", nil)
-	reason, err := p.inspect(req, "/build")
+	reason, err := p.inspect(nil, req, "/build")
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
@@ -943,7 +936,7 @@ func TestBuildPolicyDeniesRemoteContextWithRunRestriction(t *testing.T) {
 	// Remote context + allowRemoteContext=true but allowRunInstructions=false.
 	p := buildPolicy{allowRemoteContext: true, allowRunInstructions: false}
 	req := httptest.NewRequest(http.MethodPost, "/build?remote=https://github.com/acme/app", nil)
-	reason, err := p.inspect(req, "/build")
+	reason, err := p.inspect(nil, req, "/build")
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
@@ -955,7 +948,7 @@ func TestBuildPolicyDeniesRemoteContextWithRunRestriction(t *testing.T) {
 func TestBuildPolicyNilBodyAllowsWhenRunAllowed(t *testing.T) {
 	p := buildPolicy{allowRunInstructions: true}
 	req := httptest.NewRequest(http.MethodPost, "/build", nil)
-	reason, err := p.inspect(req, "/build")
+	reason, err := p.inspect(nil, req, "/build")
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
@@ -968,7 +961,7 @@ func TestBuildPolicyInspectEarlyReturnOnNonBuildPath(t *testing.T) {
 	// Exercises lines 44-46: r.Method != POST → early return.
 	p := buildPolicy{}
 	req := httptest.NewRequest(http.MethodGet, "/build", nil)
-	reason, err := p.inspect(req, "/build")
+	reason, err := p.inspect(nil, req, "/build")
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
@@ -980,7 +973,7 @@ func TestBuildPolicyInspectEarlyReturnOnNonBuildPath(t *testing.T) {
 func TestBuildPolicyInspectNilRequestReturnsEmpty(t *testing.T) {
 	// Exercises lines 44-46: r == nil → early return.
 	p := buildPolicy{}
-	reason, err := p.inspect(nil, "/build")
+	reason, err := p.inspect(nil, nil, "/build")
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
@@ -993,7 +986,7 @@ func TestBuildPolicyInspectEmptyBodyReturnsEmpty(t *testing.T) {
 	// Exercises lines 75-78: size == 0 after spool.
 	p := buildPolicy{}
 	req := httptest.NewRequest(http.MethodPost, "/build", strings.NewReader(""))
-	reason, err := p.inspect(req, "/build")
+	reason, err := p.inspect(nil, req, "/build")
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
@@ -1007,7 +1000,7 @@ func TestBuildPolicyInspectSpoolBodyError(t *testing.T) {
 	p := buildPolicy{}
 	req := httptest.NewRequest(http.MethodPost, "/build", nil)
 	req.Body = &erroringReadCloser{Reader: strings.NewReader("data"), closeErr: io.ErrClosedPipe}
-	_, err := p.inspect(req, "/build")
+	_, err := p.inspect(nil, req, "/build")
 	if err == nil {
 		t.Fatal("expected spool error to propagate")
 	}
@@ -1020,7 +1013,7 @@ func TestBuildPolicyInspectNotADockerfileDenied(t *testing.T) {
 	payload := mustBuildContextTar(t, "app.go", "package main")
 	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(payload))
 	req.ContentLength = int64(len(payload))
-	reason, err := p.inspect(req, "/build")
+	reason, err := p.inspect(nil, req, "/build")
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
@@ -1053,7 +1046,7 @@ func TestExtractDockerfileFromTarReaderSkipsNonRegularEntry(t *testing.T) {
 	_, _ = tw.Write([]byte(body))
 	_ = tw.Close()
 
-	got, ok, err := extractDockerfileFromTarReader(tar.NewReader(&buf), "Dockerfile")
+	got, ok, err := defaultIODeps().extractDockerfileFromTarReader(tar.NewReader(&buf), "Dockerfile")
 	if err != nil {
 		t.Fatalf("extractDockerfileFromTarReader() error = %v", err)
 	}
@@ -1088,7 +1081,7 @@ func TestExtractBuildDockerfileRawDockerfilePath(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	got, ok, err := extractBuildDockerfile(file, "text/plain", "Dockerfile")
+	got, ok, err := defaultIODeps().extractBuildDockerfile(file, "text/plain", "Dockerfile")
 	if err != nil {
 		t.Fatalf("extractBuildDockerfile() error = %v", err)
 	}
@@ -1101,8 +1094,6 @@ func TestExtractBuildDockerfileRawDockerfilePath(t *testing.T) {
 }
 
 func TestExtractDockerfileFromGzipTarCloseError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	file, err := os.CreateTemp("", "sockguard-build-gzip-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -1119,21 +1110,21 @@ func TestExtractDockerfileFromGzipTarCloseError(t *testing.T) {
 	}
 
 	sentinel := errors.New("gzip close failed")
-	closeReadCloser = func(io.Closer) error { return sentinel }
+	iod := defaultIODeps()
+	iod.CloseReadCloser = func(io.Closer) error { return sentinel }
 
-	_, _, err = extractDockerfileFromGzipTar(file, "Dockerfile")
+	_, _, err = iod.extractDockerfileFromGzipTar(file, "Dockerfile")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractDockerfileFromGzipTar() error = %v, want %v", err, sentinel)
 	}
 }
 
 func TestExtractDockerfileFromTarReaderReadError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	sentinel := errors.New("tar read failed")
-	readAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
+	iod := defaultIODeps()
+	iod.ReadAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
 
-	_, _, err := extractDockerfileFromTarReader(tar.NewReader(bytes.NewReader(mustBuildContextTar(t, "Dockerfile", "FROM busybox\n"))), "Dockerfile")
+	_, _, err := iod.extractDockerfileFromTarReader(tar.NewReader(bytes.NewReader(mustBuildContextTar(t, "Dockerfile", "FROM busybox\n"))), "Dockerfile")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractDockerfileFromTarReader() error = %v, want %v", err, sentinel)
 	}

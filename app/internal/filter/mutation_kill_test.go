@@ -114,11 +114,10 @@ func TestMatchGlobSegments_EmptyPath(t *testing.T) {
 // spoolRequestBodyToTempFile: `size > maxBytes` — mutant changes to `>=`.
 // A body of exactly maxBuildContextBytes bytes should be allowed (tooLarge=false).
 func TestSpoolRequestBodyToTempFile_ExactlyAtLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	// Build a request whose body is exactly maxBuildContextBytes bytes.
 	body := bytes.Repeat([]byte("x"), int(maxBuildContextBytes))
 	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(body))
-	spool, size, err := spoolRequestBodyToTempFile(req, "sockguard-test-", maxBuildContextBytes)
+	spool, size, err := defaultIODeps().spoolRequestBodyToTempFile(req, "sockguard-test-", maxBuildContextBytes)
 	if err != nil {
 		t.Fatalf("spoolRequestBodyToTempFile error = %v", err)
 	}
@@ -137,7 +136,6 @@ func TestSpoolRequestBodyToTempFile_ExactlyAtLimit(t *testing.T) {
 // We verify via the readAllLimited mock: with the real code, a limit of maxBuildDockerfileBytes+1
 // means exactly-at-limit data is NOT truncated and len(raw)==maxBuildDockerfileBytes passes.
 func TestExtractBuildDockerfile_RawExactlyAtLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	// Build content exactly at the limit. Start with a valid FROM, pad the rest.
 	base := "FROM busybox\n"
 	pad := strings.Repeat(" ", maxBuildDockerfileBytes-len(base))
@@ -147,9 +145,11 @@ func TestExtractBuildDockerfile_RawExactlyAtLimit(t *testing.T) {
 	}
 
 	// readAllLimited mock returns exactly-limit bytes (simulating a body at the limit).
-	readAllLimited = func(_ io.Reader, _ int64) ([]byte, error) {
+	iod := defaultIODeps()
+	iod.ReadAllLimited = func(_ io.Reader, _ int64) ([]byte, error) {
 		return raw, nil
 	}
+	_ = iod
 
 	// A body of exactly maxBuildDockerfileBytes should NOT trigger the too-large path.
 	// We test looksLikeDockerfile separately to confirm the FROM is recognized.
@@ -166,7 +166,6 @@ func TestExtractBuildDockerfile_RawExactlyAtLimit(t *testing.T) {
 // extractDockerfileFromTarReader: `len(body) > maxBuildDockerfileBytes` — mutant → `>=`.
 // A tar entry whose Dockerfile content is exactly maxBuildDockerfileBytes should succeed.
 func TestExtractDockerfileFromTarReader_ExactlyAtLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	content := bytes.Repeat([]byte("x"), maxBuildDockerfileBytes)
 
 	var buf bytes.Buffer
@@ -179,7 +178,7 @@ func TestExtractDockerfileFromTarReader_ExactlyAtLimit(t *testing.T) {
 	_, _ = tw.Write(content)
 	_ = tw.Close()
 
-	body, ok, err := extractDockerfileFromTarReader(tar.NewReader(bytes.NewReader(buf.Bytes())), "Dockerfile")
+	body, ok, err := defaultIODeps().extractDockerfileFromTarReader(tar.NewReader(bytes.NewReader(buf.Bytes())), "Dockerfile")
 	if err != nil {
 		t.Fatalf("extractDockerfileFromTarReader error = %v", err)
 	}
@@ -243,7 +242,7 @@ func TestBuildPolicy_HostNetworkNegation(t *testing.T) {
 		return r
 	}
 
-	reason, err := buildPolicy{allowHostNetwork: false}.inspect(req(), "/build")
+	reason, err := buildPolicy{allowHostNetwork: false, io: defaultIODeps()}.inspect(nil, req(), "/build")
 	if err != nil {
 		t.Fatalf("error = %v", err)
 	}
@@ -251,7 +250,7 @@ func TestBuildPolicy_HostNetworkNegation(t *testing.T) {
 		t.Fatalf("reason = %q, want host-network denial", reason)
 	}
 
-	reason, err = buildPolicy{allowHostNetwork: true}.inspect(req(), "/build")
+	reason, err = buildPolicy{allowHostNetwork: true, io: defaultIODeps()}.inspect(nil, req(), "/build")
 	if err != nil {
 		t.Fatalf("error = %v", err)
 	}
@@ -323,7 +322,7 @@ func TestSpoolRequestBodyForInspection_ContentLengthExactlyAtLimit(t *testing.T)
 	req := httptest.NewRequest(http.MethodPut, "/containers/abc/archive?path=/app", bytes.NewReader(body))
 	req.ContentLength = maxBytes // exactly at limit — must NOT trigger bodyTooLargeError
 
-	spool, size, err := spoolRequestBodyForInspection(req, "sockguard-test-", maxBytes)
+	spool, size, err := defaultIODeps().spoolRequestBodyForInspection(req, "sockguard-test-", maxBytes)
 	if err != nil {
 		t.Fatalf("spoolRequestBodyForInspection at exact limit error = %v", err)
 	}
@@ -356,19 +355,19 @@ func TestContainerArchiveSymlinkTargetIsSafe_AbsoluteUnsafe(t *testing.T) {
 // bytes would be read truncated and then pass the `> maxImageLoadManifestBytes` check (never exceed).
 // We ensure a manifest at exactly the limit is accepted.
 func TestExtractImageLoadRepoTags_ManifestAtExactLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	// Build a manifest that is exactly maxImageLoadManifestBytes bytes.
 	// The simplest approach: confirm readAllLimited is called with limit+1.
 	var capturedLimit int64
-	orig := readAllLimited
-	readAllLimited = func(r io.Reader, limit int64) ([]byte, error) {
+	iod := defaultIODeps()
+	orig := iod.ReadAllLimited
+	iod.ReadAllLimited = func(r io.Reader, limit int64) ([]byte, error) {
 		capturedLimit = limit
 		return orig(r, limit)
 	}
 
 	manifest := `[{"RepoTags":["reg.example.com/app:1"]}]`
 	payload := mustImageLoadTar(t, manifest)
-	_, _, err := extractImageLoadRepoTags(bytes.NewReader(payload))
+	_, _, err := iod.extractImageLoadRepoTags(bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("extractImageLoadRepoTags error = %v", err)
 	}
@@ -381,7 +380,6 @@ func TestExtractImageLoadRepoTags_ManifestAtExactLimit(t *testing.T) {
 // `len(body) > maxImageLoadManifestBytes` — mutant → `>=`.
 // A manifest of exactly maxImageLoadManifestBytes bytes must succeed (not error).
 func TestExtractImageLoadRepoTags_ManifestExactlyAtLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	exactContent := make([]byte, maxImageLoadManifestBytes)
 	// Fill with a valid JSON array (padded with spaces).
 	base := []byte(`[{"RepoTags":["reg.io/a:1"]}]`)
@@ -391,13 +389,14 @@ func TestExtractImageLoadRepoTags_ManifestExactlyAtLimit(t *testing.T) {
 	}
 	exactContent[maxImageLoadManifestBytes-1] = ' '
 
-	readAllLimited = func(_ io.Reader, _ int64) ([]byte, error) {
+	iod := defaultIODeps()
+	iod.ReadAllLimited = func(_ io.Reader, _ int64) ([]byte, error) {
 		return exactContent, nil
 	}
 
 	manifest := `[{"RepoTags":["reg.io/a:1"]}]`
 	payload := mustImageLoadTar(t, manifest)
-	tags, found, err := extractImageLoadRepoTags(bytes.NewReader(payload))
+	tags, found, err := iod.extractImageLoadRepoTags(bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("extractImageLoadRepoTags error = %v (should succeed at exact limit)", err)
 	}
@@ -645,7 +644,6 @@ func TestEndpointHasStaticIPConfig_ZeroLengthLinkLocalIPs(t *testing.T) {
 // extractPluginConfigFromTarReader: `len(body) > maxPluginConfigBytes` — mutant → `>=`.
 // A config of exactly maxPluginConfigBytes bytes must succeed.
 func TestExtractPluginConfigFromTarReader_ExactlyAtLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	content := make([]byte, maxPluginConfigBytes)
 	copy(content, []byte(`{"SchemaVersion":"1.0"}`))
 
@@ -660,7 +658,7 @@ func TestExtractPluginConfigFromTarReader_ExactlyAtLimit(t *testing.T) {
 	_ = tw.Close()
 
 	tr := tar.NewReader(bytes.NewReader(buf.Bytes()))
-	cfg, ok, err := extractPluginConfigFromTarReader(tr)
+	cfg, ok, err := defaultIODeps().extractPluginConfigFromTarReader(tr)
 	if err != nil {
 		t.Fatalf("extractPluginConfigFromTarReader error = %v", err)
 	}
