@@ -2,13 +2,14 @@
 
 ## Supported Versions
 
-Sockguard is pre-1.0 and we ship fixes on the latest minor line only. Once
-1.0 lands we'll commit to a rolling window.
+Security fixes are shipped on the **latest release line only**. Once v1.0 is
+tagged we will maintain a rolling two-minor-version window (current + one
+prior minor). Until then, patch the latest 0.x tag.
 
 | Version        | Supported          |
 | -------------- | ------------------ |
-| 0.5.x (latest) | :white_check_mark: |
-| < 0.5          | :x:                |
+| 0.8.x (latest) | :white_check_mark: |
+| < 0.8          | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -44,7 +45,7 @@ release notes unless you prefer to stay anonymous.
 - The published container image at `ghcr.io/codeswhat/sockguard:<tag>`,
   including its SBOM, build provenance, and cosign signatures.
 - Any compiled binary distributed via a GitHub release tagged
-  `v0.x.x` or later.
+  `v0.x.x` or `v1.x.x` or later.
 
 **Out of scope**
 

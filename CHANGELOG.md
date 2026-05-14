@@ -49,6 +49,7 @@ Prometheus metrics renames — update dashboards and alert rules before upgradin
 
 ### Changed
 
+- Added `RELEASING.md` documenting the end-to-end release process (pre-release checklist, tagging, post-tag verification, Helm chart bump, rollback procedure).
 - `serve --help` Long description now enumerates configuration precedence (CLI > `SOCKGUARD_*` env > Tecnativa compat env (`SOCKET_PATH`, `LOG_LEVEL`) > YAML > defaults) so the compat-env aliases and their relative precedence are visible without leaving the terminal.
 - `--config` help text now states that a missing file at the default path falls back to built-in defaults plus env overrides — previously only documented in README/Fumadocs.
 - `docs/migration.mdx` now mentions the legacy singular `ALLOW_RESTART=1` alias alongside `ALLOW_RESTARTS=1`; both have always been accepted by the compat layer (`compat.go`) but only the plural form was documented on the migration page.
