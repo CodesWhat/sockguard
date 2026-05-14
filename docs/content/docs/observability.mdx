@@ -56,12 +56,12 @@ deployments stay quiet until you opt in.
 | `sockguard_build_info`                       | gauge     | `version`, `commit`, `build_date`, `go_version`         | Constant `1`. Use for version panels and Grafana annotations.                                      |
 | `sockguard_start_time_seconds`               | gauge     | —                                                       | Unix epoch when the metrics registry was created. Use for `time() - sockguard_start_time_seconds`. |
 | `sockguard_http_requests_total`              | counter   | `decision`, `method`, `profile`, `route`, `status`      | One per completed request. `decision` ∈ `{allow, deny}`.                                           |
-| `sockguard_http_denied_requests_total`       | counter   | `profile`, `reason_code`, `route`, `rule`               | Only deny-decision rows. `rule` is the matched rule index. Use for policy-violation alerts.        |
+| `sockguard_http_denied_requests_total`       | counter   | `profile`, `reason_code`, `route`                       | Only deny-decision rows. Use for policy-violation alerts. Rule index is in the structured audit log (`matched_rule` field). |
 | `sockguard_http_request_duration_seconds`    | histogram | `decision`, `method`, `profile`, `route`                | Buckets: `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10` seconds.                        |
 | `sockguard_http_requests_active`             | gauge     | —                                                       | Currently in-flight requests. Spikes during streaming endpoints (logs/attach/events).              |
 | `sockguard_upstream_socket_up`               | gauge     | —                                                       | `1` reachable, `0` unreachable. Only emitted when `health.watchdog.enabled` is true.               |
 | `sockguard_upstream_watchdog_checks_total`   | counter   | `result`                                                | `result` ∈ `{connected, unreachable}`. Increments every interval; ratio is your error budget.      |
-| `sockguard_throttle_total`                   | counter   | `profile`, `reason`                                     | Throttle denials. `reason` ∈ `{rate_limit_exceeded, concurrency_cap, priority_floor}`. |
+| `sockguard_throttle_requests_total`          | counter   | `profile`, `reason_code`, `mode`                        | Throttle denials. `reason_code` ∈ `{rate_limit_exceeded, concurrency_cap, priority_floor}`. `mode` ∈ `{enforce, warn, audit}`. |
 | `sockguard_inflight_requests`                | gauge     | `profile`                                               | In-flight count for profiles with `max_inflight` configured. Reflects real concurrency, including `warn`/`audit`-mode requests that would have been denied. |
 | `sockguard_ratelimit_global_inflight`        | gauge     | —                                                       | Total in-flight count across all profiles when `clients.global_concurrency` is set. |
 | `sockguard_policy_version`                   | gauge     | —                                                       | Monotonic policy generation counter. Ticks once at startup and once per successful hot reload. Matches the `version` field in `GET /admin/policy/version`. |
@@ -156,7 +156,7 @@ if it currently reads `up=1`.
 **Throttle rate by profile and reason:**
 
 ```text
-sum by (profile, reason) (rate(sockguard_throttle_total[5m]))
+sum by (profile, reason_code) (rate(sockguard_throttle_requests_total[5m]))
 ```
 
 `priority_floor` denials under a sustained load usually indicate that a

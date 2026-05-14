@@ -41,11 +41,18 @@ CLI flag rename:
 
 - `--deny-response-verbosity` → `--deny-verbosity`. The YAML key and env var are `response.deny_verbosity` / `SOCKGUARD_RESPONSE_DENY_VERBOSITY`; the old flag name carried a redundant `response` segment that prevented the three forms from round-tripping.
 
+Prometheus metrics renames — update dashboards and alert rules before upgrading.
+
+- Counter `sockguard_throttle_total` → `sockguard_throttle_requests_total`. The base name now carries the `requests` noun for parity with `sockguard_http_requests_total` / `sockguard_http_denied_requests_total` / etc.
+- Label `reason` → `reason_code` on `sockguard_throttle_requests_total{...}` for parity with `sockguard_http_denied_requests_total{...reason_code=...}`. Unified `sum by (reason_code)` PromQL across both counters now works.
+- Dropped `rule` label from `sockguard_http_denied_requests_total{...}`. The label's value was the zero-based ordinal index of the matched rule, which silently shifted whenever a rule was inserted or reordered — making dashboards keyed on `rule="3"` break on any policy edit. The rule index is still emitted on every deny in the structured audit log (`matched_rule` field) and the access log (`rule` slog attribute), which is the durable forensic record.
+
 ### Changed
 
 - `serve --help` Long description now enumerates configuration precedence (CLI > `SOCKGUARD_*` env > Tecnativa compat env (`SOCKET_PATH`, `LOG_LEVEL`) > YAML > defaults) so the compat-env aliases and their relative precedence are visible without leaving the terminal.
 - `--config` help text now states that a missing file at the default path falls back to built-in defaults plus env overrides — previously only documented in README/Fumadocs.
 - `docs/migration.mdx` now mentions the legacy singular `ALLOW_RESTART=1` alias alongside `ALLOW_RESTARTS=1`; both have always been accepted by the compat layer (`compat.go`) but only the plural form was documented on the migration page.
+- Internal: renamed `configReloadLastSeconds` field to `configReloadLastNanos` and `configReloadLastSecondsKnown` to `configReloadLastKnown` in `internal/metrics`. The field stored `time.UnixNano()` — the "Seconds" suffix was misleading. The Prometheus wire format is unchanged (`/1e9` still converts to seconds at emit time).
 
 ## [0.8.1] - 2026-05-14
 

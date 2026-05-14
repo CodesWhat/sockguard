@@ -40,7 +40,7 @@ func TestMiddlewareRecordsRequestDecisionMetrics(t *testing.T) {
 
 	out := renderMetrics(t, registry)
 	assertContains(t, out, `sockguard_http_requests_total{decision="deny",method="POST",profile="watchtower",route="/containers/{id}/update",status="403"} 1`)
-	assertContains(t, out, `sockguard_http_denied_requests_total{mode="enforce",profile="watchtower",reason_code="matched_deny_rule",route="/containers/{id}/update",rule="2"} 1`)
+	assertContains(t, out, `sockguard_http_denied_requests_total{mode="enforce",profile="watchtower",reason_code="matched_deny_rule",route="/containers/{id}/update"} 1`)
 	assertContains(t, out, `sockguard_http_request_duration_seconds_count{decision="deny",method="POST",profile="watchtower",route="/containers/{id}/update"} 1`)
 	assertContains(t, out, "sockguard_http_requests_active 0")
 }
@@ -65,7 +65,7 @@ func TestMiddlewareRecordsWouldDenyWithModeLabel(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	out := renderMetrics(t, registry)
-	assertContains(t, out, `sockguard_http_denied_requests_total{mode="warn",profile="watchtower",reason_code="matched_deny_rule",route="/containers/{id}/update",rule="2"} 1`)
+	assertContains(t, out, `sockguard_http_denied_requests_total{mode="warn",profile="watchtower",reason_code="matched_deny_rule",route="/containers/{id}/update"} 1`)
 }
 
 func TestObserveThrottleEmitsModeLabel(t *testing.T) {
@@ -75,8 +75,8 @@ func TestObserveThrottleEmitsModeLabel(t *testing.T) {
 	registry.ObserveThrottle("ci", "rate_limit", "") // empty normalizes to enforce
 
 	out := renderMetrics(t, registry)
-	assertContains(t, out, `sockguard_throttle_total{mode="enforce",profile="ci",reason="rate_limit"} 2`)
-	assertContains(t, out, `sockguard_throttle_total{mode="warn",profile="ci",reason="rate_limit"} 1`)
+	assertContains(t, out, `sockguard_throttle_requests_total{mode="enforce",profile="ci",reason_code="rate_limit"} 2`)
+	assertContains(t, out, `sockguard_throttle_requests_total{mode="warn",profile="ci",reason_code="rate_limit"} 1`)
 }
 
 func TestRouteCategoryKeepsDockerPathLabelsBounded(t *testing.T) {
@@ -254,11 +254,8 @@ func TestDefaultLabelsForMissingMetaRequestAndDenyDetails(t *testing.T) {
 	out := renderMetrics(t, registry)
 	assertContains(t, out, `sockguard_http_requests_total{decision="error",method="UNKNOWN",profile="default",route="unknown",status="500"} 1`)
 	assertContains(t, out, `sockguard_http_requests_total{decision="deny",method="UNKNOWN",profile="default",route="/containers/create",status="403"} 1`)
-	assertContains(t, out, `sockguard_http_denied_requests_total{mode="enforce",profile="default",reason_code="unknown",route="/containers/create",rule="0"} 1`)
+	assertContains(t, out, `sockguard_http_denied_requests_total{mode="enforce",profile="default",reason_code="unknown",route="/containers/create"} 1`)
 
-	if got := ruleLabel(nil); got != "-1" {
-		t.Fatalf("ruleLabel(nil) = %q, want -1", got)
-	}
 	if got := routeLabel(&http.Request{}, nil); got != "unknown" {
 		t.Fatalf("routeLabel(request without URL) = %q, want unknown", got)
 	}
@@ -314,8 +311,8 @@ func TestSortKeysBucketFormattingAndLabelEscaping(t *testing.T) {
 		t.Fatalf("requestLabelSortKey() = %q", got)
 	}
 
-	denyKey := denyLabels{mode: "enforce", profile: "default", reasonCode: "matched", route: "/containers/{id}/start", rule: "3"}
-	if got := denyLabelSortKey(denyKey); got != "enforce\x00default\x00matched\x00/containers/{id}/start\x003" {
+	denyKey := denyLabels{mode: "enforce", profile: "default", reasonCode: "matched", route: "/containers/{id}/start"}
+	if got := denyLabelSortKey(denyKey); got != "enforce\x00default\x00matched\x00/containers/{id}/start" {
 		t.Fatalf("denyLabelSortKey() = %q", got)
 	}
 
@@ -390,10 +387,10 @@ func TestSortedLabelHelpersOrderDeterministically(t *testing.T) {
 	}
 
 	denies := sortedDenyLabels(map[denyLabels]uint64{
-		{mode: "enforce", profile: "b", reasonCode: "z", route: "/z", rule: "2"}: 1,
-		{mode: "enforce", profile: "a", reasonCode: "a", route: "/a", rule: "1"}: 1,
+		{mode: "enforce", profile: "b", reasonCode: "z", route: "/z"}: 1,
+		{mode: "enforce", profile: "a", reasonCode: "a", route: "/a"}: 1,
 	})
-	if got := denyLabelSortKey(denies[0]); got != "enforce\x00a\x00a\x00/a\x001" {
+	if got := denyLabelSortKey(denies[0]); got != "enforce\x00a\x00a\x00/a" {
 		t.Fatalf("first sorted deny key = %q", got)
 	}
 
@@ -558,7 +555,7 @@ func TestRegistryConcurrentObserveAndScrape(t *testing.T) {
 	expected := uint64(writers * opsPerWriter)
 	out := renderMetrics(t, registry)
 	assertContains(t, out, `sockguard_http_requests_total{decision="allow",method="GET",profile="ci",route="/_ping",status="200"} `+strconv.FormatUint(expected, 10))
-	assertContains(t, out, `sockguard_throttle_total{mode="enforce",profile="ci",reason="rate_limit"} `+strconv.FormatUint(expected, 10))
+	assertContains(t, out, `sockguard_throttle_requests_total{mode="enforce",profile="ci",reason_code="rate_limit"} `+strconv.FormatUint(expected, 10))
 	assertContains(t, out, `sockguard_config_reload_total{result="ok"} `+strconv.FormatUint(expected, 10))
 	assertContains(t, out, `sockguard_upstream_watchdog_checks_total{result="connected"} `+strconv.FormatUint(expected, 10))
 	assertContains(t, out, `sockguard_http_request_duration_seconds_count{decision="allow",method="GET",profile="ci",route="/_ping"} `+strconv.FormatUint(expected, 10))

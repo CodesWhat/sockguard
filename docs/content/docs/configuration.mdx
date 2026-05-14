@@ -552,8 +552,8 @@ violated (fail-closed, never silent-disable):
 When Prometheus metrics are enabled (`metrics.enabled: true`), two additional
 series appear:
 
-- `sockguard_throttle_total{profile, reason}` — counter incremented on every
-  denial by this subsystem. `reason` is one of `rate_limit_exceeded`,
+- `sockguard_throttle_requests_total{profile, reason_code, mode}` — counter incremented on every
+  denial by this subsystem. `reason_code` is one of `rate_limit_exceeded`,
   `concurrency_cap`, or `priority_floor`.
 - `sockguard_inflight_requests{profile}` — gauge tracking the current in-flight
   count for profiles that have `max_inflight` configured.
