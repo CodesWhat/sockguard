@@ -182,14 +182,56 @@ func TestClientUnixPeerProfiles_NonEmpty(t *testing.T) {
 	}
 }
 
+// TestClientProfileModesEmptyAndPopulated pins the CONDITIONALS_NEGATION
+// mutant at serve.go:847 (`len(profiles) == 0` → `!= 0`). The fast-path
+// returns nil for an empty list; the mutant would invert the guard and
+// short-circuit to nil precisely when there ARE profiles to flatten.
+func TestClientProfileModesEmptyAndPopulated(t *testing.T) {
+	t.Run("empty profiles returns nil", func(t *testing.T) {
+		if got := clientProfileModes(nil); got != nil {
+			t.Fatalf("clientProfileModes(nil) = %v, want nil", got)
+		}
+		if got := clientProfileModes([]config.ClientProfileConfig{}); got != nil {
+			t.Fatalf("clientProfileModes([]) = %v, want nil", got)
+		}
+	})
+
+	t.Run("populated profiles returns flattened map", func(t *testing.T) {
+		profiles := []config.ClientProfileConfig{
+			{Name: "alpha", Mode: "warn"},
+			{Name: "beta", Mode: "enforce"},
+		}
+		got := clientProfileModes(profiles)
+		if got == nil {
+			t.Fatal("clientProfileModes(populated) = nil — mutant `len(profiles) != 0` would return nil on populated input")
+		}
+		if got["alpha"] != "warn" {
+			t.Fatalf("got[alpha] = %q, want warn", got["alpha"])
+		}
+		if got["beta"] != "enforce" {
+			t.Fatalf("got[beta] = %q, want enforce", got["beta"])
+		}
+	})
+}
+
 // ---- printRules: deny action and empty method (wildcard) ----
 
 func TestPrintRules_DenyAndWildcardMethod(t *testing.T) {
+	// Pin two distinct CONDITIONALS_NEGATION mutants on printRules at
+	// validate.go:78 (`method == ""` → `!= ""`):
+	//
+	//   - Empty-method case: must render as "*". Path is "/_ping" (no '*')
+	//     so the substring assertion isolates the wildcard substitution.
+	//   - Non-empty-method case: must render the literal method ("GET"),
+	//     NOT "*". The mutant flips and would overwrite GET with "*".
+	//
+	// The earlier version used Path "/**" which leaked '*' from the path
+	// into the wildcard assertion and let the mutant survive even with
+	// two rules.
 	cfg := &config.Config{
 		Rules: []config.RuleConfig{
-			// Empty method must render as "*"
-			{Match: config.MatchConfig{Method: "", Path: "/**"}, Action: "deny"},
-			{Match: config.MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},
+			{Match: config.MatchConfig{Method: "", Path: "/_ping"}, Action: "deny"},
+			{Match: config.MatchConfig{Method: "GET", Path: "/healthz"}, Action: "allow"},
 		},
 	}
 
@@ -202,7 +244,12 @@ func TestPrintRules_DenyAndWildcardMethod(t *testing.T) {
 		t.Fatalf("expected 'deny' in output, got: %s", output)
 	}
 	if !strings.Contains(output, "*") {
-		t.Fatalf("expected wildcard method '*' in output, got: %s", output)
+		t.Fatalf("expected wildcard method '*' for empty-method rule, got: %s", output)
+	}
+	// The GET rule must render its literal method, not get overwritten with
+	// '*' by a `method != ""` mutant.
+	if !strings.Contains(output, "GET") {
+		t.Fatalf("expected 'GET' method literal for the explicit-method rule (mutant `method != \"\"` would overwrite it with '*'), got: %s", output)
 	}
 }
 

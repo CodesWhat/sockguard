@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/codeswhat/sockguard/internal/admin"
@@ -351,5 +353,40 @@ func TestReloadCoordinatorPreservesPolicyVersionOnReject(t *testing.T) {
 				t.Fatalf("Source = %q after %s, want startup preserved", got, tc.name)
 			}
 		})
+	}
+}
+
+// TestNewReloadCoordinatorPreservesNonNilInitialTeardown pins the
+// CONDITIONALS_NEGATION mutant at serve_reload.go:78 (`initialTeardown ==
+// nil` → `!= nil`). The constructor's intent is "default a nil teardown
+// to a no-op stub." The mutant inverts the guard so a NON-nil caller-
+// provided teardown gets overwritten with the stub, silently dropping
+// the chain's real teardown — a hot-reload correctness hazard because
+// the first reload would then leak the original chain's goroutines
+// instead of calling the captured teardown.
+//
+// We pass a teardown that flips a sentinel, drive coordinator.stop(),
+// and assert the sentinel was set. Under the mutant the teardown is
+// replaced and the sentinel stays unset.
+func TestNewReloadCoordinatorPreservesNonNilInitialTeardown(t *testing.T) {
+	var called atomic.Bool
+	teardown := func() { called.Store(true) }
+
+	c := newReloadCoordinator(
+		&config.Config{},
+		"unused",
+		nil,
+		teardown,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
+	c.stop()
+
+	if !called.Load() {
+		t.Fatal("non-nil initialTeardown was not invoked by stop() — mutant `initialTeardown != nil` replaces a real teardown with the stub")
 	}
 }
