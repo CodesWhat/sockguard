@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"Name\":\"data\",\"Labels\":{\"com.example/key\":\"value with \\u0007 bell\",\"\":\"empty-key\",\"\\u202etrojan\":\"rtl-override\"}}")

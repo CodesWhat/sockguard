@@ -1,0 +1,2 @@
+go test fuzz v1
+string("fromImage=ghcr.io%2Facme%2Fapp%40&tag=latest")

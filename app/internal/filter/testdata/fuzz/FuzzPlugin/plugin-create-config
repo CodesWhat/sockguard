@@ -1,0 +1,4 @@
+go test fuzz v1
+string("/plugins/create")
+string("name=trojan")
+[]byte("{\"Mounts\":[{\"Type\":\"bind\",\"Source\":\"/\",\"Destination\":\"/host\"}],\"Network\":{\"Type\":\"host\"}}")
