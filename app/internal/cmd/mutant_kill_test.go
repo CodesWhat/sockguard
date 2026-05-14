@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
@@ -214,6 +215,33 @@ func TestRequireExplicitConfigFile_FlagChangedOnRoot_EmptyPath(t *testing.T) {
 	err := requireExplicitConfigFile(child, "")
 	if err == nil {
 		t.Fatal("expected error for empty config path with changed flag")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("error = %v, want mention of 'empty'", err)
+	}
+}
+
+// TestRequireExplicitConfigFile_FlagOnRootLocalChanged actually exercises the
+// "look up the flag on the root" fallback. Earlier tests used PersistentFlags
+// which cobra propagates via persistentFlag inheritance — so cmd.Flag("config")
+// returns non-nil and the if-branch is dead code. By installing the flag as a
+// LOCAL flag on root (not persistent), child.Flag("config") returns nil and
+// the fallback path is the only way to surface the Changed flag. This is what
+// kills config_flag.go:13:10 (`flag == nil` → `!=`) and 13:31
+// (`cmd.Root() != nil` → `==`).
+func TestRequireExplicitConfigFile_FlagOnRootLocalChanged(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	root.Flags().String("config", "", "") // local, NOT persistent
+	child := &cobra.Command{Use: "child"}
+	root.AddCommand(child)
+
+	if err := root.Flags().Set("config", ""); err != nil {
+		t.Fatalf("set config flag: %v", err)
+	}
+
+	err := requireExplicitConfigFile(child, "")
+	if err == nil {
+		t.Fatal("expected error for empty config path when fallback to root's local flag is required")
 	}
 	if !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("error = %v, want mention of 'empty'", err)
@@ -825,6 +853,14 @@ func TestRunServe_AdminSocketRemovedWhenSocketPathSet(t *testing.T) {
 	if !foundAdmin {
 		t.Fatalf("expected removePath(%q) call (admin socket cleanup); calls: %#v", adminSock, removed)
 	}
+
+	// Also pin serve.go:279 CONDITIONALS_NEGATION (`err != nil` → `==`): the
+	// mutant logs "remove admin socket error" whenever removePath returns nil,
+	// even though that's the happy path. removePath above returns nil for both
+	// the listen socket and the admin socket, so no such log line should fire.
+	if collector.HasMessage("remove admin socket error") {
+		t.Fatalf("removePath returned nil but admin-socket error log fired (mutant `err == nil` would do this); records: %#v", collector.Records())
+	}
 }
 
 // TestDefaultBuildBundleVerifier_PropagatesBuildConfigError pins the
@@ -872,6 +908,74 @@ func TestDefaultBuildBundleVerifier_RejectsKeylessWithoutTUF(t *testing.T) {
 	if !strings.Contains(err.Error(), "production TUF trust root is not yet wired") {
 		t.Fatalf("error = %q, want the serve_deps.go canary message containing %q",
 			err.Error(), "production TUF trust root is not yet wired")
+	}
+}
+
+// TestRunServe_ReloadEnabledStartsWatcherWhenCfgFileSet pins the
+// CONDITIONALS_NEGATION mutant at serve.go:216 (`cfgFile != ""` → `==`).
+// With the mutation the reload branch fires only when cfgFile is empty —
+// where startReloader returns "cfgFile is required" — so a real configured
+// reload setup silently fails to start the watcher. We point cfgFile at a
+// real temp file with Reload.Enabled=true and assert the reload package's
+// "config hot-reload enabled" Info line fires (it is emitted from inside
+// rl.Run after the fsnotify watch is attached).
+func TestRunServe_ReloadEnabledStartsWatcherWhenCfgFileSet(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpCfg := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(tmpCfg, []byte("listen:\n  socket: /tmp/x.sock\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	originalCfgFile := cfgFile
+	cfgFile = tmpCfg
+	t.Cleanup(func() { cfgFile = originalCfgFile })
+
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		cfg := testServeConfig()
+		cfg.Listen.Address = "127.0.0.1:0"
+		cfg.Reload.Enabled = true
+		cfg.Reload.Debounce = "10ms"
+		return cfg, nil
+	}
+
+	collector := &testhelp.CollectingHandler{}
+	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
+		return collector.Logger(), nil, nil
+	}
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		return stubCompiledRules(), nil
+	}
+	deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return &serveTestConn{}, nil
+	}
+	deps.createServeListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) {}
+	// Wait until the reloader has logged "config hot-reload enabled" before
+	// sending SIGINT — otherwise shutdown can race the watcher startup and
+	// the log never appears.
+	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {
+		go func() {
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				if collector.HasMessage("config hot-reload enabled") {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			c <- syscall.SIGINT
+		}()
+	}
+	deps.shutdownServer = func(_ *http.Server, _ context.Context) error { return nil }
+	deps.removePath = func(string) error { return nil }
+
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
+		t.Fatalf("runServeWithDeps() error = %v", err)
+	}
+	if !collector.HasMessage("config hot-reload enabled") {
+		t.Fatalf("expected 'config hot-reload enabled' log when Reload.Enabled and cfgFile set; records: %#v", collector.Records())
 	}
 }
 
