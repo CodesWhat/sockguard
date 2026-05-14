@@ -799,6 +799,37 @@ func TestPrintClientProfiles_DenyActionDoesNotRenderAsAllow(t *testing.T) {
 	}
 }
 
+// TestPrintClientProfiles_EmptyMethodRendersWildcard kills the
+// CONDITIONALS_NEGATION mutant at validate.go:106 (`method == ""` → `!= ""`).
+// An empty Method should render as "*" so the output communicates the
+// implicit any-method behavior; the mutated form would print blank space.
+func TestPrintClientProfiles_EmptyMethodRendersWildcard(t *testing.T) {
+	cfg := &config.Config{
+		Clients: config.ClientsConfig{
+			Profiles: []config.ClientProfileConfig{
+				{
+					Name: "wild",
+					Rules: []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "", Path: "/sentinel"}, Action: "allow"},
+					},
+				},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	p := ui.New(&out)
+	printClientProfiles(&out, p, cfg)
+
+	output := out.String()
+	if !strings.Contains(output, "* ") && !strings.Contains(output, "*     ") {
+		t.Fatalf("expected '*' wildcard for empty method, got:\n%s", output)
+	}
+	if !strings.Contains(output, "/sentinel") {
+		t.Fatalf("expected /sentinel path in output, got:\n%s", output)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // serve.go:691 — CONDITIONALS_NEGATION: pb.VerifyTimeout == ""
 // serve.go:709 — CONDITIONALS_NEGATION: cfg == nil
