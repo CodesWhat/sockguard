@@ -62,9 +62,9 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		return "", err
 	}
 	if spool == nil || size == 0 {
-		if spool != nil {
-			spool.closeAndRemove()
-		}
+		// closeAndRemove is nil-safe; this avoids a per-path nil check and
+		// eliminates an equivalent mutation point in the inspect hot path.
+		spool.closeAndRemove()
 		return "", nil
 	}
 
