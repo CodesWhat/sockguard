@@ -33,6 +33,17 @@ var prometheusLabelEscaper = strings.NewReplacer(
 )
 
 // Registry stores in-process Prometheus metrics for the proxy.
+//
+// Hot-path observations (requests, denies, duration histograms, throttles,
+// upstream watchdog ticks, config-reload counters, per-profile in-flight) all
+// run lock-free against sync.Map entries whose values are atomic counters or
+// atomic-only histograms. The cold scrape path walks each sync.Map and reads
+// each counter atomically — there is no shared mutex between observe() and
+// writePrometheus(), so a slow scrape no longer blocks the request hot path.
+// Pre-v0.8.1 a single Registry.mu serialized every observe call against the
+// scrape, which became a measurable tail-latency contributor under sustained
+// scrape pressure (the v0.8.0 NAS soak saw the lock held for the full clone
+// duration of every map on every scrape).
 type Registry struct {
 	activeRequests atomic.Int64
 	upstreamKnown  atomic.Bool
@@ -54,19 +65,26 @@ type Registry struct {
 	startedAt time.Time
 
 	// inflight tracks current per-profile in-flight request counts under a
-	// concurrency cap. Kept off the shared `mu` mutex because SetInflight is
-	// called twice per admitted request on the rate-limit hot path, while
-	// `mu` also serializes request/deny/duration/throttle observations. Using
-	// per-profile *atomic.Int64 lets SetInflight be lock-free under contention.
+	// concurrency cap. SetInflight is called twice per admitted request on
+	// the rate-limit hot path; per-profile *atomic.Int64 keeps it lock-free.
 	inflight sync.Map // map[string]*atomic.Int64
 
-	mu             sync.Mutex
-	requests       map[requestLabels]uint64
-	denies         map[denyLabels]uint64
-	duration       map[durationLabels]*histogram
-	upstream       map[upstreamWatchdogLabels]uint64
-	throttles      map[throttleLabels]uint64
-	configReloads  map[configReloadLabels]uint64
+	// Lock-free counter maps. Each entry is a *atomic.Uint64 stored under
+	// the label-struct key; the first observation for a fresh label tuple
+	// pays a sync.Map.LoadOrStore, subsequent observations are a single
+	// atomic Add. The exposition path walks each map with sync.Map.Range
+	// and reads the counter atomically — no shared mutex.
+	requests      sync.Map // map[requestLabels]*atomic.Uint64
+	denies        sync.Map // map[denyLabels]*atomic.Uint64
+	upstream      sync.Map // map[upstreamWatchdogLabels]*atomic.Uint64
+	throttles     sync.Map // map[throttleLabels]*atomic.Uint64
+	configReloads sync.Map // map[configReloadLabels]*atomic.Uint64
+
+	// Duration histograms are also lock-free: each entry is a *atomicHistogram
+	// whose buckets/count/sum are atomic. observeDuration runs one atomic
+	// Add per crossed bucket plus a Float64 sum CAS; scrape reads each
+	// bucket / count / sum atomically.
+	duration sync.Map // map[durationLabels]*atomicHistogram
 }
 
 type requestLabels struct {
@@ -110,23 +128,93 @@ type configReloadLabels struct {
 	result string
 }
 
-type histogram struct {
+// atomicHistogram is the lock-free histogram representation. Each bucket
+// counter and the count + sum fields are read and written atomically; the
+// sum holds math.Float64bits(value) so a single CAS loop folds a new
+// observation into it without a per-histogram mutex. The bucket slice is
+// allocated once at construction and never resized — len(buckets) is fixed
+// at len(defaultDurationBuckets).
+type atomicHistogram struct {
+	buckets []atomic.Uint64
+	count   atomic.Uint64
+	sum     atomic.Uint64 // math.Float64bits(sum-of-seconds)
+}
+
+func newAtomicHistogram() *atomicHistogram {
+	return &atomicHistogram{buckets: make([]atomic.Uint64, len(defaultDurationBuckets))}
+}
+
+func (h *atomicHistogram) observe(seconds float64) {
+	for i, bucket := range defaultDurationBuckets {
+		if seconds <= bucket {
+			h.buckets[i].Add(1)
+		}
+	}
+	h.count.Add(1)
+	// CAS loop to add seconds into a float64 stored as its uint64 bits. Under
+	// contention this retries; under typical load (one observation per
+	// request, no shared writers across histograms) the loop exits on the
+	// first iteration.
+	for {
+		old := h.sum.Load()
+		next := math.Float64bits(math.Float64frombits(old) + seconds)
+		if h.sum.CompareAndSwap(old, next) {
+			return
+		}
+	}
+}
+
+// snapshot reads the histogram fields atomically into a plain struct for the
+// scrape path. Bucket reads happen left-to-right, so the snapshot can show a
+// later-bucket count that lags the count field by one observation; that is
+// acceptable for Prometheus exposition (the scrape is approximate anyway).
+type histogramSnapshot struct {
 	buckets []uint64
 	count   uint64
 	sum     float64
 }
 
+func (h *atomicHistogram) snapshot() histogramSnapshot {
+	buckets := make([]uint64, len(h.buckets))
+	for i := range h.buckets {
+		buckets[i] = h.buckets[i].Load()
+	}
+	return histogramSnapshot{
+		buckets: buckets,
+		count:   h.count.Load(),
+		sum:     math.Float64frombits(h.sum.Load()),
+	}
+}
+
 // NewRegistry constructs an empty metrics registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		startedAt:     time.Now(),
-		requests:      make(map[requestLabels]uint64),
-		denies:        make(map[denyLabels]uint64),
-		duration:      make(map[durationLabels]*histogram),
-		upstream:      make(map[upstreamWatchdogLabels]uint64),
-		throttles:     make(map[throttleLabels]uint64),
-		configReloads: make(map[configReloadLabels]uint64),
+		startedAt: time.Now(),
 	}
+}
+
+// addCounter increments the counter stored at key in m by 1, allocating a
+// fresh *atomic.Uint64 on first use. The LoadOrStore is paid only the first
+// time a label tuple is observed; subsequent observations are a single
+// atomic Add. Shared by every counter-map observer below.
+func addCounter[K comparable](m *sync.Map, key K) {
+	val, ok := m.Load(key)
+	if !ok {
+		actual, _ := m.LoadOrStore(key, &atomic.Uint64{})
+		val = actual
+	}
+	val.(*atomic.Uint64).Add(1)
+}
+
+// collectCounters walks a counter sync.Map into an ordinary map for the
+// sort/emit phase of writePrometheus. The walk reads each counter atomically.
+func collectCounters[K comparable](m *sync.Map) map[K]uint64 {
+	out := make(map[K]uint64)
+	m.Range(func(k, v any) bool {
+		out[k.(K)] = v.(*atomic.Uint64).Load()
+		return true
+	})
+	return out
 }
 
 // ObserveConfigReload increments the config reload counter for the given
@@ -138,9 +226,7 @@ func (r *Registry) ObserveConfigReload(result string) {
 	if r == nil {
 		return
 	}
-	r.mu.Lock()
-	r.configReloads[configReloadLabels{result: result}]++
-	r.mu.Unlock()
+	addCounter(&r.configReloads, configReloadLabels{result: result})
 
 	if result == "ok" {
 		ts := time.Now().UnixNano()
@@ -176,9 +262,7 @@ func (r *Registry) ObserveThrottle(profile, reason, mode string) {
 	if mode == "" {
 		mode = "enforce"
 	}
-	r.mu.Lock()
-	r.throttles[throttleLabels{reason: reason, profile: profile, mode: mode}]++
-	r.mu.Unlock()
+	addCounter(&r.throttles, throttleLabels{reason: reason, profile: profile, mode: mode})
 }
 
 // SetInflight updates the current in-flight count gauge for a profile.
@@ -233,10 +317,7 @@ func (r *Registry) ObserveUpstreamWatchdog(up bool) {
 	if up {
 		result = "connected"
 	}
-
-	r.mu.Lock()
-	r.upstream[upstreamWatchdogLabels{result: result}]++
-	r.mu.Unlock()
+	addCounter(&r.upstream, upstreamWatchdogLabels{result: result})
 }
 
 // SetUpstreamSocketState updates the current active upstream socket state.
@@ -273,48 +354,43 @@ func (r *Registry) observe(req *http.Request, meta *logging.RequestMeta, status 
 		route:    route,
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.requests[requestKey]++
-	r.observeDurationLocked(durationKey, seconds)
+	addCounter(&r.requests, requestKey)
+	r.observeDuration(durationKey, seconds)
 	// Both real denies (enforce mode) and would-be-denies (warn / audit) are
 	// counted here; the mode label distinguishes them so dashboards can
 	// compare "blocked" vs "would-have-been-blocked" volume.
 	if decision == "deny" || decision == logging.DecisionWouldDeny {
-		r.denies[denyLabels{
+		addCounter(&r.denies, denyLabels{
 			profile:    profile,
 			reasonCode: reasonCodeLabel(meta),
 			route:      route,
 			rule:       ruleLabel(meta),
 			mode:       rolloutModeLabel(meta),
-		}]++
+		})
 	}
 }
 
-func (r *Registry) observeDurationLocked(key durationLabels, seconds float64) {
-	h := r.duration[key]
-	if h == nil {
-		h = &histogram{buckets: make([]uint64, len(defaultDurationBuckets))}
-		r.duration[key] = h
+func (r *Registry) observeDuration(key durationLabels, seconds float64) {
+	val, ok := r.duration.Load(key)
+	if !ok {
+		actual, _ := r.duration.LoadOrStore(key, newAtomicHistogram())
+		val = actual
 	}
-	for i, bucket := range defaultDurationBuckets {
-		if seconds <= bucket {
-			h.buckets[i]++
-		}
-	}
-	h.count++
-	h.sum += seconds
+	val.(*atomicHistogram).observe(seconds)
 }
 
 func (r *Registry) writePrometheus(w http.ResponseWriter) {
-	r.mu.Lock()
-	requests := cloneMap(r.requests)
-	denies := cloneMap(r.denies)
-	durations := cloneHistograms(r.duration)
-	upstream := cloneMap(r.upstream)
-	throttles := cloneMap(r.throttles)
-	reloads := cloneMap(r.configReloads)
+	// Each sync.Map walk reads counters atomically. Without a shared mutex
+	// between hot observe() and cold writePrometheus(), individual counters
+	// remain self-consistent but the set is not a single instant — that is
+	// the standard Prometheus exposition contract (scrapes are approximate).
+	requests := collectCounters[requestLabels](&r.requests)
+	denies := collectCounters[denyLabels](&r.denies)
+	durations := snapshotHistograms(&r.duration)
+	upstream := collectCounters[upstreamWatchdogLabels](&r.upstream)
+	throttles := collectCounters[throttleLabels](&r.throttles)
+	reloads := collectCounters[configReloadLabels](&r.configReloads)
+
 	active := r.activeRequests.Load()
 	upstreamKnown := r.upstreamKnown.Load()
 	upstreamUp := r.upstreamUp.Load()
@@ -322,7 +398,6 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	reloadLastNanos := r.configReloadLastSeconds.Load()
 	policyVersionKnown := r.policyVersionKnown.Load()
 	policyVersion := r.policyVersion.Load()
-	r.mu.Unlock()
 
 	inflight := snapshotInflight(&r.inflight)
 
@@ -395,7 +470,7 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 			labelValue(profile), inflight[profile])
 	}
 
-	fmt.Fprintln(w, "# HELP sockguard_config_reload_total Total hot-reload attempts since startup. result is ok (applied), reject_load (file read or parse failed), reject_validation (validator rejected the candidate config), or reject_immutable (an immutable field changed and the reload was refused).")
+	fmt.Fprintln(w, "# HELP sockguard_config_reload_total Total hot-reload attempts since startup. result is ok (applied), reject_load (file read or parse failed), reject_validation (validator rejected the candidate config), reject_immutable (an immutable field changed and the reload was refused), or reject_signature (the configured policy bundle signature did not verify).")
 	fmt.Fprintln(w, "# TYPE sockguard_config_reload_total counter")
 	for _, key := range sortedConfigReloadLabels(reloads) {
 		fmt.Fprintf(w, "sockguard_config_reload_total{result=%s} %d\n",
@@ -460,24 +535,15 @@ func sortedInflightKeys(values map[string]int64) []string {
 	return keys
 }
 
-func cloneMap[K comparable](src map[K]uint64) map[K]uint64 {
-	dst := make(map[K]uint64, len(src))
-	for key, value := range src {
-		dst[key] = value
-	}
-	return dst
-}
-
-func cloneHistograms(src map[durationLabels]*histogram) map[durationLabels]*histogram {
-	dst := make(map[durationLabels]*histogram, len(src))
-	for key, value := range src {
-		if value == nil {
-			continue
-		}
-		buckets := make([]uint64, len(value.buckets))
-		copy(buckets, value.buckets)
-		dst[key] = &histogram{buckets: buckets, count: value.count, sum: value.sum}
-	}
+// snapshotHistograms walks the lock-free histogram sync.Map and returns
+// per-key atomic snapshots for the exposition path. Each histogram's bucket
+// counts, total count, and sum are read atomically from the live histogram.
+func snapshotHistograms(m *sync.Map) map[durationLabels]histogramSnapshot {
+	dst := make(map[durationLabels]histogramSnapshot)
+	m.Range(func(k, v any) bool {
+		dst[k.(durationLabels)] = v.(*atomicHistogram).snapshot()
+		return true
+	})
 	return dst
 }
 
@@ -503,7 +569,7 @@ func sortedDenyLabels(values map[denyLabels]uint64) []denyLabels {
 	return keys
 }
 
-func sortedDurationLabels(values map[durationLabels]*histogram) []durationLabels {
+func sortedDurationLabels(values map[durationLabels]histogramSnapshot) []durationLabels {
 	keys := make([]durationLabels, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
