@@ -282,26 +282,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy
 		{http.MethodPost, matchesNodeInspection, inspectSeverityHigh, newNodePolicy(cfg.Node).inspect, "failed to inspect node update request body", "unable to inspect node update request body"},
 		{http.MethodPost, matchesPluginInspection, inspectSeverityCritical, newPluginPolicy(cfg.Plugin).inspect, "failed to inspect plugin request body", "unable to inspect plugin request body"},
 	}
-	byMethod := make(map[string][]requestInspectPolicy, 2)
-	for _, p := range all {
-		byMethod[p.method] = append(byMethod[p.method], p)
-	}
-	// Fail loud if any (method, severity) group would overflow the fixed
-	// inspectBuckets array at request time. The bucket walk silently drops
-	// overflow entries, which would disable enforcement for the dropped
-	// inspectors — a future contributor adding a 17th POST/critical policy
-	// must bump inspectBucketCapacity rather than let that happen quietly.
-	for method, ps := range byMethod {
-		var sevCounts [3]int
-		for _, p := range ps {
-			sevCounts[int(p.severity)]++
-		}
-		for sev, n := range sevCounts {
-			if n > inspectBucketCapacity {
-				panic(fmt.Sprintf("filter: inspectBuckets capacity %d exceeded for method %s severity %d: %d policies", inspectBucketCapacity, method, sev, n))
-			}
-		}
-	}
+	byMethod := groupInspectPoliciesByMethod(all)
 	return runtimePolicy{
 		rules:                   rules,
 		denyResponseVerbosity:   cfg.DenyResponseVerbosity,
@@ -380,6 +361,36 @@ func matchesPluginInspection(normalizedPath string) bool {
 // inspectors past this cap, compileRuntimePolicy panics at startup so the
 // overflow is loud rather than silent.
 const inspectBucketCapacity = 16
+
+// groupInspectPoliciesByMethod buckets the static policy list by HTTP method
+// and panics if any (method, severity) group would overflow inspectBuckets at
+// request time. The bucket walk in inspectAllowedRequest silently drops
+// overflow entries, which would disable enforcement for the dropped
+// inspectors — a future contributor adding a 17th POST/critical policy must
+// bump inspectBucketCapacity rather than let that happen quietly.
+//
+// Extracted from compileRuntimePolicy so the per-(method, severity) counting
+// + overflow check are testable in isolation; calling compileRuntimePolicy
+// directly only exercises the hardcoded 15-inspector list, which never
+// stresses the >cap branch.
+func groupInspectPoliciesByMethod(all []requestInspectPolicy) map[string][]requestInspectPolicy {
+	byMethod := make(map[string][]requestInspectPolicy, 2)
+	for _, p := range all {
+		byMethod[p.method] = append(byMethod[p.method], p)
+	}
+	for method, ps := range byMethod {
+		var sevCounts [3]int
+		for _, p := range ps {
+			sevCounts[int(p.severity)]++
+		}
+		for sev, n := range sevCounts {
+			if n > inspectBucketCapacity {
+				panic(fmt.Sprintf("filter: inspectBuckets capacity %d exceeded for method %s severity %d: %d policies", inspectBucketCapacity, method, sev, n))
+			}
+		}
+	}
+	return byMethod
+}
 
 // inspectBuckets holds matched policies grouped by severity for zero-alloc
 // single-pass triage in inspectAllowedRequest. The array is stack-allocated

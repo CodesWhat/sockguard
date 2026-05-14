@@ -1752,3 +1752,107 @@ func TestMatchesInspectionFunctionsRejectAdjacentPaths(t *testing.T) {
 		})
 	}
 }
+
+// TestGroupInspectPoliciesBucketOverflow pins three surviving mutants in
+// the inspect-bucket capacity guard at middleware.go:
+//
+//   - INCREMENT_DECREMENT at line 297 (`sevCounts[...]++` → `--`)
+//   - CONDITIONALS_BOUNDARY at line 300 (`n > capacity` → `>=`)
+//
+// Both mutations are unreachable through the hardcoded 15-inspector list in
+// compileRuntimePolicy (no severity bucket exceeds 6 in production), so
+// without the helper extraction they sit dormant. The kill tests below call
+// groupInspectPoliciesByMethod directly with crafted lists that:
+//
+//   - hit the exact-capacity boundary (16 policies in one bucket — original
+//     does NOT panic, `>=` mutant panics)
+//   - hit the overflow boundary (17 policies — original panics, `--` mutant
+//     never reaches capacity so no panic fires)
+func TestGroupInspectPoliciesBucketOverflow(t *testing.T) {
+	noopInspect := func(*slog.Logger, *http.Request, string) (string, error) { return "", nil }
+	makePolicy := func() requestInspectPolicy {
+		return requestInspectPolicy{
+			method:            http.MethodPost,
+			matches:           func(string) bool { return true },
+			severity:          inspectSeverityCritical,
+			inspect:           noopInspect,
+			errorLogMessage:   "test",
+			denyReasonOnError: "test",
+		}
+	}
+
+	t.Run("exact capacity does not panic", func(t *testing.T) {
+		all := make([]requestInspectPolicy, 0, inspectBucketCapacity)
+		for i := 0; i < inspectBucketCapacity; i++ {
+			all = append(all, makePolicy())
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("groupInspectPoliciesByMethod panicked at exact capacity %d: %v — mutant `n >= capacity` would yield this", inspectBucketCapacity, r)
+			}
+		}()
+		got := groupInspectPoliciesByMethod(all)
+		if len(got[http.MethodPost]) != inspectBucketCapacity {
+			t.Fatalf("len(POST bucket) = %d, want %d", len(got[http.MethodPost]), inspectBucketCapacity)
+		}
+	})
+
+	t.Run("overflow panics", func(t *testing.T) {
+		all := make([]requestInspectPolicy, 0, inspectBucketCapacity+1)
+		for i := 0; i < inspectBucketCapacity+1; i++ {
+			all = append(all, makePolicy())
+		}
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatalf("groupInspectPoliciesByMethod did NOT panic with %d policies in one bucket (cap=%d) — mutant `sevCounts[...]--` makes the count negative and the `> cap` check never fires", inspectBucketCapacity+1, inspectBucketCapacity)
+			}
+			msg, ok := r.(string)
+			if !ok {
+				t.Fatalf("panic value type = %T, want string: %v", r, r)
+			}
+			if !strings.Contains(msg, "inspectBuckets capacity") {
+				t.Fatalf("panic message = %q, want it to mention 'inspectBuckets capacity'", msg)
+			}
+		}()
+		groupInspectPoliciesByMethod(all)
+	})
+}
+
+// TestInspectAllowedRequestOverflowDoesNotPanic pins the surviving
+// CONDITIONALS_BOUNDARY mutant at middleware.go's bucket-write guard
+// (`counts[sev] < len(buckets[sev])` → `<=`). The static policy list never
+// stresses this branch because the construction-time guard panics first;
+// here we bypass it by handing inspectAllowedRequest a synthesized
+// inspectPoliciesByMethod that holds inspectBucketCapacity+1 matching
+// policies, then assert that the call completes without panicking — the
+// original silently drops the overflow entry, the mutant tries to write
+// at index `cap` and panics with "index out of range."
+func TestInspectAllowedRequestOverflowDoesNotPanic(t *testing.T) {
+	noopInspect := func(*slog.Logger, *http.Request, string) (string, error) { return "", nil }
+	policies := make([]requestInspectPolicy, 0, inspectBucketCapacity+1)
+	for i := 0; i < inspectBucketCapacity+1; i++ {
+		policies = append(policies, requestInspectPolicy{
+			method:            http.MethodPost,
+			matches:           func(string) bool { return true },
+			severity:          inspectSeverityCritical,
+			inspect:           noopInspect,
+			errorLogMessage:   "test",
+			denyReasonOnError: "test",
+		})
+	}
+	p := runtimePolicy{
+		inspectPoliciesByMethod: map[string][]requestInspectPolicy{
+			http.MethodPost: policies,
+		},
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("inspectAllowedRequest panicked at overflow (have %d matching policies, cap=%d): %v — mutant `counts[sev] <= len(buckets[sev])` would write at index cap and trigger an out-of-range panic", len(policies), inspectBucketCapacity, r)
+		}
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+	_, _, _ = p.inspectAllowedRequest(testLogger(), req, "/containers/create")
+}

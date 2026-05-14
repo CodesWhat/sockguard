@@ -85,6 +85,47 @@ func TestStripVersionPrefix_MultiDigitMinor(t *testing.T) {
 	}
 }
 
+// TestStripVersionPrefix_BoundaryGuards pins three surviving CONDITIONALS_BOUNDARY
+// mutants in stripVersionPrefix:
+//
+//   - rules.go:184:8  — outer digit-consume loop bound `i < len(p)` → `<=`
+//   - rules.go:191:7  — '.' check `i < len(p) && p[i] == '.'` → `<=`
+//   - rules.go:193:41 — inner digit-consume `<= '9'` → `< '9'`
+//
+// The existing /v1 case is filtered by the length-<4 fast path (line 179) so
+// it never enters the loop at all; that's why TestStripVersionPrefix_NoTrailingSlash
+// passed both original and mutated source. The cases below exercise paths
+// that reach the digit loops at the boundary the mutants depend on.
+func TestStripVersionPrefix_BoundaryGuards(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+		why  string
+	}{
+		{
+			name: "digits run to end of path (184:8, 191:7)",
+			in:   "/v12",
+			want: "/v12",
+			why:  "len>=4 passes the fast-path; both digits consumed make i=len(p). Mutants `i <= len(p)` either re-enter the digit loop or the '.' check and read p[len(p)] → panic. Original exits cleanly and returns the input unchanged (no trailing /).",
+		},
+		{
+			name: "fractional digits with '9' at boundary (193:41)",
+			in:   "/v1.9/x",
+			want: "/x",
+			why:  "Original consumes '9' (p[j]<='9' true) and advances j past it; the trailing '/' check passes and the prefix is stripped. Mutant `p[j] < '9'` exits at '9' so j stops at 4; the dot-block check then sees p[i]='.' != '/' and returns the input unchanged.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripVersionPrefix(tt.in)
+			if got != tt.want {
+				t.Fatalf("stripVersionPrefix(%q) = %q, want %q\n%s", tt.in, got, tt.want, tt.why)
+			}
+		})
+	}
+}
+
 // CONDITIONALS_BOUNDARY rules.go:364:10 and rules.go:364:30
 // upperHTTPMethodASCII loop: `i < len(buf)` mutant → `i <= len(buf)`.
 // A method string of length 1 (single lowercase letter) exercises the edge.
