@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/imagetrust"
 	"github.com/sigstore/sigstore-go/pkg/verify"
@@ -1062,6 +1063,23 @@ func (m *mockImageVerifier) Verify(_ context.Context, imageRef, _ string, _ veri
 	return m.err
 }
 
+// ctxRecordingImageVerifier records whether the ctx handed to Verify had a
+// deadline set. Used to pin the timeout-gate at container_create.go:361
+// (`p.imageTrustTimeout > 0`).
+type ctxRecordingImageVerifier struct {
+	err            error
+	sawDeadline    bool
+	deadlineRemain time.Duration
+}
+
+func (m *ctxRecordingImageVerifier) Verify(ctx context.Context, _, _ string, _ verify.SignedEntity) error {
+	if dl, ok := ctx.Deadline(); ok {
+		m.sawDeadline = true
+		m.deadlineRemain = time.Until(dl)
+	}
+	return m.err
+}
+
 // makeInspectRequest builds a minimal POST /containers/create request with the
 // given JSON body string.
 func makeInspectRequest(t *testing.T, body string) *http.Request {
@@ -1229,6 +1247,64 @@ func TestImageTrust_AllowsAllBodiesFalseWhenVerifierPresent(t *testing.T) {
 	if policy.allowsAllContainerCreateBodies() {
 		t.Fatal("allowsAllContainerCreateBodies must be false when imageTrustVerifier is set")
 	}
+}
+
+// TestImageTrust_TimeoutGateRespectsZero pins both surviving mutants at
+// container_create.go:361:26 (CONDITIONALS_BOUNDARY `>` → `>=` and
+// CONDITIONALS_NEGATION `>` → `<=`). The guard is `if p.imageTrustTimeout > 0`
+// — only wrap the verifier ctx with a deadline when the timeout is meaningful.
+//
+// At imageTrustTimeout=0 the original skips context.WithTimeout entirely, so
+// the verifier sees the request's bare context (no Deadline). Both mutants
+// would call context.WithTimeout(ctx, 0) which sets an immediate deadline.
+// We assert the verifier saw no deadline.
+//
+// A companion sub-test pins the positive-timeout path: with imageTrustTimeout=
+// 10s the original sets the deadline; the NEGATION mutant (`<= 0`) would NOT
+// set it. We assert the verifier sees a deadline that's roughly the configured
+// timeout.
+func TestImageTrust_TimeoutGateRespectsZero(t *testing.T) {
+	t.Run("zero timeout leaves ctx unwrapped", func(t *testing.T) {
+		mv := &ctxRecordingImageVerifier{}
+		policy := containerCreatePolicy{
+			imageTrustVerifier: mv,
+			imageTrustCfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
+			imageTrustTimeout:  0,
+		}
+		reason, err := policy.inspect(nil, makeInspectRequest(t, `{"Image":"registry.example.com/app:v1","HostConfig":{}}`), "/containers/create")
+		if err != nil {
+			t.Fatalf("inspect err = %v", err)
+		}
+		if reason != "" {
+			t.Fatalf("inspect reason = %q, want empty (verifier returns nil)", reason)
+		}
+		if mv.sawDeadline {
+			t.Fatalf("verifier ctx had a deadline (remaining=%v) — original `imageTrustTimeout > 0` is false at 0; mutant `>= 0` or `<= 0` would call WithTimeout(0) and stamp a deadline", mv.deadlineRemain)
+		}
+	})
+
+	t.Run("positive timeout wraps ctx with deadline", func(t *testing.T) {
+		mv := &ctxRecordingImageVerifier{}
+		policy := containerCreatePolicy{
+			imageTrustVerifier: mv,
+			imageTrustCfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
+			imageTrustTimeout:  10 * time.Second,
+		}
+		reason, err := policy.inspect(nil, makeInspectRequest(t, `{"Image":"registry.example.com/app:v1","HostConfig":{}}`), "/containers/create")
+		if err != nil {
+			t.Fatalf("inspect err = %v", err)
+		}
+		if reason != "" {
+			t.Fatalf("inspect reason = %q, want empty", reason)
+		}
+		if !mv.sawDeadline {
+			t.Fatalf("verifier ctx had no deadline — original `imageTrustTimeout > 0` is true at 10s; mutant `<= 0` would skip WithTimeout and leave ctx bare")
+		}
+		// Remaining should be close to 10s (allow generous slack for slow CI).
+		if mv.deadlineRemain < time.Second || mv.deadlineRemain > 11*time.Second {
+			t.Fatalf("deadline remaining = %v, want ~10s", mv.deadlineRemain)
+		}
+	})
 }
 
 func TestContainerCreatePolicySysctls(t *testing.T) {

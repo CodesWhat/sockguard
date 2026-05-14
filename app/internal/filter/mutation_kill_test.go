@@ -468,6 +468,56 @@ func TestParseImageReference_SingleSegmentIsOfficial(t *testing.T) {
 	}
 }
 
+// TestParseImageReference_SingleSegmentLooksLikeRegistry pins the same
+// `len(parts) > 1` boundary at image_pull.go:115. The "nginx" case above
+// passes both original and `>=` mutant because looksLikeRegistryComponent
+// returns false for "nginx". To actually exercise the boundary we use a
+// single-segment ref whose value WOULD look like a registry component
+// (contains a '.'). After tag stripping the ref becomes a single dotted
+// segment; the original (`> 1` false at len=1) treats it as a tagged image
+// in docker.io's official namespace; the mutant (`>= 1` true at len=1)
+// enters the registry-extraction branch and leaves repository empty.
+func TestParseImageReference_SingleSegmentLooksLikeRegistry(t *testing.T) {
+	// After tag-strip "registry.example.com:5000" becomes
+	// "registry.example.com" — one segment, looks like a registry component.
+	ref, ok := parseImageReference("registry.example.com:5000")
+	if !ok {
+		t.Fatal("parseImageReference ok=false")
+	}
+	if ref.registry != "docker.io" {
+		t.Fatalf("registry = %q, want docker.io — mutant `len(parts) >= 1` enters the registry branch at len=1 and would yield %q", ref.registry, "registry.example.com")
+	}
+}
+
+// TestSplitSecurityOptKVLeadingSeparator pins the CONDITIONALS_BOUNDARY mutant
+// at container_create.go:955 (`idx >= 0` → `>`). When the entry starts with
+// the separator ('=' or ':') strings.IndexAny returns 0, which is the only
+// value that distinguishes `>= 0` from `> 0`. The original treats the entry
+// as a key/value pair with an empty key; the mutant returns hasValue=false,
+// silently dropping a SecurityOpt token that would otherwise have been
+// surfaced to the denySecurityOpt path.
+func TestSplitSecurityOptKVLeadingSeparator(t *testing.T) {
+	tests := []struct {
+		name      string
+		entry     string
+		wantKey   string
+		wantValue string
+		wantHas   bool
+	}{
+		{name: "leading equals", entry: "=value", wantKey: "", wantValue: "value", wantHas: true},
+		{name: "leading colon", entry: ":value", wantKey: "", wantValue: "value", wantHas: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			k, v, has := splitSecurityOptKV(tt.entry)
+			if k != tt.wantKey || v != tt.wantValue || has != tt.wantHas {
+				t.Fatalf("splitSecurityOptKV(%q) = (%q, %q, %v), want (%q, %q, %v) — mutant `idx > 0` would return (%q, \"\", false)",
+					tt.entry, k, v, has, tt.wantKey, tt.wantValue, tt.wantHas, tt.entry)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // middleware.go mutants
 // ---------------------------------------------------------------------------

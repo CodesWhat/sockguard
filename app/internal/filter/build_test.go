@@ -429,6 +429,44 @@ func TestExtractBuildDockerfileWrapsTooLargeError(t *testing.T) {
 	}
 }
 
+// TestExtractBuildDockerfileAcceptsExactLimit pins the strict `>` boundary
+// at build.go:228 (`len(raw) > maxBuildDockerfileBytes`). A
+// CONDITIONALS_BOUNDARY mutation to `>=` would reject a Dockerfile at exactly
+// the limit, even though the existing too-large test only proves rejection at
+// limit+1. We pad to a deterministic FROM line followed by 'A's filling the
+// remainder so the dockerfile-detection heuristic still classifies it.
+func TestExtractBuildDockerfileAcceptsExactLimit(t *testing.T) {
+	const prefix = "FROM busybox\n"
+	payload := make([]byte, maxBuildDockerfileBytes)
+	copy(payload, prefix)
+	for i := len(prefix); i < len(payload); i++ {
+		payload[i] = 'A'
+	}
+
+	file, err := os.CreateTemp("", "sockguard-build-dockerfile-exact-*")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	})
+	if _, err := file.Write(payload); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	got, ok, err := defaultIODeps().extractBuildDockerfile(file, "text/plain", "Dockerfile")
+	if err != nil {
+		t.Fatalf("extractBuildDockerfile at exact limit: err = %v, want nil — mutant `>=` would reject this size", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true — Dockerfile at exact limit must be accepted")
+	}
+	if len(got) != maxBuildDockerfileBytes {
+		t.Fatalf("len(got) = %d, want %d", len(got), maxBuildDockerfileBytes)
+	}
+}
+
 func TestBuildPolicyInspectRewindBuildBodyError(t *testing.T) {
 	payload := mustBuildContextTar(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")
 	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(payload))
@@ -607,6 +645,29 @@ func TestDockerfileContainsRunInstructionCommentSkipped(t *testing.T) {
 	dockerfile := []byte("# This is a comment\nFROM busybox\nCOPY . /app\n")
 	if dockerfileContainsRunInstruction(dockerfile) {
 		t.Fatal("expected false when Dockerfile has only comment + FROM + COPY")
+	}
+}
+
+// TestDockerfileContainsRunInstructionMidStatementCommentNotSkipped pins the
+// CONDITIONALS_NEGATION mutant at build.go:327:14 (`logical == ""` → `!= ""`).
+// The guard says "skip comment lines only when no logical statement is open."
+// The mutant flips it to "skip comment lines only when a logical statement IS
+// open," which has the side-effect of merging post-RUN comment continuation
+// into the FROM line and missing the trailing RUN.
+//
+// Setup: a Dockerfile where a comment line appears AFTER a FROM with a
+// continuation (`\`) but BEFORE the eventual RUN. Under the original, the
+// comment is APPENDED to the open FROM logical (because `logical != ""`
+// fails the skip-clause's first conjunct); the FROM's instruction is then
+// checked, found to be non-RUN, and logical resets — so the standalone RUN
+// on the next line is detected. Under the mutant, the comment is SKIPPED;
+// then "RUN y" is appended to the already-open "FROM x" → logical becomes
+// "FROM x RUN y", whose first token is FROM, so RUN is never detected and
+// the result flips to false.
+func TestDockerfileContainsRunInstructionMidStatementCommentNotSkipped(t *testing.T) {
+	dockerfile := []byte("FROM busybox \\\n# inline comment\nRUN id\n")
+	if !dockerfileContainsRunInstruction(dockerfile) {
+		t.Fatal("expected RUN to be detected despite a mid-statement comment line — `logical == \"\"` mutated to `!= \"\"` would merge RUN into the open FROM and miss it")
 	}
 }
 
