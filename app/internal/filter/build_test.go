@@ -547,6 +547,10 @@ func TestDockerfileInstruction(t *testing.T) {
 		{name: "FROM instruction", line: "FROM ubuntu:22.04", want: "FROM"},
 		{name: "run instruction lowercase", line: "run id", want: "RUN"},
 		{name: "onbuild run", line: "ONBUILD RUN id", want: "ONBUILD RUN"},
+		// Boundary case: exactly 2 fields so `len(fields) < 2` differs from
+		// `len(fields) <= 2`. The mutation would early-return "ONBUILD" and
+		// hide the inner instruction.
+		{name: "onbuild run no args", line: "ONBUILD RUN", want: "ONBUILD RUN"},
 		{name: "onbuild without second word", line: "ONBUILD", want: "ONBUILD"},
 		{name: "whitespace only line", line: "   ", want: ""},
 	}
@@ -583,6 +587,18 @@ func TestDockerfileContainsRunInstructionTrailingLogical(t *testing.T) {
 	dockerfile := []byte("FROM busybox\nRUN id\\\n")
 	if !dockerfileContainsRunInstruction(dockerfile) {
 		t.Fatal("expected dockerfileContainsRunInstruction to detect trailing RUN continuation")
+	}
+}
+
+// TestDockerfileContainsRunInstructionTrailingLogicalNotRun covers the
+// post-loop branch with a non-RUN instruction so a CONDITIONALS_NEGATION
+// flipping the final `instruction == "RUN" || instruction == "ONBUILD RUN"`
+// check would incorrectly report a Dockerfile that ends mid-COPY as
+// containing RUN.
+func TestDockerfileContainsRunInstructionTrailingLogicalNotRun(t *testing.T) {
+	dockerfile := []byte("FROM busybox\nCOPY . /app\\\n")
+	if dockerfileContainsRunInstruction(dockerfile) {
+		t.Fatal("trailing non-RUN logical should not be reported as RUN")
 	}
 }
 
