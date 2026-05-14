@@ -221,6 +221,111 @@ func TestPolicyBundleReload_VerifyRunsBeforeConfigLoad(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// verifyPolicyBundleAtStartup — exhaustive branch coverage.
+// Every failure branch of the signature gate aborts startup, so each one
+// must have an explicit regression test. The default constructor only
+// exercised the !Enabled early return; the failures previously had none.
+// ---------------------------------------------------------------------------
+
+func newStartupCfg() *config.Config {
+	cfg := config.Defaults()
+	cfg.PolicyBundle.Enabled = true
+	cfg.PolicyBundle.SignaturePath = "/tmp/sig.bundle.json"
+	cfg.PolicyBundle.AllowedSigningKeys = []config.PolicyBundleSigningKey{{PEM: "stub"}}
+	return &cfg
+}
+
+func TestVerifyPolicyBundleAtStartup_Disabled(t *testing.T) {
+	cfg := config.Defaults()
+	deps := newServeTestDeps()
+	res, err := verifyPolicyBundleAtStartup(&cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	if err != nil {
+		t.Fatalf("err = %v, want nil for disabled", err)
+	}
+	if res != nil {
+		t.Fatalf("res = %+v, want nil for disabled", res)
+	}
+}
+
+func TestVerifyPolicyBundleAtStartup_NoCfgFile(t *testing.T) {
+	cfg := newStartupCfg()
+	deps := newServeTestDeps()
+	res, err := verifyPolicyBundleAtStartup(cfg, "", deps, &stubBundleVerifier{}, newDiscardLogger())
+	if err == nil {
+		t.Fatal("err = nil, want failure when --config is empty")
+	}
+	if res != nil {
+		t.Fatalf("res = %+v, want nil", res)
+	}
+}
+
+func TestVerifyPolicyBundleAtStartup_NoSignaturePath(t *testing.T) {
+	cfg := newStartupCfg()
+	cfg.PolicyBundle.SignaturePath = ""
+	deps := newServeTestDeps()
+	_, err := verifyPolicyBundleAtStartup(cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	if err == nil {
+		t.Fatal("err = nil, want failure when signature_path is empty")
+	}
+}
+
+func TestVerifyPolicyBundleAtStartup_ReadError(t *testing.T) {
+	cfg := newStartupCfg()
+	deps := newServeTestDeps()
+	sentinel := errors.New("read failed")
+	deps.readConfigBytes = func(string) ([]byte, error) { return nil, sentinel }
+	_, err := verifyPolicyBundleAtStartup(cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want wrapped %v", err, sentinel)
+	}
+}
+
+func TestVerifyPolicyBundleAtStartup_LoadEntityError(t *testing.T) {
+	cfg := newStartupCfg()
+	deps := newServeTestDeps()
+	deps.readConfigBytes = func(string) ([]byte, error) { return []byte("rules: []\n"), nil }
+	sentinel := errors.New("load entity failed")
+	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return nil, sentinel }
+	_, err := verifyPolicyBundleAtStartup(cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want %v", err, sentinel)
+	}
+}
+
+func TestVerifyPolicyBundleAtStartup_VerifyError(t *testing.T) {
+	cfg := newStartupCfg()
+	deps := newServeTestDeps()
+	deps.readConfigBytes = func(string) ([]byte, error) { return []byte("rules: []\n"), nil }
+	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return &stubEntity{}, nil }
+	sentinel := errors.New("signature mismatch")
+	verifier := &stubBundleVerifier{err: sentinel}
+	_, err := verifyPolicyBundleAtStartup(cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want %v", err, sentinel)
+	}
+}
+
+func TestVerifyPolicyBundleAtStartup_Success(t *testing.T) {
+	cfg := newStartupCfg()
+	deps := newServeTestDeps()
+	deps.readConfigBytes = func(string) ([]byte, error) { return []byte("rules: []\n"), nil }
+	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return &stubEntity{}, nil }
+	want := policybundle.VerifyResult{Signer: "keyed:1234", DigestHex: "abcd", ElapsedMS: 42}
+	verifier := &stubBundleVerifier{res: want}
+
+	got, err := verifyPolicyBundleAtStartup(cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if got == nil {
+		t.Fatal("got = nil, want VerifyResult")
+	}
+	if got.Signer != want.Signer || got.DigestHex != want.DigestHex {
+		t.Fatalf("got = %+v, want %+v", got, want)
+	}
+}
+
 // metricsReloadCount returns the value of sockguard_config_reload_total{result}
 // and a boolean indicating whether the metric line was present. The boolean
 // guards against the silent-zero ambiguity: a missing metric line is (0, false)
