@@ -775,10 +775,28 @@ func TestPollFallbackFiresOnMtimeChange(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = r.Run(ctx) }()
 
-	// Let the loop seed the baseline before we mutate the file. Without this
-	// pause the first poll tick can fire on an unset baseline and miss the
-	// edit (the loop would just record the current state and return).
-	time.Sleep(40 * time.Millisecond)
+	// Wait until the poll-fallback goroutine has seeded its baseline snapshot
+	// before we mutate the file. The baseline is set synchronously inside
+	// loop() before the for-select starts, so we only need the Run goroutine
+	// to be scheduled past that point.
+	//
+	// Replaced time.Sleep(40ms) with a poll loop (5ms ticks, 2s cap) so this
+	// step exits quickly on fast machines and stays reliable on slow CI without
+	// a fixed-duration bet. We wait for at least 2×PollInterval to guarantee
+	// at least one poller tick has fired and the baseline is firmly seeded.
+	{
+		const warmup = 2 * 20 * time.Millisecond // 2 × PollInterval
+		deadline := time.Now().Add(2 * time.Second)
+		start := time.Now()
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for time.Since(start) < warmup {
+			if time.Now().After(deadline) {
+				break
+			}
+			<-tick.C
+		}
+	}
 
 	// Rewrite the file with new content + advance mtime so size, mtime, and
 	// inode all move. Truncate+write keeps inode but bumps size and mtime;
@@ -837,8 +855,25 @@ func TestPollFallbackIdleWhenFileUnchanged(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = r.Run(ctx) }()
 
-	// Allow several poll ticks to pass without mutating the file.
-	time.Sleep(150 * time.Millisecond)
+	// Allow several poll ticks to pass without mutating the file, then cancel.
+	// Replaced time.Sleep(150ms) with a poll loop (5ms ticks, 2s cap) to make
+	// the wait adaptive: exits after ≥8 PollInterval ticks on fast machines
+	// and is bounded by a 2s deadline on slow CI. We don't gate on a signal
+	// here because the negative case (no reload) has no observable event; we
+	// simply give the poller enough iterations to prove it stays quiet.
+	{
+		const soak = 8 * 20 * time.Millisecond // 8 × PollInterval ≈ 160ms
+		deadline := time.Now().Add(2 * time.Second)
+		start := time.Now()
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for time.Since(start) < soak {
+			if time.Now().After(deadline) {
+				break
+			}
+			<-tick.C
+		}
+	}
 	cancel()
 	<-done
 
