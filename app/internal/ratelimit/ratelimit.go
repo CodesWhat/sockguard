@@ -15,6 +15,14 @@ import (
 	"time"
 )
 
+// bucketState is the immutable snapshot that the CAS loop swaps atomically.
+// Both fields are packed into a single heap allocation that is replaced on
+// every successful AllowN transition; the old allocation is reclaimed by GC.
+type bucketState struct {
+	tokens       float64
+	lastRefillNs int64 // Unix nanoseconds
+}
+
 // AnonymousClientID is the bucket key used for requests with no resolved
 // profile. This ensures anonymous callers cannot bypass limits by skipping
 // identification.
@@ -48,29 +56,28 @@ type nowFn func() time.Time
 
 // bucket is a single per-client token bucket. It is safe for concurrent use.
 //
-// lastAccess tracks the wall-clock of the last AllowN call and is read by the
-// owning Limiter's eviction loop to drop buckets that have gone idle for
-// longer than limiterEvictTTL.
+// Token state (current count + last-refill timestamp) is held in a
+// *bucketState that is swapped via atomic.Pointer CAS so AllowN is
+// lock-free on the hot path. lastAccessNs is a separate atomic so eviction
+// reads never contend with AllowN writes.
 type bucket struct {
-	mu              sync.Mutex
-	tokens          float64
+	state           atomic.Pointer[bucketState]
+	lastAccessNs    atomic.Int64 // Unix nanoseconds; updated on every AllowN
 	tokensPerSecond float64
 	burst           float64
-	lastRefill      time.Time
-	lastAccess      time.Time
 	now             nowFn
 }
 
 func newBucket(tokensPerSecond, burst float64, now nowFn) *bucket {
 	t := now()
-	return &bucket{
-		tokens:          burst,
+	b := &bucket{
 		tokensPerSecond: tokensPerSecond,
 		burst:           burst,
-		lastRefill:      t,
-		lastAccess:      t,
 		now:             now,
 	}
+	b.state.Store(&bucketState{tokens: burst, lastRefillNs: t.UnixNano()})
+	b.lastAccessNs.Store(t.UnixNano())
+	return b
 }
 
 // Allow is shorthand for AllowN(1) — withdraws a single token.
@@ -86,38 +93,60 @@ func (b *bucket) Allow() (ok bool, retryAfter int) {
 // cost greater than burst is permanently un-satisfiable; the validator in
 // internal/config rejects that configuration at startup. AllowN does not
 // re-check it here — defensive logic in a hot path would just hide config bugs.
+//
+// Implementation: lock-free CAS loop. Each iteration reads the current
+// *bucketState, computes the next state, and attempts a CAS swap. On CAS
+// failure (another goroutine raced us) the loop retries with the fresh value.
+// After maxCASRetries unsuccessful swaps the request is conservatively denied;
+// this is an extremely rare safety-valve — in practice contention resolves
+// within one or two retries.
+const maxCASRetries = 100
+
 func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
 	if cost < 1 {
 		cost = 1
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	nowT := b.now()
+	nowNs := nowT.UnixNano()
+	b.lastAccessNs.Store(nowNs)
 
-	now := b.now()
-	b.lastAccess = now
-	elapsed := now.Sub(b.lastRefill).Seconds()
-	if elapsed > 0 {
-		b.tokens = math.Min(b.tokens+elapsed*b.tokensPerSecond, b.burst)
-		b.lastRefill = now
+	for i := 0; i < maxCASRetries; i++ {
+		old := b.state.Load()
+
+		// Refill based on elapsed time since last refill.
+		elapsedSec := float64(nowNs-old.lastRefillNs) / 1e9
+		newTokens := old.tokens
+		newRefillNs := old.lastRefillNs
+		if elapsedSec > 0 {
+			newTokens = math.Min(old.tokens+elapsedSec*b.tokensPerSecond, b.burst)
+			newRefillNs = nowNs
+		}
+
+		if newTokens >= cost {
+			next := &bucketState{tokens: newTokens - cost, lastRefillNs: newRefillNs}
+			if b.state.CompareAndSwap(old, next) {
+				return true, 0
+			}
+			// CAS lost — retry.
+			continue
+		}
+
+		// Not enough tokens; compute wait time from the refilled amount.
+		deficit := cost - newTokens
+		waitSeconds := deficit / b.tokensPerSecond
+		return false, int(math.Ceil(waitSeconds))
 	}
 
-	if b.tokens >= cost {
-		b.tokens -= cost
-		return true, 0
-	}
-
-	deficit := cost - b.tokens
-	waitSeconds := deficit / b.tokensPerSecond
-	return false, int(math.Ceil(waitSeconds))
+	// Exhausted retries under extreme contention — deny conservatively.
+	return false, 1
 }
 
-// idleSince returns how long since the last AllowN call. Read under the
-// bucket mutex so the value is consistent with concurrent AllowN updates.
+// idleSince returns how long since the last AllowN call. Reads the atomic
+// lastAccessNs directly — no lock needed.
 func (b *bucket) idleSince(now time.Time) time.Duration {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return now.Sub(b.lastAccess)
+	lastNs := b.lastAccessNs.Load()
+	return now.Sub(time.Unix(0, lastNs))
 }
 
 // Limiter maintains per-client token buckets, lazily created on first use.

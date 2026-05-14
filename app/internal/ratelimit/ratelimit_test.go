@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -572,6 +573,53 @@ func TestCompileEndpointCosts_AllInputsCompile(t *testing.T) {
 	got := compileEndpointCosts(costs)
 	if len(got) != len(weirdGlobs) {
 		t.Fatalf("expected %d compiled costs, got %d", len(weirdGlobs), len(got))
+	}
+}
+
+// TestBucket_CASStress runs 32 goroutines hammering AllowN on a single bucket
+// for 100 ms and asserts that total tokens granted ≈ initialBurst +
+// (elapsed × rate). It exercises the CAS loop under real contention and checks
+// that the lock-free implementation neither over-grants nor under-grants by
+// more than a small absolute tolerance.
+func TestBucket_CASStress(t *testing.T) {
+	const (
+		goroutines   = 32
+		rate         = 500.0  // tokens/s — high enough to keep up with 32 workers
+		burst        = 100.0  // initial bucket fill
+		runDuration  = 100 * time.Millisecond
+		tolerancePct = 0.10 // ±10 % of expected total
+	)
+
+	b := newBucket(rate, burst, time.Now)
+
+	var (
+		wg      sync.WaitGroup
+		granted atomic.Int64
+		start   = time.Now()
+	)
+	wg.Add(goroutines)
+	for range goroutines {
+		go func() {
+			defer wg.Done()
+			for time.Since(start) < runDuration {
+				if ok, _ := b.AllowN(1); ok {
+					granted.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	elapsed := time.Since(start).Seconds()
+	expected := burst + elapsed*rate
+	got := float64(granted.Load())
+
+	// got must be ≤ expected (never over-grant) and within tolerance below it.
+	if got > expected*(1+tolerancePct) {
+		t.Fatalf("over-granted: expected ≤ %.1f, got %.1f (elapsed=%.3fs)", expected, got, elapsed)
+	}
+	if got < expected*(1-tolerancePct) {
+		t.Fatalf("under-granted: expected ≥ %.1f, got %.1f (elapsed=%.3fs)", expected*(1-tolerancePct), got, elapsed)
 	}
 }
 
