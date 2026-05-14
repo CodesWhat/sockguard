@@ -85,7 +85,11 @@ var requestIDFallbackCounter uint64
 var defaultRequestIDGenerator = newRequestIDGenerator(requestIDPoolSize, requestIDRefillThreshold, rand.Read)
 
 type requestIDGenerator struct {
-	ids             chan [requestIDBytes]byte
+	// ids holds hex-encoded request IDs pre-stringified by the refill
+	// goroutine, so Next() pays only for a channel receive — no allocation
+	// per request. The hot path was previously hex.Encode + string copy on
+	// every call, which showed up as a measurable per-request alloc.
+	ids             chan string
 	refillCh        chan struct{}
 	stopCh          chan struct{}
 	wg              sync.WaitGroup
@@ -105,7 +109,7 @@ func newRequestIDGenerator(poolSize, refillThreshold int, fill func([]byte) (int
 	}
 
 	generator := &requestIDGenerator{
-		ids:             make(chan [requestIDBytes]byte, poolSize),
+		ids:             make(chan string, poolSize),
 		refillCh:        make(chan struct{}, 1),
 		stopCh:          make(chan struct{}),
 		refillThreshold: refillThreshold,
@@ -123,11 +127,11 @@ func (g *requestIDGenerator) Next() string {
 	}
 
 	select {
-	case raw := <-g.ids:
+	case id := <-g.ids:
 		if len(g.ids) <= g.refillThreshold {
 			g.signalRefill()
 		}
-		return encodeRequestID(raw)
+		return id
 	default:
 		g.signalRefill()
 		return encodeRequestID(fallbackRequestIDRaw())
@@ -166,17 +170,17 @@ func (g *requestIDGenerator) refillSync() {
 	enqueueRequestIDs(g.ids, slab)
 }
 
-func enqueueRequestIDs(ids chan [requestIDBytes]byte, slab []byte) {
+func enqueueRequestIDs(ids chan string, slab []byte) {
 	for i := 0; i < len(slab)/requestIDBytes; i++ {
 		var raw [requestIDBytes]byte
 		copy(raw[:], slab[i*requestIDBytes:(i+1)*requestIDBytes])
-		if !enqueueRequestID(ids, raw) {
+		if !enqueueRequestID(ids, encodeRequestID(raw)) {
 			return
 		}
 	}
 }
 
-func enqueueRequestID(ids chan [requestIDBytes]byte, raw [requestIDBytes]byte) bool {
+func enqueueRequestID(ids chan string, raw string) bool {
 	select {
 	case ids <- raw:
 		return true

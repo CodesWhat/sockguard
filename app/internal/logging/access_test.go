@@ -1006,7 +1006,7 @@ func TestRefillSyncBoundaryLenGreaterThanThreshold(t *testing.T) {
 // We verify that exactly `needed` distinct IDs land in the channel.
 func TestEnqueueRequestIDsSlabArithmetic(t *testing.T) {
 	const needed = 3
-	ids := make(chan [requestIDBytes]byte, needed)
+	ids := make(chan string, needed)
 
 	slab := make([]byte, needed*requestIDBytes)
 	for i := range slab {
@@ -1019,11 +1019,11 @@ func TestEnqueueRequestIDsSlabArithmetic(t *testing.T) {
 		t.Fatalf("enqueued %d IDs, want %d", got, needed)
 	}
 
-	seen := make(map[[requestIDBytes]byte]bool, needed)
+	seen := make(map[string]bool, needed)
 	for range needed {
 		raw := <-ids
 		if seen[raw] {
-			t.Fatalf("duplicate ID enqueued: %x — slice arithmetic is wrong", raw)
+			t.Fatalf("duplicate ID enqueued: %s — slice arithmetic is wrong", raw)
 		}
 		seen[raw] = true
 	}

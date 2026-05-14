@@ -405,7 +405,7 @@ func TestSortedLabelHelpersOrderDeterministically(t *testing.T) {
 
 func TestResponseWriterFlushAndHijackDelegation(t *testing.T) {
 	rw := &delegatingResponseWriter{header: make(http.Header)}
-	wrapped := newMetricsResponseWriter(rw, httptest.NewRequest(http.MethodGet, "/_ping", nil))
+	wrapped := acquireResponseWriter(rw, httptest.NewRequest(http.MethodGet, "/_ping", nil))
 
 	wrapped.Flush()
 	if !rw.flushed {
@@ -422,7 +422,7 @@ func TestResponseWriterFlushAndHijackDelegation(t *testing.T) {
 	_ = conn.Close()
 	rw.closePeer()
 
-	plain := newMetricsResponseWriter(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/_ping", nil))
+	plain := acquireResponseWriter(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/_ping", nil))
 	conn, buf, err = plain.Hijack()
 	if !errors.Is(err, http.ErrNotSupported) {
 		t.Fatalf("Hijack without underlying support error = %v, want %v", err, http.ErrNotSupported)

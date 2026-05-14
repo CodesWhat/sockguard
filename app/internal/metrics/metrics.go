@@ -6,8 +6,9 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"cmp"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -286,10 +287,10 @@ func (r *Registry) Middleware() func(http.Handler) http.Handler {
 			r.activeRequests.Add(1)
 			defer r.activeRequests.Add(-1)
 
-			mw := newMetricsResponseWriter(w, req)
+			mw := acquireResponseWriter(w, req)
 			next.ServeHTTP(mw, req)
-
 			r.observe(req, mw.meta, mw.status, time.Since(start).Seconds())
+			releaseResponseWriter(mw)
 		})
 	}
 }
@@ -493,8 +494,8 @@ func sortedConfigReloadLabels(values map[configReloadLabels]uint64) []configRelo
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return keys[i].result < keys[j].result
+	slices.SortFunc(keys, func(a, b configReloadLabels) int {
+		return cmp.Compare(a.result, b.result)
 	})
 	return keys
 }
@@ -515,10 +516,10 @@ func sortedThrottleLabels(values map[throttleLabels]uint64) []throttleLabels {
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		ki := keys[i].mode + "\x00" + keys[i].profile + "\x00" + keys[i].reasonCode
-		kj := keys[j].mode + "\x00" + keys[j].profile + "\x00" + keys[j].reasonCode
-		return ki < kj
+	slices.SortFunc(keys, func(a, b throttleLabels) int {
+		ka := a.mode + "\x00" + a.profile + "\x00" + a.reasonCode
+		kb := b.mode + "\x00" + b.profile + "\x00" + b.reasonCode
+		return cmp.Compare(ka, kb)
 	})
 	return keys
 }
@@ -528,7 +529,7 @@ func sortedInflightKeys(values map[string]int64) []string {
 	for k := range values {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
 
@@ -549,8 +550,8 @@ func sortedRequestLabels(values map[requestLabels]uint64) []requestLabels {
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return requestLabelSortKey(keys[i]) < requestLabelSortKey(keys[j])
+	slices.SortFunc(keys, func(a, b requestLabels) int {
+		return cmp.Compare(requestLabelSortKey(a), requestLabelSortKey(b))
 	})
 	return keys
 }
@@ -560,8 +561,8 @@ func sortedDenyLabels(values map[denyLabels]uint64) []denyLabels {
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return denyLabelSortKey(keys[i]) < denyLabelSortKey(keys[j])
+	slices.SortFunc(keys, func(a, b denyLabels) int {
+		return cmp.Compare(denyLabelSortKey(a), denyLabelSortKey(b))
 	})
 	return keys
 }
@@ -571,8 +572,8 @@ func sortedDurationLabels(values map[durationLabels]histogramSnapshot) []duratio
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return durationLabelSortKey(keys[i]) < durationLabelSortKey(keys[j])
+	slices.SortFunc(keys, func(a, b durationLabels) int {
+		return cmp.Compare(durationLabelSortKey(a), durationLabelSortKey(b))
 	})
 	return keys
 }
@@ -582,8 +583,8 @@ func sortedUpstreamWatchdogLabels(values map[upstreamWatchdogLabels]uint64) []up
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return keys[i].result < keys[j].result
+	slices.SortFunc(keys, func(a, b upstreamWatchdogLabels) int {
+		return cmp.Compare(a.result, b.result)
 	})
 	return keys
 }
@@ -806,21 +807,52 @@ type responseWriter struct {
 	http.ResponseWriter
 	status int
 	meta   *logging.RequestMeta
+	// ownsMeta is true when this wrapper allocated a fresh RequestMeta
+	// because the inbound request had none attached. Returning that meta to
+	// any shared pool would corrupt it; ownsMeta is the marker for the
+	// release path to drop the reference instead of caching it.
+	ownsMeta bool
 }
 
 var _ http.Flusher = (*responseWriter)(nil)
 var _ http.Hijacker = (*responseWriter)(nil)
 
-func newMetricsResponseWriter(w http.ResponseWriter, req *http.Request) *responseWriter {
-	meta := logging.MetaForRequest(w, req)
-	if meta == nil {
-		meta = &logging.RequestMeta{}
+var metricsResponseWriterPool = sync.Pool{
+	New: func() any { return &responseWriter{} },
+}
+
+func acquireResponseWriter(w http.ResponseWriter, req *http.Request) *responseWriter {
+	mw, _ := metricsResponseWriterPool.Get().(*responseWriter)
+	if mw == nil {
+		mw = &responseWriter{}
 	}
-	return &responseWriter{
-		ResponseWriter: w,
-		status:         http.StatusOK,
-		meta:           meta,
+	mw.ResponseWriter = w
+	mw.status = http.StatusOK
+	if meta := logging.MetaForRequest(w, req); meta != nil {
+		mw.meta = meta
+		mw.ownsMeta = false
+	} else {
+		mw.meta = &logging.RequestMeta{}
+		mw.ownsMeta = true
 	}
+	return mw
+}
+
+func releaseResponseWriter(mw *responseWriter) {
+	if mw == nil {
+		return
+	}
+	mw.ResponseWriter = nil
+	if mw.ownsMeta {
+		// The fallback RequestMeta is request-scoped; drop the reference so
+		// the GC reclaims it rather than letting it tail behind the wrapper.
+		mw.meta = nil
+		mw.ownsMeta = false
+	} else {
+		mw.meta = nil
+	}
+	mw.status = 0
+	metricsResponseWriterPool.Put(mw)
 }
 
 func (w *responseWriter) RequestMeta() *logging.RequestMeta {

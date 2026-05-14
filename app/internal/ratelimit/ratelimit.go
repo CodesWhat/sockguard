@@ -361,11 +361,17 @@ type clientReasonKey struct {
 // policy. Prometheus counters always fire; the slog audit record is gated
 // through this sampler to avoid log-volume blowout under attack.
 //
+// The sampler stores last-emit timestamps in a sync.Map keyed by
+// clientReasonKey. The hot path is the rejection branch (in-window
+// duplicates), which becomes lock-free via sync.Map.Load; only the first
+// emit per window pays for a CompareAndSwap.
+//
 // AuditSampler also runs a background eviction goroutine to prevent unbounded
 // memory growth from many unique client IDs.
 type AuditSampler struct {
-	mu      sync.Mutex
-	lastHit map[clientReasonKey]time.Time
+	// lastHit maps clientReasonKey → *time.Time. Pointer values let
+	// CompareAndSwap detect races without re-reading under a lock.
+	lastHit sync.Map
 	now     nowFn
 }
 
@@ -378,8 +384,7 @@ func NewAuditSampler() (s *AuditSampler, stop func()) {
 
 func newAuditSamplerWithClock(now nowFn) (*AuditSampler, func()) {
 	s := &AuditSampler{
-		lastHit: make(map[clientReasonKey]time.Time),
-		now:     now,
+		now: now,
 	}
 	stopCh := make(chan struct{})
 	var wg sync.WaitGroup
@@ -412,26 +417,38 @@ func (s *AuditSampler) ShouldEmit(clientID string, reason ThrottleReason) bool {
 	}
 	key := clientReasonKey{clientID: clientID, reason: reason}
 	now := s.now()
+	nowPtr := &now
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	last, exists := s.lastHit[key]
-	if !exists || now.Sub(last) >= auditEmitWindow {
-		s.lastHit[key] = now
+	// First-time emission: LoadOrStore returns loaded=false and the win.
+	prev, loaded := s.lastHit.LoadOrStore(key, nowPtr)
+	if !loaded {
 		return true
 	}
-	return false
+
+	lastPtr, ok := prev.(*time.Time)
+	if !ok || now.Sub(*lastPtr) < auditEmitWindow {
+		return false
+	}
+	// Window has elapsed; race the swap. Losing the race means another
+	// goroutine emitted ~simultaneously, which is the correct outcome —
+	// 1 emit per window per key, not 1-per-caller.
+	return s.lastHit.CompareAndSwap(key, lastPtr, nowPtr)
 }
 
-// evict removes entries older than ttl from the sampler map.
+// evict removes entries older than ttl from the sampler map. The Range
+// iteration is unsynchronized, which is fine because CompareAndDelete only
+// removes entries whose pointer hasn't been swapped by a racing ShouldEmit.
 func (s *AuditSampler) evict(ttl time.Duration) {
 	cutoff := s.now().Add(-ttl)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for key, t := range s.lastHit {
-		if t.Before(cutoff) {
-			delete(s.lastHit, key)
+	s.lastHit.Range(func(k, v any) bool {
+		t, ok := v.(*time.Time)
+		if !ok {
+			s.lastHit.Delete(k)
+			return true
 		}
-	}
+		if t.Before(cutoff) {
+			s.lastHit.CompareAndDelete(k, v)
+		}
+		return true
+	})
 }

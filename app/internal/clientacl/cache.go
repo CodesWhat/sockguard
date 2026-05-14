@@ -40,6 +40,11 @@ type clientCache struct {
 	maxSize int
 	now     func() time.Time
 	resolve func(context.Context, netip.Addr) (resolvedClient, bool, error)
+	// augment runs after a successful resolve (on cache miss). It is the
+	// hook the middleware uses to pre-compile label ACL rules so repeated
+	// callers from the same IP skip the expensive re-compile path. May be
+	// nil when label ACLs are disabled.
+	augment func(resolvedClient) resolvedClient
 
 	mu       sync.Mutex
 	entries  map[netip.Addr]clientCacheEntry
@@ -84,6 +89,9 @@ func (c *clientCache) Lookup(ctx context.Context, addr netip.Addr) (resolvedClie
 	c.mu.Unlock()
 
 	client, found, err := c.resolve(ctx, addr)
+	if err == nil && found && c.augment != nil {
+		client = c.augment(client)
+	}
 
 	c.mu.Lock()
 	if err == nil {

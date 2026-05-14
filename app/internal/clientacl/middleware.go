@@ -92,6 +92,15 @@ type resolvedClient struct {
 	ID     string
 	Name   string
 	Labels map[string]string
+	// labelACLRules holds the *filter.CompiledRule values derived from
+	// Labels using the middleware's configured labelPrefix. They are
+	// populated by the clientCache so that repeated requests from the same
+	// IP within the cache TTL skip the per-request re-sort + re-compile
+	// cost. A nil slice (with hasLabelACLRules=false) means the cache
+	// hasn't precompiled — callers fall back to compileContainerLabelRules.
+	labelACLRules    []*filter.CompiledRule
+	hasLabelACLRules bool
+	labelACLErr      error
 }
 
 type compiledOptions struct {
@@ -192,7 +201,20 @@ type connectionIdentity struct {
 // Middleware applies client CIDR admission checks and optional per-client
 // label ACLs resolved from the caller container's source IP.
 func Middleware(upstreamSocket string, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {
-	return middlewareWithDeps(logger, opts, newACLResolveClient(upstreamSocket))
+	return middlewareWithDeps(logger, opts, newACLResolveClient(upstreamSocket, resolvedLabelPrefix(opts)))
+}
+
+// resolvedLabelPrefix replicates the label-prefix resolution from
+// compileOptions so newACLResolveClient can pre-bind a compile hook on the
+// cache without standing up the full compiled options pipeline first.
+func resolvedLabelPrefix(opts Options) string {
+	if !opts.ContainerLabels.Enabled {
+		return ""
+	}
+	if prefix := opts.ContainerLabels.LabelPrefix; prefix != "" {
+		return prefix
+	}
+	return DefaultLabelPrefix
 }
 
 func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(context.Context, netip.Addr) (resolvedClient, bool, error)) func(http.Handler) http.Handler {
@@ -260,7 +282,16 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(co
 				return
 			}
 
-			rules, hasACLLabels, err := compileContainerLabelRules(client.Labels, compiled.labelPrefix)
+			// Prefer cache-precompiled rules when the resolver pre-populated them.
+			// Note: hasLabelACLRules false alongside a non-nil labelACLErr still
+			// counts as "precomputed" — the error must be surfaced, not retried.
+			var rules []*filter.CompiledRule
+			var hasACLLabels bool
+			if client.hasLabelACLRules || client.labelACLErr != nil {
+				rules, hasACLLabels, err = client.labelACLRules, client.hasLabelACLRules, client.labelACLErr
+			} else {
+				rules, hasACLLabels, err = compileContainerLabelRules(client.Labels, compiled.labelPrefix)
+			}
 			if err != nil {
 				logger.ErrorContext(
 					r.Context(),
@@ -295,12 +326,32 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(co
 	}
 }
 
-func newACLResolveClient(upstreamSocket string) func(context.Context, netip.Addr) (resolvedClient, bool, error) {
+func newACLResolveClient(upstreamSocket, labelPrefix string) func(context.Context, netip.Addr) (resolvedClient, bool, error) {
 	resolver := upstreamResolver{
 		client: dockerclient.New(upstreamSocket),
 	}
 	cache := newClientCache(clientCacheTTL, clientCacheMaxSize, time.Now, resolver.resolveClient)
+	if labelPrefix != "" {
+		cache.augment = func(c resolvedClient) resolvedClient {
+			return withCompiledLabelRules(c, labelPrefix)
+		}
+	}
 	return cache.Lookup
+}
+
+// withCompiledLabelRules pre-compiles a resolved client's label ACL rules
+// using the given prefix and returns the augmented client. The clientCache
+// caches the result so a busy client doesn't pay for re-compilation on
+// every request within the cache TTL.
+func withCompiledLabelRules(client resolvedClient, labelPrefix string) resolvedClient {
+	if labelPrefix == "" || len(client.Labels) == 0 {
+		return client
+	}
+	rules, hasACLLabels, err := compileContainerLabelRules(client.Labels, labelPrefix)
+	client.labelACLRules = rules
+	client.hasLabelACLRules = hasACLLabels
+	client.labelACLErr = err
+	return client
 }
 
 func compileOptions(opts Options) (compiledOptions, error) {
@@ -339,61 +390,11 @@ func compileOptions(opts Options) (compiledOptions, error) {
 		compiled.sourceIPProfiles = append(compiled.sourceIPProfiles, compiledAssignment)
 	}
 
-	compiled.clientCertProfiles = make([]compiledClientCertificateProfileAssignment, 0, len(opts.Profiles.ClientCertificates))
-	for _, assignment := range opts.Profiles.ClientCertificates {
-		compiledAssignment := compiledClientCertificateProfileAssignment{
-			profile:             strings.TrimSpace(assignment.Profile),
-			commonNames:         make([]string, 0, len(assignment.CommonNames)),
-			dnsNames:            make([]string, 0, len(assignment.DNSNames)),
-			ipAddresses:         make([]netip.Addr, 0, len(assignment.IPAddresses)),
-			uriSANs:             make([]string, 0, len(assignment.URISANs)),
-			spiffeIDs:           make([]string, 0, len(assignment.SPIFFEIDs)),
-			publicKeySHA256Pins: make([]string, 0, len(assignment.PublicKeySHA256Pins)),
-		}
-		for _, value := range assignment.CommonNames {
-			trimmed := strings.TrimSpace(value)
-			if trimmed == "" {
-				continue
-			}
-			compiledAssignment.commonNames = append(compiledAssignment.commonNames, trimmed)
-		}
-		for _, value := range assignment.DNSNames {
-			trimmed := strings.TrimSpace(value)
-			if trimmed == "" {
-				continue
-			}
-			compiledAssignment.dnsNames = append(compiledAssignment.dnsNames, trimmed)
-		}
-		for _, value := range assignment.IPAddresses {
-			addr, err := netip.ParseAddr(strings.TrimSpace(value))
-			if err != nil {
-				return compiled, fmt.Errorf("parse client certificate IP SAN %q: %w", value, err)
-			}
-			compiledAssignment.ipAddresses = append(compiledAssignment.ipAddresses, addr.Unmap())
-		}
-		for _, value := range assignment.URISANs {
-			parsed, err := url.Parse(strings.TrimSpace(value))
-			if err != nil {
-				return compiled, fmt.Errorf("parse client certificate URI SAN %q: %w", value, err)
-			}
-			compiledAssignment.uriSANs = append(compiledAssignment.uriSANs, parsed.String())
-		}
-		for _, value := range assignment.SPIFFEIDs {
-			parsed, err := url.Parse(strings.TrimSpace(value))
-			if err != nil {
-				return compiled, fmt.Errorf("parse client certificate SPIFFE ID %q: %w", value, err)
-			}
-			compiledAssignment.spiffeIDs = append(compiledAssignment.spiffeIDs, parsed.String())
-		}
-		for _, value := range assignment.PublicKeySHA256Pins {
-			pin, err := pkipin.NormalizeSubjectPublicKeySHA256Pin(value)
-			if err != nil {
-				return compiled, fmt.Errorf("parse client certificate public_key_sha256_pins entry %q: %w", value, err)
-			}
-			compiledAssignment.publicKeySHA256Pins = append(compiledAssignment.publicKeySHA256Pins, pin)
-		}
-		compiled.clientCertProfiles = append(compiled.clientCertProfiles, compiledAssignment)
+	clientCertProfiles, err := compileClientCertProfiles(opts.Profiles.ClientCertificates)
+	if err != nil {
+		return compiled, err
 	}
+	compiled.clientCertProfiles = clientCertProfiles
 
 	compiled.unixPeerProfiles = make([]compiledUnixPeerProfileAssignment, 0, len(opts.Profiles.UnixPeers))
 	for _, assignment := range opts.Profiles.UnixPeers {
@@ -417,6 +418,71 @@ func compileOptions(opts Options) (compiledOptions, error) {
 	}
 
 	return compiled, nil
+}
+
+// compileClientCertProfiles converts the wire-format client-certificate
+// profile assignments into the trimmed, parsed, normalized form that the
+// matcher uses on the request path. Extracted from compileOptions so each
+// SAN type — common names, DNS, IP, URI, SPIFFE, public-key pin — can be
+// tested in isolation and so the parent function stays under 60 lines.
+func compileClientCertProfiles(assignments []ClientCertificateProfileAssignment) ([]compiledClientCertificateProfileAssignment, error) {
+	compiled := make([]compiledClientCertificateProfileAssignment, 0, len(assignments))
+	for _, assignment := range assignments {
+		c := compiledClientCertificateProfileAssignment{
+			profile:             strings.TrimSpace(assignment.Profile),
+			commonNames:         trimNonEmpty(assignment.CommonNames),
+			dnsNames:            trimNonEmpty(assignment.DNSNames),
+			ipAddresses:         make([]netip.Addr, 0, len(assignment.IPAddresses)),
+			uriSANs:             make([]string, 0, len(assignment.URISANs)),
+			spiffeIDs:           make([]string, 0, len(assignment.SPIFFEIDs)),
+			publicKeySHA256Pins: make([]string, 0, len(assignment.PublicKeySHA256Pins)),
+		}
+		for _, value := range assignment.IPAddresses {
+			addr, err := netip.ParseAddr(strings.TrimSpace(value))
+			if err != nil {
+				return nil, fmt.Errorf("parse client certificate IP SAN %q: %w", value, err)
+			}
+			c.ipAddresses = append(c.ipAddresses, addr.Unmap())
+		}
+		for _, value := range assignment.URISANs {
+			parsed, err := url.Parse(strings.TrimSpace(value))
+			if err != nil {
+				return nil, fmt.Errorf("parse client certificate URI SAN %q: %w", value, err)
+			}
+			c.uriSANs = append(c.uriSANs, parsed.String())
+		}
+		for _, value := range assignment.SPIFFEIDs {
+			parsed, err := url.Parse(strings.TrimSpace(value))
+			if err != nil {
+				return nil, fmt.Errorf("parse client certificate SPIFFE ID %q: %w", value, err)
+			}
+			c.spiffeIDs = append(c.spiffeIDs, parsed.String())
+		}
+		for _, value := range assignment.PublicKeySHA256Pins {
+			pin, err := pkipin.NormalizeSubjectPublicKeySHA256Pin(value)
+			if err != nil {
+				return nil, fmt.Errorf("parse client certificate public_key_sha256_pins entry %q: %w", value, err)
+			}
+			c.publicKeySHA256Pins = append(c.publicKeySHA256Pins, pin)
+		}
+		compiled = append(compiled, c)
+	}
+	return compiled, nil
+}
+
+// trimNonEmpty returns a new slice containing the trimmed, non-empty entries
+// of the input. Used by client-certificate compilation to drop blank values
+// without leaking them into the matcher.
+func trimNonEmpty(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func withProfile(ctx context.Context, profile string) context.Context {

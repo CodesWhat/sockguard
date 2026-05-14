@@ -9,9 +9,19 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	requestfilter "github.com/codeswhat/sockguard/internal/filter"
 )
+
+// streamArrayBufferPool keeps growable bytes.Buffer instances warm so that
+// list-endpoint responses don't pay for fresh buffer allocations and grow
+// copies on every redaction. The final response payload is cloned out of the
+// buffer before the buffer returns to the pool — the pooled storage is reused
+// by the next caller and must not be referenced after release.
+var streamArrayBufferPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
 
 const (
 	redactedValue = "<redacted>"
@@ -84,7 +94,7 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifySystemDataUsage(resp)
 	}
 
-	// Table-driven list/inspect pairs (uniform guard + modifyListResponse / modifyMapResponse).
+	// Table-driven list/inspect pairs (uniform guard + streamArrayResponse / modifyMapResponse).
 	return f.dispatchTableEntry(normPath, resp)
 }
 
@@ -230,7 +240,7 @@ func (f *Filter) modifyVolumeInspect(resp *http.Response) error {
 
 // tableEntry describes one list or inspect endpoint that follows the uniform
 // guard-then-delegate pattern: if active(opts) is false, skip; otherwise
-// call modifyListResponse (isList=true) or modifyMapResponse (isList=false).
+// call streamArrayResponse (isList=true) or modifyMapResponse (isList=false).
 type tableEntry struct {
 	// path is the exact normalized path (e.g. "/services") or "" for
 	// inspect paths matched by an isXInspectPath predicate.
@@ -346,7 +356,7 @@ func (f *Filter) dispatchTableEntry(normPath string, resp *http.Response) error 
 		}
 		mutate := e.mutate(f)
 		if e.isList {
-			return modifyListResponse(resp, mutate)
+			return streamArrayResponse(resp, mutate)
 		}
 		return modifyMapResponse(resp, mutate)
 	}
@@ -393,10 +403,6 @@ func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) e
 	return writeResponseBody(resp, payload)
 }
 
-func modifyListResponse(resp *http.Response, mutate func(map[string]any) error) error {
-	return streamArrayResponse(resp, mutate)
-}
-
 // streamArrayResponse decodes a JSON array from resp.Body one element at a
 // time, calls mutate on each element, and writes the mutated array back to
 // resp.  It replaces the previous read-all → unmarshal → mutate → marshal
@@ -428,9 +434,14 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 		return rejectResponse(fmt.Errorf("expected JSON array, got %T %v", tok, tok))
 	}
 
-	// Stream-encode elements directly into the output buffer.
-	var out bytes.Buffer
-	enc := json.NewEncoder(&out)
+	out, _ := streamArrayBufferPool.Get().(*bytes.Buffer)
+	if out == nil {
+		out = &bytes.Buffer{}
+	}
+	out.Reset()
+	defer streamArrayBufferPool.Put(out)
+
+	enc := json.NewEncoder(out)
 	enc.SetEscapeHTML(false) // preserve original character set; Docker never needs HTML-safe JSON
 
 	out.WriteByte('[')
@@ -471,7 +482,12 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 		return rejectResponse(fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes))
 	}
 
-	body := out.Bytes()
+	// Clone the body out of the pooled buffer: ReverseProxy reads resp.Body
+	// after we return, but the buffer's storage will be reused by the next
+	// caller via streamArrayBufferPool. Sizing the destination exactly avoids
+	// the second growth pass that bytes.NewBuffer would otherwise pay.
+	body := make([]byte, out.Len())
+	copy(body, out.Bytes())
 	if resp.Header == nil {
 		resp.Header = make(http.Header)
 	}
