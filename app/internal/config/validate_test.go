@@ -1066,6 +1066,66 @@ func TestMutantKills(t *testing.T) {
 		}
 	})
 
+	// ── CONDITIONALS_NEGATION validate.go:102 ─────────────────────────────────
+	// `err != nil || interval <= 0` — if either side is negated, a watchdog
+	// configured with a valid positive interval would spuriously error. The
+	// existing "soon" and "0s" tests both leave one side true; this exercises
+	// the happy path where both sides are false.
+	t.Run("watchdog_valid_positive_interval_accepted", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Health.Watchdog.Enabled = true
+		cfg.Health.Watchdog.Interval = "30s"
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "health.watchdog.interval") {
+			t.Fatalf("valid positive watchdog interval should not error, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_NEGATION validate.go:141 ─────────────────────────────────
+	// `cfg.Reload.Enabled && cfg.Reload.Debounce != ""` — if the operator
+	// flips, an enabled reload with an empty Debounce (the default skip case)
+	// would still try to parse "" as a duration and spuriously error.
+	t.Run("reload_enabled_empty_debounce_skipped", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.Debounce = ""
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "reload.debounce") {
+			t.Fatalf("empty reload.debounce should be skipped without parse error, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_NEGATION validate.go:149 ─────────────────────────────────
+	// `cfg.Reload.Enabled && cfg.Reload.PollInterval != ""` — same shape as
+	// reload.debounce. An empty PollInterval is the documented "polling
+	// disabled" sentinel; mutating == to != would force a parse error.
+	t.Run("reload_enabled_empty_poll_interval_skipped", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.PollInterval = ""
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "reload.poll_interval") {
+			t.Fatalf("empty reload.poll_interval should be skipped without parse error, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_NEGATION validate.go:301 ─────────────────────────────────
+	// `strings.TrimSpace(kl.SubjectPattern) == ""` — if mutated to !=, a valid
+	// non-empty subject_pattern would spuriously error as "required". Existing
+	// tests only exercise the empty/whitespace-only path.
+	t.Run("keyless_valid_subject_pattern_accepted", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.PolicyBundle.Enabled = true
+		cfg.PolicyBundle.SignaturePath = "/tmp/sig.json"
+		cfg.PolicyBundle.AllowedKeyless = []PolicyBundleKeyless{
+			{Issuer: "https://accounts.google.com", SubjectPattern: ".*@example\\.com"},
+		}
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "subject_pattern is required") {
+			t.Fatalf("valid non-empty subject_pattern should not trigger 'required' error, got: %v", err)
+		}
+	})
+
 	// Empty cert profile (no selectors at all) must still error.
 	t.Run("cert_profile_no_selectors_errors", func(t *testing.T) {
 		dir := t.TempDir()
