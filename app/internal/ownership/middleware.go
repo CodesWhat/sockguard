@@ -462,7 +462,10 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 		return nil, false, fmt.Errorf("unsupported resource kind %q", kind)
 	}
 
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+target, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+target, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("build inspect %s request: %w", kind, err)
+	}
 	resp, err := u.client.Do(req)
 	if err != nil {
 		return nil, false, err
@@ -484,7 +487,10 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 }
 
 func (u upstreamInspector) inspectExec(ctx context.Context, identifier string) (string, bool, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/exec/"+url.PathEscape(identifier)+"/json", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/exec/"+url.PathEscape(identifier)+"/json", nil)
+	if err != nil {
+		return "", false, fmt.Errorf("build inspect exec request: %w", err)
+	}
 	resp, err := u.client.Do(req)
 	if err != nil {
 		return "", false, err

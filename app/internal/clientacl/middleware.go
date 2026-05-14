@@ -978,7 +978,10 @@ func splitLabelPatterns(value string) []string {
 }
 
 func (r upstreamResolver) resolveClient(ctx context.Context, addr netip.Addr) (resolvedClient, bool, error) {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/json", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/json", nil)
+	if err != nil {
+		return resolvedClient{}, false, fmt.Errorf("build container list request: %w", err)
+	}
 
 	resp, err := r.client.Do(req)
 	if err != nil {
@@ -1020,7 +1023,10 @@ func (r upstreamResolver) resolveClient(ctx context.Context, addr netip.Addr) (r
 // error returns false; other non-200 responses also return false. The caller
 // must not cache a result when this returns false.
 func (r upstreamResolver) isContainerLive(ctx context.Context, id string) bool {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/"+id+"/json", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/"+url.PathEscape(id)+"/json", nil)
+	if err != nil {
+		return false
+	}
 	resp, err := r.client.Do(req)
 	if err != nil {
 		return false
