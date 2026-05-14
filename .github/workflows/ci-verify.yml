@@ -278,8 +278,20 @@ jobs:
         fuzzer:
           - { name: FuzzPathMatch,            pkg: ./internal/filter/ }
           - { name: FuzzGlobToRegex,          pkg: ./internal/filter/ }
+          - { name: FuzzGlobToRegexString,    pkg: ./internal/filter/ }
           - { name: FuzzNormalizePath,        pkg: ./internal/filter/ }
           - { name: FuzzCompileRule,          pkg: ./internal/filter/ }
+          - { name: FuzzBuild,                pkg: ./internal/filter/ }
+          - { name: FuzzContainerCreate,      pkg: ./internal/filter/ }
+          - { name: FuzzExec,                 pkg: ./internal/filter/ }
+          - { name: FuzzImagePull,            pkg: ./internal/filter/ }
+          - { name: FuzzVolume,               pkg: ./internal/filter/ }
+          - { name: FuzzSecret,               pkg: ./internal/filter/ }
+          - { name: FuzzConfigWrite,          pkg: ./internal/filter/ }
+          - { name: FuzzService,              pkg: ./internal/filter/ }
+          - { name: FuzzSwarm,                pkg: ./internal/filter/ }
+          - { name: FuzzPlugin,               pkg: ./internal/filter/ }
+          - { name: FuzzNetwork,              pkg: ./internal/filter/ }
           - { name: FuzzProxyHeadersAndBody,  pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody, pkg: ./internal/proxy/ }
 
