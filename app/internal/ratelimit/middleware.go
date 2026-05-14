@@ -343,8 +343,19 @@ func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next htt
 	}
 
 	// Normalize the request path once. Reused for endpoint-cost lookup, the
-	// throttle audit record, and the deny path's metrics label.
-	normPath := filter.NormalizePath(r.URL.Path)
+	// throttle audit record, and the deny path's metrics label. If a prior
+	// middleware already cached the normalized path on RequestMeta, reuse it
+	// instead of re-scanning the raw path — NormalizePath is otherwise the
+	// only per-request string scan most non-throttled requests do.
+	var normPath string
+	if meta := logging.MetaForRequest(w, r); meta != nil && meta.NormPath != "" {
+		normPath = meta.NormPath
+	} else {
+		normPath = filter.NormalizePath(r.URL.Path)
+		if meta != nil {
+			meta.NormPath = normPath
+		}
+	}
 
 	if h.checkRateLimit(w, r, cp, effectiveID, normPath) {
 		return
@@ -509,16 +520,8 @@ func (h *throttleHandler) emitThrottleAudit(r *http.Request, clientID string, re
 		slog.String("path", normPath),
 	)
 	attrs = append(attrs, extras...)
-	h.logger.InfoContext(r.Context(), "throttle",
-		slog.Group("throttle", attrsToAny(attrs)...))
-}
-
-func attrsToAny(attrs []slog.Attr) []any {
-	result := make([]any, len(attrs))
-	for i, a := range attrs {
-		result[i] = a
-	}
-	return result
+	h.logger.LogAttrs(r.Context(), slog.LevelInfo, "throttle",
+		slog.Attr{Key: "throttle", Value: slog.GroupValue(attrs...)})
 }
 
 // rolloutModeOf returns the rollout mode label for the request's resolved

@@ -18,6 +18,14 @@ import (
 // bucketState is the immutable snapshot that the CAS loop swaps atomically.
 // Both fields are packed into a single heap allocation that is replaced on
 // every successful AllowN transition; the old allocation is reclaimed by GC.
+//
+// Why not a sync.Pool? Returning the OLD pointer to a pool after a CAS
+// succeeds is unsafe: a concurrent reader that already loaded that pointer
+// may still be reading its fields when a fresh consumer pulls it out of
+// the pool and overwrites them, producing a torn read. Pooling only the
+// failed-CAS `next` candidates is sound but saves nothing on the hot path
+// because steady-state CAS succeeds on the first try. The 16-byte
+// per-admit allocation is left to the GC, which handles it efficiently.
 type bucketState struct {
 	tokens       float64
 	lastRefillNs int64 // Unix nanoseconds
