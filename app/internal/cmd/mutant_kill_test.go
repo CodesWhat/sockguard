@@ -766,6 +766,67 @@ func TestRunServe_AdminShutdownErrorLogs(t *testing.T) {
 	}
 }
 
+// TestRunServe_AdminSocketRemovedWhenSocketPathSet pins the
+// CONDITIONALS_NEGATION mutant at serve.go:278 (`Socket != ""` → `==`) in
+// the admin-socket cleanup branch. With the mutation, the admin socket
+// path is only cleaned up when the socket string is empty (calling
+// removePath("")), and a real configured path is skipped — leaking the
+// admin socket file. We assert removePath is invoked with the admin
+// socket path exactly when that path is non-empty.
+func TestRunServe_AdminSocketRemovedWhenSocketPathSet(t *testing.T) {
+	const adminSock = "/tmp/sockguard-admin-shutdown-test.sock"
+
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		cfg := testServeConfig()
+		cfg.Listen.Address = "127.0.0.1:0"
+		cfg.Admin.Enabled = true
+		cfg.Admin.Listen.Address = ""
+		cfg.Admin.Listen.Socket = adminSock
+		return cfg, nil
+	}
+
+	collector := &testhelp.CollectingHandler{}
+	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
+		return collector.Logger(), nil, nil
+	}
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		return stubCompiledRules(), nil
+	}
+	deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return &serveTestConn{}, nil
+	}
+	deps.createServeListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.createAdminListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) {}
+	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) { c <- syscall.SIGINT }
+	deps.shutdownServer = func(_ *http.Server, _ context.Context) error { return nil }
+
+	var removed []string
+	deps.removePath = func(p string) error {
+		removed = append(removed, p)
+		return nil
+	}
+
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
+		t.Fatalf("runServeWithDeps() error = %v", err)
+	}
+
+	foundAdmin := false
+	for _, p := range removed {
+		if p == adminSock {
+			foundAdmin = true
+		}
+	}
+	if !foundAdmin {
+		t.Fatalf("expected removePath(%q) call (admin socket cleanup); calls: %#v", adminSock, removed)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // serve.go: CONDITIONALS_NEGATION: runtime.health != nil
 // withHealth should use runtime.health when set, otherwise fall back to a

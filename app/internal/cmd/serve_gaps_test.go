@@ -101,6 +101,26 @@ func TestBuildRateLimitMiddlewareBuildsWhenGlobalConcurrencyConfigured(t *testin
 	defer stop()
 }
 
+// TestBuildRateLimitMiddlewareGlobalConcurrencyZeroSkipped pins the
+// CONDITIONALS_BOUNDARY mutant at serve.go:533 (`MaxInflight > 0` → `>= 0`).
+// When the global-concurrency block is present but MaxInflight is zero, the
+// middleware must NOT activate (otherwise the proxy installs a zero-cap
+// concurrency limiter that blocks every request). With no profile limits,
+// returning the no-op (nil, nil) is the correct behaviour.
+func TestBuildRateLimitMiddlewareGlobalConcurrencyZeroSkipped(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Clients.GlobalConcurrency = &config.GlobalConcurrencyConfig{MaxInflight: 0}
+
+	rt := &serveRuntime{}
+	mw, stop := buildRateLimitMiddleware(cfg, newDiscardLogger(), rt)
+	if mw != nil {
+		t.Fatal("mw = non-nil, want nil when MaxInflight is 0 (the boundary)")
+	}
+	if stop != nil {
+		t.Fatal("stop = non-nil, want nil when MaxInflight is 0")
+	}
+}
+
 // TestBuildRateLimitMiddlewareBuildsWhenProfileLimitsConfigured covers the
 // branch where a profile has concurrency limits — middleware must be
 // non-nil so the limiter layer is installed.
