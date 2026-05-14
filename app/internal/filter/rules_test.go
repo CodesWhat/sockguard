@@ -863,3 +863,243 @@ func TestMatchesNormalizedUpperWithBitRegexLiteralPrefixMismatch(t *testing.T) {
 		t.Fatal("regex literalPrefix mismatch should not match")
 	}
 }
+
+// TestHTTPMethodMaskBitInvariants locks in three invariants that the mutation
+// suite repeatedly tried to break in rules.go:323 (httpMethodBit) and the
+// const block at rules.go:45:
+//
+//  1. Each known-method mask is non-zero — a mutation that sets any constant
+//     to 0 would fall through to the "unknown method" branch.
+//  2. Each mask has exactly one bit set (power of two) — mutations that flip
+//     `1 << iota` to `2 << iota` or `1 | iota` would set extra bits and make
+//     two distinct methods alias to the same mask AND/OR with another.
+//  3. All nine masks are pairwise distinct — a mutation that returns
+//     httpMethodMaskGet from the CONNECT case would silently let CONNECT
+//     traffic match GET-only rules. The flat string-to-mask test cannot tell
+//     a wrong-but-distinct mask from a right one; the uniqueness predicate
+//     can.
+func TestHTTPMethodMaskBitInvariants(t *testing.T) {
+	methods := []string{
+		http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodDelete, http.MethodPatch, http.MethodOptions,
+		http.MethodConnect, http.MethodTrace,
+	}
+	seen := make(map[httpMethodMask]string, len(methods))
+	for _, method := range methods {
+		mask := httpMethodBit(method)
+		if mask == 0 {
+			t.Errorf("httpMethodBit(%q) = 0; want a non-zero bit", method)
+		}
+		if mask&(mask-1) != 0 {
+			t.Errorf("httpMethodBit(%q) = %b; want exactly one bit set", method, mask)
+		}
+		if prev, dup := seen[mask]; dup {
+			t.Errorf("httpMethodBit(%q) collides with %q (both = %b)", method, prev, mask)
+		}
+		seen[mask] = method
+	}
+	if got := len(seen); got != len(methods) {
+		t.Fatalf("distinct masks = %d, want %d (one per known method)", got, len(methods))
+	}
+}
+
+// TestUpperHTTPMethodASCIIBoundaryRunes covers the boundary characters at the
+// edges of the ASCII lowercase range. The 'a' <= c && c <= 'z' check is a
+// classic two-sided range comparison; a mutation that flips either
+// inequality (`<=` → `<`) silently skips exactly one letter at the edge.
+//
+// Without these cases the existing "lowercase ascii"="post" test passes both
+// the original and the mutation, since neither 'a' nor 'z' appears in the
+// input.
+func TestUpperHTTPMethodASCIIBoundaryRunes(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		want   string
+	}{
+		{name: "all a", method: "aaa", want: "AAA"},
+		{name: "all z", method: "zzz", want: "ZZZ"},
+		{name: "boundary span", method: "abz", want: "ABZ"},
+		{name: "first byte a then upper", method: "aXYZ", want: "AXYZ"},
+		{name: "char just before a", method: "`abc", want: "`ABC"},
+		{name: "char just after z", method: "{abc", want: "{ABC"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := upperHTTPMethodASCII(tt.method); got != tt.want {
+				t.Fatalf("upperHTTPMethodASCII(%q) = %q, want %q", tt.method, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestMatchGlobSegmentBacktracking exercises the backtracking branch in
+// matchGlobSegment (rules.go:443 — `patternIndex = starIndex + 1;
+// segmentRetry++; segmentIndex = segmentRetry`). The branch fires when a
+// `*` has provisionally matched some prefix of the segment but a subsequent
+// literal character mismatches; the algorithm rewinds to one byte past the
+// star's initial position and retries.
+//
+// The mutations targeted here:
+//   - `starIndex + 1` → `starIndex + 2` or `starIndex - 1`
+//   - `segmentRetry++` → `segmentRetry` (no increment, infinite loop or
+//     wrong-segment match)
+//   - `starIndex = patternIndex` (initial -1) → `0`
+//
+// Each case below has at least one literal byte after the star, so the
+// matcher must rewind at least once.
+func TestMatchGlobSegmentBacktracking(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		segment string
+		want    bool
+	}{
+		// `*a` matches `aa` only by backtracking: first try * = "" matches
+		// nothing, then `a == a` consumes one byte, leaves the remaining `a`
+		// unmatched, must rewind and try * = "a".
+		{name: "star then literal needs rewind", pattern: "*a", segment: "aa", want: true},
+		// Embedded backtracking: `*ab` against `aab` first tries * = "", then
+		// `a` matches at index 0, then `b` mismatches at index 1 (it's `a`),
+		// so must rewind to * = "a" then match `ab`.
+		{name: "embedded ab", pattern: "*ab", segment: "aab", want: true},
+		// Multi-rewind: `*abc` against `aabcdabc` — first match at index 1
+		// succeeds.
+		{name: "multi-rewind succeeds", pattern: "*abc", segment: "aabcdabc", want: true},
+		// Mismatch after exhaustion — `*xy` against `abc` exhausts retries
+		// without ever matching the literal tail, must return false.
+		{name: "no literal match after star exhausts", pattern: "*xy", segment: "abc", want: false},
+		// Multiple stars with a backtrack: `*a*b` against `cabcb` — first
+		// star matches "c", then `a` consumes, then second star matches "bc"
+		// — actually segments don't have a / so works fine; testing the
+		// segmentRetry++ path under repeated retries.
+		{name: "two stars two rewinds", pattern: "*a*b", segment: "cacbabb", want: true},
+		// Star at end after literal: `abc*` against `abcdef` — no rewind,
+		// the trailing star consumes the rest.
+		{name: "literal then trailing star consumes rest", pattern: "abc*", segment: "abcdef", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matchGlobSegment(tt.pattern, tt.segment)
+			if got != tt.want {
+				t.Fatalf("matchGlobSegment(%q, %q) = %v, want %v", tt.pattern, tt.segment, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsTrailingDoubleStarPatternEdges exercises the boundary cases of
+// isTrailingDoubleStarPattern in rules.go:376, which is the gate that
+// decides whether a pattern qualifies for the fast pathMatcherTrailingDeep
+// matcher vs. falling through to the slower regex compile.
+//
+// A mutation that flipped `HasSuffix(..., "/**")` to plain `Contains` would
+// let `/foo/**/bar` (with embedded `**`) take the fast path and ignore the
+// trailing literal segments. Likewise a mutation on the !Contains-earlier-*
+// guard would let `/**/foo/**` qualify and miss the leading-segment match.
+func TestIsTrailingDoubleStarPatternEdges(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		want    bool
+	}{
+		{name: "trailing only", pattern: "/**", want: true},
+		{name: "prefix then trailing", pattern: "/containers/**", want: true},
+		{name: "embedded double-star", pattern: "/**/foo", want: false},
+		{name: "double-star sandwiched", pattern: "/foo/**/bar", want: false},
+		{name: "trailing with prior single star", pattern: "/foo/*/**", want: false},
+		{name: "no double-star", pattern: "/foo/bar", want: false},
+		{name: "just stars", pattern: "**", want: false},
+		{name: "empty pattern", pattern: "", want: false},
+		{name: "double star without slash prefix", pattern: "foo/**", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isTrailingDoubleStarPattern(tt.pattern); got != tt.want {
+				t.Fatalf("isTrailingDoubleStarPattern(%q) = %v, want %v", tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestGlobToRegexSpecialSequences covers the three top-level cases in the
+// switch at the heart of globToRegex (rules.go:485): the /** preamble that
+// must match the bare path, the bare ** that matches everything, and the
+// single * that must NOT cross a / boundary. Mutations on the byte-position
+// arithmetic (i+1, i+2, i+3) silently misalign the regex emit and would let
+// /containers/json match /containers**/jso* etc.
+//
+// We compile each emitted regex and assert the actual match semantics so
+// any drift between the glob and the regex output is caught.
+func TestGlobToRegexSpecialSequences(t *testing.T) {
+	tests := []struct {
+		name        string
+		pattern     string
+		match       []string
+		dontMatch   []string
+		regexSuffix string // expected substring in the emitted regex (sanity check)
+	}{
+		{
+			name:        "trailing slash double-star matches bare prefix",
+			pattern:     "/containers/**",
+			match:       []string{"/containers", "/containers/", "/containers/json", "/containers/a/b/c"},
+			dontMatch:   []string{"/containerstuff", "/images/json"},
+			regexSuffix: "(/.*)?",
+		},
+		{
+			name:        "bare double-star matches everything",
+			pattern:     "/**",
+			match:       []string{"", "/", "/x", "/x/y/z"},
+			dontMatch:   nil,
+			regexSuffix: "(/.*)?",
+		},
+		{
+			// Single * compiles to [^/]* — does not cross slash boundaries.
+			// `/containers/a/b/json` has two intermediate segments and must
+			// NOT match. The empty segment `/containers//json` IS matched
+			// because [^/]* accepts zero chars; this is the established
+			// behavior (cross-checked with TestGlobToRegex / FuzzPathMatch).
+			name:        "single-star is segment-bound",
+			pattern:     "/containers/*/json",
+			match:       []string{"/containers/abc/json"},
+			dontMatch:   []string{"/containers/a/b/json"},
+			regexSuffix: "[^/]*",
+		},
+		{
+			// Non-trailing /**/ compiles to (/.*)? — the slash + anything
+			// group is optional, so the pattern also matches when there is
+			// no middle path at all (`/containers/json`). This is the
+			// established behavior; the test exists to lock it in.
+			name:        "non-trailing double-star matches arbitrary depth",
+			pattern:     "/containers/**/json",
+			match:       []string{"/containers/a/json", "/containers/a/b/c/json", "/containers/json"},
+			dontMatch:   []string{"/containerstuff/json", "/images/a/json"},
+			regexSuffix: ".",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			regexStr := globToRegex(tt.pattern)
+			if !strings.Contains(regexStr, tt.regexSuffix) {
+				t.Errorf("globToRegex(%q) = %q; expected to contain %q", tt.pattern, regexStr, tt.regexSuffix)
+			}
+			re, err := regexp.Compile("^" + regexStr + "$")
+			if err != nil {
+				t.Fatalf("compile %q: %v", regexStr, err)
+			}
+			for _, m := range tt.match {
+				if !re.MatchString(m) {
+					t.Errorf("globToRegex(%q) = %q; expected to match %q", tt.pattern, regexStr, m)
+				}
+			}
+			for _, m := range tt.dontMatch {
+				if re.MatchString(m) {
+					t.Errorf("globToRegex(%q) = %q; expected NOT to match %q", tt.pattern, regexStr, m)
+				}
+			}
+		})
+	}
+}
