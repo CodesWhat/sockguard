@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/logging"
 )
@@ -1474,5 +1475,78 @@ func TestInspectAllowedRequestReturnsRejectionStatusFromError(t *testing.T) {
 	}
 	if status != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d", status, http.StatusRequestEntityTooLarge)
+	}
+}
+
+// deadlineCapturingWriter is an http.ResponseWriter that records SetReadDeadline
+// calls so tests can assert the body-read deadline is applied (Fix #7).
+type deadlineCapturingWriter struct {
+	http.ResponseWriter
+	deadlines []time.Time
+}
+
+func (w *deadlineCapturingWriter) SetReadDeadline(t time.Time) error {
+	w.deadlines = append(w.deadlines, t)
+	return nil
+}
+
+// Unwrap lets http.ResponseController find SetReadDeadline on the outer wrapper.
+func (w *deadlineCapturingWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
+}
+
+// TestBodyReadDeadlineIsSetForAllowedRequests verifies Fix #7: the filter
+// middleware sets a read deadline before inspecting the request body and resets
+// it to the zero value afterwards. The zero reset is verified by confirming the
+// second deadline recorded is time.Time{}.
+func TestBodyReadDeadlineIsSetForAllowedRequests(t *testing.T) {
+	allowAll, _ := CompileRule(Rule{Methods: []string{"POST"}, Pattern: "/containers/create", Action: ActionAllow, Index: 0})
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := MiddlewareWithOptions([]*CompiledRule{allowAll}, testLogger(), Options{})(inner)
+
+	body := strings.NewReader(`{"Image":"alpine"}`)
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", body)
+	rec := httptest.NewRecorder()
+	capturing := &deadlineCapturingWriter{ResponseWriter: rec}
+	handler.ServeHTTP(capturing, req)
+
+	if len(capturing.deadlines) < 2 {
+		t.Fatalf("expected at least 2 SetReadDeadline calls (set + reset), got %d", len(capturing.deadlines))
+	}
+
+	// First call must be a non-zero future time.
+	if capturing.deadlines[0].IsZero() {
+		t.Fatal("first SetReadDeadline deadline is zero, want a future timestamp")
+	}
+
+	// Final call must be the zero reset.
+	last := capturing.deadlines[len(capturing.deadlines)-1]
+	if !last.IsZero() {
+		t.Fatalf("final SetReadDeadline deadline = %v, want zero (reset)", last)
+	}
+}
+
+// TestBodyReadDeadlineIsNotSetForDeniedRequests confirms that the deadline is
+// only applied when the path actually passes the rule evaluation stage.
+func TestBodyReadDeadlineIsNotSetForDeniedRequests(t *testing.T) {
+	denyAll, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 0})
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inner must not be reached for denied request")
+	})
+
+	handler := MiddlewareWithOptions([]*CompiledRule{denyAll}, testLogger(), Options{})(inner)
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	capturing := &deadlineCapturingWriter{ResponseWriter: rec}
+	handler.ServeHTTP(capturing, req)
+
+	if len(capturing.deadlines) != 0 {
+		t.Fatalf("expected no SetReadDeadline calls for denied request, got %d", len(capturing.deadlines))
 	}
 }

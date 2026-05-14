@@ -277,7 +277,9 @@ func TestSwarmInspectUnlockAllowsWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestSwarmInspectUnlockMalformedJSONDefersWithoutLoggingKey(t *testing.T) {
+func TestSwarmInspectUnlockMalformedJSONDeniesFail_Closed(t *testing.T) {
+	// On decode failure inspectUnlock must deny (fail-closed), not defer to
+	// Docker, and must not leak the unlock key into log output.
 	logs := &collectingHandler{}
 	logger := slog.New(logs)
 	policy := newSwarmPolicy(SwarmOptions{})
@@ -288,8 +290,9 @@ func TestSwarmInspectUnlockMalformedJSONDefersWithoutLoggingKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred to Docker)", reason)
+	const wantReason = "swarm unlock denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 
 	records := logs.snapshot()

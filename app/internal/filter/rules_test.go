@@ -54,6 +54,8 @@ func TestStripVersionPrefix(t *testing.T) {
 		{name: "version root path", path: "/v1.45/", want: "/"},
 		{name: "double prefix strips only first", path: "/v1.45/v1.46/containers/json", want: "/v1.46/containers/json"},
 		{name: "invalid prefix without slash after digits", path: "/v1x/containers/json", want: "/v1x/containers/json"},
+		{name: "uppercase V major minor", path: "/V1.45/containers/json", want: "/containers/json"},
+		{name: "uppercase V major only", path: "/V1/containers/json", want: "/containers/json"},
 	}
 
 	for _, tt := range tests {

@@ -105,9 +105,6 @@ func (p pluginPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 	if r == nil || r.Method != http.MethodPost {
 		return "", nil
 	}
-	if p.io.CreateTempFile == nil {
-		p.io = defaultIODeps()
-	}
 
 	switch {
 	case normalizedPath == "/plugins/pull":

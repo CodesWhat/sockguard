@@ -74,7 +74,11 @@ func TestNewContainerCreatePolicyNormalizesAndDeduplicatesAllowedBindMounts(t *t
 	}
 }
 
-func TestContainerCreatePolicyInspectSkipsBodyWhenPermissive(t *testing.T) {
+func TestContainerCreatePolicyInspectAllowsPermissiveBodyWithoutForbiddenFields(t *testing.T) {
+	// allowsAllContainerCreateBodies always returns false because several fields
+	// (VolumesFrom, UTSMode:host, CgroupParent, GroupAdd, ExtraHosts) are
+	// unconditionally denied; the body must always be inspected. A body with
+	// none of those fields and a permissive policy must still be allowed.
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
 		AllowPrivileged:        true,
 		AllowHostNetwork:       true,
@@ -99,12 +103,6 @@ func TestContainerCreatePolicyInspectSkipsBodyWhenPermissive(t *testing.T) {
 	}
 	if reason != "" {
 		t.Fatalf("inspect() reason = %q, want empty", reason)
-	}
-	if tracker.reads != 0 {
-		t.Fatalf("body reads = %d, want 0", tracker.reads)
-	}
-	if tracker.closed {
-		t.Fatal("body was closed, want left open for downstream")
 	}
 
 	gotBody, readErr := io.ReadAll(req.Body)
@@ -235,6 +233,70 @@ func TestContainerCreatePolicyInspectDeniesHostNamespaces(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
 
+			reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestContainerCreatePolicyInspectDeniesNetworkModeHost(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(`{"HostConfig":{"NetworkMode":"host"}}`))
+	reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	const wantReason = "container create denied: host network mode is not allowed"
+	if reason != wantReason {
+		t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+	}
+}
+
+func TestContainerCreatePolicyInspectDeniesUninspectedHostConfigFields(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "VolumesFrom non-empty",
+			body:       `{"HostConfig":{"VolumesFrom":["other-container"]}}`,
+			wantReason: "container create denied: VolumesFrom is not allowed",
+		},
+		{
+			name:       "UTSMode host",
+			body:       `{"HostConfig":{"UTSMode":"host"}}`,
+			wantReason: "container create denied: host UTS mode is not allowed",
+		},
+		{
+			name:       "UTSMode host case insensitive",
+			body:       `{"HostConfig":{"UTSMode":"HOST"}}`,
+			wantReason: "container create denied: host UTS mode is not allowed",
+		},
+		{
+			name:       "CgroupParent non-empty",
+			body:       `{"HostConfig":{"CgroupParent":"/custom/cgroup"}}`,
+			wantReason: "container create denied: custom cgroup parent is not allowed",
+		},
+		{
+			name:       "GroupAdd non-empty",
+			body:       `{"HostConfig":{"GroupAdd":["docker","wheel"]}}`,
+			wantReason: "container create denied: supplemental group IDs are not allowed",
+		},
+		{
+			name:       "ExtraHosts non-empty",
+			body:       `{"HostConfig":{"ExtraHosts":["myhost:192.168.1.1"]}}`,
+			wantReason: "container create denied: ExtraHosts is not allowed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
 			reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")
 			if err != nil {
 				t.Fatalf("inspect() error = %v", err)

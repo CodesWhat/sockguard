@@ -226,9 +226,9 @@ func (p swarmPolicy) inspectUnlock(logger *slog.Logger, r *http.Request) (string
 	var req swarmUnlockRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "swarm unlock request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "swarm unlock request body could not be decoded for Sockguard policy inspection; denying", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "swarm unlock denied: request body could not be inspected", nil
 	}
 
 	if !p.allowUnlock {

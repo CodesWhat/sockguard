@@ -311,6 +311,21 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if !p.allowSysctls && len(createReq.HostConfig.Sysctls) > 0 {
 		return "container create denied: setting sysctls is not allowed", nil
 	}
+	if len(createReq.HostConfig.VolumesFrom) > 0 {
+		return "container create denied: VolumesFrom is not allowed", nil
+	}
+	if isHostNamespaceMode(createReq.HostConfig.UTSMode) {
+		return "container create denied: host UTS mode is not allowed", nil
+	}
+	if strings.TrimSpace(createReq.HostConfig.CgroupParent) != "" {
+		return "container create denied: custom cgroup parent is not allowed", nil
+	}
+	if len(createReq.HostConfig.GroupAdd) > 0 {
+		return "container create denied: supplemental group IDs are not allowed", nil
+	}
+	if len(createReq.HostConfig.ExtraHosts) > 0 {
+		return "container create denied: ExtraHosts is not allowed", nil
+	}
 	if denyReason := p.denyDeviceReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
@@ -358,34 +373,10 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 }
 
 func (p containerCreatePolicy) allowsAllContainerCreateBodies() bool {
-	if p.requireNoNewPrivileges ||
-		p.requireNonRootUser ||
-		p.requireReadonlyRootfs ||
-		p.requireDropAllCapabilities ||
-		p.requireMemoryLimit ||
-		p.requireCPULimit ||
-		p.requirePidsLimit ||
-		p.denyUnconfinedSeccomp ||
-		p.denyUnconfinedAppArmor ||
-		len(p.allowedSeccompProfiles) > 0 ||
-		len(p.allowedAppArmorProfiles) > 0 ||
-		len(p.requiredLabels) > 0 ||
-		len(p.allowedDeviceCgroupRules) > 0 ||
-		len(p.allowedDeviceRequests) > 0 ||
-		!p.allowAllCapabilities ||
-		p.imageTrustVerifier != nil {
-		return false
-	}
-	return p.allowPrivileged &&
-		p.allowHostNetwork &&
-		p.allowHostPID &&
-		p.allowHostIPC &&
-		p.allowHostUserNS &&
-		p.allowSysctls &&
-		bindPathAllowed("/", p.allowedBindMounts) &&
-		(p.allowAllDevices || bindPathAllowed("/", p.allowedDevices)) &&
-		p.allowDeviceRequests &&
-		p.allowDeviceCgroupRules
+	// VolumesFrom, UTSMode:host, CgroupParent, GroupAdd, and ExtraHosts are
+	// always denied regardless of any policy flag, so no request body can be
+	// unconditionally allowed without inspection.
+	return false
 }
 
 func isHostNamespaceMode(value string) bool {

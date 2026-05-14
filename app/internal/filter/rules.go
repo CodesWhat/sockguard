@@ -175,8 +175,8 @@ func pathSegmentNeedsClean(p string, start, end int, absolutePath, hasNormalSegm
 // path from the first slash after the version. Uses a hand-rolled check so the
 // common case (no prefix) avoids regexp overhead entirely.
 func stripVersionPrefix(p string) string {
-	// Minimum version prefix is /vN/ (4 chars).
-	if len(p) < 4 || p[0] != '/' || p[1] != 'v' {
+	// Minimum version prefix is /vN/ (4 chars). Accept both '/v' and '/V'.
+	if len(p) < 4 || p[0] != '/' || (p[1] != 'v' && p[1] != 'V') {
 		return p
 	}
 	i := 2

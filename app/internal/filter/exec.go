@@ -123,9 +123,9 @@ func (p execPolicy) inspectCreate(logger *slog.Logger, r *http.Request) (string,
 	command, err := decodeExecCommand(req.Cmd)
 	if err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "exec request body has unparseable Cmd; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "exec request body has unparseable Cmd; denying", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "exec denied: request body could not be inspected", nil
 	}
 
 	return p.denyReason(ExecInspectResult{

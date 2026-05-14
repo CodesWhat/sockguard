@@ -60,6 +60,11 @@ type containerCreateHostConfig struct {
 	CpuShares         int64                   `json:"CpuShares"`
 	PidsLimit         *int64                  `json:"PidsLimit"`
 	Sysctls           map[string]string       `json:"Sysctls"`
+	VolumesFrom       []string                `json:"VolumesFrom"`
+	UTSMode           string                  `json:"UTSMode"`
+	CgroupParent      string                  `json:"CgroupParent"`
+	GroupAdd          []string                `json:"GroupAdd"`
+	ExtraHosts        []string                `json:"ExtraHosts"`
 }
 
 type containerCreateMount struct {

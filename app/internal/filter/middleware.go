@@ -5,10 +5,17 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
+
+// bodyReadTimeout is the per-request deadline applied when reading the
+// request body for inspection. It guards non-streaming paths against
+// slowloris-style body-stall attacks. Streaming/hijack paths are handled
+// by the proxy.HijackHandler layer and are unaffected.
+const bodyReadTimeout = 30 * time.Second
 
 // DenialResponse is the JSON body returned when a request is denied.
 type DenialResponse struct {
@@ -220,7 +227,10 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			if action == ActionAllow {
+				rc := http.NewResponseController(w)
+				_ = rc.SetReadDeadline(time.Now().Add(bodyReadTimeout))
 				denyReason, denyReasonCode, status := activePolicy.inspectAllowedRequest(logger, r, normPath)
+				_ = rc.SetReadDeadline(time.Time{})
 				if denyReason != "" {
 					action = ActionDeny
 					reasonCode = denyReasonCode

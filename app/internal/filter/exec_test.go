@@ -741,9 +741,9 @@ func TestDecodeExecCommandInvalidJSONFails(t *testing.T) {
 	}
 }
 
-func TestInspectCreateUnparseableCmdWithLogger(t *testing.T) {
-	// Exercises the logger.DebugContext branch at exec.go:133 — valid JSON body
-	// with Cmd as an object (not array or string) causes decodeExecCommand to fail.
+func TestInspectCreateUnparseableCmdWithLoggerDeniesFail_Closed(t *testing.T) {
+	// Valid JSON body with Cmd as an object (not array or string) causes
+	// decodeExecCommand to fail. Must deny (fail-closed) and log at Debug.
 	policy := newExecPolicy(ExecOptions{AllowedCommands: [][]string{{"/bin/sh"}}})
 	logs := &collectingHandler{}
 	// {"Cmd":{}} parses as execCreateRequest but Cmd={} fails both []string and string unmarshal.
@@ -752,8 +752,9 @@ func TestInspectCreateUnparseableCmdWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspectCreate() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	const wantReason = "exec denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
@@ -831,5 +832,42 @@ func TestNewDockerExecInspectorViaUnixSocket(t *testing.T) {
 	_, _, err = inspectFn(ctx, "badjson")
 	if err == nil {
 		t.Fatal("inspect badjson: expected JSON decode error")
+	}
+}
+
+func TestExecInspectCreateDeniesUnparseableCmdField(t *testing.T) {
+	// When the Cmd field cannot be decoded (e.g. it is an integer or nested
+	// object rather than an array or string), inspectCreate must deny rather
+	// than skip the allowedCommands check (fail-closed, not fail-open).
+	policy := execPolicy{
+		allowedCommands: [][]string{{"/safe/cmd"}},
+	}
+
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "Cmd is an integer",
+			payload: `{"Cmd":42}`,
+		},
+		{
+			name:    "Cmd is a nested object",
+			payload: `{"Cmd":{"exec":"/bin/sh"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", strings.NewReader(tt.payload))
+			reason, err := policy.inspectCreate(nil, req)
+			if err != nil {
+				t.Fatalf("inspectCreate() error = %v", err)
+			}
+			const wantReason = "exec denied: request body could not be inspected"
+			if reason != wantReason {
+				t.Fatalf("reason = %q, want %q", reason, wantReason)
+			}
+		})
 	}
 }
