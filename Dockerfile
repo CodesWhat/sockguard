@@ -28,7 +28,7 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 COPY --from=builder /sockguard /sockguard
 COPY app/configs/ /etc/sockguard/
 
-USER 0:0
+USER 65532:65532
 
 ENTRYPOINT ["/sockguard"]
 CMD ["serve"]
