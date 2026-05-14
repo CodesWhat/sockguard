@@ -359,3 +359,83 @@ func benchmarkLabels(n int) map[string]string {
 	}
 	return labels
 }
+
+// BenchmarkCacheLookupMiss measures the cold-miss path: resolver call plus
+// storeLocked into a non-full cache. The resolver is trivial here so overhead
+// is dominated by Lookup's map insert, list push, and label clone.
+func BenchmarkCacheLookupMiss(b *testing.B) {
+	labels := benchmarkLabels(4)
+	cache := New(
+		10*time.Second,
+		1<<20,
+		time.Now,
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			return labels, true, nil
+		},
+	)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		got, found, err := cache.Lookup(context.Background(), "containers", fmt.Sprintf("id-%d", i))
+		if err != nil || !found {
+			b.Fatalf("lookup err=%v found=%v", err, found)
+		}
+		benchmarkLookupLabels = got
+	}
+}
+
+// BenchmarkCacheLookupEviction cycles distinct keys past maxSize so every
+// Lookup triggers the LRU tail eviction. Cost floor for a working-set larger
+// than the cache.
+func BenchmarkCacheLookupEviction(b *testing.B) {
+	const maxSize = 64
+	labels := benchmarkLabels(4)
+	cache := New(
+		10*time.Second,
+		maxSize,
+		time.Now,
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			return labels, true, nil
+		},
+	)
+	for i := 0; i < maxSize; i++ {
+		if _, _, err := cache.Lookup(context.Background(), "containers", fmt.Sprintf("warm-%d", i)); err != nil {
+			b.Fatalf("warmup: %v", err)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		got, _, err := cache.Lookup(context.Background(), "containers", fmt.Sprintf("evict-%d", i))
+		if err != nil {
+			b.Fatalf("lookup: %v", err)
+		}
+		benchmarkLookupLabels = got
+	}
+}
+
+// BenchmarkCacheLookupHitParallel runs concurrent hits on the same hot key,
+// surfacing contention on the cache mutex.
+func BenchmarkCacheLookupHitParallel(b *testing.B) {
+	labels := benchmarkLabels(8)
+	cache := New(
+		10*time.Second,
+		4,
+		time.Now,
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			return labels, true, nil
+		},
+	)
+	if _, _, err := cache.Lookup(context.Background(), "containers", "hot"); err != nil {
+		b.Fatalf("warmup: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, _, err := cache.Lookup(context.Background(), "containers", "hot"); err != nil {
+				b.Fatalf("lookup: %v", err)
+			}
+		}
+	})
+}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -230,4 +231,152 @@ func newBenchmarkInspectorRequest(method, target string, body []byte) *http.Requ
 		return httptest.NewRequest(method, target, nil)
 	}
 	return httptest.NewRequest(method, target, bytes.NewReader(body))
+}
+
+// BenchmarkInspectContainerCreate covers the most security-critical inspector.
+// Permissive variant takes the allowsAllContainerCreateBodies early-exit;
+// strict variant walks the full HostConfig.
+func BenchmarkInspectContainerCreate(b *testing.B) {
+	permissive := newContainerCreatePolicy(ContainerCreateOptions{
+		AllowPrivileged:        true,
+		AllowHostNetwork:       true,
+		AllowHostPID:           true,
+		AllowHostIPC:           true,
+		AllowHostUserNS:        true,
+		AllowedBindMounts:      []string{"/"},
+		AllowAllDevices:        true,
+		AllowDeviceRequests:    true,
+		AllowDeviceCgroupRules: true,
+		AllowAllCapabilities:   true,
+		AllowSysctls:           true,
+	})
+	strict := newContainerCreatePolicy(ContainerCreateOptions{
+		AllowedBindMounts:          []string{"/srv"},
+		AllowedDevices:             []string{"/dev/null"},
+		AllowedCapabilities:        []string{"NET_BIND_SERVICE"},
+		RequireNoNewPrivileges:     true,
+		RequireDropAllCapabilities: true,
+		RequireMemoryLimit:         true,
+		RequireCPULimit:            true,
+		RequirePidsLimit:           true,
+		DenyUnconfinedSeccomp:      true,
+		DenyUnconfinedAppArmor:     true,
+	})
+
+	simpleBody := []byte(`{
+		"Image":"alpine:3.19",
+		"Cmd":["sh","-c","echo hi"],
+		"Labels":{"app":"web"},
+		"HostConfig":{"NetworkMode":"bridge"}
+	}`)
+	strictBody := []byte(`{
+		"Image":"alpine:3.19",
+		"Cmd":["sh","-c","echo hi"],
+		"Labels":{"app":"web"},
+		"HostConfig":{
+			"NetworkMode":"bridge",
+			"Binds":["/srv/data:/data:ro"],
+			"Memory":67108864,
+			"NanoCpus":500000000,
+			"PidsLimit":256,
+			"CapAdd":["NET_BIND_SERVICE"],
+			"CapDrop":["ALL"],
+			"SecurityOpt":["seccomp=runtime/default","apparmor=docker-default","no-new-privileges:true"],
+			"ReadonlyRootfs":true
+		},
+		"User":"1000:1000",
+		"Config":{"User":"1000:1000"}
+	}`)
+
+	cases := []struct {
+		name   string
+		body   []byte
+		policy containerCreatePolicy
+	}{
+		{"permissive_early_exit", simpleBody, permissive},
+		{"strict_full_walk", strictBody, strict},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			benchmarkInspectPolicy(b, func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, "/containers/create?name=web", tc.body)
+			}, func(req *http.Request, normalizedPath string) (string, error) {
+				return tc.policy.inspect(nil, req, normalizedPath)
+			})
+		})
+	}
+}
+
+// BenchmarkInspectBuild covers POST /build (query-only inspection in the
+// allow path).
+func BenchmarkInspectBuild(b *testing.B) {
+	policy := newBuildPolicy(BuildOptions{
+		AllowRemoteContext:   true,
+		AllowHostNetwork:     false,
+		AllowRunInstructions: true,
+	})
+	cases := []struct {
+		name   string
+		target string
+	}{
+		{"local_context", "/build?t=app:latest&dockerfile=Dockerfile"},
+		{"with_buildargs", "/build?t=app:latest&buildargs=" + url.QueryEscape(`{"VERSION":"1.0","COMMIT":"abc"}`)},
+		{"remote_context", "/build?remote=https://github.com/example/repo.git"},
+		{"networkmode_default", "/build?networkmode=default&t=app:latest"},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			benchmarkInspectPolicy(b, func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, tc.target, nil)
+			}, func(req *http.Request, normalizedPath string) (string, error) {
+				return policy.inspect(nil, req, normalizedPath)
+			})
+		})
+	}
+}
+
+// BenchmarkInspectImagePull covers POST /images/create (query-only).
+func BenchmarkInspectImagePull(b *testing.B) {
+	policy := newImagePullPolicy(ImagePullOptions{
+		AllowedRegistries: []string{"docker.io", "ghcr.io", "registry.example.com"},
+	})
+	cases := []struct {
+		name   string
+		target string
+	}{
+		{"dockerhub_official", "/images/create?fromImage=docker.io/library/alpine&tag=3.19"},
+		{"ghcr_namespaced", "/images/create?fromImage=ghcr.io/org/app&tag=v1.2.3"},
+		{"private_registry", "/images/create?fromImage=registry.example.com/team/app:latest"},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			benchmarkInspectPolicy(b, func() *http.Request {
+				return newBenchmarkInspectorRequest(http.MethodPost, tc.target, nil)
+			}, func(req *http.Request, normalizedPath string) (string, error) {
+				return policy.inspect(nil, req, normalizedPath)
+			})
+		})
+	}
+}
+
+// BenchmarkInspectExecCreate exercises the exec create body inspector. The
+// allowed-command list is walked with slices.Equal; the second entry matches.
+func BenchmarkInspectExecCreate(b *testing.B) {
+	policy := newExecPolicy(ExecOptions{
+		AllowPrivileged: true,
+		AllowRootUser:   true,
+		AllowedCommands: [][]string{
+			{"sh", "-c", "echo hi"},
+			{"echo", "hi"},
+			{"ls", "-la"},
+			{"cat", "/etc/hostname"},
+		},
+	})
+	body := []byte(`{"AttachStdin":false,"AttachStdout":true,"AttachStderr":true,"Cmd":["echo","hi"],"Privileged":false,"User":"app"}`)
+
+	benchmarkInspectPolicy(b, func() *http.Request {
+		return newBenchmarkInspectorRequest(http.MethodPost, "/containers/abc123/exec", body)
+	}, func(req *http.Request, normalizedPath string) (string, error) {
+		return policy.inspect(nil, req, normalizedPath)
+	})
 }
