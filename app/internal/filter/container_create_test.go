@@ -568,6 +568,11 @@ func TestCanonicalizeDeviceCgroupRule(t *testing.T) {
 		wantOK    bool
 	}{
 		{name: "exact char device", raw: "c 1:3 rwm", want: "c 1:3 rwm", wantOK: true},
+		// Cover both digit boundaries explicitly so a CONDITIONALS_BOUNDARY
+		// mutation on isDeviceCgroupNumber (`< '0'` → `<= '0'` or `> '9'` →
+		// `>= '9'`) is caught by the canonicalize path.
+		{name: "major minor at digit boundaries", raw: "c 0:9 rwm", want: "c 0:9 rwm", wantOK: true},
+		{name: "minor at upper digit boundary", raw: "c 9:0 rwm", want: "c 9:0 rwm", wantOK: true},
 		{name: "block device", raw: "b 8:0 rw", want: "b 8:0 rw", wantOK: true},
 		{name: "wildcard major", raw: "c *:3 rwm", want: "c *:3 rwm", wantOK: true},
 		{name: "wildcard minor", raw: "c 226:* rwm", want: "c 226:* rwm", wantOK: true},

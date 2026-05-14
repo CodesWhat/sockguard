@@ -345,6 +345,30 @@ func TestContainerArchiveSymlinkTargetIsSafe_AbsoluteUnsafe(t *testing.T) {
 	}
 }
 
+// CONDITIONALS_NEGATION container_archive.go:228:37
+// containerArchiveSymlinkTargetIsSafe: `if dir := path.Dir(entryPath); dir != "."`.
+// Without the entry's directory prefix, a relative link like `../sibling`
+// looks like an archive-escape; WITH the prefix it cleans to a sibling that
+// stays inside the archive. A mutation flipping `!= "."` to `== "."` skips
+// the join and would reject the safe link.
+func TestContainerArchiveSymlinkTargetIsSafe_DirPrefixAppliedForNestedEntries(t *testing.T) {
+	// entryPath has a directory prefix → the join must apply so the relative
+	// parent-walk lands inside the archive.
+	if !containerArchiveSymlinkTargetIsSafe("a/file", "../sibling") {
+		t.Fatal("nested entry whose parent-walk stays inside archive should be safe (join must apply)")
+	}
+	// Sanity: nested entry that DOES escape the archive root must still be
+	// rejected after the join is applied.
+	if containerArchiveSymlinkTargetIsSafe("a/file", "../../escape") {
+		t.Fatal("nested entry that escapes archive root should be unsafe")
+	}
+	// Top-level entry: dir = "." → join is skipped; bare relative target must
+	// still validate against the normalize check (which it does for "sibling").
+	if !containerArchiveSymlinkTargetIsSafe("file", "sibling") {
+		t.Fatal("top-level entry with safe relative target should be safe")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // image_load.go mutants
 // ---------------------------------------------------------------------------
