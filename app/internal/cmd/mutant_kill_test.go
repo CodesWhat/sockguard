@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -629,6 +630,48 @@ func TestRunServe_SocketRemoveOtherErrorLogs(t *testing.T) {
 	}
 	if !collector.HasMessage("remove socket error") {
 		t.Fatalf("expected remove socket error log; records: %#v", collector.Records())
+	}
+}
+
+// TestRunServe_ShutdownErrorLogs pins the CONDITIONALS_NEGATION mutant at
+// serve.go:270 (`err != nil` → `==` on the regular shutdownServer call).
+// The mutant silently swallows the shutdown error instead of logging it.
+// We force shutdownServer to return a non-nil error via SIGINT-driven
+// graceful shutdown and assert the structured "shutdown error" record
+// is present in the collected log.
+func TestRunServe_ShutdownErrorLogs(t *testing.T) {
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		cfg := testServeConfig()
+		cfg.Listen.Address = "127.0.0.1:0"
+		return cfg, nil
+	}
+
+	collector := &testhelp.CollectingHandler{}
+	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
+		return collector.Logger(), nil, nil
+	}
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		return stubCompiledRules(), nil
+	}
+	deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return &serveTestConn{}, nil
+	}
+	deps.createServeListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {}
+	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) { c <- syscall.SIGINT }
+	deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
+		return errors.New("shutdown boom")
+	}
+	deps.removePath = func(string) error { return nil }
+
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
+		t.Fatalf("runServeWithDeps() error = %v", err)
+	}
+	if !collector.HasMessage("shutdown error") {
+		t.Fatalf("expected 'shutdown error' log; records: %#v", collector.Records())
 	}
 }
 
