@@ -60,8 +60,8 @@
 
 <hr>
 
-> [!WARNING]
-> **Pre-release software.** Sockguard is in active development. APIs, rule formats, and CLI flags may change before v1.0.
+> [!NOTE]
+> **v1.0 soak.** The v1.0 contract is locked — YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names will not change before v1.0 ships. Active 0.x releases are bug fixes and operational polish only; the v1.0 tag will be cut once the locked surface has soaked in production deployments. See the [changelog](CHANGELOG.md) for the latest breaking changes (collapsed into the `Unreleased` section).
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -616,17 +616,28 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
 
 <h2 align="center" id="roadmap">🗺️ Roadmap</h2>
 
-| Version | Theme | Status |
-|---------|-------|--------|
-| **0.1.0** | MVP — drop-in replacement with granular control, YAML config, structured access logging | ✅ shipped |
-| **0.2.0** | mTLS for remote TCP, TLS 1.3 minimum, loopback-by-default listener, body-blind write guardrail | ✅ shipped |
-| **0.3.0** | Body inspection for create/exec/service/swarm/pull/build, owner labels, per-client profiles, visibility/redaction | ✅ shipped |
-| **0.4.0** | Hardening + body-inspection completion pass — canonical percent-decoded path matching; mTLS listener selectors (CN/DNS/IP/URI SAN + SHA-256 SPKI pins) and per-profile certificate selectors (CN/DNS/IP/URI/SPIFFE + SHA-256 SPKI pins); 413 on oversize bounded JSON/tar inspectors; multipart plugin-create inspection; container-create policy now blocks `Privileged`, `NetworkMode=host`, `PidMode=host`, `IpcMode=host`, non-allowlisted bind sources, non-allowlisted devices, `DeviceRequests`, and `DeviceCgroupRules` by default; new body inspectors close the remaining blind-write gaps for `containers/*/update`, `containers/*/archive`, `images/load`, `networks/create`/`*/connect`/`*/disconnect`, `swarm/unlock`, and `nodes/*/update`; profile-resolution memoization; build host-network denied regardless of opt-in combinations; config preflight rejects explicit empty/missing `--config`; fuzz watchdogs replace `-timeout=0`; `scripts/local-fuzz.sh` gains `--timeout`/`--parallel`/`--suite ultra`; private vuln reporting enabled with published disclosure inboxes | ✅ shipped |
-| **0.5.0** | Operator observability — Prometheus `/metrics`, active upstream socket watchdog, trace/log correlation without an OTLP exporter | ✅ shipped |
-| **0.6.0** | Secure container enforcement — no-new-privileges, non-root, readonly rootfs, drop-all-capabilities and CapAdd allowlist rails on `POST /containers/create`, memory / CPU / PIDs limit requirements, seccomp + AppArmor profile allowlists, host-userns default-deny, required `Config.Labels`; default-deny for `CapAdd` and `UsernsMode=host`; structured `allowed_device_cgroup_rules` allowlist for cgroup device class policy; structured `allowed_device_requests` allowlist for GPU/device-request passthrough (driver, capability subsets, max_count); cosign signature verification (`image_trust`) with keyed (PEM public keys) and keyless (Fulcio + Rekor) modes, warn/enforce semantics, and per-profile configurability. (Folded into the v0.7.0 release; no separate v0.6.0 tag was cut.) | ✅ shipped |
-| **0.7.0** | Abuse controls — per-client token-bucket rate limits, burst budgets, concurrency caps, per-endpoint cost weighting for expensive Docker operations, and a system-wide priority-aware fairness gate (`low`/`normal`/`high` profiles claim 50%/80%/100% of `clients.global_concurrency.max_inflight`) | ✅ shipped |
-| **0.8.0** | Dynamic policy delivery — per-profile `audit/warn/enforce` rollout modes, opt-in `POST /admin/validate` CI gate, fsnotify+SIGHUP hot reload with immutable-field gate, monotonic policy versioning (`GET /admin/policy/version` + `sockguard_policy_version` gauge), optional dedicated admin listener (`admin.listen.*`), and cosign-signed policy bundles (`policy_bundle.*`, sigstore-go keyed + keyless verification at startup and reload) | ✅ shipped |
-| **0.8.1** | Reload-UX patch surfaced by v0.8.0 NAS soak: (1) every reload-outcome log line now carries a structured `result=<outcome>` key matching the `sockguard_config_reload_total` label, plus a regression test for the specific `admin.path` mutation scenario, so an immutable-field rejection is unambiguous in both metrics and SIEM streams; (2) `reload.poll_interval_ms` adds an opt-in stat-based fallback (size / mtime / inode) for `fsnotify`-unreliable backends (Synology / DSM btrfs bind-mounts, some FUSE / NFS setups) — `SIGHUP` is documented as the canonical reload trigger on those backends; (3) `metrics.Registry` is fully lock-free between hot `observe` and cold `writePrometheus` — every counter map is `sync.Map` of `*atomic.Uint64` and the duration histogram uses atomic buckets + a CAS-folded sum, so a slow scrape no longer blocks the request hot path | ✅ shipped |
+**v1.0 contract is locked** — the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names visible today are what v1.0 will ship. Soak period is underway; tag follows once production deployments validate the surface. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+
+### Shipped through v0.8.1
+
+| Track | Surface |
+|---|---|
+| **Foundation** | Default-deny proxy, glob path rules, Tecnativa env compatibility, structured access + audit logging, health endpoint, hardened Wolfi image, multi-arch |
+| **Transport** | Unix socket and mTLS-protected TCP listener, TLS 1.3 minimum, loopback by default, SPKI pins, plaintext non-loopback rejected without explicit opt-in |
+| **Body inspection** | Every Docker write surface with a meaningful body shape — `containers/create`, exec, build, services, swarm, configs/secrets, volumes, plugins, networks, image load, container update, archive write, node update |
+| **Container enforcement** | `Privileged` / host namespaces / `CapAdd` / device passthrough denied by default; `no-new-privileges`, non-root, readonly rootfs, drop-all-capabilities, memory / CPU / PIDs limits, seccomp + AppArmor allowlists; cosign image-trust verification (keyed + keyless via Fulcio + Rekor) |
+| **Per-client policy** | Source-IP, mTLS (CN/DNS/IP/URI/SPIFFE/SPKI), unix `SO_PEERCRED`, container-label resolution; named profiles with rollout modes (`enforce` / `warn` / `audit`) |
+| **Read-side visibility** | Response filtering across containers/services/tasks/configs/secrets/nodes/plugins/swarm/info/system-df with generic protected-JSON mediation |
+| **Abuse controls** | Per-client token-bucket rate limits, burst budgets, concurrency caps, endpoint-cost weighting, system-wide priority-aware fairness gate |
+| **Observability** | Prometheus `/metrics`, dedicated audit schema, trusted request IDs, deny-reason enums, W3C trace/log correlation, active upstream socket watchdog, lock-free hot path |
+| **Dynamic policy** | `POST /admin/validate` CI gate, `fsnotify` + SIGHUP hot reload with immutable-field gate, monotonic policy versioning, optional dedicated admin listener, cosign-signed policy bundles |
+
+### Post-1.0 preview
+
+| Tier | Theme |
+|---|---|
+| Multi-host (v1.1) | Remote Docker TCP upstreams, multi-upstream fan-out, remote daemon health checking, connection pooling, automatic failover |
+| Extensibility (v1.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
 
 <hr>
 
