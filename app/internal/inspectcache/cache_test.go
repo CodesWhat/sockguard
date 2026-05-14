@@ -176,7 +176,13 @@ func TestCacheCachesNotFound(t *testing.T) {
 	}
 }
 
-func TestCacheReturnsDefensiveLabelCopies(t *testing.T) {
+// TestCacheReturnsSameMapAcrossLookups locks in the read-only contract of
+// Lookup: the returned map is shared with the cache and concurrent waiters,
+// so callers must not mutate it. Verified by asserting two consecutive
+// lookups for the same key return the same map pointer (no defensive copy).
+// If a future change re-introduces a defensive clone, this assertion fails
+// and the alloc regression is caught before merge.
+func TestCacheReturnsSameMapAcrossLookups(t *testing.T) {
 	var calls atomic.Int32
 	cache := New(
 		10*time.Second,
@@ -195,21 +201,23 @@ func TestCacheReturnsDefensiveLabelCopies(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("first lookup = (%v, found=%v), want (nil, found=true)", err, found)
 	}
-	first["com.sockguard.owner"] = "mutated"
-	first["com.sockguard.extra"] = "leak"
 
 	second, found, err := cache.Lookup(context.Background(), "containers", "abc123")
 	if err != nil || !found {
 		t.Fatalf("second lookup = (%v, found=%v), want (nil, found=true)", err, found)
 	}
-	if got := second["com.sockguard.owner"]; got != "job-123" {
-		t.Fatalf("cached owner label = %q, want job-123", got)
+	if &first == &second {
+		t.Fatal("returned map headers compared by address — test bug")
 	}
-	if _, ok := second["com.sockguard.extra"]; ok {
-		t.Fatalf("cached labels unexpectedly retained caller mutation: %#v", second)
+	// Verify both lookups returned the same underlying map (no defensive clone).
+	first["__sentinel__"] = "marker"
+	if got := second["__sentinel__"]; got != "marker" {
+		t.Fatalf("second lookup did not return the cached map; mutation to first not visible in second")
 	}
+	delete(first, "__sentinel__")
+
 	if got := calls.Load(); got != 1 {
-		t.Fatalf("resolver calls for defensive-copy hit = %d, want 1", got)
+		t.Fatalf("resolver calls for second hit = %d, want 1 (cached)", got)
 	}
 }
 
@@ -320,7 +328,9 @@ func TestStoreLocked_EvictsOldestWhenAllLive(t *testing.T) {
 	}
 }
 
-func BenchmarkCacheLookupHitClonesLabels(b *testing.B) {
+// BenchmarkCacheLookupHit measures the cache-hit fast path. After the
+// defensive-clone removal this should be 0 alloc/op regardless of label count.
+func BenchmarkCacheLookupHit(b *testing.B) {
 	for _, labelCount := range []int{1, 8, 32} {
 		b.Run(fmt.Sprintf("labels_%d", labelCount), func(b *testing.B) {
 			labels := benchmarkLabels(labelCount)

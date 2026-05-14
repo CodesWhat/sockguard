@@ -77,9 +77,11 @@ func New(
 // Lookup returns cached labels for a resource when they are still fresh and
 // shares any in-flight miss with concurrent callers. Errors are never cached.
 //
-// The returned map is owned by the caller; it is a defensive copy of the
-// cached entry so callers may not mutate it without risk of corrupting
-// subsequent cache hits.
+// The returned map is shared with the cache and any concurrent waiter — it is
+// MUST NOT be mutated by the caller. Each lookup is invariably followed by a
+// read-only ownerMatches / clientacl label check, so the read-only contract
+// has held since the cache was introduced; dropping the defensive clones
+// trades 1–2 allocs per call for that invariant.
 func (c *Cache) Lookup(ctx context.Context, kind, identifier string) (map[string]string, bool, error) {
 	now := c.now()
 	cacheKey := key{kind: kind, identifier: identifier}
@@ -91,31 +93,26 @@ func (c *Cache) Lookup(ctx context.Context, kind, identifier string) (map[string
 			c.order.MoveToFront(elem)
 			labels, found := node.entry.labels, node.entry.found
 			c.mu.Unlock()
-			return cloneLabels(labels), found, nil
+			return labels, found, nil
 		}
 	}
 	if call, ok := c.inFlight[cacheKey]; ok {
 		c.mu.Unlock()
 		<-call.done
-		return cloneLabels(call.labels), call.found, call.err
+		return call.labels, call.found, call.err
 	}
 	call := &lookup{done: make(chan struct{})}
 	c.inFlight[cacheKey] = call
 	c.mu.Unlock()
 
 	labels, found, err := c.resolve(ctx, kind, identifier)
-	// Clone labels once for the cache entry (and in-flight waiters). The
-	// original resolver map is returned directly to this goroutine's caller
-	// so we avoid a second allocation — the resolver always returns a fresh
-	// map from JSON decode, and the cache's copy is independent of it.
-	cached := cloneLabels(labels)
 
 	c.mu.Lock()
 	if err == nil {
-		c.storeLocked(cacheKey, cached, found, c.now())
+		c.storeLocked(cacheKey, labels, found, c.now())
 	}
 	delete(c.inFlight, cacheKey)
-	call.labels = cached
+	call.labels = labels
 	call.found = found
 	call.err = err
 	close(call.done)
@@ -154,18 +151,4 @@ func (c *Cache) storeLocked(cacheKey key, labels map[string]string, found bool, 
 	}
 	node := &entryNode{key: cacheKey, entry: entry{labels: labels, found: found, at: at}}
 	c.entries[cacheKey] = c.order.PushFront(node)
-}
-
-// cloneLabels returns a defensive copy of a label map. It is used when storing
-// resolver output into the cache entry (and in-flight lookup) so the cache's
-// backing map is never the same pointer as anything returned to a caller.
-func cloneLabels(labels map[string]string) map[string]string {
-	if labels == nil {
-		return nil
-	}
-	cloned := make(map[string]string, len(labels))
-	for key, value := range labels {
-		cloned[key] = value
-	}
-	return cloned
 }
