@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+Bumped eight indirect dependencies to close 11 OSSF Scorecard / OSV-Scanner findings (security alert #8). govulncheck now reports zero reachable vulnerabilities and zero unreachable-but-imported vulnerabilities for the proxy binary.
+
+- `github.com/theupdateframework/go-tuf/v2` v2.3.0 → v2.4.1 — fixes path-traversal in TAP 4 multirepo client (GO-2026-4377), improper delegation-threshold validation (GO-2026-4349), and client DoS via malformed server response (GO-2026-4348). All three were reachable from `internal/policybundle`.
+- `github.com/sigstore/rekor` v1.4.3 → v1.5.0 — fixes Rekor SSRF via provided public-key URL (GO-2026-4355) and Rekor COSE v0.0.1 entry nil-deref in `Canonicalize` via empty `Message` (GO-2026-4354). Both reachable from `internal/policybundle` and `internal/imagetrust`.
+- `golang.org/x/net` v0.49.0 → v0.53.0 — fixes HTTP/2 infinite loop on bad `SETTINGS_MAX_FRAME_SIZE` (GO-2026-4918).
+- `google.golang.org/grpc` v1.78.0 → v1.79.3 — fixes gRPC-Go authorization bypass via missing leading slash in `:path` (GO-2026-4762).
+- `github.com/go-jose/go-jose/v4` v4.1.3 → v4.1.4 — fixes JWE decryption panic (GHSA-78h2-9frx-2jm8).
+- `github.com/in-toto/in-toto-golang` v0.9.0 → v0.11.0 — fixes inconsistent negation behavior between in-toto-golang and in-toto-python (GHSA-pmwq-pjrm-6p5r).
+- `github.com/sigstore/timestamp-authority/v2` v2.0.3 → v2.0.6 — fixes improper certificate validation in verifier (GHSA-xm5m-wgh2-rrg3).
+- `go.opentelemetry.io/otel` v1.40.0 → v1.42.0 — fixes excessive allocations on multi-value `baggage` header extraction (GHSA-mh2q-q3fh-2475).
+
 ### Changed (BREAKING)
 
 YAML schema renames — update configs and env var names before upgrading.
