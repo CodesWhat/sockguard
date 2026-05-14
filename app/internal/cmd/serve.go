@@ -210,8 +210,9 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		if cfg.Reload.DebounceMs == 0 {
 			debounce = reload.DefaultDebounce
 		}
+		pollInterval := time.Duration(cfg.Reload.PollIntervalMs) * time.Millisecond
 		var startErr error
-		stopReload, startErr = startReloader(context.Background(), cfgFile, debounce, coordinator, logger)
+		stopReload, startErr = startReloader(context.Background(), cfgFile, debounce, pollInterval, coordinator, logger)
 		if startErr != nil {
 			logger.Error("config hot-reload disabled: failed to start watcher",
 				"error", startErr,

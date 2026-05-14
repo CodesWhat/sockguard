@@ -213,6 +213,7 @@ func setLoadDefaults(v *viper.Viper, defaults Config) {
 	v.SetDefault("admin.listen.tls.allowed_public_key_sha256_pins", defaults.Admin.Listen.TLS.AllowedPublicKeySHA256Pins)
 	v.SetDefault("reload.enabled", defaults.Reload.Enabled)
 	v.SetDefault("reload.debounce_ms", defaults.Reload.DebounceMs)
+	v.SetDefault("reload.poll_interval_ms", defaults.Reload.PollIntervalMs)
 	v.SetDefault("policy_bundle.enabled", defaults.PolicyBundle.Enabled)
 	v.SetDefault("policy_bundle.signature_path", defaults.PolicyBundle.SignaturePath)
 	v.SetDefault("policy_bundle.require_rekor_inclusion", defaults.PolicyBundle.RequireRekorInclusion)

@@ -30,6 +30,17 @@ type Options struct {
 	// because most editors emit multi-event saves.
 	Debounce time.Duration
 
+	// PollInterval optionally enables a stat-based fallback that periodically
+	// checks the config file's size, modification time, and inode and arms a
+	// reload when any of them have moved since the last check. Zero disables
+	// polling — the default, because fsnotify is reliable on regular Linux
+	// and macOS filesystems and a SIGHUP covers the rest. Synology / DSM
+	// btrfs bind-mounts and some FUSE backends drop inotify events crossing
+	// the host/container boundary; on those backends the operator can either
+	// keep the canonical SIGHUP workflow or enable polling here (typical
+	// values 5s–15s) so an unattended edit is still picked up.
+	PollInterval time.Duration
+
 	// OnReload is invoked when a reload trigger has fired and debouncing
 	// has elapsed. Required. The Reloader serializes calls — there is at
 	// most one OnReload in flight at any time.
@@ -53,6 +64,12 @@ type Options struct {
 	// test can return a fake watcher whose Events channel the test drives
 	// directly. When nil, fsnotify.NewWatcher is called.
 	NewWatcher func() (Watcher, error)
+
+	// Now lets tests inject a deterministic clock for poll-fallback bookkeeping
+	// and for unit tests of the file-stat snapshot. Production callers leave
+	// this nil; the Reloader uses time.Now in that case. Mainly a test seam
+	// for the poll-fallback path.
+	Now func() time.Time
 }
 
 // Watcher is the small subset of *fsnotify.Watcher this package uses,
@@ -146,9 +163,22 @@ func (r *Reloader) Run(ctx context.Context) error {
 	r.opts.Logger.Info("config hot-reload enabled",
 		"path", r.opts.Path,
 		"debounce", r.opts.Debounce.String(),
+		"poll_interval", r.opts.PollInterval.String(),
 	)
 
 	return r.loop(ctx, watcher, signalCh)
+}
+
+// fileSnapshot captures the lightweight identity fields of the watched file
+// used by the poll-fallback path. A change in any of these between two stats
+// is treated as "the file moved" and arms a reload — the same posture as a
+// fired fsnotify event. Inode changes catch atomic-replace flows (vim, gofmt,
+// kustomize) on backends that drop inotify events.
+type fileSnapshot struct {
+	known bool
+	size  int64
+	mtime time.Time
+	inode uint64
 }
 
 func (r *Reloader) loop(ctx context.Context, watcher Watcher, signalCh <-chan os.Signal) error {
@@ -186,6 +216,28 @@ func (r *Reloader) loop(ctx context.Context, watcher Watcher, signalCh <-chan os
 		armed = true
 	}
 
+	// Stat-based fallback poller, opt-in via Options.PollInterval. Useful on
+	// inotify-unreliable backends (Synology / DSM btrfs bind-mounts, some
+	// FUSE setups, NFS): the host's IN_MODIFY does not always propagate
+	// through to a container's inotify, so absent SIGHUP the reload watcher
+	// would never see the edit. With polling on, the loop also re-stats the
+	// file and arms a reload when size/mtime/inode have moved.
+	var pollChan <-chan time.Time
+	var pollTicker *time.Ticker
+	var lastSnapshot fileSnapshot
+	if r.opts.PollInterval > 0 {
+		pollTicker = time.NewTicker(r.opts.PollInterval)
+		defer pollTicker.Stop()
+		pollChan = pollTicker.C
+		// Seed the baseline so the first tick only fires on a genuine change.
+		// If the initial stat fails (transient mount issue, file not yet
+		// present), leave the snapshot unknown — the next tick that succeeds
+		// will set the baseline rather than arming reload off a phantom diff.
+		if snap, ok := r.statSnapshot(); ok {
+			lastSnapshot = snap
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -212,11 +264,63 @@ func (r *Reloader) loop(ctx context.Context, watcher Watcher, signalCh <-chan os
 			arm()
 		case <-r.trigger:
 			arm()
+		case <-pollChan:
+			snap, ok := r.statSnapshot()
+			if !ok {
+				// stat failure is not fatal — the file may be mid-replace on
+				// an atomic-rename editor; the next tick will either confirm
+				// the change or restore the baseline.
+				continue
+			}
+			if !lastSnapshot.known {
+				lastSnapshot = snap
+				continue
+			}
+			if snap.changedFrom(lastSnapshot) {
+				r.opts.Logger.Info("config poll detected change", "path", r.opts.Path)
+				lastSnapshot = snap
+				arm()
+			}
 		case <-debounceTimer.C:
 			armed = false
 			r.safeOnReload()
 		}
 	}
+}
+
+// statSnapshot returns the watched file's current size / mtime / inode. The
+// returned ok=false means the stat failed (file briefly missing during an
+// atomic rename, transient mount issue) and the caller should leave the
+// baseline untouched and try again on the next tick. Inode extraction is
+// platform-specific and falls back to zero on backends that don't expose
+// syscall.Stat_t — size + mtime are still enough to detect most edits there.
+func (r *Reloader) statSnapshot() (fileSnapshot, bool) {
+	info, err := os.Stat(r.opts.Path)
+	if err != nil {
+		return fileSnapshot{}, false
+	}
+	return fileSnapshot{
+		known: true,
+		size:  info.Size(),
+		mtime: info.ModTime(),
+		inode: inodeOf(info),
+	}, true
+}
+
+func (s fileSnapshot) changedFrom(prev fileSnapshot) bool {
+	if !prev.known {
+		return false
+	}
+	if s.size != prev.size {
+		return true
+	}
+	if !s.mtime.Equal(prev.mtime) {
+		return true
+	}
+	if s.inode != prev.inode {
+		return true
+	}
+	return false
 }
 
 func (r *Reloader) eventTargetsConfig(ev fsnotify.Event) bool {

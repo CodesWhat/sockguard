@@ -125,6 +125,7 @@ func (c *reloadCoordinator) reload() {
 	bundleResult, err := c.verifyBundle()
 	if err != nil {
 		c.logger.Warn("config reload rejected: signature verification failed",
+			"result", "reject_signature",
 			"path", c.cfgFile,
 			"signature_path", c.activeCfg.PolicyBundle.SignaturePath,
 			"error", err.Error(),
@@ -136,6 +137,7 @@ func (c *reloadCoordinator) reload() {
 	newCfg, err := c.deps.loadConfig(c.cfgFile)
 	if err != nil {
 		c.logger.Warn("config reload rejected: load failed",
+			"result", "reject_load",
 			"path", c.cfgFile,
 			"error", err.Error(),
 		)
@@ -144,7 +146,13 @@ func (c *reloadCoordinator) reload() {
 	}
 
 	if changed := reload.ImmutableDiff(c.activeCfg, newCfg); len(changed) > 0 {
+		// Stamp result= and changed_fields= as discrete keys so a SIEM grep
+		// on result=reject_immutable lines up with the metric label exactly.
+		// Pre-v0.8.1 this rejection emitted the metric but the operator-visible
+		// log lacked the result key, making the rejection easy to miss in the
+		// NAS soak where an admin.path edit looked applied to the operator.
 		c.logger.Warn("config reload rejected: immutable fields changed; restart required to apply",
+			"result", "reject_immutable",
 			"path", c.cfgFile,
 			"changed_fields", strings.Join(changed, ","),
 		)
@@ -162,6 +170,7 @@ func (c *reloadCoordinator) reload() {
 	newRules, err := c.deps.validateRules(newCfg)
 	if err != nil {
 		c.logger.Warn("config reload rejected: validation failed",
+			"result", "reject_validation",
 			"path", c.cfgFile,
 			"error", err.Error(),
 		)
@@ -211,6 +220,7 @@ func (c *reloadCoordinator) reload() {
 	}
 
 	c.logger.Info("config reload applied",
+		"result", "ok",
 		"path", c.cfgFile,
 		"rules", len(newRules),
 		"profiles", len(newCfg.Clients.Profiles),
@@ -253,15 +263,16 @@ func (c *reloadCoordinator) verifyBundle() (*policybundle.VerifyResult, error) {
 // and returns once it has exited. Callers must invoke stop before
 // invoking coordinator.stop() so a reload-in-progress can't race the
 // teardown.
-func startReloader(ctx context.Context, cfgFile string, debounce time.Duration, coordinator *reloadCoordinator, logger *slog.Logger) (func(), error) {
+func startReloader(ctx context.Context, cfgFile string, debounce, pollInterval time.Duration, coordinator *reloadCoordinator, logger *slog.Logger) (func(), error) {
 	if cfgFile == "" {
 		return nil, errors.New("reload: cfgFile is required")
 	}
 	rl, err := reload.New(reload.Options{
-		Path:     cfgFile,
-		Debounce: debounce,
-		OnReload: coordinator.reload,
-		Logger:   logger,
+		Path:         cfgFile,
+		Debounce:     debounce,
+		PollInterval: pollInterval,
+		OnReload:     coordinator.reload,
+		Logger:       logger,
 	})
 	if err != nil {
 		return nil, err

@@ -735,3 +735,143 @@ func TestContextCancelReleasesSignalHandler(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 	}
 }
+
+// TestPollFallbackFiresOnMtimeChange exercises the stat-based fallback used
+// on inotify-unreliable backends (Synology / DSM btrfs bind-mounts, some
+// FUSE setups). The fsnotify channel is left idle; the loop only learns
+// the file changed by re-statting it.
+func TestPollFallbackFiresOnMtimeChange(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte("v1"), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	fw := newFakeWatcher()
+	reloadCount := atomic.Int64{}
+	fired := make(chan struct{}, 4)
+
+	r, err := New(Options{
+		Path:         cfgPath,
+		Debounce:     -1, // immediate fire so tests don't wait for debounce
+		PollInterval: 20 * time.Millisecond,
+		Logger:       discardLogger(),
+		NewWatcher: func() (Watcher, error) {
+			return fw, nil
+		},
+		SignalNotify: func(c chan<- os.Signal, _ ...os.Signal) {},
+		SignalStop:   func(c chan<- os.Signal) {},
+		OnReload: func() {
+			reloadCount.Add(1)
+			fired <- struct{}{}
+		},
+	})
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = r.Run(ctx) }()
+
+	// Let the loop seed the baseline before we mutate the file. Without this
+	// pause the first poll tick can fire on an unset baseline and miss the
+	// edit (the loop would just record the current state and return).
+	time.Sleep(40 * time.Millisecond)
+
+	// Rewrite the file with new content + advance mtime so size, mtime, and
+	// inode all move. Truncate+write keeps inode but bumps size and mtime;
+	// chtimes guarantees mtime moves even on coarse filesystems.
+	if err := os.WriteFile(cfgPath, []byte("v2-with-more-bytes"), 0o600); err != nil {
+		t.Fatalf("write cfg v2: %v", err)
+	}
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(cfgPath, future, future); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	select {
+	case <-fired:
+	case <-time.After(time.Second):
+		t.Fatal("poll fallback did not fire reload within 1s after file mutation")
+	}
+	cancel()
+	<-done
+	if got := reloadCount.Load(); got < 1 {
+		t.Fatalf("OnReload count = %d, want at least 1", got)
+	}
+}
+
+// TestPollFallbackIdleWhenFileUnchanged confirms the poll path does not
+// arm reload when the file hasn't moved. Without this guard, the periodic
+// stat would generate spurious reload work on every tick.
+func TestPollFallbackIdleWhenFileUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "cfg.yaml")
+	if err := os.WriteFile(cfgPath, []byte("static"), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+
+	fw := newFakeWatcher()
+	reloadCount := atomic.Int64{}
+
+	r, err := New(Options{
+		Path:         cfgPath,
+		Debounce:     -1,
+		PollInterval: 20 * time.Millisecond,
+		Logger:       discardLogger(),
+		NewWatcher: func() (Watcher, error) {
+			return fw, nil
+		},
+		SignalNotify: func(c chan<- os.Signal, _ ...os.Signal) {},
+		SignalStop:   func(c chan<- os.Signal) {},
+		OnReload:     func() { reloadCount.Add(1) },
+	})
+	if err != nil {
+		t.Fatalf("New(): %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); _ = r.Run(ctx) }()
+
+	// Allow several poll ticks to pass without mutating the file.
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	<-done
+
+	if got := reloadCount.Load(); got != 0 {
+		t.Fatalf("OnReload fired %d times on an unchanged file, want 0 (poll fallback should be quiet)", got)
+	}
+}
+
+// TestFileSnapshotChangedFrom unit-tests the diff predicate so a future
+// edit to size/mtime/inode handling doesn't silently regress the poll path.
+func TestFileSnapshotChangedFrom(t *testing.T) {
+	base := fileSnapshot{known: true, size: 100, mtime: time.Unix(1700000000, 0), inode: 42}
+
+	cases := []struct {
+		name string
+		next fileSnapshot
+		want bool
+	}{
+		{"equal", base, false},
+		{"size changed", fileSnapshot{known: true, size: 200, mtime: base.mtime, inode: base.inode}, true},
+		{"mtime changed", fileSnapshot{known: true, size: base.size, mtime: base.mtime.Add(time.Second), inode: base.inode}, true},
+		{"inode changed", fileSnapshot{known: true, size: base.size, mtime: base.mtime, inode: 99}, true},
+		{"unknown baseline", base, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			prev := base
+			if tc.name == "unknown baseline" {
+				prev = fileSnapshot{known: false}
+			}
+			if got := tc.next.changedFrom(prev); got != tc.want {
+				t.Fatalf("changedFrom(%+v vs %+v) = %v, want %v", tc.next, prev, got, tc.want)
+			}
+		})
+	}
+}

@@ -141,6 +141,9 @@ func validateBasic(cfg *Config) []string {
 	if cfg.Reload.Enabled && cfg.Reload.DebounceMs < 0 {
 		errs = append(errs, fmt.Sprintf("reload.debounce_ms must be >= 0, got %d", cfg.Reload.DebounceMs))
 	}
+	if cfg.Reload.Enabled && cfg.Reload.PollIntervalMs < 0 {
+		errs = append(errs, fmt.Sprintf("reload.poll_interval_ms must be >= 0, got %d", cfg.Reload.PollIntervalMs))
+	}
 
 	errs = append(errs, validatePolicyBundle(cfg)...)
 

@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,6 +32,7 @@ type reloadCoordinatorFixture struct {
 	loadErr     error
 	loadCfg     *config.Config
 	validateErr error
+	logBuf      *bytes.Buffer
 }
 
 func newReloadCoordinatorFixture(t *testing.T, initial *config.Config) *reloadCoordinatorFixture {
@@ -46,10 +49,12 @@ func newReloadCoordinatorFixture(t *testing.T, initial *config.Config) *reloadCo
 	versioner := admin.NewPolicyVersioner()
 
 	deps := newServeTestDeps()
+	logBuf := &bytes.Buffer{}
 	fixture := &reloadCoordinatorFixture{
 		registry:  registry,
 		versioner: versioner,
 		cfgPath:   cfgPath,
+		logBuf:    logBuf,
 	}
 	deps.loadConfig = func(_ string) (*config.Config, error) {
 		if fixture.loadErr != nil {
@@ -75,12 +80,15 @@ func newReloadCoordinatorFixture(t *testing.T, initial *config.Config) *reloadCo
 	swappable := reload.NewSwappableHandler(originalHandler)
 	fixture.swappable = swappable
 
+	// Capture structured log output so tests can assert that rejection lines
+	// carry the result=<outcome> key the operators rely on for SIEM grep.
+	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	fixture.coordinator = newReloadCoordinator(
 		initial,
 		cfgPath,
 		swappable,
 		func() {},
-		newDiscardLogger(),
+		logger,
 		nil,
 		deps,
 		runtime,
@@ -144,6 +152,54 @@ func TestReloadCoordinatorRejectsImmutableChange(t *testing.T) {
 	}
 	if got, ok := f.reloadCount("ok"); ok && got != 0 {
 		t.Fatalf("ok count = %d, want 0", got)
+	}
+	logOutput := f.logBuf.String()
+	if !strings.Contains(logOutput, "result=reject_immutable") {
+		t.Fatalf("rejection log missing result=reject_immutable key: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "changed_fields=listen") {
+		t.Fatalf("rejection log missing changed_fields=listen: %s", logOutput)
+	}
+	if strings.Contains(logOutput, "config reload applied") {
+		t.Fatalf("rejection produced an 'applied' log line (pre-v0.8.1 silent-accept bug): %s", logOutput)
+	}
+}
+
+// TestReloadCoordinatorRejectsAdminPathChange is the regression test for the
+// v0.8.0 NAS soak finding: mutating admin.path from /admin/validate to
+// /admin/check was reported as applied while the running policy continued
+// serving the old path. The rejection must surface in the reject_immutable
+// counter and structured log, and policy_version must not advance.
+func TestReloadCoordinatorRejectsAdminPathChange(t *testing.T) {
+	initial := config.Defaults()
+	initial.Admin.Enabled = true
+	initial.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"}}
+	f := newReloadCoordinatorFixture(t, &initial)
+
+	startVersion := f.versioner.Update(admin.PolicySnapshot{Source: "startup", Rules: len(initial.Rules)})
+
+	changed := initial
+	changed.Admin.Path = "/admin/check"
+	f.loadCfg = &changed
+
+	f.coordinator.reload()
+
+	if got, ok := f.reloadCount("reject_immutable"); !ok || got != 1 {
+		t.Fatalf("reject_immutable count = %d (found=%v), want 1", got, ok)
+	}
+	if got, ok := f.reloadCount("ok"); ok && got != 0 {
+		t.Fatalf("ok count = %d, want 0 (reload must reject, not silently apply)", got)
+	}
+	if got := f.versioner.Snapshot().Version; got != startVersion {
+		t.Fatalf("policy_version = %d after rejected admin.path edit, want startup version %d preserved", got, startVersion)
+	}
+
+	logOutput := f.logBuf.String()
+	if !strings.Contains(logOutput, "result=reject_immutable") {
+		t.Fatalf("admin.path rejection log missing result=reject_immutable key: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "changed_fields=admin") {
+		t.Fatalf("admin.path rejection log missing changed_fields=admin: %s", logOutput)
 	}
 }
 

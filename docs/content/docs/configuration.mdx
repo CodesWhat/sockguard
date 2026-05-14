@@ -630,8 +630,9 @@ Sockguard can reload policy at runtime without dropping connections.
 
 ```yaml filename="sockguard.yaml"
 reload:
-  enabled: true          # default false; opt-in
-  debounce_ms: 250       # collapse burst of fs events into one reload (default 250ms)
+  enabled: true            # default false; opt-in
+  debounce_ms: 250         # collapse burst of fs events into one reload (default 250ms)
+  poll_interval_ms: 0      # 0 = off; opt-in stat fallback for inotify-unreliable backends
 ```
 
 When `reload.enabled: true`:
@@ -642,13 +643,25 @@ When `reload.enabled: true`:
   into a single reload.
 - **SIGHUP** — sending `SIGHUP` triggers a reload. Without `reload.enabled`,
   SIGHUP terminates the process (Go's default); with reload on, SIGHUP never
-  terminates.
+  terminates. **On Synology / DSM and other btrfs bind-mount backends,
+  `SIGHUP` is the canonical reload trigger** — inotify events on the host
+  filesystem don't always propagate into the container, so the fsnotify watch
+  may miss otherwise-valid edits.
+- **Stat-based poll fallback** — set `reload.poll_interval_ms` (typical
+  `5000`–`15000`) to have Sockguard periodically re-stat the config file and
+  fire a reload when its size, modification time, or inode have moved. Use
+  this on filesystems where fsnotify drops events (Synology btrfs bind-mounts,
+  some FUSE backends, NFS). The poll is off by default because regular Linux
+  inotify and macOS kqueue cover the common cases reliably.
 - **Atomic swap** — on success, the running handler chain is replaced atomically.
   In-flight requests at the swap moment complete on the previous chain; new
   requests immediately route through the new one. No connections are dropped.
 - **Rollback on failure** — if the new file is unreadable, the YAML is
   malformed, the validator rejects the config, or a signature check fails, the
-  running policy is preserved untouched. The failure is logged.
+  running policy is preserved untouched. The failure is logged with a
+  structured `result=reject_load|reject_validation|reject_immutable|reject_signature`
+  key that matches the metric label exactly, so SIEM grep against either
+  surface produces the same set of events.
 
 ### Immutable fields
 
@@ -868,6 +881,7 @@ even when not enumerated here.
 | `SOCKGUARD_ADMIN_MAX_BODY_BYTES`               | `admin.max_body_bytes`                | `524288`                        | Hard cap on candidate-YAML body size. Bodies above this return `413`.                                        |
 | `SOCKGUARD_RELOAD_ENABLED`                     | `reload.enabled`                      | `false`                         | Watch the config file via fsnotify and reload on SIGHUP. Enabling this changes SIGHUP from "terminate" to "reload". |
 | `SOCKGUARD_RELOAD_DEBOUNCE_MS`                 | `reload.debounce_ms`                  | `250`                           | Coalesce a burst of fsnotify events into a single reload. Must be `>= 0`.                                    |
+| `SOCKGUARD_RELOAD_POLL_INTERVAL_MS`            | `reload.poll_interval_ms`             | `0`                             | Opt-in stat-based fallback for inotify-unreliable filesystems (Synology btrfs bind-mounts, some FUSE / NFS backends). Periodically re-stats the config file and fires a reload when size, mtime, or inode changes. `0` disables polling. Must be `>= 0`. |
 
 ### Response controls
 

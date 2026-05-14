@@ -335,21 +335,48 @@ func TestSortKeysBucketFormattingAndLabelEscaping(t *testing.T) {
 	}
 }
 
-func TestCloneHistogramsSkipsNilAndCopiesBuckets(t *testing.T) {
+// TestSnapshotHistogramsReadsAtomicCountersAndIsolatesSlice replaces the
+// pre-v0.8.1 clone test: the live histogram now stores atomic.Uint64 buckets
+// + a CAS-folded sum, and snapshotHistograms reads each one atomically into
+// a fresh histogramSnapshot. Mutating the snapshot's bucket slice must not
+// affect the live histogram, and the live histogram must keep counting after
+// the snapshot is taken.
+func TestSnapshotHistogramsReadsAtomicCountersAndIsolatesSlice(t *testing.T) {
 	key := durationLabels{decision: "allow", method: "GET", profile: "default", route: "/_ping"}
-	nilKey := durationLabels{decision: "deny", method: "POST", profile: "default", route: "/build"}
-	original := map[durationLabels]*histogram{
-		key:    {buckets: []uint64{1, 2, 3}, count: 3, sum: 0.75},
-		nilKey: nil,
+
+	var live sync.Map
+	h := newAtomicHistogram()
+	h.observe(0.004) // lands in the smallest bucket
+	h.observe(0.012)
+	h.observe(0.040)
+	live.Store(key, h)
+
+	snap := snapshotHistograms(&live)
+	got, ok := snap[key]
+	if !ok {
+		t.Fatalf("snapshot missing key %v", key)
+	}
+	if got.count != 3 {
+		t.Fatalf("snapshot count = %d, want 3", got.count)
+	}
+	if got.sum < 0.055 || got.sum > 0.057 {
+		t.Fatalf("snapshot sum = %g, want ~0.056", got.sum)
 	}
 
-	cloned := cloneHistograms(original)
-	if _, ok := cloned[nilKey]; ok {
-		t.Fatal("cloneHistograms copied nil histogram entry")
+	// Mutating the snapshot's bucket slice must not propagate to the live
+	// histogram — that would defeat the point of snapshotting.
+	got.buckets[0] = 999
+	live2 := snapshotHistograms(&live)
+	if live2[key].buckets[0] == 999 {
+		t.Fatal("snapshotHistograms aliased the live histogram bucket slice")
 	}
-	cloned[key].buckets[0] = 99
-	if original[key].buckets[0] != 1 {
-		t.Fatalf("cloneHistograms reused bucket slice, original bucket = %d", original[key].buckets[0])
+
+	// New observations after the snapshot must keep accumulating on the
+	// live histogram regardless of what we did to the snapshot.
+	h.observe(0.001)
+	live3 := snapshotHistograms(&live)
+	if got := live3[key].count; got != 4 {
+		t.Fatalf("post-snapshot count = %d, want 4", got)
 	}
 }
 
@@ -370,8 +397,8 @@ func TestSortedLabelHelpersOrderDeterministically(t *testing.T) {
 		t.Fatalf("first sorted deny key = %q", got)
 	}
 
-	durations := sortedDurationLabels(map[durationLabels]*histogram{
-		{decision: "deny", method: "POST", profile: "b", route: "/z"}: {},
+	durations := sortedDurationLabels(map[durationLabels]histogramSnapshot{
+		{decision: "deny", method: "POST", profile: "b", route: "/z"}:  {},
 		{decision: "allow", method: "GET", profile: "a", route: "/a"}: {},
 	})
 	if got := durationLabelSortKey(durations[0]); got != "allow\x00GET\x00a\x00/a" {
@@ -465,4 +492,74 @@ func assertContains(t *testing.T, got, want string) {
 	if !strings.Contains(got, want) {
 		t.Fatalf("expected output to contain %q, got:\n%s", want, got)
 	}
+}
+
+// TestRegistryConcurrentObserveAndScrape exercises the v0.8.1 lock-free
+// observation path: many goroutines hammer observe / ObserveThrottle /
+// ObserveConfigReload / ObserveUpstreamWatchdog while another goroutine
+// repeatedly scrapes the registry. Pre-v0.8.1 the registry serialized every
+// observation against the scrape on a single Registry.mu; this test would
+// still pass under that scheme but verifies the post-refactor totals are
+// correct under the new sync.Map + atomic-counter storage and that no
+// observation is lost when it races a scrape.
+func TestRegistryConcurrentObserveAndScrape(t *testing.T) {
+	registry := NewRegistry()
+
+	const writers = 8
+	const opsPerWriter = 200
+	var writerWG sync.WaitGroup
+	writerWG.Add(writers)
+
+	// Counter observers — every iteration bumps the same labels so the
+	// final totals are deterministic regardless of interleaving.
+	for w := 0; w < writers; w++ {
+		go func() {
+			defer writerWG.Done()
+			req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+			meta := &logging.RequestMeta{Decision: "allow", NormPath: "/_ping", Profile: "ci"}
+			for i := 0; i < opsPerWriter; i++ {
+				registry.observe(req, meta, http.StatusOK, 0.003)
+				registry.ObserveThrottle("ci", "rate_limit", "enforce")
+				registry.ObserveConfigReload("ok")
+				registry.ObserveUpstreamWatchdog(true)
+			}
+		}()
+	}
+
+	// Scraper — continuously asks the registry for its current state. The
+	// goroutine must not deadlock against any observer; under the old mutex
+	// scheme it would have blocked them on every scrape, under the
+	// post-refactor lock-free path both run concurrently without serializing.
+	stop := make(chan struct{})
+	scraperDone := make(chan struct{})
+	go func() {
+		defer close(scraperDone)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			rec := httptest.NewRecorder()
+			registry.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		}
+	}()
+
+	writersDone := make(chan struct{})
+	go func() { writerWG.Wait(); close(writersDone) }()
+	select {
+	case <-writersDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("writers did not finish within 10s — possible deadlock between observe and scrape")
+	}
+	close(stop)
+	<-scraperDone
+
+	expected := uint64(writers * opsPerWriter)
+	out := renderMetrics(t, registry)
+	assertContains(t, out, `sockguard_http_requests_total{decision="allow",method="GET",profile="ci",route="/_ping",status="200"} `+strconv.FormatUint(expected, 10))
+	assertContains(t, out, `sockguard_throttle_total{mode="enforce",profile="ci",reason="rate_limit"} `+strconv.FormatUint(expected, 10))
+	assertContains(t, out, `sockguard_config_reload_total{result="ok"} `+strconv.FormatUint(expected, 10))
+	assertContains(t, out, `sockguard_upstream_watchdog_checks_total{result="connected"} `+strconv.FormatUint(expected, 10))
+	assertContains(t, out, `sockguard_http_request_duration_seconds_count{decision="allow",method="GET",profile="ci",route="/_ping"} `+strconv.FormatUint(expected, 10))
 }
