@@ -184,6 +184,69 @@ func TestClientCacheCachesNotFound(t *testing.T) {
 	}
 }
 
+// TestClientCacheLRUEvictsLeastRecentlyUsed confirms that accessing an older
+// entry promotes it in the LRU order so that when eviction is needed the
+// truly least-recently-used entry is dropped, not the insertion-order oldest.
+func TestClientCacheLRUEvictsLeastRecentlyUsed(t *testing.T) {
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var calls atomic.Int32
+	resolver := func(_ context.Context, _ netip.Addr) (resolvedClient, bool, error) {
+		calls.Add(1)
+		return resolvedClient{ID: "x"}, true, nil
+	}
+
+	cache := newClientCache(
+		10*time.Second,
+		2,
+		func() time.Time { return baseNow.Add(time.Duration(nowOffset.Load())) },
+		resolver,
+	)
+	ctx := context.Background()
+
+	a := mustAddr(t, "10.1.0.1")
+	b := mustAddr(t, "10.1.0.2")
+	c := mustAddr(t, "10.1.0.3")
+
+	// Insert a (oldest), then b.
+	if _, _, err := cache.Lookup(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	nowOffset.Store(int64(time.Millisecond))
+	if _, _, err := cache.Lookup(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	// Re-access a to promote it to MRU position.
+	nowOffset.Store(int64(2 * time.Millisecond))
+	if _, _, err := cache.Lookup(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+
+	callsBefore := calls.Load()
+	// Insert c — cache is at cap=2. b is now the LRU; a was just accessed.
+	nowOffset.Store(int64(3 * time.Millisecond))
+	if _, _, err := cache.Lookup(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+
+	// a should still be cached (it was recently accessed); b should be evicted.
+	if _, _, err := cache.Lookup(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != callsBefore+1 {
+		// +1 for inserting c; a should hit from cache
+		t.Fatalf("unexpected resolver calls for a: got %d total, want %d", got, callsBefore+1)
+	}
+
+	callsBefore = calls.Load()
+	if _, _, err := cache.Lookup(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != callsBefore+1 {
+		t.Fatalf("b should have been evicted (LRU), want 1 extra resolver call, got %d", got-callsBefore)
+	}
+}
+
 func TestClientCacheEvictsBeyondMaxSize(t *testing.T) {
 	baseNow := time.Unix(1_700_000_000, 0)
 	var nowOffset atomic.Int64

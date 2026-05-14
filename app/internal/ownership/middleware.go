@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -317,9 +316,9 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	}
 	filterKey := ownerFilterKey(filter.NormalizePath(r.URL.Path))
 	label := labelKey + "=" + owner
-	if !slices.Contains(filters[filterKey], label) {
-		filters[filterKey] = append(filters[filterKey], label)
-	}
+	// Unconditional replacement ensures a client-supplied owner label cannot
+	// coexist with the proxy-enforced label, preventing OR-semantics bypass.
+	filters[filterKey] = []string{label}
 	encoded, _ := json.Marshal(filters)
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()

@@ -2,6 +2,7 @@ package clientacl
 
 import (
 	"bytes"
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
@@ -10,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -20,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -984,21 +987,26 @@ func TestMiddlewareReturnsBadGatewayWhenResolvedClientHasInvalidACLLabel(t *test
 
 func TestMiddlewareWrapperResolvesClientLabelsViaUnixSocket(t *testing.T) {
 	socketPath := startUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/containers/json" {
-			t.Fatalf("path = %q, want /containers/json", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode([]map[string]any{
-			{
-				"Id":     "client-1",
-				"Names":  []string{"/traefik"},
-				"Labels": map[string]string{DefaultLabelPrefix + "get": "/containers/**"},
-				"NetworkSettings": map[string]any{
-					"Networks": map[string]any{
-						"default": map[string]any{"IPAddress": "172.18.0.5"},
+		switch r.URL.Path {
+		case "/containers/json":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"Id":     "client-1",
+					"Names":  []string{"/traefik"},
+					"Labels": map[string]string{DefaultLabelPrefix + "get": "/containers/**"},
+					"NetworkSettings": map[string]any{
+						"Networks": map[string]any{
+							"default": map[string]any{"IPAddress": "172.18.0.5"},
+						},
 					},
 				},
-			},
-		})
+			})
+		case "/containers/client-1/json":
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
 	}))
 
 	handler := Middleware(socketPath, testLogger(), Options{
@@ -1316,6 +1324,147 @@ func TestContainerHelpers(t *testing.T) {
 	}
 	if got := clientName(resolvedClient{ID: "abc"}); got != "abc" {
 		t.Fatalf("clientName(fallback) = %q, want abc", got)
+	}
+}
+
+// TestResolveClientDeadContainerNotCached verifies Fix #6: when the liveness
+// check for a resolved container returns 404, resolveClient returns an error
+// rather than a stale cached result. A subsequent lookup should attempt
+// resolution again rather than returning the dead container's labels.
+func TestResolveClientDeadContainerNotCached(t *testing.T) {
+	var listCalls atomic.Int32
+	socketPath := startUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/containers/json":
+			listCalls.Add(1)
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"Id":     "abc",
+					"Names":  []string{"/dying"},
+					"Labels": map[string]string{DefaultLabelPrefix + "get": "/events"},
+					"NetworkSettings": map[string]any{
+						"Networks": map[string]any{
+							"default": map[string]any{"IPAddress": "172.20.0.9"},
+						},
+					},
+				},
+			})
+		case "/containers/abc/json":
+			// Container died between list and liveness check.
+			http.NotFound(w, r)
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+
+	resolver := upstreamResolver{client: newUnixHTTPClient(socketPath)}
+	_, _, err := resolver.resolveClient(context.Background(), netip.MustParseAddr("172.20.0.9"))
+	if err == nil {
+		t.Fatal("expected error when liveness check returns 404, got nil")
+	}
+	if !strings.Contains(err.Error(), "no longer live") {
+		t.Fatalf("error = %q, want it to contain 'no longer live'", err.Error())
+	}
+
+	// The clientCache must not cache error results, so a second lookup must
+	// call the resolver again (not return a stale success).
+	cache := newClientCache(10*time.Second, 8, time.Now, resolver.resolveClient)
+	addr := netip.MustParseAddr("172.20.0.9")
+
+	_, _, err = cache.Lookup(context.Background(), addr)
+	if err == nil {
+		t.Fatal("expected cache.Lookup to surface the liveness error")
+	}
+
+	// Second lookup must hit the resolver again (not a cached success).
+	callsBefore := listCalls.Load()
+	_, _, _ = cache.Lookup(context.Background(), addr)
+	if got := listCalls.Load(); got <= callsBefore {
+		t.Fatalf("expected resolver re-call after liveness error; list calls before=%d after=%d", callsBefore, got)
+	}
+}
+
+// TestSourceIPProfileIndexBounded verifies Fix #9: the source-IP profile index
+// never grows beyond profileIndexMaxSize regardless of how many distinct IPs
+// are stored.
+func TestSourceIPProfileIndexBounded(t *testing.T) {
+	idx := &sourceIPProfileIndex{
+		entries: make(map[netip.Addr]*list.Element),
+		order:   list.New(),
+	}
+
+	const insertCount = profileIndexMaxSize + 10
+	for i := range insertCount {
+		// Build addresses in 10.x.y.z space, wrapping z at 256.
+		z := i % 256
+		y := (i / 256) % 256
+		x := (i / 65536) % 256
+		raw := fmt.Sprintf("10.%d.%d.%d", x, y, z)
+		addr := netip.MustParseAddr(raw)
+		idx.store(addr, profileLookupResult{profile: "p", ok: true})
+
+		idx.mu.Lock()
+		size := len(idx.entries)
+		idx.mu.Unlock()
+		if size > profileIndexMaxSize {
+			t.Fatalf("after insert %d: index size = %d, want <= %d", i+1, size, profileIndexMaxSize)
+		}
+	}
+}
+
+// TestClientCertProfileIndexBounded verifies Fix #9 for the client-certificate
+// profile index.
+func TestClientCertProfileIndexBounded(t *testing.T) {
+	idx := &clientCertificateProfileIndex{
+		entries: make(map[[sha256.Size]byte]*list.Element),
+		order:   list.New(),
+	}
+
+	const insertCount = profileIndexMaxSize + 10
+	for i := range insertCount {
+		var fp [sha256.Size]byte
+		fp[0] = byte(i)
+		fp[1] = byte(i >> 8)
+		fp[2] = byte(i >> 16)
+		idx.store(fp, profileLookupResult{profile: "p", ok: true})
+
+		idx.mu.Lock()
+		size := len(idx.entries)
+		idx.mu.Unlock()
+		if size > profileIndexMaxSize {
+			t.Fatalf("after insert %d: index size = %d, want <= %d", i+1, size, profileIndexMaxSize)
+		}
+	}
+}
+
+// TestResolveClientLimitsUpstreamResponseSize verifies Fix #10: when the
+// upstream /containers/json response exceeds MaxResponseBodyBytes, the decoder
+// returns an error (truncated JSON) rather than allocating unbounded memory.
+func TestResolveClientLimitsUpstreamResponseSize(t *testing.T) {
+	socketPath := startUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/containers/json" {
+			http.NotFound(w, r)
+			return
+		}
+		// Write a response that is larger than MaxResponseBodyBytes by
+		// padding it with a huge label value. We open the JSON manually so
+		// we can stream arbitrary bytes without allocating a giant slice.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[{"Id":"big","Names":["/big"],"Labels":{"x":"`)
+		// Write enough to exceed the 8 MiB cap.
+		pad := make([]byte, filter.MaxResponseBodyBytes+1024)
+		for i := range pad {
+			pad[i] = 'a'
+		}
+		_, _ = w.Write(pad)
+		_, _ = io.WriteString(w, `"},"NetworkSettings":{"Networks":{}}}]`)
+	}))
+
+	resolver := upstreamResolver{client: newUnixHTTPClient(socketPath)}
+	_, _, err := resolver.resolveClient(context.Background(), netip.MustParseAddr("10.0.0.1"))
+	if err == nil {
+		t.Fatal("expected error when upstream response exceeds MaxResponseBodyBytes, got nil")
 	}
 }
 

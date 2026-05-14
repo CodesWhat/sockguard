@@ -129,8 +129,10 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 		for _, value := range values {
 			got = append(got, value.(string))
 		}
-		if !slices.Contains(got, "existing=1") || !slices.Contains(got, "com.sockguard.owner=job-123") {
-			t.Fatalf("label filters = %#v, want existing label and owner label", got)
+		// The proxy replaces the entire label filter with only the owner label;
+		// any client-supplied label values are discarded to prevent OR-bypass.
+		if len(got) != 1 || got[0] != "com.sockguard.owner=job-123" {
+			t.Fatalf("label filters = %#v, want exactly [com.sockguard.owner=job-123]", got)
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -141,6 +143,43 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+}
+
+func TestMiddlewareOwnerLabelFilterOverwritesClientSuppliedOwnerLabel(t *testing.T) {
+	// Attack: client sends filters={"label":["com.sockguard.owner=victim"]} to
+	// list another tenant's containers. The proxy must replace — not append —
+	// the label filter so the upstream request contains only the proxy-enforced
+	// owner label, not an OR-union of victim and attacker labels.
+	opts := Options{Owner: "attacker", LabelKey: "com.sockguard.owner"}
+	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		filtersJSON := r.URL.Query().Get("filters")
+		var filters map[string][]string
+		if err := json.NewDecoder(strings.NewReader(filtersJSON)).Decode(&filters); err != nil {
+			t.Fatalf("decode filters: %v", err)
+		}
+		labelFilters := filters["label"]
+		if len(labelFilters) != 1 {
+			t.Fatalf("label filter count = %d, want exactly 1; got %v", len(labelFilters), labelFilters)
+		}
+		if labelFilters[0] != "com.sockguard.owner=attacker" {
+			t.Fatalf("label filter = %q, want com.sockguard.owner=attacker (victim label must not appear)", labelFilters[0])
+		}
+		for _, lf := range labelFilters {
+			if strings.Contains(lf, "victim") {
+				t.Fatalf("victim label leaked into upstream filter: %q", lf)
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	victimFilter := `{"label":["com.sockguard.owner=victim"]}`
+	req := httptest.NewRequest(http.MethodGet, "/containers/json?filters="+victimFilter, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 }
 

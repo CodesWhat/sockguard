@@ -1,6 +1,7 @@
 package clientacl
 
 import (
+	"container/list"
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
@@ -130,18 +131,36 @@ type profileLookupResult struct {
 	ok      bool
 }
 
+// profileIndexMaxSize is the per-process upper bound on each profile lookup
+// index (source IP and client certificate). Entries beyond this cap are
+// evicted LRU. 1024 covers all realistic deployments without unbounded growth.
+const profileIndexMaxSize = 1024
+
 // These per-process runtime indexes avoid re-scanning the configured profile
 // assignments on every request for the same concrete client IP or certificate.
 // Selection semantics stay the same: the first lookup for a key still walks the
 // assignment list in config order, then memoizes that first-match-wins result.
+// Both indexes are bounded LRUs so they never grow without limit.
 type sourceIPProfileIndex struct {
-	mu    sync.RWMutex
-	cache map[netip.Addr]profileLookupResult
+	mu      sync.Mutex
+	entries map[netip.Addr]*list.Element
+	order   *list.List
+}
+
+type sourceIPProfileIndexNode struct {
+	addr   netip.Addr
+	result profileLookupResult
 }
 
 type clientCertificateProfileIndex struct {
-	mu    sync.RWMutex
-	cache map[[sha256.Size]byte]profileLookupResult
+	mu      sync.Mutex
+	entries map[[sha256.Size]byte]*list.Element
+	order   *list.List
+}
+
+type clientCertProfileIndexNode struct {
+	fingerprint [sha256.Size]byte
+	result      profileLookupResult
 }
 
 type compiledSourceIPProfileAssignment struct {
@@ -408,12 +427,14 @@ func compileOptions(opts Options) (compiledOptions, error) {
 
 	if len(compiled.sourceIPProfiles) > 0 {
 		compiled.sourceIPProfileIndex = &sourceIPProfileIndex{
-			cache: make(map[netip.Addr]profileLookupResult),
+			entries: make(map[netip.Addr]*list.Element),
+			order:   list.New(),
 		}
 	}
 	if len(compiled.clientCertProfiles) > 0 {
 		compiled.clientCertProfileIndex = &clientCertificateProfileIndex{
-			cache: make(map[[sha256.Size]byte]profileLookupResult),
+			entries: make(map[[sha256.Size]byte]*list.Element),
+			order:   list.New(),
 		}
 	}
 
@@ -756,10 +777,16 @@ func (i *sourceIPProfileIndex) lookup(addr netip.Addr) (profileLookupResult, boo
 	if i == nil {
 		return profileLookupResult{}, false
 	}
-	i.mu.RLock()
-	result, ok := i.cache[addr]
-	i.mu.RUnlock()
-	return result, ok
+	i.mu.Lock()
+	elem, ok := i.entries[addr]
+	if ok {
+		i.order.MoveToFront(elem)
+	}
+	i.mu.Unlock()
+	if !ok {
+		return profileLookupResult{}, false
+	}
+	return elem.Value.(*sourceIPProfileIndexNode).result, true
 }
 
 func (i *sourceIPProfileIndex) store(addr netip.Addr, result profileLookupResult) {
@@ -767,18 +794,37 @@ func (i *sourceIPProfileIndex) store(addr netip.Addr, result profileLookupResult
 		return
 	}
 	i.mu.Lock()
-	i.cache[addr] = result
-	i.mu.Unlock()
+	defer i.mu.Unlock()
+	if elem, ok := i.entries[addr]; ok {
+		elem.Value.(*sourceIPProfileIndexNode).result = result
+		i.order.MoveToFront(elem)
+		return
+	}
+	if i.order.Len() >= profileIndexMaxSize {
+		tail := i.order.Back()
+		if tail != nil {
+			delete(i.entries, tail.Value.(*sourceIPProfileIndexNode).addr)
+			i.order.Remove(tail)
+		}
+	}
+	node := &sourceIPProfileIndexNode{addr: addr, result: result}
+	i.entries[addr] = i.order.PushFront(node)
 }
 
 func (i *clientCertificateProfileIndex) lookup(fingerprint [sha256.Size]byte) (profileLookupResult, bool) {
 	if i == nil {
 		return profileLookupResult{}, false
 	}
-	i.mu.RLock()
-	result, ok := i.cache[fingerprint]
-	i.mu.RUnlock()
-	return result, ok
+	i.mu.Lock()
+	elem, ok := i.entries[fingerprint]
+	if ok {
+		i.order.MoveToFront(elem)
+	}
+	i.mu.Unlock()
+	if !ok {
+		return profileLookupResult{}, false
+	}
+	return elem.Value.(*clientCertProfileIndexNode).result, true
 }
 
 func (i *clientCertificateProfileIndex) store(fingerprint [sha256.Size]byte, result profileLookupResult) {
@@ -786,8 +832,21 @@ func (i *clientCertificateProfileIndex) store(fingerprint [sha256.Size]byte, res
 		return
 	}
 	i.mu.Lock()
-	i.cache[fingerprint] = result
-	i.mu.Unlock()
+	defer i.mu.Unlock()
+	if elem, ok := i.entries[fingerprint]; ok {
+		elem.Value.(*clientCertProfileIndexNode).result = result
+		i.order.MoveToFront(elem)
+		return
+	}
+	if i.order.Len() >= profileIndexMaxSize {
+		tail := i.order.Back()
+		if tail != nil {
+			delete(i.entries, tail.Value.(*clientCertProfileIndexNode).fingerprint)
+			i.order.Remove(tail)
+		}
+	}
+	node := &clientCertProfileIndexNode{fingerprint: fingerprint, result: result}
+	i.entries[fingerprint] = i.order.PushFront(node)
 }
 
 func remoteIP(remoteAddr string) (netip.Addr, bool) {
@@ -933,12 +992,18 @@ func (r upstreamResolver) resolveClient(ctx context.Context, addr netip.Addr) (r
 	}
 
 	var containers []listedContainer
-	if err := json.NewDecoder(resp.Body).Decode(&containers); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, filter.MaxResponseBodyBytes)).Decode(&containers); err != nil {
 		return resolvedClient{}, false, err
 	}
 
 	for _, container := range containers {
 		if containerHasIP(container, addr) {
+			// Verify the container is still live before caching. A container that
+			// died between the list call and now may have already released its IP;
+			// caching stale labels would apply the wrong profile to the new owner.
+			if !r.isContainerLive(ctx, container.ID) {
+				return resolvedClient{}, false, fmt.Errorf("container %s no longer live after IP resolution; retry", container.ID)
+			}
 			return resolvedClient{
 				ID:     container.ID,
 				Name:   firstContainerName(container.Names),
@@ -948,6 +1013,21 @@ func (r upstreamResolver) resolveClient(ctx context.Context, addr netip.Addr) (r
 	}
 
 	return resolvedClient{}, false, nil
+}
+
+// isContainerLive performs a GET /containers/{id}/json and returns true only
+// when the daemon confirms the container still exists. A 404 or any transport
+// error returns false; other non-200 responses also return false. The caller
+// must not cache a result when this returns false.
+func (r upstreamResolver) isContainerLive(ctx context.Context, id string) bool {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/"+id+"/json", nil)
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return false
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	_ = resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func containerHasIP(container listedContainer, addr netip.Addr) bool {
