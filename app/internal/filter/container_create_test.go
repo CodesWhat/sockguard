@@ -429,30 +429,6 @@ func TestContainerCreatePolicyDenyBindMountReasonRejectsBindMountSource(t *testi
 	}
 }
 
-func TestContainerCreateBindSource(t *testing.T) {
-	tests := []struct {
-		name   string
-		bind   string
-		want   string
-		wantOK bool
-	}{
-		{name: "valid", bind: "/source:/target:ro", want: "/source", wantOK: true},
-		{name: "missing separator", bind: "/source", wantOK: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := containerCreateBindSource(tt.bind)
-			if ok != tt.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
-			}
-			if got != tt.want {
-				t.Fatalf("source = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestExtractAndValidateBindSource(t *testing.T) {
 	tests := []struct {
 		name   string

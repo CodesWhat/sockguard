@@ -844,10 +844,6 @@ func bindPathAllowed(source string, allowedPaths []string) bool {
 	return false
 }
 
-func containerCreateBindSource(bind string) (string, bool) {
-	return extractAndValidateBindSource(bind, containerCreateMount{})
-}
-
 func extractAndValidateBindSource(bind string, mount containerCreateMount) (string, bool) {
 	if bind != "" {
 		source, _, ok := strings.Cut(bind, ":")
