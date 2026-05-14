@@ -24,6 +24,13 @@ const (
 	ActionDeny  Action = "deny"
 )
 
+// ReasonNoMatchingAllowRule is the human-readable reason stamped on the
+// default-deny outcome (no rule matched). Exported so the reason-code
+// classifier can compare against a constant rather than a magic string;
+// changing this string requires updating both this constant and the
+// downstream classifier.
+const ReasonNoMatchingAllowRule = "no matching allow rule"
+
 // Rule represents a single access control rule.
 type Rule struct {
 	Methods []string
@@ -310,7 +317,7 @@ func evaluateNormalized(rules []*CompiledRule, method, normalizedPath string) (A
 			return rule.Action, rule.Index, rule.Reason
 		}
 	}
-	return ActionDeny, -1, "no matching allow rule"
+	return ActionDeny, -1, ReasonNoMatchingAllowRule
 }
 
 func httpMethodBit(method string) httpMethodMask {

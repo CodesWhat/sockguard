@@ -144,10 +144,14 @@ func (p execPolicy) inspectExisting(ctx context.Context, normalizedPath string) 
 		return "exec start denied: no exec inspection configured", nil
 	}
 
-	// TOCTOU: Docker exposes exec inspect and exec start as separate API calls,
-	// so the command visible here can change before the client calls start. Sockguard
-	// has no mitigation; operators that require exec-command integrity should prefer
-	// container-level allowlists over exec policies.
+	// Docker's exec instance is immutable after ContainerExecCreate — there is
+	// no API to mutate Cmd, Privileged, or User on an existing exec — so the
+	// values returned by /exec/{id}/json here are the same values Docker uses
+	// when the start command runs. There is no TOCTOU on the exec config
+	// itself. The container the exec is attached to can still change between
+	// inspect and start (image swapped, process killed); operators that need
+	// to constrain that surface should prefer container-level allowlists
+	// (allowed_commands per profile) over per-exec inspection.
 	result, found, err := p.inspectStart(ctx, execID)
 	if err != nil {
 		return "", fmt.Errorf("inspect exec %q: %w", execID, err)

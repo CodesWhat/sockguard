@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -187,7 +188,12 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 				}
 			}
 
-			normPath := NormalizePath(r.URL.Path)
+			var normPath string
+			if m := logging.MetaForRequest(w, r); m != nil && m.NormPath != "" {
+				normPath = m.NormPath
+			} else {
+				normPath = NormalizePath(r.URL.Path)
+			}
 			action, ruleIndex, reason := evaluateNormalized(activePolicy.rules, r.Method, normPath)
 			denyStatus := http.StatusForbidden
 			reasonCode := ruleDecisionReasonCode(action, reason)
@@ -267,6 +273,22 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy
 	for _, p := range all {
 		byMethod[p.method] = append(byMethod[p.method], p)
 	}
+	// Fail loud if any (method, severity) group would overflow the fixed
+	// inspectBuckets array at request time. The bucket walk silently drops
+	// overflow entries, which would disable enforcement for the dropped
+	// inspectors — a future contributor adding a 17th POST/critical policy
+	// must bump inspectBucketCapacity rather than let that happen quietly.
+	for method, ps := range byMethod {
+		var sevCounts [3]int
+		for _, p := range ps {
+			sevCounts[int(p.severity)]++
+		}
+		for sev, n := range sevCounts {
+			if n > inspectBucketCapacity {
+				panic(fmt.Sprintf("filter: inspectBuckets capacity %d exceeded for method %s severity %d: %d policies", inspectBucketCapacity, method, sev, n))
+			}
+		}
+	}
 	return runtimePolicy{
 		rules:                   rules,
 		denyResponseVerbosity:   cfg.DenyResponseVerbosity,
@@ -339,11 +361,18 @@ func matchesPluginInspection(normalizedPath string) bool {
 	return normalizedPath == "/plugins/pull" || normalizedPath == "/plugins/create" || isPluginUpgradePath(normalizedPath) || isPluginSetPath(normalizedPath)
 }
 
+// inspectBucketCapacity bounds how many policies of a single severity may
+// match the same method in inspectAllowedRequest. Sized to comfortably hold
+// the current static policy list with headroom; if a future contributor adds
+// inspectors past this cap, compileRuntimePolicy panics at startup so the
+// overflow is loud rather than silent.
+const inspectBucketCapacity = 16
+
 // inspectBuckets holds matched policies grouped by severity for zero-alloc
 // single-pass triage in inspectAllowedRequest. The array is stack-allocated
 // because [3][16] fits on the frame and the slice backing p.inspectPolicies
 // caps out at ~15 entries.
-type inspectBuckets [3][16]*requestInspectPolicy
+type inspectBuckets [3][inspectBucketCapacity]*requestInspectPolicy
 
 func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int) {
 	var buckets inspectBuckets
@@ -404,7 +433,7 @@ func ruleDecisionReasonCode(action Action, reason string) string {
 	case ActionAllow:
 		return reasonCodeMatchedAllowRule
 	case ActionDeny:
-		if reason == "no matching allow rule" {
+		if reason == ReasonNoMatchingAllowRule {
 			return reasonCodeNoMatchingAllowRule
 		}
 		return reasonCodeMatchedDenyRule
