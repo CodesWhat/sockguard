@@ -202,7 +202,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	)
 
 	errCh := make(chan error, 1)
-	stopWatchdog := runtime.startWatchdog(context.Background(), cfg)
+	stopWatchdog := runtime.startWatchdog(cmd.Context(), cfg)
 	defer stopWatchdog()
 	go deps.startServing(server, listener, errCh)
 
@@ -227,7 +227,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 			}
 		}
 		var startErr error
-		stopReload, startErr = startReloader(context.Background(), cfgFile, debounce, pollInterval, coordinator, logger)
+		stopReload, startErr = startReloader(cmd.Context(), cfgFile, debounce, pollInterval, coordinator, logger)
 		if startErr != nil {
 			logger.Error("config hot-reload disabled: failed to start watcher",
 				"error", startErr,
@@ -259,7 +259,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	stopWatchdog()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), deps.shutdownGracePeriod)
+	shutdownCtx, cancel := context.WithTimeout(cmd.Context(), deps.shutdownGracePeriod)
 	defer cancel()
 
 	if adminServer != nil {
@@ -275,7 +275,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 			logger.Error("remove socket error", "socket", cfg.Listen.Socket, "error", err)
 		}
 	}
-	if cfg.Admin.Enabled && cfg.Admin.Listen.Socket != "" {
+	if cfg.Admin.Enabled && cfg.Admin.Listen.Configured() && cfg.Admin.Listen.Socket != "" {
 		if err := deps.removePath(cfg.Admin.Listen.Socket); err != nil && !os.IsNotExist(err) {
 			logger.Error("remove admin socket error", "socket", cfg.Admin.Listen.Socket, "error", err)
 		}
@@ -337,9 +337,8 @@ func startAdminServer(
 	return adminServer, adminErrCh, stop, nil
 }
 
-func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime) http.Handler {
-	handler, _ := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, nil)
-	return handler
+func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime) (http.Handler, func()) {
+	return buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, nil)
 }
 
 // buildServeHandlerChainWithRuntime is the production / reload entry point:
@@ -524,7 +523,7 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *serveRuntime) (func(http.Handler) http.Handler, func()) {
 	profiles := make(map[string]ratelimit.ProfileOptions)
 	for _, profile := range cfg.Clients.Profiles {
-		opts := configLimitsToRateLimitOptions(profile.Limits)
+		opts := configLimitsToRateLimitOptions(profile.Name, profile.Limits, logger)
 		if opts.Rate != nil || opts.Concurrency != nil || opts.Priority != ratelimit.PriorityNormal {
 			profiles[profile.Name] = opts
 		}
@@ -598,13 +597,17 @@ func warnAssignedProfilesWithoutLimits(cfg *config.Config, limitedProfiles map[s
 // configLimitsToRateLimitOptions converts a per-profile LimitsConfig to the
 // ratelimit package's ProfileOptions. Returns zero-valued options (both nil)
 // when no limits are configured.
-func configLimitsToRateLimitOptions(cfg config.LimitsConfig) ratelimit.ProfileOptions {
+func configLimitsToRateLimitOptions(profileName string, cfg config.LimitsConfig, logger *slog.Logger) ratelimit.ProfileOptions {
 	var opts ratelimit.ProfileOptions
 	if cfg.Priority != "" {
-		// Unknown values were rejected by the validator; ignore the ok flag
-		// here so a config that slipped past validation falls back to normal
-		// rather than panicking the proxy at runtime.
-		opts.Priority, _ = ratelimit.ParsePriority(cfg.Priority)
+		var ok bool
+		opts.Priority, ok = ratelimit.ParsePriority(cfg.Priority)
+		if !ok {
+			logger.Warn("unrecognized priority value in client profile; falling back to normal",
+				slog.String("profile", profileName),
+				slog.String("priority", cfg.Priority),
+			)
+		}
 	}
 	if cfg.Rate != nil {
 		burst := cfg.Rate.Burst
@@ -677,14 +680,14 @@ func withHealth(cfg *config.Config, logger *slog.Logger, deps *serveDeps, runtim
 	}
 	healthHandler := monitor.Handler()
 	return func(next http.Handler) http.Handler {
-		return healthInterceptor(cfg.Health.Path, healthHandler, next)
+		return pathInterceptor(cfg.Health.Path, healthHandler, next)
 	}
 }
 
 func withMetricsEndpoint(cfg *config.Config, registry *metrics.Registry) func(http.Handler) http.Handler {
 	metricsHandler := registry.Handler()
 	return func(next http.Handler) http.Handler {
-		return metricsInterceptor(cfg.Metrics.Path, metricsHandler, next)
+		return pathInterceptor(cfg.Metrics.Path, metricsHandler, next)
 	}
 }
 
@@ -1154,28 +1157,15 @@ func isAddrInUse(err error) bool {
 	return errors.As(err, &opErr) && errors.Is(opErr.Err, syscall.EADDRINUSE)
 }
 
-// healthInterceptor short-circuits health check requests before they hit the filter.
+// pathInterceptor short-circuits GET requests matching path to target,
+// passing all other requests to next.
 //
-// /health intentionally runs before the CIDR allowlist so external uptime
-// probes (Kubernetes liveness, load-balancer health checks) can reach it
-// without being added to clients.allowed_cidrs. Treat health as
-// always-public. Operators who need authenticated health checks should disable
-// health.enabled and use /metrics behind the listener's mTLS instead.
-func healthInterceptor(path string, healthHandler http.Handler, next http.Handler) http.Handler {
+// Used for health and metrics endpoints, which both sit ahead of Docker-API
+// filtering in the middleware chain and share identical dispatch logic.
+func pathInterceptor(path string, target, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == path {
-			healthHandler.ServeHTTP(w, r)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// metricsInterceptor short-circuits metrics scrape requests before they hit Docker API filtering.
-func metricsInterceptor(path string, metricsHandler http.Handler, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == path {
-			metricsHandler.ServeHTTP(w, r)
+			target.ServeHTTP(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)

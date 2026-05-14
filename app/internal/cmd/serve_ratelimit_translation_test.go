@@ -26,7 +26,7 @@ func TestConfigLimitsToRateLimitOptions_AllFields(t *testing.T) {
 		},
 	}
 
-	got := configLimitsToRateLimitOptions(limits)
+	got := configLimitsToRateLimitOptions("test-profile", limits, newDiscardLogger())
 
 	// Priority must translate from "high" string to ratelimit.PriorityHigh.
 	if got.Priority != ratelimit.PriorityHigh {

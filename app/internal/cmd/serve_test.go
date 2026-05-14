@@ -735,7 +735,7 @@ func TestHealthInterceptor(t *testing.T) {
 		w.WriteHeader(http.StatusTeapot)
 	})
 
-	handler := healthInterceptor("/health", healthHandler, nextHandler)
+	handler := pathInterceptor("/health", healthHandler, nextHandler)
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -765,7 +765,7 @@ func TestHealthInterceptorFallsThrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := healthInterceptor("/health", healthHandler, nextHandler)
+	handler := pathInterceptor("/health", healthHandler, nextHandler)
 
 	req := httptest.NewRequest(http.MethodPost, "/health", nil)
 	rec := httptest.NewRecorder()
@@ -795,7 +795,7 @@ func TestMetricsInterceptor(t *testing.T) {
 		w.WriteHeader(http.StatusTeapot)
 	})
 
-	handler := metricsInterceptor("/metrics", metricsHandler, nextHandler)
+	handler := pathInterceptor("/metrics", metricsHandler, nextHandler)
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -825,7 +825,7 @@ func TestMetricsInterceptorFallsThrough(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	handler := metricsInterceptor("/metrics", metricsHandler, nextHandler)
+	handler := pathInterceptor("/metrics", metricsHandler, nextHandler)
 
 	req := httptest.NewRequest(http.MethodPost, "/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -856,7 +856,7 @@ func TestBuildServeHandlerFiltersHijackEndpointsBeforeHijackHandler(t *testing.T
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1.45/containers/abc/attach?stream=1", nil)
 	rec := httptest.NewRecorder()
@@ -884,7 +884,7 @@ func TestBuildServeHandlerClientACLWrapsHealthInterceptor(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -912,7 +912,7 @@ func TestBuildServeHandlerMetricsEndpointBypassesDockerRules(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
@@ -941,7 +941,7 @@ func TestBuildServeHandlerClientACLWrapsMetricsInterceptor(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -986,7 +986,7 @@ func TestBuildServeHandlerRedactsProtectedResponsesByDefault(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc123/json", nil)
 	rec := httptest.NewRecorder()
@@ -1061,7 +1061,7 @@ func TestBuildServeHandlerAppliesAssignedClientProfile(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -1124,7 +1124,7 @@ func TestBuildServeHandlerAppliesAssignedClientVisibilityProfile(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -1162,7 +1162,7 @@ func TestBuildServeHandlerGeneratesTrustedRequestIDWithoutAccessLog(t *testing.T
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/info", nil)
 	req.Header.Set("X-Request-ID", "client-123")
@@ -1218,7 +1218,7 @@ func TestBuildServeHandlerEmitsAuditEventWhenEnabled(t *testing.T) {
 	var auditBuf bytes.Buffer
 	auditLogger := logging.NewAuditLogger(&auditBuf)
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/v1.45/info", nil)
 	req.RemoteAddr = "198.51.100.10:4444"
@@ -1329,7 +1329,7 @@ func TestBuildServeHandlerAuditEventIncludesSelectedProfile(t *testing.T) {
 
 	var auditBuf bytes.Buffer
 	auditLogger := logging.NewAuditLogger(&auditBuf)
-	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	req.RemoteAddr = "192.0.2.10:12345"
@@ -1381,7 +1381,7 @@ func TestBuildServeHandlerAuditEventCapturesMalformedContainerCreate(t *testing.
 
 	var auditBuf bytes.Buffer
 	auditLogger := logging.NewAuditLogger(&auditBuf)
-	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodPost, "/v1.45/containers/create", strings.NewReader("{"))
 	req.Header.Set("Content-Type", "application/json")
@@ -1425,7 +1425,7 @@ func TestBuildServeHandlerAuditEventCapturesUpstreamFailure(t *testing.T) {
 
 	var auditBuf bytes.Buffer
 	auditLogger := logging.NewAuditLogger(&auditBuf)
-	handler := buildServeHandler(&cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), auditLogger, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	rec := httptest.NewRecorder()
@@ -1687,7 +1687,7 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 
 	var handler http.Handler = upstream
 	handler = filter.Middleware(rules, logger)(handler)
-	handler = healthInterceptor("/health", healthHandler, handler)
+	handler = pathInterceptor("/health", healthHandler, handler)
 	handler = logging.RequestIDMiddleware()(handler)
 	handler = logging.AccessLogMiddleware(logger)(handler)
 

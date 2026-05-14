@@ -417,7 +417,7 @@ func TestBuildServeHandlerExercisesClientACLVisibilityFilterAndResponseFilter(t 
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 	addr, waitForRequest := startProxyChainServer(t, handler)
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -547,7 +547,7 @@ func TestBuildServeHandlerExercisesOwnershipForNodesAndSwarm(t *testing.T) {
 		t.Fatalf("compile rules: %v", err)
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 	addr, waitForRequest := startProxyChainServer(t, handler)
 
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -653,7 +653,7 @@ func newBuildServeChainHandler(t *testing.T, socketPath string) (http.Handler, *
 	collector := &testhelp.CollectingHandler{}
 	logger := testhelp.NewTeeLogger(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}), collector)
 
-	return buildServeHandler(&cfg, logger, nil, rules, newServeTestDeps()), &logBuf, collector
+	return buildServeHandler(t, &cfg, logger, nil, rules, newServeTestDeps()), &logBuf, collector
 }
 
 func assertFullProxyChainUpstreamError(

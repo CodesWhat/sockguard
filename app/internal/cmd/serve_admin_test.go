@@ -113,7 +113,7 @@ func TestServeHandlerShortCircuitsAdminValidate(t *testing.T) {
 	cfg.Admin.MaxRequestBytes = 4096
 
 	rules := adminTestRules(t)
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	body := strings.NewReader("rules:\n  - match: { method: GET, path: /_ping }\n    action: allow\n")
 	req := httptest.NewRequest(http.MethodPost, "/admin/validate", body)
@@ -139,7 +139,7 @@ func TestServeHandlerAdminDisabledFallsThrough(t *testing.T) {
 	cfg.Admin.Enabled = false
 
 	rules := adminTestRules(t)
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodPost, "/admin/validate", bytes.NewReader([]byte("rules: []")))
 	req.RemoteAddr = "127.0.0.1:54321"
@@ -159,7 +159,7 @@ func TestServeHandlerAdminRejectsGET(t *testing.T) {
 	cfg.Admin.Enabled = true
 
 	rules := adminTestRules(t)
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/admin/validate", nil)
 	req.RemoteAddr = "127.0.0.1:54321"

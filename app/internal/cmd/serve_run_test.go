@@ -130,6 +130,10 @@ func newServeCommand() *cobra.Command {
 	cmd.Flags().String("log-level", "", "")
 	cmd.Flags().String("log-format", "", "")
 	cmd.Flags().String("deny-verbosity", "", "")
+	// Cobra sets the command context when Execute/ExecuteContext is called.
+	// Tests construct commands directly, so set a background context to
+	// match the non-nil ctx that runServeWithDeps now propagates via cmd.Context().
+	cmd.SetContext(context.Background())
 	return cmd
 }
 

@@ -18,6 +18,11 @@ import (
 	"github.com/codeswhat/sockguard/internal/reload"
 )
 
+// discardLogger is a package-level slog.Logger that writes to io.Discard.
+// Used in hot-reload paths (e.g. ApplyCompat) where compat-expansion noise
+// must be suppressed without allocating a new handler per reload call.
+var discardLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
 // reloadCoordinator owns the hot-reload state for a running sockguard
 // process: the current chain teardown, the active config snapshot, and
 // the swappable handler the http.Server routes through. It serializes
@@ -164,8 +169,7 @@ func (c *reloadCoordinator) reload() {
 	// discard logger here so reload-time compat noise doesn't drown out
 	// the operator's real reload signal; the compat-active state is
 	// reflected in the candidate's rules, which validation will judge.
-	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
-	compatActive := config.ApplyCompat(newCfg, discard)
+	compatActive := config.ApplyCompat(newCfg, discardLogger)
 
 	newRules, err := c.deps.validateRules(newCfg)
 	if err != nil {

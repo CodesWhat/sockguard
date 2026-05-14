@@ -62,7 +62,7 @@ func TestBuildServeHandler_InvalidClientProfileConfig(t *testing.T) {
 		},
 	}
 
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, nil, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, nil, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
 	rec := httptest.NewRecorder()

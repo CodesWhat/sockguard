@@ -33,7 +33,7 @@ func TestBuildServeHandlerSkipsAdminLayerWhenDedicatedListenerConfigured(t *test
 	cfg.Admin.Listen.Address = "127.0.0.1:0"
 
 	rules := adminTestRules(t)
-	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
+	handler := buildServeHandler(t, &cfg, newDiscardLogger(), nil, rules, newServeTestDeps())
 
 	req := httptest.NewRequest(http.MethodPost, cfg.Admin.Path, strings.NewReader(""))
 	req.RemoteAddr = "127.0.0.1:1234"
