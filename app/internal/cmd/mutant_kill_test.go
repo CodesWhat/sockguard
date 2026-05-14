@@ -916,6 +916,38 @@ func TestNewAdminHTTPServerTimeoutsAre30Seconds(t *testing.T) {
 	if got, want := srv.WriteTimeout, 30*time.Second; got != want {
 		t.Fatalf("WriteTimeout = %v, want %v", got, want)
 	}
+	if got, want := srv.ReadHeaderTimeout, 5*time.Second; got != want {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v (readHeaderTimeout const)", got, want)
+	}
+	if got, want := srv.IdleTimeout, 120*time.Second; got != want {
+		t.Fatalf("IdleTimeout = %v, want %v (idleTimeout const)", got, want)
+	}
+	if got, want := srv.MaxHeaderBytes, 1<<20; got != want {
+		t.Fatalf("MaxHeaderBytes = %d, want %d (maxHeaderBytes const)", got, want)
+	}
+}
+
+// TestNewHTTPServerHardeningConstants pins the main-server timeout/limit
+// values that hijack-aware tuning depends on. ReadTimeout/WriteTimeout are
+// deliberately 0 so streaming responses don't hit a deadline mid-flight, but
+// ReadHeaderTimeout/IdleTimeout/MaxHeaderBytes guard the request prelude.
+func TestNewHTTPServerHardeningConstants(t *testing.T) {
+	srv := newHTTPServer(http.NewServeMux())
+	if got := srv.ReadTimeout; got != 0 {
+		t.Fatalf("ReadTimeout = %v, want 0 (hijack-safe)", got)
+	}
+	if got := srv.WriteTimeout; got != 0 {
+		t.Fatalf("WriteTimeout = %v, want 0 (hijack-safe)", got)
+	}
+	if got, want := srv.ReadHeaderTimeout, 5*time.Second; got != want {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v (readHeaderTimeout const)", got, want)
+	}
+	if got, want := srv.IdleTimeout, 120*time.Second; got != want {
+		t.Fatalf("IdleTimeout = %v, want %v (idleTimeout const)", got, want)
+	}
+	if got, want := srv.MaxHeaderBytes, 1<<20; got != want {
+		t.Fatalf("MaxHeaderBytes = %d, want %d (maxHeaderBytes const)", got, want)
+	}
 }
 
 // ---------------------------------------------------------------------------
