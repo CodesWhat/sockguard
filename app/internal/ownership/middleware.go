@@ -425,6 +425,13 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	if err := dec.Decode(&decoded); err != nil {
 		return fmt.Errorf("decode request body: %w", err)
 	}
+	// json.Decode into map[string]any does not error on a JSON null literal —
+	// it simply leaves the map as nil. Reject it explicitly: a null body is
+	// not a valid Docker API payload, and passing nil to the mutate callback
+	// would panic when it tries to write into the map.
+	if decoded == nil {
+		return fmt.Errorf("decode request body: JSON null is not a valid object")
+	}
 	if err := mutate(decoded); err != nil {
 		return err
 	}
