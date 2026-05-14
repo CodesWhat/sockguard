@@ -1550,3 +1550,205 @@ func TestBodyReadDeadlineIsNotSetForDeniedRequests(t *testing.T) {
 		t.Fatalf("expected no SetReadDeadline calls for denied request, got %d", len(capturing.deadlines))
 	}
 }
+
+// TestInspectSeverityConstantValues pins the integer values and the strict
+// ordering of the inspect-severity constants (middleware.go:138-142). A
+// mutation that swapped two of the iota expressions (e.g. shuffling High and
+// Critical) would leave the existing prefers-highest test passing if the test
+// only verified Critical>Medium without involving High. Asserting the values
+// directly catches any reshuffle.
+//
+// The compile-time array-size assertions on inspectSeverityHigh -
+// inspectSeverityMedium and inspectSeverityCritical - inspectSeverityHigh
+// already catch some classes of reorder (the array size would become 0 or
+// negative); this test catches the orthogonal case where someone replaces
+// the iota expression with a literal that happens to satisfy the
+// difference constraint but breaks absolute positions.
+func TestInspectSeverityConstantValues(t *testing.T) {
+	if got := int(inspectSeverityMedium); got != 0 {
+		t.Errorf("inspectSeverityMedium = %d, want 0", got)
+	}
+	if got := int(inspectSeverityHigh); got != 1 {
+		t.Errorf("inspectSeverityHigh = %d, want 1", got)
+	}
+	if got := int(inspectSeverityCritical); got != 2 {
+		t.Errorf("inspectSeverityCritical = %d, want 2", got)
+	}
+	if inspectSeverityMedium >= inspectSeverityHigh || inspectSeverityHigh >= inspectSeverityCritical {
+		t.Fatalf("severity ordering violated: Medium=%d High=%d Critical=%d",
+			inspectSeverityMedium, inspectSeverityHigh, inspectSeverityCritical)
+	}
+}
+
+// TestInspectAllowedRequestSeverityOrderingIsTransitive exercises all three
+// pairwise severity combinations to lock in the descend-from-highest bucket
+// walk in inspectAllowedRequest. The existing PrefersHighestSeverityMatch
+// test only compares Medium vs Critical, leaving the High slot untested.
+//
+// Specifically:
+//   - High beats Medium when both match
+//   - Critical beats High when both match
+//   - Critical beats both High and Medium when all three match
+//
+// A mutation that flipped the iota for one of the three constants would
+// likely pass the original (Medium-vs-Critical) test but fail at least one
+// of the three pairings here.
+func TestInspectAllowedRequestSeverityOrderingIsTransitive(t *testing.T) {
+	makePolicy := func(name string, sev inspectSeverity, denyReason string, fired *[]string) requestInspectPolicy {
+		return requestInspectPolicy{
+			method:   http.MethodPost,
+			matches:  func(string) bool { return true },
+			severity: sev,
+			inspect: func(*slog.Logger, *http.Request, string) (string, error) {
+				*fired = append(*fired, name)
+				return denyReason, nil
+			},
+			errorLogMessage:   name + " failed",
+			denyReasonOnError: name + " error",
+		}
+	}
+
+	tests := []struct {
+		name        string
+		policies    func(*[]string) []requestInspectPolicy
+		wantReason  string
+		wantFiredEq string
+	}{
+		{
+			name: "high beats medium",
+			policies: func(fired *[]string) []requestInspectPolicy {
+				return []requestInspectPolicy{
+					makePolicy("medium", inspectSeverityMedium, "medium deny", fired),
+					makePolicy("high", inspectSeverityHigh, "high deny", fired),
+				}
+			},
+			wantReason:  "high deny",
+			wantFiredEq: "high",
+		},
+		{
+			name: "critical beats high",
+			policies: func(fired *[]string) []requestInspectPolicy {
+				return []requestInspectPolicy{
+					makePolicy("high", inspectSeverityHigh, "high deny", fired),
+					makePolicy("critical", inspectSeverityCritical, "critical deny", fired),
+				}
+			},
+			wantReason:  "critical deny",
+			wantFiredEq: "critical",
+		},
+		{
+			name: "critical beats both high and medium",
+			policies: func(fired *[]string) []requestInspectPolicy {
+				return []requestInspectPolicy{
+					makePolicy("medium", inspectSeverityMedium, "medium deny", fired),
+					makePolicy("high", inspectSeverityHigh, "high deny", fired),
+					makePolicy("critical", inspectSeverityCritical, "critical deny", fired),
+				}
+			},
+			wantReason:  "critical deny",
+			wantFiredEq: "critical",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var fired []string
+			policy := runtimePolicy{
+				inspectPoliciesByMethod: map[string][]requestInspectPolicy{
+					http.MethodPost: tt.policies(&fired),
+				},
+			}
+			req := httptest.NewRequest(http.MethodPost, "/anything", nil)
+			reason, _, _ := policy.inspectAllowedRequest(testLogger(), req, NormalizePath(req.URL.Path))
+			if reason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", reason, tt.wantReason)
+			}
+			if got := strings.Join(fired, ","); got != tt.wantFiredEq {
+				t.Errorf("fired = %q, want %q (only the highest-severity inspector should run)", got, tt.wantFiredEq)
+			}
+		})
+	}
+}
+
+// TestMatchesInspectionFunctionsRejectAdjacentPaths catches mutations that
+// would turn `==` into `!=` or `||` into `&&` in the matchesXInspection
+// helpers (middleware.go:312-374). Each entry asserts:
+//
+//   - the canonical path the helper should match
+//   - one neighbor path the helper must NOT match (different prefix, extra
+//     segment, or sibling endpoint).
+//
+// A flip from `==` to `!=` would make the canonical path fail and the
+// neighbor pass; a flip from `||` to `&&` in matchesExecInspection or
+// matchesSwarmInspection would make both sub-paths fail.
+func TestMatchesInspectionFunctionsRejectAdjacentPaths(t *testing.T) {
+	tests := []struct {
+		name       string
+		matcher    func(string) bool
+		matchPaths []string
+		denyPaths  []string
+	}{
+		{
+			name:       "container create",
+			matcher:    matchesContainerCreateInspection,
+			matchPaths: []string{"/containers/create"},
+			denyPaths:  []string{"/containers/createstuff", "/containers/json", "/containers/create/exec"},
+		},
+		{
+			name:       "exec",
+			matcher:    matchesExecInspection,
+			matchPaths: []string{"/containers/abc/exec", "/exec/def/start"},
+			denyPaths:  []string{"/containers/abc/json", "/exec/def/json"},
+		},
+		{
+			name:       "image pull",
+			matcher:    matchesImagePullInspection,
+			matchPaths: []string{"/images/create"},
+			denyPaths:  []string{"/images/json", "/images/createstuff", "/images/abc/json"},
+		},
+		{
+			name:       "build",
+			matcher:    matchesBuildInspection,
+			matchPaths: []string{"/build"},
+			denyPaths:  []string{"/builds", "/buildkit", "/build/abc"},
+		},
+		{
+			name:       "volume",
+			matcher:    matchesVolumeInspection,
+			matchPaths: []string{"/volumes/create"},
+			denyPaths:  []string{"/volumes/json", "/volumes/abc"},
+		},
+		{
+			name:       "secret",
+			matcher:    matchesSecretInspection,
+			matchPaths: []string{"/secrets/create"},
+			denyPaths:  []string{"/secrets/json", "/secrets/abc"},
+		},
+		{
+			name:       "config",
+			matcher:    matchesConfigInspection,
+			matchPaths: []string{"/configs/create"},
+			denyPaths:  []string{"/configs/json", "/configs/abc"},
+		},
+		{
+			name:       "swarm",
+			matcher:    matchesSwarmInspection,
+			matchPaths: []string{"/swarm/init", "/swarm/join", "/swarm/update", "/swarm/unlock"},
+			denyPaths:  []string{"/swarm", "/swarm/unlockkey", "/swarm/inspect"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, p := range tt.matchPaths {
+				if !tt.matcher(p) {
+					t.Errorf("matcher should match %q", p)
+				}
+			}
+			for _, p := range tt.denyPaths {
+				if tt.matcher(p) {
+					t.Errorf("matcher should NOT match %q", p)
+				}
+			}
+		})
+	}
+}
