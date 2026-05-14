@@ -365,53 +365,108 @@ func validatePolicyBundle(cfg *Config) []string {
 	return errs
 }
 
+// validateRequestBody runs the request-body inspection schema check plus the
+// full client-routing / ownership cross-field validation. The work is split
+// into focused helpers below so each section's preconditions are visible at
+// the call site rather than buried 100+ lines deep in one function.
 func validateRequestBody(cfg *Config) []string {
 	var errs []string
-
 	errs = append(errs, validateRequestBodyConfig("request_body", cfg.RequestBody)...)
-
-	for _, rawCIDR := range cfg.Clients.AllowedCIDRs {
-		if _, err := netip.ParsePrefix(strings.TrimSpace(rawCIDR)); err == nil {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf("clients.allowed_cidrs entries must be valid CIDR prefixes, got %q", rawCIDR),
-		)
+	errs = append(errs, validateClientsConfig(cfg)...)
+	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
+		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))
 	}
+	return errs
+}
 
-	if cfg.Clients.ContainerLabels.Enabled && cfg.Clients.ContainerLabels.LabelPrefix == "" {
-		errs = append(errs, requiredWhenError("clients.container_labels.label_prefix", "clients.container_labels.enabled is true"))
-	}
-
-	if cfg.Listen.Socket != "" && len(cfg.Clients.AllowedCIDRs) > 0 {
-		errs = append(errs, "clients.allowed_cidrs requires a TCP listener; remove listen.socket or clear clients.allowed_cidrs")
-	}
-
-	if cfg.Listen.Socket != "" && cfg.Clients.ContainerLabels.Enabled {
-		errs = append(errs, "clients.container_labels requires a TCP listener; remove listen.socket or disable clients.container_labels")
-	}
+// validateClientsConfig validates the entire `clients:` block: the global
+// CIDR allowlist, container-label peer attribution, the profile list itself,
+// global concurrency cap, default profile, and each profile-assignment kind
+// (source-IP, client certificate, unix peer). Profile-name uniqueness is
+// gathered once into profilesByName and passed to each assignment validator
+// so they can report assignments referencing undefined profiles.
+func validateClientsConfig(cfg *Config) []string {
+	var errs []string
+	errs = append(errs, validateClientsAllowedCIDRs(cfg)...)
+	errs = append(errs, validateClientsContainerLabels(cfg)...)
+	errs = append(errs, validateClientsListenerExclusions(cfg)...)
 
 	profilesByName := make(map[string]struct{}, len(cfg.Clients.Profiles))
 	for i, profile := range cfg.Clients.Profiles {
 		errs = append(errs, validateClientProfile(i, profile, profilesByName)...)
 	}
 
-	if cfg.Clients.GlobalConcurrency != nil {
-		if cfg.Clients.GlobalConcurrency.MaxInflight <= 0 {
-			errs = append(errs, fmt.Sprintf("clients.global_concurrency.max_inflight must be > 0, got %d", cfg.Clients.GlobalConcurrency.MaxInflight))
-		}
-	}
+	errs = append(errs, validateClientsGlobalConcurrency(cfg)...)
+	errs = append(errs, validateClientsDefaultProfile(cfg, profilesByName)...)
+	errs = append(errs, validateClientsSourceIPProfiles(cfg, profilesByName)...)
+	errs = append(errs, validateClientsCertificateProfiles(cfg, profilesByName)...)
+	errs = append(errs, validateClientsUnixPeerProfiles(cfg, profilesByName)...)
+	return errs
+}
 
-	if cfg.Clients.DefaultProfile != "" {
-		if _, ok := profilesByName[cfg.Clients.DefaultProfile]; !ok {
-			errs = append(errs, configuredMatchError("clients.default_profile", "client profile", cfg.Clients.DefaultProfile))
+func validateClientsAllowedCIDRs(cfg *Config) []string {
+	var errs []string
+	for _, rawCIDR := range cfg.Clients.AllowedCIDRs {
+		if _, err := netip.ParsePrefix(strings.TrimSpace(rawCIDR)); err == nil {
+			continue
 		}
+		errs = append(errs, fmt.Sprintf("clients.allowed_cidrs entries must be valid CIDR prefixes, got %q", rawCIDR))
 	}
+	return errs
+}
 
+func validateClientsContainerLabels(cfg *Config) []string {
+	if cfg.Clients.ContainerLabels.Enabled && cfg.Clients.ContainerLabels.LabelPrefix == "" {
+		return []string{requiredWhenError("clients.container_labels.label_prefix", "clients.container_labels.enabled is true")}
+	}
+	return nil
+}
+
+// validateClientsListenerExclusions checks the listener-kind constraints that
+// would otherwise be reported as cryptic per-feature errors. Each rule is the
+// same shape: feature X requires (or forbids) a TCP/unix listener.
+func validateClientsListenerExclusions(cfg *Config) []string {
+	var errs []string
+	if cfg.Listen.Socket != "" && len(cfg.Clients.AllowedCIDRs) > 0 {
+		errs = append(errs, "clients.allowed_cidrs requires a TCP listener; remove listen.socket or clear clients.allowed_cidrs")
+	}
+	if cfg.Listen.Socket != "" && cfg.Clients.ContainerLabels.Enabled {
+		errs = append(errs, "clients.container_labels requires a TCP listener; remove listen.socket or disable clients.container_labels")
+	}
 	if cfg.Listen.Socket != "" && len(cfg.Clients.SourceIPProfiles) > 0 {
 		errs = append(errs, "clients.source_ip_profiles requires a TCP listener; remove listen.socket or clear clients.source_ip_profiles")
 	}
+	if cfg.Listen.Socket != "" && len(cfg.Clients.ClientCertificateProfiles) > 0 {
+		errs = append(errs, "clients.client_certificate_profiles requires a TCP listener; remove listen.socket or clear clients.client_certificate_profiles")
+	}
+	if cfg.Listen.Socket == "" && len(cfg.Clients.UnixPeerProfiles) > 0 {
+		errs = append(errs, "clients.unix_peer_profiles requires a unix listener; set listen.socket or clear clients.unix_peer_profiles")
+	}
+	return errs
+}
+
+func validateClientsGlobalConcurrency(cfg *Config) []string {
+	if cfg.Clients.GlobalConcurrency == nil {
+		return nil
+	}
+	if cfg.Clients.GlobalConcurrency.MaxInflight <= 0 {
+		return []string{fmt.Sprintf("clients.global_concurrency.max_inflight must be > 0, got %d", cfg.Clients.GlobalConcurrency.MaxInflight)}
+	}
+	return nil
+}
+
+func validateClientsDefaultProfile(cfg *Config, profilesByName map[string]struct{}) []string {
+	if cfg.Clients.DefaultProfile == "" {
+		return nil
+	}
+	if _, ok := profilesByName[cfg.Clients.DefaultProfile]; !ok {
+		return []string{configuredMatchError("clients.default_profile", "client profile", cfg.Clients.DefaultProfile)}
+	}
+	return nil
+}
+
+func validateClientsSourceIPProfiles(cfg *Config, profilesByName map[string]struct{}) []string {
+	var errs []string
 	for i, assignment := range cfg.Clients.SourceIPProfiles {
 		prefix := fmt.Sprintf("clients.source_ip_profiles[%d]", i)
 		if assignment.Profile == "" {
@@ -429,12 +484,13 @@ func validateRequestBody(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("%s.cidrs entries must be valid CIDR prefixes, got %q", prefix, rawCIDR))
 		}
 	}
+	return errs
+}
 
+func validateClientsCertificateProfiles(cfg *Config, profilesByName map[string]struct{}) []string {
+	var errs []string
 	if len(cfg.Clients.ClientCertificateProfiles) > 0 && !cfg.Listen.TLS.Complete() {
 		errs = append(errs, requiresError("clients.client_certificate_profiles", "listen.tls mutual TLS configuration"))
-	}
-	if cfg.Listen.Socket != "" && len(cfg.Clients.ClientCertificateProfiles) > 0 {
-		errs = append(errs, "clients.client_certificate_profiles requires a TCP listener; remove listen.socket or clear clients.client_certificate_profiles")
 	}
 	for i, assignment := range cfg.Clients.ClientCertificateProfiles {
 		prefix := fmt.Sprintf("clients.client_certificate_profiles[%d]", i)
@@ -443,59 +499,69 @@ func validateRequestBody(cfg *Config) []string {
 		} else if _, ok := profilesByName[assignment.Profile]; !ok {
 			errs = append(errs, configuredMatchError(prefix+".profile", "client profile", assignment.Profile))
 		}
-		selectorCount := 0
-		for _, value := range assignment.CommonNames {
-			if strings.TrimSpace(value) == "" {
-				errs = append(errs, prefix+".common_names entries must be non-empty")
-				continue
-			}
-			selectorCount++
-		}
-		for _, value := range assignment.DNSNames {
-			if strings.TrimSpace(value) == "" {
-				errs = append(errs, prefix+".dns_names entries must be non-empty")
-				continue
-			}
-			selectorCount++
-		}
-		for _, value := range assignment.IPAddresses {
-			if _, err := netip.ParseAddr(strings.TrimSpace(value)); err != nil {
-				errs = append(errs, fmt.Sprintf("%s.ip_addresses entries must be valid IP addresses, got %q", prefix, value))
-				continue
-			}
-			selectorCount++
-		}
-		for _, value := range assignment.URISANs {
-			parsed, err := url.Parse(strings.TrimSpace(value))
-			if err != nil || parsed.String() == "" {
-				errs = append(errs, fmt.Sprintf("%s.uri_sans entries must be valid URIs, got %q", prefix, value))
-				continue
-			}
-			selectorCount++
-		}
-		for _, value := range assignment.SPIFFEIDs {
-			parsed, err := url.Parse(strings.TrimSpace(value))
-			if err != nil || parsed.String() == "" || parsed.Scheme != "spiffe" {
-				errs = append(errs, fmt.Sprintf("%s.spiffe_ids entries must be valid SPIFFE IDs, got %q", prefix, value))
-				continue
-			}
-			selectorCount++
-		}
-		for _, value := range assignment.PublicKeySHA256Pins {
-			if _, err := pkipin.NormalizeSubjectPublicKeySHA256Pin(value); err != nil {
-				errs = append(errs, fmt.Sprintf("%s.public_key_sha256_pins entries must be hex SHA-256 SPKI pins, got %q", prefix, value))
-				continue
-			}
-			selectorCount++
-		}
-		if selectorCount == 0 {
-			errs = append(errs, containsAtLeastOneError(prefix, "client certificate identity selector"))
-		}
+		errs = append(errs, validateClientCertificateSelectors(prefix, assignment)...)
 	}
+	return errs
+}
 
-	if cfg.Listen.Socket == "" && len(cfg.Clients.UnixPeerProfiles) > 0 {
-		errs = append(errs, "clients.unix_peer_profiles requires a unix listener; set listen.socket or clear clients.unix_peer_profiles")
+// validateClientCertificateSelectors checks the per-selector identity rules
+// for one client-certificate profile assignment and verifies that at least
+// one selector is configured.
+func validateClientCertificateSelectors(prefix string, assignment ClientCertificateProfileAssignmentConfig) []string {
+	var errs []string
+	selectorCount := 0
+	for _, value := range assignment.CommonNames {
+		if strings.TrimSpace(value) == "" {
+			errs = append(errs, prefix+".common_names entries must be non-empty")
+			continue
+		}
+		selectorCount++
 	}
+	for _, value := range assignment.DNSNames {
+		if strings.TrimSpace(value) == "" {
+			errs = append(errs, prefix+".dns_names entries must be non-empty")
+			continue
+		}
+		selectorCount++
+	}
+	for _, value := range assignment.IPAddresses {
+		if _, err := netip.ParseAddr(strings.TrimSpace(value)); err != nil {
+			errs = append(errs, fmt.Sprintf("%s.ip_addresses entries must be valid IP addresses, got %q", prefix, value))
+			continue
+		}
+		selectorCount++
+	}
+	for _, value := range assignment.URISANs {
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		if err != nil || parsed.String() == "" {
+			errs = append(errs, fmt.Sprintf("%s.uri_sans entries must be valid URIs, got %q", prefix, value))
+			continue
+		}
+		selectorCount++
+	}
+	for _, value := range assignment.SPIFFEIDs {
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		if err != nil || parsed.String() == "" || parsed.Scheme != "spiffe" {
+			errs = append(errs, fmt.Sprintf("%s.spiffe_ids entries must be valid SPIFFE IDs, got %q", prefix, value))
+			continue
+		}
+		selectorCount++
+	}
+	for _, value := range assignment.PublicKeySHA256Pins {
+		if _, err := pkipin.NormalizeSubjectPublicKeySHA256Pin(value); err != nil {
+			errs = append(errs, fmt.Sprintf("%s.public_key_sha256_pins entries must be hex SHA-256 SPKI pins, got %q", prefix, value))
+			continue
+		}
+		selectorCount++
+	}
+	if selectorCount == 0 {
+		errs = append(errs, containsAtLeastOneError(prefix, "client certificate identity selector"))
+	}
+	return errs
+}
+
+func validateClientsUnixPeerProfiles(cfg *Config, profilesByName map[string]struct{}) []string {
+	var errs []string
 	for i, assignment := range cfg.Clients.UnixPeerProfiles {
 		prefix := fmt.Sprintf("clients.unix_peer_profiles[%d]", i)
 		if assignment.Profile == "" {
@@ -513,11 +579,6 @@ func validateRequestBody(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("%s.pids entries must be positive process IDs, got %d", prefix, pid))
 		}
 	}
-
-	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
-		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))
-	}
-
 	return errs
 }
 
