@@ -190,6 +190,27 @@ func TestStartReloaderStartsAndStops(t *testing.T) {
 	}
 }
 
+// TestConfigLimitsToRateLimitOptions_NilCostsWhenNoneConfigured pins the
+// CONDITIONALS_BOUNDARY mutant at serve_ratelimit_translation.go:70
+// (`len(cfg.Rate.EndpointCosts) > 0` → `>= 0`). With the mutation an empty
+// EndpointCosts list still enters the body and yields a non-nil empty
+// slice — a subtle difference that flows into ratelimit.ProfileOptions.
+// Original behaviour leaves EndpointCosts as nil.
+func TestConfigLimitsToRateLimitOptions_NilCostsWhenNoneConfigured(t *testing.T) {
+	cfg := config.LimitsConfig{
+		Rate: &config.RateLimitConfig{TokensPerSecond: 10, Burst: 20},
+		// No EndpointCosts.
+	}
+
+	opts := configLimitsToRateLimitOptions("p1", cfg, newDiscardLogger())
+	if opts.Rate == nil {
+		t.Fatal("opts.Rate = nil, want non-nil")
+	}
+	if opts.Rate.EndpointCosts != nil {
+		t.Fatalf("opts.Rate.EndpointCosts = %#v, want nil when no costs configured (mutant `>= 0` allocates empty slice)", opts.Rate.EndpointCosts)
+	}
+}
+
 // TestStartReloaderLogsNonCanceledRunError pins the CONDITIONALS_NEGATION
 // mutant at serve_reload.go:286 (`runErr != nil` → `==`). The reloader
 // goroutine logs a warning only when Run returns a non-Canceled error;
