@@ -22,6 +22,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/health"
+	"github.com/codeswhat/sockguard/internal/policybundle"
 	"github.com/codeswhat/sockguard/internal/testhelp"
 	"github.com/codeswhat/sockguard/internal/ui"
 )
@@ -288,6 +289,62 @@ func TestWriteMatchText_DenyDecisionUsesDenyLabel(t *testing.T) {
 	if !strings.Contains(output, "deny") {
 		t.Fatalf("expected 'deny' in output for deny decision, got:\n%s", output)
 	}
+}
+
+// TestWriteMatchText_AllowAndDenyUseDistinctColors kills the two CONDITIONALS_NEGATION
+// mutants in writeMatchText that flip the green/red coloring of allow vs. deny.
+// The existing label-only tests cannot kill these — both branches emit the
+// same "allow" / "deny" text, only the surrounding ANSI escapes differ — and
+// bytes.Buffer is not a TTY so detectColor returns false by default. Force
+// colors on with FORCE_COLOR so the escapes appear, then assert allow paints
+// green and deny paints red on both the decision line and the matched-rule
+// action line.
+func TestWriteMatchText_AllowAndDenyUseDistinctColors(t *testing.T) {
+	t.Setenv("FORCE_COLOR", "1")
+	t.Setenv("NO_COLOR", "")
+
+	const ansiGreen = "\x1b[32m"
+	const ansiRed = "\x1b[31m"
+
+	t.Run("allow paints green and not red", func(t *testing.T) {
+		var buf bytes.Buffer
+		writeMatchText(&buf, matchResult{
+			Decision: string(filter.ActionAllow),
+			MatchedRule: &matchedRuleInfo{
+				Index:  1,
+				Method: "GET",
+				Path:   "/_ping",
+				Action: string(filter.ActionAllow),
+			},
+		})
+		got := buf.String()
+		if !strings.Contains(got, ansiGreen+"allow") {
+			t.Fatalf("allow decision should be green, got:\n%q", got)
+		}
+		if strings.Contains(got, ansiRed+"allow") {
+			t.Fatalf("allow decision should NOT be red, got:\n%q", got)
+		}
+	})
+
+	t.Run("deny paints red and not green", func(t *testing.T) {
+		var buf bytes.Buffer
+		writeMatchText(&buf, matchResult{
+			Decision: string(filter.ActionDeny),
+			MatchedRule: &matchedRuleInfo{
+				Index:  2,
+				Method: "*",
+				Path:   "/**",
+				Action: string(filter.ActionDeny),
+			},
+		})
+		got := buf.String()
+		if !strings.Contains(got, ansiRed+"deny") {
+			t.Fatalf("deny decision should be red, got:\n%q", got)
+		}
+		if strings.Contains(got, ansiGreen+"deny") {
+			t.Fatalf("deny decision should NOT be green, got:\n%q", got)
+		}
+	})
 }
 
 // writeMatchText with no matched rule (default-deny) should show "none".
@@ -739,6 +796,125 @@ func TestPrintClientProfiles_DenyActionDoesNotRenderAsAllow(t *testing.T) {
 	}
 	if strings.Contains(output, "allow") {
 		t.Fatalf("unexpected 'allow' in output for deny-only profile rules, got:\n%s", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// serve.go:691 — CONDITIONALS_NEGATION: pb.VerifyTimeout == ""
+// serve.go:709 — CONDITIONALS_NEGATION: cfg == nil
+// serve.go:713 — CONDITIONALS_NEGATION: err != nil (from json.Marshal)
+// serve.go:971 — CONDITIONALS_NEGATION: cfg.Admin.Listen.Socket != ""
+// Pure-function helpers covered with table tests below.
+// ---------------------------------------------------------------------------
+
+func TestBundleVerifyDeadline(t *testing.T) {
+	t.Run("empty VerifyTimeout falls back to package default", func(t *testing.T) {
+		pb := config.PolicyBundleConfig{VerifyTimeout: ""}
+		if got := bundleVerifyDeadline(pb); got != policybundle.VerifyTimeout {
+			t.Fatalf("got %v, want package default %v", got, policybundle.VerifyTimeout)
+		}
+	})
+
+	t.Run("valid positive duration is honored", func(t *testing.T) {
+		pb := config.PolicyBundleConfig{VerifyTimeout: "12s"}
+		if got, want := bundleVerifyDeadline(pb), 12*time.Second; got != want {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("zero duration falls back to default", func(t *testing.T) {
+		pb := config.PolicyBundleConfig{VerifyTimeout: "0s"}
+		if got := bundleVerifyDeadline(pb); got != policybundle.VerifyTimeout {
+			t.Fatalf("got %v, want package default %v", got, policybundle.VerifyTimeout)
+		}
+	})
+
+	t.Run("negative duration falls back to default", func(t *testing.T) {
+		pb := config.PolicyBundleConfig{VerifyTimeout: "-1s"}
+		if got := bundleVerifyDeadline(pb); got != policybundle.VerifyTimeout {
+			t.Fatalf("got %v, want package default %v", got, policybundle.VerifyTimeout)
+		}
+	})
+
+	t.Run("invalid duration string falls back to default", func(t *testing.T) {
+		pb := config.PolicyBundleConfig{VerifyTimeout: "not-a-duration"}
+		if got := bundleVerifyDeadline(pb); got != policybundle.VerifyTimeout {
+			t.Fatalf("got %v, want package default %v", got, policybundle.VerifyTimeout)
+		}
+	})
+}
+
+func TestPolicyConfigHash(t *testing.T) {
+	t.Run("nil cfg returns empty string", func(t *testing.T) {
+		if got := policyConfigHash(nil); got != "" {
+			t.Fatalf("policyConfigHash(nil) = %q, want empty string", got)
+		}
+	})
+
+	t.Run("non-nil cfg returns 64-char hex sha256", func(t *testing.T) {
+		cfg := config.Defaults()
+		got := policyConfigHash(&cfg)
+		if len(got) != 64 {
+			t.Fatalf("policyConfigHash() length = %d, want 64", len(got))
+		}
+		for _, c := range got {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				t.Fatalf("policyConfigHash() contains non-hex char %q: %s", c, got)
+			}
+		}
+	})
+
+	t.Run("identical configs hash identically", func(t *testing.T) {
+		a := config.Defaults()
+		b := config.Defaults()
+		if policyConfigHash(&a) != policyConfigHash(&b) {
+			t.Fatal("identical configs produced different hashes")
+		}
+	})
+
+	t.Run("different configs hash differently", func(t *testing.T) {
+		a := config.Defaults()
+		b := config.Defaults()
+		b.Listen.Address = "127.0.0.1:9999"
+		if policyConfigHash(&a) == policyConfigHash(&b) {
+			t.Fatal("different configs produced identical hashes")
+		}
+	})
+}
+
+func TestAdminListenerAddr(t *testing.T) {
+	t.Run("unix socket path uses unix: prefix", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Admin.Listen.Socket = "/tmp/admin.sock"
+		cfg.Admin.Listen.Address = ""
+		if got, want := adminListenerAddr(&cfg), "unix:/tmp/admin.sock"; got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("empty socket falls back to tcp address", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Admin.Listen.Socket = ""
+		cfg.Admin.Listen.Address = "127.0.0.1:2376"
+		if got, want := adminListenerAddr(&cfg), "tcp://127.0.0.1:2376"; got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// serve.go:959,960 — ARITHMETIC_BASE: 30 * time.Second (admin server timeouts)
+// Mutation flips * → / which yields a near-zero duration that breaks the
+// admin endpoint contract.
+// ---------------------------------------------------------------------------
+
+func TestNewAdminHTTPServerTimeoutsAre30Seconds(t *testing.T) {
+	srv := newAdminHTTPServer(http.NewServeMux())
+	if got, want := srv.ReadTimeout, 30*time.Second; got != want {
+		t.Fatalf("ReadTimeout = %v, want %v", got, want)
+	}
+	if got, want := srv.WriteTimeout, 30*time.Second; got != want {
+		t.Fatalf("WriteTimeout = %v, want %v", got, want)
 	}
 }
 
