@@ -35,6 +35,11 @@ type upstreamHealthChecker struct {
 	now        func() time.Time
 	dial       dialContextFunc
 
+	// onWaiterJoined is called (without the mu lock held) each time a caller
+	// joins an already-in-flight check rather than starting a new dial.
+	// Nil in production; set in tests to replace time.Sleep rendezvous.
+	onWaiterJoined func()
+
 	mu         sync.Mutex
 	cachedAt   time.Time
 	cachedUp   string
@@ -117,7 +122,11 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 	}
 	if c.inFlight != nil {
 		call := c.inFlight
+		notify := c.onWaiterJoined
 		c.mu.Unlock()
+		if notify != nil {
+			notify()
+		}
 		<-call.done
 		return call.status, call.err
 	}

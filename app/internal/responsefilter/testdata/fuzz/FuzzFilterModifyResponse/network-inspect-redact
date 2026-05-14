@@ -1,0 +1,3 @@
+go test fuzz v1
+string("/networks/net-123")
+[]byte("{\"Name\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.18.0.0/16\",\"Gateway\":\"172.18.0.1\"}]},\"Containers\":{\"abc123\":{\"Name\":\"myapp\",\"IPv4Address\":\"172.18.0.5/16\"}},\"Peers\":[{\"Name\":\"node1\",\"IP\":\"10.0.0.2\"}]}")

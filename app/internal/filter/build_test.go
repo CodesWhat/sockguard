@@ -223,7 +223,6 @@ func TestBuildContextStreaming(t *testing.T) {
 		if _, err := io.WriteString(conn, "\r\n"); err != nil {
 			t.Fatalf("write chunk trailer: %v", err)
 		}
-		time.Sleep(2 * time.Millisecond)
 	}
 	if _, err := io.WriteString(conn, "0\r\n\r\n"); err != nil {
 		t.Fatalf("write terminal chunk: %v", err)

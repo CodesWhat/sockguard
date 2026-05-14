@@ -426,6 +426,7 @@ func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
 func TestHealthCheckerWaitsForInFlightCheck(t *testing.T) {
 	releaseDial := make(chan struct{})
 	dialEntered := make(chan struct{}, 2)
+	waiterJoined := make(chan struct{}, 1)
 	results := make(chan struct {
 		status string
 		err    error
@@ -444,6 +445,7 @@ func TestHealthCheckerWaitsForInFlightCheck(t *testing.T) {
 		},
 	)
 	checker.failureTTL = 0
+	checker.onWaiterJoined = func() { waiterJoined <- struct{}{} }
 
 	go func() {
 		status, err := checker.check(context.Background(), "/tmp/upstream.sock")
@@ -459,18 +461,21 @@ func TestHealthCheckerWaitsForInFlightCheck(t *testing.T) {
 		t.Fatal("expected leader health check to dial upstream")
 	}
 
-	secondStarted := make(chan struct{})
 	go func() {
-		close(secondStarted)
 		status, err := checker.check(context.Background(), "/tmp/upstream.sock")
 		results <- struct {
 			status string
 			err    error
 		}{status: status, err: err}
 	}()
-	<-secondStarted
 
-	time.Sleep(25 * time.Millisecond)
+	// Wait until the second goroutine has joined the in-flight call (no new
+	// dial) before asserting the dial count — replaces a time.Sleep rendezvous.
+	select {
+	case <-waiterJoined:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected second check to join in-flight call")
+	}
 	if dialCalls.Load() != 1 {
 		t.Fatalf("dial calls while first check is in flight = %d, want 1", dialCalls.Load())
 	}
