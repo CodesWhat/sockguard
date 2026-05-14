@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestAccessLogAllowed(t *testing.T) {
@@ -1040,14 +1041,21 @@ func TestEnqueueRequestIDsSlabArithmetic(t *testing.T) {
 	}
 }
 
-// TestLatencyMSDivision targets the ARITHMETIC_BASE mutant at access.go:492
+// TestLatencyMSDivision targets the ARITHMETIC_BASE mutant at access.go:534
 // where `latency.Microseconds() / 1000.0` could become `* 1000.0`.
-// We verify by checking the numeric result through the access log output.
+//
+// Without a deterministic floor, a sub-microsecond handler on fast hardware
+// yields latency.Microseconds() == 0 and both original/mutant produce 0 —
+// indistinguishable. We sleep 5ms inside the handler to guarantee
+// latency.Microseconds() >= 5000 (5ms = 5_000µs). The original yields
+// latencyMS = ~5.0; the mutant yields ~5_000_000.0. The < 5000 assertion
+// catches the mutant unambiguously.
 func TestLatencyMSDivision(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	handler := AccessLogMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(5 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -1055,13 +1063,10 @@ func TestLatencyMSDivision(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	// latency_ms must be a small positive value (< 1000 ms for a synthetic
-	// request). A * 1000.0 mutant would produce values in the billions.
 	output := buf.String()
 	if !strings.Contains(output, `"latency_ms":`) {
 		t.Fatalf("latency_ms missing from access log: %s", output)
 	}
-	// Parse the latency_ms field.
 	var record struct {
 		LatencyMS float64 `json:"latency_ms"`
 	}
@@ -1071,8 +1076,13 @@ func TestLatencyMSDivision(t *testing.T) {
 	if record.LatencyMS < 0 {
 		t.Fatalf("latency_ms = %f, want >= 0", record.LatencyMS)
 	}
+	// At least 5ms (the sleep). A `latency.Microseconds() * 1000.0` mutant
+	// would yield >= 5_000_000.0 — well above the upper bound below.
+	if record.LatencyMS < 1 {
+		t.Fatalf("latency_ms = %f, want >= ~5ms — sleep should have produced a measurable latency", record.LatencyMS)
+	}
 	if record.LatencyMS > 5000 {
-		t.Fatalf("latency_ms = %f, want < 5000 ms for a synthetic request — multiplication mutant may be active", record.LatencyMS)
+		t.Fatalf("latency_ms = %f, want < 5000 ms — multiplication mutant is active", record.LatencyMS)
 	}
 }
 
@@ -1203,6 +1213,165 @@ func TestAppendCorrelationAttrsClientRequestIDCondition(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestAppendCorrelationAttrsRolloutModeOmitted targets the surviving
+// CONDITIONALS_NEGATION mutants at access.go:369 (the `!= ""` and `!= "enforce"`
+// guards on the rollout_mode attr). A flip to `==` would either:
+//   - emit `rollout_mode:""` when RolloutMode is unset (the `!= ""` clause), or
+//   - emit `rollout_mode:"enforce"` for the canonical enforce case (the
+//     `!= "enforce"` clause).
+//
+// Either leak breaks the operator contract: rollout_mode is only meant to be
+// stamped when a profile is in warn/audit. The two sub-tests pin both flips.
+func TestAppendCorrelationAttrsRolloutModeOmitted(t *testing.T) {
+	t.Run("empty RolloutMode omitted", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+		req = req.WithContext(WithMeta(req.Context(), &RequestMeta{
+			Decision: "allow",
+			NormPath: "/_ping",
+		}))
+		attrs := AppendCorrelationAttrs(nil, req)
+		for _, attr := range attrs {
+			if attr.Key == "rollout_mode" {
+				t.Fatalf("unexpected rollout_mode attr when RolloutMode is empty: %#v", attr)
+			}
+		}
+	})
+
+	t.Run("enforce RolloutMode omitted", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+		req = req.WithContext(WithMeta(req.Context(), &RequestMeta{
+			Decision:    "allow",
+			NormPath:    "/_ping",
+			RolloutMode: "enforce",
+		}))
+		attrs := AppendCorrelationAttrs(nil, req)
+		for _, attr := range attrs {
+			if attr.Key == "rollout_mode" {
+				t.Fatalf("unexpected rollout_mode attr for enforce: %#v", attr)
+			}
+		}
+	})
+
+	t.Run("warn RolloutMode emitted", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+		req = req.WithContext(WithMeta(req.Context(), &RequestMeta{
+			Decision:    "would_deny",
+			NormPath:    "/_ping",
+			RolloutMode: "warn",
+		}))
+		attrs := AppendCorrelationAttrs(nil, req)
+		found := false
+		for _, attr := range attrs {
+			if attr.Key == "rollout_mode" {
+				found = true
+				if attr.Value.String() != "warn" {
+					t.Fatalf("rollout_mode = %q, want warn", attr.Value.String())
+				}
+			}
+		}
+		if !found {
+			t.Fatal("rollout_mode missing for warn mode")
+		}
+	})
+}
+
+// TestRefillSyncBoundaryLenEqualsThreshold pins the strict `>` boundary at
+// access.go:155 (`len(g.ids) > g.refillThreshold`). The existing
+// TestRefillSyncBoundaryLenGreaterThanThreshold covers `len > threshold` (skip),
+// but the surviving CONDITIONALS_BOUNDARY mutation flips `>` to `>=`, which
+// differs only at equality. This test exercises `len == threshold`: original
+// proceeds to refill, mutant returns early. We assert the fill function was
+// invoked.
+func TestRefillSyncBoundaryLenEqualsThreshold(t *testing.T) {
+	var fillCalled int32
+
+	// pool=4, threshold=2. Initial async fill will fill all 4 IDs.
+	gen := newRequestIDGenerator(4, 2, func(dst []byte) (int, error) {
+		atomic.AddInt32(&fillCalled, 1)
+		for i := range dst {
+			dst[i] = byte(i + 1)
+		}
+		return len(dst), nil
+	})
+	defer gen.close()
+
+	// Wait for initial fill via a refillSync barrier. After this, len(ids)=4.
+	gen.refillSync()
+
+	// Drain two IDs so len(ids)=2 == threshold.
+	_ = gen.Next()
+	// Next() at len==threshold triggers signalRefill; drain refillCh so the
+	// background goroutine doesn't beat us to the assertion below.
+	select {
+	case <-gen.refillCh:
+	default:
+	}
+	_ = gen.Next()
+	select {
+	case <-gen.refillCh:
+	default:
+	}
+
+	if got := len(gen.ids); got != 2 {
+		t.Fatalf("setup error: len(ids)=%d, want 2 (== threshold)", got)
+	}
+
+	before := atomic.LoadInt32(&fillCalled)
+	// At the equality boundary: original `len > threshold` (2>2=false) proceeds
+	// to refill; mutant `len >= threshold` (2>=2=true) returns without refilling.
+	gen.refillSync()
+	after := atomic.LoadInt32(&fillCalled)
+
+	if after <= before {
+		t.Fatalf("refillSync at len==threshold did not call fill (before=%d after=%d) — mutant `>=` would yield this", before, after)
+	}
+}
+
+// TestNextSignalRefillBoundary pins both surviving mutants at access.go:131
+// (CONDITIONALS_BOUNDARY `<=` → `<` and CONDITIONALS_NEGATION `<=` → `>`).
+// The check is `len(g.ids) <= g.refillThreshold` inside Next(); after pulling
+// one ID, both mutants differ from the original at `len == threshold`.
+//
+// We construct a generator without using newRequestIDGenerator so no
+// background goroutine is running — the bg goroutine would otherwise process
+// the init refill signal AFTER our Next() call and refill regardless, masking
+// the mutant. With no bg goroutine, signalRefill's write to refillCh is the
+// only producer; len(refillCh) immediately after Next() tells us whether the
+// boundary check fired the signal.
+func TestNextSignalRefillBoundary(t *testing.T) {
+	gen := &requestIDGenerator{
+		ids:             make(chan string, 4),
+		refillCh:        make(chan struct{}, 1),
+		stopCh:          make(chan struct{}),
+		refillThreshold: 3,
+		fill: func(dst []byte) (int, error) {
+			for i := range dst {
+				dst[i] = byte(i + 1)
+			}
+			return len(dst), nil
+		},
+	}
+	// Pre-fill ids to len=4 (cap) manually — no run() goroutine to do it.
+	for i := 0; i < 4; i++ {
+		gen.ids <- "id"
+	}
+	// Drain any pre-existing refill signal (none, but guard anyway).
+	select {
+	case <-gen.refillCh:
+	default:
+	}
+
+	// Next() pulls one ID, leaving len(ids)=3 == threshold.
+	// Original `3 <= 3` true → signalRefill writes to refillCh.
+	// Mutant `<`  `3 < 3` false → no signal.
+	// Mutant `>`  `3 > 3` false → no signal.
+	_ = gen.Next()
+
+	if got := len(gen.refillCh); got == 0 {
+		t.Fatalf("Next() at len==threshold did not signal refill (refillCh len=0) — `<=` mutated to `<` or `>` would yield this")
+	}
 }
 
 func BenchmarkAccessLogMiddleware(b *testing.B) {
