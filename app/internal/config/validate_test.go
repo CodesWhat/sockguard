@@ -64,7 +64,7 @@ func TestValidateRejectsMutualTLSClientIdentitySelectorsWithoutCertificates(t *t
 	cfg := Defaults()
 	cfg.Listen.Address = ":2376"
 	cfg.Listen.Socket = ""
-	cfg.Listen.TLS.AllowedCommonNames = []string{"portainer"}
+	cfg.Listen.TLS.CommonNames = []string{"portainer"}
 
 	err := Validate(&cfg)
 	if err == nil {

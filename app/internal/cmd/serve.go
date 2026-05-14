@@ -206,11 +206,18 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 
 	stopReload := func() {}
 	if cfg.Reload.Enabled && cfgFile != "" {
-		debounce := time.Duration(cfg.Reload.DebounceMs) * time.Millisecond
-		if cfg.Reload.DebounceMs == 0 {
-			debounce = reload.DefaultDebounce
+		debounce := reload.DefaultDebounce
+		if cfg.Reload.Debounce != "" {
+			if d, err := time.ParseDuration(cfg.Reload.Debounce); err == nil {
+				debounce = d
+			}
 		}
-		pollInterval := time.Duration(cfg.Reload.PollIntervalMs) * time.Millisecond
+		var pollInterval time.Duration
+		if cfg.Reload.PollInterval != "" {
+			if d, err := time.ParseDuration(cfg.Reload.PollInterval); err == nil {
+				pollInterval = d
+			}
+		}
 		var startErr error
 		stopReload, startErr = startReloader(context.Background(), cfgFile, debounce, pollInterval, coordinator, logger)
 		if startErr != nil {
@@ -683,10 +690,10 @@ func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) h
 
 func withAdminEndpoint(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
 	return admin.NewValidateInterceptor(admin.Options{
-		Path:         cfg.Admin.Path,
-		MaxBodyBytes: cfg.Admin.MaxBodyBytes,
-		Validate:     buildAdminValidator(logger),
-		Logger:       logger,
+		Path:            cfg.Admin.Path,
+		MaxRequestBytes: cfg.Admin.MaxRequestBytes,
+		Validate:        buildAdminValidator(logger),
+		Logger:          logger,
 	})
 }
 

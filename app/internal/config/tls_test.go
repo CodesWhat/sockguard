@@ -100,14 +100,14 @@ func TestBuildMutualTLSServerConfig(t *testing.T) {
 		}
 
 		cfg, err := BuildMutualTLSServerConfig(ListenTLSConfig{
-			CertFile:                   bundle.ServerCertFile,
-			KeyFile:                    bundle.ServerKeyFile,
-			ClientCAFile:               bundle.CAFile,
-			AllowedCommonNames:         []string{"allowed-client"},
-			AllowedDNSNames:            []string{"client.example.com"},
-			AllowedIPAddresses:         []string{"10.0.0.7"},
-			AllowedURISANs:             []string{"spiffe://sockguard/client"},
-			AllowedPublicKeySHA256Pins: []string{subjectPublicKeySHA256Hex(allowedLeaf)},
+			CertFile:            bundle.ServerCertFile,
+			KeyFile:             bundle.ServerKeyFile,
+			ClientCAFile:        bundle.CAFile,
+			CommonNames:         []string{"allowed-client"},
+			DNSNames:            []string{"client.example.com"},
+			IPAddresses:         []string{"10.0.0.7"},
+			URISANs:             []string{"spiffe://sockguard/client"},
+			PublicKeySHA256Pins: []string{subjectPublicKeySHA256Hex(allowedLeaf)},
 		})
 		if err != nil {
 			t.Fatalf("BuildMutualTLSServerConfig() error = %v", err)
@@ -134,12 +134,12 @@ func TestBuildMutualTLSServerConfig(t *testing.T) {
 
 	t.Run("invalid public key pin", func(t *testing.T) {
 		_, err := BuildMutualTLSServerConfig(ListenTLSConfig{
-			CertFile:                   bundle.ServerCertFile,
-			KeyFile:                    bundle.ServerKeyFile,
-			ClientCAFile:               bundle.CAFile,
-			AllowedPublicKeySHA256Pins: []string{"not-a-pin"},
+			CertFile:            bundle.ServerCertFile,
+			KeyFile:             bundle.ServerKeyFile,
+			ClientCAFile:        bundle.CAFile,
+			PublicKeySHA256Pins: []string{"not-a-pin"},
 		})
-		if err == nil || !strings.Contains(err.Error(), "allowed_public_key_sha256_pins") {
+		if err == nil || !strings.Contains(err.Error(), "public_key_sha256_pins") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})

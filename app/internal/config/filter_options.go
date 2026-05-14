@@ -112,7 +112,7 @@ func (c BuildRequestBodyConfig) ToFilterOptions() filter.BuildOptions {
 func (c ContainerUpdateRequestBodyConfig) ToFilterOptions() filter.ContainerUpdateOptions {
 	return filter.ContainerUpdateOptions{
 		AllowPrivileged:      c.AllowPrivileged,
-		AllowDevices:         c.AllowDevices,
+		AllowAllDevices:      c.AllowAllDevices,
 		AllowCapabilities:    c.AllowCapabilities,
 		AllowResourceUpdates: c.AllowResourceUpdates,
 		AllowRestartPolicy:   c.AllowRestartPolicy,
@@ -211,8 +211,8 @@ func (c NodeRequestBodyConfig) ToFilterOptions() filter.NodeOptions {
 func (c PluginRequestBodyConfig) ToFilterOptions() filter.PluginOptions {
 	return filter.PluginOptions{
 		AllowHostNetwork:      c.AllowHostNetwork,
-		AllowIPCHost:          c.AllowIPCHost,
-		AllowPIDHost:          c.AllowPIDHost,
+		AllowHostIPC:          c.AllowHostIPC,
+		AllowHostPID:          c.AllowHostPID,
 		AllowAllDevices:       c.AllowAllDevices,
 		AllowedBindMounts:     c.AllowedBindMounts,
 		AllowedDevices:        c.AllowedDevices,

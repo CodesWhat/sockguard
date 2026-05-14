@@ -15,7 +15,7 @@ const maxContainerUpdateBodyBytes = 1 << 20 // 1 MiB
 // POST /containers/{id}/update.
 type ContainerUpdateOptions struct {
 	AllowPrivileged      bool
-	AllowDevices         bool
+	AllowAllDevices      bool
 	AllowCapabilities    bool
 	AllowRestartPolicy   bool
 	AllowResourceUpdates bool
@@ -23,7 +23,7 @@ type ContainerUpdateOptions struct {
 
 type containerUpdatePolicy struct {
 	allowPrivileged      bool
-	allowDevices         bool
+	allowAllDevices      bool
 	allowCapabilities    bool
 	allowRestartPolicy   bool
 	allowResourceUpdates bool
@@ -32,7 +32,7 @@ type containerUpdatePolicy struct {
 func newContainerUpdatePolicy(opts ContainerUpdateOptions) containerUpdatePolicy {
 	return containerUpdatePolicy{
 		allowPrivileged:      opts.AllowPrivileged,
-		allowDevices:         opts.AllowDevices,
+		allowAllDevices:      opts.AllowAllDevices,
 		allowCapabilities:    opts.AllowCapabilities,
 		allowRestartPolicy:   opts.AllowRestartPolicy,
 		allowResourceUpdates: opts.AllowResourceUpdates,
@@ -68,7 +68,7 @@ func (p containerUpdatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if !p.allowPrivileged && containerUpdateHasAnyField(objects, containerUpdatePrivilegedFields...) {
 		return "container update denied: privileged mode changes are not allowed", nil
 	}
-	if !p.allowDevices && containerUpdateHasAnyField(objects, containerUpdateDeviceFields...) {
+	if !p.allowAllDevices && containerUpdateHasAnyField(objects, containerUpdateDeviceFields...) {
 		return "container update denied: device changes are not allowed", nil
 	}
 	if !p.allowCapabilities && containerUpdateHasAnyField(objects, containerUpdateCapabilityFields...) {

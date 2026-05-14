@@ -312,7 +312,7 @@ func TestCreateListenerTCPWithMutualTLS(t *testing.T) {
 				CertFile:           bundle.ServerCertFile,
 				KeyFile:            bundle.ServerKeyFile,
 				ClientCAFile:       bundle.CAFile,
-				AllowedCommonNames: []string{"sockguard-test-client"},
+				CommonNames: []string{"sockguard-test-client"},
 			},
 		},
 	}
@@ -425,7 +425,7 @@ func TestCreateListenerTCPWithMutualTLSRejectsDisallowedClientCertificateIdentit
 				CertFile:           bundle.ServerCertFile,
 				KeyFile:            bundle.ServerKeyFile,
 				ClientCAFile:       bundle.CAFile,
-				AllowedCommonNames: []string{"different-client"},
+				CommonNames: []string{"different-client"},
 			},
 		},
 	}

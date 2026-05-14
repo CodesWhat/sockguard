@@ -451,46 +451,46 @@ func TestNormalizeAllowedRegistryHostDockerAlias(t *testing.T) {
 
 func TestCompileClientCertIDConstraintsEmptyCommonName(t *testing.T) {
 	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
-		AllowedCommonNames: []string{""},
+		CommonNames: []string{""},
 	})
-	if err == nil || !strings.Contains(err.Error(), "allowed_common_names") {
-		t.Fatalf("expected allowed_common_names error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "common_names") {
+		t.Fatalf("expected common_names error, got: %v", err)
 	}
 }
 
 func TestCompileClientCertIDConstraintsEmptyDNSName(t *testing.T) {
 	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
-		AllowedDNSNames: []string{""},
+		DNSNames: []string{""},
 	})
-	if err == nil || !strings.Contains(err.Error(), "allowed_dns_names") {
-		t.Fatalf("expected allowed_dns_names error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "dns_names") {
+		t.Fatalf("expected dns_names error, got: %v", err)
 	}
 }
 
 func TestCompileClientCertIDConstraintsInvalidIP(t *testing.T) {
 	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
-		AllowedIPAddresses: []string{"not-an-ip"},
+		IPAddresses: []string{"not-an-ip"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "allowed_ip_addresses") {
-		t.Fatalf("expected allowed_ip_addresses error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "ip_addresses") {
+		t.Fatalf("expected ip_addresses error, got: %v", err)
 	}
 }
 
 func TestCompileClientCertIDConstraintsEmptyURISAN(t *testing.T) {
 	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
-		AllowedURISANs: []string{""},
+		URISANs: []string{""},
 	})
-	if err == nil || !strings.Contains(err.Error(), "allowed_uri_sans") {
-		t.Fatalf("expected allowed_uri_sans error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "uri_sans") {
+		t.Fatalf("expected uri_sans error, got: %v", err)
 	}
 }
 
 func TestCompileClientCertIDConstraintsInvalidPin(t *testing.T) {
 	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
-		AllowedPublicKeySHA256Pins: []string{"abc"},
+		PublicKeySHA256Pins: []string{"abc"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "allowed_public_key_sha256_pins") {
-		t.Fatalf("expected allowed_public_key_sha256_pins error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "public_key_sha256_pins") {
+		t.Fatalf("expected public_key_sha256_pins error, got: %v", err)
 	}
 }
 

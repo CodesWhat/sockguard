@@ -33,14 +33,14 @@ type ListenConfig struct {
 
 // ListenTLSConfig configures mutual TLS for TCP listeners.
 type ListenTLSConfig struct {
-	CertFile                   string   `mapstructure:"cert_file"`
-	KeyFile                    string   `mapstructure:"key_file"`
-	ClientCAFile               string   `mapstructure:"client_ca_file"`
-	AllowedCommonNames         []string `mapstructure:"allowed_common_names"`
-	AllowedDNSNames            []string `mapstructure:"allowed_dns_names"`
-	AllowedIPAddresses         []string `mapstructure:"allowed_ip_addresses"`
-	AllowedURISANs             []string `mapstructure:"allowed_uri_sans"`
-	AllowedPublicKeySHA256Pins []string `mapstructure:"allowed_public_key_sha256_pins"`
+	CertFile            string   `mapstructure:"cert_file"`
+	KeyFile             string   `mapstructure:"key_file"`
+	ClientCAFile        string   `mapstructure:"client_ca_file"`
+	CommonNames         []string `mapstructure:"common_names"`
+	DNSNames            []string `mapstructure:"dns_names"`
+	IPAddresses         []string `mapstructure:"ip_addresses"`
+	URISANs             []string `mapstructure:"uri_sans"`
+	PublicKeySHA256Pins []string `mapstructure:"public_key_sha256_pins"`
 }
 
 // UpstreamConfig configures the upstream Docker socket.
@@ -206,7 +206,7 @@ type BuildRequestBodyConfig struct {
 // POST /containers/*/update.
 type ContainerUpdateRequestBodyConfig struct {
 	AllowPrivileged      bool `mapstructure:"allow_privileged"`
-	AllowDevices         bool `mapstructure:"allow_devices"`
+	AllowAllDevices      bool `mapstructure:"allow_all_devices"`
 	AllowCapabilities    bool `mapstructure:"allow_capabilities"`
 	AllowResourceUpdates bool `mapstructure:"allow_resource_updates"`
 	AllowRestartPolicy   bool `mapstructure:"allow_restart_policy"`
@@ -296,8 +296,8 @@ type NodeRequestBodyConfig struct {
 // PluginRequestBodyConfig configures inspection for plugin write endpoints.
 type PluginRequestBodyConfig struct {
 	AllowHostNetwork      bool     `mapstructure:"allow_host_network"`
-	AllowIPCHost          bool     `mapstructure:"allow_ipc_host"`
-	AllowPIDHost          bool     `mapstructure:"allow_pid_host"`
+	AllowHostIPC          bool     `mapstructure:"allow_host_ipc"`
+	AllowHostPID          bool     `mapstructure:"allow_host_pid"`
 	AllowAllDevices       bool     `mapstructure:"allow_all_devices"`
 	AllowedBindMounts     []string `mapstructure:"allowed_bind_mounts"`
 	AllowedDevices        []string `mapstructure:"allowed_devices"`
@@ -493,9 +493,9 @@ type MetricsConfig struct {
 // network-reachable listener would otherwise let any client submit YAML for
 // parsing.
 type AdminConfig struct {
-	Enabled      bool   `mapstructure:"enabled"`
-	Path         string `mapstructure:"path"`
-	MaxBodyBytes int64  `mapstructure:"max_body_bytes"`
+	Enabled         bool   `mapstructure:"enabled"`
+	Path            string `mapstructure:"path"`
+	MaxRequestBytes int64  `mapstructure:"max_request_bytes"`
 	// PolicyVersionPath is the GET endpoint that reports the active policy
 	// generation counter and metadata (rules / profiles / compat-active /
 	// content hash). It shares the admin layer with Path, so it inherits the
@@ -540,9 +540,9 @@ func (cfg AdminListenConfig) Configured() bool {
 // running config is preserved and the operator must restart sockguard to
 // pick the new values up.
 //
-// DebounceMs collapses bursts of filesystem events (editors commonly emit
+// Debounce collapses bursts of filesystem events (editors commonly emit
 // chmod + write + rename + create per save) into a single reload trigger.
-// Default 250ms.
+// Default "250ms".
 //
 // Reload is opt-in because enabling it changes the meaning of SIGHUP:
 // historically SIGHUP terminated sockguard; with reload enabled, SIGHUP
@@ -550,18 +550,18 @@ func (cfg AdminListenConfig) Configured() bool {
 // that script around the old behavior must update their tooling before
 // flipping this on.
 type ReloadConfig struct {
-	Enabled    bool `mapstructure:"enabled"`
-	DebounceMs int  `mapstructure:"debounce_ms"`
-	// PollIntervalMs is an optional fallback that periodically stats the
+	Enabled  bool   `mapstructure:"enabled"`
+	Debounce string `mapstructure:"debounce"`
+	// PollInterval is an optional fallback that periodically stats the
 	// config file and triggers a reload when its size, modification time, or
 	// inode has changed since the last check. Useful on filesystems where
 	// fsnotify is unreliable (Synology / DSM btrfs bind-mounts, some FUSE
 	// backends, NFS) — inotify events on the host don't always propagate
 	// into the container, so a SIGHUP or this poll is the only way the
-	// watcher learns the file moved. 0 disables polling (default); typical
-	// values are 5000–15000 (5–15 seconds). SIGHUP remains the canonical
-	// reload trigger for unreliable propagation backends.
-	PollIntervalMs int `mapstructure:"poll_interval_ms"`
+	// watcher learns the file moved. Empty string disables polling (default);
+	// typical values are "5s"–"15s". SIGHUP remains the canonical reload
+	// trigger for unreliable propagation backends.
+	PollInterval string `mapstructure:"poll_interval"`
 }
 
 // PolicyBundleConfig configures verification of signed policy bundles.
@@ -696,7 +696,7 @@ func Defaults() Config {
 		Admin: AdminConfig{
 			Enabled:           false,
 			Path:              "/admin/validate",
-			MaxBodyBytes:      524288,
+			MaxRequestBytes:   524288,
 			PolicyVersionPath: "/admin/policy/version",
 			Listen: AdminListenConfig{
 				// Socket and Address both default to "" so the admin endpoints
@@ -708,9 +708,9 @@ func Defaults() Config {
 			},
 		},
 		Reload: ReloadConfig{
-			Enabled:        false,
-			DebounceMs:     250,
-			PollIntervalMs: 0,
+			Enabled:      false,
+			Debounce:     "250ms",
+			PollInterval: "",
 		},
 		PolicyBundle: PolicyBundleConfig{
 			Enabled:               false,

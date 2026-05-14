@@ -114,8 +114,8 @@ func validateBasic(cfg *Config) []string {
 		if !strings.HasPrefix(cfg.Admin.Path, "/") {
 			errs = append(errs, fmt.Sprintf("admin.path must start with /, got %q", cfg.Admin.Path))
 		}
-		if cfg.Admin.MaxBodyBytes <= 0 {
-			errs = append(errs, fmt.Sprintf("admin.max_body_bytes must be > 0, got %d", cfg.Admin.MaxBodyBytes))
+		if cfg.Admin.MaxRequestBytes <= 0 {
+			errs = append(errs, fmt.Sprintf("admin.max_request_bytes must be > 0, got %d", cfg.Admin.MaxRequestBytes))
 		}
 		if cfg.Health.Enabled && cfg.Admin.Path == cfg.Health.Path {
 			errs = append(errs, fmt.Sprintf("admin.path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.Path))
@@ -138,11 +138,21 @@ func validateBasic(cfg *Config) []string {
 		errs = append(errs, validateAdminListener(cfg)...)
 	}
 
-	if cfg.Reload.Enabled && cfg.Reload.DebounceMs < 0 {
-		errs = append(errs, fmt.Sprintf("reload.debounce_ms must be >= 0, got %d", cfg.Reload.DebounceMs))
+	if cfg.Reload.Enabled && cfg.Reload.Debounce != "" {
+		d, err := time.ParseDuration(cfg.Reload.Debounce)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("reload.debounce must be a valid Go duration string, got %q", cfg.Reload.Debounce))
+		} else if d < 0 {
+			errs = append(errs, fmt.Sprintf("reload.debounce must be >= 0, got %q", cfg.Reload.Debounce))
+		}
 	}
-	if cfg.Reload.Enabled && cfg.Reload.PollIntervalMs < 0 {
-		errs = append(errs, fmt.Sprintf("reload.poll_interval_ms must be >= 0, got %d", cfg.Reload.PollIntervalMs))
+	if cfg.Reload.Enabled && cfg.Reload.PollInterval != "" {
+		d, err := time.ParseDuration(cfg.Reload.PollInterval)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("reload.poll_interval must be a valid Go duration string, got %q", cfg.Reload.PollInterval))
+		} else if d < 0 {
+			errs = append(errs, fmt.Sprintf("reload.poll_interval must be >= 0, got %q", cfg.Reload.PollInterval))
+		}
 	}
 
 	errs = append(errs, validatePolicyBundle(cfg)...)

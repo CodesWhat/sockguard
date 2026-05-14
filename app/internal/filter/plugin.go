@@ -24,8 +24,8 @@ const pluginConfigName = "config.json"
 // PluginOptions configures request-body/query inspection for plugin writes.
 type PluginOptions struct {
 	AllowHostNetwork      bool
-	AllowIPCHost          bool
-	AllowPIDHost          bool
+	AllowHostIPC          bool
+	AllowHostPID          bool
 	AllowAllDevices       bool
 	AllowedBindMounts     []string
 	AllowedDevices        []string
@@ -38,9 +38,9 @@ type PluginOptions struct {
 }
 
 type pluginPolicy struct {
-	allowHostNetwork      bool
-	allowIPCHost          bool
-	allowPIDHost          bool
+	allowHostNetwork bool
+	allowHostIPC     bool
+	allowHostPID     bool
 	allowAllDevices       bool
 	allowedBindMounts     []string
 	allowedDevices        []string
@@ -82,9 +82,9 @@ func newPluginPolicy(opts PluginOptions) pluginPolicy {
 	allowedSetEnvPrefixes := normalizePluginSetEnvPrefixes(opts.AllowedSetEnvPrefixes)
 
 	return pluginPolicy{
-		allowHostNetwork:      opts.AllowHostNetwork,
-		allowIPCHost:          opts.AllowIPCHost,
-		allowPIDHost:          opts.AllowPIDHost,
+		allowHostNetwork: opts.AllowHostNetwork,
+		allowHostIPC:     opts.AllowHostIPC,
+		allowHostPID:     opts.AllowHostPID,
 		allowAllDevices:       opts.AllowAllDevices,
 		allowedBindMounts:     allowedMounts,
 		allowedDevices:        allowedDevices,
@@ -267,10 +267,10 @@ func (p pluginPolicy) denyReasonForCreateConfig(cfg pluginCreateConfig) string {
 	if !p.allowHostNetwork && strings.EqualFold(strings.TrimSpace(cfg.Network.Type), "host") {
 		return "plugin create denied: host network is not allowed"
 	}
-	if !p.allowIPCHost && cfg.IpcHost {
+	if !p.allowHostIPC && cfg.IpcHost {
 		return "plugin create denied: host IPC namespace is not allowed"
 	}
-	if !p.allowPIDHost && cfg.PidHost {
+	if !p.allowHostPID && cfg.PidHost {
 		return "plugin create denied: host PID namespace is not allowed"
 	}
 	if denyReason := p.denyBindMounts(cfg.PropagatedMount, cfg.Mounts); denyReason != "" {

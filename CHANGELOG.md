@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+
+YAML schema renames — update configs and env var names before upgrading.
+
+- `listen.tls.allowed_common_names` → `listen.tls.common_names` (env: `SOCKGUARD_LISTEN_TLS_COMMON_NAMES`)
+- `listen.tls.allowed_dns_names` → `listen.tls.dns_names` (env: `SOCKGUARD_LISTEN_TLS_DNS_NAMES`)
+- `listen.tls.allowed_ip_addresses` → `listen.tls.ip_addresses` (env: `SOCKGUARD_LISTEN_TLS_IP_ADDRESSES`)
+- `listen.tls.allowed_uri_sans` → `listen.tls.uri_sans` (env: `SOCKGUARD_LISTEN_TLS_URI_SANS`)
+- `listen.tls.allowed_public_key_sha256_pins` → `listen.tls.public_key_sha256_pins` (env: `SOCKGUARD_LISTEN_TLS_PUBLIC_KEY_SHA256_PINS`)
+- Same five renames apply to `admin.listen.tls.*`
+- `request_body.plugin.allow_ipc_host` → `request_body.plugin.allow_host_ipc` (env: `SOCKGUARD_REQUEST_BODY_PLUGIN_ALLOW_HOST_IPC`)
+- `request_body.plugin.allow_pid_host` → `request_body.plugin.allow_host_pid` (env: `SOCKGUARD_REQUEST_BODY_PLUGIN_ALLOW_HOST_PID`)
+- `request_body.container_update.allow_devices` → `request_body.container_update.allow_all_devices` (env: `SOCKGUARD_REQUEST_BODY_CONTAINER_UPDATE_ALLOW_ALL_DEVICES`)
+- `admin.max_body_bytes` → `admin.max_request_bytes` (env: `SOCKGUARD_ADMIN_MAX_REQUEST_BYTES`)
+- `reload.debounce_ms` (integer milliseconds) → `reload.debounce` (Go duration string, default `"250ms"`) (env: `SOCKGUARD_RELOAD_DEBOUNCE`)
+- `reload.poll_interval_ms` (integer milliseconds) → `reload.poll_interval` (Go duration string, default `""`) (env: `SOCKGUARD_RELOAD_POLL_INTERVAL`)
+
 ## [0.8.1] - 2026-05-14
 
 ### Fixed

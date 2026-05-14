@@ -85,7 +85,7 @@ func TestContainerUpdateAllowsConfiguredEscalationFieldsAndPreservesBody(t *test
 
 	reason, err := newContainerUpdatePolicy(ContainerUpdateOptions{
 		AllowPrivileged:      true,
-		AllowDevices:         true,
+		AllowAllDevices:      true,
 		AllowCapabilities:    true,
 		AllowRestartPolicy:   true,
 		AllowResourceUpdates: true,

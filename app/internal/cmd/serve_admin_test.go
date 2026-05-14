@@ -110,7 +110,7 @@ func TestServeHandlerShortCircuitsAdminValidate(t *testing.T) {
 	cfg.Upstream.Socket = shortSocketPath(t, "admin-svc")
 	cfg.Admin.Enabled = true
 	cfg.Admin.Path = "/admin/validate"
-	cfg.Admin.MaxBodyBytes = 4096
+	cfg.Admin.MaxRequestBytes = 4096
 
 	rules := adminTestRules(t)
 	handler := buildServeHandler(&cfg, newDiscardLogger(), nil, rules, newServeTestDeps())

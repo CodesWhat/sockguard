@@ -103,7 +103,7 @@ func TestInterceptorReturns422OnValidationFailure(t *testing.T) {
 func TestInterceptorReturns413OnOversizeBody(t *testing.T) {
 	handler := NewValidateInterceptor(Options{
 		Path:         testPath,
-		MaxBodyBytes: 16,
+		MaxRequestBytes: 16,
 		Validate:     newOKValidator(),
 	})(noopHandler())
 

@@ -18,11 +18,11 @@ func (cfg ListenTLSConfig) Enabled() bool {
 	return cfg.CertFile != "" ||
 		cfg.KeyFile != "" ||
 		cfg.ClientCAFile != "" ||
-		len(cfg.AllowedCommonNames) > 0 ||
-		len(cfg.AllowedDNSNames) > 0 ||
-		len(cfg.AllowedIPAddresses) > 0 ||
-		len(cfg.AllowedURISANs) > 0 ||
-		len(cfg.AllowedPublicKeySHA256Pins) > 0
+		len(cfg.CommonNames) > 0 ||
+		len(cfg.DNSNames) > 0 ||
+		len(cfg.IPAddresses) > 0 ||
+		len(cfg.URISANs) > 0 ||
+		len(cfg.PublicKeySHA256Pins) > 0
 }
 
 // Complete reports whether listen.tls has the full certificate, key, and
@@ -77,47 +77,47 @@ type compiledClientCertificateIdentityConstraints struct {
 
 func compileClientCertificateIdentityConstraints(cfg ListenTLSConfig) (compiledClientCertificateIdentityConstraints, error) {
 	compiled := compiledClientCertificateIdentityConstraints{
-		commonNames:         make([]string, 0, len(cfg.AllowedCommonNames)),
-		dnsNames:            make([]string, 0, len(cfg.AllowedDNSNames)),
-		ipAddresses:         make([]netip.Addr, 0, len(cfg.AllowedIPAddresses)),
-		uriSANs:             make([]string, 0, len(cfg.AllowedURISANs)),
-		publicKeySHA256Pins: make([]string, 0, len(cfg.AllowedPublicKeySHA256Pins)),
+		commonNames:         make([]string, 0, len(cfg.CommonNames)),
+		dnsNames:            make([]string, 0, len(cfg.DNSNames)),
+		ipAddresses:         make([]netip.Addr, 0, len(cfg.IPAddresses)),
+		uriSANs:             make([]string, 0, len(cfg.URISANs)),
+		publicKeySHA256Pins: make([]string, 0, len(cfg.PublicKeySHA256Pins)),
 	}
 
-	values, err := normalizeNonEmptyStrings("listen.tls.allowed_common_names", cfg.AllowedCommonNames)
+	values, err := normalizeNonEmptyStrings("listen.tls.common_names", cfg.CommonNames)
 	if err != nil {
 		return compiled, err
 	}
 	compiled.commonNames = append(compiled.commonNames, values...)
 
-	values, err = normalizeNonEmptyStrings("listen.tls.allowed_dns_names", cfg.AllowedDNSNames)
+	values, err = normalizeNonEmptyStrings("listen.tls.dns_names", cfg.DNSNames)
 	if err != nil {
 		return compiled, err
 	}
 	compiled.dnsNames = append(compiled.dnsNames, values...)
 
-	for _, raw := range cfg.AllowedIPAddresses {
+	for _, raw := range cfg.IPAddresses {
 		trimmed := strings.TrimSpace(raw)
 		addr, err := netip.ParseAddr(trimmed)
 		if err != nil || !addr.IsValid() {
-			return compiled, fmt.Errorf("listen.tls.allowed_ip_addresses entries must be valid IP addresses, got %q", raw)
+			return compiled, fmt.Errorf("listen.tls.ip_addresses entries must be valid IP addresses, got %q", raw)
 		}
 		compiled.ipAddresses = append(compiled.ipAddresses, addr.Unmap())
 	}
 
-	for _, raw := range cfg.AllowedURISANs {
+	for _, raw := range cfg.URISANs {
 		trimmed := strings.TrimSpace(raw)
 		parsed, err := url.Parse(trimmed)
 		if err != nil || parsed.String() == "" {
-			return compiled, fmt.Errorf("listen.tls.allowed_uri_sans entries must be valid URIs, got %q", raw)
+			return compiled, fmt.Errorf("listen.tls.uri_sans entries must be valid URIs, got %q", raw)
 		}
 		compiled.uriSANs = append(compiled.uriSANs, parsed.String())
 	}
 
-	for _, raw := range cfg.AllowedPublicKeySHA256Pins {
+	for _, raw := range cfg.PublicKeySHA256Pins {
 		pin, err := normalizeSubjectPublicKeySHA256Pin(raw)
 		if err != nil {
-			return compiled, fmt.Errorf("listen.tls.allowed_public_key_sha256_pins entries must be lowercase or uppercase hex SHA-256 digests, got %q", raw)
+			return compiled, fmt.Errorf("listen.tls.public_key_sha256_pins entries must be lowercase or uppercase hex SHA-256 digests, got %q", raw)
 		}
 		compiled.publicKeySHA256Pins = append(compiled.publicKeySHA256Pins, pin)
 	}

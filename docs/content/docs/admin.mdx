@@ -15,7 +15,7 @@ admin:
   enabled: true
   path: /admin/validate                # POST endpoint; must start with /
   policy_version_path: /admin/policy/version  # GET endpoint; must start with /
-  max_body_bytes: 524288               # 512 KiB hard cap on validate request bodies
+  max_request_bytes: 524288            # 512 KiB hard cap on validate request bodies
 ```
 
 Both endpoints share the `admin.enabled` gate. When disabled, any request to
@@ -88,7 +88,7 @@ Content-Type: application/x-yaml
 <candidate sockguard.yaml body>
 ```
 
-Body is limited to `admin.max_body_bytes` (default 512 KiB) via
+Body is limited to `admin.max_request_bytes` (default 512 KiB) via
 `http.MaxBytesReader`.
 
 ### Response codes
@@ -97,7 +97,7 @@ Body is limited to `admin.max_body_bytes` (default 512 KiB) via
 |--------|---------|
 | `200 OK` | YAML is valid; response body contains the parsed policy summary |
 | `405 Method Not Allowed` | Non-POST method; `Allow: POST` header is set |
-| `413 Payload Too Large` | Body exceeded `admin.max_body_bytes` |
+| `413 Payload Too Large` | Body exceeded `admin.max_request_bytes` |
 | `422 Unprocessable Entity` | YAML parsed but failed validation; errors listed |
 
 ### Response body

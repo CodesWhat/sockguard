@@ -13,8 +13,8 @@ func TestDefaultsIncludesAdminBlock(t *testing.T) {
 	if d.Admin.Path != "/admin/validate" {
 		t.Fatalf("Admin.Path = %q, want %q", d.Admin.Path, "/admin/validate")
 	}
-	if d.Admin.MaxBodyBytes <= 0 {
-		t.Fatalf("Admin.MaxBodyBytes = %d, want > 0", d.Admin.MaxBodyBytes)
+	if d.Admin.MaxRequestBytes <= 0 {
+		t.Fatalf("Admin.MaxRequestBytes = %d, want > 0", d.Admin.MaxRequestBytes)
 	}
 	if d.Admin.PolicyVersionPath != "/admin/policy/version" {
 		t.Fatalf("Admin.PolicyVersionPath = %q, want %q", d.Admin.PolicyVersionPath, "/admin/policy/version")
@@ -80,11 +80,11 @@ func TestValidateAdminRejectsRelativePath(t *testing.T) {
 func TestValidateAdminRejectsNonPositiveMaxBody(t *testing.T) {
 	cfg := Defaults()
 	cfg.Admin.Enabled = true
-	cfg.Admin.MaxBodyBytes = 0
+	cfg.Admin.MaxRequestBytes = 0
 
 	err := Validate(&cfg)
-	if err == nil || !strings.Contains(err.Error(), "admin.max_body_bytes must be > 0") {
-		t.Fatalf("Validate() = %v, want max_body_bytes error", err)
+	if err == nil || !strings.Contains(err.Error(), "admin.max_request_bytes must be > 0") {
+		t.Fatalf("Validate() = %v, want max_request_bytes error", err)
 	}
 }
 
@@ -117,7 +117,7 @@ func TestValidateAdminAllowsDisabledMisconfig(t *testing.T) {
 	cfg := Defaults()
 	cfg.Admin.Enabled = false
 	cfg.Admin.Path = ""
-	cfg.Admin.MaxBodyBytes = 0
+	cfg.Admin.MaxRequestBytes = 0
 
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("Validate() = %v, want nil when admin disabled", err)
@@ -145,7 +145,7 @@ func TestLoadBytesOverridesDefaultsFromYAML(t *testing.T) {
 admin:
   enabled: true
   path: /custom/validate
-  max_body_bytes: 1024
+  max_request_bytes: 1024
 rules:
   - match: { method: GET, path: "/_ping" }
     action: allow
@@ -160,8 +160,8 @@ rules:
 	if cfg.Admin.Path != "/custom/validate" {
 		t.Fatalf("Admin.Path = %q, want /custom/validate", cfg.Admin.Path)
 	}
-	if cfg.Admin.MaxBodyBytes != 1024 {
-		t.Fatalf("Admin.MaxBodyBytes = %d, want 1024", cfg.Admin.MaxBodyBytes)
+	if cfg.Admin.MaxRequestBytes != 1024 {
+		t.Fatalf("Admin.MaxRequestBytes = %d, want 1024", cfg.Admin.MaxRequestBytes)
 	}
 	if len(cfg.Rules) != 1 {
 		t.Fatalf("Rules = %d entries, want 1", len(cfg.Rules))

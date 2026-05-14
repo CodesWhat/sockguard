@@ -146,7 +146,7 @@ services:
 
 Non-loopback TCP without `listen.tls` fails startup unless you explicitly set `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true`.
 Sockguard's server-side TLS minimum for `listen.tls` is TLS 1.3, so remote clients must support TLS 1.3.
-If one client CA issues multiple workloads, narrow the trusted set further in YAML with `listen.tls.allowed_common_names`, `allowed_dns_names`, `allowed_ip_addresses`, `allowed_uri_sans`, and/or `allowed_public_key_sha256_pins` so any CA-issued client cert is not automatically accepted.
+If one client CA issues multiple workloads, narrow the trusted set further in YAML with `listen.tls.common_names`, `dns_names`, `ip_addresses`, `uri_sans`, and/or `public_key_sha256_pins` so any CA-issued client cert is not automatically accepted.
 
 </details>
 
@@ -289,9 +289,9 @@ listen:
     cert_file: /run/secrets/sockguard/server-cert.pem
     key_file: /run/secrets/sockguard/server-key.pem
     client_ca_file: /run/secrets/sockguard/client-ca.pem
-    allowed_dns_names:
+    dns_names:
       - portainer.internal
-    allowed_uri_sans:
+    uri_sans:
       - spiffe://sockguard.test/workload/portainer
 
 insecure_allow_body_blind_writes: false
@@ -395,7 +395,7 @@ rules:
 
 Trailing `/**` matches both the base path and any deeper path. For example, `/containers/**` matches `/containers` and `/containers/abc/json`.
 
-`listen.tls` is only needed when you expose Sockguard on non-loopback TCP. Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`, which is intended only for legacy compatibility on a private, trusted network. `listen.tls.client_ca_file` still defines the issuing trust root, and the optional `listen.tls.allowed_common_names`, `allowed_dns_names`, `allowed_ip_addresses`, `allowed_uri_sans`, and `allowed_public_key_sha256_pins` fields let you narrow that trust to specific verified client leaves. Different selector fields are ANDed, while entries inside one field are ORed.
+`listen.tls` is only needed when you expose Sockguard on non-loopback TCP. Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`, which is intended only for legacy compatibility on a private, trusted network. `listen.tls.client_ca_file` still defines the issuing trust root, and the optional `listen.tls.common_names`, `dns_names`, `ip_addresses`, `uri_sans`, and `public_key_sha256_pins` fields let you narrow that trust to specific verified client leaves. Different selector fields are ANDed, while entries inside one field are ORed.
 
 Allowed `POST /containers/create` requests are inspected by default. Unless you opt out, Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, `HostConfig.PidMode=host`, `HostConfig.IpcMode=host`, any bind mount source outside `allowed_bind_mounts`, any `HostConfig.Devices` host path outside `allowed_devices`, `HostConfig.DeviceRequests` (unless allowed via `allow_device_requests` or `allowed_device_requests`), and `HostConfig.DeviceCgroupRules` (unless allowed via `allow_device_cgroup_rules` or `allowed_device_cgroup_rules`). Named volumes still work without allowlist entries because they are not host bind mounts. `allowed_device_requests` is a structured allowlist for GPU and other device passthrough — each entry specifies a `driver` (required, case-insensitive exact match), `allowed_capabilities` (a list of capability sets; each request set must be a subset of at least one allowlisted set), and an optional `max_count` bound (`-1` = all devices; request `Count: -1` is only allowed when `max_count` is also `-1`). Set `allow_device_requests: true` only when you want unrestricted device request access. Opt-in hardening rails enforce no-new-privileges, non-root user, read-only rootfs, dropped capabilities, and memory/CPU/PID resource limits via the `require_*` knobs. Capability additions are governed by `allowed_capabilities` (or bypassed with `allow_all_capabilities: true`). Seccomp and AppArmor profiles can be constrained to an explicit allowlist; `deny_unconfined_seccomp` and `deny_unconfined_apparmor` act as standalone kill switches when no allowlist is configured. `required_labels` enforces mandatory `Config.Labels` keys. **Breaking changes in this release:** `HostConfig.CapAdd` is now default-deny — set `allow_all_capabilities: true` or populate `allowed_capabilities` to restore previous behavior. `HostConfig.UsernsMode=host` is now denied by default — set `allow_host_userns: true` to opt back in.
 
@@ -520,14 +520,14 @@ clients:
 
 reload:
   enabled: true             # fsnotify watch on the config file + SIGHUP trigger
-  # debounce_ms: 250        # coalesce a burst of editor-save events
-  # poll_interval_ms: 5000  # opt-in stat fallback; recommended on Synology / DSM / btrfs / NFS
-  debounce_ms: 250          # coalesce burst-of-events single saves into one reload
+  # debounce: 250ms         # coalesce a burst of editor-save events
+  # poll_interval: 5s       # opt-in stat fallback; recommended on Synology / DSM / btrfs / NFS
+  debounce: 250ms           # coalesce burst-of-events single saves into one reload
 
 admin:
   enabled: true             # POST /admin/validate (CI gate) + GET /admin/policy/version
   path: /admin/validate
-  max_body_bytes: 524288
+  max_request_bytes: 524288
   policy_version_path: /admin/policy/version
   listen:                   # OPTIONAL — when set, admin endpoints move off the main listener
     socket: /run/sockguard/admin.sock
@@ -550,7 +550,7 @@ policy_bundle:
 
 **Rollout modes.** `clients.profiles[*].mode` defaults to `enforce` (default-deny still returns `403`). In `warn` and `audit`, every deny gate — filter rules and the request-body inspectors, ownership label isolation, client-ACL label policy, and the three rate-limit / concurrency / priority throttle gates — instead lets the request through and stamps `decision=would_deny` on the structured audit record. The deny / throttle counters carry a new `mode` label so dashboards compare blocked vs. would-have-been-blocked volume side by side. Pre-auth admission gates (CIDR allowlist, identity-lookup failures) stay `enforce` regardless.
 
-**Hot-reload.** When `reload.enabled: true`, sockguard watches the loaded config via fsnotify (Linux inotify, macOS kqueue) and accepts `SIGHUP`. A reload runs the full validator + rule compiler against the new bytes and atomically swaps the running handler chain on success. Failures preserve the running policy and emit a structured warning carrying `result=reject_load|reject_validation|reject_immutable|reject_signature` that mirrors the metric label exactly. A rebuild that would mutate an immutable field — `listen.*`, `upstream.socket`, `log.*`, `health.*`, `metrics.*`, `admin.*`, or the `policy_bundle.*` trust material — is rejected (the running config is preserved and `policy_version` does not advance). `sockguard_config_reload_total{result="ok|reject_load|reject_validation|reject_immutable|reject_signature"}` and `sockguard_config_reload_last_success_timestamp_seconds` surface the outcome. With `reload.enabled: true`, `SIGHUP` triggers a reload instead of terminating the process. On Synology / DSM and other btrfs bind-mount backends where inotify events don't always cross the host/container boundary, `SIGHUP` is the canonical reload trigger; set `reload.poll_interval_ms` (typical `5000`–`15000`) to enable an opt-in stat-based fallback that fires on size / mtime / inode change.
+**Hot-reload.** When `reload.enabled: true`, sockguard watches the loaded config via fsnotify (Linux inotify, macOS kqueue) and accepts `SIGHUP`. A reload runs the full validator + rule compiler against the new bytes and atomically swaps the running handler chain on success. Failures preserve the running policy and emit a structured warning carrying `result=reject_load|reject_validation|reject_immutable|reject_signature` that mirrors the metric label exactly. A rebuild that would mutate an immutable field — `listen.*`, `upstream.socket`, `log.*`, `health.*`, `metrics.*`, `admin.*`, or the `policy_bundle.*` trust material — is rejected (the running config is preserved and `policy_version` does not advance). `sockguard_config_reload_total{result="ok|reject_load|reject_validation|reject_immutable|reject_signature"}` and `sockguard_config_reload_last_success_timestamp_seconds` surface the outcome. With `reload.enabled: true`, `SIGHUP` triggers a reload instead of terminating the process. On Synology / DSM and other btrfs bind-mount backends where inotify events don't always cross the host/container boundary, `SIGHUP` is the canonical reload trigger; set `reload.poll_interval` (typical `5s`–`15s`) to enable an opt-in stat-based fallback that fires on size / mtime / inode change.
 
 **Admin API.** `POST /admin/validate` (opt-in via `admin.enabled: true`) accepts a YAML body and returns `{ok, errors, rules, profiles, compat_active}` — the same verdict the offline `sockguard validate` command would, suitable for a CI gate (`curl --data-binary @candidate.yaml http://sockguard/admin/validate`). `GET /admin/policy/version` returns the active policy generation `{version, loaded_at, rules, profiles, source: "startup"|"reload", config_sha256, bundle_source?, bundle_signer?, bundle_digest?}` and the same counter is mirrored as `sockguard_policy_version`. By default both endpoints ride the main listener (and inherit its CIDR allowlist + mTLS + rate-limit posture). Set `admin.listen.socket` or `admin.listen.address` (with the same hardened socket-mode / mTLS / SPKI-pin posture as `listen.*`) to move them onto a dedicated `http.Server` firewalled off from Docker-API consumers.
 

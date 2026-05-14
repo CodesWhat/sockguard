@@ -249,11 +249,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.RequestBody.Plugin.AllowHostNetwork != defaults.RequestBody.Plugin.AllowHostNetwork {
 		t.Errorf("RequestBody.Plugin.AllowHostNetwork = %v, want %v", cfg.RequestBody.Plugin.AllowHostNetwork, defaults.RequestBody.Plugin.AllowHostNetwork)
 	}
-	if cfg.RequestBody.Plugin.AllowIPCHost != defaults.RequestBody.Plugin.AllowIPCHost {
-		t.Errorf("RequestBody.Plugin.AllowIPCHost = %v, want %v", cfg.RequestBody.Plugin.AllowIPCHost, defaults.RequestBody.Plugin.AllowIPCHost)
+	if cfg.RequestBody.Plugin.AllowHostIPC != defaults.RequestBody.Plugin.AllowHostIPC {
+		t.Errorf("RequestBody.Plugin.AllowHostIPC = %v, want %v", cfg.RequestBody.Plugin.AllowHostIPC, defaults.RequestBody.Plugin.AllowHostIPC)
 	}
-	if cfg.RequestBody.Plugin.AllowPIDHost != defaults.RequestBody.Plugin.AllowPIDHost {
-		t.Errorf("RequestBody.Plugin.AllowPIDHost = %v, want %v", cfg.RequestBody.Plugin.AllowPIDHost, defaults.RequestBody.Plugin.AllowPIDHost)
+	if cfg.RequestBody.Plugin.AllowHostPID != defaults.RequestBody.Plugin.AllowHostPID {
+		t.Errorf("RequestBody.Plugin.AllowHostPID = %v, want %v", cfg.RequestBody.Plugin.AllowHostPID, defaults.RequestBody.Plugin.AllowHostPID)
 	}
 	if cfg.RequestBody.Plugin.AllowAllDevices != defaults.RequestBody.Plugin.AllowAllDevices {
 		t.Errorf("RequestBody.Plugin.AllowAllDevices = %v, want %v", cfg.RequestBody.Plugin.AllowAllDevices, defaults.RequestBody.Plugin.AllowAllDevices)
@@ -384,8 +384,8 @@ request_body:
     allow_signing_ca_update: true
   plugin:
     allow_host_network: true
-    allow_ipc_host: true
-    allow_pid_host: true
+    allow_host_ipc: true
+    allow_host_pid: true
     allow_all_devices: true
     allowed_bind_mounts:
       - /var/lib/plugins
@@ -562,11 +562,11 @@ rules:
 	if !cfg.RequestBody.Plugin.AllowHostNetwork {
 		t.Errorf("RequestBody.Plugin.AllowHostNetwork = %v, want true", cfg.RequestBody.Plugin.AllowHostNetwork)
 	}
-	if !cfg.RequestBody.Plugin.AllowIPCHost {
-		t.Errorf("RequestBody.Plugin.AllowIPCHost = %v, want true", cfg.RequestBody.Plugin.AllowIPCHost)
+	if !cfg.RequestBody.Plugin.AllowHostIPC {
+		t.Errorf("RequestBody.Plugin.AllowHostIPC = %v, want true", cfg.RequestBody.Plugin.AllowHostIPC)
 	}
-	if !cfg.RequestBody.Plugin.AllowPIDHost {
-		t.Errorf("RequestBody.Plugin.AllowPIDHost = %v, want true", cfg.RequestBody.Plugin.AllowPIDHost)
+	if !cfg.RequestBody.Plugin.AllowHostPID {
+		t.Errorf("RequestBody.Plugin.AllowHostPID = %v, want true", cfg.RequestBody.Plugin.AllowHostPID)
 	}
 	if !cfg.RequestBody.Plugin.AllowAllDevices {
 		t.Errorf("RequestBody.Plugin.AllowAllDevices = %v, want true", cfg.RequestBody.Plugin.AllowAllDevices)
@@ -631,15 +631,15 @@ listen:
     cert_file: /certs/server.pem
     key_file: /certs/server-key.pem
     client_ca_file: /certs/ca.pem
-    allowed_common_names:
+    common_names:
       - portainer-admin
-    allowed_dns_names:
+    dns_names:
       - portainer.internal
-    allowed_ip_addresses:
+    ip_addresses:
       - 192.0.2.44
-    allowed_uri_sans:
+    uri_sans:
       - spiffe://sockguard.test/workload/portainer
-    allowed_public_key_sha256_pins:
+    public_key_sha256_pins:
       - 7f83b1657ff1fc53b92dc18148a1d65dfa135014fbf4f5e7d68b5b2f5d7f2e2c
 clients:
   default_profile: readonly
@@ -704,20 +704,20 @@ clients:
 	if cfg.Clients.DefaultProfile != "readonly" {
 		t.Fatalf("Clients.DefaultProfile = %q, want readonly", cfg.Clients.DefaultProfile)
 	}
-	if got := cfg.Listen.TLS.AllowedCommonNames; len(got) != 1 || got[0] != "portainer-admin" {
-		t.Fatalf("Listen.TLS.AllowedCommonNames = %#v, want [portainer-admin]", got)
+	if got := cfg.Listen.TLS.CommonNames; len(got) != 1 || got[0] != "portainer-admin" {
+		t.Fatalf("Listen.TLS.CommonNames = %#v, want [portainer-admin]", got)
 	}
-	if got := cfg.Listen.TLS.AllowedDNSNames; len(got) != 1 || got[0] != "portainer.internal" {
-		t.Fatalf("Listen.TLS.AllowedDNSNames = %#v, want [portainer.internal]", got)
+	if got := cfg.Listen.TLS.DNSNames; len(got) != 1 || got[0] != "portainer.internal" {
+		t.Fatalf("Listen.TLS.DNSNames = %#v, want [portainer.internal]", got)
 	}
-	if got := cfg.Listen.TLS.AllowedIPAddresses; len(got) != 1 || got[0] != "192.0.2.44" {
-		t.Fatalf("Listen.TLS.AllowedIPAddresses = %#v, want [192.0.2.44]", got)
+	if got := cfg.Listen.TLS.IPAddresses; len(got) != 1 || got[0] != "192.0.2.44" {
+		t.Fatalf("Listen.TLS.IPAddresses = %#v, want [192.0.2.44]", got)
 	}
-	if got := cfg.Listen.TLS.AllowedURISANs; len(got) != 1 || got[0] != "spiffe://sockguard.test/workload/portainer" {
-		t.Fatalf("Listen.TLS.AllowedURISANs = %#v, want [spiffe://sockguard.test/workload/portainer]", got)
+	if got := cfg.Listen.TLS.URISANs; len(got) != 1 || got[0] != "spiffe://sockguard.test/workload/portainer" {
+		t.Fatalf("Listen.TLS.URISANs = %#v, want [spiffe://sockguard.test/workload/portainer]", got)
 	}
-	if got := cfg.Listen.TLS.AllowedPublicKeySHA256Pins; len(got) != 1 || got[0] != "7f83b1657ff1fc53b92dc18148a1d65dfa135014fbf4f5e7d68b5b2f5d7f2e2c" {
-		t.Fatalf("Listen.TLS.AllowedPublicKeySHA256Pins = %#v, want configured pin", got)
+	if got := cfg.Listen.TLS.PublicKeySHA256Pins; len(got) != 1 || got[0] != "7f83b1657ff1fc53b92dc18148a1d65dfa135014fbf4f5e7d68b5b2f5d7f2e2c" {
+		t.Fatalf("Listen.TLS.PublicKeySHA256Pins = %#v, want configured pin", got)
 	}
 	if got := cfg.Clients.SourceIPProfiles; len(got) != 1 || got[0].Profile != "watchtower" || len(got[0].CIDRs) != 1 || got[0].CIDRs[0] != "172.18.0.0/16" {
 		t.Fatalf("Clients.SourceIPProfiles = %#v, want watchtower assignment", got)

@@ -264,8 +264,8 @@ func TestPluginPolicyInspectCreateDeniesDangerousFields(t *testing.T) {
 func TestPluginPolicyInspectCreateAllowsAndPreservesBody(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{
 		AllowHostNetwork:     false,
-		AllowIPCHost:         false,
-		AllowPIDHost:         false,
+		AllowHostIPC:         false,
+		AllowHostPID:         false,
 		AllowedBindMounts:    []string{"/allowed"},
 		AllowedDevices:       []string{"/dev/allowed"},
 		AllowAllCapabilities: false,
