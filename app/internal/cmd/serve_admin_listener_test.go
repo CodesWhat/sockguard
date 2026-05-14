@@ -19,6 +19,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/admin"
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/logging"
 )
 
 // TestBuildServeHandlerSkipsAdminLayerWhenDedicatedListenerConfigured proves
@@ -114,6 +115,42 @@ func TestBuildAdminHandlerChainServesPolicyVersion(t *testing.T) {
 	}
 	if snap.Rules != 3 {
 		t.Fatalf("Rules = %d, want 3", snap.Rules)
+	}
+}
+
+// TestBuildAdminHandlerChainEmitsAuditWhenEnabled pins the
+// CONDITIONALS_NEGATION mutant at serve.go:937 (`auditLogger != nil` → `==`).
+// When the operator enables audit logging AND supplies a non-nil
+// AuditLogger, the admin chain must install withAuditLog so admin actions
+// land in the audit stream. The mutant inverts the nil-check and silently
+// drops the wrapper — admin activity becomes invisible to the audit log.
+func TestBuildAdminHandlerChainEmitsAuditWhenEnabled(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Admin.Enabled = true
+	cfg.Admin.Listen.Address = "127.0.0.1:0"
+	cfg.Log.Audit.Enabled = true
+
+	var buf strings.Builder
+	auditLogger := logging.NewAuditLogger(&buf)
+
+	versioner := admin.NewPolicyVersioner()
+	versioner.Update(admin.PolicySnapshot{Source: "startup"})
+
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), auditLogger, versioner)
+
+	req := httptest.NewRequest(http.MethodGet, cfg.Admin.PolicyVersionPath, nil)
+	req.RemoteAddr = "127.0.0.1:5555"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	// AuditLogger writes asynchronously via a background goroutine; Close
+	// drains the channel and waits for the writer to flush.
+	if err := auditLogger.Close(); err != nil {
+		t.Fatalf("auditLogger.Close() error = %v", err)
+	}
+
+	if buf.Len() == 0 {
+		t.Fatalf("expected audit log entry for admin policy/version GET; got empty buffer (status=%d)", rec.Code)
 	}
 }
 

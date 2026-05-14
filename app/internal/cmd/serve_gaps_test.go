@@ -19,6 +19,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/ratelimit"
 	"github.com/codeswhat/sockguard/internal/reload"
+	"github.com/codeswhat/sockguard/internal/testhelp"
 )
 
 // TestWarnAssignedProfilesWithoutLimitsEmitsWarning seeds the four
@@ -186,6 +187,37 @@ func TestStartReloaderStartsAndStops(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("stop did not return within 2 seconds — reloader goroutine leak")
+	}
+}
+
+// TestStartReloaderLogsNonCanceledRunError pins the CONDITIONALS_NEGATION
+// mutant at serve_reload.go:286 (`runErr != nil` → `==`). The reloader
+// goroutine logs a warning only when Run returns a non-Canceled error;
+// the mutant inverts the nil check, so a clean exit would log spuriously
+// AND a real error would be silently swallowed. We point the reloader at
+// a path under a non-existent parent so fsnotify.Add fails immediately
+// (a "reload: watch ..." error from reload.Run), then assert the warn
+// record is present.
+func TestStartReloaderLogsNonCanceledRunError(t *testing.T) {
+	cfgFile := filepath.Join(t.TempDir(), "nonexistent-child", "config.yaml")
+
+	collector := &testhelp.CollectingHandler{}
+
+	coordinator := &reloadCoordinator{
+		chainTeardown: func() {},
+		swappable:     reload.NewSwappableHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})),
+	}
+
+	stop, err := startReloader(context.Background(), cfgFile, 10*time.Millisecond, 0, coordinator, collector.Logger())
+	if err != nil {
+		t.Fatalf("startReloader err = %v", err)
+	}
+	// stop() waits for the goroutine to exit, which is the moment after
+	// the Warn line is emitted.
+	stop()
+
+	if !collector.HasMessage("config reloader stopped with error") {
+		t.Fatalf("expected reloader error log; records: %#v", collector.Records())
 	}
 }
 

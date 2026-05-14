@@ -827,6 +827,54 @@ func TestRunServe_AdminSocketRemovedWhenSocketPathSet(t *testing.T) {
 	}
 }
 
+// TestDefaultBuildBundleVerifier_PropagatesBuildConfigError pins the
+// CONDITIONALS_NEGATION mutant at serve_deps.go:104 (`err != nil` → `==` on
+// the policybundle.BuildConfig return). With the mutation, BuildConfig's
+// error is silently swallowed and the function falls through to
+// policybundle.New with whatever zero Config came back — masking a
+// misconfiguration the operator must see at startup.
+// Enabled=true with no allowed_signing_keys and no allowed_keyless triggers
+// BuildConfig's "no entries" error.
+func TestDefaultBuildBundleVerifier_PropagatesBuildConfigError(t *testing.T) {
+	pb := config.PolicyBundleConfig{Enabled: true}
+
+	verifier, err := defaultBuildBundleVerifier(pb)
+	if err == nil {
+		t.Fatalf("expected error for enabled=true with no signing keys; got verifier=%v err=nil", verifier)
+	}
+	if !strings.Contains(err.Error(), "no allowed_signing_keys") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "no allowed_signing_keys")
+	}
+}
+
+// TestDefaultBuildBundleVerifier_RejectsKeylessWithoutTUF pins the
+// CONDITIONALS_NEGATION mutant at serve_deps.go:112
+// (`cfg.TrustedMaterial == nil` → `!=`). The mutant inverts the guard so
+// the function returns the helpful "configure allowed_signing_keys for now"
+// error only when TUF roots ARE wired — i.e. never under current production
+// — making the friendly error unreachable. We pin the original error by
+// content to detect the mutation.
+func TestDefaultBuildBundleVerifier_RejectsKeylessWithoutTUF(t *testing.T) {
+	pb := config.PolicyBundleConfig{
+		Enabled: true,
+		AllowedKeyless: []config.PolicyBundleKeyless{
+			{Issuer: "https://accounts.example.com", SubjectPattern: `^ci@example\.com$`},
+		},
+	}
+
+	verifier, err := defaultBuildBundleVerifier(pb)
+	if err == nil {
+		t.Fatalf("expected error for keyless without TUF; got verifier=%v err=nil", verifier)
+	}
+	// The serve_deps.go error message is the canary — policybundle.New
+	// returns a different message under the mutation, so this assertion is
+	// what differentiates the two paths.
+	if !strings.Contains(err.Error(), "production TUF trust root is not yet wired") {
+		t.Fatalf("error = %q, want the serve_deps.go canary message containing %q",
+			err.Error(), "production TUF trust root is not yet wired")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // serve.go: CONDITIONALS_NEGATION: runtime.health != nil
 // withHealth should use runtime.health when set, otherwise fall back to a
