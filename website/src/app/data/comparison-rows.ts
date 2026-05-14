@@ -101,6 +101,20 @@ export const comparisonRows: ComparisonRow[] = [
     sockguard: "Yes",
   },
   {
+    feature: "Rate limits / concurrency caps",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    sockguard: "Yes (per-profile token-bucket + global priority gate)",
+  },
+  {
+    feature: "Rollout modes (enforce / warn / audit)",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    sockguard: "Yes (per-profile shadow + would_deny audit)",
+  },
+  {
     feature: "Signed policy bundles",
     tecnativa: "No",
     linuxserver: "No",

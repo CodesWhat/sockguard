@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Tag,
+  Timer,
   UsersRound,
   Zap,
 } from "lucide-react";
@@ -153,6 +154,15 @@ export const features: Feature[] = [
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
       "Route callers to named profiles with their own rules and request-body policy by source CIDR, mTLS client certificate selectors including SPKI pins, or unix peer credentials, with a configurable default fallback.",
+    category: "control",
+  },
+  {
+    icon: Timer,
+    title: "Rate Limits & Concurrency Caps",
+    color: "text-blue-500 dark:text-blue-400",
+    bg: "bg-blue-100 dark:bg-blue-900/50",
+    description:
+      "Per-profile token-bucket rate limiting (`limits.rate`) and in-flight concurrency caps (`limits.concurrency`) return `429 Too Many Requests` with `Retry-After` when exhausted. A system-wide priority fairness gate (`clients.global_concurrency`) prevents low-priority callers from starving high-priority profiles. Anonymous callers bucket under `_anonymous` so they cannot bypass limits by skipping identification.",
     category: "control",
   },
   {

@@ -121,7 +121,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {bold("sockguard")} {dim("v0.3.1")}
+            {bold("sockguard")} {dim("v0.8.1")}
           </>
         ),
       },
@@ -139,7 +139,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("built ")} {"  "}2026-04-13T21:18:11Z
+            {dim("built ")} {"  "}2026-05-14T00:00:00Z
           </>
         ),
       },
@@ -408,8 +408,8 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {bold("sockguard")} v0.3.1{"  "}
-            {dim("(commit a8c742f, built 2026-04-13T21:18:11Z, go1.26.3)")}
+            {bold("sockguard")} v0.8.1{"  "}
+            {dim("(commit a8c742f, built 2026-05-14T00:00:00Z, go1.26.3)")}
           </>
         ),
       },
@@ -469,7 +469,7 @@ function buildLogLines(): RawFrameLine[] {
       level: "INFO",
       msg: "sockguard started",
       fields: [
-        ["version", "v0.3.1"],
+        ["version", "v0.8.1"],
         ["listen", "unix:/var/run/sockguard/sockguard.sock"],
         ["upstream", "/var/run/docker.sock"],
         ["rules", "6"],
@@ -657,7 +657,7 @@ function buildLogLines(): RawFrameLine[] {
 
   // Timestamps cascade a few ms apart so the eye registers them as a
   // live stream rather than a bulk dump.
-  let t = new Date("2026-04-13T21:18:48.803Z").getTime();
+  let t = new Date("2026-05-14T00:00:00.000Z").getTime();
   return entries.map((e) => {
     t += 120 + Math.floor(Math.random() * 180);
     const iso = new Date(t).toISOString();
