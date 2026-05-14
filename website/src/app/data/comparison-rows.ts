@@ -100,4 +100,18 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     sockguard: "Yes",
   },
+  {
+    feature: "Signed policy bundles",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    sockguard: "Yes (cosign keyed + keyless, Rekor inclusion)",
+  },
+  {
+    feature: "Hot-reload + admin API",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    sockguard: "Yes (fsnotify/SIGHUP, validate endpoint, policy version)",
+  },
 ];

@@ -5,7 +5,7 @@ import { comparisonRows } from "./data/comparison-rows.ts";
 import { features } from "./data/features.ts";
 
 test("website features live in extracted data modules", () => {
-  assert.equal(features.length, 13);
+  assert.equal(features.length, 16);
   assert.deepEqual(
     features.map((feature) => feature.title),
     [
@@ -20,8 +20,11 @@ test("website features live in extracted data modules", () => {
       "YAML Configuration",
       "Tecnativa Compatible",
       "Minimal Attack Surface",
+      "Signed Policy Bundles",
       "Visibility-Controlled Reads",
       "Named Client Profiles",
+      "Per-Profile Rollout Modes",
+      "Hot-Reload + Admin API",
     ],
   );
   assert.deepEqual(
@@ -31,7 +34,7 @@ test("website features live in extracted data modules", () => {
 });
 
 test("website comparison rows live in extracted data modules", () => {
-  assert.equal(comparisonRows.length, 13);
+  assert.equal(comparisonRows.length, 15);
 
   const requestBodyRow = comparisonRows.find((row) => row.feature === "Request body inspection");
   assert.ok(requestBodyRow);
@@ -55,6 +58,8 @@ test("website comparison rows live in extracted data modules", () => {
   assert.ok(comparisonRows.find((row) => row.feature === "Prometheus metrics"));
   assert.ok(comparisonRows.find((row) => row.feature === "Active upstream watchdog"));
   assert.ok(comparisonRows.find((row) => row.feature === "Trace/log correlation"));
+  assert.ok(comparisonRows.find((row) => row.feature === "Signed policy bundles"));
+  assert.ok(comparisonRows.find((row) => row.feature === "Hot-reload + admin API"));
 
-  assert.equal(comparisonRows.at(-1)?.feature, "YAML config");
+  assert.equal(comparisonRows.at(-1)?.feature, "Hot-reload + admin API");
 });

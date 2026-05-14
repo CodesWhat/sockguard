@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,11 +12,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/codeswhat/sockguard/internal/admin"
 	"github.com/codeswhat/sockguard/internal/banner"
 	"github.com/codeswhat/sockguard/internal/clientacl"
 	"github.com/codeswhat/sockguard/internal/config"
@@ -23,8 +28,10 @@ import (
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/metrics"
 	"github.com/codeswhat/sockguard/internal/ownership"
+	"github.com/codeswhat/sockguard/internal/policybundle"
 	"github.com/codeswhat/sockguard/internal/proxy"
 	"github.com/codeswhat/sockguard/internal/ratelimit"
+	"github.com/codeswhat/sockguard/internal/reload"
 	"github.com/codeswhat/sockguard/internal/responsefilter"
 	"github.com/codeswhat/sockguard/internal/version"
 	"github.com/codeswhat/sockguard/internal/visibility"
@@ -100,7 +107,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 
 	// Tecnativa compatibility mode expands legacy env vars like CONTAINERS=1
 	// into explicit allow/deny rules before normal validation and compilation.
-	config.ApplyCompat(cfg, logger)
+	compatActive := config.ApplyCompat(cfg, logger)
 
 	rules, err := deps.validateRules(cfg)
 	if err != nil {
@@ -110,11 +117,47 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return err
 	}
 
-	runtime := newServeRuntime(cfg, logger, deps)
-	handler := buildServeHandlerWithRuntime(cfg, logger, auditLogger, rules, deps, runtime)
-	if runtime.stopRateLimit != nil {
-		defer runtime.stopRateLimit()
+	// Bundle verification, when configured, runs BEFORE the proxy starts
+	// taking traffic. A startup that cannot verify the signature is fatal:
+	// sockguard would otherwise be serving rules an attacker may have
+	// tampered with on disk. The verifier itself is reload-immutable
+	// (trust material is in [[reload-immutable-fields]]) so the same
+	// instance is reused for SIGHUP/fsnotify reloads.
+	bundleVerifier, err := deps.buildBundleVerifier(cfg.PolicyBundle)
+	if err != nil {
+		return fmt.Errorf("policy bundle verifier: %w", err)
 	}
+	bundleResult, err := verifyPolicyBundleAtStartup(cfg, cfgFile, deps, bundleVerifier, logger)
+	if err != nil {
+		return fmt.Errorf("policy bundle: %w", err)
+	}
+
+	// Versioner publishes the initial generation BEFORE the chain is built so
+	// the admin policy-version endpoint and the sockguard_policy_version
+	// gauge are populated as soon as the server starts taking traffic.
+	versioner := admin.NewPolicyVersioner()
+	initialSnapshot := admin.PolicySnapshot{
+		LoadedAt:     deps.now(),
+		Rules:        len(rules),
+		Profiles:     len(cfg.Clients.Profiles),
+		CompatActive: compatActive,
+		Source:       "startup",
+		ConfigSHA256: policyConfigHash(cfg),
+	}
+	if bundleResult != nil {
+		initialSnapshot.BundleSource = filepath.Base(cfg.PolicyBundle.SignaturePath)
+		initialSnapshot.BundleSigner = bundleResult.Signer
+		initialSnapshot.BundleDigest = bundleResult.DigestHex
+	}
+	initialVersion := versioner.Update(initialSnapshot)
+
+	runtime := newServeRuntime(cfg, logger, deps)
+	runtime.metrics.SetPolicyVersion(initialVersion)
+	handler, chainTeardown := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, versioner)
+	swappable := reload.NewSwappableHandler(handler)
+	coordinator := newReloadCoordinator(cfg, cfgFile, swappable, chainTeardown, logger, auditLogger, deps, runtime, versioner, bundleVerifier)
+	defer coordinator.stop()
+
 	listener, err := deps.createServeListener(cfg)
 	if err != nil {
 		return fmt.Errorf("listener: %w", err)
@@ -131,7 +174,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		logger.Warn("failed to close listener", "error", closeErr)
 	}()
 
-	server := newHTTPServer(handler)
+	server := newHTTPServer(swappable)
 	listen := listenerAddr(cfg)
 	warnOnInsecureRemoteTCPBind(logger, cfg)
 	banner.Render(cmd.ErrOrStderr(), banner.Info{
@@ -155,6 +198,30 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	defer stopWatchdog()
 	go deps.startServing(server, listener, errCh)
 
+	adminServer, adminErrCh, stopAdmin, err := startAdminServer(cfg, logger, auditLogger, versioner, deps)
+	if err != nil {
+		return err
+	}
+	defer stopAdmin()
+
+	stopReload := func() {}
+	if cfg.Reload.Enabled && cfgFile != "" {
+		debounce := time.Duration(cfg.Reload.DebounceMs) * time.Millisecond
+		if cfg.Reload.DebounceMs == 0 {
+			debounce = reload.DefaultDebounce
+		}
+		var startErr error
+		stopReload, startErr = startReloader(context.Background(), cfgFile, debounce, coordinator, logger)
+		if startErr != nil {
+			logger.Error("config hot-reload disabled: failed to start watcher",
+				"error", startErr,
+				"path", cfgFile,
+			)
+			stopReload = func() {}
+		}
+	}
+	defer stopReload()
+
 	sigCh := make(chan os.Signal, 1)
 	deps.notifySignals(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
@@ -165,12 +232,25 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("server error: %w", err)
 		}
+	case err := <-adminErrCh:
+		// An admin Serve() return is always fatal: the operator enabled
+		// admin.listen specifically so they could rely on the admin
+		// endpoints, so a silent admin-only outage would be worse than
+		// taking the whole proxy down and surfacing the cause.
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("admin server error: %w", err)
+		}
 	}
 	stopWatchdog()
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), deps.shutdownGracePeriod)
 	defer cancel()
 
+	if adminServer != nil {
+		if err := deps.shutdownServer(adminServer, shutdownCtx); err != nil {
+			logger.Error("admin shutdown error", "error", err)
+		}
+	}
 	if err := deps.shutdownServer(server, shutdownCtx); err != nil {
 		logger.Error("shutdown error", "error", err)
 	}
@@ -179,32 +259,113 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 			logger.Error("remove socket error", "socket", cfg.Listen.Socket, "error", err)
 		}
 	}
+	if cfg.Admin.Enabled && cfg.Admin.Listen.Socket != "" {
+		if err := deps.removePath(cfg.Admin.Listen.Socket); err != nil && !os.IsNotExist(err) {
+			logger.Error("remove admin socket error", "socket", cfg.Admin.Listen.Socket, "error", err)
+		}
+	}
 	logger.Info("sockguard stopped")
 	return nil
 }
 
-func buildServeHandler(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
-	return buildServeHandlerWithRuntime(cfg, logger, auditLogger, rules, deps, newServeRuntime(cfg, logger, deps))
+// startAdminServer brings up the dedicated admin http.Server when
+// admin.listen is configured. Returns the server (so the caller can
+// Shutdown it), an error channel that yields the Serve return value, and
+// a stop function the caller must defer to close the admin listener.
+//
+// When admin.listen is unconfigured the function is a no-op: it returns
+// (nil, a permanently-blocked channel, no-op stop, nil) so the caller's
+// select still has an entry to read from without having to special-case
+// the unconfigured path.
+//
+// An adminErrCh receive of a non-nil error other than http.ErrServerClosed
+// is a fatal condition the caller surfaces as a process-exit error — see
+// the comment in runServeWithDeps.
+func startAdminServer(
+	cfg *config.Config,
+	logger *slog.Logger,
+	auditLogger *logging.AuditLogger,
+	versioner *admin.PolicyVersioner,
+	deps *serveDeps,
+) (*http.Server, <-chan error, func(), error) {
+	if !cfg.Admin.Enabled || !cfg.Admin.Listen.Configured() {
+		// A nil-returning channel would block forever in select; that is
+		// exactly what we want when there's no admin server to watch.
+		return nil, make(chan error), func() {}, nil
+	}
+
+	adminListener, err := deps.createAdminListener(cfg)
+	if err != nil {
+		return nil, nil, func() {}, fmt.Errorf("admin listener: %w", err)
+	}
+
+	adminHandler := buildAdminHandlerChain(cfg, logger, auditLogger, versioner)
+	adminServer := newAdminHTTPServer(adminHandler)
+	adminErrCh := make(chan error, 1)
+
+	go deps.startServing(adminServer, adminListener, adminErrCh)
+
+	logger.Info("admin listener started",
+		"listen", adminListenerAddr(cfg),
+		"validate_path", cfg.Admin.Path,
+		"policy_version_path", cfg.Admin.PolicyVersionPath,
+	)
+
+	stop := func() {
+		closeErr := adminListener.Close()
+		if closeErr == nil || errors.Is(closeErr, net.ErrClosed) {
+			return
+		}
+		logger.Warn("failed to close admin listener", "error", closeErr)
+	}
+	return adminServer, adminErrCh, stop, nil
 }
 
 func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime) http.Handler {
-	clientProfiles, err := buildServeClientProfiles(cfg)
-	if err != nil {
-		logger.Error("invalid client profile config", "error", err)
-		return invalidClientProfileHandler()
-	}
-
-	handler := newServeUpstreamHandler(cfg, logger)
-	for _, layer := range buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, runtime) {
-		handler = layer.with(handler)
-	}
+	handler, _ := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, nil)
 	return handler
 }
 
+// buildServeHandlerChainWithRuntime is the production / reload entry point:
+// it returns both the composed http.Handler and a teardown closure that stops
+// every chain-scoped goroutine (the rate-limit sampler and per-profile
+// Limiter eviction loops). Callers must invoke the returned teardown when
+// the handler is replaced (hot reload) or when the server shuts down,
+// otherwise the rate-limit goroutines tied to the previous chain leak.
+//
+// The versioner is process-scoped (its pointer is captured into the admin
+// policy-version handler), so reloads pass the SAME versioner used at
+// startup — the snapshot it returns is whatever the reload coordinator
+// last published. Tests that don't care about the policy-version endpoint
+// pass nil; in that case the layer is skipped.
+//
+// Tests that don't care about teardown should continue calling
+// buildServeHandler / buildServeHandlerWithRuntime which discard it — the
+// goroutines die with the test process anyway.
+func buildServeHandlerChainWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime, versioner *admin.PolicyVersioner) (http.Handler, func()) {
+	clientProfiles, err := buildServeClientProfiles(cfg)
+	if err != nil {
+		logger.Error("invalid client profile config", "error", err)
+		return invalidClientProfileHandler(), func() {}
+	}
+
+	handler := newServeUpstreamHandler(cfg, logger)
+	layers, teardown := buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, runtime, versioner)
+	for _, layer := range layers {
+		handler = layer.with(handler)
+	}
+	return handler, teardown
+}
+
+// serveRuntime holds process-scoped objects whose lifetime spans the whole
+// run: the metrics registry and the upstream-health monitor. Both survive
+// hot reloads — they are tied to immutable config fields, so a reload that
+// would change them is rejected by the immutable-field gate before any
+// rebuild happens. Chain-scoped goroutines (rate-limit sampler, per-profile
+// Limiter eviction) are tracked separately by reloadCoordinator.
 type serveRuntime struct {
-	metrics       *metrics.Registry
-	health        *health.Monitor
-	stopRateLimit func()
+	metrics *metrics.Registry
+	health  *health.Monitor
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) *serveRuntime {
@@ -270,11 +431,7 @@ func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handl
 	})
 }
 
-func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy) []serveHandlerLayer {
-	return buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, newServeRuntime(cfg, logger, deps))
-}
-
-func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy, runtime *serveRuntime) []serveHandlerLayer {
+func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy, runtime *serveRuntime, versioner *admin.PolicyVersioner) ([]serveHandlerLayer, func()) {
 	layers := []serveHandlerLayer{
 		namedServeHandlerLayer("withHijack", withHijack(cfg, logger)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, logger)),
@@ -282,27 +439,52 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 		namedServeHandlerLayer("withFilter", withFilter(cfg, logger, rules, clientProfiles)),
 	}
 
-	// Rate limiting and concurrency caps sit after client identity is resolved
-	// (clientacl) but before rule evaluation (filter). The sampler stop
-	// function is stored on the runtime so the caller can clean it up on
-	// server shutdown.
-	if rlMiddleware, stopSampler := buildRateLimitMiddleware(cfg, logger, runtime); rlMiddleware != nil {
-		if runtime != nil {
-			runtime.stopRateLimit = stopSampler
+	// Admin endpoints sit inside filter (so the filter never sees admin paths)
+	// but outside rate-limit and clientacl (so CIDR allowlists and per-profile
+	// limits still apply to /admin/* callers — they are not exempt from abuse
+	// controls). Layers earlier in this slice are wrapped by layers added
+	// later, so an admin layer appended here runs AFTER ratelimit / clientacl
+	// in the request flow but BEFORE filter.
+	//
+	// The policy-version endpoint is appended before the validate endpoint so
+	// a GET to /admin/policy/version is matched first; method-mismatched
+	// requests still fall through to the next admin interceptor (which sees
+	// a different path), and ultimately to filter where unrelated traffic
+	// continues normally.
+	//
+	// When admin.listen is configured the admin endpoints move to a dedicated
+	// http.Server (see startAdminServer); the main chain must NOT also mount
+	// them, otherwise the same path resolves on both listeners and operators
+	// lose the isolation they explicitly opted in to.
+	if cfg.Admin.Enabled && !cfg.Admin.Listen.Configured() {
+		if versioner != nil {
+			layers = append(layers, namedServeHandlerLayer("withPolicyVersionEndpoint", withPolicyVersionEndpoint(cfg, logger, versioner)))
 		}
+		layers = append(layers, namedServeHandlerLayer("withAdminEndpoint", withAdminEndpoint(cfg, logger)))
+	}
+
+	// Rate limiting and concurrency caps sit after client identity is resolved
+	// (clientacl) but before rule evaluation (filter), so a request denied by
+	// the filter still consumes its rate-limit quota — rule-probing cannot
+	// happen at line rate. The teardown closure halts the sampler + Limiter
+	// eviction goroutines bound to this chain — callers must invoke it when
+	// the chain is replaced (hot reload) or torn down at shutdown.
+	teardown := func() {}
+	if rlMiddleware, stop := buildRateLimitMiddleware(cfg, logger, runtime); rlMiddleware != nil {
+		teardown = stop
 		layers = append(layers, namedServeHandlerLayer("withRateLimit", rlMiddleware))
 	}
 
 	if cfg.Health.Enabled {
 		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, logger, deps, runtime)))
 	}
-	if runtime != nil && runtime.metrics != nil {
+	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetricsEndpoint", withMetricsEndpoint(cfg, runtime.metrics)))
 	}
 	layers = append(layers,
 		namedServeHandlerLayer("withClientACL", withClientACL(cfg, logger)),
 	)
-	if runtime != nil && runtime.metrics != nil {
+	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetrics", withMetrics(runtime.metrics)))
 	}
 	layers = append(layers,
@@ -315,19 +497,14 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 	if cfg.Log.AccessLog {
 		layers = append(layers, namedServeHandlerLayer("withAccessLog", withAccessLog(logger)))
 	}
-	return layers
+	return layers, teardown
 }
 
 // buildRateLimitMiddleware constructs the per-profile rate-limit+concurrency
-// middleware and its audit sampler. Returns nil, nil if no profile has limits
-// configured. The second return value is the stop function for the sampler's
-// background goroutine; callers must call it on shutdown to prevent goroutine
-// leaks in tests and graceful shutdowns.
-//
-// ratelimit.Middleware can technically return a compile error if an
-// endpoint-cost path glob is malformed, but the config validator rejects
-// those at startup. If one slips through, we log and skip the middleware
-// rather than build a proxy with broken limits.
+// middleware and its audit sampler. Returns (nil, nil) when no profile has
+// limits and no global concurrency cap is configured. The second return value
+// is a stop function that halts the sampler eviction goroutine and every
+// per-profile Limiter eviction goroutine; callers must call it on shutdown.
 func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *serveRuntime) (func(http.Handler) http.Handler, func()) {
 	profiles := make(map[string]ratelimit.ProfileOptions)
 	for _, profile := range cfg.Clients.Profiles {
@@ -348,24 +525,58 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 		return nil, nil
 	}
 
-	var reg *metrics.Registry
-	if runtime != nil {
-		reg = runtime.metrics
-	}
+	warnAssignedProfilesWithoutLimits(cfg, profiles, logger)
 
 	sampler, stopSampler := ratelimit.NewAuditSampler()
-	mw, err := ratelimit.Middleware(logger, reg, sampler, ratelimit.MiddlewareOptions{
+	mw, stopLimiters := ratelimit.Middleware(logger, runtime.metrics, sampler, ratelimit.MiddlewareOptions{
 		Profiles:          profiles,
 		ResolveProfile:    clientacl.RequestProfile,
 		GlobalConcurrency: globalConc,
 	})
-	if err != nil {
-		logger.Error("rate-limit middleware compile failed; validator should have caught this",
-			slog.String("error", err.Error()))
+	stop := func() {
+		stopLimiters()
 		stopSampler()
-		return nil, nil
 	}
-	return mw, stopSampler
+	return mw, stop
+}
+
+// warnAssignedProfilesWithoutLimits flags profiles that operators bound to a
+// caller identity (mTLS, source IP, unix peer, default) but did not give any
+// rate or concurrency configuration. Once any profile has limits configured,
+// an unlimited assigned profile is almost always a config oversight, not an
+// intentional carve-out — surface it at startup so operators notice before
+// the proxy ships traffic.
+func warnAssignedProfilesWithoutLimits(cfg *config.Config, limitedProfiles map[string]ratelimit.ProfileOptions, logger *slog.Logger) {
+	assigned := make(map[string]struct{})
+	if cfg.Clients.DefaultProfile != "" {
+		assigned[cfg.Clients.DefaultProfile] = struct{}{}
+	}
+	for _, a := range cfg.Clients.SourceIPProfiles {
+		if a.Profile != "" {
+			assigned[a.Profile] = struct{}{}
+		}
+	}
+	for _, a := range cfg.Clients.ClientCertificateProfiles {
+		if a.Profile != "" {
+			assigned[a.Profile] = struct{}{}
+		}
+	}
+	for _, a := range cfg.Clients.UnixPeerProfiles {
+		if a.Profile != "" {
+			assigned[a.Profile] = struct{}{}
+		}
+	}
+	for name := range assigned {
+		if _, ok := limitedProfiles[name]; ok {
+			continue
+		}
+		logger.Warn(
+			"client profile is assigned to callers but has no rate or concurrency limits configured",
+			slog.String("profile", name),
+			slog.String("recommendation",
+				"add clients.profiles[...].limits.rate, .concurrency, or .priority — or remove the assignment if unlimited access is intended"),
+		)
+	}
 }
 
 // configLimitsToRateLimitOptions converts a per-profile LimitsConfig to the
@@ -445,7 +656,7 @@ func withFilter(cfg *config.Config, logger *slog.Logger, rules []*filter.Compile
 
 func withHealth(cfg *config.Config, logger *slog.Logger, deps *serveDeps, runtime *serveRuntime) func(http.Handler) http.Handler {
 	monitor := health.NewMonitor(cfg.Upstream.Socket, deps.now(), logger)
-	if runtime != nil && runtime.health != nil {
+	if runtime.health != nil {
 		monitor = runtime.health
 	}
 	healthHandler := monitor.Handler()
@@ -467,6 +678,160 @@ func withMetrics(registry *metrics.Registry) func(http.Handler) http.Handler {
 
 func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
 	return clientacl.Middleware(cfg.Upstream.Socket, logger, serveClientACLOptions(cfg))
+}
+
+func withAdminEndpoint(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+	return admin.NewValidateInterceptor(admin.Options{
+		Path:         cfg.Admin.Path,
+		MaxBodyBytes: cfg.Admin.MaxBodyBytes,
+		Validate:     buildAdminValidator(logger),
+		Logger:       logger,
+	})
+}
+
+// withPolicyVersionEndpoint mounts the read-only GET admin.policy_version_path
+// handler. The versioner pointer is captured by reference so updates the
+// reload coordinator publishes after a successful swap are observable to the
+// next caller without re-wrapping the chain.
+func withPolicyVersionEndpoint(cfg *config.Config, logger *slog.Logger, versioner *admin.PolicyVersioner) func(http.Handler) http.Handler {
+	return admin.NewPolicyVersionInterceptor(admin.PolicyVersionOptions{
+		Path:   cfg.Admin.PolicyVersionPath,
+		Source: versioner.Snapshot,
+		Logger: logger,
+	})
+}
+
+// verifyPolicyBundleAtStartup runs the bundle verifier against the raw
+// YAML bytes of the on-disk config file. Returns (nil, nil) when
+// policy_bundle is disabled so the caller can skip stamping bundle
+// metadata onto the initial snapshot. Otherwise returns (*VerifyResult,
+// nil) on success or (nil, err) on any failure — startup must abort in
+// that case because the trust gate is the whole point of the feature.
+func verifyPolicyBundleAtStartup(
+	cfg *config.Config,
+	cfgFile string,
+	deps *serveDeps,
+	verifier policybundle.Verifier,
+	logger *slog.Logger,
+) (*policybundle.VerifyResult, error) {
+	if !cfg.PolicyBundle.Enabled {
+		return nil, nil
+	}
+	if cfgFile == "" {
+		return nil, errors.New("policy_bundle.enabled=true but no --config file was supplied; sockguard cannot verify an in-memory default")
+	}
+	if cfg.PolicyBundle.SignaturePath == "" {
+		return nil, errors.New("policy_bundle.signature_path is required when policy_bundle.enabled=true")
+	}
+
+	yamlBytes, err := deps.readConfigBytes(cfgFile)
+	if err != nil {
+		return nil, fmt.Errorf("read config YAML for verification: %w", err)
+	}
+	entity, err := deps.loadBundleEntity(cfg.PolicyBundle.SignaturePath)
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), bundleVerifyDeadline(cfg.PolicyBundle))
+	defer cancel()
+	result, err := verifier.Verify(ctx, yamlBytes, entity)
+	if err != nil {
+		return nil, err
+	}
+	logger.Info("policy bundle verified",
+		"signature_path", cfg.PolicyBundle.SignaturePath,
+		"signer", result.Signer,
+		"digest", result.DigestHex,
+		"elapsed_ms", result.ElapsedMS,
+	)
+	return &result, nil
+}
+
+// bundleVerifyDeadline returns the wall-clock budget for one verification
+// attempt. The policybundle.BuildConfig parser is the authoritative source
+// for the timeout but this helper avoids a second parse at the call site
+// and degrades to the package default if the value is unset.
+func bundleVerifyDeadline(pb config.PolicyBundleConfig) time.Duration {
+	if pb.VerifyTimeout == "" {
+		return policybundle.VerifyTimeout
+	}
+	d, err := time.ParseDuration(pb.VerifyTimeout)
+	if err != nil || d <= 0 {
+		return policybundle.VerifyTimeout
+	}
+	return d
+}
+
+// policyConfigHash returns a hex SHA-256 of the JSON encoding of the
+// effective config. JSON marshaling of our config structs is deterministic
+// because field order is fixed and no map[string]any leaks into the shape;
+// that makes the hash a stable fingerprint operators can compare across
+// scrapes to confirm two snapshots really represent the same config. An
+// encoding failure is non-fatal — we return the empty string so the rest
+// of the snapshot still publishes.
+func policyConfigHash(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
+}
+
+// buildAdminValidator returns the parse+validate+compile callback wired into
+// the admin /admin/validate endpoint. It mirrors the offline `sockguard
+// validate` command's pipeline (config.LoadBytes → ApplyCompat →
+// validateAndCompileRules → compileClientProfiles) so an operator's CI gate
+// and the running proxy reach the same verdict for the same YAML.
+//
+// ApplyCompat uses a discard logger here because compat-expansion log noise
+// belongs to the proxy's own startup, not to a candidate-config validation
+// request. The returned response still carries CompatActive so callers see
+// whether legacy env aliases would have fired.
+func buildAdminValidator(parentLogger *slog.Logger) admin.Validator {
+	return func(yamlBody []byte) admin.ValidateResponse {
+		cfg, err := config.LoadBytes(yamlBody)
+		if err != nil {
+			return admin.ValidateResponse{OK: false, Errors: []string{"parse: " + err.Error()}}
+		}
+
+		discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+		compatActive := config.ApplyCompat(cfg, discardLogger)
+
+		compiled, compileErr := validateAndCompileRules(cfg)
+		if compileErr != nil {
+			return admin.ValidateResponse{
+				OK:           false,
+				Errors:       splitValidationError(compileErr),
+				CompatActive: compatActive,
+			}
+		}
+
+		return admin.ValidateResponse{
+			OK:           true,
+			Rules:        len(compiled),
+			Profiles:     len(cfg.Clients.Profiles),
+			CompatActive: compatActive,
+		}
+	}
+}
+
+// splitValidationError unwraps a *config.ValidationError into its
+// per-issue lines so the admin endpoint can return a structured list
+// instead of one wrapped string. Non-validation errors (e.g. rule-compile
+// failures from filter.CompileRule) fall through as a single-element slice.
+func splitValidationError(err error) []string {
+	var vErr *config.ValidationError
+	if errors.As(err, &vErr) {
+		out := make([]string, 0, len(vErr.Errors))
+		out = append(out, vErr.Errors...)
+		return out
+	}
+	return []string{err.Error()}
 }
 
 func withRequestID() func(http.Handler) http.Handler {
@@ -535,7 +900,25 @@ func serveClientACLOptions(cfg *config.Config) clientacl.Options {
 			),
 			UnixPeers: clientUnixPeerProfiles(cfg.Clients.UnixPeerProfiles),
 		},
+		ProfileModes: clientProfileModes(cfg.Clients.Profiles),
 	}
+}
+
+// clientProfileModes flattens cfg.Clients.Profiles into the
+// (profileName -> rolloutMode) map clientacl uses to stamp meta.RolloutMode
+// when a profile is selected. Modes that fail to parse fall back to enforce;
+// the config validator already rejects unknown values at startup, so the
+// fallback is a defense-in-depth no-op under normal operation.
+func clientProfileModes(profiles []config.ClientProfileConfig) map[string]string {
+	if len(profiles) == 0 {
+		return nil
+	}
+	modes := make(map[string]string, len(profiles))
+	for _, p := range profiles {
+		mode, _ := config.ParseRolloutMode(p.Mode)
+		modes[p.Name] = mode.String()
+	}
+	return modes
 }
 
 func clientSourceIPProfiles(values []config.ClientSourceIPProfileAssignmentConfig) []clientacl.SourceIPProfileAssignment {
@@ -588,6 +971,73 @@ func clientVisibilityProfiles(values []config.ClientProfileConfig) map[string]vi
 		}
 	}
 	return profiles
+}
+
+// buildAdminHandlerChain composes the http.Handler used by the dedicated
+// admin listener (admin.listen configured). It mounts the validate and
+// policy-version interceptors over a 404 terminator and wraps the result in
+// the observability layers (request-id, trace context, optional audit log,
+// optional access log) so the admin surface still emits the same kind of
+// telemetry as the main listener.
+//
+// Note: rate-limit, client ACL, ownership, visibility, hijack, and the
+// Docker-API filter are intentionally NOT applied — the admin listener is a
+// distinct trust boundary whose access control is the bind target plus
+// admin.listen.tls, not the per-profile policy that gates Docker-API
+// traffic on the main listener.
+func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, versioner *admin.PolicyVersioner) http.Handler {
+	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Any request on the dedicated admin listener that did not match an
+		// admin path lands here. We surface it as a 404 with the same
+		// SetDeniedWithCode call used elsewhere so the access/audit logs
+		// carry a consistent reason_code.
+		logging.SetDeniedWithCode(w, r, "admin_unknown_path", "unknown admin path", nil)
+		_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "not found"})
+	})
+
+	var h http.Handler = terminal
+	h = withAdminEndpoint(cfg, logger)(h)
+	if versioner != nil {
+		h = withPolicyVersionEndpoint(cfg, logger, versioner)(h)
+	}
+	if cfg.Log.Audit.Enabled && auditLogger != nil {
+		h = withAuditLog(auditLogger, cfg)(h)
+	}
+	h = withRequestID()(h)
+	h = withTraceContext()(h)
+	if cfg.Log.AccessLog {
+		h = withAccessLog(logger)(h)
+	}
+	return h
+}
+
+// newAdminHTTPServer returns the http.Server for the dedicated admin
+// listener. Unlike the main server it sets explicit Read/Write timeouts:
+// admin endpoints never stream and never hijack, so a runaway client cannot
+// be allowed to hold a goroutine open forever. The timeout has to be generous
+// enough that the validator (which compiles regex/glob inputs and parses TLS
+// material) still finishes on a contented box — 30s is comfortably above
+// observed validation latencies.
+func newAdminHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ConnContext:       clientacl.ConnContext,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		ReadHeaderTimeout: readHeaderTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
+	}
+}
+
+// adminListenerAddr returns a human-readable address for the dedicated admin
+// listener so logging can show operators where the admin endpoints are
+// bound. Mirrors listenerAddr.
+func adminListenerAddr(cfg *config.Config) string {
+	if cfg.Admin.Listen.Socket != "" {
+		return "unix:" + cfg.Admin.Listen.Socket
+	}
+	return "tcp://" + cfg.Admin.Listen.Address
 }
 
 func newHTTPServer(handler http.Handler) *http.Server {
@@ -689,6 +1139,12 @@ func isAddrInUse(err error) bool {
 }
 
 // healthInterceptor short-circuits health check requests before they hit the filter.
+//
+// /health intentionally runs before the CIDR allowlist so external uptime
+// probes (Kubernetes liveness, load-balancer health checks) can reach it
+// without being added to clients.allowed_cidrs. Treat health as
+// always-public. Operators who need authenticated health checks should disable
+// health.enabled and use /metrics behind the listener's mTLS instead.
 func healthInterceptor(path string, healthHandler http.Handler, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == path {

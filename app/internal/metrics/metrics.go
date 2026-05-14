@@ -22,21 +22,51 @@ const contentTypePrometheusText = "text/plain; version=0.0.4; charset=utf-8"
 
 var defaultDurationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
+// prometheusLabelEscaper escapes the three characters that would break
+// Prometheus text-format label values: backslash, newline, and double-quote.
+// Hoisted to a package-level var so it is allocated once at init time rather
+// than once per labelValue call (observe calls labelValue 5+ times per request).
+var prometheusLabelEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	"\n", `\n`,
+	`"`, `\"`,
+)
+
 // Registry stores in-process Prometheus metrics for the proxy.
 type Registry struct {
 	activeRequests atomic.Int64
 	upstreamKnown  atomic.Bool
 	upstreamUp     atomic.Int64
 
+	// configReloadLastSecondsKnown distinguishes "never reloaded" (still 0)
+	// from "reloaded successfully at the start of the Unix epoch", so the
+	// gauge can be omitted from scrape output until the first successful
+	// reload lands.
+	configReloadLastSecondsKnown atomic.Bool
+	configReloadLastSeconds      atomic.Uint64
+
+	// policyVersionKnown gates emission of sockguard_policy_version so the
+	// gauge stays absent until the reload coordinator (or startup wiring)
+	// publishes a first snapshot. Counter is monotonic per process.
+	policyVersionKnown atomic.Bool
+	policyVersion      atomic.Int64
+
 	startedAt time.Time
 
-	mu        sync.Mutex
-	requests  map[requestLabels]uint64
-	denies    map[denyLabels]uint64
-	duration  map[durationLabels]*histogram
-	upstream  map[upstreamWatchdogLabels]uint64
-	throttles map[throttleLabels]uint64
-	inflight  map[string]int64 // profile → current inflight count
+	// inflight tracks current per-profile in-flight request counts under a
+	// concurrency cap. Kept off the shared `mu` mutex because SetInflight is
+	// called twice per admitted request on the rate-limit hot path, while
+	// `mu` also serializes request/deny/duration/throttle observations. Using
+	// per-profile *atomic.Int64 lets SetInflight be lock-free under contention.
+	inflight sync.Map // map[string]*atomic.Int64
+
+	mu             sync.Mutex
+	requests       map[requestLabels]uint64
+	denies         map[denyLabels]uint64
+	duration       map[durationLabels]*histogram
+	upstream       map[upstreamWatchdogLabels]uint64
+	throttles      map[throttleLabels]uint64
+	configReloads  map[configReloadLabels]uint64
 }
 
 type requestLabels struct {
@@ -52,6 +82,11 @@ type denyLabels struct {
 	reasonCode string
 	route      string
 	rule       string
+	// mode is the rollout posture in effect when the deny was decided:
+	// enforce (request blocked), warn or audit (request passed through to
+	// upstream but the gate said deny). Dashboards filter by mode to
+	// distinguish real denies from dry-run signal.
+	mode string
 }
 
 type durationLabels struct {
@@ -68,6 +103,11 @@ type upstreamWatchdogLabels struct {
 type throttleLabels struct {
 	reason  string
 	profile string
+	mode    string
+}
+
+type configReloadLabels struct {
+	result string
 }
 
 type histogram struct {
@@ -79,35 +119,77 @@ type histogram struct {
 // NewRegistry constructs an empty metrics registry.
 func NewRegistry() *Registry {
 	return &Registry{
-		startedAt: time.Now(),
-		requests:  make(map[requestLabels]uint64),
-		denies:    make(map[denyLabels]uint64),
-		duration:  make(map[durationLabels]*histogram),
-		upstream:  make(map[upstreamWatchdogLabels]uint64),
-		throttles: make(map[throttleLabels]uint64),
-		inflight:  make(map[string]int64),
+		startedAt:     time.Now(),
+		requests:      make(map[requestLabels]uint64),
+		denies:        make(map[denyLabels]uint64),
+		duration:      make(map[durationLabels]*histogram),
+		upstream:      make(map[upstreamWatchdogLabels]uint64),
+		throttles:     make(map[throttleLabels]uint64),
+		configReloads: make(map[configReloadLabels]uint64),
 	}
 }
 
-// ObserveThrottle increments the throttle counter for the given profile and
-// reason. This always fires — audit-log sampling is handled by the caller.
-func (r *Registry) ObserveThrottle(profile, reason string) {
+// ObserveConfigReload increments the config reload counter for the given
+// outcome. result is one of "ok", "reject_load", "reject_validation",
+// "reject_immutable", "reject_signature" — see internal/cmd reload
+// pipeline for the canonical list. When result is "ok" the registry also
+// stamps the last-success timestamp gauge for scrape-side visibility.
+func (r *Registry) ObserveConfigReload(result string) {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
-	r.throttles[throttleLabels{reason: reason, profile: profile}]++
+	r.configReloads[configReloadLabels{result: result}]++
+	r.mu.Unlock()
+
+	if result == "ok" {
+		ts := time.Now().UnixNano()
+		if ts < 0 {
+			return
+		}
+		r.configReloadLastSeconds.Store(uint64(ts))
+		r.configReloadLastSecondsKnown.Store(true)
+	}
+}
+
+// SetPolicyVersion publishes the current monotonic policy generation
+// counter to the metrics scrape surface. Called once at startup (after the
+// initial snapshot is built) and once per successful hot reload. n is the
+// value returned by admin.PolicyVersioner.Update — the registry does not
+// own counter assignment, only its visibility.
+func (r *Registry) SetPolicyVersion(n int64) {
+	if r == nil {
+		return
+	}
+	r.policyVersion.Store(n)
+	r.policyVersionKnown.Store(true)
+}
+
+// ObserveThrottle increments the throttle counter for the given profile,
+// reason, and rollout mode. This always fires — audit-log sampling is handled
+// by the caller. mode is one of enforce / warn / audit; an empty string is
+// normalized to enforce.
+func (r *Registry) ObserveThrottle(profile, reason, mode string) {
+	if r == nil {
+		return
+	}
+	if mode == "" {
+		mode = "enforce"
+	}
+	r.mu.Lock()
+	r.throttles[throttleLabels{reason: reason, profile: profile, mode: mode}]++
 	r.mu.Unlock()
 }
 
 // SetInflight updates the current in-flight count gauge for a profile.
+// Lock-free: per-profile counters are stored in a sync.Map keyed by profile
+// name; the call writes one atomic.Int64 without touching the registry mutex.
 func (r *Registry) SetInflight(profile string, count int64) {
 	if r == nil {
 		return
 	}
-	r.mu.Lock()
-	r.inflight[profile] = count
-	r.mu.Unlock()
+	val, _ := r.inflight.LoadOrStore(profile, &atomic.Int64{})
+	val.(*atomic.Int64).Store(count)
 }
 
 // Middleware records one metrics observation for each completed HTTP request.
@@ -196,12 +278,16 @@ func (r *Registry) observe(req *http.Request, meta *logging.RequestMeta, status 
 
 	r.requests[requestKey]++
 	r.observeDurationLocked(durationKey, seconds)
-	if decision == "deny" {
+	// Both real denies (enforce mode) and would-be-denies (warn / audit) are
+	// counted here; the mode label distinguishes them so dashboards can
+	// compare "blocked" vs "would-have-been-blocked" volume.
+	if decision == "deny" || decision == logging.DecisionWouldDeny {
 		r.denies[denyLabels{
 			profile:    profile,
 			reasonCode: reasonCodeLabel(meta),
 			route:      route,
 			rule:       ruleLabel(meta),
+			mode:       rolloutModeLabel(meta),
 		}]++
 	}
 }
@@ -228,11 +314,17 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	durations := cloneHistograms(r.duration)
 	upstream := cloneMap(r.upstream)
 	throttles := cloneMap(r.throttles)
-	inflight := cloneInflight(r.inflight)
+	reloads := cloneMap(r.configReloads)
 	active := r.activeRequests.Load()
 	upstreamKnown := r.upstreamKnown.Load()
 	upstreamUp := r.upstreamUp.Load()
+	reloadLastKnown := r.configReloadLastSecondsKnown.Load()
+	reloadLastNanos := r.configReloadLastSeconds.Load()
+	policyVersionKnown := r.policyVersionKnown.Load()
+	policyVersion := r.policyVersion.Load()
 	r.mu.Unlock()
+
+	inflight := snapshotInflight(&r.inflight)
 
 	fmt.Fprintln(w, "# HELP sockguard_build_info Sockguard build metadata exposed as constant labels.")
 	fmt.Fprintln(w, "# TYPE sockguard_build_info gauge")
@@ -250,11 +342,11 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 			labelValue(key.decision), labelValue(key.method), labelValue(key.profile), labelValue(key.route), labelValue(key.status), requests[key])
 	}
 
-	fmt.Fprintln(w, "# HELP sockguard_http_denied_requests_total Total requests denied by Sockguard policy or admission checks.")
+	fmt.Fprintln(w, "# HELP sockguard_http_denied_requests_total Total requests denied by Sockguard policy or admission checks. mode is enforce (request was blocked) or warn / audit (request would have been blocked, passed through under rollout mode).")
 	fmt.Fprintln(w, "# TYPE sockguard_http_denied_requests_total counter")
 	for _, key := range sortedDenyLabels(denies) {
-		fmt.Fprintf(w, "sockguard_http_denied_requests_total{profile=%s,reason_code=%s,route=%s,rule=%s} %d\n",
-			labelValue(key.profile), labelValue(key.reasonCode), labelValue(key.route), labelValue(key.rule), denies[key])
+		fmt.Fprintf(w, "sockguard_http_denied_requests_total{mode=%s,profile=%s,reason_code=%s,route=%s,rule=%s} %d\n",
+			labelValue(key.mode), labelValue(key.profile), labelValue(key.reasonCode), labelValue(key.route), labelValue(key.rule), denies[key])
 	}
 
 	fmt.Fprintln(w, "# HELP sockguard_http_request_duration_seconds HTTP request latency in seconds.")
@@ -289,11 +381,11 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 		fmt.Fprintf(w, "sockguard_upstream_watchdog_checks_total{result=%s} %d\n", labelValue(key.result), upstream[key])
 	}
 
-	fmt.Fprintln(w, "# HELP sockguard_throttle_total Total requests denied by rate limiting or concurrency caps.")
+	fmt.Fprintln(w, "# HELP sockguard_throttle_total Total requests denied by rate limiting or concurrency caps. mode is enforce (request was blocked with 429) or warn / audit (passed through under rollout mode).")
 	fmt.Fprintln(w, "# TYPE sockguard_throttle_total counter")
 	for _, key := range sortedThrottleLabels(throttles) {
-		fmt.Fprintf(w, "sockguard_throttle_total{profile=%s,reason=%s} %d\n",
-			labelValue(key.profile), labelValue(key.reason), throttles[key])
+		fmt.Fprintf(w, "sockguard_throttle_total{mode=%s,profile=%s,reason=%s} %d\n",
+			labelValue(key.mode), labelValue(key.profile), labelValue(key.reason), throttles[key])
 	}
 
 	fmt.Fprintln(w, "# HELP sockguard_inflight_requests Current number of in-flight requests per profile under a concurrency cap.")
@@ -302,13 +394,47 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 		fmt.Fprintf(w, "sockguard_inflight_requests{profile=%s} %d\n",
 			labelValue(profile), inflight[profile])
 	}
+
+	fmt.Fprintln(w, "# HELP sockguard_config_reload_total Total hot-reload attempts since startup. result is ok (applied), reject_load (file read or parse failed), reject_validation (validator rejected the candidate config), or reject_immutable (an immutable field changed and the reload was refused).")
+	fmt.Fprintln(w, "# TYPE sockguard_config_reload_total counter")
+	for _, key := range sortedConfigReloadLabels(reloads) {
+		fmt.Fprintf(w, "sockguard_config_reload_total{result=%s} %d\n",
+			labelValue(key.result), reloads[key])
+	}
+
+	if reloadLastKnown {
+		fmt.Fprintln(w, "# HELP sockguard_config_reload_last_success_timestamp_seconds Unix timestamp at which the most recent reload was successfully applied. Omitted until the first successful reload.")
+		fmt.Fprintln(w, "# TYPE sockguard_config_reload_last_success_timestamp_seconds gauge")
+		fmt.Fprintf(w, "sockguard_config_reload_last_success_timestamp_seconds %s\n",
+			strconv.FormatFloat(float64(reloadLastNanos)/1e9, 'f', -1, 64))
+	}
+
+	if policyVersionKnown {
+		fmt.Fprintln(w, "# HELP sockguard_policy_version Monotonic counter of the active policy generation. Starts at 1 on first publish; ticks on every successful hot reload. A stable value across scrapes means the running policy did not move. Omitted until the first publish.")
+		fmt.Fprintln(w, "# TYPE sockguard_policy_version gauge")
+		fmt.Fprintf(w, "sockguard_policy_version %d\n", policyVersion)
+	}
 }
 
-func cloneInflight(src map[string]int64) map[string]int64 {
-	dst := make(map[string]int64, len(src))
-	for k, v := range src {
-		dst[k] = v
+func sortedConfigReloadLabels(values map[configReloadLabels]uint64) []configReloadLabels {
+	keys := make([]configReloadLabels, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
 	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].result < keys[j].result
+	})
+	return keys
+}
+
+// snapshotInflight reads the lock-free inflight sync.Map into a plain map for
+// stable sorted iteration during Prometheus exposition.
+func snapshotInflight(m *sync.Map) map[string]int64 {
+	dst := make(map[string]int64)
+	m.Range(func(key, value any) bool {
+		dst[key.(string)] = value.(*atomic.Int64).Load()
+		return true
+	})
 	return dst
 }
 
@@ -318,8 +444,8 @@ func sortedThrottleLabels(values map[throttleLabels]uint64) []throttleLabels {
 		keys = append(keys, key)
 	}
 	sort.Slice(keys, func(i, j int) bool {
-		ki := keys[i].profile + "\x00" + keys[i].reason
-		kj := keys[j].profile + "\x00" + keys[j].reason
+		ki := keys[i].mode + "\x00" + keys[i].profile + "\x00" + keys[i].reason
+		kj := keys[j].mode + "\x00" + keys[j].profile + "\x00" + keys[j].reason
 		return ki < kj
 	})
 	return keys
@@ -404,7 +530,7 @@ func requestLabelSortKey(key requestLabels) string {
 }
 
 func denyLabelSortKey(key denyLabels) string {
-	return strings.Join([]string{key.profile, key.reasonCode, key.route, key.rule}, "\x00")
+	return strings.Join([]string{key.mode, key.profile, key.reasonCode, key.route, key.rule}, "\x00")
 }
 
 func durationLabelSortKey(key durationLabels) string {
@@ -419,12 +545,7 @@ func formatBucket(bucket float64) string {
 }
 
 func labelValue(value string) string {
-	escaped := strings.NewReplacer(
-		`\`, `\\`,
-		"\n", `\n`,
-		`"`, `\"`,
-	).Replace(value)
-	return `"` + escaped + `"`
+	return `"` + prometheusLabelEscaper.Replace(value) + `"`
 }
 
 func decisionLabel(meta *logging.RequestMeta, status int) string {
@@ -463,6 +584,16 @@ func ruleLabel(meta *logging.RequestMeta) string {
 		return "-1"
 	}
 	return strconv.Itoa(meta.Rule)
+}
+
+// rolloutModeLabel returns the rollout posture in effect for the request,
+// normalizing empty (unconfigured) to "enforce" so the label cardinality
+// matches the dashboarded set {enforce, warn, audit}.
+func rolloutModeLabel(meta *logging.RequestMeta) string {
+	if meta != nil && meta.RolloutMode != "" {
+		return meta.RolloutMode
+	}
+	return "enforce"
 }
 
 func routeLabel(req *http.Request, meta *logging.RequestMeta) string {

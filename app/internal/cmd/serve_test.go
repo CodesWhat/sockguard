@@ -1356,7 +1356,14 @@ func TestBuildServeHandlerAuditEventIncludesSelectedProfile(t *testing.T) {
 	}
 }
 
-func TestBuildServeHandlerAuditEventCapturesMalformedOwnershipRequest(t *testing.T) {
+// TestBuildServeHandlerAuditEventCapturesMalformedContainerCreate locks in
+// the audit-event shape when sockguard rejects a malformed POST
+// /containers/create body. The filter layer's container-create inspector
+// catches the unmarshal failure before the request reaches the ownership
+// middleware, so the deny is a 403 from request_body_policy_denied rather
+// than the older 400/owner_request_invalid path. The audit trail is
+// preserved — just emitted from the filter layer.
+func TestBuildServeHandlerAuditEventCapturesMalformedContainerCreate(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Upstream.Socket = shortSocketPath(t, "audit-malformed-upstream")
 	cfg.Health.Enabled = false
@@ -1382,8 +1389,8 @@ func TestBuildServeHandlerAuditEventCapturesMalformedOwnershipRequest(t *testing
 	handler.ServeHTTP(rec, req)
 	closeAuditLoggerForTest(t, auditLogger)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
 	}
 
 	var event map[string]any
@@ -1393,11 +1400,11 @@ func TestBuildServeHandlerAuditEventCapturesMalformedOwnershipRequest(t *testing
 	if got := event["decision"]; got != "deny" {
 		t.Fatalf("decision = %#v, want %q", got, "deny")
 	}
-	if got := event["reason_code"]; got != "owner_request_invalid" {
-		t.Fatalf("reason_code = %#v, want %q", got, "owner_request_invalid")
+	if got := event["reason_code"]; got != "request_body_policy_denied" {
+		t.Fatalf("reason_code = %#v, want %q", got, "request_body_policy_denied")
 	}
-	if got := event["status"]; got != float64(http.StatusBadRequest) {
-		t.Fatalf("status = %#v, want %d", got, http.StatusBadRequest)
+	if got := event["status"]; got != float64(http.StatusForbidden) {
+		t.Fatalf("status = %#v, want %d", got, http.StatusForbidden)
 	}
 }
 
@@ -1450,6 +1457,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 	cfg.Metrics.Enabled = true
 	cfg.Log.AccessLog = true
 	cfg.Log.Audit.Enabled = true
+	cfg.Admin.Enabled = true
 
 	auditLogger := logging.NewAuditLogger(io.Discard)
 	t.Cleanup(func() { _ = auditLogger.Close() })
@@ -1460,6 +1468,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 		"withOwnership",
 		"withVisibility",
 		"withFilter",
+		"withAdminEndpoint",
 		"withHealth",
 		"withMetricsEndpoint",
 		"withClientACL",
@@ -1477,6 +1486,7 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 	cfg.Metrics.Enabled = false
 	cfg.Log.AccessLog = false
 	cfg.Log.Audit.Enabled = false
+	cfg.Admin.Enabled = false
 
 	got = serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), nil, nil, newServeTestDeps(), nil))
 	want = []string{

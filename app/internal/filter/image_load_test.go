@@ -103,9 +103,7 @@ func TestImageLoadSkipsNonLoadRequestsAndNilBody(t *testing.T) {
 		req            *http.Request
 		normalizedPath string
 	}{
-		{name: "nil request", req: nil, normalizedPath: "/images/load"},
 		{name: "wrong path", req: httptest.NewRequest(http.MethodPost, "/images/create", strings.NewReader("image tar")), normalizedPath: "/images/create"},
-		{name: "wrong method", req: httptest.NewRequest(http.MethodGet, "/images/load", strings.NewReader("image tar")), normalizedPath: "/images/load"},
 		{name: "nil body", req: func() *http.Request {
 			req := httptest.NewRequest(http.MethodPost, "/images/load", nil)
 			req.Body = nil

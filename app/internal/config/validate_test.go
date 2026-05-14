@@ -1206,6 +1206,177 @@ func TestValidateLimitsConfig_Priority(t *testing.T) {
 	}
 }
 
+func TestValidateLimitsConfig_Rate(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        LimitsConfig
+		wantSubstr string // empty = expect no error
+	}{
+		{
+			name: "valid: rate and burst both positive",
+			cfg:  LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: 20}},
+		},
+		{
+			name: "valid: burst 0 defaults to tokens_per_second",
+			cfg:  LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: 0}},
+		},
+		{
+			name:       "tokens_per_second zero rejected",
+			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 0, Burst: 10}},
+			wantSubstr: "tokens_per_second must be > 0",
+		},
+		{
+			name:       "tokens_per_second negative rejected",
+			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: -5, Burst: 10}},
+			wantSubstr: "tokens_per_second must be > 0",
+		},
+		{
+			name:       "burst below tokens_per_second rejected",
+			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: 5}},
+			wantSubstr: "burst must be >= tokens_per_second",
+		},
+		{
+			name:       "burst negative rejected",
+			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: -1}},
+			wantSubstr: "burst must not be negative",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateLimitsConfig("clients.profiles[0].limits", tt.cfg)
+			if tt.wantSubstr == "" {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got: %v", errs)
+				}
+				return
+			}
+			if len(errs) == 0 {
+				t.Fatalf("expected error containing %q, got none", tt.wantSubstr)
+			}
+			found := false
+			for _, e := range errs {
+				if strings.Contains(e, tt.wantSubstr) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected error containing %q, got: %v", tt.wantSubstr, errs)
+			}
+		})
+	}
+}
+
+// Negative burst must surface its own error rather than collide with the
+// burst<tokens_per_second message; the burst<0 case is mutually exclusive
+// with the burst<tokens_per_second case in validateLimitsConfig.
+func TestValidateLimitsConfig_NegativeBurstDoesNotProduceDoubleError(t *testing.T) {
+	errs := validateLimitsConfig("clients.profiles[0].limits", LimitsConfig{
+		Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: -1},
+	})
+	negCount := 0
+	rangeCount := 0
+	for _, e := range errs {
+		if strings.Contains(e, "burst must not be negative") {
+			negCount++
+		}
+		if strings.Contains(e, "burst must be >= tokens_per_second") {
+			rangeCount++
+		}
+	}
+	if negCount != 1 {
+		t.Fatalf("expected exactly one 'burst must not be negative' error, got %d: %v", negCount, errs)
+	}
+	if rangeCount != 0 {
+		t.Fatalf("expected no 'burst must be >= tokens_per_second' when burst is negative, got %d: %v", rangeCount, errs)
+	}
+}
+
+func TestValidateLimitsConfig_Concurrency(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        LimitsConfig
+		wantSubstr string
+	}{
+		{name: "positive ok", cfg: LimitsConfig{Concurrency: &ConcurrencyConfig{MaxInflight: 5}}},
+		{
+			name:       "zero rejected",
+			cfg:        LimitsConfig{Concurrency: &ConcurrencyConfig{MaxInflight: 0}},
+			wantSubstr: "concurrency.max_inflight must be > 0",
+		},
+		{
+			name:       "negative rejected",
+			cfg:        LimitsConfig{Concurrency: &ConcurrencyConfig{MaxInflight: -1}},
+			wantSubstr: "concurrency.max_inflight must be > 0",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateLimitsConfig("clients.profiles[0].limits", tt.cfg)
+			if tt.wantSubstr == "" {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got: %v", errs)
+				}
+				return
+			}
+			if len(errs) == 0 {
+				t.Fatalf("expected error containing %q, got none", tt.wantSubstr)
+			}
+			found := false
+			for _, e := range errs {
+				if strings.Contains(e, tt.wantSubstr) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected error containing %q, got: %v", tt.wantSubstr, errs)
+			}
+		})
+	}
+}
+
+func TestValidateClientProfile_Mode(t *testing.T) {
+	rules := []RuleConfig{
+		{Match: MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	tests := []struct {
+		name       string
+		mode       string
+		wantSubstr string // empty = expect no mode error
+	}{
+		{name: "empty defaults to enforce", mode: ""},
+		{name: "enforce explicit", mode: "enforce"},
+		{name: "warn", mode: "warn"},
+		{name: "audit", mode: "audit"},
+		{name: "uppercase accepted", mode: "Audit"},
+		{name: "unknown rejected", mode: "observe", wantSubstr: "mode must be one of enforce|warn|audit"},
+		{name: "bool-like rejected", mode: "true", wantSubstr: "mode must be one of enforce|warn|audit"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			profile := ClientProfileConfig{Name: "p", Mode: tt.mode, Rules: rules}
+			errs := validateClientProfile(0, profile, map[string]struct{}{})
+			matched := false
+			for _, e := range errs {
+				if tt.wantSubstr != "" && strings.Contains(e, tt.wantSubstr) {
+					matched = true
+				}
+			}
+			switch {
+			case tt.wantSubstr == "":
+				for _, e := range errs {
+					if strings.Contains(e, "mode must be") {
+						t.Fatalf("unexpected mode error: %v", e)
+					}
+				}
+			case !matched:
+				t.Fatalf("expected mode error containing %q, got: %v", tt.wantSubstr, errs)
+			}
+		})
+	}
+}
+
 func TestValidateEndpointCosts(t *testing.T) {
 	tests := []struct {
 		name           string

@@ -20,26 +20,55 @@ import (
 // identification.
 const AnonymousClientID = "_anonymous"
 
+const (
+	// auditEmitWindow is the per-(client, reason) suppression window for the
+	// slog throttle audit record. The Prometheus counter still fires
+	// unconditionally — sampling only bounds log volume.
+	auditEmitWindow = time.Second
+
+	// auditEvictInterval is the period of the background eviction tick on
+	// AuditSampler and Limiter.
+	auditEvictInterval = 30 * time.Second
+
+	// auditEvictTTL is the lifetime of an unaccessed sampler entry before
+	// eviction. Must be >= auditEmitWindow so the suppression decision is
+	// preserved across at least one window.
+	auditEvictTTL = 60 * time.Second
+
+	// limiterEvictTTL is the lifetime of an unaccessed token bucket before
+	// eviction. Buckets are keyed today by configured profile name (low
+	// cardinality), but eviction is wired in as defense-in-depth so future
+	// changes to the key space cannot create an OOM vector.
+	limiterEvictTTL = 10 * time.Minute
+)
+
 // nowFn is the time source used by token buckets. It can be replaced in tests
 // via newBucketWithClock.
 type nowFn func() time.Time
 
 // bucket is a single per-client token bucket. It is safe for concurrent use.
+//
+// lastAccess tracks the wall-clock of the last AllowN call and is read by the
+// owning Limiter's eviction loop to drop buckets that have gone idle for
+// longer than limiterEvictTTL.
 type bucket struct {
 	mu              sync.Mutex
 	tokens          float64
 	tokensPerSecond float64
 	burst           float64
 	lastRefill      time.Time
+	lastAccess      time.Time
 	now             nowFn
 }
 
 func newBucket(tokensPerSecond, burst float64, now nowFn) *bucket {
+	t := now()
 	return &bucket{
 		tokens:          burst,
 		tokensPerSecond: tokensPerSecond,
 		burst:           burst,
-		lastRefill:      now(),
+		lastRefill:      t,
+		lastAccess:      t,
 		now:             now,
 	}
 }
@@ -66,6 +95,7 @@ func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
 	defer b.mu.Unlock()
 
 	now := b.now()
+	b.lastAccess = now
 	elapsed := now.Sub(b.lastRefill).Seconds()
 	if elapsed > 0 {
 		b.tokens = math.Min(b.tokens+elapsed*b.tokensPerSecond, b.burst)
@@ -82,28 +112,90 @@ func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
 	return false, int(math.Ceil(waitSeconds))
 }
 
+// idleSince returns how long since the last AllowN call. Read under the
+// bucket mutex so the value is consistent with concurrent AllowN updates.
+func (b *bucket) idleSince(now time.Time) time.Duration {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return now.Sub(b.lastAccess)
+}
+
 // Limiter maintains per-client token buckets, lazily created on first use.
+//
+// Buckets that go idle for longer than limiterEvictTTL are dropped by a
+// background eviction goroutine started in NewLimiter. The key space today
+// is bounded by configured profile names (low cardinality), but eviction is
+// wired in as defense-in-depth so future changes to the key space cannot
+// create an OOM vector via attacker-influenced identities.
+//
+// Hot-path design: AllowN uses sync.Map so the steady-state bucket lookup
+// (Load only) is lock-free after warm-up. New bucket creation uses
+// LoadOrStore to avoid a separate mutex without introducing a TOCTOU window.
 type Limiter struct {
-	mu              sync.Mutex
-	buckets         map[string]*bucket
+	buckets         sync.Map // map[string]*bucket; lock-free reads on warm path
 	tokensPerSecond float64
 	burst           float64
 	now             nowFn
+
+	stopCh chan struct{}
+	wg     sync.WaitGroup
 }
 
 // NewLimiter creates a Limiter with the given rate parameters and real-clock
-// time source.
+// time source. It starts a background eviction goroutine; the caller MUST
+// invoke (*Limiter).Stop on shutdown to halt it.
 func NewLimiter(tokensPerSecond, burst float64) *Limiter {
 	return newLimiterWithClock(tokensPerSecond, burst, time.Now)
 }
 
 func newLimiterWithClock(tokensPerSecond, burst float64, now nowFn) *Limiter {
-	return &Limiter{
-		buckets:         make(map[string]*bucket),
+	l := &Limiter{
 		tokensPerSecond: tokensPerSecond,
 		burst:           burst,
 		now:             now,
+		stopCh:          make(chan struct{}),
 	}
+	l.wg.Add(1)
+	go l.evictionLoop()
+	return l
+}
+
+func (l *Limiter) evictionLoop() {
+	defer l.wg.Done()
+	ticker := time.NewTicker(auditEvictInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			l.evict(limiterEvictTTL)
+		case <-l.stopCh:
+			return
+		}
+	}
+}
+
+// Stop halts the background eviction goroutine. Safe to call multiple times;
+// subsequent calls are no-ops via the closed stopCh.
+func (l *Limiter) Stop() {
+	select {
+	case <-l.stopCh:
+		// already stopped
+	default:
+		close(l.stopCh)
+	}
+	l.wg.Wait()
+}
+
+// evict removes buckets idle for longer than ttl. Exposed for tests.
+func (l *Limiter) evict(ttl time.Duration) {
+	now := l.now()
+	l.buckets.Range(func(key, val any) bool {
+		b := val.(*bucket)
+		if b.idleSince(now) > ttl {
+			l.buckets.Delete(key)
+		}
+		return true
+	})
 }
 
 // Allow is shorthand for AllowN(clientID, 1) — withdraws a single token.
@@ -113,20 +205,25 @@ func (l *Limiter) Allow(clientID string) (ok bool, retryAfter int) {
 
 // AllowN checks whether clientID may proceed at the given token cost.
 // If clientID is empty the request is bucketed under AnonymousClientID.
+//
+// Hot path: Load is lock-free for existing buckets (sync.Map read-path).
+// Cold path (new client): LoadOrStore races to store a fresh bucket; if two
+// goroutines race, one wins and the other discards its candidate — both use
+// the winner's bucket thereafter.
 func (l *Limiter) AllowN(clientID string, cost float64) (ok bool, retryAfter int) {
 	if clientID == "" {
 		clientID = AnonymousClientID
 	}
 
-	l.mu.Lock()
-	b, exists := l.buckets[clientID]
-	if !exists {
-		b = newBucket(l.tokensPerSecond, l.burst, l.now)
-		l.buckets[clientID] = b
+	// Optimistic load: no allocation on warm path.
+	if val, hit := l.buckets.Load(clientID); hit {
+		return val.(*bucket).AllowN(cost)
 	}
-	l.mu.Unlock()
 
-	return b.AllowN(cost)
+	// Cold path: create a candidate and race to store it.
+	candidate := newBucket(l.tokensPerSecond, l.burst, l.now)
+	actual, _ := l.buckets.LoadOrStore(clientID, candidate)
+	return actual.(*bucket).AllowN(cost)
 }
 
 // InflightTracker maintains per-client in-flight request counts. It is safe
@@ -252,12 +349,12 @@ func newAuditSamplerWithClock(now nowFn) (*AuditSampler, func()) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(auditEvictInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				s.evict(60 * time.Second)
+				s.evict(auditEvictTTL)
 			case <-stopCh:
 				return
 			}
@@ -283,7 +380,7 @@ func (s *AuditSampler) ShouldEmit(clientID string, reason ThrottleReason) bool {
 	defer s.mu.Unlock()
 
 	last, exists := s.lastHit[key]
-	if !exists || now.Sub(last) >= time.Second {
+	if !exists || now.Sub(last) >= auditEmitWindow {
 		s.lastHit[key] = now
 		return true
 	}

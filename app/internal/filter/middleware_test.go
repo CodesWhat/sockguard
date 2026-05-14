@@ -201,6 +201,60 @@ func TestMiddlewareDenied(t *testing.T) {
 	}
 }
 
+func TestMiddlewareRolloutMode(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	cases := []struct {
+		mode             string
+		wantReachInner   bool
+		wantStatus       int
+		wantDecision     string
+		wantReasonCode   string
+		wantPassThroughResponseEmpty bool
+	}{
+		{mode: "", wantReachInner: false, wantStatus: http.StatusForbidden, wantDecision: "deny", wantReasonCode: reasonCodeMatchedDenyRule},
+		{mode: "enforce", wantReachInner: false, wantStatus: http.StatusForbidden, wantDecision: "deny", wantReasonCode: reasonCodeMatchedDenyRule},
+		{mode: "warn", wantReachInner: true, wantStatus: http.StatusTeapot, wantDecision: logging.DecisionWouldDeny, wantReasonCode: reasonCodeMatchedDenyRule, wantPassThroughResponseEmpty: true},
+		{mode: "audit", wantReachInner: true, wantStatus: http.StatusTeapot, wantDecision: logging.DecisionWouldDeny, wantReasonCode: reasonCodeMatchedDenyRule, wantPassThroughResponseEmpty: true},
+	}
+
+	for _, tc := range cases {
+		t.Run("mode="+tc.mode, func(t *testing.T) {
+			reached := false
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusTeapot)
+			})
+
+			handler := verboseMiddleware(rules, testLogger())(inner)
+			req := httptest.NewRequest("POST", "/containers/create", nil)
+
+			meta := &logging.RequestMeta{RolloutMode: tc.mode}
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if reached != tc.wantReachInner {
+				t.Fatalf("inner reached=%v, want %v", reached, tc.wantReachInner)
+			}
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			if meta.Decision != tc.wantDecision {
+				t.Errorf("meta.Decision = %q, want %q", meta.Decision, tc.wantDecision)
+			}
+			if meta.ReasonCode != tc.wantReasonCode {
+				t.Errorf("meta.ReasonCode = %q, want %q", meta.ReasonCode, tc.wantReasonCode)
+			}
+			if tc.wantPassThroughResponseEmpty && rec.Body.Len() != 0 {
+				t.Errorf("expected empty body for pass-through, got %q", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestMiddlewareDeniedMinimalVerbosity(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{"GET"}, Pattern: "/_ping", Action: ActionAllow, Index: 0})
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
@@ -294,26 +348,30 @@ func TestInspectAllowedRequestPrefersHighestSeverityMatch(t *testing.T) {
 	var called []string
 
 	policy := runtimePolicy{
-		inspectPolicies: []requestInspectPolicy{
-			{
-				matches:  func(*http.Request, string) bool { return true },
-				severity: inspectSeverityMedium,
-				inspect: func(*slog.Logger, *http.Request, string) (string, error) {
-					called = append(called, "medium")
-					return "medium deny", nil
+		inspectPoliciesByMethod: map[string][]requestInspectPolicy{
+			http.MethodPost: {
+				{
+					method:   http.MethodPost,
+					matches:  func(string) bool { return true },
+					severity: inspectSeverityMedium,
+					inspect: func(*slog.Logger, *http.Request, string) (string, error) {
+						called = append(called, "medium")
+						return "medium deny", nil
+					},
+					errorLogMessage:   "medium failed",
+					denyReasonOnError: "medium error",
 				},
-				errorLogMessage:   "medium failed",
-				denyReasonOnError: "medium error",
-			},
-			{
-				matches:  func(*http.Request, string) bool { return true },
-				severity: inspectSeverityCritical,
-				inspect: func(*slog.Logger, *http.Request, string) (string, error) {
-					called = append(called, "critical")
-					return "critical deny", nil
+				{
+					method:   http.MethodPost,
+					matches:  func(string) bool { return true },
+					severity: inspectSeverityCritical,
+					inspect: func(*slog.Logger, *http.Request, string) (string, error) {
+						called = append(called, "critical")
+						return "critical deny", nil
+					},
+					errorLogMessage:   "critical failed",
+					denyReasonOnError: "critical error",
 				},
-				errorLogMessage:   "critical failed",
-				denyReasonOnError: "critical error",
 			},
 		},
 	}
@@ -335,17 +393,14 @@ func TestInspectAllowedRequestPrefersHighestSeverityMatch(t *testing.T) {
 
 func TestInspectAllowedRequestNoMatchAllocatesNothing(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
-	neverMatches := func(*http.Request, string) bool { return false }
+	// GET has no inspectors in the method-keyed map — allocations are zero.
 	policy := runtimePolicy{
-		inspectPolicies: []requestInspectPolicy{
-			{matches: neverMatches, severity: inspectSeverityMedium},
-			{matches: neverMatches, severity: inspectSeverityHigh},
-			{matches: neverMatches, severity: inspectSeverityCritical},
-		},
+		inspectPoliciesByMethod: map[string][]requestInspectPolicy{},
 	}
+	logger := testLogger()
 
 	allocs := testing.AllocsPerRun(1000, func() {
-		reason, reasonCode, status := policy.inspectAllowedRequest(nil, req, "/containers/json")
+		reason, reasonCode, status := policy.inspectAllowedRequest(logger, req, "/containers/json")
 		if reason != "" || reasonCode != "" || status != 0 {
 			t.Fatalf("inspectAllowedRequest() = (%q, %q, %d), want empty result", reason, reasonCode, status)
 		}
@@ -357,18 +412,24 @@ func TestInspectAllowedRequestNoMatchAllocatesNothing(t *testing.T) {
 
 func TestInspectAllowedRequestManyMatchesAllocatesNothing(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/plugins/create", nil)
-	inspectPolicies := make([]requestInspectPolicy, 12)
-	for i := range inspectPolicies {
-		inspectPolicies[i] = requestInspectPolicy{
-			matches:  func(*http.Request, string) bool { return true },
+	postPolicies := make([]requestInspectPolicy, 12)
+	for i := range postPolicies {
+		postPolicies[i] = requestInspectPolicy{
+			method:  http.MethodPost,
+			matches: func(string) bool { return true },
 			severity: inspectSeverityCritical,
 			inspect:  func(*slog.Logger, *http.Request, string) (string, error) { return "", nil },
 		}
 	}
-	policy := runtimePolicy{inspectPolicies: inspectPolicies}
+	policy := runtimePolicy{
+		inspectPoliciesByMethod: map[string][]requestInspectPolicy{
+			http.MethodPost: postPolicies,
+		},
+	}
+	logger := testLogger()
 
 	allocs := testing.AllocsPerRun(1000, func() {
-		reason, reasonCode, status := policy.inspectAllowedRequest(nil, req, "/plugins/create")
+		reason, reasonCode, status := policy.inspectAllowedRequest(logger, req, "/plugins/create")
 		if reason != "" || reasonCode != "" || status != 0 {
 			t.Fatalf("inspectAllowedRequest() = (%q, %q, %d), want empty result", reason, reasonCode, status)
 		}
@@ -1114,7 +1175,9 @@ func TestMiddlewareDeniesWhenExecInspectionFails(t *testing.T) {
 	}
 }
 
-func TestMiddlewareLogsDebugForMalformedContainerCreateBody(t *testing.T) {
+func TestMiddlewareDeniesMalformedContainerCreateBody(t *testing.T) {
+	// Malformed JSON must now be denied (fail-closed) rather than passed
+	// through to Docker. The debug log message is still emitted.
 	rule, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/create", Action: ActionAllow, Index: 0})
 	if err != nil {
 		t.Fatalf("CompileRule failed: %v", err)
@@ -1131,11 +1194,11 @@ func TestMiddlewareLogsDebugForMalformedContainerCreateBody(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if !reached {
-		t.Fatal("expected malformed container create body to pass through to Docker")
+	if reached {
+		t.Fatal("malformed container create body must be denied, not passed through to Docker")
 	}
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 
 	records := logs.snapshot()
@@ -1145,7 +1208,7 @@ func TestMiddlewareLogsDebugForMalformedContainerCreateBody(t *testing.T) {
 	if records[0].level != slog.LevelDebug {
 		t.Fatalf("level = %v, want %v", records[0].level, slog.LevelDebug)
 	}
-	if records[0].message != "container create request body is not valid JSON; deferring to Docker validation" {
+	if records[0].message != "container create request body is not valid JSON; denying" {
 		t.Fatalf("message = %q, want malformed JSON debug log", records[0].message)
 	}
 }
@@ -1236,22 +1299,9 @@ func TestMiddlewareWrapperDenies(t *testing.T) {
 	}
 }
 
-// TestMatchesSwarmInspectionNonPostMethod covers the r.Method != POST branch.
-func TestMatchesSwarmInspectionNonPostMethod(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/swarm/init", nil)
-	if matchesSwarmInspection(req, "/swarm/init") {
-		t.Error("matchesSwarmInspection() = true for GET, want false")
-	}
-}
-
-// TestMatchesSwarmInspectionNilRequest covers the r == nil branch.
-func TestMatchesSwarmInspectionNilRequest(t *testing.T) {
-	if matchesSwarmInspection(nil, "/swarm/init") {
-		t.Error("matchesSwarmInspection() = true for nil request, want false")
-	}
-}
-
 // TestMatchesSwarmInspectionAllPaths exercises all switch arms.
+// Method routing is enforced structurally by inspectPoliciesByMethod;
+// matchesSwarmInspection checks path only.
 func TestMatchesSwarmInspectionAllPaths(t *testing.T) {
 	tests := []struct {
 		path string
@@ -1264,10 +1314,9 @@ func TestMatchesSwarmInspectionAllPaths(t *testing.T) {
 		{"/containers/create", false},
 	}
 	for _, tt := range tests {
-		req := httptest.NewRequest(http.MethodPost, tt.path, nil)
-		got := matchesSwarmInspection(req, tt.path)
+		got := matchesSwarmInspection(tt.path)
 		if got != tt.want {
-			t.Errorf("matchesSwarmInspection(POST, %q) = %v, want %v", tt.path, got, tt.want)
+			t.Errorf("matchesSwarmInspection(%q) = %v, want %v", tt.path, got, tt.want)
 		}
 	}
 }
@@ -1405,15 +1454,18 @@ func TestInspectAllowedRequestReturnsRejectionStatusFromError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/volumes/create", nil)
 
 	policy := runtimePolicy{
-		inspectPolicies: []requestInspectPolicy{
-			{
-				matches:  func(*http.Request, string) bool { return true },
-				severity: inspectSeverityMedium,
-				inspect: func(*slog.Logger, *http.Request, string) (string, error) {
-					return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, "entity too large")
+		inspectPoliciesByMethod: map[string][]requestInspectPolicy{
+			http.MethodPost: {
+				{
+					method:  http.MethodPost,
+					matches: func(string) bool { return true },
+					severity: inspectSeverityMedium,
+					inspect: func(*slog.Logger, *http.Request, string) (string, error) {
+						return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, "entity too large")
+					},
+					errorLogMessage:   "inspect failed",
+					denyReasonOnError: "unable to inspect",
 				},
-				errorLogMessage:   "inspect failed",
-				denyReasonOnError: "unable to inspect",
 			},
 		},
 	}

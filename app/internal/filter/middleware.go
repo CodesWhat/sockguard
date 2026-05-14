@@ -120,9 +120,9 @@ func (o Options) normalized() Options {
 }
 
 type runtimePolicy struct {
-	rules                 []*CompiledRule
-	denyResponseVerbosity DenyResponseVerbosity
-	inspectPolicies       []requestInspectPolicy
+	rules                    []*CompiledRule
+	denyResponseVerbosity    DenyResponseVerbosity
+	inspectPoliciesByMethod  map[string][]requestInspectPolicy
 }
 
 type inspectSeverity int
@@ -133,8 +133,16 @@ const (
 	inspectSeverityCritical
 )
 
+// Compile-time assertion: the bucket walk in inspectAllowedRequest descends
+// from len(buckets)-1 to 0, so index order must match ascending severity.
+// If the iota block is reordered (e.g. a new severityLow inserted before
+// Medium), this assignment fails to compile because the array size becomes 0.
+var _ [1]struct{} = [inspectSeverityCritical - inspectSeverityHigh]struct{}{}
+var _ [1]struct{} = [inspectSeverityHigh - inspectSeverityMedium]struct{}{}
+
 type requestInspectPolicy struct {
-	matches           func(*http.Request, string) bool
+	method            string
+	matches           func(string) bool
 	severity          inspectSeverity
 	inspect           func(*slog.Logger, *http.Request, string) (string, error)
 	errorLogMessage   string
@@ -211,6 +219,12 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			if action == ActionDeny {
+				meta := logging.MetaForRequest(w, r)
+				if meta.AllowsPassThrough() {
+					meta.Decision = logging.DecisionWouldDeny
+					next.ServeHTTP(w, r)
+					return
+				}
 				if err := httpjson.Write(w, denyStatus, denyResponse(r, reason, activePolicy.denyResponseVerbosity)); err != nil {
 					logger.ErrorContext(r.Context(), "failed to encode denial response", "error", err, "method", r.Method, "path", r.URL.Path)
 				}
@@ -232,81 +246,83 @@ func adaptNoLogger(fn func(*http.Request, string) (string, error)) func(*slog.Lo
 
 func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy {
 	cfg = cfg.normalized()
+	all := []requestInspectPolicy{
+		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreatePolicy(cfg.ContainerCreate).inspect, "failed to inspect container create request body", "unable to inspect container create request body"},
+		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
+		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, adaptNoLogger(newImagePullPolicy(cfg.ImagePull).inspect), "failed to inspect image pull request", "unable to inspect image pull request"},
+		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, adaptNoLogger(newBuildPolicy(cfg.Build).inspect), "failed to inspect build request", "unable to inspect build request"},
+		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
+		{http.MethodPut, matchesContainerArchiveInspection, inspectSeverityHigh, newContainerArchivePolicy(cfg.ContainerArchive).inspect, "failed to inspect container archive request body", "unable to inspect container archive request body"},
+		{http.MethodPost, matchesImageLoadInspection, inspectSeverityHigh, newImageLoadPolicy(cfg.ImageLoad).inspect, "failed to inspect image load request body", "unable to inspect image load request body"},
+		{http.MethodPost, matchesVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.Volume).inspect, "failed to inspect volume create request body", "unable to inspect volume create request body"},
+		{http.MethodPost, matchesNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.Network).inspect, "failed to inspect network request body", "unable to inspect network request body"},
+		{http.MethodPost, matchesSecretInspection, inspectSeverityMedium, newSecretPolicy(cfg.Secret).inspect, "failed to inspect secret create request body", "unable to inspect secret create request body"},
+		{http.MethodPost, matchesConfigInspection, inspectSeverityMedium, newConfigPolicy(cfg.Config).inspect, "failed to inspect config create request body", "unable to inspect config create request body"},
+		{http.MethodPost, matchesServiceInspection, inspectSeverityCritical, newServicePolicy(cfg.Service).inspect, "failed to inspect service request body", "unable to inspect service request body"},
+		{http.MethodPost, matchesSwarmInspection, inspectSeverityCritical, newSwarmPolicy(cfg.Swarm).inspect, "failed to inspect swarm request body", "unable to inspect swarm request body"},
+		{http.MethodPost, matchesNodeInspection, inspectSeverityHigh, newNodePolicy(cfg.Node).inspect, "failed to inspect node update request body", "unable to inspect node update request body"},
+		{http.MethodPost, matchesPluginInspection, inspectSeverityCritical, newPluginPolicy(cfg.Plugin).inspect, "failed to inspect plugin request body", "unable to inspect plugin request body"},
+	}
+	byMethod := make(map[string][]requestInspectPolicy, 2)
+	for _, p := range all {
+		byMethod[p.method] = append(byMethod[p.method], p)
+	}
 	return runtimePolicy{
-		rules:                 rules,
-		denyResponseVerbosity: cfg.DenyResponseVerbosity,
-		inspectPolicies: []requestInspectPolicy{
-			{matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreatePolicy(cfg.ContainerCreate).inspect, "failed to inspect container create request body", "unable to inspect container create request body"},
-			{matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
-			{matchesImagePullInspection, inspectSeverityHigh, adaptNoLogger(newImagePullPolicy(cfg.ImagePull).inspect), "failed to inspect image pull request", "unable to inspect image pull request"},
-			{matchesBuildInspection, inspectSeverityCritical, adaptNoLogger(newBuildPolicy(cfg.Build).inspect), "failed to inspect build request", "unable to inspect build request"},
-			{matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
-			{matchesContainerArchiveInspection, inspectSeverityHigh, newContainerArchivePolicy(cfg.ContainerArchive).inspect, "failed to inspect container archive request body", "unable to inspect container archive request body"},
-			{matchesImageLoadInspection, inspectSeverityHigh, newImageLoadPolicy(cfg.ImageLoad).inspect, "failed to inspect image load request body", "unable to inspect image load request body"},
-			{matchesVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.Volume).inspect, "failed to inspect volume create request body", "unable to inspect volume create request body"},
-			{matchesNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.Network).inspect, "failed to inspect network request body", "unable to inspect network request body"},
-			{matchesSecretInspection, inspectSeverityMedium, newSecretPolicy(cfg.Secret).inspect, "failed to inspect secret create request body", "unable to inspect secret create request body"},
-			{matchesConfigInspection, inspectSeverityMedium, newConfigPolicy(cfg.Config).inspect, "failed to inspect config create request body", "unable to inspect config create request body"},
-			{matchesServiceInspection, inspectSeverityCritical, newServicePolicy(cfg.Service).inspect, "failed to inspect service request body", "unable to inspect service request body"},
-			{matchesSwarmInspection, inspectSeverityCritical, newSwarmPolicy(cfg.Swarm).inspect, "failed to inspect swarm request body", "unable to inspect swarm request body"},
-			{matchesNodeInspection, inspectSeverityHigh, newNodePolicy(cfg.Node).inspect, "failed to inspect node update request body", "unable to inspect node update request body"},
-			{matchesPluginInspection, inspectSeverityCritical, newPluginPolicy(cfg.Plugin).inspect, "failed to inspect plugin request body", "unable to inspect plugin request body"},
-		},
+		rules:                   rules,
+		denyResponseVerbosity:   cfg.DenyResponseVerbosity,
+		inspectPoliciesByMethod: byMethod,
 	}
 }
 
-func matchesContainerCreateInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && normalizedPath == "/containers/create"
+func matchesContainerCreateInspection(normalizedPath string) bool {
+	return normalizedPath == "/containers/create"
 }
 
-func matchesExecInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && (isExecCreatePath(normalizedPath) || isExecStartPath(normalizedPath))
+func matchesExecInspection(normalizedPath string) bool {
+	return isExecCreatePath(normalizedPath) || isExecStartPath(normalizedPath)
 }
 
-func matchesImagePullInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && normalizedPath == "/images/create"
+func matchesImagePullInspection(normalizedPath string) bool {
+	return normalizedPath == "/images/create"
 }
 
-func matchesBuildInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && normalizedPath == "/build"
+func matchesBuildInspection(normalizedPath string) bool {
+	return normalizedPath == "/build"
 }
 
-func matchesContainerUpdateInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && isContainerUpdatePath(normalizedPath)
+func matchesContainerUpdateInspection(normalizedPath string) bool {
+	return isContainerUpdatePath(normalizedPath)
 }
 
-func matchesContainerArchiveInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPut && isContainerArchivePath(normalizedPath)
+func matchesContainerArchiveInspection(normalizedPath string) bool {
+	return isContainerArchivePath(normalizedPath)
 }
 
-func matchesImageLoadInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && normalizedPath == "/images/load"
+func matchesImageLoadInspection(normalizedPath string) bool {
+	return normalizedPath == "/images/load"
 }
 
-func matchesVolumeInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && normalizedPath == "/volumes/create"
+func matchesVolumeInspection(normalizedPath string) bool {
+	return normalizedPath == "/volumes/create"
 }
 
-func matchesNetworkInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && isNetworkWritePath(normalizedPath)
+func matchesNetworkInspection(normalizedPath string) bool {
+	return isNetworkWritePath(normalizedPath)
 }
 
-func matchesSecretInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && normalizedPath == "/secrets/create"
+func matchesSecretInspection(normalizedPath string) bool {
+	return normalizedPath == "/secrets/create"
 }
 
-func matchesConfigInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && normalizedPath == "/configs/create"
+func matchesConfigInspection(normalizedPath string) bool {
+	return normalizedPath == "/configs/create"
 }
 
-func matchesServiceInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && isServiceWritePath(normalizedPath)
+func matchesServiceInspection(normalizedPath string) bool {
+	return isServiceWritePath(normalizedPath)
 }
 
-func matchesSwarmInspection(r *http.Request, normalizedPath string) bool {
-	if r == nil || r.Method != http.MethodPost {
-		return false
-	}
+func matchesSwarmInspection(normalizedPath string) bool {
 	switch normalizedPath {
 	case "/swarm/init", "/swarm/join", "/swarm/update", "/swarm/unlock":
 		return true
@@ -315,13 +331,12 @@ func matchesSwarmInspection(r *http.Request, normalizedPath string) bool {
 	}
 }
 
-func matchesNodeInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost && isNodeUpdatePath(normalizedPath)
+func matchesNodeInspection(normalizedPath string) bool {
+	return isNodeUpdatePath(normalizedPath)
 }
 
-func matchesPluginInspection(r *http.Request, normalizedPath string) bool {
-	return r != nil && r.Method == http.MethodPost &&
-		(normalizedPath == "/plugins/pull" || normalizedPath == "/plugins/create" || isPluginUpgradePath(normalizedPath) || isPluginSetPath(normalizedPath))
+func matchesPluginInspection(normalizedPath string) bool {
+	return normalizedPath == "/plugins/pull" || normalizedPath == "/plugins/create" || isPluginUpgradePath(normalizedPath) || isPluginSetPath(normalizedPath)
 }
 
 // inspectBuckets holds matched policies grouped by severity for zero-alloc
@@ -334,9 +349,9 @@ func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Reques
 	var buckets inspectBuckets
 	var counts [3]int
 
-	for i := range p.inspectPolicies {
-		policy := &p.inspectPolicies[i]
-		if policy.matches != nil && !policy.matches(r, normalizedPath) {
+	for i := range p.inspectPoliciesByMethod[r.Method] {
+		policy := &p.inspectPoliciesByMethod[r.Method][i]
+		if policy.matches != nil && !policy.matches(normalizedPath) {
 			continue
 		}
 		sev := int(policy.severity)

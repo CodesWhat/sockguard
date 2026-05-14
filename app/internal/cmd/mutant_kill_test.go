@@ -575,36 +575,12 @@ func TestRunServe_SocketRemoveOtherErrorLogs(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// serve.go:338:13 — CONDITIONALS_NEGATION: runtime != nil
-// serve.go:338:38 — CONDITIONALS_NEGATION: runtime.health != nil
-// withHealth should use runtime.health when available (non-nil runtime AND
-// non-nil runtime.health), otherwise fall back to a fresh monitor.
+// serve.go: CONDITIONALS_NEGATION: runtime.health != nil
+// withHealth should use runtime.health when set, otherwise fall back to a
+// fresh monitor. Runtime itself is guaranteed non-nil by the call-site
+// contract (newServeRuntime never returns nil), so we only test the
+// runtime.health branch.
 // ---------------------------------------------------------------------------
-
-func TestWithHealth_NilRuntimeUsesFreshMonitor(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Upstream.Socket = shortSocketPath(t, "wh-nil-rt")
-	cfg.Health.Path = "/health"
-
-	deps := newServeTestDeps()
-	deps.now = func() time.Time { return time.Unix(0, 0) }
-
-	// nil runtime → must not panic; fresh monitor must answer /health.
-	layer := withHealth(&cfg, newDiscardLogger(), deps, nil)
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusTeapot)
-	})
-	handler := layer(next)
-
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	// /health should have been intercepted (not fall through to 418).
-	if rec.Code == http.StatusTeapot {
-		t.Fatal("health interceptor did not intercept /health for nil runtime")
-	}
-}
 
 func TestWithHealth_RuntimeWithNilHealthUsesFreshMonitor(t *testing.T) {
 	cfg := config.Defaults()

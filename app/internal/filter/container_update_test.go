@@ -152,8 +152,6 @@ func TestContainerUpdateInspectSkipsNonUpdateRequestsAndNilBody(t *testing.T) {
 		req            *http.Request
 		normalizedPath string
 	}{
-		{name: "nil request", req: nil, normalizedPath: "/containers/abc/update"},
-		{name: "wrong method", req: httptest.NewRequest(http.MethodGet, "/containers/abc/update", strings.NewReader(`{"Memory":0}`)), normalizedPath: "/containers/abc/update"},
 		{name: "wrong path", req: httptest.NewRequest(http.MethodPost, "/containers/abc/json", strings.NewReader(`{"Memory":0}`)), normalizedPath: "/containers/abc/json"},
 		{name: "nil body", req: func() *http.Request {
 			req := httptest.NewRequest(http.MethodPost, "/containers/abc/update", nil)

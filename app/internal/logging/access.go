@@ -39,11 +39,34 @@ type RequestMeta struct {
 	ReasonCode      string
 	NormPath        string
 	Profile         string
+	// RolloutMode carries the resolved profile's rollout posture
+	// (enforce / warn / audit). Empty string is equivalent to "enforce".
+	// Set by clientacl when a profile is matched; read by every deny site
+	// to decide whether to actually block or pass through.
+	RolloutMode     string
 	ClientRequestID string
 	TraceID         string
 	TraceParentID   string
 	TraceSpanID     string
 	TraceFlags      string
+}
+
+// Decision values written into RequestMeta.Decision. Allow is not stamped
+// explicitly today — the access logger treats an empty decision as allow.
+const (
+	DecisionDeny      = "deny"
+	DecisionWouldDeny = "would_deny"
+)
+
+// AllowsPassThrough reports whether the resolved profile's rollout posture
+// lets a deny decision pass through to the upstream rather than block. Called
+// at every deny site to choose between SetDeniedWithCode + 4xx (enforce) and
+// SetWouldDenyWithCode + next.ServeHTTP (warn / audit).
+func (m *RequestMeta) AllowsPassThrough() bool {
+	if m == nil {
+		return false
+	}
+	return m.RolloutMode == "warn" || m.RolloutMode == "audit"
 }
 
 type requestMetaCarrier interface {
@@ -238,11 +261,23 @@ func SetDenied(w http.ResponseWriter, r *http.Request, reason string, normalize 
 // reason code onto the request metadata so access and audit logs can correlate
 // human-readable reasons with a bounded schema.
 func SetDeniedWithCode(w http.ResponseWriter, r *http.Request, reasonCode, reason string, normalize func(string) string) {
+	setDecisionWithCode(w, r, DecisionDeny, reasonCode, reason, normalize)
+}
+
+// SetWouldDenyWithCode stamps a "would have denied" verdict for warn / audit
+// rollout-mode pass-through paths. The proxy must still call next.ServeHTTP
+// after invoking this; the marker exists so the access log, audit log, and
+// deny counter can attribute the would-be-deny to the gate that triggered it.
+func SetWouldDenyWithCode(w http.ResponseWriter, r *http.Request, reasonCode, reason string, normalize func(string) string) {
+	setDecisionWithCode(w, r, DecisionWouldDeny, reasonCode, reason, normalize)
+}
+
+func setDecisionWithCode(w http.ResponseWriter, r *http.Request, decision, reasonCode, reason string, normalize func(string) string) {
 	meta := MetaForRequest(w, r)
 	if meta == nil {
 		return
 	}
-	meta.Decision = "deny"
+	meta.Decision = decision
 	meta.ReasonCode = reasonCode
 	meta.Reason = reason
 	if meta.NormPath == "" && normalize != nil && r != nil {
@@ -326,6 +361,9 @@ func appendCorrelationAttrs(attrs []slog.Attr, r *http.Request, meta *RequestMet
 		)
 		if meta.Profile != "" {
 			attrs = append(attrs, slog.String("profile", meta.Profile))
+		}
+		if meta.RolloutMode != "" && meta.RolloutMode != "enforce" {
+			attrs = append(attrs, slog.String("rollout_mode", meta.RolloutMode))
 		}
 		if meta.ReasonCode != "" {
 			attrs = append(attrs, slog.String("reason_code", meta.ReasonCode))
@@ -503,9 +541,20 @@ func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			)
 			defer putAccessLogAttrs(attrBuf)
 
-			if meta.Decision == "deny" {
+			switch meta.Decision {
+			case DecisionDeny:
 				logger.LogAttrs(r.Context(), slog.LevelWarn, "request_denied", attrs...)
-			} else {
+			case DecisionWouldDeny:
+				// Warn mode: loud so operators see what would have been
+				// blocked. Audit mode: silent INFO so a dry-run does not
+				// page on-call. The Prometheus deny counter still fires
+				// in both modes with mode={warn,audit} labels.
+				if meta.RolloutMode == "warn" {
+					logger.LogAttrs(r.Context(), slog.LevelWarn, "request_would_deny", attrs...)
+				} else {
+					logger.LogAttrs(r.Context(), slog.LevelInfo, "request_would_deny", attrs...)
+				}
+			default:
 				logger.LogAttrs(r.Context(), slog.LevelInfo, "request", attrs...)
 			}
 		})

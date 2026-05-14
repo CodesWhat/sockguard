@@ -407,20 +407,10 @@ func TestExtractImageLoadRepoTags_ManifestExactlyAtLimit(t *testing.T) {
 	_ = tags
 }
 
-// CONDITIONALS_NEGATION image_load.go:60:12
-// imageLoadPolicy.inspect: `r == nil || r.Method != http.MethodPost` — mutant flips.
-// A GET request must be a no-op (return "", nil).
-func TestImageLoadInspect_NonPostIsNoop(t *testing.T) {
-	policy := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true})
-	req := httptest.NewRequest(http.MethodGet, "/images/load", strings.NewReader("ignored"))
-	reason, err := policy.inspect(nil, req, "/images/load")
-	if err != nil {
-		t.Fatalf("error = %v", err)
-	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty for GET", reason)
-	}
-}
+// Method routing for imageLoadPolicy is enforced structurally by the POST-keyed
+// inspectPoliciesByMethod map built in compileRuntimePolicy. The dispatch table
+// guarantees that inspect is never called for non-POST methods via the normal path;
+// TestInspectPoliciesByMethodDispatch (middleware_method_dispatch_test.go) covers this.
 
 // ---------------------------------------------------------------------------
 // image_pull.go mutants
@@ -448,89 +438,55 @@ func TestParseImageReference_SingleSegmentIsOfficial(t *testing.T) {
 // middleware.go mutants
 // ---------------------------------------------------------------------------
 
-// CONDITIONALS_NEGATION middleware.go:395:11 and 395:30
-// matchesImageLoadInspection: `r != nil && r.Method == http.MethodPost`
-// mutant flips `r != nil` or `Method ==`.
-// Nil request → false. Non-POST → false. POST to correct path → true.
+// CONDITIONALS_NEGATION middleware.go — matchesImageLoadInspection path check.
+// Method routing is now enforced structurally by inspectPoliciesByMethod;
+// the matches func checks path only.
 func TestMatchesImageLoadInspection_Guards(t *testing.T) {
-	if matchesImageLoadInspection(nil, "/images/load") {
-		t.Fatal("nil request should not match")
+	if !matchesImageLoadInspection("/images/load") {
+		t.Fatal("/images/load should match")
 	}
-	req := httptest.NewRequest(http.MethodGet, "/images/load", nil)
-	if matchesImageLoadInspection(req, "/images/load") {
-		t.Fatal("GET should not match")
-	}
-	req = httptest.NewRequest(http.MethodPost, "/images/load", nil)
-	if !matchesImageLoadInspection(req, "/images/load") {
-		t.Fatal("POST to /images/load should match")
+	if matchesImageLoadInspection("/images/list") {
+		t.Fatal("/images/list should not match image load inspection")
 	}
 }
 
-// CONDITIONALS_NEGATION middleware.go:399:11 and 399:30
-// matchesVolumeInspection: same guards.
+// CONDITIONALS_NEGATION middleware.go — matchesVolumeInspection path check.
 func TestMatchesVolumeInspection_Guards(t *testing.T) {
-	if matchesVolumeInspection(nil, "/volumes/create") {
-		t.Fatal("nil request should not match")
-	}
-	req := httptest.NewRequest(http.MethodGet, "/volumes/create", nil)
-	if matchesVolumeInspection(req, "/volumes/create") {
-		t.Fatal("GET should not match")
-	}
-	req = httptest.NewRequest(http.MethodPost, "/volumes/create", nil)
-	if !matchesVolumeInspection(req, "/volumes/create") {
-		t.Fatal("POST to /volumes/create should match")
+	if !matchesVolumeInspection("/volumes/create") {
+		t.Fatal("/volumes/create should match")
 	}
 }
 
-// CONDITIONALS_NEGATION middleware.go:399:67
-// matchesVolumeInspection: normalizedPath == "/volumes/create" — mutant flips to `!=`.
-// POST to a non-volume path must not match.
+// CONDITIONALS_NEGATION middleware.go — matchesVolumeInspection wrong path.
+// mutant flips normalizedPath == "/volumes/create" to !=.
 func TestMatchesVolumeInspection_WrongPath(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/volumes/list", nil)
-	if matchesVolumeInspection(req, "/volumes/list") {
-		t.Fatal("POST to /volumes/list should not match volume inspection")
+	if matchesVolumeInspection("/volumes/list") {
+		t.Fatal("/volumes/list should not match volume inspection")
 	}
 }
 
-// CONDITIONALS_NEGATION middleware.go:403:11 and 403:30
-// matchesNetworkInspection guards.
+// CONDITIONALS_NEGATION middleware.go — matchesNetworkInspection path check.
 func TestMatchesNetworkInspection_Guards(t *testing.T) {
-	if matchesNetworkInspection(nil, "/networks/create") {
-		t.Fatal("nil request should not match")
-	}
-	req := httptest.NewRequest(http.MethodGet, "/networks/create", nil)
-	if matchesNetworkInspection(req, "/networks/create") {
-		t.Fatal("GET should not match")
-	}
-	req = httptest.NewRequest(http.MethodPost, "/networks/create", nil)
-	if !matchesNetworkInspection(req, "/networks/create") {
-		t.Fatal("POST to /networks/create should match")
+	if !matchesNetworkInspection("/networks/create") {
+		t.Fatal("/networks/create should match")
 	}
 }
 
-// CONDITIONALS_NEGATION middleware.go:403:67
-// matchesNetworkInspection: isNetworkWritePath — mutant flips to `!isNetworkWritePath`.
-// POST to non-network-write path must not match.
+// CONDITIONALS_NEGATION middleware.go — matchesNetworkInspection wrong path.
+// isNetworkWritePath mutant flips to !isNetworkWritePath.
 func TestMatchesNetworkInspection_WrongPath(t *testing.T) {
-	req := httptest.NewRequest(http.MethodPost, "/networks/list", nil)
-	if matchesNetworkInspection(req, "/networks/list") {
-		t.Fatal("POST to /networks/list should not match network inspection")
+	if matchesNetworkInspection("/networks/list") {
+		t.Fatal("/networks/list should not match network inspection")
 	}
 }
 
-// CONDITIONALS_NEGATION middleware.go:427:11 and 427:30
-// matchesPluginInspection guards.
+// CONDITIONALS_NEGATION middleware.go — matchesPluginInspection path check.
 func TestMatchesPluginInspection_Guards(t *testing.T) {
-	if matchesPluginInspection(nil, "/plugins/pull") {
-		t.Fatal("nil request should not match")
+	if !matchesPluginInspection("/plugins/pull") {
+		t.Fatal("/plugins/pull should match")
 	}
-	req := httptest.NewRequest(http.MethodGet, "/plugins/pull", nil)
-	if matchesPluginInspection(req, "/plugins/pull") {
-		t.Fatal("GET should not match")
-	}
-	req = httptest.NewRequest(http.MethodPost, "/plugins/pull", nil)
-	if !matchesPluginInspection(req, "/plugins/pull") {
-		t.Fatal("POST to /plugins/pull should match")
+	if matchesPluginInspection("/plugins/disable") {
+		t.Fatal("/plugins/disable should not match plugin inspection")
 	}
 }
 

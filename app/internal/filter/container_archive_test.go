@@ -161,8 +161,6 @@ func TestContainerArchiveInspectSkipsNonArchiveRequestsAndNilBody(t *testing.T) 
 		req            *http.Request
 		normalizedPath string
 	}{
-		{name: "nil request", req: nil, normalizedPath: "/containers/abc/archive"},
-		{name: "wrong method", req: httptest.NewRequest(http.MethodPost, "/containers/abc/archive?path=app", strings.NewReader("tar")), normalizedPath: "/containers/abc/archive"},
 		{name: "wrong path", req: httptest.NewRequest(http.MethodPut, "/containers/abc/json", strings.NewReader("tar")), normalizedPath: "/containers/abc/json"},
 		{name: "nil body", req: func() *http.Request {
 			req := httptest.NewRequest(http.MethodPut, "/containers/abc/archive?path=app", nil)

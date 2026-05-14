@@ -39,7 +39,7 @@ func newContainerArchivePolicy(opts ContainerArchiveOptions) containerArchivePol
 }
 
 func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-	if !matchesContainerArchiveInspection(r, normalizedPath) || r.Body == nil {
+	if !matchesContainerArchiveInspection(normalizedPath) || r.Body == nil {
 		return "", nil
 	}
 

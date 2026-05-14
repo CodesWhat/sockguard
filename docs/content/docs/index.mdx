@@ -19,6 +19,8 @@ Most existing proxies stop at method/path or regex filtering. Sockguard goes fur
 - **mTLS for remote TCP** — non-loopback TCP requires mutual TLS 1.3 by default, plaintext TCP is an explicit legacy opt-in
 - **Structured access logging** — JSON logs with method, raw path, normalized policy path, decision, matched rule, latency, canonical request ID, preserved client request ID when present, and W3C trace correlation fields
 - **Operator observability** — opt-in `/metrics` scrape endpoint, active upstream watchdog signals for Docker socket reachability, and trace/log correlation without an OTLP exporter
+- **Abuse controls** — per-profile token-bucket rate limits, concurrency caps, per-endpoint cost weighting, and a system-wide priority-aware fairness gate keep noisy callers from starving the rest
+- **Dynamic policy delivery** — per-profile `enforce|warn|audit` rollout modes for safe staged rollouts, fsnotify + SIGHUP hot-reload with an immutable-field gate, monotonic policy versioning at `GET /admin/policy/version` and on `sockguard_policy_version`, an optional dedicated admin listener, and cosign-signed policy bundles verified at startup *and* every reload
 - **Default-deny** — everything blocked unless explicitly allowed
 - **Tecnativa compatible** — drop-in replacement for the current Tecnativa environment-variable surface
 

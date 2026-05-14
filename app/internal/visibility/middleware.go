@@ -263,9 +263,28 @@ func (p *patternFilterWriter) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
+// mustHaveEmptyBody reports whether the given HTTP status code requires an
+// empty body per RFC 9110. Writing any bytes for these codes causes Go's
+// http.ResponseWriter to downgrade the response to 502.
+func mustHaveEmptyBody(code int) bool {
+	switch code {
+	case http.StatusNoContent, http.StatusNotModified:
+		return true
+	default:
+		return false
+	}
+}
+
 // flushFiltered filters the buffered JSON array response by pattern axes and
 // writes the result to the underlying ResponseWriter.
 func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPolicy) error {
+	// RFC 9110 §15.4.5 / §15.3.5: 204 and 304 must have an empty body.
+	// Writing any bytes triggers an http.ResponseWriter downgrade to 502.
+	if mustHaveEmptyBody(p.statusCode) {
+		p.underlying.WriteHeader(p.statusCode)
+		return nil
+	}
+
 	// Only filter 2xx responses with a JSON body; pass through everything else.
 	if p.statusCode < http.StatusOK || p.statusCode >= http.StatusMultipleChoices {
 		p.underlying.WriteHeader(p.statusCode)

@@ -428,6 +428,153 @@ func TestBucket_AllowN_ClampsCostBelowOne(t *testing.T) {
 	}
 }
 
+// Clock going backwards (e.g., NTP step) must not over-refill the bucket. The
+// elapsed > 0 guard in AllowN skips refill when now.Sub(lastRefill) <= 0; this
+// test exercises that branch directly.
+func TestBucket_TimeBackwardsDoesNotRefill(t *testing.T) {
+	clk := newFixedClock(time.Unix(0, 0).Add(10 * time.Second))
+	b := newBucket(10, 10, clk.Now)
+
+	// Drain to zero.
+	for range 10 {
+		b.Allow() //nolint:errcheck
+	}
+	if ok, _ := b.Allow(); ok {
+		t.Fatal("bucket should be empty before clock step")
+	}
+
+	// Step clock backwards by 5 seconds. Refill must NOT happen.
+	clk.Advance(-5 * time.Second)
+	if ok, _ := b.Allow(); ok {
+		t.Fatal("Allow() must remain denied after clock step backwards")
+	}
+}
+
+// Empty clientID flows through ShouldEmit's anonymous fallback. The result
+// should be identical to passing AnonymousClientID explicitly.
+func TestAuditSampler_EmptyClientIDFallsBackToAnonymous(t *testing.T) {
+	clk := newFixedClock(time.Unix(0, 0))
+	s, stop := newAuditSamplerWithClock(clk.Now)
+	defer stop()
+
+	if !s.ShouldEmit("", ReasonRateLimit) {
+		t.Fatal("first emit for empty clientID should be true")
+	}
+	// Second call with explicit AnonymousClientID hits the same bucket and is
+	// suppressed within the 1s window.
+	if s.ShouldEmit(AnonymousClientID, ReasonRateLimit) {
+		t.Fatal("empty clientID and AnonymousClientID must share the same bucket")
+	}
+}
+
+// Zero-cap concurrency must always deny. The validator rejects this at
+// startup, but the InflightTracker contract is part of the security model
+// (denied-by-cap means denied, not admitted) and is tested directly.
+func TestInflightTracker_ZeroCapAlwaysDenies(t *testing.T) {
+	var tr InflightTracker
+	for i := range 3 {
+		ok, curr := tr.Acquire("anyone", 0)
+		if ok {
+			t.Fatalf("acquire %d: cap=0 must deny, got admit (curr=%d)", i, curr)
+		}
+	}
+}
+
+// Concurrent Release on a counter at zero must clamp without panic or
+// underflow. Exercises the CAS-loop guard in Release.
+func TestInflightTracker_ConcurrentReleaseClampsAtZero(t *testing.T) {
+	var tr InflightTracker
+	ok, _ := tr.Acquire("x", 1)
+	if !ok {
+		t.Fatal("setup acquire should admit")
+	}
+	const releasers = 50
+	var wg sync.WaitGroup
+	wg.Add(releasers)
+	for range releasers {
+		go func() {
+			defer wg.Done()
+			tr.Release("x")
+		}()
+	}
+	wg.Wait()
+	if got := tr.Current("x"); got != 0 {
+		t.Fatalf("expected current=0 after concurrent releases, got %d", got)
+	}
+}
+
+// Idle buckets are evicted by Limiter.evict after the configured TTL.
+func TestLimiter_EvictsIdleBuckets(t *testing.T) {
+	clk := newFixedClock(time.Unix(0, 0))
+	l := newLimiterWithClock(10, 10, clk.Now)
+	defer l.Stop()
+
+	l.Allow("alice") //nolint:errcheck
+	l.Allow("bob")   //nolint:errcheck
+
+	// Use alice again, but leave bob idle.
+	clk.Advance(5 * time.Minute)
+	l.Allow("alice") //nolint:errcheck
+
+	// Advance past TTL relative to bob's last access.
+	clk.Advance(8 * time.Minute) // alice accessed 8 min ago, bob 13 min ago
+	l.evict(10 * time.Minute)    // only bob exceeds 10-minute idle TTL
+
+	_, aliceExists := l.buckets.Load("alice")
+	_, bobExists := l.buckets.Load("bob")
+
+	if !aliceExists {
+		t.Fatal("alice's bucket should still exist after evict (recently accessed)")
+	}
+	if bobExists {
+		t.Fatal("bob's bucket should have been evicted after exceeding TTL")
+	}
+}
+
+// Calling Stop multiple times must be safe (idempotent close).
+func TestLimiter_StopIsIdempotent(t *testing.T) {
+	l := NewLimiter(10, 10)
+	l.Stop()
+	l.Stop() // must not panic on double-close
+}
+
+// compileEndpointCosts must accept any user-influenced glob string without
+// regex-compile failure. globToRegex is constructed so every input character
+// is either an explicit glob token or regexp.QuoteMeta'd; this test pins that
+// invariant so a future change to globToRegex that breaks it gets caught.
+func TestCompileEndpointCosts_AllInputsCompile(t *testing.T) {
+	weirdGlobs := []string{
+		"",
+		"[",
+		"(",
+		"]",
+		")",
+		"\\",
+		"$",
+		"^",
+		"|",
+		"+",
+		"?(",
+		"foo[bar",
+		"foo)bar",
+		"foo$bar",
+		"foo\\bar",
+		"/**/*.go",
+		"/v1.45/containers/**",
+		"with\nnewline",
+		"with\x00null",
+	}
+	costs := make([]EndpointCost, 0, len(weirdGlobs))
+	for _, g := range weirdGlobs {
+		costs = append(costs, EndpointCost{PathGlob: g, Cost: 1})
+	}
+	// Must not panic — every glob must produce valid regex.
+	got := compileEndpointCosts(costs)
+	if len(got) != len(weirdGlobs) {
+		t.Fatalf("expected %d compiled costs, got %d", len(weirdGlobs), len(got))
+	}
+}
+
 // TestAuditSampler_Race verifies the sampler is safe under concurrent access.
 func TestAuditSampler_Race(t *testing.T) {
 	clk := newFixedClock(time.Unix(0, 0))

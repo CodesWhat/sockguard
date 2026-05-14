@@ -124,6 +124,11 @@ type containerCreatePolicy struct {
 	imageTrustVerifier imageVerifier
 	imageTrustCfg      imagetrust.Config
 	imageTrustTimeout  time.Duration
+	// imageTrustInitErr holds any error that occurred while building the image
+	// trust verifier at policy construction time. When non-nil, inspect returns
+	// a denial reason so that a misconfigured trust policy fails closed rather
+	// than silently falling through to Docker.
+	imageTrustInitErr error
 }
 
 // AllowedDeviceRequestEntry is the public form of a device request allowlist
@@ -262,12 +267,19 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		requiredLabels:             normalizeStringList(opts.RequiredLabels),
 	}
 
-	// Build image trust verifier (best-effort; startup validation catches
-	// misconfigured policies before the proxy starts serving).
+	// Build image trust verifier. Errors are stored in imageTrustInitErr so
+	// that inspect can return a denial reason instead of silently allowing
+	// requests through (fail-closed rather than fail-open).
 	if mode := imagetrust.Mode(opts.ImageTrust.Mode); mode != imagetrust.ModeOff && mode != "" {
 		raw := buildImageTrustRaw(opts.ImageTrust)
-		if cfg, err := imagetrust.BuildConfig(raw); err == nil {
-			if v, err := imagetrust.New(cfg); err == nil {
+		cfg, err := imagetrust.BuildConfig(raw)
+		if err != nil {
+			p.imageTrustInitErr = fmt.Errorf("image trust policy build failed: %w", err)
+		} else {
+			v, err := imagetrust.New(cfg)
+			if err != nil {
+				p.imageTrustInitErr = fmt.Errorf("image trust verifier construction failed: %w", err)
+			} else {
 				p.imageTrustVerifier = v
 				p.imageTrustCfg = cfg
 				p.imageTrustTimeout = cfg.VerifyTimeout
@@ -306,6 +318,11 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if r == nil || r.Method != http.MethodPost || normalizedPath != "/containers/create" || r.Body == nil {
 		return "", nil
 	}
+	// Fail closed if the image trust policy failed to initialize: a
+	// misconfigured trust config must not silently allow all images through.
+	if p.imageTrustInitErr != nil {
+		return fmt.Sprintf("container create denied: image trust policy initialization error: %s", p.imageTrustInitErr.Error()), nil
+	}
 	if p.allowsAllContainerCreateBodies() {
 		return "", nil
 	}
@@ -324,12 +341,13 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 
 	var createReq containerCreateRequest
 	if err := json.Unmarshal(body, &createReq); err != nil {
-		// Let Docker return its native validation error when the create payload
-		// is malformed; Sockguard only overrides known-dangerous valid requests.
+		// Deny malformed JSON bodies rather than passing them through. A valid
+		// create request must be parseable; letting an unparseable body reach
+		// Docker would silently skip all policy checks (fail-open).
 		if logger != nil {
-			logger.DebugContext(r.Context(), "container create request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "container create request body is not valid JSON; denying", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "container create denied: malformed JSON request body", nil
 	}
 
 	if !p.allowPrivileged && createReq.HostConfig.Privileged {
@@ -371,17 +389,22 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 
 	if p.imageTrustVerifier != nil {
 		imageRef := strings.TrimSpace(createReq.Image)
-		if imageRef != "" {
-			ctx := r.Context()
-			if p.imageTrustTimeout > 0 {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, p.imageTrustTimeout)
-				defer cancel()
-			}
-			outcome := imagetrust.VerifyWithMode(ctx, p.imageTrustVerifier, p.imageTrustCfg, logger, imageRef, "", nil)
-			if !outcome.Allowed {
-				return fmt.Sprintf("container create denied: image trust verification failed for %s: %s", imageRef, outcome.FailureMsg), nil
-			}
+		if imageRef == "" {
+			// Require an explicit image reference when trust verification is
+			// configured. Docker itself rejects creates without an image, but
+			// the explicit deny here preserves fail-closed behavior at the
+			// Sockguard layer and avoids skipping the verifier call entirely.
+			return "container create denied: image field is required when image trust is configured", nil
+		}
+		ctx := r.Context()
+		if p.imageTrustTimeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, p.imageTrustTimeout)
+			defer cancel()
+		}
+		outcome := imagetrust.VerifyWithMode(ctx, p.imageTrustVerifier, p.imageTrustCfg, logger, imageRef, "", nil)
+		if !outcome.Allowed {
+			return fmt.Sprintf("container create denied: image trust verification failed for %s: %s", imageRef, outcome.FailureMsg), nil
 		}
 	}
 

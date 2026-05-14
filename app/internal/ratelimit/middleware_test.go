@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/metrics"
 )
 
@@ -73,8 +75,8 @@ func TestMiddleware_RateLimit_AllowAndDeny(t *testing.T) {
 		t.Fatalf("expected 429, got %d", rec.Code)
 	}
 
-	// Body should decode to RateLimitResponse.
-	var body RateLimitResponse
+	// Body should decode to a ThrottleResponse with rate-limit fields populated.
+	var body ThrottleResponse
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
@@ -136,12 +138,15 @@ func TestMiddleware_ConcurrencyCap_AllowAndDeny(t *testing.T) {
 		t.Fatalf("expected 429, got %d", rec.Code)
 	}
 
-	var body ConcurrencyLimitResponse
+	var body ThrottleResponse
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
 	if body.Reason != string(ReasonConcurrency) {
 		t.Fatalf("expected reason=%q, got %q", ReasonConcurrency, body.Reason)
+	}
+	if body.RetryAfterSeconds != 0 {
+		t.Fatalf("concurrency 429 should omit retry_after_seconds, got %d", body.RetryAfterSeconds)
 	}
 
 	// Release the first request and wait for it to finish.
@@ -312,6 +317,7 @@ func TestMiddleware_ConcurrentUnderRace(t *testing.T) {
 
 func TestMiddleware_EndpointCost_WeightsExpensiveEndpoint(t *testing.T) {
 	reg := metrics.NewRegistry()
+	clk := newFixedClock(time.Unix(0, 0))
 
 	opts := MiddlewareOptions{
 		Profiles: map[string]ProfileOptions{
@@ -326,6 +332,7 @@ func TestMiddleware_EndpointCost_WeightsExpensiveEndpoint(t *testing.T) {
 			},
 		},
 		ResolveProfile: resolveProfileFn("ci"),
+		Now:            clk.Now, // frozen — no refill between requests
 	}
 	h := mustMiddleware(t, newTestLogger(), reg, nil, opts)(okHandler)
 
@@ -338,9 +345,7 @@ func TestMiddleware_EndpointCost_WeightsExpensiveEndpoint(t *testing.T) {
 		}
 	}
 
-	// Third build is denied — bucket is empty (and refill hasn't ticked in this
-	// real-clock test, but the rate is high enough that this should still 429
-	// because the call happens within a microsecond).
+	// Third build is denied: frozen clock means no refill since burst was drained.
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/build", nil))
 	if rec.Code != http.StatusTooManyRequests {
@@ -516,6 +521,117 @@ func (b *threadSafeBuffer) String() string {
 }
 
 // ---------------------------------------------------------------------------
+// Rollout mode: warn / audit pass deny decisions through with a would_deny
+// audit marker. The throttle counter must still fire with the matching mode
+// label so dashboards can compare warn / audit volume against enforce.
+// ---------------------------------------------------------------------------
+
+func TestMiddleware_RolloutMode_RateLimitPassesThrough(t *testing.T) {
+	for _, mode := range []string{"warn", "audit"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			reg := metrics.NewRegistry()
+			sampler, stop := NewAuditSampler()
+			defer stop()
+
+			opts := MiddlewareOptions{
+				Profiles: map[string]ProfileOptions{
+					"ci": {Rate: &RateOptions{TokensPerSecond: 100, Burst: 1}},
+				},
+				ResolveProfile: resolveProfileFn("ci"),
+			}
+			reached := 0
+			h := mustMiddleware(t, newTestLogger(), reg, sampler, opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached++
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			// Burst 1: first request consumes the token.
+			rec1 := httptest.NewRecorder()
+			req1 := withRolloutMode(httptest.NewRequest(http.MethodGet, "/containers/json", nil), mode)
+			h.ServeHTTP(rec1, req1)
+			if rec1.Code != http.StatusOK {
+				t.Fatalf("first request: expected 200, got %d", rec1.Code)
+			}
+
+			// Second request would normally be rate-limited (429). Under
+			// warn / audit it must pass through to the inner handler.
+			rec2 := httptest.NewRecorder()
+			meta2 := metaWithRolloutMode(mode)
+			req2 := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+			req2 = req2.WithContext(metaContext(req2, meta2))
+			h.ServeHTTP(rec2, req2)
+			if rec2.Code != http.StatusOK {
+				t.Fatalf("rate-limited request under mode=%s should pass through, got %d (body %q)", mode, rec2.Code, rec2.Body.String())
+			}
+			if reached != 2 {
+				t.Fatalf("inner handler reach count = %d, want 2 (both requests should pass through under mode=%s)", reached, mode)
+			}
+			if meta2.Decision != "would_deny" {
+				t.Fatalf("expected meta.Decision=would_deny on throttled-but-passed request, got %q", meta2.Decision)
+			}
+		})
+	}
+}
+
+func TestMiddleware_RolloutMode_ConcurrencyPassesThrough(t *testing.T) {
+	reg := metrics.NewRegistry()
+	sampler, stop := NewAuditSampler()
+	defer stop()
+
+	opts := MiddlewareOptions{
+		Profiles: map[string]ProfileOptions{
+			"ci": {Concurrency: &ConcurrencyOptions{MaxInflight: 1}},
+		},
+		ResolveProfile: resolveProfileFn("ci"),
+	}
+	block := make(chan struct{})
+	release := make(chan struct{})
+	reached := 0
+	var mu sync.Mutex
+	h := mustMiddleware(t, newTestLogger(), reg, sampler, opts)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reached++
+		mu.Unlock()
+		if r.URL.RawQuery == "hold=1" {
+			close(block)
+			<-release
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// First request occupies the single inflight slot.
+	done := make(chan struct{})
+	go func() {
+		rec := httptest.NewRecorder()
+		req := withRolloutMode(httptest.NewRequest(http.MethodGet, "/containers/json?hold=1", nil), "warn")
+		h.ServeHTTP(rec, req)
+		close(done)
+	}()
+	<-block
+
+	// Second request hits the cap. Under warn it must pass through.
+	rec := httptest.NewRecorder()
+	meta := metaWithRolloutMode("warn")
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	req = req.WithContext(metaContext(req, meta))
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("concurrency-capped request under warn should pass through, got %d", rec.Code)
+	}
+	if meta.Decision != "would_deny" {
+		t.Fatalf("expected meta.Decision=would_deny on capped-but-passed request, got %q", meta.Decision)
+	}
+
+	close(release)
+	<-done
+	mu.Lock()
+	defer mu.Unlock()
+	if reached != 2 {
+		t.Fatalf("inner reach count = %d, want 2", reached)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -523,14 +639,110 @@ func newTestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
-// mustMiddleware constructs Middleware and fails the test on a compile error.
-// All happy-path tests use well-formed configs; this helper keeps the assertion
-// boilerplate from drowning out the actual test logic.
+// mustMiddleware constructs Middleware and registers its Limiter stop function
+// with t.Cleanup so per-profile eviction goroutines exit at test end.
 func mustMiddleware(t *testing.T, logger *slog.Logger, reg *metrics.Registry, sampler *AuditSampler, opts MiddlewareOptions) func(http.Handler) http.Handler {
 	t.Helper()
-	mw, err := Middleware(logger, reg, sampler, opts)
-	if err != nil {
-		t.Fatalf("Middleware: unexpected compile error: %v", err)
-	}
+	mw, stop := Middleware(logger, reg, sampler, opts)
+	t.Cleanup(stop)
 	return mw
+}
+
+// metaWithRolloutMode returns a fresh RequestMeta carrying the rollout posture
+// the deny gates read to decide between enforce and pass-through.
+func metaWithRolloutMode(mode string) *logging.RequestMeta {
+	return &logging.RequestMeta{RolloutMode: mode}
+}
+
+// metaContext attaches a RequestMeta to the request context. ratelimit reads
+// it via logging.MetaForRequest.
+func metaContext(r *http.Request, meta *logging.RequestMeta) context.Context {
+	return logging.WithMeta(r.Context(), meta)
+}
+
+// withRolloutMode is a convenience that builds a request-with-context for the
+// happy-path "first request consumes the bucket" cases where the test does
+// not need a handle to the meta afterwards.
+func withRolloutMode(r *http.Request, mode string) *http.Request {
+	return r.WithContext(logging.WithMeta(r.Context(), metaWithRolloutMode(mode)))
+}
+
+// ---------------------------------------------------------------------------
+// Global inflight gauge counts warn / audit pass-throughs.
+// ---------------------------------------------------------------------------
+
+// TestGlobalInflight_CountsPassThroughInWarnMode verifies that a request
+// denied by the priority floor under warn (or audit) rollout mode is still
+// counted in the global in-flight gauge for the duration of the request.
+// Without the fix, the gauge stayed at 0 during the pass-through, giving
+// operators misleading numbers when sizing a new global cap via dashboards.
+func TestGlobalInflight_CountsPassThroughInWarnMode(t *testing.T) {
+	for _, mode := range []string{"warn", "audit"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			// Use a GlobalInflightTracker directly so we can assert Current()
+			// while a request is in flight through the throttleHandler.
+			tracker := &GlobalInflightTracker{}
+
+			enter := make(chan struct{})
+			leave := make(chan struct{})
+
+			// Inner handler signals entry and blocks until the test releases it.
+			blocking := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				close(enter)
+				<-leave
+				w.WriteHeader(http.StatusOK)
+			})
+
+			reg := metrics.NewRegistry()
+			h := &throttleHandler{
+				logger:   newTestLogger(),
+				registry: reg,
+				compiled: map[string]*compiledProfile{
+					"scraper": {priority: PriorityLow},
+				},
+				// globalMax=1, low priority threshold = floor(1*0.5) = 0, so ANY
+				// in-flight request already exceeds the low floor and the gate denies.
+				globalTracker: tracker,
+				globalMax:     1,
+				resolve:       resolveProfileFn("scraper"),
+			}
+
+			meta := metaWithRolloutMode(mode)
+			req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+			req = req.WithContext(metaContext(req, meta))
+			rec := httptest.NewRecorder()
+
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				h.serve(rec, req, blocking)
+			}()
+
+			// Wait until the inner handler is executing — the pass-through
+			// request is in-flight at this point.
+			<-enter
+
+			// The global gauge MUST be 1 during the pass-through.
+			if got := tracker.Current(); got != 1 {
+				t.Errorf("mode=%s: global inflight during pass-through = %d, want 1", mode, got)
+			}
+
+			// Release the handler and wait for the goroutine to finish.
+			close(leave)
+			<-done
+
+			// After the request completes the gauge must return to 0.
+			if got := tracker.Current(); got != 0 {
+				t.Errorf("mode=%s: global inflight after completion = %d, want 0", mode, got)
+			}
+
+			// The request should have passed through (200) with a would_deny decision.
+			if rec.Code != http.StatusOK {
+				t.Errorf("mode=%s: expected 200 pass-through, got %d", mode, rec.Code)
+			}
+			if meta.Decision != logging.DecisionWouldDeny {
+				t.Errorf("mode=%s: expected decision=%q, got %q", mode, logging.DecisionWouldDeny, meta.Decision)
+			}
+		})
+	}
 }

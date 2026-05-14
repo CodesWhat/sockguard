@@ -39,7 +39,7 @@ func newImageLoadPolicy(opts ImageLoadOptions) imageLoadPolicy {
 }
 
 func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-	if !matchesImageLoadInspection(r, normalizedPath) {
+	if !matchesImageLoadInspection(normalizedPath) {
 		return "", nil
 	}
 	if !p.allowsAnyImageLoad() {

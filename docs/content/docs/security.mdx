@@ -19,6 +19,37 @@ A socket proxy sits between consumers and the raw socket, filtering requests to 
 
 Sockguard implements multiple layers of filtering:
 
+### Layer 0: Policy Integrity
+
+Before any request is evaluated, Sockguard can verify that the loaded
+configuration was signed by a trusted key. When `policy_bundle.enabled: true`,
+the on-disk YAML is treated as untrusted until a cosign sigstore bundle at
+`policy_bundle.signature_path` confirms it. An unsigned, malformed, or
+wrong-key bundle aborts startup with a wrapped `policy bundle:` error — no
+rules compile, no listener opens.
+
+Two verification paths are supported:
+
+- **Keyed** — PEM-encoded ECDSA, RSA, or ed25519 public keys listed under
+  `policy_bundle.allowed_signing_keys`. No network round-trip required.
+- **Keyless (Fulcio + Rekor)** — `policy_bundle.allowed_keyless` entries
+  constrain the Fulcio cert chain by exact OIDC issuer URL and subject SAN
+  regex. When `policy_bundle.require_rekor_inclusion: true`, a Rekor
+  transparency-log entry is additionally required.
+
+Verification also runs on every **hot reload**. A reload whose bundle fails
+verification is rejected with `result=reject_signature` in
+`sockguard_config_reload_total` and never touches the running policy. The
+trust material (`enabled`, `allowed_signing_keys`, `allowed_keyless`,
+`require_rekor_inclusion`, `verify_timeout`) is reload-immutable so a SIGHUP
+cannot silently widen the set of accepted signers; only `signature_path` is
+reload-mutable so an operator can re-sign without a restart.
+
+The verified signer (`keyed:<spki-fingerprint>` or `keyless:<issuer>:<san>`)
+and the YAML's SHA-256 digest are stamped onto `GET /admin/policy/version` in
+the `bundle_signer` and `bundle_digest` fields, giving operators a tamper-evident
+audit trail of exactly who signed the running policy and over which bytes.
+
 ### Layer 1: Transport Admission
 Non-loopback TCP listeners require mutual TLS 1.3 by default via `listen.tls`. Plaintext remote TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true` for legacy compatibility on a private network. Unix socket listeners bypass this layer because they are filesystem-bounded. `listen.tls.client_ca_file` defines the issuing trust root, and the optional `listen.tls.allowed_common_names`, `allowed_dns_names`, `allowed_ip_addresses`, `allowed_uri_sans`, and `allowed_public_key_sha256_pins` fields can narrow that trust to specific verified client certificates instead of implicitly accepting every client cert issued by the configured CA.
 
@@ -156,3 +187,37 @@ The runtime controls that matter are:
 The getting-started examples use the container-level controls above by
 default so the drop-in path stays simple without hiding the real
 hardening story.
+
+## Known Limitations
+
+These are architectural constraints inherent to Sockguard's position in the
+stack. They are documented here for honest operator awareness rather than as
+open bugs.
+
+**clientacl IP→label race.** When `clients.container_labels.enabled` is true,
+Sockguard resolves the calling container by source IP through the Docker API.
+If a container is restarted and a new container quickly acquires the same
+bridge IP before the label lookup completes, the lookup may return the new
+container's labels rather than the previous container's. Prefer
+`clients.unix_peer_profiles` with `uids`/`gids` on a unix socket listener when
+you need strong caller identity — `SO_PEERCRED` is supplied by the kernel and
+cannot be spoofed from within the container.
+
+**Exec TOCTOU (inspect/start split).** Docker exposes exec metadata inspection
+and exec start as separate API calls. Sockguard re-checks `POST /exec/*/start`
+against Docker's stored exec metadata before the command runs, but the gap
+between the create and start calls is an unavoidable time-of-check/time-of-use
+window inherent to Docker's API shape. Keep exec allowlists narrow and
+client profile assignments conservative for clients that do not need
+interactive command execution.
+
+**Hijacked-stream redaction limits.** Sockguard's response filter operates on
+structured JSON responses with known shapes. Raw streaming endpoints — `GET
+/containers/*/logs`, `POST /containers/*/attach`, `GET /services/*/logs`, and
+exec attach — switch the connection to a raw bidirectional stream after the
+initial HTTP response, at which point Sockguard cannot inspect or redact the
+byte stream. These paths are protected at request time via the
+`insecure_allow_read_exfiltration` guardrail and per-profile rule gates, but
+there is no post-admission byte-level filtering of the stream content. Restrict
+these paths in your rules to only the profiles and callers that genuinely need
+them.

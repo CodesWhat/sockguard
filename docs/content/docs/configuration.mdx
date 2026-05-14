@@ -137,6 +137,11 @@ metrics:
   enabled: false
   path: /metrics
 
+admin:
+  enabled: false
+  path: /admin/validate
+  max_body_bytes: 524288
+
 rules:
   - match: { method: GET, path: "/_ping" }
     action: allow
@@ -166,6 +171,8 @@ The default listener is loopback TCP `127.0.0.1:2375`, which keeps the Docker AP
 - Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`. That mode is only for legacy compatibility on a private, trusted network.
 - `health.watchdog.enabled` starts an active upstream socket monitor that checks Docker every `health.watchdog.interval`, logs reachable/unreachable state transitions, and lets `/health` answer from the latest watchdog state instead of waiting for a scrape or probe to discover an outage.
 - `metrics.enabled` is opt-in and serves Prometheus text metrics at `metrics.path` on the same listener. The endpoint is local to Sockguard, is never forwarded to Docker, bypasses Docker API allow rules like `/health`, and remains behind listener security plus `clients.allowed_cidrs`. Every scrape also exports a `sockguard_build_info{version,commit,build_date,go_version}` gauge and a `sockguard_start_time_seconds` gauge for version panels and uptime alerts. When the active watchdog is enabled, metrics also include `sockguard_upstream_socket_up` and `sockguard_upstream_watchdog_checks_total`.
+- `admin.enabled` is opt-in and exposes a single `POST <admin.path>` endpoint (default `/admin/validate`) that runs the same parse + validate + compile pipeline as the offline `sockguard validate` command against a YAML body in the request payload. Useful as a CI gate before promoting a candidate config to production. Running policy is never mutated. The endpoint rides the main listener, so the listener's CIDR allowlist, mTLS posture, and per-profile rate-limit / concurrency caps all apply. Bodies are hard-capped at `admin.max_body_bytes` (default 512 KiB) via `http.MaxBytesReader` and return `413` on overflow. Non-POST methods return `405` with `Allow: POST`. The response body is a structured JSON report: `{"ok": bool, "rules": int, "profiles": int, "compat_active": bool, "errors": [...]?}`. A failing candidate returns `422` with the validator's per-issue error list; a passing candidate returns `200`. `admin.path` must start with `/` and must not collide with `health.path` or `metrics.path` when those endpoints are also enabled.
+- `reload.enabled` is opt-in and turns on hot reload of policy at runtime. When on, sockguard watches the loaded config file via `fsnotify` (Linux inotify / macOS kqueue) and also reloads on `SIGHUP`. A burst of editor events (vim's chmod + write + rename + create save dance, for example) is debounced into a single reload by `reload.debounce_ms` (default `250`). The reload pipeline parses the new file, applies the same Tecnativa-compat env expansion the startup path uses, runs the full validator + rule compiler, and **atomically swaps** the running handler chain on success. In-flight requests at the moment of the swap complete on the previous chain; new requests immediately route through the new one — no connections dropped. On any failure (file unreadable, YAML malformed, validator rejects, compile error) the running policy is preserved untouched. Hot reload is restricted to a reloadable subset of the config. The **immutable** fields — `listen.*`, `upstream.socket`, `log.*`, `health.*`, `metrics.*`, `admin.*` — are bound at startup to long-lived sockets and goroutines that cannot be replaced from within a running process. A reload that would mutate any of those is refused (the running config stays in place, and the failure is logged with `changed_fields=...`); operators must restart sockguard to apply listener, upstream socket, log sink, health, metrics, or admin changes. Everything else — `rules`, `clients.*`, `response.*`, `request_body.*`, `ownership.*`, `insecure_allow_*` — is rebuilt and atomically applied on every successful reload. Reload outcomes are surfaced as Prometheus metrics: `sockguard_config_reload_total{result="ok|reject_load|reject_validation|reject_immutable"}` counter and a `sockguard_config_reload_last_success_timestamp_seconds` gauge (omitted from scrape output until the first successful reload). **SIGHUP semantics change** when hot reload is on: previously SIGHUP terminated sockguard (Go's default action for unhandled SIGHUP); with `reload.enabled: true` it triggers a reload and never terminates the process. Default is `reload.enabled: false` for backward compatibility — operators who script around SIGHUP-as-shutdown must update their tooling before enabling reload.
 - W3C trace/log correlation is always on and has no config knob. Sockguard preserves valid incoming `traceparent` trace IDs and sampled flags, replaces the parent span with a proxy-local span ID for the forwarded request, and generates fresh local context when the caller does not send valid trace context.
 - `POST /containers/create` bodies are inspected by default. Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, `HostConfig.PidMode=host`, `HostConfig.IpcMode=host`, `HostConfig.UsernsMode=host`, bind mount sources outside `request_body.container_create.allowed_bind_mounts`, `HostConfig.Devices` host paths outside `request_body.container_create.allowed_devices`, `HostConfig.DeviceRequests` (unless explicitly allowed via `allow_device_requests` or `allowed_device_requests`), `HostConfig.DeviceCgroupRules` (unless explicitly allowed via `allow_device_cgroup_rules` or `allowed_device_cgroup_rules`), and any `HostConfig.CapAdd` entry that isn't covered by `allow_all_capabilities` or `allowed_capabilities`. Named volumes still work without allowlist entries because they are not host bind mounts. `allowed_device_requests` is the structured opt-in for GPU passthrough and similar device request policy — each entry must specify a `driver` (exact match, case-insensitive), an `allowed_capabilities` list of capability sets (each request capability set must be a subset of at least one allowlisted set), and an optional `max_count` bound (`-1` means all devices; request `Count: -1` is only allowed when `max_count` is also `-1`); set `allow_device_requests: true` only when you need unrestricted device request access. `allowed_device_cgroup_rules` is the structured opt-in for cgroup device policy — it accepts Docker cgroup rule strings (`<type> <major>:<minor> <perms>`) with `*` wildcards for major or minor, and denies request wildcards unless the matching allowlist entry also uses a wildcard at that position; set `allow_device_cgroup_rules: true` only when you need unrestricted cgroup device access. Optional opt-in rails enforce `no-new-privileges`, non-root `Config.User`, `HostConfig.ReadonlyRootfs=true`, `HostConfig.CapDrop=["ALL"]`, memory / CPU / PIDs limits, allowlisted seccomp and AppArmor profiles, and required `Config.Labels` keys — all default to off so an existing 0.5.x configuration keeps its behavior except for the CapAdd allowlist and host-userns default-deny noted above. `image_trust` adds cosign-backed signature verification: set `mode: enforce` to deny containers whose image lacks a valid signature from one of your `allowed_signing_keys` (PEM public keys) or `allowed_keyless` identities (Fulcio cert chain matched by issuer URL and SAN regex); set `mode: warn` to log failures and allow the request through instead. `require_rekor_inclusion: true` additionally requires a Rekor transparency log entry for keyless bundles. `verify_timeout` controls the per-verification network timeout (default 10s); set to a low value in air-gapped environments to fail fast. Either mode is a no-op when the image reference is empty — Docker refuses to create a container without an image anyway.
 - `POST /containers/*/exec` and `POST /exec/*/start` are inspected when `request_body.exec.allowed_commands` is non-empty. Sockguard denies argv vectors outside that allowlist, denies privileged exec unless `allow_privileged: true`, denies root-user exec unless `allow_root_user: true`, and re-checks `POST /exec/*/start` against Docker's stored exec metadata before execution. Docker exposes exec inspect and exec start as separate API calls, so this start-time check has an unavoidable time-of-check/time-of-use window; keep exec allowlists and client profile assignments narrow.
@@ -571,6 +578,209 @@ Unlabeled nodes and swarm state are denied on reads once ownership is enabled. T
 
 `allow_unowned_images` defaults to `true` so shared base images can still be pulled and inspected without relabeling. Set it to `false` in tighter multi-tenant setups.
 
+## Rollout Modes
+
+Each named profile can set a `mode` field that controls how Sockguard applies
+denials from that profile's rules, request-body inspectors, ownership
+isolation, client-ACL label policy, and rate-limit / concurrency throttle
+gates:
+
+| Mode | Behavior |
+|------|----------|
+| `enforce` | Default. Denied requests return `403`; throttled requests return `429`. |
+| `warn` | Requests that would be denied are **allowed** upstream. The structured audit record carries `decision=would_deny`. Deny and throttle counters fire with a `mode` label. |
+| `audit` | Same as `warn` — the request is served — but the log record is tagged `decision=would_deny` rather than producing a warning-level event. |
+
+`warn` and `audit` exist for staged rollouts: add a tighter rule to a profile
+in `warn` or `audit` mode, observe `would_deny` in dashboards and logs until
+you are confident the deny rate is correct, then flip to `enforce`.
+
+> Pre-auth admission gates — `clients.allowed_cidrs` CIDR checks and
+> identity-lookup failures — stay `enforce` regardless of the profile's mode.
+> Those are unsafe to relax through rollout mode because they fire before a
+> profile is even resolved.
+
+```yaml filename="sockguard.yaml"
+clients:
+  profiles:
+    - name: ci-agent
+      mode: warn          # observe would_deny before enforcing
+      rules:
+        - match: { method: GET, path: "/containers/**" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/exec" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+```
+
+Once the would-deny rate in dashboards matches expectations, set `mode:
+enforce` (or remove the field — `enforce` is the default).
+
+The `mode` label on deny/throttle counters lets you compare blocked vs.
+would-have-been-blocked volume side by side:
+
+```text
+sum by (mode) (rate(sockguard_http_denied_requests_total[5m]))
+```
+
+## Hot Reload
+
+Sockguard can reload policy at runtime without dropping connections.
+
+```yaml filename="sockguard.yaml"
+reload:
+  enabled: true          # default false; opt-in
+  debounce_ms: 250       # collapse burst of fs events into one reload (default 250ms)
+```
+
+When `reload.enabled: true`:
+
+- **fsnotify file watch** — Sockguard watches the loaded config file via Linux
+  inotify / macOS kqueue. A burst of editor-save events (vim's chmod + write +
+  rename + create sequence, for example) is debounced by `reload.debounce_ms`
+  into a single reload.
+- **SIGHUP** — sending `SIGHUP` triggers a reload. Without `reload.enabled`,
+  SIGHUP terminates the process (Go's default); with reload on, SIGHUP never
+  terminates.
+- **Atomic swap** — on success, the running handler chain is replaced atomically.
+  In-flight requests at the swap moment complete on the previous chain; new
+  requests immediately route through the new one. No connections are dropped.
+- **Rollback on failure** — if the new file is unreadable, the YAML is
+  malformed, the validator rejects the config, or a signature check fails, the
+  running policy is preserved untouched. The failure is logged.
+
+### Immutable fields
+
+Some config fields are bound to long-lived sockets and goroutines that cannot
+be replaced from within a running process. A reload that would mutate any of
+these is refused — the running policy stays in place and the failure is logged
+with `changed_fields=...`:
+
+- `listen.*` — listener address, TLS material, and socket path
+- `upstream.socket` — upstream Docker socket path
+- `log.*` — log level, format, and output sink
+- `health.*` — health endpoint path and watchdog config
+- `metrics.*` — metrics endpoint and path
+- `admin.*` — admin config (including `admin.listen.*`)
+- `policy_bundle` trust material — `enabled`, `allowed_signing_keys`,
+  `allowed_keyless`, `require_rekor_inclusion`, `verify_timeout`
+
+`policy_bundle.signature_path` is **reload-mutable** so an operator can
+re-sign the same YAML without a restart.
+
+Everything else — `rules`, `clients.*`, `response.*`, `request_body.*`,
+`ownership.*`, `insecure_allow_*` — is rebuilt and atomically applied on every
+successful reload.
+
+### Reload outcomes
+
+When `metrics.enabled: true`, two series track reload outcomes:
+
+- `sockguard_config_reload_total{result}` — counter with labels
+  `ok`, `reject_load`, `reject_validation`, `reject_immutable`,
+  `reject_signature`.
+- `sockguard_config_reload_last_success_timestamp_seconds` — gauge; omitted
+  from scrape output until the first successful reload.
+
+## Admin Listener
+
+The admin endpoints (`POST /admin/validate` and `GET /admin/policy/version`)
+can run on a separate listener, keeping admin traffic entirely off the main
+Docker-API data plane.
+
+```yaml filename="sockguard.yaml"
+admin:
+  enabled: true
+  listen:
+    socket: /var/run/sockguard-admin/admin.sock   # operator-only perms
+```
+
+Or loopback TCP:
+
+```yaml filename="sockguard.yaml"
+admin:
+  enabled: true
+  listen:
+    address: 127.0.0.1:2376
+    tls:
+      cert_file: /run/secrets/sockguard/admin-cert.pem
+      key_file:  /run/secrets/sockguard/admin-key.pem
+      client_ca_file: /run/secrets/sockguard/admin-ca.pem
+```
+
+When `admin.listen` is unset, admin endpoints are served on the main listener
+and inherit its CIDR allowlist, mTLS posture, and per-profile rate-limit /
+concurrency caps. When set, Docker-API traffic and admin traffic are fully
+isolated. See the [Admin API](/admin) page for the full endpoint reference and
+recommended posture.
+
+The `admin.*` block including `admin.listen.*` is immutable across hot reload
+— restart is required to change the listener binding.
+
+## Signed Policy Bundles
+
+Sockguard can refuse to start (or reload) unless the on-disk YAML config is
+covered by a valid cosign sigstore bundle. This is Layer 0 of the security
+model: even a valid YAML that passes all structural validators is rejected if
+it was not signed by a trusted key.
+
+```yaml filename="sockguard.yaml"
+policy_bundle:
+  enabled: true
+  signature_path: /etc/sockguard/sockguard.yaml.bundle   # cosign bundle file
+  allowed_signing_keys:                                   # keyed: PEM public keys
+    - pem: |
+        -----BEGIN PUBLIC KEY-----
+        MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...
+        -----END PUBLIC KEY-----
+  allowed_keyless:                                        # keyless: Fulcio + Rekor
+    - issuer: "https://token.actions.githubusercontent.com"
+      subject_pattern: "^https://github.com/my-org/my-repo/.github/workflows/release\\.yml@refs/heads/main$"
+  require_rekor_inclusion: true       # require Rekor transparency log entry (keyless)
+  verify_timeout: 10s                 # per-verification network timeout
+```
+
+Sign the config with cosign:
+
+```bash
+cosign sign-blob \
+  --bundle /etc/sockguard/sockguard.yaml.bundle \
+  /etc/sockguard/sockguard.yaml
+```
+
+Verification runs at startup before any rule compiles. A missing, malformed,
+or wrong-key bundle aborts the process with a wrapped `policy bundle:` error.
+On every hot reload, a signature failure rejects the reload with reason
+`reject_signature` in `sockguard_config_reload_total` and never touches the
+running policy.
+
+The `policy_bundle` trust material (`enabled`, `allowed_signing_keys`,
+`allowed_keyless`, `require_rekor_inclusion`, `verify_timeout`) is
+**reload-immutable** so a SIGHUP cannot silently widen the set of accepted
+signers. Only `signature_path` is reload-mutable, so an operator can re-sign
+without a restart.
+
+Two verification paths are supported and can coexist:
+
+- **Keyed** — PEM-encoded ECDSA, RSA, or ed25519 public keys listed under
+  `allowed_signing_keys`. Verification uses the key's algorithm directly; no
+  network round-trip required.
+- **Keyless (Fulcio + Rekor)** — `allowed_keyless` entries specify the exact
+  OIDC issuer URL and a subject SAN regex. The signing cert's chain is
+  verified against Fulcio; when `require_rekor_inclusion: true` a Rekor
+  transparency-log entry is also required. The `verify_timeout` caps each
+  network round-trip.
+
+The verified signer fingerprint (`keyed:<spki-fingerprint>` or
+`keyless:<issuer>:<san>`) and the YAML's SHA-256 digest are stamped onto the
+policy-version snapshot returned by `GET /admin/policy/version` in the
+`bundle_signer`, `bundle_digest`, and `bundle_source` fields.
+
+`policy_bundle.enabled: false` is the default. The feature adds
+`github.com/sigstore/sigstore-go` as a dependency; it reuses the same stack
+already used for container image trust (`request_body.container_create.image_trust`).
+
 ## Logging And Audit
 
 Sockguard has two operator-facing logging streams:
@@ -653,6 +863,11 @@ even when not enumerated here.
 | `SOCKGUARD_HEALTH_WATCHDOG_INTERVAL`           | `health.watchdog.interval`            | `5s`                            | Watchdog probe interval. Must be a positive Go duration; 1s–30s is typical.                                  |
 | `SOCKGUARD_METRICS_ENABLED`                    | `metrics.enabled`                     | `false`                         | Serve Prometheus text metrics on the proxy listener. See the [Observability page](./observability) for the full metric reference. |
 | `SOCKGUARD_METRICS_PATH`                       | `metrics.path`                        | `/metrics`                      | Scrape path. Must start with `/` and differ from `health.path` when both endpoints are enabled.              |
+| `SOCKGUARD_ADMIN_ENABLED`                      | `admin.enabled`                       | `false`                         | Serve the in-band `POST <admin.path>` candidate-config validation endpoint on the main listener.             |
+| `SOCKGUARD_ADMIN_PATH`                         | `admin.path`                          | `/admin/validate`               | Admin endpoint path. Must start with `/` and must differ from `health.path` and `metrics.path` when enabled. |
+| `SOCKGUARD_ADMIN_MAX_BODY_BYTES`               | `admin.max_body_bytes`                | `524288`                        | Hard cap on candidate-YAML body size. Bodies above this return `413`.                                        |
+| `SOCKGUARD_RELOAD_ENABLED`                     | `reload.enabled`                      | `false`                         | Watch the config file via fsnotify and reload on SIGHUP. Enabling this changes SIGHUP from "terminate" to "reload". |
+| `SOCKGUARD_RELOAD_DEBOUNCE_MS`                 | `reload.debounce_ms`                  | `250`                           | Coalesce a burst of fsnotify events into a single reload. Must be `>= 0`.                                    |
 
 ### Response controls
 

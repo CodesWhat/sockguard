@@ -40,6 +40,10 @@ type Options struct {
 	AllowedCIDRs    []string
 	ContainerLabels ContainerLabelOptions
 	Profiles        ProfileOptions
+	// ProfileModes maps a profile name to its rollout mode (enforce / warn /
+	// audit). Profiles absent from the map are treated as enforce. Set by
+	// the serve wiring from cfg.Clients.Profiles[*].Mode.
+	ProfileModes map[string]string
 }
 
 // ContainerLabelOptions configures opt-in ACLs loaded from the caller
@@ -100,6 +104,7 @@ type compiledOptions struct {
 	clientCertProfiles     []compiledClientCertificateProfileAssignment
 	clientCertProfileIndex *clientCertificateProfileIndex
 	unixPeerProfiles       []compiledUnixPeerProfileAssignment
+	profileModes           map[string]string
 }
 
 type profileMatchStrategy string
@@ -226,8 +231,10 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(co
 			}
 			if ok {
 				logger.DebugContext(r.Context(), "client ACL profile matched", "profile", profile, "strategy", strategy)
+				mode := compiled.profileModes[profile]
 				if meta := logging.MetaForRequest(w, r); meta != nil {
 					meta.Profile = profile
+					meta.RolloutMode = mode
 				}
 				r = r.WithContext(withProfile(r.Context(), profile))
 			}
@@ -237,6 +244,10 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(co
 				return
 			}
 
+			// IP→label resolution is inherently race-prone: container teardown followed
+			// by IP recycling creates a window where labels from a new container may be
+			// applied to a request from the old one. Operators that need strong isolation
+			// should prefer UID/GID unix-peer profile assignment over IP/label ACLs.
 			client, found, err := resolveClient(r.Context(), clientIP)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "client label ACL lookup failed", "error", err, "client_ip", clientIP.String())
@@ -273,6 +284,11 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(co
 				return
 			}
 
+			if logging.MetaForRequest(w, r).AllowsPassThrough() {
+				logging.SetWouldDenyWithCode(w, r, reasonCodeClientLabelPolicyDenied, "client label policy denied request", filter.NormalizePath)
+				next.ServeHTTP(w, r)
+				return
+			}
 			logging.SetDeniedWithCode(w, r, reasonCodeClientLabelPolicyDenied, "client label policy denied request", filter.NormalizePath)
 			_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: "client label policy denied request"})
 		})
@@ -292,6 +308,7 @@ func compileOptions(opts Options) (compiledOptions, error) {
 		labelPrefix:    opts.ContainerLabels.LabelPrefix,
 		labelsOn:       opts.ContainerLabels.Enabled,
 		defaultProfile: strings.TrimSpace(opts.Profiles.DefaultProfile),
+		profileModes:   opts.ProfileModes,
 	}
 	if compiled.labelsOn && compiled.labelPrefix == "" {
 		compiled.labelPrefix = DefaultLabelPrefix

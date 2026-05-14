@@ -110,6 +110,40 @@ func validateBasic(cfg *Config) []string {
 		errs = append(errs, fmt.Sprintf("metrics.path must not equal health.path when both endpoints are enabled, got %q", cfg.Metrics.Path))
 	}
 
+	if cfg.Admin.Enabled {
+		if !strings.HasPrefix(cfg.Admin.Path, "/") {
+			errs = append(errs, fmt.Sprintf("admin.path must start with /, got %q", cfg.Admin.Path))
+		}
+		if cfg.Admin.MaxBodyBytes <= 0 {
+			errs = append(errs, fmt.Sprintf("admin.max_body_bytes must be > 0, got %d", cfg.Admin.MaxBodyBytes))
+		}
+		if cfg.Health.Enabled && cfg.Admin.Path == cfg.Health.Path {
+			errs = append(errs, fmt.Sprintf("admin.path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.Path))
+		}
+		if cfg.Metrics.Enabled && cfg.Admin.Path == cfg.Metrics.Path {
+			errs = append(errs, fmt.Sprintf("admin.path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.Path))
+		}
+		if !strings.HasPrefix(cfg.Admin.PolicyVersionPath, "/") {
+			errs = append(errs, fmt.Sprintf("admin.policy_version_path must start with /, got %q", cfg.Admin.PolicyVersionPath))
+		}
+		if cfg.Admin.PolicyVersionPath == cfg.Admin.Path {
+			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal admin.path, got %q", cfg.Admin.PolicyVersionPath))
+		}
+		if cfg.Health.Enabled && cfg.Admin.PolicyVersionPath == cfg.Health.Path {
+			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
+		}
+		if cfg.Metrics.Enabled && cfg.Admin.PolicyVersionPath == cfg.Metrics.Path {
+			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
+		}
+		errs = append(errs, validateAdminListener(cfg)...)
+	}
+
+	if cfg.Reload.Enabled && cfg.Reload.DebounceMs < 0 {
+		errs = append(errs, fmt.Sprintf("reload.debounce_ms must be >= 0, got %d", cfg.Reload.DebounceMs))
+	}
+
+	errs = append(errs, validatePolicyBundle(cfg)...)
+
 	errs = append(errs, validateRequestBody(cfg)...)
 
 	// At least one rule
@@ -146,6 +180,64 @@ func validateUnixSocketListenerSecurity(cfg *Config) []string {
 	}
 }
 
+// validateAdminListener validates the optional dedicated admin listener. It
+// only runs when cfg.Admin.Enabled is true; an unconfigured Listen sub-block
+// (Socket == "" && Address == "") is the documented "ride the main listener"
+// mode and is intentionally a no-op here.
+//
+// Errors mirror the main-listener validators: a socket listener must use the
+// hardened owner-only socket mode, a partially-configured TLS block is
+// rejected, a complete TLS block is constructively validated by loading the
+// material, and a non-loopback plaintext TCP listener requires the same
+// explicit opt-in (admin.listen.insecure_allow_plain_tcp=true) that the main
+// listener requires. The admin listener must also point at a different
+// socket/address than the main listener — otherwise the two http.Servers
+// would race for the same bind and the dedicated-listener model would be a
+// silent lie.
+func validateAdminListener(cfg *Config) []string {
+	listen := cfg.Admin.Listen
+	if !listen.Configured() {
+		return nil
+	}
+
+	var errs []string
+
+	if listen.Socket != "" && listen.Address != "" {
+		errs = append(errs, "admin.listen.socket and admin.listen.address are mutually exclusive; configure one")
+	}
+
+	if listen.Socket != "" {
+		if strings.TrimSpace(listen.SocketMode) != HardenedListenSocketMode {
+			errs = append(errs, fmt.Sprintf("admin.listen.socket_mode must be %q because unix listeners are created with owner-only permissions", HardenedListenSocketMode))
+		}
+		if cfg.Listen.Socket != "" && cfg.Listen.Socket == listen.Socket {
+			errs = append(errs, fmt.Sprintf("admin.listen.socket must differ from listen.socket, got %q", listen.Socket))
+		}
+	}
+
+	if listen.Address != "" {
+		if listen.TLS.Enabled() && !listen.TLS.Complete() {
+			errs = append(errs, requiresError("admin.listen.tls", "cert_file, key_file, and client_ca_file together"))
+		} else if listen.TLS.Complete() {
+			if _, err := BuildMutualTLSServerConfig(listen.TLS); err != nil {
+				errs = append(errs, strings.Replace(err.Error(), "listen.tls", "admin.listen.tls", 1))
+			}
+		}
+
+		if IsNonLoopbackTCPAddress(listen.Address) && !listen.InsecureAllowPlainTCP && !listen.TLS.Complete() {
+			errs = append(errs,
+				fmt.Sprintf("non-loopback TCP admin listener %q requires admin.listen.tls mTLS config or admin.listen.insecure_allow_plain_tcp=true", listen.Address),
+			)
+		}
+
+		if cfg.Listen.Address != "" && cfg.Listen.Socket == "" && cfg.Listen.Address == listen.Address {
+			errs = append(errs, fmt.Sprintf("admin.listen.address must differ from listen.address, got %q", listen.Address))
+		}
+	}
+
+	return errs
+}
+
 func validateTCPListenerSecurity(cfg *Config) []string {
 	var errs []string
 
@@ -164,6 +256,65 @@ func validateTCPListenerSecurity(cfg *Config) []string {
 		errs = append(errs,
 			fmt.Sprintf("non-loopback TCP listener %q requires listen.tls mTLS config or listen.insecure_allow_plain_tcp=true", cfg.Listen.Address),
 		)
+	}
+
+	return errs
+}
+
+// validatePolicyBundle validates the policy_bundle sub-block. The verifier
+// itself enforces deeper structural checks (PEM parsing, regex compilation,
+// etc.) at startup; here we only catch the cases the operator can fix from
+// the config file alone.
+func validatePolicyBundle(cfg *Config) []string {
+	pb := cfg.PolicyBundle
+	if !pb.Enabled {
+		return nil
+	}
+
+	var errs []string
+
+	if strings.TrimSpace(pb.SignaturePath) == "" {
+		errs = append(errs, requiredFieldError("policy_bundle.signature_path"))
+	}
+
+	if len(pb.AllowedSigningKeys) == 0 && len(pb.AllowedKeyless) == 0 {
+		errs = append(errs,
+			"policy_bundle: enabled=true requires at least one allowed_signing_keys or allowed_keyless entry",
+		)
+	}
+
+	for i, k := range pb.AllowedSigningKeys {
+		if strings.TrimSpace(k.PEM) == "" {
+			errs = append(errs,
+				fmt.Sprintf("policy_bundle.allowed_signing_keys[%d].pem is required", i),
+			)
+		}
+	}
+
+	for i, kl := range pb.AllowedKeyless {
+		if strings.TrimSpace(kl.Issuer) == "" {
+			errs = append(errs,
+				fmt.Sprintf("policy_bundle.allowed_keyless[%d].issuer is required", i),
+			)
+		}
+		if strings.TrimSpace(kl.SubjectPattern) == "" {
+			errs = append(errs,
+				fmt.Sprintf("policy_bundle.allowed_keyless[%d].subject_pattern is required", i),
+			)
+		} else if _, err := regexp.Compile(kl.SubjectPattern); err != nil {
+			errs = append(errs,
+				fmt.Sprintf("policy_bundle.allowed_keyless[%d].subject_pattern: %v", i, err),
+			)
+		}
+	}
+
+	if pb.VerifyTimeout != "" {
+		d, err := time.ParseDuration(pb.VerifyTimeout)
+		if err != nil || d <= 0 {
+			errs = append(errs,
+				fmt.Sprintf("policy_bundle.verify_timeout must be a positive duration, got %q", pb.VerifyTimeout),
+			)
+		}
 	}
 
 	return errs
@@ -343,6 +494,10 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 		errs = append(errs, containsAtLeastOneError(prefix+".rules", "rule"))
 	}
 
+	if _, ok := ParseRolloutMode(profile.Mode); !ok {
+		errs = append(errs, fmt.Sprintf("%s.mode must be one of enforce|warn|audit, got %q", prefix, profile.Mode))
+	}
+
 	errs = append(errs, validateVisibleResourceLabels(prefix+".response.visible_resource_labels", profile.Response.VisibleResourceLabels)...)
 	errs = append(errs, validateRequestBodyConfig(prefix+".request_body", profile.RequestBody)...)
 	errs = append(errs, validateRuleConfigs(profile.Rules, prefix+".rules")...)
@@ -369,16 +524,15 @@ func validateLimitsConfig(prefix string, cfg LimitsConfig) []string {
 			errs = append(errs, fmt.Sprintf("%s.tokens_per_second must be > 0, got %v", ratePfx, cfg.Rate.TokensPerSecond))
 		}
 		effectiveBurst := cfg.Rate.Burst
-		if effectiveBurst == 0 {
+		switch {
+		case cfg.Rate.Burst < 0:
+			errs = append(errs, fmt.Sprintf("%s.burst must not be negative, got %v", ratePfx, cfg.Rate.Burst))
+		case effectiveBurst == 0:
 			// Default: burst equals tokens_per_second.
 			effectiveBurst = cfg.Rate.TokensPerSecond
-		}
-		if effectiveBurst < cfg.Rate.TokensPerSecond {
+		case effectiveBurst < cfg.Rate.TokensPerSecond:
 			errs = append(errs, fmt.Sprintf("%s.burst must be >= tokens_per_second (%v) or 0 (default), got %v",
 				ratePfx, cfg.Rate.TokensPerSecond, cfg.Rate.Burst))
-		}
-		if cfg.Rate.Burst < 0 {
-			errs = append(errs, fmt.Sprintf("%s.burst must not be negative, got %v", ratePfx, cfg.Rate.Burst))
 		}
 
 		errs = append(errs, validateEndpointCosts(ratePfx+".endpoint_costs", cfg.Rate.EndpointCosts, effectiveBurst)...)
@@ -739,6 +893,10 @@ func validateImageTrustConfig(prefix string, cfg ImageTrustConfig) []string {
 		if strings.TrimSpace(kl.SubjectPattern) == "" {
 			errs = append(errs,
 				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern is required", prefix, i),
+			)
+		} else if _, err := regexp.Compile(kl.SubjectPattern); err != nil {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern: %v", prefix, i, err),
 			)
 		}
 	}

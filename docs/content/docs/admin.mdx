@@ -1,0 +1,212 @@
+---
+title: Admin API
+description: Sockguard's optional admin endpoints — config dry-run validation and policy version introspection. Deploy on a dedicated listener to keep admin traffic off the Docker-API data plane.
+---
+
+Sockguard exposes two admin endpoints: `POST /admin/validate` runs a
+parse/validate/compile dry-run against a candidate YAML body without touching
+the running policy, and `GET /admin/policy/version` returns a snapshot of the
+currently active policy. Both are opt-in and disabled by default.
+
+## Enabling the admin API
+
+```yaml filename="sockguard.yaml"
+admin:
+  enabled: true
+  path: /admin/validate                # POST endpoint; must start with /
+  policy_version_path: /admin/policy/version  # GET endpoint; must start with /
+  max_body_bytes: 524288               # 512 KiB hard cap on validate request bodies
+```
+
+Both endpoints share the `admin.enabled` gate. When disabled, any request to
+either path returns `404`.
+
+## Dedicated admin listener (recommended)
+
+By default, admin endpoints share the main data listener — the same socket that
+forwards traffic to Docker. This is convenient for single-socket deployments but
+means any container with socket access can reach the admin API alongside the
+Docker API.
+
+A dedicated admin listener separates the two planes completely. Admin traffic
+never traverses the Docker-API filter, rate-limit, or client-ACL chain, and
+Docker-API callers never see the admin surface at all.
+
+```yaml filename="sockguard.yaml"
+admin:
+  enabled: true
+  listen:
+    socket: /var/run/sockguard-admin/admin.sock  # tighter filesystem perms
+```
+
+Or bind to loopback TCP if your operator tooling connects over the network:
+
+```yaml filename="sockguard.yaml"
+admin:
+  enabled: true
+  listen:
+    address: 127.0.0.1:2376
+    tls:
+      cert_file: /run/secrets/sockguard/admin-cert.pem
+      key_file:  /run/secrets/sockguard/admin-key.pem
+      client_ca_file: /run/secrets/sockguard/admin-ca.pem
+```
+
+The dedicated listener supports the same posture as `listen.*`: unix socket
+(hardened `0600` mode), loopback or TLS-protected TCP (with
+`admin.listen.tls.cert_file` / `key_file` / `client_ca_file` plus the same CN /
+DNS / IP / URI / SPIFFE / SHA-256 SPKI client-identity selectors as the main
+listener), or non-loopback plaintext TCP behind an explicit
+`admin.listen.insecure_allow_plain_tcp: true` opt-in.
+
+> **Recommended posture:** configure `admin.listen.socket` at a path whose
+> parent directory is only writable by the operator UID, e.g.
+> `/var/run/sockguard-admin/admin.sock` with that directory `chmod 700`. This
+> keeps admin endpoints entirely off the container-accessible socket while still
+> allowing operator tooling to reach them from the host.
+
+When `admin.listen` is set, unknown paths on the dedicated listener return `404`
+rather than falling through to the Docker-API filter. An admin server failure is
+fatal: the process exits with a wrapped `admin server error` so a misconfigured
+dedicated control plane is never silently lost.
+
+The `admin.*` block (including `admin.listen.*`) is **immutable across hot
+reload** — changing listener binding or TLS material requires a process restart.
+
+## POST /admin/validate
+
+Runs the same parse → validate → compile pipeline as `sockguard validate` on a
+YAML body you supply in the request, and returns a structured JSON report.
+Running policy is never mutated.
+
+### Request
+
+```
+POST /admin/validate
+Content-Type: application/x-yaml
+
+<candidate sockguard.yaml body>
+```
+
+Body is limited to `admin.max_body_bytes` (default 512 KiB) via
+`http.MaxBytesReader`.
+
+### Response codes
+
+| Status | Meaning |
+|--------|---------|
+| `200 OK` | YAML is valid; response body contains the parsed policy summary |
+| `405 Method Not Allowed` | Non-POST method; `Allow: POST` header is set |
+| `413 Payload Too Large` | Body exceeded `admin.max_body_bytes` |
+| `422 Unprocessable Entity` | YAML parsed but failed validation; errors listed |
+
+### Response body
+
+```json
+{
+  "ok": true,
+  "rules": 6,
+  "profiles": 2,
+  "compat_active": false,
+  "errors": null
+}
+```
+
+On a failing candidate (`422`):
+
+```json
+{
+  "ok": false,
+  "rules": 0,
+  "profiles": 0,
+  "compat_active": false,
+  "errors": [
+    "profile 'ci': limits.rate.tokens_per_second must be > 0",
+    "profile 'ci': limits.rate.burst must be >= tokens_per_second"
+  ]
+}
+```
+
+### CI gate usage
+
+```bash
+curl --silent --fail \
+  --data-binary @candidate.yaml \
+  http://sockguard:2375/admin/validate | jq .
+```
+
+Exit code is non-zero on HTTP errors (`--fail`). A `422` response with
+validation errors will also cause `--fail` to exit non-zero, so the pattern
+works as a pre-promote gate in CI without extra scripting.
+
+## GET /admin/policy/version
+
+Returns a snapshot of the currently active policy: version counter, metadata
+about which config was loaded, bundle verification results when signed bundles
+are enabled, and the SHA-256 of the effective config.
+
+### Request
+
+```
+GET /admin/policy/version
+```
+
+### Response codes
+
+| Status | Meaning |
+|--------|---------|
+| `200 OK` | Snapshot available |
+| `405 Method Not Allowed` | Non-GET method; `Allow: GET` header is set |
+| `503 Service Unavailable` | Version not yet published (should not occur post-startup) |
+
+### Response body
+
+```json
+{
+  "version": 4,
+  "loaded_at": "2026-05-13T14:22:01Z",
+  "source": "reload",
+  "rules": 8,
+  "profiles": 3,
+  "compat_active": false,
+  "config_sha256": "a3f2b7c1d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1",
+  "bundle_source": "operator-signed",
+  "bundle_signer": "keyless:https://token.actions.githubusercontent.com:https://github.com/my-org/my-repo/.github/workflows/release.yml@refs/heads/main",
+  "bundle_digest": "b4c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7"
+}
+```
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `version` | int | Monotonic counter. Increments at startup and once per successful hot reload. A stable value across two queries means the policy genuinely did not change. |
+| `loaded_at` | RFC3339 string | Timestamp when this version became active |
+| `source` | string | `"startup"` or `"reload"` |
+| `rules` | int | Number of compiled filter rules in the active policy |
+| `profiles` | int | Number of named client profiles |
+| `compat_active` | bool | `true` when Tecnativa env-var compat rules are in effect |
+| `config_sha256` | hex string | SHA-256 of the effective config's JSON encoding. Best-effort; may be empty if the encoder fails. Two snapshots with the same `version` but different hashes indicate a config-drift bug. |
+| `bundle_source` | string | Omitted when `policy_bundle.enabled: false`. The value passed to `policy_bundle.signature_path`. |
+| `bundle_signer` | string | Omitted when bundles disabled. `keyed:<spki-fingerprint>` for keyed verification or `keyless:<issuer>:<san>` for keyless. |
+| `bundle_digest` | hex string | Omitted when bundles disabled. SHA-256 of the verified YAML bytes. |
+
+The `sockguard_policy_version` Prometheus gauge mirrors the same counter, so
+`GET /admin/policy/version` and the gauge always agree.
+
+### Confirming a reload took effect
+
+```bash
+# Before promoting the new config:
+curl -s http://sockguard:2375/admin/policy/version | jq .version
+# → 3
+
+# Send SIGHUP or wait for fsnotify:
+kill -HUP $(pidof sockguard)
+
+# After:
+curl -s http://sockguard:2375/admin/policy/version | jq .version
+# → 4
+```
+
+A stable version after a SIGHUP means the reload was rejected — check
+`sockguard_config_reload_total{result!="ok"}` and the structured logs for the
+rejection reason.

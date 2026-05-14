@@ -14,6 +14,9 @@ type Config struct {
 	Ownership                     OwnershipConfig   `mapstructure:"ownership"`
 	Health                        HealthConfig      `mapstructure:"health"`
 	Metrics                       MetricsConfig     `mapstructure:"metrics"`
+	Admin                         AdminConfig       `mapstructure:"admin"`
+	Reload                        ReloadConfig      `mapstructure:"reload"`
+	PolicyBundle                  PolicyBundleConfig `mapstructure:"policy_bundle"`
 	Rules                         []RuleConfig      `mapstructure:"rules"`
 	InsecureAllowBodyBlindWrites  bool              `mapstructure:"insecure_allow_body_blind_writes"`
 	InsecureAllowReadExfiltration bool              `mapstructure:"insecure_allow_read_exfiltration"`
@@ -367,8 +370,12 @@ type ClientUnixPeerProfileAssignmentConfig struct {
 }
 
 // ClientProfileConfig defines a named per-client request policy profile.
+//
+// Mode is the rollout posture for the profile's deny decisions. One of
+// "enforce" (default), "warn", or "audit". See RolloutMode for semantics.
 type ClientProfileConfig struct {
 	Name        string                      `mapstructure:"name"`
+	Mode        string                      `mapstructure:"mode"`
 	Response    ClientProfileResponseConfig `mapstructure:"response"`
 	RequestBody RequestBodyConfig           `mapstructure:"request_body"`
 	Rules       []RuleConfig                `mapstructure:"rules"`
@@ -468,6 +475,125 @@ type MetricsConfig struct {
 	Path    string `mapstructure:"path"`
 }
 
+// AdminConfig configures the admin HTTP endpoints (POST <path> for
+// candidate-config validation, GET <policy_version_path> for the active
+// policy generation counter).
+//
+// By default the admin endpoints ride the main listener and therefore
+// inherit its CIDR allowlist, mTLS, and rate-limit posture. When Listen is
+// configured (Listen.Socket OR Listen.Address set), sockguard starts a
+// dedicated http.Server on that address that serves ONLY the admin
+// endpoints. The main Docker-API listener never sees admin traffic in that
+// mode, and admin traffic never sees the Docker-API filter chain. Operators
+// running production traffic alongside an automation/CI control plane
+// should prefer the dedicated listener so the two surfaces are isolated
+// at the OS/socket layer.
+//
+// Enabled is opt-in because a misconfigured admin path on a
+// network-reachable listener would otherwise let any client submit YAML for
+// parsing.
+type AdminConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	Path         string `mapstructure:"path"`
+	MaxBodyBytes int64  `mapstructure:"max_body_bytes"`
+	// PolicyVersionPath is the GET endpoint that reports the active policy
+	// generation counter and metadata (rules / profiles / compat-active /
+	// content hash). It shares the admin layer with Path, so it inherits the
+	// listener CIDR allowlist, mTLS, and rate-limit posture. Default
+	// /admin/policy/version. Must differ from Path, health.path, and
+	// metrics.path when those endpoints are enabled.
+	PolicyVersionPath string `mapstructure:"policy_version_path"`
+	// Listen optionally moves the admin endpoints to a dedicated listener
+	// instead of sharing the main proxy listener. Configure either Socket
+	// (unix) or Address (TCP, optionally wrapped in TLS). When unset, the
+	// admin endpoints continue to ride the main listener.
+	Listen AdminListenConfig `mapstructure:"listen"`
+}
+
+// AdminListenConfig configures the dedicated admin listener. Its shape
+// mirrors ListenConfig so operators have a single mental model for the
+// two listeners; the behavioral differences are limited to defaults and
+// the fact that the admin listener never carries Docker-API traffic.
+//
+// Configured reports whether a dedicated admin listener has been requested.
+// When false the admin endpoints fall back to riding the main listener.
+type AdminListenConfig struct {
+	Socket                string          `mapstructure:"socket"`
+	SocketMode            string          `mapstructure:"socket_mode"`
+	Address               string          `mapstructure:"address"`
+	InsecureAllowPlainTCP bool            `mapstructure:"insecure_allow_plain_tcp"`
+	TLS                   ListenTLSConfig `mapstructure:"tls"`
+}
+
+// Configured reports whether an admin listener address has been requested.
+// It is the single source of truth used by both validation and serve wiring
+// to decide whether to spin up the dedicated admin http.Server.
+func (cfg AdminListenConfig) Configured() bool {
+	return cfg.Socket != "" || cfg.Address != ""
+}
+
+// ReloadConfig configures the hot-reload pipeline.
+//
+// When Enabled, sockguard watches the config file via fsnotify and reloads
+// on SIGHUP. A reload that mutates any immutable field — listen.*,
+// upstream.socket, log.*, health.*, metrics.*, admin.* — is rejected; the
+// running config is preserved and the operator must restart sockguard to
+// pick the new values up.
+//
+// DebounceMs collapses bursts of filesystem events (editors commonly emit
+// chmod + write + rename + create per save) into a single reload trigger.
+// Default 250ms.
+//
+// Reload is opt-in because enabling it changes the meaning of SIGHUP:
+// historically SIGHUP terminated sockguard; with reload enabled, SIGHUP
+// triggers a config reload and never terminates the process. Operators
+// that script around the old behavior must update their tooling before
+// flipping this on.
+type ReloadConfig struct {
+	Enabled    bool `mapstructure:"enabled"`
+	DebounceMs int  `mapstructure:"debounce_ms"`
+}
+
+// PolicyBundleConfig configures verification of signed policy bundles.
+//
+// When Enabled, sockguard reads the YAML config file bytes and the sigstore
+// bundle JSON at SignaturePath, then asks the policybundle verifier to
+// confirm the bundle signs the YAML's sha256 digest under one of the
+// configured trust paths (AllowedSigningKeys or AllowedKeyless). Both
+// startup load and SIGHUP / fsnotify-driven reloads consult the verifier;
+// an unsigned or invalid bundle fails startup and rejects reloads with the
+// reject_signature metrics reason. The verified signer fingerprint or
+// identity is published on GET /admin/policy/version so operators can
+// confirm exactly who vouched for the running policy.
+//
+// SignaturePath is reload-mutable so an operator can re-sign without
+// rotating the YAML; the other fields (enable / trust material / Rekor
+// requirement / timeout) are reload-immutable for the same reasons as the
+// listener / TLS material: changing the trust root mid-reload would
+// silently expand the set of accepted signers.
+type PolicyBundleConfig struct {
+	Enabled               bool                        `mapstructure:"enabled"`
+	SignaturePath         string                      `mapstructure:"signature_path"`
+	AllowedSigningKeys    []PolicyBundleSigningKey    `mapstructure:"allowed_signing_keys"`
+	AllowedKeyless        []PolicyBundleKeyless       `mapstructure:"allowed_keyless"`
+	RequireRekorInclusion bool                        `mapstructure:"require_rekor_inclusion"`
+	VerifyTimeout         string                      `mapstructure:"verify_timeout"`
+}
+
+// PolicyBundleSigningKey is one entry in policy_bundle.allowed_signing_keys.
+type PolicyBundleSigningKey struct {
+	// PEM is the PEM-encoded public key (ECDSA, RSA, or ed25519).
+	PEM string `mapstructure:"pem"`
+}
+
+// PolicyBundleKeyless is one entry in policy_bundle.allowed_keyless.
+type PolicyBundleKeyless struct {
+	// Issuer is the exact OIDC issuer URL to match against the Fulcio cert.
+	Issuer string `mapstructure:"issuer"`
+	// SubjectPattern is a Go regexp matched against the cert's SAN.
+	SubjectPattern string `mapstructure:"subject_pattern"`
+}
+
 // RuleConfig represents a single access control rule in config.
 type RuleConfig struct {
 	Match  MatchConfig `mapstructure:"match"`
@@ -556,6 +682,28 @@ func Defaults() Config {
 		Metrics: MetricsConfig{
 			Enabled: false,
 			Path:    "/metrics",
+		},
+		Admin: AdminConfig{
+			Enabled:           false,
+			Path:              "/admin/validate",
+			MaxBodyBytes:      524288,
+			PolicyVersionPath: "/admin/policy/version",
+			Listen: AdminListenConfig{
+				// Socket and Address both default to "" so the admin endpoints
+				// ride the main listener until the operator opts in. SocketMode
+				// still defaults to the hardened mode so that an operator who
+				// only sets admin.listen.socket gets owner-only permissions
+				// without needing to repeat the boilerplate.
+				SocketMode: HardenedListenSocketMode,
+			},
+		},
+		Reload: ReloadConfig{
+			Enabled:    false,
+			DebounceMs: 250,
+		},
+		PolicyBundle: PolicyBundleConfig{
+			Enabled:               false,
+			RequireRekorInclusion: true,
 		},
 		Rules: []RuleConfig{
 			{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"},
