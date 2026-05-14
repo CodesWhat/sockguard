@@ -552,6 +552,16 @@ func (cfg AdminListenConfig) Configured() bool {
 type ReloadConfig struct {
 	Enabled    bool `mapstructure:"enabled"`
 	DebounceMs int  `mapstructure:"debounce_ms"`
+	// PollIntervalMs is an optional fallback that periodically stats the
+	// config file and triggers a reload when its size, modification time, or
+	// inode has changed since the last check. Useful on filesystems where
+	// fsnotify is unreliable (Synology / DSM btrfs bind-mounts, some FUSE
+	// backends, NFS) — inotify events on the host don't always propagate
+	// into the container, so a SIGHUP or this poll is the only way the
+	// watcher learns the file moved. 0 disables polling (default); typical
+	// values are 5000–15000 (5–15 seconds). SIGHUP remains the canonical
+	// reload trigger for unreliable propagation backends.
+	PollIntervalMs int `mapstructure:"poll_interval_ms"`
 }
 
 // PolicyBundleConfig configures verification of signed policy bundles.
@@ -698,8 +708,9 @@ func Defaults() Config {
 			},
 		},
 		Reload: ReloadConfig{
-			Enabled:    false,
-			DebounceMs: 250,
+			Enabled:        false,
+			DebounceMs:     250,
+			PollIntervalMs: 0,
 		},
 		PolicyBundle: PolicyBundleConfig{
 			Enabled:               false,

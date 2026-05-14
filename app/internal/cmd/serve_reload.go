@@ -263,15 +263,16 @@ func (c *reloadCoordinator) verifyBundle() (*policybundle.VerifyResult, error) {
 // and returns once it has exited. Callers must invoke stop before
 // invoking coordinator.stop() so a reload-in-progress can't race the
 // teardown.
-func startReloader(ctx context.Context, cfgFile string, debounce time.Duration, coordinator *reloadCoordinator, logger *slog.Logger) (func(), error) {
+func startReloader(ctx context.Context, cfgFile string, debounce, pollInterval time.Duration, coordinator *reloadCoordinator, logger *slog.Logger) (func(), error) {
 	if cfgFile == "" {
 		return nil, errors.New("reload: cfgFile is required")
 	}
 	rl, err := reload.New(reload.Options{
-		Path:     cfgFile,
-		Debounce: debounce,
-		OnReload: coordinator.reload,
-		Logger:   logger,
+		Path:         cfgFile,
+		Debounce:     debounce,
+		PollInterval: pollInterval,
+		OnReload:     coordinator.reload,
+		Logger:       logger,
 	})
 	if err != nil {
 		return nil, err
