@@ -7,10 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed (planned for 0.8.1)
+## [0.8.1] - 2026-05-14
 
-- Reload pipeline silently keeps the old value when an immutable field (`listen.*`, `upstream.socket`, `log.*`, `health.*`, `metrics.*`, `admin.*`, `policy_bundle` trust material) is mutated in the on-disk YAML, but still logs `config reload applied` and ticks `policy_version`. Production safety is intact — the running config keeps serving the old value — but operators can't tell the change was rejected. Surfaced during the v0.8.0 NAS smoke test by mutating `admin.path` from `/admin/validate` to `/admin/check`: the reload was reported as applied, `policy_version` ticked up, but `/admin/check` still returned 403 (catch-all deny) while `/admin/validate` kept serving 200. Fix: emit `reject_immutable` to logs and `sockguard_config_reload_total`, do not bump `policy_version`, and surface the rejected field name in the structured log.
-- `fsnotify` file-watch can miss `IN_MODIFY` events on Synology / btrfs bind-mounts. The watcher inside the container watches the bind-mounted path, but inotify events on the host's underlying file don't always propagate to the container. `SIGHUP` reload works as a reliable fallback. Operator docs should call out `SIGHUP` as the canonical DSM reload trigger; optional reload-path hardening — also watch the parent directory and re-arm the file watch on `IN_ATTRIB` so atomic-rename editors (vim, kustomize, helm) on flaky propagation backends still trigger a reload.
+### Fixed
+
+- Hot-reload rejections now emit a structured `result=<outcome>` key on every reload-outcome log line (`reject_load`, `reject_validation`, `reject_immutable`, `reject_signature`, `ok`) so a SIEM grep against the log stream lines up with the `sockguard_config_reload_total{result=...}` label exactly. Pre-0.8.1 the immutable-field gate already incremented the metric and preserved `policy_version`, but the corresponding Warn line only carried `changed_fields=...`, which made the rejection easy to miss in the v0.8.0 Synology soak (operators editing `admin.path` saw the metric tick on `reject_immutable` but read the warn-level line as background noise). The fix also adds a regression test for the specific `admin.path` mutation scenario so the rejection cannot silently regress.
+- Updated the `sockguard_config_reload_total` help line to enumerate `reject_signature` alongside the other four outcomes; it was previously omitted from the scrape-side HELP text even though the counter accepted it.
+
+### Added
+
+- `reload.poll_interval_ms` — opt-in stat-based fallback for `fsnotify`-unreliable filesystems (Synology / DSM btrfs bind-mounts, some FUSE backends, NFS). When > 0, the reload loop periodically re-stats the watched config file and arms a reload when size, modification time, or inode have moved since the last successful check. Off by default (regular Linux inotify and macOS kqueue cover the common cases); typical values when enabling are 5000–15000ms. SIGHUP remains the canonical reload trigger on unreliable propagation backends and is now called out as such in the configuration docs.
+
+### Changed
+
+- `metrics.Registry` no longer serializes hot-path observations against the cold scrape on a shared `sync.Mutex`. Every counter map (`sockguard_http_requests_total`, `sockguard_http_denied_requests_total`, `sockguard_throttle_total`, `sockguard_upstream_watchdog_checks_total`, `sockguard_config_reload_total`) is now a `sync.Map` of `*atomic.Uint64`, and the duration histogram (`sockguard_http_request_duration_seconds`) uses `[]atomic.Uint64` buckets plus a CAS-folded `atomic.Uint64` sum holding the IEEE-754 bit pattern. The exposition path walks each `sync.Map` with `Range` and reads each counter atomically — `observe()` no longer blocks on `writePrometheus()` even during long scrapes. Pre-0.8.1 a single mutex was held for the full clone duration of every map on every scrape (carried over from the v0.8.0 review sweep). The Prometheus exposition format is byte-for-byte unchanged.
 
 ## [0.8.0] - 2026-05-14
 
