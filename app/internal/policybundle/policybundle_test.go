@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -462,5 +463,44 @@ func TestVerify_RekorNotRequired_StillRejectsBadIdentity(t *testing.T) {
 
 	if _, err := v.Verify(context.Background(), yaml, entity); err == nil {
 		t.Fatal("expected SAN mismatch to fail even when RequireRekorInclusion=false")
+	}
+}
+
+// TestVerify_KeyedBranchExecutes covers the keyed verification path. We can't
+// produce a "keyed" SignedEntity via the testing/ca helpers (they emit
+// Fulcio-cert-bound entities), so instead we point a keyed-only config at a
+// keyless-signed entity and assert the failure mentions the keyed branch.
+// That proves verifyKeyed actually ran and returned its error rather than
+// being short-circuited before invocation.
+func TestVerify_KeyedBranchExecutes(t *testing.T) {
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	yaml := []byte("rules: []\n")
+	entity, err := vs.Sign("ops@example.com", "https://github.com/login/oauth", yaml)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+
+	pemStr := generatePEM(t)
+	cfg, err := BuildConfig(RawConfig{
+		Enabled:            true,
+		AllowedSigningKeys: []SigningKeyConfig{{PEM: pemStr}},
+	})
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	v, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = v.Verify(context.Background(), yaml, entity)
+	if err == nil {
+		t.Fatal("expected verification failure: keyless-signed entity against keyed-only config")
+	}
+	if !strings.Contains(err.Error(), "keyed:") {
+		t.Fatalf("expected error to mention the keyed branch, got %v", err)
 	}
 }
