@@ -32,26 +32,36 @@ func (cfg ListenTLSConfig) Complete() bool {
 }
 
 // BuildMutualTLSServerConfig builds a TLS server config that requires and
-// verifies client certificates for TCP listeners.
+// verifies client certificates for TCP listeners. Error messages reference
+// the "listen.tls" config field path. To produce errors keyed to a different
+// field (e.g. "admin.listen.tls"), use BuildMutualTLSServerConfigForField.
 func BuildMutualTLSServerConfig(cfg ListenTLSConfig) (*tls.Config, error) {
-	clientIdentity, err := compileClientCertificateIdentityConstraints(cfg)
+	return BuildMutualTLSServerConfigForField("listen.tls", cfg)
+}
+
+// BuildMutualTLSServerConfigForField is BuildMutualTLSServerConfig with an
+// explicit field prefix used in error messages. Validation paths use this to
+// produce errors that reference the operator's actual config field path
+// (e.g. "admin.listen.tls") without post-hoc string substitution.
+func BuildMutualTLSServerConfigForField(fieldPrefix string, cfg ListenTLSConfig) (*tls.Config, error) {
+	clientIdentity, err := compileClientCertificateIdentityConstraints(fieldPrefix, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("load listen.tls cert/key pair: %w", err)
+		return nil, fmt.Errorf("load %s cert/key pair: %w", fieldPrefix, err)
 	}
 
 	clientCAPEM, err := os.ReadFile(cfg.ClientCAFile)
 	if err != nil {
-		return nil, fmt.Errorf("read listen.tls client_ca_file: %w", err)
+		return nil, fmt.Errorf("read %s client_ca_file: %w", fieldPrefix, err)
 	}
 
 	clientCAs := x509.NewCertPool()
 	if !clientCAs.AppendCertsFromPEM(clientCAPEM) {
-		return nil, fmt.Errorf("parse listen.tls client_ca_file: no PEM certificates found")
+		return nil, fmt.Errorf("parse %s client_ca_file: no PEM certificates found", fieldPrefix)
 	}
 
 	tlsConfig := &tls.Config{
@@ -68,6 +78,7 @@ func BuildMutualTLSServerConfig(cfg ListenTLSConfig) (*tls.Config, error) {
 }
 
 type compiledClientCertificateIdentityConstraints struct {
+	fieldPrefix         string
 	commonNames         []string
 	dnsNames            []string
 	ipAddresses         []netip.Addr
@@ -75,8 +86,9 @@ type compiledClientCertificateIdentityConstraints struct {
 	publicKeySHA256Pins []string
 }
 
-func compileClientCertificateIdentityConstraints(cfg ListenTLSConfig) (compiledClientCertificateIdentityConstraints, error) {
+func compileClientCertificateIdentityConstraints(fieldPrefix string, cfg ListenTLSConfig) (compiledClientCertificateIdentityConstraints, error) {
 	compiled := compiledClientCertificateIdentityConstraints{
+		fieldPrefix:         fieldPrefix,
 		commonNames:         make([]string, 0, len(cfg.CommonNames)),
 		dnsNames:            make([]string, 0, len(cfg.DNSNames)),
 		ipAddresses:         make([]netip.Addr, 0, len(cfg.IPAddresses)),
@@ -84,13 +96,13 @@ func compileClientCertificateIdentityConstraints(cfg ListenTLSConfig) (compiledC
 		publicKeySHA256Pins: make([]string, 0, len(cfg.PublicKeySHA256Pins)),
 	}
 
-	values, err := normalizeNonEmptyStrings("listen.tls.common_names", cfg.CommonNames)
+	values, err := normalizeNonEmptyStrings(fieldPrefix+".common_names", cfg.CommonNames)
 	if err != nil {
 		return compiled, err
 	}
 	compiled.commonNames = append(compiled.commonNames, values...)
 
-	values, err = normalizeNonEmptyStrings("listen.tls.dns_names", cfg.DNSNames)
+	values, err = normalizeNonEmptyStrings(fieldPrefix+".dns_names", cfg.DNSNames)
 	if err != nil {
 		return compiled, err
 	}
@@ -100,7 +112,7 @@ func compileClientCertificateIdentityConstraints(cfg ListenTLSConfig) (compiledC
 		trimmed := strings.TrimSpace(raw)
 		addr, err := netip.ParseAddr(trimmed)
 		if err != nil || !addr.IsValid() {
-			return compiled, fmt.Errorf("listen.tls.ip_addresses entries must be valid IP addresses, got %q", raw)
+			return compiled, fmt.Errorf("%s.ip_addresses entries must be valid IP addresses, got %q", fieldPrefix, raw)
 		}
 		compiled.ipAddresses = append(compiled.ipAddresses, addr.Unmap())
 	}
@@ -109,7 +121,7 @@ func compileClientCertificateIdentityConstraints(cfg ListenTLSConfig) (compiledC
 		trimmed := strings.TrimSpace(raw)
 		parsed, err := url.Parse(trimmed)
 		if err != nil || parsed.String() == "" {
-			return compiled, fmt.Errorf("listen.tls.uri_sans entries must be valid URIs, got %q", raw)
+			return compiled, fmt.Errorf("%s.uri_sans entries must be valid URIs, got %q", fieldPrefix, raw)
 		}
 		compiled.uriSANs = append(compiled.uriSANs, parsed.String())
 	}
@@ -117,7 +129,7 @@ func compileClientCertificateIdentityConstraints(cfg ListenTLSConfig) (compiledC
 	for _, raw := range cfg.PublicKeySHA256Pins {
 		pin, err := normalizeSubjectPublicKeySHA256Pin(raw)
 		if err != nil {
-			return compiled, fmt.Errorf("listen.tls.public_key_sha256_pins entries must be lowercase or uppercase hex SHA-256 digests, got %q", raw)
+			return compiled, fmt.Errorf("%s.public_key_sha256_pins entries must be lowercase or uppercase hex SHA-256 digests, got %q", fieldPrefix, raw)
 		}
 		compiled.publicKeySHA256Pins = append(compiled.publicKeySHA256Pins, pin)
 	}
@@ -134,12 +146,16 @@ func (c compiledClientCertificateIdentityConstraints) hasSelectors() bool {
 }
 
 func (c compiledClientCertificateIdentityConstraints) verifyConnection(state tls.ConnectionState) error {
+	prefix := c.fieldPrefix
+	if prefix == "" {
+		prefix = "listen.tls"
+	}
 	leaf, err := verifiedClientCertificateLeaf(state)
 	if err != nil {
-		return fmt.Errorf("verify listen.tls client certificate identity: %w", err)
+		return fmt.Errorf("verify %s client certificate identity: %w", prefix, err)
 	}
 	if !c.matches(leaf) {
-		return fmt.Errorf("verify listen.tls client certificate identity: client certificate not allowed")
+		return fmt.Errorf("verify %s client certificate identity: client certificate not allowed", prefix)
 	}
 	return nil
 }

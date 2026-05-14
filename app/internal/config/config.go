@@ -132,6 +132,7 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowedAppArmorProfiles    []string `mapstructure:"allowed_apparmor_profiles"`
 	DenyUnconfinedAppArmor     bool     `mapstructure:"deny_unconfined_apparmor"`
 	AllowHostUserNS            bool     `mapstructure:"allow_host_userns"`
+	AllowSysctls               bool     `mapstructure:"allow_sysctls"`
 	RequiredLabels             []string `mapstructure:"required_labels"`
 	ImageTrust                 ImageTrustConfig `mapstructure:"image_trust"`
 }
@@ -510,19 +511,15 @@ type AdminConfig struct {
 	Listen AdminListenConfig `mapstructure:"listen"`
 }
 
-// AdminListenConfig configures the dedicated admin listener. Its shape
-// mirrors ListenConfig so operators have a single mental model for the
-// two listeners; the behavioral differences are limited to defaults and
+// AdminListenConfig configures the dedicated admin listener. It embeds
+// ListenConfig so operators have a single mental model for the two
+// listeners; the behavioral differences are limited to defaults and
 // the fact that the admin listener never carries Docker-API traffic.
 //
 // Configured reports whether a dedicated admin listener has been requested.
 // When false the admin endpoints fall back to riding the main listener.
 type AdminListenConfig struct {
-	Socket                string          `mapstructure:"socket"`
-	SocketMode            string          `mapstructure:"socket_mode"`
-	Address               string          `mapstructure:"address"`
-	InsecureAllowPlainTCP bool            `mapstructure:"insecure_allow_plain_tcp"`
-	TLS                   ListenTLSConfig `mapstructure:"tls"`
+	ListenConfig `mapstructure:",squash"`
 }
 
 // Configured reports whether an admin listener address has been requested.
@@ -699,12 +696,14 @@ func Defaults() Config {
 			MaxRequestBytes:   524288,
 			PolicyVersionPath: "/admin/policy/version",
 			Listen: AdminListenConfig{
-				// Socket and Address both default to "" so the admin endpoints
-				// ride the main listener until the operator opts in. SocketMode
-				// still defaults to the hardened mode so that an operator who
-				// only sets admin.listen.socket gets owner-only permissions
-				// without needing to repeat the boilerplate.
-				SocketMode: HardenedListenSocketMode,
+				ListenConfig: ListenConfig{
+					// Socket and Address both default to "" so the admin endpoints
+					// ride the main listener until the operator opts in. SocketMode
+					// still defaults to the hardened mode so that an operator who
+					// only sets admin.listen.socket gets owner-only permissions
+					// without needing to repeat the boilerplate.
+					SocketMode: HardenedListenSocketMode,
+				},
 			},
 		},
 		Reload: ReloadConfig{

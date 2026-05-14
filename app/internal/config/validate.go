@@ -80,8 +80,8 @@ func validateBasic(cfg *Config) []string {
 		default:
 			errs = append(errs, fmt.Sprintf("log.audit.format must be json, got %q", cfg.Log.Audit.Format))
 		}
-		if err := validateLogOutput(cfg.Log.Audit.Output); err != nil {
-			errs = append(errs, strings.Replace(err.Error(), "log output", "log.audit.output", 1))
+		if err := validateLogOutputField("log.audit.output", cfg.Log.Audit.Output); err != nil {
+			errs = append(errs, err.Error())
 		}
 	}
 
@@ -232,8 +232,8 @@ func validateAdminListener(cfg *Config) []string {
 		if listen.TLS.Enabled() && !listen.TLS.Complete() {
 			errs = append(errs, requiresError("admin.listen.tls", "cert_file, key_file, and client_ca_file together"))
 		} else if listen.TLS.Complete() {
-			if _, err := BuildMutualTLSServerConfig(listen.TLS); err != nil {
-				errs = append(errs, strings.Replace(err.Error(), "listen.tls", "admin.listen.tls", 1))
+			if _, err := BuildMutualTLSServerConfigForField("admin.listen.tls", listen.TLS); err != nil {
+				errs = append(errs, err.Error())
 			}
 		}
 
@@ -274,6 +274,53 @@ func validateTCPListenerSecurity(cfg *Config) []string {
 	return errs
 }
 
+// validateKeylessTrustEntries validates the common structure shared between
+// policy_bundle and container_create.image_trust: a list of signing keys
+// (each requiring a non-empty PEM field) and a list of keyless identities
+// (each requiring a non-empty issuer and a valid subject_pattern regexp).
+// prefix is the dot-separated config path of the parent block (e.g.
+// "policy_bundle" or "request_body.container_create.image_trust") and
+// appears verbatim in every returned error string.
+func validateKeylessTrustEntries(prefix string, keys []signingKeyEntry, keyless []keylessEntry) []string {
+	var errs []string
+
+	for i, k := range keys {
+		if strings.TrimSpace(k.PEM) == "" {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_signing_keys[%d].pem is required", prefix, i),
+			)
+		}
+	}
+
+	for i, kl := range keyless {
+		if strings.TrimSpace(kl.Issuer) == "" {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_keyless[%d].issuer is required", prefix, i),
+			)
+		}
+		if strings.TrimSpace(kl.SubjectPattern) == "" {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern is required", prefix, i),
+			)
+		} else if _, err := regexp.Compile(kl.SubjectPattern); err != nil {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern: %v", prefix, i, err),
+			)
+		}
+	}
+
+	return errs
+}
+
+// signingKeyEntry is the minimal shape shared by PolicyBundleSigningKey and
+// SigningKeyConfig. It exists solely so validateKeylessTrustEntries can
+// operate on both without duplicating logic.
+type signingKeyEntry struct{ PEM string }
+
+// keylessEntry is the minimal shape shared by PolicyBundleKeyless and
+// KeylessConfig.
+type keylessEntry struct{ Issuer, SubjectPattern string }
+
 // validatePolicyBundle validates the policy_bundle sub-block. The verifier
 // itself enforces deeper structural checks (PEM parsing, regex compilation,
 // etc.) at startup; here we only catch the cases the operator can fix from
@@ -296,30 +343,15 @@ func validatePolicyBundle(cfg *Config) []string {
 		)
 	}
 
+	keys := make([]signingKeyEntry, len(pb.AllowedSigningKeys))
 	for i, k := range pb.AllowedSigningKeys {
-		if strings.TrimSpace(k.PEM) == "" {
-			errs = append(errs,
-				fmt.Sprintf("policy_bundle.allowed_signing_keys[%d].pem is required", i),
-			)
-		}
+		keys[i] = signingKeyEntry(k)
 	}
-
+	kls := make([]keylessEntry, len(pb.AllowedKeyless))
 	for i, kl := range pb.AllowedKeyless {
-		if strings.TrimSpace(kl.Issuer) == "" {
-			errs = append(errs,
-				fmt.Sprintf("policy_bundle.allowed_keyless[%d].issuer is required", i),
-			)
-		}
-		if strings.TrimSpace(kl.SubjectPattern) == "" {
-			errs = append(errs,
-				fmt.Sprintf("policy_bundle.allowed_keyless[%d].subject_pattern is required", i),
-			)
-		} else if _, err := regexp.Compile(kl.SubjectPattern); err != nil {
-			errs = append(errs,
-				fmt.Sprintf("policy_bundle.allowed_keyless[%d].subject_pattern: %v", i, err),
-			)
-		}
+		kls[i] = keylessEntry(kl)
 	}
+	errs = append(errs, validateKeylessTrustEntries("policy_bundle", keys, kls)...)
 
 	if pb.VerifyTimeout != "" {
 		d, err := time.ParseDuration(pb.VerifyTimeout)
@@ -889,30 +921,15 @@ func validateImageTrustConfig(prefix string, cfg ImageTrustConfig) []string {
 		)
 	}
 
+	keys := make([]signingKeyEntry, len(cfg.AllowedSigningKeys))
 	for i, k := range cfg.AllowedSigningKeys {
-		if strings.TrimSpace(k.PEM) == "" {
-			errs = append(errs,
-				fmt.Sprintf("%s.allowed_signing_keys[%d].pem is required", prefix, i),
-			)
-		}
+		keys[i] = signingKeyEntry(k)
 	}
-
+	kls := make([]keylessEntry, len(cfg.AllowedKeyless))
 	for i, kl := range cfg.AllowedKeyless {
-		if strings.TrimSpace(kl.Issuer) == "" {
-			errs = append(errs,
-				fmt.Sprintf("%s.allowed_keyless[%d].issuer is required", prefix, i),
-			)
-		}
-		if strings.TrimSpace(kl.SubjectPattern) == "" {
-			errs = append(errs,
-				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern is required", prefix, i),
-			)
-		} else if _, err := regexp.Compile(kl.SubjectPattern); err != nil {
-			errs = append(errs,
-				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern: %v", prefix, i, err),
-			)
-		}
+		kls[i] = keylessEntry(kl)
 	}
+	errs = append(errs, validateKeylessTrustEntries(prefix, keys, kls)...)
 
 	if cfg.VerifyTimeout != "" {
 		d, err := time.ParseDuration(cfg.VerifyTimeout)
@@ -925,6 +942,18 @@ func validateImageTrustConfig(prefix string, cfg ImageTrustConfig) []string {
 
 	return errs
 }
+
+// validateLogOutputField validates a log output value under the given config
+// field path. It wraps validateLogOutput so callers can pass a field-specific
+// prefix (e.g. "log.audit.output") and receive errors that reference that
+// path directly, without post-hoc string replacement.
+func validateLogOutputField(fieldPath, output string) error {
+	if err := validateLogOutput(output); err != nil {
+		return fmt.Errorf("%s: %w", fieldPath, err)
+	}
+	return nil
+}
+
 
 func validateVisibleResourceLabels(prefix string, values []string) []string {
 	var errs []string

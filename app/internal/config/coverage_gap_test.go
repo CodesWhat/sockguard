@@ -450,7 +450,7 @@ func TestNormalizeAllowedRegistryHostDockerAlias(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCompileClientCertIDConstraintsEmptyCommonName(t *testing.T) {
-	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
+	_, err := compileClientCertificateIdentityConstraints("listen.tls", ListenTLSConfig{
 		CommonNames: []string{""},
 	})
 	if err == nil || !strings.Contains(err.Error(), "common_names") {
@@ -459,7 +459,7 @@ func TestCompileClientCertIDConstraintsEmptyCommonName(t *testing.T) {
 }
 
 func TestCompileClientCertIDConstraintsEmptyDNSName(t *testing.T) {
-	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
+	_, err := compileClientCertificateIdentityConstraints("listen.tls", ListenTLSConfig{
 		DNSNames: []string{""},
 	})
 	if err == nil || !strings.Contains(err.Error(), "dns_names") {
@@ -468,7 +468,7 @@ func TestCompileClientCertIDConstraintsEmptyDNSName(t *testing.T) {
 }
 
 func TestCompileClientCertIDConstraintsInvalidIP(t *testing.T) {
-	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
+	_, err := compileClientCertificateIdentityConstraints("listen.tls", ListenTLSConfig{
 		IPAddresses: []string{"not-an-ip"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "ip_addresses") {
@@ -477,7 +477,7 @@ func TestCompileClientCertIDConstraintsInvalidIP(t *testing.T) {
 }
 
 func TestCompileClientCertIDConstraintsEmptyURISAN(t *testing.T) {
-	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
+	_, err := compileClientCertificateIdentityConstraints("listen.tls", ListenTLSConfig{
 		URISANs: []string{""},
 	})
 	if err == nil || !strings.Contains(err.Error(), "uri_sans") {
@@ -486,7 +486,7 @@ func TestCompileClientCertIDConstraintsEmptyURISAN(t *testing.T) {
 }
 
 func TestCompileClientCertIDConstraintsInvalidPin(t *testing.T) {
-	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
+	_, err := compileClientCertificateIdentityConstraints("listen.tls", ListenTLSConfig{
 		PublicKeySHA256Pins: []string{"abc"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "public_key_sha256_pins") {

@@ -52,6 +52,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		AllowedAppArmorProfiles:    c.AllowedAppArmorProfiles,
 		DenyUnconfinedAppArmor:     c.DenyUnconfinedAppArmor,
 		AllowHostUserNS:            c.AllowHostUserNS,
+		AllowSysctls:               c.AllowSysctls,
 		RequiredLabels:             c.RequiredLabels,
 		ImageTrust:                 c.ImageTrust.toFilterOptions(),
 	}

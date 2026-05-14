@@ -352,6 +352,40 @@ func TestCompiledConstraintsMatchesMutantKills(t *testing.T) {
 	})
 }
 
+func TestVerifyConnectionRejectsEmptyChain(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1", "localhost")
+	if err != nil {
+		t.Fatalf("WriteMutualTLSBundle: %v", err)
+	}
+
+	// Build a TLS config with at least one identity selector so that
+	// VerifyConnection is set on the returned config.
+	cfg, err := BuildMutualTLSServerConfig(ListenTLSConfig{
+		CertFile:     bundle.ServerCertFile,
+		KeyFile:      bundle.ServerKeyFile,
+		ClientCAFile: bundle.CAFile,
+		CommonNames:  []string{"some-client"},
+	})
+	if err != nil {
+		t.Fatalf("BuildMutualTLSServerConfig() error = %v", err)
+	}
+	if cfg.VerifyConnection == nil {
+		t.Fatal("VerifyConnection = nil, want callback")
+	}
+
+	// VerifiedChains: nil — simulates a connection where the TLS stack did
+	// not produce a verified chain (e.g. the peer certificate is absent or
+	// failed chain construction). The callback must reject this.
+	err = cfg.VerifyConnection(tls.ConnectionState{
+		VerifiedChains:   nil,
+		PeerCertificates: nil,
+	})
+	if err == nil {
+		t.Fatal("VerifyConnection(empty chain) = nil, want error")
+	}
+}
+
 func TestValidateLogOutputAcceptsStdoutAndLocalPath(t *testing.T) {
 	tests := []string{
 		"stdout",
