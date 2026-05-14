@@ -398,6 +398,145 @@ func TestNormalizeCapabilityStripsPrefix(t *testing.T) {
 	}
 }
 
+// TestContainerCreatePolicyBoundaryMutationCoverage closes the surviving-
+// mutant cluster VISION.md flags around container_create.go's boundary and
+// negation checks. Each case is built to differ between original code and a
+// specific named mutation, so the suite acts as a regression gate against
+// any future drift in the inspector.
+func TestContainerCreatePolicyBoundaryMutationCoverage(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		// denyRequiredLabelsReason: `!ok || strings.TrimSpace(value) == ""` —
+		// a mutation that drops TrimSpace would let a whitespace-only label
+		// satisfy the requirement. The existing "label empty value" test
+		// passes both original and mutated because TrimSpace("") == "" too.
+		// Whitespace-only differentiates them.
+		{
+			name:       "required label whitespace-only value treated as empty",
+			opts:       ContainerCreateOptions{RequiredLabels: []string{"com.example.owner"}, AllowAllCapabilities: true},
+			body:       `{"Labels":{"com.example.owner":"   "}}`,
+			wantReason: `container create denied: required label "com.example.owner" is missing or empty`,
+		},
+		// denyResourceLimitReason: `hostConfig.Memory <= 0` — explicitly set
+		// to 0 (not via the "missing" default) ensures the boundary check
+		// triggers on the documented zero value, not just on absent fields.
+		{
+			name:       "memory limit zero rejected explicitly",
+			opts:       ContainerCreateOptions{RequireMemoryLimit: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"Memory":0}}`,
+			wantReason: "container create denied: a memory limit is required (set HostConfig.Memory)",
+		},
+		// `hostConfig.Memory <= 0` — mutation `<= 0` → `< 0` would accept
+		// Memory=0; mutation `< 0` → `<= 0` would reject Memory<0 which is
+		// fine. The strict-on-boundary case is Memory=1 (must pass).
+		{
+			name: "memory limit one accepted (boundary above <=0)",
+			opts: ContainerCreateOptions{RequireMemoryLimit: true, AllowAllCapabilities: true},
+			body: `{"HostConfig":{"Memory":1}}`,
+		},
+		// denyHardeningReason: `requireNoNewPrivileges && !hasNoNewPrivileges`
+		// — explicitly check the satisfied path. SecurityOpt with
+		// "no-new-privileges:true" should clear the deny, even when other
+		// hardening rails are also enabled.
+		{
+			name: "no-new-privileges satisfied with all rails enabled",
+			opts: ContainerCreateOptions{
+				RequireNoNewPrivileges:     true,
+				RequireDropAllCapabilities: true,
+				AllowAllCapabilities:       true,
+			},
+			body: `{"HostConfig":{"SecurityOpt":["no-new-privileges:true"],"CapDrop":["ALL"]}}`,
+		},
+		// `!isNonRootUser(req.User)` — explicit non-root User "1000" must
+		// pass; the satisfied case differentiates the negation flip.
+		{
+			name: "non-root user numeric uid accepted",
+			opts: ContainerCreateOptions{RequireNonRootUser: true, AllowAllCapabilities: true},
+			body: `{"User":"1000","HostConfig":{}}`,
+		},
+		// "0" (numeric root) must reject so the original/mutation isolation
+		// is bidirectional.
+		{
+			name:       "non-root user numeric zero rejected",
+			opts:       ContainerCreateOptions{RequireNonRootUser: true, AllowAllCapabilities: true},
+			body:       `{"User":"0","HostConfig":{}}`,
+			wantReason: "container create denied: non-root user is required (set Config.User to a non-zero UID or non-root username)",
+		},
+		// denySecurityOptReason: the three apparmor "default-class" names —
+		// "default", "docker-default", "runtime/default" — should each
+		// independently clear the missing-profile check. The existing tests
+		// only cover "docker-default"; mutations that drop either of the
+		// other two slices.Contains() short-circuits would survive without
+		// the additional cases below.
+		{
+			name: "apparmor missing allowed when default allowlisted",
+			opts: ContainerCreateOptions{AllowedAppArmorProfiles: []string{"default"}, AllowAllCapabilities: true},
+			body: `{"HostConfig":{}}`,
+		},
+		{
+			name: "apparmor missing allowed when runtime/default allowlisted",
+			opts: ContainerCreateOptions{AllowedAppArmorProfiles: []string{"runtime/default"}, AllowAllCapabilities: true},
+			body: `{"HostConfig":{}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestBindPathAllowedBoundaryMutationCoverage extends TestBindPathAllowed
+// with the cases that differentiate the strict-prefix semantics from a
+// careless contains-check. A mutation that drops the trailing slash in
+// `strings.HasPrefix(source, allowed+"/")` would let "/srv/database" pass
+// when "/srv/data" is allowlisted — already covered by the existing
+// "sibling prefix rejected" case. The cases below close the parallel gaps:
+//   - empty source string with allowlist (must reject; bindPathAllowed
+//     should not match anything when source is "")
+//   - multiple allowlist entries (any-match semantics)
+//   - root-only source against subdir allowlist (must reject)
+func TestBindPathAllowedBoundaryMutationCoverage(t *testing.T) {
+	tests := []struct {
+		name    string
+		source  string
+		allowed []string
+		want    bool
+	}{
+		{name: "empty source with explicit allowlist rejected", source: "", allowed: []string{"/srv"}, want: false},
+		{name: "empty source with root allowlist accepted", source: "", allowed: []string{"/"}, want: true},
+		{name: "multi-entry allowlist matches second", source: "/var/lib/app", allowed: []string{"/srv", "/var/lib/app"}, want: true},
+		{name: "multi-entry allowlist no match", source: "/var/log", allowed: []string{"/srv", "/var/lib/app"}, want: false},
+		{name: "root source against subdir allowlist rejected", source: "/", allowed: []string{"/srv/data"}, want: false},
+		// The trailing-slash variation: "/srv/data/" vs allowlist ["/srv/data"]
+		// — exact match doesn't apply because the source has a trailing slash,
+		// HasPrefix("srv/data/", "srv/data/") fires only if the allowlist
+		// entry doesn't carry the trailing slash. Boundary case for the
+		// allowed+"/" construction.
+		{name: "source with trailing slash exactly matches allowlist", source: "/srv/data/", allowed: []string{"/srv/data"}, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := bindPathAllowed(tt.source, tt.allowed); got != tt.want {
+				t.Fatalf("bindPathAllowed(%q, %v) = %v, want %v", tt.source, tt.allowed, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNewContainerCreatePolicyDeduplicatesCapabilityList(t *testing.T) {
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
 		AllowedCapabilities: []string{"NET_ADMIN", "cap_net_admin", "CAP_SYS_PTRACE", " "},
