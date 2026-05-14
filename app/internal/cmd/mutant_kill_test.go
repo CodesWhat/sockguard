@@ -633,6 +633,39 @@ func TestRunServe_SocketRemoveOtherErrorLogs(t *testing.T) {
 	}
 }
 
+// TestStartAdminServer_NilListenerCloseDoesNotWarn pins the
+// CONDITIONALS_NEGATION mutant at serve.go:332 (`closeErr == nil` → `!=` in
+// the admin listener's stop closure). The original early-returns when the
+// listener closes cleanly (closeErr == nil) OR with net.ErrClosed. The
+// mutant inverts the first conjunct so a clean close (closeErr == nil)
+// falls through and emits a spurious "failed to close admin listener"
+// Warn line. We inject a listener whose Close returns nil and assert the
+// warning is absent from the collected records.
+func TestStartAdminServer_NilListenerCloseDoesNotWarn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Admin.Enabled = true
+	cfg.Admin.Listen.Address = "127.0.0.1:0"
+
+	collector := &testhelp.CollectingHandler{}
+
+	deps := newServeTestDeps()
+	deps.createAdminListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{closeErr: nil}, nil
+	}
+	deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) {
+		errCh <- http.ErrServerClosed
+	}
+
+	_, _, stop, err := startAdminServer(&cfg, collector.Logger(), nil, nil, deps)
+	if err != nil {
+		t.Fatalf("startAdminServer() error = %v", err)
+	}
+	stop()
+	if collector.HasMessage("failed to close admin listener") {
+		t.Fatalf("clean close (closeErr=nil) emitted spurious warning — mutant `closeErr != nil` would yield this; records: %#v", collector.Records())
+	}
+}
+
 // TestRunServe_ShutdownErrorLogs pins the CONDITIONALS_NEGATION mutant at
 // serve.go:270 (`err != nil` → `==` on the regular shutdownServer call).
 // The mutant silently swallows the shutdown error instead of logging it.
