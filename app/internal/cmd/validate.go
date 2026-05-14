@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"io"
-	"log/slog"
 
 	"github.com/spf13/cobra"
 
@@ -41,7 +40,6 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return wrapped
 	}
 
-	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	compatActive := config.ApplyCompat(cfg, discardLogger)
 
 	compiled, err := newServeDeps().validateRules(cfg)

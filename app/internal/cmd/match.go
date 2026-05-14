@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -105,7 +104,6 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("config load: %w", err)
 	}
 
-	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	compatActive := config.ApplyCompat(cfg, discardLogger)
 
 	compiled, err := validateAndCompileRules(cfg)
