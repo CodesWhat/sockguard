@@ -20,6 +20,20 @@ Bumped eight indirect dependencies to close 11 OSSF Scorecard / OSV-Scanner find
 - `github.com/sigstore/timestamp-authority/v2` v2.0.3 → v2.0.6 — fixes improper certificate validation in verifier (GHSA-xm5m-wgh2-rrg3).
 - `go.opentelemetry.io/otel` v1.40.0 → v1.42.0 — fixes excessive allocations on multi-value `baggage` header extraction (GHSA-mh2q-q3fh-2475).
 
+Filter inspector hardening — close inspection-bypass and slowloris gaps on the request path:
+
+- `POST /containers/create` now always denies `HostConfig.VolumesFrom`, `HostConfig.UTSMode=host`, a non-empty `HostConfig.CgroupParent`, `HostConfig.GroupAdd`, and `HostConfig.ExtraHosts`. These five fields expose namespace-escape or privilege-escalation paths and were previously uninspected; no policy combination can opt out of the new deny gates. `allowsAllContainerCreateBodies()` now always returns `false`, so the body is always walked.
+- `POST /containers/{id}/exec` and `POST /swarm/unlock` are now fail-closed when the request body cannot be decoded. The previous behaviour was to log at Debug and defer to the daemon, which let an attacker shape a Cmd field or unlock body that the proxy could not parse and bypass the inspector entirely. Both now return a structured deny reason without logging sensitive fields.
+- Filter middleware applies a 30s read deadline to the request body before the inspector runs and resets it to zero on return. Slowloris-style stalled bodies can no longer pin an inspector worker indefinitely. Hijack and streaming paths are unaffected — the deadline is scoped to body inspection on non-streaming endpoints.
+- Docker API version prefix stripping (`stripVersionPrefix` in `internal/filter/rules.go`) now accepts uppercase `/V` as well as `/v` so `/V1.45/containers/json` normalizes to `/containers/json`. Docker accepts both cases; the previous lowercase-only check meant a request like `/V1.45/containers/json` could skip every path-rule match.
+
+Ownership and clientacl hardening — bound caches and close OR-bypass on read-side filters:
+
+- Owner-label filter on list endpoints (`GET /containers/json`, etc.) now replaces the entire `label` filter with the proxy-enforced owner label rather than appending to it. The Docker daemon ORs label filters, so the previous append-if-missing logic let a client send `filters={"label":["com.sockguard.owner=victim"]}` and silently broaden the visible container set to another tenant's containers. The enforced owner label is now the only label filter the daemon sees.
+- Internal `sourceIPProfileIndex` and `clientCertificateProfileIndex` profile-lookup caches are now bounded to 1024 entries with LRU eviction (previously unbounded `sync.RWMutex`-guarded maps). Attacker-influenced source IPs or client-certificate fingerprints can no longer drive unbounded memory growth on the assignment-lookup path.
+- Container-label resolution now verifies the container is still live with a follow-up `GET /containers/{id}/json` before caching its labels. A container that died between the list call and resolution may have already released its IP to a new owner; caching the stale labels would apply the wrong profile. Also `io.LimitReader` the `GET /containers/json` response body to `filter.MaxResponseBodyBytes` so a malicious or runaway daemon cannot flood the resolver.
+- Internal `clientacl` resolution cache replaces the linear-scan eviction with a proper LRU (`container/list`). At cap, TTL-expired entries drain first, then the LRU tail evicts. Promotes on hit so cold entries cannot starve hot ones. Defense-in-depth refactor; no behavioural change visible from outside the process.
+
 ### Changed (BREAKING)
 
 YAML schema renames — update configs and env var names before upgrading.
