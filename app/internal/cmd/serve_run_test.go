@@ -24,6 +24,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/testhelp"
 )
 
 type serveTestConn struct {
@@ -945,8 +946,8 @@ func TestVerifyUpstreamReachable(t *testing.T) {
 
 	t.Run("close failure is debug logged", func(t *testing.T) {
 		deps := newServeTestDeps()
-		var logBuf strings.Builder
-		logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		collector := &testhelp.CollectingHandler{}
+		logger := collector.Logger()
 
 		deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
 			return &serveTestConn{closeErr: errors.New("close boom")}, nil
@@ -955,8 +956,8 @@ func TestVerifyUpstreamReachable(t *testing.T) {
 		if err := deps.verifyUpstreamReachable("/var/run/docker.sock", logger); err != nil {
 			t.Fatalf("verifyUpstreamReachable() error = %v", err)
 		}
-		if !strings.Contains(logBuf.String(), `"msg":"failed to close upstream check connection"`) {
-			t.Fatalf("expected debug close log, got: %s", logBuf.String())
+		if !collector.HasMessage("failed to close upstream check connection") {
+			t.Fatalf("expected debug close log, got: %+v", collector.Records())
 		}
 	})
 }
@@ -1037,9 +1038,9 @@ func TestRunServeDoesNotWarnWhenDeferredListenerCloseReturnsNetErrClosed(t *test
 		return cfg, nil
 	}
 
-	var logBuf strings.Builder
+	collector := &testhelp.CollectingHandler{}
 	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
+		return collector.Logger(), nil, nil
 	}
 	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
@@ -1069,8 +1070,8 @@ func TestRunServeDoesNotWarnWhenDeferredListenerCloseReturnsNetErrClosed(t *test
 	if listener.closeCalls != 2 {
 		t.Fatalf("listener close calls = %d, want 2", listener.closeCalls)
 	}
-	if strings.Contains(logBuf.String(), `"msg":"failed to close listener"`) {
-		t.Fatalf("unexpected listener-close warning for net.ErrClosed: %s", logBuf.String())
+	if collector.HasMessage("failed to close listener") {
+		t.Fatalf("unexpected listener-close warning for net.ErrClosed: %+v", collector.Records())
 	}
 }
 
