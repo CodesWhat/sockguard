@@ -13,7 +13,6 @@ import (
 	"github.com/codeswhat/sockguard/internal/admin"
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/logging"
-	"github.com/codeswhat/sockguard/internal/metrics"
 	"github.com/codeswhat/sockguard/internal/policybundle"
 	"github.com/codeswhat/sockguard/internal/reload"
 )
@@ -47,7 +46,6 @@ type reloadCoordinator struct {
 	auditLogger *logging.AuditLogger
 	deps        *serveDeps
 	runtime     *serveRuntime
-	registry    *metrics.Registry
 	// versioner is shared with the admin policy-version handler. Updating it
 	// after a successful swap is what makes the new generation visible to
 	// GET /admin/policy/version and to sockguard_policy_version. Nil-safe so
@@ -89,7 +87,6 @@ func newReloadCoordinator(
 		auditLogger:    auditLogger,
 		deps:           deps,
 		runtime:        runtime,
-		registry:       runtime.metrics,
 		versioner:      versioner,
 		bundleVerifier: bundleVerifier,
 	}
@@ -135,7 +132,7 @@ func (c *reloadCoordinator) reload() {
 			"signature_path", c.activeCfg.PolicyBundle.SignaturePath,
 			"error", err.Error(),
 		)
-		c.registry.ObserveConfigReload("reject_signature")
+		c.runtime.metrics.ObserveConfigReload("reject_signature")
 		return
 	}
 
@@ -146,7 +143,7 @@ func (c *reloadCoordinator) reload() {
 			"path", c.cfgFile,
 			"error", err.Error(),
 		)
-		c.registry.ObserveConfigReload("reject_load")
+		c.runtime.metrics.ObserveConfigReload("reject_load")
 		return
 	}
 
@@ -161,7 +158,7 @@ func (c *reloadCoordinator) reload() {
 			"path", c.cfgFile,
 			"changed_fields", strings.Join(changed, ","),
 		)
-		c.registry.ObserveConfigReload("reject_immutable")
+		c.runtime.metrics.ObserveConfigReload("reject_immutable")
 		return
 	}
 
@@ -178,7 +175,7 @@ func (c *reloadCoordinator) reload() {
 			"path", c.cfgFile,
 			"error", err.Error(),
 		)
-		c.registry.ObserveConfigReload("reject_validation")
+		c.runtime.metrics.ObserveConfigReload("reject_validation")
 		return
 	}
 
@@ -220,7 +217,7 @@ func (c *reloadCoordinator) reload() {
 			snap.BundleDigest = bundleResult.DigestHex
 		}
 		newVersion = c.versioner.Update(snap)
-		c.registry.SetPolicyVersion(newVersion)
+		c.runtime.metrics.SetPolicyVersion(newVersion)
 	}
 
 	c.logger.Info("config reload applied",
@@ -230,7 +227,7 @@ func (c *reloadCoordinator) reload() {
 		"profiles", len(newCfg.Clients.Profiles),
 		"policy_version", newVersion,
 	)
-	c.registry.ObserveConfigReload("ok")
+	c.runtime.metrics.ObserveConfigReload("ok")
 }
 
 // verifyBundle returns (nil, nil) when bundle verification is disabled,
