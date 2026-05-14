@@ -543,7 +543,7 @@ func TestApplyFlagOverrides(t *testing.T) {
 	cmd.Flags().String("upstream-socket", "", "")
 	cmd.Flags().String("log-level", "", "")
 	cmd.Flags().String("log-format", "", "")
-	cmd.Flags().String("deny-response-verbosity", "", "")
+	cmd.Flags().String("deny-verbosity", "", "")
 
 	if err := cmd.Flags().Set("listen-socket", "/tmp/sockguard.sock"); err != nil {
 		t.Fatalf("set listen-socket: %v", err)
@@ -557,8 +557,8 @@ func TestApplyFlagOverrides(t *testing.T) {
 	if err := cmd.Flags().Set("log-format", "text"); err != nil {
 		t.Fatalf("set log-format: %v", err)
 	}
-	if err := cmd.Flags().Set("deny-response-verbosity", "minimal"); err != nil {
-		t.Fatalf("set deny-response-verbosity: %v", err)
+	if err := cmd.Flags().Set("deny-verbosity", "minimal"); err != nil {
+		t.Fatalf("set deny-verbosity: %v", err)
 	}
 
 	if err := applyFlagOverrides(cmd, &cfg); err != nil {

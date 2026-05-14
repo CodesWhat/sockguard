@@ -44,8 +44,16 @@ const maxHeaderBytes = 1 << 20
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the proxy server",
-	Long:  "Start the sockguard proxy, listening for Docker API requests and filtering them according to configured rules.",
-	RunE:  runServe,
+	Long: `Start the sockguard proxy, listening for Docker API requests and filtering them according to configured rules.
+
+Configuration sources (highest precedence first):
+  1. CLI flags
+  2. SOCKGUARD_* env vars (e.g. SOCKGUARD_LISTEN_SOCKET, SOCKGUARD_LOG_LEVEL)
+  3. Tecnativa-compat env vars (SOCKET_PATH, LOG_LEVEL) — accepted as aliases
+     for backward compatibility; lower precedence than the SOCKGUARD_* form
+  4. YAML config file (--config)
+  5. Built-in defaults`,
+	RunE: runServe,
 }
 
 func init() {
@@ -55,7 +63,7 @@ func init() {
 	serveCmd.Flags().String("upstream-socket", "", "Docker socket path (overrides config)")
 	serveCmd.Flags().String("log-level", "", "log level (overrides config)")
 	serveCmd.Flags().String("log-format", "", "log format (overrides config)")
-	serveCmd.Flags().String("deny-response-verbosity", "", "deny response verbosity: verbose or minimal (overrides config)")
+	serveCmd.Flags().String("deny-verbosity", "", "deny response verbosity: verbose or minimal (overrides config)")
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
@@ -1098,7 +1106,7 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) error {
 			},
 		},
 		{
-			name: "deny-response-verbosity",
+			name: "deny-verbosity",
 			set: func(v string) {
 				cfg.Response.DenyVerbosity = v
 			},

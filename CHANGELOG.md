@@ -37,6 +37,16 @@ YAML schema renames — update configs and env var names before upgrading.
 - `reload.debounce_ms` (integer milliseconds) → `reload.debounce` (Go duration string, default `"250ms"`) (env: `SOCKGUARD_RELOAD_DEBOUNCE`)
 - `reload.poll_interval_ms` (integer milliseconds) → `reload.poll_interval` (Go duration string, default `""`) (env: `SOCKGUARD_RELOAD_POLL_INTERVAL`)
 
+CLI flag rename:
+
+- `--deny-response-verbosity` → `--deny-verbosity`. The YAML key and env var are `response.deny_verbosity` / `SOCKGUARD_RESPONSE_DENY_VERBOSITY`; the old flag name carried a redundant `response` segment that prevented the three forms from round-tripping.
+
+### Changed
+
+- `serve --help` Long description now enumerates configuration precedence (CLI > `SOCKGUARD_*` env > Tecnativa compat env (`SOCKET_PATH`, `LOG_LEVEL`) > YAML > defaults) so the compat-env aliases and their relative precedence are visible without leaving the terminal.
+- `--config` help text now states that a missing file at the default path falls back to built-in defaults plus env overrides — previously only documented in README/Fumadocs.
+- `docs/migration.mdx` now mentions the legacy singular `ALLOW_RESTART=1` alias alongside `ALLOW_RESTARTS=1`; both have always been accepted by the compat layer (`compat.go`) but only the plural form was documented on the migration page.
+
 ## [0.8.1] - 2026-05-14
 
 ### Fixed

@@ -129,7 +129,7 @@ func newServeCommand() *cobra.Command {
 	cmd.Flags().String("upstream-socket", "", "")
 	cmd.Flags().String("log-level", "", "")
 	cmd.Flags().String("log-format", "", "")
-	cmd.Flags().String("deny-response-verbosity", "", "")
+	cmd.Flags().String("deny-verbosity", "", "")
 	return cmd
 }
 
@@ -329,7 +329,7 @@ func TestApplyFlagOverridesErrorBranches(t *testing.T) {
 		"listen-socket",
 		"upstream-socket",
 		"log-format",
-		"deny-response-verbosity",
+		"deny-verbosity",
 	}
 
 	for _, name := range tests {
@@ -767,8 +767,8 @@ response:
 	if err := cmd.Flags().Set("log-format", "console"); err != nil {
 		t.Fatalf("set log-format: %v", err)
 	}
-	if err := cmd.Flags().Set("deny-response-verbosity", "minimal"); err != nil {
-		t.Fatalf("set deny-response-verbosity: %v", err)
+	if err := cmd.Flags().Set("deny-verbosity", "minimal"); err != nil {
+		t.Fatalf("set deny-verbosity: %v", err)
 	}
 
 	cfg := captureMergedServeConfig(t, newServeTestDeps(), cmd, cfgPath)
