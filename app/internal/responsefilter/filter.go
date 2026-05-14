@@ -132,55 +132,26 @@ func (f *Filter) modifyContainerList(resp *http.Response) error {
 	if !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology {
 		return nil
 	}
-
-	body, err := readResponseBody(resp)
-	if err != nil {
-		return rejectResponse(err)
-	}
-
-	var payload []map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return rejectResponse(err)
-	}
-
-	for _, container := range payload {
+	return streamArrayResponse(resp, func(container map[string]any) error {
 		if f.opts.RedactMountPaths {
 			if err := redactMountObjects(container, "Mounts"); err != nil {
-				return rejectResponse(err)
+				return err
 			}
 		}
 		if f.opts.RedactNetworkTopology {
 			if err := redactContainerNetworkTopology(container); err != nil {
-				return rejectResponse(err)
+				return err
 			}
 		}
-	}
-
-	return writeResponseBody(resp, payload)
+		return nil
+	})
 }
 
 func (f *Filter) modifyNetworkList(resp *http.Response) error {
 	if !f.opts.RedactNetworkTopology {
 		return nil
 	}
-
-	body, err := readResponseBody(resp)
-	if err != nil {
-		return rejectResponse(err)
-	}
-
-	var payload []map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return rejectResponse(err)
-	}
-
-	for _, network := range payload {
-		if err := redactNetworkTopology(network); err != nil {
-			return rejectResponse(err)
-		}
-	}
-
-	return writeResponseBody(resp, payload)
+	return streamArrayResponse(resp, redactNetworkTopology)
 }
 
 func (f *Filter) modifyNetworkInspect(resp *http.Response) error {
@@ -423,21 +394,92 @@ func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) e
 }
 
 func modifyListResponse(resp *http.Response, mutate func(map[string]any) error) error {
-	body, err := readResponseBody(resp)
+	return streamArrayResponse(resp, mutate)
+}
+
+// streamArrayResponse decodes a JSON array from resp.Body one element at a
+// time, calls mutate on each element, and writes the mutated array back to
+// resp.  It replaces the previous read-all → unmarshal → mutate → marshal
+// round-trip for array-shaped endpoints, eliminating the intermediate
+// full-unmarshal allocation while keeping identical output semantics.
+//
+// The size limit (MaxResponseBodyBytes) is enforced by wrapping the body
+// reader before handing it to json.Decoder, so oversized responses are
+// still rejected.
+func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error) error {
+	if resp.Body == nil {
+		return rejectResponse(errors.New("missing response body"))
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Enforce the same 8 MiB cap as readResponseBody.
+	limited := &io.LimitedReader{
+		R: resp.Body,
+		N: requestfilter.MaxResponseBodyBytes + 1,
+	}
+	dec := json.NewDecoder(limited)
+
+	// Consume the opening '['.
+	tok, err := dec.Token()
 	if err != nil {
 		return rejectResponse(err)
 	}
-
-	var payload []map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return rejectResponse(err)
+	if delim, ok := tok.(json.Delim); !ok || delim != '[' {
+		return rejectResponse(fmt.Errorf("expected JSON array, got %T %v", tok, tok))
 	}
-	for _, item := range payload {
-		if err := mutate(item); err != nil {
+
+	// Stream-encode elements directly into the output buffer.
+	var out bytes.Buffer
+	enc := json.NewEncoder(&out)
+	enc.SetEscapeHTML(false) // preserve original character set; Docker never needs HTML-safe JSON
+
+	out.WriteByte('[')
+	first := true
+	for dec.More() {
+		// Enforce the size cap: if the limited reader is exhausted the next
+		// Decode call will return an error (unexpected EOF or similar), which
+		// we surface as a rejection. We add an explicit check here so that we
+		// can emit the same "response body exceeds N bytes" message.
+		if limited.N <= 0 {
+			return rejectResponse(fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes))
+		}
+
+		var elem map[string]any
+		if err := dec.Decode(&elem); err != nil {
 			return rejectResponse(err)
 		}
+		if err := mutate(elem); err != nil {
+			return rejectResponse(err)
+		}
+		if !first {
+			out.WriteByte(',')
+		}
+		first = false
+		if err := enc.Encode(elem); err != nil {
+			return rejectResponse(err)
+		}
+		// enc.Encode appends a newline; trim it so the output is compact and
+		// byte-for-byte predictable (no trailing newlines inside the array).
+		if out.Len() > 0 && out.Bytes()[out.Len()-1] == '\n' {
+			out.Truncate(out.Len() - 1)
+		}
 	}
-	return writeResponseBody(resp, payload)
+	out.WriteByte(']')
+
+	// Re-check the limit after consuming the closing token.
+	if limited.N <= 0 {
+		return rejectResponse(fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes))
+	}
+
+	body := out.Bytes()
+	if resp.Header == nil {
+		resp.Header = make(http.Header)
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	resp.TransferEncoding = nil
+	return nil
 }
 
 func (f *Filter) redactServicePayload(payload map[string]any) error {
