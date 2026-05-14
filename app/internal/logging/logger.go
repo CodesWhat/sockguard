@@ -85,11 +85,12 @@ func outputWriter(output string) (io.Writer, io.Closer, error) {
 // indefinitely on low-throughput hosts. The mutex serializes Write and the
 // periodic flush, since bufio.Writer is not concurrency-safe.
 type bufferedFileWriter struct {
-	mu   sync.Mutex
-	buf  *bufio.Writer
-	file *os.File
-	stop chan struct{}
-	done chan struct{}
+	mu       sync.Mutex
+	buf      *bufio.Writer
+	file     *os.File
+	stop     chan struct{}
+	done     chan struct{}
+	stopOnce sync.Once
 }
 
 func newBufferedFileWriter(f *os.File, size int, flushInterval time.Duration) *bufferedFileWriter {
@@ -126,7 +127,7 @@ func (w *bufferedFileWriter) flushLoop(interval time.Duration) {
 }
 
 func (w *bufferedFileWriter) Close() error {
-	close(w.stop)
+	w.stopOnce.Do(func() { close(w.stop) })
 	<-w.done
 	w.mu.Lock()
 	defer w.mu.Unlock()
