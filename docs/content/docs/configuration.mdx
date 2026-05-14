@@ -853,7 +853,7 @@ even when not enumerated here.
 | `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP`    | `listen.insecure_allow_plain_tcp`     | `false`                         | Opt-in to plaintext non-loopback TCP. Use only on private trusted networks; never expose to the host or Internet. |
 | `SOCKGUARD_LISTEN_TLS_CERT_FILE`               | `listen.tls.cert_file`                | _(unset)_                       | Path to the listener certificate. Required to enable mTLS.                                                   |
 | `SOCKGUARD_LISTEN_TLS_KEY_FILE`                | `listen.tls.key_file`                 | _(unset)_                       | Path to the listener private key. Required to enable mTLS.                                                   |
-| `SOCKGUARD_LISTEN_TLS_CLIENT_CA_FILE`          | `listen.tls.client_ca_file`           | _(unset)_                       | CA bundle that verifies client certificates. Pair with selectors under `listen.tls.allowed_*` to narrow trust. |
+| `SOCKGUARD_LISTEN_TLS_CLIENT_CA_FILE`          | `listen.tls.client_ca_file`           | _(unset)_                       | CA bundle that verifies client certificates. Pair with selectors under `listen.tls` (`common_names`, `dns_names`, `ip_addresses`, `uri_sans`, `public_key_sha256_pins`) to narrow trust. |
 | `SOCKGUARD_LISTEN_SOCKET`                      | `listen.socket`                       | _(unset)_                       | Switches to a unix socket listener. Sockguard hardens the socket to mode `0600` and rejects broader modes.  |
 | `SOCKGUARD_UPSTREAM_SOCKET`                    | `upstream.socket`                     | `/var/run/docker.sock`          | Path to the real Docker daemon socket Sockguard proxies to.                                                  |
 

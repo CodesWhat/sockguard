@@ -108,8 +108,6 @@ The remaining blind-write guardrail covers body-bearing writes Sockguard still c
 
 Sockguard now applies the same honesty rule to raw archive/export and log/attach streaming reads. Validation refuses to start broad read rules that would expose `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, or `GET /images/*/get` unless you explicitly set `insecure_allow_read_exfiltration: true`. Because this validation layer only sees method + path, `/containers/*/logs` is treated conservatively whether or not the caller also sets `follow=1`. That keeps backup/export and raw-stream use cases possible without letting a casual `GET /containers/**` or Tecnativa-style section gate silently include filesystem or log stream exfiltration.
 
-Future body-inspection additions on the roadmap: deeper secure-create rails such as escalation capabilities like `SYS_ADMIN`/`NET_ADMIN`, no-new-privilege / non-root rails, resource defaults, and security profile overrides.
-
 ### Layer 6: Owner Label Isolation
 When `ownership.owner` is set, Sockguard stamps label-capable creates and build-produced images with an owner label, injects owner filters into list/prune/events responses, and inspects target resources on individual requests to deny cross-owner access. That now covers owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state, with service writes stamping both the service and its task template so downstream tasks inherit the same owner identity, `/nodes` using Docker's `node.label` filter key, and unlabeled node/swarm resources only claimable through their update paths. This turns one shared Docker socket into N isolated identity views.
 
@@ -130,10 +128,6 @@ Together with request-side visibility and exfiltration guardrails, the read-side
 - Redact config payload data, plugin env/path metadata, node/swarm TLS material, swarm join/unlock material, and `/info` plus `/system/df` topology-sensitive fields
 
 These controls are on by default where they are pure redaction because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout.
-
-Future read-side visibility / redaction additions still tracked for the next tier:
-- Name/image pattern visibility controls beyond label selectors
-- Per-resource-type visibility controls for resource families that do not expose Docker label selectors cleanly
 
 ### Layer 8: Structured Access And Audit Logging
 Every request is stamped with a proxy-generated canonical `X-Request-Id` and logged with method, raw `path`, `normalized_path`, decision, matched rule index, selected client profile when present, latency, request ID, trace context, and client metadata. If the caller supplied its own request ID, Sockguard preserves it separately as `client_request_id` in logs instead of trusting it as the canonical correlation key.
