@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/dockerresource"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -85,7 +86,7 @@ func TestMiddlewareReturnsNotFoundForInvisibleContainerInspect(t *testing.T) {
 	handler := middlewareWithDeps(logger, Options{
 		VisibleResourceLabels: []string{"com.sockguard.visible=true"},
 	}, visibilityDeps{
-		inspectResource: func(context.Context, resourceKind, string) (map[string]string, bool, error) {
+		inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
 			return map[string]string{"com.sockguard.visible": "false"}, true, nil
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -118,8 +119,8 @@ func TestMiddlewareAllowsVisibleExecInspectViaContainerLabels(t *testing.T) {
 		inspectExec: func(context.Context, string) (string, bool, error) {
 			return "container-123", true, nil
 		},
-		inspectResource: func(_ context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
-			if kind != resourceKindContainer || identifier != "container-123" {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindContainer || identifier != "container-123" {
 				t.Fatalf("inspectResource kind/id = %s/%s, want containers/container-123", kind, identifier)
 			}
 			return map[string]string{"com.sockguard.visible": "true"}, true, nil
@@ -203,7 +204,7 @@ func TestMiddlewarePassesThroughWhenInspectTargetIsMissing(t *testing.T) {
 	handler := middlewareWithDeps(logger, Options{
 		VisibleResourceLabels: []string{"com.sockguard.visible=true"},
 	}, visibilityDeps{
-		inspectResource: func(context.Context, resourceKind, string) (map[string]string, bool, error) {
+		inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
 			return nil, false, nil
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -265,7 +266,7 @@ func TestVisibilityInspectTimeout(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 		defer cancel()
 
-		_, _, err := newTimeoutInspector().inspectResource(ctx, resourceKindContainer, "abc123")
+		_, _, err := newTimeoutInspector().inspectResource(ctx, dockerresource.KindContainer, "abc123")
 		if err == nil {
 			t.Fatal("expected inspectResource() to fail")
 		}
@@ -625,7 +626,7 @@ func TestInspectResourceNotFound(t *testing.T) {
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	labels, found, err := ins.inspectResource(context.Background(), resourceKindContainer, "missing")
+	labels, found, err := ins.inspectResource(context.Background(), dockerresource.KindContainer, "missing")
 	if err != nil {
 		t.Fatalf("error = %v, want nil", err)
 	}
@@ -641,7 +642,7 @@ func TestInspectResourceNon200Error(t *testing.T) {
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	_, _, err := ins.inspectResource(context.Background(), resourceKindContainer, "abc")
+	_, _, err := ins.inspectResource(context.Background(), dockerresource.KindContainer, "abc")
 	if err == nil {
 		t.Fatal("expected error for non-200 non-404 status")
 	}
@@ -663,7 +664,7 @@ func TestInspectResourceDecodesContainerLabels(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"Config":{"Labels":{"com.example.env":"prod"}}}`)
 	}))
-	labels, found, err := ins.inspectResource(context.Background(), resourceKindContainer, "abc")
+	labels, found, err := ins.inspectResource(context.Background(), dockerresource.KindContainer, "abc")
 	if err != nil || !found {
 		t.Fatalf("err=%v found=%v", err, found)
 	}
@@ -724,80 +725,80 @@ func TestInspectExecReturnsContainerID(t *testing.T) {
 func TestDecodeResourceLabelsAllKinds(t *testing.T) {
 	tests := []struct {
 		name  string
-		kind  resourceKind
+		kind  dockerresource.Kind
 		body  string
 		wantK string
 		wantV string
 	}{
 		{
 			name:  "container",
-			kind:  resourceKindContainer,
+			kind:  dockerresource.KindContainer,
 			body:  `{"Config":{"Labels":{"env":"prod"}}}`,
 			wantK: "env", wantV: "prod",
 		},
 		{
 			name:  "image config labels",
-			kind:  resourceKindImage,
+			kind:  dockerresource.KindImage,
 			body:  `{"Config":{"Labels":{"tier":"web"}},"ContainerConfig":{"Labels":{}}}`,
 			wantK: "tier", wantV: "web",
 		},
 		{
 			name:  "image fallback to ContainerConfig",
-			kind:  resourceKindImage,
+			kind:  dockerresource.KindImage,
 			body:  `{"Config":{"Labels":{}},"ContainerConfig":{"Labels":{"tier":"db"}}}`,
 			wantK: "tier", wantV: "db",
 		},
 		{
 			name:  "network",
-			kind:  resourceKindNetwork,
+			kind:  dockerresource.KindNetwork,
 			body:  `{"Labels":{"net":"overlay"}}`,
 			wantK: "net", wantV: "overlay",
 		},
 		{
 			name:  "volume",
-			kind:  resourceKindVolume,
+			kind:  dockerresource.KindVolume,
 			body:  `{"Labels":{"vol":"data"}}`,
 			wantK: "vol", wantV: "data",
 		},
 		{
 			name:  "service",
-			kind:  resourceKindService,
+			kind:  dockerresource.KindService,
 			body:  `{"Spec":{"Labels":{"svc":"api"}}}`,
 			wantK: "svc", wantV: "api",
 		},
 		{
 			name:  "secret",
-			kind:  resourceKindSecret,
+			kind:  dockerresource.KindSecret,
 			body:  `{"Spec":{"Labels":{"sec":"key"}}}`,
 			wantK: "sec", wantV: "key",
 		},
 		{
 			name:  "config",
-			kind:  resourceKindConfig,
+			kind:  dockerresource.KindConfig,
 			body:  `{"Spec":{"Labels":{"cfg":"app"}}}`,
 			wantK: "cfg", wantV: "app",
 		},
 		{
 			name:  "node",
-			kind:  resourceKindNode,
+			kind:  dockerresource.KindNode,
 			body:  `{"Spec":{"Labels":{"role":"worker"}}}`,
 			wantK: "role", wantV: "worker",
 		},
 		{
 			name:  "swarm",
-			kind:  resourceKindSwarm,
+			kind:  dockerresource.KindSwarm,
 			body:  `{"Spec":{"Labels":{"cluster":"prod"}}}`,
 			wantK: "cluster", wantV: "prod",
 		},
 		{
 			name:  "task with top-level labels",
-			kind:  resourceKindTask,
+			kind:  dockerresource.KindTask,
 			body:  `{"Labels":{"t":"1"},"Spec":{"ContainerSpec":{"Labels":{"t":"2"}}}}`,
 			wantK: "t", wantV: "1",
 		},
 		{
 			name:  "task fallback to ContainerSpec",
-			kind:  resourceKindTask,
+			kind:  dockerresource.KindTask,
 			body:  `{"Labels":{},"Spec":{"ContainerSpec":{"Labels":{"t":"2"}}}}`,
 			wantK: "t", wantV: "2",
 		},
@@ -825,17 +826,17 @@ func TestDecodeResourceLabelsUnsupportedKind(t *testing.T) {
 
 func TestDecodeResourceLabelsDecodeErrors(t *testing.T) {
 	// Exercise the decode-error branch for every resource kind.
-	kinds := []resourceKind{
-		resourceKindContainer,
-		resourceKindImage,
-		resourceKindNetwork,
-		resourceKindVolume,
-		resourceKindService,
-		resourceKindSecret,
-		resourceKindConfig,
-		resourceKindNode,
-		resourceKindSwarm,
-		resourceKindTask,
+	kinds := []dockerresource.Kind{
+		dockerresource.KindContainer,
+		dockerresource.KindImage,
+		dockerresource.KindNetwork,
+		dockerresource.KindVolume,
+		dockerresource.KindService,
+		dockerresource.KindSecret,
+		dockerresource.KindConfig,
+		dockerresource.KindNode,
+		dockerresource.KindSwarm,
+		dockerresource.KindTask,
 	}
 	for _, kind := range kinds {
 		kind := kind
@@ -853,8 +854,8 @@ func TestDecodeResourceLabelsDecodeErrors(t *testing.T) {
 func TestRequestVisibleSwarmInspect(t *testing.T) {
 	selectors := []compiledSelector{{key: "cluster", value: "prod", hasValue: true}}
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, kind resourceKind, id string) (map[string]string, bool, error) {
-			if kind != resourceKindSwarm {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindSwarm {
 				t.Fatalf("unexpected kind=%s", kind)
 			}
 			return map[string]string{"cluster": "prod"}, true, nil
@@ -947,18 +948,18 @@ func TestServiceInspectIdentifierBranches(t *testing.T) {
 
 func TestInspectResourceAllKinds(t *testing.T) {
 	tests := []struct {
-		kind resourceKind
+		kind dockerresource.Kind
 		body string
 	}{
-		{resourceKindImage, `{"Config":{"Labels":{"env":"staging"}}}`},
-		{resourceKindNetwork, `{"Labels":{"net":"bridge"}}`},
-		{resourceKindVolume, `{"Labels":{"vol":"data"}}`},
-		{resourceKindService, `{"Spec":{"Labels":{"svc":"api"}}}`},
-		{resourceKindTask, `{"Labels":{"t":"1"},"Spec":{"ContainerSpec":{"Labels":{}}}}`},
-		{resourceKindSecret, `{"Spec":{"Labels":{"sec":"key"}}}`},
-		{resourceKindConfig, `{"Spec":{"Labels":{"cfg":"app"}}}`},
-		{resourceKindNode, `{"Spec":{"Labels":{"role":"worker"}}}`},
-		{resourceKindSwarm, `{"Spec":{"Labels":{"cluster":"prod"}}}`},
+		{dockerresource.KindImage, `{"Config":{"Labels":{"env":"staging"}}}`},
+		{dockerresource.KindNetwork, `{"Labels":{"net":"bridge"}}`},
+		{dockerresource.KindVolume, `{"Labels":{"vol":"data"}}`},
+		{dockerresource.KindService, `{"Spec":{"Labels":{"svc":"api"}}}`},
+		{dockerresource.KindTask, `{"Labels":{"t":"1"},"Spec":{"ContainerSpec":{"Labels":{}}}}`},
+		{dockerresource.KindSecret, `{"Spec":{"Labels":{"sec":"key"}}}`},
+		{dockerresource.KindConfig, `{"Spec":{"Labels":{"cfg":"app"}}}`},
+		{dockerresource.KindNode, `{"Spec":{"Labels":{"role":"worker"}}}`},
+		{dockerresource.KindSwarm, `{"Spec":{"Labels":{"cluster":"prod"}}}`},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -986,7 +987,7 @@ func TestInspectResourceDecodeError(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `not-valid-json`)
 	}))
-	_, _, err := ins.inspectResource(context.Background(), resourceKindContainer, "abc")
+	_, _, err := ins.inspectResource(context.Background(), dockerresource.KindContainer, "abc")
 	if err == nil {
 		t.Fatal("expected decode error for invalid JSON body")
 	}
@@ -995,7 +996,7 @@ func TestInspectResourceDecodeError(t *testing.T) {
 func TestInspectResourceNilContextError(t *testing.T) {
 	ins := upstreamInspector{client: &http.Client{}}
 	//nolint:staticcheck // SA1012: intentionally passing nil context to exercise the error path
-	_, _, err := ins.inspectResource(nil, resourceKindContainer, "abc") //nolint:staticcheck
+	_, _, err := ins.inspectResource(nil, dockerresource.KindContainer, "abc") //nolint:staticcheck
 	if err == nil {
 		t.Fatal("expected error for nil context")
 	}
@@ -1028,8 +1029,8 @@ func TestInspectExecDecodeError(t *testing.T) {
 func TestRequestVisibleImageInspect(t *testing.T) {
 	selectors := []compiledSelector{{key: "env", value: "prod", hasValue: true}}
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, kind resourceKind, id string) (map[string]string, bool, error) {
-			if kind != resourceKindImage || id != "sha256:abc" {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindImage || id != "sha256:abc" {
 				t.Fatalf("unexpected kind=%s id=%s", kind, id)
 			}
 			return map[string]string{"env": "prod"}, true, nil
@@ -1044,8 +1045,8 @@ func TestRequestVisibleImageInspect(t *testing.T) {
 func TestRequestVisibleNetworkInspect(t *testing.T) {
 	selectors := []compiledSelector{{key: "net", hasValue: false}}
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, kind resourceKind, id string) (map[string]string, bool, error) {
-			if kind != resourceKindNetwork || id != "net-1" {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindNetwork || id != "net-1" {
 				t.Fatalf("unexpected kind=%s id=%s", kind, id)
 			}
 			return map[string]string{"net": "overlay"}, true, nil
@@ -1060,7 +1061,7 @@ func TestRequestVisibleNetworkInspect(t *testing.T) {
 func TestRequestVisibleVolumeInspect(t *testing.T) {
 	selectors := []compiledSelector{{key: "vol", hasValue: false}}
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, kind resourceKind, _ string) (map[string]string, bool, error) {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, _ string) (map[string]string, bool, error) {
 			return map[string]string{"vol": "data"}, true, nil
 		},
 	}
@@ -1081,8 +1082,8 @@ func TestRequestVisibleUnknownPathPassesThrough(t *testing.T) {
 func TestRequestVisibleServiceLogs(t *testing.T) {
 	selectors := []compiledSelector{{key: "svc", hasValue: false}}
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, kind resourceKind, id string) (map[string]string, bool, error) {
-			if kind != resourceKindService || id != "web" {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindService || id != "web" {
 				t.Fatalf("unexpected kind=%s id=%s", kind, id)
 			}
 			return map[string]string{"svc": "api"}, true, nil
@@ -1097,8 +1098,8 @@ func TestRequestVisibleServiceLogs(t *testing.T) {
 func TestRequestVisibleTaskInspect(t *testing.T) {
 	selectors := []compiledSelector{{key: "t", hasValue: false}}
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, kind resourceKind, id string) (map[string]string, bool, error) {
-			if kind != resourceKindTask || id != "task-1" {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindTask || id != "task-1" {
 				t.Fatalf("unexpected kind=%s id=%s", kind, id)
 			}
 			return map[string]string{"t": "1"}, true, nil
@@ -1113,8 +1114,8 @@ func TestRequestVisibleTaskInspect(t *testing.T) {
 func TestRequestVisibleTaskLogs(t *testing.T) {
 	selectors := []compiledSelector{{key: "t", hasValue: false}}
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, kind resourceKind, id string) (map[string]string, bool, error) {
-			if kind != resourceKindTask || id != "task-1" {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindTask || id != "task-1" {
 				t.Fatalf("unexpected kind=%s id=%s", kind, id)
 			}
 			return map[string]string{"t": "1"}, true, nil
@@ -1129,8 +1130,8 @@ func TestRequestVisibleTaskLogs(t *testing.T) {
 func TestRequestVisibleSecretInspect(t *testing.T) {
 	selectors := []compiledSelector{{key: "sec", hasValue: false}}
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, kind resourceKind, id string) (map[string]string, bool, error) {
-			if kind != resourceKindSecret || id != "sec-1" {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindSecret || id != "sec-1" {
 				t.Fatalf("unexpected kind=%s id=%s", kind, id)
 			}
 			return map[string]string{"sec": "key"}, true, nil
@@ -1145,8 +1146,8 @@ func TestRequestVisibleSecretInspect(t *testing.T) {
 func TestRequestVisibleConfigInspect(t *testing.T) {
 	selectors := []compiledSelector{{key: "cfg", hasValue: false}}
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, kind resourceKind, id string) (map[string]string, bool, error) {
-			if kind != resourceKindConfig || id != "cfg-1" {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindConfig || id != "cfg-1" {
 				t.Fatalf("unexpected kind=%s id=%s", kind, id)
 			}
 			return map[string]string{"cfg": "app"}, true, nil
@@ -1161,8 +1162,8 @@ func TestRequestVisibleConfigInspect(t *testing.T) {
 func TestRequestVisibleNodeInspect(t *testing.T) {
 	selectors := []compiledSelector{{key: "role", hasValue: false}}
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, kind resourceKind, id string) (map[string]string, bool, error) {
-			if kind != resourceKindNode || id != "node-1" {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindNode || id != "node-1" {
 				t.Fatalf("unexpected kind=%s id=%s", kind, id)
 			}
 			return map[string]string{"role": "worker"}, true, nil
@@ -1177,8 +1178,8 @@ func TestRequestVisibleNodeInspect(t *testing.T) {
 func TestRequestVisibleServiceInspect(t *testing.T) {
 	selectors := []compiledSelector{{key: "svc", hasValue: false}}
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, kind resourceKind, id string) (map[string]string, bool, error) {
-			if kind != resourceKindService || id != "web" {
+		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+			if kind != dockerresource.KindService || id != "web" {
 				t.Fatalf("unexpected kind=%s id=%s", kind, id)
 			}
 			return map[string]string{"svc": "api"}, true, nil
@@ -1208,7 +1209,7 @@ func TestMiddlewareProfileResolveReturnsFalse(t *testing.T) {
 		VisibleResourceLabels: []string{"k=v"},
 		ResolveProfile:        func(*http.Request) (string, bool) { return "", false },
 	}, visibilityDeps{
-		inspectResource: func(context.Context, resourceKind, string) (map[string]string, bool, error) {
+		inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
 			return map[string]string{"k": "v"}, true, nil
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1351,29 +1352,29 @@ func TestMiddlewareReturnsNotFoundForInvisibleExpandedReadTargets(t *testing.T) 
 	tests := []struct {
 		name       string
 		target     string
-		kind       resourceKind
+		kind       dockerresource.Kind
 		identifier string
 	}{
-		{name: "service inspect", target: "/v1.53/services/web", kind: resourceKindService, identifier: "web"},
-		{name: "service logs", target: "/v1.53/services/web/logs", kind: resourceKindService, identifier: "web"},
-		{name: "task inspect", target: "/v1.53/tasks/task-1", kind: resourceKindTask, identifier: "task-1"},
-		{name: "task logs", target: "/v1.53/tasks/task-1/logs", kind: resourceKindTask, identifier: "task-1"},
-		{name: "secret inspect", target: "/v1.53/secrets/sec-1", kind: resourceKindSecret, identifier: "sec-1"},
-		{name: "config inspect", target: "/v1.53/configs/cfg-1", kind: resourceKindConfig, identifier: "cfg-1"},
-		{name: "node inspect", target: "/v1.53/nodes/node-1", kind: resourceKindNode, identifier: "node-1"},
-		{name: "swarm inspect", target: "/v1.53/swarm", kind: resourceKindSwarm, identifier: ""},
+		{name: "service inspect", target: "/v1.53/services/web", kind: dockerresource.KindService, identifier: "web"},
+		{name: "service logs", target: "/v1.53/services/web/logs", kind: dockerresource.KindService, identifier: "web"},
+		{name: "task inspect", target: "/v1.53/tasks/task-1", kind: dockerresource.KindTask, identifier: "task-1"},
+		{name: "task logs", target: "/v1.53/tasks/task-1/logs", kind: dockerresource.KindTask, identifier: "task-1"},
+		{name: "secret inspect", target: "/v1.53/secrets/sec-1", kind: dockerresource.KindSecret, identifier: "sec-1"},
+		{name: "config inspect", target: "/v1.53/configs/cfg-1", kind: dockerresource.KindConfig, identifier: "cfg-1"},
+		{name: "node inspect", target: "/v1.53/nodes/node-1", kind: dockerresource.KindNode, identifier: "node-1"},
+		{name: "swarm inspect", target: "/v1.53/swarm", kind: dockerresource.KindSwarm, identifier: ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			nextCalled := false
-			var gotKind resourceKind
+			var gotKind dockerresource.Kind
 			var gotIdentifier string
 
 			handler := middlewareWithDeps(logger, Options{
 				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
 			}, visibilityDeps{
-				inspectResource: func(_ context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
+				inspectResource: func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
 					gotKind = kind
 					gotIdentifier = identifier
 					return map[string]string{"com.sockguard.visible": "false"}, true, nil
@@ -1655,7 +1656,7 @@ func TestNamePatternHidesContainerInspect(t *testing.T) {
 	handler := middlewareWithDeps(logger, Options{
 		NamePatterns: []string{"traefik"},
 	}, visibilityDeps{
-		inspectResourceMeta: func(_ context.Context, kind resourceKind, id string) (*resourceMeta, bool, error) {
+		inspectResourceMeta: func(_ context.Context, kind dockerresource.Kind, id string) (*resourceMeta, bool, error) {
 			return &resourceMeta{names: []string{"/portainer"}, image: "portainer/portainer:latest"}, true, nil
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1682,7 +1683,7 @@ func TestImagePatternHidesContainerInspect(t *testing.T) {
 	handler := middlewareWithDeps(logger, Options{
 		ImagePatterns: []string{"traefik:*"},
 	}, visibilityDeps{
-		inspectResourceMeta: func(_ context.Context, kind resourceKind, id string) (*resourceMeta, bool, error) {
+		inspectResourceMeta: func(_ context.Context, kind dockerresource.Kind, id string) (*resourceMeta, bool, error) {
 			return &resourceMeta{names: []string{"/portainer"}, image: "portainer/portainer:latest"}, true, nil
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1709,7 +1710,7 @@ func TestNamePatternAllowsContainerInspect(t *testing.T) {
 	handler := middlewareWithDeps(logger, Options{
 		NamePatterns: []string{"traefik"},
 	}, visibilityDeps{
-		inspectResourceMeta: func(_ context.Context, kind resourceKind, id string) (*resourceMeta, bool, error) {
+		inspectResourceMeta: func(_ context.Context, kind dockerresource.Kind, id string) (*resourceMeta, bool, error) {
 			return &resourceMeta{names: []string{"/traefik"}, image: "traefik:latest"}, true, nil
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1738,7 +1739,7 @@ func TestNamePatternHidesImageInspect(t *testing.T) {
 	handler := middlewareWithDeps(logger, Options{
 		NamePatterns: []string{"traefik:*"},
 	}, visibilityDeps{
-		inspectResourceMeta: func(_ context.Context, kind resourceKind, id string) (*resourceMeta, bool, error) {
+		inspectResourceMeta: func(_ context.Context, kind dockerresource.Kind, id string) (*resourceMeta, bool, error) {
 			return &resourceMeta{repoTags: []string{"redis:7"}}, true, nil
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1765,7 +1766,7 @@ func TestImagePatternHidesImageInspect(t *testing.T) {
 	handler := middlewareWithDeps(logger, Options{
 		ImagePatterns: []string{"ghcr.io/org/**"},
 	}, visibilityDeps{
-		inspectResourceMeta: func(_ context.Context, kind resourceKind, id string) (*resourceMeta, bool, error) {
+		inspectResourceMeta: func(_ context.Context, kind dockerresource.Kind, id string) (*resourceMeta, bool, error) {
 			return &resourceMeta{repoTags: []string{"redis:7"}}, true, nil
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1791,7 +1792,7 @@ func TestInspectResourceMetaContainerNotFound(t *testing.T) {
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
-	meta, found, err := ins.inspectResourceMeta(context.Background(), resourceKindContainer, "missing")
+	meta, found, err := ins.inspectResourceMeta(context.Background(), dockerresource.KindContainer, "missing")
 	if err != nil || found || meta != nil {
 		t.Fatalf("err=%v found=%v meta=%v, want nil/false/nil", err, found, meta)
 	}
@@ -1801,7 +1802,7 @@ func TestInspectResourceMetaContainerNon200(t *testing.T) {
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	_, _, err := ins.inspectResourceMeta(context.Background(), resourceKindContainer, "abc")
+	_, _, err := ins.inspectResourceMeta(context.Background(), dockerresource.KindContainer, "abc")
 	if err == nil || !strings.Contains(err.Error(), "returned status") {
 		t.Fatalf("err = %v, want 'returned status'", err)
 	}
@@ -1812,7 +1813,7 @@ func TestInspectResourceMetaContainerDecodes(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"Name":"/traefik","Image":"traefik:latest"}`)
 	}))
-	meta, found, err := ins.inspectResourceMeta(context.Background(), resourceKindContainer, "abc")
+	meta, found, err := ins.inspectResourceMeta(context.Background(), dockerresource.KindContainer, "abc")
 	if err != nil || !found {
 		t.Fatalf("err=%v found=%v", err, found)
 	}
@@ -1829,7 +1830,7 @@ func TestInspectResourceMetaImageDecodes(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"RepoTags":["traefik:latest","traefik:v2"]}`)
 	}))
-	meta, found, err := ins.inspectResourceMeta(context.Background(), resourceKindImage, "sha256:abc")
+	meta, found, err := ins.inspectResourceMeta(context.Background(), dockerresource.KindImage, "sha256:abc")
 	if err != nil || !found {
 		t.Fatalf("err=%v found=%v", err, found)
 	}
@@ -1840,7 +1841,7 @@ func TestInspectResourceMetaImageDecodes(t *testing.T) {
 
 func TestInspectResourceMetaUnsupportedKind(t *testing.T) {
 	ins := upstreamInspector{client: &http.Client{}}
-	_, _, err := ins.inspectResourceMeta(context.Background(), resourceKindNetwork, "net-1")
+	_, _, err := ins.inspectResourceMeta(context.Background(), dockerresource.KindNetwork, "net-1")
 	if err == nil || !strings.Contains(err.Error(), "unsupported resource kind") {
 		t.Fatalf("err = %v, want unsupported resource kind", err)
 	}
@@ -1850,7 +1851,7 @@ func TestInspectResourceMetaUnsupportedKind(t *testing.T) {
 
 func TestDecodeResourceMetaContainerUsesNamesWhenPresent(t *testing.T) {
 	body := strings.NewReader(`{"Name":"/single","Names":["/multi"],"Image":"img:tag"}`)
-	meta, err := decodeResourceMeta(body, resourceKindContainer)
+	meta, err := decodeResourceMeta(body, dockerresource.KindContainer)
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
@@ -1862,7 +1863,7 @@ func TestDecodeResourceMetaContainerUsesNamesWhenPresent(t *testing.T) {
 
 func TestDecodeResourceMetaContainerFallsBackToName(t *testing.T) {
 	body := strings.NewReader(`{"Name":"/solo","Names":[],"Image":"img:tag"}`)
-	meta, err := decodeResourceMeta(body, resourceKindContainer)
+	meta, err := decodeResourceMeta(body, dockerresource.KindContainer)
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
@@ -1872,14 +1873,14 @@ func TestDecodeResourceMetaContainerFallsBackToName(t *testing.T) {
 }
 
 func TestDecodeResourceMetaUnsupportedKind(t *testing.T) {
-	_, err := decodeResourceMeta(strings.NewReader(`{}`), resourceKindNetwork)
+	_, err := decodeResourceMeta(strings.NewReader(`{}`), dockerresource.KindNetwork)
 	if err == nil || !strings.Contains(err.Error(), "unsupported resource kind") {
 		t.Fatalf("err = %v, want unsupported resource kind", err)
 	}
 }
 
 func TestDecodeResourceMetaDecodeError(t *testing.T) {
-	_, err := decodeResourceMeta(strings.NewReader(`not-json`), resourceKindContainer)
+	_, err := decodeResourceMeta(strings.NewReader(`not-json`), dockerresource.KindContainer)
 	if err == nil {
 		t.Fatal("expected decode error for invalid JSON body")
 	}

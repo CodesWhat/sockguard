@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/codeswhat/sockguard/internal/dockerresource"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -170,7 +171,7 @@ func TestDecodeResourceLabelsImageContainerConfigFallback(t *testing.T) {
 		"Config":{"Labels":{}},
 		"ContainerConfig":{"Labels":{"com.sockguard.owner":"job-123"}}
 	}`)
-	labels, err := decodeResourceLabels(body, resourceKindImage)
+	labels, err := decodeResourceLabels(body, dockerresource.KindImage)
 	if err != nil {
 		t.Fatalf("decodeResourceLabels(image with ContainerConfig) error = %v", err)
 	}
@@ -188,7 +189,7 @@ func TestDecodeResourceLabelsTaskSpecFallback(t *testing.T) {
 		"Labels":{},
 		"Spec":{"ContainerSpec":{"Labels":{"com.sockguard.owner":"job-123"}}}
 	}`)
-	labels, err := decodeResourceLabels(body, resourceKindTask)
+	labels, err := decodeResourceLabels(body, dockerresource.KindTask)
 	if err != nil {
 		t.Fatalf("decodeResourceLabels(task Spec fallback) error = %v", err)
 	}
@@ -202,7 +203,7 @@ func TestDecodeResourceLabelsTaskSpecFallback(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDecodeResourceLabelsUnsupportedKind(t *testing.T) {
-	_, err := decodeResourceLabels(strings.NewReader(`{}`), resourceKind("other"))
+	_, err := decodeResourceLabels(strings.NewReader(`{}`), dockerresource.Kind("other"))
 	if err == nil || !strings.Contains(err.Error(), "unsupported resource kind") {
 		t.Fatalf("expected unsupported resource kind error, got: %v", err)
 	}
@@ -269,17 +270,17 @@ func TestSetDeniedNilMeta(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDecodeResourceLabelsDecodeErrors(t *testing.T) {
-	kinds := []resourceKind{
-		resourceKindContainer,
-		resourceKindImage,
-		resourceKindNetwork,
-		resourceKindVolume,
-		resourceKindService,
-		resourceKindTask,
-		resourceKindSecret,
-		resourceKindConfig,
-		resourceKindNode,
-		resourceKindSwarm,
+	kinds := []dockerresource.Kind{
+		dockerresource.KindContainer,
+		dockerresource.KindImage,
+		dockerresource.KindNetwork,
+		dockerresource.KindVolume,
+		dockerresource.KindService,
+		dockerresource.KindTask,
+		dockerresource.KindSecret,
+		dockerresource.KindConfig,
+		dockerresource.KindNode,
+		dockerresource.KindSwarm,
 	}
 	for _, kind := range kinds {
 		t.Run(string(kind), func(t *testing.T) {
@@ -302,7 +303,7 @@ func TestInspectResourceUnsupportedKind(t *testing.T) {
 	}))
 
 	inspector := upstreamInspector{client: newUnixHTTPClient(socketPath)}
-	_, _, err := inspector.inspectResource(context.Background(), resourceKind("bogus"), "id")
+	_, _, err := inspector.inspectResource(context.Background(), dockerresource.Kind("bogus"), "id")
 	if err == nil || !strings.Contains(err.Error(), "unsupported resource kind") {
 		t.Fatalf("expected unsupported resource kind error, got: %v", err)
 	}

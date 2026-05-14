@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/dockerclient"
+	"github.com/codeswhat/sockguard/internal/dockerresource"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/inspectcache"
@@ -54,21 +55,6 @@ const (
 	verdictDeny
 )
 
-type resourceKind string
-
-const (
-	resourceKindContainer resourceKind = "containers"
-	resourceKindImage     resourceKind = "images"
-	resourceKindNetwork   resourceKind = "networks"
-	resourceKindVolume    resourceKind = "volumes"
-	resourceKindService   resourceKind = "services"
-	resourceKindTask      resourceKind = "tasks"
-	resourceKindSecret    resourceKind = "secrets"
-	resourceKindConfig    resourceKind = "configs"
-	resourceKindNode      resourceKind = "nodes"
-	resourceKindSwarm     resourceKind = "swarm"
-)
-
 // Options configures per-proxy resource ownership labeling and enforcement.
 type Options struct {
 	Owner              string
@@ -91,10 +77,10 @@ func Middleware(upstreamSocket string, logger *slog.Logger, opts Options) func(h
 		inspectcache.DefaultMaxSize,
 		time.Now,
 		func(ctx context.Context, kind, identifier string) (map[string]string, bool, error) {
-			return inspector.inspectResource(ctx, resourceKind(kind), identifier)
+			return inspector.inspectResource(ctx, dockerresource.Kind(kind), identifier)
 		},
 	)
-	inspectResource := func(ctx context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
+	inspectResource := func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
 		return cache.Lookup(ctx, string(kind), identifier)
 	}
 	return middlewareWithDeps(logger, opts, inspectResource, inspector.inspectExec)
@@ -103,7 +89,7 @@ func Middleware(upstreamSocket string, logger *slog.Logger, opts Options) func(h
 func middlewareWithDeps(
 	logger *slog.Logger,
 	opts Options,
-	inspectResource func(context.Context, resourceKind, string) (map[string]string, bool, error),
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
 ) func(http.Handler) http.Handler {
 	opts = opts.normalized()
@@ -182,11 +168,11 @@ func allowOwnershipRequest(
 	ctx context.Context,
 	normPath string,
 	opts Options,
-	inspectResource func(context.Context, resourceKind, string) (map[string]string, bool, error),
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
 ) (ownershipVerdict, string, error) {
 	if identifier, ok := containerIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, inspectResource, resourceKindContainer, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, identifier, opts, false)
 	}
 	if execID, ok := execIdentifier(normPath); ok {
 		containerID, found, err := inspectExec(ctx, execID)
@@ -196,39 +182,39 @@ func allowOwnershipRequest(
 		if !found {
 			return verdictPassThrough, "", nil
 		}
-		return checkOwnedResource(ctx, inspectResource, resourceKindContainer, containerID, opts, false)
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
 	if identifier, ok := networkIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, inspectResource, resourceKindNetwork, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindNetwork, identifier, opts, false)
 	}
 	if identifier, ok := volumeIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, inspectResource, resourceKindVolume, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindVolume, identifier, opts, false)
 	}
 	if identifier, ok := imageIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, inspectResource, resourceKindImage, identifier, opts, opts.AllowUnownedImages)
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
 	}
 	if identifier, ok := serviceIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, inspectResource, resourceKindService, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindService, identifier, opts, false)
 	}
 	if identifier, ok := taskIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, inspectResource, resourceKindTask, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindTask, identifier, opts, false)
 	}
 	if identifier, ok := secretIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, inspectResource, resourceKindSecret, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)
 	}
 	if identifier, ok := configIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, inspectResource, resourceKindConfig, identifier, opts, false)
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindConfig, identifier, opts, false)
 	}
 	if identifier, ok := nodeIdentifier(normPath); ok {
-		return checkOwnedResource(ctx, inspectResource, resourceKindNode, identifier, opts, isNodeUpdatePath(normPath))
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindNode, identifier, opts, isNodeUpdatePath(normPath))
 	}
 	if isSwarmPath(normPath) || isSwarmUpdatePath(normPath) {
-		return checkOwnedResource(ctx, inspectResource, resourceKindSwarm, "", opts, isSwarmUpdatePath(normPath))
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSwarm, "", opts, isSwarmUpdatePath(normPath))
 	}
 	return verdictPassThrough, "", nil
 }
 
-func checkOwnedResource(ctx context.Context, inspectResource func(context.Context, resourceKind, string) (map[string]string, bool, error), kind resourceKind, identifier string, opts Options, allowUnowned bool) (ownershipVerdict, string, error) {
+func checkOwnedResource(ctx context.Context, inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error), kind dockerresource.Kind, identifier string, opts Options, allowUnowned bool) (ownershipVerdict, string, error) {
 	labels, found, err := inspectResource(ctx, kind, identifier)
 	if err != nil {
 		return verdictPassThrough, "", err
@@ -253,27 +239,27 @@ func ownerMatches(labels map[string]string, labelKey, owner string, allowUnowned
 	return value == owner
 }
 
-func singularResource(kind resourceKind) string {
+func singularResource(kind dockerresource.Kind) string {
 	switch kind {
-	case resourceKindContainer:
+	case dockerresource.KindContainer:
 		return "container"
-	case resourceKindImage:
+	case dockerresource.KindImage:
 		return "image"
-	case resourceKindNetwork:
+	case dockerresource.KindNetwork:
 		return "network"
-	case resourceKindVolume:
+	case dockerresource.KindVolume:
 		return "volume"
-	case resourceKindService:
+	case dockerresource.KindService:
 		return "service"
-	case resourceKindTask:
+	case dockerresource.KindTask:
 		return "task"
-	case resourceKindSecret:
+	case dockerresource.KindSecret:
 		return "secret"
-	case resourceKindConfig:
+	case dockerresource.KindConfig:
 		return "config"
-	case resourceKindNode:
+	case dockerresource.KindNode:
 		return "node"
-	case resourceKindSwarm:
+	case dockerresource.KindSwarm:
 		return "swarm"
 	default:
 		return string(kind)
@@ -471,30 +457,9 @@ func nestedObjectPath(decoded map[string]any, keys ...string) (map[string]any, e
 	return current, nil
 }
 
-func (u upstreamInspector) inspectResource(ctx context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
-	var target string
-	switch kind {
-	case resourceKindContainer:
-		target = "/containers/" + url.PathEscape(identifier) + "/json"
-	case resourceKindImage:
-		target = "/images/" + url.PathEscape(identifier) + "/json"
-	case resourceKindNetwork:
-		target = "/networks/" + url.PathEscape(identifier)
-	case resourceKindVolume:
-		target = "/volumes/" + url.PathEscape(identifier)
-	case resourceKindService:
-		target = "/services/" + url.PathEscape(identifier)
-	case resourceKindTask:
-		target = "/tasks/" + url.PathEscape(identifier)
-	case resourceKindSecret:
-		target = "/secrets/" + url.PathEscape(identifier)
-	case resourceKindConfig:
-		target = "/configs/" + url.PathEscape(identifier)
-	case resourceKindNode:
-		target = "/nodes/" + url.PathEscape(identifier)
-	case resourceKindSwarm:
-		target = "/swarm"
-	default:
+func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+	target, ok := dockerresource.InspectPath(kind, identifier)
+	if !ok {
 		return nil, false, fmt.Errorf("unsupported resource kind %q", kind)
 	}
 
@@ -546,9 +511,9 @@ func (u upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 	return body.ContainerID, true, nil
 }
 
-func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string, error) {
+func decodeResourceLabels(body io.Reader, kind dockerresource.Kind) (map[string]string, error) {
 	switch kind {
-	case resourceKindContainer:
+	case dockerresource.KindContainer:
 		var payload struct {
 			Config struct {
 				Labels map[string]string `json:"Labels"`
@@ -558,7 +523,7 @@ func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string,
 			return nil, err
 		}
 		return payload.Config.Labels, nil
-	case resourceKindImage:
+	case dockerresource.KindImage:
 		var payload struct {
 			Config struct {
 				Labels map[string]string `json:"Labels"`
@@ -574,7 +539,7 @@ func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string,
 			return payload.Config.Labels, nil
 		}
 		return payload.ContainerConfig.Labels, nil
-	case resourceKindNetwork, resourceKindVolume:
+	case dockerresource.KindNetwork, dockerresource.KindVolume:
 		var payload struct {
 			Labels map[string]string `json:"Labels"`
 		}
@@ -582,7 +547,7 @@ func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string,
 			return nil, err
 		}
 		return payload.Labels, nil
-	case resourceKindService, resourceKindSecret, resourceKindConfig, resourceKindNode, resourceKindSwarm:
+	case dockerresource.KindService, dockerresource.KindSecret, dockerresource.KindConfig, dockerresource.KindNode, dockerresource.KindSwarm:
 		var payload struct {
 			Spec struct {
 				Labels map[string]string `json:"Labels"`
@@ -592,7 +557,7 @@ func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string,
 			return nil, err
 		}
 		return payload.Spec.Labels, nil
-	case resourceKindTask:
+	case dockerresource.KindTask:
 		var payload struct {
 			Labels map[string]string `json:"Labels"`
 			Spec   struct {

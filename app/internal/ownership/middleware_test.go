@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/dockerresource"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -41,7 +42,7 @@ type fakeInspector struct {
 	execs     map[string]execResult
 }
 
-func (f fakeInspector) inspectResource(_ context.Context, kind resourceKind, id string) (map[string]string, bool, error) {
+func (f fakeInspector) inspectResource(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
 	if f.resources == nil {
 		return nil, false, nil
 	}
@@ -862,37 +863,37 @@ func TestOwnerHelpers(t *testing.T) {
 		})
 	}
 
-	if got := singularResource(resourceKindContainer); got != "container" {
+	if got := singularResource(dockerresource.KindContainer); got != "container" {
 		t.Fatalf("singularResource(container) = %q, want container", got)
 	}
-	if got := singularResource(resourceKindImage); got != "image" {
+	if got := singularResource(dockerresource.KindImage); got != "image" {
 		t.Fatalf("singularResource(image) = %q, want image", got)
 	}
-	if got := singularResource(resourceKindNetwork); got != "network" {
+	if got := singularResource(dockerresource.KindNetwork); got != "network" {
 		t.Fatalf("singularResource(network) = %q, want network", got)
 	}
-	if got := singularResource(resourceKindVolume); got != "volume" {
+	if got := singularResource(dockerresource.KindVolume); got != "volume" {
 		t.Fatalf("singularResource(volume) = %q, want volume", got)
 	}
-	if got := singularResource(resourceKind("services")); got != "service" {
+	if got := singularResource(dockerresource.Kind("services")); got != "service" {
 		t.Fatalf("singularResource(services) = %q, want service", got)
 	}
-	if got := singularResource(resourceKind("tasks")); got != "task" {
+	if got := singularResource(dockerresource.Kind("tasks")); got != "task" {
 		t.Fatalf("singularResource(tasks) = %q, want task", got)
 	}
-	if got := singularResource(resourceKind("secrets")); got != "secret" {
+	if got := singularResource(dockerresource.Kind("secrets")); got != "secret" {
 		t.Fatalf("singularResource(secrets) = %q, want secret", got)
 	}
-	if got := singularResource(resourceKind("configs")); got != "config" {
+	if got := singularResource(dockerresource.Kind("configs")); got != "config" {
 		t.Fatalf("singularResource(configs) = %q, want config", got)
 	}
-	if got := singularResource(resourceKind("nodes")); got != "node" {
+	if got := singularResource(dockerresource.Kind("nodes")); got != "node" {
 		t.Fatalf("singularResource(nodes) = %q, want node", got)
 	}
-	if got := singularResource(resourceKind("swarm")); got != "swarm" {
+	if got := singularResource(dockerresource.Kind("swarm")); got != "swarm" {
 		t.Fatalf("singularResource(swarm) = %q, want swarm", got)
 	}
-	if got := singularResource(resourceKind("other")); got != "other" {
+	if got := singularResource(dockerresource.Kind("other")); got != "other" {
 		t.Fatalf("singularResource(other) = %q, want other", got)
 	}
 }
@@ -1273,12 +1274,12 @@ func TestUpstreamInspectorInspectResource(t *testing.T) {
 
 	inspector := upstreamInspector{client: newUnixHTTPClient(socketPath)}
 
-	for _, kind := range []resourceKind{resourceKindContainer, resourceKindImage, resourceKindNetwork, resourceKindVolume} {
-		identifier := map[resourceKind]string{
-			resourceKindContainer: "abc",
-			resourceKindImage:     "busybox:latest",
-			resourceKindNetwork:   "net-1",
-			resourceKindVolume:    "vol-1",
+	for _, kind := range []dockerresource.Kind{dockerresource.KindContainer, dockerresource.KindImage, dockerresource.KindNetwork, dockerresource.KindVolume} {
+		identifier := map[dockerresource.Kind]string{
+			dockerresource.KindContainer: "abc",
+			dockerresource.KindImage:     "busybox:latest",
+			dockerresource.KindNetwork:   "net-1",
+			dockerresource.KindVolume:    "vol-1",
 		}[kind]
 		labels, found, err := inspector.inspectResource(context.Background(), kind, identifier)
 		if err != nil || !found || labels["com.sockguard.owner"] != "job-123" {
@@ -1286,22 +1287,22 @@ func TestUpstreamInspectorInspectResource(t *testing.T) {
 		}
 	}
 
-	for _, kind := range []resourceKind{resourceKind("services"), resourceKind("tasks"), resourceKind("secrets"), resourceKind("configs")} {
-		identifier := map[resourceKind]string{
-			resourceKind("services"): "svc-1",
-			resourceKind("tasks"):    "task-1",
-			resourceKind("secrets"):  "secret-1",
-			resourceKind("configs"):  "config-1",
+	for _, kind := range []dockerresource.Kind{dockerresource.Kind("services"), dockerresource.Kind("tasks"), dockerresource.Kind("secrets"), dockerresource.Kind("configs")} {
+		identifier := map[dockerresource.Kind]string{
+			dockerresource.Kind("services"): "svc-1",
+			dockerresource.Kind("tasks"):    "task-1",
+			dockerresource.Kind("secrets"):  "secret-1",
+			dockerresource.Kind("configs"):  "config-1",
 		}[kind]
 		labels, found, err := inspector.inspectResource(context.Background(), kind, identifier)
 		if err != nil || !found || labels["com.sockguard.owner"] != "job-123" {
 			t.Fatalf("inspectResource(%s) = (%#v, %v, %v), want owner labels", kind, labels, found, err)
 		}
 	}
-	for _, kind := range []resourceKind{resourceKind("nodes"), resourceKind("swarm")} {
-		identifier := map[resourceKind]string{
-			resourceKind("nodes"): "node-1",
-			resourceKind("swarm"): "",
+	for _, kind := range []dockerresource.Kind{dockerresource.Kind("nodes"), dockerresource.Kind("swarm")} {
+		identifier := map[dockerresource.Kind]string{
+			dockerresource.Kind("nodes"): "node-1",
+			dockerresource.Kind("swarm"): "",
 		}[kind]
 		labels, found, err := inspector.inspectResource(context.Background(), kind, identifier)
 		if err != nil || !found || labels["com.sockguard.owner"] != "job-123" {
@@ -1309,29 +1310,29 @@ func TestUpstreamInspectorInspectResource(t *testing.T) {
 		}
 	}
 
-	if _, found, err := inspector.inspectResource(context.Background(), resourceKindContainer, "missing"); err != nil || found {
+	if _, found, err := inspector.inspectResource(context.Background(), dockerresource.KindContainer, "missing"); err != nil || found {
 		t.Fatalf("inspectResource(missing) = found %v err %v, want false nil", found, err)
 	}
-	if _, _, err := inspector.inspectResource(context.Background(), resourceKindContainer, "bad-status"); err == nil {
+	if _, _, err := inspector.inspectResource(context.Background(), dockerresource.KindContainer, "bad-status"); err == nil {
 		t.Fatal("expected upstream status error")
 	}
-	if _, _, err := inspector.inspectResource(context.Background(), resourceKindContainer, "bad-json"); err == nil {
+	if _, _, err := inspector.inspectResource(context.Background(), dockerresource.KindContainer, "bad-json"); err == nil {
 		t.Fatal("expected JSON decode error")
 	}
-	if _, found, err := inspector.inspectResource(context.Background(), resourceKindNetwork, "missing"); err != nil || found {
+	if _, found, err := inspector.inspectResource(context.Background(), dockerresource.KindNetwork, "missing"); err != nil || found {
 		t.Fatalf("inspectResource(network missing) = found %v err %v, want false nil", found, err)
 	}
-	if _, _, err := inspector.inspectResource(context.Background(), resourceKindVolume, "bad-status"); err == nil {
+	if _, _, err := inspector.inspectResource(context.Background(), dockerresource.KindVolume, "bad-status"); err == nil {
 		t.Fatal("expected upstream status error for volume")
 	}
-	if _, _, err := inspector.inspectResource(context.Background(), resourceKindNetwork, "bad-json"); err == nil {
+	if _, _, err := inspector.inspectResource(context.Background(), dockerresource.KindNetwork, "bad-json"); err == nil {
 		t.Fatal("expected network JSON decode error")
 	}
 	transportErrorInspector := upstreamInspector{client: newUnixHTTPClient(filepath.Join("/tmp", "sockguard-ownership-missing-"+time.Now().Format("150405000000000")+".sock"))}
-	if _, _, err := transportErrorInspector.inspectResource(context.Background(), resourceKindContainer, "abc"); err == nil {
+	if _, _, err := transportErrorInspector.inspectResource(context.Background(), dockerresource.KindContainer, "abc"); err == nil {
 		t.Fatal("expected transport error")
 	}
-	if _, _, err := inspector.inspectResource(context.Background(), resourceKind("other"), "id"); err == nil {
+	if _, _, err := inspector.inspectResource(context.Background(), dockerresource.Kind("other"), "id"); err == nil {
 		t.Fatal("expected unsupported kind error")
 	}
 }

@@ -13,25 +13,11 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/dockerclient"
+	"github.com/codeswhat/sockguard/internal/dockerresource"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/inspectcache"
 	"github.com/codeswhat/sockguard/internal/logging"
-)
-
-type resourceKind string
-
-const (
-	resourceKindContainer resourceKind = "containers"
-	resourceKindImage     resourceKind = "images"
-	resourceKindNetwork   resourceKind = "networks"
-	resourceKindVolume    resourceKind = "volumes"
-	resourceKindService   resourceKind = "services"
-	resourceKindTask      resourceKind = "tasks"
-	resourceKindSecret    resourceKind = "secrets"
-	resourceKindConfig    resourceKind = "configs"
-	resourceKindNode      resourceKind = "nodes"
-	resourceKindSwarm     resourceKind = "swarm"
 )
 
 const (
@@ -99,9 +85,9 @@ type resourceMeta struct {
 }
 
 type visibilityDeps struct {
-	inspectResource     func(context.Context, resourceKind, string) (map[string]string, bool, error)
+	inspectResource     func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error)
 	inspectExec         func(context.Context, string) (string, bool, error)
-	inspectResourceMeta func(context.Context, resourceKind, string) (*resourceMeta, bool, error)
+	inspectResourceMeta func(context.Context, dockerresource.Kind, string) (*resourceMeta, bool, error)
 }
 
 type upstreamInspector struct {
@@ -127,7 +113,11 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 		}
 	}
 
-	profilePolicies := make(map[string]compiledPolicy, len(opts.Profiles))
+	// Pre-merge default + profile policies once at construction. Profiles are
+	// reload-immutable, so cloning the slice on every request to compute the
+	// same merged compiledPolicy is wasted work. Each map entry holds the
+	// final merged compiledPolicy that requests can reference by pointer.
+	mergedProfilePolicies := make(map[string]compiledPolicy, len(opts.Profiles))
 	for name, policy := range opts.Profiles {
 		compiled, err := compilePolicy(policy.VisibleResourceLabels, policy.NamePatterns, policy.ImagePatterns)
 		if err != nil {
@@ -139,35 +129,30 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 				})
 			}
 		}
-		profilePolicies[name] = compiled
+		mergedProfilePolicies[name] = compiledPolicy{
+			selectors:     append(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
+			namePatterns:  append(slices.Clone(defaultPolicy.namePatterns), compiled.namePatterns...),
+			imagePatterns: append(slices.Clone(defaultPolicy.imagePatterns), compiled.imagePatterns...),
+		}
 	}
 
-	hasAnyConfig := len(defaultPolicy.selectors) > 0 || defaultPolicy.hasPatternAxes() || len(profilePolicies) > 0
+	hasAnyConfig := len(defaultPolicy.selectors) > 0 || defaultPolicy.hasPatternAxes() || len(mergedProfilePolicies) > 0
 	if !hasAnyConfig {
 		return func(next http.Handler) http.Handler { return next }
 	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Build the effective policy for this request by merging default +
-			// any active profile policy.
 			effectivePolicy := defaultPolicy
 			if opts.ResolveProfile != nil {
 				if profileName, ok := opts.ResolveProfile(r); ok && profileName != "" {
-					profile, found := profilePolicies[profileName]
+					profile, found := mergedProfilePolicies[profileName]
 					if !found {
 						logging.SetDeniedWithCode(w, r, reasonCodeVisibilityProfileUnresolved, "visibility profile could not be resolved", filter.NormalizePath)
 						_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility profile could not be resolved"})
 						return
 					}
-					// Merge: profile selectors are additive with default selectors;
-					// profile patterns are additive with default patterns (union means
-					// a resource only needs to match one pattern per axis).
-					effectivePolicy = compiledPolicy{
-						selectors:     append(slices.Clone(effectivePolicy.selectors), profile.selectors...),
-						namePatterns:  append(slices.Clone(effectivePolicy.namePatterns), profile.namePatterns...),
-						imagePatterns: append(slices.Clone(effectivePolicy.imagePatterns), profile.imagePatterns...),
-					}
+					effectivePolicy = profile
 				}
 			}
 
@@ -401,11 +386,11 @@ func newVisibilityDeps(upstreamSocket string) visibilityDeps {
 		inspectcache.DefaultMaxSize,
 		time.Now,
 		func(ctx context.Context, kind, identifier string) (map[string]string, bool, error) {
-			return inspector.inspectResource(ctx, resourceKind(kind), identifier)
+			return inspector.inspectResource(ctx, dockerresource.Kind(kind), identifier)
 		},
 	)
 	return visibilityDeps{
-		inspectResource: func(ctx context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
+		inspectResource: func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
 			return cache.Lookup(ctx, string(kind), identifier)
 		},
 		inspectExec:         inspector.inspectExec,
@@ -524,10 +509,10 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 		return true, nil
 	}
 	if identifier, ok := containerInspectIdentifier(normPath); ok {
-		return resourceVisibleWithPolicy(ctx, deps, resourceKindContainer, identifier, policy)
+		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindContainer, identifier, policy)
 	}
 	if identifier, ok := imageInspectIdentifier(normPath); ok {
-		return resourceVisibleWithPolicy(ctx, deps, resourceKindImage, identifier, policy)
+		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
 	}
 	// Pattern axes only apply to containers and images. All other resource
 	// kinds use label-selector checks only.
@@ -536,34 +521,34 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 		return true, nil
 	}
 	if identifier, ok := networkInspectIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, resourceKindNetwork, identifier, policy.selectors)
+		return resourceVisible(ctx, deps, dockerresource.KindNetwork, identifier, policy.selectors)
 	}
 	if identifier, ok := volumeInspectIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, resourceKindVolume, identifier, policy.selectors)
+		return resourceVisible(ctx, deps, dockerresource.KindVolume, identifier, policy.selectors)
 	}
 	if identifier, ok := serviceInspectIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, resourceKindService, identifier, policy.selectors)
+		return resourceVisible(ctx, deps, dockerresource.KindService, identifier, policy.selectors)
 	}
 	if identifier, ok := serviceLogsIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, resourceKindService, identifier, policy.selectors)
+		return resourceVisible(ctx, deps, dockerresource.KindService, identifier, policy.selectors)
 	}
 	if identifier, ok := taskInspectIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, resourceKindTask, identifier, policy.selectors)
+		return resourceVisible(ctx, deps, dockerresource.KindTask, identifier, policy.selectors)
 	}
 	if identifier, ok := taskLogsIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, resourceKindTask, identifier, policy.selectors)
+		return resourceVisible(ctx, deps, dockerresource.KindTask, identifier, policy.selectors)
 	}
 	if identifier, ok := secretInspectIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, resourceKindSecret, identifier, policy.selectors)
+		return resourceVisible(ctx, deps, dockerresource.KindSecret, identifier, policy.selectors)
 	}
 	if identifier, ok := configInspectIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, resourceKindConfig, identifier, policy.selectors)
+		return resourceVisible(ctx, deps, dockerresource.KindConfig, identifier, policy.selectors)
 	}
 	if identifier, ok := nodeInspectIdentifier(normPath); ok {
-		return resourceVisible(ctx, deps, resourceKindNode, identifier, policy.selectors)
+		return resourceVisible(ctx, deps, dockerresource.KindNode, identifier, policy.selectors)
 	}
 	if isSwarmInspectPath(normPath) {
-		return resourceVisible(ctx, deps, resourceKindSwarm, "", policy.selectors)
+		return resourceVisible(ctx, deps, dockerresource.KindSwarm, "", policy.selectors)
 	}
 	if execID, ok := execInspectIdentifier(normPath); ok {
 		containerID, found, err := deps.inspectExec(ctx, execID)
@@ -573,14 +558,14 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 		if !found {
 			return true, nil
 		}
-		return resourceVisible(ctx, deps, resourceKindContainer, containerID, policy.selectors)
+		return resourceVisible(ctx, deps, dockerresource.KindContainer, containerID, policy.selectors)
 	}
 	return true, nil
 }
 
 // resourceVisibleWithPolicy checks both label selectors and name/image pattern
 // axes for a single container or image resource.
-func resourceVisibleWithPolicy(ctx context.Context, deps visibilityDeps, kind resourceKind, identifier string, policy *compiledPolicy) (bool, error) {
+func resourceVisibleWithPolicy(ctx context.Context, deps visibilityDeps, kind dockerresource.Kind, identifier string, policy *compiledPolicy) (bool, error) {
 	// Check label selectors first (uses the cached inspect path).
 	if len(policy.selectors) > 0 {
 		labels, found, err := deps.inspectResource(ctx, kind, identifier)
@@ -616,9 +601,9 @@ func resourceVisibleWithPolicy(ctx context.Context, deps visibilityDeps, kind re
 
 // resourceMetaMatchesPatterns checks a resource's name/image metadata against
 // the pattern axes in the policy.
-func resourceMetaMatchesPatterns(meta *resourceMeta, kind resourceKind, policy *compiledPolicy) bool {
+func resourceMetaMatchesPatterns(meta *resourceMeta, kind dockerresource.Kind, policy *compiledPolicy) bool {
 	switch kind {
-	case resourceKindContainer:
+	case dockerresource.KindContainer:
 		if len(policy.namePatterns) > 0 {
 			name := containerNameFromNames(meta.names)
 			if !matchesAnyPattern(name, policy.namePatterns) {
@@ -630,7 +615,7 @@ func resourceMetaMatchesPatterns(meta *resourceMeta, kind resourceKind, policy *
 				return false
 			}
 		}
-	case resourceKindImage:
+	case dockerresource.KindImage:
 		if len(policy.namePatterns) > 0 {
 			matched := false
 			for _, ref := range meta.repoTags {
@@ -659,7 +644,7 @@ func resourceMetaMatchesPatterns(meta *resourceMeta, kind resourceKind, policy *
 	return true
 }
 
-func resourceVisible(ctx context.Context, deps visibilityDeps, kind resourceKind, identifier string, selectors []compiledSelector) (bool, error) {
+func resourceVisible(ctx context.Context, deps visibilityDeps, kind dockerresource.Kind, identifier string, selectors []compiledSelector) (bool, error) {
 	labels, found, err := deps.inspectResource(ctx, kind, identifier)
 	if err != nil {
 		return false, err
@@ -878,30 +863,9 @@ func decodeDockerFilters(encoded string) (map[string][]string, error) {
 	return filters, nil
 }
 
-func (i upstreamInspector) inspectResource(ctx context.Context, kind resourceKind, identifier string) (map[string]string, bool, error) {
-	var requestPath string
-	switch kind {
-	case resourceKindContainer:
-		requestPath = "/containers/" + url.PathEscape(identifier) + "/json"
-	case resourceKindImage:
-		requestPath = "/images/" + url.PathEscape(identifier) + "/json"
-	case resourceKindNetwork:
-		requestPath = "/networks/" + url.PathEscape(identifier)
-	case resourceKindVolume:
-		requestPath = "/volumes/" + url.PathEscape(identifier)
-	case resourceKindService:
-		requestPath = "/services/" + url.PathEscape(identifier)
-	case resourceKindTask:
-		requestPath = "/tasks/" + url.PathEscape(identifier)
-	case resourceKindSecret:
-		requestPath = "/secrets/" + url.PathEscape(identifier)
-	case resourceKindConfig:
-		requestPath = "/configs/" + url.PathEscape(identifier)
-	case resourceKindNode:
-		requestPath = "/nodes/" + url.PathEscape(identifier)
-	case resourceKindSwarm:
-		requestPath = "/swarm"
-	default:
+func (i upstreamInspector) inspectResource(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+	requestPath, ok := dockerresource.InspectPath(kind, identifier)
+	if !ok {
 		return nil, false, fmt.Errorf("unsupported resource kind %q", kind)
 	}
 
@@ -959,12 +923,12 @@ func (i upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 	return payload.ContainerID, true, nil
 }
 
-func (i upstreamInspector) inspectResourceMeta(ctx context.Context, kind resourceKind, identifier string) (*resourceMeta, bool, error) {
+func (i upstreamInspector) inspectResourceMeta(ctx context.Context, kind dockerresource.Kind, identifier string) (*resourceMeta, bool, error) {
 	var requestPath string
 	switch kind {
-	case resourceKindContainer:
+	case dockerresource.KindContainer:
 		requestPath = "/containers/" + url.PathEscape(identifier) + "/json"
-	case resourceKindImage:
+	case dockerresource.KindImage:
 		requestPath = "/images/" + url.PathEscape(identifier) + "/json"
 	default:
 		return nil, false, fmt.Errorf("unsupported resource kind %q for meta inspect", kind)
@@ -992,9 +956,9 @@ func (i upstreamInspector) inspectResourceMeta(ctx context.Context, kind resourc
 	return meta, true, nil
 }
 
-func decodeResourceMeta(body io.Reader, kind resourceKind) (*resourceMeta, error) {
+func decodeResourceMeta(body io.Reader, kind dockerresource.Kind) (*resourceMeta, error) {
 	switch kind {
-	case resourceKindContainer:
+	case dockerresource.KindContainer:
 		var payload struct {
 			Name  string   `json:"Name"`
 			Names []string `json:"Names"`
@@ -1008,7 +972,7 @@ func decodeResourceMeta(body io.Reader, kind resourceKind) (*resourceMeta, error
 			names = []string{payload.Name}
 		}
 		return &resourceMeta{names: names, image: payload.Image}, nil
-	case resourceKindImage:
+	case dockerresource.KindImage:
 		var payload struct {
 			RepoTags []string `json:"RepoTags"`
 		}
@@ -1021,9 +985,9 @@ func decodeResourceMeta(body io.Reader, kind resourceKind) (*resourceMeta, error
 	}
 }
 
-func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string, error) {
+func decodeResourceLabels(body io.Reader, kind dockerresource.Kind) (map[string]string, error) {
 	switch kind {
-	case resourceKindContainer:
+	case dockerresource.KindContainer:
 		var payload struct {
 			Config struct {
 				Labels map[string]string `json:"Labels"`
@@ -1033,7 +997,7 @@ func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string,
 			return nil, err
 		}
 		return payload.Config.Labels, nil
-	case resourceKindImage:
+	case dockerresource.KindImage:
 		var payload struct {
 			Config struct {
 				Labels map[string]string `json:"Labels"`
@@ -1049,7 +1013,7 @@ func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string,
 			return payload.Config.Labels, nil
 		}
 		return payload.ContainerConfig.Labels, nil
-	case resourceKindNetwork, resourceKindVolume:
+	case dockerresource.KindNetwork, dockerresource.KindVolume:
 		var payload struct {
 			Labels map[string]string `json:"Labels"`
 		}
@@ -1057,7 +1021,7 @@ func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string,
 			return nil, err
 		}
 		return payload.Labels, nil
-	case resourceKindService, resourceKindSecret, resourceKindConfig, resourceKindNode, resourceKindSwarm:
+	case dockerresource.KindService, dockerresource.KindSecret, dockerresource.KindConfig, dockerresource.KindNode, dockerresource.KindSwarm:
 		var payload struct {
 			Spec struct {
 				Labels map[string]string `json:"Labels"`
@@ -1067,7 +1031,7 @@ func decodeResourceLabels(body io.Reader, kind resourceKind) (map[string]string,
 			return nil, err
 		}
 		return payload.Spec.Labels, nil
-	case resourceKindTask:
+	case dockerresource.KindTask:
 		var payload struct {
 			Labels map[string]string `json:"Labels"`
 			Spec   struct {

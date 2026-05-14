@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/codeswhat/sockguard/internal/dockerresource"
 )
 
 // BenchmarkPatternFilterContainerList measures the allocation budget for
@@ -119,7 +121,7 @@ func BenchmarkResourceMetaMatchesPatterns(b *testing.B) {
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		_ = resourceMetaMatchesPatterns(meta, resourceKindContainer, &policy)
+		_ = resourceMetaMatchesPatterns(meta, dockerresource.KindContainer, &policy)
 	}
 }
 
@@ -129,10 +131,10 @@ func BenchmarkContainerInspectWithPatterns(b *testing.B) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	deps := visibilityDeps{
-		inspectResource: func(_ context.Context, _ resourceKind, _ string) (map[string]string, bool, error) {
+		inspectResource: func(_ context.Context, _ dockerresource.Kind, _ string) (map[string]string, bool, error) {
 			return map[string]string{"com.example.team": "platform"}, true, nil
 		},
-		inspectResourceMeta: func(_ context.Context, _ resourceKind, _ string) (*resourceMeta, bool, error) {
+		inspectResourceMeta: func(_ context.Context, _ dockerresource.Kind, _ string) (*resourceMeta, bool, error) {
 			return &resourceMeta{names: []string{"/traefik"}, image: "traefik:latest"}, true, nil
 		},
 	}
