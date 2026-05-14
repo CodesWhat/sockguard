@@ -1109,6 +1109,73 @@ func TestMutantKills(t *testing.T) {
 		}
 	})
 
+	// ── CONDITIONALS_NEGATION validate.go:143 and :151 ────────────────────────
+	// `if err != nil` on the time.ParseDuration return — flipping to ==
+	// would silently accept an invalid Debounce/PollInterval string. Test
+	// both: with an unparseable value, Validate() must add the parse error.
+	t.Run("reload_debounce_invalid_duration_rejected", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.Debounce = "bogus"
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), `reload.debounce must be a valid Go duration string, got "bogus"`) {
+			t.Fatalf("invalid reload.debounce should produce parse error, got: %v", err)
+		}
+	})
+
+	t.Run("reload_poll_interval_invalid_duration_rejected", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.PollInterval = "bogus"
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), `reload.poll_interval must be a valid Go duration string, got "bogus"`) {
+			t.Fatalf("invalid reload.poll_interval should produce parse error, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_BOUNDARY + CONDITIONALS_NEGATION validate.go:145 and :153
+	// `else if d < 0` boundary. `d=0` must NOT add an error (boundary case)
+	// AND `d=-1s` MUST add the negative-duration error (exercises the branch).
+	t.Run("reload_debounce_zero_is_valid", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.Debounce = "0s"
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "reload.debounce") {
+			t.Fatalf("zero reload.debounce should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("reload_debounce_negative_rejected", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.Debounce = "-1s"
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), `reload.debounce must be >= 0, got "-1s"`) {
+			t.Fatalf("negative reload.debounce should be rejected, got: %v", err)
+		}
+	})
+
+	t.Run("reload_poll_interval_zero_is_valid", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.PollInterval = "0s"
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "reload.poll_interval") {
+			t.Fatalf("zero reload.poll_interval should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("reload_poll_interval_negative_rejected", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.PollInterval = "-1s"
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), `reload.poll_interval must be >= 0, got "-1s"`) {
+			t.Fatalf("negative reload.poll_interval should be rejected, got: %v", err)
+		}
+	})
+
 	// ── CONDITIONALS_NEGATION validate.go:301 ─────────────────────────────────
 	// `strings.TrimSpace(kl.SubjectPattern) == ""` — if mutated to !=, a valid
 	// non-empty subject_pattern would spuriously error as "required". Existing

@@ -554,7 +554,7 @@ func validateClientCertificateSelectors(prefix string, assignment ClientCertific
 		}
 		selectorCount++
 	}
-	if selectorCount == 0 {
+	if selectorCount <= 0 {
 		errs = append(errs, containsAtLeastOneError(prefix, "client certificate identity selector"))
 	}
 	return errs
