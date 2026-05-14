@@ -1267,6 +1267,139 @@ func TestValidateLimitsConfig_Rate(t *testing.T) {
 	}
 }
 
+// TestValidateLimitsConfig_RateBoundaryEqualities pins down the strict-vs-
+// inclusive comparison operators in validateLimitsConfig (validate.go:629,
+// 634, 639). The existing tests catch obvious negative / clearly-wrong
+// inputs but pass under several boundary-flipping mutations:
+//
+//   - `<= 0` → `< 0` on TokensPerSecond would accept zero (silently
+//     disables rate limiting on the profile).
+//   - `< 0` → `<= 0` on Burst would reject the documented 0-defaults form.
+//   - `< TokensPerSecond` → `<= TokensPerSecond` on the burst/rate ratio
+//     would reject burst == tokens_per_second, the natural minimum.
+//
+// Each case below tests the inputs that differ by exactly one between the
+// original and the mutated operator.
+func TestValidateLimitsConfig_RateBoundaryEqualities(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         LimitsConfig
+		expectError bool
+	}{
+		{
+			name:        "tokens_per_second exactly 1 accepted (boundary above <=0)",
+			cfg:         LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 1, Burst: 1}},
+			expectError: false,
+		},
+		{
+			name:        "burst exactly equal to tokens_per_second accepted",
+			cfg:         LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: 10}},
+			expectError: false,
+		},
+		{
+			name:        "burst exactly zero defaults to tokens_per_second",
+			cfg:         LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: 0}},
+			expectError: false,
+		},
+		{
+			name:        "burst one below tokens_per_second rejected",
+			cfg:         LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: 9}},
+			expectError: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateLimitsConfig("clients.profiles[0].limits", tt.cfg)
+			if tt.expectError && len(errs) == 0 {
+				t.Fatalf("expected error, got none")
+			}
+			if !tt.expectError && len(errs) != 0 {
+				t.Fatalf("expected no error, got: %v", errs)
+			}
+		})
+	}
+}
+
+// TestValidateEndpointCosts_BoundaryEqualities pins down the strict-vs-
+// inclusive operators in validateEndpointCosts (validate.go:672, 675).
+//
+//   - `< 1` → `<= 1` would reject Cost==1, the documented minimum.
+//   - `> effectiveBurst` → `>= effectiveBurst` would reject Cost ==
+//     effectiveBurst, which is the maximum cost a request could ever
+//     actually pay without permanently 429-ing.
+//   - `> 0` → `>= 0` on the burst guard would change which costs the
+//     burst check applies to when effectiveBurst is exactly 0 (i.e., the
+//     no-burst-configured case).
+func TestValidateEndpointCosts_BoundaryEqualities(t *testing.T) {
+	tests := []struct {
+		name           string
+		costs          []EndpointCostConfig
+		effectiveBurst float64
+		expectError    bool
+	}{
+		{
+			name:           "cost exactly 1 accepted",
+			costs:          []EndpointCostConfig{{Path: "/build", Cost: 1}},
+			effectiveBurst: 10,
+			expectError:    false,
+		},
+		{
+			name:           "cost exactly equal to effective burst accepted",
+			costs:          []EndpointCostConfig{{Path: "/build", Cost: 10}},
+			effectiveBurst: 10,
+			expectError:    false,
+		},
+		{
+			name:           "cost one above effective burst rejected",
+			costs:          []EndpointCostConfig{{Path: "/build", Cost: 11}},
+			effectiveBurst: 10,
+			expectError:    true,
+		},
+		{
+			name:           "effectiveBurst zero skips burst check (cost positive accepted)",
+			costs:          []EndpointCostConfig{{Path: "/build", Cost: 100}},
+			effectiveBurst: 0,
+			expectError:    false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateEndpointCosts("clients.profiles[0].limits.rate.endpoint_costs", tt.costs, tt.effectiveBurst)
+			if tt.expectError && len(errs) == 0 {
+				t.Fatalf("expected error, got none")
+			}
+			if !tt.expectError && len(errs) != 0 {
+				t.Fatalf("expected no error, got: %v", errs)
+			}
+		})
+	}
+}
+
+// TestValidateConcurrency_BoundaryEqualities pins down the strict-vs-
+// inclusive operator in validateLimitsConfig's concurrency check
+// (validate.go:648) and the parallel global_concurrency check
+// (validate.go:452). Both use `<= 0` to reject; a mutation to `< 0` would
+// accept max_inflight=0 (silently disables every request — closes the
+// admission gate).
+func TestValidateConcurrency_BoundaryEqualities(t *testing.T) {
+	t.Run("profile-level max_inflight=1 accepted", func(t *testing.T) {
+		errs := validateLimitsConfig("clients.profiles[0].limits", LimitsConfig{
+			Concurrency: &ConcurrencyConfig{MaxInflight: 1},
+		})
+		if len(errs) != 0 {
+			t.Fatalf("expected no error, got: %v", errs)
+		}
+	})
+	t.Run("profile-level max_inflight=0 rejected", func(t *testing.T) {
+		errs := validateLimitsConfig("clients.profiles[0].limits", LimitsConfig{
+			Concurrency: &ConcurrencyConfig{MaxInflight: 0},
+		})
+		if len(errs) == 0 {
+			t.Fatalf("expected error for max_inflight=0, got none")
+		}
+	})
+}
+
 // Negative burst must surface its own error rather than collide with the
 // burst<tokens_per_second message; the burst<0 case is mutually exclusive
 // with the burst<tokens_per_second case in validateLimitsConfig.
