@@ -2392,3 +2392,40 @@ func (p *stubBufferPool) Get() any {
 func (p *stubBufferPool) Put(value any) {
 	p.putValue = value
 }
+
+// TestHijackConstantsArePinned pins the concrete values of the three hijack
+// tuning constants. Other tests use the constants in comparisons, so an
+// ARITHMETIC_BASE mutation (`*` → `/`, etc.) would shift both the const and
+// the comparison together and stay invisible. These pin tests assert against
+// the explicit literal values so a mutation cannot ride the rename.
+func TestHijackConstantsArePinned(t *testing.T) {
+	if hijackBufSize != 64*1024 {
+		t.Errorf("hijackBufSize = %d, want %d", hijackBufSize, 64*1024)
+	}
+	if hijackDialTimeout != 5*time.Second {
+		t.Errorf("hijackDialTimeout = %v, want 5s", hijackDialTimeout)
+	}
+	if hijackInactivityTimeout != 10*time.Minute {
+		t.Errorf("hijackInactivityTimeout = %v, want 10m", hijackInactivityTimeout)
+	}
+}
+
+// TestNewProxyTransportTunings pins the IdleConnTimeout on the upstream
+// transport and the FlushInterval=-1 on the ReverseProxy. Both are required
+// for correct streaming behavior: a non-streaming FlushInterval would buffer
+// docker events/logs/attach, and a shortened idle timeout would prematurely
+// recycle pooled connections.
+func TestNewProxyTransportTunings(t *testing.T) {
+	rp := New("/tmp/does-not-matter.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if got, want := rp.FlushInterval, time.Duration(-1); got != want {
+		t.Errorf("FlushInterval = %v, want %v (immediate flush for streaming)", got, want)
+	}
+	tr, ok := rp.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport type = %T, want *http.Transport", rp.Transport)
+	}
+	if got, want := tr.IdleConnTimeout, 90*time.Second; got != want {
+		t.Errorf("IdleConnTimeout = %v, want %v", got, want)
+	}
+}
