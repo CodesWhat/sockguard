@@ -1341,6 +1341,138 @@ func TestInactivityDeadlineWriterReturnsDeadlineError(t *testing.T) {
 	}
 }
 
+// TestInactivityDeadlineRefreshBoundary pins the strict `>` boundary in
+// inactivityDeadlineReader.Read and inactivityDeadlineWriter.Write
+// (hijack.go:459, hijack.go:487). The condition is
+// `now.Sub(lastRefresh) > refreshInterval`; the surviving CONDITIONALS_BOUNDARY
+// mutation flips it to `>=`. A flip would cause an extra SetReadDeadline /
+// SetWriteDeadline call when the elapsed time equals refreshInterval exactly.
+//
+// We pin the boundary using the timeNowHook to drive elapsed time to *exactly*
+// refreshInterval on the second Read/Write — the only point where `>` and `>=`
+// disagree. The first call always refreshes (lastRefresh is zero-valued); the
+// boundary case asserts that the second call does NOT refresh.
+func TestInactivityDeadlineRefreshBoundary(t *testing.T) {
+	t.Run("reader does not refresh when elapsed == refreshInterval", func(t *testing.T) {
+		base := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
+		refreshInterval := 250 * time.Millisecond // = timeout/4 of 1s
+		// Sequence: first Read sees base (refresh, lastRefresh=base).
+		// Second Read sees base+refreshInterval; elapsed == refreshInterval;
+		// `>` says don't refresh, `>=` says refresh. We assert "don't refresh."
+		times := []time.Time{base, base.Add(refreshInterval)}
+		idx := 0
+		restore := swapTimeNow(func() time.Time {
+			ts := times[idx]
+			idx++
+			return ts
+		})
+		defer restore()
+
+		conn := &funcConn{readFn: func(p []byte) (int, error) { return len(p), nil }}
+		r := withReadInactivityDeadline(strings.NewReader("ab"), conn, time.Second)
+
+		if _, err := r.Read(make([]byte, 1)); err != nil {
+			t.Fatalf("first Read: %v", err)
+		}
+		if got := conn.readDeadlineCalls; got != 1 {
+			t.Fatalf("after first Read: readDeadlineCalls=%d, want 1", got)
+		}
+		if _, err := r.Read(make([]byte, 1)); err != nil {
+			t.Fatalf("second Read: %v", err)
+		}
+		if got := conn.readDeadlineCalls; got != 1 {
+			t.Fatalf("after second Read at exact boundary: readDeadlineCalls=%d, want 1 (mutant `>=` would yield 2)", got)
+		}
+	})
+
+	t.Run("reader refreshes when elapsed > refreshInterval", func(t *testing.T) {
+		base := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
+		refreshInterval := 250 * time.Millisecond
+		times := []time.Time{base, base.Add(refreshInterval + time.Nanosecond)}
+		idx := 0
+		restore := swapTimeNow(func() time.Time {
+			ts := times[idx]
+			idx++
+			return ts
+		})
+		defer restore()
+
+		conn := &funcConn{readFn: func(p []byte) (int, error) { return len(p), nil }}
+		r := withReadInactivityDeadline(strings.NewReader("ab"), conn, time.Second)
+
+		if _, err := r.Read(make([]byte, 1)); err != nil {
+			t.Fatalf("first Read: %v", err)
+		}
+		if _, err := r.Read(make([]byte, 1)); err != nil {
+			t.Fatalf("second Read: %v", err)
+		}
+		if got := conn.readDeadlineCalls; got != 2 {
+			t.Fatalf("after second Read just past boundary: readDeadlineCalls=%d, want 2", got)
+		}
+	})
+
+	t.Run("writer does not refresh when elapsed == refreshInterval", func(t *testing.T) {
+		base := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
+		refreshInterval := 250 * time.Millisecond
+		times := []time.Time{base, base.Add(refreshInterval)}
+		idx := 0
+		restore := swapTimeNow(func() time.Time {
+			ts := times[idx]
+			idx++
+			return ts
+		})
+		defer restore()
+
+		conn := &funcConn{writeFn: func(p []byte) (int, error) { return len(p), nil }}
+		w := withWriteInactivityDeadline(io.Discard, conn, time.Second)
+
+		if _, err := w.Write([]byte("a")); err != nil {
+			t.Fatalf("first Write: %v", err)
+		}
+		if got := conn.writeDeadlineCalls; got != 1 {
+			t.Fatalf("after first Write: writeDeadlineCalls=%d, want 1", got)
+		}
+		if _, err := w.Write([]byte("b")); err != nil {
+			t.Fatalf("second Write: %v", err)
+		}
+		if got := conn.writeDeadlineCalls; got != 1 {
+			t.Fatalf("after second Write at exact boundary: writeDeadlineCalls=%d, want 1 (mutant `>=` would yield 2)", got)
+		}
+	})
+
+	t.Run("writer refreshes when elapsed > refreshInterval", func(t *testing.T) {
+		base := time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC)
+		refreshInterval := 250 * time.Millisecond
+		times := []time.Time{base, base.Add(refreshInterval + time.Nanosecond)}
+		idx := 0
+		restore := swapTimeNow(func() time.Time {
+			ts := times[idx]
+			idx++
+			return ts
+		})
+		defer restore()
+
+		conn := &funcConn{writeFn: func(p []byte) (int, error) { return len(p), nil }}
+		w := withWriteInactivityDeadline(io.Discard, conn, time.Second)
+
+		if _, err := w.Write([]byte("a")); err != nil {
+			t.Fatalf("first Write: %v", err)
+		}
+		if _, err := w.Write([]byte("b")); err != nil {
+			t.Fatalf("second Write: %v", err)
+		}
+		if got := conn.writeDeadlineCalls; got != 2 {
+			t.Fatalf("after second Write just past boundary: writeDeadlineCalls=%d, want 2", got)
+		}
+	})
+}
+
+func swapTimeNow(fn func() time.Time) func() {
+	prev := timeNowHook
+	timeNowHook = fn
+	return func() { timeNowHook = prev }
+}
+
 func TestHandleHijack_NonUpgradeFallbackEdgePaths(t *testing.T) {
 	restoreHijackHooks(t)
 
