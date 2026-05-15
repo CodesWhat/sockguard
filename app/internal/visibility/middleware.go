@@ -130,120 +130,141 @@ func Middleware(upstreamSocket string, logger *slog.Logger, opts Options) func(h
 }
 
 func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) func(http.Handler) http.Handler {
-	defaultPolicy, err := compilePolicy(opts.VisibleResourceLabels, opts.NamePatterns, opts.ImagePatterns)
-	if err != nil {
-		logger.Error("invalid visibility config", "error", err)
-		return func(http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyMisconfigured, "visibility policy misconfigured", filter.NormalizePath)
-				_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility policy misconfigured"})
-			})
-		}
+	defaultPolicy, mergedProfilePolicies, ok := compileVisibilityPolicies(logger, opts)
+	if !ok {
+		return misconfiguredVisibilityMiddleware()
 	}
 
-	// Pre-merge default + profile policies once at construction. Profiles are
-	// reload-immutable, so cloning the slice on every request to compute the
-	// same merged compiledPolicy is wasted work. Each map entry holds the
-	// final merged compiledPolicy that requests can reference by pointer.
-	mergedProfilePolicies := make(map[string]compiledPolicy, len(opts.Profiles))
-	for name, policy := range opts.Profiles {
-		compiled, err := compilePolicy(policy.VisibleResourceLabels, policy.NamePatterns, policy.ImagePatterns)
-		if err != nil {
-			logger.Error("invalid visibility profile config", "profile", name, "error", err)
-			return func(http.Handler) http.Handler {
-				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyMisconfigured, "visibility policy misconfigured", filter.NormalizePath)
-					_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility policy misconfigured"})
-				})
-			}
-		}
-		mergedProfilePolicies[name] = compiledPolicy{
-			selectors:     append(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
-			namePatterns:  append(slices.Clone(defaultPolicy.namePatterns), compiled.namePatterns...),
-			imagePatterns: append(slices.Clone(defaultPolicy.imagePatterns), compiled.imagePatterns...),
-		}
-	}
-
-	hasAnyConfig := len(defaultPolicy.selectors) > 0 || defaultPolicy.hasPatternAxes() || len(mergedProfilePolicies) > 0
-	if !hasAnyConfig {
+	if len(defaultPolicy.selectors) == 0 && !defaultPolicy.hasPatternAxes() && len(mergedProfilePolicies) == 0 {
 		return func(next http.Handler) http.Handler { return next }
 	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			effectivePolicy := defaultPolicy
-			if opts.ResolveProfile != nil {
-				if profileName, ok := opts.ResolveProfile(r); ok && profileName != "" {
-					profile, found := mergedProfilePolicies[profileName]
-					if !found {
-						logging.SetDeniedWithCode(w, r, reasonCodeVisibilityProfileUnresolved, "visibility profile could not be resolved", filter.NormalizePath)
-						_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility profile could not be resolved"})
-						return
-					}
-					effectivePolicy = profile
-				}
+			effectivePolicy, ok := resolveEffectivePolicy(opts, mergedProfilePolicies, defaultPolicy, w, r)
+			if !ok {
+				return
 			}
 
 			hasSelectors := len(effectivePolicy.selectors) > 0
 			hasPatterns := effectivePolicy.hasPatternAxes()
-
-			if !hasSelectors && !hasPatterns {
-				next.ServeHTTP(w, r)
-				return
-			}
-			if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if (!hasSelectors && !hasPatterns) || (r.Method != http.MethodGet && r.Method != http.MethodHead) {
 				next.ServeHTTP(w, r)
 				return
 			}
 
 			normPath := normalizedPathForRequest(w, r)
-
-			// Label-filter injection for list endpoints (selectors only).
 			if needsVisibilityLabelFilter(normPath) {
-				if hasSelectors {
-					if err := addVisibilityLabelFilters(r, normPath, effectivePolicy.selectors); err != nil {
-						logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
-						_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
-						return
-					}
-				}
-				// Pattern-axis filtering for container/image list endpoints: wrap
-				// the response writer so we can filter the returned JSON array.
-				if hasPatterns && needsPatternResponseFilter(normPath) {
-					interceptingW := newPatternFilterWriter(w)
-					defer interceptingW.release()
-					next.ServeHTTP(interceptingW, r)
-					if err := interceptingW.flushFiltered(normPath, &effectivePolicy); err != nil {
-						logger.ErrorContext(r.Context(), "visibility pattern list filter failed", "error", err)
-						// If we haven't written a response yet, send a gateway error.
-						if !interceptingW.headerWritten {
-							logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility pattern filter failed", nil)
-							_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility pattern filter failed"})
-						}
-					}
-					return
-				}
-				next.ServeHTTP(w, r)
+				handleVisibilityListRequest(logger, next, w, r, normPath, &effectivePolicy, hasSelectors, hasPatterns)
 				return
 			}
 
-			// Inspect/single-resource visibility check.
-			visible, err := requestVisibleWithPolicy(r.Context(), normPath, &effectivePolicy, deps)
-			if err != nil {
-				logger.ErrorContext(r.Context(), "visibility policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
-				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility policy lookup failed", nil)
-				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility policy lookup failed"})
-				return
-			}
-			if !visible {
-				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyHidResource, "visibility policy hid resource", nil)
-				_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "resource not found"})
-				return
-			}
-
-			next.ServeHTTP(w, r)
+			handleVisibilityInspectRequest(logger, next, deps, w, r, normPath, &effectivePolicy)
 		})
 	}
+}
+
+// compileVisibilityPolicies compiles the default and per-profile visibility
+// policies once at construction. Profiles are reload-immutable, so cloning
+// selectors/patterns on every request to compute the same merged
+// compiledPolicy would be wasted work — each map entry holds the final
+// merged compiledPolicy that requests reference by pointer. Returns ok=false
+// after logging when any compilation fails so the caller can install the
+// misconfigured-middleware fallback.
+func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolicy, map[string]compiledPolicy, bool) {
+	defaultPolicy, err := compilePolicy(opts.VisibleResourceLabels, opts.NamePatterns, opts.ImagePatterns)
+	if err != nil {
+		logger.Error("invalid visibility config", "error", err)
+		return compiledPolicy{}, nil, false
+	}
+	merged := make(map[string]compiledPolicy, len(opts.Profiles))
+	for name, policy := range opts.Profiles {
+		compiled, err := compilePolicy(policy.VisibleResourceLabels, policy.NamePatterns, policy.ImagePatterns)
+		if err != nil {
+			logger.Error("invalid visibility profile config", "profile", name, "error", err)
+			return compiledPolicy{}, nil, false
+		}
+		merged[name] = compiledPolicy{
+			selectors:     append(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
+			namePatterns:  append(slices.Clone(defaultPolicy.namePatterns), compiled.namePatterns...),
+			imagePatterns: append(slices.Clone(defaultPolicy.imagePatterns), compiled.imagePatterns...),
+		}
+	}
+	return defaultPolicy, merged, true
+}
+
+func misconfiguredVisibilityMiddleware() func(http.Handler) http.Handler {
+	return func(http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyMisconfigured, "visibility policy misconfigured", filter.NormalizePath)
+			_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility policy misconfigured"})
+		})
+	}
+}
+
+// resolveEffectivePolicy picks the per-request policy based on the optional
+// profile resolver. Returns ok=false after writing a denial response when a
+// profile was named but not registered.
+func resolveEffectivePolicy(opts Options, profiles map[string]compiledPolicy, defaultPolicy compiledPolicy, w http.ResponseWriter, r *http.Request) (compiledPolicy, bool) {
+	if opts.ResolveProfile == nil {
+		return defaultPolicy, true
+	}
+	profileName, ok := opts.ResolveProfile(r)
+	if !ok || profileName == "" {
+		return defaultPolicy, true
+	}
+	profile, found := profiles[profileName]
+	if !found {
+		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityProfileUnresolved, "visibility profile could not be resolved", filter.NormalizePath)
+		_ = httpjson.Write(w, http.StatusInternalServerError, httpjson.ErrorResponse{Message: "visibility profile could not be resolved"})
+		return compiledPolicy{}, false
+	}
+	return profile, true
+}
+
+// handleVisibilityListRequest applies selector-based label filter injection
+// and (where supported) pattern-based response filtering for list endpoints.
+func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, policy *compiledPolicy, hasSelectors, hasPatterns bool) {
+	if hasSelectors {
+		if err := addVisibilityLabelFilters(r, normPath, policy.selectors); err != nil {
+			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityFilterInvalid, err.Error(), nil)
+			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
+			return
+		}
+	}
+	if hasPatterns && needsPatternResponseFilter(normPath) {
+		interceptingW := newPatternFilterWriter(w)
+		defer interceptingW.release()
+		next.ServeHTTP(interceptingW, r)
+		if err := interceptingW.flushFiltered(normPath, policy); err != nil {
+			logger.ErrorContext(r.Context(), "visibility pattern list filter failed", "error", err)
+			if !interceptingW.headerWritten {
+				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility pattern filter failed", nil)
+				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility pattern filter failed"})
+			}
+		}
+		return
+	}
+	next.ServeHTTP(w, r)
+}
+
+// handleVisibilityInspectRequest applies the inspect / single-resource
+// visibility check and either forwards the request or returns 404 when the
+// resource fails the policy.
+func handleVisibilityInspectRequest(logger *slog.Logger, next http.Handler, deps visibilityDeps, w http.ResponseWriter, r *http.Request, normPath string, policy *compiledPolicy) {
+	visible, err := requestVisibleWithPolicy(r.Context(), normPath, policy, deps)
+	if err != nil {
+		logger.ErrorContext(r.Context(), "visibility policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
+		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility policy lookup failed", nil)
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility policy lookup failed"})
+		return
+	}
+	if !visible {
+		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyHidResource, "visibility policy hid resource", nil)
+		_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "resource not found"})
+		return
+	}
+	next.ServeHTTP(w, r)
 }
 
 // needsPatternResponseFilter reports whether the given normalized path is a
@@ -651,48 +672,58 @@ func resourceVisibleWithPolicy(ctx context.Context, deps visibilityDeps, kind do
 }
 
 // resourceMetaMatchesPatterns checks a resource's name/image metadata against
-// the pattern axes in the policy.
+// the pattern axes in the policy. Containers compare a single name/image
+// against the pattern lists; images iterate every RepoTag since one image may
+// expose several user-visible names.
 func resourceMetaMatchesPatterns(meta *resourceMeta, kind dockerresource.Kind, policy *compiledPolicy) bool {
 	switch kind {
 	case dockerresource.KindContainer:
-		if len(policy.namePatterns) > 0 {
-			name := containerNameFromNames(meta.names)
-			if !matchesAnyPattern(name, policy.namePatterns) {
-				return false
-			}
-		}
-		if len(policy.imagePatterns) > 0 {
-			if !matchesAnyPattern(meta.image, policy.imagePatterns) {
-				return false
-			}
-		}
+		return containerMetaMatchesPatterns(meta, policy)
 	case dockerresource.KindImage:
-		if len(policy.namePatterns) > 0 {
-			matched := false
-			for _, ref := range meta.repoTags {
-				if matchesAnyPattern(imageShortName(ref), policy.namePatterns) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				return false
-			}
+		return imageMetaMatchesPatterns(meta, policy)
+	}
+	return true
+}
+
+func containerMetaMatchesPatterns(meta *resourceMeta, policy *compiledPolicy) bool {
+	if len(policy.namePatterns) > 0 {
+		if !matchesAnyPattern(containerNameFromNames(meta.names), policy.namePatterns) {
+			return false
 		}
-		if len(policy.imagePatterns) > 0 {
-			matched := false
-			for _, ref := range meta.repoTags {
-				if matchesAnyPattern(ref, policy.imagePatterns) {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				return false
-			}
+	}
+	if len(policy.imagePatterns) > 0 {
+		if !matchesAnyPattern(meta.image, policy.imagePatterns) {
+			return false
 		}
 	}
 	return true
+}
+
+func imageMetaMatchesPatterns(meta *resourceMeta, policy *compiledPolicy) bool {
+	if len(policy.namePatterns) > 0 && !anyRepoTagMatches(meta.repoTags, policy.namePatterns, imageShortName) {
+		return false
+	}
+	if len(policy.imagePatterns) > 0 && !anyRepoTagMatches(meta.repoTags, policy.imagePatterns, nil) {
+		return false
+	}
+	return true
+}
+
+// anyRepoTagMatches returns true when at least one RepoTag matches any
+// pattern in patterns. When transform is non-nil it's applied to each
+// RepoTag before pattern matching (e.g. imageShortName strips the
+// registry/repo prefix when matching against name patterns).
+func anyRepoTagMatches(repoTags []string, patterns []compiledPattern, transform func(string) string) bool {
+	for _, ref := range repoTags {
+		candidate := ref
+		if transform != nil {
+			candidate = transform(ref)
+		}
+		if matchesAnyPattern(candidate, patterns) {
+			return true
+		}
+	}
+	return false
 }
 
 func resourceVisible(ctx context.Context, deps visibilityDeps, kind dockerresource.Kind, identifier string, selectors []compiledSelector) (bool, error) {
@@ -725,151 +756,85 @@ func matchesSelectors(labels map[string]string, selectors []compiledSelector) bo
 	return true
 }
 
-func containerInspectIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/containers/") {
+// singleSegmentIdentifier strips prefix from normPath and returns the
+// remaining single segment as an identifier. It returns ok=false when the
+// remainder is empty, contains "/", or matches any reserved keyword such as
+// "create" or "prune" that Docker reuses for collection-level endpoints.
+func singleSegmentIdentifier(normPath, prefix string, reserved ...string) (string, bool) {
+	if !strings.HasPrefix(normPath, prefix) {
 		return "", false
 	}
-	rest := strings.TrimPrefix(normPath, "/containers/")
+	rest := strings.TrimPrefix(normPath, prefix)
+	if rest == "" || strings.Contains(rest, "/") {
+		return "", false
+	}
+	for _, r := range reserved {
+		if rest == r {
+			return "", false
+		}
+	}
+	return rest, true
+}
+
+// suffixedIdentifier strips prefix and splits the remainder once on "/",
+// returning the leading segment when the trailing segment matches suffix.
+// Used for endpoints shaped `/<kind>/<id>/<suffix>` like `.../json` or
+// `.../logs`.
+func suffixedIdentifier(normPath, prefix, suffix string) (string, bool) {
+	if !strings.HasPrefix(normPath, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(normPath, prefix)
 	identifier, tail, ok := strings.Cut(rest, "/")
-	return identifier, ok && identifier != "" && tail == "json"
+	return identifier, ok && identifier != "" && tail == suffix
+}
+
+func containerInspectIdentifier(normPath string) (string, bool) {
+	return suffixedIdentifier(normPath, "/containers/", "json")
 }
 
 func imageInspectIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/images/") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(normPath, "/images/")
-	identifier, tail, ok := strings.Cut(rest, "/")
-	return identifier, ok && identifier != "" && tail == "json"
+	return suffixedIdentifier(normPath, "/images/", "json")
 }
 
 func networkInspectIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/networks/") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(normPath, "/networks/")
-	if rest == "" || strings.Contains(rest, "/") {
-		return "", false
-	}
-	switch rest {
-	case "create", "prune":
-		return "", false
-	default:
-		return rest, true
-	}
+	return singleSegmentIdentifier(normPath, "/networks/", "create", "prune")
 }
 
 func volumeInspectIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/volumes/") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(normPath, "/volumes/")
-	if rest == "" || strings.Contains(rest, "/") {
-		return "", false
-	}
-	switch rest {
-	case "create", "prune":
-		return "", false
-	default:
-		return rest, true
-	}
+	return singleSegmentIdentifier(normPath, "/volumes/", "create", "prune")
 }
 
 func execInspectIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/exec/") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(normPath, "/exec/")
-	identifier, tail, ok := strings.Cut(rest, "/")
-	return identifier, ok && identifier != "" && tail == "json"
+	return suffixedIdentifier(normPath, "/exec/", "json")
 }
 
 func serviceInspectIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/services/") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(normPath, "/services/")
-	if rest == "" || strings.Contains(rest, "/") {
-		return "", false
-	}
-	switch rest {
-	case "create":
-		return "", false
-	default:
-		return rest, true
-	}
+	return singleSegmentIdentifier(normPath, "/services/", "create")
 }
 
 func serviceLogsIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/services/") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(normPath, "/services/")
-	identifier, tail, ok := strings.Cut(rest, "/")
-	return identifier, ok && identifier != "" && tail == "logs"
+	return suffixedIdentifier(normPath, "/services/", "logs")
 }
 
 func taskInspectIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/tasks/") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(normPath, "/tasks/")
-	if rest == "" || strings.Contains(rest, "/") {
-		return "", false
-	}
-	return rest, true
+	return singleSegmentIdentifier(normPath, "/tasks/")
 }
 
 func taskLogsIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/tasks/") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(normPath, "/tasks/")
-	identifier, tail, ok := strings.Cut(rest, "/")
-	return identifier, ok && identifier != "" && tail == "logs"
+	return suffixedIdentifier(normPath, "/tasks/", "logs")
 }
 
 func secretInspectIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/secrets/") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(normPath, "/secrets/")
-	if rest == "" || strings.Contains(rest, "/") {
-		return "", false
-	}
-	switch rest {
-	case "create":
-		return "", false
-	default:
-		return rest, true
-	}
+	return singleSegmentIdentifier(normPath, "/secrets/", "create")
 }
 
 func configInspectIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/configs/") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(normPath, "/configs/")
-	if rest == "" || strings.Contains(rest, "/") {
-		return "", false
-	}
-	switch rest {
-	case "create":
-		return "", false
-	default:
-		return rest, true
-	}
+	return singleSegmentIdentifier(normPath, "/configs/", "create")
 }
 
 func nodeInspectIdentifier(normPath string) (string, bool) {
-	if !strings.HasPrefix(normPath, "/nodes/") {
-		return "", false
-	}
-	rest := strings.TrimPrefix(normPath, "/nodes/")
-	if rest == "" || strings.Contains(rest, "/") {
-		return "", false
-	}
-	return rest, true
+	return singleSegmentIdentifier(normPath, "/nodes/")
 }
 
 func isSwarmInspectPath(normPath string) bool {
@@ -937,7 +902,7 @@ func (i upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 		return nil, false, fmt.Errorf("inspect %s %q returned status %d", kind, identifier, resp.StatusCode)
 	}
 
-	labels, err := decodeResourceLabels(resp.Body, kind)
+	labels, err := dockerresource.DecodeLabels(resp.Body, kind)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1036,69 +1001,3 @@ func decodeResourceMeta(body io.Reader, kind dockerresource.Kind) (*resourceMeta
 	}
 }
 
-func decodeResourceLabels(body io.Reader, kind dockerresource.Kind) (map[string]string, error) {
-	switch kind {
-	case dockerresource.KindContainer:
-		var payload struct {
-			Config struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"Config"`
-		}
-		if err := json.NewDecoder(body).Decode(&payload); err != nil {
-			return nil, err
-		}
-		return payload.Config.Labels, nil
-	case dockerresource.KindImage:
-		var payload struct {
-			Config struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"Config"`
-			ContainerConfig struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"ContainerConfig"`
-		}
-		if err := json.NewDecoder(body).Decode(&payload); err != nil {
-			return nil, err
-		}
-		if len(payload.Config.Labels) > 0 {
-			return payload.Config.Labels, nil
-		}
-		return payload.ContainerConfig.Labels, nil
-	case dockerresource.KindNetwork, dockerresource.KindVolume:
-		var payload struct {
-			Labels map[string]string `json:"Labels"`
-		}
-		if err := json.NewDecoder(body).Decode(&payload); err != nil {
-			return nil, err
-		}
-		return payload.Labels, nil
-	case dockerresource.KindService, dockerresource.KindSecret, dockerresource.KindConfig, dockerresource.KindNode, dockerresource.KindSwarm:
-		var payload struct {
-			Spec struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"Spec"`
-		}
-		if err := json.NewDecoder(body).Decode(&payload); err != nil {
-			return nil, err
-		}
-		return payload.Spec.Labels, nil
-	case dockerresource.KindTask:
-		var payload struct {
-			Labels map[string]string `json:"Labels"`
-			Spec   struct {
-				ContainerSpec struct {
-					Labels map[string]string `json:"Labels"`
-				} `json:"ContainerSpec"`
-			} `json:"Spec"`
-		}
-		if err := json.NewDecoder(body).Decode(&payload); err != nil {
-			return nil, err
-		}
-		if len(payload.Labels) > 0 {
-			return payload.Labels, nil
-		}
-		return payload.Spec.ContainerSpec.Labels, nil
-	default:
-		return nil, fmt.Errorf("unsupported resource kind %q", kind)
-	}
-}
