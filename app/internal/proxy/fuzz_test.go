@@ -302,7 +302,7 @@ func TestSanitizeHeaderValueIsBounded(t *testing.T) {
 func startFuzzEchoUpstream(f *testing.F) string {
 	f.Helper()
 
-	socketPath := "/tmp/sockguard-fuzz-" + time.Now().Format("20060102150405.000000000") + ".sock"
+	socketPath := fmt.Sprintf("/tmp/sockguard-fuzz-echo-%d-%d.sock", os.Getpid(), time.Now().UnixNano())
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		f.Fatalf("listen unix socket: %v", err)
