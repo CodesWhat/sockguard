@@ -935,7 +935,12 @@ func TestRunServe_ReloadEnabledStartsWatcherWhenCfgFileSet(t *testing.T) {
 		cfg := testServeConfig()
 		cfg.Listen.Address = "127.0.0.1:0"
 		cfg.Reload.Enabled = true
+		// Non-default Debounce + PollInterval so we can assert they flow
+		// through to the reload package. The mutants at serve.go:218, 219,
+		// and 224 would all collapse one of these to the DefaultDebounce
+		// (250ms) / zero PollInterval default.
 		cfg.Reload.Debounce = "10ms"
+		cfg.Reload.PollInterval = "200ms"
 		return cfg, nil
 	}
 
@@ -974,8 +979,29 @@ func TestRunServe_ReloadEnabledStartsWatcherWhenCfgFileSet(t *testing.T) {
 	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
 		t.Fatalf("runServeWithDeps() error = %v", err)
 	}
-	if !collector.HasMessage("config hot-reload enabled") {
+	enabledRecs := collector.FindMessage("config hot-reload enabled")
+	if len(enabledRecs) == 0 {
 		t.Fatalf("expected 'config hot-reload enabled' log when Reload.Enabled and cfgFile set; records: %#v", collector.Records())
+	}
+	// Pin serve.go:218 (`Debounce != ""` → `==`) and 219 (`err == nil` → `!=`):
+	// both would collapse our configured "10ms" debounce back to the
+	// DefaultDebounce (250ms). The reload-package log carries the value as
+	// a duration string.
+	if got := enabledRecs[0].Attrs["debounce"]; got != "10ms" {
+		t.Fatalf("debounce attr = %v, want \"10ms\" (mutant at serve.go:218 or :219 collapses to DefaultDebounce)", got)
+	}
+	// Pin serve.go:224 (`PollInterval != ""` → `==`): mutant collapses to
+	// the zero default (formatted "0s").
+	if got := enabledRecs[0].Attrs["poll_interval"]; got != "200ms" {
+		t.Fatalf("poll_interval attr = %v, want \"200ms\" (mutant at serve.go:224 collapses to 0s)", got)
+	}
+	// Pin serve.go:231 (`startErr != nil` → `==`): when startReloader
+	// succeeds (startErr == nil), the mutant takes the "disabled" branch and
+	// emits the error log AND replaces stopReload with a noop. The "enabled"
+	// log still fires from the goroutine, so existence alone isn't enough —
+	// we must assert the "disabled" log is ABSENT.
+	if collector.HasMessage("config hot-reload disabled: failed to start watcher") {
+		t.Fatalf("'config hot-reload disabled' fired despite startReloader success (mutant `startErr == nil`); records: %#v", collector.Records())
 	}
 }
 
