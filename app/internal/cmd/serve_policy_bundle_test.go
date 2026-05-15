@@ -102,6 +102,7 @@ func newPolicyBundleFixture(t *testing.T, initial *config.Config, verifier *stub
 	fixture.swappable = swappable
 
 	fixture.coordinator = newReloadCoordinator(
+		context.Background(),
 		initial,
 		cfgPath,
 		swappable,
@@ -239,7 +240,7 @@ func newStartupCfg() *config.Config {
 func TestVerifyPolicyBundleAtStartup_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	deps := newServeTestDeps()
-	res, err := verifyPolicyBundleAtStartup(&cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	res, err := verifyPolicyBundleAtStartup(context.Background(), &cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
 	if err != nil {
 		t.Fatalf("err = %v, want nil for disabled", err)
 	}
@@ -251,7 +252,7 @@ func TestVerifyPolicyBundleAtStartup_Disabled(t *testing.T) {
 func TestVerifyPolicyBundleAtStartup_NoCfgFile(t *testing.T) {
 	cfg := newStartupCfg()
 	deps := newServeTestDeps()
-	res, err := verifyPolicyBundleAtStartup(cfg, "", deps, &stubBundleVerifier{}, newDiscardLogger())
+	res, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "", deps, &stubBundleVerifier{}, newDiscardLogger())
 	if err == nil {
 		t.Fatal("err = nil, want failure when --config is empty")
 	}
@@ -264,7 +265,7 @@ func TestVerifyPolicyBundleAtStartup_NoSignaturePath(t *testing.T) {
 	cfg := newStartupCfg()
 	cfg.PolicyBundle.SignaturePath = ""
 	deps := newServeTestDeps()
-	_, err := verifyPolicyBundleAtStartup(cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	_, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
 	if err == nil {
 		t.Fatal("err = nil, want failure when signature_path is empty")
 	}
@@ -275,7 +276,7 @@ func TestVerifyPolicyBundleAtStartup_ReadError(t *testing.T) {
 	deps := newServeTestDeps()
 	sentinel := errors.New("read failed")
 	deps.readConfigBytes = func(string) ([]byte, error) { return nil, sentinel }
-	_, err := verifyPolicyBundleAtStartup(cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	_, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want wrapped %v", err, sentinel)
 	}
@@ -287,7 +288,7 @@ func TestVerifyPolicyBundleAtStartup_LoadEntityError(t *testing.T) {
 	deps.readConfigBytes = func(string) ([]byte, error) { return []byte("rules: []\n"), nil }
 	sentinel := errors.New("load entity failed")
 	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return nil, sentinel }
-	_, err := verifyPolicyBundleAtStartup(cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	_, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want %v", err, sentinel)
 	}
@@ -300,7 +301,7 @@ func TestVerifyPolicyBundleAtStartup_VerifyError(t *testing.T) {
 	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return &stubEntity{}, nil }
 	sentinel := errors.New("signature mismatch")
 	verifier := &stubBundleVerifier{err: sentinel}
-	_, err := verifyPolicyBundleAtStartup(cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
+	_, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want %v", err, sentinel)
 	}
@@ -314,7 +315,7 @@ func TestVerifyPolicyBundleAtStartup_Success(t *testing.T) {
 	want := policybundle.VerifyResult{Signer: "keyed:1234", DigestHex: "abcd", ElapsedMS: 42}
 	verifier := &stubBundleVerifier{res: want}
 
-	got, err := verifyPolicyBundleAtStartup(cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
+	got, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}

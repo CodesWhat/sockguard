@@ -121,6 +121,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	if err != nil {
 		return fmt.Errorf("config validation: %w", err)
 	}
+	warnLiteralPercentInPatterns(cfg, logger)
 	if err := deps.verifyUpstreamReachable(cfg.Upstream.Socket, logger); err != nil {
 		return err
 	}
@@ -135,7 +136,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	if err != nil {
 		return fmt.Errorf("policy bundle verifier: %w", err)
 	}
-	bundleResult, err := verifyPolicyBundleAtStartup(cfg, cfgFile, deps, bundleVerifier, logger)
+	bundleResult, err := verifyPolicyBundleAtStartup(cmd.Context(), cfg, cfgFile, deps, bundleVerifier, logger)
 	if err != nil {
 		return fmt.Errorf("policy bundle: %w", err)
 	}
@@ -163,7 +164,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	runtime.metrics.SetPolicyVersion(initialVersion)
 	handler, chainTeardown := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, versioner)
 	swappable := reload.NewSwappableHandler(handler)
-	coordinator := newReloadCoordinator(cfg, cfgFile, swappable, chainTeardown, logger, auditLogger, deps, runtime, versioner, bundleVerifier)
+	coordinator := newReloadCoordinator(cmd.Context(), cfg, cfgFile, swappable, chainTeardown, logger, auditLogger, deps, runtime, versioner, bundleVerifier)
 	defer coordinator.stop()
 
 	listener, err := deps.createServeListener(cfg)
@@ -432,12 +433,21 @@ func buildServeClientProfiles(cfg *config.Config) (map[string]filter.Policy, err
 		return nil, err
 	}
 	for name, profile := range clientProfiles {
-		exec := profile.Exec
-		exec.InspectStart = filter.NewDockerExecInspector(cfg.Upstream.Socket)
-		profile.Exec = exec
+		profile.PolicyConfig = attachRuntimeInspectors(cfg, profile.PolicyConfig)
 		clientProfiles[name] = profile
 	}
 	return clientProfiles, nil
+}
+
+// attachRuntimeInspectors wires the runtime-bound inspectors (currently just
+// the exec-start inspector that needs the upstream socket) onto a PolicyConfig
+// shaped by config translation. Centralized so every call path that produces
+// a filter.PolicyConfig destined for live request evaluation gets the same
+// wiring — a future runtime dependency added here propagates to both the
+// default policy and every client profile without revisiting two call sites.
+func attachRuntimeInspectors(cfg *config.Config, policy filter.PolicyConfig) filter.PolicyConfig {
+	policy.Exec.InspectStart = filter.NewDockerExecInspector(cfg.Upstream.Socket)
+	return policy
 }
 
 func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handler {
@@ -491,7 +501,7 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 	}
 
 	if cfg.Health.Enabled {
-		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, logger, deps, runtime)))
+		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, runtime)))
 	}
 	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetricsEndpoint", withMetricsEndpoint(cfg, runtime.metrics)))
@@ -589,12 +599,14 @@ func withFilter(cfg *config.Config, logger *slog.Logger, rules []*filter.Compile
 	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, clientProfiles))
 }
 
-func withHealth(cfg *config.Config, logger *slog.Logger, deps *serveDeps, runtime *serveRuntime) func(http.Handler) http.Handler {
-	monitor := health.NewMonitor(cfg.Upstream.Socket, deps.now(), logger)
-	if runtime.health != nil {
-		monitor = runtime.health
-	}
-	healthHandler := monitor.Handler()
+// withHealth wires the /health endpoint onto the runtime monitor.
+//
+// Precondition: cfg.Health.Enabled is true, so newServeRuntime has already
+// allocated runtime.health. The caller must guarantee this — a nil monitor
+// here is a programming error and will panic on Handler() rather than be
+// papered over with a silently-allocated fallback.
+func withHealth(cfg *config.Config, runtime *serveRuntime) func(http.Handler) http.Handler {
+	healthHandler := runtime.health.Handler()
 	return func(next http.Handler) http.Handler {
 		return pathInterceptor(cfg.Health.Path, healthHandler, next)
 	}
@@ -642,7 +654,12 @@ func withPolicyVersionEndpoint(cfg *config.Config, logger *slog.Logger, versione
 // metadata onto the initial snapshot. Otherwise returns (*VerifyResult,
 // nil) on success or (nil, err) on any failure — startup must abort in
 // that case because the trust gate is the whole point of the feature.
+//
+// The supplied ctx is the cobra command context; SIGINT/SIGTERM during
+// startup verification must cancel the verifier rather than block until the
+// per-bundle deadline expires.
 func verifyPolicyBundleAtStartup(
+	parent context.Context,
 	cfg *config.Config,
 	cfgFile string,
 	deps *serveDeps,
@@ -668,7 +685,10 @@ func verifyPolicyBundleAtStartup(
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), bundleVerifyDeadline(cfg.PolicyBundle))
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, bundleVerifyDeadline(cfg.PolicyBundle))
 	defer cancel()
 	result, err := verifier.Verify(ctx, yamlBytes, entity)
 	if err != nil {
@@ -815,8 +835,7 @@ func serveFilterOptions(cfg *config.Config, clientProfiles map[string]filter.Pol
 func servePolicyConfig(cfg *config.Config) filter.PolicyConfig {
 	policy := cfg.RequestBody.ToFilterOptions()
 	policy.DenyResponseVerbosity = filter.ParseDenyResponseVerbosity(cfg.Response.DenyVerbosity)
-	policy.Exec.InspectStart = filter.NewDockerExecInspector(cfg.Upstream.Socket)
-	return policy
+	return attachRuntimeInspectors(cfg, policy)
 }
 
 func serveClientACLOptions(cfg *config.Config) clientacl.Options {

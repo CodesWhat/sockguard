@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -86,6 +87,7 @@ func newReloadCoordinatorFixture(t *testing.T, initial *config.Config) *reloadCo
 	// carry the result=<outcome> key the operators rely on for SIEM grep.
 	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	fixture.coordinator = newReloadCoordinator(
+		context.Background(),
 		initial,
 		cfgPath,
 		swappable,
@@ -373,6 +375,7 @@ func TestNewReloadCoordinatorPreservesNonNilInitialTeardown(t *testing.T) {
 	teardown := func() { called.Store(true) }
 
 	c := newReloadCoordinator(
+		context.Background(),
 		&config.Config{},
 		"unused",
 		nil,

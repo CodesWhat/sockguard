@@ -1,7 +1,15 @@
 package config
 
-// HardenedListenSocketMode is the only supported unix-socket permission mode.
+import "os"
+
+// HardenedListenSocketMode is the only supported unix-socket permission mode
+// (string form, as it appears in YAML).
 const HardenedListenSocketMode = "0600"
+
+// HardenedListenSocketFileMode is the os.FileMode equivalent of
+// HardenedListenSocketMode, exported so listener creation paths derive the
+// umask from a single source of truth.
+const HardenedListenSocketFileMode = os.FileMode(0o600)
 
 // Config represents the sockguard configuration.
 type Config struct {

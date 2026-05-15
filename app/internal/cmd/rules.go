@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -9,6 +10,39 @@ import (
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 )
+
+// warnLiteralPercentInPatterns emits a startup warning for each rule whose
+// path pattern contains a literal '%'. Rationale: the path normalizer
+// percent-decodes incoming paths (twice, to handle double-encoded
+// sequences like %252F → %2F → /), so a rule written against a
+// literal percent-encoded segment never matches the form that actually
+// reaches rule evaluation. This is operator surprise, not a bypass —
+// the default-deny posture still fires — but a warning makes the
+// silent miss visible.
+func warnLiteralPercentInPatterns(cfg *config.Config, logger *slog.Logger) {
+	if logger == nil {
+		return
+	}
+	for i, rule := range cfg.Rules {
+		if strings.Contains(rule.Match.Path, "%") {
+			logger.Warn("rule pattern contains a literal '%'; sockguard percent-decodes paths before matching, so this rule will never fire against percent-encoded traffic",
+				"rule_index", i,
+				"pattern", rule.Match.Path,
+			)
+		}
+	}
+	for _, profile := range cfg.Clients.Profiles {
+		for i, rule := range profile.Rules {
+			if strings.Contains(rule.Match.Path, "%") {
+				logger.Warn("client profile rule pattern contains a literal '%'; sockguard percent-decodes paths before matching, so this rule will never fire against percent-encoded traffic",
+					"profile", profile.Name,
+					"rule_index", i,
+					"pattern", rule.Match.Path,
+				)
+			}
+		}
+	}
+}
 
 var (
 	validateConfig    = config.Validate

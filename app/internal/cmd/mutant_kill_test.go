@@ -1005,42 +1005,13 @@ func TestRunServe_ReloadEnabledStartsWatcherWhenCfgFileSet(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// serve.go: CONDITIONALS_NEGATION: runtime.health != nil
-// withHealth should use runtime.health when set, otherwise fall back to a
-// fresh monitor. Runtime itself is guaranteed non-nil by the call-site
-// contract (newServeRuntime never returns nil), so we only test the
-// runtime.health branch.
-// ---------------------------------------------------------------------------
+// withHealth must intercept /health via the runtime monitor. The function's
+// precondition is that newServeRuntime has allocated runtime.health, so the
+// "nil-fallback" branch was removed; this test pins the only remaining path.
 
-func TestWithHealth_RuntimeWithNilHealthUsesFreshMonitor(t *testing.T) {
+func TestWithHealth_UsesRuntimeMonitor(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Upstream.Socket = shortSocketPath(t, "wh-nil-health")
-	cfg.Health.Path = "/health"
-
-	deps := newServeTestDeps()
-	deps.now = func() time.Time { return time.Unix(0, 0) }
-
-	// runtime is non-nil but runtime.health is nil → must use fresh monitor.
-	rt := &serveRuntime{health: nil}
-	layer := withHealth(&cfg, newDiscardLogger(), deps, rt)
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusTeapot)
-	})
-	handler := layer(next)
-
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code == http.StatusTeapot {
-		t.Fatal("health interceptor did not intercept /health for runtime with nil health")
-	}
-}
-
-func TestWithHealth_RuntimeWithHealthUsesInjectedMonitor(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Upstream.Socket = shortSocketPath(t, "wh-injected")
+	cfg.Upstream.Socket = shortSocketPath(t, "wh-runtime")
 	cfg.Health.Path = "/health"
 
 	deps := newServeTestDeps()
@@ -1049,7 +1020,7 @@ func TestWithHealth_RuntimeWithHealthUsesInjectedMonitor(t *testing.T) {
 	sharedMonitor := health.NewMonitor(cfg.Upstream.Socket, deps.now(), newDiscardLogger())
 	rt := &serveRuntime{health: sharedMonitor}
 
-	layer := withHealth(&cfg, newDiscardLogger(), deps, rt)
+	layer := withHealth(&cfg, rt)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
@@ -1060,7 +1031,7 @@ func TestWithHealth_RuntimeWithHealthUsesInjectedMonitor(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code == http.StatusTeapot {
-		t.Fatal("health interceptor did not intercept /health for injected monitor")
+		t.Fatal("health interceptor did not intercept /health")
 	}
 }
 

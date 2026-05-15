@@ -24,8 +24,6 @@ import (
 	"github.com/codeswhat/sockguard/internal/policybundle"
 )
 
-const hardenedListenSocketMode = os.FileMode(0o600)
-
 type serveDeps struct {
 	loadConfig           func(string) (*config.Config, error)
 	readConfigBytes      func(string) ([]byte, error)
@@ -197,7 +195,7 @@ func (d *serveDeps) wrapListenerWithTLS(ln net.Listener, tlsCfg config.ListenTLS
 }
 
 func (d *serveDeps) listenUnixSocket(path string) (net.Listener, error) {
-	return d.withUmask(socketCreateUmask(hardenedListenSocketMode), func() (net.Listener, error) {
+	return d.withUmask(socketCreateUmask(config.HardenedListenSocketFileMode), func() (net.Listener, error) {
 		ln, err := d.listenNetwork("unix", path)
 		if err == nil {
 			return ln, nil

@@ -37,6 +37,12 @@ type reloadCoordinator struct {
 	chainTeardown func()
 	activeCfg     *config.Config
 
+	// rootCtx is the cobra command context; bundle re-verification on
+	// reload must derive its timeout from this so SIGTERM cancels an
+	// in-flight verifier rather than blocking on the per-bundle deadline.
+	// Nil is tolerated for test fixtures that don't exercise verifyBundle.
+	rootCtx context.Context
+
 	// Bindings that live for the whole process lifetime. None of these
 	// change across reloads — the immutable-field gate rejects any
 	// reload whose YAML would mutate these inputs.
@@ -64,6 +70,7 @@ type reloadCoordinator struct {
 // chain teardown and current config snapshot. The caller must arrange for
 // stop to be invoked once at process shutdown.
 func newReloadCoordinator(
+	rootCtx context.Context,
 	cfg *config.Config,
 	cfgFile string,
 	swappable *reload.SwappableHandler,
@@ -81,6 +88,7 @@ func newReloadCoordinator(
 	return &reloadCoordinator{
 		chainTeardown:  initialTeardown,
 		activeCfg:      cfg,
+		rootCtx:        rootCtx,
 		swappable:      swappable,
 		cfgFile:        cfgFile,
 		logger:         logger,
@@ -250,7 +258,11 @@ func (c *reloadCoordinator) verifyBundle() (*policybundle.VerifyResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), bundleVerifyDeadline(c.activeCfg.PolicyBundle))
+	parent := c.rootCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, bundleVerifyDeadline(c.activeCfg.PolicyBundle))
 	defer cancel()
 	res, err := c.bundleVerifier.Verify(ctx, yamlBytes, entity)
 	if err != nil {
