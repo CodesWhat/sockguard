@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/glob"
 	"github.com/codeswhat/sockguard/internal/pkipin"
 )
 
@@ -664,7 +664,7 @@ func validateEndpointCosts(prefix string, costs []EndpointCostConfig, effectiveB
 		if strings.TrimSpace(ec.Path) == "" {
 			errs = append(errs, requiredFieldError(entryPfx+".path"))
 		} else {
-			regex := "^" + filter.GlobToRegexString(ec.Path) + "$"
+			regex := "^" + glob.ToRegexString(ec.Path) + "$"
 			if _, err := regexp.Compile(regex); err != nil {
 				errs = append(errs, fmt.Sprintf("%s.path %q is not a valid glob: %v", entryPfx, ec.Path, err))
 			}
@@ -1014,7 +1014,6 @@ func validateLogOutputField(fieldPath, output string) error {
 	}
 	return nil
 }
-
 
 func validateVisibleResourceLabels(prefix string, values []string) []string {
 	var errs []string

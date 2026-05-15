@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/glob"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/metrics"
@@ -121,9 +122,9 @@ type compiledEndpointCost struct {
 // compileEndpointCosts converts the public-API slice into the runtime matcher
 // table. A nil input returns a nil slice (no per-endpoint weighting).
 //
-// Compilation uses regexp.MustCompile: filter.GlobToRegexString output is
-// always valid regex (every input character is either an explicit glob token
-// or regexp.QuoteMeta'd), so a Compile failure here means globToRegex has a
+// Compilation uses regexp.MustCompile: glob.ToRegexString output is always
+// valid regex (every input character is either an explicit glob token or
+// regexp.QuoteMeta'd), so a Compile failure here means ToRegexString has a
 // programming bug and the proxy must fail-fast at startup rather than silently
 // run without rate limiting. The config validator already rejects malformed
 // user input via regexp.Compile, so untrusted globs never reach this path.
@@ -133,7 +134,7 @@ func compileEndpointCosts(costs []EndpointCost) []compiledEndpointCost {
 	}
 	compiled := make([]compiledEndpointCost, 0, len(costs))
 	for _, ec := range costs {
-		regex := "^" + filter.GlobToRegexString(ec.PathGlob) + "$"
+		regex := "^" + glob.ToRegexString(ec.PathGlob) + "$"
 		re := regexp.MustCompile(regex)
 		var methods map[string]struct{}
 		if len(ec.Methods) > 0 {

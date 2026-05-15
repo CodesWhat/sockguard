@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/codeswhat/sockguard/internal/glob"
 )
 
 // regexpCompileHook is the package-level hook for regexp compilation.
@@ -469,39 +471,13 @@ func literalPrefixForPattern(pattern string) string {
 	return pattern
 }
 
-// GlobToRegexString converts a simple glob pattern to a regex string using the
-// same dialect used for path-rule matching. Callers that need to compile the
-// pattern into a *regexp.Regexp should wrap the result with "^" + ... + "$".
-// Exported so other packages (e.g. visibility) can reuse the same glob dialect
-// without importing a third-party glob library.
+// GlobToRegexString converts the sockguard glob dialect to a regex string.
+// Kept as a thin re-export of glob.ToRegexString for callers that already
+// depend on the filter package.
 func GlobToRegexString(pattern string) string {
-	return globToRegex(pattern)
+	return glob.ToRegexString(pattern)
 }
 
-// globToRegex converts a simple glob pattern to a regex string.
-// Supports * (single path segment) and ** (any path segments).
-// The sequence /** also matches the bare path without the trailing slash,
-// so /containers/** matches both /containers and /containers/anything.
 func globToRegex(pattern string) string {
-	var b strings.Builder
-	runes := []rune(pattern)
-	i := 0
-	for i < len(runes) {
-		switch {
-		case i+2 < len(runes) && runes[i] == '/' && runes[i+1] == '*' && runes[i+2] == '*':
-			// /** matches the bare path OR /anything/deeper
-			b.WriteString("(/.*)?")
-			i += 3
-		case i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*':
-			b.WriteString(".*")
-			i += 2
-		case runes[i] == '*':
-			b.WriteString("[^/]*")
-			i++
-		default:
-			b.WriteString(regexp.QuoteMeta(string(runes[i])))
-			i++
-		}
-	}
-	return b.String()
+	return glob.ToRegexString(pattern)
 }

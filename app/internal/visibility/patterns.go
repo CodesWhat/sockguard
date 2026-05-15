@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/glob"
 )
 
 // compiledPattern is a pre-compiled glob pattern for name or image matching.
@@ -22,16 +22,16 @@ type compiledPattern struct {
 // this as a fatal config error and refuse to serve traffic.
 func compilePatterns(globs []string) ([]compiledPattern, error) {
 	out := make([]compiledPattern, 0, len(globs))
-	for _, glob := range globs {
-		if glob == "" {
+	for _, pattern := range globs {
+		if pattern == "" {
 			return nil, fmt.Errorf("visibility pattern must not be empty")
 		}
-		regex := filter.GlobToRegexString(glob)
+		regex := glob.ToRegexString(pattern)
 		compiled, err := regexp.Compile("^" + regex + "$")
 		if err != nil {
-			return nil, fmt.Errorf("visibility pattern %q is invalid: %w", glob, err)
+			return nil, fmt.Errorf("visibility pattern %q is invalid: %w", pattern, err)
 		}
-		out = append(out, compiledPattern{raw: glob, pattern: compiled})
+		out = append(out, compiledPattern{raw: pattern, pattern: compiled})
 	}
 	return out, nil
 }
