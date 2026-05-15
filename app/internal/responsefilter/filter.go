@@ -498,27 +498,37 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 	return nil
 }
 
+// redactContainerSpec applies env/mount/secret-config redactions to a swarm
+// ContainerSpec. Both /services and /tasks responses surface the same shape
+// under different parent keys, so they share this helper.
+func (f *Filter) redactContainerSpec(containerSpec map[string]any) error {
+	if f.opts.RedactContainerEnv {
+		redactArrayField(containerSpec, "Env")
+	}
+	if f.opts.RedactMountPaths {
+		if err := redactMountObjects(containerSpec, "Mounts"); err != nil {
+			return err
+		}
+	}
+	if f.opts.RedactSensitiveData {
+		if err := redactReferenceObjects(containerSpec, "Secrets", "SecretID", "SecretName"); err != nil {
+			return err
+		}
+		if err := redactReferenceObjects(containerSpec, "Configs", "ConfigID", "ConfigName"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (f *Filter) redactServicePayload(payload map[string]any) error {
 	containerSpec, found, err := nestedMapValue(payload, "Spec", "TaskTemplate", "ContainerSpec")
 	if err != nil {
 		return err
 	}
 	if found {
-		if f.opts.RedactContainerEnv {
-			redactArrayField(containerSpec, "Env")
-		}
-		if f.opts.RedactMountPaths {
-			if err := redactMountObjects(containerSpec, "Mounts"); err != nil {
-				return err
-			}
-		}
-		if f.opts.RedactSensitiveData {
-			if err := redactReferenceObjects(containerSpec, "Secrets", "SecretID", "SecretName"); err != nil {
-				return err
-			}
-			if err := redactReferenceObjects(containerSpec, "Configs", "ConfigID", "ConfigName"); err != nil {
-				return err
-			}
+		if err := f.redactContainerSpec(containerSpec); err != nil {
+			return err
 		}
 	}
 	if f.opts.RedactNetworkTopology {
@@ -535,21 +545,8 @@ func (f *Filter) redactTaskPayload(payload map[string]any) error {
 		return err
 	}
 	if found {
-		if f.opts.RedactContainerEnv {
-			redactArrayField(containerSpec, "Env")
-		}
-		if f.opts.RedactMountPaths {
-			if err := redactMountObjects(containerSpec, "Mounts"); err != nil {
-				return err
-			}
-		}
-		if f.opts.RedactSensitiveData {
-			if err := redactReferenceObjects(containerSpec, "Secrets", "SecretID", "SecretName"); err != nil {
-				return err
-			}
-			if err := redactReferenceObjects(containerSpec, "Configs", "ConfigID", "ConfigName"); err != nil {
-				return err
-			}
+		if err := f.redactContainerSpec(containerSpec); err != nil {
+			return err
 		}
 	}
 	if f.opts.RedactNetworkTopology {
@@ -584,46 +581,53 @@ func redactConfigPayload(payload map[string]any) error {
 }
 
 func (f *Filter) redactPluginPayload(payload map[string]any) error {
-	if settings, found, err := nestedMapValue(payload, "Settings"); err != nil {
+	if err := f.redactPluginSettings(payload); err != nil {
 		return err
-	} else if found {
-		if f.opts.RedactContainerEnv {
-			if err := redactEnvStrings(settings, "Env"); err != nil {
-				return err
-			}
-		}
-		if f.opts.RedactMountPaths {
-			if err := redactMountObjects(settings, "Mounts"); err != nil {
-				return err
-			}
-			if err := redactReferenceObjects(settings, "Devices", "Path"); err != nil {
-				return err
-			}
+	}
+	return f.redactPluginConfig(payload)
+}
+
+func (f *Filter) redactPluginSettings(payload map[string]any) error {
+	settings, found, err := nestedMapValue(payload, "Settings")
+	if err != nil || !found {
+		return err
+	}
+	if f.opts.RedactContainerEnv {
+		if err := redactEnvStrings(settings, "Env"); err != nil {
+			return err
 		}
 	}
-	if config, found, err := nestedMapValue(payload, "Config"); err != nil {
+	if !f.opts.RedactMountPaths {
+		return nil
+	}
+	if err := redactMountObjects(settings, "Mounts"); err != nil {
 		return err
-	} else if found {
-		if f.opts.RedactContainerEnv {
-			if err := redactPluginEnvObjects(config, "Env"); err != nil {
-				return err
-			}
-		}
-		if f.opts.RedactMountPaths {
-			if err := redactMountObjects(config, "Mounts"); err != nil {
-				return err
-			}
-			redactStringField(config, "PropagatedMount")
-			if linux, found, err := nestedMapValue(config, "Linux"); err != nil {
-				return err
-			} else if found {
-				if err := redactReferenceObjects(linux, "Devices", "Path"); err != nil {
-					return err
-				}
-			}
+	}
+	return redactReferenceObjects(settings, "Devices", "Path")
+}
+
+func (f *Filter) redactPluginConfig(payload map[string]any) error {
+	config, found, err := nestedMapValue(payload, "Config")
+	if err != nil || !found {
+		return err
+	}
+	if f.opts.RedactContainerEnv {
+		if err := redactPluginEnvObjects(config, "Env"); err != nil {
+			return err
 		}
 	}
-	return nil
+	if !f.opts.RedactMountPaths {
+		return nil
+	}
+	if err := redactMountObjects(config, "Mounts"); err != nil {
+		return err
+	}
+	redactStringField(config, "PropagatedMount")
+	linux, found, err := nestedMapValue(config, "Linux")
+	if err != nil || !found {
+		return err
+	}
+	return redactReferenceObjects(linux, "Devices", "Path")
 }
 
 func (f *Filter) redactNodePayload(payload map[string]any) error {
@@ -706,54 +710,71 @@ func (f *Filter) redactInfoPayload(payload map[string]any) error {
 }
 
 func (f *Filter) redactSystemDataUsagePayload(payload map[string]any) error {
-	if containerUsage, found, err := nestedMapValue(payload, "ContainerUsage"); err != nil {
+	if err := f.redactSystemDataUsageContainers(payload); err != nil {
 		return err
-	} else if found {
-		items, ok := containerUsage["Items"]
-		if ok && items != nil {
-			containers, ok := items.([]any)
-			if !ok {
-				return fmt.Errorf("ContainerUsage.Items has unexpected type %T", items)
-			}
-			for _, value := range containers {
-				container, ok := value.(map[string]any)
-				if !ok {
-					return fmt.Errorf("ContainerUsage.Items entry has unexpected type %T", value)
-				}
-				if f.opts.RedactMountPaths {
-					if err := redactMountObjects(container, "Mounts"); err != nil {
-						return err
-					}
-				}
-				if f.opts.RedactNetworkTopology {
-					if err := redactContainerNetworkTopology(container); err != nil {
-						return err
-					}
-				}
+	}
+	return f.redactSystemDataUsageVolumes(payload)
+}
+
+func (f *Filter) redactSystemDataUsageContainers(payload map[string]any) error {
+	containers, err := systemDataUsageItems(payload, "ContainerUsage")
+	if err != nil {
+		return err
+	}
+	for _, container := range containers {
+		if f.opts.RedactMountPaths {
+			if err := redactMountObjects(container, "Mounts"); err != nil {
+				return err
 			}
 		}
-	}
-	if volumeUsage, found, err := nestedMapValue(payload, "VolumeUsage"); err != nil {
-		return err
-	} else if found {
-		items, ok := volumeUsage["Items"]
-		if ok && items != nil {
-			volumes, ok := items.([]any)
-			if !ok {
-				return fmt.Errorf("VolumeUsage.Items has unexpected type %T", items)
-			}
-			for _, value := range volumes {
-				volume, ok := value.(map[string]any)
-				if !ok {
-					return fmt.Errorf("VolumeUsage.Items entry has unexpected type %T", value)
-				}
-				if f.opts.RedactMountPaths {
-					redactStringField(volume, "Mountpoint")
-				}
+		if f.opts.RedactNetworkTopology {
+			if err := redactContainerNetworkTopology(container); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+func (f *Filter) redactSystemDataUsageVolumes(payload map[string]any) error {
+	if !f.opts.RedactMountPaths {
+		return nil
+	}
+	volumes, err := systemDataUsageItems(payload, "VolumeUsage")
+	if err != nil {
+		return err
+	}
+	for _, volume := range volumes {
+		redactStringField(volume, "Mountpoint")
+	}
+	return nil
+}
+
+// systemDataUsageItems returns the .Items array from a /system/df sub-key
+// (ContainerUsage or VolumeUsage) decoded as object maps. Returns (nil, nil)
+// when the sub-key or its Items field is absent.
+func systemDataUsageItems(payload map[string]any, key string) ([]map[string]any, error) {
+	usage, found, err := nestedMapValue(payload, key)
+	if err != nil || !found {
+		return nil, err
+	}
+	items, ok := usage["Items"]
+	if !ok || items == nil {
+		return nil, nil
+	}
+	arr, ok := items.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s.Items has unexpected type %T", key, items)
+	}
+	out := make([]map[string]any, 0, len(arr))
+	for _, value := range arr {
+		obj, ok := value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s.Items entry has unexpected type %T", key, value)
+		}
+		out = append(out, obj)
+	}
+	return out, nil
 }
 
 func nestedMapValue(payload map[string]any, keys ...string) (map[string]any, bool, error) {
