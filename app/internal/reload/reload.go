@@ -182,61 +182,11 @@ type fileSnapshot struct {
 }
 
 func (r *Reloader) loop(ctx context.Context, watcher Watcher, signalCh <-chan os.Signal) error {
-	// debounceTimer is created stopped; arming it on the first relevant
-	// event collapses subsequent events into the same window.
-	debounceTimer := time.NewTimer(time.Hour)
-	if !debounceTimer.Stop() {
-		<-debounceTimer.C
-	}
-	defer debounceTimer.Stop()
-	armed := false
-	arm := func() {
-		if r.opts.Debounce <= 0 {
-			// No-debounce mode: fire immediately, used by tests that
-			// want determinism. We still funnel through the timer channel
-			// for code-path uniformity — reset to a near-zero interval.
-			if armed && !debounceTimer.Stop() {
-				select {
-				case <-debounceTimer.C:
-				default:
-				}
-			}
-			debounceTimer.Reset(time.Microsecond)
-			armed = true
-			return
-		}
-		if armed && !debounceTimer.Stop() {
-			select {
-			case <-debounceTimer.C:
-			default:
-				// Already fired and was drained — armed should already be false.
-			}
-		}
-		debounceTimer.Reset(r.opts.Debounce)
-		armed = true
-	}
+	deb := newDebouncer(r.opts.Debounce)
+	defer deb.close()
 
-	// Stat-based fallback poller, opt-in via Options.PollInterval. Useful on
-	// inotify-unreliable backends (Synology / DSM btrfs bind-mounts, some
-	// FUSE setups, NFS): the host's IN_MODIFY does not always propagate
-	// through to a container's inotify, so absent SIGHUP the reload watcher
-	// would never see the edit. With polling on, the loop also re-stats the
-	// file and arms a reload when size/mtime/inode have moved.
-	var pollChan <-chan time.Time
-	var pollTicker *time.Ticker
-	var lastSnapshot fileSnapshot
-	if r.opts.PollInterval > 0 {
-		pollTicker = time.NewTicker(r.opts.PollInterval)
-		defer pollTicker.Stop()
-		pollChan = pollTicker.C
-		// Seed the baseline so the first tick only fires on a genuine change.
-		// If the initial stat fails (transient mount issue, file not yet
-		// present), leave the snapshot unknown — the next tick that succeeds
-		// will set the baseline rather than arming reload off a phantom diff.
-		if snap, ok := r.statSnapshot(); ok {
-			lastSnapshot = snap
-		}
-	}
+	pollChan, pollStop, lastSnapshot := r.setupPoller()
+	defer pollStop()
 
 	for {
 		select {
@@ -247,7 +197,7 @@ func (r *Reloader) loop(ctx context.Context, watcher Watcher, signalCh <-chan os
 				return errors.New("reload: watcher events channel closed unexpectedly")
 			}
 			if r.eventTargetsConfig(ev) {
-				arm()
+				deb.arm()
 			}
 		case err, ok := <-watcher.Errors():
 			if !ok {
@@ -261,32 +211,99 @@ func (r *Reloader) loop(ctx context.Context, watcher Watcher, signalCh <-chan os
 				return nil
 			}
 			r.opts.Logger.Info("reload signal received", "signal", sig.String())
-			arm()
+			deb.arm()
 		case <-r.trigger:
-			arm()
+			deb.arm()
 		case <-pollChan:
-			snap, ok := r.statSnapshot()
-			if !ok {
-				// stat failure is not fatal — the file may be mid-replace on
-				// an atomic-rename editor; the next tick will either confirm
-				// the change or restore the baseline.
-				continue
-			}
-			if !lastSnapshot.known {
-				lastSnapshot = snap
-				continue
-			}
-			if snap.changedFrom(lastSnapshot) {
-				r.opts.Logger.Info("config poll detected change", "path", r.opts.Path)
-				lastSnapshot = snap
-				arm()
-			}
-		case <-debounceTimer.C:
-			armed = false
+			r.pollAndMaybeArm(&lastSnapshot, deb.arm)
+		case <-deb.fired():
+			deb.onFire()
 			r.safeOnReload()
 		}
 	}
 }
+
+// setupPoller is the stat-based fallback used on inotify-unreliable backends
+// (Synology / DSM btrfs bind-mounts, some FUSE setups, NFS) where the host's
+// IN_MODIFY does not always propagate through to a container's inotify.
+// Returns (nil, no-op, zero) when PollInterval is disabled so the caller can
+// dispatch on the channel uniformly.
+func (r *Reloader) setupPoller() (<-chan time.Time, func(), fileSnapshot) {
+	if r.opts.PollInterval <= 0 {
+		return nil, func() {}, fileSnapshot{}
+	}
+	ticker := time.NewTicker(r.opts.PollInterval)
+	// Seed the baseline so the first tick only fires on a genuine change.
+	// If the initial stat fails (transient mount issue, file not yet
+	// present), leave the snapshot unknown — the next tick that succeeds
+	// will set the baseline rather than arming reload off a phantom diff.
+	var seed fileSnapshot
+	if snap, ok := r.statSnapshot(); ok {
+		seed = snap
+	}
+	return ticker.C, ticker.Stop, seed
+}
+
+// pollAndMaybeArm advances the snapshot and arms a reload when the watched
+// file's size / mtime / inode have moved.
+func (r *Reloader) pollAndMaybeArm(lastSnapshot *fileSnapshot, arm func()) {
+	snap, ok := r.statSnapshot()
+	if !ok {
+		// stat failure is not fatal — the file may be mid-replace on an
+		// atomic-rename editor; the next tick will either confirm the
+		// change or restore the baseline.
+		return
+	}
+	if !lastSnapshot.known {
+		*lastSnapshot = snap
+		return
+	}
+	if !snap.changedFrom(*lastSnapshot) {
+		return
+	}
+	r.opts.Logger.Info("config poll detected change", "path", r.opts.Path)
+	*lastSnapshot = snap
+	arm()
+}
+
+// debouncer collapses bursts of reload events into a single fire after
+// `duration` of quiet. Created stopped; arm() schedules a fire and is
+// idempotent against repeated calls inside one window. With duration<=0 it
+// fires after a microsecond — used by tests that want determinism while
+// going through the same timer channel as production.
+type debouncer struct {
+	timer    *time.Timer
+	armed    bool
+	duration time.Duration
+}
+
+func newDebouncer(duration time.Duration) *debouncer {
+	t := time.NewTimer(time.Hour)
+	if !t.Stop() {
+		<-t.C
+	}
+	return &debouncer{timer: t, duration: duration}
+}
+
+func (d *debouncer) arm() {
+	interval := d.duration
+	if interval <= 0 {
+		interval = time.Microsecond
+	}
+	if d.armed && !d.timer.Stop() {
+		select {
+		case <-d.timer.C:
+		default:
+			// Already fired and was drained — armed should already be false.
+		}
+	}
+	d.timer.Reset(interval)
+	d.armed = true
+}
+
+func (d *debouncer) fired() <-chan time.Time { return d.timer.C }
+func (d *debouncer) onFire()                 { d.armed = false }
+func (d *debouncer) close()                  { d.timer.Stop() }
 
 // statSnapshot returns the watched file's current size / mtime / inode. The
 // returned ok=false means the stat failed (file briefly missing during an
