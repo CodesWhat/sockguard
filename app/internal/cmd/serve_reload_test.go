@@ -86,19 +86,19 @@ func newReloadCoordinatorFixture(t *testing.T, initial *config.Config) *reloadCo
 	// Capture structured log output so tests can assert that rejection lines
 	// carry the result=<outcome> key the operators rely on for SIEM grep.
 	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	fixture.coordinator = newReloadCoordinator(
-		context.Background(),
-		initial,
-		cfgPath,
-		swappable,
-		func() {},
-		logger,
-		nil,
-		deps,
-		runtime,
-		versioner,
-		nil, // bundleVerifier — fixture covers the policy_bundle.enabled=false path
-	)
+	fixture.coordinator = newReloadCoordinator(reloadCoordinatorParams{
+		RootCtx:         context.Background(),
+		Cfg:             initial,
+		CfgFile:         cfgPath,
+		Swappable:       swappable,
+		InitialTeardown: func() {},
+		Logger:          logger,
+		AuditLogger:     nil,
+		Deps:            deps,
+		Runtime:         runtime,
+		Versioner:       versioner,
+		BundleVerifier:  nil, // fixture covers the policy_bundle.enabled=false path
+	})
 	return fixture
 }
 
@@ -374,19 +374,13 @@ func TestNewReloadCoordinatorPreservesNonNilInitialTeardown(t *testing.T) {
 	var called atomic.Bool
 	teardown := func() { called.Store(true) }
 
-	c := newReloadCoordinator(
-		context.Background(),
-		&config.Config{},
-		"unused",
-		nil,
-		teardown,
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-	)
+	c := newReloadCoordinator(reloadCoordinatorParams{
+		RootCtx:         context.Background(),
+		Cfg:             &config.Config{},
+		CfgFile:         "unused",
+		InitialTeardown: teardown,
+		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
 	c.stop()
 
 	if !called.Load() {

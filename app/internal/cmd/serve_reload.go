@@ -66,37 +66,43 @@ type reloadCoordinator struct {
 	bundleVerifier policybundle.Verifier
 }
 
+// reloadCoordinatorParams bundles the inputs newReloadCoordinator needs.
+// The set is large because the coordinator pulls together every piece of
+// reload-time state — the running config, the swappable handler, every
+// per-process singleton — and grouping them here keeps call sites compact.
+type reloadCoordinatorParams struct {
+	RootCtx          context.Context
+	Cfg              *config.Config
+	CfgFile          string
+	Swappable        *reload.SwappableHandler
+	InitialTeardown  func()
+	Logger           *slog.Logger
+	AuditLogger      *logging.AuditLogger
+	Deps             *serveDeps
+	Runtime          *serveRuntime
+	Versioner        *admin.PolicyVersioner
+	BundleVerifier   policybundle.Verifier
+}
+
 // newReloadCoordinator returns a coordinator wired up with the initial
 // chain teardown and current config snapshot. The caller must arrange for
 // stop to be invoked once at process shutdown.
-func newReloadCoordinator(
-	rootCtx context.Context,
-	cfg *config.Config,
-	cfgFile string,
-	swappable *reload.SwappableHandler,
-	initialTeardown func(),
-	logger *slog.Logger,
-	auditLogger *logging.AuditLogger,
-	deps *serveDeps,
-	runtime *serveRuntime,
-	versioner *admin.PolicyVersioner,
-	bundleVerifier policybundle.Verifier,
-) *reloadCoordinator {
-	if initialTeardown == nil {
-		initialTeardown = func() {}
+func newReloadCoordinator(p reloadCoordinatorParams) *reloadCoordinator {
+	if p.InitialTeardown == nil {
+		p.InitialTeardown = func() {}
 	}
 	return &reloadCoordinator{
-		chainTeardown:  initialTeardown,
-		activeCfg:      cfg,
-		rootCtx:        rootCtx,
-		swappable:      swappable,
-		cfgFile:        cfgFile,
-		logger:         logger,
-		auditLogger:    auditLogger,
-		deps:           deps,
-		runtime:        runtime,
-		versioner:      versioner,
-		bundleVerifier: bundleVerifier,
+		chainTeardown:  p.InitialTeardown,
+		activeCfg:      p.Cfg,
+		rootCtx:        p.RootCtx,
+		swappable:      p.Swappable,
+		cfgFile:        p.CfgFile,
+		logger:         p.Logger,
+		auditLogger:    p.AuditLogger,
+		deps:           p.Deps,
+		runtime:        p.Runtime,
+		versioner:      p.Versioner,
+		bundleVerifier: p.BundleVerifier,
 	}
 }
 
@@ -187,9 +193,15 @@ func (c *reloadCoordinator) reload() {
 		return
 	}
 
-	newHandler, newTeardown := buildServeHandlerChainWithRuntime(
-		newCfg, c.logger, c.auditLogger, newRules, c.deps, c.runtime, c.versioner,
-	)
+	newHandler, newTeardown := buildServeHandlerChainWithRuntime(serveHandlerBuild{
+		Cfg:         newCfg,
+		Logger:      c.logger,
+		AuditLogger: c.auditLogger,
+		Rules:       newRules,
+		Deps:        c.deps,
+		Runtime:     c.runtime,
+		Versioner:   c.versioner,
+	})
 
 	oldTeardown := c.chainTeardown
 	c.chainTeardown = newTeardown

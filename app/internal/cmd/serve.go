@@ -145,26 +145,33 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	// the admin policy-version endpoint and the sockguard_policy_version
 	// gauge are populated as soon as the server starts taking traffic.
 	versioner := admin.NewPolicyVersioner()
-	initialSnapshot := admin.PolicySnapshot{
-		LoadedAt:     deps.now(),
-		Rules:        len(rules),
-		Profiles:     len(cfg.Clients.Profiles),
-		CompatActive: compatActive,
-		Source:       "startup",
-		ConfigSHA256: policyConfigHash(cfg),
-	}
-	if bundleResult != nil {
-		initialSnapshot.BundleSource = filepath.Base(cfg.PolicyBundle.SignaturePath)
-		initialSnapshot.BundleSigner = bundleResult.Signer
-		initialSnapshot.BundleDigest = bundleResult.DigestHex
-	}
-	initialVersion := versioner.Update(initialSnapshot)
+	initialVersion := versioner.Update(buildInitialPolicySnapshot(deps, cfg, rules, compatActive, bundleResult))
 
 	runtime := newServeRuntime(cfg, logger, deps)
 	runtime.metrics.SetPolicyVersion(initialVersion)
-	handler, chainTeardown := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, versioner)
+	handler, chainTeardown := buildServeHandlerChainWithRuntime(serveHandlerBuild{
+		Cfg:         cfg,
+		Logger:      logger,
+		AuditLogger: auditLogger,
+		Rules:       rules,
+		Deps:        deps,
+		Runtime:     runtime,
+		Versioner:   versioner,
+	})
 	swappable := reload.NewSwappableHandler(handler)
-	coordinator := newReloadCoordinator(cmd.Context(), cfg, cfgFile, swappable, chainTeardown, logger, auditLogger, deps, runtime, versioner, bundleVerifier)
+	coordinator := newReloadCoordinator(reloadCoordinatorParams{
+		RootCtx:         cmd.Context(),
+		Cfg:             cfg,
+		CfgFile:         cfgFile,
+		Swappable:       swappable,
+		InitialTeardown: chainTeardown,
+		Logger:          logger,
+		AuditLogger:     auditLogger,
+		Deps:            deps,
+		Runtime:         runtime,
+		Versioner:       versioner,
+		BundleVerifier:  bundleVerifier,
+	})
 	defer coordinator.stop()
 
 	listener, err := deps.createServeListener(cfg)
@@ -213,30 +220,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	defer stopAdmin()
 
-	stopReload := func() {}
-	if cfg.Reload.Enabled && cfgFile != "" {
-		debounce := reload.DefaultDebounce
-		if cfg.Reload.Debounce != "" {
-			if d, err := time.ParseDuration(cfg.Reload.Debounce); err == nil {
-				debounce = d
-			}
-		}
-		var pollInterval time.Duration
-		if cfg.Reload.PollInterval != "" {
-			if d, err := time.ParseDuration(cfg.Reload.PollInterval); err == nil {
-				pollInterval = d
-			}
-		}
-		var startErr error
-		stopReload, startErr = startReloader(cmd.Context(), cfgFile, debounce, pollInterval, coordinator, logger)
-		if startErr != nil {
-			logger.Error("config hot-reload disabled: failed to start watcher",
-				"error", startErr,
-				"path", cfgFile,
-			)
-			stopReload = func() {}
-		}
-	}
+	stopReload := startConfigReload(cmd.Context(), cfg, cfgFile, coordinator, logger)
 	defer stopReload()
 
 	sigCh := make(chan os.Signal, 1)
@@ -260,7 +244,18 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	stopWatchdog()
 
-	shutdownCtx, cancel := context.WithTimeout(cmd.Context(), deps.shutdownGracePeriod)
+	shutdownServers(cmd.Context(), deps, cfg, server, adminServer, logger)
+	logger.Info("sockguard stopped")
+	return nil
+}
+
+// shutdownServers gracefully stops the main and admin http.Servers within
+// the configured grace period and removes any unix sockets sockguard owns.
+// Errors from each step are logged but do not block subsequent steps —
+// shutdown must always make progress so a partial failure can't leave a
+// stale listener behind.
+func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, server, adminServer *http.Server, logger *slog.Logger) {
+	shutdownCtx, cancel := context.WithTimeout(ctx, deps.shutdownGracePeriod)
 	defer cancel()
 
 	if adminServer != nil {
@@ -281,8 +276,57 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 			logger.Error("remove admin socket error", "socket", cfg.Admin.Listen.Socket, "error", err)
 		}
 	}
-	logger.Info("sockguard stopped")
-	return nil
+}
+
+// buildInitialPolicySnapshot captures the per-startup metadata that the
+// admin policy-version endpoint and the policy-version gauge surface to
+// operators. Bundle fields stay zero unless verification succeeded.
+func buildInitialPolicySnapshot(deps *serveDeps, cfg *config.Config, rules []*filter.CompiledRule, compatActive bool, bundleResult *policybundle.VerifyResult) admin.PolicySnapshot {
+	snap := admin.PolicySnapshot{
+		LoadedAt:     deps.now(),
+		Rules:        len(rules),
+		Profiles:     len(cfg.Clients.Profiles),
+		CompatActive: compatActive,
+		Source:       "startup",
+		ConfigSHA256: policyConfigHash(cfg),
+	}
+	if bundleResult != nil {
+		snap.BundleSource = filepath.Base(cfg.PolicyBundle.SignaturePath)
+		snap.BundleSigner = bundleResult.Signer
+		snap.BundleDigest = bundleResult.DigestHex
+	}
+	return snap
+}
+
+// startConfigReload wires up the SIGHUP / fsnotify reload loop. Returns a
+// stop closure the caller must defer; the closure is a no-op when reload is
+// disabled or the watcher fails to start (logged at Error so an operator can
+// see the degradation without taking the proxy down).
+func startConfigReload(ctx context.Context, cfg *config.Config, cfgFile string, coordinator *reloadCoordinator, logger *slog.Logger) func() {
+	if !cfg.Reload.Enabled || cfgFile == "" {
+		return func() {}
+	}
+	debounce := reload.DefaultDebounce
+	if cfg.Reload.Debounce != "" {
+		if d, err := time.ParseDuration(cfg.Reload.Debounce); err == nil {
+			debounce = d
+		}
+	}
+	var pollInterval time.Duration
+	if cfg.Reload.PollInterval != "" {
+		if d, err := time.ParseDuration(cfg.Reload.PollInterval); err == nil {
+			pollInterval = d
+		}
+	}
+	stop, err := startReloader(ctx, cfgFile, debounce, pollInterval, coordinator, logger)
+	if err != nil {
+		logger.Error("config hot-reload disabled: failed to start watcher",
+			"error", err,
+			"path", cfgFile,
+		)
+		return func() {}
+	}
+	return stop
 }
 
 // startAdminServer brings up the dedicated admin http.Server when
@@ -338,8 +382,23 @@ func startAdminServer(
 	return adminServer, adminErrCh, stop, nil
 }
 
-func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime) (http.Handler, func()) {
-	return buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, nil)
+// serveHandlerBuild bundles the inputs the buildServeHandler* family needs.
+// The chain pulls together config, rules, every per-process singleton, and
+// the optional admin versioner; grouping them avoids 6-8 positional params
+// at every call site.
+type serveHandlerBuild struct {
+	Cfg            *config.Config
+	Logger         *slog.Logger
+	AuditLogger    *logging.AuditLogger
+	Rules          []*filter.CompiledRule
+	Deps           *serveDeps
+	Runtime        *serveRuntime
+	Versioner      *admin.PolicyVersioner
+	ClientProfiles map[string]filter.Policy
+}
+
+func buildServeHandlerWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
+	return buildServeHandlerChainWithRuntime(b)
 }
 
 // buildServeHandlerChainWithRuntime is the production / reload entry point:
@@ -358,15 +417,16 @@ func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, audit
 // Tests that don't care about teardown should continue calling
 // buildServeHandler / buildServeHandlerWithRuntime which discard it — the
 // goroutines die with the test process anyway.
-func buildServeHandlerChainWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime, versioner *admin.PolicyVersioner) (http.Handler, func()) {
-	clientProfiles, err := buildServeClientProfiles(cfg)
+func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
+	clientProfiles, err := buildServeClientProfiles(b.Cfg)
 	if err != nil {
-		logger.Error("invalid client profile config", "error", err)
+		b.Logger.Error("invalid client profile config", "error", err)
 		return invalidClientProfileHandler(), func() {}
 	}
 
-	handler := newServeUpstreamHandler(cfg, logger)
-	layers, teardown := buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, runtime, versioner)
+	handler := newServeUpstreamHandler(b.Cfg, b.Logger)
+	b.ClientProfiles = clientProfiles
+	layers, teardown := buildServeHandlerLayersWithRuntime(b)
 	for _, layer := range layers {
 		handler = layer.with(handler)
 	}
@@ -456,7 +516,10 @@ func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handl
 	})
 }
 
-func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy, runtime *serveRuntime, versioner *admin.PolicyVersioner) ([]serveHandlerLayer, func()) {
+func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLayer, func()) {
+	cfg, logger, auditLogger := b.Cfg, b.Logger, b.AuditLogger
+	runtime, versioner := b.Runtime, b.Versioner
+	rules, clientProfiles := b.Rules, b.ClientProfiles
 	layers := []serveHandlerLayer{
 		namedServeHandlerLayer("withHijack", withHijack(cfg, logger)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, logger)),

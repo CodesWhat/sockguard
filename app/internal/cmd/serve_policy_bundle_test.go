@@ -101,19 +101,18 @@ func newPolicyBundleFixture(t *testing.T, initial *config.Config, verifier *stub
 	swappable := reload.NewSwappableHandler(originalHandler)
 	fixture.swappable = swappable
 
-	fixture.coordinator = newReloadCoordinator(
-		context.Background(),
-		initial,
-		cfgPath,
-		swappable,
-		func() {},
-		newDiscardLogger(),
-		nil,
-		deps,
-		runtime,
-		versioner,
-		verifier,
-	)
+	fixture.coordinator = newReloadCoordinator(reloadCoordinatorParams{
+		RootCtx:         context.Background(),
+		Cfg:             initial,
+		CfgFile:         cfgPath,
+		Swappable:       swappable,
+		InitialTeardown: func() {},
+		Logger:          newDiscardLogger(),
+		Deps:            deps,
+		Runtime:         runtime,
+		Versioner:       versioner,
+		BundleVerifier:  verifier,
+	})
 	return fixture
 }
 
