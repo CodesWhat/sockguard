@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -228,9 +229,21 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 
 			if action == ActionAllow {
 				rc := http.NewResponseController(w)
-				_ = rc.SetReadDeadline(time.Now().Add(bodyReadTimeout))
+				// SetReadDeadline returns http.ErrNotSupported on connections
+				// that don't implement it (httptest.ResponseRecorder, custom
+				// transports). That's expected — the slowloris guard simply
+				// doesn't apply there. Anything else is a real failure: log
+				// the SET error at DEBUG (inspection just lacks the guard),
+				// and the CLEAR error at ERROR (a lingering deadline on a
+				// proxied connection can prematurely kill a slow-but-honest
+				// streaming client mid-body).
+				if err := rc.SetReadDeadline(time.Now().Add(bodyReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+					logger.Debug("filter: slowloris read deadline not applied", "error", err)
+				}
 				denyReason, denyReasonCode, status := activePolicy.inspectAllowedRequest(logger, r, normPath)
-				_ = rc.SetReadDeadline(time.Time{})
+				if err := rc.SetReadDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+					logger.Error("filter: failed to clear slowloris read deadline", "error", err)
+				}
 				if denyReason != "" {
 					action = ActionDeny
 					reasonCode = denyReasonCode

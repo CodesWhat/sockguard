@@ -70,7 +70,6 @@ type ContainerCreateOptions struct {
 	AllowDeviceCgroupRules      bool
 	AllowedDeviceCgroupRules    []string
 
-	// 0.6.0 secure-container rails.
 	RequireNoNewPrivileges     bool
 	RequireNonRootUser         bool
 	RequireReadonlyRootfs      bool
@@ -266,10 +265,6 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if p.imageTrustInitErr != nil {
 		return fmt.Sprintf("container create denied: image trust policy initialization error: %s", p.imageTrustInitErr.Error()), nil
 	}
-	if p.allowsAllContainerCreateBodies() {
-		return "", nil
-	}
-
 	body, err := readBoundedBody(r, maxContainerCreateBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
@@ -370,13 +365,6 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	}
 
 	return "", nil
-}
-
-func (p containerCreatePolicy) allowsAllContainerCreateBodies() bool {
-	// VolumesFrom, UTSMode:host, CgroupParent, GroupAdd, and ExtraHosts are
-	// always denied regardless of any policy flag, so no request body can be
-	// unconditionally allowed without inspection.
-	return false
 }
 
 func isHostNamespaceMode(value string) bool {

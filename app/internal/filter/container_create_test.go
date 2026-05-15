@@ -1226,9 +1226,9 @@ func TestImageTrust_EmptyImage_DeniedWhenVerifierConfigured(t *testing.T) {
 	}
 }
 
-func TestImageTrust_AllowsAllBodiesFalseWhenVerifierPresent(t *testing.T) {
+func TestImageTrust_BodyInspectedWhenVerifierPresent(t *testing.T) {
 	// Even with every flag permissive, a non-nil imageTrustVerifier must cause
-	// allowsAllContainerCreateBodies to return false so the body is inspected.
+	// the request body to be read and the verifier to be called.
 	mv := &mockImageVerifier{}
 	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
 	policy := containerCreatePolicy{
@@ -1244,8 +1244,16 @@ func TestImageTrust_AllowsAllBodiesFalseWhenVerifierPresent(t *testing.T) {
 		imageTrustVerifier:     mv,
 		imageTrustCfg:          cfg,
 	}
-	if policy.allowsAllContainerCreateBodies() {
-		t.Fatal("allowsAllContainerCreateBodies must be false when imageTrustVerifier is set")
+	body := `{"Image":"registry.example.com/app:v1","HostConfig":{}}`
+	reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want allow (verifier returns nil)", reason)
+	}
+	if mv.lastCalled != "registry.example.com/app:v1" {
+		t.Fatalf("verifier lastCalled = %q, want registry.example.com/app:v1 — body was not inspected", mv.lastCalled)
 	}
 }
 
