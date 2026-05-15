@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.1] - 2026-05-15
+
 ### Security
 
 Bumped eight indirect dependencies to close 11 OSSF Scorecard / OSV-Scanner findings (security alert #8). govulncheck now reports zero reachable vulnerabilities and zero unreachable-but-imported vulnerabilities for the proxy binary.
@@ -25,7 +27,6 @@ Filter inspector hardening — close inspection-bypass and slowloris gaps on the
 - `POST /containers/create` now always denies `HostConfig.VolumesFrom`, `HostConfig.UTSMode=host`, a non-empty `HostConfig.CgroupParent`, `HostConfig.GroupAdd`, and `HostConfig.ExtraHosts`. These five fields expose namespace-escape or privilege-escalation paths and were previously uninspected; no policy combination can opt out of the new deny gates. `allowsAllContainerCreateBodies()` now always returns `false`, so the body is always walked.
 - `POST /containers/{id}/exec` and `POST /swarm/unlock` are now fail-closed when the request body cannot be decoded. The previous behaviour was to log at Debug and defer to the daemon, which let an attacker shape a Cmd field or unlock body that the proxy could not parse and bypass the inspector entirely. Both now return a structured deny reason without logging sensitive fields.
 - Filter middleware applies a 30s read deadline to the request body before the inspector runs and resets it to zero on return. Slowloris-style stalled bodies can no longer pin an inspector worker indefinitely. Hijack and streaming paths are unaffected — the deadline is scoped to body inspection on non-streaming endpoints.
-- Docker API version prefix stripping (`stripVersionPrefix` in `internal/filter/rules.go`) now accepts uppercase `/V` as well as `/v` so `/V1.45/containers/json` normalizes to `/containers/json`. Docker accepts both cases; the previous lowercase-only check meant a request like `/V1.45/containers/json` could skip every path-rule match.
 
 Ownership and clientacl hardening — bound caches and close OR-bypass on read-side filters:
 
