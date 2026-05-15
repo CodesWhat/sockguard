@@ -8,7 +8,6 @@ import (
 	"crypto/x509/pkix"
 	"net"
 	"net/netip"
-	"net/url"
 	"strings"
 	"testing"
 )
@@ -628,37 +627,6 @@ func TestVerifyConnectionNoChains(t *testing.T) {
 func TestIntersectsStringsNoMatch(t *testing.T) {
 	if intersectsStrings([]string{"a", "b"}, []string{"c", "d"}) {
 		t.Fatal("intersectsStrings should return false when no match")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// tls.go: intersectsIPAddrs — un-parseable IP (3-byte slice)
-// ---------------------------------------------------------------------------
-
-func TestIntersectsIPAddrsUnparseableIP(t *testing.T) {
-	addr, _ := netip.ParseAddr("10.0.0.1")
-	bad := net.IP([]byte{1, 2, 3}) // 3-byte IP is invalid for netip
-	if intersectsIPAddrs([]netip.Addr{addr}, []net.IP{bad}) {
-		t.Fatal("intersectsIPAddrs should return false for un-parseable IP")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// tls.go: certificateURIStrings — nil cert and nil URI entry
-// ---------------------------------------------------------------------------
-
-func TestCertificateURIStringsNilCert(t *testing.T) {
-	if got := certificateURIStrings(nil); got != nil {
-		t.Fatalf("certificateURIStrings(nil) = %v, want nil", got)
-	}
-}
-
-func TestCertificateURIStringsNilEntry(t *testing.T) {
-	validURL, _ := url.Parse("https://example.com")
-	cert := &x509.Certificate{URIs: []*url.URL{nil, validURL}}
-	got := certificateURIStrings(cert)
-	if len(got) != 1 || got[0] != "https://example.com" {
-		t.Fatalf("certificateURIStrings() = %v, want [https://example.com]", got)
 	}
 }
 

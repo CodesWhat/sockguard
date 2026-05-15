@@ -479,7 +479,7 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 		return nil, false, fmt.Errorf("inspect %s %q: upstream returned %s", kind, identifier, resp.Status)
 	}
 
-	labels, err := decodeResourceLabels(resp.Body, kind)
+	labels, err := dockerresource.DecodeLabels(resp.Body, kind)
 	if err != nil {
 		return nil, false, err
 	}
@@ -516,69 +516,3 @@ func (u upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 	return body.ContainerID, true, nil
 }
 
-func decodeResourceLabels(body io.Reader, kind dockerresource.Kind) (map[string]string, error) {
-	switch kind {
-	case dockerresource.KindContainer:
-		var payload struct {
-			Config struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"Config"`
-		}
-		if err := json.NewDecoder(body).Decode(&payload); err != nil {
-			return nil, err
-		}
-		return payload.Config.Labels, nil
-	case dockerresource.KindImage:
-		var payload struct {
-			Config struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"Config"`
-			ContainerConfig struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"ContainerConfig"`
-		}
-		if err := json.NewDecoder(body).Decode(&payload); err != nil {
-			return nil, err
-		}
-		if len(payload.Config.Labels) > 0 {
-			return payload.Config.Labels, nil
-		}
-		return payload.ContainerConfig.Labels, nil
-	case dockerresource.KindNetwork, dockerresource.KindVolume:
-		var payload struct {
-			Labels map[string]string `json:"Labels"`
-		}
-		if err := json.NewDecoder(body).Decode(&payload); err != nil {
-			return nil, err
-		}
-		return payload.Labels, nil
-	case dockerresource.KindService, dockerresource.KindSecret, dockerresource.KindConfig, dockerresource.KindNode, dockerresource.KindSwarm:
-		var payload struct {
-			Spec struct {
-				Labels map[string]string `json:"Labels"`
-			} `json:"Spec"`
-		}
-		if err := json.NewDecoder(body).Decode(&payload); err != nil {
-			return nil, err
-		}
-		return payload.Spec.Labels, nil
-	case dockerresource.KindTask:
-		var payload struct {
-			Labels map[string]string `json:"Labels"`
-			Spec   struct {
-				ContainerSpec struct {
-					Labels map[string]string `json:"Labels"`
-				} `json:"ContainerSpec"`
-			} `json:"Spec"`
-		}
-		if err := json.NewDecoder(body).Decode(&payload); err != nil {
-			return nil, err
-		}
-		if len(payload.Labels) > 0 {
-			return payload.Labels, nil
-		}
-		return payload.Spec.ContainerSpec.Labels, nil
-	default:
-		return nil, fmt.Errorf("unsupported resource kind %q", kind)
-	}
-}

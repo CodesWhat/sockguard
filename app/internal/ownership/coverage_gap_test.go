@@ -163,53 +163,6 @@ func TestNestedObjectPathBadIntermediate(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// middleware.go: inspectResource — image with ContainerConfig labels fallback
-// ---------------------------------------------------------------------------
-
-func TestDecodeResourceLabelsImageContainerConfigFallback(t *testing.T) {
-	body := strings.NewReader(`{
-		"Config":{"Labels":{}},
-		"ContainerConfig":{"Labels":{"com.sockguard.owner":"job-123"}}
-	}`)
-	labels, err := decodeResourceLabels(body, dockerresource.KindImage)
-	if err != nil {
-		t.Fatalf("decodeResourceLabels(image with ContainerConfig) error = %v", err)
-	}
-	if labels["com.sockguard.owner"] != "job-123" {
-		t.Fatalf("labels = %#v, want com.sockguard.owner=job-123", labels)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// middleware.go: decodeResourceLabels — task with Spec.ContainerSpec labels fallback
-// ---------------------------------------------------------------------------
-
-func TestDecodeResourceLabelsTaskSpecFallback(t *testing.T) {
-	body := strings.NewReader(`{
-		"Labels":{},
-		"Spec":{"ContainerSpec":{"Labels":{"com.sockguard.owner":"job-123"}}}
-	}`)
-	labels, err := decodeResourceLabels(body, dockerresource.KindTask)
-	if err != nil {
-		t.Fatalf("decodeResourceLabels(task Spec fallback) error = %v", err)
-	}
-	if labels["com.sockguard.owner"] != "job-123" {
-		t.Fatalf("labels = %#v, want com.sockguard.owner=job-123", labels)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// middleware.go: decodeResourceLabels — unsupported kind
-// ---------------------------------------------------------------------------
-
-func TestDecodeResourceLabelsUnsupportedKind(t *testing.T) {
-	_, err := decodeResourceLabels(strings.NewReader(`{}`), dockerresource.Kind("other"))
-	if err == nil || !strings.Contains(err.Error(), "unsupported resource kind") {
-		t.Fatalf("expected unsupported resource kind error, got: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // middleware.go: inspectExec — exec error path via fakeInspector
 // ---------------------------------------------------------------------------
 
@@ -263,33 +216,6 @@ func TestSetDeniedNilMeta(t *testing.T) {
 	// Plain recorder has no RequestMeta — should be a no-op
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	logging.SetDenied(httptest.NewRecorder(), req, "ignored", nil)
-}
-
-// ---------------------------------------------------------------------------
-// middleware.go: decodeResourceLabels — JSON decode error for each kind
-// ---------------------------------------------------------------------------
-
-func TestDecodeResourceLabelsDecodeErrors(t *testing.T) {
-	kinds := []dockerresource.Kind{
-		dockerresource.KindContainer,
-		dockerresource.KindImage,
-		dockerresource.KindNetwork,
-		dockerresource.KindVolume,
-		dockerresource.KindService,
-		dockerresource.KindTask,
-		dockerresource.KindSecret,
-		dockerresource.KindConfig,
-		dockerresource.KindNode,
-		dockerresource.KindSwarm,
-	}
-	for _, kind := range kinds {
-		t.Run(string(kind), func(t *testing.T) {
-			_, err := decodeResourceLabels(strings.NewReader(`{`), kind)
-			if err == nil {
-				t.Fatalf("expected decode error for %s", kind)
-			}
-		})
-	}
 }
 
 // ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/codeswhat/sockguard/internal/certmatch"
 	"github.com/codeswhat/sockguard/internal/pkipin"
 )
 
@@ -170,10 +171,10 @@ func (c compiledClientCertificateIdentityConstraints) matches(cert *x509.Certifi
 	if len(c.dnsNames) > 0 && !intersectsStrings(c.dnsNames, cert.DNSNames) {
 		return false
 	}
-	if len(c.ipAddresses) > 0 && !intersectsIPAddrs(c.ipAddresses, cert.IPAddresses) {
+	if len(c.ipAddresses) > 0 && !certmatch.IntersectsIPAddrs(c.ipAddresses, cert.IPAddresses) {
 		return false
 	}
-	if len(c.uriSANs) > 0 && !intersectsStrings(c.uriSANs, certificateURIStrings(cert)) {
+	if len(c.uriSANs) > 0 && !intersectsStrings(c.uriSANs, certmatch.CertificateURIStrings(cert)) {
 		return false
 	}
 	if len(c.publicKeySHA256Pins) > 0 && !containsExactString(c.publicKeySHA256Pins, subjectPublicKeySHA256Hex(cert)) {
@@ -221,36 +222,6 @@ func intersectsStrings(allowed []string, actual []string) bool {
 		}
 	}
 	return false
-}
-
-func intersectsIPAddrs(allowed []netip.Addr, actual []net.IP) bool {
-	for _, candidate := range actual {
-		addr, ok := netip.AddrFromSlice(candidate)
-		if !ok {
-			continue
-		}
-		addr = addr.Unmap()
-		for _, allowedAddr := range allowed {
-			if allowedAddr == addr {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func certificateURIStrings(cert *x509.Certificate) []string {
-	if cert == nil || len(cert.URIs) == 0 {
-		return nil
-	}
-	values := make([]string, 0, len(cert.URIs))
-	for _, value := range cert.URIs {
-		if value == nil {
-			continue
-		}
-		values = append(values, value.String())
-	}
-	return values
 }
 
 func subjectPublicKeySHA256Hex(cert *x509.Certificate) string {
