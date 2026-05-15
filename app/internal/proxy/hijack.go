@@ -318,7 +318,9 @@ func writeNonUpgradeHijackResponse(
 	if resp.Body == nil {
 		return
 	}
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	buf := getHijackBuffer()
+	defer putHijackBuffer(buf)
+	if _, err := io.CopyBuffer(w, resp.Body, buf); err != nil {
 		logger.Debug("hijack: error copying non-upgrade response body", "error", err, "path", path)
 	}
 	if err := resp.Body.Close(); err != nil {

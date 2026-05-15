@@ -4,6 +4,8 @@
 // enumeration lives here to prevent silent divergence.
 package dockerresource
 
+import "net/url"
+
 // Kind names a category of Docker resource (container, image, network, etc.)
 // in the same form the Docker API uses in URL paths.
 type Kind string
@@ -29,7 +31,7 @@ const (
 // Ownership and visibility both build the same URLs to fetch labels for a
 // resource; centralizing the mapping ensures they cannot drift apart.
 func InspectPath(kind Kind, identifier string) (string, bool) {
-	escaped := pathEscape(identifier)
+	escaped := url.PathEscape(identifier)
 	switch kind {
 	case KindContainer:
 		return "/containers/" + escaped + "/json", true
