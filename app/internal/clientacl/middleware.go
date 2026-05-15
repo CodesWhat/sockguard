@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/certmatch"
 	"github.com/codeswhat/sockguard/internal/dockerclient"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
@@ -141,27 +142,23 @@ const profileIndexMaxSize = 1024
 // Selection semantics stay the same: the first lookup for a key still walks the
 // assignment list in config order, then memoizes that first-match-wins result.
 // Both indexes are bounded LRUs so they never grow without limit.
-type sourceIPProfileIndex struct {
+// profileLRU is a bounded LRU cache of profile lookups keyed by an arbitrary
+// comparable key. Both the source-IP and client-cert indexes parameterize it
+// so they share one implementation of lookup/store and the eviction policy.
+type profileLRU[K comparable] struct {
 	mu      sync.Mutex
-	entries map[netip.Addr]*list.Element
+	entries map[K]*list.Element
 	order   *list.List
 }
 
-type sourceIPProfileIndexNode struct {
-	addr   netip.Addr
+type profileLRUNode[K comparable] struct {
+	key    K
 	result profileLookupResult
 }
 
-type clientCertificateProfileIndex struct {
-	mu      sync.Mutex
-	entries map[[sha256.Size]byte]*list.Element
-	order   *list.List
-}
+type sourceIPProfileIndex = profileLRU[netip.Addr]
 
-type clientCertProfileIndexNode struct {
-	fingerprint [sha256.Size]byte
-	result      profileLookupResult
-}
+type clientCertificateProfileIndex = profileLRU[[sha256.Size]byte]
 
 type compiledSourceIPProfileAssignment struct {
 	profile string
@@ -255,29 +252,13 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(co
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			clientIP, ipOK := remoteIP(r.RemoteAddr)
-			if len(compiled.allowedCIDRs) > 0 {
-				if !ipOK || !ipAllowed(clientIP, compiled.allowedCIDRs) {
-					logging.SetDeniedWithCode(w, r, reasonCodeClientIPNotAllowed, "client IP not allowed", filter.NormalizePath)
-					_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: "client IP not allowed"})
-					return
-				}
-			}
-
-			profile, strategy, ok, err := selectProfile(r, clientIP, ipOK, compiled)
-			if err != nil {
-				logger.ErrorContext(r.Context(), "client identity lookup failed", "error", err)
-				logging.SetDeniedWithCode(w, r, reasonCodeClientIdentityLookupFailed, "client identity lookup failed", filter.NormalizePath)
-				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client identity lookup failed"})
+			if !enforceAllowedCIDRs(compiled, clientIP, ipOK, w, r) {
 				return
 			}
-			if ok {
-				logger.DebugContext(r.Context(), "client ACL profile matched", "profile", profile, "strategy", strategy)
-				mode := compiled.profileModes[profile]
-				if meta := logging.MetaForRequest(w, r); meta != nil {
-					meta.Profile = profile
-					meta.RolloutMode = mode
-				}
-				r = r.WithContext(withProfile(r.Context(), profile))
+
+			r, ok := applyProfileSelection(compiled, logger, w, r, clientIP, ipOK)
+			if !ok {
+				return
 			}
 
 			if !compiled.labelsOn || !ipOK {
@@ -285,64 +266,112 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, resolveClient func(co
 				return
 			}
 
-			// IP→label resolution is inherently race-prone: container teardown followed
-			// by IP recycling creates a window where labels from a new container may be
-			// applied to a request from the old one. Operators that need strong isolation
-			// should prefer UID/GID unix-peer profile assignment over IP/label ACLs.
-			client, found, err := resolveClient(r.Context(), clientIP)
-			if err != nil {
-				logger.ErrorContext(r.Context(), "client label ACL lookup failed", "error", err, "client_ip", clientIP.String())
-				logging.SetDeniedWithCode(w, r, reasonCodeClientLabelACLLookupFailed, "client label ACL lookup failed", filter.NormalizePath)
-				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client label ACL lookup failed"})
-				return
-			}
-			if !found {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			// Prefer cache-precompiled rules when the resolver pre-populated them.
-			// Note: hasLabelACLRules false alongside a non-nil labelACLErr still
-			// counts as "precomputed" — the error must be surfaced, not retried.
-			var rules []*filter.CompiledRule
-			var hasACLLabels bool
-			if client.hasLabelACLRules || client.labelACLErr != nil {
-				rules, hasACLLabels, err = client.labelACLRules, client.hasLabelACLRules, client.labelACLErr
-			} else {
-				rules, hasACLLabels, err = compileContainerLabelRules(client.Labels, compiled.labelPrefix)
-			}
-			if err != nil {
-				logger.ErrorContext(
-					r.Context(),
-					"client label ACL evaluation failed",
-					"error", err,
-					"client_ip", clientIP.String(),
-					"client_container", clientName(client),
-				)
-				logging.SetDeniedWithCode(w, r, reasonCodeClientLabelACLEvalFailed, "client label ACL evaluation failed", filter.NormalizePath)
-				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client label ACL evaluation failed"})
-				return
-			}
-			if !hasACLLabels {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			action, _, _ := filter.Evaluate(rules, r)
-			if action == filter.ActionAllow {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			if logging.MetaForRequest(w, r).AllowsPassThrough() {
-				logging.SetWouldDenyWithCode(w, r, reasonCodeClientLabelPolicyDenied, "client label policy denied request", filter.NormalizePath)
-				next.ServeHTTP(w, r)
-				return
-			}
-			logging.SetDeniedWithCode(w, r, reasonCodeClientLabelPolicyDenied, "client label policy denied request", filter.NormalizePath)
-			_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: "client label policy denied request"})
+			evaluateLabelACL(compiled, logger, resolveClient, next, w, r, clientIP)
 		})
 	}
+}
+
+// enforceAllowedCIDRs returns false (after writing a 403) when allowedCIDRs
+// is set and the client either has no resolvable IP or is not in the list.
+// Returns true when the CIDR gate is off or the client passes.
+func enforceAllowedCIDRs(compiled compiledOptions, clientIP netip.Addr, ipOK bool, w http.ResponseWriter, r *http.Request) bool {
+	if len(compiled.allowedCIDRs) == 0 {
+		return true
+	}
+	if !ipOK || !ipAllowed(clientIP, compiled.allowedCIDRs) {
+		logging.SetDeniedWithCode(w, r, reasonCodeClientIPNotAllowed, "client IP not allowed", filter.NormalizePath)
+		_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: "client IP not allowed"})
+		return false
+	}
+	return true
+}
+
+// applyProfileSelection resolves the client to a profile (when any selectors
+// are configured) and stamps the profile + rollout mode onto the request
+// meta. Returns the (possibly-rewrapped) *http.Request plus ok=false after
+// writing a denial when identity lookup fails.
+func applyProfileSelection(compiled compiledOptions, logger *slog.Logger, w http.ResponseWriter, r *http.Request, clientIP netip.Addr, ipOK bool) (*http.Request, bool) {
+	profile, strategy, ok, err := selectProfile(r, clientIP, ipOK, compiled)
+	if err != nil {
+		logger.ErrorContext(r.Context(), "client identity lookup failed", "error", err)
+		logging.SetDeniedWithCode(w, r, reasonCodeClientIdentityLookupFailed, "client identity lookup failed", filter.NormalizePath)
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client identity lookup failed"})
+		return r, false
+	}
+	if !ok {
+		return r, true
+	}
+	logger.DebugContext(r.Context(), "client ACL profile matched", "profile", profile, "strategy", strategy)
+	if meta := logging.MetaForRequest(w, r); meta != nil {
+		meta.Profile = profile
+		meta.RolloutMode = compiled.profileModes[profile]
+	}
+	return r.WithContext(withProfile(r.Context(), profile)), true
+}
+
+// evaluateLabelACL resolves the client's container labels (when enabled),
+// compiles ACL rules from those labels, and runs the request through them.
+// On allow / no-match the request flows to next; on deny we either pass
+// through with would-deny metadata (audit/dry-run) or emit a 403.
+//
+// IP→label resolution is inherently race-prone: container teardown followed
+// by IP recycling creates a window where labels from a new container may
+// be applied to a request from the old one. Operators that need strong
+// isolation should prefer UID/GID unix-peer profile assignment instead.
+func evaluateLabelACL(compiled compiledOptions, logger *slog.Logger, resolveClient func(context.Context, netip.Addr) (resolvedClient, bool, error), next http.Handler, w http.ResponseWriter, r *http.Request, clientIP netip.Addr) {
+	client, found, err := resolveClient(r.Context(), clientIP)
+	if err != nil {
+		logger.ErrorContext(r.Context(), "client label ACL lookup failed", "error", err, "client_ip", clientIP.String())
+		logging.SetDeniedWithCode(w, r, reasonCodeClientLabelACLLookupFailed, "client label ACL lookup failed", filter.NormalizePath)
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client label ACL lookup failed"})
+		return
+	}
+	if !found {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	rules, hasACLLabels, err := resolveLabelACLRules(client, compiled.labelPrefix)
+	if err != nil {
+		logger.ErrorContext(r.Context(), "client label ACL evaluation failed",
+			"error", err,
+			"client_ip", clientIP.String(),
+			"client_container", clientName(client),
+		)
+		logging.SetDeniedWithCode(w, r, reasonCodeClientLabelACLEvalFailed, "client label ACL evaluation failed", filter.NormalizePath)
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client label ACL evaluation failed"})
+		return
+	}
+	if !hasACLLabels {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	action, _, _ := filter.Evaluate(rules, r)
+	if action == filter.ActionAllow {
+		next.ServeHTTP(w, r)
+		return
+	}
+
+	if logging.MetaForRequest(w, r).AllowsPassThrough() {
+		logging.SetWouldDenyWithCode(w, r, reasonCodeClientLabelPolicyDenied, "client label policy denied request", filter.NormalizePath)
+		next.ServeHTTP(w, r)
+		return
+	}
+	logging.SetDeniedWithCode(w, r, reasonCodeClientLabelPolicyDenied, "client label policy denied request", filter.NormalizePath)
+	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: "client label policy denied request"})
+}
+
+// resolveLabelACLRules prefers cache-precompiled rules when the resolver
+// pre-populated them. hasLabelACLRules=false alongside a non-nil labelACLErr
+// still counts as precomputed — the error must be surfaced, not silently
+// retried (otherwise a transient compile failure would fail open on the
+// next request that hits the same client).
+func resolveLabelACLRules(client resolvedClient, labelPrefix string) ([]*filter.CompiledRule, bool, error) {
+	if client.hasLabelACLRules || client.labelACLErr != nil {
+		return client.labelACLRules, client.hasLabelACLRules, client.labelACLErr
+	}
+	return compileContainerLabelRules(client.Labels, labelPrefix)
 }
 
 func newACLResolveClient(upstreamSocket, labelPrefix string) func(context.Context, netip.Addr) (resolvedClient, bool, error) {
@@ -693,10 +722,10 @@ func (a compiledClientCertificateProfileAssignment) matches(cert *x509.Certifica
 	if len(a.dnsNames) > 0 && !intersectsStrings(a.dnsNames, cert.DNSNames) {
 		return false
 	}
-	if len(a.ipAddresses) > 0 && !intersectsIPAddrs(a.ipAddresses, cert.IPAddresses) {
+	if len(a.ipAddresses) > 0 && !certmatch.IntersectsIPAddrs(a.ipAddresses, cert.IPAddresses) {
 		return false
 	}
-	uriSANs := certificateURIStrings(cert)
+	uriSANs := certmatch.CertificateURIStrings(cert)
 	if len(a.uriSANs) > 0 && !intersectsStrings(a.uriSANs, uriSANs) {
 		return false
 	}
@@ -736,36 +765,6 @@ func intersectsStrings(allowed []string, actual []string) bool {
 	return false
 }
 
-func intersectsIPAddrs(allowed []netip.Addr, actual []net.IP) bool {
-	for _, candidate := range actual {
-		addr, ok := netip.AddrFromSlice(candidate)
-		if !ok {
-			continue
-		}
-		addr = addr.Unmap()
-		for _, allowedAddr := range allowed {
-			if allowedAddr == addr {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func certificateURIStrings(cert *x509.Certificate) []string {
-	if cert == nil || len(cert.URIs) == 0 {
-		return nil
-	}
-	values := make([]string, 0, len(cert.URIs))
-	for _, value := range cert.URIs {
-		if value == nil {
-			continue
-		}
-		values = append(values, value.String())
-	}
-	return values
-}
-
 func clientCertificateFingerprint(cert *x509.Certificate) ([sha256.Size]byte, bool) {
 	if cert == nil || len(cert.Raw) == 0 {
 		return [sha256.Size]byte{}, false
@@ -773,12 +772,12 @@ func clientCertificateFingerprint(cert *x509.Certificate) ([sha256.Size]byte, bo
 	return sha256.Sum256(cert.Raw), true
 }
 
-func (i *sourceIPProfileIndex) lookup(addr netip.Addr) (profileLookupResult, bool) {
+func (i *profileLRU[K]) lookup(key K) (profileLookupResult, bool) {
 	if i == nil {
 		return profileLookupResult{}, false
 	}
 	i.mu.Lock()
-	elem, ok := i.entries[addr]
+	elem, ok := i.entries[key]
 	if ok {
 		i.order.MoveToFront(elem)
 	}
@@ -786,67 +785,29 @@ func (i *sourceIPProfileIndex) lookup(addr netip.Addr) (profileLookupResult, boo
 	if !ok {
 		return profileLookupResult{}, false
 	}
-	return elem.Value.(*sourceIPProfileIndexNode).result, true
+	return elem.Value.(*profileLRUNode[K]).result, true
 }
 
-func (i *sourceIPProfileIndex) store(addr netip.Addr, result profileLookupResult) {
+func (i *profileLRU[K]) store(key K, result profileLookupResult) {
 	if i == nil {
 		return
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
-	if elem, ok := i.entries[addr]; ok {
-		elem.Value.(*sourceIPProfileIndexNode).result = result
+	if elem, ok := i.entries[key]; ok {
+		elem.Value.(*profileLRUNode[K]).result = result
 		i.order.MoveToFront(elem)
 		return
 	}
 	if i.order.Len() >= profileIndexMaxSize {
 		tail := i.order.Back()
 		if tail != nil {
-			delete(i.entries, tail.Value.(*sourceIPProfileIndexNode).addr)
+			delete(i.entries, tail.Value.(*profileLRUNode[K]).key)
 			i.order.Remove(tail)
 		}
 	}
-	node := &sourceIPProfileIndexNode{addr: addr, result: result}
-	i.entries[addr] = i.order.PushFront(node)
-}
-
-func (i *clientCertificateProfileIndex) lookup(fingerprint [sha256.Size]byte) (profileLookupResult, bool) {
-	if i == nil {
-		return profileLookupResult{}, false
-	}
-	i.mu.Lock()
-	elem, ok := i.entries[fingerprint]
-	if ok {
-		i.order.MoveToFront(elem)
-	}
-	i.mu.Unlock()
-	if !ok {
-		return profileLookupResult{}, false
-	}
-	return elem.Value.(*clientCertProfileIndexNode).result, true
-}
-
-func (i *clientCertificateProfileIndex) store(fingerprint [sha256.Size]byte, result profileLookupResult) {
-	if i == nil {
-		return
-	}
-	i.mu.Lock()
-	defer i.mu.Unlock()
-	if elem, ok := i.entries[fingerprint]; ok {
-		elem.Value.(*clientCertProfileIndexNode).result = result
-		i.order.MoveToFront(elem)
-		return
-	}
-	if i.order.Len() >= profileIndexMaxSize {
-		tail := i.order.Back()
-		if tail != nil {
-			delete(i.entries, tail.Value.(*clientCertProfileIndexNode).fingerprint)
-			i.order.Remove(tail)
-		}
-	}
-	node := &clientCertProfileIndexNode{fingerprint: fingerprint, result: result}
-	i.entries[fingerprint] = i.order.PushFront(node)
+	node := &profileLRUNode[K]{key: key, result: result}
+	i.entries[key] = i.order.PushFront(node)
 }
 
 func remoteIP(remoteAddr string) (netip.Addr, bool) {

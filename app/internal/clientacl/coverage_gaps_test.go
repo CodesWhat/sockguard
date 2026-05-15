@@ -352,27 +352,6 @@ func TestCompiledCertProfileMatches_PublicKeyPinMiss(t *testing.T) {
 	}
 }
 
-// ---- intersectsIPAddrs: invalid IP slice (AddrFromSlice fails)
-
-func TestIntersectsIPAddrs_InvalidSlice(t *testing.T) {
-	// net.IP with 3 bytes is invalid; AddrFromSlice returns ok=false.
-	badIP := net.IP{1, 2, 3}
-	if intersectsIPAddrs([]netip.Addr{netip.MustParseAddr("10.0.0.1")}, []net.IP{badIP}) {
-		t.Fatal("expected intersectsIPAddrs=false for unparseable IP slice")
-	}
-}
-
-// ---- certificateURIStrings: nil URL in list
-
-func TestCertificateURIStrings_NilURIInList(t *testing.T) {
-	u, _ := url.Parse("https://example.com")
-	cert := &x509.Certificate{URIs: []*url.URL{nil, u}}
-	result := certificateURIStrings(cert)
-	if len(result) != 1 || result[0] != "https://example.com" {
-		t.Fatalf("certificateURIStrings = %v, want [https://example.com]", result)
-	}
-}
-
 // ---- clientCertificateProfileIndex: nil receiver
 
 func TestClientCertProfileIndex_NilReceiver(t *testing.T) {
