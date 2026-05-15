@@ -1,6 +1,7 @@
 package visibility
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,7 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/dockerclient"
@@ -19,6 +22,31 @@ import (
 	"github.com/codeswhat/sockguard/internal/inspectcache"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
+
+// patternBufferPool pools bytes.Buffer instances so the pattern-filter writer
+// avoids fresh allocations + grow-copies for every list-endpoint response.
+// One buffer per writer collects the upstream body; flushFiltered acquires a
+// second buffer for the filtered output. Both are returned to the pool after
+// the response bytes are copied into the underlying writer.
+var patternBufferPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
+
+func acquirePatternBuffer() *bytes.Buffer {
+	buf, _ := patternBufferPool.Get().(*bytes.Buffer)
+	if buf == nil {
+		buf = &bytes.Buffer{}
+	}
+	buf.Reset()
+	return buf
+}
+
+func releasePatternBuffer(buf *bytes.Buffer) {
+	if buf == nil {
+		return
+	}
+	patternBufferPool.Put(buf)
+}
 
 const (
 	reasonCodeVisibilityPolicyMisconfigured = "visibility_policy_misconfigured"
@@ -183,6 +211,7 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 				// the response writer so we can filter the returned JSON array.
 				if hasPatterns && needsPatternResponseFilter(normPath) {
 					interceptingW := newPatternFilterWriter(w)
+					defer interceptingW.release()
 					next.ServeHTTP(interceptingW, r)
 					if err := interceptingW.flushFiltered(normPath, &effectivePolicy); err != nil {
 						logger.ErrorContext(r.Context(), "visibility pattern list filter failed", "error", err)
@@ -225,11 +254,13 @@ func needsPatternResponseFilter(normPath string) bool {
 
 // patternFilterWriter is a response-intercepting http.ResponseWriter that
 // buffers the body so we can filter the JSON array before forwarding it.
+// body is drawn from patternBufferPool and must be released via release()
+// once flushFiltered has copied any retained bytes into the underlying writer.
 type patternFilterWriter struct {
 	underlying    http.ResponseWriter
 	header        http.Header
 	statusCode    int
-	body          []byte
+	body          *bytes.Buffer
 	headerWritten bool
 }
 
@@ -238,14 +269,19 @@ func newPatternFilterWriter(w http.ResponseWriter) *patternFilterWriter {
 		underlying: w,
 		header:     w.Header(),
 		statusCode: http.StatusOK,
+		body:       acquirePatternBuffer(),
 	}
 }
 
-func (p *patternFilterWriter) Header() http.Header       { return p.header }
-func (p *patternFilterWriter) WriteHeader(code int)      { p.statusCode = code }
+func (p *patternFilterWriter) release() {
+	releasePatternBuffer(p.body)
+	p.body = nil
+}
+
+func (p *patternFilterWriter) Header() http.Header  { return p.header }
+func (p *patternFilterWriter) WriteHeader(code int) { p.statusCode = code }
 func (p *patternFilterWriter) Write(b []byte) (int, error) {
-	p.body = append(p.body, b...)
-	return len(b), nil
+	return p.body.Write(b)
 }
 
 // mustHaveEmptyBody reports whether the given HTTP status code requires an
@@ -262,6 +298,12 @@ func mustHaveEmptyBody(code int) bool {
 
 // flushFiltered filters the buffered JSON array response by pattern axes and
 // writes the result to the underlying ResponseWriter.
+//
+// The body is streamed through a json.Decoder rather than fully Unmarshalled
+// into []json.RawMessage; that avoids the outer slice allocation on
+// large list responses (hundreds of containers/images) while preserving the
+// per-item visibility check. Filtered items are encoded into a pooled output
+// buffer so Content-Length can be set before WriteHeader.
 func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPolicy) error {
 	// RFC 9110 §15.4.5 / §15.3.5: 204 and 304 must have an empty body.
 	// Writing any bytes triggers an http.ResponseWriter downgrade to 502.
@@ -273,37 +315,46 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 	// Only filter 2xx responses with a JSON body; pass through everything else.
 	if p.statusCode < http.StatusOK || p.statusCode >= http.StatusMultipleChoices {
 		p.underlying.WriteHeader(p.statusCode)
-		_, err := p.underlying.Write(p.body)
+		_, err := p.underlying.Write(p.body.Bytes())
 		return err
 	}
 
-	var items []json.RawMessage
-	if err := json.Unmarshal(p.body, &items); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(p.body.Bytes()))
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('[') {
 		// Not a JSON array — pass through unchanged.
 		p.underlying.WriteHeader(p.statusCode)
-		_, err = p.underlying.Write(p.body)
-		return err
+		_, werr := p.underlying.Write(p.body.Bytes())
+		return werr
 	}
 
-	filtered := make([]json.RawMessage, 0, len(items))
-	for _, raw := range items {
+	out := acquirePatternBuffer()
+	defer releasePatternBuffer(out)
+	out.WriteByte('[')
+	first := true
+	for dec.More() {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return err
+		}
 		visible, err := itemVisibleByPatterns(raw, normPath, policy)
 		if err != nil {
 			return err
 		}
-		if visible {
-			filtered = append(filtered, raw)
+		if !visible {
+			continue
 		}
+		if !first {
+			out.WriteByte(',')
+		}
+		first = false
+		out.Write(raw)
 	}
+	out.WriteByte(']')
 
-	out, err := json.Marshal(filtered)
-	if err != nil {
-		return err
-	}
-
-	p.underlying.Header().Set("Content-Length", fmt.Sprintf("%d", len(out)))
+	p.underlying.Header().Set("Content-Length", strconv.Itoa(out.Len()))
 	p.underlying.WriteHeader(p.statusCode)
-	_, err = p.underlying.Write(out)
+	_, err = p.underlying.Write(out.Bytes())
 	p.headerWritten = true
 	return err
 }
@@ -832,7 +883,7 @@ func decodeDockerFilters(encoded string) (map[string][]string, error) {
 	}
 
 	var raw map[string]any
-	if err := json.NewDecoder(strings.NewReader(encoded)).Decode(&raw); err != nil {
+	if err := json.Unmarshal([]byte(encoded), &raw); err != nil {
 		return nil, fmt.Errorf("decode filters: %w", err)
 	}
 
