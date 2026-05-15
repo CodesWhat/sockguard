@@ -752,7 +752,8 @@ func imageRoute(segments []string) string {
 	if len(segments) == 1 {
 		return "/images"
 	}
-	if segments[1] == "json" || segments[1] == "create" || segments[1] == "load" || segments[1] == "prune" || segments[1] == "search" {
+	switch segments[1] {
+	case "json", "create", "load", "prune", "search":
 		return "/images/" + segments[1]
 	}
 	return routeWithID("images", segments)
@@ -762,7 +763,8 @@ func pluginRoute(segments []string) string {
 	if len(segments) == 1 {
 		return "/plugins"
 	}
-	if segments[1] == "pull" || segments[1] == "create" || segments[1] == "privileges" {
+	switch segments[1] {
+	case "pull", "create", "privileges":
 		return "/plugins/" + segments[1]
 	}
 	if len(segments) == 2 {
