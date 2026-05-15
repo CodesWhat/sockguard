@@ -184,10 +184,12 @@ func TestClientCacheCachesNotFound(t *testing.T) {
 	}
 }
 
-// TestClientCacheLRUEvictsLeastRecentlyUsed confirms that accessing an older
-// entry promotes it in the LRU order so that when eviction is needed the
-// truly least-recently-used entry is dropped, not the insertion-order oldest.
-func TestClientCacheLRUEvictsLeastRecentlyUsed(t *testing.T) {
+// TestClientCacheEvictsByInsertionOrderUnderCap pins approximate-LRU
+// semantics: cache hits do NOT promote, so eviction follows insertion
+// order. Re-accessing an older entry does not save it from eviction.
+// This trade reduces hit-path lock contention; see clientCache.Lookup
+// for the rationale.
+func TestClientCacheEvictsByInsertionOrderUnderCap(t *testing.T) {
 	baseNow := time.Unix(1_700_000_000, 0)
 	var nowOffset atomic.Int64
 	var calls atomic.Int32
@@ -208,7 +210,6 @@ func TestClientCacheLRUEvictsLeastRecentlyUsed(t *testing.T) {
 	b := mustAddr(t, "10.1.0.2")
 	c := mustAddr(t, "10.1.0.3")
 
-	// Insert a (oldest), then b.
 	if _, _, err := cache.Lookup(ctx, a); err != nil {
 		t.Fatal(err)
 	}
@@ -216,34 +217,37 @@ func TestClientCacheLRUEvictsLeastRecentlyUsed(t *testing.T) {
 	if _, _, err := cache.Lookup(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	// Re-access a to promote it to MRU position.
+	// Re-accessing a is a pure cache hit — no promotion, no resolver call.
 	nowOffset.Store(int64(2 * time.Millisecond))
 	if _, _, err := cache.Lookup(ctx, a); err != nil {
 		t.Fatal(err)
 	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("re-access of a triggered a resolver call: got %d, want 2", got)
+	}
 
-	callsBefore := calls.Load()
-	// Insert c — cache is at cap=2. b is now the LRU; a was just accessed.
+	// Insert c — at cap=2, the LRU tail (a, the older insertion) is evicted.
 	nowOffset.Store(int64(3 * time.Millisecond))
 	if _, _, err := cache.Lookup(ctx, c); err != nil {
 		t.Fatal(err)
 	}
 
-	// a should still be cached (it was recently accessed); b should be evicted.
+	// b should still be cached (younger insertion).
+	callsBefore := calls.Load()
+	if _, _, err := cache.Lookup(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != callsBefore {
+		t.Fatalf("b should have hit cache after c displaced a; resolver was called %d times", got-callsBefore)
+	}
+
+	// a should have been evicted — next lookup re-resolves.
+	callsBefore = calls.Load()
 	if _, _, err := cache.Lookup(ctx, a); err != nil {
 		t.Fatal(err)
 	}
 	if got := calls.Load(); got != callsBefore+1 {
-		// +1 for inserting c; a should hit from cache
-		t.Fatalf("unexpected resolver calls for a: got %d total, want %d", got, callsBefore+1)
-	}
-
-	callsBefore = calls.Load()
-	if _, _, err := cache.Lookup(ctx, b); err != nil {
-		t.Fatal(err)
-	}
-	if got := calls.Load(); got != callsBefore+1 {
-		t.Fatalf("b should have been evicted (LRU), want 1 extra resolver call, got %d", got-callsBefore)
+		t.Fatalf("a should have been evicted by c (older insertion); want 1 extra resolver call, got %d", got-callsBefore)
 	}
 }
 

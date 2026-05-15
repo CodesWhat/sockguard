@@ -79,6 +79,15 @@ func newClientCache(
 // fresh and coalescing concurrent misses into one upstream call. Errors
 // are never cached — a transient upstream blip should recover on the
 // next caller instead of being pinned to a stale failure verdict.
+//
+// Cache hits do NOT promote the entry to the LRU front: the hit-path
+// critical section is map-lookup + two scalar reads, no list write.
+// LRU ordering is maintained on store (insert/refresh), which keeps the
+// bounded-size invariant intact and lets bursts of cache hits run
+// without serializing on the list head. The TTL drain in storeLocked
+// also pulls stale tail entries first, so missing per-hit promotions
+// only degrade the eviction order under sustained pressure — a
+// trade we accept given the small (256/1024) cap.
 func (c *clientCache) Lookup(ctx context.Context, addr netip.Addr) (resolvedClient, bool, error) {
 	now := c.now()
 
@@ -86,7 +95,6 @@ func (c *clientCache) Lookup(ctx context.Context, addr netip.Addr) (resolvedClie
 	if elem, ok := c.entries[addr]; ok {
 		node := elem.Value.(*clientCacheNode)
 		if now.Sub(node.entry.at) < c.ttl {
-			c.order.MoveToFront(elem)
 			client, found := node.entry.client, node.entry.found
 			c.mu.Unlock()
 			return client, found, nil

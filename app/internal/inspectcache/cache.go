@@ -41,10 +41,12 @@ type key struct {
 // Cache coalesces concurrent upstream inspect calls for the same resource
 // and memoizes successful/not-found results for a short TTL.
 //
-// Eviction is true LRU: every cache hit moves the entry to the front of an
-// ordering list, and storeLocked drops the tail when the map hits maxSize.
-// Previously eviction did a full O(n) scan under the lock on every miss that
-// hit the size cap; with a list-backed LRU each lookup pays O(1).
+// Eviction is approximate LRU: storeLocked drops the tail when the map hits
+// maxSize and re-promotes refreshed entries, but cache hits do NOT promote.
+// That trade keeps the hot-path critical section to a map lookup + scalar
+// reads — no list write — so bursts of hits run without serializing on the
+// list head. TTL-drained tail entries are evicted first on store, so a
+// burst-then-quiet pattern still reclaims stale state correctly.
 type Cache struct {
 	ttl     time.Duration
 	maxSize int
@@ -90,7 +92,6 @@ func (c *Cache) Lookup(ctx context.Context, kind, identifier string) (map[string
 	if elem, ok := c.entries[cacheKey]; ok {
 		node := elem.Value.(*entryNode)
 		if now.Sub(node.entry.at) < c.ttl {
-			c.order.MoveToFront(elem)
 			labels, found := node.entry.labels, node.entry.found
 			c.mu.Unlock()
 			return labels, found, nil
