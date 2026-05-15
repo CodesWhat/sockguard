@@ -193,57 +193,19 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			// context fallback once per request is the minimal correct cost.
 			meta := logging.MetaForRequest(w, r)
 
-			activePolicy := defaultPolicy
-			if opts.ResolveProfile != nil {
-				if profileName, ok := opts.ResolveProfile(r); ok {
-					if meta != nil && profileName != "" {
-						meta.Profile = profileName
-					}
-					profile, found := profilePolicies[profileName]
-					if !found {
-						denyWithReasonCode(w, r, logger, reasonCodeClientPolicyProfileUnresolved, "client policy profile could not be resolved", activePolicy.denyResponseVerbosity)
-						return
-					}
-					activePolicy = profile
-				}
+			activePolicy, ok := resolveActivePolicy(opts, profilePolicies, defaultPolicy, w, r, meta, logger)
+			if !ok {
+				return
 			}
 
-			var normPath string
-			if meta != nil && meta.NormPath != "" {
-				normPath = meta.NormPath
-			} else {
-				normPath = NormalizePath(r.URL.Path)
-			}
+			normPath := resolveNormalizedPath(meta, r)
 			action, ruleIndex, reason := evaluateNormalized(activePolicy.rules, r.Method, normPath)
 			denyStatus := http.StatusForbidden
 			reasonCode := ruleDecisionReasonCode(action, reason)
-
-			// Write decision to shared RequestMeta (created by access log middleware).
-			if meta != nil {
-				meta.Decision = string(action)
-				meta.Rule = ruleIndex
-				meta.ReasonCode = reasonCode
-				meta.Reason = reason
-				meta.NormPath = normPath
-			}
+			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
 
 			if action == ActionAllow {
-				rc := http.NewResponseController(w)
-				// SetReadDeadline returns http.ErrNotSupported on connections
-				// that don't implement it (httptest.ResponseRecorder, custom
-				// transports). That's expected — the slowloris guard simply
-				// doesn't apply there. Anything else is a real failure: log
-				// the SET error at DEBUG (inspection just lacks the guard),
-				// and the CLEAR error at ERROR (a lingering deadline on a
-				// proxied connection can prematurely kill a slow-but-honest
-				// streaming client mid-body).
-				if err := rc.SetReadDeadline(time.Now().Add(bodyReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
-					logger.Debug("filter: slowloris read deadline not applied", "error", err)
-				}
-				denyReason, denyReasonCode, status := activePolicy.inspectAllowedRequest(logger, r, normPath)
-				if err := rc.SetReadDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
-					logger.Error("filter: failed to clear slowloris read deadline", "error", err)
-				}
+				denyReason, denyReasonCode, status := runAllowedInspection(activePolicy, logger, w, r, normPath)
 				if denyReason != "" {
 					action = ActionDeny
 					reasonCode = denyReasonCode
@@ -274,6 +236,69 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// resolveActivePolicy picks the per-request runtimePolicy based on the
+// optional profile resolver. Returns ok=false after writing the denial
+// response when a profile was named but is not registered.
+func resolveActivePolicy(opts Options, profilePolicies map[string]runtimePolicy, defaultPolicy runtimePolicy, w http.ResponseWriter, r *http.Request, meta *logging.RequestMeta, logger *slog.Logger) (runtimePolicy, bool) {
+	if opts.ResolveProfile == nil {
+		return defaultPolicy, true
+	}
+	profileName, ok := opts.ResolveProfile(r)
+	if !ok {
+		return defaultPolicy, true
+	}
+	if meta != nil && profileName != "" {
+		meta.Profile = profileName
+	}
+	profile, found := profilePolicies[profileName]
+	if !found {
+		denyWithReasonCode(w, r, logger, reasonCodeClientPolicyProfileUnresolved, "client policy profile could not be resolved", defaultPolicy.denyResponseVerbosity)
+		return runtimePolicy{}, false
+	}
+	return profile, true
+}
+
+// resolveNormalizedPath returns the cached normalized path when access logging
+// already produced it; otherwise it normalizes once and lets the meta carry
+// the value forward to downstream layers.
+func resolveNormalizedPath(meta *logging.RequestMeta, r *http.Request) string {
+	if meta != nil && meta.NormPath != "" {
+		return meta.NormPath
+	}
+	return NormalizePath(r.URL.Path)
+}
+
+func stampDecisionOnMeta(meta *logging.RequestMeta, action Action, ruleIndex int, reasonCode, reason, normPath string) {
+	if meta == nil {
+		return
+	}
+	meta.Decision = string(action)
+	meta.Rule = ruleIndex
+	meta.ReasonCode = reasonCode
+	meta.Reason = reason
+	meta.NormPath = normPath
+}
+
+// runAllowedInspection runs the request-body inspectors under a slowloris read
+// deadline. The deadline is applied only for inspection so a slow-but-honest
+// streaming client isn't killed once we hand off to the upstream.
+//
+// ErrNotSupported on httptest / custom transports is benign; anything else
+// surfaces at the usual severity — DEBUG for the set (guard simply doesn't
+// apply), ERROR for the clear (a lingering deadline on a proxied connection
+// can kill a streaming response mid-body).
+func runAllowedInspection(activePolicy runtimePolicy, logger *slog.Logger, w http.ResponseWriter, r *http.Request, normPath string) (string, string, int) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetReadDeadline(time.Now().Add(bodyReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		logger.Debug("filter: slowloris read deadline not applied", "error", err)
+	}
+	denyReason, denyReasonCode, status := activePolicy.inspectAllowedRequest(logger, r, normPath)
+	if err := rc.SetReadDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		logger.Error("filter: failed to clear slowloris read deadline", "error", err)
+	}
+	return denyReason, denyReasonCode, status
 }
 
 func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy {

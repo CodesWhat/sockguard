@@ -296,40 +296,61 @@ func (p pluginPolicy) denyReasonForCreateConfig(cfg pluginCreateConfig) string {
 
 func (p pluginPolicy) denyReasonForPrivileges(subject string, privileges []pluginPrivilege) string {
 	for _, privilege := range privileges {
+		var reason string
 		switch strings.ToLower(strings.TrimSpace(privilege.Name)) {
 		case "network":
-			for _, value := range privilege.Value {
-				if strings.EqualFold(strings.TrimSpace(value), "host") && !p.allowHostNetwork {
-					return fmt.Sprintf("%s denied: host network is not allowed", subject)
-				}
-			}
+			reason = p.denyNetworkPrivilege(subject, privilege.Value)
 		case "mount":
-			if denyReason := p.denyBindMountValues(subject, privilege.Value); denyReason != "" {
-				return denyReason
-			}
+			reason = p.denyBindMountValues(subject, privilege.Value)
 		case "device":
-			if !p.allowAllDevices {
-				for _, value := range privilege.Value {
-					path, ok := normalizeBindMount(value)
-					if !ok || p.deviceAllowed(path) {
-						continue
-					}
-					return fmt.Sprintf("%s denied: device path %q is not allowlisted", subject, path)
-				}
-			}
+			reason = p.denyDevicePrivilege(subject, privilege.Value)
 		case "capabilities":
-			if !p.allowAllCapabilities {
-				for _, value := range privilege.Value {
-					capability := normalizePluginCapability(value)
-					if capability == "" || p.capabilityAllowed(capability) {
-						continue
-					}
-					return fmt.Sprintf("%s denied: capability %q is not allowlisted", subject, capability)
-				}
-			}
+			reason = p.denyCapabilityPrivilege(subject, privilege.Value)
+		}
+		if reason != "" {
+			return reason
 		}
 	}
+	return ""
+}
 
+func (p pluginPolicy) denyNetworkPrivilege(subject string, values []string) string {
+	if p.allowHostNetwork {
+		return ""
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), "host") {
+			return fmt.Sprintf("%s denied: host network is not allowed", subject)
+		}
+	}
+	return ""
+}
+
+func (p pluginPolicy) denyDevicePrivilege(subject string, values []string) string {
+	if p.allowAllDevices {
+		return ""
+	}
+	for _, value := range values {
+		path, ok := normalizeBindMount(value)
+		if !ok || p.deviceAllowed(path) {
+			continue
+		}
+		return fmt.Sprintf("%s denied: device path %q is not allowlisted", subject, path)
+	}
+	return ""
+}
+
+func (p pluginPolicy) denyCapabilityPrivilege(subject string, values []string) string {
+	if p.allowAllCapabilities {
+		return ""
+	}
+	for _, value := range values {
+		capability := normalizePluginCapability(value)
+		if capability == "" || p.capabilityAllowed(capability) {
+			continue
+		}
+		return fmt.Sprintf("%s denied: capability %q is not allowlisted", subject, capability)
+	}
 	return ""
 }
 
