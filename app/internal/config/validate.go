@@ -34,66 +34,81 @@ func Validate(cfg *Config) error {
 
 func validateBasic(cfg *Config) []string {
 	var errs []string
+	errs = append(errs, validateListeners(cfg)...)
+	errs = append(errs, validateUpstream(cfg)...)
+	errs = append(errs, validateLogging(cfg)...)
+	errs = append(errs, validateResponse(cfg)...)
+	errs = append(errs, validateHealthMetrics(cfg)...)
+	if cfg.Admin.Enabled {
+		errs = append(errs, validateAdmin(cfg)...)
+	}
+	errs = append(errs, validateReload(cfg)...)
+	errs = append(errs, validatePolicyBundle(cfg)...)
+	errs = append(errs, validateRequestBody(cfg)...)
+	errs = append(errs, validateRules(cfg)...)
+	return errs
+}
 
-	// At least one listener
+func validateListeners(cfg *Config) []string {
+	var errs []string
 	if cfg.Listen.Socket == "" && cfg.Listen.Address == "" {
 		errs = append(errs, "at least one listener is required (listen.socket or listen.address)")
 	}
-
 	if cfg.Listen.Socket != "" {
 		errs = append(errs, validateUnixSocketListenerSecurity(cfg)...)
 	}
-
 	if cfg.Listen.Socket == "" && cfg.Listen.Address != "" {
 		errs = append(errs, validateTCPListenerSecurity(cfg)...)
 	}
+	return errs
+}
 
-	// Non-empty upstream
+func validateUpstream(cfg *Config) []string {
 	if cfg.Upstream.Socket == "" {
-		errs = append(errs, "upstream.socket is required")
+		return []string{"upstream.socket is required"}
 	}
+	return nil
+}
 
-	// Valid log level
+func validateLogging(cfg *Config) []string {
+	var errs []string
 	switch cfg.Log.Level {
 	case "debug", "info", "warn", "error":
-		// OK
 	default:
 		errs = append(errs, enumValueError("log.level", cfg.Log.Level, "debug", "info", "warn", "error"))
 	}
-
-	// Valid log format
 	switch cfg.Log.Format {
 	case "json", "text":
-		// OK
 	default:
 		errs = append(errs, enumValueError("log.format", cfg.Log.Format, "json", "text"))
 	}
-
-	// Log output must resolve to stderr, stdout, or a local file path.
 	if err := validateLogOutput(cfg.Log.Output); err != nil {
 		errs = append(errs, err.Error())
 	}
 	if cfg.Log.Audit.Enabled {
-		switch cfg.Log.Audit.Format {
-		case "json":
-			// OK
-		default:
+		if cfg.Log.Audit.Format != "json" {
 			errs = append(errs, fmt.Sprintf("log.audit.format must be json, got %q", cfg.Log.Audit.Format))
 		}
 		if err := validateLogOutputField("log.audit.output", cfg.Log.Audit.Output); err != nil {
 			errs = append(errs, err.Error())
 		}
 	}
+	return errs
+}
 
+func validateResponse(cfg *Config) []string {
+	var errs []string
 	switch cfg.Response.DenyVerbosity {
 	case "minimal", "verbose":
-		// OK
 	default:
 		errs = append(errs, enumValueError("response.deny_verbosity", cfg.Response.DenyVerbosity, "minimal", "verbose"))
 	}
 	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels)...)
+	return errs
+}
 
-	// Health path starts with /
+func validateHealthMetrics(cfg *Config) []string {
+	var errs []string
 	if cfg.Health.Enabled && !strings.HasPrefix(cfg.Health.Path, "/") {
 		errs = append(errs, fmt.Sprintf("health.path must start with /, got %q", cfg.Health.Path))
 	}
@@ -109,62 +124,66 @@ func validateBasic(cfg *Config) []string {
 	if cfg.Health.Enabled && cfg.Metrics.Enabled && cfg.Health.Path == cfg.Metrics.Path {
 		errs = append(errs, fmt.Sprintf("metrics.path must not equal health.path when both endpoints are enabled, got %q", cfg.Metrics.Path))
 	}
+	return errs
+}
 
-	if cfg.Admin.Enabled {
-		if !strings.HasPrefix(cfg.Admin.Path, "/") {
-			errs = append(errs, fmt.Sprintf("admin.path must start with /, got %q", cfg.Admin.Path))
-		}
-		if cfg.Admin.MaxRequestBytes <= 0 {
-			errs = append(errs, fmt.Sprintf("admin.max_request_bytes must be > 0, got %d", cfg.Admin.MaxRequestBytes))
-		}
-		if cfg.Health.Enabled && cfg.Admin.Path == cfg.Health.Path {
-			errs = append(errs, fmt.Sprintf("admin.path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.Path))
-		}
-		if cfg.Metrics.Enabled && cfg.Admin.Path == cfg.Metrics.Path {
-			errs = append(errs, fmt.Sprintf("admin.path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.Path))
-		}
-		if !strings.HasPrefix(cfg.Admin.PolicyVersionPath, "/") {
-			errs = append(errs, fmt.Sprintf("admin.policy_version_path must start with /, got %q", cfg.Admin.PolicyVersionPath))
-		}
-		if cfg.Admin.PolicyVersionPath == cfg.Admin.Path {
-			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal admin.path, got %q", cfg.Admin.PolicyVersionPath))
-		}
-		if cfg.Health.Enabled && cfg.Admin.PolicyVersionPath == cfg.Health.Path {
-			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
-		}
-		if cfg.Metrics.Enabled && cfg.Admin.PolicyVersionPath == cfg.Metrics.Path {
-			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
-		}
-		errs = append(errs, validateAdminListener(cfg)...)
+func validateAdmin(cfg *Config) []string {
+	var errs []string
+	if !strings.HasPrefix(cfg.Admin.Path, "/") {
+		errs = append(errs, fmt.Sprintf("admin.path must start with /, got %q", cfg.Admin.Path))
 	}
+	if cfg.Admin.MaxRequestBytes <= 0 {
+		errs = append(errs, fmt.Sprintf("admin.max_request_bytes must be > 0, got %d", cfg.Admin.MaxRequestBytes))
+	}
+	if cfg.Health.Enabled && cfg.Admin.Path == cfg.Health.Path {
+		errs = append(errs, fmt.Sprintf("admin.path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.Path))
+	}
+	if cfg.Metrics.Enabled && cfg.Admin.Path == cfg.Metrics.Path {
+		errs = append(errs, fmt.Sprintf("admin.path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.Path))
+	}
+	if !strings.HasPrefix(cfg.Admin.PolicyVersionPath, "/") {
+		errs = append(errs, fmt.Sprintf("admin.policy_version_path must start with /, got %q", cfg.Admin.PolicyVersionPath))
+	}
+	if cfg.Admin.PolicyVersionPath == cfg.Admin.Path {
+		errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal admin.path, got %q", cfg.Admin.PolicyVersionPath))
+	}
+	if cfg.Health.Enabled && cfg.Admin.PolicyVersionPath == cfg.Health.Path {
+		errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
+	}
+	if cfg.Metrics.Enabled && cfg.Admin.PolicyVersionPath == cfg.Metrics.Path {
+		errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
+	}
+	errs = append(errs, validateAdminListener(cfg)...)
+	return errs
+}
 
-	if cfg.Reload.Enabled && cfg.Reload.Debounce != "" {
-		d, err := time.ParseDuration(cfg.Reload.Debounce)
-		if err != nil {
+func validateReload(cfg *Config) []string {
+	if !cfg.Reload.Enabled {
+		return nil
+	}
+	var errs []string
+	if cfg.Reload.Debounce != "" {
+		if d, err := time.ParseDuration(cfg.Reload.Debounce); err != nil {
 			errs = append(errs, fmt.Sprintf("reload.debounce must be a valid Go duration string, got %q", cfg.Reload.Debounce))
 		} else if d < 0 {
 			errs = append(errs, fmt.Sprintf("reload.debounce must be >= 0, got %q", cfg.Reload.Debounce))
 		}
 	}
-	if cfg.Reload.Enabled && cfg.Reload.PollInterval != "" {
-		d, err := time.ParseDuration(cfg.Reload.PollInterval)
-		if err != nil {
+	if cfg.Reload.PollInterval != "" {
+		if d, err := time.ParseDuration(cfg.Reload.PollInterval); err != nil {
 			errs = append(errs, fmt.Sprintf("reload.poll_interval must be a valid Go duration string, got %q", cfg.Reload.PollInterval))
 		} else if d < 0 {
 			errs = append(errs, fmt.Sprintf("reload.poll_interval must be >= 0, got %q", cfg.Reload.PollInterval))
 		}
 	}
+	return errs
+}
 
-	errs = append(errs, validatePolicyBundle(cfg)...)
-
-	errs = append(errs, validateRequestBody(cfg)...)
-
-	// At least one rule
+func validateRules(cfg *Config) []string {
+	var errs []string
 	if len(cfg.Rules) == 0 {
 		errs = append(errs, containsAtLeastOneError("rules", "rule"))
 	}
-
-	// Validate each rule
 	for i, r := range cfg.Rules {
 		if r.Match.Method == "" {
 			errs = append(errs, fmt.Sprintf("rule %d: match.method is required", i+1))
@@ -174,12 +193,10 @@ func validateBasic(cfg *Config) []string {
 		}
 		switch r.Action {
 		case "allow", "deny":
-			// OK
 		default:
 			errs = append(errs, fmt.Sprintf("rule %d: %s", i+1, enumValueError("action", r.Action, "allow", "deny")))
 		}
 	}
-
 	return errs
 }
 
@@ -687,169 +704,113 @@ func validateEndpointCosts(prefix string, costs []EndpointCostConfig, effectiveB
 
 func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	var errs []string
+	errs = append(errs, validateContainerCreateConfig(prefix, cfg.ContainerCreate)...)
+	errs = append(errs, validateExecConfig(prefix, cfg.Exec)...)
+	errs = append(errs, validateImagePullConfig(prefix, cfg.ImagePull)...)
+	errs = append(errs, validateServiceConfig(prefix, cfg.Service)...)
+	errs = append(errs, validateSwarmConfig(prefix, cfg.Swarm)...)
+	errs = append(errs, validatePluginConfig(prefix, cfg.Plugin)...)
+	return errs
+}
 
-	for _, rawPath := range cfg.ContainerCreate.AllowedBindMounts {
+// validateHostPathEntries flags any entries that don't normalize to absolute
+// host paths via normalizeAllowedBindMount. Shared by bind-mount and device
+// allowlists across container_create / service / plugin.
+func validateHostPathEntries(prefix, entries string, paths []string) []string {
+	var errs []string
+	for _, rawPath := range paths {
 		if _, ok := normalizeAllowedBindMount(rawPath); ok {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf(
-				"%s.container_create.allowed_bind_mounts entries must be absolute host paths, got %q",
-				prefix,
-				rawPath,
-			),
-		)
+		errs = append(errs, fmt.Sprintf("%s.%s entries must be absolute host paths, got %q", prefix, entries, rawPath))
 	}
+	return errs
+}
 
-	for _, rawPath := range cfg.ContainerCreate.AllowedDevices {
-		if _, ok := normalizeAllowedBindMount(rawPath); ok {
+// validateRegistryHostEntries flags any entries that don't normalize to a
+// bare registry host via normalizeAllowedRegistryHost.
+func validateRegistryHostEntries(prefix, entries string, registries []string) []string {
+	var errs []string
+	for _, registry := range registries {
+		if _, ok := normalizeAllowedRegistryHost(registry); ok {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf(
-				"%s.container_create.allowed_devices entries must be absolute host paths, got %q",
-				prefix,
-				rawPath,
-			),
-		)
+		errs = append(errs, fmt.Sprintf("%s.%s entries must be bare registry hosts, got %q", prefix, entries, registry))
 	}
+	return errs
+}
 
-	for i, entry := range cfg.ContainerCreate.AllowedDeviceRequests {
+func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBodyConfig) []string {
+	var errs []string
+	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
+	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_devices", cfg.AllowedDevices)...)
+	for i, entry := range cfg.AllowedDeviceRequests {
 		if strings.TrimSpace(entry.Driver) == "" {
-			errs = append(errs,
-				fmt.Sprintf("%s.container_create.allowed_device_requests[%d].driver is required", prefix, i),
-			)
+			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].driver is required", prefix, i))
 		}
 		for j, capSet := range entry.AllowedCapabilities {
 			if len(capSet) == 0 {
-				errs = append(errs,
-					fmt.Sprintf("%s.container_create.allowed_device_requests[%d].allowed_capabilities[%d] must be a non-empty capability set", prefix, i, j),
-				)
+				errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].allowed_capabilities[%d] must be a non-empty capability set", prefix, i, j))
 			}
 		}
 		if entry.MaxCount != nil && *entry.MaxCount < -1 {
-			errs = append(errs,
-				fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount),
-			)
+			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount))
 		}
 	}
+	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ImageTrust)...)
+	return errs
+}
 
-	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ContainerCreate.ImageTrust)...)
-
-	for i, command := range cfg.Exec.AllowedCommands {
+func validateExecConfig(prefix string, cfg ExecRequestBodyConfig) []string {
+	var errs []string
+	for i, command := range cfg.AllowedCommands {
 		if validExecCommand(command) {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.exec.allowed_commands entries must contain at least one non-empty argv token, got entry %d", prefix, i+1),
-		)
+		errs = append(errs, fmt.Sprintf("%s.exec.allowed_commands entries must contain at least one non-empty argv token, got entry %d", prefix, i+1))
 	}
+	return errs
+}
 
-	for _, registry := range cfg.ImagePull.AllowedRegistries {
-		if _, ok := normalizeAllowedRegistryHost(registry); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.image_pull.allowed_registries entries must be bare registry hosts, got %q", prefix, registry),
-		)
-	}
+func validateImagePullConfig(prefix string, cfg ImagePullRequestBodyConfig) []string {
+	return validateRegistryHostEntries(prefix, "image_pull.allowed_registries", cfg.AllowedRegistries)
+}
 
-	for _, rawPath := range cfg.Service.AllowedBindMounts {
-		if _, ok := normalizeAllowedBindMount(rawPath); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf(
-				"%s.service.allowed_bind_mounts entries must be absolute host paths, got %q",
-				prefix,
-				rawPath,
-			),
-		)
-	}
+func validateServiceConfig(prefix string, cfg ServiceRequestBodyConfig) []string {
+	var errs []string
+	errs = append(errs, validateHostPathEntries(prefix, "service.allowed_bind_mounts", cfg.AllowedBindMounts)...)
+	errs = append(errs, validateRegistryHostEntries(prefix, "service.allowed_registries", cfg.AllowedRegistries)...)
+	return errs
+}
 
-	for _, registry := range cfg.Service.AllowedRegistries {
-		if _, ok := normalizeAllowedRegistryHost(registry); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.service.allowed_registries entries must be bare registry hosts, got %q", prefix, registry),
-		)
-	}
-
-	for _, remoteAddr := range cfg.Swarm.AllowedJoinRemoteAddrs {
+func validateSwarmConfig(prefix string, cfg SwarmRequestBodyConfig) []string {
+	var errs []string
+	for _, remoteAddr := range cfg.AllowedJoinRemoteAddrs {
 		if validRemoteAddress(remoteAddr) {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.swarm.allowed_join_remote_addrs entries must be bare host[:port] values, got %q", prefix, remoteAddr),
-		)
+		errs = append(errs, fmt.Sprintf("%s.swarm.allowed_join_remote_addrs entries must be bare host[:port] values, got %q", prefix, remoteAddr))
 	}
+	return errs
+}
 
-	for _, registry := range cfg.Plugin.AllowedRegistries {
-		if _, ok := normalizeAllowedRegistryHost(registry); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.plugin.allowed_registries entries must be bare registry hosts, got %q", prefix, registry),
-		)
-	}
-
-	for _, rawPath := range cfg.Plugin.AllowedBindMounts {
-		if _, ok := normalizeAllowedBindMount(rawPath); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf(
-				"%s.plugin.allowed_bind_mounts entries must be absolute host paths, got %q",
-				prefix,
-				rawPath,
-			),
-		)
-	}
-
-	for _, rawPath := range cfg.Plugin.AllowedDevices {
-		if _, ok := normalizeAllowedBindMount(rawPath); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf(
-				"%s.plugin.allowed_devices entries must be absolute host paths, got %q",
-				prefix,
-				rawPath,
-			),
-		)
-	}
-
-	for _, capability := range cfg.Plugin.AllowedCapabilities {
+func validatePluginConfig(prefix string, cfg PluginRequestBodyConfig) []string {
+	var errs []string
+	errs = append(errs, validateRegistryHostEntries(prefix, "plugin.allowed_registries", cfg.AllowedRegistries)...)
+	errs = append(errs, validateHostPathEntries(prefix, "plugin.allowed_bind_mounts", cfg.AllowedBindMounts)...)
+	errs = append(errs, validateHostPathEntries(prefix, "plugin.allowed_devices", cfg.AllowedDevices)...)
+	for _, capability := range cfg.AllowedCapabilities {
 		if validPluginCapability(capability) {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.plugin.allowed_capabilities entries must be non-empty capability names, got %q", prefix, capability),
-		)
+		errs = append(errs, fmt.Sprintf("%s.plugin.allowed_capabilities entries must be non-empty capability names, got %q", prefix, capability))
 	}
-
-	for _, rawPrefix := range cfg.Plugin.AllowedSetEnvPrefixes {
+	for _, rawPrefix := range cfg.AllowedSetEnvPrefixes {
 		if validPluginSetEnvPrefix(rawPrefix) {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.plugin.allowed_set_env_prefixes entries must be non-empty env assignment prefixes, got %q", prefix, rawPrefix),
-		)
+		errs = append(errs, fmt.Sprintf("%s.plugin.allowed_set_env_prefixes entries must be non-empty env assignment prefixes, got %q", prefix, rawPrefix))
 	}
-
 	return errs
 }
 
