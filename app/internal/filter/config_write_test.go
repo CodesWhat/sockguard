@@ -62,7 +62,7 @@ func TestConfigWriteInspectHandlesMalformedJSON(t *testing.T) {
 
 func TestConfigWriteInspectCapsOversizedBody(t *testing.T) {
 	policy := newConfigPolicy(ConfigOptions{})
-	req := httptest.NewRequest(http.MethodPost, "/configs/create", bytes.NewReader(bytes.Repeat([]byte{'x'}, maxConfigWriteBodyBytes+1)))
+	req := httptest.NewRequest(http.MethodPost, "/configs/create", bytes.NewReader(bytes.Repeat([]byte{'x'}, driverCreateMaxBodyBytes+1)))
 
 	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
 	if reason != "" {

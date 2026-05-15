@@ -62,7 +62,7 @@ func TestSecretInspectHandlesMalformedJSON(t *testing.T) {
 
 func TestSecretInspectCapsOversizedBody(t *testing.T) {
 	policy := newSecretPolicy(SecretOptions{})
-	req := httptest.NewRequest(http.MethodPost, "/secrets/create", bytes.NewReader(bytes.Repeat([]byte{'x'}, maxSecretBodyBytes+1)))
+	req := httptest.NewRequest(http.MethodPost, "/secrets/create", bytes.NewReader(bytes.Repeat([]byte{'x'}, driverCreateMaxBodyBytes+1)))
 
 	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
 	if reason != "" {
