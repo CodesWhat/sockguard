@@ -14,7 +14,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -23,6 +22,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
+	"github.com/codeswhat/sockguard/internal/testhelp"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -79,15 +79,6 @@ func restoreHijackHooks(t *testing.T) {
 		readResponseHook = savedRead
 		copyBufferHook = savedCopy
 	})
-}
-
-func TestDialHijackUpstreamDefaultIsNotBareNetDial(t *testing.T) {
-	got := runtime.FuncForPC(reflect.ValueOf(dialUpstreamHook).Pointer()).Name()
-	wantNot := runtime.FuncForPC(reflect.ValueOf(net.Dial).Pointer()).Name()
-
-	if got == wantNot {
-		t.Fatalf("dialUpstream = %s, want a wrapper that applies a timeout", got)
-	}
 }
 
 func TestDefaultDialHijackUpstreamUsesFiveSecondTimeout(t *testing.T) {
@@ -2074,7 +2065,8 @@ func TestHandleHijack_UpstreamDisconnectDuringStreaming(t *testing.T) {
 	}()
 
 	var logs safeBuffer
-	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	collector := &testhelp.CollectingHandler{}
+	logger := testhelp.NewTeeLogger(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}), collector)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("next handler should not be called for hijack endpoint")
 	})
@@ -2126,12 +2118,8 @@ func TestHandleHijack_UpstreamDisconnectDuringStreaming(t *testing.T) {
 
 	serverWg.Wait()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logs.String(), "connection closed") {
-		if time.Now().After(deadline) {
-			t.Fatalf("expected connection closed log, got %q", logs.String())
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !collector.WaitForMessage("hijack: connection closed", 2*time.Second) {
+		t.Fatalf("expected 'connection closed' log within 2s; captured = %q", logs.String())
 	}
 }
 
@@ -2188,7 +2176,8 @@ func TestHijackConnectionClosedByUpstream(t *testing.T) {
 	}()
 
 	var logs safeBuffer
-	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	collector := &testhelp.CollectingHandler{}
+	logger := testhelp.NewTeeLogger(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}), collector)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("next handler should not be called for hijack endpoint")
 	})
@@ -2253,12 +2242,8 @@ func TestHijackConnectionClosedByUpstream(t *testing.T) {
 		t.Fatal("HTTP server did not stop after upstream close")
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logs.String(), "connection closed") {
-		if time.Now().After(deadline) {
-			t.Fatalf("expected connection closed log, got %q", logs.String())
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !collector.WaitForMessage("hijack: connection closed", 2*time.Second) {
+		t.Fatalf("expected 'connection closed' log within 2s; captured = %q", logs.String())
 	}
 
 	waitForGoroutineDrain(t, baseline, 2*time.Second)

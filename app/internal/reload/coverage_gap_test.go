@@ -30,6 +30,7 @@ func TestSafeOnReloadRecoversPanic(t *testing.T) {
 
 	// The first invocation panics; the second succeeds and records a hit.
 	var callCount atomic.Int64
+	firstEntered := make(chan struct{}, 1)
 	secondFired := make(chan struct{}, 1)
 
 	r, err := New(Options{
@@ -44,6 +45,7 @@ func TestSafeOnReloadRecoversPanic(t *testing.T) {
 		OnReload: func() {
 			n := callCount.Add(1)
 			if n == 1 {
+				firstEntered <- struct{}{}
 				panic("intentional panic in OnReload")
 			}
 			select {
@@ -64,13 +66,17 @@ func TestSafeOnReloadRecoversPanic(t *testing.T) {
 		_ = r.Run(ctx)
 	}()
 
-	// First trigger — OnReload will panic.
+	// First trigger — OnReload signals firstEntered, then panics.
 	fw.emit(fsnotify.Event{Name: cfgPath, Op: fsnotify.Write})
+	select {
+	case <-firstEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first OnReload was never entered")
+	}
 
-	// Wait a moment for the panic to be recovered, then trigger again.
-	time.Sleep(20 * time.Millisecond)
-
-	// Second trigger — must succeed despite the earlier panic.
+	// Recovery runs in the same goroutine as the panic, so by the time the
+	// reloader loop is ready to consume the second event the recover() has
+	// already completed — no sleep needed.
 	fw.emit(fsnotify.Event{Name: cfgPath, Op: fsnotify.Write})
 
 	select {

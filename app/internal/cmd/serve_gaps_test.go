@@ -1,10 +1,8 @@
 package cmd
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -25,10 +23,11 @@ import (
 // TestWarnAssignedProfilesWithoutLimitsEmitsWarning seeds the four
 // assignment channels (default, source-IP, certificate, unix-peer) with a
 // profile that has no entry in limitedProfiles, and verifies a warning is
-// emitted for each unique assigned profile.
+// emitted for each unique assigned profile. CollectingHandler is used so
+// the assertion survives any change in log message format.
 func TestWarnAssignedProfilesWithoutLimitsEmitsWarning(t *testing.T) {
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	collector := &testhelp.CollectingHandler{}
+	logger := collector.Logger()
 
 	cfg := &config.Config{}
 	cfg.Clients.DefaultProfile = "default"
@@ -38,10 +37,15 @@ func TestWarnAssignedProfilesWithoutLimitsEmitsWarning(t *testing.T) {
 
 	warnAssignedProfilesWithoutLimits(cfg, map[string]ratelimit.ProfileOptions{}, logger)
 
-	out := buf.String()
+	seen := map[string]bool{}
+	for _, r := range collector.Records() {
+		if name, ok := r.Attrs["profile"].(string); ok {
+			seen[name] = true
+		}
+	}
 	for _, want := range []string{"default", "ip", "cert", "peer"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("warning output missing profile %q\nfull output:\n%s", want, out)
+		if !seen[want] {
+			t.Errorf("no warning record carried profile=%q; records: %+v", want, collector.Records())
 		}
 	}
 }
@@ -49,8 +53,8 @@ func TestWarnAssignedProfilesWithoutLimitsEmitsWarning(t *testing.T) {
 // TestWarnAssignedProfilesWithoutLimitsSilentWhenLimited verifies that
 // profiles which DO have a limits entry are not flagged.
 func TestWarnAssignedProfilesWithoutLimitsSilentWhenLimited(t *testing.T) {
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	collector := &testhelp.CollectingHandler{}
+	logger := collector.Logger()
 
 	cfg := &config.Config{}
 	cfg.Clients.DefaultProfile = "default"
@@ -60,8 +64,8 @@ func TestWarnAssignedProfilesWithoutLimitsSilentWhenLimited(t *testing.T) {
 	}
 	warnAssignedProfilesWithoutLimits(cfg, limited, logger)
 
-	if got := buf.String(); got != "" {
-		t.Fatalf("warning unexpectedly emitted: %q", got)
+	if recs := collector.Records(); len(recs) != 0 {
+		t.Fatalf("warning unexpectedly emitted: %+v", recs)
 	}
 }
 
@@ -107,7 +111,7 @@ func TestBuildRateLimitMiddlewareBuildsWhenGlobalConcurrencyConfigured(t *testin
 // When the global-concurrency block is present but MaxInflight is zero, the
 // middleware must NOT activate (otherwise the proxy installs a zero-cap
 // concurrency limiter that blocks every request). With no profile limits,
-// returning the no-op (nil, nil) is the correct behaviour.
+// returning the no-op (nil, nil) is the correct behavior.
 func TestBuildRateLimitMiddlewareGlobalConcurrencyZeroSkipped(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Clients.GlobalConcurrency = &config.GlobalConcurrencyConfig{MaxInflight: 0}
@@ -195,7 +199,7 @@ func TestStartReloaderStartsAndStops(t *testing.T) {
 // (`len(cfg.Rate.EndpointCosts) > 0` → `>= 0`). With the mutation an empty
 // EndpointCosts list still enters the body and yields a non-nil empty
 // slice — a subtle difference that flows into ratelimit.ProfileOptions.
-// Original behaviour leaves EndpointCosts as nil.
+// Original behavior leaves EndpointCosts as nil.
 func TestConfigLimitsToRateLimitOptions_NilCostsWhenNoneConfigured(t *testing.T) {
 	cfg := config.LimitsConfig{
 		Rate: &config.RateLimitConfig{TokensPerSecond: 10, Burst: 20},
