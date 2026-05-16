@@ -56,8 +56,10 @@ The dedicated listener supports the same posture as `listen.*`: unix socket
 (hardened `0600` mode), loopback or TLS-protected TCP (with
 `admin.listen.tls.cert_file` / `key_file` / `client_ca_file` plus the same CN /
 DNS / IP / URI / SPIFFE / SHA-256 SPKI client-identity selectors as the main
-listener), or non-loopback plaintext TCP behind an explicit
-`admin.listen.insecure_allow_plain_tcp: true` opt-in.
+listener), or non-loopback plaintext TCP behind the two-flag insecure opt-in
+(`admin.listen.insecure_allow_plain_tcp: true` plus
+`admin.listen.insecure_allow_unauthenticated_clients: true` — one without the
+other is rejected).
 
 > **Recommended posture:** configure `admin.listen.socket` at a path whose
 > parent directory is only writable by the operator UID, e.g.

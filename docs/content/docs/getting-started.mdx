@@ -57,7 +57,7 @@ Download from [GitHub Releases](https://github.com/CodesWhat/sockguard/releases)
 sockguard serve -c /etc/sockguard/sockguard.yaml
 ```
 
-This guide uses a unix socket because it is the simplest secure deployment. If you expose Sockguard on non-loopback TCP, configure `listen.tls` for mutual TLS. Plaintext remote TCP requires the explicit legacy opt-in `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true`.
+This guide uses a unix socket because it is the simplest secure deployment. If you expose Sockguard on non-loopback TCP, configure `listen.tls` for mutual TLS. Plaintext remote TCP requires the two-flag legacy opt-in — both `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true` and `SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS=true`.
 
 ## Connecting Your Apps
 

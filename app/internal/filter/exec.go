@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 )
 
 const maxExecBodyBytes = 64 << 10 // 64 KiB
@@ -281,6 +282,9 @@ func NewDockerExecInspector(upstreamSocket string) ExecInspectFunc {
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", upstreamSocket)
 		},
+		// The exec-inspect call is a short JSON GET; bound the wait for upstream
+		// headers so an unresponsive daemon cannot pin this goroutine.
+		ResponseHeaderTimeout: 30 * time.Second,
 	}
 	client := &http.Client{Transport: transport}
 

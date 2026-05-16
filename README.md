@@ -83,6 +83,7 @@ services:
     environment:
       - SOCKGUARD_LISTEN_ADDRESS=:2375
       - SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true
+      - SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS=true
       - SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true
       - CONTAINERS=1
       - IMAGES=1
@@ -100,7 +101,7 @@ services:
 
 By default sockguard listens on loopback TCP `127.0.0.1:2375`, not on all interfaces. Non-loopback TCP now requires mutual TLS via `listen.tls` by default.
 
-The compose example above opts into **legacy plaintext TCP** with `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true` so migration from `tecnativa/docker-socket-proxy` and `linuxserver/socket-proxy` still works on a private Docker network. It also opts into `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` because broad `CONTAINERS=1` / `IMAGES=1` compatibility includes raw archive/export and log/attach streaming endpoints. Do not publish that plaintext listener to the host or Internet, and remove the read-exfil opt-in once you migrate to tighter YAML list/inspect rules.
+The compose example above opts into **legacy plaintext TCP** so migration from `tecnativa/docker-socket-proxy` and `linuxserver/socket-proxy` still works on a private Docker network. A non-loopback plaintext listener requires **two** deliberate acknowledgments — `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true` (unencrypted transport) and `SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS=true` (any host that can reach the port can impersonate a client) — so a single fat-fingered flag cannot expose it. It also opts into `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` because broad `CONTAINERS=1` / `IMAGES=1` compatibility includes raw archive/export and log/attach streaming endpoints. Do not publish that plaintext listener to the host or Internet, and remove the read-exfil opt-in once you migrate to tighter YAML list/inspect rules.
 
 If you run sockguard directly on a host, keep `SOCKGUARD_LISTEN_ADDRESS=127.0.0.1:2375`, configure `listen.tls` for remote TCP, or switch to `SOCKGUARD_LISTEN_SOCKET` to avoid a network listener entirely.
 
@@ -285,6 +286,7 @@ Broad compat reads such as `CONTAINERS=1`, `IMAGES=1`, or `POST=0` with section-
 listen:
   address: 127.0.0.1:2375
   insecure_allow_plain_tcp: false
+  insecure_allow_unauthenticated_clients: false
   tls:
     cert_file: /run/secrets/sockguard/server-cert.pem
     key_file: /run/secrets/sockguard/server-key.pem
@@ -395,7 +397,7 @@ rules:
 
 Trailing `/**` matches both the base path and any deeper path. For example, `/containers/**` matches `/containers` and `/containers/abc/json`.
 
-`listen.tls` is only needed when you expose Sockguard on non-loopback TCP. Plaintext non-loopback TCP is rejected unless you set `listen.insecure_allow_plain_tcp: true`, which is intended only for legacy compatibility on a private, trusted network. `listen.tls.client_ca_file` still defines the issuing trust root, and the optional `listen.tls.common_names`, `dns_names`, `ip_addresses`, `uri_sans`, and `public_key_sha256_pins` fields let you narrow that trust to specific verified client leaves. Different selector fields are ANDed, while entries inside one field are ORed.
+`listen.tls` is only needed when you expose Sockguard on non-loopback TCP. Plaintext non-loopback TCP is rejected unless you set **both** `listen.insecure_allow_plain_tcp: true` and `listen.insecure_allow_unauthenticated_clients: true` — one without the other is rejected, so the dangerous mode cannot be reached by a single flag. That mode is intended only for legacy compatibility on a private, trusted network. `listen.tls.client_ca_file` still defines the issuing trust root, and the optional `listen.tls.common_names`, `dns_names`, `ip_addresses`, `uri_sans`, and `public_key_sha256_pins` fields let you narrow that trust to specific verified client leaves. Different selector fields are ANDed, while entries inside one field are ORed.
 
 Allowed `POST /containers/create` requests are inspected by default. Unless you opt out, Sockguard blocks `HostConfig.Privileged=true`, `HostConfig.NetworkMode=host`, `HostConfig.PidMode=host`, `HostConfig.IpcMode=host`, any bind mount source outside `allowed_bind_mounts`, any `HostConfig.Devices` host path outside `allowed_devices`, `HostConfig.DeviceRequests` (unless allowed via `allow_device_requests` or `allowed_device_requests`), and `HostConfig.DeviceCgroupRules` (unless allowed via `allow_device_cgroup_rules` or `allowed_device_cgroup_rules`). Named volumes still work without allowlist entries because they are not host bind mounts. `allowed_device_requests` is a structured allowlist for GPU and other device passthrough — each entry specifies a `driver` (required, case-insensitive exact match), `allowed_capabilities` (a list of capability sets; each request set must be a subset of at least one allowlisted set), and an optional `max_count` bound (`-1` = all devices; request `Count: -1` is only allowed when `max_count` is also `-1`). Set `allow_device_requests: true` only when you want unrestricted device request access. Opt-in hardening rails enforce no-new-privileges, non-root user, read-only rootfs, dropped capabilities, and memory/CPU/PID resource limits via the `require_*` knobs. Capability additions are governed by `allowed_capabilities` (or bypassed with `allow_all_capabilities: true`). Seccomp and AppArmor profiles can be constrained to an explicit allowlist; `deny_unconfined_seccomp` and `deny_unconfined_apparmor` act as standalone kill switches when no allowlist is configured. `required_labels` enforces mandatory `Config.Labels` keys. **Breaking changes in this release:** `HostConfig.CapAdd` is now default-deny — set `allow_all_capabilities: true` or populate `allowed_capabilities` to restore previous behavior. `HostConfig.UsernsMode=host` is now denied by default — set `allow_host_userns: true` to opt back in.
 

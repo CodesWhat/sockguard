@@ -121,7 +121,6 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	if err != nil {
 		return fmt.Errorf("config validation: %w", err)
 	}
-	warnLiteralPercentInPatterns(cfg, logger)
 	if err := deps.verifyUpstreamReachable(cfg.Upstream.Socket, logger); err != nil {
 		return err
 	}
@@ -192,7 +191,6 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 
 	server := newHTTPServer(swappable)
 	listen := listenerAddr(cfg)
-	warnOnInsecureRemoteTCPBind(logger, cfg)
 	banner.Render(cmd.ErrOrStderr(), banner.Info{
 		Listen:    listen,
 		Upstream:  cfg.Upstream.Socket,
@@ -1175,15 +1173,4 @@ func listenerAddr(cfg *config.Config) string {
 		return "unix:" + cfg.Listen.Socket
 	}
 	return "tcp://" + cfg.Listen.Address
-}
-
-func warnOnInsecureRemoteTCPBind(logger *slog.Logger, cfg *config.Config) {
-	if cfg.Listen.Socket != "" || !cfg.Listen.InsecureAllowPlainTCP || cfg.Listen.TLS.Complete() || !config.IsNonLoopbackTCPAddress(cfg.Listen.Address) {
-		return
-	}
-
-	logger.Warn("plaintext TCP listener is exposed beyond loopback",
-		"listen", listenerAddr(cfg),
-		"recommendation", "configure listen.tls for mTLS, bind 127.0.0.1:<port>, or use listen.socket",
-	)
 }

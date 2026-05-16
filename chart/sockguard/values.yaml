@@ -40,15 +40,19 @@ service:
   type: ClusterIP
   port: 2375
   # Sockguard listens on plaintext TCP :2375 by default inside the pod.
-  # For non-loopback TCP you must either set SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true
+  # For non-loopback TCP you must either set both
+  # SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true and
+  # SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS=true
   # (trusted cluster-internal traffic only) or configure listen.tls in config above.
 
 # Extra environment variables for the sockguard container.
-# Useful for SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP, log level overrides, etc.
+# Useful for the two-flag plaintext opt-in, log level overrides, etc.
 env:
   - name: SOCKGUARD_LISTEN_ADDRESS
     value: ":2375"
   - name: SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP
+    value: "true"
+  - name: SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS
     value: "true"
 
 resources: {}

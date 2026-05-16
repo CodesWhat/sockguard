@@ -54,6 +54,7 @@ const (
 	reasonCodeVisibilityFilterInvalid       = "visibility_filter_invalid"
 	reasonCodeVisibilityPolicyLookupFailed  = "visibility_policy_lookup_failed"
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
+	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
 )
 
 // Options configures label-based visibility control on Docker read endpoints.
@@ -236,6 +237,13 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 		interceptingW := newPatternFilterWriter(w)
 		defer interceptingW.release()
 		next.ServeHTTP(interceptingW, r)
+		if interceptingW.overflow {
+			logger.ErrorContext(r.Context(), "visibility pattern filter: upstream response exceeds size limit",
+				"limit_bytes", filter.MaxResponseBodyBytes, "method", r.Method, "path", r.URL.Path)
+			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityResponseTooLarge, "upstream response too large to filter", nil)
+			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "upstream response too large to filter"})
+			return
+		}
 		if err := interceptingW.flushFiltered(normPath, policy); err != nil {
 			logger.ErrorContext(r.Context(), "visibility pattern list filter failed", "error", err)
 			if !interceptingW.headerWritten {
@@ -260,6 +268,14 @@ func handleVisibilityInspectRequest(logger *slog.Logger, next http.Handler, deps
 		return
 	}
 	if !visible {
+		// In warn / audit rollout mode, surface a would_deny verdict and let
+		// the request reach the upstream so operators can measure visibility
+		// impact before enforcing — consistent with every other deny gate.
+		if meta := logging.MetaForRequest(w, r); meta.AllowsPassThrough() {
+			logging.SetWouldDenyWithCode(w, r, reasonCodeVisibilityPolicyHidResource, "visibility policy hid resource", nil)
+			next.ServeHTTP(w, r)
+			return
+		}
 		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyHidResource, "visibility policy hid resource", nil)
 		_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "resource not found"})
 		return
@@ -283,6 +299,11 @@ type patternFilterWriter struct {
 	statusCode    int
 	body          *bytes.Buffer
 	headerWritten bool
+	// overflow is set once the buffered body would exceed
+	// filter.MaxResponseBodyBytes. Further bytes are discarded so the buffer
+	// stays bounded; the caller turns the flag into a 502 once the upstream
+	// copy completes.
+	overflow bool
 }
 
 func newPatternFilterWriter(w http.ResponseWriter) *patternFilterWriter {
@@ -301,8 +322,22 @@ func (p *patternFilterWriter) release() {
 
 func (p *patternFilterWriter) Header() http.Header  { return p.header }
 func (p *patternFilterWriter) WriteHeader(code int) { p.statusCode = code }
+
+// Write buffers the upstream body until it reaches filter.MaxResponseBodyBytes.
+// Past that cap it discards further bytes but still reports them as written so
+// httputil.ReverseProxy completes its copy normally (returning an error here
+// would make ReverseProxy panic with http.ErrAbortHandler, skipping the clean
+// 502 path). The overflow flag bounds memory; flushFiltered / the caller turn
+// it into a 502 once the copy finishes.
 func (p *patternFilterWriter) Write(b []byte) (int, error) {
-	return p.body.Write(b)
+	if !p.overflow {
+		if int64(p.body.Len())+int64(len(b)) > filter.MaxResponseBodyBytes {
+			p.overflow = true
+		} else {
+			return p.body.Write(b)
+		}
+	}
+	return len(b), nil
 }
 
 // mustHaveEmptyBody reports whether the given HTTP status code requires an

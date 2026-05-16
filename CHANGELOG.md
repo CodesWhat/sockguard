@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 `request_body.exec.allowed_commands` entries are now argv templates whose tokens are matched as sockguard globs instead of by exact string equality. Each token follows the same dialect as path rules — `*` matches a run of non-slash characters, `**` matches any sequence — and a command is allowed when its token count equals an entry's and every token matches the glob at that position. This lets an operator allowlist an exec whose argv carries a variable component (a run ID, timestamp, or generated path) without enumerating every literal form, e.g. `["drydock", "finalize", "*"]`. Tokens with no glob metacharacters keep matching exactly as before; the only behavioral change is for an entry that literally contained `*` or `**` and relied on it being matched as a literal asterisk.
 
+A non-loopback plaintext TCP listener now requires **two** insecure acknowledgments instead of one: `listen.insecure_allow_plain_tcp` (unencrypted transport) and the new `listen.insecure_allow_unauthenticated_clients` (any host that can reach the port can impersonate a client). One flag without the other is rejected at config validation, so the dangerous mode cannot be reached by a single fat-fingered flag. The same applies to `admin.listen.*`. Existing configs running plaintext non-loopback TCP must add `insecure_allow_unauthenticated_clients: true` (env: `SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS`). The previous standalone startup warning is removed — the two-flag validation gate replaces it.
+
+A rule whose `match.path` contains a literal `%` is now a config-validation error instead of a startup warning. sockguard percent-decodes request paths before rule matching, so such a pattern can never fire against real traffic — a silently dead rule is a security-intent gap, so the misconfiguration now fails at load.
+
+### Security
+
+Hardening from the 2026-05-16 branch review:
+
+- The visibility pattern-filter response buffer (`GET /containers/json`, `/images/json` with `response.name_patterns` / `response.image_patterns`) is now capped at `filter.MaxResponseBodyBytes` (8 MiB). A larger upstream response is rejected with a `502` instead of being buffered unbounded, closing an out-of-memory DoS that every other body path already guarded against.
+- The visibility middleware now honors rollout mode. An invisible single-resource inspect under `mode: warn` / `mode: audit` is forwarded to the upstream with a `would_deny` verdict instead of being hard-`404`'d, so operators can measure visibility-policy impact before enforcing — consistent with every other deny gate.
+- The reverse-proxy and side-channel (ownership / clientacl / visibility / exec-inspect) upstream transports now set `ResponseHeaderTimeout: 30s`. A Docker daemon that accepts a connection but never sends response headers can no longer pin a goroutine until context cancellation. Streaming endpoints send headers promptly and hijacked attach/exec-start connections bypass the pooled transport, so long-lived responses are unaffected.
+
 ## [1.0.0-rc.1] - 2026-05-15
 
 ### Security

@@ -89,14 +89,27 @@ func TestValidateAdminListenLoopbackPlaintextAccepted(t *testing.T) {
 	}
 }
 
-func TestValidateAdminListenAcceptsNonLoopbackWithExplicitOptIn(t *testing.T) {
+func TestValidateAdminListenAcceptsNonLoopbackWithBothOptIns(t *testing.T) {
 	cfg := Defaults()
 	cfg.Admin.Enabled = true
 	cfg.Admin.Listen.Address = "0.0.0.0:9000"
 	cfg.Admin.Listen.InsecureAllowPlainTCP = true
+	cfg.Admin.Listen.InsecureAllowUnauthenticatedClients = true
 
 	if err := Validate(&cfg); err != nil {
-		t.Fatalf("Validate() = %v, want nil after opt-in", err)
+		t.Fatalf("Validate() = %v, want nil with both admin insecure opt-ins", err)
+	}
+}
+
+func TestValidateAdminListenRejectsSingleInsecureOptIn(t *testing.T) {
+	cfg := Defaults()
+	cfg.Admin.Enabled = true
+	cfg.Admin.Listen.Address = "0.0.0.0:9000"
+	cfg.Admin.Listen.InsecureAllowPlainTCP = true // missing the second opt-in
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "insecure_allow_unauthenticated_clients") {
+		t.Fatalf("Validate() = %v, want error requiring the second admin opt-in", err)
 	}
 }
 

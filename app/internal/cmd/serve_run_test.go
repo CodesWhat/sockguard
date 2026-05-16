@@ -987,49 +987,6 @@ func TestWithUmaskReturnsCallbackResult(t *testing.T) {
 	}
 }
 
-func TestRunServeWarnsOnWildcardTCPBind(t *testing.T) {
-	deps := newServeTestDeps()
-	deps.loadConfig = func(string) (*config.Config, error) {
-		cfg := testServeConfig()
-		cfg.Listen.Address = ":2375"
-		cfg.Listen.InsecureAllowPlainTCP = true
-		return cfg, nil
-	}
-
-	var logBuf strings.Builder
-	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
-	}
-	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
-		return stubCompiledRules(), nil
-	}
-	deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		return &serveTestConn{}, nil
-	}
-	deps.createServeListener = func(*config.Config) (net.Listener, error) {
-		return &serveTestListener{}, nil
-	}
-	deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {
-		errCh <- http.ErrServerClosed
-	}
-	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
-	deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
-		return nil
-	}
-
-	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
-		t.Fatalf("runServe() error = %v", err)
-	}
-
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, `"msg":"plaintext TCP listener is exposed beyond loopback"`) {
-		t.Fatalf("expected insecure remote tcp warning, got: %s", logOutput)
-	}
-	if !strings.Contains(logOutput, `"recommendation":"configure listen.tls for mTLS, bind 127.0.0.1:<port>, or use listen.socket"`) {
-		t.Fatalf("expected mTLS/loopback/socket recommendation, got: %s", logOutput)
-	}
-}
-
 func TestRunServeDoesNotWarnWhenDeferredListenerCloseReturnsNetErrClosed(t *testing.T) {
 	deps := newServeTestDeps()
 	deps.loadConfig = func(string) (*config.Config, error) {

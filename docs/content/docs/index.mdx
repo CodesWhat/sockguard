@@ -62,4 +62,4 @@ volumes:
 
 > `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` is only there to preserve broad `CONTAINERS=1` / `IMAGES=1` compatibility, including raw archive/export and log/attach streaming endpoints. Remove it once you switch to tighter YAML list/inspect rules.
 
-> If you choose TCP instead of a unix socket, Sockguard only allows loopback TCP by default. Non-loopback TCP requires mutual TLS unless you explicitly opt into legacy plaintext mode with `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true`.
+> If you choose TCP instead of a unix socket, Sockguard only allows loopback TCP by default. Non-loopback TCP requires mutual TLS unless you explicitly opt into legacy plaintext mode with both `SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true` and `SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS=true`.

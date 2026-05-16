@@ -17,7 +17,7 @@ func TestValidateDefaults(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsNonLoopbackPlainTCPWithoutExplicitInsecureOptIn(t *testing.T) {
+func TestValidateRejectsNonLoopbackPlainTCPWithoutOptIn(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Address = ":2375"
 	cfg.Listen.Socket = ""
@@ -29,19 +29,76 @@ func TestValidateRejectsNonLoopbackPlainTCPWithoutExplicitInsecureOptIn(t *testi
 	if !strings.Contains(err.Error(), "listen.tls") {
 		t.Fatalf("expected mTLS requirement in error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "listen.insecure_allow_plain_tcp") {
-		t.Fatalf("expected insecure opt-in hint in error, got: %v", err)
+	if !strings.Contains(err.Error(), "insecure_allow_unauthenticated_clients") {
+		t.Fatalf("expected second-acknowledgment hint in error, got: %v", err)
 	}
 }
 
-func TestValidateAllowsNonLoopbackPlainTCPWithExplicitInsecureOptIn(t *testing.T) {
+func TestValidateRejectsNonLoopbackPlainTCPWithOnlyOneOptIn(t *testing.T) {
+	// A single insecure flag must not be enough to reach plaintext mode — both
+	// acknowledgments are required so one fat-fingered flag cannot expose it.
+	cases := []struct {
+		name      string
+		plainTCP  bool
+		unauthztd bool
+	}{
+		{"only_plain_tcp", true, false},
+		{"only_unauthenticated_clients", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Listen.Address = ":2375"
+			cfg.Listen.Socket = ""
+			cfg.Listen.InsecureAllowPlainTCP = tc.plainTCP
+			cfg.Listen.InsecureAllowUnauthenticatedClients = tc.unauthztd
+
+			err := Validate(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "non-loopback TCP listener") {
+				t.Fatalf("Validate() = %v, want rejection of a single insecure opt-in", err)
+			}
+		})
+	}
+}
+
+func TestValidateAllowsNonLoopbackPlainTCPWithBothOptIns(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Address = ":2375"
 	cfg.Listen.Socket = ""
 	cfg.Listen.InsecureAllowPlainTCP = true
+	cfg.Listen.InsecureAllowUnauthenticatedClients = true
 
 	if err := Validate(&cfg); err != nil {
-		t.Fatalf("Validate() error = %v, want nil", err)
+		t.Fatalf("Validate() error = %v, want nil with both insecure opt-ins", err)
+	}
+}
+
+func TestValidateRejectsLiteralPercentInRulePath(t *testing.T) {
+	// sockguard percent-decodes paths before rule matching, so a literal '%'
+	// in a pattern is a silently dead rule — it must fail config validation.
+	cfg := Defaults()
+	cfg.Rules = append(cfg.Rules, RuleConfig{
+		Match:  MatchConfig{Method: "GET", Path: "/containers/%2F/json"},
+		Action: "allow",
+	})
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "literal '%'") {
+		t.Fatalf("Validate() = %v, want literal-percent rejection", err)
+	}
+}
+
+func TestValidateRejectsLiteralPercentInProfileRulePath(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "ro", Rules: []RuleConfig{
+			{Match: MatchConfig{Method: "GET", Path: "/images/%2A/json"}, Action: "allow"},
+		}},
+	}
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "literal '%'") {
+		t.Fatalf("Validate() = %v, want literal-percent rejection for profile rule", err)
 	}
 }
 
@@ -929,7 +986,6 @@ func TestMutantKills(t *testing.T) {
 		cfg := Defaults()
 		cfg.Listen.Socket = ""
 		cfg.Listen.Address = "127.0.0.1:2376"
-		cfg.Listen.InsecureAllowPlainTCP = true
 		cfg.Clients.ContainerLabels.Enabled = true
 		cfg.Clients.ContainerLabels.LabelPrefix = "com.example"
 		err := Validate(&cfg)

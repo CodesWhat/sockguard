@@ -831,6 +831,7 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("SOCKGUARD_RESPONSE_DENY_VERBOSITY", "minimal")
 	t.Setenv("SOCKGUARD_RESPONSE_REDACT_SENSITIVE_DATA", "false")
 	t.Setenv("SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP", "true")
+	t.Setenv("SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS", "true")
 	t.Setenv("SOCKGUARD_LISTEN_TLS_CERT_FILE", "/env/server-cert.pem")
 	t.Setenv("SOCKGUARD_LISTEN_TLS_KEY_FILE", "/env/server-key.pem")
 	t.Setenv("SOCKGUARD_LISTEN_TLS_CLIENT_CA_FILE", "/env/ca.pem")
@@ -890,6 +891,9 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 	if !cfg.Listen.InsecureAllowPlainTCP {
 		t.Errorf("Listen.InsecureAllowPlainTCP = %v, want true", cfg.Listen.InsecureAllowPlainTCP)
+	}
+	if !cfg.Listen.InsecureAllowUnauthenticatedClients {
+		t.Errorf("Listen.InsecureAllowUnauthenticatedClients = %v, want true", cfg.Listen.InsecureAllowUnauthenticatedClients)
 	}
 	if cfg.Listen.TLS.CertFile != "/env/server-cert.pem" {
 		t.Errorf("Listen.TLS.CertFile = %q, want /env/server-cert.pem", cfg.Listen.TLS.CertFile)

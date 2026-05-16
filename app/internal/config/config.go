@@ -32,11 +32,19 @@ type Config struct {
 
 // ListenConfig configures the proxy listener.
 type ListenConfig struct {
-	Socket                string          `mapstructure:"socket"`
-	SocketMode            string          `mapstructure:"socket_mode"`
-	Address               string          `mapstructure:"address"`
-	InsecureAllowPlainTCP bool            `mapstructure:"insecure_allow_plain_tcp"`
-	TLS                   ListenTLSConfig `mapstructure:"tls"`
+	Socket     string `mapstructure:"socket"`
+	SocketMode string `mapstructure:"socket_mode"`
+	Address    string `mapstructure:"address"`
+	// InsecureAllowPlainTCP opts a non-loopback TCP listener into unencrypted
+	// transport. A non-loopback plaintext listener requires this AND
+	// InsecureAllowUnauthenticatedClients — two deliberate acknowledgments so
+	// the dangerous mode cannot be reached by a single fat-fingered flag.
+	InsecureAllowPlainTCP bool `mapstructure:"insecure_allow_plain_tcp"`
+	// InsecureAllowUnauthenticatedClients is the second acknowledgment a
+	// non-loopback plaintext listener requires: without mutual TLS any host
+	// that can reach the port can impersonate a client.
+	InsecureAllowUnauthenticatedClients bool            `mapstructure:"insecure_allow_unauthenticated_clients"`
+	TLS                                 ListenTLSConfig `mapstructure:"tls"`
 }
 
 // ListenTLSConfig configures mutual TLS for TCP listeners.
@@ -627,8 +635,9 @@ type MatchConfig struct {
 // The default listener is loopback TCP 127.0.0.1:2375 so local development
 // stays simple without exposing the Docker API proxy on the network. To expose
 // Sockguard on non-loopback TCP you must either configure listen.tls for mTLS
-// or explicitly opt into legacy plaintext mode with
-// listen.insecure_allow_plain_tcp=true.
+// or explicitly opt into legacy plaintext mode with both
+// listen.insecure_allow_plain_tcp=true and
+// listen.insecure_allow_unauthenticated_clients=true.
 func Defaults() Config {
 	return Config{
 		Listen: ListenConfig{

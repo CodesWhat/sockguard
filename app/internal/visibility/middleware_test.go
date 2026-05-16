@@ -109,6 +109,49 @@ func TestMiddlewareReturnsNotFoundForInvisibleContainerInspect(t *testing.T) {
 	}
 }
 
+// TestMiddlewareRolloutModePassesInvisibleInspectThrough asserts that in warn /
+// audit rollout mode an invisible single-resource inspect is forwarded to the
+// upstream with a would_deny verdict, instead of being hard-404'd — consistent
+// with every other deny gate.
+func TestMiddlewareRolloutModePassesInvisibleInspectThrough(t *testing.T) {
+	for _, mode := range []string{"warn", "audit"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			nextCalled := false
+
+			handler := middlewareWithDeps(logger, Options{
+				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+			}, visibilityDeps{
+				inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+					return map[string]string{"com.sockguard.visible": "false"}, true, nil
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			meta := &logging.RequestMeta{RolloutMode: mode}
+			req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc123/json", nil)
+			req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if !nextCalled {
+				t.Fatalf("expected invisible inspect to pass through under mode=%s", mode)
+			}
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204 (inner write) under mode=%s", rec.Code, mode)
+			}
+			if meta.Decision != logging.DecisionWouldDeny {
+				t.Fatalf("meta.Decision = %q, want would_deny", meta.Decision)
+			}
+			if meta.ReasonCode != reasonCodeVisibilityPolicyHidResource {
+				t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeVisibilityPolicyHidResource)
+			}
+		})
+	}
+}
+
 func TestMiddlewareAllowsVisibleExecInspectViaContainerLabels(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false

@@ -267,7 +267,6 @@ func TestValidateRequestBodyUnixPeerProfileRequiresSocket(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Socket = ""
 	cfg.Listen.Address = "127.0.0.1:2376"
-	cfg.Listen.InsecureAllowPlainTCP = true
 	cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{
 		{Profile: "ro", UIDs: []uint32{1000}},
 	}

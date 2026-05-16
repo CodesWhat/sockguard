@@ -63,6 +63,28 @@ func validateListeners(cfg *Config) []string {
 	return errs
 }
 
+// plainTCPListenerErrors validates a non-loopback TCP listener that is not
+// protected by mutual TLS. label is the human noun ("TCP listener" /
+// "TCP admin listener") and prefix is the config path ("listen" /
+// "admin.listen"). Legacy plaintext beyond loopback is permitted only behind
+// BOTH insecure opt-ins: insecure_allow_plain_tcp acknowledges the unencrypted
+// transport and insecure_allow_unauthenticated_clients acknowledges that any
+// host able to reach the port can impersonate a client. Requiring two
+// deliberate acknowledgments means a single fat-fingered flag cannot reach the
+// dangerous mode.
+func plainTCPListenerErrors(label, prefix string, listen ListenConfig) []string {
+	if !IsNonLoopbackTCPAddress(listen.Address) || listen.TLS.Complete() {
+		return nil
+	}
+	if listen.InsecureAllowPlainTCP && listen.InsecureAllowUnauthenticatedClients {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"non-loopback %s %q requires %s.tls mutual TLS configuration, or — for legacy plaintext on a private trusted network — both %s.insecure_allow_plain_tcp=true and %s.insecure_allow_unauthenticated_clients=true (one acknowledgment without the other is rejected)",
+		label, listen.Address, prefix, prefix, prefix,
+	)}
+}
+
 func validateUpstream(cfg *Config) []string {
 	if cfg.Upstream.Socket == "" {
 		return []string{"upstream.socket is required"}
@@ -190,6 +212,8 @@ func validateRules(cfg *Config) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, fmt.Sprintf("rule %d: match.path is required", i+1))
+		} else if strings.Contains(r.Match.Path, "%") {
+			errs = append(errs, literalPercentRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":
@@ -198,6 +222,17 @@ func validateRules(cfg *Config) []string {
 		}
 	}
 	return errs
+}
+
+// literalPercentRuleError reports a rule path pattern that contains a literal
+// '%'. sockguard percent-decodes request paths before rule matching, so such a
+// pattern can never match real traffic — a silently dead rule is a security
+// intent gap, so it fails config validation rather than logging a warning.
+func literalPercentRuleError(label, pattern string) string {
+	return fmt.Sprintf(
+		"%s: match.path %q contains a literal '%%'; sockguard percent-decodes request paths before rule matching, so this pattern can never match — remove the '%%' or write the decoded form",
+		label, pattern,
+	)
 }
 
 func validateUnixSocketListenerSecurity(cfg *Config) []string {
@@ -219,7 +254,8 @@ func validateUnixSocketListenerSecurity(cfg *Config) []string {
 // hardened owner-only socket mode, a partially-configured TLS block is
 // rejected, a complete TLS block is constructively validated by loading the
 // material, and a non-loopback plaintext TCP listener requires the same
-// explicit opt-in (admin.listen.insecure_allow_plain_tcp=true) that the main
+// two-flag insecure opt-in (admin.listen.insecure_allow_plain_tcp=true plus
+// admin.listen.insecure_allow_unauthenticated_clients=true) that the main
 // listener requires. The admin listener must also point at a different
 // socket/address than the main listener — otherwise the two http.Servers
 // would race for the same bind and the dedicated-listener model would be a
@@ -254,11 +290,7 @@ func validateAdminListener(cfg *Config) []string {
 			}
 		}
 
-		if IsNonLoopbackTCPAddress(listen.Address) && !listen.InsecureAllowPlainTCP && !listen.TLS.Complete() {
-			errs = append(errs,
-				fmt.Sprintf("non-loopback TCP admin listener %q requires admin.listen.tls mTLS config or admin.listen.insecure_allow_plain_tcp=true", listen.Address),
-			)
-		}
+		errs = append(errs, plainTCPListenerErrors("TCP admin listener", "admin.listen", listen.ListenConfig)...)
 
 		if cfg.Listen.Address != "" && cfg.Listen.Socket == "" && cfg.Listen.Address == listen.Address {
 			errs = append(errs, fmt.Sprintf("admin.listen.address must differ from listen.address, got %q", listen.Address))
@@ -282,11 +314,7 @@ func validateTCPListenerSecurity(cfg *Config) []string {
 		}
 	}
 
-	if IsNonLoopbackTCPAddress(cfg.Listen.Address) && !cfg.Listen.InsecureAllowPlainTCP && !cfg.Listen.TLS.Complete() {
-		errs = append(errs,
-			fmt.Sprintf("non-loopback TCP listener %q requires listen.tls mTLS config or listen.insecure_allow_plain_tcp=true", cfg.Listen.Address),
-		)
-	}
+	errs = append(errs, plainTCPListenerErrors("TCP listener", "listen", cfg.Listen)...)
 
 	return errs
 }
@@ -823,6 +851,8 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, rulePrefix+".match.path is required")
+		} else if strings.Contains(r.Match.Path, "%") {
+			errs = append(errs, literalPercentRuleError(rulePrefix, r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":
