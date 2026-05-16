@@ -636,6 +636,9 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
 
 | Tier | Theme |
 |---|---|
+| Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators |
+| Policy refinement (v1.x) | Glob / prefix matching for exec command allowlists, multiple frontend listeners on the main proxy, named rule path aliases |
+| Compliance (v1.x) | CIS Docker Benchmark control mapping, audit-ready policy templates |
 | Multi-host (v1.1) | Remote Docker TCP upstreams, multi-upstream fan-out, remote daemon health checking, connection pooling, automatic failover |
 | Extensibility (v1.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
 
