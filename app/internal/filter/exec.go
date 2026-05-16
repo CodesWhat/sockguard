@@ -9,7 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
+	"regexp"
 	"strings"
 )
 
@@ -36,6 +36,11 @@ type ExecInspectFunc func(context.Context, string) (ExecInspectResult, bool, err
 type ExecOptions struct {
 	AllowPrivileged bool
 	AllowRootUser   bool
+	// AllowedCommands is an allowlist of exec argv templates. Each token is a
+	// sockguard glob (see internal/glob): "*" matches a run of non-slash
+	// characters, "**" matches any sequence. A command is allowed when its
+	// token count equals an entry's and every token matches the glob at that
+	// position.
 	AllowedCommands [][]string
 	InspectStart    ExecInspectFunc
 }
@@ -43,8 +48,27 @@ type ExecOptions struct {
 type execPolicy struct {
 	allowPrivileged bool
 	allowRootUser   bool
-	allowedCommands [][]string
+	allowedCommands []execCommandMatcher
 	inspectStart    ExecInspectFunc
+}
+
+// execCommandMatcher is a compiled allowlist entry: one anchored regex per
+// argv token. A command matches only when its token count equals len(tokens)
+// and every token matches positionally.
+type execCommandMatcher struct {
+	tokens []*regexp.Regexp
+}
+
+func (m execCommandMatcher) matches(command []string) bool {
+	if len(command) != len(m.tokens) {
+		return false
+	}
+	for i, tok := range m.tokens {
+		if !tok.MatchString(command[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 type execCreateRequest struct {
@@ -63,13 +87,21 @@ type execInspectResponse struct {
 }
 
 func newExecPolicy(opts ExecOptions) execPolicy {
-	allowed := make([][]string, 0, len(opts.AllowedCommands))
+	allowed := make([]execCommandMatcher, 0, len(opts.AllowedCommands))
 	for _, command := range opts.AllowedCommands {
 		if len(command) == 0 {
 			continue
 		}
-		copied := append([]string(nil), command...)
-		allowed = append(allowed, copied)
+		tokens := make([]*regexp.Regexp, len(command))
+		for i, token := range command {
+			// GlobToRegexString output is always valid regex — every byte is an
+			// explicit glob token or regexp.QuoteMeta'd — so MustCompile cannot
+			// panic on operator input. \A...\z anchors the whole token exactly;
+			// $ would also match a trailing newline, letting "foo\n" satisfy a
+			// "foo" entry.
+			tokens[i] = regexp.MustCompile(`\A(?:` + GlobToRegexString(token) + `)\z`)
+		}
+		allowed = append(allowed, execCommandMatcher{tokens: tokens})
 	}
 
 	return execPolicy{
@@ -173,7 +205,7 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 		return "exec denied: root exec user is not allowed"
 	}
 	for _, allowed := range p.allowedCommands {
-		if slices.Equal(result.Command, allowed) {
+		if allowed.matches(result.Command) {
 			return ""
 		}
 	}

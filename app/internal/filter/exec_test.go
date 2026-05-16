@@ -432,8 +432,105 @@ func TestNewExecPolicyFiltersEmptyCommands(t *testing.T) {
 	if len(policy.allowedCommands) != 1 {
 		t.Fatalf("allowedCommands = %v, want 1 entry", policy.allowedCommands)
 	}
-	if policy.allowedCommands[0][0] != "/usr/bin/env" {
-		t.Fatalf("allowedCommands[0] = %v, want [/usr/bin/env]", policy.allowedCommands[0])
+	if !policy.allowedCommands[0].matches([]string{"/usr/bin/env"}) {
+		t.Fatalf("allowedCommands[0] should match [/usr/bin/env]")
+	}
+}
+
+func TestExecAllowlistGlobMatching(t *testing.T) {
+	tests := []struct {
+		name    string
+		allowed [][]string
+		command []string
+		wantOK  bool
+	}{
+		{
+			name:    "literal entry matches exactly",
+			allowed: [][]string{{"/bin/sh"}},
+			command: []string{"/bin/sh"},
+			wantOK:  true,
+		},
+		{
+			name:    "literal entry rejects a different command",
+			allowed: [][]string{{"/bin/sh"}},
+			command: []string{"/bin/bash"},
+			wantOK:  false,
+		},
+		{
+			name:    "single-token wildcard matches a variable argument",
+			allowed: [][]string{{"drydock", "finalize", "*"}},
+			command: []string{"drydock", "finalize", "run-abc123"},
+			wantOK:  true,
+		},
+		{
+			name:    "single-token wildcard does not span a slash",
+			allowed: [][]string{{"drydock", "finalize", "*"}},
+			command: []string{"drydock", "finalize", "nested/value"},
+			wantOK:  false,
+		},
+		{
+			name:    "double-star token spans a slash",
+			allowed: [][]string{{"drydock", "finalize", "**"}},
+			command: []string{"drydock", "finalize", "/var/run/token"},
+			wantOK:  true,
+		},
+		{
+			name:    "fewer tokens than the entry is denied",
+			allowed: [][]string{{"drydock", "finalize", "*"}},
+			command: []string{"drydock", "finalize"},
+			wantOK:  false,
+		},
+		{
+			name:    "more tokens than the entry is denied",
+			allowed: [][]string{{"drydock", "finalize", "*"}},
+			command: []string{"drydock", "finalize", "a", "b"},
+			wantOK:  false,
+		},
+		{
+			name:    "prefix glob within a token",
+			allowed: [][]string{{"deploy-*"}},
+			command: []string{"deploy-2026"},
+			wantOK:  true,
+		},
+		{
+			name:    "prefix glob still requires the literal prefix",
+			allowed: [][]string{{"deploy-*"}},
+			command: []string{"deploy"},
+			wantOK:  false,
+		},
+		{
+			name:    "regex metacharacters in a token stay literal",
+			allowed: [][]string{{"a.b"}},
+			command: []string{"aXb"},
+			wantOK:  false,
+		},
+		{
+			name:    "trailing newline does not satisfy a literal token",
+			allowed: [][]string{{"foo"}},
+			command: []string{"foo\n"},
+			wantOK:  false,
+		},
+		{
+			name:    "a later allowlist entry can match",
+			allowed: [][]string{{"/bin/sh"}, {"drydock", "*"}},
+			command: []string{"drydock", "status"},
+			wantOK:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newExecPolicy(ExecOptions{AllowedCommands: tt.allowed})
+			reason := policy.denyReason(ExecInspectResult{Command: tt.command})
+			switch {
+			case tt.wantOK && reason != "":
+				t.Fatalf("denyReason(%v) = %q, want allowed", tt.command, reason)
+			case !tt.wantOK && reason == "":
+				t.Fatalf("denyReason(%v) = allowed, want denied", tt.command)
+			case !tt.wantOK && !strings.Contains(reason, "not allowlisted"):
+				t.Fatalf("denyReason(%v) = %q, want an 'not allowlisted' denial", tt.command, reason)
+			}
+		})
 	}
 }
 
@@ -839,9 +936,9 @@ func TestExecInspectCreateDeniesUnparseableCmdField(t *testing.T) {
 	// When the Cmd field cannot be decoded (e.g. it is an integer or nested
 	// object rather than an array or string), inspectCreate must deny rather
 	// than skip the allowedCommands check (fail-closed, not fail-open).
-	policy := execPolicy{
-		allowedCommands: [][]string{{"/safe/cmd"}},
-	}
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{{"/safe/cmd"}},
+	})
 
 	tests := []struct {
 		name    string

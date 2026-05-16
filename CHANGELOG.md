@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+`request_body.exec.allowed_commands` entries are now argv templates whose tokens are matched as sockguard globs instead of by exact string equality. Each token follows the same dialect as path rules — `*` matches a run of non-slash characters, `**` matches any sequence — and a command is allowed when its token count equals an entry's and every token matches the glob at that position. This lets an operator allowlist an exec whose argv carries a variable component (a run ID, timestamp, or generated path) without enumerating every literal form, e.g. `["drydock", "finalize", "*"]`. Tokens with no glob metacharacters keep matching exactly as before; the only behavioral change is for an entry that literally contained `*` or `**` and relied on it being matched as a literal asterisk.
+
 ## [1.0.0-rc.1] - 2026-05-15
 
 ### Security
