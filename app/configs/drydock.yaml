@@ -7,6 +7,17 @@
 #         preset stays clean under sockguard's exfiltration validator without
 #         needing insecure_allow_read_exfiltration: true.
 # Denies: exec, build, secrets, plugins, raw archive/export/logs/attach streams.
+#
+# Self-update: when Drydock updates itself it spawns a short-lived helper
+# container that reaches the daemon through this proxy over TCP. The
+# container-lifecycle rules below already cover everything the helper needs
+# (stop/start/rename/remove/create); the replacement container is created
+# through the proxy carrying Drydock's own volumes, so its host path must be
+# listed under request_body.container_create.allowed_bind_mounts. The helper's
+# finalize step is a `docker exec`, which this preset denies — the update still
+# completes, only the terminal-status callback is skipped. To get a clean
+# finalize, allow POST /containers/*/exec + POST /exec/*/start and set
+# request_body.exec.allowed_commands to the single finalize argv.
 
 upstream:
   socket: /var/run/docker.sock
