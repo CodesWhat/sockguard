@@ -628,12 +628,13 @@ func TestSwarmInspectJoinOversizedBody(t *testing.T) {
 	policy := newSwarmPolicy(SwarmOptions{})
 	payload := strings.Repeat("x", maxSwarmBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/swarm/join", strings.NewReader(payload))
-	reason, err := policy.inspectJoin(nil, req)
-	if err != nil {
-		t.Fatalf("inspectJoin() error = %v", err)
+	_, err := policy.inspectJoin(nil, req)
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspectJoin() error = %v, want request rejection", err)
 	}
-	if reason == "" {
-		t.Fatal("expected oversized body denial")
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
 	}
 }
 
@@ -651,12 +652,13 @@ func TestSwarmInspectUpdateOversizedBody(t *testing.T) {
 	policy := newSwarmPolicy(SwarmOptions{})
 	payload := strings.Repeat("x", maxSwarmBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/swarm/update", strings.NewReader(payload))
-	reason, err := policy.inspectUpdate(nil, req)
-	if err != nil {
-		t.Fatalf("inspectUpdate() error = %v", err)
+	_, err := policy.inspectUpdate(nil, req)
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspectUpdate() error = %v, want request rejection", err)
 	}
-	if reason == "" {
-		t.Fatal("expected oversized body denial")
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
 	}
 }
 
@@ -692,11 +694,15 @@ func TestSwarmInspectUnlockOversizedBody(t *testing.T) {
 	payload := strings.Repeat("x", maxSwarmBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/swarm/unlock", strings.NewReader(payload))
 
-	reason, err := policy.inspectUnlock(nil, req)
-	if err != nil {
-		t.Fatalf("inspectUnlock() error = %v", err)
+	_, err := policy.inspectUnlock(nil, req)
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspectUnlock() error = %v, want request rejection", err)
 	}
-	if !strings.HasPrefix(reason, "swarm unlock denied: request body exceeds") {
-		t.Fatalf("reason = %q, want oversized body denial", reason)
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
+	}
+	if !strings.HasPrefix(rejection.reason, "swarm unlock denied: request body exceeds") {
+		t.Fatalf("reason = %q, want oversized body denial", rejection.reason)
 	}
 }

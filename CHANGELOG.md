@@ -15,6 +15,10 @@ A non-loopback plaintext TCP listener now requires **two** insecure acknowledgme
 
 A rule whose `match.path` contains a literal `%` is now a config-validation error instead of a startup warning. sockguard percent-decodes request paths before rule matching, so such a pattern can never fire against real traffic — a silently dead rule is a security-intent gap, so the misconfiguration now fails at load.
 
+### Fixed
+
+Oversized request bodies on the exec, plugin, and swarm inspectors now return `413 Request Entity Too Large` instead of `403`. These three were the remaining inspectors emitting a plain `403` for a body-size rejection while container-create, service, volume, network, and the others already returned `413`; all body inspectors now share one size-rejection contract.
+
 ### Security
 
 Hardening from the 2026-05-16 branch review:

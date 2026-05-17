@@ -662,12 +662,13 @@ func TestInspectPrivilegesOversizedBodyDenied(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{})
 	payload := bytes.Repeat([]byte("x"), maxPluginBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/plugins/pull", bytes.NewReader(payload))
-	reason, err := policy.inspectPrivileges(nil, req, "plugin pull")
-	if err != nil {
-		t.Fatalf("inspectPrivileges() error = %v", err)
+	_, err := policy.inspectPrivileges(nil, req, "plugin pull")
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspectPrivileges() error = %v, want request rejection", err)
 	}
-	if reason == "" {
-		t.Fatal("expected denial for oversized privilege body")
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
 	}
 }
 
@@ -675,12 +676,13 @@ func TestInspectPluginSetOversizedBodyDenied(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{})
 	payload := bytes.Repeat([]byte("x"), maxPluginBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/plugins/acme/set", bytes.NewReader(payload))
-	reason, err := policy.inspectPluginSet(nil, req)
-	if err != nil {
-		t.Fatalf("inspectPluginSet() error = %v", err)
+	_, err := policy.inspectPluginSet(nil, req)
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspectPluginSet() error = %v, want request rejection", err)
 	}
-	if reason == "" {
-		t.Fatal("expected denial for oversized set body")
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
 	}
 }
 

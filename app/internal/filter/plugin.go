@@ -150,7 +150,7 @@ func (p pluginPolicy) inspectPrivileges(logger *slog.Logger, r *http.Request, su
 	body, err := readBoundedBody(r, maxPluginBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
-			return fmt.Sprintf("%s denied: request body exceeds %d byte limit", subject, maxPluginBodyBytes), nil
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("%s denied: request body exceeds %d byte limit", subject, maxPluginBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
@@ -178,7 +178,7 @@ func (p pluginPolicy) inspectPluginSet(logger *slog.Logger, r *http.Request) (st
 	body, err := readBoundedBody(r, maxPluginBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
-			return fmt.Sprintf("plugin set denied: request body exceeds %d byte limit", maxPluginBodyBytes), nil
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("plugin set denied: request body exceeds %d byte limit", maxPluginBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
 	}

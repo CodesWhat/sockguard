@@ -136,7 +136,7 @@ func (p execPolicy) inspectCreate(logger *slog.Logger, r *http.Request) (string,
 	body, err := readBoundedBody(r, maxExecBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
-			return fmt.Sprintf("exec denied: request body exceeds %d byte limit", maxExecBodyBytes), nil
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("exec denied: request body exceeds %d byte limit", maxExecBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
 	}

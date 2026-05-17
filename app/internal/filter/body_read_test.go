@@ -119,6 +119,7 @@ func TestInspectorsUseBoundedBodyContentLengthFastPath(t *testing.T) {
 				return newExecPolicy(ExecOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
 			},
 			wantPrefix: "exec denied: request body exceeds",
+			wantStatus: http.StatusRequestEntityTooLarge,
 		},
 		{
 			name: "container create",
@@ -138,6 +139,7 @@ func TestInspectorsUseBoundedBodyContentLengthFastPath(t *testing.T) {
 				return newPluginPolicy(PluginOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
 			},
 			wantPrefix: "plugin pull denied: request body exceeds",
+			wantStatus: http.StatusRequestEntityTooLarge,
 		},
 		{
 			name: "plugin set",
@@ -147,6 +149,7 @@ func TestInspectorsUseBoundedBodyContentLengthFastPath(t *testing.T) {
 				return newPluginPolicy(PluginOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
 			},
 			wantPrefix: "plugin set denied: request body exceeds",
+			wantStatus: http.StatusRequestEntityTooLarge,
 		},
 		{
 			name: "service create",
@@ -166,6 +169,7 @@ func TestInspectorsUseBoundedBodyContentLengthFastPath(t *testing.T) {
 				return newSwarmPolicy(SwarmOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
 			},
 			wantPrefix: "swarm join denied: request body exceeds",
+			wantStatus: http.StatusRequestEntityTooLarge,
 		},
 	}
 

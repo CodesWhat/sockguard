@@ -105,7 +105,7 @@ func (p swarmPolicy) inspectInit(logger *slog.Logger, r *http.Request) (string, 
 	body, err := readBoundedBody(r, maxSwarmBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
-			return fmt.Sprintf("swarm init denied: request body exceeds %d byte limit", maxSwarmBodyBytes), nil
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("swarm init denied: request body exceeds %d byte limit", maxSwarmBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
@@ -139,7 +139,7 @@ func (p swarmPolicy) inspectJoin(logger *slog.Logger, r *http.Request) (string, 
 	body, err := readBoundedBody(r, maxSwarmBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
-			return fmt.Sprintf("swarm join denied: request body exceeds %d byte limit", maxSwarmBodyBytes), nil
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("swarm join denied: request body exceeds %d byte limit", maxSwarmBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
@@ -171,7 +171,7 @@ func (p swarmPolicy) inspectUpdate(logger *slog.Logger, r *http.Request) (string
 	body, err := readBoundedBody(r, maxSwarmBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
-			return fmt.Sprintf("swarm update denied: request body exceeds %d byte limit", maxSwarmBodyBytes), nil
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("swarm update denied: request body exceeds %d byte limit", maxSwarmBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
@@ -214,7 +214,7 @@ func (p swarmPolicy) inspectUnlock(logger *slog.Logger, r *http.Request) (string
 	body, err := readBoundedBody(r, maxSwarmBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
-			return fmt.Sprintf("swarm unlock denied: request body exceeds %d byte limit", maxSwarmBodyBytes), nil
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("swarm unlock denied: request body exceeds %d byte limit", maxSwarmBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
