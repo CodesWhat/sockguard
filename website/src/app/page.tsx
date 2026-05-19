@@ -320,7 +320,7 @@ export default function Home() {
                 Features
               </h2>
               <p className="relative mt-4 text-neutral-600 dark:text-neutral-400">
-                Default-deny Docker socket proxy — no runtime dependencies beyond Cobra and Viper
+                Default-deny Docker socket proxy — a lean Go binary with a stdlib request hot path
               </p>
             </div>
 
