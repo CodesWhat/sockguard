@@ -43,11 +43,12 @@ docker run -d \
   codeswhat/sockguard:latest
 ```
 
-Sockguard runs as root inside the container by default so it can open
-`/var/run/docker.sock` on stock Docker hosts without `user` or
-`group_add` overrides. The hardening knobs that matter in practice are
-`--read-only`, `--cap-drop=ALL`, `--security-opt no-new-privileges:true`,
-and your runtime's seccomp/AppArmor/SELinux defaults.
+Sockguard runs as UID 65532 (Chainguard `nonroot`) inside the container.
+On stock Docker hosts where `/var/run/docker.sock` is owned by the `docker`
+group you may need a `--group-add docker` override or a matching GID. The
+hardening knobs that matter in practice are `--read-only`, `--cap-drop=ALL`,
+`--security-opt no-new-privileges:true`, and your runtime's
+seccomp/AppArmor/SELinux defaults.
 
 ### Binary
 
