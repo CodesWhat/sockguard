@@ -111,6 +111,22 @@ func (d *recordingDaemon) requestByID(id string) *recordedRequest {
 	return nil
 }
 
+// snapshot returns a copy of every request the daemon has recorded. The
+// smuggling suite drives raw bytes that cannot carry a correlation id, so it
+// gives each case its own daemon and reads the full record instead.
+func (d *recordingDaemon) snapshot() []recordedRequest {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]recordedRequest(nil), d.requests...)
+}
+
+// count reports how many requests reached the daemon.
+func (d *recordingDaemon) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.requests)
+}
+
 // buildChain assembles the production middleware order that governs path
 // matching and proxying — filter rule evaluator → hijack handler → reverse
 // proxy — pointed at the daemon socket. ownership/visibility are deliberately
