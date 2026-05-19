@@ -32,9 +32,9 @@ func TestPathDifferentialNoEndpointEscalation(t *testing.T) {
 	// route it to the same read sockguard judged, or to nothing at all.
 	chain := buildChain(t, daemon.socketPath, allowRule(http.MethodGet, "/containers/json"))
 
-	safeDaemonRoutes := map[routeCategory]bool{
-		routeContainerList: true,
-		routeUnknown:       true,
+	safeDaemonRoutes := map[RouteCategory]bool{
+		RouteContainerList: true,
+		RouteUnknown:       true,
 	}
 
 	tests := []struct {
@@ -126,7 +126,7 @@ func TestPathDifferentialNoEndpointEscalation(t *testing.T) {
 
 			// Allowed: the daemon received the request. Classify the endpoint
 			// it would actually execute against what sockguard's policy permits.
-			route := classifyDockerRoute(tt.method, fwd.Path)
+			route := ClassifyDockerRoute(tt.method, fwd.Path)
 			if !safeDaemonRoutes[route] {
 				t.Fatalf("BYPASS: sockguard allowed %s %q under policy {GET /containers/json}, "+
 					"but the daemon received %q which routes to %q",

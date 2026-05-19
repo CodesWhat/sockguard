@@ -23,8 +23,8 @@ import (
 // per-PR fuzz budget while still exercising the real normalization code.
 //
 // The invariant: whenever sockguard *allows* a request, the endpoint the daemon
-// resolves must be one the policy would also permit — routeContainerList (the
-// read sockguard judged) or routeUnknown (the daemon routes nowhere, 404/405).
+// resolves must be one the policy would also permit — RouteContainerList (the
+// read sockguard judged) or RouteUnknown (the daemon routes nowhere, 404/405).
 // Any other route means a client smuggled a forbidden endpoint past the filter.
 // The over-decode bypass that motivated the NormalizePath fix —
 // GET /containers/%252e/json normalizing to /containers/json for sockguard
@@ -45,9 +45,9 @@ func FuzzPathRoutingDifferential(f *testing.F) {
 	}
 	rules := []*filter.CompiledRule{rule}
 
-	safeDaemonRoutes := map[routeCategory]bool{
-		routeContainerList: true,
-		routeUnknown:       true,
+	safeDaemonRoutes := map[RouteCategory]bool{
+		RouteContainerList: true,
+		RouteUnknown:       true,
 	}
 
 	seeds := []struct {
@@ -102,7 +102,7 @@ func FuzzPathRoutingDifferential(f *testing.F) {
 		// daemon routes on its own view of the path. The proxy forwards
 		// EscapedPath(), which the daemon decodes back to this same u.Path, so
 		// classifyDockerRoute models the daemon's routing of u.Path.
-		route := classifyDockerRoute(method, u.Path)
+		route := ClassifyDockerRoute(method, u.Path)
 		if !safeDaemonRoutes[route] {
 			t.Errorf("BYPASS: sockguard allowed %s %q under policy {GET /containers/json}, "+
 				"but the daemon would route %q to %q",

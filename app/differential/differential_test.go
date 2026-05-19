@@ -1,15 +1,15 @@
-// Package differential is the proxy-vs-daemon differential test harness
-// (QA-1). The threat model for a Docker socket proxy is parser-differential:
-// "can a client make the daemon do something policy forbids?" sockguard
-// decides allow/deny on its normalized/parsed view of a request; the daemon
-// acts on its own view. A bypass exists wherever the two views diverge.
+// Package differential is the proxy-vs-daemon differential test harness. The
+// threat model for a Docker socket proxy is parser-differential: "can a client
+// make the daemon do something policy forbids?" sockguard decides allow/deny
+// on its normalized/parsed view of a request; the daemon acts on its own view.
+// A bypass exists wherever the two views diverge.
 //
 // This harness drives the production middleware order — filter rule evaluator
 // → hijack handler → reverse proxy — against a recording stand-in daemon, so a
 // test can compare what sockguard's policy judged against the exact bytes the
 // daemon received. It carries no build tag, so it runs in the per-PR CI test
-// job. A real-dockerd tier (QA-1f, build-tagged in app/integration/) replays
-// the same corpus against a live daemon.
+// job. A build-tagged real-dockerd tier in app/integration/ replays the same
+// corpus against a live daemon.
 package differential
 
 import (
