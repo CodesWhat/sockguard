@@ -1,6 +1,6 @@
 ---
 title: Migration
-description: Drop-in migration paths from Tecnativa, LinuxServer, and wollomatic socket proxies — current env compatibility, same intent, stronger inspection underneath.
+description: Drop-in migration paths from Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard socket proxies — current env compatibility, same intent, stronger inspection underneath.
 ---
 
 ## From Tecnativa/docker-socket-proxy
@@ -70,3 +70,69 @@ Key differences:
 - YAML config instead of CLI flags
 - Auto-anchoring built in (no need for `^` and `$`)
 - Wollomatic already supports hostname allowlists and a filtered unix-socket endpoint today; Sockguard is stronger on exec/pull/build inspection, named profiles, ownership isolation, and visibility-controlled reads
+
+## From 11notes/docker-socket-proxy
+
+`11notes/docker-socket-proxy` is a fixed read-only proxy — it allows every Docker API `GET` except seven exfiltration-prone endpoints and blocks every write. There is no rule syntax to translate; the equivalent in Sockguard is a default-deny config that allows reads broadly while denying those same endpoints first (first-match-wins):
+
+```yaml filename="sockguard.yaml"
+rules:
+  # Deny the seven exfiltration-prone reads 11notes blocks
+  - match: { method: GET, path: "/containers/*/attach/ws" }
+    action: deny
+  - match: { method: GET, path: "/containers/*/export" }
+    action: deny
+  - match: { method: GET, path: "/containers/*/archive" }
+    action: deny
+  - match: { method: GET, path: "/secrets" }
+    action: deny
+  - match: { method: GET, path: "/configs" }
+    action: deny
+  - match: { method: GET, path: "/swarm/unlockkey" }
+    action: deny
+  - match: { method: GET, path: "/images/*/get" }
+    action: deny
+  # Allow everything else read-only — writes fall through to default-deny
+  - match: { method: GET, path: "/**" }
+    action: allow
+```
+
+The 11notes environment variables configure the process, not the policy, so they map to Sockguard's listener and upstream settings rather than to rules:
+
+| 11notes env var | Sockguard equivalent |
+|-----------------|----------------------|
+| `SOCKET_PROXY_DOCKER_SOCKET` | `upstream.socket` (env: `SOCKGUARD_UPSTREAM_SOCKET`) |
+| `SOCKET_PROXY_VOLUME` | `listen.socket` (env: `SOCKGUARD_LISTEN_SOCKET`) |
+| `SOCKET_PROXY_HTTP_LISTEN_IP` | `listen.address` — mTLS is required for any non-loopback bind |
+| `SOCKET_PROXY_UID` / `SOCKET_PROXY_GID` | Set via the container runtime `user:`; Sockguard's image already runs non-root |
+| `DEBUG` | `log.level: debug` (env: `SOCKGUARD_LOG_LEVEL`) |
+
+Once migrated, tighten the broad `GET /**` allow into the specific list/inspect endpoints your client actually needs, then re-enable individual writes with body inspection instead of leaving the whole API read-only.
+
+## From hectorm/cetusguard
+
+CetusGuard is the closest in spirit to Sockguard — a zero-dependency, default-deny proxy with method + path rules. Its rules use a `METHOD[,METHOD] PATTERN` grammar with regex patterns and `%VARIABLE%` placeholders; Sockguard expresses the same intent as YAML glob rules:
+
+| CetusGuard rule | Sockguard rule |
+|-----------------|----------------|
+| `GET %API_PREFIX_CONTAINERS%/json` | `{ method: GET, path: "/containers/json" }` |
+| `GET %API_PREFIX_CONTAINERS%/%CONTAINER_ID_OR_NAME%/json` | `{ method: GET, path: "/containers/*/json" }` |
+| `POST %API_PREFIX_CONTAINERS%/%CONTAINER_ID_OR_NAME%/start` | `{ method: POST, path: "/containers/*/start" }` |
+
+`%API_PREFIX_*%` placeholders become literal path segments (`/containers`, `/images`, …), id placeholders such as `%CONTAINER_ID_OR_NAME%` become a `*` glob, and a `GET,POST` method list becomes two rules. CetusGuard's flags and env vars map to Sockguard's listener and upstream config:
+
+| CetusGuard | Sockguard |
+|------------|-----------|
+| `-frontend-addr` / `CETUSGUARD_FRONTEND_ADDR` | `listen.address` (TCP) or `listen.socket` (unix) |
+| `-backend-addr` / `CETUSGUARD_BACKEND_ADDR` | `upstream.socket` |
+| `-frontend-tls-cert` / `-frontend-tls-key` | `listen.tls.cert_file` / `listen.tls.key_file` |
+| `-frontend-tls-cacert` | `listen.tls.client_ca_file` (enables mTLS) |
+| `-rules` / `-rules-file` / `CETUSGUARD_RULES*` | The YAML `rules:` block |
+| `-log-level` / `CETUSGUARD_LOG_LEVEL` | `log.level` |
+| builtin `/_ping`, `/info`, `/version` rules | Allow them explicitly — Sockguard has no implicit allows |
+
+Key differences:
+- Sockguard auto-strips Docker API version prefixes (`/v1.45/…`) before matching, so patterns never account for them
+- Glob patterns (`*`, `**`) with auto-anchoring instead of regex
+- CetusGuard filters on method + path only; Sockguard adds request-body inspection, named per-client profiles, owner isolation, read-side visibility/redaction, rate limits, and metrics on top
+- CetusGuard can dial a remote daemon over backend TLS today; Sockguard's upstream is the local socket, with remote TCP upstreams on the v1.1 roadmap
