@@ -320,7 +320,7 @@ export default function Home() {
                 Features
               </h2>
               <p className="relative mt-4 text-neutral-600 dark:text-neutral-400">
-                Security-first Docker socket proxy with zero external dependencies
+                Default-deny Docker socket proxy — no runtime dependencies beyond Cobra and Viper
               </p>
             </div>
 

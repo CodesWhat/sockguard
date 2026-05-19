@@ -71,10 +71,14 @@ Allow or deny specific Docker API endpoint paths using glob patterns. Before mat
 - `HostConfig.NetworkMode: host`
 - `HostConfig.PidMode: host`
 - `HostConfig.IpcMode: host`
+- `HostConfig.UsernsMode: host`
+- A non-empty `HostConfig.Sysctls` map (kernel parameter tuning), unless `request_body.container_create.allow_sysctls` is set
 - Any bind mount whose source is outside `request_body.container_create.allowed_bind_mounts`
 - Any `HostConfig.Devices` host path outside `request_body.container_create.allowed_devices`
 - `HostConfig.DeviceRequests` unless explicitly allowed
 - `HostConfig.DeviceCgroupRules` unless explicitly allowed
+
+Five further `HostConfig` fields are denied unconditionally — no policy setting opts back in — because each one opens a namespace-escape or privilege-escalation path: `VolumesFrom`, `UTSMode: host`, a non-empty `CgroupParent`, `GroupAdd`, and `ExtraHosts`.
 
 `POST /containers/*/exec` and `POST /exec/*/start` can also be inspected now. When `request_body.exec.allowed_commands` is configured, Sockguard denies argv vectors that match no allowlist entry, denies privileged exec unless explicitly allowed, denies root-user exec unless explicitly allowed, and re-inspects `POST /exec/*/start` against Docker's stored exec metadata before the command runs. Each allowlist entry is an argv template whose tokens are sockguard globs (`*` matches a run of non-slash characters, `**` matches any sequence): a command matches when its token count equals an entry's and every token matches the glob at that position, so an exec whose argv carries a variable component — a run ID, timestamp, or generated path — can be allowlisted without enumerating every literal form. Keep glob tokens as tight as the use case allows; a token of `**` matches anything.
 
@@ -100,7 +104,7 @@ The exec-start re-inspection is necessarily best effort: Docker exposes metadata
 
 `POST /swarm/unlock` and `POST /nodes/*/update` are inspected by default. Swarm unlock is denied unless explicitly allowed, and node updates block role, availability, name, and arbitrary label mutations unless the corresponding node policy permits them. The default owner-label key remains allowed for controlled node claims.
 
-Bounded JSON/tar inspectors read request bodies under per-endpoint byte caps and return `413 Payload Too Large` when those caps are exceeded, instead of streaming unbounded bodies into memory. A malformed or hostile client cannot tie up the filter or the Docker daemon with oversized payloads — the bounded reader short-circuits before the JSON decode or tar parse even begins.
+Bounded JSON/tar inspectors read request bodies under per-endpoint byte caps and return `413 Payload Too Large` when those caps are exceeded, instead of streaming unbounded bodies into memory. A malformed or hostile client cannot tie up the filter or the Docker daemon with oversized payloads — the bounded reader short-circuits before the JSON decode or tar parse even begins. The filter also applies a 30-second read deadline to the request body before an inspector runs, so a client that opens a request and then dribbles the body slowly cannot pin the inspector indefinitely. On the upstream side, the reverse-proxy and side-channel transports set a 30-second response-header timeout, so a Docker daemon that accepts a connection but never replies cannot pin a goroutine; streaming endpoints send headers promptly and are unaffected.
 
 These inspectors intentionally decode only the Docker request fields Sockguard actually enforces. They are not full Docker-schema validators, so full payload validation still belongs to Docker once Sockguard has checked the policy-relevant subset.
 
@@ -126,6 +130,8 @@ Together with request-side visibility and exfiltration guardrails, the read-side
 - Redact container and network address topology on container/network list and inspect responses
 - Redact service/task env, mount, secret/config-reference, and network metadata
 - Redact config payload data, plugin env/path metadata, node/swarm TLS material, swarm join/unlock material, and `/info` plus `/system/df` topology-sensitive fields
+
+Single-resource inspect denials honor rollout mode: under a profile in `warn` or `audit` mode, a target that visibility policy would hide is forwarded upstream with a `would_deny` audit verdict instead of being hard-`404`'d, so visibility policy can be staged like every other deny gate. When `response.name_patterns` or `response.image_patterns` filter a list response, Sockguard buffers the upstream body under an 8 MiB cap and rejects a larger response with a `502` rather than buffering it unbounded.
 
 These controls are on by default where they are pure redaction because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout.
 
@@ -154,7 +160,7 @@ When `health.watchdog.enabled` is true, Sockguard actively probes the upstream D
 ## Image Security
 
 Sockguard's container image is built on [Wolfi](https://www.chainguard.dev/chainguard-images) (Chainguard):
-- Near-zero CVEs in the base image
+- Minimal package set, which keeps the base image's CVE exposure low
 - Built-in SBOM output and build provenance when release visibility supports attestations
 - Cosign-signed for verification — see the [image verification guide](/verification) for the canonical `cosign verify` invocation
 - No shell, no package manager in production image

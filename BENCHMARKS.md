@@ -121,8 +121,8 @@ Across all 18 proxy runs (3 scenarios × 3 concurrencies × 2 proxies):
    evaluation, access-log meta, and request-body inspection plumbing. It
    is not a bug, and it is not unique to sockguard. If you need
    near-zero overhead you want HAProxy; if you need rules, you want a
-   Go-based proxy and sockguard is the fastest one in this class on this
-   benchmark today.
+   Go-based proxy — and on this benchmark sockguard is faster than
+   wollomatic on every measured scenario.
 3. **Deny is cheaper than allow.** Both proxies short-circuit without
    dialing upstream, so denied requests run at or near direct-upstream
    throughput. This is the expected behavior for a default-deny proxy and

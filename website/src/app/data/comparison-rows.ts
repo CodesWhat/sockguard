@@ -57,13 +57,23 @@ export const comparisonRows: ComparisonRow[] = [
     sockguard: "Yes (workload + control plane)",
   },
   {
-    feature: "Remote TCP mTLS",
+    feature: "Remote TCP mTLS (listener)",
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
     elevenNotes: "No (plaintext TCP)",
     cetusguard: "Yes",
     sockguard: "Yes (TLS 1.3)",
+  },
+  {
+    feature: "Remote daemon upstream (TLS)",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "Yes",
+    sockguard: "Roadmap (v1.1)",
+    planned: true,
   },
   {
     feature: "Read-side visibility / redaction",
@@ -95,7 +105,7 @@ export const comparisonRows: ComparisonRow[] = [
   {
     feature: "Prometheus metrics",
     tecnativa: "HAProxy stats",
-    linuxserver: "nginx status",
+    linuxserver: "No",
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "No",
