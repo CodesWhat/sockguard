@@ -142,6 +142,7 @@ metrics:
 admin:
   enabled: false
   path: /admin/validate
+  policy_version_path: /admin/policy/version
   max_request_bytes: 524288
 
 rules:
@@ -876,13 +877,18 @@ even when not enumerated here.
 
 | Variable                                       | YAML field                            | Default                         | Description                                                                                                  |
 | ---------------------------------------------- | ------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `SOCKGUARD_HEALTH_ENABLED`                     | `health.enabled`                      | `true`                          | Serve the `/health` liveness endpoint.                                                                       |
+| `SOCKGUARD_HEALTH_PATH`                        | `health.path`                         | `/health`                       | Health endpoint path. Must start with `/` and differ from `metrics.path` / `admin.path` when those are set.  |
 | `SOCKGUARD_HEALTH_WATCHDOG_ENABLED`            | `health.watchdog.enabled`             | `false`                         | Start an active upstream socket monitor. Logs reachable/unreachable transitions and feeds `/health`.         |
 | `SOCKGUARD_HEALTH_WATCHDOG_INTERVAL`           | `health.watchdog.interval`            | `5s`                            | Watchdog probe interval. Must be a positive Go duration; 1s–30s is typical.                                  |
 | `SOCKGUARD_METRICS_ENABLED`                    | `metrics.enabled`                     | `false`                         | Serve Prometheus text metrics on the proxy listener. See the [Observability page](./observability) for the full metric reference. |
 | `SOCKGUARD_METRICS_PATH`                       | `metrics.path`                        | `/metrics`                      | Scrape path. Must start with `/` and differ from `health.path` when both endpoints are enabled.              |
 | `SOCKGUARD_ADMIN_ENABLED`                      | `admin.enabled`                       | `false`                         | Serve the in-band `POST <admin.path>` candidate-config validation endpoint on the main listener.             |
 | `SOCKGUARD_ADMIN_PATH`                         | `admin.path`                          | `/admin/validate`               | Admin endpoint path. Must start with `/` and must differ from `health.path` and `metrics.path` when enabled. |
+| `SOCKGUARD_ADMIN_POLICY_VERSION_PATH`          | `admin.policy_version_path`           | `/admin/policy/version`         | Path of the read-only policy-version endpoint. Must start with `/` and not collide with other endpoint paths. |
 | `SOCKGUARD_ADMIN_MAX_REQUEST_BYTES`            | `admin.max_request_bytes`             | `524288`                        | Hard cap on candidate-YAML body size. Bodies above this return `413`.                                        |
+| `SOCKGUARD_ADMIN_LISTEN_SOCKET`                | `admin.listen.socket`                 | _(unset)_                       | Serve admin endpoints on a dedicated unix socket instead of the main listener.                               |
+| `SOCKGUARD_ADMIN_LISTEN_ADDRESS`               | `admin.listen.address`                | _(unset)_                       | Serve admin endpoints on a dedicated TCP listener (mTLS via `admin.listen.tls.*`).                           |
 | `SOCKGUARD_RELOAD_ENABLED`                     | `reload.enabled`                      | `false`                         | Watch the config file via fsnotify and reload on SIGHUP. Enabling this changes SIGHUP from "terminate" to "reload". |
 | `SOCKGUARD_RELOAD_DEBOUNCE`                    | `reload.debounce`                     | `"250ms"`                       | Coalesce a burst of fsnotify events into a single reload. Must be a valid Go duration string `>= 0`.         |
 | `SOCKGUARD_RELOAD_POLL_INTERVAL`               | `reload.poll_interval`                | `""`                            | Opt-in stat-based fallback for inotify-unreliable filesystems (Synology btrfs bind-mounts, some FUSE / NFS backends). Periodically re-stats the config file and fires a reload when size, mtime, or inode changes. Empty string disables polling. Must be a valid Go duration string `>= 0`. |
