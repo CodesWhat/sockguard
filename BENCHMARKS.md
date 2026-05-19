@@ -147,17 +147,15 @@ sustained 200-way concurrency.
 - **Hijack / exec streams.** Attach and exec use HTTP upgrade into long-lived
   bidirectional TCP streams; the benchmark does not exercise those paths.
 - **TLS.** All three proxies here run on plain loopback unix sockets.
-  Sockguard's mTLS 1.3 fast path for remote TCP listeners has its own
-  microbenchmark under `app/internal/testcert` but is not exercised in this
-  harness.
+  Sockguard's mTLS 1.3 fast path for remote TCP listeners is not exercised
+  in this harness.
 - **Memory growth.** `loadgen` captures goroutine counts before and after
   but does not track RSS or heap size across long runs. A dedicated leak
   soak is a separate exercise.
 - **Body-inspection overhead.** `POST /containers/create` with a real body
   is the interesting workload for body inspection; the benchmark here
   hits the fast deny path on `POST /exec/x/start` instead. Body-inspection
-  micro-benchmarks live in `app/internal/filter/bench_test.go` and
-  `app/internal/ownership/bench_test.go`.
+  micro-benchmarks live in `app/internal/filter/bench_test.go`.
 
 ## Reproducing the run
 
