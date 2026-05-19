@@ -36,7 +36,7 @@ export const comparisonRows: ComparisonRow[] = [
     elevenNotes: "No",
     cetusguard: "No",
     sockguard:
-      "Yes (container, image, build, volume, network, secret, config, service, swarm, node, plugin)",
+      "Yes (container, exec, image, build, volume, network, secret, config, service, swarm, node, plugin)",
   },
   {
     feature: "Per-client policies",
