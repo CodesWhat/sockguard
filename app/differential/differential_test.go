@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,11 +95,20 @@ func (d *recordingDaemon) handle(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("[]"))
 }
 
-// received returns a snapshot copy of every request the daemon has handled.
-func (d *recordingDaemon) received() []recordedRequest {
+// requestByID returns the request the daemon recorded carrying the given
+// correlation id, or nil if none reached it — i.e. the request was denied
+// before the proxy. Matching by id rather than arrival order keeps the harness
+// correct when subtests run in parallel against a shared daemon.
+func (d *recordingDaemon) requestByID(id string) *recordedRequest {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return append([]recordedRequest(nil), d.requests...)
+	for i := range d.requests {
+		if d.requests[i].Header.Get(diffIDHeader) == id {
+			r := d.requests[i]
+			return &r
+		}
+	}
+	return nil
 }
 
 // buildChain assembles the production middleware order that governs path
@@ -144,29 +154,34 @@ type proxyResult struct {
 	allowed bool
 }
 
+// diffIDHeader correlates a request sent through the chain with the request
+// the daemon recorded. It is an ordinary header, so sockguard forwards it
+// untouched (it is not hop-by-hop).
+const diffIDHeader = "X-Sockguard-Diff-Id"
+
+var diffRequestSeq atomic.Int64
+
 // sendRequest drives one request through the chain and reports both the
 // client-visible result and, when the request was allowed through, the
 // request the daemon actually received. httptest.NewRequest builds the
-// *http.Request via the same parser the net/http server uses, so r.URL.Path /
-// RawPath are populated exactly as in production.
+// *http.Request via http.ReadRequest — the same parser the net/http server
+// uses — so r.URL.Path / RawPath are populated exactly as in production.
 func sendRequest(t *testing.T, h http.Handler, daemon *recordingDaemon, method, target string, body []byte) (proxyResult, *recordedRequest) {
 	t.Helper()
 
-	before := len(daemon.received())
+	id := fmt.Sprintf("diff-%d", diffRequestSeq.Add(1))
 
 	var rdr io.Reader
 	if body != nil {
 		rdr = bytes.NewReader(body)
 	}
 	req := httptest.NewRequest(method, target, rdr)
+	req.Header.Set(diffIDHeader, id)
+
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
-	after := daemon.received()
-	var forwarded *recordedRequest
-	if len(after) > before {
-		forwarded = &after[len(after)-1]
-	}
+	forwarded := daemon.requestByID(id)
 	return proxyResult{
 		statusCode: rec.Code,
 		body:       rec.Body.String(),
