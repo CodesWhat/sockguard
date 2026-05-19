@@ -599,7 +599,7 @@ Output is text by default or JSON via `-o json`.
 
 <h2 align="center" id="migrating-from-tecnativa">🔄 Migrating from Tecnativa</h2>
 
-Replace the image — your current Tecnativa env surface maps over directly, with one explicit security acknowledgement for broad archive/export or log/attach streaming parity:
+Replace the image — your current Tecnativa env surface maps over directly, with two explicit security acknowledgements for the non-loopback plaintext TCP listener plus a third for broad archive/export or log/attach streaming parity:
 
 ```diff
  services:
@@ -611,6 +611,7 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
      environment:
        - SOCKGUARD_LISTEN_ADDRESS=:2375
        - SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true
++      - SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS=true
        - SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true
        - CONTAINERS=1
        - SERVICES=1
