@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,6 +113,30 @@ func TestContainerCreatePolicyInspectAllowsPermissiveBodyWithoutForbiddenFields(
 	}
 	if !bytes.Equal(gotBody, body) {
 		t.Fatalf("body after inspect = %q, want %q", string(gotBody), string(body))
+	}
+}
+
+// TestContainerCreatePolicyInspectBodyReadErrorFailsClosed proves the
+// highest-privilege inspector fails closed on a body-read I/O error: inspect
+// must surface the error (reason empty, error non-nil with "read body"
+// context) rather than return ("", nil), which the middleware treats as allow.
+// A swallowed read error here would skip every container-create policy check
+// — privileged, host-namespace, capability, device — so it is fail-open.
+func TestContainerCreatePolicyInspectBodyReadErrorFailsClosed(t *testing.T) {
+	sentinel := errors.New("read failed")
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+	req.Body = &readErrorReadCloser{readErr: sentinel}
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("inspect() error = %v, want wrapped %v", err, sentinel)
+	}
+	if !strings.Contains(err.Error(), "read body") {
+		t.Fatalf("inspect() error = %q, want read body context", err)
 	}
 }
 
