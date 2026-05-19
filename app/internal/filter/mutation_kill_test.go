@@ -28,20 +28,6 @@ func TestBodyReadTimeoutIs30Seconds(t *testing.T) {
 // rules.go mutants
 // ---------------------------------------------------------------------------
 
-// CONDITIONALS_BOUNDARY rules.go:95:31
-// canonicalizePath: `strings.IndexByte(p, '%') >= 0` — mutant changes to `> 0`.
-// When '%' is at index 0 the condition is still >=0 (true); with `>0` it becomes false.
-// We verify that a path whose first byte IS '%' still gets unescaped.
-func TestCanonicalizePath_PercentAtIndexZero(t *testing.T) {
-	// %2F is an encoded '/'
-	// Calling NormalizePath exercises canonicalizePath internally.
-	// If the mutation `>0` fires, the percent at index 0 would not be unescaped.
-	got := NormalizePath("%2Fcontainers%2Fjson")
-	if got != "/containers/json" {
-		t.Fatalf("NormalizePath(%%2Fcontainers%%2Fjson) = %q, want /containers/json", got)
-	}
-}
-
 // CONDITIONALS_BOUNDARY rules.go:119:12
 // pathNeedsClean: `len(p) > 1 && p[len(p)-1] == '/'` — mutant changes to `>= 1` (i.e. `len(p) >= 1`).
 // The only path where len==1 and ends with '/' is "/" itself, which is handled by the earlier guard.

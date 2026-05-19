@@ -82,14 +82,19 @@ func TestPathDifferentialNoEndpointEscalation(t *testing.T) {
 		{"trailing NUL byte", http.MethodGet, "/containers/json%00", false},
 
 		// --- percent-encoding ---
-		// sockguard decodes up to two layers of percent-encoding; the daemon
-		// decodes one. Single-encoded paths converge on both sides. Double
-		// encoding makes sockguard see /containers/json while the daemon sees
-		// a literal %XX segment — a divergence, but a safe one: the daemon
-		// routes nowhere (routeUnknown), it cannot reach a different endpoint.
+		// net/http decodes one layer of escaping at the request boundary, on
+		// both sockguard's and the daemon's side; sockguard does not decode
+		// again. So a single-encoded path converges to the same decoded form
+		// for both, while a double-encoded path keeps a literal %XX segment for
+		// both — sockguard never resolves an escape the daemon leaves literal.
 		{"encoded last segment", http.MethodGet, "/containers/%6a%73%6f%6e", true},
 		{"encoded separator", http.MethodGet, "/containers%2Fjson", true},
-		{"double-encoded last segment", http.MethodGet, "/containers/%256a%2573%256f%256e", true},
+		{"double-encoded last segment stays literal", http.MethodGet, "/containers/%256a%2573%256f%256e", false},
+		// Regression: a double-encoded dot must not collapse. If sockguard
+		// decoded %252e to "." and path.Clean ate the segment, it would
+		// authorize container.list while the daemon routes the literal
+		// "/containers/%2e/json" to container.inspect.
+		{"double-encoded dot segment stays literal", http.MethodGet, "/containers/%252e/json", false},
 		{"encoded dot-dot into create (POST)", http.MethodPost, "/containers/json/%2e%2e/create", false},
 		{"encoded dot-dot from create to json", http.MethodGet, "/containers/create/%2e%2e/json", true},
 

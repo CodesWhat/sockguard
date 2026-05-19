@@ -125,13 +125,18 @@ func TestNormalizePath(t *testing.T) {
 		{"versioned dot-dot", "/v1.45/../containers/json", "/containers/json"},
 		{"redundant slashes", "//containers///json", "/containers/json"},
 		{"dot segment", "/containers/./json", "/containers/json"},
-		{"encoded slash unescapes before match", "/containers%2Fjson", "/containers/json"},
-		{"encoded dot-dot collapses after unescape", "/containers/%2e%2e/images/json", "/images/json"},
-		{"encoded version separator strips prefix", "/v1.45%2Fcontainers/json", "/containers/json"},
 		{"empty string", "", ""},
-		// Fix F-3: double-encoded sequences must be fully decoded.
-		{"double-encoded slash in containers/create", "%252Fcontainers%252Fcreate", "/containers/create"},
-		{"double-encoded path traversal collapses", "/containers%252F..%252Fimages/json", "/images/json"},
+		// NormalizePath does not percent-decode. Its input (r.URL.Path) has
+		// already been decoded once by net/http — the same single decode the
+		// Docker daemon applies — so any %XX still present is a double-encoded
+		// escape that the daemon's router also leaves literal. Decoding it here
+		// would desync sockguard's policy view from the daemon's routing view.
+		{"literal percent escape is left intact", "/containers%2Fjson", "/containers%2Fjson"},
+		{"encoded dot stays a literal segment", "/containers/%2e/json", "/containers/%2e/json"},
+		{"encoded dot-dot stays a literal segment", "/containers/%2e%2e/images/json", "/containers/%2e%2e/images/json"},
+		{"encoded version separator is not a version prefix", "/v1.45%2Fcontainers/json", "/v1.45%2Fcontainers/json"},
+		{"double-encoded escape is not decoded", "%252Fcontainers%252Fcreate", "%252Fcontainers%252Fcreate"},
+		{"double-encoded traversal does not collapse", "/containers%252F..%252Fimages/json", "/containers%252F..%252Fimages/json"},
 	}
 
 	for _, tt := range tests {

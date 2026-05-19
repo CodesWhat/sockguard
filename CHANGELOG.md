@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+A rule could be bypassed with a doubly percent-encoded request path. `filter.NormalizePath` percent-decoded the path up to two times beyond the single decode Go's HTTP server already applies at the request boundary, while the Docker daemon's router decodes exactly once. A request such as `GET /containers/%252e/json` was therefore normalized by sockguard to `/containers/json` — matching an allow rule for the container list — while the daemon routed the once-decoded `/containers/%2e/json` to a different endpoint. `canonicalizePath` now only resolves `.`/`..` segments and redundant slashes via `path.Clean` and no longer percent-decodes, so sockguard's matched path is byte-identical to the path the daemon routes on. Single-encoded paths are unaffected — both sides decode them once at the HTTP layer — and a doubly-encoded `%25XX` sequence now stays literal for matching, exactly as it stays literal for daemon routing. A `match.path` pattern containing a literal `%` is still a config-validation error: such a pattern now only ever matches doubly-encoded traffic and never normal requests.
+
 ## [1.0.0-rc.2] - 2026-05-16
 
 ### Changed

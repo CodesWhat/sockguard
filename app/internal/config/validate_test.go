@@ -74,8 +74,9 @@ func TestValidateAllowsNonLoopbackPlainTCPWithBothOptIns(t *testing.T) {
 }
 
 func TestValidateRejectsLiteralPercentInRulePath(t *testing.T) {
-	// sockguard percent-decodes paths before rule matching, so a literal '%'
-	// in a pattern is a silently dead rule — it must fail config validation.
+	// sockguard matches the path as the daemon routes it (decoded once at the
+	// HTTP layer), so a literal '%' in a pattern only ever matches a doubly-
+	// encoded request — a silently dead rule that must fail config validation.
 	cfg := Defaults()
 	cfg.Rules = append(cfg.Rules, RuleConfig{
 		Match:  MatchConfig{Method: "GET", Path: "/containers/%2F/json"},

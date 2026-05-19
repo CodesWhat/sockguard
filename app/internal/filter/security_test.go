@@ -35,24 +35,33 @@ func TestNormalizePathAdversarialEncodings(t *testing.T) {
 		want    string
 	}{
 		{
-			name:    "single encoded slash decodes once at the HTTP boundary",
+			// net/http's request parser decodes one layer of escaping, so a
+			// singly-encoded separator is already "/" when NormalizePath sees
+			// it — exactly as the Docker daemon's parser sees it.
+			name:    "single encoded slash is decoded once at the HTTP boundary",
 			rawPath: "/containers%2Fjson",
 			want:    "/containers/json",
 		},
 		{
-			name:    "double encoded slash canonicalizes before normalization",
+			// A double-encoded separator survives the single HTTP-boundary
+			// decode as a literal "%2F" and must NOT be decoded again: the
+			// daemon's router leaves it literal too, so resolving it here
+			// would desync sockguard's policy view from the daemon's routing.
+			name:    "double encoded slash is left literal",
 			rawPath: "/containers%252Fjson",
-			want:    "/containers/json",
+			want:    "/containers%2Fjson",
 		},
 		{
-			name:    "single encoded dot-dot collapses after one decode",
+			name:    "single encoded dot-dot collapses after the boundary decode",
 			rawPath: "/containers/%2e%2e/images/json",
 			want:    "/images/json",
 		},
 		{
-			name:    "double encoded dot-dot collapses before normalization",
+			// Same reasoning: a double-encoded "%2e%2e" stays a literal path
+			// segment and is never resolved into a ".." traversal.
+			name:    "double encoded dot-dot is left literal",
 			rawPath: "/containers/%252e%252e/images/json",
-			want:    "/images/json",
+			want:    "/containers/%2e%2e/images/json",
 		},
 	}
 
@@ -74,19 +83,24 @@ func TestNormalizePathUnicodeEncoding(t *testing.T) {
 		want    string
 	}{
 		{
+			// The HTTP-boundary decode resolves the single layer; the decoded
+			// UTF-8 segment passes through NormalizePath unchanged.
 			name:    "single encoded cjk segment stays decoded",
 			rawPath: "/%E6%97%A5%E6%9C%AC/containers/json",
 			want:    "/日本/containers/json",
 		},
 		{
-			name:    "double encoded cyrillic segment canonicalizes before normalization",
+			// Double-encoded non-ASCII survives the boundary decode as literal
+			// "%XX" bytes and is left literal — NormalizePath never decodes
+			// the second layer, matching the daemon.
+			name:    "double encoded cyrillic segment is left literal",
 			rawPath: "/%25D1%2582%25D0%25B5%25D1%2581%25D1%2582/images/json",
-			want:    "/тест/images/json",
+			want:    "/%D1%82%D0%B5%D1%81%D1%82/images/json",
 		},
 		{
-			name:    "versioned double encoded arabic segment strips prefix after decode",
+			name:    "versioned double encoded arabic segment is left literal after prefix strip",
 			rawPath: "/v1.45/%25D9%2585%25D8%25B1%25D8%25AD%25D8%25A8%25D8%25A7/json",
-			want:    "/مرحبا/json",
+			want:    "/%D9%85%D8%B1%D8%AD%D8%A8%D8%A7/json",
 		},
 	}
 
@@ -126,11 +140,15 @@ func TestEvaluateEncodedPathBypassResistance(t *testing.T) {
 			wantIndex:  0,
 		},
 		{
-			name:       "double encoded slash canonicalizes into the containers allow rule",
+			// A double-encoded slash is a literal "%2F" segment, not a path
+			// separator — to sockguard and to the daemon's router alike. It
+			// must not slip into the slash-delimited /containers/** rule; it
+			// falls through to default-deny.
+			name:       "double encoded slash stays literal and is denied",
 			rules:      containerRules,
 			rawPath:    "/containers%252Fjson",
-			wantAction: ActionAllow,
-			wantIndex:  0,
+			wantAction: ActionDeny,
+			wantIndex:  1,
 		},
 		{
 			name:       "single encoded dot-dot normalizes to the actual target path once",
@@ -140,11 +158,14 @@ func TestEvaluateEncodedPathBypassResistance(t *testing.T) {
 			wantIndex:  0,
 		},
 		{
-			name:       "double encoded dot-dot canonicalizes into the target allow rule",
+			// A double-encoded "%2e%2e" stays a literal segment — it never
+			// resolves into a ".." traversal, so the path does not canonicalize
+			// onto /images/** and is denied.
+			name:       "double encoded dot-dot stays literal and is denied",
 			rules:      imageRules,
 			rawPath:    "/containers/%252e%252e/images/json",
-			wantAction: ActionAllow,
-			wantIndex:  0,
+			wantAction: ActionDeny,
+			wantIndex:  1,
 		},
 	}
 
@@ -162,20 +183,32 @@ func TestEvaluateEncodedPathBypassResistance(t *testing.T) {
 	}
 }
 
-func TestContainerCreatePolicyInspectCanonicalizesDoubleEncodedPath(t *testing.T) {
+// TestContainerCreateDoubleEncodedPathIsNotACreateRequest verifies that a
+// double-encoded path cannot smuggle a privileged container-create past the
+// body inspector. A double-encoded "/containers%252Fcreate" decodes once at
+// the HTTP boundary to the literal one-segment path "/containers%2Fcreate" —
+// not "/containers/create". The daemon's router sees the same literal path and
+// would 404, so it never runs a container-create; the inspector correctly does
+// not fire, and the request is left for the rule layer's default-deny.
+func TestContainerCreateDoubleEncodedPathIsNotACreateRequest(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"http://example.com/containers%252Fcreate",
 		strings.NewReader(`{"HostConfig":{"Privileged":true}}`),
 	)
-	policy := newContainerCreatePolicy(ContainerCreateOptions{})
 
-	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	normalized := NormalizePath(req.URL.Path)
+	if normalized == "/containers/create" {
+		t.Fatalf("NormalizePath(%q) = %q, want a path that is NOT /containers/create", req.URL.Path, normalized)
+	}
+
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	reason, err := policy.inspect(nil, req, normalized)
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "container create denied: privileged containers are not allowed" {
-		t.Fatalf("inspect() reason = %q, want privileged denial", reason)
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty: a non-create path is not the inspector's to judge", reason)
 	}
 }
 

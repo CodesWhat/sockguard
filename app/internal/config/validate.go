@@ -225,12 +225,14 @@ func validateRules(cfg *Config) []string {
 }
 
 // literalPercentRuleError reports a rule path pattern that contains a literal
-// '%'. sockguard percent-decodes request paths before rule matching, so such a
-// pattern can never match real traffic — a silently dead rule is a security
-// intent gap, so it fails config validation rather than logging a warning.
+// '%'. sockguard matches the request path as the daemon routes it — decoded
+// exactly once by the HTTP layer — so a '%XX' in a pattern only ever matches a
+// doubly-encoded request, never normal traffic. The rule the author meant is
+// therefore silently dead, a security-intent gap, so it fails config
+// validation rather than logging a warning.
 func literalPercentRuleError(label, pattern string) string {
 	return fmt.Sprintf(
-		"%s: match.path %q contains a literal '%%'; sockguard percent-decodes request paths before rule matching, so this pattern can never match — remove the '%%' or write the decoded form",
+		"%s: match.path %q contains a literal '%%'; sockguard matches the path as the daemon routes it (decoded once at the HTTP layer), so a '%%XX' here matches only a doubly-encoded request and never normal traffic — write the decoded form",
 		label, pattern,
 	)
 }

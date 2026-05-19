@@ -2,7 +2,6 @@ package filter
 
 import (
 	"net/http"
-	"net/url"
 	"path"
 	"regexp"
 	"slices"
@@ -85,10 +84,19 @@ type CompiledRule struct {
 	Index int
 }
 
-// NormalizePath sanitizes and strips the Docker API version prefix from a path.
-// It decodes one additional layer of path escaping, resolves ".." and "."
-// segments, and collapses redundant slashes before stripping the version
-// prefix so encoded separators cannot bypass path-based policy checks.
+// NormalizePath canonicalizes a request path into the form policy rules are
+// matched against: it resolves "." and ".." segments and collapses redundant
+// slashes (path.Clean), then strips a leading Docker API version prefix.
+//
+// It deliberately does NOT percent-decode. The path it receives is r.URL.Path,
+// which net/http's request parser has already decoded exactly once — the same
+// single decode the Docker daemon's request parser applies. Decoding again
+// would let sockguard resolve an escape the daemon leaves literal: a
+// double-encoded "%252e", for instance, would become a "." segment that
+// path.Clean collapses for sockguard while the daemon still routes it as a
+// real path segment, so the two would disagree on which endpoint the request
+// targets. Matching the daemon's single decode keeps sockguard's policy view
+// byte-identical to the daemon's routing view.
 func NormalizePath(p string) string {
 	if p == "" {
 		return ""
@@ -96,19 +104,10 @@ func NormalizePath(p string) string {
 	return stripVersionPrefix(canonicalizePath(p))
 }
 
+// canonicalizePath resolves "." / ".." segments and collapses redundant
+// slashes via path.Clean, fronted by the allocation-free pathNeedsClean fast
+// path. It does not percent-decode — see NormalizePath for why.
 func canonicalizePath(p string) string {
-	if strings.IndexByte(p, '%') >= 0 {
-		unescaped, err := url.PathUnescape(p)
-		if err == nil {
-			p = unescaped
-		}
-		// Second pass: handle double-encoded sequences like %252F → %2F → /.
-		if strings.IndexByte(p, '%') >= 0 {
-			if again, err2 := url.PathUnescape(p); err2 == nil {
-				p = again
-			}
-		}
-	}
 	if pathNeedsClean(p) {
 		p = path.Clean(p)
 	}
