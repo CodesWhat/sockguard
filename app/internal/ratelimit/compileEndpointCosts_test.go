@@ -119,14 +119,14 @@ func TestCompileEndpointCosts_RoundTrip(t *testing.T) {
 			cases: []matchCase{
 				{"/containers/abc123/exec", true},
 				{"/containers/very-long-container-id/exec", true},
-				{"/containers/exec", false},   // * needs at least the one segment
+				{"/containers/exec", false},     // * needs at least the one segment
 				{"/containers/a/b/exec", false}, // * doesn't cross slashes
 			},
 		},
 		{
 			// Method-restricted rule: POST /containers/create costs 10
-			name: "method_filter_post_only",
-			glob: "/containers/create",
+			name:    "method_filter_post_only",
+			glob:    "/containers/create",
 			methods: []string{"POST"},
 			cases: []matchCase{
 				{"/containers/create", true},
@@ -138,8 +138,8 @@ func TestCompileEndpointCosts_RoundTrip(t *testing.T) {
 			name: "bracket_characters_are_literal",
 			glob: "/foo[bar]",
 			cases: []matchCase{
-				{"/foo[bar]", true},  // literal square brackets
-				{"/foob", false},      // NOT a character class
+				{"/foo[bar]", true}, // literal square brackets
+				{"/foob", false},    // NOT a character class
 				{"/foobar", false},
 			},
 		},

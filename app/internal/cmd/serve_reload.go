@@ -71,17 +71,17 @@ type reloadCoordinator struct {
 // reload-time state — the running config, the swappable handler, every
 // per-process singleton — and grouping them here keeps call sites compact.
 type reloadCoordinatorParams struct {
-	RootCtx          context.Context
-	Cfg              *config.Config
-	CfgFile          string
-	Swappable        *reload.SwappableHandler
-	InitialTeardown  func()
-	Logger           *slog.Logger
-	AuditLogger      *logging.AuditLogger
-	Deps             *serveDeps
-	Runtime          *serveRuntime
-	Versioner        *admin.PolicyVersioner
-	BundleVerifier   policybundle.Verifier
+	RootCtx         context.Context
+	Cfg             *config.Config
+	CfgFile         string
+	Swappable       *reload.SwappableHandler
+	InitialTeardown func()
+	Logger          *slog.Logger
+	AuditLogger     *logging.AuditLogger
+	Deps            *serveDeps
+	Runtime         *serveRuntime
+	Versioner       *admin.PolicyVersioner
+	BundleVerifier  policybundle.Verifier
 }
 
 // newReloadCoordinator returns a coordinator wired up with the initial
@@ -318,4 +318,3 @@ func startReloader(ctx context.Context, cfgFile string, debounce, pollInterval t
 	}
 	return stop, nil
 }
-

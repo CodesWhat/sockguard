@@ -208,11 +208,11 @@ func TestMiddlewareRolloutMode(t *testing.T) {
 	rules := []*CompiledRule{r1, r2}
 
 	cases := []struct {
-		mode             string
-		wantReachInner   bool
-		wantStatus       int
-		wantDecision     string
-		wantReasonCode   string
+		mode                         string
+		wantReachInner               bool
+		wantStatus                   int
+		wantDecision                 string
+		wantReasonCode               string
 		wantPassThroughResponseEmpty bool
 	}{
 		{mode: "", wantReachInner: false, wantStatus: http.StatusForbidden, wantDecision: "deny", wantReasonCode: reasonCodeMatchedDenyRule},
@@ -416,8 +416,8 @@ func TestInspectAllowedRequestManyMatchesAllocatesNothing(t *testing.T) {
 	postPolicies := make([]requestInspectPolicy, 12)
 	for i := range postPolicies {
 		postPolicies[i] = requestInspectPolicy{
-			method:  http.MethodPost,
-			matches: func(string) bool { return true },
+			method:   http.MethodPost,
+			matches:  func(string) bool { return true },
 			severity: inspectSeverityCritical,
 			inspect:  func(*slog.Logger, *http.Request, string) (string, error) { return "", nil },
 		}
@@ -1453,8 +1453,8 @@ func TestInspectAllowedRequestReturnsRejectionStatusFromError(t *testing.T) {
 		inspectPoliciesByMethod: map[string][]requestInspectPolicy{
 			http.MethodPost: {
 				{
-					method:  http.MethodPost,
-					matches: func(string) bool { return true },
+					method:   http.MethodPost,
+					matches:  func(string) bool { return true },
 					severity: inspectSeverityMedium,
 					inspect: func(*slog.Logger, *http.Request, string) (string, error) {
 						return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, "entity too large")

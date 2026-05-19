@@ -67,7 +67,7 @@ type Options struct {
 	// ImagePatterns is a list of glob patterns matched against the container
 	// Image field and image RepoTags full references. When non-empty, a
 	// resource must match at least one pattern to be visible.
-	ImagePatterns []string
+	ImagePatterns  []string
 	Profiles       map[string]Policy
 	ResolveProfile func(*http.Request) (string, bool)
 }
@@ -1035,4 +1035,3 @@ func decodeResourceMeta(body io.Reader, kind dockerresource.Kind) (*resourceMeta
 		return nil, fmt.Errorf("unsupported resource kind %q for meta decode", kind)
 	}
 }
-

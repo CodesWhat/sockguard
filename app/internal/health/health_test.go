@@ -41,7 +41,6 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 }
 
-
 type headerCallTrackingWriter struct {
 	*httptest.ResponseRecorder
 	headerCalls int

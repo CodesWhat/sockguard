@@ -23,12 +23,12 @@ func FuzzBuildConfig(f *testing.F) {
 	}))
 
 	// f.Add seeds: (pemOrKey string, subjectPattern string, issuer string, enabled bool)
-	f.Add(validPEMSeed, "", "", true)          // keyed: valid-ish PEM, no keyless
+	f.Add(validPEMSeed, "", "", true)                                                   // keyed: valid-ish PEM, no keyless
 	f.Add("-----BEGIN PUBLIC KEY-----\nAA==\n-----END PUBLIC KEY-----\n", "", "", true) // truncated PEM
 	f.Add("", "(*invalid-regex", "https://accounts.google.com", true)                   // malformed regex
-	f.Add("", "", "", false)                                                              // disabled (no panic expected)
-	f.Add("", ".*", "https://accounts.google.com", true)                                 // keyless only, valid regex
-	f.Add("", "", "", true)                                                               // enabled but empty (error, not panic)
+	f.Add("", "", "", false)                                                            // disabled (no panic expected)
+	f.Add("", ".*", "https://accounts.google.com", true)                                // keyless only, valid regex
+	f.Add("", "", "", true)                                                             // enabled but empty (error, not panic)
 
 	f.Fuzz(func(t *testing.T, pemKey string, subjectPattern string, issuer string, enabled bool) {
 		// Build a RawConfig from the fuzz inputs. We populate both axes so that

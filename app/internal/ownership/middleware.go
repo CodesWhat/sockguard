@@ -515,4 +515,3 @@ func (u upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 	}
 	return body.ContainerID, true, nil
 }
-

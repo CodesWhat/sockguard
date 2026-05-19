@@ -13,21 +13,21 @@ const HardenedListenSocketFileMode = os.FileMode(0o600)
 
 // Config represents the sockguard configuration.
 type Config struct {
-	Listen                        ListenConfig      `mapstructure:"listen"`
-	Upstream                      UpstreamConfig    `mapstructure:"upstream"`
-	Log                           LogConfig         `mapstructure:"log"`
-	Response                      ResponseConfig    `mapstructure:"response"`
-	RequestBody                   RequestBodyConfig `mapstructure:"request_body"`
-	Clients                       ClientsConfig     `mapstructure:"clients"`
-	Ownership                     OwnershipConfig   `mapstructure:"ownership"`
-	Health                        HealthConfig      `mapstructure:"health"`
-	Metrics                       MetricsConfig     `mapstructure:"metrics"`
-	Admin                         AdminConfig       `mapstructure:"admin"`
-	Reload                        ReloadConfig      `mapstructure:"reload"`
+	Listen                        ListenConfig       `mapstructure:"listen"`
+	Upstream                      UpstreamConfig     `mapstructure:"upstream"`
+	Log                           LogConfig          `mapstructure:"log"`
+	Response                      ResponseConfig     `mapstructure:"response"`
+	RequestBody                   RequestBodyConfig  `mapstructure:"request_body"`
+	Clients                       ClientsConfig      `mapstructure:"clients"`
+	Ownership                     OwnershipConfig    `mapstructure:"ownership"`
+	Health                        HealthConfig       `mapstructure:"health"`
+	Metrics                       MetricsConfig      `mapstructure:"metrics"`
+	Admin                         AdminConfig        `mapstructure:"admin"`
+	Reload                        ReloadConfig       `mapstructure:"reload"`
 	PolicyBundle                  PolicyBundleConfig `mapstructure:"policy_bundle"`
-	Rules                         []RuleConfig      `mapstructure:"rules"`
-	InsecureAllowBodyBlindWrites  bool              `mapstructure:"insecure_allow_body_blind_writes"`
-	InsecureAllowReadExfiltration bool              `mapstructure:"insecure_allow_read_exfiltration"`
+	Rules                         []RuleConfig       `mapstructure:"rules"`
+	InsecureAllowBodyBlindWrites  bool               `mapstructure:"insecure_allow_body_blind_writes"`
+	InsecureAllowReadExfiltration bool               `mapstructure:"insecure_allow_read_exfiltration"`
 }
 
 // ListenConfig configures the proxy listener.
@@ -122,34 +122,34 @@ type RequestBodyConfig struct {
 // ContainerCreateRequestBodyConfig configures body inspection for
 // POST /containers/create requests.
 type ContainerCreateRequestBodyConfig struct {
-	AllowPrivileged        bool     `mapstructure:"allow_privileged"`
-	AllowHostNetwork       bool     `mapstructure:"allow_host_network"`
-	AllowHostPID           bool     `mapstructure:"allow_host_pid"`
-	AllowHostIPC           bool     `mapstructure:"allow_host_ipc"`
-	AllowedBindMounts      []string `mapstructure:"allowed_bind_mounts"`
-	AllowAllDevices        bool     `mapstructure:"allow_all_devices"`
-	AllowedDevices         []string `mapstructure:"allowed_devices"`
-	AllowDeviceRequests         bool                   `mapstructure:"allow_device_requests"`
-	AllowedDeviceRequests       []AllowedDeviceRequest `mapstructure:"allowed_device_requests"`
-	AllowDeviceCgroupRules      bool                   `mapstructure:"allow_device_cgroup_rules"`
-	AllowedDeviceCgroupRules    []string               `mapstructure:"allowed_device_cgroup_rules"`
+	AllowPrivileged          bool                   `mapstructure:"allow_privileged"`
+	AllowHostNetwork         bool                   `mapstructure:"allow_host_network"`
+	AllowHostPID             bool                   `mapstructure:"allow_host_pid"`
+	AllowHostIPC             bool                   `mapstructure:"allow_host_ipc"`
+	AllowedBindMounts        []string               `mapstructure:"allowed_bind_mounts"`
+	AllowAllDevices          bool                   `mapstructure:"allow_all_devices"`
+	AllowedDevices           []string               `mapstructure:"allowed_devices"`
+	AllowDeviceRequests      bool                   `mapstructure:"allow_device_requests"`
+	AllowedDeviceRequests    []AllowedDeviceRequest `mapstructure:"allowed_device_requests"`
+	AllowDeviceCgroupRules   bool                   `mapstructure:"allow_device_cgroup_rules"`
+	AllowedDeviceCgroupRules []string               `mapstructure:"allowed_device_cgroup_rules"`
 
-	RequireNoNewPrivileges     bool     `mapstructure:"require_no_new_privileges"`
-	RequireNonRootUser         bool     `mapstructure:"require_non_root_user"`
-	RequireReadonlyRootfs      bool     `mapstructure:"require_readonly_rootfs"`
-	RequireDropAllCapabilities bool     `mapstructure:"require_drop_all_capabilities"`
-	AllowAllCapabilities       bool     `mapstructure:"allow_all_capabilities"`
-	AllowedCapabilities        []string `mapstructure:"allowed_capabilities"`
-	RequireMemoryLimit         bool     `mapstructure:"require_memory_limit"`
-	RequireCPULimit            bool     `mapstructure:"require_cpu_limit"`
-	RequirePidsLimit           bool     `mapstructure:"require_pids_limit"`
-	AllowedSeccompProfiles     []string `mapstructure:"allowed_seccomp_profiles"`
-	DenyUnconfinedSeccomp      bool     `mapstructure:"deny_unconfined_seccomp"`
-	AllowedAppArmorProfiles    []string `mapstructure:"allowed_apparmor_profiles"`
-	DenyUnconfinedAppArmor     bool     `mapstructure:"deny_unconfined_apparmor"`
-	AllowHostUserNS            bool     `mapstructure:"allow_host_userns"`
-	AllowSysctls               bool     `mapstructure:"allow_sysctls"`
-	RequiredLabels             []string `mapstructure:"required_labels"`
+	RequireNoNewPrivileges     bool             `mapstructure:"require_no_new_privileges"`
+	RequireNonRootUser         bool             `mapstructure:"require_non_root_user"`
+	RequireReadonlyRootfs      bool             `mapstructure:"require_readonly_rootfs"`
+	RequireDropAllCapabilities bool             `mapstructure:"require_drop_all_capabilities"`
+	AllowAllCapabilities       bool             `mapstructure:"allow_all_capabilities"`
+	AllowedCapabilities        []string         `mapstructure:"allowed_capabilities"`
+	RequireMemoryLimit         bool             `mapstructure:"require_memory_limit"`
+	RequireCPULimit            bool             `mapstructure:"require_cpu_limit"`
+	RequirePidsLimit           bool             `mapstructure:"require_pids_limit"`
+	AllowedSeccompProfiles     []string         `mapstructure:"allowed_seccomp_profiles"`
+	DenyUnconfinedSeccomp      bool             `mapstructure:"deny_unconfined_seccomp"`
+	AllowedAppArmorProfiles    []string         `mapstructure:"allowed_apparmor_profiles"`
+	DenyUnconfinedAppArmor     bool             `mapstructure:"deny_unconfined_apparmor"`
+	AllowHostUserNS            bool             `mapstructure:"allow_host_userns"`
+	AllowSysctls               bool             `mapstructure:"allow_sysctls"`
+	RequiredLabels             []string         `mapstructure:"required_labels"`
 	ImageTrust                 ImageTrustConfig `mapstructure:"image_trust"`
 }
 
@@ -595,12 +595,12 @@ type ReloadConfig struct {
 // listener / TLS material: changing the trust root mid-reload would
 // silently expand the set of accepted signers.
 type PolicyBundleConfig struct {
-	Enabled               bool                        `mapstructure:"enabled"`
-	SignaturePath         string                      `mapstructure:"signature_path"`
-	AllowedSigningKeys    []PolicyBundleSigningKey    `mapstructure:"allowed_signing_keys"`
-	AllowedKeyless        []PolicyBundleKeyless       `mapstructure:"allowed_keyless"`
-	RequireRekorInclusion bool                        `mapstructure:"require_rekor_inclusion"`
-	VerifyTimeout         string                      `mapstructure:"verify_timeout"`
+	Enabled               bool                     `mapstructure:"enabled"`
+	SignaturePath         string                   `mapstructure:"signature_path"`
+	AllowedSigningKeys    []PolicyBundleSigningKey `mapstructure:"allowed_signing_keys"`
+	AllowedKeyless        []PolicyBundleKeyless    `mapstructure:"allowed_keyless"`
+	RequireRekorInclusion bool                     `mapstructure:"require_rekor_inclusion"`
+	VerifyTimeout         string                   `mapstructure:"verify_timeout"`
 }
 
 // PolicyBundleSigningKey is one entry in policy_bundle.allowed_signing_keys.

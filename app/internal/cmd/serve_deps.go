@@ -25,27 +25,27 @@ import (
 )
 
 type serveDeps struct {
-	loadConfig           func(string) (*config.Config, error)
-	readConfigBytes      func(string) ([]byte, error)
-	newLogger            func(string, string, string) (*slog.Logger, io.Closer, error)
-	newAuditLogger       func(string, string) (*logging.AuditLogger, io.Closer, error)
-	validateRules        func(*config.Config) ([]*filter.CompiledRule, error)
-	dialUpstream         func(string, string, time.Duration) (net.Conn, error)
-	listenNetwork        func(string, string) (net.Listener, error)
-	lstatPath            func(string) (os.FileInfo, error)
-	isAddrInUse          func(error) bool
-	createServeListener  func(*config.Config) (net.Listener, error)
-	createAdminListener  func(*config.Config) (net.Listener, error)
-	buildBundleVerifier  func(config.PolicyBundleConfig) (policybundle.Verifier, error)
-	loadBundleEntity     func(string) (verify.SignedEntity, error)
-	notifySignals        func(chan<- os.Signal, ...os.Signal)
-	startServing         func(*http.Server, net.Listener, chan<- error)
-	shutdownServer       func(*http.Server, context.Context) error
-	removePath           func(string) error
-	now                  func() time.Time
-	shutdownGracePeriod  time.Duration
-	umask                func(int) int
-	umaskMu              *sync.Mutex
+	loadConfig          func(string) (*config.Config, error)
+	readConfigBytes     func(string) ([]byte, error)
+	newLogger           func(string, string, string) (*slog.Logger, io.Closer, error)
+	newAuditLogger      func(string, string) (*logging.AuditLogger, io.Closer, error)
+	validateRules       func(*config.Config) ([]*filter.CompiledRule, error)
+	dialUpstream        func(string, string, time.Duration) (net.Conn, error)
+	listenNetwork       func(string, string) (net.Listener, error)
+	lstatPath           func(string) (os.FileInfo, error)
+	isAddrInUse         func(error) bool
+	createServeListener func(*config.Config) (net.Listener, error)
+	createAdminListener func(*config.Config) (net.Listener, error)
+	buildBundleVerifier func(config.PolicyBundleConfig) (policybundle.Verifier, error)
+	loadBundleEntity    func(string) (verify.SignedEntity, error)
+	notifySignals       func(chan<- os.Signal, ...os.Signal)
+	startServing        func(*http.Server, net.Listener, chan<- error)
+	shutdownServer      func(*http.Server, context.Context) error
+	removePath          func(string) error
+	now                 func() time.Time
+	shutdownGracePeriod time.Duration
+	umask               func(int) int
+	umaskMu             *sync.Mutex
 }
 
 var processUmaskMu sync.Mutex

@@ -2,11 +2,11 @@ package metrics
 
 import (
 	"bufio"
+	"cmp"
 	"fmt"
 	"math"
 	"net"
 	"net/http"
-	"cmp"
 	"runtime"
 	"slices"
 	"strconv"

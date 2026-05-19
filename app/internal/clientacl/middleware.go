@@ -89,7 +89,6 @@ type UnixPeerProfileAssignment struct {
 	PIDs    []int32
 }
 
-
 type resolvedClient struct {
 	ID     string
 	Name   string

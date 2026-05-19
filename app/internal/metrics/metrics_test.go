@@ -395,7 +395,7 @@ func TestSortedLabelHelpersOrderDeterministically(t *testing.T) {
 	}
 
 	durations := sortedDurationLabels(map[durationLabels]histogramSnapshot{
-		{decision: "deny", method: "POST", profile: "b", route: "/z"}:  {},
+		{decision: "deny", method: "POST", profile: "b", route: "/z"}: {},
 		{decision: "allow", method: "GET", profile: "a", route: "/a"}: {},
 	})
 	if got := durationLabelSortKey(durations[0]); got != "allow\x00GET\x00a\x00/a" {

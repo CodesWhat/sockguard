@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
-	"github.com/codeswhat/sockguard/internal/testhelp"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/testhelp"
 )
 
 const wantHijackInactivityTimeout = 10 * time.Minute

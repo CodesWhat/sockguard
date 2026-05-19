@@ -309,10 +309,10 @@ func TestCreateListenerTCPWithMutualTLS(t *testing.T) {
 		Listen: config.ListenConfig{
 			Address: "127.0.0.1:0",
 			TLS: config.ListenTLSConfig{
-				CertFile:           bundle.ServerCertFile,
-				KeyFile:            bundle.ServerKeyFile,
-				ClientCAFile:       bundle.CAFile,
-				CommonNames: []string{"sockguard-test-client"},
+				CertFile:     bundle.ServerCertFile,
+				KeyFile:      bundle.ServerKeyFile,
+				ClientCAFile: bundle.CAFile,
+				CommonNames:  []string{"sockguard-test-client"},
 			},
 		},
 	}
@@ -422,10 +422,10 @@ func TestCreateListenerTCPWithMutualTLSRejectsDisallowedClientCertificateIdentit
 		Listen: config.ListenConfig{
 			Address: "127.0.0.1:0",
 			TLS: config.ListenTLSConfig{
-				CertFile:           bundle.ServerCertFile,
-				KeyFile:            bundle.ServerKeyFile,
-				ClientCAFile:       bundle.CAFile,
-				CommonNames: []string{"different-client"},
+				CertFile:     bundle.ServerCertFile,
+				KeyFile:      bundle.ServerKeyFile,
+				ClientCAFile: bundle.CAFile,
+				CommonNames:  []string{"different-client"},
 			},
 		},
 	}

@@ -563,10 +563,10 @@ func TestContainerCreatePolicyInspectCapsOversizedBody(t *testing.T) {
 // perm-sorting of Docker device cgroup rule strings.
 func TestCanonicalizeDeviceCgroupRule(t *testing.T) {
 	tests := []struct {
-		name      string
-		raw       string
-		want      string
-		wantOK    bool
+		name   string
+		raw    string
+		want   string
+		wantOK bool
 	}{
 		{name: "exact char device", raw: "c 1:3 rwm", want: "c 1:3 rwm", wantOK: true},
 		// Cover both digit boundaries explicitly so a CONDITIONALS_BOUNDARY
@@ -797,9 +797,9 @@ func TestContainerCreatePolicyDenyDeviceCgroupRulesReason(t *testing.T) {
 		},
 		{
 			// Multiple rules: first passes, second fails
-			name: "multiple rules first passes second fails",
-			opts: ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 rwm"}},
-			body: `{"HostConfig":{"DeviceCgroupRules":["c 1:3 rwm","c 10:200 rwm"]}}`,
+			name:       "multiple rules first passes second fails",
+			opts:       ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 rwm"}},
+			body:       `{"HostConfig":{"DeviceCgroupRules":["c 1:3 rwm","c 10:200 rwm"]}}`,
 			wantReason: `container create denied: device cgroup rule "c 10:200 rwm" is not in the allowed list`,
 		},
 		{
@@ -829,7 +829,7 @@ func TestContainerCreatePolicyDenyDeviceCgroupRulesReason(t *testing.T) {
 func TestNewContainerCreatePolicyNormalizesDeviceCgroupRules(t *testing.T) {
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
 		AllowedDeviceCgroupRules: []string{
-			"c  1:3  rwm",  // extra whitespace
+			"c  1:3  rwm", // extra whitespace
 			"c 1:3 mrw",   // unsorted perms (same as above after canon)
 			"c 226:* rwm", // unique entry
 			"z bad",       // invalid, should be skipped
@@ -1012,7 +1012,7 @@ func TestNewContainerCreatePolicyNormalizesDeviceRequests(t *testing.T) {
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
 		AllowedDeviceRequests: []AllowedDeviceRequestEntry{
 			{Driver: "NVIDIA", AllowedCapabilities: [][]string{{"compute", "gpu", "gpu"}}, MaxCount: &maxTwo},
-			{Driver: "", AllowedCapabilities: [][]string{{"gpu"}}},                // invalid: empty driver, skipped
+			{Driver: "", AllowedCapabilities: [][]string{{"gpu"}}},                 // invalid: empty driver, skipped
 			{Driver: "  amd  ", AllowedCapabilities: [][]string{{"gpu", "video"}}}, // whitespace stripped
 		},
 	})
@@ -1105,18 +1105,18 @@ func TestImageTrust_Enforce_VerifierCalledWithImageRef(t *testing.T) {
 	mv := &mockImageVerifier{}
 	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
 	policy := containerCreatePolicy{
-		allowPrivileged:  true,
-		allowHostNetwork: true,
-		allowHostPID:     true,
-		allowHostIPC:     true,
-		allowHostUserNS:  true,
-		allowAllDevices:  true,
-		allowAllCapabilities: true,
-		allowDeviceRequests:  true,
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
-		imageTrustVerifier: mv,
-		imageTrustCfg:      cfg,
-		imageTrustTimeout:  0,
+		imageTrustVerifier:     mv,
+		imageTrustCfg:          cfg,
+		imageTrustTimeout:      0,
 	}
 
 	body := `{"Image":"registry.example.com/myapp:v1.2.3","HostConfig":{}}`
@@ -1136,17 +1136,17 @@ func TestImageTrust_Enforce_DeniesOnVerifierError(t *testing.T) {
 	mv := &mockImageVerifier{err: errors.New("no valid signature found")}
 	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
 	policy := containerCreatePolicy{
-		allowPrivileged:  true,
-		allowHostNetwork: true,
-		allowHostPID:     true,
-		allowHostIPC:     true,
-		allowHostUserNS:  true,
-		allowAllDevices:  true,
-		allowAllCapabilities: true,
-		allowDeviceRequests:  true,
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
-		imageTrustVerifier: mv,
-		imageTrustCfg:      cfg,
+		imageTrustVerifier:     mv,
+		imageTrustCfg:          cfg,
 	}
 
 	body := `{"Image":"registry.example.com/unsigned:latest","HostConfig":{}}`
@@ -1170,17 +1170,17 @@ func TestImageTrust_Warn_AllowsOnVerifierError(t *testing.T) {
 	mv := &mockImageVerifier{err: errors.New("no valid signature found")}
 	cfg := imagetrust.Config{Mode: imagetrust.ModeWarn}
 	policy := containerCreatePolicy{
-		allowPrivileged:  true,
-		allowHostNetwork: true,
-		allowHostPID:     true,
-		allowHostIPC:     true,
-		allowHostUserNS:  true,
-		allowAllDevices:  true,
-		allowAllCapabilities: true,
-		allowDeviceRequests:  true,
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
-		imageTrustVerifier: mv,
-		imageTrustCfg:      cfg,
+		imageTrustVerifier:     mv,
+		imageTrustCfg:          cfg,
 	}
 
 	body := `{"Image":"registry.example.com/unsigned:latest","HostConfig":{}}`
@@ -1199,17 +1199,17 @@ func TestImageTrust_EmptyImage_DeniedWhenVerifierConfigured(t *testing.T) {
 	mv := &mockImageVerifier{err: errors.New("should not be called")}
 	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
 	policy := containerCreatePolicy{
-		allowPrivileged:  true,
-		allowHostNetwork: true,
-		allowHostPID:     true,
-		allowHostIPC:     true,
-		allowHostUserNS:  true,
-		allowAllDevices:  true,
-		allowAllCapabilities: true,
-		allowDeviceRequests:  true,
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
-		imageTrustVerifier: mv,
-		imageTrustCfg:      cfg,
+		imageTrustVerifier:     mv,
+		imageTrustCfg:          cfg,
 	}
 
 	body := `{"Image":"","HostConfig":{}}`
@@ -1317,10 +1317,10 @@ func TestImageTrust_TimeoutGateRespectsZero(t *testing.T) {
 
 func TestContainerCreatePolicySysctls(t *testing.T) {
 	tests := []struct {
-		name         string
-		opts         ContainerCreateOptions
-		body         string
-		wantReason   string
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
 	}{
 		{
 			name:       "sysctls present AllowSysctls=false → deny",

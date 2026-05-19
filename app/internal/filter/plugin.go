@@ -38,9 +38,9 @@ type PluginOptions struct {
 }
 
 type pluginPolicy struct {
-	allowHostNetwork bool
-	allowHostIPC     bool
-	allowHostPID     bool
+	allowHostNetwork      bool
+	allowHostIPC          bool
+	allowHostPID          bool
 	allowAllDevices       bool
 	allowedBindMounts     []string
 	allowedDevices        []string
@@ -83,9 +83,9 @@ func newPluginPolicy(opts PluginOptions) pluginPolicy {
 	allowedSetEnvPrefixes := normalizePluginSetEnvPrefixes(opts.AllowedSetEnvPrefixes)
 
 	return pluginPolicy{
-		allowHostNetwork: opts.AllowHostNetwork,
-		allowHostIPC:     opts.AllowHostIPC,
-		allowHostPID:     opts.AllowHostPID,
+		allowHostNetwork:      opts.AllowHostNetwork,
+		allowHostIPC:          opts.AllowHostIPC,
+		allowHostPID:          opts.AllowHostPID,
 		allowAllDevices:       opts.AllowAllDevices,
 		allowedBindMounts:     allowedMounts,
 		allowedDevices:        allowedDevices,

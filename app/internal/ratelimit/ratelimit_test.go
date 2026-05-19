@@ -584,8 +584,8 @@ func TestCompileEndpointCosts_AllInputsCompile(t *testing.T) {
 func TestBucket_CASStress(t *testing.T) {
 	const (
 		goroutines   = 32
-		rate         = 500.0  // tokens/s — high enough to keep up with 32 workers
-		burst        = 100.0  // initial bucket fill
+		rate         = 500.0 // tokens/s — high enough to keep up with 32 workers
+		burst        = 100.0 // initial bucket fill
 		runDuration  = 100 * time.Millisecond
 		tolerancePct = 0.10 // ±10 % of expected total
 	)

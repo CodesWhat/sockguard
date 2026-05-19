@@ -58,17 +58,17 @@ type imageVerifier interface {
 // ContainerCreateOptions configures request-body policy checks for
 // POST /containers/create.
 type ContainerCreateOptions struct {
-	AllowPrivileged        bool
-	AllowHostNetwork       bool
-	AllowHostPID           bool
-	AllowHostIPC           bool
-	AllowedBindMounts      []string
-	AllowAllDevices        bool
-	AllowedDevices         []string
-	AllowDeviceRequests         bool
-	AllowedDeviceRequests       []AllowedDeviceRequestEntry
-	AllowDeviceCgroupRules      bool
-	AllowedDeviceCgroupRules    []string
+	AllowPrivileged          bool
+	AllowHostNetwork         bool
+	AllowHostPID             bool
+	AllowHostIPC             bool
+	AllowedBindMounts        []string
+	AllowAllDevices          bool
+	AllowedDevices           []string
+	AllowDeviceRequests      bool
+	AllowedDeviceRequests    []AllowedDeviceRequestEntry
+	AllowDeviceCgroupRules   bool
+	AllowedDeviceCgroupRules []string
 
 	RequireNoNewPrivileges     bool
 	RequireNonRootUser         bool
@@ -95,17 +95,17 @@ type ContainerCreateOptions struct {
 }
 
 type containerCreatePolicy struct {
-	allowPrivileged        bool
-	allowHostNetwork       bool
-	allowHostPID           bool
-	allowHostIPC           bool
-	allowedBindMounts      []string
-	allowAllDevices        bool
-	allowedDevices         []string
-	allowDeviceRequests         bool
-	allowedDeviceRequests       []allowedDeviceRequestEntry
-	allowDeviceCgroupRules      bool
-	allowedDeviceCgroupRules    []string
+	allowPrivileged          bool
+	allowHostNetwork         bool
+	allowHostPID             bool
+	allowHostIPC             bool
+	allowedBindMounts        []string
+	allowAllDevices          bool
+	allowedDevices           []string
+	allowDeviceRequests      bool
+	allowedDeviceRequests    []allowedDeviceRequestEntry
+	allowDeviceCgroupRules   bool
+	allowedDeviceCgroupRules []string
 
 	requireNoNewPrivileges     bool
 	requireNonRootUser         bool
@@ -180,17 +180,17 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	}
 
 	p := containerCreatePolicy{
-		allowPrivileged:             opts.AllowPrivileged,
-		allowHostNetwork:            opts.AllowHostNetwork,
-		allowHostPID:                opts.AllowHostPID,
-		allowHostIPC:                opts.AllowHostIPC,
-		allowedBindMounts:           allowed,
-		allowAllDevices:             opts.AllowAllDevices,
-		allowedDevices:              allowedDevices,
-		allowDeviceRequests:         opts.AllowDeviceRequests,
-		allowedDeviceRequests:       allowedDeviceRequests,
-		allowDeviceCgroupRules:      opts.AllowDeviceCgroupRules,
-		allowedDeviceCgroupRules:    allowedDeviceCgroupRules,
+		allowPrivileged:            opts.AllowPrivileged,
+		allowHostNetwork:           opts.AllowHostNetwork,
+		allowHostPID:               opts.AllowHostPID,
+		allowHostIPC:               opts.AllowHostIPC,
+		allowedBindMounts:          allowed,
+		allowAllDevices:            opts.AllowAllDevices,
+		allowedDevices:             allowedDevices,
+		allowDeviceRequests:        opts.AllowDeviceRequests,
+		allowedDeviceRequests:      allowedDeviceRequests,
+		allowDeviceCgroupRules:     opts.AllowDeviceCgroupRules,
+		allowedDeviceCgroupRules:   allowedDeviceCgroupRules,
 		requireNoNewPrivileges:     opts.RequireNoNewPrivileges,
 		requireNonRootUser:         opts.RequireNonRootUser,
 		requireReadonlyRootfs:      opts.RequireReadonlyRootfs,

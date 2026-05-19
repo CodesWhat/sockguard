@@ -33,12 +33,12 @@ const (
 // ResponseWriter; tests and non-access-log callers can also pass it through
 // request context via WithMeta.
 type RequestMeta struct {
-	Decision        string
-	Rule            int
-	Reason          string
-	ReasonCode      string
-	NormPath        string
-	Profile         string
+	Decision   string
+	Rule       int
+	Reason     string
+	ReasonCode string
+	NormPath   string
+	Profile    string
 	// RolloutMode carries the resolved profile's rollout posture
 	// (enforce / warn / audit). Empty string is equivalent to "enforce".
 	// Set by clientacl when a profile is matched; read by every deny site

@@ -411,8 +411,8 @@ type fsnotifyWatcher struct {
 	w *fsnotify.Watcher
 }
 
-func (f *fsnotifyWatcher) Add(path string) error               { return f.w.Add(path) }
-func (f *fsnotifyWatcher) Remove(path string) error            { return f.w.Remove(path) }
-func (f *fsnotifyWatcher) Close() error                        { return f.w.Close() }
-func (f *fsnotifyWatcher) Events() <-chan fsnotify.Event       { return f.w.Events }
-func (f *fsnotifyWatcher) Errors() <-chan error                { return f.w.Errors }
+func (f *fsnotifyWatcher) Add(path string) error         { return f.w.Add(path) }
+func (f *fsnotifyWatcher) Remove(path string) error      { return f.w.Remove(path) }
+func (f *fsnotifyWatcher) Close() error                  { return f.w.Close() }
+func (f *fsnotifyWatcher) Events() <-chan fsnotify.Event { return f.w.Events }
+func (f *fsnotifyWatcher) Errors() <-chan error          { return f.w.Errors }

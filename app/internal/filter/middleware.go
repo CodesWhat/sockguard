@@ -129,9 +129,9 @@ func (o Options) normalized() Options {
 }
 
 type runtimePolicy struct {
-	rules                    []*CompiledRule
-	denyResponseVerbosity    DenyResponseVerbosity
-	inspectPoliciesByMethod  map[string][]requestInspectPolicy
+	rules                   []*CompiledRule
+	denyResponseVerbosity   DenyResponseVerbosity
+	inspectPoliciesByMethod map[string][]requestInspectPolicy
 }
 
 type inspectSeverity int
