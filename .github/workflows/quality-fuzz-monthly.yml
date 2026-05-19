@@ -12,8 +12,8 @@ run-name: >-
 # very deep pass per month that can find paths the shorter tiers miss,
 # plus on-demand longer runs via `workflow_dispatch` before a release.
 #
-# 1 hour per fuzzer × 8 fuzzers × matrix-parallel = ~1 hour wall time,
-# ~8 runner-hours total. That's well within the free-tier budget for
+# 1 hour per fuzzer × 9 fuzzers × matrix-parallel = ~1 hour wall time,
+# ~9 runner-hours total. That's well within the free-tier budget for
 # public repos and cheap insurance for a default-deny security proxy.
 #
 # Crashes are uploaded with 180-day retention so a failing input from
@@ -64,6 +64,7 @@ jobs:
           - { name: FuzzProxyHeadersAndBody,       pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,      pkg: ./internal/proxy/ }
           - { name: FuzzHijackBidirectionalStream, pkg: ./internal/proxy/ }
+          - { name: FuzzPathRoutingDifferential,   pkg: ./differential/ }
 
     steps:
       - name: Harden Runner
@@ -119,7 +120,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: fuzz-corpus-monthly-${{ matrix.fuzzer.name }}-${{ github.run_id }}
-          path: app/internal/**/testdata/fuzz/${{ matrix.fuzzer.name }}/
+          path: app/**/testdata/fuzz/${{ matrix.fuzzer.name }}/
           retention-days: 180
           if-no-files-found: ignore
 

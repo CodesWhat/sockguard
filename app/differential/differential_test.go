@@ -24,7 +24,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/proxy"
@@ -51,13 +50,20 @@ type recordingDaemon struct {
 	requests []recordedRequest
 }
 
+// diffSocketSeq names every unix socket the harness creates — recording
+// daemons here and raw-chain front-ends in the smuggling tier. A process-wide
+// atomic counter is collision-free; a time.Now() suffix is not, because two
+// parallel subtests can build a path within the same nanosecond and the second
+// net.Listen then fails with "bind: file exists".
+var diffSocketSeq atomic.Int64
+
 // newRecordingDaemon starts a recording daemon on a fresh unix socket and
 // registers cleanup. The socket path is kept short (under /tmp) because macOS
 // caps sun_path at 104 bytes, which t.TempDir() can exceed.
 func newRecordingDaemon(t *testing.T) *recordingDaemon {
 	t.Helper()
 
-	socketPath := fmt.Sprintf("/tmp/sockguard-diff-%d-%d.sock", os.Getpid(), time.Now().UnixNano())
+	socketPath := fmt.Sprintf("/tmp/sockguard-diff-%d-%d.sock", os.Getpid(), diffSocketSeq.Add(1))
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("listen unix socket %q: %v", socketPath, err)
@@ -137,10 +143,14 @@ func buildChain(t *testing.T, socketPath string, rules ...filter.Rule) http.Hand
 
 	compiled := make([]*filter.CompiledRule, 0, len(rules))
 	for i := range rules {
-		rules[i].Index = i
-		cr, err := filter.CompileRule(rules[i])
+		// Copy the rule before stamping its Index: a caller that expands a
+		// shared []filter.Rule with `...` passes the same backing array, so
+		// mutating rules[i] in place would race across parallel subtests.
+		rule := rules[i]
+		rule.Index = i
+		cr, err := filter.CompileRule(rule)
 		if err != nil {
-			t.Fatalf("compile rule %d (%+v): %v", i, rules[i], err)
+			t.Fatalf("compile rule %d (%+v): %v", i, rule, err)
 		}
 		compiled = append(compiled, cr)
 	}

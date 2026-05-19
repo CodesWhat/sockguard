@@ -286,24 +286,25 @@ jobs:
       fail-fast: false
       matrix:
         fuzzer:
-          - { name: FuzzPathMatch,            pkg: ./internal/filter/ }
-          - { name: FuzzGlobToRegex,          pkg: ./internal/filter/ }
-          - { name: FuzzGlobToRegexString,    pkg: ./internal/filter/ }
-          - { name: FuzzNormalizePath,        pkg: ./internal/filter/ }
-          - { name: FuzzCompileRule,          pkg: ./internal/filter/ }
-          - { name: FuzzBuild,                pkg: ./internal/filter/ }
-          - { name: FuzzContainerCreate,      pkg: ./internal/filter/ }
-          - { name: FuzzExec,                 pkg: ./internal/filter/ }
-          - { name: FuzzImagePull,            pkg: ./internal/filter/ }
-          - { name: FuzzVolume,               pkg: ./internal/filter/ }
-          - { name: FuzzSecret,               pkg: ./internal/filter/ }
-          - { name: FuzzConfigWrite,          pkg: ./internal/filter/ }
-          - { name: FuzzService,              pkg: ./internal/filter/ }
-          - { name: FuzzSwarm,                pkg: ./internal/filter/ }
-          - { name: FuzzPlugin,               pkg: ./internal/filter/ }
-          - { name: FuzzNetwork,              pkg: ./internal/filter/ }
-          - { name: FuzzProxyHeadersAndBody,  pkg: ./internal/proxy/ }
-          - { name: FuzzHijackHeadersAndBody, pkg: ./internal/proxy/ }
+          - { name: FuzzPathMatch,               pkg: ./internal/filter/ }
+          - { name: FuzzGlobToRegex,             pkg: ./internal/filter/ }
+          - { name: FuzzGlobToRegexString,       pkg: ./internal/filter/ }
+          - { name: FuzzNormalizePath,           pkg: ./internal/filter/ }
+          - { name: FuzzCompileRule,             pkg: ./internal/filter/ }
+          - { name: FuzzBuild,                   pkg: ./internal/filter/ }
+          - { name: FuzzContainerCreate,         pkg: ./internal/filter/ }
+          - { name: FuzzExec,                    pkg: ./internal/filter/ }
+          - { name: FuzzImagePull,               pkg: ./internal/filter/ }
+          - { name: FuzzVolume,                  pkg: ./internal/filter/ }
+          - { name: FuzzSecret,                  pkg: ./internal/filter/ }
+          - { name: FuzzConfigWrite,             pkg: ./internal/filter/ }
+          - { name: FuzzService,                 pkg: ./internal/filter/ }
+          - { name: FuzzSwarm,                   pkg: ./internal/filter/ }
+          - { name: FuzzPlugin,                  pkg: ./internal/filter/ }
+          - { name: FuzzNetwork,                 pkg: ./internal/filter/ }
+          - { name: FuzzProxyHeadersAndBody,     pkg: ./internal/proxy/ }
+          - { name: FuzzHijackHeadersAndBody,    pkg: ./internal/proxy/ }
+          - { name: FuzzPathRoutingDifferential, pkg: ./differential/ }
 
     steps:
       - name: Harden Runner
@@ -339,7 +340,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: fuzz-corpus-${{ matrix.fuzzer.name }}-${{ github.run_id }}
-          path: app/internal/**/testdata/fuzz/${{ matrix.fuzzer.name }}/
+          path: app/**/testdata/fuzz/${{ matrix.fuzzer.name }}/
           retention-days: 30
           if-no-files-found: ignore
 

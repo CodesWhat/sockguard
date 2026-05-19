@@ -36,7 +36,7 @@ func newRawChain(t *testing.T, daemon *recordingDaemon, rules ...filter.Rule) st
 
 	chain := buildChain(t, daemon.socketPath, rules...)
 
-	sockPath := fmt.Sprintf("/tmp/sockguard-diff-fe-%d-%d.sock", os.Getpid(), time.Now().UnixNano())
+	sockPath := fmt.Sprintf("/tmp/sockguard-diff-fe-%d-%d.sock", os.Getpid(), diffSocketSeq.Add(1))
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
 		t.Fatalf("listen unix socket %q: %v", sockPath, err)

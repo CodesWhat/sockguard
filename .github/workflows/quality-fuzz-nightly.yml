@@ -76,6 +76,7 @@ jobs:
           - { name: FuzzProxyHeadersAndBody,       pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,      pkg: ./internal/proxy/ }
           - { name: FuzzHijackBidirectionalStream, pkg: ./internal/proxy/ }
+          - { name: FuzzPathRoutingDifferential,   pkg: ./differential/ }
 
     steps:
       - name: Harden Runner
@@ -131,7 +132,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: fuzz-corpus-${{ matrix.fuzzer.name }}-${{ github.run_id }}
-          path: app/internal/**/testdata/fuzz/${{ matrix.fuzzer.name }}/
+          path: app/**/testdata/fuzz/${{ matrix.fuzzer.name }}/
           retention-days: 90
           if-no-files-found: ignore
 
