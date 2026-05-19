@@ -3,6 +3,8 @@ interface ComparisonRow {
   tecnativa: string;
   linuxserver: string;
   wollomatic: string;
+  elevenNotes: string;
+  cetusguard: string;
   sockguard: string;
   planned?: boolean;
 }
@@ -13,6 +15,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "Yes",
     linuxserver: "Yes",
     wollomatic: "Yes (regex)",
+    elevenNotes: "Read-only (fixed)",
+    cetusguard: "Yes (regex)",
     sockguard: "Yes",
   },
   {
@@ -20,6 +24,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "Partial",
     wollomatic: "Via regex",
+    elevenNotes: "No (read-only)",
+    cetusguard: "Via regex",
     sockguard: "Yes",
   },
   {
@@ -27,6 +33,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "Partial (bind-mount restrictions)",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard:
       "Yes (container, image, build, volume, network, secret, config, service, swarm, node, plugin)",
   },
@@ -35,6 +43,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "IP/hostname + labels",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "CIDR + labels + cert selectors incl. SPKI + unix peer",
   },
   {
@@ -42,6 +52,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (workload + control plane)",
   },
   {
@@ -49,6 +61,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No (plaintext TCP)",
+    cetusguard: "Yes",
     sockguard: "Yes (TLS 1.3)",
   },
   {
@@ -56,6 +70,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "Partial (blocks 7 risky GETs)",
+    cetusguard: "No",
     sockguard: "Yes (visibility + protected JSON redaction)",
   },
   {
@@ -63,6 +79,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "Yes (JSON option)",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (request + trace correlation)",
   },
   {
@@ -70,6 +88,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (JSON schema + reason codes)",
   },
   {
@@ -77,6 +97,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "HAProxy stats",
     linuxserver: "nginx status",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (socket-proxy metrics)",
   },
   {
@@ -84,6 +106,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "Yes",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (+ /health + metrics)",
   },
   {
@@ -91,6 +115,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (W3C traceparent)",
   },
   {
@@ -98,6 +124,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes",
   },
   {
@@ -105,6 +133,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (per-profile token-bucket + global priority gate)",
   },
   {
@@ -112,6 +142,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (per-profile shadow + would_deny audit)",
   },
   {
@@ -119,6 +151,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (cosign keyed + keyless, Rekor inclusion)",
   },
   {
@@ -126,6 +160,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (fsnotify/SIGHUP, validate endpoint, policy version)",
   },
 ];

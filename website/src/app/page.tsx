@@ -407,7 +407,7 @@ export default function Home() {
                 Comparison
               </h2>
               <p className="relative mt-4 text-neutral-600 dark:text-neutral-400">
-                How Sockguard stacks up against other Docker socket proxies
+                How we stack up against other Docker socket proxies
               </p>
             </div>
 
@@ -426,6 +426,12 @@ export default function Home() {
                     </th>
                     <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-500">
                       wollomatic
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                      11notes
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                      CetusGuard
                     </th>
                     <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-900 dark:text-neutral-50">
                       Sockguard
@@ -449,6 +455,12 @@ export default function Home() {
                       </td>
                       <td className="px-4 py-3 text-center">
                         <ComparisonCell value={row.wollomatic} />
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <ComparisonCell value={row.elevenNotes} />
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <ComparisonCell value={row.cetusguard} />
                       </td>
                       <td className="px-4 py-3 text-center">
                         <ComparisonCell value={row.sockguard} planned={row.planned} />

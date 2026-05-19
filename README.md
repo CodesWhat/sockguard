@@ -198,7 +198,7 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 
 The Docker socket is **root access to your host**. Every container with socket access can escape containment, mount the host filesystem, and pivot to other containers. Yet tools like Traefik, Portainer, and drydock need socket access to function.
 
-Most existing socket proxies stop at method/path or regex filtering. Tecnativa and LinuxServer gate broad Docker API sections, and wollomatic adds regex allowlists, hostname/IP admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, and a filtered unix-socket endpoint. Sockguard goes further on body-aware policy enforcement, per-client profile selection, ownership isolation, and read-side visibility/redaction.
+Most existing socket proxies stop at method/path or regex filtering. Tecnativa and LinuxServer gate broad Docker API sections, wollomatic adds regex allowlists, hostname/IP admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, and a filtered unix-socket endpoint, 11notes ships a fixed read-only proxy that blocks all writes plus seven exfiltration-prone GET endpoints, and CetusGuard pairs zero-dependency default-deny regex rules with mTLS. We go further on body-aware policy enforcement, per-client profile selection, ownership isolation, and read-side visibility/redaction.
 
 <hr>
 
@@ -233,25 +233,26 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 
 <h2 align="center" id="comparison">⚖️ Comparison</h2>
 
-How sockguard stacks up against other Docker socket proxies:
+How we stack up against other Docker socket proxies:
 
-| Feature | Tecnativa | LinuxServer | wollomatic | **Sockguard** |
-|---------|:---------:|:-----------:|:----------:|:-------------:|
-| Method + path filtering | ✅ | ✅ | ✅ (regex) | ✅ |
-| Granular container write ops | ❌ | Partial (`ALLOW_*`) | Via regex | ✅ |
-| Request body inspection | ❌ | ❌ | Partial (bind-mount source restrictions) | ✅ (`container` create/update/exec/archive, `image` pull/load, `build`, `volume`, `network` create/connect/disconnect, `secret`, `config`, `service`, `swarm` init/join/update/unlock, `node` update, `plugin`) |
-| Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
-| Read-side visibility / redaction | ❌ | ❌ | ❌ | ✅ (visibility + protected JSON redaction) |
-| Structured access logs | ❌ | ❌ | ✅ (JSON option) | ✅ (request + trace correlation) |
-| Dedicated audit log schema | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
-| Rate limits / concurrency caps | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
-| Rollout modes (audit/warn/enforce) | ❌ | ❌ | ❌ | ✅ (per-profile shadow + would_deny audit) |
-| Hot-reload + policy versioning | ❌ | ❌ | ❌ | ✅ (fsnotify + SIGHUP, `/admin/policy/version`) |
-| Signed policy bundles | ❌ | ❌ | ❌ | ✅ (sigstore keyed + keyless) |
-| YAML config | ❌ | ❌ | ❌ | ✅ |
-| Tecnativa env compat | N/A | ✅ | ❌ | ✅ |
+| Feature | Tecnativa | LinuxServer | wollomatic | 11notes | CetusGuard | **Sockguard** |
+|---------|:---------:|:-----------:|:----------:|:-------:|:----------:|:-------------:|
+| Method + path filtering | ✅ | ✅ | ✅ (regex) | Fixed read-only | ✅ (regex) | ✅ |
+| Granular container write ops | ❌ | Partial (`ALLOW_*`) | Via regex | ❌ (read-only) | Via regex | ✅ |
+| Request body inspection | ❌ | ❌ | Partial (bind-mount source restrictions) | ❌ | ❌ | ✅ (`container` create/update/exec/archive, `image` pull/load, `build`, `volume`, `network` create/connect/disconnect, `secret`, `config`, `service`, `swarm` init/join/update/unlock, `node` update, `plugin`) |
+| Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
+| Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (blocks 7 risky GETs) | ❌ | ✅ (visibility + protected JSON redaction) |
+| Remote TCP mTLS | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (TLS 1.3) |
+| Structured access logs | ❌ | ❌ | ✅ (JSON option) | ❌ | ❌ | ✅ (request + trace correlation) |
+| Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
+| Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
+| Rollout modes (audit/warn/enforce) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile shadow + would_deny audit) |
+| Hot-reload + policy versioning | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (fsnotify + SIGHUP, `/admin/policy/version`) |
+| Signed policy bundles | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (sigstore keyed + keyless) |
+| YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ✅ |
 
-Wollomatic deserves more credit than earlier versions of this README gave it. Current releases already support hostname/IP admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, and a filtered unix-socket endpoint. Sockguard's current lead is in body inspection breadth (every body-bearing Docker write path Sockguard can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction.
+We give wollomatic its due — it is the strongest of the prior generation, with hostname/IP admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, and a filtered unix-socket endpoint. `11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules and run non-root ourselves, but we additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Our overall lead is in body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction.
 
 <hr>
 
