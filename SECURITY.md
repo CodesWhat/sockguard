@@ -4,12 +4,13 @@
 
 Security fixes are shipped on the **latest release line only**. Once v1.0 is
 tagged we will maintain a rolling two-minor-version window (current + one
-prior minor). Until then, patch the latest 0.x tag.
+prior minor). Until then, patch the latest release candidate.
 
-| Version        | Supported          |
-| -------------- | ------------------ |
-| 0.8.x (latest) | :white_check_mark: |
-| < 0.8          | :x:                |
+| Version           | Supported          |
+| ----------------- | ------------------ |
+| 1.0.0-rc.2 (latest) | :white_check_mark: |
+| 0.8.x             | :x:                |
+| < 0.8             | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -106,7 +107,7 @@ reporting — we'd rather deduplicate than miss a real bug.
 A good report makes triage fast and reduces the risk we misread the
 severity. Please include as much of the following as you can:
 
-- **Sockguard version and image digest** — `sockguard --version` and
+- **Sockguard version and image digest** — `sockguard version` and
   the digest of the image you tested (`docker image inspect`).
 - **Reproducer** — the minimal config, rules, and request(s) that
   demonstrate the issue. If the repro needs a specific Docker daemon
@@ -125,5 +126,5 @@ severity. Please include as much of the following as you can:
 If the bug involves a supply-chain concern (a tampered image, a cosign
 verification failure, a compromised dependency), also include the
 exact `cosign verify` command you ran and its full output. See the
-[image verification guide](./docs/src/content/verification.mdx) for
+[image verification guide](docs/content/docs/verification.mdx) for
 the canonical invocation.
