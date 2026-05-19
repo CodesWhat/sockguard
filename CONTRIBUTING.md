@@ -131,10 +131,17 @@ Scope is optional. Subject line should be imperative, lowercase, no trailing per
 
 | Step | What it does |
 |------|-------------|
+| `clean-tree` | Abort if there are uncommitted changes |
+| `goreleaser-snapshot` | Release dry-run (skipped if goreleaser not installed) |
 | `go-lint` | golangci-lint on Go code |
-| `go-test` | Full test suite with coverage |
+| `go-test` | Full test suite with race detector |
+| `go-fuzz` | 5 s smoke run across all 8 fuzz targets |
+| `lockfile-dedupe` | Detect lockfile drift (`npm dedupe --dry-run`) |
+| `knip` | Unused files/exports/deps in TS workspaces |
 | `biome` | Biome lint and format check on TS/JS |
+| `ts-test` | TypeScript workspace tests |
 | `build` | Verify all packages build |
+| `zizmor` | GitHub Actions workflow security scan (skipped if not installed) |
 
 ## Pull requests
 

@@ -40,7 +40,7 @@
 
    The only file that needs a manual bump is `chart/sockguard/Chart.yaml` (see [Helm chart](#helm-chart) below).
 
-6. **Lefthook pre-push** — runs automatically on `git push`. Sequence: goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails.
+6. **Lefthook pre-push** — runs automatically on `git push`. Sequence: clean-tree → goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails.
 
 ---
 
