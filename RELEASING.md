@@ -1,5 +1,22 @@
 # Releasing sockguard
 
+## v1.0.0 release gate (one-time)
+
+> Applies only to the `v1.0.0` tag. Remove this section once v1.0.0 ships.
+>
+> v1.0.0 is **criteria-gated, not date-gated** — there is no fixed soak duration, and "soak until it feels ready" is not a criterion. The v1.0 contract — YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names — is frozen as of `v1.0.0-rc.2` (tagged 2026-05-16). Every box below must hold before the `v1.0.0` tag is cut; the generic [Before tagging](#before-tagging) steps then still apply on top.
+
+- [ ] An rc (`rc.2` or later) has run **≥ 2–4 weeks across ≥ 2 real deployments** carrying production-shaped traffic.
+- [ ] **Zero policy-bypass findings** from the proxy-vs-daemon differential harness and the negative / red-team test suite.
+- [ ] **Zero panics and zero goroutine/RSS growth** over a 24 h+ memory-and-goroutine soak.
+- [ ] **No change was forced to the locked surface during the soak.** Any forced schema / CLI / env var / admin-endpoint / metric-name change re-cuts an rc and resets the soak clock — that is the point of freezing the surface.
+- [ ] `govulncheck` is clean, Grype + OpenSSF Scorecard are green, and the published image verifies with the documented `cosign verify` invocation.
+- [ ] CHANGELOG `[Unreleased]` is rolled into a `[1.0.0]` entry and `chart/sockguard/Chart.yaml` is bumped (also covered by the generic checklist below).
+
+If any box fails, fix it, cut a fresh rc, and restart the soak clock — a reset here is the gate working as designed, not a failure.
+
+---
+
 ## Before tagging
 
 1. **Clean tree on `main`**
