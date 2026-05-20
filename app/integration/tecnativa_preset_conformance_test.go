@@ -3,6 +3,7 @@
 package integration_test
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/config"
 )
@@ -78,7 +80,11 @@ func TestTecnativaPresetConformance(t *testing.T) {
 			expect: []presetExpectation{
 				{http.MethodGet, "/_ping", true},
 				{http.MethodGet, "/version", true},
-				{http.MethodGet, "/events", true},
+				// /events streams indefinitely by default; ?until=0 forces
+				// dockerd to return a snapshot of past events and close the
+				// body, so the assertion measures the rule layer without
+				// stalling the test on a live connection.
+				{http.MethodGet, "/events?until=0", true},
 				{http.MethodGet, "/containers/json", true},
 				{http.MethodHead, "/containers/json", true},
 				{http.MethodGet, "/containers/abc/json", true},
@@ -189,7 +195,8 @@ func TestTecnativaPresetConformance(t *testing.T) {
 			expect: []presetExpectation{
 				{http.MethodGet, "/_ping", false},
 				{http.MethodGet, "/version", true},
-				{http.MethodGet, "/events", true},
+				// See containers-read: ?until=0 keeps /events from streaming.
+				{http.MethodGet, "/events?until=0", true},
 				{http.MethodGet, "/containers/json", true},
 			},
 		},
@@ -297,8 +304,16 @@ func runPresetExpectation(t *testing.T, handler http.Handler, presetName string,
 		headers["Content-Type"] = "application/json"
 	}
 
+	// Per-request deadline as defense-in-depth: if a future case ever
+	// hits a streaming dockerd endpoint without a bounded query, the
+	// proxy honors the request context and unblocks rather than hanging
+	// the whole suite until the outer test timeout. httputil.ReverseProxy
+	// propagates ctx through to the upstream dial / response body.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(exp.method, exp.path, body)
+	req := httptest.NewRequest(exp.method, exp.path, body).WithContext(ctx)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
