@@ -461,3 +461,52 @@ jobs:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.digest.outputs.value }}
           push-to-registry: true
+
+  verify-published:
+    # QA-6 end-to-end signature verification: run the *exact* documented
+    # cosign verify / cosign verify-blob commands from
+    # docs/content/docs/verification.mdx against the artifacts we just
+    # pushed. The `release` job above verifies signatures inline using
+    # internal pipeline outputs (the build digest, the local dist/ pem
+    # + sig). This downstream twin pulls the published tag from each
+    # mirror and downloads the release assets via `gh release download`,
+    # so a documentation drift between docs and pipeline fails the tag.
+    name: "🔍 Release: Verify Published Artifacts (QA-6)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [release]
+    permissions:
+      contents: read   # gh release download
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+
+      - name: Verify published image + tarball signatures
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: scripts/verify-published-release.sh --tag "${RELEASE_TAG}"
+
+      - name: Summarize
+        if: always()
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          {
+            echo "### QA-6: Published-artifact signature verification"
+            echo "- Tag: \`${RELEASE_TAG}\`"
+            echo "- Pulled \`ghcr.io\`, \`docker.io\`, \`quay.io\` image tags and ran the documented \`cosign verify\` against each"
+            echo "- Downloaded the signed release tarball + .sig + .pem and ran the documented \`cosign verify-blob\`"
+            echo "- See \`docs/content/docs/verification.mdx\` for the canonical operator-facing invocation"
+          } >> "$GITHUB_STEP_SUMMARY"

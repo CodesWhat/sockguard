@@ -97,6 +97,7 @@ Signed tags require your GPG key. The `release-from-tag.yml` workflow fires on a
    - Verifies the cosign signature in the same job
    - Signs the release tarball with cosign (blob signing)
    - Attests SLSA build provenance (public repo only; activates automatically when the repo is public)
+5. **verify-published** — QA-6 end-to-end gate: pulls each published image tag (ghcr, docker.io, quay.io) and the release tarball + signature assets, then runs the *exact* `cosign verify` / `cosign verify-blob` commands published in `docs/content/docs/verification.mdx`. Catches drift between the operator-facing docs and the actual pipeline.
 
 **Verify the release:**
 
