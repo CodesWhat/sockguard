@@ -1648,8 +1648,34 @@ func TestHandleHijack_StreamingActivityRefreshesInactivityDeadlines(t *testing.T
 	assertDeadlineNearTimeout(t, clientConn.writeDeadlines[0], start, end)
 }
 
+// TestReadInactivityDeadlineRefreshIsThrottled exercises the same throttle
+// boundary as TestInactivityDeadlineRefreshBoundary but along the temporal
+// axis the production code uses on a live stream: the first call primes
+// lastRefresh, a second call within refreshInterval must not re-arm the
+// deadline, and a call beyond refreshInterval must. The earlier version of
+// this test pegged the third call by sleeping (timeout/4)+(timeout/20)
+// against a 200ms timeout — a 60ms wall-clock pause that put the test in
+// scheduler-noise territory and made the QA-3 soak suite, which depends on
+// these throttle assertions, non-deterministic. The conversion drives
+// elapsed time through the timeNowHook the production code already reads
+// from (hijack.go:62), so the boundary is hit to the nanosecond and the
+// test runs in microseconds.
 func TestReadInactivityDeadlineRefreshIsThrottled(t *testing.T) {
 	timeout := 200 * time.Millisecond
+	refreshInterval := timeout / 4
+	base := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	// Read 1: lastRefresh is zero, refresh fires.
+	// Read 2: same instant — elapsed == 0, no refresh.
+	// Read 3: refreshInterval + 1ns past base — elapsed > refreshInterval, refresh fires.
+	times := []time.Time{base, base, base.Add(refreshInterval + time.Nanosecond)}
+	idx := 0
+	restore := swapTimeNow(func() time.Time {
+		ts := times[idx]
+		idx++
+		return ts
+	})
+	defer restore()
+
 	readerConn := &funcConn{}
 	reader := withReadInactivityDeadline(bytes.NewReader([]byte("abc")), readerConn, timeout)
 	buf := make([]byte, 1)
@@ -1668,8 +1694,6 @@ func TestReadInactivityDeadlineRefreshIsThrottled(t *testing.T) {
 		t.Fatalf("read deadline calls after immediate second read = %d, want %d", got, want)
 	}
 
-	time.Sleep((timeout / 4) + (timeout / 20))
-
 	if _, err := reader.Read(buf); err != nil {
 		t.Fatalf("third read: %v", err)
 	}
@@ -1678,8 +1702,23 @@ func TestReadInactivityDeadlineRefreshIsThrottled(t *testing.T) {
 	}
 }
 
+// TestWriteInactivityDeadlineRefreshIsThrottled is the writer-side twin of
+// TestReadInactivityDeadlineRefreshIsThrottled — see that test for the
+// throttle invariant and the rationale for using timeNowHook instead of a
+// wall-clock sleep.
 func TestWriteInactivityDeadlineRefreshIsThrottled(t *testing.T) {
 	timeout := 200 * time.Millisecond
+	refreshInterval := timeout / 4
+	base := time.Date(2026, 5, 20, 0, 0, 0, 0, time.UTC)
+	times := []time.Time{base, base, base.Add(refreshInterval + time.Nanosecond)}
+	idx := 0
+	restore := swapTimeNow(func() time.Time {
+		ts := times[idx]
+		idx++
+		return ts
+	})
+	defer restore()
+
 	writerConn := &funcConn{}
 	writer := withWriteInactivityDeadline(io.Discard, writerConn, timeout)
 
@@ -1696,8 +1735,6 @@ func TestWriteInactivityDeadlineRefreshIsThrottled(t *testing.T) {
 	if got, want := writerConn.writeDeadlineCalls, 1; got != want {
 		t.Fatalf("write deadline calls after immediate second write = %d, want %d", got, want)
 	}
-
-	time.Sleep((timeout / 4) + (timeout / 20))
 
 	if _, err := writer.Write([]byte("c")); err != nil {
 		t.Fatalf("third write: %v", err)
