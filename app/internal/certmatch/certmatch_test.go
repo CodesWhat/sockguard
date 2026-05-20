@@ -33,6 +33,28 @@ func TestIntersectsIPAddrs_NoMatch(t *testing.T) {
 	}
 }
 
+func TestIntersectsIPAddrs_IPv4InIPv6Match(t *testing.T) {
+	t.Parallel()
+	// Exercises addr.Unmap(): Linux dual-stack listeners surface IPv4 connections
+	// as ::ffff:10.0.0.1; Unmap() reduces that to the plain v4 form before comparison.
+	actual := []net.IP{net.ParseIP("::ffff:10.0.0.1")}
+	allowed := []netip.Addr{netip.MustParseAddr("10.0.0.1")}
+	if !IntersectsIPAddrs(allowed, actual) {
+		t.Fatal("expected IntersectsIPAddrs=true for IPv4-mapped-IPv6 address matching allowed v4 addr")
+	}
+}
+
+func TestIntersectsIPAddrs_IPv6NoMatch(t *testing.T) {
+	t.Parallel()
+	// Unmap() is a no-op for real IPv6 addresses; confirms the branch does not
+	// falsely collapse unrelated IPv6 addrs into matching an allowed v4 entry.
+	actual := []net.IP{net.ParseIP("2001:db8::1")}
+	allowed := []netip.Addr{netip.MustParseAddr("10.0.0.1")}
+	if IntersectsIPAddrs(allowed, actual) {
+		t.Fatal("expected IntersectsIPAddrs=false for real IPv6 address against allowed v4 addr")
+	}
+}
+
 func TestCertificateURIStrings_NilCert(t *testing.T) {
 	t.Parallel()
 	if got := CertificateURIStrings(nil); got != nil {
