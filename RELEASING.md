@@ -8,7 +8,7 @@
 
 - [ ] An rc (`rc.2` or later) has run **≥ 2–4 weeks across ≥ 2 real deployments** carrying production-shaped traffic.
 - [ ] **Zero policy-bypass findings** from the proxy-vs-daemon differential harness and the negative / red-team test suite.
-- [ ] **Zero panics and zero goroutine/RSS growth** over a 24 h+ memory-and-goroutine soak.
+- [ ] **Zero panics and zero goroutine/RSS growth** over a 24 h+ memory-and-goroutine soak. The scheduled `quality-soak-weekly` workflow runs the 4 h github-hosted soak via `scripts/soak.sh`; a 24 h target run is the same script with `--duration 24h` on a self-hosted runner.
 - [ ] **No change was forced to the locked surface during the soak.** Any forced schema / CLI / env var / admin-endpoint / metric-name change re-cuts an rc and resets the soak clock — that is the point of freezing the surface.
 - [ ] `govulncheck` is clean, Grype + OpenSSF Scorecard are green, and the published image verifies with the documented `cosign verify` invocation.
 - [ ] CHANGELOG `[Unreleased]` is rolled into a `[1.0.0]` entry and `chart/sockguard/Chart.yaml` is bumped (also covered by the generic checklist below).
