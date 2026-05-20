@@ -1,0 +1,195 @@
+# examples/compose/cis-docker-benchmark/sockguard.yaml
+#
+# Bundled CIS Docker Benchmark preset — copied verbatim from
+# app/configs/cis-docker-benchmark.yaml.
+#
+# This is a generic admission gate suitable for any downstream that
+# produces `docker run` traffic (CI runners, orchestrators, management
+# UIs, custom tooling). The gate is enforced at the API boundary: a
+# non-compliant request is rejected with 403 before dockerd executes it.
+#
+# Deviation policy: any loosening of a control (e.g. adding an entry to
+# allowed_bind_mounts, flipping allow_privileged, or adding a capability
+# to allowed_capabilities) should be a single-line diff against this file.
+# That diff is the audit trail — reviewers can see exactly which CIS
+# control was relaxed, for which workload, and when.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+# Audit logging belongs on for CIS posture — Section 1 of the benchmark
+# expects every Docker action to be traceable. The audit log already
+# captures every denied request with its rule + reason; access_log
+# captures the allowed ones.
+health:
+  enabled: true
+  path: /health
+
+# Container-create body inspection: every "require_*" knob ON, every
+# "allow_*" knob explicitly OFF (the secure default — re-stated here so
+# operators editing this file can see the full posture without consulting
+# config.go).
+request_body:
+  container_create:
+    # CIS 5.4 — privileged containers
+    allow_privileged: false
+    # CIS 5.9, 5.15, 5.16 — host namespaces
+    allow_host_network: false
+    allow_host_pid: false
+    allow_host_ipc: false
+    # CIS 5.30 — host user namespace
+    allow_host_userns: false
+    # CIS 5.5 — sensitive host directories. Default-empty allowlist =
+    # bind mounts denied. Add entries here (e.g. "/srv/data:/data") for
+    # the specific paths your workload truly needs.
+    allowed_bind_mounts: []
+    # CIS 5.17 — host devices. allow_all_devices off + empty allowlist
+    # means HostConfig.Devices must be empty. DeviceRequests (GPU etc.)
+    # similarly off; populate allowed_device_requests if a workload
+    # genuinely needs hardware access.
+    allow_all_devices: false
+    allowed_devices: []
+    allow_device_requests: false
+    allowed_device_requests: []
+    allow_device_cgroup_rules: false
+    allowed_device_cgroup_rules: []
+    # CIS 5.3 — capabilities. allow_all_capabilities off means CapAdd
+    # entries must be in the allowlist below. Empty allowlist = no
+    # capability additions. require_drop_all_capabilities requires the
+    # workload to drop everything first (CapDrop: ["ALL"]). Together
+    # this is "default-deny capabilities, opt-in via allowlist."
+    allow_all_capabilities: false
+    allowed_capabilities: []
+    require_drop_all_capabilities: true
+    # CIS 5.25 — no_new_privileges flag must be set.
+    require_no_new_privileges: true
+    # CIS 5.12 — read-only root filesystem.
+    require_readonly_rootfs: true
+    # CIS 5.10, 5.11, 5.28 — resource limits.
+    require_memory_limit: true
+    require_cpu_limit: true
+    require_pids_limit: true
+    # CIS 5.21 — seccomp. deny_unconfined_seccomp blocks
+    # SecurityOpt: ["seccomp=unconfined"]. Operators can pin a specific
+    # profile via allowed_seccomp_profiles if they ship one.
+    deny_unconfined_seccomp: true
+    # AppArmor companion to seccomp. CIS does not have a numbered
+    # AppArmor-must-be-enabled control, but the docker-cis tool and
+    # most CIS-aligned guides expect AppArmor unconfined to be denied.
+    deny_unconfined_apparmor: true
+    # Sysctls: rare in CIS-aligned deployments. Off by default; flip
+    # only if you allowlist the specific sysctls your workload needs.
+    allow_sysctls: false
+    # Image trust: optional but recommended for CIS 4.5 (Content
+    # Trust). Leave mode: off here so the preset works without
+    # cosign-signed images; flip to "enforce" and add allowed_keyless
+    # or allowed_signing_keys to gate untrusted images at this layer.
+    image_trust:
+      mode: "off"
+
+  # Exec body inspection: when exec is needed (this preset denies it
+  # by rule below, but if you allow it, these settings apply to CIS
+  # 5.22 / 5.23 — no privileged exec, no root exec).
+  exec:
+    allow_privileged: false
+    # allowed_users left empty = no `User:` override on exec. Combine
+    # with allow_root_user: false below for full CIS 5.23 enforcement.
+    allow_root_user: false
+
+# Read responses: redact host paths, env, network topology, and other
+# sensitive metadata so a compromised consumer cannot enumerate the
+# host through the proxy. These are on by default; re-stated here so
+# the CIS posture is self-documenting in the preset file.
+response:
+  redact_container_env: true
+  redact_mount_paths: true
+  redact_network_topology: true
+  redact_sensitive_data: true
+  deny_verbosity: minimal
+
+rules:
+  # Health and metadata reads
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+
+  # Container reads. Logs / archive / attach / export deliberately
+  # omitted — CIS does not require them and they bypass the
+  # response-redaction layer (Section 5 has no specific control, but
+  # the principle of least privilege from Section 1 applies).
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  # Container lifecycle. POST /containers/create runs through the
+  # full body-inspection chain above; everything else is metadata
+  # CRUD on existing containers.
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Image reads — list / inspect / history only. /images/get and
+  # /images/*/get (raw tarball exfil) are intentionally left denied.
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/**" }
+    action: allow
+
+  # Network and volume reads.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+
+  # Events — needed for orchestrators to react to container state.
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Default deny. The benchmark explicitly excludes exec (CIS 5.22 /
+  # 5.23 — exec adds runtime privileges that re-open the same risks
+  # the container_create gate closed), build (5.x mostly image-level),
+  # swarm management, secrets, configs, plugins, raw archive/log/
+  # attach streams, and the daemon socket commit path. Operators that
+  # need any of these must add a rule above and accept the residual
+  # risk.
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by CIS Docker Benchmark preset"

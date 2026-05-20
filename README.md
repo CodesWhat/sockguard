@@ -577,6 +577,8 @@ Audit events always include an `ownership` object. When `ownership.owner` is con
 
 Preset configs included for [drydock](app/configs/drydock.yaml), [Traefik](app/configs/traefik.yaml), [Portainer](app/configs/portainer.yaml), [Watchtower](app/configs/watchtower.yaml), [Homepage](app/configs/homepage.yaml), [Homarr](app/configs/homarr.yaml), [Diun](app/configs/diun.yaml), [Autoheal](app/configs/autoheal.yaml), [read-only](app/configs/readonly.yaml), [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) (admission-gates CIS Section 5 runtime controls — see [the dedicated guide](https://getsockguard.com/docs/cis-docker-benchmark)), [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml), and [GitLab Runner (Docker executor)](app/configs/gitlab-runner.yaml).
 
+Ready-to-run compose stacks pairing sockguard with a downstream consumer live under [`examples/compose/`](examples/compose/) — one directory per stack with its own `docker-compose.yml`, `sockguard.yaml` overlay, and `README.md` (audience, exposed surface, security tradeoffs). Currently shipped: [drydock](examples/compose/drydock/), [Traefik](examples/compose/traefik/), [Portainer](examples/compose/portainer/), [Watchtower](examples/compose/watchtower/), [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/), [GitLab Runner](examples/compose/gitlab-runner/), and a generic [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/) you can drop in front of any Docker consumer.
+
 <hr>
 
 <h2 align="center" id="cli">🔧 CLI</h2>

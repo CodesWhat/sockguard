@@ -1,0 +1,215 @@
+# Sockguard config for GitHub Actions self-hosted runner — mirrors the
+# shipped github-actions-runner preset. This is a verbatim copy of
+# app/configs/github-actions-runner.yaml; it is embedded here so the
+# compose stack is fully self-contained. No additional overlay is needed:
+# the preset is purpose-built for runner workloads and is already strict.
+# Update both files together if you change rules.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Container-create body inspection — strict CI posture.
+# Job and service containers should be ephemeral, non-privileged, and
+# isolated from the host. Workflows that require host access or extra
+# capabilities should be redesigned to use proper volume mounts or
+# runner labels rather than relaxing these guards.
+request_body:
+  container_create:
+    # Host isolation — workflows must not escape container boundaries.
+    allow_privileged: false
+    allow_host_network: false
+    allow_host_pid: false
+    allow_host_ipc: false
+    allow_host_userns: false
+
+    # Bind mounts — disabled. GHA cache actions use named volumes (see
+    # volumes/create below); host paths are off-limits. If your runner
+    # uses a self-hosted actions/cache backed by a host directory, add
+    # the specific cache root (e.g. "/var/cache/actions:/cache") here.
+    allowed_bind_mounts: []
+
+    # Devices — job containers don't need hardware device access.
+    allow_all_devices: false
+    allowed_devices: []
+    allow_device_requests: false
+    allowed_device_requests: []
+    allow_device_cgroup_rules: false
+    allowed_device_cgroup_rules: []
+
+    # Capabilities — CI containers should not need extra caps.
+    # If a workflow genuinely needs NET_ADMIN (e.g. network-in-docker
+    # integration tests), add "NET_ADMIN" to allowed_capabilities rather
+    # than enabling allow_all_capabilities.
+    allow_all_capabilities: false
+    allowed_capabilities: []
+    require_drop_all_capabilities: false
+
+    # Privilege escalation — hard off.
+    require_no_new_privileges: true
+
+    # Read-only rootfs is not required: job containers typically write to
+    # their own FS (npm install, build artifacts, etc.).
+    require_readonly_rootfs: false
+
+    # Resource limits — not required by default; uncomment to enforce
+    # per-container CPU/memory budgets on shared runners.
+    # require_memory_limit: true
+    # require_cpu_limit: true
+    # require_pids_limit: true
+
+    # Seccomp / AppArmor — deny unconfined profiles. Actions runners
+    # ship their own container config and generally do not need to
+    # disable the default seccomp or AppArmor profiles.
+    deny_unconfined_seccomp: true
+    deny_unconfined_apparmor: true
+
+    # Sysctls — denied by default; uncomment if integration tests need
+    # specific kernel parameters (e.g. net.ipv4.ip_forward).
+    allow_sysctls: false
+
+    # Image trust — off by default so the preset works with arbitrary
+    # workflow images (public Docker Hub, GHCR, ECR, etc.). Flip to
+    # "enforce" and configure allowed_keyless/allowed_signing_keys to
+    # gate untrusted images on runners with a fixed image corpus.
+    image_trust:
+      mode: "off"
+
+  # Exec body inspection — `run:` steps run as root in most action
+  # containers (the default GHA runner images all use root). Privileged
+  # exec is denied; exec is otherwise allowed so workflow steps work.
+  exec:
+    allow_privileged: false
+    allow_root_user: true
+
+  # Image pull — workflows fetch from arbitrary public and private
+  # registries (ghcr.io, docker.io, quay.io, ECR, GAR, etc.).
+  # fromSrc imports (pipe a tarball via stdin) remain denied by default.
+  image_pull:
+    allow_all_registries: true
+    allow_imports: false
+
+# Response redactions — leave default-on. The runner reads container
+# inspect output to set up log streaming, not to enumerate host paths or
+# env vars. Keeping redactions on means a compromised workflow step
+# cannot exfiltrate host mount points or runner secrets injected as env
+# vars into sibling containers.
+response:
+  redact_container_env: true
+  redact_mount_paths: true
+  redact_network_topology: true
+  redact_sensitive_data: true
+  deny_verbosity: minimal
+
+rules:
+  # Daemon metadata — runner health checks and pre-flight probes.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+
+  # Event stream — runner subscribes to container events to track job
+  # and service container state transitions.
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads — list, inspect, logs. Deliberately excludes
+  # /containers/*/archive and /containers/*/export (tarball exfil paths).
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+
+  # Container creation — body-inspected per request_body.container_create above.
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  # Container lifecycle — start, stop, kill, wait, remove.
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Container attach — runner streams job container stdout/stderr.
+  - match: { method: POST, path: "/containers/*/attach" }
+    action: allow
+
+  # Exec — body-inspected per request_body.exec above. Covers
+  # `run:` steps, service container health checks, and post-job cleanup.
+  - match: { method: POST, path: "/containers/*/exec" }
+    action: allow
+  - match: { method: POST, path: "/exec/*/start" }
+    action: allow
+  - match: { method: GET, path: "/exec/*/json" }
+    action: allow
+
+  # Image reads — list + inspect. Namespaced image references
+  # (ghcr.io/org/repo:sha) need ** in the middle segment. /images/get
+  # and /images/*/get (raw tarball export) are intentionally left denied.
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+
+  # Image pull — POST /images/create with fromImage query param.
+  # body-inspected per request_body.image_pull above.
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+
+  # Networks — per-job bridge networks are created before containers
+  # start and torn down afterwards. Custom IPAM and swarm-scope are
+  # denied by the network body-inspection defaults.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/create" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+  - match: { method: DELETE, path: "/networks/*" }
+    action: allow
+
+  # Volumes — named volumes used by actions/cache and Docker layer cache.
+  # Host-path bind mounts are denied at the container_create level; named
+  # volumes are the safe alternative.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+  - match: { method: POST, path: "/volumes/create" }
+    action: allow
+  - match: { method: DELETE, path: "/volumes/*" }
+    action: allow
+
+  # Default deny — build, swarm, secrets, configs, plugins, and any
+  # endpoint not enumerated above are denied. Operators that need build
+  # support (e.g. docker/build-push-action) must add POST /build here
+  # and accept the expanded attack surface.
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by github-actions-runner preset"

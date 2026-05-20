@@ -1,0 +1,208 @@
+# Sockguard config for GitLab Runner (Docker Executor) — mirrors the shipped
+# gitlab-runner preset. This is a copy of app/configs/gitlab-runner.yaml;
+# embedded here so the compose stack is self-contained. No overlay is needed
+# for the common case — the preset is purpose-built for the Docker executor's
+# API surface. Update both files together if you change rules.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Response redactions are ON. The runner does not re-submit inspect payloads
+# verbatim, so redacting host paths, env vars, and network topology from read
+# responses is safe and reduces the blast radius of a compromised job container
+# that tries to enumerate the host through the API.
+response:
+  redact_container_env: true
+  redact_mount_paths: true
+  redact_network_topology: true
+  redact_sensitive_data: true
+  deny_verbosity: minimal
+
+request_body:
+  container_create:
+    # Privileged containers are rejected unconditionally — see security note
+    # above. Remove this line only after reading that note carefully.
+    allow_privileged: false
+
+    # Host namespaces: all off. CI jobs have no business sharing the host
+    # network, PID, IPC, or user namespace.
+    allow_host_network: false
+    allow_host_pid: false
+    allow_host_ipc: false
+    allow_host_userns: false
+
+    # Bind mounts: default-empty. The runner should configure named volumes
+    # (cache_dir, builds_dir) in config.toml rather than bind-mounting host
+    # paths. Populate this list if your specific runner config requires a host
+    # path (e.g. "/srv/gitlab-runner/cache:/cache"), keeping entries as narrow
+    # as possible.
+    allowed_bind_mounts: []
+
+    # Devices: off. GPU-enabled runner configs that pass DeviceRequests
+    # (nvidia driver) must set allow_device_requests: true and populate
+    # allowed_device_requests with the specific driver + capability set.
+    allow_all_devices: false
+    allowed_devices: []
+    allow_device_requests: false
+    allowed_device_requests: []
+    allow_device_cgroup_rules: false
+    allowed_device_cgroup_rules: []
+
+    # Capabilities: default-deny. CI workloads that compile kernel modules,
+    # run strace, or perform raw network operations may need specific entries
+    # here (e.g. "SYS_PTRACE" for debugger-assisted builds). Add only what
+    # individual jobs have demonstrated they need.
+    allow_all_capabilities: false
+    allowed_capabilities: []
+    require_drop_all_capabilities: false
+
+    # Seccomp + AppArmor: deny unconfined.
+    deny_unconfined_seccomp: true
+    deny_unconfined_apparmor: true
+
+    # no_new_privileges: enforce across all job containers.
+    require_no_new_privileges: true
+
+    # Resource limits: not enforced here — GitLab runner's own resource limit
+    # configuration in config.toml is the authoritative gate. Flip these to
+    # true if you want sockguard to independently verify every container
+    # request carries explicit limits.
+    require_memory_limit: false
+    require_cpu_limit: false
+    require_pids_limit: false
+
+    # Sysctls: off.
+    allow_sysctls: false
+
+    # Image trust: off by default.
+    image_trust:
+      mode: "off"
+
+  exec:
+    # The runner injects job steps via exec — this is the primary execution
+    # mechanism of the Docker executor and must remain allowed. Privileged exec
+    # is still denied; the runner never requests it in normal operation.
+    allow_privileged: false
+    # Most official CI images run job scripts as root. Set allow_root_user:
+    # false and provide allowed_users if your pipeline enforces non-root images.
+    allow_root_user: true
+
+  image_pull:
+    # Jobs pull images from arbitrary registries declared in .gitlab-ci.yml.
+    allow_all_registries: true
+
+rules:
+  # Ping, version, info — runner polls these at startup and during job prep.
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+
+  # Events — runner monitors container state transitions to detect job
+  # container exits and service container readiness.
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads — list, inspect, logs, stats. The runner streams job
+  # output via /containers/*/logs and /containers/*/attach.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  # Container creation — spawns build, service, and helper containers. Body
+  # is inspected by the container_create block above.
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  # Container lifecycle — start, stop, kill, wait, remove.
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Attach — log streaming for live job output.
+  - match: { method: POST, path: "/containers/*/attach" }
+    action: allow
+
+  # Exec — job-step injection. Creates exec instance, starts it, inspects
+  # exit code. Body inspection configured in the exec block above.
+  - match: { method: POST, path: "/containers/*/exec" }
+    action: allow
+  - match: { method: POST, path: "/exec/*/start" }
+    action: allow
+  - match: { method: GET, path: "/exec/*/json" }
+    action: allow
+
+  # Image reads — list, inspect, history.
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+
+  # Image pull — pulls job images and the helper image.
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+
+  # Image remove — runner prunes job images after each pipeline.
+  - match: { method: DELETE, path: "/images/**" }
+    action: allow
+
+  # Network lifecycle — per-job network create/delete/connect/disconnect.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/create" }
+    action: allow
+  - match: { method: DELETE, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+
+  # Volume reads + lifecycle — cache and builds volumes.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+  - match: { method: POST, path: "/volumes/create" }
+    action: allow
+  - match: { method: DELETE, path: "/volumes/*" }
+    action: allow
+
+  # Deny everything else: build, swarm, secrets, configs, plugins, raw
+  # archive/export, service management, and any future Docker API surface.
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by gitlab-runner preset"

@@ -1,0 +1,45 @@
+# examples/compose/cis-docker-benchmark/docker-compose.yml
+#
+# Sockguard + CIS Docker Benchmark Gate — generic admission gate for any
+# downstream Docker consumer.
+#
+# Every container the downstream tries to create must satisfy CIS Docker
+# Benchmark v1.6.0 Section 5 (Container Runtime) inspectable controls —
+# no privileged flag, no host namespaces, no arbitrary bind mounts,
+# capabilities must be dropped, read-only rootfs required, resource limits
+# required — or sockguard returns 403 BEFORE dockerd executes the request.
+#
+# The `your-app` service is a placeholder using the official Docker CLI
+# image. Replace it with your real downstream consumer. It exists so you
+# can run `docker compose exec your-app docker run ...` to verify the gate
+# interactively — see the README for the verification recipe.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  your-app:
+    image: docker:cli
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    command: ["sleep", "infinity"]
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - DOCKER_HOST=unix:///var/run/sockguard/sockguard.sock
+
+volumes:
+  sockguard-socket:

@@ -1,0 +1,47 @@
+# examples/compose/github-actions-runner/docker-compose.yml
+#
+# Sockguard + GitHub Actions self-hosted runner — unix-socket mode,
+# github-actions-runner preset.
+# Sockguard writes a filtered unix socket into a shared named volume;
+# the runner reads that socket rather than mounting /var/run/docker.sock.
+#
+# The runner needs: container create/start/stop/kill/wait/remove, exec
+# (run: steps), attach (log streaming), image pull/inspect, per-job bridge
+# networks, named volumes (actions/cache), and standard daemon reads.
+# The github-actions-runner preset covers all of these with full body
+# inspection; privileged containers, host-path bind mounts, extra capabilities,
+# Docker builds, and raw tarball export are denied by default.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  runner:
+    image: myoung34/github-runner:latest
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - DOCKER_HOST=unix:///var/run/sockguard/sockguard.sock
+      - REPO_URL=${REPO_URL}
+      - RUNNER_NAME=${RUNNER_NAME}
+      - RUNNER_TOKEN=${RUNNER_TOKEN}
+      - LABELS=${LABELS}
+      - RUNNER_WORKDIR=${RUNNER_WORKDIR}
+
+volumes:
+  sockguard-socket:

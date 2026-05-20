@@ -1,0 +1,41 @@
+# examples/compose/gitlab-runner/docker-compose.yml
+#
+# Sockguard + GitLab Runner (Docker Executor) — unix-socket mode, gitlab-runner preset.
+# Sockguard writes a filtered unix socket into a shared named volume;
+# gitlab-runner reads that socket rather than mounting /var/run/docker.sock.
+#
+# The gitlab-runner Docker executor needs: container create/lifecycle, exec
+# (job-step injection), attach (log streaming), image pull, network lifecycle,
+# volume lifecycle, and events. The gitlab-runner preset covers all of these.
+# Build, privileged containers, host namespace sharing, bind mounts, swarm,
+# secrets, configs, and raw archive export/import are denied by default.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  gitlab-runner:
+    image: gitlab/gitlab-runner:latest
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+      - /srv/gitlab-runner/config:/etc/gitlab-runner
+    environment:
+      - DOCKER_HOST=unix:///var/run/sockguard/sockguard.sock
+
+volumes:
+  sockguard-socket:
