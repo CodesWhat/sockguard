@@ -26,6 +26,7 @@ func makePatternPolicy(t *testing.T, nameGlobs ...string) *compiledPolicy {
 // response is forwarded with no body (RFC 9110 §15.4.5). Any bytes written for
 // a 304 would trigger Go's http.ResponseWriter to downgrade to 502.
 func TestFilterWriterFlushFilteredEmptyBodyOn304(t *testing.T) {
+	t.Parallel()
 	rec := httptest.NewRecorder()
 	fw := newPatternFilterWriter(rec)
 
@@ -49,6 +50,7 @@ func TestFilterWriterFlushFilteredEmptyBodyOn304(t *testing.T) {
 // TestFilterWriterFlushFilteredEmptyBodyOn204 asserts that a 204 No Content
 // response is forwarded with no body (RFC 9110 §15.3.5).
 func TestFilterWriterFlushFilteredEmptyBodyOn204(t *testing.T) {
+	t.Parallel()
 	rec := httptest.NewRecorder()
 	fw := newPatternFilterWriter(rec)
 
@@ -71,6 +73,7 @@ func TestFilterWriterFlushFilteredEmptyBodyOn204(t *testing.T) {
 // TestFilterWriterFlushFilteredFiltersContainersByName verifies the happy-path
 // pattern filtering: only containers matching the name glob survive.
 func TestFilterWriterFlushFilteredFiltersContainersByName(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +107,7 @@ func TestFilterWriterFlushFilteredFiltersContainersByName(t *testing.T) {
 // stops buffering once the body would exceed filter.MaxResponseBodyBytes, so a
 // large upstream response cannot drive unbounded memory growth.
 func TestFilterWriterWriteCapsBufferAtLimit(t *testing.T) {
+	t.Parallel()
 	rec := httptest.NewRecorder()
 	fw := newPatternFilterWriter(rec)
 
@@ -134,6 +138,7 @@ func TestFilterWriterWriteCapsBufferAtLimit(t *testing.T) {
 // containers/json response larger than the 8 MiB cap and asserts the client
 // gets a 502 rather than the proxy buffering the whole body (OOM DoS guard).
 func TestFilterWriterCapsOversizedResponse(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	chunk := `{"Names":["/c"],"Image":"alpine"},`

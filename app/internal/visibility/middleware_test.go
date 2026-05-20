@@ -39,6 +39,7 @@ func missingSocketPath(t *testing.T) string {
 }
 
 func TestMiddlewareInjectsVisibilityLabelsIntoContainerListAndEvents(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var gotPaths []string
 
@@ -80,6 +81,7 @@ func TestMiddlewareInjectsVisibilityLabelsIntoContainerListAndEvents(t *testing.
 }
 
 func TestMiddlewareReturnsNotFoundForInvisibleContainerInspect(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 
@@ -114,6 +116,7 @@ func TestMiddlewareReturnsNotFoundForInvisibleContainerInspect(t *testing.T) {
 // upstream with a would_deny verdict, instead of being hard-404'd — consistent
 // with every other deny gate.
 func TestMiddlewareRolloutModePassesInvisibleInspectThrough(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"warn", "audit"} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -153,6 +156,7 @@ func TestMiddlewareRolloutModePassesInvisibleInspectThrough(t *testing.T) {
 }
 
 func TestMiddlewareAllowsVisibleExecInspectViaContainerLabels(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 
@@ -186,6 +190,7 @@ func TestMiddlewareAllowsVisibleExecInspectViaContainerLabels(t *testing.T) {
 }
 
 func TestMiddlewareRejectsMalformedFilterQuery(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 
@@ -212,6 +217,7 @@ func TestMiddlewareRejectsMalformedFilterQuery(t *testing.T) {
 }
 
 func TestMiddlewareReturnsInternalServerErrorWhenResolvedProfileIsMissing(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 
@@ -241,6 +247,7 @@ func TestMiddlewareReturnsInternalServerErrorWhenResolvedProfileIsMissing(t *tes
 }
 
 func TestMiddlewarePassesThroughWhenInspectTargetIsMissing(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 
@@ -268,6 +275,7 @@ func TestMiddlewarePassesThroughWhenInspectTargetIsMissing(t *testing.T) {
 }
 
 func TestMiddlewareUpstreamInspectNetworkFailure(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 
@@ -294,6 +302,7 @@ func TestMiddlewareUpstreamInspectNetworkFailure(t *testing.T) {
 }
 
 func TestVisibilityInspectTimeout(t *testing.T) {
+	t.Parallel()
 	newTimeoutInspector := func() upstreamInspector {
 		return upstreamInspector{
 			client: &http.Client{
@@ -335,6 +344,7 @@ func TestVisibilityInspectTimeout(t *testing.T) {
 // ---- middlewareWithDeps error paths ----
 
 func TestMiddlewareWithDepsInvalidDefaultPolicy(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	// Empty string is an invalid selector.
 	mw := middlewareWithDeps(logger, Options{
@@ -353,6 +363,7 @@ func TestMiddlewareWithDepsInvalidDefaultPolicy(t *testing.T) {
 }
 
 func TestMiddlewareWithDepsInvalidProfilePolicy(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mw := middlewareWithDeps(logger, Options{
 		VisibleResourceLabels: []string{"valid=ok"},
@@ -373,6 +384,7 @@ func TestMiddlewareWithDepsInvalidProfilePolicy(t *testing.T) {
 }
 
 func TestMiddlewarePassesThroughNonGetMethod(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 	mw := middlewareWithDeps(logger, Options{
@@ -391,6 +403,7 @@ func TestMiddlewarePassesThroughNonGetMethod(t *testing.T) {
 }
 
 func TestMiddlewarePassesThroughWhenNoSelectors(t *testing.T) {
+	t.Parallel()
 	// ResolveProfile returns empty string → no selectors → pass through.
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
@@ -413,6 +426,7 @@ func TestMiddlewarePassesThroughWhenNoSelectors(t *testing.T) {
 }
 
 func TestMiddlewareNoOpWhenBothDefaultAndProfilesEmpty(t *testing.T) {
+	t.Parallel()
 	// Both VisibleResourceLabels empty and no Profiles → early-return no-op middleware.
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
@@ -432,6 +446,7 @@ func TestMiddlewareNoOpWhenBothDefaultAndProfilesEmpty(t *testing.T) {
 // ---- parseSelector branches ----
 
 func TestParseSelectorErrors(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		input   string
@@ -456,6 +471,7 @@ func TestParseSelectorErrors(t *testing.T) {
 }
 
 func TestParseSelectorKeyOnly(t *testing.T) {
+	t.Parallel()
 	sel, err := parseSelector("mykey")
 	if err != nil {
 		t.Fatalf("parseSelector(\"mykey\") error = %v", err)
@@ -468,12 +484,14 @@ func TestParseSelectorKeyOnly(t *testing.T) {
 // ---- matchesSelectors branches ----
 
 func TestMatchesSelectorsEmptySelectors(t *testing.T) {
+	t.Parallel()
 	if !matchesSelectors(nil, nil) {
 		t.Fatal("empty selectors should always match")
 	}
 }
 
 func TestMatchesSelectorsEmptyLabels(t *testing.T) {
+	t.Parallel()
 	sel := []compiledSelector{{key: "k", value: "v", hasValue: true}}
 	if matchesSelectors(nil, sel) {
 		t.Fatal("empty labels should not match non-empty selectors")
@@ -484,6 +502,7 @@ func TestMatchesSelectorsEmptyLabels(t *testing.T) {
 }
 
 func TestMatchesSelectorsKeyMissing(t *testing.T) {
+	t.Parallel()
 	labels := map[string]string{"other": "x"}
 	sel := []compiledSelector{{key: "k", hasValue: false}}
 	if matchesSelectors(labels, sel) {
@@ -492,6 +511,7 @@ func TestMatchesSelectorsKeyMissing(t *testing.T) {
 }
 
 func TestMatchesSelectorsValueMismatch(t *testing.T) {
+	t.Parallel()
 	labels := map[string]string{"k": "wrong"}
 	sel := []compiledSelector{{key: "k", value: "right", hasValue: true}}
 	if matchesSelectors(labels, sel) {
@@ -500,6 +520,7 @@ func TestMatchesSelectorsValueMismatch(t *testing.T) {
 }
 
 func TestMatchesSelectorsKeyPresentNoValueConstraint(t *testing.T) {
+	t.Parallel()
 	labels := map[string]string{"k": "anything"}
 	sel := []compiledSelector{{key: "k", hasValue: false}}
 	if !matchesSelectors(labels, sel) {
@@ -510,6 +531,7 @@ func TestMatchesSelectorsKeyPresentNoValueConstraint(t *testing.T) {
 // ---- identifier helpers — uncovered branches ----
 
 func TestImageInspectIdentifierBranches(t *testing.T) {
+	t.Parallel()
 	// Wrong prefix
 	if _, ok := imageInspectIdentifier("/containers/foo/json"); ok {
 		t.Fatal("wrong prefix should not match")
@@ -529,6 +551,7 @@ func TestImageInspectIdentifierBranches(t *testing.T) {
 }
 
 func TestNetworkInspectIdentifierBranches(t *testing.T) {
+	t.Parallel()
 	// Wrong prefix
 	if _, ok := networkInspectIdentifier("/containers/net"); ok {
 		t.Fatal("wrong prefix should not match")
@@ -556,6 +579,7 @@ func TestNetworkInspectIdentifierBranches(t *testing.T) {
 }
 
 func TestVolumeInspectIdentifierBranches(t *testing.T) {
+	t.Parallel()
 	// Wrong prefix
 	if _, ok := volumeInspectIdentifier("/networks/vol"); ok {
 		t.Fatal("wrong prefix should not match")
@@ -583,6 +607,7 @@ func TestVolumeInspectIdentifierBranches(t *testing.T) {
 }
 
 func TestExecInspectIdentifierBranches(t *testing.T) {
+	t.Parallel()
 	// Wrong prefix
 	if _, ok := execInspectIdentifier("/containers/exec"); ok {
 		t.Fatal("wrong prefix should not match")
@@ -598,6 +623,7 @@ func TestExecInspectIdentifierBranches(t *testing.T) {
 }
 
 func TestSecretInspectIdentifierBranches(t *testing.T) {
+	t.Parallel()
 	if _, ok := secretInspectIdentifier("/configs/sec"); ok {
 		t.Fatal("wrong prefix should not match")
 	}
@@ -616,6 +642,7 @@ func TestSecretInspectIdentifierBranches(t *testing.T) {
 }
 
 func TestConfigInspectIdentifierBranches(t *testing.T) {
+	t.Parallel()
 	if _, ok := configInspectIdentifier("/secrets/cfg"); ok {
 		t.Fatal("wrong prefix should not match")
 	}
@@ -634,6 +661,7 @@ func TestConfigInspectIdentifierBranches(t *testing.T) {
 }
 
 func TestNodeInspectIdentifierBranches(t *testing.T) {
+	t.Parallel()
 	if _, ok := nodeInspectIdentifier("/swarm/node"); ok {
 		t.Fatal("wrong prefix should not match")
 	}
@@ -666,6 +694,7 @@ func newMockInspector(handler http.Handler) upstreamInspector {
 }
 
 func TestInspectResourceNotFound(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -682,6 +711,7 @@ func TestInspectResourceNotFound(t *testing.T) {
 }
 
 func TestInspectResourceNon200Error(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -695,6 +725,7 @@ func TestInspectResourceNon200Error(t *testing.T) {
 }
 
 func TestInspectResourceUnsupportedKind(t *testing.T) {
+	t.Parallel()
 	ins := upstreamInspector{client: &http.Client{}}
 	_, _, err := ins.inspectResource(context.Background(), "bogus", "id")
 	if err == nil || !strings.Contains(err.Error(), "unsupported resource kind") {
@@ -703,6 +734,7 @@ func TestInspectResourceUnsupportedKind(t *testing.T) {
 }
 
 func TestInspectResourceDecodesContainerLabels(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"Config":{"Labels":{"com.example.env":"prod"}}}`)
@@ -719,6 +751,7 @@ func TestInspectResourceDecodesContainerLabels(t *testing.T) {
 // ---- upstreamInspector.inspectExec via httptest mock ----
 
 func TestInspectExecNotFound(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -729,6 +762,7 @@ func TestInspectExecNotFound(t *testing.T) {
 }
 
 func TestInspectExecNon200Error(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 	}))
@@ -742,6 +776,7 @@ func TestInspectExecNon200Error(t *testing.T) {
 }
 
 func TestInspectExecEmptyContainerID(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ContainerID":""}`)
@@ -753,6 +788,7 @@ func TestInspectExecEmptyContainerID(t *testing.T) {
 }
 
 func TestInspectExecReturnsContainerID(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"ContainerID":"container-xyz"}`)
@@ -766,6 +802,7 @@ func TestInspectExecReturnsContainerID(t *testing.T) {
 // ---- requestVisible — swarm path ----
 
 func TestRequestVisibleSwarmInspect(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "cluster", value: "prod", hasValue: true}}
 	deps := visibilityDeps{
 		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
@@ -784,6 +821,7 @@ func TestRequestVisibleSwarmInspect(t *testing.T) {
 // ---- requestVisible exec path: exec not found → pass through ----
 
 func TestRequestVisibleExecNotFound(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "k", value: "v", hasValue: true}}
 	deps := visibilityDeps{
 		inspectExec: func(context.Context, string) (string, bool, error) {
@@ -802,6 +840,7 @@ func TestRequestVisibleExecNotFound(t *testing.T) {
 // ---- requestVisible exec path: exec inspect error ----
 
 func TestRequestVisibleExecInspectError(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "k", value: "v", hasValue: true}}
 	wantErr := errors.New("exec error")
 	deps := visibilityDeps{
@@ -818,6 +857,7 @@ func TestRequestVisibleExecInspectError(t *testing.T) {
 // ---- normalizedPathForRequest ----
 
 func TestNormalizedPathForRequestNoMeta(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodGet, "/v1.45/containers/json", nil)
 	rec := httptest.NewRecorder()
 	got := normalizedPathForRequest(rec, req)
@@ -827,6 +867,7 @@ func TestNormalizedPathForRequestNoMeta(t *testing.T) {
 }
 
 func TestNormalizedPathForRequestUsesMetaNormPath(t *testing.T) {
+	t.Parallel()
 	// Inject a RequestMeta via context so MetaForRequest returns it with NormPath set.
 	meta := &logging.RequestMeta{NormPath: "/containers/abc/json"}
 	ctx := logging.WithMeta(context.Background(), meta)
@@ -841,6 +882,7 @@ func TestNormalizedPathForRequestUsesMetaNormPath(t *testing.T) {
 // ---- serviceInspectIdentifier missing branches ----
 
 func TestServiceInspectIdentifierBranches(t *testing.T) {
+	t.Parallel()
 	if _, ok := serviceInspectIdentifier("/nodes/svc"); ok {
 		t.Fatal("wrong prefix should not match")
 	}
@@ -861,6 +903,7 @@ func TestServiceInspectIdentifierBranches(t *testing.T) {
 // ---- inspectResource — all resource kinds ----
 
 func TestInspectResourceAllKinds(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		kind dockerresource.Kind
 		body string
@@ -897,6 +940,7 @@ func TestInspectResourceAllKinds(t *testing.T) {
 }
 
 func TestInspectResourceDecodeError(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `not-valid-json`)
@@ -908,6 +952,7 @@ func TestInspectResourceDecodeError(t *testing.T) {
 }
 
 func TestInspectResourceNilContextError(t *testing.T) {
+	t.Parallel()
 	ins := upstreamInspector{client: &http.Client{}}
 	//nolint:staticcheck // SA1012: intentionally passing nil context to exercise the error path
 	_, _, err := ins.inspectResource(nil, dockerresource.KindContainer, "abc") //nolint:staticcheck
@@ -917,6 +962,7 @@ func TestInspectResourceNilContextError(t *testing.T) {
 }
 
 func TestInspectExecNilContextError(t *testing.T) {
+	t.Parallel()
 	ins := upstreamInspector{client: &http.Client{}}
 	//nolint:staticcheck // SA1012: intentionally passing nil context to exercise the error path
 	_, _, err := ins.inspectExec(nil, "exec-1") //nolint:staticcheck
@@ -928,6 +974,7 @@ func TestInspectExecNilContextError(t *testing.T) {
 // ---- inspectExec decode error ----
 
 func TestInspectExecDecodeError(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `not-valid-json`)
@@ -941,6 +988,7 @@ func TestInspectExecDecodeError(t *testing.T) {
 // ---- requestVisible — remaining resource type paths ----
 
 func TestRequestVisibleImageInspect(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "env", value: "prod", hasValue: true}}
 	deps := visibilityDeps{
 		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
@@ -957,6 +1005,7 @@ func TestRequestVisibleImageInspect(t *testing.T) {
 }
 
 func TestRequestVisibleNetworkInspect(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "net", hasValue: false}}
 	deps := visibilityDeps{
 		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
@@ -973,6 +1022,7 @@ func TestRequestVisibleNetworkInspect(t *testing.T) {
 }
 
 func TestRequestVisibleVolumeInspect(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "vol", hasValue: false}}
 	deps := visibilityDeps{
 		inspectResource: func(_ context.Context, kind dockerresource.Kind, _ string) (map[string]string, bool, error) {
@@ -986,6 +1036,7 @@ func TestRequestVisibleVolumeInspect(t *testing.T) {
 }
 
 func TestRequestVisibleUnknownPathPassesThrough(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "k", hasValue: false}}
 	visible, err := requestVisible(context.Background(), "/ping", selectors, visibilityDeps{})
 	if err != nil || !visible {
@@ -994,6 +1045,7 @@ func TestRequestVisibleUnknownPathPassesThrough(t *testing.T) {
 }
 
 func TestRequestVisibleServiceLogs(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "svc", hasValue: false}}
 	deps := visibilityDeps{
 		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
@@ -1010,6 +1062,7 @@ func TestRequestVisibleServiceLogs(t *testing.T) {
 }
 
 func TestRequestVisibleTaskInspect(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "t", hasValue: false}}
 	deps := visibilityDeps{
 		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
@@ -1026,6 +1079,7 @@ func TestRequestVisibleTaskInspect(t *testing.T) {
 }
 
 func TestRequestVisibleTaskLogs(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "t", hasValue: false}}
 	deps := visibilityDeps{
 		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
@@ -1042,6 +1096,7 @@ func TestRequestVisibleTaskLogs(t *testing.T) {
 }
 
 func TestRequestVisibleSecretInspect(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "sec", hasValue: false}}
 	deps := visibilityDeps{
 		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
@@ -1058,6 +1113,7 @@ func TestRequestVisibleSecretInspect(t *testing.T) {
 }
 
 func TestRequestVisibleConfigInspect(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "cfg", hasValue: false}}
 	deps := visibilityDeps{
 		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
@@ -1074,6 +1130,7 @@ func TestRequestVisibleConfigInspect(t *testing.T) {
 }
 
 func TestRequestVisibleNodeInspect(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "role", hasValue: false}}
 	deps := visibilityDeps{
 		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
@@ -1090,6 +1147,7 @@ func TestRequestVisibleNodeInspect(t *testing.T) {
 }
 
 func TestRequestVisibleServiceInspect(t *testing.T) {
+	t.Parallel()
 	selectors := []compiledSelector{{key: "svc", hasValue: false}}
 	deps := visibilityDeps{
 		inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
@@ -1106,6 +1164,7 @@ func TestRequestVisibleServiceInspect(t *testing.T) {
 }
 
 func TestRequestVisibleEmptySelectors(t *testing.T) {
+	t.Parallel()
 	visible, err := requestVisible(context.Background(), "/containers/abc/json", nil, visibilityDeps{})
 	if err != nil || !visible {
 		t.Fatalf("err=%v visible=%v, want nil/true for empty selectors", err, visible)
@@ -1115,6 +1174,7 @@ func TestRequestVisibleEmptySelectors(t *testing.T) {
 // ---- middlewareWithDeps — missing branch: profile resolution returns ok=false ----
 
 func TestMiddlewareProfileResolveReturnsFalse(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 	// ResolveProfile returns ok=false → selectors stay as default → selectors non-empty
@@ -1140,6 +1200,7 @@ func TestMiddlewareProfileResolveReturnsFalse(t *testing.T) {
 }
 
 func TestDecodeDockerFilters(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		input   string
@@ -1201,6 +1262,7 @@ func TestDecodeDockerFilters(t *testing.T) {
 }
 
 func TestAddVisibilityLabelFiltersLeavesQueryUntouchedWhenSelectorsAlreadyPresent(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(
 		http.MethodGet,
 		`/v1.53/containers/json?all=1&filters={"label":["com.sockguard.visible=true","com.sockguard.client=watchtower"]}`,
@@ -1221,6 +1283,7 @@ func TestAddVisibilityLabelFiltersLeavesQueryUntouchedWhenSelectorsAlreadyPresen
 }
 
 func TestMiddlewareInjectsVisibilityLabelsIntoExpandedLists(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var gotPaths []string
 
@@ -1261,6 +1324,7 @@ func TestMiddlewareInjectsVisibilityLabelsIntoExpandedLists(t *testing.T) {
 }
 
 func TestMiddlewareReturnsNotFoundForInvisibleExpandedReadTargets(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	tests := []struct {
@@ -1335,6 +1399,7 @@ func imageListHandler(items []map[string]any) http.HandlerFunc {
 }
 
 func TestNamePatternHidesContainerFromList(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	// Upstream returns two containers; only "traefik" should match the pattern.
@@ -1370,6 +1435,7 @@ func TestNamePatternHidesContainerFromList(t *testing.T) {
 }
 
 func TestImagePatternHidesContainerFromList(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1403,6 +1469,7 @@ func TestImagePatternHidesContainerFromList(t *testing.T) {
 }
 
 func TestNameAndLabelANDSemanticsContainerList(t *testing.T) {
+	t.Parallel()
 	// Both name pattern AND label selector must pass.
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -1444,6 +1511,7 @@ func TestNameAndLabelANDSemanticsContainerList(t *testing.T) {
 }
 
 func TestEmptyPatternsPassthroughContainerList(t *testing.T) {
+	t.Parallel()
 	// No patterns configured → all containers pass through.
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -1474,6 +1542,7 @@ func TestEmptyPatternsPassthroughContainerList(t *testing.T) {
 }
 
 func TestInvalidPatternFailsFastAtConfigLoad(t *testing.T) {
+	t.Parallel()
 	// An empty pattern string is invalid and causes compilePolicy to error, which
 	// causes middlewareWithDeps to return a 500-only handler (no panic, no serve).
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -1496,6 +1565,7 @@ func TestInvalidPatternFailsFastAtConfigLoad(t *testing.T) {
 // ---- name_patterns and image_patterns: image list filtering ----
 
 func TestNamePatternHidesImageFromList(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1531,6 +1601,7 @@ func TestNamePatternHidesImageFromList(t *testing.T) {
 }
 
 func TestImagePatternHidesImageFromList(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1564,6 +1635,7 @@ func TestImagePatternHidesImageFromList(t *testing.T) {
 // ---- name_patterns and image_patterns: container inspect ----
 
 func TestNamePatternHidesContainerInspect(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 
@@ -1591,6 +1663,7 @@ func TestNamePatternHidesContainerInspect(t *testing.T) {
 }
 
 func TestImagePatternHidesContainerInspect(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 
@@ -1618,6 +1691,7 @@ func TestImagePatternHidesContainerInspect(t *testing.T) {
 }
 
 func TestNamePatternAllowsContainerInspect(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 
@@ -1647,6 +1721,7 @@ func TestNamePatternAllowsContainerInspect(t *testing.T) {
 // ---- name_patterns and image_patterns: image inspect ----
 
 func TestNamePatternHidesImageInspect(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 
@@ -1674,6 +1749,7 @@ func TestNamePatternHidesImageInspect(t *testing.T) {
 }
 
 func TestImagePatternHidesImageInspect(t *testing.T) {
+	t.Parallel()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	nextCalled := false
 
@@ -1703,6 +1779,7 @@ func TestImagePatternHidesImageInspect(t *testing.T) {
 // ---- inspectResourceMeta via httptest mock ----
 
 func TestInspectResourceMetaContainerNotFound(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
@@ -1713,6 +1790,7 @@ func TestInspectResourceMetaContainerNotFound(t *testing.T) {
 }
 
 func TestInspectResourceMetaContainerNon200(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -1723,6 +1801,7 @@ func TestInspectResourceMetaContainerNon200(t *testing.T) {
 }
 
 func TestInspectResourceMetaContainerDecodes(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"Name":"/traefik","Image":"traefik:latest"}`)
@@ -1740,6 +1819,7 @@ func TestInspectResourceMetaContainerDecodes(t *testing.T) {
 }
 
 func TestInspectResourceMetaImageDecodes(t *testing.T) {
+	t.Parallel()
 	ins := newMockInspector(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"RepoTags":["traefik:latest","traefik:v2"]}`)
@@ -1754,6 +1834,7 @@ func TestInspectResourceMetaImageDecodes(t *testing.T) {
 }
 
 func TestInspectResourceMetaUnsupportedKind(t *testing.T) {
+	t.Parallel()
 	ins := upstreamInspector{client: &http.Client{}}
 	_, _, err := ins.inspectResourceMeta(context.Background(), dockerresource.KindNetwork, "net-1")
 	if err == nil || !strings.Contains(err.Error(), "unsupported resource kind") {
@@ -1764,6 +1845,7 @@ func TestInspectResourceMetaUnsupportedKind(t *testing.T) {
 // ---- decodeResourceMeta ----
 
 func TestDecodeResourceMetaContainerUsesNamesWhenPresent(t *testing.T) {
+	t.Parallel()
 	body := strings.NewReader(`{"Name":"/single","Names":["/multi"],"Image":"img:tag"}`)
 	meta, err := decodeResourceMeta(body, dockerresource.KindContainer)
 	if err != nil {
@@ -1776,6 +1858,7 @@ func TestDecodeResourceMetaContainerUsesNamesWhenPresent(t *testing.T) {
 }
 
 func TestDecodeResourceMetaContainerFallsBackToName(t *testing.T) {
+	t.Parallel()
 	body := strings.NewReader(`{"Name":"/solo","Names":[],"Image":"img:tag"}`)
 	meta, err := decodeResourceMeta(body, dockerresource.KindContainer)
 	if err != nil {
@@ -1787,6 +1870,7 @@ func TestDecodeResourceMetaContainerFallsBackToName(t *testing.T) {
 }
 
 func TestDecodeResourceMetaUnsupportedKind(t *testing.T) {
+	t.Parallel()
 	_, err := decodeResourceMeta(strings.NewReader(`{}`), dockerresource.KindNetwork)
 	if err == nil || !strings.Contains(err.Error(), "unsupported resource kind") {
 		t.Fatalf("err = %v, want unsupported resource kind", err)
@@ -1794,6 +1878,7 @@ func TestDecodeResourceMetaUnsupportedKind(t *testing.T) {
 }
 
 func TestDecodeResourceMetaDecodeError(t *testing.T) {
+	t.Parallel()
 	_, err := decodeResourceMeta(strings.NewReader(`not-json`), dockerresource.KindContainer)
 	if err == nil {
 		t.Fatal("expected decode error for invalid JSON body")
@@ -1803,6 +1888,7 @@ func TestDecodeResourceMetaDecodeError(t *testing.T) {
 // ---- compilePatterns ----
 
 func TestCompilePatternsEmptyGlob(t *testing.T) {
+	t.Parallel()
 	_, err := compilePatterns([]string{""})
 	if err == nil || !strings.Contains(err.Error(), "must not be empty") {
 		t.Fatalf("err = %v, want 'must not be empty'", err)
@@ -1810,6 +1896,7 @@ func TestCompilePatternsEmptyGlob(t *testing.T) {
 }
 
 func TestCompilePatternsInvalidEmptyPattern(t *testing.T) {
+	t.Parallel()
 	// The glob-to-regex converter escapes all special regex characters, so the
 	// only way to produce an invalid pattern is an empty string.
 	_, err := compilePatterns([]string{"valid", ""})
@@ -1819,6 +1906,7 @@ func TestCompilePatternsInvalidEmptyPattern(t *testing.T) {
 }
 
 func TestCompilePatternsHappyPath(t *testing.T) {
+	t.Parallel()
 	patterns, err := compilePatterns([]string{"traefik", "redis:*"})
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
@@ -1831,12 +1919,14 @@ func TestCompilePatternsHappyPath(t *testing.T) {
 // ---- matchesAnyPattern ----
 
 func TestMatchesAnyPatternEmptyPatternsAlwaysTrue(t *testing.T) {
+	t.Parallel()
 	if !matchesAnyPattern("anything", nil) {
 		t.Fatal("empty patterns should always return true")
 	}
 }
 
 func TestMatchesAnyPatternNoMatch(t *testing.T) {
+	t.Parallel()
 	patterns, _ := compilePatterns([]string{"traefik"})
 	if matchesAnyPattern("portainer", patterns) {
 		t.Fatal("portainer should not match traefik pattern")
@@ -1844,6 +1934,7 @@ func TestMatchesAnyPatternNoMatch(t *testing.T) {
 }
 
 func TestMatchesAnyPatternMatch(t *testing.T) {
+	t.Parallel()
 	patterns, _ := compilePatterns([]string{"redis:*"})
 	if !matchesAnyPattern("redis:7", patterns) {
 		t.Fatal("redis:7 should match redis:* pattern")
@@ -1853,30 +1944,35 @@ func TestMatchesAnyPatternMatch(t *testing.T) {
 // ---- containerNameFromNames and imageShortName ----
 
 func TestContainerNameFromNamesEmpty(t *testing.T) {
+	t.Parallel()
 	if got := containerNameFromNames(nil); got != "" {
 		t.Fatalf("got %q, want empty string", got)
 	}
 }
 
 func TestContainerNameFromNamesStripsLeadingSlash(t *testing.T) {
+	t.Parallel()
 	if got := containerNameFromNames([]string{"/traefik"}); got != "traefik" {
 		t.Fatalf("got %q, want traefik", got)
 	}
 }
 
 func TestImageShortNameNoSlash(t *testing.T) {
+	t.Parallel()
 	if got := imageShortName("traefik:latest"); got != "traefik:latest" {
 		t.Fatalf("got %q, want traefik:latest", got)
 	}
 }
 
 func TestImageShortNameWithRegistry(t *testing.T) {
+	t.Parallel()
 	if got := imageShortName("ghcr.io/org/traefik:v2"); got != "traefik:v2" {
 		t.Fatalf("got %q, want traefik:v2", got)
 	}
 }
 
 func TestFilterWriterWriteHeaderCapturesCode(t *testing.T) {
+	t.Parallel()
 	// Drive patternFilterWriter via a fake upstream that returns 404 with a
 	// plain-text body. The middleware must record the status via WriteHeader,
 	// then pass the 404 through the non-2xx flush path without attempting JSON
@@ -1908,6 +2004,7 @@ func TestFilterWriterWriteHeaderCapturesCode(t *testing.T) {
 }
 
 func TestFilterWriterFlushFilteredPassesThroughNon2xx(t *testing.T) {
+	t.Parallel()
 	// Drive patternFilterWriter via a fake upstream that returns 500 with a
 	// plain-text (non-JSON) error body. The middleware must forward the 500
 	// status and body byte-for-byte without attempting to filter it.

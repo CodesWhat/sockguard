@@ -6,6 +6,7 @@ import (
 )
 
 func TestToRegexString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		pattern string

@@ -44,6 +44,7 @@ func tempSocketPath(t *testing.T, label string) string {
 }
 
 func TestNew_ErrorHandler(t *testing.T) {
+	t.Parallel()
 	// Point at a socket that does not exist so the error handler fires.
 	socketPath := "/tmp/dp-nonexistent-socket.sock"
 	rp := New(socketPath, testLogger())
@@ -73,6 +74,7 @@ func TestNew_ErrorHandler(t *testing.T) {
 }
 
 func TestNew_ErrorHandlerEncodeFailure(t *testing.T) {
+	t.Parallel()
 	rp := New("/tmp/does-not-matter.sock", testLogger())
 	writer := &erroringResponseWriter{}
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -89,6 +91,7 @@ func TestNew_ErrorHandlerEncodeFailure(t *testing.T) {
 // returns a non-nil error — i.e., the condition is "!= nil", not "== nil".
 // Kills mutant: CONDITIONALS_NEGATION proxy.go:68 ("encErr != nil" → "encErr == nil").
 func TestNew_ErrorHandlerDoesNotLogWarnOnSuccessfulEncode(t *testing.T) {
+	t.Parallel()
 	var logBuf strings.Builder
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	rp := New("/tmp/does-not-matter.sock", logger)
@@ -113,6 +116,7 @@ func TestNew_ErrorHandlerDoesNotLogWarnOnSuccessfulEncode(t *testing.T) {
 // Together with TestNew_ErrorHandlerDoesNotLogWarnOnSuccessfulEncode this kills
 // the CONDITIONALS_NEGATION mutant by covering both outcomes of the condition.
 func TestNew_ErrorHandlerLogsWarnOnEncodeFailure(t *testing.T) {
+	t.Parallel()
 	var logBuf strings.Builder
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	rp := New("/tmp/does-not-matter.sock", logger)
@@ -129,6 +133,7 @@ func TestNew_ErrorHandlerLogsWarnOnEncodeFailure(t *testing.T) {
 }
 
 func TestNew_ErrorHandlerLogsRequestCorrelation(t *testing.T) {
+	t.Parallel()
 	var logBuf strings.Builder
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	rp := New("/tmp/does-not-matter.sock", logger)
@@ -168,6 +173,7 @@ func TestNew_ErrorHandlerLogsRequestCorrelation(t *testing.T) {
 }
 
 func TestNew_ErrorHandlerStampsRequestMetaReasonCode(t *testing.T) {
+	t.Parallel()
 	rp := New("/tmp/does-not-matter.sock", testLogger())
 
 	meta := &logging.RequestMeta{Decision: "allow", ReasonCode: "matched_allow_rule", Reason: "allow"}
@@ -186,6 +192,7 @@ func TestNew_ErrorHandlerStampsRequestMetaReasonCode(t *testing.T) {
 }
 
 func TestNew_ErrorHandlerStampsResponseRejectedReasonCode(t *testing.T) {
+	t.Parallel()
 	rp := New("/tmp/does-not-matter.sock", testLogger())
 
 	meta := &logging.RequestMeta{Decision: "allow", ReasonCode: "matched_allow_rule", Reason: "allow"}
@@ -229,6 +236,7 @@ func startMockDocker(t *testing.T) string {
 }
 
 func TestNew_ForwardsRequests(t *testing.T) {
+	t.Parallel()
 	socketPath := startMockDocker(t)
 	rp := New(socketPath, testLogger())
 
@@ -277,6 +285,7 @@ func TestNew_ForwardsRequests(t *testing.T) {
 }
 
 func TestNew_PreservesResponseBody(t *testing.T) {
+	t.Parallel()
 	socketPath := startMockDocker(t)
 	rp := New(socketPath, testLogger())
 
@@ -297,6 +306,7 @@ func TestNew_PreservesResponseBody(t *testing.T) {
 }
 
 func TestNewWithOptions_RedactsProtectedResponses(t *testing.T) {
+	t.Parallel()
 	socketPath := tempSocketPath(t, "response-filter")
 
 	ln, err := net.Listen("unix", socketPath)
@@ -365,6 +375,7 @@ func TestNewWithOptions_RedactsProtectedResponses(t *testing.T) {
 }
 
 func TestNewWithOptions_SkipsHeadProtectedResponses(t *testing.T) {
+	t.Parallel()
 	socketPath := tempSocketPath(t, "response-filter-head")
 
 	ln, err := net.Listen("unix", socketPath)
@@ -400,6 +411,7 @@ func TestNewWithOptions_SkipsHeadProtectedResponses(t *testing.T) {
 }
 
 func TestNewWithOptions_RejectsProtectedResponsesThatCannotBeSanitized(t *testing.T) {
+	t.Parallel()
 	socketPath := tempSocketPath(t, "response-reject")
 
 	ln, err := net.Listen("unix", socketPath)
@@ -441,6 +453,7 @@ func TestNewWithOptions_RejectsProtectedResponsesThatCannotBeSanitized(t *testin
 }
 
 func TestNew_UpstreamDown(t *testing.T) {
+	t.Parallel()
 	// Point at a socket that does not exist.
 	socketPath := "/tmp/dp-nonexistent-socket.sock"
 	rp := New(socketPath, testLogger())
@@ -466,6 +479,7 @@ func TestNew_UpstreamDown(t *testing.T) {
 }
 
 func TestNew_UpstreamGoesAway(t *testing.T) {
+	t.Parallel()
 	// Start a real upstream, then shut it down before the request.
 	socketPath := tempSocketPath(t, "goaway")
 
@@ -494,6 +508,7 @@ func TestNew_UpstreamGoesAway(t *testing.T) {
 }
 
 func TestNew_ConcurrentRequestsRemainIsolated(t *testing.T) {
+	t.Parallel()
 	socketPath := tempSocketPath(t, "proxy-concurrent")
 
 	ln, err := net.Listen("unix", socketPath)
@@ -607,6 +622,7 @@ func TestNew_ConcurrentRequestsRemainIsolated(t *testing.T) {
 // propagates to the upstream handler (via req.Context().Done()) and the
 // server releases its goroutines instead of leaking them.
 func TestNew_ClientCancelMidResponsePropagates(t *testing.T) {
+	t.Parallel()
 	socketPath := tempSocketPath(t, "cancel-mid-stream")
 
 	upstreamCtx := make(chan struct{}, 1)

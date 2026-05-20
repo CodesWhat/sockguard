@@ -25,6 +25,7 @@ import (
 )
 
 func TestCompileEndpointCosts_RoundTrip(t *testing.T) {
+	t.Parallel()
 	type matchCase struct {
 		path string
 		want bool
@@ -195,6 +196,7 @@ func TestCompileEndpointCosts_RoundTrip(t *testing.T) {
 
 // TestCompileEndpointCosts_EmptyInput verifies the nil-slice fast-path.
 func TestCompileEndpointCosts_EmptyInput(t *testing.T) {
+	t.Parallel()
 	if got := compileEndpointCosts(nil); got != nil {
 		t.Fatalf("compileEndpointCosts(nil) = %v, want nil", got)
 	}

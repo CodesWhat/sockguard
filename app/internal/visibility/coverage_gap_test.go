@@ -19,6 +19,7 @@ import (
 // returns a non-nil error, resourceVisible propagates it to the caller rather
 // than silently treating the resource as visible or invisible.
 func TestResourceVisibleInspectError(t *testing.T) {
+	t.Parallel()
 	inspectErr := errors.New("upstream dial error")
 
 	deps := visibilityDeps{
@@ -44,6 +45,7 @@ func TestResourceVisibleInspectError(t *testing.T) {
 // several resource kinds that reach resourceVisible via requestVisibleWithPolicy
 // (network, volume, service, secret, config, node, swarm).
 func TestResourceVisibleInspectErrorForMultipleKinds(t *testing.T) {
+	t.Parallel()
 	inspectErr := errors.New("transient error")
 
 	deps := visibilityDeps{

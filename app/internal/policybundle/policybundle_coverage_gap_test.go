@@ -16,6 +16,7 @@ import (
 // empty. BuildConfig rejects that combo, so the only way to hit this
 // branch is to construct the verifier struct directly.
 func TestVerify_NoVerifiersConfiguredReturnsError(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -41,6 +42,7 @@ func TestVerify_NoVerifiersConfiguredReturnsError(t *testing.T) {
 // not a valid sigstore bundle" path inside LoadBundle, distinct from the
 // already-tested missing-path case.
 func TestLoadBundle_CorruptJSONReturnsError(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "garbage.json")
 	if err := os.WriteFile(path, []byte("{not valid sigstore bundle"), 0o600); err != nil {

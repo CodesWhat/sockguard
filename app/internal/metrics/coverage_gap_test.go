@@ -15,6 +15,7 @@ import (
 //   - Setting zero is visible in the scrape output (gauge emits 0, not absent).
 //   - A nil registry is a no-op and does not panic.
 func TestSetInflightUpdatesGaugeInScrape(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 
 	// Initial set for two profiles.

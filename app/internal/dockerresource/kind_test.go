@@ -3,6 +3,7 @@ package dockerresource
 import "testing"
 
 func TestInspectPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		kind       Kind

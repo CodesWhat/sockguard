@@ -82,6 +82,7 @@ func BenchmarkLimiterAllowNHot(b *testing.B) {
 // ---------------------------------------------------------------------------
 
 func TestLimiterStop_MidFlightRace(t *testing.T) {
+	t.Parallel()
 	const (
 		workerCount  = 50
 		clientCount  = 200

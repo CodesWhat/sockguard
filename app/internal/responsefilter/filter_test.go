@@ -65,6 +65,7 @@ func decodeBodyForTest(t *testing.T, resp *http.Response) map[string]any {
 }
 
 func TestFilterModifyResponse_RedactsContainerInspectResponse(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactContainerEnv: true,
 		RedactMountPaths:   true,
@@ -116,6 +117,7 @@ func TestFilterModifyResponse_RedactsContainerInspectResponse(t *testing.T) {
 }
 
 func TestFilterModifyResponse_RedactsContainerListAndVolumes(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactMountPaths: true,
 	})
@@ -173,6 +175,7 @@ func TestFilterModifyResponse_RedactsContainerListAndVolumes(t *testing.T) {
 }
 
 func TestFilterModifyResponse_RejectsMalformedProtectedJSON(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactContainerEnv: true,
 	})
@@ -189,6 +192,7 @@ func TestFilterModifyResponse_RejectsMalformedProtectedJSON(t *testing.T) {
 }
 
 func TestFilterRejectsOversizedResponse(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactContainerEnv: true,
 	})
@@ -209,6 +213,7 @@ func TestFilterRejectsOversizedResponse(t *testing.T) {
 }
 
 func TestFilterRejectsOversizedSwarmInspectResponse(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactSensitiveData: true,
 	})
@@ -229,6 +234,7 @@ func TestFilterRejectsOversizedSwarmInspectResponse(t *testing.T) {
 }
 
 func TestFilterHandlesChunkedEncoding(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactContainerEnv: true,
 	})
@@ -262,6 +268,7 @@ func TestFilterHandlesChunkedEncoding(t *testing.T) {
 }
 
 func TestFilterRejectsChunkedSwarmInspectReadFailure(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactSensitiveData: true,
 	})
@@ -288,6 +295,7 @@ func TestFilterRejectsChunkedSwarmInspectReadFailure(t *testing.T) {
 }
 
 func TestFilterRejectsMidStreamReadFailure(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactContainerEnv: true,
 	})
@@ -313,6 +321,7 @@ func TestFilterRejectsMidStreamReadFailure(t *testing.T) {
 }
 
 func TestFilterModifyResponse_RedactsNetworkTopologyFromContainerAndNetworkReads(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactNetworkTopology: true,
 	})
@@ -396,6 +405,7 @@ func TestFilterModifyResponse_RedactsNetworkTopologyFromContainerAndNetworkReads
 }
 
 func TestFilterModifyResponse_RedactsNetworkTopologyFromContainerListWithoutMountRedaction(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactNetworkTopology: true,
 	})
@@ -440,6 +450,7 @@ func TestFilterModifyResponse_RedactsNetworkTopologyFromContainerListWithoutMoun
 }
 
 func TestFilterModifyResponse_RedactsExpandedControlPlaneReads(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactContainerEnv:    true,
 		RedactMountPaths:      true,
@@ -574,6 +585,7 @@ func TestFilterModifyResponse_RedactsExpandedControlPlaneReads(t *testing.T) {
 }
 
 func TestFilterModifyResponse_RedactsSensitivePlatformMetadata(t *testing.T) {
+	t.Parallel()
 	filter := New(Options{
 		RedactContainerEnv:    true,
 		RedactMountPaths:      true,

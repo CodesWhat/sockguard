@@ -6,6 +6,7 @@ import (
 )
 
 func TestDecodeLabelsAllKinds(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		kind  Kind
@@ -101,6 +102,7 @@ func TestDecodeLabelsAllKinds(t *testing.T) {
 }
 
 func TestDecodeLabelsUnsupportedKind(t *testing.T) {
+	t.Parallel()
 	_, err := DecodeLabels(strings.NewReader(`{}`), "bogus")
 	if err == nil || !strings.Contains(err.Error(), "unsupported resource kind") {
 		t.Fatalf("error = %v, want unsupported resource kind", err)
@@ -108,6 +110,7 @@ func TestDecodeLabelsUnsupportedKind(t *testing.T) {
 }
 
 func TestDecodeLabelsDecodeErrors(t *testing.T) {
+	t.Parallel()
 	kinds := []Kind{
 		KindContainer,
 		KindImage,

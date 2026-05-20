@@ -11,6 +11,7 @@ import (
 )
 
 func TestSwappableHandlerInitialHandlerRoutes(t *testing.T) {
+	t.Parallel()
 	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, "initial")
 	})
@@ -25,6 +26,7 @@ func TestSwappableHandlerInitialHandlerRoutes(t *testing.T) {
 }
 
 func TestSwappableHandlerSwapRoutesToNew(t *testing.T) {
+	t.Parallel()
 	initial := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, "initial")
 	})
@@ -58,6 +60,7 @@ func TestSwappableHandlerSwapRoutesToNew(t *testing.T) {
 // completes through the ORIGINAL handler and that a fresh request reaches
 // the replacement.
 func TestSwappableHandlerInFlightCompletesOnOldHandler(t *testing.T) {
+	t.Parallel()
 	release := make(chan struct{})
 	inHandler := make(chan struct{})
 
@@ -117,6 +120,7 @@ func TestSwappableHandlerInFlightCompletesOnOldHandler(t *testing.T) {
 //  5. The gate is opened; all N parked requests complete.
 //  6. We assert every response body is "A" — none were switched mid-flight.
 func TestSwappableHandlerSwapDoesNotDropInFlightRequests(t *testing.T) {
+	t.Parallel()
 	const numInFlight = 8
 
 	gate := make(chan struct{})
@@ -180,6 +184,7 @@ func TestSwappableHandlerSwapDoesNotDropInFlightRequests(t *testing.T) {
 }
 
 func TestSwappableHandlerSwapConcurrentWithRequests(t *testing.T) {
+	t.Parallel()
 	// Race-detector exerciser: hammer ServeHTTP from many goroutines while
 	// another goroutine flips between two handlers. The test does not
 	// assert routing semantics here — go test -race is what does the work.
@@ -224,6 +229,7 @@ func TestSwappableHandlerSwapConcurrentWithRequests(t *testing.T) {
 }
 
 func TestNewSwappableHandlerPanicsOnNil(t *testing.T) {
+	t.Parallel()
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("expected panic on nil handler")
@@ -233,6 +239,7 @@ func TestNewSwappableHandlerPanicsOnNil(t *testing.T) {
 }
 
 func TestSwapPanicsOnNil(t *testing.T) {
+	t.Parallel()
 	s := NewSwappableHandler(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer func() {
 		if r := recover(); r == nil {
@@ -243,6 +250,7 @@ func TestSwapPanicsOnNil(t *testing.T) {
 }
 
 func TestSwappableHandlerCurrentReturnsLatest(t *testing.T) {
+	t.Parallel()
 	initial := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 	replacement := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 	s := NewSwappableHandler(initial)

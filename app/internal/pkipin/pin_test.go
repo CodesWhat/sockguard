@@ -14,6 +14,7 @@ import (
 )
 
 func TestNormalizeSubjectPublicKeySHA256PinAcceptsSupportedForms(t *testing.T) {
+	t.Parallel()
 	sum := sha256.Sum256([]byte("client public key"))
 	lowerHex := hex.EncodeToString(sum[:])
 	upperHex := strings.ToUpper(lowerHex)
@@ -43,6 +44,7 @@ func TestNormalizeSubjectPublicKeySHA256PinAcceptsSupportedForms(t *testing.T) {
 }
 
 func TestNormalizeSubjectPublicKeySHA256PinRejectsInvalidPins(t *testing.T) {
+	t.Parallel()
 	valid := strings.Repeat("a", sha256.Size*2)
 
 	tests := []struct {
@@ -69,6 +71,7 @@ func TestNormalizeSubjectPublicKeySHA256PinRejectsInvalidPins(t *testing.T) {
 }
 
 func TestSubjectPublicKeySHA256HexReturnsSPKIDigest(t *testing.T) {
+	t.Parallel()
 	cert := makeTestCertificate(t)
 	wantSum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
 	want := hex.EncodeToString(wantSum[:])
@@ -83,6 +86,7 @@ func TestSubjectPublicKeySHA256HexReturnsSPKIDigest(t *testing.T) {
 }
 
 func TestSubjectPublicKeySHA256HexMatchesNormalizedConfiguredPin(t *testing.T) {
+	t.Parallel()
 	cert := &x509.Certificate{RawSubjectPublicKeyInfo: []byte("allowed-client-key")}
 	pin := "SHA256:" + strings.ToUpper(SubjectPublicKeySHA256Hex(cert))
 
@@ -97,6 +101,7 @@ func TestSubjectPublicKeySHA256HexMatchesNormalizedConfiguredPin(t *testing.T) {
 }
 
 func TestSubjectPublicKeySHA256HexHandlesNilAndMissingSPKI(t *testing.T) {
+	t.Parallel()
 	if got := SubjectPublicKeySHA256Hex(nil); got != "" {
 		t.Fatalf("SubjectPublicKeySHA256Hex(nil) = %q, want empty string", got)
 	}

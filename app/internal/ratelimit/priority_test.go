@@ -13,6 +13,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestParsePriority_KnownValues(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		in   string
 		want Priority
@@ -35,6 +36,7 @@ func TestParsePriority_KnownValues(t *testing.T) {
 }
 
 func TestPriority_String(t *testing.T) {
+	t.Parallel()
 	cases := map[Priority]string{
 		PriorityLow:    "low",
 		PriorityNormal: "normal",
@@ -48,6 +50,7 @@ func TestPriority_String(t *testing.T) {
 }
 
 func TestPriorityThreshold_HardcodedShares(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		priority  Priority
 		globalMax int64
@@ -80,6 +83,7 @@ func TestPriorityThreshold_HardcodedShares(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestGlobalInflightTracker_AdmitsBelowThreshold(t *testing.T) {
+	t.Parallel()
 	tr := &GlobalInflightTracker{}
 
 	// globalMax=10, normal share=0.8 → threshold=8
@@ -107,6 +111,7 @@ func TestGlobalInflightTracker_AdmitsBelowThreshold(t *testing.T) {
 }
 
 func TestGlobalInflightTracker_HighPriorityBypassesNormalFloor(t *testing.T) {
+	t.Parallel()
 	tr := &GlobalInflightTracker{}
 
 	// Fill to 8 with normal — at normal threshold.
@@ -140,6 +145,7 @@ func TestGlobalInflightTracker_HighPriorityBypassesNormalFloor(t *testing.T) {
 }
 
 func TestGlobalInflightTracker_Release(t *testing.T) {
+	t.Parallel()
 	tr := &GlobalInflightTracker{}
 
 	for range 5 {
@@ -168,6 +174,7 @@ func TestGlobalInflightTracker_Release(t *testing.T) {
 }
 
 func TestGlobalInflightTracker_DisabledGateAdmitsAll(t *testing.T) {
+	t.Parallel()
 	tr := &GlobalInflightTracker{}
 	// globalMax=0 disables the gate; all priorities admit.
 	for _, p := range []Priority{PriorityLow, PriorityNormal, PriorityHigh} {
@@ -182,6 +189,7 @@ func TestGlobalInflightTracker_DisabledGateAdmitsAll(t *testing.T) {
 }
 
 func TestGlobalInflightTracker_ConcurrentAcquireRespectsCap(t *testing.T) {
+	t.Parallel()
 	tr := &GlobalInflightTracker{}
 	const goroutines = 200
 	const globalMax = 20
@@ -217,6 +225,7 @@ func TestGlobalInflightTracker_ConcurrentAcquireRespectsCap(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_GlobalConcurrency_LowProfileHitsPriorityFloor(t *testing.T) {
+	t.Parallel()
 	enter := make(chan struct{})
 	release := make(chan struct{})
 	blocking := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -267,6 +276,7 @@ func TestMiddleware_GlobalConcurrency_LowProfileHitsPriorityFloor(t *testing.T) 
 }
 
 func TestMiddleware_GlobalConcurrency_HighProfilePassesBelowGlobalCap(t *testing.T) {
+	t.Parallel()
 	enter := make(chan struct{})
 	release := make(chan struct{})
 	blocking := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -329,6 +339,7 @@ func TestMiddleware_GlobalConcurrency_HighProfilePassesBelowGlobalCap(t *testing
 }
 
 func TestMiddleware_GlobalConcurrency_NoProfileFallsBackToNormal(t *testing.T) {
+	t.Parallel()
 	enter := make(chan struct{})
 	release := make(chan struct{})
 	blocking := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -369,6 +380,7 @@ func TestMiddleware_GlobalConcurrency_NoProfileFallsBackToNormal(t *testing.T) {
 }
 
 func TestMiddleware_GlobalConcurrency_DeniedRequestReleasesNoSlot(t *testing.T) {
+	t.Parallel()
 	// Verifies that a request denied at the priority floor does NOT consume
 	// or leak a global slot (no Acquire happened on the denied path).
 	tr := &GlobalInflightTracker{}

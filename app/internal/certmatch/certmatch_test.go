@@ -9,6 +9,7 @@ import (
 )
 
 func TestIntersectsIPAddrs_InvalidSlice(t *testing.T) {
+	t.Parallel()
 	// net.IP with 3 bytes is invalid; netip.AddrFromSlice returns ok=false.
 	bad := net.IP{1, 2, 3}
 	if IntersectsIPAddrs([]netip.Addr{netip.MustParseAddr("10.0.0.1")}, []net.IP{bad}) {
@@ -17,6 +18,7 @@ func TestIntersectsIPAddrs_InvalidSlice(t *testing.T) {
 }
 
 func TestIntersectsIPAddrs_Match(t *testing.T) {
+	t.Parallel()
 	allowed := []netip.Addr{netip.MustParseAddr("10.0.0.1")}
 	if !IntersectsIPAddrs(allowed, []net.IP{net.ParseIP("10.0.0.1")}) {
 		t.Fatal("expected IntersectsIPAddrs=true for matching IP")
@@ -24,6 +26,7 @@ func TestIntersectsIPAddrs_Match(t *testing.T) {
 }
 
 func TestIntersectsIPAddrs_NoMatch(t *testing.T) {
+	t.Parallel()
 	allowed := []netip.Addr{netip.MustParseAddr("10.0.0.1")}
 	if IntersectsIPAddrs(allowed, []net.IP{net.ParseIP("192.168.1.1")}) {
 		t.Fatal("expected IntersectsIPAddrs=false for non-matching IP")
@@ -31,12 +34,14 @@ func TestIntersectsIPAddrs_NoMatch(t *testing.T) {
 }
 
 func TestCertificateURIStrings_NilCert(t *testing.T) {
+	t.Parallel()
 	if got := CertificateURIStrings(nil); got != nil {
 		t.Fatalf("CertificateURIStrings(nil) = %v, want nil", got)
 	}
 }
 
 func TestCertificateURIStrings_EmptyURIs(t *testing.T) {
+	t.Parallel()
 	cert := &x509.Certificate{}
 	if got := CertificateURIStrings(cert); got != nil {
 		t.Fatalf("CertificateURIStrings(empty) = %v, want nil", got)
@@ -44,6 +49,7 @@ func TestCertificateURIStrings_EmptyURIs(t *testing.T) {
 }
 
 func TestCertificateURIStrings_NilEntry(t *testing.T) {
+	t.Parallel()
 	u, _ := url.Parse("https://example.com")
 	cert := &x509.Certificate{URIs: []*url.URL{nil, u}}
 	got := CertificateURIStrings(cert)

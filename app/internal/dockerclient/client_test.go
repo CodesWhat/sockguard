@@ -12,6 +12,7 @@ import (
 )
 
 func TestNew_TransportValues(t *testing.T) {
+	t.Parallel()
 	client := dockerclient.New("/var/run/docker.sock")
 
 	tr, ok := client.Transport.(*http.Transport)
@@ -29,6 +30,7 @@ func TestNew_TransportValues(t *testing.T) {
 }
 
 func TestNew_DialContextSet(t *testing.T) {
+	t.Parallel()
 	client := dockerclient.New("/var/run/docker.sock")
 
 	tr, ok := client.Transport.(*http.Transport)
@@ -47,6 +49,7 @@ func TestNew_DialContextSet(t *testing.T) {
 // regressions where the dialer is misconfigured (wrong network family,
 // wrong path source) but the transport shape still looks right.
 func TestNew_ActualUnixDial(t *testing.T) {
+	t.Parallel()
 	sockPath := filepath.Join(t.TempDir(), "test.sock")
 
 	ln, err := net.Listen("unix", sockPath)

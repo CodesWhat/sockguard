@@ -56,6 +56,7 @@ var _ Verifier = (*alwaysFailVerifier)(nil)
 // --- Config validation ---
 
 func TestBuildConfigValidation(t *testing.T) {
+	t.Parallel()
 	t.Run("mode off accepted with no keys", func(t *testing.T) {
 		cfg, err := BuildConfig(RawConfig{Mode: ModeOff})
 		if err != nil {
@@ -153,6 +154,7 @@ func TestBuildConfigValidation(t *testing.T) {
 // --- mode=off ---
 
 func TestModeOff_NoopVerifier(t *testing.T) {
+	t.Parallel()
 	cfg := Config{Mode: ModeOff}
 	v, err := New(cfg)
 	if err != nil {
@@ -165,6 +167,7 @@ func TestModeOff_NoopVerifier(t *testing.T) {
 }
 
 func TestVerifyWithMode_Off_AlwaysAllows(t *testing.T) {
+	t.Parallel()
 	cfg := Config{Mode: ModeOff}
 	outcome := VerifyWithMode(context.Background(), &offVerifier{}, cfg, nil, "img:latest", "abc", nil)
 	if !outcome.Allowed {
@@ -180,6 +183,7 @@ func TestVerifyWithMode_Off_AlwaysAllows(t *testing.T) {
 // TestVerifyWithMode_Warn_AllowsOnFailure ensures that a verification failure
 // in warn mode does NOT deny the request; instead it logs and returns Allowed=true.
 func TestVerifyWithMode_Warn_AllowsOnFailure(t *testing.T) {
+	t.Parallel()
 	pemStr, _ := generateECDSAKey(t)
 	cfg, err := BuildConfig(RawConfig{
 		Mode:               ModeWarn,
@@ -205,6 +209,7 @@ func TestVerifyWithMode_Warn_AllowsOnFailure(t *testing.T) {
 // TestVerifyWithMode_Enforce_DeniesOnFailure ensures that a verification
 // failure in enforce mode returns Allowed=false.
 func TestVerifyWithMode_Enforce_DeniesOnFailure(t *testing.T) {
+	t.Parallel()
 	pemStr, _ := generateECDSAKey(t)
 	cfg, err := BuildConfig(RawConfig{
 		Mode:               ModeEnforce,
@@ -225,6 +230,7 @@ func TestVerifyWithMode_Enforce_DeniesOnFailure(t *testing.T) {
 // TestNilEntityDeniedWithDescription ensures that a nil entity returns a
 // descriptive error so the log record is useful.
 func TestNilEntityDeniedWithDescription(t *testing.T) {
+	t.Parallel()
 	pemStr, _ := generateECDSAKey(t)
 	cfg, err := BuildConfig(RawConfig{
 		Mode:               ModeEnforce,
@@ -248,6 +254,7 @@ func TestNilEntityDeniedWithDescription(t *testing.T) {
 // TestKeylessVerification_Success verifies that an image signed with the
 // correct issuer and identity passes enforcement.
 func TestKeylessVerification_Success(t *testing.T) {
+	t.Parallel()
 	artifact := []byte("my image manifest content for keyless")
 	digestHex := artDigest(artifact)
 
@@ -289,6 +296,7 @@ func TestKeylessVerification_Success(t *testing.T) {
 // TestKeylessVerification_IssuerMismatch checks that a signature from the
 // wrong OIDC issuer is rejected.
 func TestKeylessVerification_IssuerMismatch(t *testing.T) {
+	t.Parallel()
 	artifact := []byte("manifest data - issuer mismatch test")
 	digestHex := artDigest(artifact)
 
@@ -328,6 +336,7 @@ func TestKeylessVerification_IssuerMismatch(t *testing.T) {
 // TestKeylessVerification_SubjectMismatch checks that a signature whose SAN
 // does not match the configured pattern is rejected.
 func TestKeylessVerification_SubjectMismatch(t *testing.T) {
+	t.Parallel()
 	artifact := []byte("manifest data - subject mismatch test")
 	digestHex := artDigest(artifact)
 
@@ -369,6 +378,7 @@ func TestKeylessVerification_SubjectMismatch(t *testing.T) {
 // TestKeyedVerification_WrongKeyFails checks that a keyed verifier rejects
 // a bundle signed with a different key.
 func TestKeyedVerification_WrongKeyFails(t *testing.T) {
+	t.Parallel()
 	artifact := []byte("some manifest bytes for keyed mismatch")
 	digestHex := artDigest(artifact)
 
@@ -410,6 +420,7 @@ func TestKeyedVerification_WrongKeyFails(t *testing.T) {
 
 // TestBuildConfigTimeout validates the verify_timeout field parsing.
 func TestBuildConfigTimeout(t *testing.T) {
+	t.Parallel()
 	pemStr, _ := generateECDSAKey(t)
 	base := RawConfig{
 		Mode:               ModeEnforce,
@@ -459,6 +470,7 @@ func TestBuildConfigTimeout(t *testing.T) {
 // the sigstoreVerifier falls through to the keyless list and succeeds if a
 // keyless identity matches.
 func TestVerify_KeyedFallsBackToKeyless(t *testing.T) {
+	t.Parallel()
 	artifact := []byte("fallback-chain artifact payload")
 	digestHex := artDigest(artifact)
 
@@ -512,6 +524,7 @@ func TestVerify_KeyedFallsBackToKeyless(t *testing.T) {
 // keyless verification fail the returned error contains both "keyed:" and
 // "keyless:" substrings so operators can diagnose which leg(s) failed.
 func TestVerify_AllVerifiersFail_CompositeError(t *testing.T) {
+	t.Parallel()
 	artifact := []byte("composite error artifact payload")
 	digestHex := artDigest(artifact)
 

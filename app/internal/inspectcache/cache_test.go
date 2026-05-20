@@ -13,6 +13,7 @@ import (
 )
 
 func TestCacheHitsWithinTTL(t *testing.T) {
+	t.Parallel()
 	baseNow := time.Unix(1_700_000_000, 0)
 	var nowOffset atomic.Int64
 	var calls atomic.Int32
@@ -48,6 +49,7 @@ func TestCacheHitsWithinTTL(t *testing.T) {
 }
 
 func TestCacheCoalescesConcurrentMissesPerResource(t *testing.T) {
+	t.Parallel()
 	const callers = 16
 
 	release := make(chan struct{})
@@ -101,6 +103,7 @@ func TestCacheCoalescesConcurrentMissesPerResource(t *testing.T) {
 }
 
 func TestCacheDifferentResourcesIndependent(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	cache := New(
 		10*time.Second,
@@ -131,6 +134,7 @@ func TestCacheDifferentResourcesIndependent(t *testing.T) {
 }
 
 func TestCacheDoesNotCacheErrors(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	cache := New(
 		10*time.Second,
@@ -154,6 +158,7 @@ func TestCacheDoesNotCacheErrors(t *testing.T) {
 }
 
 func TestCacheCachesNotFound(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	cache := New(
 		10*time.Second,
@@ -183,6 +188,7 @@ func TestCacheCachesNotFound(t *testing.T) {
 // If a future change re-introduces a defensive clone, this assertion fails
 // and the alloc regression is caught before merge.
 func TestCacheReturnsSameMapAcrossLookups(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	cache := New(
 		10*time.Second,
@@ -225,6 +231,7 @@ func TestCacheReturnsSameMapAcrossLookups(t *testing.T) {
 // storeLocked: when the cache is full and at least one entry is past its TTL,
 // those entries are deleted without touching the live ones.
 func TestStoreLocked_EvictsStaleEntries(t *testing.T) {
+	t.Parallel()
 	const maxSize = 2
 	ttl := 10 * time.Second
 
@@ -279,6 +286,7 @@ func TestStoreLocked_EvictsStaleEntries(t *testing.T) {
 // TestStoreLocked_EvictsOldestWhenAllLive exercises the oldest-eviction branch:
 // when the cache is full and no entry is stale, the oldest live entry is deleted.
 func TestStoreLocked_EvictsOldestWhenAllLive(t *testing.T) {
+	t.Parallel()
 	const maxSize = 2
 	ttl := 10 * time.Second
 

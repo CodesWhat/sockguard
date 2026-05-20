@@ -21,6 +21,7 @@ import (
 // also confirms CompileKey emits the SPKI sha256 fingerprint callers
 // rely on for audit logs.
 func TestCompileKey(t *testing.T) {
+	t.Parallel()
 	t.Run("empty pem after trim is rejected", func(t *testing.T) {
 		_, _, err := CompileKey("   \n\t  ")
 		if err == nil || !strings.Contains(err.Error(), "pem is empty") {
@@ -80,6 +81,7 @@ func TestCompileKey(t *testing.T) {
 // returned issuer is whitespace-trimmed and the compiled pattern
 // round-trips.
 func TestCompileKeyless(t *testing.T) {
+	t.Parallel()
 	t.Run("empty issuer is rejected", func(t *testing.T) {
 		_, _, err := CompileKeyless("  \n", "^.+$")
 		if err == nil || !strings.Contains(err.Error(), "issuer is required") {
@@ -124,6 +126,7 @@ func TestCompileKeyless(t *testing.T) {
 // with a nil material, but VerifyKeyless is exported and a future
 // caller that forgets to inject TUF roots must fail closed.
 func TestVerifyKeylessRequiresTrustedMaterial(t *testing.T) {
+	t.Parallel()
 	err := VerifyKeyless(nil, nil, nil, "https://accounts.google.com", regexp.MustCompile(`^ops@example\.com$`), false)
 	if err == nil || !strings.Contains(err.Error(), "TrustedMaterial") {
 		t.Fatalf("VerifyKeyless(nil material) error = %v, want TrustedMaterial complaint", err)
@@ -136,6 +139,7 @@ func TestVerifyKeylessRequiresTrustedMaterial(t *testing.T) {
 // the bottom of VerifyKeyless layers on top of sigstore-go's matcher;
 // asserting the rejection happens at all is the TQ-17b coverage gap.
 func TestVerifyKeylessIssuerMismatch(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -174,6 +178,7 @@ func TestVerifyKeylessIssuerMismatch(t *testing.T) {
 // TestVerifyKeylessIssuerMismatch: signed SAN does not match the
 // configured subjectPattern, the policy rejects.
 func TestVerifyKeylessSANMismatch(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -208,6 +213,7 @@ func TestVerifyKeylessSANMismatch(t *testing.T) {
 // the mismatch tests are measured against and prevents an accidental
 // "always rejects" regression from satisfying the mismatch assertions.
 func TestVerifyKeylessSuccess(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)

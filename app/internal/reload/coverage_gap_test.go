@@ -20,6 +20,7 @@ import (
 // caught by safeOnReload and does not propagate to the caller. The reloader
 // must remain alive and invoke a subsequent trigger correctly.
 func TestSafeOnReloadRecoversPanic(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte("rules: []"), 0o600); err != nil {
@@ -102,6 +103,7 @@ func TestSafeOnReloadRecoversPanic(t *testing.T) {
 // the watchReadyWatcher wrapper, so both the wrapped and unwrapped paths are
 // reached.
 func TestProductionWatcherFileRewriteTriggersReload(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte("rules: []\n"), 0o600); err != nil {

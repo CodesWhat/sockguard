@@ -18,6 +18,7 @@ import (
 )
 
 func TestMiddlewareRecordsRequestDecisionMetrics(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 	handler := registry.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		meta := logging.MetaForRequest(w, r)
@@ -46,6 +47,7 @@ func TestMiddlewareRecordsRequestDecisionMetrics(t *testing.T) {
 }
 
 func TestMiddlewareRecordsWouldDenyWithModeLabel(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 	handler := registry.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		meta := logging.MetaForRequest(w, r)
@@ -69,6 +71,7 @@ func TestMiddlewareRecordsWouldDenyWithModeLabel(t *testing.T) {
 }
 
 func TestObserveThrottleEmitsModeLabel(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 	registry.ObserveThrottle("ci", "rate_limit", "warn")
 	registry.ObserveThrottle("ci", "rate_limit", "enforce")
@@ -80,6 +83,7 @@ func TestObserveThrottleEmitsModeLabel(t *testing.T) {
 }
 
 func TestRouteCategoryKeepsDockerPathLabelsBounded(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		path string
@@ -103,6 +107,7 @@ func TestRouteCategoryKeepsDockerPathLabelsBounded(t *testing.T) {
 }
 
 func TestHandlerWritesPrometheusTextFormat(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 	rec := httptest.NewRecorder()
 
@@ -117,6 +122,7 @@ func TestHandlerWritesPrometheusTextFormat(t *testing.T) {
 }
 
 func TestRegistryEmitsBuildInfoAndStartTime(t *testing.T) {
+	t.Parallel()
 	before := float64(time.Now().UnixNano()) / 1e9
 	registry := NewRegistry()
 	after := float64(time.Now().UnixNano()) / 1e9
@@ -150,6 +156,7 @@ func TestRegistryEmitsBuildInfoAndStartTime(t *testing.T) {
 }
 
 func TestRegistryOmitsPolicyVersionUntilSet(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 	out := renderMetrics(t, registry)
 	if strings.Contains(out, "sockguard_policy_version") {
@@ -158,6 +165,7 @@ func TestRegistryOmitsPolicyVersionUntilSet(t *testing.T) {
 }
 
 func TestRegistryEmitsPolicyVersionAfterSet(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 	registry.SetPolicyVersion(1)
 	registry.SetPolicyVersion(7) // monotonic in production; test the latest-wins behavior
@@ -168,11 +176,13 @@ func TestRegistryEmitsPolicyVersionAfterSet(t *testing.T) {
 }
 
 func TestNilRegistrySetPolicyVersionIsNoop(t *testing.T) {
+	t.Parallel()
 	var registry *Registry
 	registry.SetPolicyVersion(42) // must not panic
 }
 
 func TestRegistryRecordsUpstreamWatchdogState(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 
 	registry.ObserveUpstreamWatchdog(false)
@@ -187,6 +197,7 @@ func TestRegistryRecordsUpstreamWatchdogState(t *testing.T) {
 }
 
 func TestNilRegistryNoOps(t *testing.T) {
+	t.Parallel()
 	var registry *Registry
 
 	called := false
@@ -216,6 +227,7 @@ func TestNilRegistryNoOps(t *testing.T) {
 }
 
 func TestActiveRequestsGaugeIncludesInFlightRequests(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -241,6 +253,7 @@ func TestActiveRequestsGaugeIncludesInFlightRequests(t *testing.T) {
 }
 
 func TestDefaultLabelsForMissingMetaRequestAndDenyDetails(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 
 	registry.observe(nil, nil, http.StatusInternalServerError, 0.001)
@@ -262,6 +275,7 @@ func TestDefaultLabelsForMissingMetaRequestAndDenyDetails(t *testing.T) {
 }
 
 func TestRouteCategoryCoversDockerRouteFamiliesAndPathEdges(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		path string
@@ -306,6 +320,7 @@ func TestRouteCategoryCoversDockerRouteFamiliesAndPathEdges(t *testing.T) {
 }
 
 func TestSortKeysBucketFormattingAndLabelEscaping(t *testing.T) {
+	t.Parallel()
 	requestKey := requestLabels{decision: "allow", method: "GET", profile: "default", route: "/_ping", status: "200"}
 	if got := requestLabelSortKey(requestKey); got != "allow\x00GET\x00default\x00/_ping\x00200" {
 		t.Fatalf("requestLabelSortKey() = %q", got)
@@ -339,6 +354,7 @@ func TestSortKeysBucketFormattingAndLabelEscaping(t *testing.T) {
 // affect the live histogram, and the live histogram must keep counting after
 // the snapshot is taken.
 func TestSnapshotHistogramsReadsAtomicCountersAndIsolatesSlice(t *testing.T) {
+	t.Parallel()
 	key := durationLabels{decision: "allow", method: "GET", profile: "default", route: "/_ping"}
 
 	var live sync.Map
@@ -378,6 +394,7 @@ func TestSnapshotHistogramsReadsAtomicCountersAndIsolatesSlice(t *testing.T) {
 }
 
 func TestSortedLabelHelpersOrderDeterministically(t *testing.T) {
+	t.Parallel()
 	requests := sortedRequestLabels(map[requestLabels]uint64{
 		{decision: "deny", method: "POST", profile: "b", route: "/z", status: "403"}: 1,
 		{decision: "allow", method: "GET", profile: "a", route: "/a", status: "200"}: 1,
@@ -404,6 +421,7 @@ func TestSortedLabelHelpersOrderDeterministically(t *testing.T) {
 }
 
 func TestResponseWriterFlushAndHijackDelegation(t *testing.T) {
+	t.Parallel()
 	rw := &delegatingResponseWriter{header: make(http.Header)}
 	wrapped := acquireResponseWriter(rw, httptest.NewRequest(http.MethodGet, "/_ping", nil))
 
@@ -500,6 +518,7 @@ func assertContains(t *testing.T, got, want string) {
 // correct under the new sync.Map + atomic-counter storage and that no
 // observation is lost when it races a scrape.
 func TestRegistryConcurrentObserveAndScrape(t *testing.T) {
+	t.Parallel()
 	registry := NewRegistry()
 
 	const writers = 8

@@ -13,6 +13,7 @@ import (
 // empty key/keyless lists is rejected by BuildConfig, so we construct the
 // verifier struct directly to land in the final error branch.
 func TestVerify_NoVerifiersConfiguredReturnsError(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -36,6 +37,7 @@ func TestVerify_NoVerifiersConfiguredReturnsError(t *testing.T) {
 // TestVerify_InvalidDigestHexReturnsError covers the digest-decode branch
 // in sigstoreVerifier.Verify.
 func TestVerify_InvalidDigestHexReturnsError(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -60,6 +62,7 @@ func TestVerify_InvalidDigestHexReturnsError(t *testing.T) {
 // Verify only reaches verifyKeyless when there are AllowedKeyless entries,
 // so we configure one and leave TrustedMaterial nil to hit the early return.
 func TestVerifyKeyless_RequiresTrustedMaterial(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)

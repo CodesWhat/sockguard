@@ -32,6 +32,7 @@ func resolveProfileFn(profile string) func(*http.Request) (string, bool) {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_NoLimitsIsPassthrough(t *testing.T) {
+	t.Parallel()
 	mw := mustMiddleware(t, newTestLogger(), nil, nil, MiddlewareOptions{})
 	h := mw(okHandler)
 
@@ -47,6 +48,7 @@ func TestMiddleware_NoLimitsIsPassthrough(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_RateLimit_AllowAndDeny(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 	sampler, stop := NewAuditSampler()
 	defer stop()
@@ -98,6 +100,7 @@ func TestMiddleware_RateLimit_AllowAndDeny(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_ConcurrencyCap_AllowAndDeny(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 	sampler, stop := NewAuditSampler()
 	defer stop()
@@ -159,6 +162,7 @@ func TestMiddleware_ConcurrencyCap_AllowAndDeny(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_AnonymousClientID(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 
 	// Requests with empty profile are bucketed under _anonymous.
@@ -188,6 +192,7 @@ func TestMiddleware_AnonymousClientID(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_UnknownProfilePassthrough(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 	opts := MiddlewareOptions{
 		Profiles: map[string]ProfileOptions{
@@ -211,6 +216,7 @@ func TestMiddleware_UnknownProfilePassthrough(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_DeniedRateRequestNotCountedAsInflight(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 	sampler, stop := NewAuditSampler()
 	defer stop()
@@ -252,6 +258,7 @@ func TestMiddleware_DeniedRateRequestNotCountedAsInflight(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_BurstZeroDefaultsToRate(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 	opts := MiddlewareOptions{
 		Profiles: map[string]ProfileOptions{
@@ -282,6 +289,7 @@ func TestMiddleware_BurstZeroDefaultsToRate(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_ConcurrentUnderRace(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 	sampler, stop := newAuditSamplerWithClock(func() time.Time { return time.Now() })
 	defer stop()
@@ -316,6 +324,7 @@ func TestMiddleware_ConcurrentUnderRace(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_EndpointCost_WeightsExpensiveEndpoint(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 	clk := newFixedClock(time.Unix(0, 0))
 
@@ -354,6 +363,7 @@ func TestMiddleware_EndpointCost_WeightsExpensiveEndpoint(t *testing.T) {
 }
 
 func TestMiddleware_EndpointCost_MethodFilter(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 
 	opts := MiddlewareOptions{
@@ -383,6 +393,7 @@ func TestMiddleware_EndpointCost_MethodFilter(t *testing.T) {
 }
 
 func TestMiddleware_EndpointCost_UnmatchedFallsBackToOne(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 
 	opts := MiddlewareOptions{
@@ -418,6 +429,7 @@ func TestMiddleware_EndpointCost_UnmatchedFallsBackToOne(t *testing.T) {
 }
 
 func TestMiddleware_EndpointCost_FirstMatchWins(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 
 	// Two overlapping rules: the first (cost=10) is matched, even though the
@@ -458,6 +470,7 @@ func TestMiddleware_EndpointCost_FirstMatchWins(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_ThrottleAudit_IncludesCost(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 	sampler, stop := NewAuditSampler()
 	defer stop()
@@ -527,6 +540,7 @@ func (b *threadSafeBuffer) String() string {
 // ---------------------------------------------------------------------------
 
 func TestMiddleware_RolloutMode_RateLimitPassesThrough(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"warn", "audit"} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			reg := metrics.NewRegistry()
@@ -574,6 +588,7 @@ func TestMiddleware_RolloutMode_RateLimitPassesThrough(t *testing.T) {
 }
 
 func TestMiddleware_RolloutMode_ConcurrencyPassesThrough(t *testing.T) {
+	t.Parallel()
 	reg := metrics.NewRegistry()
 	sampler, stop := NewAuditSampler()
 	defer stop()
@@ -677,6 +692,7 @@ func withRolloutMode(r *http.Request, mode string) *http.Request {
 // Without the fix, the gauge stayed at 0 during the pass-through, giving
 // operators misleading numbers when sizing a new global cap via dashboards.
 func TestGlobalInflight_CountsPassThroughInWarnMode(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"warn", "audit"} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			// Use a GlobalInflightTracker directly so we can assert Current()

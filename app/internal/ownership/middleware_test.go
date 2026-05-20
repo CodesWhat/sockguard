@@ -65,6 +65,7 @@ func (f fakeInspector) inspectExec(_ context.Context, id string) (string, bool, 
 }
 
 func TestMiddlewareAddsOwnerLabelToContainerCreate(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -95,6 +96,7 @@ func TestMiddlewareAddsOwnerLabelToContainerCreate(t *testing.T) {
 }
 
 func TestMiddlewareNoOpWhenOwnerEmpty(t *testing.T) {
+	t.Parallel()
 	reached := false
 	handler := middlewareWithDeps(testLogger(), Options{}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached = true
@@ -111,6 +113,7 @@ func TestMiddlewareNoOpWhenOwnerEmpty(t *testing.T) {
 }
 
 func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		filtersJSON := r.URL.Query().Get("filters")
@@ -147,6 +150,7 @@ func TestMiddlewareInjectsOwnerFilterIntoContainerList(t *testing.T) {
 }
 
 func TestMiddlewareOwnerLabelFilterOverwritesClientSuppliedOwnerLabel(t *testing.T) {
+	t.Parallel()
 	// Attack: client sends filters={"label":["com.sockguard.owner=victim"]} to
 	// list another tenant's containers. The proxy must replace — not append —
 	// the label filter so the upstream request contains only the proxy-enforced
@@ -184,6 +188,7 @@ func TestMiddlewareOwnerLabelFilterOverwritesClientSuppliedOwnerLabel(t *testing
 }
 
 func TestMiddlewareInjectsOwnerFilterIntoExpandedControlPlaneLists(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 
 	tests := []struct {
@@ -234,6 +239,7 @@ func TestMiddlewareInjectsOwnerFilterIntoExpandedControlPlaneLists(t *testing.T)
 }
 
 func TestMiddlewareInjectsOwnerFilterIntoNodesListWithNodeLabel(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 
 	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -272,6 +278,7 @@ func TestMiddlewareInjectsOwnerFilterIntoNodesListWithNodeLabel(t *testing.T) {
 }
 
 func TestMiddlewareReturnsBadRequestForInvalidMutationInput(t *testing.T) {
+	t.Parallel()
 	t.Run("invalid labels object", func(t *testing.T) {
 		handler := middlewareWithDeps(testLogger(), Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 			t.Fatal("expected invalid create body to be denied")
@@ -302,6 +309,7 @@ func TestMiddlewareReturnsBadRequestForInvalidMutationInput(t *testing.T) {
 }
 
 func TestMiddlewareDeniesCrossOwnerContainerAccess(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
@@ -327,6 +335,7 @@ func TestMiddlewareDeniesCrossOwnerContainerAccess(t *testing.T) {
 }
 
 func TestMiddlewareRolloutModePassesOwnershipDenyThrough(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"warn", "audit"} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
@@ -366,6 +375,7 @@ func TestMiddlewareRolloutModePassesOwnershipDenyThrough(t *testing.T) {
 }
 
 func TestMiddlewareAllowsOwnedContainerAccess(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
@@ -388,6 +398,7 @@ func TestMiddlewareAllowsOwnedContainerAccess(t *testing.T) {
 }
 
 func TestMiddlewareDeniesCrossOwnerExpandedControlPlaneAccess(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 
 	tests := []struct {
@@ -432,6 +443,7 @@ func TestMiddlewareDeniesCrossOwnerExpandedControlPlaneAccess(t *testing.T) {
 }
 
 func TestMiddlewareDeniesCrossOwnerNodeAndSwarmReads(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 
 	tests := []struct {
@@ -472,6 +484,7 @@ func TestMiddlewareDeniesCrossOwnerNodeAndSwarmReads(t *testing.T) {
 }
 
 func TestMiddlewareClaimsUnownedNodeAndSwarmUpdates(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 
 	tests := []struct {
@@ -518,6 +531,7 @@ func TestMiddlewareClaimsUnownedNodeAndSwarmUpdates(t *testing.T) {
 }
 
 func TestMiddlewareDeniesCrossOwnerNodeAndSwarmUpdates(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 
 	tests := []struct {
@@ -556,6 +570,7 @@ func TestMiddlewareDeniesCrossOwnerNodeAndSwarmUpdates(t *testing.T) {
 }
 
 func TestMiddlewareAllowsUnownedImageAccessByDefault(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: true}
 	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
@@ -578,6 +593,7 @@ func TestMiddlewareAllowsUnownedImageAccessByDefault(t *testing.T) {
 }
 
 func TestMiddlewareDeniesExecAccessForCrossOwnerContainer(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	fi := fakeInspector{
 		execs: map[string]execResult{
@@ -603,6 +619,7 @@ func TestMiddlewareDeniesExecAccessForCrossOwnerContainer(t *testing.T) {
 }
 
 func TestMiddlewarePassesThroughWhenResourceMissing(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
@@ -625,6 +642,7 @@ func TestMiddlewarePassesThroughWhenResourceMissing(t *testing.T) {
 }
 
 func TestMiddlewareReturnsBadGatewayWhenOwnerLookupFails(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
@@ -647,6 +665,7 @@ func TestMiddlewareReturnsBadGatewayWhenOwnerLookupFails(t *testing.T) {
 }
 
 func TestMiddlewareWrapperUsesUnixSocketInspector(t *testing.T) {
+	t.Parallel()
 	socketPath := startUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/containers/abc123/json" {
 			t.Errorf("path = %q, want /containers/abc123/json", r.URL.Path)
@@ -668,6 +687,7 @@ func TestMiddlewareWrapperUsesUnixSocketInspector(t *testing.T) {
 }
 
 func TestOptionsNormalized(t *testing.T) {
+	t.Parallel()
 	opts := (Options{Owner: "job-123"}).normalized()
 	if opts.LabelKey != DefaultLabelKey {
 		t.Fatalf("LabelKey = %q, want %q", opts.LabelKey, DefaultLabelKey)
@@ -675,6 +695,7 @@ func TestOptionsNormalized(t *testing.T) {
 }
 
 func TestMutateOwnershipRequest(t *testing.T) {
+	t.Parallel()
 	t.Run("build", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/build?labels=%7B%22existing%22%3A%22value%22%7D", nil)
 		if err := mutateOwnershipRequest(req, "/build", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
@@ -811,6 +832,7 @@ func TestMutateOwnershipRequest(t *testing.T) {
 }
 
 func TestAllowOwnershipRequest(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: true}
 	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
@@ -882,6 +904,7 @@ func TestAllowOwnershipRequest(t *testing.T) {
 }
 
 func TestOwnerHelpers(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		labels       map[string]string
@@ -938,6 +961,7 @@ func TestOwnerHelpers(t *testing.T) {
 }
 
 func TestOwnershipSetDenied(t *testing.T) {
+	t.Parallel()
 	// Ownership passes nil for the normalize callback because filter has
 	// already stamped meta.NormPath by the time ownership fires.
 	meta := &logging.RequestMeta{}
@@ -950,6 +974,7 @@ func TestOwnershipSetDenied(t *testing.T) {
 }
 
 func TestIdentifierHelpers(t *testing.T) {
+	t.Parallel()
 	if id, ok := networkIdentifier("/networks/net-1"); !ok || id != "net-1" {
 		t.Fatalf("networkIdentifier() = (%q, %v), want (net-1, true)", id, ok)
 	}
@@ -1022,6 +1047,7 @@ func TestIdentifierHelpers(t *testing.T) {
 }
 
 func TestAddOwnerLabelToBuildQuery(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodPost, "/build", nil)
 	if err := addOwnerLabelToBuildQuery(req, "com.sockguard.owner", "job-123"); err != nil {
 		t.Fatalf("addOwnerLabelToBuildQuery() error = %v", err)
@@ -1041,6 +1067,7 @@ func TestAddOwnerLabelToBuildQuery(t *testing.T) {
 }
 
 func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"busybox"}`))
 	if err := addOwnerLabelToBody(req, "com.sockguard.owner", "job-123"); err != nil {
 		t.Fatalf("addOwnerLabelToBody() error = %v", err)
@@ -1118,6 +1145,7 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 }
 
 func TestDecodeDockerFilters(t *testing.T) {
+	t.Parallel()
 	if filters, err := decodeDockerFilters(""); err != nil || len(filters) != 0 {
 		t.Fatalf("decodeDockerFilters(empty) = (%#v, %v), want empty nil", filters, err)
 	}
@@ -1165,6 +1193,7 @@ func TestDecodeDockerFilters(t *testing.T) {
 }
 
 func TestMutateJSONBody(t *testing.T) {
+	t.Parallel()
 	t.Run("nil body", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
 		req.Body = nil
@@ -1215,6 +1244,7 @@ func TestMutateJSONBody(t *testing.T) {
 }
 
 func TestMutateJSONBodyPreservesLargeIntegers(t *testing.T) {
+	t.Parallel()
 	// Docker container create payloads routinely carry 53-bit+ integers —
 	// MemorySwap, Memory, PidsLimit, NanoCpus — that float64 silently
 	// truncates. UseNumber must round-trip these exactly through the
@@ -1261,6 +1291,7 @@ func TestMutateJSONBodyPreservesLargeIntegers(t *testing.T) {
 }
 
 func TestNestedObject(t *testing.T) {
+	t.Parallel()
 	decoded := map[string]any{}
 	obj, err := nestedObject(decoded, "Labels")
 	if err != nil {
@@ -1281,6 +1312,7 @@ func TestNestedObject(t *testing.T) {
 }
 
 func TestUpstreamInspectorInspectResource(t *testing.T) {
+	t.Parallel()
 	socketPath := startUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/containers/abc/json", "/images/busybox:latest/json":
@@ -1394,6 +1426,7 @@ func nestedMapAnyForTest(t *testing.T, payload map[string]any, keys ...string) m
 }
 
 func TestUpstreamInspectorInspectExec(t *testing.T) {
+	t.Parallel()
 	socketPath := startUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/exec/exec-1/json":
@@ -1495,6 +1528,7 @@ func newUnixHTTPClient(socketPath string) *http.Client {
 // must short-circuit with an error and never invoke the mutate callback, so
 // we don't hand a multi-GB byte slice to json.Unmarshal.
 func TestMutateJSONBodyRejectsOversizedBody(t *testing.T) {
+	t.Parallel()
 	oversized := strings.Repeat("x", maxOwnershipBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(oversized))
 
@@ -1511,6 +1545,7 @@ func TestMutateJSONBodyRejectsOversizedBody(t *testing.T) {
 }
 
 func TestMiddlewareOverwritesClientSuppliedOwnerLabel(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any

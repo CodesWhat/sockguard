@@ -21,6 +21,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestMiddlewareWithDepsOwnerLookupError(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
@@ -48,6 +49,7 @@ func TestMiddlewareWithDepsOwnerLookupError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddlewareWithDepsNormPathFallback(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	reached := false
 	fi := fakeInspector{}
@@ -68,6 +70,7 @@ func TestMiddlewareWithDepsNormPathFallback(t *testing.T) {
 }
 
 func TestMiddlewareWithDepsUsesPrecomputedNormPath(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
@@ -96,6 +99,7 @@ func TestMiddlewareWithDepsUsesPrecomputedNormPath(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestMiddlewareWithDepsMutateError(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	fi := fakeInspector{}
 	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -117,6 +121,7 @@ func TestMiddlewareWithDepsMutateError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAllowOwnershipRequestSwarmUpdate(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	fi := fakeInspector{
 		resources: map[string]map[string]inspectResult{
@@ -139,6 +144,7 @@ func TestAllowOwnershipRequestSwarmUpdate(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAddOwnerLabelToServiceBodyBadContainerLabels(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
 		`{"Labels":{},"TaskTemplate":{"ContainerSpec":{"Labels":"bad"}}}`,
 	))
@@ -153,6 +159,7 @@ func TestAddOwnerLabelToServiceBodyBadContainerLabels(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNestedObjectPathBadIntermediate(t *testing.T) {
+	t.Parallel()
 	decoded := map[string]any{
 		"TaskTemplate": "not-an-object",
 	}
@@ -167,6 +174,7 @@ func TestNestedObjectPathBadIntermediate(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAllowOwnershipRequestExecError(t *testing.T) {
+	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
 	fi := fakeInspector{
 		execs: map[string]execResult{
@@ -185,6 +193,7 @@ func TestAllowOwnershipRequestExecError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTaskIdentifierEmpty(t *testing.T) {
+	t.Parallel()
 	if _, ok := taskIdentifier("/tasks/"); ok {
 		t.Fatal("expected empty task identifier to be excluded")
 	}
@@ -192,6 +201,7 @@ func TestTaskIdentifierEmpty(t *testing.T) {
 
 // paths.go: nodeIdentifier — empty identifier
 func TestNodeIdentifierEmpty(t *testing.T) {
+	t.Parallel()
 	if _, ok := nodeIdentifier("/nodes/"); ok {
 		t.Fatal("expected empty node identifier to be excluded")
 	}
@@ -202,6 +212,7 @@ func TestNodeIdentifierEmpty(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSetDeniedWithNormalizeFillsNormPath(t *testing.T) {
+	t.Parallel()
 	meta := &logging.RequestMeta{}
 	req := httptest.NewRequest(http.MethodGet, "/v1.45/containers/json", nil)
 	logging.SetDenied(&metaWriter{meta: meta}, req, "test reason", func(path string) string {
@@ -213,6 +224,7 @@ func TestSetDeniedWithNormalizeFillsNormPath(t *testing.T) {
 }
 
 func TestSetDeniedNilMeta(t *testing.T) {
+	t.Parallel()
 	// Plain recorder has no RequestMeta — should be a no-op
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
 	logging.SetDenied(httptest.NewRecorder(), req, "ignored", nil)
@@ -223,6 +235,7 @@ func TestSetDeniedNilMeta(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInspectResourceUnsupportedKind(t *testing.T) {
+	t.Parallel()
 	socketPath := startUnixHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, `{}`)
@@ -241,6 +254,7 @@ func TestInspectResourceUnsupportedKind(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSetDeniedPopulatesDecisionAndReason(t *testing.T) {
+	t.Parallel()
 	meta := &logging.RequestMeta{}
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
 	logging.SetDenied(&metaWriter{meta: meta}, req, "test deny reason", nil)
@@ -261,6 +275,7 @@ func TestSetDeniedPopulatesDecisionAndReason(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAddOwnerLabelToServiceBodyNoTaskTemplate(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{"Name":"mysvc"}`))
 	if err := addOwnerLabelToServiceBody(req, "com.sockguard.owner", "job-123"); err != nil {
 		t.Fatalf("addOwnerLabelToServiceBody() error = %v", err)

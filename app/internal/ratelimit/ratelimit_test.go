@@ -32,6 +32,7 @@ func (c *fixedClock) Advance(d time.Duration) {
 // ---------------------------------------------------------------------------
 
 func TestBucket_AllowConsumeAndDeny(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	b := newBucket(10, 10, clk.Now) // 10 tokens/s, burst 10
 
@@ -54,6 +55,7 @@ func TestBucket_AllowConsumeAndDeny(t *testing.T) {
 }
 
 func TestBucket_RefillPartial(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	b := newBucket(10, 10, clk.Now) // 10 tokens/s, burst 10
 
@@ -77,6 +79,7 @@ func TestBucket_RefillPartial(t *testing.T) {
 }
 
 func TestBucket_RefillCapAtBurst(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	b := newBucket(10, 5, clk.Now) // 10 tokens/s, burst 5
 
@@ -97,6 +100,7 @@ func TestBucket_RefillCapAtBurst(t *testing.T) {
 }
 
 func TestBucket_RefillAcrossMultipleSeconds(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	b := newBucket(2, 10, clk.Now) // 2 tokens/s, burst 10
 
@@ -120,6 +124,7 @@ func TestBucket_RefillAcrossMultipleSeconds(t *testing.T) {
 }
 
 func TestBucket_RetryAfterCalculation(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	b := newBucket(1, 1, clk.Now) // 1 token/s, burst 1
 
@@ -140,6 +145,7 @@ func TestBucket_RetryAfterCalculation(t *testing.T) {
 }
 
 func TestBucket_JustRefilled(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	b := newBucket(10, 10, clk.Now)
 
@@ -165,6 +171,7 @@ func TestBucket_JustRefilled(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestLimiter_AnonymousBucketing(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	l := newLimiterWithClock(1, 1, clk.Now)
 
@@ -181,6 +188,7 @@ func TestLimiter_AnonymousBucketing(t *testing.T) {
 }
 
 func TestLimiter_SeparateBucketsPerClient(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	l := newLimiterWithClock(1, 1, clk.Now)
 
@@ -203,6 +211,7 @@ func TestLimiter_SeparateBucketsPerClient(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestInflightTracker_BasicAdmitAndRelease(t *testing.T) {
+	t.Parallel()
 	var tr InflightTracker
 
 	ok, count := tr.Acquire("alice", 2)
@@ -230,6 +239,7 @@ func TestInflightTracker_BasicAdmitAndRelease(t *testing.T) {
 }
 
 func TestInflightTracker_AnonymousBucketing(t *testing.T) {
+	t.Parallel()
 	var tr InflightTracker
 
 	ok, _ := tr.Acquire("", 1)
@@ -243,12 +253,14 @@ func TestInflightTracker_AnonymousBucketing(t *testing.T) {
 }
 
 func TestInflightTracker_ReleaseNoOp(t *testing.T) {
+	t.Parallel()
 	var tr InflightTracker
 	// Should not panic.
 	tr.Release("nobody")
 }
 
 func TestInflightTracker_SeparateCountsPerClient(t *testing.T) {
+	t.Parallel()
 	var tr InflightTracker
 
 	tr.Acquire("a", 1) //nolint:errcheck
@@ -270,6 +282,7 @@ func TestInflightTracker_SeparateCountsPerClient(t *testing.T) {
 // TestInflightTracker_Race exercises the tracker under -race for 100
 // concurrent goroutines simultaneously acquiring and releasing.
 func TestInflightTracker_Race(t *testing.T) {
+	t.Parallel()
 	const cap = 10
 	const goroutines = 100
 	var tr InflightTracker
@@ -299,6 +312,7 @@ func TestInflightTracker_Race(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestAuditSampler_FirstEmitAlways(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	s, stop := newAuditSamplerWithClock(clk.Now)
 	defer stop()
@@ -309,6 +323,7 @@ func TestAuditSampler_FirstEmitAlways(t *testing.T) {
 }
 
 func TestAuditSampler_SuppressesWithin1s(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	s, stop := newAuditSamplerWithClock(clk.Now)
 	defer stop()
@@ -323,6 +338,7 @@ func TestAuditSampler_SuppressesWithin1s(t *testing.T) {
 }
 
 func TestAuditSampler_AllowsAfter1s(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	s, stop := newAuditSamplerWithClock(clk.Now)
 	defer stop()
@@ -336,6 +352,7 @@ func TestAuditSampler_AllowsAfter1s(t *testing.T) {
 }
 
 func TestAuditSampler_IndependentPerClientAndReason(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	s, stop := newAuditSamplerWithClock(clk.Now)
 	defer stop()
@@ -353,6 +370,7 @@ func TestAuditSampler_IndependentPerClientAndReason(t *testing.T) {
 }
 
 func TestAuditSampler_Eviction(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	s, stop := newAuditSamplerWithClock(clk.Now)
 	defer stop()
@@ -374,6 +392,7 @@ func TestAuditSampler_Eviction(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestBucket_AllowN_ConsumesNTokens(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	b := newBucket(100, 10, clk.Now) // burst 10
 
@@ -394,6 +413,7 @@ func TestBucket_AllowN_ConsumesNTokens(t *testing.T) {
 }
 
 func TestBucket_AllowN_RetryAfterScalesWithCost(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	b := newBucket(1, 10, clk.Now) // 1 token/s, burst 10
 
@@ -413,6 +433,7 @@ func TestBucket_AllowN_RetryAfterScalesWithCost(t *testing.T) {
 }
 
 func TestBucket_AllowN_ClampsCostBelowOne(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	b := newBucket(10, 10, clk.Now)
 
@@ -433,6 +454,7 @@ func TestBucket_AllowN_ClampsCostBelowOne(t *testing.T) {
 // elapsed > 0 guard in AllowN skips refill when now.Sub(lastRefill) <= 0; this
 // test exercises that branch directly.
 func TestBucket_TimeBackwardsDoesNotRefill(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0).Add(10 * time.Second))
 	b := newBucket(10, 10, clk.Now)
 
@@ -454,6 +476,7 @@ func TestBucket_TimeBackwardsDoesNotRefill(t *testing.T) {
 // Empty clientID flows through ShouldEmit's anonymous fallback. The result
 // should be identical to passing AnonymousClientID explicitly.
 func TestAuditSampler_EmptyClientIDFallsBackToAnonymous(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	s, stop := newAuditSamplerWithClock(clk.Now)
 	defer stop()
@@ -472,6 +495,7 @@ func TestAuditSampler_EmptyClientIDFallsBackToAnonymous(t *testing.T) {
 // startup, but the InflightTracker contract is part of the security model
 // (denied-by-cap means denied, not admitted) and is tested directly.
 func TestInflightTracker_ZeroCapAlwaysDenies(t *testing.T) {
+	t.Parallel()
 	var tr InflightTracker
 	for i := range 3 {
 		ok, curr := tr.Acquire("anyone", 0)
@@ -484,6 +508,7 @@ func TestInflightTracker_ZeroCapAlwaysDenies(t *testing.T) {
 // Concurrent Release on a counter at zero must clamp without panic or
 // underflow. Exercises the CAS-loop guard in Release.
 func TestInflightTracker_ConcurrentReleaseClampsAtZero(t *testing.T) {
+	t.Parallel()
 	var tr InflightTracker
 	ok, _ := tr.Acquire("x", 1)
 	if !ok {
@@ -506,6 +531,7 @@ func TestInflightTracker_ConcurrentReleaseClampsAtZero(t *testing.T) {
 
 // Idle buckets are evicted by Limiter.evict after the configured TTL.
 func TestLimiter_EvictsIdleBuckets(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	l := newLimiterWithClock(10, 10, clk.Now)
 	defer l.Stop()
@@ -534,6 +560,7 @@ func TestLimiter_EvictsIdleBuckets(t *testing.T) {
 
 // Calling Stop multiple times must be safe (idempotent close).
 func TestLimiter_StopIsIdempotent(t *testing.T) {
+	t.Parallel()
 	l := NewLimiter(10, 10)
 	l.Stop()
 	l.Stop() // must not panic on double-close
@@ -544,6 +571,7 @@ func TestLimiter_StopIsIdempotent(t *testing.T) {
 // is either an explicit glob token or regexp.QuoteMeta'd; this test pins that
 // invariant so a future change to globToRegex that breaks it gets caught.
 func TestCompileEndpointCosts_AllInputsCompile(t *testing.T) {
+	t.Parallel()
 	weirdGlobs := []string{
 		"",
 		"[",
@@ -582,6 +610,7 @@ func TestCompileEndpointCosts_AllInputsCompile(t *testing.T) {
 // that the lock-free implementation neither over-grants nor under-grants by
 // more than a small absolute tolerance.
 func TestBucket_CASStress(t *testing.T) {
+	t.Parallel()
 	const (
 		goroutines   = 32
 		rate         = 500.0 // tokens/s — high enough to keep up with 32 workers
@@ -625,6 +654,7 @@ func TestBucket_CASStress(t *testing.T) {
 
 // TestAuditSampler_Race verifies the sampler is safe under concurrent access.
 func TestAuditSampler_Race(t *testing.T) {
+	t.Parallel()
 	clk := newFixedClock(time.Unix(0, 0))
 	s, stop := newAuditSamplerWithClock(clk.Now)
 	defer stop()
