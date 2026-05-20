@@ -126,7 +126,9 @@ func TestDockerdRouteClassifierOracle(t *testing.T) {
 //
 //   - 200 + a JSON array carrying the sentinel container → container.list;
 //   - 404 + a JSON daemon error naming a container       → container.inspect;
-//   - 404 + a plain-text body (the router's NotFound)     → unknown.
+//   - 404 + the router NotFound body ("page not found",
+//     served as JSON on modern dockerd, plain text on older
+//     builds)                                              → unknown.
 func observeDockerRoute(t *testing.T, socketPath string, req *http.Request, sentinelID string) differential.RouteCategory {
 	t.Helper()
 
@@ -172,15 +174,23 @@ func observeDockerRoute(t *testing.T, socketPath string, req *http.Request, sent
 			t.Fatalf("404 JSON response for %q is not a docker API error: %v; body: %s",
 				req.URL.RequestURI(), err, clipBody(body))
 		}
-		if strings.Contains(strings.ToLower(apiErr.Message), "container") {
+		msg := strings.ToLower(apiErr.Message)
+		// "page not found" is the mux router's NotFound handler when no
+		// route matches — modern dockerd serves it as JSON, older builds
+		// as plain text (handled in the next case). Either way, no route
+		// was reached, so the daemon executed nothing.
+		if strings.Contains(msg, "page not found") {
+			return differential.RouteUnknown
+		}
+		if strings.Contains(msg, "container") {
 			return differential.RouteContainerInspect
 		}
-		t.Fatalf("404 docker API error for %q does not name a container: %q",
+		t.Fatalf("404 docker API error for %q is neither a NotFound nor a container error: %q",
 			req.URL.RequestURI(), apiErr.Message)
 
 	case resp.StatusCode == http.StatusNotFound:
-		// The daemon router's NotFound handler — a plain-text 404. No route
-		// matched, so the daemon executes nothing.
+		// Plain-text 404 on older dockerd builds — same NotFound handler,
+		// no JSON envelope. No route matched.
 		return differential.RouteUnknown
 	}
 
