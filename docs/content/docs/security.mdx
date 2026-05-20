@@ -194,14 +194,27 @@ These are architectural constraints inherent to Sockguard's position in the
 stack. They are documented here for honest operator awareness rather than as
 open bugs.
 
-**clientacl IP→label race.** When `clients.container_labels.enabled` is true,
-Sockguard resolves the calling container by source IP through the Docker API.
-If a container is restarted and a new container quickly acquires the same
-bridge IP before the label lookup completes, the lookup may return the new
-container's labels rather than the previous container's. Prefer
-`clients.unix_peer_profiles` with `uids`/`gids` on a unix socket listener when
-you need strong caller identity — `SO_PEERCRED` is supplied by the kernel and
-cannot be spoofed from within the container.
+**IP-based client identity is soft isolation.** When
+`clients.container_labels.enabled` is true, or any `clients.profiles[*].match`
+rule keys on `source_cidrs`, Sockguard resolves the calling container by
+source IP through the Docker API. This is *soft isolation* — adequate against
+configuration drift and friendly-fire mistakes, but **not a hard boundary**
+against an attacker who can influence which container a given bridge IP
+points at:
+
+- A container restart can race the label lookup: if a new container acquires
+  the same bridge IP before the lookup completes, the lookup may return the
+  new container's labels rather than the previous container's.
+- An attacker who can create containers on the same user-defined bridge can,
+  in principle, claim a privileged IP and inherit its policy until the next
+  legitimate container takes it back.
+- Host-network containers (`network_mode: host`) all share the host IP, so
+  IP-keyed allowlists cannot tell them apart.
+
+For workloads where caller identity is part of the security boundary, listen
+on a unix socket and use `clients.unix_peer_profiles` with `uids`/`gids`.
+`SO_PEERCRED` is supplied by the kernel and cannot be spoofed from within
+the calling container — that is the hard-isolation path.
 
 **Exec TOCTOU (inspect/start split).** Docker exposes exec metadata inspection
 and exec start as separate API calls. Sockguard re-checks `POST /exec/*/start`
@@ -211,13 +224,21 @@ window inherent to Docker's API shape. Keep exec allowlists narrow and
 client profile assignments conservative for clients that do not need
 interactive command execution.
 
-**Hijacked-stream redaction limits.** Sockguard's response filter operates on
-structured JSON responses with known shapes. Raw streaming endpoints — `GET
-/containers/*/logs`, `POST /containers/*/attach`, `GET /services/*/logs`, and
-exec attach — switch the connection to a raw bidirectional stream after the
-initial HTTP response, at which point Sockguard cannot inspect or redact the
-byte stream. These paths are protected at request time via the
-`insecure_allow_read_exfiltration` guardrail and per-profile rule gates, but
-there is no post-admission byte-level filtering of the stream content. Restrict
-these paths in your rules to only the profiles and callers that genuinely need
-them.
+**Hijacked-stream redaction limits.** Sockguard's response filter — including
+the `response.redact_container_env`, `response.redact_mount_paths`,
+`response.redact_network_topology`, and `response.redact_sensitive_data`
+toggles — operates only on structured JSON responses with known shapes. Raw
+streaming endpoints — `GET /containers/*/logs`, `POST /containers/*/attach`,
+`GET /services/*/logs`, `GET /events`, exec attach, and image-build progress
+output — switch the connection to a raw byte stream (or a non-JSON
+chunked stream) after the initial HTTP response, at which point Sockguard
+cannot inspect or redact the byte stream. **A secret an application writes
+to its own stdout will reach a caller that has been allowed to attach.**
+
+These paths are gated at request time via per-profile rule allowlists and
+the `insecure_allow_read_exfiltration` guardrail (which keeps the streaming
+read endpoints denied by default), but there is no post-admission byte-level
+filtering of the stream content. Restrict these paths in your rules to only
+the profiles and callers that genuinely need them, and treat the redaction
+toggles as a guarantee for *Docker's structured metadata only* — not for
+arbitrary workload output.

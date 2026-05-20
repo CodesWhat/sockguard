@@ -257,6 +257,8 @@ com.sockguard.allow.post=/containers/*/restart
 
 If you are migrating from wollomatic, set `clients.container_labels.label_prefix: socket-proxy.allow.` to reuse existing labels. Callers that cannot be resolved by IP (for example, because they share the host network) fall through to the global rule set unchanged.
 
+> **Security note — IP-based identity is soft isolation.** IP-keyed admission (`clients.allowed_cidrs`, `clients.container_labels.enabled`, and profile `match.source_cidrs`) is adequate against configuration drift but not hard isolation against an attacker who can influence container-to-IP mapping on a shared bridge. For caller identity in the security boundary, prefer a unix socket with `clients.unix_peer_profiles` and `uids`/`gids` — `SO_PEERCRED` cannot be spoofed. See [the Known Limitations section in the Security guide](/docs/security#known-limitations) for the full caveat.
+
 Named client profiles turn one Sockguard instance into a shared control plane for multiple consumers. Root-level `rules` and `request_body` remain the fallback policy unless `clients.default_profile` points at a named profile:
 
 ```yaml
@@ -1004,6 +1006,8 @@ multiple entries via the env var; e.g.
 - `redact_mount_paths` (default `true`): redacts mount and host-device source paths on container, volume, task, service, plugin, and `/system/df` reads.
 - `redact_network_topology` (default `true`): redacts container, network, task, service, node, swarm, `/info`, and `/system/df` topology details such as network IDs, attached addresses, remote managers, and node reachability addresses.
 - `redact_sensitive_data` (default `true`): redacts config payload material, service secret/config references, swarm join/unlock and CA material, and node/swarm TLS metadata.
+
+> **Security note — the redaction toggles do not cover stream bodies.** These toggles operate only on structured JSON Docker responses. Hijacked / streaming endpoints (`GET /containers/*/logs`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /events`, exec attach, image-build progress) are forwarded byte-for-byte; secrets a workload writes to its own stdout will reach an allowed caller. Gate those paths by rule, not by redaction. See [the Known Limitations section in the Security guide](/docs/security#known-limitations) for the full caveat.
 
 ## Tecnativa Compatibility
 
