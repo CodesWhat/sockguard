@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0] - 2026-05-20
 
-v1.0.0 ships the proxy contract `v1.0.0-rc.2` froze on 2026-05-16. Two small binary deltas land on top: the Go toolchain pin moves from "latest 1.26.x" to a fixed `1.26.3` (clears 17 HIGH stdlib CVEs the 2026-05-18 weekly Grype scan surfaced), and `internal/sigverify` no longer silently skips its belt-and-suspenders issuer / SAN re-check when a sigstore-go result returns with a nil certificate. Everything else below is non-binary hardening that accumulated on top — new tests, new CI workflows, new policy presets and compose examples, and docs polish.
+v1.0.0 ships the proxy contract `v1.0.0-rc.2` froze on 2026-05-16. Three small binary deltas land on top: the Go toolchain pin moves from "latest 1.26.x" to a fixed `1.26.3` (clears 17 HIGH stdlib CVEs the 2026-05-18 weekly Grype scan surfaced), `internal/sigverify` no longer silently skips its belt-and-suspenders issuer / SAN re-check when a sigstore-go result returns with a nil certificate, and `github.com/sigstore/sigstore` is bumped from v1.10.5 to v1.10.6 (a cosmetic OAuth success-page template fix in upstream sigstore; no behavior change in policy-bundle or image-trust). Everything else below is non-binary hardening that accumulated on top — new tests, new CI workflows, new policy presets and compose examples, and docs polish.
 
 ### Security
 
