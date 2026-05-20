@@ -30,18 +30,18 @@ func FuzzVisibilityFilter(f *testing.F) {
 	// Seeds cover the parse, pass-through, and overflow paths.
 	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"},{"Names":["/db"],"Image":"postgres"}]`))
 	f.Add("/containers/json", []byte(`[]`))
-	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Names":["/db"],"Image":"nginx"}]`))           // duplicate keys
-	f.Add("/containers/json", []byte(`[{"NAMES":["/web"],"image":"nginx"}]`))                          // case variance
-	f.Add("/containers/json", []byte(`[{"Names":null,"Image":""}]`))                                   // nulls / empties
-	f.Add("/containers/json", []byte(`{"not":"an array"}`))                                            // pass-through branch
-	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"}`))                           // truncated array
-	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"},`))                          // trailing comma
+	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Names":["/db"],"Image":"nginx"}]`)) // duplicate keys
+	f.Add("/containers/json", []byte(`[{"NAMES":["/web"],"image":"nginx"}]`))                 // case variance
+	f.Add("/containers/json", []byte(`[{"Names":null,"Image":""}]`))                          // nulls / empties
+	f.Add("/containers/json", []byte(`{"not":"an array"}`))                                   // pass-through branch
+	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"}`))                  // truncated array
+	f.Add("/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"},`))                 // trailing comma
 	f.Add("/images/json", []byte(`[{"RepoTags":["docker.io/library/alpine:latest"]}]`))
 	f.Add("/images/json", []byte(`[{"RepoTags":null},{"RepoTags":[]}]`))
-	f.Add("/v1.53/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"}]`))                    // normPath drift
-	f.Add("/info", []byte(`{"Architecture":"x86_64"}`))                                                // non-list endpoint
+	f.Add("/v1.53/containers/json", []byte(`[{"Names":["/web"],"Image":"nginx"}]`))           // normPath drift
+	f.Add("/info", []byte(`{"Architecture":"x86_64"}`))                                       // non-list endpoint
 	f.Add("/containers/json", bytes.Repeat([]byte("a"), int(filter.MaxResponseBodyBytes/16))) // medium garbage
-	f.Add("/containers/json", []byte(``))                                                              // empty body
+	f.Add("/containers/json", []byte(``))                                                     // empty body
 
 	// Pre-compile two policies — one with name + image pattern axes,
 	// one bare — so the fuzzer probes both the filter-and-rewrite path
