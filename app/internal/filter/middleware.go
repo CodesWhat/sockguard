@@ -16,7 +16,12 @@ import (
 // request body for inspection. It guards non-streaming paths against
 // slowloris-style body-stall attacks. Streaming/hijack paths are handled
 // by the proxy.HijackHandler layer and are unaffected.
-const bodyReadTimeout = 30 * time.Second
+//
+// var rather than const so the slowloris regression suite can dial it down
+// to a few hundred ms without sleeping 30s of wall clock. The
+// TestBodyReadTimeoutIs30Seconds mutation-kill test pins the default; any
+// override must be scoped via t.Cleanup.
+var bodyReadTimeout = 30 * time.Second
 
 // DenialResponse is the JSON body returned when a request is denied.
 type DenialResponse struct {

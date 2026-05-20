@@ -15,9 +15,11 @@ import (
 )
 
 // ARITHMETIC_BASE middleware.go:18:28
-// `const bodyReadTimeout = 30 * time.Second` — mutation `*` → `/` would
+// `var bodyReadTimeout = 30 * time.Second` — mutation `*` → `/` would
 // silently collapse the slowloris guard to a near-zero deadline, breaking
-// inspector body reads on slow clients without any test failure.
+// inspector body reads on slow clients without any test failure. (Was
+// const until QA-3 needed to dial it down for the slowloris regression
+// suite; this assertion still pins the production default.)
 func TestBodyReadTimeoutIs30Seconds(t *testing.T) {
 	if bodyReadTimeout != 30*time.Second {
 		t.Fatalf("bodyReadTimeout = %v, want 30s", bodyReadTimeout)
