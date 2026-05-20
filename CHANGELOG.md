@@ -7,17 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-20
+
+v1.0.0 ships with the same proxy binary as `v1.0.0-rc.2` (tagged 2026-05-16). The Go source — every byte that compiles into `sockguard` — is unchanged between the two tags. Everything below is non-binary hardening that accumulated on top: new tests, new CI workflows, new policy presets and compose examples, and docs polish.
+
 ### Added
 
-Three new ready-to-run compose stacks under `examples/compose/`, each with its own `docker-compose.yml`, `sockguard.yaml` overlay, and security-tradeoff `README.md`:
+Two new bundled policy presets (`/etc/sockguard/` inside the image):
 
-- `examples/compose/github-actions-runner/` — `myoung34/github-runner` self-hosted runner behind the `github-actions-runner` preset. Privileged containers, host namespace sharing, bind mounts, capability additions, and `docker build` are all rejected at the proxy, so a compromised workflow image cannot escalate through the socket.
-- `examples/compose/gitlab-runner/` — `gitlab/gitlab-runner` with `executor = "docker"` behind the `gitlab-runner` preset. Calls out that `privileged = true` in `config.toml` now returns 403 by design; DinD-style jobs must move to a dedicated runner or to rootless DinD via sysbox.
-- `examples/compose/cis-docker-benchmark/` — generic CIS Docker Benchmark Section 5 admission gate (`your-app` placeholder = `docker:cli`) so any downstream `docker run` is checked against the inspectable subset of CIS controls before dockerd executes it. README carries a copy-pasteable verification recipe (negative + positive `docker compose exec` invocations).
+- **`cis-docker-benchmark.yaml`** — admission gate for the inspectable subset of the CIS Docker Benchmark v1.6.0 Section 5 (Container Runtime) controls. Every non-compliant `docker run` is rejected at the proxy with `403` before dockerd ever executes it. Maps CIS 5.3, 5.4, 5.5, 5.9, 5.10, 5.11, 5.12, 5.15, 5.16, 5.17, 5.21, 5.22, 5.23, 5.25, 5.28, 5.30, 5.31. Companion docs page at `/docs/cis-docker-benchmark` covers the full control-by-control mapping, a copy-pasteable negative + positive verification recipe, and pointers to docker-bench-security / Trivy / Grype for the host/daemon/image controls sockguard cannot inspect.
+- **`github-actions-runner.yaml`** — purpose-built for `actions/runner` self-hosted runners that spawn job + service containers. Allows container lifecycle / exec / attach / image-pull / per-job networks / named volumes; denies privileged, host namespace sharing, bind mounts, capability additions, build, swarm, secrets, plugins, raw archive export.
+- **`gitlab-runner.yaml`** — purpose-built for `gitlab-runner` with `executor = "docker"`. Same allow / deny surface as the GitHub Actions preset. **Deliberately rejects `HostConfig.Privileged=true`** even if the runner's `config.toml` asks for it; DinD-style jobs that need privileged must move to a dedicated runner or to rootless DinD via sysbox.
 
-### Security
+Three new ready-to-run compose stacks under `examples/compose/` (each with `docker-compose.yml`, `sockguard.yaml` overlay, and a security-tradeoff `README.md`):
 
-A rule could be bypassed with a doubly percent-encoded request path. `filter.NormalizePath` percent-decoded the path up to two times beyond the single decode Go's HTTP server already applies at the request boundary, while the Docker daemon's router decodes exactly once. A request such as `GET /containers/%252e/json` was therefore normalized by sockguard to `/containers/json` — matching an allow rule for the container list — while the daemon routed the once-decoded `/containers/%2e/json` to a different endpoint. `canonicalizePath` now only resolves `.`/`..` segments and redundant slashes via `path.Clean` and no longer percent-decodes, so sockguard's matched path is byte-identical to the path the daemon routes on. Single-encoded paths are unaffected — both sides decode them once at the HTTP layer — and a doubly-encoded `%25XX` sequence now stays literal for matching, exactly as it stays literal for daemon routing. A `match.path` pattern containing a literal `%` is still a config-validation error: such a pattern now only ever matches doubly-encoded traffic and never normal requests.
+- `examples/compose/github-actions-runner/` — `myoung34/github-runner` behind the GH Actions preset.
+- `examples/compose/gitlab-runner/` — `gitlab/gitlab-runner` (Docker executor) behind the GitLab preset.
+- `examples/compose/cis-docker-benchmark/` — generic CIS gate (`your-app` placeholder = `docker:cli`) for interactive verification. README ships the negative + positive `docker compose exec` recipe.
+
+Total bundled presets is now 12: drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner.
+
+### Quality
+
+The Phase A QA hardening pass — every item below is test-only, CI-only, or docs-only. The proxy binary is unaffected:
+
+- **QA-1 — Proxy-vs-daemon differential harness.** New `app/differential/` package: `recordingDaemon` unix-socket recorder, `ClassifyDockerRoute` route oracle, `buildChain` production-middleware harness. 29-case path-evasion table (`path_differential_test.go`) covering version-prefix stripping, repeated slashes, dot segments, trailing slash, `;`-params, case sensitivity, percent-encoding — surfaced the single-vs-double percent-decode bug fixed in `df6a041` and folded into the rc.2 security note above. 11 additional pathological cases (`path_evasion_extended_test.go`) for `/v0/`, `/v/`, `/v1.45.99/`, `///`, `/./`, encoded whitespace / CR / LF, encoded backslash. CL/TE smuggling axis (`smuggling_test.go`) raw-`net.Conn` tests for CL/TE conflicts, chunked tricks, and pipelined second-request smuggling across the `httputil.ReverseProxy` → daemon hop. JSON-decoder differential axis (`json_differential_test.go`): duplicate keys, gzip bodies, content-type mismatch, trailing garbage, numeric/string coercion. New `FuzzPathRoutingDifferential` fuzz target wired into per-PR + nightly + monthly matrices. Real-`dockerd` differential tier under `app/integration/` validates the route classifier oracle against a live daemon.
+- **QA-2 — End-to-end against real `dockerd`.** New `app/integration/` build-tagged suite drives sockguard as a process behind a real Docker daemon, exercising each shipped preset for allow / deny conformance. Wired into a nightly CI job (`quality-integration.yml`).
+- **QA-3 — Memory / goroutine-leak soak + DoS regression.** New `scripts/soak.sh` runs `loadgen` against sockguard fronting `mockdocker` while tracking RSS, goroutine count, and heap. New `quality-soak-weekly.yml` runs the 4 h GitHub-hosted variant every Sunday. Slowloris regression (`filter/slowloris_test.go`) asserts the 30 s body-inspection deadline holds. Concurrent-hijack goroutine-leak regression closes the gap `BENCHMARKS.md` flagged. Hijack timing tests drive the throttle via a `timeNowHook` mock clock instead of a wall-clock sleep.
+- **QA-4 — mTLS / TLS edge-case suite.** `internal/sigverify` coverage from 0% → comprehensive (issuer / SAN mismatch cases). End-to-end client-cert regression: expired, wrong CA, revoked, SAN mismatch, SPKI-pin path, malformed certs, TLS downgrade. Weekly `testssl.sh` DAST probe of the TCP listener in `security-grype-weekly.yml`'s sibling slot.
+- **QA-6 — Downstream image-signature verification.** New `verify-published` job in `release-from-tag.yml` pulls each published image tag (ghcr.io / docker.io / quay.io) and runs the *exact* `cosign verify` / `cosign verify-blob` commands published in `docs/content/docs/verification.mdx`. Catches drift between operator-facing docs and the actual pipeline.
+- **TQ-17b** `internal/sigverify` issuer / SAN matcher coverage.
+- **TQ-18b** new `FuzzVisibilityFilter` fuzz target driving `patternFilterWriter.Write` + `flushFiltered` against adversarial JSON; wired into per-PR + nightly + monthly fuzz tiers.
+- **TQ-20b** `t.Parallel()` pass across 19 packages — admin, certmatch, dockerclient, dockerresource, glob, health, imagetrust, inspectcache, metrics, ownership, pkipin, policybundle, proxy, ratelimit, reload, responsefilter, sigverify, version, visibility. Suite wall-clock ~14% faster under `-race`.
+- **TQ-21** `certmatch.IntersectsIPAddrs` IPv4-in-IPv6 `Unmap` branch covered. The Linux dual-stack `::ffff:10.0.0.1` form now has explicit positive + negative tests.
+- **TQ-22** `configLimitsToRateLimitOptions` burst-zero-defaults-to-rate fallback and unrecognized-priority Warn-log paths covered via `testhelp.CollectingHandler`-driven log attr assertions.
+- **TQ-23** `FuzzFilterModifyResponse` corpus extended with 11 swarm-resource seeds (services, tasks, secrets, configs, nodes, swarm) and `RedactSensitiveData: true` flipped on so the swarm-redaction branches no longer short-circuit.
+
+### Tooling
+
+- `gofmt -l .` CI gate added to the `go-lint` job in `ci-verify.yml`; the 23 historical drift files were reformatted in one whitespace-only pass.
+- `govulncheck ./...` added to the lefthook pre-push pipeline as a priority-4 step (skip-if-not-installed). Tree is vuln-clean.
+- `RELEASING.md` carries the post-1.0 release checklist (the one-time v1.0.0 gate section is removed at this tag per its own instruction).
+
+### Docs
+
+- New `/docs/cis-docker-benchmark` guide — full Section 5 control mapping table, "Beyond Section 5" pointers (CIS 2.6 mTLS, CIS 4.5 image_trust, CIS 7.x swarm by exclusion), "What sockguard cannot enforce" companion-tool guidance.
+- `/docs/security#known-limitations` renamed and widened: "IP-based client identity is soft isolation" covers bridge IP rebinding, host-network sharing, and attacker-controlled IP allocation. "Hijacked-stream redaction limits" names all four `response.redact_*` toggles explicitly and lists every streaming endpoint a secret written to stdout can reach.
+- `/docs/presets` covers all 12 bundled presets including the three new ones.
+- README updated: preset count 9 → 12 across all surfaces, forward pointer to `examples/compose/` right under the preset list.
 
 ## [1.0.0-rc.2] - 2026-05-16
 
