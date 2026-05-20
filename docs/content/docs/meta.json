@@ -5,6 +5,7 @@
     "getting-started",
     "configuration",
     "presets",
+    "cis-docker-benchmark",
     "observability",
     "admin",
     "migration",
