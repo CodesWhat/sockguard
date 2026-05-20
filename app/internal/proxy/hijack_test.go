@@ -2286,6 +2286,224 @@ func TestHijackConnectionClosedByUpstream(t *testing.T) {
 	waitForGoroutineDrain(t, baseline, 2*time.Second)
 }
 
+// TestHijackHandler_ConcurrentSessionsDoNotLeakGoroutines is the QA-3
+// per-PR goroutine-leak regression for hijacked exec/attach streams.
+// TestHijackConnectionClosedByUpstream above asserts the invariant for a
+// single session; a leak that only shows up under fan-out (e.g. a per-
+// session goroutine that never receives its stop signal when peers
+// overlap) would slip past it but still grow RSS in production. Run a
+// modest fan-out of full upgrade-and-echo sessions, finish them, and
+// assert NumGoroutine returns to the baseline within the same window the
+// single-session test uses.
+//
+// Sized at 32 sessions: large enough that a per-session leak puts the
+// final goroutine count well above baseline+2 (the existing helper's
+// slack); small enough that the test still completes well under a second
+// on a loaded CI runner. The upstream serves one session per accepted
+// connection in its own goroutine, mirroring how a real dockerd handles
+// concurrent attaches.
+func TestHijackHandler_ConcurrentSessionsDoNotLeakGoroutines(t *testing.T) {
+	const sessions = 32
+	const echoPayload = "ack"
+
+	baseline := runtime.NumGoroutine()
+
+	socketPath := tempSocketPath(t, "concurrent-hijack")
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	var upstreamWg sync.WaitGroup
+	upstreamDone := make(chan struct{})
+	go func() {
+		defer close(upstreamDone)
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			upstreamWg.Add(1)
+			go func(c net.Conn) {
+				defer upstreamWg.Done()
+				defer c.Close()
+
+				reader := bufio.NewReader(c)
+				req, readErr := http.ReadRequest(reader)
+				if readErr != nil {
+					return
+				}
+				if req.Body != nil {
+					_ = req.Body.Close()
+				}
+
+				resp := &http.Response{
+					StatusCode: http.StatusSwitchingProtocols,
+					ProtoMajor: 1,
+					ProtoMinor: 1,
+					Header:     http.Header{},
+				}
+				resp.Header.Set("Connection", "Upgrade")
+				resp.Header.Set("Upgrade", "tcp")
+				resp.Header.Set("Content-Type", "application/vnd.docker.raw-stream")
+				if writeErr := resp.Write(c); writeErr != nil {
+					return
+				}
+
+				if _, writeErr := c.Write([]byte(echoPayload)); writeErr != nil {
+					return
+				}
+			}(conn)
+		}
+	}()
+
+	// Tee through a CollectingHandler so the test can wait for each
+	// session's "hijack: connection closed" — the proxy emits that log
+	// *after* wg.Wait() on both copy goroutines (hijack.go:264), and
+	// the collector's internal mutex turns observing the log into a
+	// happens-before edge with everything the copy goroutines did,
+	// including the deferred putHijackBuffer call that the next test
+	// would otherwise race on.
+	collector := &testhelp.CollectingHandler{}
+	logger := slog.New(collector)
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("next handler should not be called for hijack endpoint")
+	})
+	handler := HijackHandler(socketPath, logger, next)
+
+	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("client listen: %v", err)
+	}
+	defer clientLn.Close()
+
+	srv := &http.Server{Handler: handler}
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = srv.Serve(clientLn)
+	}()
+	defer srv.Close()
+
+	addr := clientLn.Addr().String()
+	var clientWg sync.WaitGroup
+	clientWg.Add(sessions)
+	for i := 0; i < sessions; i++ {
+		go func(i int) {
+			defer clientWg.Done()
+
+			clientConn, dialErr := net.Dial("tcp", addr)
+			if dialErr != nil {
+				t.Errorf("session %d: dial: %v", i, dialErr)
+				return
+			}
+			defer clientConn.Close()
+
+			reqStr := fmt.Sprintf(
+				"POST /containers/abc%d/attach?stream=1 HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+				i,
+			)
+			if _, writeErr := clientConn.Write([]byte(reqStr)); writeErr != nil {
+				t.Errorf("session %d: write: %v", i, writeErr)
+				return
+			}
+
+			clientBuf := bufio.NewReader(clientConn)
+			resp, respErr := http.ReadResponse(clientBuf, nil)
+			if respErr != nil {
+				t.Errorf("session %d: read response: %v", i, respErr)
+				return
+			}
+			if resp.StatusCode != http.StatusSwitchingProtocols {
+				t.Errorf("session %d: status = %d, want 101", i, resp.StatusCode)
+				return
+			}
+
+			if deadlineErr := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); deadlineErr != nil {
+				t.Errorf("session %d: SetReadDeadline: %v", i, deadlineErr)
+				return
+			}
+			got := make([]byte, len(echoPayload))
+			if _, readErr := io.ReadFull(clientBuf, got); readErr != nil {
+				t.Errorf("session %d: read payload: %v", i, readErr)
+				return
+			}
+			if string(got) != echoPayload {
+				t.Errorf("session %d: payload = %q, want %q", i, string(got), echoPayload)
+			}
+		}(i)
+	}
+
+	clientWg.Wait()
+
+	// Wait for "hijack: connection closed" × sessions before doing
+	// anything else. That log is the published-after-wg.Wait signal
+	// that BOTH copy goroutines for a session have finished their
+	// deferred putHijackBuffer; the collector's mutex turns it into a
+	// real HB edge with the test goroutine. Without this, the next
+	// test's write to hijackBufferPool races the copy goroutines'
+	// trailing read (Go race detector flags it even after the
+	// goroutines have exited, because exit alone does not synchronize).
+	closedDeadline := time.Now().Add(5 * time.Second)
+	for {
+		got := len(collector.FindMessage("hijack: connection closed"))
+		if got >= sessions {
+			break
+		}
+		if time.Now().After(closedDeadline) {
+			t.Fatalf("only %d/%d sessions reached 'hijack: connection closed' within 5s", got, sessions)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if closeErr := ln.Close(); closeErr != nil {
+		t.Errorf("close upstream listener: %v", closeErr)
+	}
+	<-upstreamDone
+	upstreamWg.Wait()
+
+	if closeErr := srv.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+		t.Errorf("close http server: %v", closeErr)
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP server did not stop after all sessions closed")
+	}
+
+	// 32 sessions widen the "proxy hijack goroutine still in its
+	// deferred putHijackBuffer when the next test mutates
+	// hijackBufferPool" window past what the shared helper's baseline+2
+	// slack tolerates — race detector catches it as a global write/read
+	// race. Drain to baseline exactly so every straggler has fully
+	// returned before the next test runs.
+	waitForStrictGoroutineDrain(t, baseline, 5*time.Second)
+}
+
+// waitForStrictGoroutineDrain is a tighter sibling of
+// waitForGoroutineDrain: same shape, but no baseline+2 slack. Use it
+// when subsequent tests mutate a global (here, hijackBufferPool) that
+// the goroutines being drained still touch on their way out — that
+// global write would race the in-flight read.
+func waitForStrictGoroutineDrain(t *testing.T, baseline int, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	var got int
+	for {
+		runtime.GC()
+		got = runtime.NumGoroutine()
+		if got <= baseline {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines did not drain to baseline: got %d, want <= %d after %v", got, baseline, timeout)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestGetHijackBufferRestoresFullLengthFromPool(t *testing.T) {
 	restoreHijackHooks(t)
 	fakePool := &stubBufferPool{getValue: make([]byte, 128, hijackBufSize)}
