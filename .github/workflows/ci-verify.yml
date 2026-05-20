@@ -305,6 +305,7 @@ jobs:
           - { name: FuzzProxyHeadersAndBody,     pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,    pkg: ./internal/proxy/ }
           - { name: FuzzPathRoutingDifferential, pkg: ./differential/ }
+          - { name: FuzzVisibilityFilter,        pkg: ./internal/visibility/ }
 
     steps:
       - name: Harden Runner
