@@ -9,7 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0] - 2026-05-20
 
-v1.0.0 ships with the same proxy binary as `v1.0.0-rc.2` (tagged 2026-05-16). The Go source — every byte that compiles into `sockguard` — is unchanged between the two tags. Everything below is non-binary hardening that accumulated on top: new tests, new CI workflows, new policy presets and compose examples, and docs polish.
+v1.0.0 ships the proxy contract `v1.0.0-rc.2` froze on 2026-05-16. Two small binary deltas land on top: the Go toolchain pin moves from "latest 1.26.x" to a fixed `1.26.3` (clears 17 HIGH stdlib CVEs the 2026-05-18 weekly Grype scan surfaced), and `internal/sigverify` no longer silently skips its belt-and-suspenders issuer / SAN re-check when a sigstore-go result returns with a nil certificate. Everything else below is non-binary hardening that accumulated on top — new tests, new CI workflows, new policy presets and compose examples, and docs polish.
+
+### Security
+
+- **Go toolchain pinned to 1.26.3 via `toolchain` directive in `app/go.mod` and `benchmarks/go.mod`.** The CI setup-go literals (`go-version: "1.26"`) that resolved to whatever 1.26.x was latest at job-time are replaced with `go-version-file: app/go.mod`, so the toolchain is one source of truth. Clears the 17 HIGH stdlib CVEs (CVE-2026-27143, CVE-2026-27144, CVE-2026-32280..83, CVE-2026-32288..89, CVE-2026-33810..14, CVE-2026-39817..36, CVE-2026-42499, CVE-2026-42501) that opened against rc.2's 1.26.1 / 1.26.2 stdlib in the weekly Grype scan.
+- **`internal/sigverify.VerifyKeyless` no longer silently skips its issuer / SAN re-check when sigstore-go returns a nil certificate.** The belt-and-suspenders re-check was previously guarded `if result.Signature != nil && result.Signature.Certificate != nil`, so a successful verification with no cert quietly bypassed the re-check. It now treats absent cert as a verification failure whenever issuer or SAN expectations are configured: if the cert cannot be inspected, the expectation cannot be honored, so the only safe answer is to reject. sigstore-go's policy gate above already enforces the identity, so the bypass shape was unreachable today; this seals it in case the sigstore-go result type ever drifts.
 
 ### Added
 
@@ -42,6 +47,12 @@ The Phase A QA hardening pass — every item below is test-only, CI-only, or doc
 - **TQ-21** `certmatch.IntersectsIPAddrs` IPv4-in-IPv6 `Unmap` branch covered. The Linux dual-stack `::ffff:10.0.0.1` form now has explicit positive + negative tests.
 - **TQ-22** `configLimitsToRateLimitOptions` burst-zero-defaults-to-rate fallback and unrecognized-priority Warn-log paths covered via `testhelp.CollectingHandler`-driven log attr assertions.
 - **TQ-23** `FuzzFilterModifyResponse` corpus extended with 11 swarm-resource seeds (services, tasks, secrets, configs, nodes, swarm) and `RedactSensitiveData: true` flipped on so the swarm-redaction branches no longer short-circuit.
+- **Pre-tag coverage pass** (2026-05-20 review):
+  - Preset conformance suites for all three new presets — `app/integration/cis_docker_benchmark_conformance_test.go`, `github_actions_runner_conformance_test.go`, `gitlab_runner_conformance_test.go`. Each mirrors the tecnativa preset conformance pattern: rule-layer assertions + per-preset body-inspection 403 pins for privileged / host-namespaces / bind-mounts / capability-adds. The GitLab test specifically pins the `privileged = true` `config.toml` rejection the README calls out.
+  - `app/differential/classifier_test.go` extended with rows for seven `Route*` constants that were exported but never asserted as expected values (`RouteContainerStop`, `RouteContainerKill`, `RouteContainerExecCreate`, `RouteExecInspect`, `RouteVersion`, `RouteInfo`, `RouteImageList`). The classifier is the oracle for the differential fuzz tier — silent oracle bugs would have made the harness lie. Classifier agreed with every expected value; no oracle bugs.
+  - `app/internal/sigverify/sigverify_test.go` — `TestVerifyKeyedSuccess` + `TestVerifyKeyedDigestMismatch` for the keyed cosign verification path that was previously untested (keyless was tested, keyed was not). Closes the v1.0 advertised-security-control coverage gap.
+  - `app/internal/filter/config_write_test.go` — `TestConfigInspectAllowsCustomDriverWhenConfigured` pins the symmetric allow-branch for `AllowCustomDrivers: true` on the config-create inspector; the secret-create equivalent already existed.
+  - Persisted fuzz corpora — `app/internal/filter/testdata/fuzz/FuzzNormalizePath/` gains three seeds anchoring the rc.2 percent-decode advisory (`/containers/%252e/json`, `/containers/%2e%2e/json`, `/v9999/containers/json`); `app/internal/visibility/testdata/fuzz/FuzzVisibilityFilter/` is created with three baseline seeds. Persisted seeds ship in the repo so the regression surface lives in the commit history, not just as `f.Add` lines behind a fuzz invocation.
 
 ### Tooling
 
