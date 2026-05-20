@@ -140,7 +140,17 @@ func VerifyKeyless(
 		return err
 	}
 
-	if result.Signature != nil && result.Signature.Certificate != nil {
+	// Belt-and-suspenders issuer/SAN re-check. sigstore-go's policy gate above
+	// already enforces both via NewCertificateIdentity, but a future sigstore-go
+	// change to its result shape (or a verification path that returns nil cert
+	// despite a successful Verify) must not silently skip the check on our side.
+	// Treat an absent certificate as a verification failure: if the caller
+	// configured an issuer / SAN expectation, we cannot honor it without a cert
+	// to inspect.
+	if issuerExact != "" || subjectPattern != nil {
+		if result.Signature == nil || result.Signature.Certificate == nil {
+			return fmt.Errorf("keyless: certificate identity required (issuer or SAN pattern configured) but verification result has no certificate")
+		}
 		cert := result.Signature.Certificate
 		if issuerExact != "" && cert.Issuer != issuerExact {
 			return fmt.Errorf("keyless: issuer mismatch: got %q, want %q", cert.Issuer, issuerExact)

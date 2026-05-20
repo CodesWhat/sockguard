@@ -2,6 +2,8 @@ module github.com/codeswhat/sockguard
 
 go 1.26
 
+toolchain go1.26.3
+
 require (
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/sigstore/sigstore v1.10.5
