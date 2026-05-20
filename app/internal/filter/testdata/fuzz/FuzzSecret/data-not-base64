@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"Name\":\"db-password\",\"Data\":\"!!!not-base64!!!\"}")

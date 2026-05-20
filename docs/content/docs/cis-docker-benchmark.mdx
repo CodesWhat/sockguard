@@ -1,0 +1,162 @@
+---
+title: CIS Docker Benchmark
+description: How sockguard's container_create body inspection maps to the inspectable subset of the CIS Docker Benchmark v1.6.0 — and the cis-docker-benchmark.yaml preset that turns it on.
+---
+
+The [CIS Docker Benchmark v1.6.0](https://www.cisecurity.org/benchmark/docker)
+is the de-facto compliance baseline for Docker deployments. It catalogues
+117 controls across the host, the daemon, images, runtime, operations,
+and Swarm. Sockguard sits at the API boundary, so the controls it can
+*enforce* are the runtime ones in Section 5: when a `docker run` would
+violate them, sockguard rejects the request with `403` before dockerd
+executes it. The CIS posture becomes an admission gate, not just an
+audit finding.
+
+This page maps each inspectable Section 5 control to the sockguard knob
+that enforces it. The ready-made `cis-docker-benchmark.yaml` preset
+turns every one of them on at once.
+
+## Quick start
+
+```bash
+docker run -d \
+  --name sockguard \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /etc/sockguard/cis-docker-benchmark.yaml:/etc/sockguard/config.yaml:ro \
+  -v sockguard-sock:/run/sockguard \
+  ghcr.io/codeswhat/sockguard:latest
+```
+
+The preset is bundled in the container image at
+`/etc/sockguard/cis-docker-benchmark.yaml`. Mount it as `config.yaml`
+to activate.
+
+A workload that violates any of the mapped controls gets a `403` with
+the deny reason naming the specific knob:
+
+```json
+{
+  "message": "request denied by sockguard policy"
+}
+```
+
+(The preset uses `deny_verbosity: minimal` so the response never echoes
+the violating field; the structured access log in
+[Observability](/docs/observability) records the full deny reason.)
+
+## What sockguard enforces
+
+| CIS control | Description | Sockguard knob |
+|---|---|---|
+| **5.3** | Linux kernel capabilities restricted | `allowed_capabilities: []` + `require_drop_all_capabilities: true` — `CapAdd` must be empty, `CapDrop` must include `ALL` |
+| **5.4** | Privileged containers not used | `allow_privileged: false` — rejects `HostConfig.Privileged: true` |
+| **5.5** | Sensitive host directories not mounted | `allowed_bind_mounts: []` — every host-path bind must be on the allowlist; default-empty rejects all binds |
+| **5.9** | Host network namespace not shared | `allow_host_network: false` — rejects `NetworkMode: "host"` |
+| **5.10** | Memory usage limited | `require_memory_limit: true` — `HostConfig.Memory` must be non-zero |
+| **5.11** | CPU priority set | `require_cpu_limit: true` — at least one of `CPUShares`, `CPUQuota`, `NanoCpus` must be set |
+| **5.12** | Container root filesystem mounted read-only | `require_readonly_rootfs: true` — `HostConfig.ReadonlyRootfs` must be `true` |
+| **5.15** | Host PID namespace not shared | `allow_host_pid: false` — rejects `PidMode: "host"` |
+| **5.16** | Host IPC namespace not shared | `allow_host_ipc: false` — rejects `IpcMode: "host"` |
+| **5.17** | Host devices not directly exposed | `allowed_devices: []`, `allow_all_devices: false` — `HostConfig.Devices` must be empty (allowlist host paths for genuine GPU/HW use) |
+| **5.21** | Default seccomp profile not disabled | `deny_unconfined_seccomp: true` — rejects `SecurityOpt: ["seccomp=unconfined"]` |
+| **5.22** | Docker exec without `--privileged` | `request_body.exec.allow_privileged: false` (when exec is allowed by rule) |
+| **5.23** | Docker exec without `--user=root` | `request_body.exec.allow_root_user: false` (when exec is allowed by rule) |
+| **5.25** | Acquiring additional privileges restricted | `require_no_new_privileges: true` — `HostConfig.SecurityOpt` must include `no-new-privileges:true` |
+| **5.28** | PIDs cgroup limit used | `require_pids_limit: true` — `HostConfig.PidsLimit` must be non-zero |
+| **5.30** | Host user namespace not shared | `allow_host_userns: false` — rejects `UsernsMode: "host"` |
+| **5.31** | Docker socket not mounted inside containers | Satisfied **structurally** by deploying sockguard — workloads see the proxy socket, not the real `/var/run/docker.sock` |
+
+The preset wires every row above to its CIS-compliant default. Edit the
+preset to widen a knob only when a workload genuinely requires it; that
+edit is itself the auditable record of why your CIS posture diverges
+from the benchmark.
+
+## Beyond Section 5 — controls sockguard influences
+
+| CIS control | Description | How sockguard contributes |
+|---|---|---|
+| **2.6** | TLS authentication for Docker daemon | mTLS on the sockguard TCP listener (see [Configuration → mTLS](/docs/configuration#mtls)) replaces direct daemon TLS for in-cluster consumers |
+| **4.5** | Content trust for Docker | `request_body.container_create.image_trust.mode: enforce` verifies cosign signatures on image references before the create reaches the daemon |
+| **5.22/5.23** | Exec hardening | When a rule permits exec, the `request_body.exec` block applies the same admission gates documented above |
+| **7.x** | Swarm controls (operations) | This preset denies the entire `/swarm/**`, `/services/**`, `/nodes/**`, `/configs/**`, `/secrets/**` surface — meeting 7.1–7.10 by exclusion. Re-enable per rule for clusters that actually use Swarm |
+
+## What sockguard cannot enforce
+
+These controls live above or below the Docker Engine API. Sockguard
+does not see them, so the preset cannot help. Track them with the
+recommended companion tool.
+
+| CIS section | Examples | Recommended check |
+|---|---|---|
+| **1.x — Host configuration** | OS hardening, audit daemon, mount points | [docker-bench-security](https://github.com/docker/docker-bench-security) |
+| **2.x — Daemon configuration** | live-restore, default logging driver, default ulimit, registry trust | `dockerd` flags + `docker-bench-security` |
+| **3.x — Daemon config files** | file permissions on `/etc/docker/daemon.json`, key/cert ownership | filesystem audit |
+| **4.x — Container images** | base image scanning, `HEALTHCHECK`, image freshness (4.6, 4.7) | Trivy or Grype on the image, registry-side controls |
+| **5.x runtime — uninspectable** | 5.6 SSH not running in container (image-level), 5.7/5.8 ports (network-level), 5.13 traffic binding, 5.14 restart policy, 5.18 ulimit override, 5.19 mount propagation, 5.20 UTS namespace, 5.24 cgroup usage, 5.26 healthcheck at runtime, 5.27 updated image, 5.29 default bridge | image scanner + dockerd flags + container-runtime audit |
+| **6.x — Security operations** | image lifecycle policy | registry-side governance |
+
+For a complete CIS posture, run the preset above plus
+`docker-bench-security` periodically against the host. The two are
+complementary: sockguard catches runtime violations as they happen,
+`docker-bench-security` catches configuration drift on the host and
+daemon.
+
+## Verifying the posture
+
+A two-step verification per workload:
+
+1. **Negative test.** Try to run a non-compliant container through
+   sockguard. It must come back `403`:
+
+   ```bash
+   curl -X POST --unix-socket /run/sockguard/sockguard.sock \
+     -H 'Content-Type: application/json' \
+     -d '{"Image":"alpine","HostConfig":{"Privileged":true}}' \
+     http://localhost/containers/create
+   # → HTTP/1.1 403 Forbidden
+   ```
+
+2. **Positive test.** Run a compliant container. It must succeed with
+   the usual `201`:
+
+   ```bash
+   curl -X POST --unix-socket /run/sockguard/sockguard.sock \
+     -H 'Content-Type: application/json' \
+     -d '{
+           "Image":"alpine",
+           "HostConfig":{
+             "ReadonlyRootfs":true,
+             "Memory":67108864,
+             "PidsLimit":50,
+             "CpuShares":256,
+             "CapDrop":["ALL"],
+             "SecurityOpt":["no-new-privileges:true"]
+           }
+         }' \
+     http://localhost/containers/create
+   # → HTTP/1.1 201 Created
+   ```
+
+The structured access log records both with the matching rule and (on
+deny) the violated knob; pipe it into your SIEM as the auditable
+evidence that the CIS posture is live, not just documented.
+
+## Customizing the preset
+
+The preset's body-inspection block is intentionally verbose — every CIS-
+mapped knob is set explicitly even when the value equals the secure
+default. Editing the file is therefore the canonical place to record
+*why* your deployment diverges from CIS:
+
+```yaml
+request_body:
+  container_create:
+    # CIS 5.5: production workload needs /srv/data mounted. Diverges
+    # from the benchmark intentionally — approved 2026-05-20 by
+    # security.
+    allowed_bind_mounts:
+      - "/srv/data:/data"
+```
+
+A git diff of the preset is the audit trail. If the file matches the
+shipped baseline, the deployment is CIS-aligned by inspection.

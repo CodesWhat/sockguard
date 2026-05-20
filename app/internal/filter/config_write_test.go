@@ -53,22 +53,16 @@ func TestConfigWriteInspectHandlesMalformedJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("inspect() reason = %q, want empty", reason)
-	}
-
-	body, readErr := io.ReadAll(req.Body)
-	if readErr != nil {
-		t.Fatalf("ReadAll() error = %v", readErr)
-	}
-	if string(body) != "{" {
-		t.Fatalf("reset body = %q, want %q", string(body), "{")
+	// Malformed JSON must be denied (fail-closed).
+	const wantReason = "config create denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
 	}
 }
 
 func TestConfigWriteInspectCapsOversizedBody(t *testing.T) {
 	policy := newConfigPolicy(ConfigOptions{})
-	req := httptest.NewRequest(http.MethodPost, "/configs/create", bytes.NewReader(bytes.Repeat([]byte{'x'}, maxConfigWriteBodyBytes+1)))
+	req := httptest.NewRequest(http.MethodPost, "/configs/create", bytes.NewReader(bytes.Repeat([]byte{'x'}, driverCreateMaxBodyBytes+1)))
 
 	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
 	if reason != "" {
@@ -125,6 +119,18 @@ func TestConfigWriteInspectAllowsTemplateDriverWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestConfigInspectAllowsCustomDriverWhenConfigured(t *testing.T) {
+	policy := newConfigPolicy(ConfigOptions{AllowCustomDrivers: true})
+	req := httptest.NewRequest(http.MethodPost, "/configs/create", strings.NewReader(`{"Name":"tls-cert","Driver":"vault"}`))
+	reason, err := policy.inspect(nil, req, "/configs/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty (AllowCustomDrivers=true should permit non-default driver)", reason)
+	}
+}
+
 func TestConfigWriteInspectBodyReadErrorPropagates(t *testing.T) {
 	// Exercises the non-tooLarge error branch from readBoundedBody (line 48).
 	policy := newConfigPolicy(ConfigOptions{})
@@ -138,7 +144,7 @@ func TestConfigWriteInspectBodyReadErrorPropagates(t *testing.T) {
 }
 
 func TestConfigWriteInspectMalformedJSONWithLogger(t *testing.T) {
-	// Exercises the logger debug branch when JSON decode fails (lines 57-59).
+	// Exercises the logger debug branch when JSON decode fails; must deny (fail-closed).
 	policy := newConfigPolicy(ConfigOptions{})
 	logs := &collectingHandler{}
 	req := httptest.NewRequest(http.MethodPost, "/configs/create", strings.NewReader("{bad json}"))
@@ -146,8 +152,9 @@ func TestConfigWriteInspectMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	const wantReason = "config create denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))

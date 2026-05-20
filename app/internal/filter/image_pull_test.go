@@ -87,7 +87,7 @@ func TestMiddlewareAllowsOfficialImagePullWhenConfigured(t *testing.T) {
 
 func TestImagePullInspectNilRequestReturnsEmpty(t *testing.T) {
 	policy := newImagePullPolicy(ImagePullOptions{})
-	reason, err := policy.inspect(nil, "/images/create")
+	reason, err := policy.inspect(nil, nil, "/images/create")
 	if err != nil || reason != "" {
 		t.Fatalf("inspect(nil) = (%q, %v), want empty", reason, err)
 	}
@@ -97,7 +97,7 @@ func TestImagePullInspectNoFromImageReturnsEmpty(t *testing.T) {
 	// POST /images/create with neither fromSrc nor fromImage → empty allow.
 	policy := newImagePullPolicy(ImagePullOptions{AllowAllRegistries: true})
 	req := httptest.NewRequest(http.MethodPost, "/images/create", nil)
-	reason, err := policy.inspect(req, "/images/create")
+	reason, err := policy.inspect(nil, req, "/images/create")
 	if err != nil || reason != "" {
 		t.Fatalf("inspect() = (%q, %v), want empty", reason, err)
 	}
@@ -106,7 +106,7 @@ func TestImagePullInspectNoFromImageReturnsEmpty(t *testing.T) {
 func TestImagePullInspectImportAllowed(t *testing.T) {
 	policy := newImagePullPolicy(ImagePullOptions{AllowImports: true})
 	req := httptest.NewRequest(http.MethodPost, "/images/create?fromSrc=https://example.com/rootfs.tar", nil)
-	reason, err := policy.inspect(req, "/images/create")
+	reason, err := policy.inspect(nil, req, "/images/create")
 	if err != nil || reason != "" {
 		t.Fatalf("inspect() = (%q, %v), want allow", reason, err)
 	}

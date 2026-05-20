@@ -19,7 +19,6 @@ package policybundle
 
 import (
 	"context"
-	"crypto"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -29,11 +28,11 @@ import (
 	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/bundle"
-	"github.com/sigstore/sigstore-go/pkg/fulcio/certificate"
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
-	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
+
+	"github.com/codeswhat/sockguard/internal/sigverify"
 )
 
 // VerifyTimeout is the default per-verification context timeout. Bundle
@@ -110,42 +109,21 @@ func BuildConfig(raw RawConfig) (Config, error) {
 
 	var keyed []KeyedVerifier
 	for i, k := range raw.AllowedSigningKeys {
-		pem := strings.TrimSpace(k.PEM)
-		if pem == "" {
-			return Config{}, fmt.Errorf("policy_bundle.allowed_signing_keys[%d].pem is empty", i)
-		}
-		pubKey, err := cryptoutils.UnmarshalPEMToPublicKey([]byte(pem))
-		if err != nil {
-			return Config{}, fmt.Errorf("policy_bundle.allowed_signing_keys[%d].pem: %w", i, err)
-		}
-		verifier, err := sigsig.LoadVerifier(pubKey, crypto.SHA256)
+		verifier, fingerprint, err := sigverify.CompileKey(k.PEM)
 		if err != nil {
 			return Config{}, fmt.Errorf("policy_bundle.allowed_signing_keys[%d]: %w", i, err)
 		}
-		der, err := cryptoutils.MarshalPublicKeyToDER(pubKey)
-		if err != nil {
-			return Config{}, fmt.Errorf("policy_bundle.allowed_signing_keys[%d] fingerprint: %w", i, err)
-		}
-		h := sha256.Sum256(der)
 		keyed = append(keyed, KeyedVerifier{
 			verifier:    verifier,
-			fingerprint: hex.EncodeToString(h[:]),
+			fingerprint: fingerprint,
 		})
 	}
 
 	var keyless []KeylessIdentity
 	for i, kl := range raw.AllowedKeyless {
-		issuer := strings.TrimSpace(kl.Issuer)
-		if issuer == "" {
-			return Config{}, fmt.Errorf("policy_bundle.allowed_keyless[%d].issuer is required", i)
-		}
-		pattern := strings.TrimSpace(kl.SubjectPattern)
-		if pattern == "" {
-			return Config{}, fmt.Errorf("policy_bundle.allowed_keyless[%d].subject_pattern is required", i)
-		}
-		re, err := regexp.Compile(pattern)
+		issuer, re, err := sigverify.CompileKeyless(kl.Issuer, kl.SubjectPattern)
 		if err != nil {
-			return Config{}, fmt.Errorf("policy_bundle.allowed_keyless[%d].subject_pattern: %w", i, err)
+			return Config{}, fmt.Errorf("policy_bundle.allowed_keyless[%d].%w", i, err)
 		}
 		keyless = append(keyless, KeylessIdentity{
 			IssuerExact:    issuer,
@@ -303,61 +281,9 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, yaml []byte, entity verif
 }
 
 func (s *sigstoreVerifier) verifyKeyed(_ context.Context, entity verify.SignedEntity, digestBytes []byte, kv KeyedVerifier) error {
-	tm := root.NewTrustedPublicKeyMaterial(func(_ string) (root.TimeConstrainedVerifier, error) {
-		return root.NewExpiringKey(kv.verifier, time.Time{}, time.Time{}), nil
-	})
-	v, err := verify.NewVerifier(tm, verify.WithNoObserverTimestamps())
-	if err != nil {
-		return fmt.Errorf("build keyed verifier: %w", err)
-	}
-	policy := verify.NewPolicy(
-		verify.WithArtifactDigest("sha256", digestBytes),
-		verify.WithKey(),
-	)
-	_, err = v.Verify(entity, policy)
-	return err
+	return sigverify.VerifyKeyed(entity, digestBytes, kv.verifier)
 }
 
 func (s *sigstoreVerifier) verifyKeyless(_ context.Context, entity verify.SignedEntity, digestBytes []byte, kl KeylessIdentity) error {
-	if s.cfg.TrustedMaterial == nil {
-		return errors.New("keyless verification requires TrustedMaterial")
-	}
-	verifierOpts := []verify.VerifierOption{verify.WithObserverTimestamps(1)}
-	if s.cfg.RequireRekorInclusion {
-		verifierOpts = append(verifierOpts, verify.WithTransparencyLog(1))
-	}
-	v, err := verify.NewVerifier(s.cfg.TrustedMaterial, verifierOpts...)
-	if err != nil {
-		return fmt.Errorf("build keyless verifier: %w", err)
-	}
-	sanMatcher, err := verify.NewSANMatcher("", kl.SubjectPattern.String())
-	if err != nil {
-		return fmt.Errorf("compile SAN matcher: %w", err)
-	}
-	issuerMatcher, err := verify.NewIssuerMatcher(kl.IssuerExact, "")
-	if err != nil {
-		return fmt.Errorf("compile issuer matcher: %w", err)
-	}
-	certID, err := verify.NewCertificateIdentity(sanMatcher, issuerMatcher, certificate.Extensions{})
-	if err != nil {
-		return fmt.Errorf("build cert identity: %w", err)
-	}
-	policy := verify.NewPolicy(
-		verify.WithArtifactDigest("sha256", digestBytes),
-		verify.WithCertificateIdentity(certID),
-	)
-	result, err := v.Verify(entity, policy)
-	if err != nil {
-		return err
-	}
-	if result.Signature != nil && result.Signature.Certificate != nil {
-		cert := result.Signature.Certificate
-		if kl.IssuerExact != "" && cert.Issuer != kl.IssuerExact {
-			return fmt.Errorf("keyless: issuer mismatch: got %q, want %q", cert.Issuer, kl.IssuerExact)
-		}
-		if kl.SubjectPattern != nil && !kl.SubjectPattern.MatchString(cert.SubjectAlternativeName) {
-			return fmt.Errorf("keyless: SAN %q does not match pattern %q", cert.SubjectAlternativeName, kl.SubjectPattern.String())
-		}
-	}
-	return nil
+	return sigverify.VerifyKeyless(entity, digestBytes, s.cfg.TrustedMaterial, kl.IssuerExact, kl.SubjectPattern, s.cfg.RequireRekorInclusion)
 }

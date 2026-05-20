@@ -12,6 +12,7 @@ import (
 const testPolicyVersionPath = "/admin/policy/version"
 
 func TestPolicyVersionerSnapshotIsNilBeforeFirstUpdate(t *testing.T) {
+	t.Parallel()
 	v := NewPolicyVersioner()
 	if got := v.Snapshot(); got != nil {
 		t.Fatalf("Snapshot() = %+v, want nil before Update()", got)
@@ -19,6 +20,7 @@ func TestPolicyVersionerSnapshotIsNilBeforeFirstUpdate(t *testing.T) {
 }
 
 func TestPolicyVersionerUpdateIsMonotonic(t *testing.T) {
+	t.Parallel()
 	v := NewPolicyVersioner()
 	if got := v.Update(PolicySnapshot{Source: "startup"}); got != 1 {
 		t.Fatalf("first Update = %d, want 1", got)
@@ -37,6 +39,7 @@ func TestPolicyVersionerUpdateIsMonotonic(t *testing.T) {
 }
 
 func TestPolicyVersionerUpdateStampsLoadedAtWhenZero(t *testing.T) {
+	t.Parallel()
 	v := NewPolicyVersioner()
 	v.Update(PolicySnapshot{Source: "startup"})
 	if snap := v.Snapshot(); snap.LoadedAt.IsZero() {
@@ -45,6 +48,7 @@ func TestPolicyVersionerUpdateStampsLoadedAtWhenZero(t *testing.T) {
 }
 
 func TestPolicyVersionerUpdatePreservesProvidedLoadedAt(t *testing.T) {
+	t.Parallel()
 	v := NewPolicyVersioner()
 	stamp := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	v.Update(PolicySnapshot{LoadedAt: stamp, Source: "startup"})
@@ -54,6 +58,7 @@ func TestPolicyVersionerUpdatePreservesProvidedLoadedAt(t *testing.T) {
 }
 
 func TestPolicyVersionerConcurrentReadsAndWritesRaceClean(t *testing.T) {
+	t.Parallel()
 	// Race-detector check: many writers calling Update concurrently with
 	// readers calling Snapshot must never produce a torn read. The final
 	// Snapshot's Version must equal the total number of Updates issued —
@@ -98,6 +103,7 @@ func TestPolicyVersionerConcurrentReadsAndWritesRaceClean(t *testing.T) {
 }
 
 func TestPolicyVersionInterceptorReturns200OnGET(t *testing.T) {
+	t.Parallel()
 	v := NewPolicyVersioner()
 	v.Update(PolicySnapshot{
 		Rules:        7,
@@ -142,6 +148,7 @@ func TestPolicyVersionInterceptorReturns200OnGET(t *testing.T) {
 }
 
 func TestPolicyVersionInterceptorReturns503BeforeFirstUpdate(t *testing.T) {
+	t.Parallel()
 	v := NewPolicyVersioner()
 	handler := NewPolicyVersionInterceptor(PolicyVersionOptions{
 		Path:   testPolicyVersionPath,
@@ -158,6 +165,7 @@ func TestPolicyVersionInterceptorReturns503BeforeFirstUpdate(t *testing.T) {
 }
 
 func TestPolicyVersionInterceptorRejectsNonGET(t *testing.T) {
+	t.Parallel()
 	v := NewPolicyVersioner()
 	v.Update(PolicySnapshot{Source: "startup"})
 	handler := NewPolicyVersionInterceptor(PolicyVersionOptions{
@@ -180,6 +188,7 @@ func TestPolicyVersionInterceptorRejectsNonGET(t *testing.T) {
 }
 
 func TestPolicyVersionInterceptorPassesThroughOtherPaths(t *testing.T) {
+	t.Parallel()
 	v := NewPolicyVersioner()
 	v.Update(PolicySnapshot{Source: "startup"})
 	called := false
@@ -200,6 +209,7 @@ func TestPolicyVersionInterceptorPassesThroughOtherPaths(t *testing.T) {
 }
 
 func TestPolicyVersionInterceptorReturns503WhenSourceNil(t *testing.T) {
+	t.Parallel()
 	handler := NewPolicyVersionInterceptor(PolicyVersionOptions{
 		Path:   testPolicyVersionPath,
 		Source: nil,
@@ -215,6 +225,7 @@ func TestPolicyVersionInterceptorReturns503WhenSourceNil(t *testing.T) {
 }
 
 func TestNilPolicyVersionSource_FallsThroughForUnrelatedPaths(t *testing.T) {
+	t.Parallel()
 	// When Source is nil the middleware must NOT 503 every request — only
 	// requests to the configured policy-version path should fail closed.
 	// Docker API traffic on an unrelated path must still reach next.
@@ -256,6 +267,7 @@ func TestNilPolicyVersionSource_FallsThroughForUnrelatedPaths(t *testing.T) {
 }
 
 func TestPolicySnapshot_BundleSourceIsBasenameOnly(t *testing.T) {
+	t.Parallel()
 	// BundleSource must be the file basename only — no directory component —
 	// so that GET /admin/policy/version does not leak the host filesystem
 	// layout to Docker API callers.

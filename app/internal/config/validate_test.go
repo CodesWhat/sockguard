@@ -17,7 +17,7 @@ func TestValidateDefaults(t *testing.T) {
 	}
 }
 
-func TestValidateRejectsNonLoopbackPlainTCPWithoutExplicitInsecureOptIn(t *testing.T) {
+func TestValidateRejectsNonLoopbackPlainTCPWithoutOptIn(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Address = ":2375"
 	cfg.Listen.Socket = ""
@@ -29,19 +29,77 @@ func TestValidateRejectsNonLoopbackPlainTCPWithoutExplicitInsecureOptIn(t *testi
 	if !strings.Contains(err.Error(), "listen.tls") {
 		t.Fatalf("expected mTLS requirement in error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "listen.insecure_allow_plain_tcp") {
-		t.Fatalf("expected insecure opt-in hint in error, got: %v", err)
+	if !strings.Contains(err.Error(), "insecure_allow_unauthenticated_clients") {
+		t.Fatalf("expected second-acknowledgment hint in error, got: %v", err)
 	}
 }
 
-func TestValidateAllowsNonLoopbackPlainTCPWithExplicitInsecureOptIn(t *testing.T) {
+func TestValidateRejectsNonLoopbackPlainTCPWithOnlyOneOptIn(t *testing.T) {
+	// A single insecure flag must not be enough to reach plaintext mode — both
+	// acknowledgments are required so one fat-fingered flag cannot expose it.
+	cases := []struct {
+		name      string
+		plainTCP  bool
+		unauthztd bool
+	}{
+		{"only_plain_tcp", true, false},
+		{"only_unauthenticated_clients", false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Listen.Address = ":2375"
+			cfg.Listen.Socket = ""
+			cfg.Listen.InsecureAllowPlainTCP = tc.plainTCP
+			cfg.Listen.InsecureAllowUnauthenticatedClients = tc.unauthztd
+
+			err := Validate(&cfg)
+			if err == nil || !strings.Contains(err.Error(), "non-loopback TCP listener") {
+				t.Fatalf("Validate() = %v, want rejection of a single insecure opt-in", err)
+			}
+		})
+	}
+}
+
+func TestValidateAllowsNonLoopbackPlainTCPWithBothOptIns(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Address = ":2375"
 	cfg.Listen.Socket = ""
 	cfg.Listen.InsecureAllowPlainTCP = true
+	cfg.Listen.InsecureAllowUnauthenticatedClients = true
 
 	if err := Validate(&cfg); err != nil {
-		t.Fatalf("Validate() error = %v, want nil", err)
+		t.Fatalf("Validate() error = %v, want nil with both insecure opt-ins", err)
+	}
+}
+
+func TestValidateRejectsLiteralPercentInRulePath(t *testing.T) {
+	// sockguard matches the path as the daemon routes it (decoded once at the
+	// HTTP layer), so a literal '%' in a pattern only ever matches a doubly-
+	// encoded request — a silently dead rule that must fail config validation.
+	cfg := Defaults()
+	cfg.Rules = append(cfg.Rules, RuleConfig{
+		Match:  MatchConfig{Method: "GET", Path: "/containers/%2F/json"},
+		Action: "allow",
+	})
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "literal '%'") {
+		t.Fatalf("Validate() = %v, want literal-percent rejection", err)
+	}
+}
+
+func TestValidateRejectsLiteralPercentInProfileRulePath(t *testing.T) {
+	cfg := Defaults()
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "ro", Rules: []RuleConfig{
+			{Match: MatchConfig{Method: "GET", Path: "/images/%2A/json"}, Action: "allow"},
+		}},
+	}
+
+	err := Validate(&cfg)
+	if err == nil || !strings.Contains(err.Error(), "literal '%'") {
+		t.Fatalf("Validate() = %v, want literal-percent rejection for profile rule", err)
 	}
 }
 
@@ -64,7 +122,7 @@ func TestValidateRejectsMutualTLSClientIdentitySelectorsWithoutCertificates(t *t
 	cfg := Defaults()
 	cfg.Listen.Address = ":2376"
 	cfg.Listen.Socket = ""
-	cfg.Listen.TLS.AllowedCommonNames = []string{"portainer"}
+	cfg.Listen.TLS.CommonNames = []string{"portainer"}
 
 	err := Validate(&cfg)
 	if err == nil {
@@ -929,7 +987,6 @@ func TestMutantKills(t *testing.T) {
 		cfg := Defaults()
 		cfg.Listen.Socket = ""
 		cfg.Listen.Address = "127.0.0.1:2376"
-		cfg.Listen.InsecureAllowPlainTCP = true
 		cfg.Clients.ContainerLabels.Enabled = true
 		cfg.Clients.ContainerLabels.LabelPrefix = "com.example"
 		err := Validate(&cfg)
@@ -1063,6 +1120,133 @@ func TestMutantKills(t *testing.T) {
 		err = Validate(&cfg)
 		if err != nil && strings.Contains(err.Error(), "must contain at least one client certificate identity selector") {
 			t.Fatalf("single valid spiffe_id should count as a selector (selectorCount++), got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_NEGATION validate.go:102 ─────────────────────────────────
+	// `err != nil || interval <= 0` — if either side is negated, a watchdog
+	// configured with a valid positive interval would spuriously error. The
+	// existing "soon" and "0s" tests both leave one side true; this exercises
+	// the happy path where both sides are false.
+	t.Run("watchdog_valid_positive_interval_accepted", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Health.Watchdog.Enabled = true
+		cfg.Health.Watchdog.Interval = "30s"
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "health.watchdog.interval") {
+			t.Fatalf("valid positive watchdog interval should not error, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_NEGATION validate.go:141 ─────────────────────────────────
+	// `cfg.Reload.Enabled && cfg.Reload.Debounce != ""` — if the operator
+	// flips, an enabled reload with an empty Debounce (the default skip case)
+	// would still try to parse "" as a duration and spuriously error.
+	t.Run("reload_enabled_empty_debounce_skipped", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.Debounce = ""
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "reload.debounce") {
+			t.Fatalf("empty reload.debounce should be skipped without parse error, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_NEGATION validate.go:149 ─────────────────────────────────
+	// `cfg.Reload.Enabled && cfg.Reload.PollInterval != ""` — same shape as
+	// reload.debounce. An empty PollInterval is the documented "polling
+	// disabled" sentinel; mutating == to != would force a parse error.
+	t.Run("reload_enabled_empty_poll_interval_skipped", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.PollInterval = ""
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "reload.poll_interval") {
+			t.Fatalf("empty reload.poll_interval should be skipped without parse error, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_NEGATION validate.go:143 and :151 ────────────────────────
+	// `if err != nil` on the time.ParseDuration return — flipping to ==
+	// would silently accept an invalid Debounce/PollInterval string. Test
+	// both: with an unparseable value, Validate() must add the parse error.
+	t.Run("reload_debounce_invalid_duration_rejected", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.Debounce = "bogus"
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), `reload.debounce must be a valid Go duration string, got "bogus"`) {
+			t.Fatalf("invalid reload.debounce should produce parse error, got: %v", err)
+		}
+	})
+
+	t.Run("reload_poll_interval_invalid_duration_rejected", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.PollInterval = "bogus"
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), `reload.poll_interval must be a valid Go duration string, got "bogus"`) {
+			t.Fatalf("invalid reload.poll_interval should produce parse error, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_BOUNDARY + CONDITIONALS_NEGATION validate.go:145 and :153
+	// `else if d < 0` boundary. `d=0` must NOT add an error (boundary case)
+	// AND `d=-1s` MUST add the negative-duration error (exercises the branch).
+	t.Run("reload_debounce_zero_is_valid", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.Debounce = "0s"
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "reload.debounce") {
+			t.Fatalf("zero reload.debounce should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("reload_debounce_negative_rejected", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.Debounce = "-1s"
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), `reload.debounce must be >= 0, got "-1s"`) {
+			t.Fatalf("negative reload.debounce should be rejected, got: %v", err)
+		}
+	})
+
+	t.Run("reload_poll_interval_zero_is_valid", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.PollInterval = "0s"
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "reload.poll_interval") {
+			t.Fatalf("zero reload.poll_interval should be valid, got: %v", err)
+		}
+	})
+
+	t.Run("reload_poll_interval_negative_rejected", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.Reload.Enabled = true
+		cfg.Reload.PollInterval = "-1s"
+		err := Validate(&cfg)
+		if err == nil || !strings.Contains(err.Error(), `reload.poll_interval must be >= 0, got "-1s"`) {
+			t.Fatalf("negative reload.poll_interval should be rejected, got: %v", err)
+		}
+	})
+
+	// ── CONDITIONALS_NEGATION validate.go:301 ─────────────────────────────────
+	// `strings.TrimSpace(kl.SubjectPattern) == ""` — if mutated to !=, a valid
+	// non-empty subject_pattern would spuriously error as "required". Existing
+	// tests only exercise the empty/whitespace-only path.
+	t.Run("keyless_valid_subject_pattern_accepted", func(t *testing.T) {
+		cfg := Defaults()
+		cfg.PolicyBundle.Enabled = true
+		cfg.PolicyBundle.SignaturePath = "/tmp/sig.json"
+		cfg.PolicyBundle.AllowedKeyless = []PolicyBundleKeyless{
+			{Issuer: "https://accounts.google.com", SubjectPattern: ".*@example\\.com"},
+		}
+		err := Validate(&cfg)
+		if err != nil && strings.Contains(err.Error(), "subject_pattern is required") {
+			t.Fatalf("valid non-empty subject_pattern should not trigger 'required' error, got: %v", err)
 		}
 	})
 
@@ -1265,6 +1449,139 @@ func TestValidateLimitsConfig_Rate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateLimitsConfig_RateBoundaryEqualities pins down the strict-vs-
+// inclusive comparison operators in validateLimitsConfig (validate.go:629,
+// 634, 639). The existing tests catch obvious negative / clearly-wrong
+// inputs but pass under several boundary-flipping mutations:
+//
+//   - `<= 0` → `< 0` on TokensPerSecond would accept zero (silently
+//     disables rate limiting on the profile).
+//   - `< 0` → `<= 0` on Burst would reject the documented 0-defaults form.
+//   - `< TokensPerSecond` → `<= TokensPerSecond` on the burst/rate ratio
+//     would reject burst == tokens_per_second, the natural minimum.
+//
+// Each case below tests the inputs that differ by exactly one between the
+// original and the mutated operator.
+func TestValidateLimitsConfig_RateBoundaryEqualities(t *testing.T) {
+	tests := []struct {
+		name        string
+		cfg         LimitsConfig
+		expectError bool
+	}{
+		{
+			name:        "tokens_per_second exactly 1 accepted (boundary above <=0)",
+			cfg:         LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 1, Burst: 1}},
+			expectError: false,
+		},
+		{
+			name:        "burst exactly equal to tokens_per_second accepted",
+			cfg:         LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: 10}},
+			expectError: false,
+		},
+		{
+			name:        "burst exactly zero defaults to tokens_per_second",
+			cfg:         LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: 0}},
+			expectError: false,
+		},
+		{
+			name:        "burst one below tokens_per_second rejected",
+			cfg:         LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 10, Burst: 9}},
+			expectError: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateLimitsConfig("clients.profiles[0].limits", tt.cfg)
+			if tt.expectError && len(errs) == 0 {
+				t.Fatalf("expected error, got none")
+			}
+			if !tt.expectError && len(errs) != 0 {
+				t.Fatalf("expected no error, got: %v", errs)
+			}
+		})
+	}
+}
+
+// TestValidateEndpointCosts_BoundaryEqualities pins down the strict-vs-
+// inclusive operators in validateEndpointCosts (validate.go:672, 675).
+//
+//   - `< 1` → `<= 1` would reject Cost==1, the documented minimum.
+//   - `> effectiveBurst` → `>= effectiveBurst` would reject Cost ==
+//     effectiveBurst, which is the maximum cost a request could ever
+//     actually pay without permanently 429-ing.
+//   - `> 0` → `>= 0` on the burst guard would change which costs the
+//     burst check applies to when effectiveBurst is exactly 0 (i.e., the
+//     no-burst-configured case).
+func TestValidateEndpointCosts_BoundaryEqualities(t *testing.T) {
+	tests := []struct {
+		name           string
+		costs          []EndpointCostConfig
+		effectiveBurst float64
+		expectError    bool
+	}{
+		{
+			name:           "cost exactly 1 accepted",
+			costs:          []EndpointCostConfig{{Path: "/build", Cost: 1}},
+			effectiveBurst: 10,
+			expectError:    false,
+		},
+		{
+			name:           "cost exactly equal to effective burst accepted",
+			costs:          []EndpointCostConfig{{Path: "/build", Cost: 10}},
+			effectiveBurst: 10,
+			expectError:    false,
+		},
+		{
+			name:           "cost one above effective burst rejected",
+			costs:          []EndpointCostConfig{{Path: "/build", Cost: 11}},
+			effectiveBurst: 10,
+			expectError:    true,
+		},
+		{
+			name:           "effectiveBurst zero skips burst check (cost positive accepted)",
+			costs:          []EndpointCostConfig{{Path: "/build", Cost: 100}},
+			effectiveBurst: 0,
+			expectError:    false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateEndpointCosts("clients.profiles[0].limits.rate.endpoint_costs", tt.costs, tt.effectiveBurst)
+			if tt.expectError && len(errs) == 0 {
+				t.Fatalf("expected error, got none")
+			}
+			if !tt.expectError && len(errs) != 0 {
+				t.Fatalf("expected no error, got: %v", errs)
+			}
+		})
+	}
+}
+
+// TestValidateConcurrency_BoundaryEqualities pins down the strict-vs-
+// inclusive operator in validateLimitsConfig's concurrency check
+// (validate.go:648) and the parallel global_concurrency check
+// (validate.go:452). Both use `<= 0` to reject; a mutation to `< 0` would
+// accept max_inflight=0 (silently disables every request — closes the
+// admission gate).
+func TestValidateConcurrency_BoundaryEqualities(t *testing.T) {
+	t.Run("profile-level max_inflight=1 accepted", func(t *testing.T) {
+		errs := validateLimitsConfig("clients.profiles[0].limits", LimitsConfig{
+			Concurrency: &ConcurrencyConfig{MaxInflight: 1},
+		})
+		if len(errs) != 0 {
+			t.Fatalf("expected no error, got: %v", errs)
+		}
+	})
+	t.Run("profile-level max_inflight=0 rejected", func(t *testing.T) {
+		errs := validateLimitsConfig("clients.profiles[0].limits", LimitsConfig{
+			Concurrency: &ConcurrencyConfig{MaxInflight: 0},
+		})
+		if len(errs) == 0 {
+			t.Fatalf("expected error for max_inflight=0, got none")
+		}
+	})
 }
 
 // Negative burst must surface its own error rather than collide with the

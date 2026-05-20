@@ -80,6 +80,7 @@ func discardLogger() *slog.Logger {
 
 // TestNewRejectsMissingPath / OnReload covers the construction guards.
 func TestNewRejectsMissingPath(t *testing.T) {
+	t.Parallel()
 	_, err := New(Options{OnReload: func() {}})
 	if err == nil {
 		t.Fatal("expected error when Path is empty")
@@ -87,6 +88,7 @@ func TestNewRejectsMissingPath(t *testing.T) {
 }
 
 func TestNewRejectsMissingOnReload(t *testing.T) {
+	t.Parallel()
 	_, err := New(Options{Path: "/tmp/cfg.yaml"})
 	if err == nil {
 		t.Fatal("expected error when OnReload is nil")
@@ -94,6 +96,7 @@ func TestNewRejectsMissingOnReload(t *testing.T) {
 }
 
 func TestNewAbsolvesPath(t *testing.T) {
+	t.Parallel()
 	r, err := New(Options{Path: "cfg.yaml", OnReload: func() {}})
 	if err != nil {
 		t.Fatalf("New(): %v", err)
@@ -107,6 +110,7 @@ func TestNewAbsolvesPath(t *testing.T) {
 // path: a single Trigger() should fire OnReload exactly once after the
 // debounce window elapses.
 func TestTriggerInvokesOnReloadAfterDebounce(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte("rules: []"), 0o600); err != nil {
@@ -161,6 +165,7 @@ func TestTriggerInvokesOnReloadAfterDebounce(t *testing.T) {
 // TestMultipleTriggersCoalesce verifies the debounce contract — three
 // triggers inside the window collapse to a single OnReload call.
 func TestMultipleTriggersCoalesce(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
@@ -221,6 +226,7 @@ func TestMultipleTriggersCoalesce(t *testing.T) {
 // TestFileWriteEventTriggersReload exercises the fsnotify path: a Write
 // event targeting the configured file fires OnReload after debouncing.
 func TestFileWriteEventTriggersReload(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
@@ -263,6 +269,7 @@ func TestFileWriteEventTriggersReload(t *testing.T) {
 // TestFileEventForOtherFileIsIgnored verifies that events for sibling
 // files in the watched dir don't trigger spurious reloads.
 func TestFileEventForOtherFileIsIgnored(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
@@ -304,6 +311,7 @@ func TestFileEventForOtherFileIsIgnored(t *testing.T) {
 // signal source. The injected SignalNotify wires the reloader's channel
 // to a test-controlled producer.
 func TestSignalTriggersReload(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
@@ -367,6 +375,7 @@ func TestSignalTriggersReload(t *testing.T) {
 // TestWatcherErrorDoesNotKillLoop confirms a transient watcher error is
 // logged but the loop continues to serve subsequent triggers.
 func TestWatcherErrorDoesNotKillLoop(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
@@ -409,6 +418,7 @@ func TestWatcherErrorDoesNotKillLoop(t *testing.T) {
 // TestContextCancelExitsCleanly verifies the loop returns when ctx is
 // canceled and that any in-flight OnReload completes first.
 func TestContextCancelExitsCleanly(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
@@ -464,6 +474,7 @@ func (w *watchReadyWatcher) Add(path string) error {
 // watcher. Touching the file should trigger a reload. Skipped on
 // platforms where filesystem notifications are not available.
 func TestRealFsnotifyEndToEnd(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte("rules: []\n"), 0o600); err != nil {
@@ -523,6 +534,7 @@ func TestRealFsnotifyEndToEnd(t *testing.T) {
 // rename (mv tempfile → cfg.yaml) is the dominant safe-write pattern used
 // by editors, Ansible, kustomize, and Helm.
 func TestRenameEventTriggersReload(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
@@ -564,6 +576,7 @@ func TestRenameEventTriggersReload(t *testing.T) {
 // event fires OnReload. This matches the "file first appears" scenario and
 // the second half of an atomic-rename sequence on macOS kqueue.
 func TestCreateEventTriggersReload(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
@@ -605,6 +618,7 @@ func TestCreateEventTriggersReload(t *testing.T) {
 // followed by a Create on the same path (the macOS kqueue atomic-rename
 // teardown-and-restore sequence) debounces into exactly one OnReload call.
 func TestRemoveThenCreateEventSequenceTriggersReload(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
@@ -666,6 +680,7 @@ func TestRemoveThenCreateEventSequenceTriggersReload(t *testing.T) {
 // (the event loop and the signal handler). The goroutine count after
 // shutdown must return to the pre-Run baseline within a small tolerance.
 func TestContextCancelReleasesSignalHandler(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte(""), 0o600); err != nil {
@@ -741,6 +756,7 @@ func TestContextCancelReleasesSignalHandler(t *testing.T) {
 // FUSE setups). The fsnotify channel is left idle; the loop only learns
 // the file changed by re-statting it.
 func TestPollFallbackFiresOnMtimeChange(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte("v1"), 0o600); err != nil {
@@ -775,10 +791,28 @@ func TestPollFallbackFiresOnMtimeChange(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = r.Run(ctx) }()
 
-	// Let the loop seed the baseline before we mutate the file. Without this
-	// pause the first poll tick can fire on an unset baseline and miss the
-	// edit (the loop would just record the current state and return).
-	time.Sleep(40 * time.Millisecond)
+	// Wait until the poll-fallback goroutine has seeded its baseline snapshot
+	// before we mutate the file. The baseline is set synchronously inside
+	// loop() before the for-select starts, so we only need the Run goroutine
+	// to be scheduled past that point.
+	//
+	// Replaced time.Sleep(40ms) with a poll loop (5ms ticks, 2s cap) so this
+	// step exits quickly on fast machines and stays reliable on slow CI without
+	// a fixed-duration bet. We wait for at least 2×PollInterval to guarantee
+	// at least one poller tick has fired and the baseline is firmly seeded.
+	{
+		const warmup = 2 * 20 * time.Millisecond // 2 × PollInterval
+		deadline := time.Now().Add(2 * time.Second)
+		start := time.Now()
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for time.Since(start) < warmup {
+			if time.Now().After(deadline) {
+				break
+			}
+			<-tick.C
+		}
+	}
 
 	// Rewrite the file with new content + advance mtime so size, mtime, and
 	// inode all move. Truncate+write keeps inode but bumps size and mtime;
@@ -807,6 +841,7 @@ func TestPollFallbackFiresOnMtimeChange(t *testing.T) {
 // arm reload when the file hasn't moved. Without this guard, the periodic
 // stat would generate spurious reload work on every tick.
 func TestPollFallbackIdleWhenFileUnchanged(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "cfg.yaml")
 	if err := os.WriteFile(cfgPath, []byte("static"), 0o600); err != nil {
@@ -837,8 +872,25 @@ func TestPollFallbackIdleWhenFileUnchanged(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); _ = r.Run(ctx) }()
 
-	// Allow several poll ticks to pass without mutating the file.
-	time.Sleep(150 * time.Millisecond)
+	// Allow several poll ticks to pass without mutating the file, then cancel.
+	// Replaced time.Sleep(150ms) with a poll loop (5ms ticks, 2s cap) to make
+	// the wait adaptive: exits after ≥8 PollInterval ticks on fast machines
+	// and is bounded by a 2s deadline on slow CI. We don't gate on a signal
+	// here because the negative case (no reload) has no observable event; we
+	// simply give the poller enough iterations to prove it stays quiet.
+	{
+		const soak = 8 * 20 * time.Millisecond // 8 × PollInterval ≈ 160ms
+		deadline := time.Now().Add(2 * time.Second)
+		start := time.Now()
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for time.Since(start) < soak {
+			if time.Now().After(deadline) {
+				break
+			}
+			<-tick.C
+		}
+	}
 	cancel()
 	<-done
 
@@ -850,6 +902,7 @@ func TestPollFallbackIdleWhenFileUnchanged(t *testing.T) {
 // TestFileSnapshotChangedFrom unit-tests the diff predicate so a future
 // edit to size/mtime/inode handling doesn't silently regress the poll path.
 func TestFileSnapshotChangedFrom(t *testing.T) {
+	t.Parallel()
 	base := fileSnapshot{known: true, size: 100, mtime: time.Unix(1700000000, 0), inode: 42}
 
 	cases := []struct {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/glob"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/metrics"
@@ -121,9 +122,9 @@ type compiledEndpointCost struct {
 // compileEndpointCosts converts the public-API slice into the runtime matcher
 // table. A nil input returns a nil slice (no per-endpoint weighting).
 //
-// Compilation uses regexp.MustCompile: filter.GlobToRegexString output is
-// always valid regex (every input character is either an explicit glob token
-// or regexp.QuoteMeta'd), so a Compile failure here means globToRegex has a
+// Compilation uses regexp.MustCompile: glob.ToRegexString output is always
+// valid regex (every input character is either an explicit glob token or
+// regexp.QuoteMeta'd), so a Compile failure here means ToRegexString has a
 // programming bug and the proxy must fail-fast at startup rather than silently
 // run without rate limiting. The config validator already rejects malformed
 // user input via regexp.Compile, so untrusted globs never reach this path.
@@ -133,7 +134,7 @@ func compileEndpointCosts(costs []EndpointCost) []compiledEndpointCost {
 	}
 	compiled := make([]compiledEndpointCost, 0, len(costs))
 	for _, ec := range costs {
-		regex := "^" + filter.GlobToRegexString(ec.PathGlob) + "$"
+		regex := "^" + glob.ToRegexString(ec.PathGlob) + "$"
 		re := regexp.MustCompile(regex)
 		var methods map[string]struct{}
 		if len(ec.Methods) > 0 {
@@ -343,8 +344,19 @@ func (h *throttleHandler) serve(w http.ResponseWriter, r *http.Request, next htt
 	}
 
 	// Normalize the request path once. Reused for endpoint-cost lookup, the
-	// throttle audit record, and the deny path's metrics label.
-	normPath := filter.NormalizePath(r.URL.Path)
+	// throttle audit record, and the deny path's metrics label. If a prior
+	// middleware already cached the normalized path on RequestMeta, reuse it
+	// instead of re-scanning the raw path — NormalizePath is otherwise the
+	// only per-request string scan most non-throttled requests do.
+	var normPath string
+	if meta := logging.MetaForRequest(w, r); meta != nil && meta.NormPath != "" {
+		normPath = meta.NormPath
+	} else {
+		normPath = filter.NormalizePath(r.URL.Path)
+		if meta != nil {
+			meta.NormPath = normPath
+		}
+	}
 
 	if h.checkRateLimit(w, r, cp, effectiveID, normPath) {
 		return
@@ -509,16 +521,8 @@ func (h *throttleHandler) emitThrottleAudit(r *http.Request, clientID string, re
 		slog.String("path", normPath),
 	)
 	attrs = append(attrs, extras...)
-	h.logger.InfoContext(r.Context(), "throttle",
-		slog.Group("throttle", attrsToAny(attrs)...))
-}
-
-func attrsToAny(attrs []slog.Attr) []any {
-	result := make([]any, len(attrs))
-	for i, a := range attrs {
-		result[i] = a
-	}
-	return result
+	h.logger.LogAttrs(r.Context(), slog.LevelInfo, "throttle",
+		slog.Attr{Key: "throttle", Value: slog.GroupValue(attrs...)})
 }
 
 // rolloutModeOf returns the rollout mode label for the request's resolved

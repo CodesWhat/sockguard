@@ -1,0 +1,2 @@
+go test fuzz v1
+string("fromImage=busybox&fromSrc=https%3A%2F%2Fevil.example.com%2Frootfs.tar")

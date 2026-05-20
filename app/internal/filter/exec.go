@@ -9,8 +9,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"slices"
+	"regexp"
 	"strings"
+	"time"
 )
 
 const maxExecBodyBytes = 64 << 10 // 64 KiB
@@ -36,6 +37,11 @@ type ExecInspectFunc func(context.Context, string) (ExecInspectResult, bool, err
 type ExecOptions struct {
 	AllowPrivileged bool
 	AllowRootUser   bool
+	// AllowedCommands is an allowlist of exec argv templates. Each token is a
+	// sockguard glob (see internal/glob): "*" matches a run of non-slash
+	// characters, "**" matches any sequence. A command is allowed when its
+	// token count equals an entry's and every token matches the glob at that
+	// position.
 	AllowedCommands [][]string
 	InspectStart    ExecInspectFunc
 }
@@ -43,8 +49,27 @@ type ExecOptions struct {
 type execPolicy struct {
 	allowPrivileged bool
 	allowRootUser   bool
-	allowedCommands [][]string
+	allowedCommands []execCommandMatcher
 	inspectStart    ExecInspectFunc
+}
+
+// execCommandMatcher is a compiled allowlist entry: one anchored regex per
+// argv token. A command matches only when its token count equals len(tokens)
+// and every token matches positionally.
+type execCommandMatcher struct {
+	tokens []*regexp.Regexp
+}
+
+func (m execCommandMatcher) matches(command []string) bool {
+	if len(command) != len(m.tokens) {
+		return false
+	}
+	for i, tok := range m.tokens {
+		if !tok.MatchString(command[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 type execCreateRequest struct {
@@ -63,13 +88,21 @@ type execInspectResponse struct {
 }
 
 func newExecPolicy(opts ExecOptions) execPolicy {
-	allowed := make([][]string, 0, len(opts.AllowedCommands))
+	allowed := make([]execCommandMatcher, 0, len(opts.AllowedCommands))
 	for _, command := range opts.AllowedCommands {
 		if len(command) == 0 {
 			continue
 		}
-		copied := append([]string(nil), command...)
-		allowed = append(allowed, copied)
+		tokens := make([]*regexp.Regexp, len(command))
+		for i, token := range command {
+			// GlobToRegexString output is always valid regex — every byte is an
+			// explicit glob token or regexp.QuoteMeta'd — so MustCompile cannot
+			// panic on operator input. \A...\z anchors the whole token exactly;
+			// $ would also match a trailing newline, letting "foo\n" satisfy a
+			// "foo" entry.
+			tokens[i] = regexp.MustCompile(`\A(?:` + GlobToRegexString(token) + `)\z`)
+		}
+		allowed = append(allowed, execCommandMatcher{tokens: tokens})
 	}
 
 	return execPolicy{
@@ -103,7 +136,7 @@ func (p execPolicy) inspectCreate(logger *slog.Logger, r *http.Request) (string,
 	body, err := readBoundedBody(r, maxExecBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
-			return fmt.Sprintf("exec denied: request body exceeds %d byte limit", maxExecBodyBytes), nil
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("exec denied: request body exceeds %d byte limit", maxExecBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
@@ -117,15 +150,15 @@ func (p execPolicy) inspectCreate(logger *slog.Logger, r *http.Request) (string,
 		if logger != nil {
 			logger.DebugContext(r.Context(), "exec request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "exec denied: request body could not be inspected", nil
 	}
 
 	command, err := decodeExecCommand(req.Cmd)
 	if err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "exec request body has unparseable Cmd; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "exec request body has unparseable Cmd; denying", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		return "exec denied: request body could not be inspected", nil
 	}
 
 	return p.denyReason(ExecInspectResult{
@@ -144,10 +177,14 @@ func (p execPolicy) inspectExisting(ctx context.Context, normalizedPath string) 
 		return "exec start denied: no exec inspection configured", nil
 	}
 
-	// TOCTOU: Docker exposes exec inspect and exec start as separate API calls,
-	// so the command visible here can change before the client calls start. Sockguard
-	// has no mitigation; operators that require exec-command integrity should prefer
-	// container-level allowlists over exec policies.
+	// Docker's exec instance is immutable after ContainerExecCreate — there is
+	// no API to mutate Cmd, Privileged, or User on an existing exec — so the
+	// values returned by /exec/{id}/json here are the same values Docker uses
+	// when the start command runs. There is no TOCTOU on the exec config
+	// itself. The container the exec is attached to can still change between
+	// inspect and start (image swapped, process killed); operators that need
+	// to constrain that surface should prefer container-level allowlists
+	// (allowed_commands per profile) over per-exec inspection.
 	result, found, err := p.inspectStart(ctx, execID)
 	if err != nil {
 		return "", fmt.Errorf("inspect exec %q: %w", execID, err)
@@ -169,7 +206,7 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 		return "exec denied: root exec user is not allowed"
 	}
 	for _, allowed := range p.allowedCommands {
-		if slices.Equal(result.Command, allowed) {
+		if allowed.matches(result.Command) {
 			return ""
 		}
 	}
@@ -245,6 +282,9 @@ func NewDockerExecInspector(upstreamSocket string) ExecInspectFunc {
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", upstreamSocket)
 		},
+		// The exec-inspect call is a short JSON GET; bound the wait for upstream
+		// headers so an unresponsive daemon cannot pin this goroutine.
+		ResponseHeaderTimeout: 30 * time.Second,
 	}
 	client := &http.Client{Transport: transport}
 

@@ -30,7 +30,7 @@ metrics:
 admin:
   enabled: false                 # Opt-in: POST <path> validates a candidate YAML config
   path: /admin/validate          # Must not collide with health.path or metrics.path
-  max_body_bytes: 524288         # Hard cap on candidate-config size (default 512 KiB)
+  max_request_bytes: 524288      # Hard cap on candidate-config size (default 512 KiB)
   # Running policy is NEVER mutated by the admin endpoint. The handler shares the
   # main listener, so the listener's CIDR allowlist, mTLS posture, and per-profile
   # rate-limit caps all apply to admin callers. Useful as a CI gate:
@@ -38,7 +38,7 @@ admin:
 
 reload:
   enabled: false                 # Opt-in: hot-reload policy on file change + SIGHUP
-  debounce_ms: 250               # Coalesce a burst of fsnotify events into one reload
+  debounce: 250ms                # Coalesce a burst of fsnotify events into one reload
   # When enabled, sockguard watches THIS file via fsnotify and reloads on SIGHUP.
   # A reload that would mutate any IMMUTABLE field — listen.*, upstream.socket,
   # log.*, health.*, metrics.*, admin.* — is rejected; restart sockguard to apply

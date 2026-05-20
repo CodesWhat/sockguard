@@ -1,46 +1,62 @@
 package config
 
-// HardenedListenSocketMode is the only supported unix-socket permission mode.
+import "os"
+
+// HardenedListenSocketMode is the only supported unix-socket permission mode
+// (string form, as it appears in YAML).
 const HardenedListenSocketMode = "0600"
+
+// HardenedListenSocketFileMode is the os.FileMode equivalent of
+// HardenedListenSocketMode, exported so listener creation paths derive the
+// umask from a single source of truth.
+const HardenedListenSocketFileMode = os.FileMode(0o600)
 
 // Config represents the sockguard configuration.
 type Config struct {
-	Listen                        ListenConfig      `mapstructure:"listen"`
-	Upstream                      UpstreamConfig    `mapstructure:"upstream"`
-	Log                           LogConfig         `mapstructure:"log"`
-	Response                      ResponseConfig    `mapstructure:"response"`
-	RequestBody                   RequestBodyConfig `mapstructure:"request_body"`
-	Clients                       ClientsConfig     `mapstructure:"clients"`
-	Ownership                     OwnershipConfig   `mapstructure:"ownership"`
-	Health                        HealthConfig      `mapstructure:"health"`
-	Metrics                       MetricsConfig     `mapstructure:"metrics"`
-	Admin                         AdminConfig       `mapstructure:"admin"`
-	Reload                        ReloadConfig      `mapstructure:"reload"`
+	Listen                        ListenConfig       `mapstructure:"listen"`
+	Upstream                      UpstreamConfig     `mapstructure:"upstream"`
+	Log                           LogConfig          `mapstructure:"log"`
+	Response                      ResponseConfig     `mapstructure:"response"`
+	RequestBody                   RequestBodyConfig  `mapstructure:"request_body"`
+	Clients                       ClientsConfig      `mapstructure:"clients"`
+	Ownership                     OwnershipConfig    `mapstructure:"ownership"`
+	Health                        HealthConfig       `mapstructure:"health"`
+	Metrics                       MetricsConfig      `mapstructure:"metrics"`
+	Admin                         AdminConfig        `mapstructure:"admin"`
+	Reload                        ReloadConfig       `mapstructure:"reload"`
 	PolicyBundle                  PolicyBundleConfig `mapstructure:"policy_bundle"`
-	Rules                         []RuleConfig      `mapstructure:"rules"`
-	InsecureAllowBodyBlindWrites  bool              `mapstructure:"insecure_allow_body_blind_writes"`
-	InsecureAllowReadExfiltration bool              `mapstructure:"insecure_allow_read_exfiltration"`
+	Rules                         []RuleConfig       `mapstructure:"rules"`
+	InsecureAllowBodyBlindWrites  bool               `mapstructure:"insecure_allow_body_blind_writes"`
+	InsecureAllowReadExfiltration bool               `mapstructure:"insecure_allow_read_exfiltration"`
 }
 
 // ListenConfig configures the proxy listener.
 type ListenConfig struct {
-	Socket                string          `mapstructure:"socket"`
-	SocketMode            string          `mapstructure:"socket_mode"`
-	Address               string          `mapstructure:"address"`
-	InsecureAllowPlainTCP bool            `mapstructure:"insecure_allow_plain_tcp"`
-	TLS                   ListenTLSConfig `mapstructure:"tls"`
+	Socket     string `mapstructure:"socket"`
+	SocketMode string `mapstructure:"socket_mode"`
+	Address    string `mapstructure:"address"`
+	// InsecureAllowPlainTCP opts a non-loopback TCP listener into unencrypted
+	// transport. A non-loopback plaintext listener requires this AND
+	// InsecureAllowUnauthenticatedClients — two deliberate acknowledgments so
+	// the dangerous mode cannot be reached by a single fat-fingered flag.
+	InsecureAllowPlainTCP bool `mapstructure:"insecure_allow_plain_tcp"`
+	// InsecureAllowUnauthenticatedClients is the second acknowledgment a
+	// non-loopback plaintext listener requires: without mutual TLS any host
+	// that can reach the port can impersonate a client.
+	InsecureAllowUnauthenticatedClients bool            `mapstructure:"insecure_allow_unauthenticated_clients"`
+	TLS                                 ListenTLSConfig `mapstructure:"tls"`
 }
 
 // ListenTLSConfig configures mutual TLS for TCP listeners.
 type ListenTLSConfig struct {
-	CertFile                   string   `mapstructure:"cert_file"`
-	KeyFile                    string   `mapstructure:"key_file"`
-	ClientCAFile               string   `mapstructure:"client_ca_file"`
-	AllowedCommonNames         []string `mapstructure:"allowed_common_names"`
-	AllowedDNSNames            []string `mapstructure:"allowed_dns_names"`
-	AllowedIPAddresses         []string `mapstructure:"allowed_ip_addresses"`
-	AllowedURISANs             []string `mapstructure:"allowed_uri_sans"`
-	AllowedPublicKeySHA256Pins []string `mapstructure:"allowed_public_key_sha256_pins"`
+	CertFile            string   `mapstructure:"cert_file"`
+	KeyFile             string   `mapstructure:"key_file"`
+	ClientCAFile        string   `mapstructure:"client_ca_file"`
+	CommonNames         []string `mapstructure:"common_names"`
+	DNSNames            []string `mapstructure:"dns_names"`
+	IPAddresses         []string `mapstructure:"ip_addresses"`
+	URISANs             []string `mapstructure:"uri_sans"`
+	PublicKeySHA256Pins []string `mapstructure:"public_key_sha256_pins"`
 }
 
 // UpstreamConfig configures the upstream Docker socket.
@@ -106,33 +122,34 @@ type RequestBodyConfig struct {
 // ContainerCreateRequestBodyConfig configures body inspection for
 // POST /containers/create requests.
 type ContainerCreateRequestBodyConfig struct {
-	AllowPrivileged        bool     `mapstructure:"allow_privileged"`
-	AllowHostNetwork       bool     `mapstructure:"allow_host_network"`
-	AllowHostPID           bool     `mapstructure:"allow_host_pid"`
-	AllowHostIPC           bool     `mapstructure:"allow_host_ipc"`
-	AllowedBindMounts      []string `mapstructure:"allowed_bind_mounts"`
-	AllowAllDevices        bool     `mapstructure:"allow_all_devices"`
-	AllowedDevices         []string `mapstructure:"allowed_devices"`
-	AllowDeviceRequests         bool                   `mapstructure:"allow_device_requests"`
-	AllowedDeviceRequests       []AllowedDeviceRequest `mapstructure:"allowed_device_requests"`
-	AllowDeviceCgroupRules      bool                   `mapstructure:"allow_device_cgroup_rules"`
-	AllowedDeviceCgroupRules    []string               `mapstructure:"allowed_device_cgroup_rules"`
+	AllowPrivileged          bool                   `mapstructure:"allow_privileged"`
+	AllowHostNetwork         bool                   `mapstructure:"allow_host_network"`
+	AllowHostPID             bool                   `mapstructure:"allow_host_pid"`
+	AllowHostIPC             bool                   `mapstructure:"allow_host_ipc"`
+	AllowedBindMounts        []string               `mapstructure:"allowed_bind_mounts"`
+	AllowAllDevices          bool                   `mapstructure:"allow_all_devices"`
+	AllowedDevices           []string               `mapstructure:"allowed_devices"`
+	AllowDeviceRequests      bool                   `mapstructure:"allow_device_requests"`
+	AllowedDeviceRequests    []AllowedDeviceRequest `mapstructure:"allowed_device_requests"`
+	AllowDeviceCgroupRules   bool                   `mapstructure:"allow_device_cgroup_rules"`
+	AllowedDeviceCgroupRules []string               `mapstructure:"allowed_device_cgroup_rules"`
 
-	RequireNoNewPrivileges     bool     `mapstructure:"require_no_new_privileges"`
-	RequireNonRootUser         bool     `mapstructure:"require_non_root_user"`
-	RequireReadonlyRootfs      bool     `mapstructure:"require_readonly_rootfs"`
-	RequireDropAllCapabilities bool     `mapstructure:"require_drop_all_capabilities"`
-	AllowAllCapabilities       bool     `mapstructure:"allow_all_capabilities"`
-	AllowedCapabilities        []string `mapstructure:"allowed_capabilities"`
-	RequireMemoryLimit         bool     `mapstructure:"require_memory_limit"`
-	RequireCPULimit            bool     `mapstructure:"require_cpu_limit"`
-	RequirePidsLimit           bool     `mapstructure:"require_pids_limit"`
-	AllowedSeccompProfiles     []string `mapstructure:"allowed_seccomp_profiles"`
-	DenyUnconfinedSeccomp      bool     `mapstructure:"deny_unconfined_seccomp"`
-	AllowedAppArmorProfiles    []string `mapstructure:"allowed_apparmor_profiles"`
-	DenyUnconfinedAppArmor     bool     `mapstructure:"deny_unconfined_apparmor"`
-	AllowHostUserNS            bool     `mapstructure:"allow_host_userns"`
-	RequiredLabels             []string `mapstructure:"required_labels"`
+	RequireNoNewPrivileges     bool             `mapstructure:"require_no_new_privileges"`
+	RequireNonRootUser         bool             `mapstructure:"require_non_root_user"`
+	RequireReadonlyRootfs      bool             `mapstructure:"require_readonly_rootfs"`
+	RequireDropAllCapabilities bool             `mapstructure:"require_drop_all_capabilities"`
+	AllowAllCapabilities       bool             `mapstructure:"allow_all_capabilities"`
+	AllowedCapabilities        []string         `mapstructure:"allowed_capabilities"`
+	RequireMemoryLimit         bool             `mapstructure:"require_memory_limit"`
+	RequireCPULimit            bool             `mapstructure:"require_cpu_limit"`
+	RequirePidsLimit           bool             `mapstructure:"require_pids_limit"`
+	AllowedSeccompProfiles     []string         `mapstructure:"allowed_seccomp_profiles"`
+	DenyUnconfinedSeccomp      bool             `mapstructure:"deny_unconfined_seccomp"`
+	AllowedAppArmorProfiles    []string         `mapstructure:"allowed_apparmor_profiles"`
+	DenyUnconfinedAppArmor     bool             `mapstructure:"deny_unconfined_apparmor"`
+	AllowHostUserNS            bool             `mapstructure:"allow_host_userns"`
+	AllowSysctls               bool             `mapstructure:"allow_sysctls"`
+	RequiredLabels             []string         `mapstructure:"required_labels"`
 	ImageTrust                 ImageTrustConfig `mapstructure:"image_trust"`
 }
 
@@ -206,7 +223,7 @@ type BuildRequestBodyConfig struct {
 // POST /containers/*/update.
 type ContainerUpdateRequestBodyConfig struct {
 	AllowPrivileged      bool `mapstructure:"allow_privileged"`
-	AllowDevices         bool `mapstructure:"allow_devices"`
+	AllowAllDevices      bool `mapstructure:"allow_all_devices"`
 	AllowCapabilities    bool `mapstructure:"allow_capabilities"`
 	AllowResourceUpdates bool `mapstructure:"allow_resource_updates"`
 	AllowRestartPolicy   bool `mapstructure:"allow_restart_policy"`
@@ -296,8 +313,8 @@ type NodeRequestBodyConfig struct {
 // PluginRequestBodyConfig configures inspection for plugin write endpoints.
 type PluginRequestBodyConfig struct {
 	AllowHostNetwork      bool     `mapstructure:"allow_host_network"`
-	AllowIPCHost          bool     `mapstructure:"allow_ipc_host"`
-	AllowPIDHost          bool     `mapstructure:"allow_pid_host"`
+	AllowHostIPC          bool     `mapstructure:"allow_host_ipc"`
+	AllowHostPID          bool     `mapstructure:"allow_host_pid"`
 	AllowAllDevices       bool     `mapstructure:"allow_all_devices"`
 	AllowedBindMounts     []string `mapstructure:"allowed_bind_mounts"`
 	AllowedDevices        []string `mapstructure:"allowed_devices"`
@@ -493,9 +510,9 @@ type MetricsConfig struct {
 // network-reachable listener would otherwise let any client submit YAML for
 // parsing.
 type AdminConfig struct {
-	Enabled      bool   `mapstructure:"enabled"`
-	Path         string `mapstructure:"path"`
-	MaxBodyBytes int64  `mapstructure:"max_body_bytes"`
+	Enabled         bool   `mapstructure:"enabled"`
+	Path            string `mapstructure:"path"`
+	MaxRequestBytes int64  `mapstructure:"max_request_bytes"`
 	// PolicyVersionPath is the GET endpoint that reports the active policy
 	// generation counter and metadata (rules / profiles / compat-active /
 	// content hash). It shares the admin layer with Path, so it inherits the
@@ -510,19 +527,15 @@ type AdminConfig struct {
 	Listen AdminListenConfig `mapstructure:"listen"`
 }
 
-// AdminListenConfig configures the dedicated admin listener. Its shape
-// mirrors ListenConfig so operators have a single mental model for the
-// two listeners; the behavioral differences are limited to defaults and
+// AdminListenConfig configures the dedicated admin listener. It embeds
+// ListenConfig so operators have a single mental model for the two
+// listeners; the behavioral differences are limited to defaults and
 // the fact that the admin listener never carries Docker-API traffic.
 //
 // Configured reports whether a dedicated admin listener has been requested.
 // When false the admin endpoints fall back to riding the main listener.
 type AdminListenConfig struct {
-	Socket                string          `mapstructure:"socket"`
-	SocketMode            string          `mapstructure:"socket_mode"`
-	Address               string          `mapstructure:"address"`
-	InsecureAllowPlainTCP bool            `mapstructure:"insecure_allow_plain_tcp"`
-	TLS                   ListenTLSConfig `mapstructure:"tls"`
+	ListenConfig `mapstructure:",squash"`
 }
 
 // Configured reports whether an admin listener address has been requested.
@@ -540,9 +553,9 @@ func (cfg AdminListenConfig) Configured() bool {
 // running config is preserved and the operator must restart sockguard to
 // pick the new values up.
 //
-// DebounceMs collapses bursts of filesystem events (editors commonly emit
+// Debounce collapses bursts of filesystem events (editors commonly emit
 // chmod + write + rename + create per save) into a single reload trigger.
-// Default 250ms.
+// Default "250ms".
 //
 // Reload is opt-in because enabling it changes the meaning of SIGHUP:
 // historically SIGHUP terminated sockguard; with reload enabled, SIGHUP
@@ -550,18 +563,18 @@ func (cfg AdminListenConfig) Configured() bool {
 // that script around the old behavior must update their tooling before
 // flipping this on.
 type ReloadConfig struct {
-	Enabled    bool `mapstructure:"enabled"`
-	DebounceMs int  `mapstructure:"debounce_ms"`
-	// PollIntervalMs is an optional fallback that periodically stats the
+	Enabled  bool   `mapstructure:"enabled"`
+	Debounce string `mapstructure:"debounce"`
+	// PollInterval is an optional fallback that periodically stats the
 	// config file and triggers a reload when its size, modification time, or
 	// inode has changed since the last check. Useful on filesystems where
 	// fsnotify is unreliable (Synology / DSM btrfs bind-mounts, some FUSE
 	// backends, NFS) — inotify events on the host don't always propagate
 	// into the container, so a SIGHUP or this poll is the only way the
-	// watcher learns the file moved. 0 disables polling (default); typical
-	// values are 5000–15000 (5–15 seconds). SIGHUP remains the canonical
-	// reload trigger for unreliable propagation backends.
-	PollIntervalMs int `mapstructure:"poll_interval_ms"`
+	// watcher learns the file moved. Empty string disables polling (default);
+	// typical values are "5s"–"15s". SIGHUP remains the canonical reload
+	// trigger for unreliable propagation backends.
+	PollInterval string `mapstructure:"poll_interval"`
 }
 
 // PolicyBundleConfig configures verification of signed policy bundles.
@@ -582,12 +595,12 @@ type ReloadConfig struct {
 // listener / TLS material: changing the trust root mid-reload would
 // silently expand the set of accepted signers.
 type PolicyBundleConfig struct {
-	Enabled               bool                        `mapstructure:"enabled"`
-	SignaturePath         string                      `mapstructure:"signature_path"`
-	AllowedSigningKeys    []PolicyBundleSigningKey    `mapstructure:"allowed_signing_keys"`
-	AllowedKeyless        []PolicyBundleKeyless       `mapstructure:"allowed_keyless"`
-	RequireRekorInclusion bool                        `mapstructure:"require_rekor_inclusion"`
-	VerifyTimeout         string                      `mapstructure:"verify_timeout"`
+	Enabled               bool                     `mapstructure:"enabled"`
+	SignaturePath         string                   `mapstructure:"signature_path"`
+	AllowedSigningKeys    []PolicyBundleSigningKey `mapstructure:"allowed_signing_keys"`
+	AllowedKeyless        []PolicyBundleKeyless    `mapstructure:"allowed_keyless"`
+	RequireRekorInclusion bool                     `mapstructure:"require_rekor_inclusion"`
+	VerifyTimeout         string                   `mapstructure:"verify_timeout"`
 }
 
 // PolicyBundleSigningKey is one entry in policy_bundle.allowed_signing_keys.
@@ -622,8 +635,9 @@ type MatchConfig struct {
 // The default listener is loopback TCP 127.0.0.1:2375 so local development
 // stays simple without exposing the Docker API proxy on the network. To expose
 // Sockguard on non-loopback TCP you must either configure listen.tls for mTLS
-// or explicitly opt into legacy plaintext mode with
-// listen.insecure_allow_plain_tcp=true.
+// or explicitly opt into legacy plaintext mode with both
+// listen.insecure_allow_plain_tcp=true and
+// listen.insecure_allow_unauthenticated_clients=true.
 func Defaults() Config {
 	return Config{
 		Listen: ListenConfig{
@@ -696,21 +710,23 @@ func Defaults() Config {
 		Admin: AdminConfig{
 			Enabled:           false,
 			Path:              "/admin/validate",
-			MaxBodyBytes:      524288,
+			MaxRequestBytes:   524288,
 			PolicyVersionPath: "/admin/policy/version",
 			Listen: AdminListenConfig{
-				// Socket and Address both default to "" so the admin endpoints
-				// ride the main listener until the operator opts in. SocketMode
-				// still defaults to the hardened mode so that an operator who
-				// only sets admin.listen.socket gets owner-only permissions
-				// without needing to repeat the boilerplate.
-				SocketMode: HardenedListenSocketMode,
+				ListenConfig: ListenConfig{
+					// Socket and Address both default to "" so the admin endpoints
+					// ride the main listener until the operator opts in. SocketMode
+					// still defaults to the hardened mode so that an operator who
+					// only sets admin.listen.socket gets owner-only permissions
+					// without needing to repeat the boilerplate.
+					SocketMode: HardenedListenSocketMode,
+				},
 			},
 		},
 		Reload: ReloadConfig{
-			Enabled:        false,
-			DebounceMs:     250,
-			PollIntervalMs: 0,
+			Enabled:      false,
+			Debounce:     "250ms",
+			PollInterval: "",
 		},
 		PolicyBundle: PolicyBundleConfig{
 			Enabled:               false,

@@ -15,7 +15,7 @@ admin:
   enabled: true
   path: /admin/validate                # POST endpoint; must start with /
   policy_version_path: /admin/policy/version  # GET endpoint; must start with /
-  max_body_bytes: 524288               # 512 KiB hard cap on validate request bodies
+  max_request_bytes: 524288            # 512 KiB hard cap on validate request bodies
 ```
 
 Both endpoints share the `admin.enabled` gate. When disabled, any request to
@@ -56,8 +56,10 @@ The dedicated listener supports the same posture as `listen.*`: unix socket
 (hardened `0600` mode), loopback or TLS-protected TCP (with
 `admin.listen.tls.cert_file` / `key_file` / `client_ca_file` plus the same CN /
 DNS / IP / URI / SPIFFE / SHA-256 SPKI client-identity selectors as the main
-listener), or non-loopback plaintext TCP behind an explicit
-`admin.listen.insecure_allow_plain_tcp: true` opt-in.
+listener), or non-loopback plaintext TCP behind the two-flag insecure opt-in
+(`admin.listen.insecure_allow_plain_tcp: true` plus
+`admin.listen.insecure_allow_unauthenticated_clients: true` — one without the
+other is rejected).
 
 > **Recommended posture:** configure `admin.listen.socket` at a path whose
 > parent directory is only writable by the operator UID, e.g.
@@ -88,7 +90,7 @@ Content-Type: application/x-yaml
 <candidate sockguard.yaml body>
 ```
 
-Body is limited to `admin.max_body_bytes` (default 512 KiB) via
+Body is limited to `admin.max_request_bytes` (default 512 KiB) via
 `http.MaxBytesReader`.
 
 ### Response codes
@@ -97,7 +99,7 @@ Body is limited to `admin.max_body_bytes` (default 512 KiB) via
 |--------|---------|
 | `200 OK` | YAML is valid; response body contains the parsed policy summary |
 | `405 Method Not Allowed` | Non-POST method; `Allow: POST` header is set |
-| `413 Payload Too Large` | Body exceeded `admin.max_body_bytes` |
+| `413 Payload Too Large` | Body exceeded `admin.max_request_bytes` |
 | `422 Unprocessable Entity` | YAML parsed but failed validation; errors listed |
 
 ### Response body

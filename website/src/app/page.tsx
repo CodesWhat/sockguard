@@ -118,8 +118,8 @@ export default function Home() {
               <p className="mx-auto mb-10 max-w-2xl text-lg text-neutral-600 sm:text-xl dark:text-neutral-400">
                 Control what gets through. Filter Docker API requests by method, path, and request
                 body with default-deny posture — then layer on signed policy bundles, per-profile
-                rollout modes for staged enforcement, hot-reload with an admin API, Prometheus
-                metrics, and drop-in Tecnativa compatibility.
+                rollout modes for staged enforcement, rate limits and concurrency caps, hot-reload
+                with an admin API, Prometheus metrics, and drop-in Tecnativa compatibility.
               </p>
 
               <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
@@ -320,7 +320,7 @@ export default function Home() {
                 Features
               </h2>
               <p className="relative mt-4 text-neutral-600 dark:text-neutral-400">
-                Security-first Docker socket proxy with zero external dependencies
+                Default-deny Docker socket proxy — a lean Go binary with a stdlib request hot path
               </p>
             </div>
 
@@ -407,7 +407,7 @@ export default function Home() {
                 Comparison
               </h2>
               <p className="relative mt-4 text-neutral-600 dark:text-neutral-400">
-                How Sockguard stacks up against other Docker socket proxies
+                How we stack up against other Docker socket proxies
               </p>
             </div>
 
@@ -426,6 +426,12 @@ export default function Home() {
                     </th>
                     <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-500">
                       wollomatic
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                      11notes
+                    </th>
+                    <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-500">
+                      CetusGuard
                     </th>
                     <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-900 dark:text-neutral-50">
                       Sockguard
@@ -449,6 +455,12 @@ export default function Home() {
                       </td>
                       <td className="px-4 py-3 text-center">
                         <ComparisonCell value={row.wollomatic} />
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <ComparisonCell value={row.elevenNotes} />
+                      </td>
+                      <td className="px-4 py-3 text-center">
+                        <ComparisonCell value={row.cetusguard} />
                       </td>
                       <td className="px-4 py-3 text-center">
                         <ComparisonCell value={row.sockguard} planned={row.planned} />

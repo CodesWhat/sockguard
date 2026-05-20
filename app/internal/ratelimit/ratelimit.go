@@ -15,6 +15,22 @@ import (
 	"time"
 )
 
+// bucketState is the immutable snapshot that the CAS loop swaps atomically.
+// Both fields are packed into a single heap allocation that is replaced on
+// every successful AllowN transition; the old allocation is reclaimed by GC.
+//
+// Why not a sync.Pool? Returning the OLD pointer to a pool after a CAS
+// succeeds is unsafe: a concurrent reader that already loaded that pointer
+// may still be reading its fields when a fresh consumer pulls it out of
+// the pool and overwrites them, producing a torn read. Pooling only the
+// failed-CAS `next` candidates is sound but saves nothing on the hot path
+// because steady-state CAS succeeds on the first try. The 16-byte
+// per-admit allocation is left to the GC, which handles it efficiently.
+type bucketState struct {
+	tokens       float64
+	lastRefillNs int64 // Unix nanoseconds
+}
+
 // AnonymousClientID is the bucket key used for requests with no resolved
 // profile. This ensures anonymous callers cannot bypass limits by skipping
 // identification.
@@ -48,29 +64,28 @@ type nowFn func() time.Time
 
 // bucket is a single per-client token bucket. It is safe for concurrent use.
 //
-// lastAccess tracks the wall-clock of the last AllowN call and is read by the
-// owning Limiter's eviction loop to drop buckets that have gone idle for
-// longer than limiterEvictTTL.
+// Token state (current count + last-refill timestamp) is held in a
+// *bucketState that is swapped via atomic.Pointer CAS so AllowN is
+// lock-free on the hot path. lastAccessNs is a separate atomic so eviction
+// reads never contend with AllowN writes.
 type bucket struct {
-	mu              sync.Mutex
-	tokens          float64
+	state           atomic.Pointer[bucketState]
+	lastAccessNs    atomic.Int64 // Unix nanoseconds; updated on every AllowN
 	tokensPerSecond float64
 	burst           float64
-	lastRefill      time.Time
-	lastAccess      time.Time
 	now             nowFn
 }
 
 func newBucket(tokensPerSecond, burst float64, now nowFn) *bucket {
 	t := now()
-	return &bucket{
-		tokens:          burst,
+	b := &bucket{
 		tokensPerSecond: tokensPerSecond,
 		burst:           burst,
-		lastRefill:      t,
-		lastAccess:      t,
 		now:             now,
 	}
+	b.state.Store(&bucketState{tokens: burst, lastRefillNs: t.UnixNano()})
+	b.lastAccessNs.Store(t.UnixNano())
+	return b
 }
 
 // Allow is shorthand for AllowN(1) — withdraws a single token.
@@ -86,38 +101,60 @@ func (b *bucket) Allow() (ok bool, retryAfter int) {
 // cost greater than burst is permanently un-satisfiable; the validator in
 // internal/config rejects that configuration at startup. AllowN does not
 // re-check it here — defensive logic in a hot path would just hide config bugs.
+//
+// Implementation: lock-free CAS loop. Each iteration reads the current
+// *bucketState, computes the next state, and attempts a CAS swap. On CAS
+// failure (another goroutine raced us) the loop retries with the fresh value.
+// After maxCASRetries unsuccessful swaps the request is conservatively denied;
+// this is an extremely rare safety-valve — in practice contention resolves
+// within one or two retries.
+const maxCASRetries = 100
+
 func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
 	if cost < 1 {
 		cost = 1
 	}
 
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	nowT := b.now()
+	nowNs := nowT.UnixNano()
+	b.lastAccessNs.Store(nowNs)
 
-	now := b.now()
-	b.lastAccess = now
-	elapsed := now.Sub(b.lastRefill).Seconds()
-	if elapsed > 0 {
-		b.tokens = math.Min(b.tokens+elapsed*b.tokensPerSecond, b.burst)
-		b.lastRefill = now
+	for i := 0; i < maxCASRetries; i++ {
+		old := b.state.Load()
+
+		// Refill based on elapsed time since last refill.
+		elapsedSec := float64(nowNs-old.lastRefillNs) / 1e9
+		newTokens := old.tokens
+		newRefillNs := old.lastRefillNs
+		if elapsedSec > 0 {
+			newTokens = math.Min(old.tokens+elapsedSec*b.tokensPerSecond, b.burst)
+			newRefillNs = nowNs
+		}
+
+		if newTokens >= cost {
+			next := &bucketState{tokens: newTokens - cost, lastRefillNs: newRefillNs}
+			if b.state.CompareAndSwap(old, next) {
+				return true, 0
+			}
+			// CAS lost — retry.
+			continue
+		}
+
+		// Not enough tokens; compute wait time from the refilled amount.
+		deficit := cost - newTokens
+		waitSeconds := deficit / b.tokensPerSecond
+		return false, int(math.Ceil(waitSeconds))
 	}
 
-	if b.tokens >= cost {
-		b.tokens -= cost
-		return true, 0
-	}
-
-	deficit := cost - b.tokens
-	waitSeconds := deficit / b.tokensPerSecond
-	return false, int(math.Ceil(waitSeconds))
+	// Exhausted retries under extreme contention — deny conservatively.
+	return false, 1
 }
 
-// idleSince returns how long since the last AllowN call. Read under the
-// bucket mutex so the value is consistent with concurrent AllowN updates.
+// idleSince returns how long since the last AllowN call. Reads the atomic
+// lastAccessNs directly — no lock needed.
 func (b *bucket) idleSince(now time.Time) time.Duration {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return now.Sub(b.lastAccess)
+	lastNs := b.lastAccessNs.Load()
+	return now.Sub(time.Unix(0, lastNs))
 }
 
 // Limiter maintains per-client token buckets, lazily created on first use.
@@ -324,11 +361,17 @@ type clientReasonKey struct {
 // policy. Prometheus counters always fire; the slog audit record is gated
 // through this sampler to avoid log-volume blowout under attack.
 //
+// The sampler stores last-emit timestamps in a sync.Map keyed by
+// clientReasonKey. The hot path is the rejection branch (in-window
+// duplicates), which becomes lock-free via sync.Map.Load; only the first
+// emit per window pays for a CompareAndSwap.
+//
 // AuditSampler also runs a background eviction goroutine to prevent unbounded
 // memory growth from many unique client IDs.
 type AuditSampler struct {
-	mu      sync.Mutex
-	lastHit map[clientReasonKey]time.Time
+	// lastHit maps clientReasonKey → *time.Time. Pointer values let
+	// CompareAndSwap detect races without re-reading under a lock.
+	lastHit sync.Map
 	now     nowFn
 }
 
@@ -341,8 +384,7 @@ func NewAuditSampler() (s *AuditSampler, stop func()) {
 
 func newAuditSamplerWithClock(now nowFn) (*AuditSampler, func()) {
 	s := &AuditSampler{
-		lastHit: make(map[clientReasonKey]time.Time),
-		now:     now,
+		now: now,
 	}
 	stopCh := make(chan struct{})
 	var wg sync.WaitGroup
@@ -375,26 +417,38 @@ func (s *AuditSampler) ShouldEmit(clientID string, reason ThrottleReason) bool {
 	}
 	key := clientReasonKey{clientID: clientID, reason: reason}
 	now := s.now()
+	nowPtr := &now
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	last, exists := s.lastHit[key]
-	if !exists || now.Sub(last) >= auditEmitWindow {
-		s.lastHit[key] = now
+	// First-time emission: LoadOrStore returns loaded=false and the win.
+	prev, loaded := s.lastHit.LoadOrStore(key, nowPtr)
+	if !loaded {
 		return true
 	}
-	return false
+
+	lastPtr, ok := prev.(*time.Time)
+	if !ok || now.Sub(*lastPtr) < auditEmitWindow {
+		return false
+	}
+	// Window has elapsed; race the swap. Losing the race means another
+	// goroutine emitted ~simultaneously, which is the correct outcome —
+	// 1 emit per window per key, not 1-per-caller.
+	return s.lastHit.CompareAndSwap(key, lastPtr, nowPtr)
 }
 
-// evict removes entries older than ttl from the sampler map.
+// evict removes entries older than ttl from the sampler map. The Range
+// iteration is unsynchronized, which is fine because CompareAndDelete only
+// removes entries whose pointer hasn't been swapped by a racing ShouldEmit.
 func (s *AuditSampler) evict(ttl time.Duration) {
 	cutoff := s.now().Add(-ttl)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for key, t := range s.lastHit {
-		if t.Before(cutoff) {
-			delete(s.lastHit, key)
+	s.lastHit.Range(func(k, v any) bool {
+		t, ok := v.(*time.Time)
+		if !ok {
+			s.lastHit.Delete(k)
+			return true
 		}
-	}
+		if t.Before(cutoff) {
+			s.lastHit.CompareAndDelete(k, v)
+		}
+		return true
+	})
 }

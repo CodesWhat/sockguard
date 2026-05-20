@@ -8,7 +8,6 @@ import (
 	"crypto/x509/pkix"
 	"net"
 	"net/netip"
-	"net/url"
 	"strings"
 	"testing"
 )
@@ -268,7 +267,6 @@ func TestValidateRequestBodyUnixPeerProfileRequiresSocket(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Socket = ""
 	cfg.Listen.Address = "127.0.0.1:2376"
-	cfg.Listen.InsecureAllowPlainTCP = true
 	cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{
 		{Profile: "ro", UIDs: []uint32{1000}},
 	}
@@ -450,47 +448,47 @@ func TestNormalizeAllowedRegistryHostDockerAlias(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCompileClientCertIDConstraintsEmptyCommonName(t *testing.T) {
-	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
-		AllowedCommonNames: []string{""},
+	_, err := compileClientCertificateIdentityConstraints("listen.tls", ListenTLSConfig{
+		CommonNames: []string{""},
 	})
-	if err == nil || !strings.Contains(err.Error(), "allowed_common_names") {
-		t.Fatalf("expected allowed_common_names error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "common_names") {
+		t.Fatalf("expected common_names error, got: %v", err)
 	}
 }
 
 func TestCompileClientCertIDConstraintsEmptyDNSName(t *testing.T) {
-	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
-		AllowedDNSNames: []string{""},
+	_, err := compileClientCertificateIdentityConstraints("listen.tls", ListenTLSConfig{
+		DNSNames: []string{""},
 	})
-	if err == nil || !strings.Contains(err.Error(), "allowed_dns_names") {
-		t.Fatalf("expected allowed_dns_names error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "dns_names") {
+		t.Fatalf("expected dns_names error, got: %v", err)
 	}
 }
 
 func TestCompileClientCertIDConstraintsInvalidIP(t *testing.T) {
-	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
-		AllowedIPAddresses: []string{"not-an-ip"},
+	_, err := compileClientCertificateIdentityConstraints("listen.tls", ListenTLSConfig{
+		IPAddresses: []string{"not-an-ip"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "allowed_ip_addresses") {
-		t.Fatalf("expected allowed_ip_addresses error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "ip_addresses") {
+		t.Fatalf("expected ip_addresses error, got: %v", err)
 	}
 }
 
 func TestCompileClientCertIDConstraintsEmptyURISAN(t *testing.T) {
-	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
-		AllowedURISANs: []string{""},
+	_, err := compileClientCertificateIdentityConstraints("listen.tls", ListenTLSConfig{
+		URISANs: []string{""},
 	})
-	if err == nil || !strings.Contains(err.Error(), "allowed_uri_sans") {
-		t.Fatalf("expected allowed_uri_sans error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "uri_sans") {
+		t.Fatalf("expected uri_sans error, got: %v", err)
 	}
 }
 
 func TestCompileClientCertIDConstraintsInvalidPin(t *testing.T) {
-	_, err := compileClientCertificateIdentityConstraints(ListenTLSConfig{
-		AllowedPublicKeySHA256Pins: []string{"abc"},
+	_, err := compileClientCertificateIdentityConstraints("listen.tls", ListenTLSConfig{
+		PublicKeySHA256Pins: []string{"abc"},
 	})
-	if err == nil || !strings.Contains(err.Error(), "allowed_public_key_sha256_pins") {
-		t.Fatalf("expected allowed_public_key_sha256_pins error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "public_key_sha256_pins") {
+		t.Fatalf("expected public_key_sha256_pins error, got: %v", err)
 	}
 }
 
@@ -628,37 +626,6 @@ func TestVerifyConnectionNoChains(t *testing.T) {
 func TestIntersectsStringsNoMatch(t *testing.T) {
 	if intersectsStrings([]string{"a", "b"}, []string{"c", "d"}) {
 		t.Fatal("intersectsStrings should return false when no match")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// tls.go: intersectsIPAddrs — un-parseable IP (3-byte slice)
-// ---------------------------------------------------------------------------
-
-func TestIntersectsIPAddrsUnparseableIP(t *testing.T) {
-	addr, _ := netip.ParseAddr("10.0.0.1")
-	bad := net.IP([]byte{1, 2, 3}) // 3-byte IP is invalid for netip
-	if intersectsIPAddrs([]netip.Addr{addr}, []net.IP{bad}) {
-		t.Fatal("intersectsIPAddrs should return false for un-parseable IP")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// tls.go: certificateURIStrings — nil cert and nil URI entry
-// ---------------------------------------------------------------------------
-
-func TestCertificateURIStringsNilCert(t *testing.T) {
-	if got := certificateURIStrings(nil); got != nil {
-		t.Fatalf("certificateURIStrings(nil) = %v, want nil", got)
-	}
-}
-
-func TestCertificateURIStringsNilEntry(t *testing.T) {
-	validURL, _ := url.Parse("https://example.com")
-	cert := &x509.Certificate{URIs: []*url.URL{nil, validURL}}
-	got := certificateURIStrings(cert)
-	if len(got) != 1 || got[0] != "https://example.com" {
-		t.Fatalf("certificateURIStrings() = %v, want [https://example.com]", got)
 	}
 }
 

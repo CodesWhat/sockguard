@@ -1,0 +1,73 @@
+name: "🐋 Quality: Integration"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && '🐋 Quality: Integration — Nightly' ||
+    github.event_name == 'pull_request' && format('🐋 Quality: Integration — PR #{0}', github.event.pull_request.number) ||
+    format('🐋 Quality: Integration — Manual by {0}', github.actor)
+  }}
+
+# Runs the build-tagged integration suite (app/integration/) against the
+# Linux dockerd preinstalled on the GitHub-hosted runner. This is the
+# real-daemon tier of the QA suites that the in-process tests cannot
+# fully exercise — Tecnativa-preset rule-layer conformance, the
+# route-classifier oracle's agreement with a live daemon, ownership-label
+# isolation, and the attach hijack end-to-end.
+#
+# The runner's Docker is configured the way a production host would be —
+# no dind container, no special privileges — so the suite measures what
+# a real deployment would actually see. The runner image already ships
+# docker, so the only setup is pulling the small busybox image two
+# helper tests use as a sentinel.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 6 * * *'  # 06:15 UTC daily
+  pull_request:
+    paths:
+      - 'app/**'
+      - '.github/workflows/quality-integration.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-integration-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: "🐋 Integration (real dockerd)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: Verify Docker daemon is reachable
+        run: |
+          docker version
+          docker info --format 'server={{.ServerVersion}} api={{.OperatingSystem}}'
+
+      - name: Pre-pull busybox sentinel image
+        run: docker pull busybox:1.37
+
+      - name: Run integration suite
+        working-directory: app
+        env:
+          SOCKGUARD_TEST_DOCKER_SOCKET: /var/run/docker.sock
+        run: go test -tags=integration -count=1 -timeout=10m ./integration/

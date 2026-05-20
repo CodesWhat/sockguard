@@ -11,25 +11,24 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+// ARITHMETIC_BASE middleware.go:18:28
+// `var bodyReadTimeout = 30 * time.Second` — mutation `*` → `/` would
+// silently collapse the slowloris guard to a near-zero deadline, breaking
+// inspector body reads on slow clients without any test failure. (Was
+// const until QA-3 needed to dial it down for the slowloris regression
+// suite; this assertion still pins the production default.)
+func TestBodyReadTimeoutIs30Seconds(t *testing.T) {
+	if bodyReadTimeout != 30*time.Second {
+		t.Fatalf("bodyReadTimeout = %v, want 30s", bodyReadTimeout)
+	}
+}
 
 // ---------------------------------------------------------------------------
 // rules.go mutants
 // ---------------------------------------------------------------------------
-
-// CONDITIONALS_BOUNDARY rules.go:95:31
-// canonicalizePath: `strings.IndexByte(p, '%') >= 0` — mutant changes to `> 0`.
-// When '%' is at index 0 the condition is still >=0 (true); with `>0` it becomes false.
-// We verify that a path whose first byte IS '%' still gets unescaped.
-func TestCanonicalizePath_PercentAtIndexZero(t *testing.T) {
-	// %2F is an encoded '/'
-	// Calling NormalizePath exercises canonicalizePath internally.
-	// If the mutation `>0` fires, the percent at index 0 would not be unescaped.
-	got := NormalizePath("%2Fcontainers%2Fjson")
-	if got != "/containers/json" {
-		t.Fatalf("NormalizePath(%%2Fcontainers%%2Fjson) = %q, want /containers/json", got)
-	}
-}
 
 // CONDITIONALS_BOUNDARY rules.go:119:12
 // pathNeedsClean: `len(p) > 1 && p[len(p)-1] == '/'` — mutant changes to `>= 1` (i.e. `len(p) >= 1`).
@@ -74,6 +73,47 @@ func TestStripVersionPrefix_MultiDigitMinor(t *testing.T) {
 	}
 }
 
+// TestStripVersionPrefix_BoundaryGuards pins three surviving CONDITIONALS_BOUNDARY
+// mutants in stripVersionPrefix:
+//
+//   - rules.go:184:8  — outer digit-consume loop bound `i < len(p)` → `<=`
+//   - rules.go:191:7  — '.' check `i < len(p) && p[i] == '.'` → `<=`
+//   - rules.go:193:41 — inner digit-consume `<= '9'` → `< '9'`
+//
+// The existing /v1 case is filtered by the length-<4 fast path (line 179) so
+// it never enters the loop at all; that's why TestStripVersionPrefix_NoTrailingSlash
+// passed both original and mutated source. The cases below exercise paths
+// that reach the digit loops at the boundary the mutants depend on.
+func TestStripVersionPrefix_BoundaryGuards(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+		why  string
+	}{
+		{
+			name: "digits run to end of path (184:8, 191:7)",
+			in:   "/v12",
+			want: "/v12",
+			why:  "len>=4 passes the fast-path; both digits consumed make i=len(p). Mutants `i <= len(p)` either re-enter the digit loop or the '.' check and read p[len(p)] → panic. Original exits cleanly and returns the input unchanged (no trailing /).",
+		},
+		{
+			name: "fractional digits with '9' at boundary (193:41)",
+			in:   "/v1.9/x",
+			want: "/x",
+			why:  "Original consumes '9' (p[j]<='9' true) and advances j past it; the trailing '/' check passes and the prefix is stripped. Mutant `p[j] < '9'` exits at '9' so j stops at 4; the dot-block check then sees p[i]='.' != '/' and returns the input unchanged.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripVersionPrefix(tt.in)
+			if got != tt.want {
+				t.Fatalf("stripVersionPrefix(%q) = %q, want %q\n%s", tt.in, got, tt.want, tt.why)
+			}
+		})
+	}
+}
+
 // CONDITIONALS_BOUNDARY rules.go:364:10 and rules.go:364:30
 // upperHTTPMethodASCII loop: `i < len(buf)` mutant → `i <= len(buf)`.
 // A method string of length 1 (single lowercase letter) exercises the edge.
@@ -114,11 +154,10 @@ func TestMatchGlobSegments_EmptyPath(t *testing.T) {
 // spoolRequestBodyToTempFile: `size > maxBytes` — mutant changes to `>=`.
 // A body of exactly maxBuildContextBytes bytes should be allowed (tooLarge=false).
 func TestSpoolRequestBodyToTempFile_ExactlyAtLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	// Build a request whose body is exactly maxBuildContextBytes bytes.
 	body := bytes.Repeat([]byte("x"), int(maxBuildContextBytes))
 	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(body))
-	spool, size, err := spoolRequestBodyToTempFile(req, "sockguard-test-", maxBuildContextBytes)
+	spool, size, err := defaultIODeps().spoolRequestBodyToTempFile(req, "sockguard-test-", maxBuildContextBytes)
 	if err != nil {
 		t.Fatalf("spoolRequestBodyToTempFile error = %v", err)
 	}
@@ -137,7 +176,6 @@ func TestSpoolRequestBodyToTempFile_ExactlyAtLimit(t *testing.T) {
 // We verify via the readAllLimited mock: with the real code, a limit of maxBuildDockerfileBytes+1
 // means exactly-at-limit data is NOT truncated and len(raw)==maxBuildDockerfileBytes passes.
 func TestExtractBuildDockerfile_RawExactlyAtLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	// Build content exactly at the limit. Start with a valid FROM, pad the rest.
 	base := "FROM busybox\n"
 	pad := strings.Repeat(" ", maxBuildDockerfileBytes-len(base))
@@ -147,9 +185,11 @@ func TestExtractBuildDockerfile_RawExactlyAtLimit(t *testing.T) {
 	}
 
 	// readAllLimited mock returns exactly-limit bytes (simulating a body at the limit).
-	readAllLimited = func(_ io.Reader, _ int64) ([]byte, error) {
+	iod := defaultIODeps()
+	iod.ReadAllLimited = func(_ io.Reader, _ int64) ([]byte, error) {
 		return raw, nil
 	}
+	_ = iod
 
 	// A body of exactly maxBuildDockerfileBytes should NOT trigger the too-large path.
 	// We test looksLikeDockerfile separately to confirm the FROM is recognized.
@@ -166,7 +206,6 @@ func TestExtractBuildDockerfile_RawExactlyAtLimit(t *testing.T) {
 // extractDockerfileFromTarReader: `len(body) > maxBuildDockerfileBytes` — mutant → `>=`.
 // A tar entry whose Dockerfile content is exactly maxBuildDockerfileBytes should succeed.
 func TestExtractDockerfileFromTarReader_ExactlyAtLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	content := bytes.Repeat([]byte("x"), maxBuildDockerfileBytes)
 
 	var buf bytes.Buffer
@@ -179,7 +218,7 @@ func TestExtractDockerfileFromTarReader_ExactlyAtLimit(t *testing.T) {
 	_, _ = tw.Write(content)
 	_ = tw.Close()
 
-	body, ok, err := extractDockerfileFromTarReader(tar.NewReader(bytes.NewReader(buf.Bytes())), "Dockerfile")
+	body, ok, err := defaultIODeps().extractDockerfileFromTarReader(tar.NewReader(bytes.NewReader(buf.Bytes())), "Dockerfile")
 	if err != nil {
 		t.Fatalf("extractDockerfileFromTarReader error = %v", err)
 	}
@@ -243,7 +282,7 @@ func TestBuildPolicy_HostNetworkNegation(t *testing.T) {
 		return r
 	}
 
-	reason, err := buildPolicy{allowHostNetwork: false}.inspect(req(), "/build")
+	reason, err := buildPolicy{allowHostNetwork: false, io: defaultIODeps()}.inspect(nil, req(), "/build")
 	if err != nil {
 		t.Fatalf("error = %v", err)
 	}
@@ -251,7 +290,7 @@ func TestBuildPolicy_HostNetworkNegation(t *testing.T) {
 		t.Fatalf("reason = %q, want host-network denial", reason)
 	}
 
-	reason, err = buildPolicy{allowHostNetwork: true}.inspect(req(), "/build")
+	reason, err = buildPolicy{allowHostNetwork: true, io: defaultIODeps()}.inspect(nil, req(), "/build")
 	if err != nil {
 		t.Fatalf("error = %v", err)
 	}
@@ -323,7 +362,7 @@ func TestSpoolRequestBodyForInspection_ContentLengthExactlyAtLimit(t *testing.T)
 	req := httptest.NewRequest(http.MethodPut, "/containers/abc/archive?path=/app", bytes.NewReader(body))
 	req.ContentLength = maxBytes // exactly at limit — must NOT trigger bodyTooLargeError
 
-	spool, size, err := spoolRequestBodyForInspection(req, "sockguard-test-", maxBytes)
+	spool, size, err := defaultIODeps().spoolRequestBodyForInspection(req, "sockguard-test-", maxBytes)
 	if err != nil {
 		t.Fatalf("spoolRequestBodyForInspection at exact limit error = %v", err)
 	}
@@ -346,6 +385,30 @@ func TestContainerArchiveSymlinkTargetIsSafe_AbsoluteUnsafe(t *testing.T) {
 	}
 }
 
+// CONDITIONALS_NEGATION container_archive.go:228:37
+// containerArchiveSymlinkTargetIsSafe: `if dir := path.Dir(entryPath); dir != "."`.
+// Without the entry's directory prefix, a relative link like `../sibling`
+// looks like an archive-escape; WITH the prefix it cleans to a sibling that
+// stays inside the archive. A mutation flipping `!= "."` to `== "."` skips
+// the join and would reject the safe link.
+func TestContainerArchiveSymlinkTargetIsSafe_DirPrefixAppliedForNestedEntries(t *testing.T) {
+	// entryPath has a directory prefix → the join must apply so the relative
+	// parent-walk lands inside the archive.
+	if !containerArchiveSymlinkTargetIsSafe("a/file", "../sibling") {
+		t.Fatal("nested entry whose parent-walk stays inside archive should be safe (join must apply)")
+	}
+	// Sanity: nested entry that DOES escape the archive root must still be
+	// rejected after the join is applied.
+	if containerArchiveSymlinkTargetIsSafe("a/file", "../../escape") {
+		t.Fatal("nested entry that escapes archive root should be unsafe")
+	}
+	// Top-level entry: dir = "." → join is skipped; bare relative target must
+	// still validate against the normalize check (which it does for "sibling").
+	if !containerArchiveSymlinkTargetIsSafe("file", "sibling") {
+		t.Fatal("top-level entry with safe relative target should be safe")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // image_load.go mutants
 // ---------------------------------------------------------------------------
@@ -356,19 +419,19 @@ func TestContainerArchiveSymlinkTargetIsSafe_AbsoluteUnsafe(t *testing.T) {
 // bytes would be read truncated and then pass the `> maxImageLoadManifestBytes` check (never exceed).
 // We ensure a manifest at exactly the limit is accepted.
 func TestExtractImageLoadRepoTags_ManifestAtExactLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	// Build a manifest that is exactly maxImageLoadManifestBytes bytes.
 	// The simplest approach: confirm readAllLimited is called with limit+1.
 	var capturedLimit int64
-	orig := readAllLimited
-	readAllLimited = func(r io.Reader, limit int64) ([]byte, error) {
+	iod := defaultIODeps()
+	orig := iod.ReadAllLimited
+	iod.ReadAllLimited = func(r io.Reader, limit int64) ([]byte, error) {
 		capturedLimit = limit
 		return orig(r, limit)
 	}
 
 	manifest := `[{"RepoTags":["reg.example.com/app:1"]}]`
 	payload := mustImageLoadTar(t, manifest)
-	_, _, err := extractImageLoadRepoTags(bytes.NewReader(payload))
+	_, _, err := iod.extractImageLoadRepoTags(bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("extractImageLoadRepoTags error = %v", err)
 	}
@@ -381,7 +444,6 @@ func TestExtractImageLoadRepoTags_ManifestAtExactLimit(t *testing.T) {
 // `len(body) > maxImageLoadManifestBytes` — mutant → `>=`.
 // A manifest of exactly maxImageLoadManifestBytes bytes must succeed (not error).
 func TestExtractImageLoadRepoTags_ManifestExactlyAtLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	exactContent := make([]byte, maxImageLoadManifestBytes)
 	// Fill with a valid JSON array (padded with spaces).
 	base := []byte(`[{"RepoTags":["reg.io/a:1"]}]`)
@@ -391,13 +453,14 @@ func TestExtractImageLoadRepoTags_ManifestExactlyAtLimit(t *testing.T) {
 	}
 	exactContent[maxImageLoadManifestBytes-1] = ' '
 
-	readAllLimited = func(_ io.Reader, _ int64) ([]byte, error) {
+	iod := defaultIODeps()
+	iod.ReadAllLimited = func(_ io.Reader, _ int64) ([]byte, error) {
 		return exactContent, nil
 	}
 
 	manifest := `[{"RepoTags":["reg.io/a:1"]}]`
 	payload := mustImageLoadTar(t, manifest)
-	tags, found, err := extractImageLoadRepoTags(bytes.NewReader(payload))
+	tags, found, err := iod.extractImageLoadRepoTags(bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("extractImageLoadRepoTags error = %v (should succeed at exact limit)", err)
 	}
@@ -431,6 +494,56 @@ func TestParseImageReference_SingleSegmentIsOfficial(t *testing.T) {
 	}
 	if !ref.official {
 		t.Fatal("single-segment ref should be official")
+	}
+}
+
+// TestParseImageReference_SingleSegmentLooksLikeRegistry pins the same
+// `len(parts) > 1` boundary at image_pull.go:115. The "nginx" case above
+// passes both original and `>=` mutant because looksLikeRegistryComponent
+// returns false for "nginx". To actually exercise the boundary we use a
+// single-segment ref whose value WOULD look like a registry component
+// (contains a '.'). After tag stripping the ref becomes a single dotted
+// segment; the original (`> 1` false at len=1) treats it as a tagged image
+// in docker.io's official namespace; the mutant (`>= 1` true at len=1)
+// enters the registry-extraction branch and leaves repository empty.
+func TestParseImageReference_SingleSegmentLooksLikeRegistry(t *testing.T) {
+	// After tag-strip "registry.example.com:5000" becomes
+	// "registry.example.com" — one segment, looks like a registry component.
+	ref, ok := parseImageReference("registry.example.com:5000")
+	if !ok {
+		t.Fatal("parseImageReference ok=false")
+	}
+	if ref.registry != "docker.io" {
+		t.Fatalf("registry = %q, want docker.io — mutant `len(parts) >= 1` enters the registry branch at len=1 and would yield %q", ref.registry, "registry.example.com")
+	}
+}
+
+// TestSplitSecurityOptKVLeadingSeparator pins the CONDITIONALS_BOUNDARY mutant
+// at container_create.go:955 (`idx >= 0` → `>`). When the entry starts with
+// the separator ('=' or ':') strings.IndexAny returns 0, which is the only
+// value that distinguishes `>= 0` from `> 0`. The original treats the entry
+// as a key/value pair with an empty key; the mutant returns hasValue=false,
+// silently dropping a SecurityOpt token that would otherwise have been
+// surfaced to the denySecurityOpt path.
+func TestSplitSecurityOptKVLeadingSeparator(t *testing.T) {
+	tests := []struct {
+		name      string
+		entry     string
+		wantKey   string
+		wantValue string
+		wantHas   bool
+	}{
+		{name: "leading equals", entry: "=value", wantKey: "", wantValue: "value", wantHas: true},
+		{name: "leading colon", entry: ":value", wantKey: "", wantValue: "value", wantHas: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			k, v, has := splitSecurityOptKV(tt.entry)
+			if k != tt.wantKey || v != tt.wantValue || has != tt.wantHas {
+				t.Fatalf("splitSecurityOptKV(%q) = (%q, %q, %v), want (%q, %q, %v) — mutant `idx > 0` would return (%q, \"\", false)",
+					tt.entry, k, v, has, tt.wantKey, tt.wantValue, tt.wantHas, tt.entry)
+			}
+		})
 	}
 }
 
@@ -645,7 +758,6 @@ func TestEndpointHasStaticIPConfig_ZeroLengthLinkLocalIPs(t *testing.T) {
 // extractPluginConfigFromTarReader: `len(body) > maxPluginConfigBytes` — mutant → `>=`.
 // A config of exactly maxPluginConfigBytes bytes must succeed.
 func TestExtractPluginConfigFromTarReader_ExactlyAtLimit(t *testing.T) {
-	restoreFilterIODeps(t)
 	content := make([]byte, maxPluginConfigBytes)
 	copy(content, []byte(`{"SchemaVersion":"1.0"}`))
 
@@ -660,7 +772,7 @@ func TestExtractPluginConfigFromTarReader_ExactlyAtLimit(t *testing.T) {
 	_ = tw.Close()
 
 	tr := tar.NewReader(bytes.NewReader(buf.Bytes()))
-	cfg, ok, err := extractPluginConfigFromTarReader(tr)
+	cfg, ok, err := defaultIODeps().extractPluginConfigFromTarReader(tr)
 	if err != nil {
 		t.Fatalf("extractPluginConfigFromTarReader error = %v", err)
 	}

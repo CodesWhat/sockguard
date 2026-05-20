@@ -58,6 +58,9 @@ var readResponseHook func(*bufio.Reader, *http.Request) (*http.Response, error) 
 // Test hook — do not use t.Parallel() in tests that swap this.
 var copyBufferHook func(io.Writer, io.Reader, []byte) (int64, error) = io.CopyBuffer
 
+// Test hook — do not use t.Parallel() in tests that swap this.
+var timeNowHook func() time.Time = time.Now
+
 var hopByHopHeaders = []string{
 	"Connection",
 	"Proxy-Connection",
@@ -315,7 +318,9 @@ func writeNonUpgradeHijackResponse(
 	if resp.Body == nil {
 		return
 	}
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	buf := getHijackBuffer()
+	defer putHijackBuffer(buf)
+	if _, err := io.CopyBuffer(w, resp.Body, buf); err != nil {
 		logger.Debug("hijack: error copying non-upgrade response body", "error", err, "path", path)
 	}
 	if err := resp.Body.Close(); err != nil {
@@ -455,7 +460,7 @@ func withReadInactivityDeadline(reader io.Reader, conn readDeadlineSetter, timeo
 }
 
 func (r *inactivityDeadlineReader) Read(p []byte) (int, error) {
-	now := time.Now()
+	now := timeNowHook()
 	if r.lastRefresh.IsZero() || now.Sub(r.lastRefresh) > r.refreshInterval {
 		if err := r.conn.SetReadDeadline(now.Add(r.timeout)); err != nil {
 			return 0, err
@@ -483,7 +488,7 @@ func withWriteInactivityDeadline(writer io.Writer, conn writeDeadlineSetter, tim
 }
 
 func (w *inactivityDeadlineWriter) Write(p []byte) (int, error) {
-	now := time.Now()
+	now := timeNowHook()
 	if w.lastRefresh.IsZero() || now.Sub(w.lastRefresh) > w.refreshInterval {
 		if err := w.conn.SetWriteDeadline(now.Add(w.timeout)); err != nil {
 			return 0, err

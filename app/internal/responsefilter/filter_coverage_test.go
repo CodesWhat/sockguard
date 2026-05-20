@@ -12,6 +12,7 @@ import (
 // ─── Enabled ────────────────────────────────────────────────────────────────
 
 func TestEnabled(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		f    *Filter
@@ -36,6 +37,7 @@ func TestEnabled(t *testing.T) {
 // ─── ModifyResponse – early-return branches ──────────────────────────────────
 
 func TestModifyResponse_NilReturns(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 
 	// nil resp
@@ -50,6 +52,7 @@ func TestModifyResponse_NilReturns(t *testing.T) {
 }
 
 func TestModifyResponse_RedactsSuccessfulProtectedResponsesAcrossMethodsAnd2xxStatuses(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 
 	req, _ := http.NewRequest(http.MethodPost, "http://x/containers/abc/json", nil)
@@ -99,6 +102,7 @@ func TestModifyResponse_RedactsSuccessfulProtectedResponsesAcrossMethodsAnd2xxSt
 }
 
 func TestModifyResponse_SkipsHeadProtectedResponses(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 
 	req, _ := http.NewRequest(http.MethodHead, "http://x/containers/abc/json", nil)
@@ -121,6 +125,7 @@ func TestModifyResponse_SkipsHeadProtectedResponses(t *testing.T) {
 }
 
 func TestModifyResponse_SkipsNonSuccessfulProtectedResponses(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 
 	req, _ := http.NewRequest(http.MethodGet, "http://x/containers/abc/json", nil)
@@ -135,6 +140,7 @@ func TestModifyResponse_SkipsNonSuccessfulProtectedResponses(t *testing.T) {
 }
 
 func TestModifyResponse_SkipsNoBodySuccessStatuses(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 
 	tests := []struct {
@@ -161,6 +167,7 @@ func TestModifyResponse_SkipsNoBodySuccessStatuses(t *testing.T) {
 }
 
 func TestModifyResponse_DisabledFilterNoOp(t *testing.T) {
+	t.Parallel()
 	f := New(Options{}) // all false
 	resp := newResponseForTest(t, http.MethodGet, "/containers/abc/json", `{"Config":{"Env":["X=Y"]}}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -169,6 +176,7 @@ func TestModifyResponse_DisabledFilterNoOp(t *testing.T) {
 }
 
 func TestModifyResponse_DefaultPathReturnsNil(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/_ping", `OK`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -179,6 +187,7 @@ func TestModifyResponse_DefaultPathReturnsNil(t *testing.T) {
 // ─── modifyNetworkList ───────────────────────────────────────────────────────
 
 func TestModifyNetworkList_SkipsWhenNetworkTopologyDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true}) // RedactNetworkTopology = false
 	resp := newResponseForTest(t, http.MethodGet, "/networks", `[{"IPAM":{"Config":[{"Subnet":"10.0.0.0/8"}]}}]`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -187,6 +196,7 @@ func TestModifyNetworkList_SkipsWhenNetworkTopologyDisabled(t *testing.T) {
 }
 
 func TestModifyNetworkList_RedactsTopology(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/networks", `[
 		{
@@ -222,6 +232,7 @@ func TestModifyNetworkList_RedactsTopology(t *testing.T) {
 }
 
 func TestModifyNetworkList_RejectsMalformed(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/networks", `{not-array}`)
 	err := f.ModifyResponse(resp)
@@ -231,6 +242,7 @@ func TestModifyNetworkList_RejectsMalformed(t *testing.T) {
 }
 
 func TestModifyNetworkList_RejectsBadTopologyType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	// Containers is a string instead of object — triggers redactNetworkTopology error
 	resp := newResponseForTest(t, http.MethodGet, "/networks", `[{"Containers":"bad"}]`)
@@ -243,6 +255,7 @@ func TestModifyNetworkList_RejectsBadTopologyType(t *testing.T) {
 // ─── modifyVolumeInspect ─────────────────────────────────────────────────────
 
 func TestModifyVolumeInspect_SkipsWhenMountPathsDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true}) // RedactMountPaths = false
 	resp := newResponseForTest(t, http.MethodGet, "/volumes/myvol", `{"Mountpoint":"/var/lib/docker/volumes/myvol/_data"}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -251,6 +264,7 @@ func TestModifyVolumeInspect_SkipsWhenMountPathsDisabled(t *testing.T) {
 }
 
 func TestModifyVolumeInspect_RedactsMountpoint(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/volumes/myvol", `{
 		"Name":"myvol",
@@ -272,6 +286,7 @@ func TestModifyVolumeInspect_RedactsMountpoint(t *testing.T) {
 }
 
 func TestModifyVolumeInspect_RejectsMalformed(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/volumes/myvol", `not-json`)
 	err := f.ModifyResponse(resp)
@@ -283,6 +298,7 @@ func TestModifyVolumeInspect_RejectsMalformed(t *testing.T) {
 // ─── modifyServiceInspect ────────────────────────────────────────────────────
 
 func TestModifyServiceInspect_SkipsWhenAllDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{})
 	resp := newResponseForTest(t, http.MethodGet, "/services/svc-1", `{"ID":"svc-1"}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -291,6 +307,7 @@ func TestModifyServiceInspect_SkipsWhenAllDisabled(t *testing.T) {
 }
 
 func TestModifyServiceInspect_RedactsPayload(t *testing.T) {
+	t.Parallel()
 	f := New(Options{
 		RedactContainerEnv:    true,
 		RedactMountPaths:      true,
@@ -341,6 +358,7 @@ func TestModifyServiceInspect_RedactsPayload(t *testing.T) {
 }
 
 func TestModifyServiceInspect_RejectsMalformed(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/services/svc-1", `[not-object]`)
 	err := f.ModifyResponse(resp)
@@ -352,6 +370,7 @@ func TestModifyServiceInspect_RejectsMalformed(t *testing.T) {
 // ─── modifyTaskList ──────────────────────────────────────────────────────────
 
 func TestModifyTaskList_SkipsWhenAllDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{})
 	resp := newResponseForTest(t, http.MethodGet, "/tasks", `[{"ID":"task-1"}]`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -360,6 +379,7 @@ func TestModifyTaskList_SkipsWhenAllDisabled(t *testing.T) {
 }
 
 func TestModifyTaskList_RedactsPayload(t *testing.T) {
+	t.Parallel()
 	f := New(Options{
 		RedactContainerEnv:    true,
 		RedactNetworkTopology: true,
@@ -403,6 +423,7 @@ func TestModifyTaskList_RedactsPayload(t *testing.T) {
 }
 
 func TestModifyTaskList_RejectsMalformed(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/tasks", `not-json`)
 	err := f.ModifyResponse(resp)
@@ -414,6 +435,7 @@ func TestModifyTaskList_RejectsMalformed(t *testing.T) {
 // ─── modifySecretList ────────────────────────────────────────────────────────
 
 func TestModifySecretList_SkipsWhenSensitiveDataDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true}) // RedactSensitiveData = false
 	resp := newResponseForTest(t, http.MethodGet, "/secrets", `[{"ID":"sec-1","Spec":{"Data":"secret"}}]`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -422,6 +444,7 @@ func TestModifySecretList_SkipsWhenSensitiveDataDisabled(t *testing.T) {
 }
 
 func TestModifySecretList_RedactsData(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/secrets", `[
 		{
@@ -450,6 +473,7 @@ func TestModifySecretList_RedactsData(t *testing.T) {
 }
 
 func TestModifySecretList_RejectsMalformed(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/secrets", `not-json`)
 	err := f.ModifyResponse(resp)
@@ -461,6 +485,7 @@ func TestModifySecretList_RejectsMalformed(t *testing.T) {
 // ─── modifySecretInspect ─────────────────────────────────────────────────────
 
 func TestModifySecretInspect_SkipsWhenSensitiveDataDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/secrets/sec-1", `{"ID":"sec-1","Spec":{"Data":"secret"}}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -469,6 +494,7 @@ func TestModifySecretInspect_SkipsWhenSensitiveDataDisabled(t *testing.T) {
 }
 
 func TestModifySecretInspect_RedactsData(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/secrets/sec-1", `{
 		"ID":"sec-1",
@@ -487,6 +513,7 @@ func TestModifySecretInspect_RedactsData(t *testing.T) {
 }
 
 func TestModifySecretInspect_NoSpecField(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/secrets/sec-1", `{"ID":"sec-1"}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -495,6 +522,7 @@ func TestModifySecretInspect_NoSpecField(t *testing.T) {
 }
 
 func TestModifySecretInspect_RejectsBadSpecType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/secrets/sec-1", `{"Spec":"bad"}`)
 	err := f.ModifyResponse(resp)
@@ -506,6 +534,7 @@ func TestModifySecretInspect_RejectsBadSpecType(t *testing.T) {
 // ─── modifyConfigList ────────────────────────────────────────────────────────
 
 func TestModifyConfigList_SkipsWhenSensitiveDataDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/configs", `[{"ID":"cfg-1","Spec":{"Data":"secret"}}]`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -514,6 +543,7 @@ func TestModifyConfigList_SkipsWhenSensitiveDataDisabled(t *testing.T) {
 }
 
 func TestModifyConfigList_RedactsData(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/configs", `[
 		{
@@ -539,6 +569,7 @@ func TestModifyConfigList_RedactsData(t *testing.T) {
 }
 
 func TestModifyConfigList_RejectsMalformed(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/configs", `not-json`)
 	err := f.ModifyResponse(resp)
@@ -550,6 +581,7 @@ func TestModifyConfigList_RejectsMalformed(t *testing.T) {
 // ─── modifyPluginList ────────────────────────────────────────────────────────
 
 func TestModifyPluginList_SkipsWhenBothDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true}) // no env/mount flags
 	resp := newResponseForTest(t, http.MethodGet, "/plugins", `[{"Name":"myplugin"}]`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -558,6 +590,7 @@ func TestModifyPluginList_SkipsWhenBothDisabled(t *testing.T) {
 }
 
 func TestModifyPluginList_RedactsEnvAndMounts(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true, RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/plugins", `[
 		{
@@ -603,6 +636,7 @@ func TestModifyPluginList_RedactsEnvAndMounts(t *testing.T) {
 }
 
 func TestModifyPluginList_RejectsMalformed(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/plugins", `not-json`)
 	err := f.ModifyResponse(resp)
@@ -614,6 +648,7 @@ func TestModifyPluginList_RejectsMalformed(t *testing.T) {
 // ─── modifyNodeList ──────────────────────────────────────────────────────────
 
 func TestModifyNodeList_SkipsWhenBothDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/nodes", `[{"ID":"node-1"}]`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -622,6 +657,7 @@ func TestModifyNodeList_SkipsWhenBothDisabled(t *testing.T) {
 }
 
 func TestModifyNodeList_RedactsTopologyAndTLS(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true, RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/nodes", `[
 		{
@@ -657,6 +693,7 @@ func TestModifyNodeList_RedactsTopologyAndTLS(t *testing.T) {
 }
 
 func TestModifyNodeList_RejectsMalformed(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/nodes", `not-json`)
 	err := f.ModifyResponse(resp)
@@ -668,6 +705,7 @@ func TestModifyNodeList_RejectsMalformed(t *testing.T) {
 // ─── redactSecretPayload ─────────────────────────────────────────────────────
 
 func TestRedactSecretPayload_RedactsData(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{
 		"ID":   "sec-1",
 		"Spec": map[string]any{"Name": "mysecret", "Data": "c2VjcmV0"},
@@ -685,6 +723,7 @@ func TestRedactSecretPayload_RedactsData(t *testing.T) {
 }
 
 func TestRedactSecretPayload_NoSpec(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"ID": "sec-1"}
 	if err := redactSecretPayload(payload); err != nil {
 		t.Fatalf("no Spec: %v", err)
@@ -692,6 +731,7 @@ func TestRedactSecretPayload_NoSpec(t *testing.T) {
 }
 
 func TestRedactSecretPayload_NilSpec(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Spec": nil}
 	if err := redactSecretPayload(payload); err != nil {
 		t.Fatalf("nil Spec: %v", err)
@@ -699,6 +739,7 @@ func TestRedactSecretPayload_NilSpec(t *testing.T) {
 }
 
 func TestRedactSecretPayload_BadSpecType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Spec": "not-a-map"}
 	err := redactSecretPayload(payload)
 	if err == nil {
@@ -709,6 +750,7 @@ func TestRedactSecretPayload_BadSpecType(t *testing.T) {
 // ─── splitBindSpec ───────────────────────────────────────────────────────────
 
 func TestSplitBindSpec(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		bind       string
@@ -741,6 +783,7 @@ func TestSplitBindSpec(t *testing.T) {
 // ─── isSensitiveHostPath ──────────────────────────────────────────────────────
 
 func TestIsSensitiveHostPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value string
@@ -768,6 +811,7 @@ func TestIsSensitiveHostPath(t *testing.T) {
 // ─── isWindowsAbsolutePath ────────────────────────────────────────────────────
 
 func TestIsWindowsAbsolutePath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value string
@@ -796,6 +840,7 @@ func TestIsWindowsAbsolutePath(t *testing.T) {
 // ─── isVolumeInspectPath ──────────────────────────────────────────────────────
 
 func TestIsVolumeInspectPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path string
 		want bool
@@ -818,6 +863,7 @@ func TestIsVolumeInspectPath(t *testing.T) {
 // ─── isServiceInspectPath ─────────────────────────────────────────────────────
 
 func TestIsServiceInspectPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path string
 		want bool
@@ -839,6 +885,7 @@ func TestIsServiceInspectPath(t *testing.T) {
 // ─── isSecretInspectPath ──────────────────────────────────────────────────────
 
 func TestIsSecretInspectPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path string
 		want bool
@@ -860,6 +907,7 @@ func TestIsSecretInspectPath(t *testing.T) {
 // ─── rejectResponse ──────────────────────────────────────────────────────────
 
 func TestRejectResponse_NilErr(t *testing.T) {
+	t.Parallel()
 	err := rejectResponse(nil)
 	if !errors.Is(err, ErrResponseRejected) {
 		t.Fatalf("want ErrResponseRejected, got %v", err)
@@ -870,6 +918,7 @@ func TestRejectResponse_NilErr(t *testing.T) {
 }
 
 func TestRejectResponse_WithErr(t *testing.T) {
+	t.Parallel()
 	inner := errors.New("inner error")
 	err := rejectResponse(inner)
 	if !errors.Is(err, ErrResponseRejected) {
@@ -883,6 +932,7 @@ func TestRejectResponse_WithErr(t *testing.T) {
 // ─── readResponseBody – nil body ─────────────────────────────────────────────
 
 func TestReadResponseBody_NilBody(t *testing.T) {
+	t.Parallel()
 	resp := &http.Response{Body: nil}
 	_, err := readResponseBody(resp)
 	if err == nil {
@@ -893,6 +943,7 @@ func TestReadResponseBody_NilBody(t *testing.T) {
 // ─── writeResponseBody – nil header ─────────────────────────────────────────
 
 func TestWriteResponseBody_NilHeader(t *testing.T) {
+	t.Parallel()
 	resp := &http.Response{
 		Body:   io.NopCloser(strings.NewReader("")),
 		Header: nil,
@@ -909,6 +960,7 @@ func TestWriteResponseBody_NilHeader(t *testing.T) {
 // ─── nestedMapValue – wrong type ─────────────────────────────────────────────
 
 func TestNestedMapValue_WrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Spec": "not-a-map"}
 	_, _, err := nestedMapValue(payload, "Spec")
 	if err == nil {
@@ -919,6 +971,7 @@ func TestNestedMapValue_WrongType(t *testing.T) {
 // ─── nestedArrayValue – various branches ─────────────────────────────────────
 
 func TestNestedArrayValue_NoKeys(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{}
 	vals, found, err := nestedArrayValue(payload)
 	if err != nil || found || vals != nil {
@@ -927,6 +980,7 @@ func TestNestedArrayValue_NoKeys(t *testing.T) {
 }
 
 func TestNestedArrayValue_MissingIntermediate(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{}
 	vals, found, err := nestedArrayValue(payload, "Endpoint", "VirtualIPs")
 	if err != nil || found {
@@ -936,6 +990,7 @@ func TestNestedArrayValue_MissingIntermediate(t *testing.T) {
 }
 
 func TestNestedArrayValue_WrongIntermediateType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Endpoint": "bad"}
 	_, _, err := nestedArrayValue(payload, "Endpoint", "VirtualIPs")
 	if err == nil {
@@ -944,6 +999,7 @@ func TestNestedArrayValue_WrongIntermediateType(t *testing.T) {
 }
 
 func TestNestedArrayValue_MissingLeaf(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Endpoint": map[string]any{}}
 	vals, found, err := nestedArrayValue(payload, "Endpoint", "VirtualIPs")
 	if err != nil || found || vals != nil {
@@ -952,6 +1008,7 @@ func TestNestedArrayValue_MissingLeaf(t *testing.T) {
 }
 
 func TestNestedArrayValue_WrongLeafType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Endpoint": map[string]any{"VirtualIPs": "bad"}}
 	_, _, err := nestedArrayValue(payload, "Endpoint", "VirtualIPs")
 	if err == nil {
@@ -962,6 +1019,7 @@ func TestNestedArrayValue_WrongLeafType(t *testing.T) {
 // ─── redactNestedValue – wrong object type ───────────────────────────────────
 
 func TestRedactNestedValue_WrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Config": "not-a-map"}
 	err := redactNestedValue(payload, "Config", "Env", []string{})
 	if err == nil {
@@ -972,6 +1030,7 @@ func TestRedactNestedValue_WrongType(t *testing.T) {
 // ─── redactMountObjects – error paths ────────────────────────────────────────
 
 func TestRedactMountObjects_WrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Mounts": "not-array"}
 	err := redactMountObjects(payload, "Mounts")
 	if err == nil {
@@ -980,6 +1039,7 @@ func TestRedactMountObjects_WrongType(t *testing.T) {
 }
 
 func TestRedactMountObjects_EntryWrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Mounts": []any{"not-a-map"}}
 	err := redactMountObjects(payload, "Mounts")
 	if err == nil {
@@ -990,6 +1050,7 @@ func TestRedactMountObjects_EntryWrongType(t *testing.T) {
 // ─── redactHostConfigBinds – error paths ─────────────────────────────────────
 
 func TestRedactHostConfigBinds_WrongHostConfigType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"HostConfig": "bad"}
 	err := redactHostConfigBinds(payload)
 	if err == nil {
@@ -998,6 +1059,7 @@ func TestRedactHostConfigBinds_WrongHostConfigType(t *testing.T) {
 }
 
 func TestRedactHostConfigBinds_WrongBindsType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"HostConfig": map[string]any{"Binds": "bad"}}
 	err := redactHostConfigBinds(payload)
 	if err == nil {
@@ -1006,6 +1068,7 @@ func TestRedactHostConfigBinds_WrongBindsType(t *testing.T) {
 }
 
 func TestRedactHostConfigBinds_WrongBindEntryType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"HostConfig": map[string]any{"Binds": []any{123}}}
 	err := redactHostConfigBinds(payload)
 	if err == nil {
@@ -1016,6 +1079,7 @@ func TestRedactHostConfigBinds_WrongBindEntryType(t *testing.T) {
 // ─── redactContainerNetworkTopology – error paths ────────────────────────────
 
 func TestRedactContainerNetworkTopology_WrongNetworkSettingsType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"NetworkSettings": "bad"}
 	err := redactContainerNetworkTopology(payload)
 	if err == nil {
@@ -1024,6 +1088,7 @@ func TestRedactContainerNetworkTopology_WrongNetworkSettingsType(t *testing.T) {
 }
 
 func TestRedactContainerNetworkTopology_WrongNetworksType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"NetworkSettings": map[string]any{"Networks": "bad"}}
 	err := redactContainerNetworkTopology(payload)
 	if err == nil {
@@ -1032,6 +1097,7 @@ func TestRedactContainerNetworkTopology_WrongNetworksType(t *testing.T) {
 }
 
 func TestRedactContainerNetworkTopology_WrongNetworkEntryType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{
 		"NetworkSettings": map[string]any{
 			"Networks": map[string]any{"bridge": "bad"},
@@ -1044,6 +1110,7 @@ func TestRedactContainerNetworkTopology_WrongNetworkEntryType(t *testing.T) {
 }
 
 func TestRedactContainerNetworkTopology_WrongHostConfigType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"HostConfig": "bad"}
 	err := redactContainerNetworkTopology(payload)
 	if err == nil {
@@ -1054,6 +1121,7 @@ func TestRedactContainerNetworkTopology_WrongHostConfigType(t *testing.T) {
 // ─── redactNetworkTopology – error paths ─────────────────────────────────────
 
 func TestRedactNetworkTopology_WrongIPAMType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"IPAM": "bad"}
 	err := redactNetworkTopology(payload)
 	if err == nil {
@@ -1062,6 +1130,7 @@ func TestRedactNetworkTopology_WrongIPAMType(t *testing.T) {
 }
 
 func TestRedactNetworkTopology_WrongPeersType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Peers": "bad"}
 	err := redactNetworkTopology(payload)
 	if err == nil {
@@ -1072,6 +1141,7 @@ func TestRedactNetworkTopology_WrongPeersType(t *testing.T) {
 // ─── redactNestedStringValue – wrong type ────────────────────────────────────
 
 func TestRedactNestedStringValue_WrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"HostConfig": "bad"}
 	err := redactNestedStringValue(payload, "HostConfig", "NetworkMode")
 	if err == nil {
@@ -1082,6 +1152,7 @@ func TestRedactNestedStringValue_WrongType(t *testing.T) {
 // ─── redactEnvStrings – error paths ─────────────────────────────────────────
 
 func TestRedactEnvStrings_WrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Env": "bad"}
 	err := redactEnvStrings(payload, "Env")
 	if err == nil {
@@ -1090,6 +1161,7 @@ func TestRedactEnvStrings_WrongType(t *testing.T) {
 }
 
 func TestRedactEnvStrings_EntryWrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Env": []any{123}}
 	err := redactEnvStrings(payload, "Env")
 	if err == nil {
@@ -1098,6 +1170,7 @@ func TestRedactEnvStrings_EntryWrongType(t *testing.T) {
 }
 
 func TestRedactEnvStrings_NoEquals(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Env": []any{"NOEQUALS"}}
 	if err := redactEnvStrings(payload, "Env"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1111,6 +1184,7 @@ func TestRedactEnvStrings_NoEquals(t *testing.T) {
 // ─── redactPluginEnvObjects – error paths ────────────────────────────────────
 
 func TestRedactPluginEnvObjects_WrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Env": "bad"}
 	err := redactPluginEnvObjects(payload, "Env")
 	if err == nil {
@@ -1119,6 +1193,7 @@ func TestRedactPluginEnvObjects_WrongType(t *testing.T) {
 }
 
 func TestRedactPluginEnvObjects_EntryWrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Env": []any{"not-a-map"}}
 	err := redactPluginEnvObjects(payload, "Env")
 	if err == nil {
@@ -1129,6 +1204,7 @@ func TestRedactPluginEnvObjects_EntryWrongType(t *testing.T) {
 // ─── redactReferenceObjects – error paths ────────────────────────────────────
 
 func TestRedactReferenceObjects_WrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Secrets": "bad"}
 	err := redactReferenceObjects(payload, "Secrets", "SecretID")
 	if err == nil {
@@ -1137,6 +1213,7 @@ func TestRedactReferenceObjects_WrongType(t *testing.T) {
 }
 
 func TestRedactReferenceObjects_EntryWrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Secrets": []any{"not-a-map"}}
 	err := redactReferenceObjects(payload, "Secrets", "SecretID")
 	if err == nil {
@@ -1147,6 +1224,7 @@ func TestRedactReferenceObjects_EntryWrongType(t *testing.T) {
 // ─── redactVirtualIPs – error paths ─────────────────────────────────────────
 
 func TestRedactVirtualIPs_EntryWrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{
 		"Endpoint": map[string]any{
 			"VirtualIPs": []any{"not-a-map"},
@@ -1161,6 +1239,7 @@ func TestRedactVirtualIPs_EntryWrongType(t *testing.T) {
 // ─── redactTaskStatus – missing ContainerStatus ───────────────────────────────
 
 func TestRedactTaskStatus_MissingContainerStatus(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Status": map[string]any{}}
 	if err := redactTaskStatus(payload); err != nil {
 		t.Fatalf("missing ContainerStatus: %v", err)
@@ -1168,6 +1247,7 @@ func TestRedactTaskStatus_MissingContainerStatus(t *testing.T) {
 }
 
 func TestRedactTaskStatus_BadStatusType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Status": "bad"}
 	err := redactTaskStatus(payload)
 	if err == nil {
@@ -1178,6 +1258,7 @@ func TestRedactTaskStatus_BadStatusType(t *testing.T) {
 // ─── redactTaskNetworkAttachments – error paths ───────────────────────────────
 
 func TestRedactTaskNetworkAttachments_WrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"NetworksAttachments": "bad"}
 	err := redactTaskNetworkAttachments(payload)
 	if err == nil {
@@ -1186,6 +1267,7 @@ func TestRedactTaskNetworkAttachments_WrongType(t *testing.T) {
 }
 
 func TestRedactTaskNetworkAttachments_EntryWrongType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"NetworksAttachments": []any{"not-a-map"}}
 	err := redactTaskNetworkAttachments(payload)
 	if err == nil {
@@ -1194,6 +1276,7 @@ func TestRedactTaskNetworkAttachments_EntryWrongType(t *testing.T) {
 }
 
 func TestRedactTaskNetworkAttachments_BadNetworkType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{
 		"NetworksAttachments": []any{
 			map[string]any{"Network": "bad"},
@@ -1206,6 +1289,7 @@ func TestRedactTaskNetworkAttachments_BadNetworkType(t *testing.T) {
 }
 
 func TestRedactTaskNetworkAttachments_BadIPAMType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{
 		"NetworksAttachments": []any{
 			map[string]any{
@@ -1224,6 +1308,7 @@ func TestRedactTaskNetworkAttachments_BadIPAMType(t *testing.T) {
 // ─── redactPluginPayload – Linux.Devices path ────────────────────────────────
 
 func TestRedactPluginPayload_LinuxDevices(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{
 		"Config": map[string]any{
@@ -1250,6 +1335,7 @@ func TestRedactPluginPayload_LinuxDevices(t *testing.T) {
 // ─── VolumeList edge cases ───────────────────────────────────────────────────
 
 func TestModifyVolumeList_NilVolumes(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/volumes", `{"Volumes":null}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1258,6 +1344,7 @@ func TestModifyVolumeList_NilVolumes(t *testing.T) {
 }
 
 func TestModifyVolumeList_WrongVolumesType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/volumes", `{"Volumes":"bad"}`)
 	err := f.ModifyResponse(resp)
@@ -1267,6 +1354,7 @@ func TestModifyVolumeList_WrongVolumesType(t *testing.T) {
 }
 
 func TestModifyVolumeList_WrongVolumeEntryType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/volumes", `{"Volumes":["not-a-map"]}`)
 	err := f.ModifyResponse(resp)
@@ -1278,6 +1366,7 @@ func TestModifyVolumeList_WrongVolumeEntryType(t *testing.T) {
 // ─── modifyContainerList – error paths ───────────────────────────────────────
 
 func TestModifyContainerList_RejectsMalformedMounts(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/containers/json", `[{"Mounts":"bad"}]`)
 	err := f.ModifyResponse(resp)
@@ -1287,6 +1376,7 @@ func TestModifyContainerList_RejectsMalformedMounts(t *testing.T) {
 }
 
 func TestModifyContainerList_RejectsMalformedNetworkSettings(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/containers/json", `[{"NetworkSettings":"bad"}]`)
 	err := f.ModifyResponse(resp)
@@ -1298,6 +1388,7 @@ func TestModifyContainerList_RejectsMalformedNetworkSettings(t *testing.T) {
 // ─── modifyContainerInspect – error paths ────────────────────────────────────
 
 func TestModifyContainerInspect_RejectsBadHostConfigType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/containers/abc/json", `{"HostConfig":"bad"}`)
 	err := f.ModifyResponse(resp)
@@ -1307,6 +1398,7 @@ func TestModifyContainerInspect_RejectsBadHostConfigType(t *testing.T) {
 }
 
 func TestModifyContainerInspect_RejectsBadConfigType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/containers/abc/json", `{"Config":"bad"}`)
 	err := f.ModifyResponse(resp)
@@ -1316,6 +1408,7 @@ func TestModifyContainerInspect_RejectsBadConfigType(t *testing.T) {
 }
 
 func TestModifyContainerInspect_RejectsBadNetworkSettings(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/containers/abc/json", `{"NetworkSettings":"bad"}`)
 	err := f.ModifyResponse(resp)
@@ -1327,6 +1420,7 @@ func TestModifyContainerInspect_RejectsBadNetworkSettings(t *testing.T) {
 // ─── modifyNetworkInspect – error paths ──────────────────────────────────────
 
 func TestModifyNetworkInspect_SkipsWhenTopologyDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/networks/net-1", `{"IPAM":{"Config":[{"Subnet":"10.0.0.0/8"}]}}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1335,6 +1429,7 @@ func TestModifyNetworkInspect_SkipsWhenTopologyDisabled(t *testing.T) {
 }
 
 func TestModifyNetworkInspect_RejectsBadIPAMType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/networks/net-1", `{"IPAM":"bad"}`)
 	err := f.ModifyResponse(resp)
@@ -1346,6 +1441,7 @@ func TestModifyNetworkInspect_RejectsBadIPAMType(t *testing.T) {
 // ─── modifySwarmInspect – no opts ────────────────────────────────────────────
 
 func TestModifySwarmInspect_SkipsWhenBothDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/swarm", `{"JoinTokens":{"Worker":"token"}}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1356,6 +1452,7 @@ func TestModifySwarmInspect_SkipsWhenBothDisabled(t *testing.T) {
 // ─── modifySwarmUnlockKey – skip when disabled ────────────────────────────────
 
 func TestModifySwarmUnlockKey_SkipsWhenSensitiveDataDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/swarm/unlockkey", `{"UnlockKey":"SWMKEY-123"}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1366,6 +1463,7 @@ func TestModifySwarmUnlockKey_SkipsWhenSensitiveDataDisabled(t *testing.T) {
 // ─── modifyInfo – skip when disabled ──────────────────────────────────────────
 
 func TestModifyInfo_SkipsWhenBothDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/info", `{"Swarm":{"NodeID":"node-1"}}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1374,6 +1472,7 @@ func TestModifyInfo_SkipsWhenBothDisabled(t *testing.T) {
 }
 
 func TestModifyInfo_NoSwarmKey(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/info", `{"ID":"daemon-1"}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1382,6 +1481,7 @@ func TestModifyInfo_NoSwarmKey(t *testing.T) {
 }
 
 func TestModifyInfo_BadSwarmType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/info", `{"Swarm":"bad"}`)
 	err := f.ModifyResponse(resp)
@@ -1393,6 +1493,7 @@ func TestModifyInfo_BadSwarmType(t *testing.T) {
 // ─── modifySystemDataUsage – error paths ─────────────────────────────────────
 
 func TestModifySystemDataUsage_SkipsWhenBothDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/system/df", `{"ContainerUsage":{"Items":[]}}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1401,6 +1502,7 @@ func TestModifySystemDataUsage_SkipsWhenBothDisabled(t *testing.T) {
 }
 
 func TestModifySystemDataUsage_BadContainerItemsType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/system/df", `{"ContainerUsage":{"Items":"bad"}}`)
 	err := f.ModifyResponse(resp)
@@ -1410,6 +1512,7 @@ func TestModifySystemDataUsage_BadContainerItemsType(t *testing.T) {
 }
 
 func TestModifySystemDataUsage_BadContainerItemEntryType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/system/df", `{"ContainerUsage":{"Items":["bad"]}}`)
 	err := f.ModifyResponse(resp)
@@ -1419,6 +1522,7 @@ func TestModifySystemDataUsage_BadContainerItemEntryType(t *testing.T) {
 }
 
 func TestModifySystemDataUsage_BadVolumeItemsType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/system/df", `{"VolumeUsage":{"Items":"bad"}}`)
 	err := f.ModifyResponse(resp)
@@ -1428,6 +1532,7 @@ func TestModifySystemDataUsage_BadVolumeItemsType(t *testing.T) {
 }
 
 func TestModifySystemDataUsage_BadVolumeItemEntryType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/system/df", `{"VolumeUsage":{"Items":["bad"]}}`)
 	err := f.ModifyResponse(resp)
@@ -1439,6 +1544,7 @@ func TestModifySystemDataUsage_BadVolumeItemEntryType(t *testing.T) {
 // ─── modifyMapResponse / modifyListResponse error paths ──────────────────────
 
 func TestModifyMapResponse_BadJSON(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/configs/cfg-1", `not-json`)
 	err := f.ModifyResponse(resp)
@@ -1448,6 +1554,7 @@ func TestModifyMapResponse_BadJSON(t *testing.T) {
 }
 
 func TestModifyListResponse_BadJSON(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/configs", `not-json`)
 	err := f.ModifyResponse(resp)
@@ -1459,6 +1566,7 @@ func TestModifyListResponse_BadJSON(t *testing.T) {
 // ─── redactSwarmPayload – no JoinTokens / no TLSInfo ─────────────────────────
 
 func TestRedactSwarmPayload_MissingOptionalFields(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true, RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/swarm", `{"ID":"swarm-1"}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1467,6 +1575,7 @@ func TestRedactSwarmPayload_MissingOptionalFields(t *testing.T) {
 }
 
 func TestRedactSwarmPayload_BadCAConfigType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/swarm", `{"Spec":{"CAConfig":"bad"}}`)
 	err := f.ModifyResponse(resp)
@@ -1478,6 +1587,7 @@ func TestRedactSwarmPayload_BadCAConfigType(t *testing.T) {
 // ─── redactInfoPayload – cluster TLS ─────────────────────────────────────────
 
 func TestRedactInfoPayload_ClusterTLSInfo(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/info", `{
 		"Swarm":{
@@ -1499,6 +1609,7 @@ func TestRedactInfoPayload_ClusterTLSInfo(t *testing.T) {
 // ─── modifyConfigInspect – skip when disabled ─────────────────────────────────
 
 func TestModifyConfigInspect_SkipsWhenSensitiveDataDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/configs/cfg-1", `{"Spec":{"Data":"secret"}}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1509,6 +1620,7 @@ func TestModifyConfigInspect_SkipsWhenSensitiveDataDisabled(t *testing.T) {
 // ─── modifyPluginInspect – skip when disabled ────────────────────────────────
 
 func TestModifyPluginInspect_SkipsWhenBothDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/plugins/myplugin/json", `{"Name":"myplugin"}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1519,6 +1631,7 @@ func TestModifyPluginInspect_SkipsWhenBothDisabled(t *testing.T) {
 // ─── modifyNodeInspect – skip when disabled ───────────────────────────────────
 
 func TestModifyNodeInspect_SkipsWhenBothDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/nodes/node-1", `{"Status":{"Addr":"10.0.0.1"}}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1529,6 +1642,7 @@ func TestModifyNodeInspect_SkipsWhenBothDisabled(t *testing.T) {
 // ─── redactTaskPayload – Secrets/Configs ─────────────────────────────────────
 
 func TestRedactTaskPayload_SecretsAndConfigs(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/tasks/task-1", `{
 		"Spec":{
@@ -1562,6 +1676,7 @@ func TestRedactTaskPayload_SecretsAndConfigs(t *testing.T) {
 // the table entry's own active() guard returns nil when the relevant flags are off.
 
 func TestModifyServiceList_InternalSkipGuard(t *testing.T) {
+	t.Parallel()
 	// Pass through ModifyResponse with all flags false → Enabled() is false → nil.
 	f := New(Options{})
 	resp := newResponseForTest(t, http.MethodGet, "/services", `[{"ID":"svc-1"}]`)
@@ -1571,6 +1686,7 @@ func TestModifyServiceList_InternalSkipGuard(t *testing.T) {
 }
 
 func TestModifyServiceInspect_InternalSkipGuard(t *testing.T) {
+	t.Parallel()
 	f := New(Options{})
 	resp := newResponseForTest(t, http.MethodGet, "/services/svc-1", `{"ID":"svc-1"}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1579,6 +1695,7 @@ func TestModifyServiceInspect_InternalSkipGuard(t *testing.T) {
 }
 
 func TestModifyTaskList_InternalSkipGuard(t *testing.T) {
+	t.Parallel()
 	f := New(Options{})
 	resp := newResponseForTest(t, http.MethodGet, "/tasks", `[{"ID":"task-1"}]`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1587,6 +1704,7 @@ func TestModifyTaskList_InternalSkipGuard(t *testing.T) {
 }
 
 func TestModifyTaskInspect_InternalSkipGuard(t *testing.T) {
+	t.Parallel()
 	f := New(Options{})
 	resp := newResponseForTest(t, http.MethodGet, "/tasks/task-1", `{"ID":"task-1"}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1597,6 +1715,7 @@ func TestModifyTaskInspect_InternalSkipGuard(t *testing.T) {
 // ─── modifyTaskInspect – skip when all disabled ───────────────────────────────
 
 func TestModifyTaskInspect_SkipsWhenAllDisabled(t *testing.T) {
+	t.Parallel()
 	f := New(Options{})
 	resp := newResponseForTest(t, http.MethodGet, "/tasks/task-1", `{"ID":"task-1"}`)
 	if err := f.ModifyResponse(resp); err != nil {
@@ -1618,6 +1737,7 @@ func makeNilBodyResponse(t *testing.T, method, path string) *http.Response {
 }
 
 func TestModifyServiceList_ReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/services")
 	err := f.ModifyResponse(resp)
@@ -1627,6 +1747,7 @@ func TestModifyServiceList_ReadBodyError(t *testing.T) {
 }
 
 func TestModifyServiceInspect_ReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/services/svc-1")
 	err := f.ModifyResponse(resp)
@@ -1636,6 +1757,7 @@ func TestModifyServiceInspect_ReadBodyError(t *testing.T) {
 }
 
 func TestModifyTaskList_ReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/tasks")
 	err := f.ModifyResponse(resp)
@@ -1645,6 +1767,7 @@ func TestModifyTaskList_ReadBodyError(t *testing.T) {
 }
 
 func TestModifyTaskInspect_ReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/tasks/task-1")
 	err := f.ModifyResponse(resp)
@@ -1654,6 +1777,7 @@ func TestModifyTaskInspect_ReadBodyError(t *testing.T) {
 }
 
 func TestModifyNetworkList_ReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/networks")
 	err := f.ModifyResponse(resp)
@@ -1663,6 +1787,7 @@ func TestModifyNetworkList_ReadBodyError(t *testing.T) {
 }
 
 func TestModifyNetworkInspect_ReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/networks/net-1")
 	err := f.ModifyResponse(resp)
@@ -1672,6 +1797,7 @@ func TestModifyNetworkInspect_ReadBodyError(t *testing.T) {
 }
 
 func TestModifyVolumeList_ReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/volumes")
 	err := f.ModifyResponse(resp)
@@ -1681,6 +1807,7 @@ func TestModifyVolumeList_ReadBodyError(t *testing.T) {
 }
 
 func TestModifyVolumeInspect_ReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/volumes/myvol")
 	err := f.ModifyResponse(resp)
@@ -1690,6 +1817,7 @@ func TestModifyVolumeInspect_ReadBodyError(t *testing.T) {
 }
 
 func TestModifyContainerList_ReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/containers/json")
 	err := f.ModifyResponse(resp)
@@ -1703,6 +1831,7 @@ func TestModifyContainerList_ReadBodyError(t *testing.T) {
 // modifyServiceList propagates a mutate error from redactServicePayload when
 // the nested map has a wrong type.
 func TestModifyServiceList_MutateError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	// "Spec" is a string, not a map → nestedMapValue returns an error inside redactServicePayload
 	resp := newResponseForTest(t, http.MethodGet, "/services", `[{"ID":"svc-1","Spec":"bad"}]`)
@@ -1713,6 +1842,7 @@ func TestModifyServiceList_MutateError(t *testing.T) {
 }
 
 func TestModifyServiceInspect_MutateError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/services/svc-1", `{"ID":"svc-1","Spec":"bad"}`)
 	err := f.ModifyResponse(resp)
@@ -1722,6 +1852,7 @@ func TestModifyServiceInspect_MutateError(t *testing.T) {
 }
 
 func TestModifyTaskList_MutateError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	// "Spec" is a string, not a map → nestedMapValue returns an error inside redactTaskPayload
 	resp := newResponseForTest(t, http.MethodGet, "/tasks", `[{"ID":"task-1","Spec":"bad"}]`)
@@ -1732,6 +1863,7 @@ func TestModifyTaskList_MutateError(t *testing.T) {
 }
 
 func TestModifyTaskInspect_MutateError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := newResponseForTest(t, http.MethodGet, "/tasks/task-1", `{"ID":"task-1","Spec":"bad"}`)
 	err := f.ModifyResponse(resp)
@@ -1743,6 +1875,7 @@ func TestModifyTaskInspect_MutateError(t *testing.T) {
 // ─── redactServicePayload – error branches ────────────────────────────────────
 
 func TestRedactServicePayload_MountsError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{
 		"Spec": map[string]any{
@@ -1760,6 +1893,7 @@ func TestRedactServicePayload_MountsError(t *testing.T) {
 }
 
 func TestRedactServicePayload_SecretsError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	payload := map[string]any{
 		"Spec": map[string]any{
@@ -1777,6 +1911,7 @@ func TestRedactServicePayload_SecretsError(t *testing.T) {
 }
 
 func TestRedactServicePayload_ConfigsError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	payload := map[string]any{
 		"Spec": map[string]any{
@@ -1795,6 +1930,7 @@ func TestRedactServicePayload_ConfigsError(t *testing.T) {
 }
 
 func TestRedactServicePayload_VirtualIPsError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	payload := map[string]any{
 		"Endpoint": map[string]any{
@@ -1808,6 +1944,7 @@ func TestRedactServicePayload_VirtualIPsError(t *testing.T) {
 }
 
 func TestRedactServicePayload_BadSpecType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	payload := map[string]any{"Spec": "bad"}
 	err := f.redactServicePayload(payload)
@@ -1819,6 +1956,7 @@ func TestRedactServicePayload_BadSpecType(t *testing.T) {
 // ─── redactTaskPayload – error branches ───────────────────────────────────────
 
 func TestRedactTaskPayload_MountsError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{
 		"Spec": map[string]any{
@@ -1834,6 +1972,7 @@ func TestRedactTaskPayload_MountsError(t *testing.T) {
 }
 
 func TestRedactTaskPayload_SecretsError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	payload := map[string]any{
 		"Spec": map[string]any{
@@ -1849,6 +1988,7 @@ func TestRedactTaskPayload_SecretsError(t *testing.T) {
 }
 
 func TestRedactTaskPayload_ConfigsError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	payload := map[string]any{
 		"Spec": map[string]any{
@@ -1865,6 +2005,7 @@ func TestRedactTaskPayload_ConfigsError(t *testing.T) {
 }
 
 func TestRedactTaskPayload_TaskStatusError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	payload := map[string]any{
 		"Status": "bad", // wrong type → redactTaskStatus errors
@@ -1876,6 +2017,7 @@ func TestRedactTaskPayload_TaskStatusError(t *testing.T) {
 }
 
 func TestRedactTaskPayload_NetworkAttachmentsError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	payload := map[string]any{
 		"NetworksAttachments": "bad",
@@ -1887,6 +2029,7 @@ func TestRedactTaskPayload_NetworkAttachmentsError(t *testing.T) {
 }
 
 func TestRedactTaskPayload_BadSpecType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	payload := map[string]any{"Spec": "bad"}
 	err := f.redactTaskPayload(payload)
@@ -1898,6 +2041,7 @@ func TestRedactTaskPayload_BadSpecType(t *testing.T) {
 // ─── redactConfigPayload – no Spec / nil Spec ─────────────────────────────────
 
 func TestRedactConfigPayload_NoSpec(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"ID": "cfg-1"}
 	if err := redactConfigPayload(payload); err != nil {
 		t.Fatalf("no Spec: %v", err)
@@ -1905,6 +2049,7 @@ func TestRedactConfigPayload_NoSpec(t *testing.T) {
 }
 
 func TestRedactConfigPayload_BadSpecType(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Spec": "bad"}
 	if err := redactConfigPayload(payload); err == nil {
 		t.Fatal("want error for bad Spec type, got nil")
@@ -1914,6 +2059,7 @@ func TestRedactConfigPayload_BadSpecType(t *testing.T) {
 // ─── redactPluginPayload – Settings error branches ───────────────────────────
 
 func TestRedactPluginPayload_BadSettingsType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	payload := map[string]any{"Settings": "bad"}
 	err := f.redactPluginPayload(payload)
@@ -1923,6 +2069,7 @@ func TestRedactPluginPayload_BadSettingsType(t *testing.T) {
 }
 
 func TestRedactPluginPayload_SettingsEnvError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	payload := map[string]any{
 		"Settings": map[string]any{"Env": "bad"},
@@ -1934,6 +2081,7 @@ func TestRedactPluginPayload_SettingsEnvError(t *testing.T) {
 }
 
 func TestRedactPluginPayload_SettingsMountsError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{
 		"Settings": map[string]any{"Mounts": "bad"},
@@ -1945,6 +2093,7 @@ func TestRedactPluginPayload_SettingsMountsError(t *testing.T) {
 }
 
 func TestRedactPluginPayload_SettingsDevicesError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{
 		"Settings": map[string]any{
@@ -1959,6 +2108,7 @@ func TestRedactPluginPayload_SettingsDevicesError(t *testing.T) {
 }
 
 func TestRedactPluginPayload_BadConfigType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	payload := map[string]any{"Config": "bad"}
 	err := f.redactPluginPayload(payload)
@@ -1968,6 +2118,7 @@ func TestRedactPluginPayload_BadConfigType(t *testing.T) {
 }
 
 func TestRedactPluginPayload_ConfigEnvError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	payload := map[string]any{
 		"Config": map[string]any{"Env": "bad"},
@@ -1979,6 +2130,7 @@ func TestRedactPluginPayload_ConfigEnvError(t *testing.T) {
 }
 
 func TestRedactPluginPayload_ConfigMountsError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{
 		"Config": map[string]any{"Mounts": "bad"},
@@ -1990,6 +2142,7 @@ func TestRedactPluginPayload_ConfigMountsError(t *testing.T) {
 }
 
 func TestRedactPluginPayload_BadLinuxType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{
 		"Config": map[string]any{
@@ -2004,6 +2157,7 @@ func TestRedactPluginPayload_BadLinuxType(t *testing.T) {
 }
 
 func TestRedactPluginPayload_LinuxDevicesError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{
 		"Config": map[string]any{
@@ -2022,6 +2176,7 @@ func TestRedactPluginPayload_LinuxDevicesError(t *testing.T) {
 // ─── redactNodePayload – error branches ──────────────────────────────────────
 
 func TestRedactNodePayload_BadStatusType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	payload := map[string]any{"Status": "bad"}
 	err := f.redactNodePayload(payload)
@@ -2031,6 +2186,7 @@ func TestRedactNodePayload_BadStatusType(t *testing.T) {
 }
 
 func TestRedactNodePayload_BadManagerStatusType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	payload := map[string]any{"ManagerStatus": "bad"}
 	err := f.redactNodePayload(payload)
@@ -2040,6 +2196,7 @@ func TestRedactNodePayload_BadManagerStatusType(t *testing.T) {
 }
 
 func TestRedactNodePayload_BadTLSInfoType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	payload := map[string]any{
 		"Description": map[string]any{"TLSInfo": "bad"},
@@ -2053,6 +2210,7 @@ func TestRedactNodePayload_BadTLSInfoType(t *testing.T) {
 // ─── redactSwarmPayload – error branches ─────────────────────────────────────
 
 func TestRedactSwarmPayload_BadJoinTokensType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	payload := map[string]any{"JoinTokens": "bad"}
 	err := f.redactSwarmPayload(payload)
@@ -2062,6 +2220,7 @@ func TestRedactSwarmPayload_BadJoinTokensType(t *testing.T) {
 }
 
 func TestRedactSwarmPayload_BadTLSInfoType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	payload := map[string]any{"TLSInfo": "bad"}
 	err := f.redactSwarmPayload(payload)
@@ -2071,6 +2230,7 @@ func TestRedactSwarmPayload_BadTLSInfoType(t *testing.T) {
 }
 
 func TestRedactSwarmPayload_BadSpecType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	payload := map[string]any{"Spec": "bad"}
 	err := f.redactSwarmPayload(payload)
@@ -2082,6 +2242,7 @@ func TestRedactSwarmPayload_BadSpecType(t *testing.T) {
 // ─── redactInfoPayload – error branches ──────────────────────────────────────
 
 func TestRedactInfoPayload_BadClusterType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	payload := map[string]any{
 		"Swarm": map[string]any{"Cluster": "bad"},
@@ -2093,6 +2254,7 @@ func TestRedactInfoPayload_BadClusterType(t *testing.T) {
 }
 
 func TestRedactInfoPayload_BadTLSInfoType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	payload := map[string]any{
 		"Swarm": map[string]any{
@@ -2108,6 +2270,7 @@ func TestRedactInfoPayload_BadTLSInfoType(t *testing.T) {
 // ─── redactSystemDataUsagePayload – ContainerUsage/VolumeUsage type errors ───
 
 func TestRedactSystemDataUsagePayload_BadContainerUsageType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{"ContainerUsage": "bad"}
 	err := f.redactSystemDataUsagePayload(payload)
@@ -2117,6 +2280,7 @@ func TestRedactSystemDataUsagePayload_BadContainerUsageType(t *testing.T) {
 }
 
 func TestRedactSystemDataUsagePayload_BadVolumeUsageType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{"VolumeUsage": "bad"}
 	err := f.redactSystemDataUsagePayload(payload)
@@ -2128,6 +2292,7 @@ func TestRedactSystemDataUsagePayload_BadVolumeUsageType(t *testing.T) {
 // ─── writeResponseBody – marshal error ──────────────────────────────────────
 
 func TestWriteResponseBody_MarshalError(t *testing.T) {
+	t.Parallel()
 	// json.Marshal fails on channels
 	resp := &http.Response{
 		Body:   io.NopCloser(strings.NewReader("")),
@@ -2144,6 +2309,7 @@ func TestWriteResponseBody_MarshalError(t *testing.T) {
 // ─── redactNestedValue – nil objectValue ─────────────────────────────────────
 
 func TestRedactNestedValue_NilObject(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Config": nil}
 	if err := redactNestedValue(payload, "Config", "Env", []string{}); err != nil {
 		t.Fatalf("nil object value: %v", err)
@@ -2153,6 +2319,7 @@ func TestRedactNestedValue_NilObject(t *testing.T) {
 // ─── redactHostConfigBinds – nil binds ───────────────────────────────────────
 
 func TestRedactHostConfigBinds_NilBinds(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{
 		"HostConfig": map[string]any{"Binds": nil},
 	}
@@ -2164,6 +2331,7 @@ func TestRedactHostConfigBinds_NilBinds(t *testing.T) {
 // ─── modifyContainerList – no-op when neither flag set ───────────────────────
 
 func TestModifyContainerList_SkipsWhenNeitherFlagSet(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true, RedactSensitiveData: true})
 	resp := newResponseForTest(t, http.MethodGet, "/containers/json",
 		`[{"Id":"abc","Mounts":[{"Source":"/host/path"}]}]`)
@@ -2180,6 +2348,7 @@ func TestModifyContainerList_SkipsWhenNeitherFlagSet(t *testing.T) {
 // ─── redactContainerNetworkTopology – nil NetworkSettings ────────────────────
 
 func TestRedactContainerNetworkTopology_NilNetworkSettings(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"NetworkSettings": nil}
 	if err := redactContainerNetworkTopology(payload); err != nil {
 		t.Fatalf("nil NetworkSettings: %v", err)
@@ -2187,6 +2356,7 @@ func TestRedactContainerNetworkTopology_NilNetworkSettings(t *testing.T) {
 }
 
 func TestRedactContainerNetworkTopology_NilNetworks(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{
 		"NetworkSettings": map[string]any{"Networks": nil},
 	}
@@ -2198,6 +2368,7 @@ func TestRedactContainerNetworkTopology_NilNetworks(t *testing.T) {
 // ─── modifyNetworkInspect – direct-call internal paths ───────────────────────
 
 func TestModifyNetworkInspect_InternalSkipGuard(t *testing.T) {
+	t.Parallel()
 	f := New(Options{}) // RedactNetworkTopology = false
 	resp := newResponseForTest(t, http.MethodGet, "/networks/net-1", `{"Name":"bridge"}`)
 	if err := f.modifyNetworkInspect(resp); err != nil {
@@ -2206,6 +2377,7 @@ func TestModifyNetworkInspect_InternalSkipGuard(t *testing.T) {
 }
 
 func TestModifyNetworkInspect_InternalReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/networks/net-1")
 	err := f.modifyNetworkInspect(resp)
@@ -2215,6 +2387,7 @@ func TestModifyNetworkInspect_InternalReadBodyError(t *testing.T) {
 }
 
 func TestModifyNetworkInspect_InternalUnmarshalError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/networks/net-1", `not-json`)
 	err := f.modifyNetworkInspect(resp)
@@ -2226,6 +2399,7 @@ func TestModifyNetworkInspect_InternalUnmarshalError(t *testing.T) {
 // ─── modifyVolumeList – direct-call internal paths ────────────────────────────
 
 func TestModifyVolumeList_InternalSkipGuard(t *testing.T) {
+	t.Parallel()
 	f := New(Options{}) // RedactMountPaths = false
 	resp := newResponseForTest(t, http.MethodGet, "/volumes", `{"Volumes":[]}`)
 	if err := f.modifyVolumeList(resp); err != nil {
@@ -2234,6 +2408,7 @@ func TestModifyVolumeList_InternalSkipGuard(t *testing.T) {
 }
 
 func TestModifyVolumeList_InternalReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/volumes")
 	err := f.modifyVolumeList(resp)
@@ -2243,6 +2418,7 @@ func TestModifyVolumeList_InternalReadBodyError(t *testing.T) {
 }
 
 func TestModifyVolumeList_InternalUnmarshalError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/volumes", `not-json`)
 	err := f.modifyVolumeList(resp)
@@ -2254,6 +2430,7 @@ func TestModifyVolumeList_InternalUnmarshalError(t *testing.T) {
 // ─── modifyContainerInspect – direct-call body-read error ────────────────────
 
 func TestModifyContainerInspect_InternalReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactContainerEnv: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/containers/abc/json")
 	err := f.modifyContainerInspect(resp)
@@ -2263,6 +2440,7 @@ func TestModifyContainerInspect_InternalReadBodyError(t *testing.T) {
 }
 
 func TestModifyContainerInspect_MountsWrongType(t *testing.T) {
+	t.Parallel()
 	// Mounts is a string, not []any — triggers rejectResponse from redactMountObjects
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/containers/abc/json", `{"Mounts":"bad"}`)
@@ -2275,6 +2453,7 @@ func TestModifyContainerInspect_MountsWrongType(t *testing.T) {
 // ─── modifyContainerList – direct-call body-read error ───────────────────────
 
 func TestModifyContainerList_InternalReadBodyError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := makeNilBodyResponse(t, http.MethodGet, "/containers/json")
 	err := f.modifyContainerList(resp)
@@ -2284,6 +2463,7 @@ func TestModifyContainerList_InternalReadBodyError(t *testing.T) {
 }
 
 func TestModifyContainerList_InternalUnmarshalError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	resp := newResponseForTest(t, http.MethodGet, "/containers/json", `not-json`)
 	err := f.modifyContainerList(resp)
@@ -2295,6 +2475,7 @@ func TestModifyContainerList_InternalUnmarshalError(t *testing.T) {
 // ─── redactInfoPayload – Cluster nestedMapValue error path ───────────────────
 
 func TestRedactInfoPayload_ClusterNestedMapError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	// Cluster is a string → nestedMapValue returns error
 	payload := map[string]any{
@@ -2307,6 +2488,7 @@ func TestRedactInfoPayload_ClusterNestedMapError(t *testing.T) {
 }
 
 func TestRedactInfoPayload_SensitiveDataClusterNestedMapError(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactSensitiveData: true})
 	// Cluster is a string → nestedMapValue returns error in the RedactSensitiveData branch
 	payload := map[string]any{
@@ -2321,6 +2503,7 @@ func TestRedactInfoPayload_SensitiveDataClusterNestedMapError(t *testing.T) {
 // ─── redactVirtualIPs – nestedArrayValue error ───────────────────────────────
 
 func TestRedactVirtualIPs_NestedArrayError(t *testing.T) {
+	t.Parallel()
 	// Endpoint is a string → nestedArrayValue returns error at intermediate
 	payload := map[string]any{"Endpoint": "bad"}
 	err := redactVirtualIPs(payload, "Endpoint", "VirtualIPs")
@@ -2332,6 +2515,7 @@ func TestRedactVirtualIPs_NestedArrayError(t *testing.T) {
 // ─── redactEnvStrings – nil / missing field returns nil ──────────────────────
 
 func TestRedactEnvStrings_NilField(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Env": nil}
 	if err := redactEnvStrings(payload, "Env"); err != nil {
 		t.Fatalf("nil field: %v", err)
@@ -2339,6 +2523,7 @@ func TestRedactEnvStrings_NilField(t *testing.T) {
 }
 
 func TestRedactEnvStrings_MissingField(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{}
 	if err := redactEnvStrings(payload, "Env"); err != nil {
 		t.Fatalf("missing field: %v", err)
@@ -2348,6 +2533,7 @@ func TestRedactEnvStrings_MissingField(t *testing.T) {
 // ─── redactPluginEnvObjects – nil / missing field returns nil ────────────────
 
 func TestRedactPluginEnvObjects_NilField(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Env": nil}
 	if err := redactPluginEnvObjects(payload, "Env"); err != nil {
 		t.Fatalf("nil field: %v", err)
@@ -2355,6 +2541,7 @@ func TestRedactPluginEnvObjects_NilField(t *testing.T) {
 }
 
 func TestRedactPluginEnvObjects_MissingField(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{}
 	if err := redactPluginEnvObjects(payload, "Env"); err != nil {
 		t.Fatalf("missing field: %v", err)
@@ -2364,6 +2551,7 @@ func TestRedactPluginEnvObjects_MissingField(t *testing.T) {
 // ─── redactHostConfigBinds – no HostConfig key ───────────────────────────────
 
 func TestRedactHostConfigBinds_NoHostConfigKey(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{"Other": "value"}
 	if err := redactHostConfigBinds(payload); err != nil {
 		t.Fatalf("no HostConfig key: %v", err)
@@ -2373,6 +2561,7 @@ func TestRedactHostConfigBinds_NoHostConfigKey(t *testing.T) {
 // ─── redactSystemDataUsagePayload – nil ContainerUsage / VolumeUsage ──────────
 
 func TestRedactSystemDataUsagePayload_NilContainerUsageItems(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{
 		"ContainerUsage": map[string]any{"Items": nil},
@@ -2383,6 +2572,7 @@ func TestRedactSystemDataUsagePayload_NilContainerUsageItems(t *testing.T) {
 }
 
 func TestRedactSystemDataUsagePayload_NilVolumeUsageItems(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{
 		"VolumeUsage": map[string]any{"Items": nil},
@@ -2393,6 +2583,7 @@ func TestRedactSystemDataUsagePayload_NilVolumeUsageItems(t *testing.T) {
 }
 
 func TestRedactSystemDataUsagePayload_ContainerMountsWrongType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactMountPaths: true})
 	payload := map[string]any{
 		"ContainerUsage": map[string]any{
@@ -2407,6 +2598,7 @@ func TestRedactSystemDataUsagePayload_ContainerMountsWrongType(t *testing.T) {
 }
 
 func TestRedactSystemDataUsagePayload_ContainerNetworkSettingsWrongType(t *testing.T) {
+	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	payload := map[string]any{
 		"ContainerUsage": map[string]any{
@@ -2423,6 +2615,7 @@ func TestRedactSystemDataUsagePayload_ContainerNetworkSettingsWrongType(t *testi
 // ─── redactTaskNetworkAttachments – Network with IPAMOptions ──────────────────
 
 func TestRedactTaskNetworkAttachments_WithIPAMOptions(t *testing.T) {
+	t.Parallel()
 	payload := map[string]any{
 		"NetworksAttachments": []any{
 			map[string]any{

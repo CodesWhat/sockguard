@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"Name\":\"tmpl-secret\",\"Spec\":{\"Templating\":{\"Name\":\"golang-template\",\"Options\":{\"key\":\"value\"}}},\"Data\":\"c2VjcmV0\"}")

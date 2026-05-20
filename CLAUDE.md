@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Sockguard?
 
-Sockguard is a Docker socket proxy written in Go. It sits between Docker API consumers (Traefik, drydock, Portainer, etc.) and the Docker socket, filtering requests by HTTP method, path, and request body content (`containers/create`, exec create/start, service create/update, swarm init, image pull, and build are all inspected; the remaining blind-write guardrail is arbitrary exec without an allowlist). Default-deny posture, structured logging, per-client policy profiles, owner-label isolation, and read-side visibility/redaction make it the most comprehensive Docker socket security layer available.
+Sockguard is a Docker socket proxy written in Go. It sits between Docker API consumers (Traefik, drydock, Portainer, etc.) and the Docker socket, filtering requests by HTTP method, path, and request body content (`containers/create`, exec create/start, service create/update, swarm init, image pull, and build are all inspected; the remaining blind-write guardrail is arbitrary exec without an allowlist). Default-deny posture, structured logging, per-client policy profiles, owner-label isolation, and read-side visibility/redaction set it apart from socket proxies that stop at method/path filtering.
 
 ## Repository Structure
 
@@ -105,7 +105,7 @@ Runs piped (sequential, fail-fast): go-lint → go-test → biome → build.
 
 ## Key Constraints
 
-- Go proxy core uses **zero external dependencies** beyond Cobra+Viper. Filtering, proxying, logging all use stdlib.
+- The proxy's request hot path — filtering, proxying, logging — uses only the Go stdlib. The binary's direct external dependencies are Cobra+Viper (CLI/config), fsnotify (config hot-reload), and sigstore/sigstore-go (image-trust and signed-policy-bundle verification).
 - Container image is **Wolfi-based** (Chainguard) for near-zero CVEs and built-in SBOM/provenance.
 - Biome is a direct devDependency in the root workspace for TS/JS linting.
 - `.planning/` is gitignored — local-only working notes; never reference its contents in committed files.

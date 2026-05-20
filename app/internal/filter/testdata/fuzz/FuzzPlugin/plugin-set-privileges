@@ -1,0 +1,4 @@
+go test fuzz v1
+string("/plugins/myplug/set")
+string("")
+[]byte("[\"--cap-add=SYS_ADMIN\",\"--device=/dev/sda1\",\"--mount=/host\"]")

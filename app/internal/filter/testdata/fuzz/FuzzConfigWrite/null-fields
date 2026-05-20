@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"Name\":null,\"Labels\":null,\"Data\":null}")

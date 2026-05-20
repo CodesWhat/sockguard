@@ -1,0 +1,3 @@
+go test fuzz v1
+string("/networks/create")
+[]byte("{\"Name\":\"swarm-net\",\"Driver\":\"overlay\",\"Attachable\":true,\"Scope\":\"swarm\",\"IPAM\":{\"Driver\":\"default\",\"Config\":[{\"Subnet\":\"10.0.0.0/24\"}]}}")

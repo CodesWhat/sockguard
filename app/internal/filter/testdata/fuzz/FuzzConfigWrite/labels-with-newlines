@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"Name\":\"app-config\",\"Labels\":{\"multiline\":\"line1\\nline2\\rline3\"},\"Data\":\"Zm9v\"}")

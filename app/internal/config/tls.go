@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/codeswhat/sockguard/internal/certmatch"
 	"github.com/codeswhat/sockguard/internal/pkipin"
 )
 
@@ -18,11 +19,11 @@ func (cfg ListenTLSConfig) Enabled() bool {
 	return cfg.CertFile != "" ||
 		cfg.KeyFile != "" ||
 		cfg.ClientCAFile != "" ||
-		len(cfg.AllowedCommonNames) > 0 ||
-		len(cfg.AllowedDNSNames) > 0 ||
-		len(cfg.AllowedIPAddresses) > 0 ||
-		len(cfg.AllowedURISANs) > 0 ||
-		len(cfg.AllowedPublicKeySHA256Pins) > 0
+		len(cfg.CommonNames) > 0 ||
+		len(cfg.DNSNames) > 0 ||
+		len(cfg.IPAddresses) > 0 ||
+		len(cfg.URISANs) > 0 ||
+		len(cfg.PublicKeySHA256Pins) > 0
 }
 
 // Complete reports whether listen.tls has the full certificate, key, and
@@ -32,26 +33,36 @@ func (cfg ListenTLSConfig) Complete() bool {
 }
 
 // BuildMutualTLSServerConfig builds a TLS server config that requires and
-// verifies client certificates for TCP listeners.
+// verifies client certificates for TCP listeners. Error messages reference
+// the "listen.tls" config field path. To produce errors keyed to a different
+// field (e.g. "admin.listen.tls"), use BuildMutualTLSServerConfigForField.
 func BuildMutualTLSServerConfig(cfg ListenTLSConfig) (*tls.Config, error) {
-	clientIdentity, err := compileClientCertificateIdentityConstraints(cfg)
+	return BuildMutualTLSServerConfigForField("listen.tls", cfg)
+}
+
+// BuildMutualTLSServerConfigForField is BuildMutualTLSServerConfig with an
+// explicit field prefix used in error messages. Validation paths use this to
+// produce errors that reference the operator's actual config field path
+// (e.g. "admin.listen.tls") without post-hoc string substitution.
+func BuildMutualTLSServerConfigForField(fieldPrefix string, cfg ListenTLSConfig) (*tls.Config, error) {
+	clientIdentity, err := compileClientCertificateIdentityConstraints(fieldPrefix, cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 	if err != nil {
-		return nil, fmt.Errorf("load listen.tls cert/key pair: %w", err)
+		return nil, fmt.Errorf("load %s cert/key pair: %w", fieldPrefix, err)
 	}
 
 	clientCAPEM, err := os.ReadFile(cfg.ClientCAFile)
 	if err != nil {
-		return nil, fmt.Errorf("read listen.tls client_ca_file: %w", err)
+		return nil, fmt.Errorf("read %s client_ca_file: %w", fieldPrefix, err)
 	}
 
 	clientCAs := x509.NewCertPool()
 	if !clientCAs.AppendCertsFromPEM(clientCAPEM) {
-		return nil, fmt.Errorf("parse listen.tls client_ca_file: no PEM certificates found")
+		return nil, fmt.Errorf("parse %s client_ca_file: no PEM certificates found", fieldPrefix)
 	}
 
 	tlsConfig := &tls.Config{
@@ -68,6 +79,7 @@ func BuildMutualTLSServerConfig(cfg ListenTLSConfig) (*tls.Config, error) {
 }
 
 type compiledClientCertificateIdentityConstraints struct {
+	fieldPrefix         string
 	commonNames         []string
 	dnsNames            []string
 	ipAddresses         []netip.Addr
@@ -75,49 +87,50 @@ type compiledClientCertificateIdentityConstraints struct {
 	publicKeySHA256Pins []string
 }
 
-func compileClientCertificateIdentityConstraints(cfg ListenTLSConfig) (compiledClientCertificateIdentityConstraints, error) {
+func compileClientCertificateIdentityConstraints(fieldPrefix string, cfg ListenTLSConfig) (compiledClientCertificateIdentityConstraints, error) {
 	compiled := compiledClientCertificateIdentityConstraints{
-		commonNames:         make([]string, 0, len(cfg.AllowedCommonNames)),
-		dnsNames:            make([]string, 0, len(cfg.AllowedDNSNames)),
-		ipAddresses:         make([]netip.Addr, 0, len(cfg.AllowedIPAddresses)),
-		uriSANs:             make([]string, 0, len(cfg.AllowedURISANs)),
-		publicKeySHA256Pins: make([]string, 0, len(cfg.AllowedPublicKeySHA256Pins)),
+		fieldPrefix:         fieldPrefix,
+		commonNames:         make([]string, 0, len(cfg.CommonNames)),
+		dnsNames:            make([]string, 0, len(cfg.DNSNames)),
+		ipAddresses:         make([]netip.Addr, 0, len(cfg.IPAddresses)),
+		uriSANs:             make([]string, 0, len(cfg.URISANs)),
+		publicKeySHA256Pins: make([]string, 0, len(cfg.PublicKeySHA256Pins)),
 	}
 
-	values, err := normalizeNonEmptyStrings("listen.tls.allowed_common_names", cfg.AllowedCommonNames)
+	values, err := normalizeNonEmptyStrings(fieldPrefix+".common_names", cfg.CommonNames)
 	if err != nil {
 		return compiled, err
 	}
 	compiled.commonNames = append(compiled.commonNames, values...)
 
-	values, err = normalizeNonEmptyStrings("listen.tls.allowed_dns_names", cfg.AllowedDNSNames)
+	values, err = normalizeNonEmptyStrings(fieldPrefix+".dns_names", cfg.DNSNames)
 	if err != nil {
 		return compiled, err
 	}
 	compiled.dnsNames = append(compiled.dnsNames, values...)
 
-	for _, raw := range cfg.AllowedIPAddresses {
+	for _, raw := range cfg.IPAddresses {
 		trimmed := strings.TrimSpace(raw)
 		addr, err := netip.ParseAddr(trimmed)
 		if err != nil || !addr.IsValid() {
-			return compiled, fmt.Errorf("listen.tls.allowed_ip_addresses entries must be valid IP addresses, got %q", raw)
+			return compiled, fmt.Errorf("%s.ip_addresses entries must be valid IP addresses, got %q", fieldPrefix, raw)
 		}
 		compiled.ipAddresses = append(compiled.ipAddresses, addr.Unmap())
 	}
 
-	for _, raw := range cfg.AllowedURISANs {
+	for _, raw := range cfg.URISANs {
 		trimmed := strings.TrimSpace(raw)
 		parsed, err := url.Parse(trimmed)
 		if err != nil || parsed.String() == "" {
-			return compiled, fmt.Errorf("listen.tls.allowed_uri_sans entries must be valid URIs, got %q", raw)
+			return compiled, fmt.Errorf("%s.uri_sans entries must be valid URIs, got %q", fieldPrefix, raw)
 		}
 		compiled.uriSANs = append(compiled.uriSANs, parsed.String())
 	}
 
-	for _, raw := range cfg.AllowedPublicKeySHA256Pins {
+	for _, raw := range cfg.PublicKeySHA256Pins {
 		pin, err := normalizeSubjectPublicKeySHA256Pin(raw)
 		if err != nil {
-			return compiled, fmt.Errorf("listen.tls.allowed_public_key_sha256_pins entries must be lowercase or uppercase hex SHA-256 digests, got %q", raw)
+			return compiled, fmt.Errorf("%s.public_key_sha256_pins entries must be lowercase or uppercase hex SHA-256 digests, got %q", fieldPrefix, raw)
 		}
 		compiled.publicKeySHA256Pins = append(compiled.publicKeySHA256Pins, pin)
 	}
@@ -134,12 +147,16 @@ func (c compiledClientCertificateIdentityConstraints) hasSelectors() bool {
 }
 
 func (c compiledClientCertificateIdentityConstraints) verifyConnection(state tls.ConnectionState) error {
+	prefix := c.fieldPrefix
+	if prefix == "" {
+		prefix = "listen.tls"
+	}
 	leaf, err := verifiedClientCertificateLeaf(state)
 	if err != nil {
-		return fmt.Errorf("verify listen.tls client certificate identity: %w", err)
+		return fmt.Errorf("verify %s client certificate identity: %w", prefix, err)
 	}
 	if !c.matches(leaf) {
-		return fmt.Errorf("verify listen.tls client certificate identity: client certificate not allowed")
+		return fmt.Errorf("verify %s client certificate identity: client certificate not allowed", prefix)
 	}
 	return nil
 }
@@ -154,10 +171,10 @@ func (c compiledClientCertificateIdentityConstraints) matches(cert *x509.Certifi
 	if len(c.dnsNames) > 0 && !intersectsStrings(c.dnsNames, cert.DNSNames) {
 		return false
 	}
-	if len(c.ipAddresses) > 0 && !intersectsIPAddrs(c.ipAddresses, cert.IPAddresses) {
+	if len(c.ipAddresses) > 0 && !certmatch.IntersectsIPAddrs(c.ipAddresses, cert.IPAddresses) {
 		return false
 	}
-	if len(c.uriSANs) > 0 && !intersectsStrings(c.uriSANs, certificateURIStrings(cert)) {
+	if len(c.uriSANs) > 0 && !intersectsStrings(c.uriSANs, certmatch.CertificateURIStrings(cert)) {
 		return false
 	}
 	if len(c.publicKeySHA256Pins) > 0 && !containsExactString(c.publicKeySHA256Pins, subjectPublicKeySHA256Hex(cert)) {
@@ -205,36 +222,6 @@ func intersectsStrings(allowed []string, actual []string) bool {
 		}
 	}
 	return false
-}
-
-func intersectsIPAddrs(allowed []netip.Addr, actual []net.IP) bool {
-	for _, candidate := range actual {
-		addr, ok := netip.AddrFromSlice(candidate)
-		if !ok {
-			continue
-		}
-		addr = addr.Unmap()
-		for _, allowedAddr := range allowed {
-			if allowedAddr == addr {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func certificateURIStrings(cert *x509.Certificate) []string {
-	if cert == nil || len(cert.URIs) == 0 {
-		return nil
-	}
-	values := make([]string, 0, len(cert.URIs))
-	for _, value := range cert.URIs {
-		if value == nil {
-			continue
-		}
-		values = append(values, value.String())
-	}
-	return values
 }
 
 func subjectPublicKeySHA256Hex(cert *x509.Certificate) string {

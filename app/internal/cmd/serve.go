@@ -44,8 +44,16 @@ const maxHeaderBytes = 1 << 20
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the proxy server",
-	Long:  "Start the sockguard proxy, listening for Docker API requests and filtering them according to configured rules.",
-	RunE:  runServe,
+	Long: `Start the sockguard proxy, listening for Docker API requests and filtering them according to configured rules.
+
+Configuration sources (highest precedence first):
+  1. CLI flags
+  2. SOCKGUARD_* env vars (e.g. SOCKGUARD_LISTEN_SOCKET, SOCKGUARD_LOG_LEVEL)
+  3. Tecnativa-compat env vars (SOCKET_PATH, LOG_LEVEL) — accepted as aliases
+     for backward compatibility; lower precedence than the SOCKGUARD_* form
+  4. YAML config file (--config)
+  5. Built-in defaults`,
+	RunE: runServe,
 }
 
 func init() {
@@ -55,7 +63,7 @@ func init() {
 	serveCmd.Flags().String("upstream-socket", "", "Docker socket path (overrides config)")
 	serveCmd.Flags().String("log-level", "", "log level (overrides config)")
 	serveCmd.Flags().String("log-format", "", "log format (overrides config)")
-	serveCmd.Flags().String("deny-response-verbosity", "", "deny response verbosity: verbose or minimal (overrides config)")
+	serveCmd.Flags().String("deny-verbosity", "", "deny response verbosity: verbose or minimal (overrides config)")
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
@@ -127,7 +135,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	if err != nil {
 		return fmt.Errorf("policy bundle verifier: %w", err)
 	}
-	bundleResult, err := verifyPolicyBundleAtStartup(cfg, cfgFile, deps, bundleVerifier, logger)
+	bundleResult, err := verifyPolicyBundleAtStartup(cmd.Context(), cfg, cfgFile, deps, bundleVerifier, logger)
 	if err != nil {
 		return fmt.Errorf("policy bundle: %w", err)
 	}
@@ -136,26 +144,33 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	// the admin policy-version endpoint and the sockguard_policy_version
 	// gauge are populated as soon as the server starts taking traffic.
 	versioner := admin.NewPolicyVersioner()
-	initialSnapshot := admin.PolicySnapshot{
-		LoadedAt:     deps.now(),
-		Rules:        len(rules),
-		Profiles:     len(cfg.Clients.Profiles),
-		CompatActive: compatActive,
-		Source:       "startup",
-		ConfigSHA256: policyConfigHash(cfg),
-	}
-	if bundleResult != nil {
-		initialSnapshot.BundleSource = filepath.Base(cfg.PolicyBundle.SignaturePath)
-		initialSnapshot.BundleSigner = bundleResult.Signer
-		initialSnapshot.BundleDigest = bundleResult.DigestHex
-	}
-	initialVersion := versioner.Update(initialSnapshot)
+	initialVersion := versioner.Update(buildInitialPolicySnapshot(deps, cfg, rules, compatActive, bundleResult))
 
 	runtime := newServeRuntime(cfg, logger, deps)
 	runtime.metrics.SetPolicyVersion(initialVersion)
-	handler, chainTeardown := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, versioner)
+	handler, chainTeardown := buildServeHandlerChainWithRuntime(serveHandlerBuild{
+		Cfg:         cfg,
+		Logger:      logger,
+		AuditLogger: auditLogger,
+		Rules:       rules,
+		Deps:        deps,
+		Runtime:     runtime,
+		Versioner:   versioner,
+	})
 	swappable := reload.NewSwappableHandler(handler)
-	coordinator := newReloadCoordinator(cfg, cfgFile, swappable, chainTeardown, logger, auditLogger, deps, runtime, versioner, bundleVerifier)
+	coordinator := newReloadCoordinator(reloadCoordinatorParams{
+		RootCtx:         cmd.Context(),
+		Cfg:             cfg,
+		CfgFile:         cfgFile,
+		Swappable:       swappable,
+		InitialTeardown: chainTeardown,
+		Logger:          logger,
+		AuditLogger:     auditLogger,
+		Deps:            deps,
+		Runtime:         runtime,
+		Versioner:       versioner,
+		BundleVerifier:  bundleVerifier,
+	})
 	defer coordinator.stop()
 
 	listener, err := deps.createServeListener(cfg)
@@ -176,7 +191,6 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 
 	server := newHTTPServer(swappable)
 	listen := listenerAddr(cfg)
-	warnOnInsecureRemoteTCPBind(logger, cfg)
 	banner.Render(cmd.ErrOrStderr(), banner.Info{
 		Listen:    listen,
 		Upstream:  cfg.Upstream.Socket,
@@ -194,7 +208,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	)
 
 	errCh := make(chan error, 1)
-	stopWatchdog := runtime.startWatchdog(context.Background(), cfg)
+	stopWatchdog := runtime.startWatchdog(cmd.Context(), cfg)
 	defer stopWatchdog()
 	go deps.startServing(server, listener, errCh)
 
@@ -204,23 +218,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	defer stopAdmin()
 
-	stopReload := func() {}
-	if cfg.Reload.Enabled && cfgFile != "" {
-		debounce := time.Duration(cfg.Reload.DebounceMs) * time.Millisecond
-		if cfg.Reload.DebounceMs == 0 {
-			debounce = reload.DefaultDebounce
-		}
-		pollInterval := time.Duration(cfg.Reload.PollIntervalMs) * time.Millisecond
-		var startErr error
-		stopReload, startErr = startReloader(context.Background(), cfgFile, debounce, pollInterval, coordinator, logger)
-		if startErr != nil {
-			logger.Error("config hot-reload disabled: failed to start watcher",
-				"error", startErr,
-				"path", cfgFile,
-			)
-			stopReload = func() {}
-		}
-	}
+	stopReload := startConfigReload(cmd.Context(), cfg, cfgFile, coordinator, logger)
 	defer stopReload()
 
 	sigCh := make(chan os.Signal, 1)
@@ -244,7 +242,18 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	stopWatchdog()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), deps.shutdownGracePeriod)
+	shutdownServers(cmd.Context(), deps, cfg, server, adminServer, logger)
+	logger.Info("sockguard stopped")
+	return nil
+}
+
+// shutdownServers gracefully stops the main and admin http.Servers within
+// the configured grace period and removes any unix sockets sockguard owns.
+// Errors from each step are logged but do not block subsequent steps —
+// shutdown must always make progress so a partial failure can't leave a
+// stale listener behind.
+func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, server, adminServer *http.Server, logger *slog.Logger) {
+	shutdownCtx, cancel := context.WithTimeout(ctx, deps.shutdownGracePeriod)
 	defer cancel()
 
 	if adminServer != nil {
@@ -260,13 +269,62 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 			logger.Error("remove socket error", "socket", cfg.Listen.Socket, "error", err)
 		}
 	}
-	if cfg.Admin.Enabled && cfg.Admin.Listen.Socket != "" {
+	if cfg.Admin.Enabled && cfg.Admin.Listen.Configured() && cfg.Admin.Listen.Socket != "" {
 		if err := deps.removePath(cfg.Admin.Listen.Socket); err != nil && !os.IsNotExist(err) {
 			logger.Error("remove admin socket error", "socket", cfg.Admin.Listen.Socket, "error", err)
 		}
 	}
-	logger.Info("sockguard stopped")
-	return nil
+}
+
+// buildInitialPolicySnapshot captures the per-startup metadata that the
+// admin policy-version endpoint and the policy-version gauge surface to
+// operators. Bundle fields stay zero unless verification succeeded.
+func buildInitialPolicySnapshot(deps *serveDeps, cfg *config.Config, rules []*filter.CompiledRule, compatActive bool, bundleResult *policybundle.VerifyResult) admin.PolicySnapshot {
+	snap := admin.PolicySnapshot{
+		LoadedAt:     deps.now(),
+		Rules:        len(rules),
+		Profiles:     len(cfg.Clients.Profiles),
+		CompatActive: compatActive,
+		Source:       "startup",
+		ConfigSHA256: policyConfigHash(cfg),
+	}
+	if bundleResult != nil {
+		snap.BundleSource = filepath.Base(cfg.PolicyBundle.SignaturePath)
+		snap.BundleSigner = bundleResult.Signer
+		snap.BundleDigest = bundleResult.DigestHex
+	}
+	return snap
+}
+
+// startConfigReload wires up the SIGHUP / fsnotify reload loop. Returns a
+// stop closure the caller must defer; the closure is a no-op when reload is
+// disabled or the watcher fails to start (logged at Error so an operator can
+// see the degradation without taking the proxy down).
+func startConfigReload(ctx context.Context, cfg *config.Config, cfgFile string, coordinator *reloadCoordinator, logger *slog.Logger) func() {
+	if !cfg.Reload.Enabled || cfgFile == "" {
+		return func() {}
+	}
+	debounce := reload.DefaultDebounce
+	if cfg.Reload.Debounce != "" {
+		if d, err := time.ParseDuration(cfg.Reload.Debounce); err == nil {
+			debounce = d
+		}
+	}
+	var pollInterval time.Duration
+	if cfg.Reload.PollInterval != "" {
+		if d, err := time.ParseDuration(cfg.Reload.PollInterval); err == nil {
+			pollInterval = d
+		}
+	}
+	stop, err := startReloader(ctx, cfgFile, debounce, pollInterval, coordinator, logger)
+	if err != nil {
+		logger.Error("config hot-reload disabled: failed to start watcher",
+			"error", err,
+			"path", cfgFile,
+		)
+		return func() {}
+	}
+	return stop
 }
 
 // startAdminServer brings up the dedicated admin http.Server when
@@ -322,9 +380,23 @@ func startAdminServer(
 	return adminServer, adminErrCh, stop, nil
 }
 
-func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime) http.Handler {
-	handler, _ := buildServeHandlerChainWithRuntime(cfg, logger, auditLogger, rules, deps, runtime, nil)
-	return handler
+// serveHandlerBuild bundles the inputs the buildServeHandler* family needs.
+// The chain pulls together config, rules, every per-process singleton, and
+// the optional admin versioner; grouping them avoids 6-8 positional params
+// at every call site.
+type serveHandlerBuild struct {
+	Cfg            *config.Config
+	Logger         *slog.Logger
+	AuditLogger    *logging.AuditLogger
+	Rules          []*filter.CompiledRule
+	Deps           *serveDeps
+	Runtime        *serveRuntime
+	Versioner      *admin.PolicyVersioner
+	ClientProfiles map[string]filter.Policy
+}
+
+func buildServeHandlerWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
+	return buildServeHandlerChainWithRuntime(b)
 }
 
 // buildServeHandlerChainWithRuntime is the production / reload entry point:
@@ -343,15 +415,16 @@ func buildServeHandlerWithRuntime(cfg *config.Config, logger *slog.Logger, audit
 // Tests that don't care about teardown should continue calling
 // buildServeHandler / buildServeHandlerWithRuntime which discard it — the
 // goroutines die with the test process anyway.
-func buildServeHandlerChainWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, runtime *serveRuntime, versioner *admin.PolicyVersioner) (http.Handler, func()) {
-	clientProfiles, err := buildServeClientProfiles(cfg)
+func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
+	clientProfiles, err := buildServeClientProfiles(b.Cfg)
 	if err != nil {
-		logger.Error("invalid client profile config", "error", err)
+		b.Logger.Error("invalid client profile config", "error", err)
 		return invalidClientProfileHandler(), func() {}
 	}
 
-	handler := newServeUpstreamHandler(cfg, logger)
-	layers, teardown := buildServeHandlerLayersWithRuntime(cfg, logger, auditLogger, rules, deps, clientProfiles, runtime, versioner)
+	handler := newServeUpstreamHandler(b.Cfg, b.Logger)
+	b.ClientProfiles = clientProfiles
+	layers, teardown := buildServeHandlerLayersWithRuntime(b)
 	for _, layer := range layers {
 		handler = layer.with(handler)
 	}
@@ -418,12 +491,21 @@ func buildServeClientProfiles(cfg *config.Config) (map[string]filter.Policy, err
 		return nil, err
 	}
 	for name, profile := range clientProfiles {
-		exec := profile.Exec
-		exec.InspectStart = filter.NewDockerExecInspector(cfg.Upstream.Socket)
-		profile.Exec = exec
+		profile.PolicyConfig = attachRuntimeInspectors(cfg, profile.PolicyConfig)
 		clientProfiles[name] = profile
 	}
 	return clientProfiles, nil
+}
+
+// attachRuntimeInspectors wires the runtime-bound inspectors (currently just
+// the exec-start inspector that needs the upstream socket) onto a PolicyConfig
+// shaped by config translation. Centralized so every call path that produces
+// a filter.PolicyConfig destined for live request evaluation gets the same
+// wiring — a future runtime dependency added here propagates to both the
+// default policy and every client profile without revisiting two call sites.
+func attachRuntimeInspectors(cfg *config.Config, policy filter.PolicyConfig) filter.PolicyConfig {
+	policy.Exec.InspectStart = filter.NewDockerExecInspector(cfg.Upstream.Socket)
+	return policy
 }
 
 func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handler {
@@ -432,7 +514,10 @@ func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handl
 	})
 }
 
-func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy, runtime *serveRuntime, versioner *admin.PolicyVersioner) ([]serveHandlerLayer, func()) {
+func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLayer, func()) {
+	cfg, logger, auditLogger := b.Cfg, b.Logger, b.AuditLogger
+	runtime, versioner := b.Runtime, b.Versioner
+	rules, clientProfiles := b.Rules, b.ClientProfiles
 	layers := []serveHandlerLayer{
 		namedServeHandlerLayer("withHijack", withHijack(cfg, logger)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, logger)),
@@ -477,7 +562,7 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 	}
 
 	if cfg.Health.Enabled {
-		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, logger, deps, runtime)))
+		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, runtime)))
 	}
 	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetricsEndpoint", withMetricsEndpoint(cfg, runtime.metrics)))
@@ -509,7 +594,7 @@ func buildServeHandlerLayersWithRuntime(cfg *config.Config, logger *slog.Logger,
 func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *serveRuntime) (func(http.Handler) http.Handler, func()) {
 	profiles := make(map[string]ratelimit.ProfileOptions)
 	for _, profile := range cfg.Clients.Profiles {
-		opts := configLimitsToRateLimitOptions(profile.Limits)
+		opts := configLimitsToRateLimitOptions(profile.Name, profile.Limits, logger)
 		if opts.Rate != nil || opts.Concurrency != nil || opts.Priority != ratelimit.PriorityNormal {
 			profiles[profile.Name] = opts
 		}
@@ -539,86 +624,6 @@ func buildRateLimitMiddleware(cfg *config.Config, logger *slog.Logger, runtime *
 		stopSampler()
 	}
 	return mw, stop
-}
-
-// warnAssignedProfilesWithoutLimits flags profiles that operators bound to a
-// caller identity (mTLS, source IP, unix peer, default) but did not give any
-// rate or concurrency configuration. Once any profile has limits configured,
-// an unlimited assigned profile is almost always a config oversight, not an
-// intentional carve-out — surface it at startup so operators notice before
-// the proxy ships traffic.
-func warnAssignedProfilesWithoutLimits(cfg *config.Config, limitedProfiles map[string]ratelimit.ProfileOptions, logger *slog.Logger) {
-	assigned := make(map[string]struct{})
-	if cfg.Clients.DefaultProfile != "" {
-		assigned[cfg.Clients.DefaultProfile] = struct{}{}
-	}
-	for _, a := range cfg.Clients.SourceIPProfiles {
-		if a.Profile != "" {
-			assigned[a.Profile] = struct{}{}
-		}
-	}
-	for _, a := range cfg.Clients.ClientCertificateProfiles {
-		if a.Profile != "" {
-			assigned[a.Profile] = struct{}{}
-		}
-	}
-	for _, a := range cfg.Clients.UnixPeerProfiles {
-		if a.Profile != "" {
-			assigned[a.Profile] = struct{}{}
-		}
-	}
-	for name := range assigned {
-		if _, ok := limitedProfiles[name]; ok {
-			continue
-		}
-		logger.Warn(
-			"client profile is assigned to callers but has no rate or concurrency limits configured",
-			slog.String("profile", name),
-			slog.String("recommendation",
-				"add clients.profiles[...].limits.rate, .concurrency, or .priority — or remove the assignment if unlimited access is intended"),
-		)
-	}
-}
-
-// configLimitsToRateLimitOptions converts a per-profile LimitsConfig to the
-// ratelimit package's ProfileOptions. Returns zero-valued options (both nil)
-// when no limits are configured.
-func configLimitsToRateLimitOptions(cfg config.LimitsConfig) ratelimit.ProfileOptions {
-	var opts ratelimit.ProfileOptions
-	if cfg.Priority != "" {
-		// Unknown values were rejected by the validator; ignore the ok flag
-		// here so a config that slipped past validation falls back to normal
-		// rather than panicking the proxy at runtime.
-		opts.Priority, _ = ratelimit.ParsePriority(cfg.Priority)
-	}
-	if cfg.Rate != nil {
-		burst := cfg.Rate.Burst
-		if burst == 0 {
-			burst = cfg.Rate.TokensPerSecond
-		}
-		var costs []ratelimit.EndpointCost
-		if len(cfg.Rate.EndpointCosts) > 0 {
-			costs = make([]ratelimit.EndpointCost, 0, len(cfg.Rate.EndpointCosts))
-			for _, ec := range cfg.Rate.EndpointCosts {
-				costs = append(costs, ratelimit.EndpointCost{
-					PathGlob: ec.Path,
-					Methods:  ec.Methods,
-					Cost:     ec.Cost,
-				})
-			}
-		}
-		opts.Rate = &ratelimit.RateOptions{
-			TokensPerSecond: cfg.Rate.TokensPerSecond,
-			Burst:           burst,
-			EndpointCosts:   costs,
-		}
-	}
-	if cfg.Concurrency != nil {
-		opts.Concurrency = &ratelimit.ConcurrencyOptions{
-			MaxInflight: cfg.Concurrency.MaxInflight,
-		}
-	}
-	return opts
 }
 
 func namedServeHandlerLayer(name string, with func(http.Handler) http.Handler) serveHandlerLayer {
@@ -655,21 +660,23 @@ func withFilter(cfg *config.Config, logger *slog.Logger, rules []*filter.Compile
 	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, clientProfiles))
 }
 
-func withHealth(cfg *config.Config, logger *slog.Logger, deps *serveDeps, runtime *serveRuntime) func(http.Handler) http.Handler {
-	monitor := health.NewMonitor(cfg.Upstream.Socket, deps.now(), logger)
-	if runtime.health != nil {
-		monitor = runtime.health
-	}
-	healthHandler := monitor.Handler()
+// withHealth wires the /health endpoint onto the runtime monitor.
+//
+// Precondition: cfg.Health.Enabled is true, so newServeRuntime has already
+// allocated runtime.health. The caller must guarantee this — a nil monitor
+// here is a programming error and will panic on Handler() rather than be
+// papered over with a silently-allocated fallback.
+func withHealth(cfg *config.Config, runtime *serveRuntime) func(http.Handler) http.Handler {
+	healthHandler := runtime.health.Handler()
 	return func(next http.Handler) http.Handler {
-		return healthInterceptor(cfg.Health.Path, healthHandler, next)
+		return pathInterceptor(cfg.Health.Path, healthHandler, next)
 	}
 }
 
 func withMetricsEndpoint(cfg *config.Config, registry *metrics.Registry) func(http.Handler) http.Handler {
 	metricsHandler := registry.Handler()
 	return func(next http.Handler) http.Handler {
-		return metricsInterceptor(cfg.Metrics.Path, metricsHandler, next)
+		return pathInterceptor(cfg.Metrics.Path, metricsHandler, next)
 	}
 }
 
@@ -683,10 +690,10 @@ func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) h
 
 func withAdminEndpoint(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
 	return admin.NewValidateInterceptor(admin.Options{
-		Path:         cfg.Admin.Path,
-		MaxBodyBytes: cfg.Admin.MaxBodyBytes,
-		Validate:     buildAdminValidator(logger),
-		Logger:       logger,
+		Path:            cfg.Admin.Path,
+		MaxRequestBytes: cfg.Admin.MaxRequestBytes,
+		Validate:        buildAdminValidator(logger),
+		Logger:          logger,
 	})
 }
 
@@ -708,7 +715,12 @@ func withPolicyVersionEndpoint(cfg *config.Config, logger *slog.Logger, versione
 // metadata onto the initial snapshot. Otherwise returns (*VerifyResult,
 // nil) on success or (nil, err) on any failure — startup must abort in
 // that case because the trust gate is the whole point of the feature.
+//
+// The supplied ctx is the cobra command context; SIGINT/SIGTERM during
+// startup verification must cancel the verifier rather than block until the
+// per-bundle deadline expires.
 func verifyPolicyBundleAtStartup(
+	parent context.Context,
 	cfg *config.Config,
 	cfgFile string,
 	deps *serveDeps,
@@ -734,7 +746,10 @@ func verifyPolicyBundleAtStartup(
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), bundleVerifyDeadline(cfg.PolicyBundle))
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, bundleVerifyDeadline(cfg.PolicyBundle))
 	defer cancel()
 	result, err := verifier.Verify(ctx, yamlBytes, entity)
 	if err != nil {
@@ -800,7 +815,6 @@ func buildAdminValidator(parentLogger *slog.Logger) admin.Validator {
 			return admin.ValidateResponse{OK: false, Errors: []string{"parse: " + err.Error()}}
 		}
 
-		discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
 		compatActive := config.ApplyCompat(cfg, discardLogger)
 
 		compiled, compileErr := validateAndCompileRules(cfg)
@@ -882,8 +896,7 @@ func serveFilterOptions(cfg *config.Config, clientProfiles map[string]filter.Pol
 func servePolicyConfig(cfg *config.Config) filter.PolicyConfig {
 	policy := cfg.RequestBody.ToFilterOptions()
 	policy.DenyResponseVerbosity = filter.ParseDenyResponseVerbosity(cfg.Response.DenyVerbosity)
-	policy.Exec.InspectStart = filter.NewDockerExecInspector(cfg.Upstream.Socket)
-	return policy
+	return attachRuntimeInspectors(cfg, policy)
 }
 
 func serveClientACLOptions(cfg *config.Config) clientacl.Options {
@@ -1091,7 +1104,7 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) error {
 			},
 		},
 		{
-			name: "deny-response-verbosity",
+			name: "deny-verbosity",
 			set: func(v string) {
 				cfg.Response.DenyVerbosity = v
 			},
@@ -1139,28 +1152,15 @@ func isAddrInUse(err error) bool {
 	return errors.As(err, &opErr) && errors.Is(opErr.Err, syscall.EADDRINUSE)
 }
 
-// healthInterceptor short-circuits health check requests before they hit the filter.
+// pathInterceptor short-circuits GET requests matching path to target,
+// passing all other requests to next.
 //
-// /health intentionally runs before the CIDR allowlist so external uptime
-// probes (Kubernetes liveness, load-balancer health checks) can reach it
-// without being added to clients.allowed_cidrs. Treat health as
-// always-public. Operators who need authenticated health checks should disable
-// health.enabled and use /metrics behind the listener's mTLS instead.
-func healthInterceptor(path string, healthHandler http.Handler, next http.Handler) http.Handler {
+// Used for health and metrics endpoints, which both sit ahead of Docker-API
+// filtering in the middleware chain and share identical dispatch logic.
+func pathInterceptor(path string, target, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && r.URL.Path == path {
-			healthHandler.ServeHTTP(w, r)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// metricsInterceptor short-circuits metrics scrape requests before they hit Docker API filtering.
-func metricsInterceptor(path string, metricsHandler http.Handler, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == path {
-			metricsHandler.ServeHTTP(w, r)
+			target.ServeHTTP(w, r)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -1173,15 +1173,4 @@ func listenerAddr(cfg *config.Config) string {
 		return "unix:" + cfg.Listen.Socket
 	}
 	return "tcp://" + cfg.Listen.Address
-}
-
-func warnOnInsecureRemoteTCPBind(logger *slog.Logger, cfg *config.Config) {
-	if cfg.Listen.Socket != "" || !cfg.Listen.InsecureAllowPlainTCP || cfg.Listen.TLS.Complete() || !config.IsNonLoopbackTCPAddress(cfg.Listen.Address) {
-		return
-	}
-
-	logger.Warn("plaintext TCP listener is exposed beyond loopback",
-		"listen", listenerAddr(cfg),
-		"recommendation", "configure listen.tls for mTLS, bind 127.0.0.1:<port>, or use listen.socket",
-	)
 }

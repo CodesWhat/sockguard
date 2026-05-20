@@ -95,6 +95,16 @@ func newIntegrationProxyHandlerWithOptions(t *testing.T, socketPath string, rule
 		t.Fatalf("compile rules: %v", err)
 	}
 
+	// Integration tests assert which rule fired by reading the deny
+	// reason out of the response body. Production defaults to
+	// DenyResponseVerbosityMinimal, which strips the reason — fine on
+	// the wire but useless for end-to-end assertions. Upgrade unset
+	// verbosity to verbose here so each test does not have to re-state
+	// it; an explicit minimal still wins.
+	if filterOpts.DenyResponseVerbosity == "" {
+		filterOpts.DenyResponseVerbosity = filter.DenyResponseVerbosityVerbose
+	}
+
 	logger := newIntegrationLogger()
 
 	var handler http.Handler = proxy.New(socketPath, logger)

@@ -1,0 +1,139 @@
+name: "⏱️ Quality: Soak"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && '⏱️ Quality: Soak — Weekly' ||
+    format('⏱️ Quality: Soak — Manual by {0}', github.actor)
+  }}
+
+# QA-3's RSS + thread-count soak. Runs sockguard in front of mockdocker
+# behind a sustained loadgen mix (allowed reads + a denied write so the
+# deny-response codepath is exercised steadily) and asserts working-set
+# growth stays inside a configured threshold. Closes the
+# "BENCHMARKS.md explicitly defers RSS/leak tracking as a separate
+# exercise" gap that the v1.0 exit criteria pin: "zero panics, zero
+# goroutine/RSS growth over a 24h+ soak".
+#
+# GitHub-hosted runners cap a single job at 6h, so the scheduled run
+# soaks for 4h — enough wall time that a per-request allocation leak
+# would show up as multiple-MiB RSS growth well above the 64 MiB
+# threshold. The 24h target lives on once a self-hosted runner is
+# wired up; the manual dispatch input lets a maintainer override the
+# duration for that, or shorten it for a one-off check.
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Soak duration (Go time.Duration; e.g. 30m, 4h)"
+        required: false
+        default: "4h"
+      concurrency:
+        description: "Concurrent loadgen workers per scenario"
+        required: false
+        default: "20"
+      rss_growth_threshold_bytes:
+        description: "Fail if VmRSS grows by more than this many bytes from the post-warmup baseline"
+        required: false
+        default: "67108864"
+  schedule:
+    - cron: '15 6 * * 0'  # Sundays 06:15 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-soak-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  soak:
+    name: "⏱️ Soak (sockguard RSS + thread drift)"
+    runs-on: ubuntu-latest
+    # Allow 30 minutes for build + warmup + post-run reporting on top of
+    # the 4-hour soak; well under the 6-hour github-hosted ceiling.
+    timeout-minutes: 270
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version-file: app/go.mod
+
+      - name: Resolve soak parameters
+        id: params
+        env:
+          INPUT_DURATION: ${{ github.event.inputs.duration }}
+          INPUT_CONCURRENCY: ${{ github.event.inputs.concurrency }}
+          INPUT_RSS_THRESHOLD: ${{ github.event.inputs.rss_growth_threshold_bytes }}
+        run: |
+          # Defaults match the dispatch input defaults; scheduled runs
+          # see empty inputs and fall back to these values.
+          echo "duration=${INPUT_DURATION:-4h}" >> "$GITHUB_OUTPUT"
+          echo "concurrency=${INPUT_CONCURRENCY:-20}" >> "$GITHUB_OUTPUT"
+          echo "rss_threshold=${INPUT_RSS_THRESHOLD:-67108864}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate the soak script accepts the resolved parameters
+        env:
+          # Pull dispatch inputs through env vars so the shell never
+          # interpolates raw `${{ … }}` — closes zizmor's template-
+          # injection audit even though soak.sh re-validates downstream.
+          SOAK_DURATION: ${{ steps.params.outputs.duration }}
+          SOAK_CONCURRENCY: ${{ steps.params.outputs.concurrency }}
+          SOAK_RSS_THRESHOLD: ${{ steps.params.outputs.rss_threshold }}
+        run: |
+          # Dry-run also guards the script's option surface — soak.test.mjs
+          # owns that contract, but a CI-side smoke is cheap.
+          scripts/soak.sh --dry-run \
+            --duration "${SOAK_DURATION}" \
+            --concurrency "${SOAK_CONCURRENCY}" \
+            --rss-growth-threshold-bytes "${SOAK_RSS_THRESHOLD}"
+
+      - name: Run soak
+        id: soak
+        env:
+          SOAK_DURATION: ${{ steps.params.outputs.duration }}
+          SOAK_CONCURRENCY: ${{ steps.params.outputs.concurrency }}
+          SOAK_RSS_THRESHOLD: ${{ steps.params.outputs.rss_threshold }}
+        run: |
+          scripts/soak.sh \
+            --duration "${SOAK_DURATION}" \
+            --concurrency "${SOAK_CONCURRENCY}" \
+            --rss-growth-threshold-bytes "${SOAK_RSS_THRESHOLD}" \
+            | tee soak-output.txt
+
+      - name: Upload soak output
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: soak-output-${{ github.run_id }}
+          path: soak-output.txt
+          retention-days: 90
+
+      - name: Summarize
+        if: always()
+        env:
+          SOAK_DURATION: ${{ steps.params.outputs.duration }}
+          SOAK_CONCURRENCY: ${{ steps.params.outputs.concurrency }}
+          SOAK_RSS_THRESHOLD: ${{ steps.params.outputs.rss_threshold }}
+        run: |
+          {
+            echo "### Sockguard soak"
+            echo "- Duration:            ${SOAK_DURATION}"
+            echo "- Concurrency/worker:  ${SOAK_CONCURRENCY}"
+            echo "- RSS threshold:       ${SOAK_RSS_THRESHOLD} bytes"
+            echo ""
+            echo "Last 20 lines of soak output:"
+            echo '```'
+            tail -n 20 soak-output.txt 2>/dev/null || echo "(no output captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

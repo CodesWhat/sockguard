@@ -39,6 +39,13 @@ func NewWithOptions(upstreamSocket string, logger *slog.Logger, opts Options) *h
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 100,
 		IdleConnTimeout:     90 * time.Second,
+		// Bound the wait for upstream response headers so a Docker daemon that
+		// accepts the connection but never replies cannot pin a goroutine until
+		// context cancellation. Streaming endpoints (logs follow, events, stats)
+		// send headers promptly and then stream the body, so this does not cap
+		// long-lived responses; hijacked attach/exec-start connections bypass
+		// this pooled transport entirely.
+		ResponseHeaderTimeout: 30 * time.Second,
 	}
 
 	return &httputil.ReverseProxy{

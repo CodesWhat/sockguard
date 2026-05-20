@@ -9,9 +9,19 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	requestfilter "github.com/codeswhat/sockguard/internal/filter"
 )
+
+// streamArrayBufferPool keeps growable bytes.Buffer instances warm so that
+// list-endpoint responses don't pay for fresh buffer allocations and grow
+// copies on every redaction. The final response payload is cloned out of the
+// buffer before the buffer returns to the pool — the pooled storage is reused
+// by the next caller and must not be referenced after release.
+var streamArrayBufferPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
 
 const (
 	redactedValue = "<redacted>"
@@ -84,7 +94,7 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifySystemDataUsage(resp)
 	}
 
-	// Table-driven list/inspect pairs (uniform guard + modifyListResponse / modifyMapResponse).
+	// Table-driven list/inspect pairs (uniform guard + streamArrayResponse / modifyMapResponse).
 	return f.dispatchTableEntry(normPath, resp)
 }
 
@@ -132,55 +142,26 @@ func (f *Filter) modifyContainerList(resp *http.Response) error {
 	if !f.opts.RedactMountPaths && !f.opts.RedactNetworkTopology {
 		return nil
 	}
-
-	body, err := readResponseBody(resp)
-	if err != nil {
-		return rejectResponse(err)
-	}
-
-	var payload []map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return rejectResponse(err)
-	}
-
-	for _, container := range payload {
+	return streamArrayResponse(resp, func(container map[string]any) error {
 		if f.opts.RedactMountPaths {
 			if err := redactMountObjects(container, "Mounts"); err != nil {
-				return rejectResponse(err)
+				return err
 			}
 		}
 		if f.opts.RedactNetworkTopology {
 			if err := redactContainerNetworkTopology(container); err != nil {
-				return rejectResponse(err)
+				return err
 			}
 		}
-	}
-
-	return writeResponseBody(resp, payload)
+		return nil
+	})
 }
 
 func (f *Filter) modifyNetworkList(resp *http.Response) error {
 	if !f.opts.RedactNetworkTopology {
 		return nil
 	}
-
-	body, err := readResponseBody(resp)
-	if err != nil {
-		return rejectResponse(err)
-	}
-
-	var payload []map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return rejectResponse(err)
-	}
-
-	for _, network := range payload {
-		if err := redactNetworkTopology(network); err != nil {
-			return rejectResponse(err)
-		}
-	}
-
-	return writeResponseBody(resp, payload)
+	return streamArrayResponse(resp, redactNetworkTopology)
 }
 
 func (f *Filter) modifyNetworkInspect(resp *http.Response) error {
@@ -259,7 +240,7 @@ func (f *Filter) modifyVolumeInspect(resp *http.Response) error {
 
 // tableEntry describes one list or inspect endpoint that follows the uniform
 // guard-then-delegate pattern: if active(opts) is false, skip; otherwise
-// call modifyListResponse (isList=true) or modifyMapResponse (isList=false).
+// call streamArrayResponse (isList=true) or modifyMapResponse (isList=false).
 type tableEntry struct {
 	// path is the exact normalized path (e.g. "/services") or "" for
 	// inspect paths matched by an isXInspectPath predicate.
@@ -375,7 +356,7 @@ func (f *Filter) dispatchTableEntry(normPath string, resp *http.Response) error 
 		}
 		mutate := e.mutate(f)
 		if e.isList {
-			return modifyListResponse(resp, mutate)
+			return streamArrayResponse(resp, mutate)
 		}
 		return modifyMapResponse(resp, mutate)
 	}
@@ -422,22 +403,122 @@ func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) e
 	return writeResponseBody(resp, payload)
 }
 
-func modifyListResponse(resp *http.Response, mutate func(map[string]any) error) error {
-	body, err := readResponseBody(resp)
+// streamArrayResponse decodes a JSON array from resp.Body one element at a
+// time, calls mutate on each element, and writes the mutated array back to
+// resp.  It replaces the previous read-all → unmarshal → mutate → marshal
+// round-trip for array-shaped endpoints, eliminating the intermediate
+// full-unmarshal allocation while keeping identical output semantics.
+//
+// The size limit (MaxResponseBodyBytes) is enforced by wrapping the body
+// reader before handing it to json.Decoder, so oversized responses are
+// still rejected.
+func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error) error {
+	if resp.Body == nil {
+		return rejectResponse(errors.New("missing response body"))
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Enforce the same 8 MiB cap as readResponseBody.
+	limited := &io.LimitedReader{
+		R: resp.Body,
+		N: requestfilter.MaxResponseBodyBytes + 1,
+	}
+	dec := json.NewDecoder(limited)
+
+	// Consume the opening '['.
+	tok, err := dec.Token()
 	if err != nil {
 		return rejectResponse(err)
 	}
-
-	var payload []map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return rejectResponse(err)
+	if delim, ok := tok.(json.Delim); !ok || delim != '[' {
+		return rejectResponse(fmt.Errorf("expected JSON array, got %T %v", tok, tok))
 	}
-	for _, item := range payload {
-		if err := mutate(item); err != nil {
+
+	out, _ := streamArrayBufferPool.Get().(*bytes.Buffer)
+	if out == nil {
+		out = &bytes.Buffer{}
+	}
+	out.Reset()
+	defer streamArrayBufferPool.Put(out)
+
+	enc := json.NewEncoder(out)
+	enc.SetEscapeHTML(false) // preserve original character set; Docker never needs HTML-safe JSON
+
+	out.WriteByte('[')
+	first := true
+	for dec.More() {
+		// Enforce the size cap: if the limited reader is exhausted the next
+		// Decode call will return an error (unexpected EOF or similar), which
+		// we surface as a rejection. We add an explicit check here so that we
+		// can emit the same "response body exceeds N bytes" message.
+		if limited.N <= 0 {
+			return rejectResponse(fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes))
+		}
+
+		var elem map[string]any
+		if err := dec.Decode(&elem); err != nil {
 			return rejectResponse(err)
 		}
+		if err := mutate(elem); err != nil {
+			return rejectResponse(err)
+		}
+		if !first {
+			out.WriteByte(',')
+		}
+		first = false
+		if err := enc.Encode(elem); err != nil {
+			return rejectResponse(err)
+		}
+		// enc.Encode appends a newline; trim it so the output is compact and
+		// byte-for-byte predictable (no trailing newlines inside the array).
+		if out.Len() > 0 && out.Bytes()[out.Len()-1] == '\n' {
+			out.Truncate(out.Len() - 1)
+		}
 	}
-	return writeResponseBody(resp, payload)
+	out.WriteByte(']')
+
+	// Re-check the limit after consuming the closing token.
+	if limited.N <= 0 {
+		return rejectResponse(fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes))
+	}
+
+	// Clone the body out of the pooled buffer: ReverseProxy reads resp.Body
+	// after we return, but the buffer's storage will be reused by the next
+	// caller via streamArrayBufferPool. Sizing the destination exactly avoids
+	// the second growth pass that bytes.NewBuffer would otherwise pay.
+	body := make([]byte, out.Len())
+	copy(body, out.Bytes())
+	if resp.Header == nil {
+		resp.Header = make(http.Header)
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+	resp.TransferEncoding = nil
+	return nil
+}
+
+// redactContainerSpec applies env/mount/secret-config redactions to a swarm
+// ContainerSpec. Both /services and /tasks responses surface the same shape
+// under different parent keys, so they share this helper.
+func (f *Filter) redactContainerSpec(containerSpec map[string]any) error {
+	if f.opts.RedactContainerEnv {
+		redactArrayField(containerSpec, "Env")
+	}
+	if f.opts.RedactMountPaths {
+		if err := redactMountObjects(containerSpec, "Mounts"); err != nil {
+			return err
+		}
+	}
+	if f.opts.RedactSensitiveData {
+		if err := redactReferenceObjects(containerSpec, "Secrets", "SecretID", "SecretName"); err != nil {
+			return err
+		}
+		if err := redactReferenceObjects(containerSpec, "Configs", "ConfigID", "ConfigName"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *Filter) redactServicePayload(payload map[string]any) error {
@@ -446,21 +527,8 @@ func (f *Filter) redactServicePayload(payload map[string]any) error {
 		return err
 	}
 	if found {
-		if f.opts.RedactContainerEnv {
-			redactArrayField(containerSpec, "Env")
-		}
-		if f.opts.RedactMountPaths {
-			if err := redactMountObjects(containerSpec, "Mounts"); err != nil {
-				return err
-			}
-		}
-		if f.opts.RedactSensitiveData {
-			if err := redactReferenceObjects(containerSpec, "Secrets", "SecretID", "SecretName"); err != nil {
-				return err
-			}
-			if err := redactReferenceObjects(containerSpec, "Configs", "ConfigID", "ConfigName"); err != nil {
-				return err
-			}
+		if err := f.redactContainerSpec(containerSpec); err != nil {
+			return err
 		}
 	}
 	if f.opts.RedactNetworkTopology {
@@ -477,21 +545,8 @@ func (f *Filter) redactTaskPayload(payload map[string]any) error {
 		return err
 	}
 	if found {
-		if f.opts.RedactContainerEnv {
-			redactArrayField(containerSpec, "Env")
-		}
-		if f.opts.RedactMountPaths {
-			if err := redactMountObjects(containerSpec, "Mounts"); err != nil {
-				return err
-			}
-		}
-		if f.opts.RedactSensitiveData {
-			if err := redactReferenceObjects(containerSpec, "Secrets", "SecretID", "SecretName"); err != nil {
-				return err
-			}
-			if err := redactReferenceObjects(containerSpec, "Configs", "ConfigID", "ConfigName"); err != nil {
-				return err
-			}
+		if err := f.redactContainerSpec(containerSpec); err != nil {
+			return err
 		}
 	}
 	if f.opts.RedactNetworkTopology {
@@ -526,46 +581,53 @@ func redactConfigPayload(payload map[string]any) error {
 }
 
 func (f *Filter) redactPluginPayload(payload map[string]any) error {
-	if settings, found, err := nestedMapValue(payload, "Settings"); err != nil {
+	if err := f.redactPluginSettings(payload); err != nil {
 		return err
-	} else if found {
-		if f.opts.RedactContainerEnv {
-			if err := redactEnvStrings(settings, "Env"); err != nil {
-				return err
-			}
-		}
-		if f.opts.RedactMountPaths {
-			if err := redactMountObjects(settings, "Mounts"); err != nil {
-				return err
-			}
-			if err := redactReferenceObjects(settings, "Devices", "Path"); err != nil {
-				return err
-			}
+	}
+	return f.redactPluginConfig(payload)
+}
+
+func (f *Filter) redactPluginSettings(payload map[string]any) error {
+	settings, found, err := nestedMapValue(payload, "Settings")
+	if err != nil || !found {
+		return err
+	}
+	if f.opts.RedactContainerEnv {
+		if err := redactEnvStrings(settings, "Env"); err != nil {
+			return err
 		}
 	}
-	if config, found, err := nestedMapValue(payload, "Config"); err != nil {
+	if !f.opts.RedactMountPaths {
+		return nil
+	}
+	if err := redactMountObjects(settings, "Mounts"); err != nil {
 		return err
-	} else if found {
-		if f.opts.RedactContainerEnv {
-			if err := redactPluginEnvObjects(config, "Env"); err != nil {
-				return err
-			}
-		}
-		if f.opts.RedactMountPaths {
-			if err := redactMountObjects(config, "Mounts"); err != nil {
-				return err
-			}
-			redactStringField(config, "PropagatedMount")
-			if linux, found, err := nestedMapValue(config, "Linux"); err != nil {
-				return err
-			} else if found {
-				if err := redactReferenceObjects(linux, "Devices", "Path"); err != nil {
-					return err
-				}
-			}
+	}
+	return redactReferenceObjects(settings, "Devices", "Path")
+}
+
+func (f *Filter) redactPluginConfig(payload map[string]any) error {
+	config, found, err := nestedMapValue(payload, "Config")
+	if err != nil || !found {
+		return err
+	}
+	if f.opts.RedactContainerEnv {
+		if err := redactPluginEnvObjects(config, "Env"); err != nil {
+			return err
 		}
 	}
-	return nil
+	if !f.opts.RedactMountPaths {
+		return nil
+	}
+	if err := redactMountObjects(config, "Mounts"); err != nil {
+		return err
+	}
+	redactStringField(config, "PropagatedMount")
+	linux, found, err := nestedMapValue(config, "Linux")
+	if err != nil || !found {
+		return err
+	}
+	return redactReferenceObjects(linux, "Devices", "Path")
 }
 
 func (f *Filter) redactNodePayload(payload map[string]any) error {
@@ -648,54 +710,71 @@ func (f *Filter) redactInfoPayload(payload map[string]any) error {
 }
 
 func (f *Filter) redactSystemDataUsagePayload(payload map[string]any) error {
-	if containerUsage, found, err := nestedMapValue(payload, "ContainerUsage"); err != nil {
+	if err := f.redactSystemDataUsageContainers(payload); err != nil {
 		return err
-	} else if found {
-		items, ok := containerUsage["Items"]
-		if ok && items != nil {
-			containers, ok := items.([]any)
-			if !ok {
-				return fmt.Errorf("ContainerUsage.Items has unexpected type %T", items)
-			}
-			for _, value := range containers {
-				container, ok := value.(map[string]any)
-				if !ok {
-					return fmt.Errorf("ContainerUsage.Items entry has unexpected type %T", value)
-				}
-				if f.opts.RedactMountPaths {
-					if err := redactMountObjects(container, "Mounts"); err != nil {
-						return err
-					}
-				}
-				if f.opts.RedactNetworkTopology {
-					if err := redactContainerNetworkTopology(container); err != nil {
-						return err
-					}
-				}
+	}
+	return f.redactSystemDataUsageVolumes(payload)
+}
+
+func (f *Filter) redactSystemDataUsageContainers(payload map[string]any) error {
+	containers, err := systemDataUsageItems(payload, "ContainerUsage")
+	if err != nil {
+		return err
+	}
+	for _, container := range containers {
+		if f.opts.RedactMountPaths {
+			if err := redactMountObjects(container, "Mounts"); err != nil {
+				return err
 			}
 		}
-	}
-	if volumeUsage, found, err := nestedMapValue(payload, "VolumeUsage"); err != nil {
-		return err
-	} else if found {
-		items, ok := volumeUsage["Items"]
-		if ok && items != nil {
-			volumes, ok := items.([]any)
-			if !ok {
-				return fmt.Errorf("VolumeUsage.Items has unexpected type %T", items)
-			}
-			for _, value := range volumes {
-				volume, ok := value.(map[string]any)
-				if !ok {
-					return fmt.Errorf("VolumeUsage.Items entry has unexpected type %T", value)
-				}
-				if f.opts.RedactMountPaths {
-					redactStringField(volume, "Mountpoint")
-				}
+		if f.opts.RedactNetworkTopology {
+			if err := redactContainerNetworkTopology(container); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+func (f *Filter) redactSystemDataUsageVolumes(payload map[string]any) error {
+	if !f.opts.RedactMountPaths {
+		return nil
+	}
+	volumes, err := systemDataUsageItems(payload, "VolumeUsage")
+	if err != nil {
+		return err
+	}
+	for _, volume := range volumes {
+		redactStringField(volume, "Mountpoint")
+	}
+	return nil
+}
+
+// systemDataUsageItems returns the .Items array from a /system/df sub-key
+// (ContainerUsage or VolumeUsage) decoded as object maps. Returns (nil, nil)
+// when the sub-key or its Items field is absent.
+func systemDataUsageItems(payload map[string]any, key string) ([]map[string]any, error) {
+	usage, found, err := nestedMapValue(payload, key)
+	if err != nil || !found {
+		return nil, err
+	}
+	items, ok := usage["Items"]
+	if !ok || items == nil {
+		return nil, nil
+	}
+	arr, ok := items.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s.Items has unexpected type %T", key, items)
+	}
+	out := make([]map[string]any, 0, len(arr))
+	for _, value := range arr {
+		obj, ok := value.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s.Items entry has unexpected type %T", key, value)
+		}
+		out = append(out, obj)
+	}
+	return out, nil
 }
 
 func nestedMapValue(payload map[string]any, keys ...string) (map[string]any, bool, error) {

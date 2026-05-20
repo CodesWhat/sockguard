@@ -185,11 +185,11 @@ func TestImageLoadDeniesMissingManifestUnlessUntaggedAllowed(t *testing.T) {
 }
 
 func TestImageLoadRewindErrorAfterInspection(t *testing.T) {
-	restoreFilterIODeps(t)
 	sentinel := errors.New("rewind failed")
-	oldSeekToStart := seekToStart
+	p := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true})
+	oldSeekToStart := p.io.SeekToStart
 	seekCalls := 0
-	seekToStart = func(file *os.File) error {
+	p.io.SeekToStart = func(file *os.File) error {
 		seekCalls++
 		if seekCalls == 2 {
 			return sentinel
@@ -200,7 +200,7 @@ func TestImageLoadRewindErrorAfterInspection(t *testing.T) {
 	payload := mustImageLoadTar(t, `[{"RepoTags":["registry.example.com/acme/app:latest"]}]`)
 	req := httptest.NewRequest(http.MethodPost, "/images/load", bytes.NewReader(payload))
 
-	reason, err := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true}).inspect(nil, req, "/images/load")
+	reason, err := p.inspect(nil, req, "/images/load")
 	if reason != "" {
 		t.Fatalf("reason = %q, want empty", reason)
 	}
@@ -225,32 +225,32 @@ func TestImageLoadDenyReasonForTagEdgeCases(t *testing.T) {
 
 func TestExtractImageLoadRepoTagsManifestErrors(t *testing.T) {
 	t.Run("read manifest error", func(t *testing.T) {
-		restoreFilterIODeps(t)
 		sentinel := errors.New("read manifest failed")
-		readAllLimited = func(io.Reader, int64) ([]byte, error) {
+		iod := defaultIODeps()
+		iod.ReadAllLimited = func(io.Reader, int64) ([]byte, error) {
 			return nil, sentinel
 		}
 
-		_, _, err := extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `[]`)))
+		_, _, err := iod.extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `[]`)))
 		if !errors.Is(err, sentinel) {
 			t.Fatalf("extractImageLoadRepoTags() error = %v, want wrapped %v", err, sentinel)
 		}
 	})
 
 	t.Run("manifest too large", func(t *testing.T) {
-		restoreFilterIODeps(t)
-		readAllLimited = func(io.Reader, int64) ([]byte, error) {
+		iod := defaultIODeps()
+		iod.ReadAllLimited = func(io.Reader, int64) ([]byte, error) {
 			return bytes.Repeat([]byte{'x'}, maxImageLoadManifestBytes+1), nil
 		}
 
-		_, _, err := extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `[]`)))
+		_, _, err := iod.extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `[]`)))
 		if err == nil || !strings.Contains(err.Error(), "manifest.json exceeds") {
 			t.Fatalf("extractImageLoadRepoTags() error = %v, want manifest size error", err)
 		}
 	})
 
 	t.Run("decode manifest error", func(t *testing.T) {
-		_, _, err := extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `{`)))
+		_, _, err := defaultIODeps().extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `{`)))
 		if err == nil || !strings.Contains(err.Error(), "decode manifest.json") {
 			t.Fatalf("extractImageLoadRepoTags() error = %v, want decode error", err)
 		}

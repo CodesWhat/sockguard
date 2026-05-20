@@ -38,7 +38,7 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 		},
 		ContainerUpdate: ContainerUpdateRequestBodyConfig{
 			AllowPrivileged:      true,
-			AllowDevices:         true,
+			AllowAllDevices:      true,
 			AllowCapabilities:    true,
 			AllowResourceUpdates: true,
 			AllowRestartPolicy:   true,
@@ -107,8 +107,8 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 		},
 		Plugin: PluginRequestBodyConfig{
 			AllowHostNetwork:      true,
-			AllowIPCHost:          true,
-			AllowPIDHost:          true,
+			AllowHostIPC:          true,
+			AllowHostPID:          true,
 			AllowAllDevices:       true,
 			AllowedBindMounts:     []string{"/var/lib/plugins"},
 			AllowedDevices:        []string{"/dev/fuse"},
@@ -152,7 +152,7 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 		},
 		ContainerUpdate: filter.ContainerUpdateOptions{
 			AllowPrivileged:      true,
-			AllowDevices:         true,
+			AllowAllDevices:      true,
 			AllowCapabilities:    true,
 			AllowResourceUpdates: true,
 			AllowRestartPolicy:   true,
@@ -221,8 +221,8 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 		},
 		Plugin: filter.PluginOptions{
 			AllowHostNetwork:      true,
-			AllowIPCHost:          true,
-			AllowPIDHost:          true,
+			AllowHostIPC:          true,
+			AllowHostPID:          true,
 			AllowAllDevices:       true,
 			AllowedBindMounts:     []string{"/var/lib/plugins"},
 			AllowedDevices:        []string{"/dev/fuse"},

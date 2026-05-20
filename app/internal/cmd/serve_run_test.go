@@ -24,6 +24,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/testhelp"
 )
 
 type serveTestConn struct {
@@ -129,7 +130,11 @@ func newServeCommand() *cobra.Command {
 	cmd.Flags().String("upstream-socket", "", "")
 	cmd.Flags().String("log-level", "", "")
 	cmd.Flags().String("log-format", "", "")
-	cmd.Flags().String("deny-response-verbosity", "", "")
+	cmd.Flags().String("deny-verbosity", "", "")
+	// Cobra sets the command context when Execute/ExecuteContext is called.
+	// Tests construct commands directly, so set a background context to
+	// match the non-nil ctx that runServeWithDeps now propagates via cmd.Context().
+	cmd.SetContext(context.Background())
 	return cmd
 }
 
@@ -329,7 +334,7 @@ func TestApplyFlagOverridesErrorBranches(t *testing.T) {
 		"listen-socket",
 		"upstream-socket",
 		"log-format",
-		"deny-response-verbosity",
+		"deny-verbosity",
 	}
 
 	for _, name := range tests {
@@ -767,8 +772,8 @@ response:
 	if err := cmd.Flags().Set("log-format", "console"); err != nil {
 		t.Fatalf("set log-format: %v", err)
 	}
-	if err := cmd.Flags().Set("deny-response-verbosity", "minimal"); err != nil {
-		t.Fatalf("set deny-response-verbosity: %v", err)
+	if err := cmd.Flags().Set("deny-verbosity", "minimal"); err != nil {
+		t.Fatalf("set deny-verbosity: %v", err)
 	}
 
 	cfg := captureMergedServeConfig(t, newServeTestDeps(), cmd, cfgPath)
@@ -941,8 +946,8 @@ func TestVerifyUpstreamReachable(t *testing.T) {
 
 	t.Run("close failure is debug logged", func(t *testing.T) {
 		deps := newServeTestDeps()
-		var logBuf strings.Builder
-		logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		collector := &testhelp.CollectingHandler{}
+		logger := collector.Logger()
 
 		deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
 			return &serveTestConn{closeErr: errors.New("close boom")}, nil
@@ -951,8 +956,8 @@ func TestVerifyUpstreamReachable(t *testing.T) {
 		if err := deps.verifyUpstreamReachable("/var/run/docker.sock", logger); err != nil {
 			t.Fatalf("verifyUpstreamReachable() error = %v", err)
 		}
-		if !strings.Contains(logBuf.String(), `"msg":"failed to close upstream check connection"`) {
-			t.Fatalf("expected debug close log, got: %s", logBuf.String())
+		if !collector.HasMessage("failed to close upstream check connection") {
+			t.Fatalf("expected debug close log, got: %+v", collector.Records())
 		}
 	})
 }
@@ -982,49 +987,6 @@ func TestWithUmaskReturnsCallbackResult(t *testing.T) {
 	}
 }
 
-func TestRunServeWarnsOnWildcardTCPBind(t *testing.T) {
-	deps := newServeTestDeps()
-	deps.loadConfig = func(string) (*config.Config, error) {
-		cfg := testServeConfig()
-		cfg.Listen.Address = ":2375"
-		cfg.Listen.InsecureAllowPlainTCP = true
-		return cfg, nil
-	}
-
-	var logBuf strings.Builder
-	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
-	}
-	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
-		return stubCompiledRules(), nil
-	}
-	deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
-		return &serveTestConn{}, nil
-	}
-	deps.createServeListener = func(*config.Config) (net.Listener, error) {
-		return &serveTestListener{}, nil
-	}
-	deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {
-		errCh <- http.ErrServerClosed
-	}
-	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
-	deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
-		return nil
-	}
-
-	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
-		t.Fatalf("runServe() error = %v", err)
-	}
-
-	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, `"msg":"plaintext TCP listener is exposed beyond loopback"`) {
-		t.Fatalf("expected insecure remote tcp warning, got: %s", logOutput)
-	}
-	if !strings.Contains(logOutput, `"recommendation":"configure listen.tls for mTLS, bind 127.0.0.1:<port>, or use listen.socket"`) {
-		t.Fatalf("expected mTLS/loopback/socket recommendation, got: %s", logOutput)
-	}
-}
-
 func TestRunServeDoesNotWarnWhenDeferredListenerCloseReturnsNetErrClosed(t *testing.T) {
 	deps := newServeTestDeps()
 	deps.loadConfig = func(string) (*config.Config, error) {
@@ -1033,9 +995,9 @@ func TestRunServeDoesNotWarnWhenDeferredListenerCloseReturnsNetErrClosed(t *test
 		return cfg, nil
 	}
 
-	var logBuf strings.Builder
+	collector := &testhelp.CollectingHandler{}
 	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
+		return collector.Logger(), nil, nil
 	}
 	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
@@ -1065,8 +1027,8 @@ func TestRunServeDoesNotWarnWhenDeferredListenerCloseReturnsNetErrClosed(t *test
 	if listener.closeCalls != 2 {
 		t.Fatalf("listener close calls = %d, want 2", listener.closeCalls)
 	}
-	if strings.Contains(logBuf.String(), `"msg":"failed to close listener"`) {
-		t.Fatalf("unexpected listener-close warning for net.ErrClosed: %s", logBuf.String())
+	if collector.HasMessage("failed to close listener") {
+		t.Fatalf("unexpected listener-close warning for net.ErrClosed: %+v", collector.Records())
 	}
 }
 

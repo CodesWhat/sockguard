@@ -264,8 +264,8 @@ func TestPluginPolicyInspectCreateDeniesDangerousFields(t *testing.T) {
 func TestPluginPolicyInspectCreateAllowsAndPreservesBody(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{
 		AllowHostNetwork:     false,
-		AllowIPCHost:         false,
-		AllowPIDHost:         false,
+		AllowHostIPC:         false,
+		AllowHostPID:         false,
 		AllowedBindMounts:    []string{"/allowed"},
 		AllowedDevices:       []string{"/dev/allowed"},
 		AllowAllCapabilities: false,
@@ -662,12 +662,13 @@ func TestInspectPrivilegesOversizedBodyDenied(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{})
 	payload := bytes.Repeat([]byte("x"), maxPluginBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/plugins/pull", bytes.NewReader(payload))
-	reason, err := policy.inspectPrivileges(nil, req, "plugin pull")
-	if err != nil {
-		t.Fatalf("inspectPrivileges() error = %v", err)
+	_, err := policy.inspectPrivileges(nil, req, "plugin pull")
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspectPrivileges() error = %v, want request rejection", err)
 	}
-	if reason == "" {
-		t.Fatal("expected denial for oversized privilege body")
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
 	}
 }
 
@@ -675,12 +676,13 @@ func TestInspectPluginSetOversizedBodyDenied(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{})
 	payload := bytes.Repeat([]byte("x"), maxPluginBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/plugins/acme/set", bytes.NewReader(payload))
-	reason, err := policy.inspectPluginSet(nil, req)
-	if err != nil {
-		t.Fatalf("inspectPluginSet() error = %v", err)
+	_, err := policy.inspectPluginSet(nil, req)
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspectPluginSet() error = %v, want request rejection", err)
 	}
-	if reason == "" {
-		t.Fatal("expected denial for oversized set body")
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
 	}
 }
 
@@ -813,12 +815,12 @@ func TestExtractPluginConfigFromArchiveReaderPlainTar(t *testing.T) {
 	// Exercises the looksLikeTarHeader branch in extractPluginConfigFromArchiveReader.
 	payload := mustPluginCreateContextPayload(t, `{"Network":{"Type":"bridge"}}`, false)
 	reader := bytes.NewReader(payload)
-	config, ok, err := extractPluginConfigFromArchiveReader(reader)
+	config, ok, err := defaultIODeps().extractPluginConfigFromArchiveReader(reader)
 	if err != nil {
-		t.Fatalf("extractPluginConfigFromArchiveReader() error = %v", err)
+		t.Fatalf("defaultIODeps().extractPluginConfigFromArchiveReader() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("extractPluginConfigFromArchiveReader() ok=false, want true")
+		t.Fatal("defaultIODeps().extractPluginConfigFromArchiveReader() ok=false, want true")
 	}
 	if len(config) == 0 {
 		t.Fatal("config is empty")
@@ -829,12 +831,12 @@ func TestExtractPluginConfigFromArchiveReaderGzip(t *testing.T) {
 	// Exercises the looksLikeGzipHeader branch.
 	payload := mustPluginCreateContextPayload(t, `{"Network":{"Type":"bridge"}}`, true)
 	reader := bytes.NewReader(payload)
-	config, ok, err := extractPluginConfigFromArchiveReader(reader)
+	config, ok, err := defaultIODeps().extractPluginConfigFromArchiveReader(reader)
 	if err != nil {
-		t.Fatalf("extractPluginConfigFromArchiveReader() error = %v", err)
+		t.Fatalf("defaultIODeps().extractPluginConfigFromArchiveReader() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("extractPluginConfigFromArchiveReader() ok=false, want true")
+		t.Fatal("defaultIODeps().extractPluginConfigFromArchiveReader() ok=false, want true")
 	}
 	if len(config) == 0 {
 		t.Fatal("config is empty")
@@ -844,9 +846,9 @@ func TestExtractPluginConfigFromArchiveReaderGzip(t *testing.T) {
 func TestExtractPluginConfigFromArchiveReaderUnknownFormat(t *testing.T) {
 	// Neither gzip nor tar header → ok=false.
 	reader := bytes.NewReader(bytes.Repeat([]byte("x"), 512))
-	_, ok, err := extractPluginConfigFromArchiveReader(reader)
+	_, ok, err := defaultIODeps().extractPluginConfigFromArchiveReader(reader)
 	if err != nil {
-		t.Fatalf("extractPluginConfigFromArchiveReader() error = %v", err)
+		t.Fatalf("defaultIODeps().extractPluginConfigFromArchiveReader() error = %v", err)
 	}
 	if ok {
 		t.Fatal("expected ok=false for unknown format")
@@ -858,9 +860,9 @@ func TestExtractPluginConfigFromGzipReaderInvalidGzip(t *testing.T) {
 	// detect gzip.ErrHeader. Provide a full non-gzip header that triggers ErrHeader.
 	// A valid-length but wrong-magic byte sequence causes gzip.ErrHeader.
 	invalidHeader := make([]byte, 32) // 32 zero bytes — not 0x1f 0x8b magic
-	_, ok, err := extractPluginConfigFromGzipReader(bytes.NewReader(invalidHeader))
+	_, ok, err := defaultIODeps().extractPluginConfigFromGzipReader(bytes.NewReader(invalidHeader))
 	if err != nil {
-		t.Fatalf("extractPluginConfigFromGzipReader() error = %v", err)
+		t.Fatalf("defaultIODeps().extractPluginConfigFromGzipReader() error = %v", err)
 	}
 	if ok {
 		t.Fatal("expected ok=false for invalid gzip")
@@ -869,7 +871,7 @@ func TestExtractPluginConfigFromGzipReaderInvalidGzip(t *testing.T) {
 
 func TestExtractPluginConfigFromGzipReaderEmptyReader(t *testing.T) {
 	// Exercises line 511: gzip.NewReader returns io.EOF for empty reader (not gzip.ErrHeader).
-	_, _, err := extractPluginConfigFromGzipReader(bytes.NewReader(nil))
+	_, _, err := defaultIODeps().extractPluginConfigFromGzipReader(bytes.NewReader(nil))
 	if err == nil {
 		t.Fatal("expected error from empty gzip reader (io.EOF from gzip.NewReader)")
 	}
@@ -883,9 +885,9 @@ func TestExtractPluginConfigFromTarReaderInvalidTar(t *testing.T) {
 	// Padding to 512 bytes forces the tar reader to parse a full header block.
 	invalidTar := make([]byte, 512) // 512 zero bytes → tar reports invalid header
 	tr := tar.NewReader(bytes.NewReader(invalidTar))
-	_, ok, err := extractPluginConfigFromTarReader(tr)
+	_, ok, err := defaultIODeps().extractPluginConfigFromTarReader(tr)
 	if err != nil {
-		t.Fatalf("extractPluginConfigFromTarReader() error = %v", err)
+		t.Fatalf("defaultIODeps().extractPluginConfigFromTarReader() error = %v", err)
 	}
 	if ok {
 		t.Fatal("expected ok=false for invalid tar")
@@ -908,7 +910,7 @@ func TestExtractPluginConfigGzipTarPath(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	config, ok, err := extractPluginConfig(file, "")
+	config, ok, err := defaultIODeps().extractPluginConfig(file, "")
 	if err != nil {
 		t.Fatalf("extractPluginConfig() error = %v", err)
 	}
@@ -935,7 +937,7 @@ func TestExtractPluginConfigPlainTarPath(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	config, ok, err := extractPluginConfig(file, "")
+	config, ok, err := defaultIODeps().extractPluginConfig(file, "")
 	if err != nil {
 		t.Fatalf("extractPluginConfig() error = %v", err)
 	}
@@ -1004,7 +1006,7 @@ func TestInspectPrivilegesIgnoresBodyCloseErrorAfterRead(t *testing.T) {
 }
 
 func TestInspectPrivilegesMalformedJSONWithLogger(t *testing.T) {
-	// Exercises lines 168-172: logger debug when privilege JSON cannot be decoded.
+	// Exercises the logger debug branch when privilege JSON cannot be decoded; must deny (fail-closed).
 	policy := newPluginPolicy(PluginOptions{})
 	logs := &collectingHandler{}
 	req := httptest.NewRequest(http.MethodPost, "/plugins/acme/json", strings.NewReader("{not json}"))
@@ -1012,8 +1014,9 @@ func TestInspectPrivilegesMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspectPrivileges() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	const wantReason = "plugin denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
@@ -1073,15 +1076,14 @@ func TestInspectPluginCreateBodySpoolError(t *testing.T) {
 }
 
 func TestInspectPluginCreateExtractConfigError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	payload := mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false)
 	req := httptest.NewRequest(http.MethodPost, "/plugins/create", bytes.NewReader(payload))
 
-	realSeekToStart := seekToStart
+	p := newPluginPolicy(PluginOptions{})
+	realSeekToStart := p.io.SeekToStart
 	var seekCalls int
 	sentinel := errors.New("extract config failed")
-	seekToStart = func(file *os.File) error {
+	p.io.SeekToStart = func(file *os.File) error {
 		seekCalls++
 		if seekCalls == 2 {
 			return sentinel
@@ -1089,22 +1091,21 @@ func TestInspectPluginCreateExtractConfigError(t *testing.T) {
 		return realSeekToStart(file)
 	}
 
-	_, err := newPluginPolicy(PluginOptions{}).inspectPluginCreate(nil, req)
+	_, err := p.inspectPluginCreate(nil, req)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("inspectPluginCreate() error = %v, want %v", err, sentinel)
 	}
 }
 
 func TestInspectPluginCreateRewindBodyError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	payload := mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false)
 	req := httptest.NewRequest(http.MethodPost, "/plugins/create", bytes.NewReader(payload))
 
-	realSeekToStart := seekToStart
+	p := newPluginPolicy(PluginOptions{})
+	realSeekToStart := p.io.SeekToStart
 	var seekCalls int
 	sentinel := errors.New("rewind plugin body failed")
-	seekToStart = func(file *os.File) error {
+	p.io.SeekToStart = func(file *os.File) error {
 		seekCalls++
 		if seekCalls == 4 {
 			return sentinel
@@ -1112,7 +1113,7 @@ func TestInspectPluginCreateRewindBodyError(t *testing.T) {
 		return realSeekToStart(file)
 	}
 
-	_, err := newPluginPolicy(PluginOptions{}).inspectPluginCreate(nil, req)
+	_, err := p.inspectPluginCreate(nil, req)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("inspectPluginCreate() error = %v, want %v", err, sentinel)
 	}
@@ -1138,8 +1139,6 @@ func TestInspectPluginCreateLoggerOnDecodeError(t *testing.T) {
 }
 
 func TestExtractPluginConfigMultipartRewindError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	body, contentType := mustMultipartPluginUpload(t, mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false))
 	file, err := os.CreateTemp("", "sockguard-plugin-multipart-*")
 	if err != nil {
@@ -1154,17 +1153,16 @@ func TestExtractPluginConfigMultipartRewindError(t *testing.T) {
 	}
 
 	sentinel := errors.New("multipart rewind failed")
-	seekToStart = func(*os.File) error { return sentinel }
+	iod := defaultIODeps()
+	iod.SeekToStart = func(*os.File) error { return sentinel }
 
-	_, _, err = extractPluginConfig(file, contentType)
+	_, _, err = iod.extractPluginConfig(file, contentType)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
 	}
 }
 
 func TestExtractPluginConfigInitialRewindError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	file, err := os.CreateTemp("", "sockguard-plugin-rewind-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -1178,17 +1176,16 @@ func TestExtractPluginConfigInitialRewindError(t *testing.T) {
 	}
 
 	sentinel := errors.New("initial rewind failed")
-	seekToStart = func(*os.File) error { return sentinel }
+	iod := defaultIODeps()
+	iod.SeekToStart = func(*os.File) error { return sentinel }
 
-	_, _, err = extractPluginConfig(file, "application/x-tar")
+	_, _, err = iod.extractPluginConfig(file, "application/x-tar")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
 	}
 }
 
 func TestExtractPluginConfigRewindAfterGzipProbeError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	file, err := os.CreateTemp("", "sockguard-plugin-rewind-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
@@ -1201,10 +1198,11 @@ func TestExtractPluginConfigRewindAfterGzipProbeError(t *testing.T) {
 		t.Fatalf("Write: %v", err)
 	}
 
-	realSeekToStart := seekToStart
+	iod := defaultIODeps()
+	realSeekToStart := iod.SeekToStart
 	var seekCalls int
 	sentinel := errors.New("second rewind failed")
-	seekToStart = func(file *os.File) error {
+	iod.SeekToStart = func(file *os.File) error {
 		seekCalls++
 		if seekCalls == 2 {
 			return sentinel
@@ -1212,15 +1210,13 @@ func TestExtractPluginConfigRewindAfterGzipProbeError(t *testing.T) {
 		return realSeekToStart(file)
 	}
 
-	_, _, err = extractPluginConfig(file, "application/x-tar")
+	_, _, err = iod.extractPluginConfig(file, "application/x-tar")
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
 	}
 }
 
 func TestExtractPluginConfigFromMultipartArchiveError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	body, contentType := mustMultipartPluginUpload(t, mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false))
 	file, err := os.CreateTemp("", "sockguard-plugin-multipart-*")
 	if err != nil {
@@ -1235,45 +1231,43 @@ func TestExtractPluginConfigFromMultipartArchiveError(t *testing.T) {
 	}
 
 	sentinel := errors.New("archive read failed")
-	readAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
+	iod := defaultIODeps()
+	iod.ReadAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
 
-	_, _, err = extractPluginConfig(file, contentType)
+	_, _, err = iod.extractPluginConfig(file, contentType)
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractPluginConfig() error = %v, want %v", err, sentinel)
 	}
 }
 
 func TestExtractPluginConfigFromGzipReaderDrainError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	sentinel := errors.New("drain failed")
-	drainReader = func(io.Reader) error { return sentinel }
+	iod := defaultIODeps()
+	iod.DrainReader = func(io.Reader) error { return sentinel }
 
-	_, _, err := extractPluginConfigFromGzipReader(bytes.NewReader(mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, true)))
+	_, _, err := iod.extractPluginConfigFromGzipReader(bytes.NewReader(mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, true)))
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractPluginConfigFromGzipReader() error = %v, want %v", err, sentinel)
 	}
 }
 
 func TestExtractPluginConfigFromGzipReaderCloseError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	sentinel := errors.New("close failed")
-	closeReadCloser = func(io.Closer) error { return sentinel }
+	iod := defaultIODeps()
+	iod.CloseReadCloser = func(io.Closer) error { return sentinel }
 
-	_, _, err := extractPluginConfigFromGzipReader(bytes.NewReader(mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, true)))
+	_, _, err := iod.extractPluginConfigFromGzipReader(bytes.NewReader(mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, true)))
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractPluginConfigFromGzipReader() error = %v, want %v", err, sentinel)
 	}
 }
 
 func TestExtractPluginConfigFromTarReaderReadError(t *testing.T) {
-	restoreFilterIODeps(t)
-
 	sentinel := errors.New("config read failed")
-	readAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
+	iod := defaultIODeps()
+	iod.ReadAllLimited = func(io.Reader, int64) ([]byte, error) { return nil, sentinel }
 
-	_, _, err := extractPluginConfigFromTarReader(tar.NewReader(bytes.NewReader(mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false))))
+	_, _, err := iod.extractPluginConfigFromTarReader(tar.NewReader(bytes.NewReader(mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":[]}}`, false))))
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("extractPluginConfigFromTarReader() error = %v, want %v", err, sentinel)
 	}
@@ -1304,7 +1298,7 @@ func TestExtractPluginConfigMultipartEmptyBoundary(t *testing.T) {
 	}
 
 	// Content type with no boundary param → boundary == "".
-	config, ok, err := extractPluginConfig(file, "multipart/form-data")
+	config, ok, err := defaultIODeps().extractPluginConfig(file, "multipart/form-data")
 	if err != nil {
 		t.Fatalf("extractPluginConfig() error = %v, want nil", err)
 	}
@@ -1335,12 +1329,12 @@ func TestExtractPluginConfigFromMultipartEOF(t *testing.T) {
 		t.Fatalf("Seek: %v", err)
 	}
 
-	config, ok, err := extractPluginConfigFromMultipart(file, boundary)
+	config, ok, err := defaultIODeps().extractPluginConfigFromMultipart(file, boundary)
 	if err != nil {
-		t.Fatalf("extractPluginConfigFromMultipart() error = %v, want nil", err)
+		t.Fatalf("defaultIODeps().extractPluginConfigFromMultipart() error = %v, want nil", err)
 	}
 	if ok {
-		t.Fatalf("extractPluginConfigFromMultipart() ok = true, want false")
+		t.Fatalf("defaultIODeps().extractPluginConfigFromMultipart() ok = true, want false")
 	}
 	_ = config
 }
@@ -1366,7 +1360,7 @@ func TestExtractPluginConfigFromMultipartMalformedHeaders(t *testing.T) {
 		t.Fatalf("Seek: %v", err)
 	}
 
-	_, _, err = extractPluginConfigFromMultipart(file, boundary)
+	_, _, err = defaultIODeps().extractPluginConfigFromMultipart(file, boundary)
 	// Either the part is read successfully (with a possibly truncated header) or
 	// NextPart returns a non-EOF error → triggers lines 468-470. Accept either outcome.
 	_ = err
@@ -1407,12 +1401,12 @@ func TestExtractPluginConfigFromMultipartExtractsConfig(t *testing.T) {
 		t.Fatalf("Seek: %v", err)
 	}
 
-	config, ok, err := extractPluginConfigFromMultipart(file, boundary)
+	config, ok, err := defaultIODeps().extractPluginConfigFromMultipart(file, boundary)
 	if err != nil {
-		t.Fatalf("extractPluginConfigFromMultipart() error = %v", err)
+		t.Fatalf("defaultIODeps().extractPluginConfigFromMultipart() error = %v", err)
 	}
 	if !ok {
-		t.Fatal("extractPluginConfigFromMultipart() ok=false, want true")
+		t.Fatal("defaultIODeps().extractPluginConfigFromMultipart() ok=false, want true")
 	}
 	if len(config) == 0 {
 		t.Fatal("config is empty")
@@ -1424,7 +1418,7 @@ func TestExtractPluginConfigFromArchiveReaderPeekError(t *testing.T) {
 	sentinel := io.ErrUnexpectedEOF
 	// A readErrorReadCloser always returns an error on Read → Peek propagates it.
 	r := &readErrorReadCloser{readErr: sentinel}
-	_, _, err := extractPluginConfigFromArchiveReader(r)
+	_, _, err := defaultIODeps().extractPluginConfigFromArchiveReader(r)
 	if err == nil {
 		t.Fatal("expected peek error to propagate from extractPluginConfigFromArchiveReader")
 	}
@@ -1437,12 +1431,12 @@ func TestExtractPluginConfigFromTarReaderNonRegularFile(t *testing.T) {
 	_ = tw.WriteHeader(&tar.Header{Name: "config.json", Typeflag: tar.TypeDir})
 	_ = tw.Close()
 
-	config, ok, err := extractPluginConfigFromTarReader(tar.NewReader(&buf))
+	config, ok, err := defaultIODeps().extractPluginConfigFromTarReader(tar.NewReader(&buf))
 	if err != nil {
-		t.Fatalf("extractPluginConfigFromTarReader() error = %v, want nil", err)
+		t.Fatalf("defaultIODeps().extractPluginConfigFromTarReader() error = %v, want nil", err)
 	}
 	if ok {
-		t.Fatalf("extractPluginConfigFromTarReader() ok=true, want false (dir entry skipped)")
+		t.Fatalf("defaultIODeps().extractPluginConfigFromTarReader() ok=true, want false (dir entry skipped)")
 	}
 	_ = config
 }
@@ -1455,12 +1449,12 @@ func TestExtractPluginConfigFromTarReaderWrongName(t *testing.T) {
 	_, _ = tw.Write([]byte("{}"))
 	_ = tw.Close()
 
-	config, ok, err := extractPluginConfigFromTarReader(tar.NewReader(&buf))
+	config, ok, err := defaultIODeps().extractPluginConfigFromTarReader(tar.NewReader(&buf))
 	if err != nil {
-		t.Fatalf("extractPluginConfigFromTarReader() error = %v, want nil", err)
+		t.Fatalf("defaultIODeps().extractPluginConfigFromTarReader() error = %v, want nil", err)
 	}
 	if ok {
-		t.Fatalf("extractPluginConfigFromTarReader() ok=true, want false (wrong name)")
+		t.Fatalf("defaultIODeps().extractPluginConfigFromTarReader() ok=true, want false (wrong name)")
 	}
 	_ = config
 }
@@ -1474,7 +1468,7 @@ func TestExtractPluginConfigFromTarReaderOversizedEntry(t *testing.T) {
 	_, _ = tw.Write(configBytes)
 	_ = tw.Close()
 
-	_, _, err := extractPluginConfigFromTarReader(tar.NewReader(&buf))
+	_, _, err := defaultIODeps().extractPluginConfigFromTarReader(tar.NewReader(&buf))
 	if err == nil {
 		t.Fatal("expected error for oversized config.json entry")
 	}
@@ -1487,12 +1481,12 @@ func TestExtractPluginConfigFromTarReaderInvalidHeader(t *testing.T) {
 	for i := range data {
 		data[i] = 0x41 // 'A' — non-zero, non-EOF block
 	}
-	_, ok, err := extractPluginConfigFromTarReader(tar.NewReader(bytes.NewReader(data)))
+	_, ok, err := defaultIODeps().extractPluginConfigFromTarReader(tar.NewReader(bytes.NewReader(data)))
 	if err != nil {
-		t.Fatalf("extractPluginConfigFromTarReader() error = %v, want nil for invalid header", err)
+		t.Fatalf("defaultIODeps().extractPluginConfigFromTarReader() error = %v, want nil for invalid header", err)
 	}
 	if ok {
-		t.Fatal("extractPluginConfigFromTarReader() ok=true, want false for invalid header")
+		t.Fatal("defaultIODeps().extractPluginConfigFromTarReader() ok=true, want false for invalid header")
 	}
 }
 
@@ -1516,14 +1510,14 @@ func TestExtractPluginConfigFromTarReaderTruncatedBody(t *testing.T) {
 	// The second call to tr.Next() should successfully return "other.json" header.
 	// The third call to tr.Next() will try to skip the 1024-byte body that isn't there
 	// → returns io.ErrUnexpectedEOF (triggers line 539).
-	_, _, err := extractPluginConfigFromTarReader(tar.NewReader(bytes.NewReader(truncated)))
+	_, _, err := defaultIODeps().extractPluginConfigFromTarReader(tar.NewReader(bytes.NewReader(truncated)))
 	// Accept any outcome — either we get line 539 or we may already have config found.
 	// The key assertion is that this doesn't panic.
 	_ = err
 }
 
 func TestParsePluginSettingSourceNormalizationFails(t *testing.T) {
-	// Exercises line 616: .source key with relative path → normalizeContainerCreateBindMount fails.
+	// Exercises line 616: .source key with relative path → normalizeBindMount fails.
 	kind, normalized, matched := parsePluginSetting("volume.source", "relative/path")
 	if matched {
 		t.Fatalf("parsePluginSetting() matched=true, want false; kind=%v, normalized=%q", kind, normalized)
@@ -1531,7 +1525,7 @@ func TestParsePluginSettingSourceNormalizationFails(t *testing.T) {
 }
 
 func TestParsePluginSettingPathNormalizationFails(t *testing.T) {
-	// Exercises line 621: .path key with relative path → normalizeContainerCreateBindMount fails.
+	// Exercises line 621: .path key with relative path → normalizeBindMount fails.
 	kind, normalized, matched := parsePluginSetting("dev.path", "relative/path")
 	if matched {
 		t.Fatalf("parsePluginSetting() matched=true, want false; kind=%v, normalized=%q", kind, normalized)

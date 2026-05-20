@@ -53,7 +53,7 @@ sudo mv cosign /usr/local/bin/
 ## One-liner verify
 
 Replace `<TAG>` with the release tag you're pulling (for example
-`0.5.1`, `0.5`, or `latest`):
+`1.0.0-rc.2` or `latest`):
 
 ```bash
 cosign verify \
@@ -124,11 +124,11 @@ cosign-signed. The release workflow uploads a detached signature
 
 ```bash
 cosign verify-blob \
-  --certificate "sockguard-v0.5.1.tar.gz.pem" \
-  --signature   "sockguard-v0.5.1.tar.gz.sig" \
+  --certificate "sockguard-v1.0.0-rc.2.tar.gz.pem" \
+  --signature   "sockguard-v1.0.0-rc.2.tar.gz.sig" \
   --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  "sockguard-v0.5.1.tar.gz"
+  "sockguard-v1.0.0-rc.2.tar.gz"
 ```
 
 Same interpretation as the image verify: a clean exit code is a

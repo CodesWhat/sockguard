@@ -1,10 +1,12 @@
 package logging
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOutputWriterStdStreams(t *testing.T) {
@@ -150,6 +152,75 @@ func TestNewJSONFormat(t *testing.T) {
 	}
 	if closer != nil {
 		t.Fatalf("closer = %v, want nil for stdout", closer)
+	}
+}
+
+// TestBufferedFileWriterFlushOnClose pins the contract that Close() drains
+// the in-memory buffer to disk before returning. The 1 s periodic flush ticker
+// is irrelevant here: we explicitly want to assert that even records the
+// ticker never had a chance to flush (because Close runs first) end up on disk.
+//
+// Write a tight burst of records larger than the 4 KiB bufio buffer in one go
+// so most of the burst stays buffered, then Close immediately and assert the
+// resulting file holds every record.
+func TestBufferedFileWriterFlushOnClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "burst.log")
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+
+	// Hour-long flush interval so the periodic flush definitely does not fire
+	// before Close. Anything Close drains has to come from the explicit final
+	// Flush in Close itself.
+	w := newBufferedFileWriter(f, logBufferSize, time.Hour)
+
+	// 100 records × 64 bytes = 6400 bytes, well above the 4 KiB buffer.
+	const records = 100
+	for i := 0; i < records; i++ {
+		line := bytes.Repeat([]byte{'a' + byte(i%26)}, 63)
+		line = append(line, '\n')
+		if _, err := w.Write(line); err != nil {
+			t.Fatalf("Write %d: %v", i, err)
+		}
+	}
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	lines := bytes.Count(data, []byte("\n"))
+	if lines != records {
+		t.Fatalf("persisted %d lines, want %d (buffer was not drained on Close)", lines, records)
+	}
+}
+
+// TestBufferedFileWriterDoubleCloseSafe pins the idempotent-Close contract:
+// the second Close must not panic on a re-closed stop channel. Pre-v1.0 the
+// stop channel was unprotected and a defer'd Close paired with an explicit
+// Close at shutdown would crash the process during teardown.
+func TestBufferedFileWriterDoubleCloseSafe(t *testing.T) {
+	tmpDir := t.TempDir()
+	logPath := filepath.Join(tmpDir, "double-close.log")
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	w := newBufferedFileWriter(f, logBufferSize, time.Hour)
+
+	if err := w.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	// Second Close used to panic via close(w.stop) on an already-closed chan.
+	// File.Close on the underlying handle returns os.ErrClosed; the stopOnce
+	// guard means we should reach that point rather than crashing earlier.
+	if err := w.Close(); err == nil {
+		t.Fatal("expected error from second Close on already-closed file, got nil")
 	}
 }
 

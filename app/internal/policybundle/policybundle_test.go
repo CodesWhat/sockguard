@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,7 @@ func generatePEM(t *testing.T) string {
 // --- BuildConfig validation ---
 
 func TestBuildConfig_DisabledReturnsNoopConfig(t *testing.T) {
+	t.Parallel()
 	cfg, err := BuildConfig(RawConfig{Enabled: false})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -45,6 +47,7 @@ func TestBuildConfig_DisabledReturnsNoopConfig(t *testing.T) {
 }
 
 func TestBuildConfig_EnabledRequiresAtLeastOneTrustEntry(t *testing.T) {
+	t.Parallel()
 	_, err := BuildConfig(RawConfig{Enabled: true})
 	if err == nil {
 		t.Fatal("expected error when Enabled=true and no trust entries are configured")
@@ -52,6 +55,7 @@ func TestBuildConfig_EnabledRequiresAtLeastOneTrustEntry(t *testing.T) {
 }
 
 func TestBuildConfig_RejectsMalformedPEM(t *testing.T) {
+	t.Parallel()
 	_, err := BuildConfig(RawConfig{
 		Enabled:            true,
 		AllowedSigningKeys: []SigningKeyConfig{{PEM: "not-a-pem"}},
@@ -62,6 +66,7 @@ func TestBuildConfig_RejectsMalformedPEM(t *testing.T) {
 }
 
 func TestBuildConfig_RejectsEmptyPEM(t *testing.T) {
+	t.Parallel()
 	_, err := BuildConfig(RawConfig{
 		Enabled:            true,
 		AllowedSigningKeys: []SigningKeyConfig{{PEM: "   "}},
@@ -72,6 +77,7 @@ func TestBuildConfig_RejectsEmptyPEM(t *testing.T) {
 }
 
 func TestBuildConfig_RejectsKeylessWithoutIssuer(t *testing.T) {
+	t.Parallel()
 	_, err := BuildConfig(RawConfig{
 		Enabled:        true,
 		AllowedKeyless: []KeylessConfig{{SubjectPattern: ".*"}},
@@ -82,6 +88,7 @@ func TestBuildConfig_RejectsKeylessWithoutIssuer(t *testing.T) {
 }
 
 func TestBuildConfig_RejectsKeylessWithoutSubjectPattern(t *testing.T) {
+	t.Parallel()
 	_, err := BuildConfig(RawConfig{
 		Enabled:        true,
 		AllowedKeyless: []KeylessConfig{{Issuer: "https://example.com"}},
@@ -92,6 +99,7 @@ func TestBuildConfig_RejectsKeylessWithoutSubjectPattern(t *testing.T) {
 }
 
 func TestBuildConfig_RejectsBadSubjectRegex(t *testing.T) {
+	t.Parallel()
 	_, err := BuildConfig(RawConfig{
 		Enabled: true,
 		AllowedKeyless: []KeylessConfig{
@@ -104,6 +112,7 @@ func TestBuildConfig_RejectsBadSubjectRegex(t *testing.T) {
 }
 
 func TestBuildConfig_CompilesKeyedFingerprint(t *testing.T) {
+	t.Parallel()
 	pemStr := generatePEM(t)
 	cfg, err := BuildConfig(RawConfig{
 		Enabled:            true,
@@ -122,6 +131,7 @@ func TestBuildConfig_CompilesKeyedFingerprint(t *testing.T) {
 }
 
 func TestBuildConfig_TimeoutParsing(t *testing.T) {
+	t.Parallel()
 	pemStr := generatePEM(t)
 	base := RawConfig{
 		Enabled:            true,
@@ -168,6 +178,7 @@ func TestBuildConfig_TimeoutParsing(t *testing.T) {
 // --- New() invariants ---
 
 func TestNew_KeylessRequiresTrustedMaterial(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		Enabled: true,
 		AllowedKeyless: []KeylessIdentity{
@@ -180,6 +191,7 @@ func TestNew_KeylessRequiresTrustedMaterial(t *testing.T) {
 }
 
 func TestDisabledVerifier_RejectsCalls(t *testing.T) {
+	t.Parallel()
 	v, err := New(Config{Enabled: false})
 	if err != nil {
 		t.Fatalf("New disabled: %v", err)
@@ -192,6 +204,7 @@ func TestDisabledVerifier_RejectsCalls(t *testing.T) {
 // --- DigestYAML ---
 
 func TestDigestYAML_Deterministic(t *testing.T) {
+	t.Parallel()
 	got := DigestYAML([]byte("hello world"))
 	want := "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
 	if got != want {
@@ -202,6 +215,7 @@ func TestDigestYAML_Deterministic(t *testing.T) {
 // --- Verify happy + sad paths via VirtualSigstore (keyless) ---
 
 func TestVerify_KeylessHappyPath(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -242,6 +256,7 @@ func TestVerify_KeylessHappyPath(t *testing.T) {
 }
 
 func TestVerify_TamperedYAMLRejected(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -274,6 +289,7 @@ func TestVerify_TamperedYAMLRejected(t *testing.T) {
 }
 
 func TestVerify_IssuerMismatchRejected(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -303,6 +319,7 @@ func TestVerify_IssuerMismatchRejected(t *testing.T) {
 }
 
 func TestVerify_SubjectMismatchRejected(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -333,6 +350,7 @@ func TestVerify_SubjectMismatchRejected(t *testing.T) {
 }
 
 func TestVerify_NilEntityRejected(t *testing.T) {
+	t.Parallel()
 	pemStr := generatePEM(t)
 	cfg, err := BuildConfig(RawConfig{
 		Enabled:            true,
@@ -351,6 +369,7 @@ func TestVerify_NilEntityRejected(t *testing.T) {
 }
 
 func TestVerify_EmptyYAMLRejected(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -378,6 +397,7 @@ func TestVerify_EmptyYAMLRejected(t *testing.T) {
 // --- LoadBundle ---
 
 func TestLoadBundle_MissingPathReturnsError(t *testing.T) {
+	t.Parallel()
 	if _, err := LoadBundle("/nonexistent/bundle.json"); err == nil {
 		t.Fatal("expected error for missing bundle file")
 	}
@@ -392,6 +412,7 @@ func TestLoadBundle_MissingPathReturnsError(t *testing.T) {
 // relaxed — i.e. the flag only disables a mandatory check, not the whole
 // keyless path.
 func TestVerify_RekorNotRequired_AcceptsBundle(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -433,6 +454,7 @@ func TestVerify_RekorNotRequired_AcceptsBundle(t *testing.T) {
 // A certificate whose issuer or SAN does not match AllowedKeyless must still
 // be rejected even when the transparency-log requirement is off.
 func TestVerify_RekorNotRequired_StillRejectsBadIdentity(t *testing.T) {
+	t.Parallel()
 	vs, err := ca.NewVirtualSigstore()
 	if err != nil {
 		t.Fatalf("NewVirtualSigstore: %v", err)
@@ -462,5 +484,45 @@ func TestVerify_RekorNotRequired_StillRejectsBadIdentity(t *testing.T) {
 
 	if _, err := v.Verify(context.Background(), yaml, entity); err == nil {
 		t.Fatal("expected SAN mismatch to fail even when RequireRekorInclusion=false")
+	}
+}
+
+// TestVerify_KeyedBranchExecutes covers the keyed verification path. We can't
+// produce a "keyed" SignedEntity via the testing/ca helpers (they emit
+// Fulcio-cert-bound entities), so instead we point a keyed-only config at a
+// keyless-signed entity and assert the failure mentions the keyed branch.
+// That proves verifyKeyed actually ran and returned its error rather than
+// being short-circuited before invocation.
+func TestVerify_KeyedBranchExecutes(t *testing.T) {
+	t.Parallel()
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	yaml := []byte("rules: []\n")
+	entity, err := vs.Sign("ops@example.com", "https://github.com/login/oauth", yaml)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+
+	pemStr := generatePEM(t)
+	cfg, err := BuildConfig(RawConfig{
+		Enabled:            true,
+		AllowedSigningKeys: []SigningKeyConfig{{PEM: pemStr}},
+	})
+	if err != nil {
+		t.Fatalf("BuildConfig: %v", err)
+	}
+	v, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	_, err = v.Verify(context.Background(), yaml, entity)
+	if err == nil {
+		t.Fatal("expected verification failure: keyless-signed entity against keyed-only config")
+	}
+	if !strings.Contains(err.Error(), "keyed:") {
+		t.Fatalf("expected error to mention the keyed branch, got %v", err)
 	}
 }

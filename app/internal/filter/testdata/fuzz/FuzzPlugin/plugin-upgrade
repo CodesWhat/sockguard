@@ -1,0 +1,4 @@
+go test fuzz v1
+string("/plugins/abc/upgrade")
+string("remote=registry%2Eexample%2Ecom%2Fmalicious%3Alatest")
+[]byte("")

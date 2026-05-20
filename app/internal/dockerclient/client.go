@@ -13,8 +13,10 @@ import (
 
 // New returns an *http.Client that dials the Docker unix socket at path.
 // The transport is tuned to match the main reverse-proxy transport:
-//   - MaxIdleConnsPerHost: 10  — caps idle connections per host bucket
-//   - IdleConnTimeout: 90s     — matches net/http DefaultTransport
+//   - MaxIdleConnsPerHost: 10    — caps idle connections per host bucket
+//   - IdleConnTimeout: 90s       — matches net/http DefaultTransport
+//   - ResponseHeaderTimeout: 30s — bounds the wait for upstream headers so an
+//     unresponsive Docker daemon cannot pin a side-channel goroutine
 //
 // Callers must not mutate the returned client after construction.
 func New(socketPath string) *http.Client {
@@ -23,8 +25,9 @@ func New(socketPath string) *http.Client {
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 			},
-			MaxIdleConnsPerHost: 10,
-			IdleConnTimeout:     90 * time.Second,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       90 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
 		},
 	}
 }

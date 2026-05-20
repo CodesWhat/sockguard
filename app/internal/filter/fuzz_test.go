@@ -1,24 +1,21 @@
 package filter
 
 import (
-	"net/url"
 	pathpkg "path"
 	"regexp"
-	"strings"
 	"testing"
 )
 
 var legacyVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+)?/`)
 
+// referenceNormalizePath is an independent re-implementation of NormalizePath
+// used by FuzzNormalizePath as a differential oracle. Like NormalizePath it
+// path-cleans then strips the version prefix and does not percent-decode; it
+// calls path.Clean unconditionally so the fuzzer also exercises the
+// pathNeedsClean fast path NormalizePath uses.
 func referenceNormalizePath(p string) string {
 	if p == "" {
 		return ""
-	}
-	if strings.IndexByte(p, '%') >= 0 {
-		unescaped, err := url.PathUnescape(p)
-		if err == nil {
-			p = unescaped
-		}
 	}
 	return legacyVersionPrefix.ReplaceAllString(pathpkg.Clean(p), "/")
 }
@@ -153,8 +150,8 @@ func FuzzGlobToRegex(f *testing.F) {
 }
 
 // FuzzNormalizePath fuzzes path normalization in isolation. The result must
-// stay equivalent to a reference implementation that percent-decodes once
-// before path cleaning and version-prefix stripping.
+// stay equivalent to a reference implementation that path-cleans and strips
+// the version prefix without percent-decoding.
 func FuzzNormalizePath(f *testing.F) {
 	seeds := []string{
 		"/containers/json",
@@ -177,6 +174,8 @@ func FuzzNormalizePath(f *testing.F) {
 		"/containers/./json",    // dot segment
 		"/containers%2Fjson",
 		"/containers%252Fjson",
+		"/containers/%2e/json",   // single-encoded dot — stays literal, no collapse
+		"/containers/%252e/json", // double-encoded dot — must not decode to "."
 		"/containers/%2e%2e/images/json",
 		"/containers/%252e%252e/images/json",
 		"/v1.45%2Fcontainers/json",

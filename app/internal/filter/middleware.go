@@ -1,13 +1,27 @@
 package filter
 
 import (
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
+
+// bodyReadTimeout is the per-request deadline applied when reading the
+// request body for inspection. It guards non-streaming paths against
+// slowloris-style body-stall attacks. Streaming/hijack paths are handled
+// by the proxy.HijackHandler layer and are unaffected.
+//
+// var rather than const so the slowloris regression suite can dial it down
+// to a few hundred ms without sleeping 30s of wall clock. The
+// TestBodyReadTimeoutIs30Seconds mutation-kill test pins the default; any
+// override must be scoped via t.Cleanup.
+var bodyReadTimeout = 30 * time.Second
 
 // DenialResponse is the JSON body returned when a request is denied.
 type DenialResponse struct {
@@ -120,9 +134,9 @@ func (o Options) normalized() Options {
 }
 
 type runtimePolicy struct {
-	rules                    []*CompiledRule
-	denyResponseVerbosity    DenyResponseVerbosity
-	inspectPoliciesByMethod  map[string][]requestInspectPolicy
+	rules                   []*CompiledRule
+	denyResponseVerbosity   DenyResponseVerbosity
+	inspectPoliciesByMethod map[string][]requestInspectPolicy
 }
 
 type inspectSeverity int
@@ -140,11 +154,17 @@ const (
 var _ [1]struct{} = [inspectSeverityCritical - inspectSeverityHigh]struct{}{}
 var _ [1]struct{} = [inspectSeverityHigh - inspectSeverityMedium]struct{}{}
 
+// inspectorFunc is the common signature for request-body / query inspectors
+// dispatched by the filter middleware. Inspectors that don't log anything
+// receive the logger but ignore it; that keeps the bucket walk in
+// inspectAllowedRequest monomorphic instead of paying for a per-policy bridge.
+type inspectorFunc func(*slog.Logger, *http.Request, string) (string, error)
+
 type requestInspectPolicy struct {
 	method            string
 	matches           func(string) bool
 	severity          inspectSeverity
-	inspect           func(*slog.Logger, *http.Request, string) (string, error)
+	inspect           inspectorFunc
 	errorLogMessage   string
 	denyReasonOnError string
 }
@@ -172,37 +192,25 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			activePolicy := defaultPolicy
-			if opts.ResolveProfile != nil {
-				if profileName, ok := opts.ResolveProfile(r); ok {
-					if meta := logging.MetaForRequest(w, r); meta != nil && profileName != "" {
-						meta.Profile = profileName
-					}
-					profile, found := profilePolicies[profileName]
-					if !found {
-						denyWithReasonCode(w, r, logger, reasonCodeClientPolicyProfileUnresolved, "client policy profile could not be resolved", activePolicy.denyResponseVerbosity)
-						return
-					}
-					activePolicy = profile
-				}
+			// Resolve the request meta once: subsequent decision stamps, deny
+			// pass-through checks, and profile/rule annotations all read or
+			// write the same pointer, so paying for the type assertion plus
+			// context fallback once per request is the minimal correct cost.
+			meta := logging.MetaForRequest(w, r)
+
+			activePolicy, ok := resolveActivePolicy(opts, profilePolicies, defaultPolicy, w, r, meta, logger)
+			if !ok {
+				return
 			}
 
-			normPath := NormalizePath(r.URL.Path)
+			normPath := resolveNormalizedPath(meta, r)
 			action, ruleIndex, reason := evaluateNormalized(activePolicy.rules, r.Method, normPath)
 			denyStatus := http.StatusForbidden
 			reasonCode := ruleDecisionReasonCode(action, reason)
-
-			// Write decision to shared RequestMeta (created by access log middleware).
-			if m := logging.MetaForRequest(w, r); m != nil {
-				m.Decision = string(action)
-				m.Rule = ruleIndex
-				m.ReasonCode = reasonCode
-				m.Reason = reason
-				m.NormPath = normPath
-			}
+			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
 
 			if action == ActionAllow {
-				denyReason, denyReasonCode, status := activePolicy.inspectAllowedRequest(logger, r, normPath)
+				denyReason, denyReasonCode, status := runAllowedInspection(activePolicy, logger, w, r, normPath)
 				if denyReason != "" {
 					action = ActionDeny
 					reasonCode = denyReasonCode
@@ -210,16 +218,15 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 					if status != 0 {
 						denyStatus = status
 					}
-					if m := logging.MetaForRequest(w, r); m != nil {
-						m.Decision = string(action)
-						m.ReasonCode = reasonCode
-						m.Reason = reason
+					if meta != nil {
+						meta.Decision = string(action)
+						meta.ReasonCode = reasonCode
+						meta.Reason = reason
 					}
 				}
 			}
 
 			if action == ActionDeny {
-				meta := logging.MetaForRequest(w, r)
 				if meta.AllowsPassThrough() {
 					meta.Decision = logging.DecisionWouldDeny
 					next.ServeHTTP(w, r)
@@ -236,12 +243,67 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 	}
 }
 
-// adaptNoLogger wraps an inspect func that has no logger parameter into the
-// standard (*slog.Logger, *http.Request, string) → (string, error) signature.
-func adaptNoLogger(fn func(*http.Request, string) (string, error)) func(*slog.Logger, *http.Request, string) (string, error) {
-	return func(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-		return fn(r, normalizedPath)
+// resolveActivePolicy picks the per-request runtimePolicy based on the
+// optional profile resolver. Returns ok=false after writing the denial
+// response when a profile was named but is not registered.
+func resolveActivePolicy(opts Options, profilePolicies map[string]runtimePolicy, defaultPolicy runtimePolicy, w http.ResponseWriter, r *http.Request, meta *logging.RequestMeta, logger *slog.Logger) (runtimePolicy, bool) {
+	if opts.ResolveProfile == nil {
+		return defaultPolicy, true
 	}
+	profileName, ok := opts.ResolveProfile(r)
+	if !ok {
+		return defaultPolicy, true
+	}
+	if meta != nil && profileName != "" {
+		meta.Profile = profileName
+	}
+	profile, found := profilePolicies[profileName]
+	if !found {
+		denyWithReasonCode(w, r, logger, reasonCodeClientPolicyProfileUnresolved, "client policy profile could not be resolved", defaultPolicy.denyResponseVerbosity)
+		return runtimePolicy{}, false
+	}
+	return profile, true
+}
+
+// resolveNormalizedPath returns the cached normalized path when access logging
+// already produced it; otherwise it normalizes once and lets the meta carry
+// the value forward to downstream layers.
+func resolveNormalizedPath(meta *logging.RequestMeta, r *http.Request) string {
+	if meta != nil && meta.NormPath != "" {
+		return meta.NormPath
+	}
+	return NormalizePath(r.URL.Path)
+}
+
+func stampDecisionOnMeta(meta *logging.RequestMeta, action Action, ruleIndex int, reasonCode, reason, normPath string) {
+	if meta == nil {
+		return
+	}
+	meta.Decision = string(action)
+	meta.Rule = ruleIndex
+	meta.ReasonCode = reasonCode
+	meta.Reason = reason
+	meta.NormPath = normPath
+}
+
+// runAllowedInspection runs the request-body inspectors under a slowloris read
+// deadline. The deadline is applied only for inspection so a slow-but-honest
+// streaming client isn't killed once we hand off to the upstream.
+//
+// ErrNotSupported on httptest / custom transports is benign; anything else
+// surfaces at the usual severity — DEBUG for the set (guard simply doesn't
+// apply), ERROR for the clear (a lingering deadline on a proxied connection
+// can kill a streaming response mid-body).
+func runAllowedInspection(activePolicy runtimePolicy, logger *slog.Logger, w http.ResponseWriter, r *http.Request, normPath string) (string, string, int) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetReadDeadline(time.Now().Add(bodyReadTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		logger.Debug("filter: slowloris read deadline not applied", "error", err)
+	}
+	denyReason, denyReasonCode, status := activePolicy.inspectAllowedRequest(logger, r, normPath)
+	if err := rc.SetReadDeadline(time.Time{}); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		logger.Error("filter: failed to clear slowloris read deadline", "error", err)
+	}
+	return denyReason, denyReasonCode, status
 }
 
 func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy {
@@ -249,8 +311,8 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy
 	all := []requestInspectPolicy{
 		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreatePolicy(cfg.ContainerCreate).inspect, "failed to inspect container create request body", "unable to inspect container create request body"},
 		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
-		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, adaptNoLogger(newImagePullPolicy(cfg.ImagePull).inspect), "failed to inspect image pull request", "unable to inspect image pull request"},
-		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, adaptNoLogger(newBuildPolicy(cfg.Build).inspect), "failed to inspect build request", "unable to inspect build request"},
+		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
+		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
 		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
 		{http.MethodPut, matchesContainerArchiveInspection, inspectSeverityHigh, newContainerArchivePolicy(cfg.ContainerArchive).inspect, "failed to inspect container archive request body", "unable to inspect container archive request body"},
 		{http.MethodPost, matchesImageLoadInspection, inspectSeverityHigh, newImageLoadPolicy(cfg.ImageLoad).inspect, "failed to inspect image load request body", "unable to inspect image load request body"},
@@ -263,10 +325,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy
 		{http.MethodPost, matchesNodeInspection, inspectSeverityHigh, newNodePolicy(cfg.Node).inspect, "failed to inspect node update request body", "unable to inspect node update request body"},
 		{http.MethodPost, matchesPluginInspection, inspectSeverityCritical, newPluginPolicy(cfg.Plugin).inspect, "failed to inspect plugin request body", "unable to inspect plugin request body"},
 	}
-	byMethod := make(map[string][]requestInspectPolicy, 2)
-	for _, p := range all {
-		byMethod[p.method] = append(byMethod[p.method], p)
-	}
+	byMethod := groupInspectPoliciesByMethod(all)
 	return runtimePolicy{
 		rules:                   rules,
 		denyResponseVerbosity:   cfg.DenyResponseVerbosity,
@@ -339,11 +398,48 @@ func matchesPluginInspection(normalizedPath string) bool {
 	return normalizedPath == "/plugins/pull" || normalizedPath == "/plugins/create" || isPluginUpgradePath(normalizedPath) || isPluginSetPath(normalizedPath)
 }
 
+// inspectBucketCapacity bounds how many policies of a single severity may
+// match the same method in inspectAllowedRequest. Sized to comfortably hold
+// the current static policy list with headroom; if a future contributor adds
+// inspectors past this cap, compileRuntimePolicy panics at startup so the
+// overflow is loud rather than silent.
+const inspectBucketCapacity = 16
+
+// groupInspectPoliciesByMethod buckets the static policy list by HTTP method
+// and panics if any (method, severity) group would overflow inspectBuckets at
+// request time. The bucket walk in inspectAllowedRequest silently drops
+// overflow entries, which would disable enforcement for the dropped
+// inspectors — a future contributor adding a 17th POST/critical policy must
+// bump inspectBucketCapacity rather than let that happen quietly.
+//
+// Extracted from compileRuntimePolicy so the per-(method, severity) counting
+// + overflow check are testable in isolation; calling compileRuntimePolicy
+// directly only exercises the hardcoded 15-inspector list, which never
+// stresses the >cap branch.
+func groupInspectPoliciesByMethod(all []requestInspectPolicy) map[string][]requestInspectPolicy {
+	byMethod := make(map[string][]requestInspectPolicy, 2)
+	for _, p := range all {
+		byMethod[p.method] = append(byMethod[p.method], p)
+	}
+	for method, ps := range byMethod {
+		var sevCounts [3]int
+		for _, p := range ps {
+			sevCounts[int(p.severity)]++
+		}
+		for sev, n := range sevCounts {
+			if n > inspectBucketCapacity {
+				panic(fmt.Sprintf("filter: inspectBuckets capacity %d exceeded for method %s severity %d: %d policies", inspectBucketCapacity, method, sev, n))
+			}
+		}
+	}
+	return byMethod
+}
+
 // inspectBuckets holds matched policies grouped by severity for zero-alloc
 // single-pass triage in inspectAllowedRequest. The array is stack-allocated
 // because [3][16] fits on the frame and the slice backing p.inspectPolicies
 // caps out at ~15 entries.
-type inspectBuckets [3][16]*requestInspectPolicy
+type inspectBuckets [3][inspectBucketCapacity]*requestInspectPolicy
 
 func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Request, normalizedPath string) (string, string, int) {
 	var buckets inspectBuckets
@@ -404,7 +500,7 @@ func ruleDecisionReasonCode(action Action, reason string) string {
 	case ActionAllow:
 		return reasonCodeMatchedAllowRule
 	case ActionDeny:
-		if reason == "no matching allow rule" {
+		if reason == ReasonNoMatchingAllowRule {
 			return reasonCodeNoMatchingAllowRule
 		}
 		return reasonCodeMatchedDenyRule

@@ -7,6 +7,151 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-20
+
+v1.0.0 ships the proxy contract `v1.0.0-rc.2` froze on 2026-05-16. Three small binary deltas land on top: the Go toolchain pin moves from "latest 1.26.x" to a fixed `1.26.3` (clears 17 HIGH stdlib CVEs the 2026-05-18 weekly Grype scan surfaced), `internal/sigverify` no longer silently skips its belt-and-suspenders issuer / SAN re-check when a sigstore-go result returns with a nil certificate, and `github.com/sigstore/sigstore` is bumped from v1.10.5 to v1.10.6 (a cosmetic OAuth success-page template fix in upstream sigstore; no behavior change in policy-bundle or image-trust). Everything else below is non-binary hardening that accumulated on top — new tests, new CI workflows, new policy presets and compose examples, and docs polish.
+
+### Security
+
+- **Go toolchain pinned to 1.26.3 via `toolchain` directive in `app/go.mod` and `benchmarks/go.mod`.** The CI setup-go literals (`go-version: "1.26"`) that resolved to whatever 1.26.x was latest at job-time are replaced with `go-version-file: app/go.mod`, so the toolchain is one source of truth. Clears the 17 HIGH stdlib CVEs (CVE-2026-27143, CVE-2026-27144, CVE-2026-32280..83, CVE-2026-32288..89, CVE-2026-33810..14, CVE-2026-39817..36, CVE-2026-42499, CVE-2026-42501) that opened against rc.2's 1.26.1 / 1.26.2 stdlib in the weekly Grype scan.
+- **`internal/sigverify.VerifyKeyless` no longer silently skips its issuer / SAN re-check when sigstore-go returns a nil certificate.** The belt-and-suspenders re-check was previously guarded `if result.Signature != nil && result.Signature.Certificate != nil`, so a successful verification with no cert quietly bypassed the re-check. It now treats absent cert as a verification failure whenever issuer or SAN expectations are configured: if the cert cannot be inspected, the expectation cannot be honored, so the only safe answer is to reject. sigstore-go's policy gate above already enforces the identity, so the bypass shape was unreachable today; this seals it in case the sigstore-go result type ever drifts.
+
+### Added
+
+Two new bundled policy presets (`/etc/sockguard/` inside the image):
+
+- **`cis-docker-benchmark.yaml`** — admission gate for the inspectable subset of the CIS Docker Benchmark v1.6.0 Section 5 (Container Runtime) controls. Every non-compliant `docker run` is rejected at the proxy with `403` before dockerd ever executes it. Maps CIS 5.3, 5.4, 5.5, 5.9, 5.10, 5.11, 5.12, 5.15, 5.16, 5.17, 5.21, 5.22, 5.23, 5.25, 5.28, 5.30, 5.31. Companion docs page at `/docs/cis-docker-benchmark` covers the full control-by-control mapping, a copy-pasteable negative + positive verification recipe, and pointers to docker-bench-security / Trivy / Grype for the host/daemon/image controls sockguard cannot inspect.
+- **`github-actions-runner.yaml`** — purpose-built for `actions/runner` self-hosted runners that spawn job + service containers. Allows container lifecycle / exec / attach / image-pull / per-job networks / named volumes; denies privileged, host namespace sharing, bind mounts, capability additions, build, swarm, secrets, plugins, raw archive export.
+- **`gitlab-runner.yaml`** — purpose-built for `gitlab-runner` with `executor = "docker"`. Same allow / deny surface as the GitHub Actions preset. **Deliberately rejects `HostConfig.Privileged=true`** even if the runner's `config.toml` asks for it; DinD-style jobs that need privileged must move to a dedicated runner or to rootless DinD via sysbox.
+
+Three new ready-to-run compose stacks under `examples/compose/` (each with `docker-compose.yml`, `sockguard.yaml` overlay, and a security-tradeoff `README.md`):
+
+- `examples/compose/github-actions-runner/` — `myoung34/github-runner` behind the GH Actions preset.
+- `examples/compose/gitlab-runner/` — `gitlab/gitlab-runner` (Docker executor) behind the GitLab preset.
+- `examples/compose/cis-docker-benchmark/` — generic CIS gate (`your-app` placeholder = `docker:cli`) for interactive verification. README ships the negative + positive `docker compose exec` recipe.
+
+Total bundled presets is now 12: drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner.
+
+### Quality
+
+The Phase A QA hardening pass — every item below is test-only, CI-only, or docs-only. The proxy binary is unaffected:
+
+- **QA-1 — Proxy-vs-daemon differential harness.** New `app/differential/` package: `recordingDaemon` unix-socket recorder, `ClassifyDockerRoute` route oracle, `buildChain` production-middleware harness. 29-case path-evasion table (`path_differential_test.go`) covering version-prefix stripping, repeated slashes, dot segments, trailing slash, `;`-params, case sensitivity, percent-encoding — surfaced the single-vs-double percent-decode bug fixed in `df6a041` and folded into the rc.2 security note above. 11 additional pathological cases (`path_evasion_extended_test.go`) for `/v0/`, `/v/`, `/v1.45.99/`, `///`, `/./`, encoded whitespace / CR / LF, encoded backslash. CL/TE smuggling axis (`smuggling_test.go`) raw-`net.Conn` tests for CL/TE conflicts, chunked tricks, and pipelined second-request smuggling across the `httputil.ReverseProxy` → daemon hop. JSON-decoder differential axis (`json_differential_test.go`): duplicate keys, gzip bodies, content-type mismatch, trailing garbage, numeric/string coercion. New `FuzzPathRoutingDifferential` fuzz target wired into per-PR + nightly + monthly matrices. Real-`dockerd` differential tier under `app/integration/` validates the route classifier oracle against a live daemon.
+- **QA-2 — End-to-end against real `dockerd`.** New `app/integration/` build-tagged suite drives sockguard as a process behind a real Docker daemon, exercising each shipped preset for allow / deny conformance. Wired into a nightly CI job (`quality-integration.yml`).
+- **QA-3 — Memory / goroutine-leak soak + DoS regression.** New `scripts/soak.sh` runs `loadgen` against sockguard fronting `mockdocker` while tracking RSS, goroutine count, and heap. New `quality-soak-weekly.yml` runs the 4 h GitHub-hosted variant every Sunday. Slowloris regression (`filter/slowloris_test.go`) asserts the 30 s body-inspection deadline holds. Concurrent-hijack goroutine-leak regression closes the gap `BENCHMARKS.md` flagged. Hijack timing tests drive the throttle via a `timeNowHook` mock clock instead of a wall-clock sleep.
+- **QA-4 — mTLS / TLS edge-case suite.** `internal/sigverify` coverage from 0% → comprehensive (issuer / SAN mismatch cases). End-to-end client-cert regression: expired, wrong CA, revoked, SAN mismatch, SPKI-pin path, malformed certs, TLS downgrade. Weekly `testssl.sh` DAST probe of the TCP listener in `security-grype-weekly.yml`'s sibling slot.
+- **QA-6 — Downstream image-signature verification.** New `verify-published` job in `release-from-tag.yml` pulls each published image tag (ghcr.io / docker.io / quay.io) and runs the *exact* `cosign verify` / `cosign verify-blob` commands published in `docs/content/docs/verification.mdx`. Catches drift between operator-facing docs and the actual pipeline.
+- **TQ-17b** `internal/sigverify` issuer / SAN matcher coverage.
+- **TQ-18b** new `FuzzVisibilityFilter` fuzz target driving `patternFilterWriter.Write` + `flushFiltered` against adversarial JSON; wired into per-PR + nightly + monthly fuzz tiers.
+- **TQ-20b** `t.Parallel()` pass across 19 packages — admin, certmatch, dockerclient, dockerresource, glob, health, imagetrust, inspectcache, metrics, ownership, pkipin, policybundle, proxy, ratelimit, reload, responsefilter, sigverify, version, visibility. Suite wall-clock ~14% faster under `-race`.
+- **TQ-21** `certmatch.IntersectsIPAddrs` IPv4-in-IPv6 `Unmap` branch covered. The Linux dual-stack `::ffff:10.0.0.1` form now has explicit positive + negative tests.
+- **TQ-22** `configLimitsToRateLimitOptions` burst-zero-defaults-to-rate fallback and unrecognized-priority Warn-log paths covered via `testhelp.CollectingHandler`-driven log attr assertions.
+- **TQ-23** `FuzzFilterModifyResponse` corpus extended with 11 swarm-resource seeds (services, tasks, secrets, configs, nodes, swarm) and `RedactSensitiveData: true` flipped on so the swarm-redaction branches no longer short-circuit.
+- **Pre-tag coverage pass** (2026-05-20 review):
+  - Preset conformance suites for all three new presets — `app/integration/cis_docker_benchmark_conformance_test.go`, `github_actions_runner_conformance_test.go`, `gitlab_runner_conformance_test.go`. Each mirrors the tecnativa preset conformance pattern: rule-layer assertions + per-preset body-inspection 403 pins for privileged / host-namespaces / bind-mounts / capability-adds. The GitLab test specifically pins the `privileged = true` `config.toml` rejection the README calls out.
+  - `app/differential/classifier_test.go` extended with rows for seven `Route*` constants that were exported but never asserted as expected values (`RouteContainerStop`, `RouteContainerKill`, `RouteContainerExecCreate`, `RouteExecInspect`, `RouteVersion`, `RouteInfo`, `RouteImageList`). The classifier is the oracle for the differential fuzz tier — silent oracle bugs would have made the harness lie. Classifier agreed with every expected value; no oracle bugs.
+  - `app/internal/sigverify/sigverify_test.go` — `TestVerifyKeyedSuccess` + `TestVerifyKeyedDigestMismatch` for the keyed cosign verification path that was previously untested (keyless was tested, keyed was not). Closes the v1.0 advertised-security-control coverage gap.
+  - `app/internal/filter/config_write_test.go` — `TestConfigInspectAllowsCustomDriverWhenConfigured` pins the symmetric allow-branch for `AllowCustomDrivers: true` on the config-create inspector; the secret-create equivalent already existed.
+  - Persisted fuzz corpora — `app/internal/filter/testdata/fuzz/FuzzNormalizePath/` gains three seeds anchoring the rc.2 percent-decode advisory (`/containers/%252e/json`, `/containers/%2e%2e/json`, `/v9999/containers/json`); `app/internal/visibility/testdata/fuzz/FuzzVisibilityFilter/` is created with three baseline seeds. Persisted seeds ship in the repo so the regression surface lives in the commit history, not just as `f.Add` lines behind a fuzz invocation.
+
+### Tooling
+
+- `gofmt -l .` CI gate added to the `go-lint` job in `ci-verify.yml`; the 23 historical drift files were reformatted in one whitespace-only pass.
+- `govulncheck ./...` added to the lefthook pre-push pipeline as a priority-4 step (skip-if-not-installed). Tree is vuln-clean.
+- `RELEASING.md` carries the post-1.0 release checklist (the one-time v1.0.0 gate section is removed at this tag per its own instruction).
+
+### Docs
+
+- New `/docs/cis-docker-benchmark` guide — full Section 5 control mapping table, "Beyond Section 5" pointers (CIS 2.6 mTLS, CIS 4.5 image_trust, CIS 7.x swarm by exclusion), "What sockguard cannot enforce" companion-tool guidance.
+- `/docs/security#known-limitations` renamed and widened: "IP-based client identity is soft isolation" covers bridge IP rebinding, host-network sharing, and attacker-controlled IP allocation. "Hijacked-stream redaction limits" names all four `response.redact_*` toggles explicitly and lists every streaming endpoint a secret written to stdout can reach.
+- `/docs/presets` covers all 12 bundled presets including the three new ones.
+- README updated: preset count 9 → 12 across all surfaces, forward pointer to `examples/compose/` right under the preset list.
+
+## [1.0.0-rc.2] - 2026-05-16
+
+### Changed
+
+`request_body.exec.allowed_commands` entries are now argv templates whose tokens are matched as sockguard globs instead of by exact string equality. Each token follows the same dialect as path rules — `*` matches a run of non-slash characters, `**` matches any sequence — and a command is allowed when its token count equals an entry's and every token matches the glob at that position. This lets an operator allowlist an exec whose argv carries a variable component (a run ID, timestamp, or generated path) without enumerating every literal form, e.g. `["drydock", "finalize", "*"]`. Tokens with no glob metacharacters keep matching exactly as before; the only behavioral change is for an entry that literally contained `*` or `**` and relied on it being matched as a literal asterisk.
+
+A non-loopback plaintext TCP listener now requires **two** insecure acknowledgments instead of one: `listen.insecure_allow_plain_tcp` (unencrypted transport) and the new `listen.insecure_allow_unauthenticated_clients` (any host that can reach the port can impersonate a client). One flag without the other is rejected at config validation, so the dangerous mode cannot be reached by a single fat-fingered flag. The same applies to `admin.listen.*`. Existing configs running plaintext non-loopback TCP must add `insecure_allow_unauthenticated_clients: true` (env: `SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS`). The previous standalone startup warning is removed — the two-flag validation gate replaces it.
+
+A rule whose `match.path` contains a literal `%` is now a config-validation error instead of a startup warning. sockguard percent-decodes request paths before rule matching, so such a pattern can never fire against real traffic — a silently dead rule is a security-intent gap, so the misconfiguration now fails at load.
+
+### Fixed
+
+Oversized request bodies on the exec, plugin, and swarm inspectors now return `413 Request Entity Too Large` instead of `403`. These three were the remaining inspectors emitting a plain `403` for a body-size rejection while container-create, service, volume, network, and the others already returned `413`; all body inspectors now share one size-rejection contract.
+
+### Security
+
+Hardening from the 2026-05-16 branch review:
+
+- The visibility pattern-filter response buffer (`GET /containers/json`, `/images/json` with `response.name_patterns` / `response.image_patterns`) is now capped at `filter.MaxResponseBodyBytes` (8 MiB). A larger upstream response is rejected with a `502` instead of being buffered unbounded, closing an out-of-memory DoS that every other body path already guarded against.
+- The visibility middleware now honors rollout mode. An invisible single-resource inspect under `mode: warn` / `mode: audit` is forwarded to the upstream with a `would_deny` verdict instead of being hard-`404`'d, so operators can measure visibility-policy impact before enforcing — consistent with every other deny gate.
+- The reverse-proxy and side-channel (ownership / clientacl / visibility / exec-inspect) upstream transports now set `ResponseHeaderTimeout: 30s`. A Docker daemon that accepts a connection but never sends response headers can no longer pin a goroutine until context cancellation. Streaming endpoints send headers promptly and hijacked attach/exec-start connections bypass the pooled transport, so long-lived responses are unaffected.
+
+## [1.0.0-rc.1] - 2026-05-15
+
+### Security
+
+Bumped eight indirect dependencies to close 11 OSSF Scorecard / OSV-Scanner findings (security alert #8). govulncheck now reports zero reachable vulnerabilities and zero unreachable-but-imported vulnerabilities for the proxy binary.
+
+- `github.com/theupdateframework/go-tuf/v2` v2.3.0 → v2.4.1 — fixes path-traversal in TAP 4 multirepo client (GO-2026-4377), improper delegation-threshold validation (GO-2026-4349), and client DoS via malformed server response (GO-2026-4348). All three were reachable from `internal/policybundle`.
+- `github.com/sigstore/rekor` v1.4.3 → v1.5.0 — fixes Rekor SSRF via provided public-key URL (GO-2026-4355) and Rekor COSE v0.0.1 entry nil-deref in `Canonicalize` via empty `Message` (GO-2026-4354). Both reachable from `internal/policybundle` and `internal/imagetrust`.
+- `golang.org/x/net` v0.49.0 → v0.53.0 — fixes HTTP/2 infinite loop on bad `SETTINGS_MAX_FRAME_SIZE` (GO-2026-4918).
+- `google.golang.org/grpc` v1.78.0 → v1.79.3 — fixes gRPC-Go authorization bypass via missing leading slash in `:path` (GO-2026-4762).
+- `github.com/go-jose/go-jose/v4` v4.1.3 → v4.1.4 — fixes JWE decryption panic (GHSA-78h2-9frx-2jm8).
+- `github.com/in-toto/in-toto-golang` v0.9.0 → v0.11.0 — fixes inconsistent negation behavior between in-toto-golang and in-toto-python (GHSA-pmwq-pjrm-6p5r).
+- `github.com/sigstore/timestamp-authority/v2` v2.0.3 → v2.0.6 — fixes improper certificate validation in verifier (GHSA-xm5m-wgh2-rrg3).
+- `go.opentelemetry.io/otel` v1.40.0 → v1.42.0 — fixes excessive allocations on multi-value `baggage` header extraction (GHSA-mh2q-q3fh-2475).
+
+Filter inspector hardening — close inspection-bypass and slowloris gaps on the request path:
+
+- `POST /containers/create` now always denies `HostConfig.VolumesFrom`, `HostConfig.UTSMode=host`, a non-empty `HostConfig.CgroupParent`, `HostConfig.GroupAdd`, and `HostConfig.ExtraHosts`. These five fields expose namespace-escape or privilege-escalation paths and were previously uninspected; no policy combination can opt out of the new deny gates. `allowsAllContainerCreateBodies()` now always returns `false`, so the body is always walked.
+- `POST /containers/{id}/exec` and `POST /swarm/unlock` are now fail-closed when the request body cannot be decoded. The previous behaviour was to log at Debug and defer to the daemon, which let an attacker shape a Cmd field or unlock body that the proxy could not parse and bypass the inspector entirely. Both now return a structured deny reason without logging sensitive fields.
+- Filter middleware applies a 30s read deadline to the request body before the inspector runs and resets it to zero on return. Slowloris-style stalled bodies can no longer pin an inspector worker indefinitely. Hijack and streaming paths are unaffected — the deadline is scoped to body inspection on non-streaming endpoints.
+
+Ownership and clientacl hardening — bound caches and close OR-bypass on read-side filters:
+
+- Owner-label filter on list endpoints (`GET /containers/json`, etc.) now replaces the entire `label` filter with the proxy-enforced owner label rather than appending to it. The Docker daemon ORs label filters, so the previous append-if-missing logic let a client send `filters={"label":["com.sockguard.owner=victim"]}` and silently broaden the visible container set to another tenant's containers. The enforced owner label is now the only label filter the daemon sees.
+- Internal `sourceIPProfileIndex` and `clientCertificateProfileIndex` profile-lookup caches are now bounded to 1024 entries with LRU eviction (previously unbounded `sync.RWMutex`-guarded maps). Attacker-influenced source IPs or client-certificate fingerprints can no longer drive unbounded memory growth on the assignment-lookup path.
+- Container-label resolution now verifies the container is still live with a follow-up `GET /containers/{id}/json` before caching its labels. A container that died between the list call and resolution may have already released its IP to a new owner; caching the stale labels would apply the wrong profile. Also `io.LimitReader` the `GET /containers/json` response body to `filter.MaxResponseBodyBytes` so a malicious or runaway daemon cannot flood the resolver.
+- Internal `clientacl` resolution cache replaces the linear-scan eviction with a proper LRU (`container/list`). At cap, TTL-expired entries drain first, then the LRU tail evicts. Promotes on hit so cold entries cannot starve hot ones. Defense-in-depth refactor; no behavioural change visible from outside the process.
+
+### Changed (BREAKING)
+
+YAML schema renames — update configs and env var names before upgrading.
+
+- `listen.tls.allowed_common_names` → `listen.tls.common_names` (env: `SOCKGUARD_LISTEN_TLS_COMMON_NAMES`)
+- `listen.tls.allowed_dns_names` → `listen.tls.dns_names` (env: `SOCKGUARD_LISTEN_TLS_DNS_NAMES`)
+- `listen.tls.allowed_ip_addresses` → `listen.tls.ip_addresses` (env: `SOCKGUARD_LISTEN_TLS_IP_ADDRESSES`)
+- `listen.tls.allowed_uri_sans` → `listen.tls.uri_sans` (env: `SOCKGUARD_LISTEN_TLS_URI_SANS`)
+- `listen.tls.allowed_public_key_sha256_pins` → `listen.tls.public_key_sha256_pins` (env: `SOCKGUARD_LISTEN_TLS_PUBLIC_KEY_SHA256_PINS`)
+- Same five renames apply to `admin.listen.tls.*`
+- `request_body.plugin.allow_ipc_host` → `request_body.plugin.allow_host_ipc` (env: `SOCKGUARD_REQUEST_BODY_PLUGIN_ALLOW_HOST_IPC`)
+- `request_body.plugin.allow_pid_host` → `request_body.plugin.allow_host_pid` (env: `SOCKGUARD_REQUEST_BODY_PLUGIN_ALLOW_HOST_PID`)
+- `request_body.container_update.allow_devices` → `request_body.container_update.allow_all_devices` (env: `SOCKGUARD_REQUEST_BODY_CONTAINER_UPDATE_ALLOW_ALL_DEVICES`)
+- `admin.max_body_bytes` → `admin.max_request_bytes` (env: `SOCKGUARD_ADMIN_MAX_REQUEST_BYTES`)
+- `reload.debounce_ms` (integer milliseconds) → `reload.debounce` (Go duration string, default `"250ms"`) (env: `SOCKGUARD_RELOAD_DEBOUNCE`)
+- `reload.poll_interval_ms` (integer milliseconds) → `reload.poll_interval` (Go duration string, default `""`) (env: `SOCKGUARD_RELOAD_POLL_INTERVAL`)
+
+CLI flag rename:
+
+- `--deny-response-verbosity` → `--deny-verbosity`. The YAML key and env var are `response.deny_verbosity` / `SOCKGUARD_RESPONSE_DENY_VERBOSITY`; the old flag name carried a redundant `response` segment that prevented the three forms from round-tripping.
+
+Prometheus metrics renames — update dashboards and alert rules before upgrading.
+
+- Counter `sockguard_throttle_total` → `sockguard_throttle_requests_total`. The base name now carries the `requests` noun for parity with `sockguard_http_requests_total` / `sockguard_http_denied_requests_total` / etc.
+- Label `reason` → `reason_code` on `sockguard_throttle_requests_total{...}` for parity with `sockguard_http_denied_requests_total{...reason_code=...}`. Unified `sum by (reason_code)` PromQL across both counters now works.
+- Dropped `rule` label from `sockguard_http_denied_requests_total{...}`. The label's value was the zero-based ordinal index of the matched rule, which silently shifted whenever a rule was inserted or reordered — making dashboards keyed on `rule="3"` break on any policy edit. The rule index is still emitted on every deny in the structured audit log (`matched_rule` field) and the access log (`rule` slog attribute), which is the durable forensic record.
+
+### Changed
+
+- Added `RELEASING.md` documenting the end-to-end release process (pre-release checklist, tagging, post-tag verification, Helm chart bump, rollback procedure).
+- `serve --help` Long description now enumerates configuration precedence (CLI > `SOCKGUARD_*` env > Tecnativa compat env (`SOCKET_PATH`, `LOG_LEVEL`) > YAML > defaults) so the compat-env aliases and their relative precedence are visible without leaving the terminal.
+- `--config` help text now states that a missing file at the default path falls back to built-in defaults plus env overrides — previously only documented in README/Fumadocs.
+- `docs/migration.mdx` now mentions the legacy singular `ALLOW_RESTART=1` alias alongside `ALLOW_RESTARTS=1`; both have always been accepted by the compat layer (`compat.go`) but only the plural form was documented on the migration page.
+- Internal: renamed `configReloadLastSeconds` field to `configReloadLastNanos` and `configReloadLastSecondsKnown` to `configReloadLastKnown` in `internal/metrics`. The field stored `time.UnixNano()` — the "Seconds" suffix was misleading. The Prometheus wire format is unchanged (`/1e9` still converts to seconds at emit time).
+
 ## [0.8.1] - 2026-05-14
 
 ### Fixed

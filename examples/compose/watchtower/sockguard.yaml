@@ -18,6 +18,11 @@ health:
   enabled: true
   path: /health
 
+response:
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
+
 request_body:
   container_create:
     allowed_bind_mounts: []

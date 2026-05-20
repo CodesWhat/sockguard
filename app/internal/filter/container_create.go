@@ -58,19 +58,18 @@ type imageVerifier interface {
 // ContainerCreateOptions configures request-body policy checks for
 // POST /containers/create.
 type ContainerCreateOptions struct {
-	AllowPrivileged        bool
-	AllowHostNetwork       bool
-	AllowHostPID           bool
-	AllowHostIPC           bool
-	AllowedBindMounts      []string
-	AllowAllDevices        bool
-	AllowedDevices         []string
-	AllowDeviceRequests         bool
-	AllowedDeviceRequests       []AllowedDeviceRequestEntry
-	AllowDeviceCgroupRules      bool
-	AllowedDeviceCgroupRules    []string
+	AllowPrivileged          bool
+	AllowHostNetwork         bool
+	AllowHostPID             bool
+	AllowHostIPC             bool
+	AllowedBindMounts        []string
+	AllowAllDevices          bool
+	AllowedDevices           []string
+	AllowDeviceRequests      bool
+	AllowedDeviceRequests    []AllowedDeviceRequestEntry
+	AllowDeviceCgroupRules   bool
+	AllowedDeviceCgroupRules []string
 
-	// 0.6.0 secure-container rails.
 	RequireNoNewPrivileges     bool
 	RequireNonRootUser         bool
 	RequireReadonlyRootfs      bool
@@ -87,22 +86,26 @@ type ContainerCreateOptions struct {
 	AllowHostUserNS            bool
 	RequiredLabels             []string
 
+	// AllowSysctls permits setting kernel parameters via HostConfig.Sysctls.
+	// Default false: any non-empty Sysctls map is denied.
+	AllowSysctls bool
+
 	// ImageTrust configures cosign-backed signature verification.
 	ImageTrust ImageTrustOptions
 }
 
 type containerCreatePolicy struct {
-	allowPrivileged        bool
-	allowHostNetwork       bool
-	allowHostPID           bool
-	allowHostIPC           bool
-	allowedBindMounts      []string
-	allowAllDevices        bool
-	allowedDevices         []string
-	allowDeviceRequests         bool
-	allowedDeviceRequests       []allowedDeviceRequestEntry
-	allowDeviceCgroupRules      bool
-	allowedDeviceCgroupRules    []string
+	allowPrivileged          bool
+	allowHostNetwork         bool
+	allowHostPID             bool
+	allowHostIPC             bool
+	allowedBindMounts        []string
+	allowAllDevices          bool
+	allowedDevices           []string
+	allowDeviceRequests      bool
+	allowedDeviceRequests    []allowedDeviceRequestEntry
+	allowDeviceCgroupRules   bool
+	allowedDeviceCgroupRules []string
 
 	requireNoNewPrivileges     bool
 	requireNonRootUser         bool
@@ -119,6 +122,7 @@ type containerCreatePolicy struct {
 	denyUnconfinedAppArmor     bool
 	allowHostUserNS            bool
 	requiredLabels             []string
+	allowSysctls               bool
 
 	// Image trust — non-nil when mode != off.
 	imageTrustVerifier imageVerifier
@@ -133,73 +137,10 @@ type containerCreatePolicy struct {
 
 // AllowedDeviceRequestEntry is the public form of a device request allowlist
 // entry, used in ContainerCreateOptions.
-type AllowedDeviceRequestEntry struct {
-	Driver              string
-	AllowedCapabilities [][]string
-	MaxCount            *int
-}
-
-// allowedDeviceRequestEntry is the pre-processed form stored in
-// containerCreatePolicy after canonicalization.
-type allowedDeviceRequestEntry struct {
-	driver              string     // lowercase
-	allowedCapabilities [][]string // each inner slice sorted + deduped
-	maxCount            *int
-}
-
-// dockerDeviceRequest mirrors the Docker API HostConfig.DeviceRequests element.
-type dockerDeviceRequest struct {
-	Driver       string            `json:"Driver"`
-	Count        int               `json:"Count"`
-	DeviceIDs    []string          `json:"DeviceIDs"`
-	Capabilities [][]string        `json:"Capabilities"`
-	Options      map[string]string `json:"Options"`
-}
-
-type containerCreateRequest struct {
-	Image      string                    `json:"Image"`
-	HostConfig containerCreateHostConfig `json:"HostConfig"`
-	User       string                    `json:"User"`
-	Labels     map[string]string         `json:"Labels"`
-}
-
-type containerCreateHostConfig struct {
-	Privileged        bool                    `json:"Privileged"`
-	NetworkMode       string                  `json:"NetworkMode"`
-	PidMode           string                  `json:"PidMode"`
-	IpcMode           string                  `json:"IpcMode"`
-	UsernsMode        string                  `json:"UsernsMode"`
-	Binds             []string                `json:"Binds"`
-	Mounts            []containerCreateMount  `json:"Mounts"`
-	Devices           []containerCreateDevice `json:"Devices"`
-	DeviceRequests    []dockerDeviceRequest   `json:"DeviceRequests"`
-	DeviceCgroupRules []string                `json:"DeviceCgroupRules"`
-	SecurityOpt       []string                `json:"SecurityOpt"`
-	CapAdd            []string                `json:"CapAdd"`
-	CapDrop           []string                `json:"CapDrop"`
-	ReadonlyRootfs    bool                    `json:"ReadonlyRootfs"`
-	Memory            int64                   `json:"Memory"`
-	MemoryReservation int64                   `json:"MemoryReservation"`
-	NanoCpus          int64                   `json:"NanoCpus"`
-	CpuQuota          int64                   `json:"CpuQuota"`
-	CpuPeriod         int64                   `json:"CpuPeriod"`
-	CpuShares         int64                   `json:"CpuShares"`
-	PidsLimit         *int64                  `json:"PidsLimit"`
-}
-
-type containerCreateMount struct {
-	Type   string `json:"Type"`
-	Source string `json:"Source"`
-}
-
-type containerCreateDevice struct {
-	PathOnHost string `json:"PathOnHost"`
-}
-
 func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy {
 	allowed := make([]string, 0, len(opts.AllowedBindMounts))
 	for _, bindMount := range opts.AllowedBindMounts {
-		normalized, ok := normalizeContainerCreateBindMount(bindMount)
+		normalized, ok := normalizeBindMount(bindMount)
 		if !ok || slices.Contains(allowed, normalized) {
 			continue
 		}
@@ -239,17 +180,17 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	}
 
 	p := containerCreatePolicy{
-		allowPrivileged:             opts.AllowPrivileged,
-		allowHostNetwork:            opts.AllowHostNetwork,
-		allowHostPID:                opts.AllowHostPID,
-		allowHostIPC:                opts.AllowHostIPC,
-		allowedBindMounts:           allowed,
-		allowAllDevices:             opts.AllowAllDevices,
-		allowedDevices:              allowedDevices,
-		allowDeviceRequests:         opts.AllowDeviceRequests,
-		allowedDeviceRequests:       allowedDeviceRequests,
-		allowDeviceCgroupRules:      opts.AllowDeviceCgroupRules,
-		allowedDeviceCgroupRules:    allowedDeviceCgroupRules,
+		allowPrivileged:            opts.AllowPrivileged,
+		allowHostNetwork:           opts.AllowHostNetwork,
+		allowHostPID:               opts.AllowHostPID,
+		allowHostIPC:               opts.AllowHostIPC,
+		allowedBindMounts:          allowed,
+		allowAllDevices:            opts.AllowAllDevices,
+		allowedDevices:             allowedDevices,
+		allowDeviceRequests:        opts.AllowDeviceRequests,
+		allowedDeviceRequests:      allowedDeviceRequests,
+		allowDeviceCgroupRules:     opts.AllowDeviceCgroupRules,
+		allowedDeviceCgroupRules:   allowedDeviceCgroupRules,
 		requireNoNewPrivileges:     opts.RequireNoNewPrivileges,
 		requireNonRootUser:         opts.RequireNonRootUser,
 		requireReadonlyRootfs:      opts.RequireReadonlyRootfs,
@@ -265,6 +206,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denyUnconfinedAppArmor:     opts.DenyUnconfinedAppArmor,
 		allowHostUserNS:            opts.AllowHostUserNS,
 		requiredLabels:             normalizeStringList(opts.RequiredLabels),
+		allowSysctls:               opts.AllowSysctls,
 	}
 
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so
@@ -323,10 +265,6 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if p.imageTrustInitErr != nil {
 		return fmt.Sprintf("container create denied: image trust policy initialization error: %s", p.imageTrustInitErr.Error()), nil
 	}
-	if p.allowsAllContainerCreateBodies() {
-		return "", nil
-	}
-
 	body, err := readBoundedBody(r, maxContainerCreateBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
@@ -364,6 +302,24 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	}
 	if !p.allowHostUserNS && isHostNamespaceMode(createReq.HostConfig.UsernsMode) {
 		return "container create denied: host user namespace mode is not allowed", nil
+	}
+	if !p.allowSysctls && len(createReq.HostConfig.Sysctls) > 0 {
+		return "container create denied: setting sysctls is not allowed", nil
+	}
+	if len(createReq.HostConfig.VolumesFrom) > 0 {
+		return "container create denied: VolumesFrom is not allowed", nil
+	}
+	if isHostNamespaceMode(createReq.HostConfig.UTSMode) {
+		return "container create denied: host UTS mode is not allowed", nil
+	}
+	if strings.TrimSpace(createReq.HostConfig.CgroupParent) != "" {
+		return "container create denied: custom cgroup parent is not allowed", nil
+	}
+	if len(createReq.HostConfig.GroupAdd) > 0 {
+		return "container create denied: supplemental group IDs are not allowed", nil
+	}
+	if len(createReq.HostConfig.ExtraHosts) > 0 {
+		return "container create denied: ExtraHosts is not allowed", nil
 	}
 	if denyReason := p.denyDeviceReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
@@ -409,36 +365,6 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	}
 
 	return "", nil
-}
-
-func (p containerCreatePolicy) allowsAllContainerCreateBodies() bool {
-	if p.requireNoNewPrivileges ||
-		p.requireNonRootUser ||
-		p.requireReadonlyRootfs ||
-		p.requireDropAllCapabilities ||
-		p.requireMemoryLimit ||
-		p.requireCPULimit ||
-		p.requirePidsLimit ||
-		p.denyUnconfinedSeccomp ||
-		p.denyUnconfinedAppArmor ||
-		len(p.allowedSeccompProfiles) > 0 ||
-		len(p.allowedAppArmorProfiles) > 0 ||
-		len(p.requiredLabels) > 0 ||
-		len(p.allowedDeviceCgroupRules) > 0 ||
-		len(p.allowedDeviceRequests) > 0 ||
-		!p.allowAllCapabilities ||
-		p.imageTrustVerifier != nil {
-		return false
-	}
-	return p.allowPrivileged &&
-		p.allowHostNetwork &&
-		p.allowHostPID &&
-		p.allowHostIPC &&
-		p.allowHostUserNS &&
-		bindPathAllowed("/", p.allowedBindMounts) &&
-		(p.allowAllDevices || bindPathAllowed("/", p.allowedDevices)) &&
-		p.allowDeviceRequests &&
-		p.allowDeviceCgroupRules
 }
 
 func isHostNamespaceMode(value string) bool {
@@ -906,31 +832,20 @@ func bindPathAllowed(source string, allowedPaths []string) bool {
 	return false
 }
 
-func containerCreateBindSource(bind string) (string, bool) {
-	return extractAndValidateBindSource(bind, containerCreateMount{})
-}
-
 func extractAndValidateBindSource(bind string, mount containerCreateMount) (string, bool) {
 	if bind != "" {
 		source, _, ok := strings.Cut(bind, ":")
 		if !ok {
 			return "", false
 		}
-		return normalizeContainerCreateBindMount(source)
+		return normalizeBindMount(source)
 	}
 
 	if !strings.EqualFold(mount.Type, "bind") {
 		return "", false
 	}
 
-	return normalizeContainerCreateBindMount(mount.Source)
-}
-
-func normalizeContainerCreateBindMount(value string) (string, bool) {
-	if value == "" || !strings.HasPrefix(value, "/") {
-		return "", false
-	}
-	return path.Clean(value), true
+	return normalizeBindMount(mount.Source)
 }
 
 func normalizeContainerCreateDevicePath(value string) (string, bool) {
@@ -1031,6 +946,11 @@ func splitSecurityOptKV(entry string) (key, value string, hasValue bool) {
 	return entry, "", false
 }
 
+// normalizeCapability canonicalizes a Linux capability name into the form
+// HostConfig.CapAdd/CapDrop uses on the wire. Docker accepts both "NET_ADMIN"
+// and "CAP_NET_ADMIN" and treats them identically; sockguard strips the
+// "CAP_" prefix so a single allowlist entry covers both. Plugin manifest
+// capabilities follow a different namespace — see normalizePluginCapability.
 func normalizeCapability(value string) string {
 	trimmed := strings.ToUpper(strings.TrimSpace(value))
 	return strings.TrimPrefix(trimmed, "CAP_")

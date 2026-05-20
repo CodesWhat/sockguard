@@ -277,7 +277,9 @@ func TestSwarmInspectUnlockAllowsWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestSwarmInspectUnlockMalformedJSONDefersWithoutLoggingKey(t *testing.T) {
+func TestSwarmInspectUnlockMalformedJSONDeniesFail_Closed(t *testing.T) {
+	// On decode failure inspectUnlock must deny (fail-closed), not defer to
+	// Docker, and must not leak the unlock key into log output.
 	logs := &collectingHandler{}
 	logger := slog.New(logs)
 	policy := newSwarmPolicy(SwarmOptions{})
@@ -288,8 +290,9 @@ func TestSwarmInspectUnlockMalformedJSONDefersWithoutLoggingKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred to Docker)", reason)
+	const wantReason = "swarm unlock denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 
 	records := logs.snapshot()
@@ -497,7 +500,7 @@ func TestNormalizeSwarmRemoteAddrsSkipsEmpty(t *testing.T) {
 }
 
 func TestSwarmInspectInitMalformedJSONWithLogger(t *testing.T) {
-	// Exercises the logger != nil branch in inspectInit decode error path.
+	// Exercises the logger != nil branch in inspectInit decode error path; must deny (fail-closed).
 	policy := newSwarmPolicy(SwarmOptions{})
 	logs := &collectingHandler{}
 	logger := slog.New(logs)
@@ -507,8 +510,9 @@ func TestSwarmInspectInitMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred to Docker)", reason)
+	const wantReason = "swarm init denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 
 	records := logs.snapshot()
@@ -530,8 +534,9 @@ func TestSwarmInspectJoinMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty", reason)
+	const wantReason = "swarm join denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	records := logs.snapshot()
 	if len(records) != 1 {
@@ -549,8 +554,9 @@ func TestSwarmInspectUpdateMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty", reason)
+	const wantReason = "swarm update denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	records := logs.snapshot()
 	if len(records) != 1 {
@@ -622,12 +628,13 @@ func TestSwarmInspectJoinOversizedBody(t *testing.T) {
 	policy := newSwarmPolicy(SwarmOptions{})
 	payload := strings.Repeat("x", maxSwarmBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/swarm/join", strings.NewReader(payload))
-	reason, err := policy.inspectJoin(nil, req)
-	if err != nil {
-		t.Fatalf("inspectJoin() error = %v", err)
+	_, err := policy.inspectJoin(nil, req)
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspectJoin() error = %v, want request rejection", err)
 	}
-	if reason == "" {
-		t.Fatal("expected oversized body denial")
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
 	}
 }
 
@@ -645,12 +652,13 @@ func TestSwarmInspectUpdateOversizedBody(t *testing.T) {
 	policy := newSwarmPolicy(SwarmOptions{})
 	payload := strings.Repeat("x", maxSwarmBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/swarm/update", strings.NewReader(payload))
-	reason, err := policy.inspectUpdate(nil, req)
-	if err != nil {
-		t.Fatalf("inspectUpdate() error = %v", err)
+	_, err := policy.inspectUpdate(nil, req)
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspectUpdate() error = %v, want request rejection", err)
 	}
-	if reason == "" {
-		t.Fatal("expected oversized body denial")
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
 	}
 }
 
@@ -686,11 +694,15 @@ func TestSwarmInspectUnlockOversizedBody(t *testing.T) {
 	payload := strings.Repeat("x", maxSwarmBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/swarm/unlock", strings.NewReader(payload))
 
-	reason, err := policy.inspectUnlock(nil, req)
-	if err != nil {
-		t.Fatalf("inspectUnlock() error = %v", err)
+	_, err := policy.inspectUnlock(nil, req)
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspectUnlock() error = %v, want request rejection", err)
 	}
-	if !strings.HasPrefix(reason, "swarm unlock denied: request body exceeds") {
-		t.Fatalf("reason = %q, want oversized body denial", reason)
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
+	}
+	if !strings.HasPrefix(rejection.reason, "swarm unlock denied: request body exceeds") {
+		t.Fatalf("reason = %q, want oversized body denial", rejection.reason)
 	}
 }

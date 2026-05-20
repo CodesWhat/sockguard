@@ -2,12 +2,13 @@ package metrics
 
 import (
 	"bufio"
+	"cmp"
 	"fmt"
 	"math"
 	"net"
 	"net/http"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,12 +50,11 @@ type Registry struct {
 	upstreamKnown  atomic.Bool
 	upstreamUp     atomic.Int64
 
-	// configReloadLastSecondsKnown distinguishes "never reloaded" (still 0)
-	// from "reloaded successfully at the start of the Unix epoch", so the
-	// gauge can be omitted from scrape output until the first successful
-	// reload lands.
-	configReloadLastSecondsKnown atomic.Bool
-	configReloadLastSeconds      atomic.Uint64
+	// configReloadLastKnown distinguishes "never reloaded" (still 0) from
+	// "reloaded successfully at the start of the Unix epoch", so the gauge
+	// can be omitted from scrape output until the first successful reload lands.
+	configReloadLastKnown atomic.Bool
+	configReloadLastNanos atomic.Uint64
 
 	// policyVersionKnown gates emission of sockguard_policy_version so the
 	// gauge stays absent until the reload coordinator (or startup wiring)
@@ -99,7 +99,6 @@ type denyLabels struct {
 	profile    string
 	reasonCode string
 	route      string
-	rule       string
 	// mode is the rollout posture in effect when the deny was decided:
 	// enforce (request blocked), warn or audit (request passed through to
 	// upstream but the gate said deny). Dashboards filter by mode to
@@ -119,9 +118,9 @@ type upstreamWatchdogLabels struct {
 }
 
 type throttleLabels struct {
-	reason  string
-	profile string
-	mode    string
+	reasonCode string
+	profile    string
+	mode       string
 }
 
 type configReloadLabels struct {
@@ -233,8 +232,8 @@ func (r *Registry) ObserveConfigReload(result string) {
 		if ts < 0 {
 			return
 		}
-		r.configReloadLastSeconds.Store(uint64(ts))
-		r.configReloadLastSecondsKnown.Store(true)
+		r.configReloadLastNanos.Store(uint64(ts))
+		r.configReloadLastKnown.Store(true)
 	}
 }
 
@@ -262,7 +261,7 @@ func (r *Registry) ObserveThrottle(profile, reason, mode string) {
 	if mode == "" {
 		mode = "enforce"
 	}
-	addCounter(&r.throttles, throttleLabels{reason: reason, profile: profile, mode: mode})
+	addCounter(&r.throttles, throttleLabels{reasonCode: reason, profile: profile, mode: mode})
 }
 
 // SetInflight updates the current in-flight count gauge for a profile.
@@ -288,10 +287,10 @@ func (r *Registry) Middleware() func(http.Handler) http.Handler {
 			r.activeRequests.Add(1)
 			defer r.activeRequests.Add(-1)
 
-			mw := newMetricsResponseWriter(w, req)
+			mw := acquireResponseWriter(w, req)
 			next.ServeHTTP(mw, req)
-
 			r.observe(req, mw.meta, mw.status, time.Since(start).Seconds())
+			releaseResponseWriter(mw)
 		})
 	}
 }
@@ -364,7 +363,6 @@ func (r *Registry) observe(req *http.Request, meta *logging.RequestMeta, status 
 			profile:    profile,
 			reasonCode: reasonCodeLabel(meta),
 			route:      route,
-			rule:       ruleLabel(meta),
 			mode:       rolloutModeLabel(meta),
 		})
 	}
@@ -394,8 +392,8 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	active := r.activeRequests.Load()
 	upstreamKnown := r.upstreamKnown.Load()
 	upstreamUp := r.upstreamUp.Load()
-	reloadLastKnown := r.configReloadLastSecondsKnown.Load()
-	reloadLastNanos := r.configReloadLastSeconds.Load()
+	reloadLastKnown := r.configReloadLastKnown.Load()
+	reloadLastNanos := r.configReloadLastNanos.Load()
 	policyVersionKnown := r.policyVersionKnown.Load()
 	policyVersion := r.policyVersion.Load()
 
@@ -420,8 +418,8 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	fmt.Fprintln(w, "# HELP sockguard_http_denied_requests_total Total requests denied by Sockguard policy or admission checks. mode is enforce (request was blocked) or warn / audit (request would have been blocked, passed through under rollout mode).")
 	fmt.Fprintln(w, "# TYPE sockguard_http_denied_requests_total counter")
 	for _, key := range sortedDenyLabels(denies) {
-		fmt.Fprintf(w, "sockguard_http_denied_requests_total{mode=%s,profile=%s,reason_code=%s,route=%s,rule=%s} %d\n",
-			labelValue(key.mode), labelValue(key.profile), labelValue(key.reasonCode), labelValue(key.route), labelValue(key.rule), denies[key])
+		fmt.Fprintf(w, "sockguard_http_denied_requests_total{mode=%s,profile=%s,reason_code=%s,route=%s} %d\n",
+			labelValue(key.mode), labelValue(key.profile), labelValue(key.reasonCode), labelValue(key.route), denies[key])
 	}
 
 	fmt.Fprintln(w, "# HELP sockguard_http_request_duration_seconds HTTP request latency in seconds.")
@@ -456,11 +454,11 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 		fmt.Fprintf(w, "sockguard_upstream_watchdog_checks_total{result=%s} %d\n", labelValue(key.result), upstream[key])
 	}
 
-	fmt.Fprintln(w, "# HELP sockguard_throttle_total Total requests denied by rate limiting or concurrency caps. mode is enforce (request was blocked with 429) or warn / audit (passed through under rollout mode).")
-	fmt.Fprintln(w, "# TYPE sockguard_throttle_total counter")
+	fmt.Fprintln(w, "# HELP sockguard_throttle_requests_total Total requests denied by rate limiting or concurrency caps. mode is enforce (request was blocked with 429) or warn / audit (passed through under rollout mode).")
+	fmt.Fprintln(w, "# TYPE sockguard_throttle_requests_total counter")
 	for _, key := range sortedThrottleLabels(throttles) {
-		fmt.Fprintf(w, "sockguard_throttle_total{mode=%s,profile=%s,reason=%s} %d\n",
-			labelValue(key.mode), labelValue(key.profile), labelValue(key.reason), throttles[key])
+		fmt.Fprintf(w, "sockguard_throttle_requests_total{mode=%s,profile=%s,reason_code=%s} %d\n",
+			labelValue(key.mode), labelValue(key.profile), labelValue(key.reasonCode), throttles[key])
 	}
 
 	fmt.Fprintln(w, "# HELP sockguard_inflight_requests Current number of in-flight requests per profile under a concurrency cap.")
@@ -496,8 +494,8 @@ func sortedConfigReloadLabels(values map[configReloadLabels]uint64) []configRelo
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return keys[i].result < keys[j].result
+	slices.SortFunc(keys, func(a, b configReloadLabels) int {
+		return cmp.Compare(a.result, b.result)
 	})
 	return keys
 }
@@ -518,10 +516,10 @@ func sortedThrottleLabels(values map[throttleLabels]uint64) []throttleLabels {
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		ki := keys[i].mode + "\x00" + keys[i].profile + "\x00" + keys[i].reason
-		kj := keys[j].mode + "\x00" + keys[j].profile + "\x00" + keys[j].reason
-		return ki < kj
+	slices.SortFunc(keys, func(a, b throttleLabels) int {
+		ka := a.mode + "\x00" + a.profile + "\x00" + a.reasonCode
+		kb := b.mode + "\x00" + b.profile + "\x00" + b.reasonCode
+		return cmp.Compare(ka, kb)
 	})
 	return keys
 }
@@ -531,7 +529,7 @@ func sortedInflightKeys(values map[string]int64) []string {
 	for k := range values {
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys
 }
 
@@ -552,8 +550,8 @@ func sortedRequestLabels(values map[requestLabels]uint64) []requestLabels {
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return requestLabelSortKey(keys[i]) < requestLabelSortKey(keys[j])
+	slices.SortFunc(keys, func(a, b requestLabels) int {
+		return cmp.Compare(requestLabelSortKey(a), requestLabelSortKey(b))
 	})
 	return keys
 }
@@ -563,8 +561,8 @@ func sortedDenyLabels(values map[denyLabels]uint64) []denyLabels {
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return denyLabelSortKey(keys[i]) < denyLabelSortKey(keys[j])
+	slices.SortFunc(keys, func(a, b denyLabels) int {
+		return cmp.Compare(denyLabelSortKey(a), denyLabelSortKey(b))
 	})
 	return keys
 }
@@ -574,8 +572,8 @@ func sortedDurationLabels(values map[durationLabels]histogramSnapshot) []duratio
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return durationLabelSortKey(keys[i]) < durationLabelSortKey(keys[j])
+	slices.SortFunc(keys, func(a, b durationLabels) int {
+		return cmp.Compare(durationLabelSortKey(a), durationLabelSortKey(b))
 	})
 	return keys
 }
@@ -585,8 +583,8 @@ func sortedUpstreamWatchdogLabels(values map[upstreamWatchdogLabels]uint64) []up
 	for key := range values {
 		keys = append(keys, key)
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return keys[i].result < keys[j].result
+	slices.SortFunc(keys, func(a, b upstreamWatchdogLabels) int {
+		return cmp.Compare(a.result, b.result)
 	})
 	return keys
 }
@@ -596,7 +594,7 @@ func requestLabelSortKey(key requestLabels) string {
 }
 
 func denyLabelSortKey(key denyLabels) string {
-	return strings.Join([]string{key.mode, key.profile, key.reasonCode, key.route, key.rule}, "\x00")
+	return strings.Join([]string{key.mode, key.profile, key.reasonCode, key.route}, "\x00")
 }
 
 func durationLabelSortKey(key durationLabels) string {
@@ -643,13 +641,6 @@ func reasonCodeLabel(meta *logging.RequestMeta) string {
 		return meta.ReasonCode
 	}
 	return "unknown"
-}
-
-func ruleLabel(meta *logging.RequestMeta) string {
-	if meta == nil {
-		return "-1"
-	}
-	return strconv.Itoa(meta.Rule)
 }
 
 // rolloutModeLabel returns the rollout posture in effect for the request,
@@ -761,7 +752,8 @@ func imageRoute(segments []string) string {
 	if len(segments) == 1 {
 		return "/images"
 	}
-	if segments[1] == "json" || segments[1] == "create" || segments[1] == "load" || segments[1] == "prune" || segments[1] == "search" {
+	switch segments[1] {
+	case "json", "create", "load", "prune", "search":
 		return "/images/" + segments[1]
 	}
 	return routeWithID("images", segments)
@@ -771,7 +763,8 @@ func pluginRoute(segments []string) string {
 	if len(segments) == 1 {
 		return "/plugins"
 	}
-	if segments[1] == "pull" || segments[1] == "create" || segments[1] == "privileges" {
+	switch segments[1] {
+	case "pull", "create", "privileges":
 		return "/plugins/" + segments[1]
 	}
 	if len(segments) == 2 {
@@ -816,21 +809,52 @@ type responseWriter struct {
 	http.ResponseWriter
 	status int
 	meta   *logging.RequestMeta
+	// ownsMeta is true when this wrapper allocated a fresh RequestMeta
+	// because the inbound request had none attached. Returning that meta to
+	// any shared pool would corrupt it; ownsMeta is the marker for the
+	// release path to drop the reference instead of caching it.
+	ownsMeta bool
 }
 
 var _ http.Flusher = (*responseWriter)(nil)
 var _ http.Hijacker = (*responseWriter)(nil)
 
-func newMetricsResponseWriter(w http.ResponseWriter, req *http.Request) *responseWriter {
-	meta := logging.MetaForRequest(w, req)
-	if meta == nil {
-		meta = &logging.RequestMeta{}
+var metricsResponseWriterPool = sync.Pool{
+	New: func() any { return &responseWriter{} },
+}
+
+func acquireResponseWriter(w http.ResponseWriter, req *http.Request) *responseWriter {
+	mw, _ := metricsResponseWriterPool.Get().(*responseWriter)
+	if mw == nil {
+		mw = &responseWriter{}
 	}
-	return &responseWriter{
-		ResponseWriter: w,
-		status:         http.StatusOK,
-		meta:           meta,
+	mw.ResponseWriter = w
+	mw.status = http.StatusOK
+	if meta := logging.MetaForRequest(w, req); meta != nil {
+		mw.meta = meta
+		mw.ownsMeta = false
+	} else {
+		mw.meta = &logging.RequestMeta{}
+		mw.ownsMeta = true
 	}
+	return mw
+}
+
+func releaseResponseWriter(mw *responseWriter) {
+	if mw == nil {
+		return
+	}
+	mw.ResponseWriter = nil
+	if mw.ownsMeta {
+		// The fallback RequestMeta is request-scoped; drop the reference so
+		// the GC reclaims it rather than letting it tail behind the wrapper.
+		mw.meta = nil
+		mw.ownsMeta = false
+	} else {
+		mw.meta = nil
+	}
+	mw.status = 0
+	metricsResponseWriterPool.Put(mw)
 }
 
 func (w *responseWriter) RequestMeta() *logging.RequestMeta {

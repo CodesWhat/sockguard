@@ -25,6 +25,6 @@ docker compose up -d
 
 ## Hardening tips
 
-- Add `clients.allowed_cidrs` to restrict which source IPs can reach the sockguard socket.
+- Add `clients.unix_peer_profiles` to restrict which container UIDs/GIDs can reach the sockguard unix socket (unix socket listeners do not support `clients.allowed_cidrs`, which requires a TCP listener).
 - Remove `insecure_allow_body_blind_writes` and add `request_body.exec.allowed_commands` if your Portainer usage only runs known exec commands.
 - Remove `insecure_allow_read_exfiltration` if you don't use Portainer's log viewer or container export features.

@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/imagetrust"
 	"github.com/sigstore/sigstore-go/pkg/verify"
@@ -74,13 +76,18 @@ func TestNewContainerCreatePolicyNormalizesAndDeduplicatesAllowedBindMounts(t *t
 	}
 }
 
-func TestContainerCreatePolicyInspectSkipsBodyWhenPermissive(t *testing.T) {
+func TestContainerCreatePolicyInspectAllowsPermissiveBodyWithoutForbiddenFields(t *testing.T) {
+	// allowsAllContainerCreateBodies always returns false because several fields
+	// (VolumesFrom, UTSMode:host, CgroupParent, GroupAdd, ExtraHosts) are
+	// unconditionally denied; the body must always be inspected. A body with
+	// none of those fields and a permissive policy must still be allowed.
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
 		AllowPrivileged:        true,
 		AllowHostNetwork:       true,
 		AllowHostPID:           true,
 		AllowHostIPC:           true,
 		AllowHostUserNS:        true,
+		AllowSysctls:           true,
 		AllowedBindMounts:      []string{"/"},
 		AllowAllDevices:        true,
 		AllowDeviceRequests:    true,
@@ -99,12 +106,6 @@ func TestContainerCreatePolicyInspectSkipsBodyWhenPermissive(t *testing.T) {
 	if reason != "" {
 		t.Fatalf("inspect() reason = %q, want empty", reason)
 	}
-	if tracker.reads != 0 {
-		t.Fatalf("body reads = %d, want 0", tracker.reads)
-	}
-	if tracker.closed {
-		t.Fatal("body was closed, want left open for downstream")
-	}
 
 	gotBody, readErr := io.ReadAll(req.Body)
 	if readErr != nil {
@@ -112,6 +113,30 @@ func TestContainerCreatePolicyInspectSkipsBodyWhenPermissive(t *testing.T) {
 	}
 	if !bytes.Equal(gotBody, body) {
 		t.Fatalf("body after inspect = %q, want %q", string(gotBody), string(body))
+	}
+}
+
+// TestContainerCreatePolicyInspectBodyReadErrorFailsClosed proves the
+// highest-privilege inspector fails closed on a body-read I/O error: inspect
+// must surface the error (reason empty, error non-nil with "read body"
+// context) rather than return ("", nil), which the middleware treats as allow.
+// A swallowed read error here would skip every container-create policy check
+// — privileged, host-namespace, capability, device — so it is fail-open.
+func TestContainerCreatePolicyInspectBodyReadErrorFailsClosed(t *testing.T) {
+	sentinel := errors.New("read failed")
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+	req.Body = &readErrorReadCloser{readErr: sentinel}
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("inspect() error = %v, want wrapped %v", err, sentinel)
+	}
+	if !strings.Contains(err.Error(), "read body") {
+		t.Fatalf("inspect() error = %q, want read body context", err)
 	}
 }
 
@@ -245,6 +270,70 @@ func TestContainerCreatePolicyInspectDeniesHostNamespaces(t *testing.T) {
 	}
 }
 
+func TestContainerCreatePolicyInspectDeniesNetworkModeHost(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(`{"HostConfig":{"NetworkMode":"host"}}`))
+	reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	const wantReason = "container create denied: host network mode is not allowed"
+	if reason != wantReason {
+		t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+	}
+}
+
+func TestContainerCreatePolicyInspectDeniesUninspectedHostConfigFields(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "VolumesFrom non-empty",
+			body:       `{"HostConfig":{"VolumesFrom":["other-container"]}}`,
+			wantReason: "container create denied: VolumesFrom is not allowed",
+		},
+		{
+			name:       "UTSMode host",
+			body:       `{"HostConfig":{"UTSMode":"host"}}`,
+			wantReason: "container create denied: host UTS mode is not allowed",
+		},
+		{
+			name:       "UTSMode host case insensitive",
+			body:       `{"HostConfig":{"UTSMode":"HOST"}}`,
+			wantReason: "container create denied: host UTS mode is not allowed",
+		},
+		{
+			name:       "CgroupParent non-empty",
+			body:       `{"HostConfig":{"CgroupParent":"/custom/cgroup"}}`,
+			wantReason: "container create denied: custom cgroup parent is not allowed",
+		},
+		{
+			name:       "GroupAdd non-empty",
+			body:       `{"HostConfig":{"GroupAdd":["docker","wheel"]}}`,
+			wantReason: "container create denied: supplemental group IDs are not allowed",
+		},
+		{
+			name:       "ExtraHosts non-empty",
+			body:       `{"HostConfig":{"ExtraHosts":["myhost:192.168.1.1"]}}`,
+			wantReason: "container create denied: ExtraHosts is not allowed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+			reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestContainerCreatePolicyInspectAllowsHostNamespacesWhenConfigured(t *testing.T) {
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
 		AllowHostPID: true,
@@ -366,30 +455,6 @@ func TestContainerCreatePolicyDenyBindMountReasonRejectsBindMountSource(t *testi
 	}
 }
 
-func TestContainerCreateBindSource(t *testing.T) {
-	tests := []struct {
-		name   string
-		bind   string
-		want   string
-		wantOK bool
-	}{
-		{name: "valid", bind: "/source:/target:ro", want: "/source", wantOK: true},
-		{name: "missing separator", bind: "/source", wantOK: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, ok := containerCreateBindSource(tt.bind)
-			if ok != tt.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
-			}
-			if got != tt.want {
-				t.Fatalf("source = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestExtractAndValidateBindSource(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -455,7 +520,7 @@ func TestNormalizeContainerCreateBindMount(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, ok := normalizeContainerCreateBindMount(tt.value)
+			got, ok := normalizeBindMount(tt.value)
 			if ok != tt.wantOK {
 				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
 			}
@@ -523,12 +588,17 @@ func TestContainerCreatePolicyInspectCapsOversizedBody(t *testing.T) {
 // perm-sorting of Docker device cgroup rule strings.
 func TestCanonicalizeDeviceCgroupRule(t *testing.T) {
 	tests := []struct {
-		name      string
-		raw       string
-		want      string
-		wantOK    bool
+		name   string
+		raw    string
+		want   string
+		wantOK bool
 	}{
 		{name: "exact char device", raw: "c 1:3 rwm", want: "c 1:3 rwm", wantOK: true},
+		// Cover both digit boundaries explicitly so a CONDITIONALS_BOUNDARY
+		// mutation on isDeviceCgroupNumber (`< '0'` → `<= '0'` or `> '9'` →
+		// `>= '9'`) is caught by the canonicalize path.
+		{name: "major minor at digit boundaries", raw: "c 0:9 rwm", want: "c 0:9 rwm", wantOK: true},
+		{name: "minor at upper digit boundary", raw: "c 9:0 rwm", want: "c 9:0 rwm", wantOK: true},
 		{name: "block device", raw: "b 8:0 rw", want: "b 8:0 rw", wantOK: true},
 		{name: "wildcard major", raw: "c *:3 rwm", want: "c *:3 rwm", wantOK: true},
 		{name: "wildcard minor", raw: "c 226:* rwm", want: "c 226:* rwm", wantOK: true},
@@ -752,9 +822,9 @@ func TestContainerCreatePolicyDenyDeviceCgroupRulesReason(t *testing.T) {
 		},
 		{
 			// Multiple rules: first passes, second fails
-			name: "multiple rules first passes second fails",
-			opts: ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 rwm"}},
-			body: `{"HostConfig":{"DeviceCgroupRules":["c 1:3 rwm","c 10:200 rwm"]}}`,
+			name:       "multiple rules first passes second fails",
+			opts:       ContainerCreateOptions{AllowedDeviceCgroupRules: []string{"c 1:3 rwm"}},
+			body:       `{"HostConfig":{"DeviceCgroupRules":["c 1:3 rwm","c 10:200 rwm"]}}`,
 			wantReason: `container create denied: device cgroup rule "c 10:200 rwm" is not in the allowed list`,
 		},
 		{
@@ -784,7 +854,7 @@ func TestContainerCreatePolicyDenyDeviceCgroupRulesReason(t *testing.T) {
 func TestNewContainerCreatePolicyNormalizesDeviceCgroupRules(t *testing.T) {
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
 		AllowedDeviceCgroupRules: []string{
-			"c  1:3  rwm",  // extra whitespace
+			"c  1:3  rwm", // extra whitespace
 			"c 1:3 mrw",   // unsorted perms (same as above after canon)
 			"c 226:* rwm", // unique entry
 			"z bad",       // invalid, should be skipped
@@ -967,7 +1037,7 @@ func TestNewContainerCreatePolicyNormalizesDeviceRequests(t *testing.T) {
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
 		AllowedDeviceRequests: []AllowedDeviceRequestEntry{
 			{Driver: "NVIDIA", AllowedCapabilities: [][]string{{"compute", "gpu", "gpu"}}, MaxCount: &maxTwo},
-			{Driver: "", AllowedCapabilities: [][]string{{"gpu"}}},                // invalid: empty driver, skipped
+			{Driver: "", AllowedCapabilities: [][]string{{"gpu"}}},                 // invalid: empty driver, skipped
 			{Driver: "  amd  ", AllowedCapabilities: [][]string{{"gpu", "video"}}}, // whitespace stripped
 		},
 	})
@@ -1018,6 +1088,23 @@ func (m *mockImageVerifier) Verify(_ context.Context, imageRef, _ string, _ veri
 	return m.err
 }
 
+// ctxRecordingImageVerifier records whether the ctx handed to Verify had a
+// deadline set. Used to pin the timeout-gate at container_create.go:361
+// (`p.imageTrustTimeout > 0`).
+type ctxRecordingImageVerifier struct {
+	err            error
+	sawDeadline    bool
+	deadlineRemain time.Duration
+}
+
+func (m *ctxRecordingImageVerifier) Verify(ctx context.Context, _, _ string, _ verify.SignedEntity) error {
+	if dl, ok := ctx.Deadline(); ok {
+		m.sawDeadline = true
+		m.deadlineRemain = time.Until(dl)
+	}
+	return m.err
+}
+
 // makeInspectRequest builds a minimal POST /containers/create request with the
 // given JSON body string.
 func makeInspectRequest(t *testing.T, body string) *http.Request {
@@ -1043,18 +1130,18 @@ func TestImageTrust_Enforce_VerifierCalledWithImageRef(t *testing.T) {
 	mv := &mockImageVerifier{}
 	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
 	policy := containerCreatePolicy{
-		allowPrivileged:  true,
-		allowHostNetwork: true,
-		allowHostPID:     true,
-		allowHostIPC:     true,
-		allowHostUserNS:  true,
-		allowAllDevices:  true,
-		allowAllCapabilities: true,
-		allowDeviceRequests:  true,
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
-		imageTrustVerifier: mv,
-		imageTrustCfg:      cfg,
-		imageTrustTimeout:  0,
+		imageTrustVerifier:     mv,
+		imageTrustCfg:          cfg,
+		imageTrustTimeout:      0,
 	}
 
 	body := `{"Image":"registry.example.com/myapp:v1.2.3","HostConfig":{}}`
@@ -1074,17 +1161,17 @@ func TestImageTrust_Enforce_DeniesOnVerifierError(t *testing.T) {
 	mv := &mockImageVerifier{err: errors.New("no valid signature found")}
 	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
 	policy := containerCreatePolicy{
-		allowPrivileged:  true,
-		allowHostNetwork: true,
-		allowHostPID:     true,
-		allowHostIPC:     true,
-		allowHostUserNS:  true,
-		allowAllDevices:  true,
-		allowAllCapabilities: true,
-		allowDeviceRequests:  true,
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
-		imageTrustVerifier: mv,
-		imageTrustCfg:      cfg,
+		imageTrustVerifier:     mv,
+		imageTrustCfg:          cfg,
 	}
 
 	body := `{"Image":"registry.example.com/unsigned:latest","HostConfig":{}}`
@@ -1108,17 +1195,17 @@ func TestImageTrust_Warn_AllowsOnVerifierError(t *testing.T) {
 	mv := &mockImageVerifier{err: errors.New("no valid signature found")}
 	cfg := imagetrust.Config{Mode: imagetrust.ModeWarn}
 	policy := containerCreatePolicy{
-		allowPrivileged:  true,
-		allowHostNetwork: true,
-		allowHostPID:     true,
-		allowHostIPC:     true,
-		allowHostUserNS:  true,
-		allowAllDevices:  true,
-		allowAllCapabilities: true,
-		allowDeviceRequests:  true,
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
-		imageTrustVerifier: mv,
-		imageTrustCfg:      cfg,
+		imageTrustVerifier:     mv,
+		imageTrustCfg:          cfg,
 	}
 
 	body := `{"Image":"registry.example.com/unsigned:latest","HostConfig":{}}`
@@ -1137,17 +1224,17 @@ func TestImageTrust_EmptyImage_DeniedWhenVerifierConfigured(t *testing.T) {
 	mv := &mockImageVerifier{err: errors.New("should not be called")}
 	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
 	policy := containerCreatePolicy{
-		allowPrivileged:  true,
-		allowHostNetwork: true,
-		allowHostPID:     true,
-		allowHostIPC:     true,
-		allowHostUserNS:  true,
-		allowAllDevices:  true,
-		allowAllCapabilities: true,
-		allowDeviceRequests:  true,
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
-		imageTrustVerifier: mv,
-		imageTrustCfg:      cfg,
+		imageTrustVerifier:     mv,
+		imageTrustCfg:          cfg,
 	}
 
 	body := `{"Image":"","HostConfig":{}}`
@@ -1164,9 +1251,9 @@ func TestImageTrust_EmptyImage_DeniedWhenVerifierConfigured(t *testing.T) {
 	}
 }
 
-func TestImageTrust_AllowsAllBodiesFalseWhenVerifierPresent(t *testing.T) {
+func TestImageTrust_BodyInspectedWhenVerifierPresent(t *testing.T) {
 	// Even with every flag permissive, a non-nil imageTrustVerifier must cause
-	// allowsAllContainerCreateBodies to return false so the body is inspected.
+	// the request body to be read and the verifier to be called.
 	mv := &mockImageVerifier{}
 	cfg := imagetrust.Config{Mode: imagetrust.ModeEnforce}
 	policy := containerCreatePolicy{
@@ -1182,8 +1269,119 @@ func TestImageTrust_AllowsAllBodiesFalseWhenVerifierPresent(t *testing.T) {
 		imageTrustVerifier:     mv,
 		imageTrustCfg:          cfg,
 	}
-	if policy.allowsAllContainerCreateBodies() {
-		t.Fatal("allowsAllContainerCreateBodies must be false when imageTrustVerifier is set")
+	body := `{"Image":"registry.example.com/app:v1","HostConfig":{}}`
+	reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want allow (verifier returns nil)", reason)
+	}
+	if mv.lastCalled != "registry.example.com/app:v1" {
+		t.Fatalf("verifier lastCalled = %q, want registry.example.com/app:v1 — body was not inspected", mv.lastCalled)
+	}
+}
+
+// TestImageTrust_TimeoutGateRespectsZero pins both surviving mutants at
+// container_create.go:361:26 (CONDITIONALS_BOUNDARY `>` → `>=` and
+// CONDITIONALS_NEGATION `>` → `<=`). The guard is `if p.imageTrustTimeout > 0`
+// — only wrap the verifier ctx with a deadline when the timeout is meaningful.
+//
+// At imageTrustTimeout=0 the original skips context.WithTimeout entirely, so
+// the verifier sees the request's bare context (no Deadline). Both mutants
+// would call context.WithTimeout(ctx, 0) which sets an immediate deadline.
+// We assert the verifier saw no deadline.
+//
+// A companion sub-test pins the positive-timeout path: with imageTrustTimeout=
+// 10s the original sets the deadline; the NEGATION mutant (`<= 0`) would NOT
+// set it. We assert the verifier sees a deadline that's roughly the configured
+// timeout.
+func TestImageTrust_TimeoutGateRespectsZero(t *testing.T) {
+	t.Run("zero timeout leaves ctx unwrapped", func(t *testing.T) {
+		mv := &ctxRecordingImageVerifier{}
+		policy := containerCreatePolicy{
+			imageTrustVerifier: mv,
+			imageTrustCfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
+			imageTrustTimeout:  0,
+		}
+		reason, err := policy.inspect(nil, makeInspectRequest(t, `{"Image":"registry.example.com/app:v1","HostConfig":{}}`), "/containers/create")
+		if err != nil {
+			t.Fatalf("inspect err = %v", err)
+		}
+		if reason != "" {
+			t.Fatalf("inspect reason = %q, want empty (verifier returns nil)", reason)
+		}
+		if mv.sawDeadline {
+			t.Fatalf("verifier ctx had a deadline (remaining=%v) — original `imageTrustTimeout > 0` is false at 0; mutant `>= 0` or `<= 0` would call WithTimeout(0) and stamp a deadline", mv.deadlineRemain)
+		}
+	})
+
+	t.Run("positive timeout wraps ctx with deadline", func(t *testing.T) {
+		mv := &ctxRecordingImageVerifier{}
+		policy := containerCreatePolicy{
+			imageTrustVerifier: mv,
+			imageTrustCfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
+			imageTrustTimeout:  10 * time.Second,
+		}
+		reason, err := policy.inspect(nil, makeInspectRequest(t, `{"Image":"registry.example.com/app:v1","HostConfig":{}}`), "/containers/create")
+		if err != nil {
+			t.Fatalf("inspect err = %v", err)
+		}
+		if reason != "" {
+			t.Fatalf("inspect reason = %q, want empty", reason)
+		}
+		if !mv.sawDeadline {
+			t.Fatalf("verifier ctx had no deadline — original `imageTrustTimeout > 0` is true at 10s; mutant `<= 0` would skip WithTimeout and leave ctx bare")
+		}
+		// Remaining should be close to 10s (allow generous slack for slow CI).
+		if mv.deadlineRemain < time.Second || mv.deadlineRemain > 11*time.Second {
+			t.Fatalf("deadline remaining = %v, want ~10s", mv.deadlineRemain)
+		}
+	})
+}
+
+func TestContainerCreatePolicySysctls(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "sysctls present AllowSysctls=false → deny",
+			opts:       ContainerCreateOptions{},
+			body:       `{"HostConfig":{"Sysctls":{"net.ipv4.ip_forward":"1"}}}`,
+			wantReason: "container create denied: setting sysctls is not allowed",
+		},
+		{
+			name: "sysctls present AllowSysctls=true → allow",
+			opts: ContainerCreateOptions{AllowSysctls: true},
+			body: `{"HostConfig":{"Sysctls":{"net.ipv4.ip_forward":"1"}}}`,
+		},
+		{
+			name: "sysctls absent → allow (unaffected)",
+			opts: ContainerCreateOptions{},
+			body: `{"HostConfig":{}}`,
+		},
+		{
+			name: "empty sysctls map → allow (unaffected)",
+			opts: ContainerCreateOptions{},
+			body: `{"HostConfig":{"Sysctls":{}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newContainerCreatePolicy(tt.opts)
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+			reason, err := policy.inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
 	}
 }
 

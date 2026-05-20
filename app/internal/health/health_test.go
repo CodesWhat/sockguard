@@ -41,7 +41,6 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(devNull{}, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 }
 
-
 type headerCallTrackingWriter struct {
 	*httptest.ResponseRecorder
 	headerCalls int
@@ -53,6 +52,7 @@ func (w *headerCallTrackingWriter) Header() http.Header {
 }
 
 func TestHealthReachable(t *testing.T) {
+	t.Parallel()
 	sock := filepath.Join(t.TempDir(), "upstream.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
@@ -95,6 +95,7 @@ func TestHealthReachable(t *testing.T) {
 }
 
 func TestHealthHandlerSetsContentTypeOnce(t *testing.T) {
+	t.Parallel()
 	handler := Handler("/nonexistent/socket.sock", time.Now(), testLogger())
 
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -111,6 +112,7 @@ func TestHealthHandlerSetsContentTypeOnce(t *testing.T) {
 }
 
 func TestHealthCheckerTimesOutWithBlockingDial(t *testing.T) {
+	t.Parallel()
 	checker := newUpstreamHealthChecker(
 		0,
 		10*time.Millisecond,
@@ -136,6 +138,7 @@ func TestHealthCheckerTimesOutWithBlockingDial(t *testing.T) {
 }
 
 func TestHealthUnreachable(t *testing.T) {
+	t.Parallel()
 	startTime := time.Now().Add(-45 * time.Second)
 	handler := Handler("/nonexistent/socket.sock", startTime, testLogger())
 
@@ -174,6 +177,7 @@ func TestHealthUnreachable(t *testing.T) {
 }
 
 func TestHealthCachesUpstreamStatusWithinTTL(t *testing.T) {
+	t.Parallel()
 	baseNow := time.Unix(1_700_000_000, 0)
 	var nowOffset atomic.Int64
 	var dialCalls atomic.Int32
@@ -215,6 +219,7 @@ func TestHealthCachesUpstreamStatusWithinTTL(t *testing.T) {
 }
 
 func TestHealthDoesNotCacheUnhealthyStatusWithinTTL(t *testing.T) {
+	t.Parallel()
 	baseNow := time.Unix(1_700_000_000, 0)
 	var nowOffset atomic.Int64
 	var dialCalls atomic.Int32
@@ -247,6 +252,7 @@ func TestHealthDoesNotCacheUnhealthyStatusWithinTTL(t *testing.T) {
 }
 
 func TestHealthBrieflyCachesUnhealthyStatusForLateCallers(t *testing.T) {
+	t.Parallel()
 	baseNow := time.Unix(1_700_000_000, 0)
 	var nowOffset atomic.Int64
 	var dialCalls atomic.Int32
@@ -287,6 +293,7 @@ func TestHealthBrieflyCachesUnhealthyStatusForLateCallers(t *testing.T) {
 }
 
 func TestHealthDoesNotCacheCallerCancelledFailure(t *testing.T) {
+	t.Parallel()
 	baseNow := time.Unix(1_700_000_000, 0)
 	var dialCalls atomic.Int32
 
@@ -319,6 +326,7 @@ func TestHealthDoesNotCacheCallerCancelledFailure(t *testing.T) {
 }
 
 func TestHealthDoesNotCacheCallerDeadlineFailure(t *testing.T) {
+	t.Parallel()
 	baseNow := time.Unix(1_700_000_000, 0)
 	var dialCalls atomic.Int32
 
@@ -353,6 +361,7 @@ func TestHealthDoesNotCacheCallerDeadlineFailure(t *testing.T) {
 }
 
 func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
+	t.Parallel()
 	const callers = 16
 
 	releaseDial := make(chan struct{})
@@ -424,8 +433,10 @@ func TestHealthCheckerCoalescesConcurrentCacheMisses(t *testing.T) {
 }
 
 func TestHealthCheckerWaitsForInFlightCheck(t *testing.T) {
+	t.Parallel()
 	releaseDial := make(chan struct{})
 	dialEntered := make(chan struct{}, 2)
+	waiterJoined := make(chan struct{}, 1)
 	results := make(chan struct {
 		status string
 		err    error
@@ -444,6 +455,7 @@ func TestHealthCheckerWaitsForInFlightCheck(t *testing.T) {
 		},
 	)
 	checker.failureTTL = 0
+	checker.onWaiterJoined = func() { waiterJoined <- struct{}{} }
 
 	go func() {
 		status, err := checker.check(context.Background(), "/tmp/upstream.sock")
@@ -459,18 +471,21 @@ func TestHealthCheckerWaitsForInFlightCheck(t *testing.T) {
 		t.Fatal("expected leader health check to dial upstream")
 	}
 
-	secondStarted := make(chan struct{})
 	go func() {
-		close(secondStarted)
 		status, err := checker.check(context.Background(), "/tmp/upstream.sock")
 		results <- struct {
 			status string
 			err    error
 		}{status: status, err: err}
 	}()
-	<-secondStarted
 
-	time.Sleep(25 * time.Millisecond)
+	// Wait until the second goroutine has joined the in-flight call (no new
+	// dial) before asserting the dial count — replaces a time.Sleep rendezvous.
+	select {
+	case <-waiterJoined:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected second check to join in-flight call")
+	}
 	if dialCalls.Load() != 1 {
 		t.Fatalf("dial calls while first check is in flight = %d, want 1", dialCalls.Load())
 	}
@@ -497,6 +512,7 @@ func TestHealthCheckerWaitsForInFlightCheck(t *testing.T) {
 }
 
 func TestMonitorWatchdogReportsStateChanges(t *testing.T) {
+	t.Parallel()
 	var dialCalls atomic.Int32
 	checker := newUpstreamHealthChecker(
 		0,
@@ -532,6 +548,7 @@ func TestMonitorWatchdogReportsStateChanges(t *testing.T) {
 }
 
 func TestMonitorDefaultsNilLogger(t *testing.T) {
+	t.Parallel()
 	checker := newUpstreamHealthChecker(
 		0,
 		time.Second,
@@ -553,6 +570,7 @@ func TestMonitorDefaultsNilLogger(t *testing.T) {
 }
 
 func TestNilMonitorStateAndStartWatchdogAreNoops(t *testing.T) {
+	t.Parallel()
 	var monitor *Monitor
 
 	if state, ok := monitor.State(); ok || state != (WatchdogState{}) {
@@ -565,6 +583,7 @@ func TestNilMonitorStateAndStartWatchdogAreNoops(t *testing.T) {
 }
 
 func TestMonitorStartWatchdogIgnoresNonPositiveInterval(t *testing.T) {
+	t.Parallel()
 	checker := newUpstreamHealthChecker(
 		0,
 		time.Second,
@@ -589,6 +608,7 @@ func TestMonitorStartWatchdogIgnoresNonPositiveInterval(t *testing.T) {
 }
 
 func TestMonitorEmitWatchdogCheckLogsUnhealthyChange(t *testing.T) {
+	t.Parallel()
 	collector := &testhelp.CollectingHandler{}
 	checkErr := errors.New("upstream down")
 	checker := newUpstreamHealthChecker(
@@ -665,6 +685,7 @@ func (w *failingWriter) Write(p []byte) (int, error) {
 }
 
 func TestHealthHandlerHealthyEncodeFailure(t *testing.T) {
+	t.Parallel()
 	sock := fmt.Sprintf("/tmp/health-encode-%d.sock", os.Getpid())
 	_ = os.Remove(sock)
 	t.Cleanup(func() {
@@ -688,6 +709,7 @@ func TestHealthHandlerHealthyEncodeFailure(t *testing.T) {
 }
 
 func TestHealthHandlerUnhealthyEncodeFailure(t *testing.T) {
+	t.Parallel()
 	handler := Handler("/nonexistent/socket.sock", time.Now(), testLogger())
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
 	writer := &failingWriter{}

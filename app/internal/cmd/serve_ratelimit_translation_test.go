@@ -5,6 +5,7 @@ import (
 
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/ratelimit"
+	"github.com/codeswhat/sockguard/internal/testhelp"
 )
 
 // TestConfigLimitsToRateLimitOptions_AllFields is a happy-path test for the
@@ -26,7 +27,7 @@ func TestConfigLimitsToRateLimitOptions_AllFields(t *testing.T) {
 		},
 	}
 
-	got := configLimitsToRateLimitOptions(limits)
+	got := configLimitsToRateLimitOptions("test-profile", limits, newDiscardLogger())
 
 	// Priority must translate from "high" string to ratelimit.PriorityHigh.
 	if got.Priority != ratelimit.PriorityHigh {
@@ -63,5 +64,63 @@ func TestConfigLimitsToRateLimitOptions_AllFields(t *testing.T) {
 	}
 	if got.Concurrency.MaxInflight != 10 {
 		t.Errorf("Concurrency.MaxInflight = %d, want 10", got.Concurrency.MaxInflight)
+	}
+}
+
+// TestConfigLimitsToRateLimitOptions_BurstZeroDefaultsToRate pins the
+// fallback at serve_ratelimit_translation.go:66–68: when Burst is 0 the
+// function substitutes TokensPerSecond so the token bucket has non-zero
+// capacity. Without this fallback a zero Burst would silently disable rate
+// limiting for the profile — every request would be rejected by a bucket
+// that can never hold a token.
+func TestConfigLimitsToRateLimitOptions_BurstZeroDefaultsToRate(t *testing.T) {
+	cfg := config.LimitsConfig{
+		Rate: &config.RateLimitConfig{TokensPerSecond: 10, Burst: 0},
+	}
+
+	opts := configLimitsToRateLimitOptions("p1", cfg, newDiscardLogger())
+
+	if opts.Rate == nil {
+		t.Fatal("opts.Rate = nil, want non-nil")
+	}
+	if opts.Rate.TokensPerSecond != 10 {
+		t.Errorf("Rate.TokensPerSecond = %v, want 10", opts.Rate.TokensPerSecond)
+	}
+	// Burst must have been promoted to TokensPerSecond (10), not left at 0.
+	if opts.Rate.Burst != 10 {
+		t.Errorf("Rate.Burst = %v, want 10 (fallback from TokensPerSecond)", opts.Rate.Burst)
+	}
+}
+
+// TestConfigLimitsToRateLimitOptions_UnrecognizedPriorityLogsWarn pins the
+// Warn branch at serve_ratelimit_translation.go:57–62: an unrecognized
+// priority string must emit a warning containing the profile name and the
+// offending priority value, and the returned Priority must be PriorityNormal
+// (ParsePriority's documented return on !ok — the zero value of Priority).
+func TestConfigLimitsToRateLimitOptions_UnrecognizedPriorityLogsWarn(t *testing.T) {
+	collector := &testhelp.CollectingHandler{}
+	cfg := config.LimitsConfig{Priority: "ultra-high"}
+
+	opts := configLimitsToRateLimitOptions("admin", cfg, collector.Logger())
+
+	const wantMsg = "unrecognized priority value in client profile; falling back to normal"
+	if !collector.HasMessage(wantMsg) {
+		t.Fatalf("expected warn log %q; records: %#v", wantMsg, collector.Records())
+	}
+
+	matches := collector.FindMessage(wantMsg)
+	rec := matches[0]
+	if got, ok := rec.Attrs["profile"]; !ok || got != "admin" {
+		t.Errorf("log attr profile = %v, want %q", got, "admin")
+	}
+	if got, ok := rec.Attrs["priority"]; !ok || got != "ultra-high" {
+		t.Errorf("log attr priority = %v, want %q", got, "ultra-high")
+	}
+
+	// ParsePriority returns (PriorityNormal, false) for unknown values; the
+	// function leaves opts.Priority at whatever ParsePriority returns, which
+	// is PriorityNormal (the zero value of ratelimit.Priority / iota = 0).
+	if opts.Priority != ratelimit.PriorityNormal {
+		t.Errorf("Priority = %v, want PriorityNormal", opts.Priority)
 	}
 }

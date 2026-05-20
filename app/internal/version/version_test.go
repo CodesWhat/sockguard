@@ -7,6 +7,7 @@ import (
 )
 
 func TestString(t *testing.T) {
+	t.Parallel()
 	got := String()
 
 	if !strings.Contains(got, "sockguard "+Version) {

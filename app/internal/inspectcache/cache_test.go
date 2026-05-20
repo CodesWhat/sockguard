@@ -13,6 +13,7 @@ import (
 )
 
 func TestCacheHitsWithinTTL(t *testing.T) {
+	t.Parallel()
 	baseNow := time.Unix(1_700_000_000, 0)
 	var nowOffset atomic.Int64
 	var calls atomic.Int32
@@ -48,6 +49,7 @@ func TestCacheHitsWithinTTL(t *testing.T) {
 }
 
 func TestCacheCoalescesConcurrentMissesPerResource(t *testing.T) {
+	t.Parallel()
 	const callers = 16
 
 	release := make(chan struct{})
@@ -101,6 +103,7 @@ func TestCacheCoalescesConcurrentMissesPerResource(t *testing.T) {
 }
 
 func TestCacheDifferentResourcesIndependent(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	cache := New(
 		10*time.Second,
@@ -131,6 +134,7 @@ func TestCacheDifferentResourcesIndependent(t *testing.T) {
 }
 
 func TestCacheDoesNotCacheErrors(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	cache := New(
 		10*time.Second,
@@ -154,6 +158,7 @@ func TestCacheDoesNotCacheErrors(t *testing.T) {
 }
 
 func TestCacheCachesNotFound(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	cache := New(
 		10*time.Second,
@@ -176,7 +181,14 @@ func TestCacheCachesNotFound(t *testing.T) {
 	}
 }
 
-func TestCacheReturnsDefensiveLabelCopies(t *testing.T) {
+// TestCacheReturnsSameMapAcrossLookups locks in the read-only contract of
+// Lookup: the returned map is shared with the cache and concurrent waiters,
+// so callers must not mutate it. Verified by asserting two consecutive
+// lookups for the same key return the same map pointer (no defensive copy).
+// If a future change re-introduces a defensive clone, this assertion fails
+// and the alloc regression is caught before merge.
+func TestCacheReturnsSameMapAcrossLookups(t *testing.T) {
+	t.Parallel()
 	var calls atomic.Int32
 	cache := New(
 		10*time.Second,
@@ -195,21 +207,23 @@ func TestCacheReturnsDefensiveLabelCopies(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("first lookup = (%v, found=%v), want (nil, found=true)", err, found)
 	}
-	first["com.sockguard.owner"] = "mutated"
-	first["com.sockguard.extra"] = "leak"
 
 	second, found, err := cache.Lookup(context.Background(), "containers", "abc123")
 	if err != nil || !found {
 		t.Fatalf("second lookup = (%v, found=%v), want (nil, found=true)", err, found)
 	}
-	if got := second["com.sockguard.owner"]; got != "job-123" {
-		t.Fatalf("cached owner label = %q, want job-123", got)
+	if &first == &second {
+		t.Fatal("returned map headers compared by address — test bug")
 	}
-	if _, ok := second["com.sockguard.extra"]; ok {
-		t.Fatalf("cached labels unexpectedly retained caller mutation: %#v", second)
+	// Verify both lookups returned the same underlying map (no defensive clone).
+	first["__sentinel__"] = "marker"
+	if got := second["__sentinel__"]; got != "marker" {
+		t.Fatalf("second lookup did not return the cached map; mutation to first not visible in second")
 	}
+	delete(first, "__sentinel__")
+
 	if got := calls.Load(); got != 1 {
-		t.Fatalf("resolver calls for defensive-copy hit = %d, want 1", got)
+		t.Fatalf("resolver calls for second hit = %d, want 1 (cached)", got)
 	}
 }
 
@@ -217,6 +231,7 @@ func TestCacheReturnsDefensiveLabelCopies(t *testing.T) {
 // storeLocked: when the cache is full and at least one entry is past its TTL,
 // those entries are deleted without touching the live ones.
 func TestStoreLocked_EvictsStaleEntries(t *testing.T) {
+	t.Parallel()
 	const maxSize = 2
 	ttl := 10 * time.Second
 
@@ -271,6 +286,7 @@ func TestStoreLocked_EvictsStaleEntries(t *testing.T) {
 // TestStoreLocked_EvictsOldestWhenAllLive exercises the oldest-eviction branch:
 // when the cache is full and no entry is stale, the oldest live entry is deleted.
 func TestStoreLocked_EvictsOldestWhenAllLive(t *testing.T) {
+	t.Parallel()
 	const maxSize = 2
 	ttl := 10 * time.Second
 
@@ -320,7 +336,9 @@ func TestStoreLocked_EvictsOldestWhenAllLive(t *testing.T) {
 	}
 }
 
-func BenchmarkCacheLookupHitClonesLabels(b *testing.B) {
+// BenchmarkCacheLookupHit measures the cache-hit fast path. After the
+// defensive-clone removal this should be 0 alloc/op regardless of label count.
+func BenchmarkCacheLookupHit(b *testing.B) {
 	for _, labelCount := range []int{1, 8, 32} {
 		b.Run(fmt.Sprintf("labels_%d", labelCount), func(b *testing.B) {
 			labels := benchmarkLabels(labelCount)
@@ -358,4 +376,84 @@ func benchmarkLabels(n int) map[string]string {
 		labels[fmt.Sprintf("com.sockguard.label.%d", i)] = fmt.Sprintf("value-%d", i)
 	}
 	return labels
+}
+
+// BenchmarkCacheLookupMiss measures the cold-miss path: resolver call plus
+// storeLocked into a non-full cache. The resolver is trivial here so overhead
+// is dominated by Lookup's map insert, list push, and label clone.
+func BenchmarkCacheLookupMiss(b *testing.B) {
+	labels := benchmarkLabels(4)
+	cache := New(
+		10*time.Second,
+		1<<20,
+		time.Now,
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			return labels, true, nil
+		},
+	)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		got, found, err := cache.Lookup(context.Background(), "containers", fmt.Sprintf("id-%d", i))
+		if err != nil || !found {
+			b.Fatalf("lookup err=%v found=%v", err, found)
+		}
+		benchmarkLookupLabels = got
+	}
+}
+
+// BenchmarkCacheLookupEviction cycles distinct keys past maxSize so every
+// Lookup triggers the LRU tail eviction. Cost floor for a working-set larger
+// than the cache.
+func BenchmarkCacheLookupEviction(b *testing.B) {
+	const maxSize = 64
+	labels := benchmarkLabels(4)
+	cache := New(
+		10*time.Second,
+		maxSize,
+		time.Now,
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			return labels, true, nil
+		},
+	)
+	for i := 0; i < maxSize; i++ {
+		if _, _, err := cache.Lookup(context.Background(), "containers", fmt.Sprintf("warm-%d", i)); err != nil {
+			b.Fatalf("warmup: %v", err)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		got, _, err := cache.Lookup(context.Background(), "containers", fmt.Sprintf("evict-%d", i))
+		if err != nil {
+			b.Fatalf("lookup: %v", err)
+		}
+		benchmarkLookupLabels = got
+	}
+}
+
+// BenchmarkCacheLookupHitParallel runs concurrent hits on the same hot key,
+// surfacing contention on the cache mutex.
+func BenchmarkCacheLookupHitParallel(b *testing.B) {
+	labels := benchmarkLabels(8)
+	cache := New(
+		10*time.Second,
+		4,
+		time.Now,
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			return labels, true, nil
+		},
+	)
+	if _, _, err := cache.Lookup(context.Background(), "containers", "hot"); err != nil {
+		b.Fatalf("warmup: %v", err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			if _, _, err := cache.Lookup(context.Background(), "containers", "hot"); err != nil {
+				b.Fatalf("lookup: %v", err)
+			}
+		}
+	})
 }

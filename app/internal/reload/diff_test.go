@@ -9,6 +9,7 @@ import (
 )
 
 func TestImmutableDiffEqualConfigs(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := config.Defaults()
 	if diff := ImmutableDiff(&a, &b); len(diff) != 0 {
@@ -17,6 +18,7 @@ func TestImmutableDiffEqualConfigs(t *testing.T) {
 }
 
 func TestImmutableDiffDetectsListenChange(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.Listen.Address = "127.0.0.1:9999"
@@ -27,6 +29,7 @@ func TestImmutableDiffDetectsListenChange(t *testing.T) {
 }
 
 func TestImmutableDiffDetectsUpstreamSocketChange(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.Upstream.Socket = "/tmp/other.sock"
@@ -37,6 +40,7 @@ func TestImmutableDiffDetectsUpstreamSocketChange(t *testing.T) {
 }
 
 func TestImmutableDiffDetectsLogChange(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.Log.Level = "debug"
@@ -47,6 +51,7 @@ func TestImmutableDiffDetectsLogChange(t *testing.T) {
 }
 
 func TestImmutableDiffDetectsHealthChange(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.Health.Path = "/healthz"
@@ -57,6 +62,7 @@ func TestImmutableDiffDetectsHealthChange(t *testing.T) {
 }
 
 func TestImmutableDiffDetectsMetricsChange(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.Metrics.Enabled = true
@@ -67,6 +73,7 @@ func TestImmutableDiffDetectsMetricsChange(t *testing.T) {
 }
 
 func TestImmutableDiffDetectsAdminChange(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.Admin.Enabled = true
@@ -77,6 +84,7 @@ func TestImmutableDiffDetectsAdminChange(t *testing.T) {
 }
 
 func TestImmutableDiffDetectsPolicyBundleEnableChange(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.PolicyBundle.Enabled = true
@@ -87,6 +95,7 @@ func TestImmutableDiffDetectsPolicyBundleEnableChange(t *testing.T) {
 }
 
 func TestImmutableDiffDetectsPolicyBundleTrustChange(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.PolicyBundle.AllowedSigningKeys = []config.PolicyBundleSigningKey{{PEM: "new-key"}}
@@ -97,6 +106,7 @@ func TestImmutableDiffDetectsPolicyBundleTrustChange(t *testing.T) {
 }
 
 func TestImmutableDiffDetectsPolicyBundleKeylessChange(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.PolicyBundle.AllowedKeyless = []config.PolicyBundleKeyless{
@@ -109,6 +119,7 @@ func TestImmutableDiffDetectsPolicyBundleKeylessChange(t *testing.T) {
 }
 
 func TestImmutableDiffDetectsPolicyBundleRekorChange(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.PolicyBundle.RequireRekorInclusion = !a.PolicyBundle.RequireRekorInclusion
@@ -119,6 +130,7 @@ func TestImmutableDiffDetectsPolicyBundleRekorChange(t *testing.T) {
 }
 
 func TestImmutableDiffDetectsPolicyBundleTimeoutChange(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.PolicyBundle.VerifyTimeout = "42s"
@@ -131,6 +143,7 @@ func TestImmutableDiffDetectsPolicyBundleTimeoutChange(t *testing.T) {
 // SignaturePath is intentionally mutable so an operator can re-sign the
 // same YAML without restart.
 func TestImmutableDiffIgnoresPolicyBundleSignaturePath(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.PolicyBundle.SignaturePath = "/etc/sockguard/cfg.bundle.json.new"
@@ -142,6 +155,7 @@ func TestImmutableDiffIgnoresPolicyBundleSignaturePath(t *testing.T) {
 // Reloadable fields must not register as a change — these are exactly the
 // surface hot-reload exists to update.
 func TestImmutableDiffIgnoresReloadableFields(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.Rules = append([]config.RuleConfig{}, b.Rules...)
@@ -161,6 +175,7 @@ func TestImmutableDiffIgnoresReloadableFields(t *testing.T) {
 }
 
 func TestImmutableDiffMultipleChanges(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	b := a
 	b.Listen.Address = "0.0.0.0:2375"
@@ -175,6 +190,7 @@ func TestImmutableDiffMultipleChanges(t *testing.T) {
 }
 
 func TestImmutableDiffNilInputs(t *testing.T) {
+	t.Parallel()
 	a := config.Defaults()
 	if diff := ImmutableDiff(nil, &a); len(diff) != 0 {
 		t.Fatalf("ImmutableDiff(nil, cfg) = %v, want empty", diff)

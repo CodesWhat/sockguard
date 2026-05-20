@@ -266,14 +266,14 @@ func TestRefillSyncShortFill(t *testing.T) {
 func TestRefillSyncFullPoolIsNoop(t *testing.T) {
 	var fillCalls atomic.Int32
 	gen := &requestIDGenerator{
-		ids:             make(chan [requestIDBytes]byte, 1),
+		ids:             make(chan string, 1),
 		refillThreshold: 1,
 		fill: func(b []byte) (int, error) {
 			fillCalls.Add(1)
 			return len(b), nil
 		},
 	}
-	gen.ids <- [requestIDBytes]byte{}
+	gen.ids <- ""
 
 	gen.refillSync()
 
@@ -284,7 +284,7 @@ func TestRefillSyncFullPoolIsNoop(t *testing.T) {
 
 func TestRefillSyncFillErrorNoop(t *testing.T) {
 	gen := &requestIDGenerator{
-		ids:             make(chan [requestIDBytes]byte, 2),
+		ids:             make(chan string, 2),
 		refillThreshold: 2,
 		fill: func([]byte) (int, error) {
 			return 0, errors.New("fill failed")
@@ -299,17 +299,17 @@ func TestRefillSyncFillErrorNoop(t *testing.T) {
 }
 
 func TestEnqueueRequestIDReturnsFalseWhenChannelFull(t *testing.T) {
-	ids := make(chan [requestIDBytes]byte, 1)
-	ids <- [requestIDBytes]byte{}
+	ids := make(chan string, 1)
+	ids <- ""
 
-	if enqueueRequestID(ids, [requestIDBytes]byte{}) {
+	if enqueueRequestID(ids, "") {
 		t.Fatal("enqueueRequestID() = true, want false for a full channel")
 	}
 }
 
 func TestEnqueueRequestIDsStopsWhenChannelFull(t *testing.T) {
-	ids := make(chan [requestIDBytes]byte, 1)
-	ids <- [requestIDBytes]byte{}
+	ids := make(chan string, 1)
+	ids <- ""
 
 	enqueueRequestIDs(ids, make([]byte, requestIDBytes))
 
@@ -400,4 +400,94 @@ func TestClientRequestIDForRequestNilRequest(t *testing.T) {
 	if got != "" {
 		t.Fatalf("clientRequestIDForRequest(nil, nil) = %q, want empty", got)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// access.go: AllowsPassThrough — gates the warn / audit pass-through paths
+// in every middleware. Direct coverage avoids relying on indirect callers
+// to exercise each rollout mode.
+// ---------------------------------------------------------------------------
+
+func TestAllowsPassThroughByRolloutMode(t *testing.T) {
+	tests := []struct {
+		mode string
+		want bool
+	}{
+		{mode: "warn", want: true},
+		{mode: "audit", want: true},
+		{mode: "enforce", want: false},
+		{mode: "", want: false},
+		{mode: "WARN", want: false}, // case-sensitive by design — config validation upper-bounds
+		{mode: "unknown", want: false},
+	}
+	for _, tc := range tests {
+		meta := &RequestMeta{RolloutMode: tc.mode}
+		if got := meta.AllowsPassThrough(); got != tc.want {
+			t.Fatalf("AllowsPassThrough(mode=%q) = %v, want %v", tc.mode, got, tc.want)
+		}
+	}
+}
+
+func TestAllowsPassThroughNilReceiver(t *testing.T) {
+	var meta *RequestMeta
+	if meta.AllowsPassThrough() {
+		t.Fatal("nil *RequestMeta.AllowsPassThrough() = true, want false")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// access.go: SetWouldDenyWithCode — stamps the warn / audit verdict so the
+// access log and audit log can correlate the would-be denial with its gate.
+// ---------------------------------------------------------------------------
+
+func TestSetWouldDenyWithCodeStampsDecision(t *testing.T) {
+	meta := &RequestMeta{}
+	rc := &responseCapture{ResponseWriter: httptest.NewRecorder(), meta: meta}
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+
+	SetWouldDenyWithCode(rc, req, "rate_limited", "would have throttled", nil)
+
+	if meta.Decision != DecisionWouldDeny {
+		t.Fatalf("Decision = %q, want %q", meta.Decision, DecisionWouldDeny)
+	}
+	if meta.ReasonCode != "rate_limited" {
+		t.Fatalf("ReasonCode = %q, want rate_limited", meta.ReasonCode)
+	}
+	if meta.Reason != "would have throttled" {
+		t.Fatalf("Reason = %q, want 'would have throttled'", meta.Reason)
+	}
+}
+
+func TestSetWouldDenyWithCodeRunsNormalizeWhenNormPathMissing(t *testing.T) {
+	meta := &RequestMeta{}
+	rc := &responseCapture{ResponseWriter: httptest.NewRecorder(), meta: meta}
+	req := httptest.NewRequest(http.MethodGet, "/v1.45/containers/json", nil)
+
+	SetWouldDenyWithCode(rc, req, "deny_default", "warn", func(string) string {
+		return "/containers/json"
+	})
+
+	if meta.NormPath != "/containers/json" {
+		t.Fatalf("NormPath = %q, want /containers/json", meta.NormPath)
+	}
+}
+
+func TestSetWouldDenyWithCodeKeepsExistingNormPath(t *testing.T) {
+	meta := &RequestMeta{NormPath: "/already/set"}
+	rc := &responseCapture{ResponseWriter: httptest.NewRecorder(), meta: meta}
+	req := httptest.NewRequest(http.MethodGet, "/v1.45/containers/json", nil)
+
+	SetWouldDenyWithCode(rc, req, "deny_default", "warn", func(string) string {
+		return "/should/not/override"
+	})
+
+	if meta.NormPath != "/already/set" {
+		t.Fatalf("NormPath = %q, want it preserved as /already/set", meta.NormPath)
+	}
+}
+
+func TestSetWouldDenyWithCodeNilMetaIsNoop(t *testing.T) {
+	// Plain recorder has no carrier — must not panic when no meta is reachable.
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	SetWouldDenyWithCode(httptest.NewRecorder(), req, "code", "reason", nil)
 }

@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -22,6 +24,8 @@ import (
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/health"
+	"github.com/codeswhat/sockguard/internal/policybundle"
+	"github.com/codeswhat/sockguard/internal/testhelp"
 	"github.com/codeswhat/sockguard/internal/ui"
 )
 
@@ -217,6 +221,33 @@ func TestRequireExplicitConfigFile_FlagChangedOnRoot_EmptyPath(t *testing.T) {
 	}
 }
 
+// TestRequireExplicitConfigFile_FlagOnRootLocalChanged actually exercises the
+// "look up the flag on the root" fallback. Earlier tests used PersistentFlags
+// which cobra propagates via persistentFlag inheritance — so cmd.Flag("config")
+// returns non-nil and the if-branch is dead code. By installing the flag as a
+// LOCAL flag on root (not persistent), child.Flag("config") returns nil and
+// the fallback path is the only way to surface the Changed flag. This is what
+// kills config_flag.go:13:10 (`flag == nil` → `!=`) and 13:31
+// (`cmd.Root() != nil` → `==`).
+func TestRequireExplicitConfigFile_FlagOnRootLocalChanged(t *testing.T) {
+	root := &cobra.Command{Use: "root"}
+	root.Flags().String("config", "", "") // local, NOT persistent
+	child := &cobra.Command{Use: "child"}
+	root.AddCommand(child)
+
+	if err := root.Flags().Set("config", ""); err != nil {
+		t.Fatalf("set config flag: %v", err)
+	}
+
+	err := requireExplicitConfigFile(child, "")
+	if err == nil {
+		t.Fatal("expected error for empty config path when fallback to root's local flag is required")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("error = %v, want mention of 'empty'", err)
+	}
+}
+
 func TestRequireExplicitConfigFile_FlagChangedDirectlyOnCmd(t *testing.T) {
 	// The flag lives on the command itself, not the root.
 	cmd := &cobra.Command{Use: "cmd"}
@@ -289,6 +320,62 @@ func TestWriteMatchText_DenyDecisionUsesDenyLabel(t *testing.T) {
 	}
 }
 
+// TestWriteMatchText_AllowAndDenyUseDistinctColors kills the two CONDITIONALS_NEGATION
+// mutants in writeMatchText that flip the green/red coloring of allow vs. deny.
+// The existing label-only tests cannot kill these — both branches emit the
+// same "allow" / "deny" text, only the surrounding ANSI escapes differ — and
+// bytes.Buffer is not a TTY so detectColor returns false by default. Force
+// colors on with FORCE_COLOR so the escapes appear, then assert allow paints
+// green and deny paints red on both the decision line and the matched-rule
+// action line.
+func TestWriteMatchText_AllowAndDenyUseDistinctColors(t *testing.T) {
+	t.Setenv("FORCE_COLOR", "1")
+	t.Setenv("NO_COLOR", "")
+
+	const ansiGreen = "\x1b[32m"
+	const ansiRed = "\x1b[31m"
+
+	t.Run("allow paints green and not red", func(t *testing.T) {
+		var buf bytes.Buffer
+		writeMatchText(&buf, matchResult{
+			Decision: string(filter.ActionAllow),
+			MatchedRule: &matchedRuleInfo{
+				Index:  1,
+				Method: "GET",
+				Path:   "/_ping",
+				Action: string(filter.ActionAllow),
+			},
+		})
+		got := buf.String()
+		if !strings.Contains(got, ansiGreen+"allow") {
+			t.Fatalf("allow decision should be green, got:\n%q", got)
+		}
+		if strings.Contains(got, ansiRed+"allow") {
+			t.Fatalf("allow decision should NOT be red, got:\n%q", got)
+		}
+	})
+
+	t.Run("deny paints red and not green", func(t *testing.T) {
+		var buf bytes.Buffer
+		writeMatchText(&buf, matchResult{
+			Decision: string(filter.ActionDeny),
+			MatchedRule: &matchedRuleInfo{
+				Index:  2,
+				Method: "*",
+				Path:   "/**",
+				Action: string(filter.ActionDeny),
+			},
+		})
+		got := buf.String()
+		if !strings.Contains(got, ansiRed+"deny") {
+			t.Fatalf("deny decision should be red, got:\n%q", got)
+		}
+		if strings.Contains(got, ansiGreen+"deny") {
+			t.Fatalf("deny decision should NOT be green, got:\n%q", got)
+		}
+	})
+}
+
 // writeMatchText with no matched rule (default-deny) should show "none".
 func TestWriteMatchText_NoMatchedRule(t *testing.T) {
 	var buf bytes.Buffer
@@ -324,9 +411,9 @@ func TestRunServe_DeferredListenerCloseNilErrorNoWarn(t *testing.T) {
 		return cfg, nil
 	}
 
-	var logBuf strings.Builder
+	collector := &testhelp.CollectingHandler{}
 	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
+		return collector.Logger(), nil, nil
 	}
 	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
@@ -349,8 +436,8 @@ func TestRunServe_DeferredListenerCloseNilErrorNoWarn(t *testing.T) {
 		t.Fatalf("runServeWithDeps() error = %v", err)
 	}
 
-	if strings.Contains(logBuf.String(), `"msg":"failed to close listener"`) {
-		t.Fatalf("unexpected listener-close warning when Close returns nil: %s", logBuf.String())
+	if collector.HasMessage("failed to close listener") {
+		t.Fatalf("unexpected listener-close warning when Close returns nil; records: %#v", collector.Records())
 	}
 }
 
@@ -366,9 +453,9 @@ func TestRunServe_DeferredListenerCloseUnexpectedErrorWarns(t *testing.T) {
 		return cfg, nil
 	}
 
-	var logBuf strings.Builder
+	collector := &testhelp.CollectingHandler{}
 	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
+		return collector.Logger(), nil, nil
 	}
 	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
@@ -396,8 +483,8 @@ func TestRunServe_DeferredListenerCloseUnexpectedErrorWarns(t *testing.T) {
 	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
 		t.Fatalf("runServeWithDeps() error = %v", err)
 	}
-	if !strings.Contains(logBuf.String(), `"msg":"failed to close listener"`) {
-		t.Fatalf("expected listener-close warning for unexpected error, got: %s", logBuf.String())
+	if !collector.HasMessage("failed to close listener") {
+		t.Fatalf("expected listener-close warning for unexpected error; records: %#v", collector.Records())
 	}
 }
 
@@ -509,9 +596,9 @@ func TestRunServe_SocketRemoveNotExistIgnored(t *testing.T) {
 		return cfg, nil
 	}
 
-	var logBuf strings.Builder
+	collector := &testhelp.CollectingHandler{}
 	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
+		return collector.Logger(), nil, nil
 	}
 	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
@@ -532,8 +619,8 @@ func TestRunServe_SocketRemoveNotExistIgnored(t *testing.T) {
 	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
 		t.Fatalf("runServeWithDeps() error = %v", err)
 	}
-	if strings.Contains(logBuf.String(), "remove socket error") {
-		t.Fatalf("unexpected remove-socket error log for ErrNotExist: %s", logBuf.String())
+	if collector.HasMessage("remove socket error") {
+		t.Fatalf("unexpected remove-socket error log for ErrNotExist; records: %#v", collector.Records())
 	}
 }
 
@@ -546,9 +633,9 @@ func TestRunServe_SocketRemoveOtherErrorLogs(t *testing.T) {
 		return cfg, nil
 	}
 
-	var logBuf strings.Builder
+	collector := &testhelp.CollectingHandler{}
 	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
-		return slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})), nil, nil
+		return collector.Logger(), nil, nil
 	}
 	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
 		return stubCompiledRules(), nil
@@ -569,47 +656,362 @@ func TestRunServe_SocketRemoveOtherErrorLogs(t *testing.T) {
 	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
 		t.Fatalf("runServeWithDeps() error = %v", err)
 	}
-	if !strings.Contains(logBuf.String(), "remove socket error") {
-		t.Fatalf("expected remove socket error log, got: %s", logBuf.String())
+	if !collector.HasMessage("remove socket error") {
+		t.Fatalf("expected remove socket error log; records: %#v", collector.Records())
 	}
 }
 
-// ---------------------------------------------------------------------------
-// serve.go: CONDITIONALS_NEGATION: runtime.health != nil
-// withHealth should use runtime.health when set, otherwise fall back to a
-// fresh monitor. Runtime itself is guaranteed non-nil by the call-site
-// contract (newServeRuntime never returns nil), so we only test the
-// runtime.health branch.
-// ---------------------------------------------------------------------------
-
-func TestWithHealth_RuntimeWithNilHealthUsesFreshMonitor(t *testing.T) {
+// TestStartAdminServer_NilListenerCloseDoesNotWarn pins the
+// CONDITIONALS_NEGATION mutant at serve.go:332 (`closeErr == nil` → `!=` in
+// the admin listener's stop closure). The original early-returns when the
+// listener closes cleanly (closeErr == nil) OR with net.ErrClosed. The
+// mutant inverts the first conjunct so a clean close (closeErr == nil)
+// falls through and emits a spurious "failed to close admin listener"
+// Warn line. We inject a listener whose Close returns nil and assert the
+// warning is absent from the collected records.
+func TestStartAdminServer_NilListenerCloseDoesNotWarn(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Upstream.Socket = shortSocketPath(t, "wh-nil-health")
-	cfg.Health.Path = "/health"
+	cfg.Admin.Enabled = true
+	cfg.Admin.Listen.Address = "127.0.0.1:0"
+
+	collector := &testhelp.CollectingHandler{}
 
 	deps := newServeTestDeps()
-	deps.now = func() time.Time { return time.Unix(0, 0) }
+	deps.createAdminListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{closeErr: nil}, nil
+	}
+	deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) {
+		errCh <- http.ErrServerClosed
+	}
 
-	// runtime is non-nil but runtime.health is nil → must use fresh monitor.
-	rt := &serveRuntime{health: nil}
-	layer := withHealth(&cfg, newDiscardLogger(), deps, rt)
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusTeapot)
-	})
-	handler := layer(next)
-
-	req := httptest.NewRequest(http.MethodGet, "/health", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	if rec.Code == http.StatusTeapot {
-		t.Fatal("health interceptor did not intercept /health for runtime with nil health")
+	_, _, stop, err := startAdminServer(&cfg, collector.Logger(), nil, nil, deps)
+	if err != nil {
+		t.Fatalf("startAdminServer() error = %v", err)
+	}
+	stop()
+	if collector.HasMessage("failed to close admin listener") {
+		t.Fatalf("clean close (closeErr=nil) emitted spurious warning — mutant `closeErr != nil` would yield this; records: %#v", collector.Records())
 	}
 }
 
-func TestWithHealth_RuntimeWithHealthUsesInjectedMonitor(t *testing.T) {
+// TestRunServe_ShutdownErrorLogs pins the CONDITIONALS_NEGATION mutant at
+// serve.go:270 (`err != nil` → `==` on the regular shutdownServer call).
+// The mutant silently swallows the shutdown error instead of logging it.
+// We force shutdownServer to return a non-nil error via SIGINT-driven
+// graceful shutdown and assert the structured "shutdown error" record
+// is present in the collected log.
+func TestRunServe_ShutdownErrorLogs(t *testing.T) {
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		cfg := testServeConfig()
+		cfg.Listen.Address = "127.0.0.1:0"
+		return cfg, nil
+	}
+
+	collector := &testhelp.CollectingHandler{}
+	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
+		return collector.Logger(), nil, nil
+	}
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		return stubCompiledRules(), nil
+	}
+	deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return &serveTestConn{}, nil
+	}
+	deps.createServeListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {}
+	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) { c <- syscall.SIGINT }
+	deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
+		return errors.New("shutdown boom")
+	}
+	deps.removePath = func(string) error { return nil }
+
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
+		t.Fatalf("runServeWithDeps() error = %v", err)
+	}
+	if !collector.HasMessage("shutdown error") {
+		t.Fatalf("expected 'shutdown error' log; records: %#v", collector.Records())
+	}
+}
+
+// TestRunServe_AdminShutdownErrorLogs pins the CONDITIONALS_NEGATION mutant at
+// serve.go:266 (`err != nil` → `==` on the admin shutdownServer call). The
+// mutant would silently swallow a failed admin server graceful-shutdown.
+// We enable the admin listener, force shutdownServer to return an error only
+// when invoked with the admin *http.Server (i.e. the first call — serve.go
+// shuts admin down before the regular server), and assert the structured
+// "admin shutdown error" record is in the collected log.
+func TestRunServe_AdminShutdownErrorLogs(t *testing.T) {
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		cfg := testServeConfig()
+		cfg.Listen.Address = "127.0.0.1:0"
+		cfg.Admin.Enabled = true
+		cfg.Admin.Listen.Address = "127.0.0.1:0"
+		return cfg, nil
+	}
+
+	collector := &testhelp.CollectingHandler{}
+	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
+		return collector.Logger(), nil, nil
+	}
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		return stubCompiledRules(), nil
+	}
+	deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return &serveTestConn{}, nil
+	}
+	deps.createServeListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.createAdminListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {}
+	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) { c <- syscall.SIGINT }
+
+	// serve.go shuts the admin server down first (line 266), then the regular
+	// server (line 270). Discriminate by call order so we only return an
+	// error for the admin call — that isolates the kill to serve.go:266 and
+	// avoids triggering the regular-shutdown "shutdown error" log too.
+	var shutdownCalls int
+	deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
+		shutdownCalls++
+		if shutdownCalls == 1 {
+			return errors.New("admin shutdown boom")
+		}
+		return nil
+	}
+	deps.removePath = func(string) error { return nil }
+
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
+		t.Fatalf("runServeWithDeps() error = %v", err)
+	}
+	if !collector.HasMessage("admin shutdown error") {
+		t.Fatalf("expected 'admin shutdown error' log; records: %#v", collector.Records())
+	}
+}
+
+// TestRunServe_AdminSocketRemovedWhenSocketPathSet pins the
+// CONDITIONALS_NEGATION mutant at serve.go:278 (`Socket != ""` → `==`) in
+// the admin-socket cleanup branch. With the mutation, the admin socket
+// path is only cleaned up when the socket string is empty (calling
+// removePath("")), and a real configured path is skipped — leaking the
+// admin socket file. We assert removePath is invoked with the admin
+// socket path exactly when that path is non-empty.
+func TestRunServe_AdminSocketRemovedWhenSocketPathSet(t *testing.T) {
+	const adminSock = "/tmp/sockguard-admin-shutdown-test.sock"
+
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		cfg := testServeConfig()
+		cfg.Listen.Address = "127.0.0.1:0"
+		cfg.Admin.Enabled = true
+		cfg.Admin.Listen.Address = ""
+		cfg.Admin.Listen.Socket = adminSock
+		return cfg, nil
+	}
+
+	collector := &testhelp.CollectingHandler{}
+	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
+		return collector.Logger(), nil, nil
+	}
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		return stubCompiledRules(), nil
+	}
+	deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return &serveTestConn{}, nil
+	}
+	deps.createServeListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.createAdminListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) {}
+	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) { c <- syscall.SIGINT }
+	deps.shutdownServer = func(_ *http.Server, _ context.Context) error { return nil }
+
+	var removed []string
+	deps.removePath = func(p string) error {
+		removed = append(removed, p)
+		return nil
+	}
+
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
+		t.Fatalf("runServeWithDeps() error = %v", err)
+	}
+
+	foundAdmin := false
+	for _, p := range removed {
+		if p == adminSock {
+			foundAdmin = true
+		}
+	}
+	if !foundAdmin {
+		t.Fatalf("expected removePath(%q) call (admin socket cleanup); calls: %#v", adminSock, removed)
+	}
+
+	// Also pin serve.go:279 CONDITIONALS_NEGATION (`err != nil` → `==`): the
+	// mutant logs "remove admin socket error" whenever removePath returns nil,
+	// even though that's the happy path. removePath above returns nil for both
+	// the listen socket and the admin socket, so no such log line should fire.
+	if collector.HasMessage("remove admin socket error") {
+		t.Fatalf("removePath returned nil but admin-socket error log fired (mutant `err == nil` would do this); records: %#v", collector.Records())
+	}
+}
+
+// TestDefaultBuildBundleVerifier_PropagatesBuildConfigError pins the
+// CONDITIONALS_NEGATION mutant at serve_deps.go:104 (`err != nil` → `==` on
+// the policybundle.BuildConfig return). With the mutation, BuildConfig's
+// error is silently swallowed and the function falls through to
+// policybundle.New with whatever zero Config came back — masking a
+// misconfiguration the operator must see at startup.
+// Enabled=true with no allowed_signing_keys and no allowed_keyless triggers
+// BuildConfig's "no entries" error.
+func TestDefaultBuildBundleVerifier_PropagatesBuildConfigError(t *testing.T) {
+	pb := config.PolicyBundleConfig{Enabled: true}
+
+	verifier, err := defaultBuildBundleVerifier(pb)
+	if err == nil {
+		t.Fatalf("expected error for enabled=true with no signing keys; got verifier=%v err=nil", verifier)
+	}
+	if !strings.Contains(err.Error(), "no allowed_signing_keys") {
+		t.Fatalf("error = %q, want substring %q", err.Error(), "no allowed_signing_keys")
+	}
+}
+
+// TestDefaultBuildBundleVerifier_RejectsKeylessWithoutTUF pins the
+// CONDITIONALS_NEGATION mutant at serve_deps.go:112
+// (`cfg.TrustedMaterial == nil` → `!=`). The mutant inverts the guard so
+// the function returns the helpful "configure allowed_signing_keys for now"
+// error only when TUF roots ARE wired — i.e. never under current production
+// — making the friendly error unreachable. We pin the original error by
+// content to detect the mutation.
+func TestDefaultBuildBundleVerifier_RejectsKeylessWithoutTUF(t *testing.T) {
+	pb := config.PolicyBundleConfig{
+		Enabled: true,
+		AllowedKeyless: []config.PolicyBundleKeyless{
+			{Issuer: "https://accounts.example.com", SubjectPattern: `^ci@example\.com$`},
+		},
+	}
+
+	verifier, err := defaultBuildBundleVerifier(pb)
+	if err == nil {
+		t.Fatalf("expected error for keyless without TUF; got verifier=%v err=nil", verifier)
+	}
+	// The serve_deps.go error message is the canary — policybundle.New
+	// returns a different message under the mutation, so this assertion is
+	// what differentiates the two paths.
+	if !strings.Contains(err.Error(), "production TUF trust root is not yet wired") {
+		t.Fatalf("error = %q, want the serve_deps.go canary message containing %q",
+			err.Error(), "production TUF trust root is not yet wired")
+	}
+}
+
+// TestRunServe_ReloadEnabledStartsWatcherWhenCfgFileSet pins the
+// CONDITIONALS_NEGATION mutant at serve.go:216 (`cfgFile != ""` → `==`).
+// With the mutation the reload branch fires only when cfgFile is empty —
+// where startReloader returns "cfgFile is required" — so a real configured
+// reload setup silently fails to start the watcher. We point cfgFile at a
+// real temp file with Reload.Enabled=true and assert the reload package's
+// "config hot-reload enabled" Info line fires (it is emitted from inside
+// rl.Run after the fsnotify watch is attached).
+func TestRunServe_ReloadEnabledStartsWatcherWhenCfgFileSet(t *testing.T) {
+	tmpDir := t.TempDir()
+	tmpCfg := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(tmpCfg, []byte("listen:\n  socket: /tmp/x.sock\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	originalCfgFile := cfgFile
+	cfgFile = tmpCfg
+	t.Cleanup(func() { cfgFile = originalCfgFile })
+
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) {
+		cfg := testServeConfig()
+		cfg.Listen.Address = "127.0.0.1:0"
+		cfg.Reload.Enabled = true
+		// Non-default Debounce + PollInterval so we can assert they flow
+		// through to the reload package. The mutants at serve.go:218, 219,
+		// and 224 would all collapse one of these to the DefaultDebounce
+		// (250ms) / zero PollInterval default.
+		cfg.Reload.Debounce = "10ms"
+		cfg.Reload.PollInterval = "200ms"
+		return cfg, nil
+	}
+
+	collector := &testhelp.CollectingHandler{}
+	deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
+		return collector.Logger(), nil, nil
+	}
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		return stubCompiledRules(), nil
+	}
+	deps.dialUpstream = func(network, address string, timeout time.Duration) (net.Conn, error) {
+		return &serveTestConn{}, nil
+	}
+	deps.createServeListener = func(*config.Config) (net.Listener, error) {
+		return &serveTestListener{}, nil
+	}
+	deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) {}
+	// Wait until the reloader has logged "config hot-reload enabled" before
+	// sending SIGINT — otherwise shutdown can race the watcher startup and
+	// the log never appears.
+	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {
+		go func() {
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				if collector.HasMessage("config hot-reload enabled") {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			c <- syscall.SIGINT
+		}()
+	}
+	deps.shutdownServer = func(_ *http.Server, _ context.Context) error { return nil }
+	deps.removePath = func(string) error { return nil }
+
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
+		t.Fatalf("runServeWithDeps() error = %v", err)
+	}
+	enabledRecs := collector.FindMessage("config hot-reload enabled")
+	if len(enabledRecs) == 0 {
+		t.Fatalf("expected 'config hot-reload enabled' log when Reload.Enabled and cfgFile set; records: %#v", collector.Records())
+	}
+	// Pin serve.go:218 (`Debounce != ""` → `==`) and 219 (`err == nil` → `!=`):
+	// both would collapse our configured "10ms" debounce back to the
+	// DefaultDebounce (250ms). The reload-package log carries the value as
+	// a duration string.
+	if got := enabledRecs[0].Attrs["debounce"]; got != "10ms" {
+		t.Fatalf("debounce attr = %v, want \"10ms\" (mutant at serve.go:218 or :219 collapses to DefaultDebounce)", got)
+	}
+	// Pin serve.go:224 (`PollInterval != ""` → `==`): mutant collapses to
+	// the zero default (formatted "0s").
+	if got := enabledRecs[0].Attrs["poll_interval"]; got != "200ms" {
+		t.Fatalf("poll_interval attr = %v, want \"200ms\" (mutant at serve.go:224 collapses to 0s)", got)
+	}
+	// Pin serve.go:231 (`startErr != nil` → `==`): when startReloader
+	// succeeds (startErr == nil), the mutant takes the "disabled" branch and
+	// emits the error log AND replaces stopReload with a noop. The "enabled"
+	// log still fires from the goroutine, so existence alone isn't enough —
+	// we must assert the "disabled" log is ABSENT.
+	if collector.HasMessage("config hot-reload disabled: failed to start watcher") {
+		t.Fatalf("'config hot-reload disabled' fired despite startReloader success (mutant `startErr == nil`); records: %#v", collector.Records())
+	}
+}
+
+// withHealth must intercept /health via the runtime monitor. The function's
+// precondition is that newServeRuntime has allocated runtime.health, so the
+// "nil-fallback" branch was removed; this test pins the only remaining path.
+
+func TestWithHealth_UsesRuntimeMonitor(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.Upstream.Socket = shortSocketPath(t, "wh-injected")
+	cfg.Upstream.Socket = shortSocketPath(t, "wh-runtime")
 	cfg.Health.Path = "/health"
 
 	deps := newServeTestDeps()
@@ -618,7 +1020,7 @@ func TestWithHealth_RuntimeWithHealthUsesInjectedMonitor(t *testing.T) {
 	sharedMonitor := health.NewMonitor(cfg.Upstream.Socket, deps.now(), newDiscardLogger())
 	rt := &serveRuntime{health: sharedMonitor}
 
-	layer := withHealth(&cfg, newDiscardLogger(), deps, rt)
+	layer := withHealth(&cfg, rt)
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
@@ -629,7 +1031,7 @@ func TestWithHealth_RuntimeWithHealthUsesInjectedMonitor(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code == http.StatusTeapot {
-		t.Fatal("health interceptor did not intercept /health for injected monitor")
+		t.Fatal("health interceptor did not intercept /health")
 	}
 }
 
@@ -738,6 +1140,188 @@ func TestPrintClientProfiles_DenyActionDoesNotRenderAsAllow(t *testing.T) {
 	}
 	if strings.Contains(output, "allow") {
 		t.Fatalf("unexpected 'allow' in output for deny-only profile rules, got:\n%s", output)
+	}
+}
+
+// TestPrintClientProfiles_EmptyMethodRendersWildcard kills the
+// CONDITIONALS_NEGATION mutant at validate.go:106 (`method == ""` → `!= ""`).
+// An empty Method should render as "*" so the output communicates the
+// implicit any-method behavior; the mutated form would print blank space.
+func TestPrintClientProfiles_EmptyMethodRendersWildcard(t *testing.T) {
+	cfg := &config.Config{
+		Clients: config.ClientsConfig{
+			Profiles: []config.ClientProfileConfig{
+				{
+					Name: "wild",
+					Rules: []config.RuleConfig{
+						{Match: config.MatchConfig{Method: "", Path: "/sentinel"}, Action: "allow"},
+					},
+				},
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	p := ui.New(&out)
+	printClientProfiles(&out, p, cfg)
+
+	output := out.String()
+	if !strings.Contains(output, "* ") && !strings.Contains(output, "*     ") {
+		t.Fatalf("expected '*' wildcard for empty method, got:\n%s", output)
+	}
+	if !strings.Contains(output, "/sentinel") {
+		t.Fatalf("expected /sentinel path in output, got:\n%s", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// serve.go:691 — CONDITIONALS_NEGATION: pb.VerifyTimeout == ""
+// serve.go:709 — CONDITIONALS_NEGATION: cfg == nil
+// serve.go:713 — CONDITIONALS_NEGATION: err != nil (from json.Marshal)
+// serve.go:971 — CONDITIONALS_NEGATION: cfg.Admin.Listen.Socket != ""
+// Pure-function helpers covered with table tests below.
+// ---------------------------------------------------------------------------
+
+func TestBundleVerifyDeadline(t *testing.T) {
+	t.Run("empty VerifyTimeout falls back to package default", func(t *testing.T) {
+		pb := config.PolicyBundleConfig{VerifyTimeout: ""}
+		if got := bundleVerifyDeadline(pb); got != policybundle.VerifyTimeout {
+			t.Fatalf("got %v, want package default %v", got, policybundle.VerifyTimeout)
+		}
+	})
+
+	t.Run("valid positive duration is honored", func(t *testing.T) {
+		pb := config.PolicyBundleConfig{VerifyTimeout: "12s"}
+		if got, want := bundleVerifyDeadline(pb), 12*time.Second; got != want {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+
+	t.Run("zero duration falls back to default", func(t *testing.T) {
+		pb := config.PolicyBundleConfig{VerifyTimeout: "0s"}
+		if got := bundleVerifyDeadline(pb); got != policybundle.VerifyTimeout {
+			t.Fatalf("got %v, want package default %v", got, policybundle.VerifyTimeout)
+		}
+	})
+
+	t.Run("negative duration falls back to default", func(t *testing.T) {
+		pb := config.PolicyBundleConfig{VerifyTimeout: "-1s"}
+		if got := bundleVerifyDeadline(pb); got != policybundle.VerifyTimeout {
+			t.Fatalf("got %v, want package default %v", got, policybundle.VerifyTimeout)
+		}
+	})
+
+	t.Run("invalid duration string falls back to default", func(t *testing.T) {
+		pb := config.PolicyBundleConfig{VerifyTimeout: "not-a-duration"}
+		if got := bundleVerifyDeadline(pb); got != policybundle.VerifyTimeout {
+			t.Fatalf("got %v, want package default %v", got, policybundle.VerifyTimeout)
+		}
+	})
+}
+
+func TestPolicyConfigHash(t *testing.T) {
+	t.Run("nil cfg returns empty string", func(t *testing.T) {
+		if got := policyConfigHash(nil); got != "" {
+			t.Fatalf("policyConfigHash(nil) = %q, want empty string", got)
+		}
+	})
+
+	t.Run("non-nil cfg returns 64-char hex sha256", func(t *testing.T) {
+		cfg := config.Defaults()
+		got := policyConfigHash(&cfg)
+		if len(got) != 64 {
+			t.Fatalf("policyConfigHash() length = %d, want 64", len(got))
+		}
+		for _, c := range got {
+			if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+				t.Fatalf("policyConfigHash() contains non-hex char %q: %s", c, got)
+			}
+		}
+	})
+
+	t.Run("identical configs hash identically", func(t *testing.T) {
+		a := config.Defaults()
+		b := config.Defaults()
+		if policyConfigHash(&a) != policyConfigHash(&b) {
+			t.Fatal("identical configs produced different hashes")
+		}
+	})
+
+	t.Run("different configs hash differently", func(t *testing.T) {
+		a := config.Defaults()
+		b := config.Defaults()
+		b.Listen.Address = "127.0.0.1:9999"
+		if policyConfigHash(&a) == policyConfigHash(&b) {
+			t.Fatal("different configs produced identical hashes")
+		}
+	})
+}
+
+func TestAdminListenerAddr(t *testing.T) {
+	t.Run("unix socket path uses unix: prefix", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Admin.Listen.Socket = "/tmp/admin.sock"
+		cfg.Admin.Listen.Address = ""
+		if got, want := adminListenerAddr(&cfg), "unix:/tmp/admin.sock"; got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("empty socket falls back to tcp address", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Admin.Listen.Socket = ""
+		cfg.Admin.Listen.Address = "127.0.0.1:2376"
+		if got, want := adminListenerAddr(&cfg), "tcp://127.0.0.1:2376"; got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// serve.go:959,960 — ARITHMETIC_BASE: 30 * time.Second (admin server timeouts)
+// Mutation flips * → / which yields a near-zero duration that breaks the
+// admin endpoint contract.
+// ---------------------------------------------------------------------------
+
+func TestNewAdminHTTPServerTimeoutsAre30Seconds(t *testing.T) {
+	srv := newAdminHTTPServer(http.NewServeMux())
+	if got, want := srv.ReadTimeout, 30*time.Second; got != want {
+		t.Fatalf("ReadTimeout = %v, want %v", got, want)
+	}
+	if got, want := srv.WriteTimeout, 30*time.Second; got != want {
+		t.Fatalf("WriteTimeout = %v, want %v", got, want)
+	}
+	if got, want := srv.ReadHeaderTimeout, 5*time.Second; got != want {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v (readHeaderTimeout const)", got, want)
+	}
+	if got, want := srv.IdleTimeout, 120*time.Second; got != want {
+		t.Fatalf("IdleTimeout = %v, want %v (idleTimeout const)", got, want)
+	}
+	if got, want := srv.MaxHeaderBytes, 1<<20; got != want {
+		t.Fatalf("MaxHeaderBytes = %d, want %d (maxHeaderBytes const)", got, want)
+	}
+}
+
+// TestNewHTTPServerHardeningConstants pins the main-server timeout/limit
+// values that hijack-aware tuning depends on. ReadTimeout/WriteTimeout are
+// deliberately 0 so streaming responses don't hit a deadline mid-flight, but
+// ReadHeaderTimeout/IdleTimeout/MaxHeaderBytes guard the request prelude.
+func TestNewHTTPServerHardeningConstants(t *testing.T) {
+	srv := newHTTPServer(http.NewServeMux())
+	if got := srv.ReadTimeout; got != 0 {
+		t.Fatalf("ReadTimeout = %v, want 0 (hijack-safe)", got)
+	}
+	if got := srv.WriteTimeout; got != 0 {
+		t.Fatalf("WriteTimeout = %v, want 0 (hijack-safe)", got)
+	}
+	if got, want := srv.ReadHeaderTimeout, 5*time.Second; got != want {
+		t.Fatalf("ReadHeaderTimeout = %v, want %v (readHeaderTimeout const)", got, want)
+	}
+	if got, want := srv.IdleTimeout, 120*time.Second; got != want {
+		t.Fatalf("IdleTimeout = %v, want %v (idleTimeout const)", got, want)
+	}
+	if got, want := srv.MaxHeaderBytes, 1<<20; got != want {
+		t.Fatalf("MaxHeaderBytes = %d, want %d (maxHeaderBytes const)", got, want)
 	}
 }
 

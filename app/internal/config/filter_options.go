@@ -34,10 +34,10 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		AllowedBindMounts:          c.AllowedBindMounts,
 		AllowAllDevices:            c.AllowAllDevices,
 		AllowedDevices:             c.AllowedDevices,
-		AllowDeviceRequests:         c.AllowDeviceRequests,
-		AllowedDeviceRequests:       toFilterAllowedDeviceRequests(c.AllowedDeviceRequests),
-		AllowDeviceCgroupRules:      c.AllowDeviceCgroupRules,
-		AllowedDeviceCgroupRules:    c.AllowedDeviceCgroupRules,
+		AllowDeviceRequests:        c.AllowDeviceRequests,
+		AllowedDeviceRequests:      toFilterAllowedDeviceRequests(c.AllowedDeviceRequests),
+		AllowDeviceCgroupRules:     c.AllowDeviceCgroupRules,
+		AllowedDeviceCgroupRules:   c.AllowedDeviceCgroupRules,
 		RequireNoNewPrivileges:     c.RequireNoNewPrivileges,
 		RequireNonRootUser:         c.RequireNonRootUser,
 		RequireReadonlyRootfs:      c.RequireReadonlyRootfs,
@@ -52,6 +52,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		AllowedAppArmorProfiles:    c.AllowedAppArmorProfiles,
 		DenyUnconfinedAppArmor:     c.DenyUnconfinedAppArmor,
 		AllowHostUserNS:            c.AllowHostUserNS,
+		AllowSysctls:               c.AllowSysctls,
 		RequiredLabels:             c.RequiredLabels,
 		ImageTrust:                 c.ImageTrust.toFilterOptions(),
 	}
@@ -112,7 +113,7 @@ func (c BuildRequestBodyConfig) ToFilterOptions() filter.BuildOptions {
 func (c ContainerUpdateRequestBodyConfig) ToFilterOptions() filter.ContainerUpdateOptions {
 	return filter.ContainerUpdateOptions{
 		AllowPrivileged:      c.AllowPrivileged,
-		AllowDevices:         c.AllowDevices,
+		AllowAllDevices:      c.AllowAllDevices,
 		AllowCapabilities:    c.AllowCapabilities,
 		AllowResourceUpdates: c.AllowResourceUpdates,
 		AllowRestartPolicy:   c.AllowRestartPolicy,
@@ -211,8 +212,8 @@ func (c NodeRequestBodyConfig) ToFilterOptions() filter.NodeOptions {
 func (c PluginRequestBodyConfig) ToFilterOptions() filter.PluginOptions {
 	return filter.PluginOptions{
 		AllowHostNetwork:      c.AllowHostNetwork,
-		AllowIPCHost:          c.AllowIPCHost,
-		AllowPIDHost:          c.AllowPIDHost,
+		AllowHostIPC:          c.AllowHostIPC,
+		AllowHostPID:          c.AllowHostPID,
 		AllowAllDevices:       c.AllowAllDevices,
 		AllowedBindMounts:     c.AllowedBindMounts,
 		AllowedDevices:        c.AllowedDevices,

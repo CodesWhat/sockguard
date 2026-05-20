@@ -2,14 +2,17 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/codeswhat/sockguard/internal/admin"
@@ -83,18 +86,19 @@ func newReloadCoordinatorFixture(t *testing.T, initial *config.Config) *reloadCo
 	// Capture structured log output so tests can assert that rejection lines
 	// carry the result=<outcome> key the operators rely on for SIEM grep.
 	logger := slog.New(slog.NewTextHandler(logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	fixture.coordinator = newReloadCoordinator(
-		initial,
-		cfgPath,
-		swappable,
-		func() {},
-		logger,
-		nil,
-		deps,
-		runtime,
-		versioner,
-		nil, // bundleVerifier — fixture covers the policy_bundle.enabled=false path
-	)
+	fixture.coordinator = newReloadCoordinator(reloadCoordinatorParams{
+		RootCtx:         context.Background(),
+		Cfg:             initial,
+		CfgFile:         cfgPath,
+		Swappable:       swappable,
+		InitialTeardown: func() {},
+		Logger:          logger,
+		AuditLogger:     nil,
+		Deps:            deps,
+		Runtime:         runtime,
+		Versioner:       versioner,
+		BundleVerifier:  nil, // fixture covers the policy_bundle.enabled=false path
+	})
 	return fixture
 }
 
@@ -351,5 +355,35 @@ func TestReloadCoordinatorPreservesPolicyVersionOnReject(t *testing.T) {
 				t.Fatalf("Source = %q after %s, want startup preserved", got, tc.name)
 			}
 		})
+	}
+}
+
+// TestNewReloadCoordinatorPreservesNonNilInitialTeardown pins the
+// CONDITIONALS_NEGATION mutant at serve_reload.go:78 (`initialTeardown ==
+// nil` → `!= nil`). The constructor's intent is "default a nil teardown
+// to a no-op stub." The mutant inverts the guard so a NON-nil caller-
+// provided teardown gets overwritten with the stub, silently dropping
+// the chain's real teardown — a hot-reload correctness hazard because
+// the first reload would then leak the original chain's goroutines
+// instead of calling the captured teardown.
+//
+// We pass a teardown that flips a sentinel, drive coordinator.stop(),
+// and assert the sentinel was set. Under the mutant the teardown is
+// replaced and the sentinel stays unset.
+func TestNewReloadCoordinatorPreservesNonNilInitialTeardown(t *testing.T) {
+	var called atomic.Bool
+	teardown := func() { called.Store(true) }
+
+	c := newReloadCoordinator(reloadCoordinatorParams{
+		RootCtx:         context.Background(),
+		Cfg:             &config.Config{},
+		CfgFile:         "unused",
+		InitialTeardown: teardown,
+		Logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	c.stop()
+
+	if !called.Load() {
+		t.Fatal("non-nil initialTeardown was not invoked by stop() — mutant `initialTeardown != nil` replaces a real teardown with the stub")
 	}
 }

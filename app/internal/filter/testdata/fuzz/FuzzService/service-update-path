@@ -1,0 +1,3 @@
+go test fuzz v1
+string("/services/svc-abc123/update")
+[]byte("{\"Name\":\"api\",\"TaskTemplate\":{\"ContainerSpec\":{\"Image\":\"nginx:1.27\",\"Mounts\":[{\"Type\":\"bind\",\"Source\":\"/host\",\"Target\":\"/container\"}]}}}")

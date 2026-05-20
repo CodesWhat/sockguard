@@ -42,7 +42,7 @@ func FuzzSecret(f *testing.F) {
 	f.Add([]byte(`{"Driver":"vault"}`))
 	f.Add([]byte(`{"Templating":{"Name":"golang-template"}}`))
 	f.Add([]byte(`{`))
-	f.Add(bytes.Repeat([]byte("a"), maxSecretBodyBytes+1))
+	f.Add(bytes.Repeat([]byte("a"), driverCreateMaxBodyBytes+1))
 
 	policy := newSecretPolicy(SecretOptions{
 		AllowCustomDrivers:   true,
@@ -63,7 +63,7 @@ func FuzzConfigWrite(f *testing.F) {
 	f.Add([]byte(`{"Driver":"vault"}`))
 	f.Add([]byte(`{"TemplateDriver":"sprig"}`))
 	f.Add([]byte(`{`))
-	f.Add(bytes.Repeat([]byte("a"), maxConfigWriteBodyBytes+1))
+	f.Add(bytes.Repeat([]byte("a"), driverCreateMaxBodyBytes+1))
 
 	policy := newConfigPolicy(ConfigOptions{
 		AllowCustomDrivers:   true,

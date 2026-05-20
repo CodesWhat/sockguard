@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"encoding/pem"
 	"testing"
+	"time"
 
+	"github.com/codeswhat/sockguard/internal/imagetrust"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 )
 
@@ -73,5 +75,39 @@ func TestContainerCreateImageTrustInitErrFailsClosed(t *testing.T) {
 	}
 	if policy.imageTrustVerifier != nil {
 		t.Fatal("expected nil imageTrustVerifier when init failed, got non-nil")
+	}
+}
+
+// TestContainerCreateImageTrustTimeoutHonorsExplicitConfig pins the
+// CONDITIONALS_NEGATION mutant at container_create.go:229 (`imageTrustTimeout
+// == 0` → `!= 0`). The intent of the guard is "if the parsed Config came back
+// with VerifyTimeout=0 (defensive against future Config callers), fall back
+// to the package default." Under the mutant, the fall-back fires for every
+// non-zero timeout instead — silently replacing operator-configured timeouts
+// with the 10s package default.
+//
+// We configure verify_timeout="30s" and assert the policy stores 30s. The
+// mutant would yield 10s.
+func TestContainerCreateImageTrustTimeoutHonorsExplicitConfig(t *testing.T) {
+	pemStr := generateTestECDSAPEM(t)
+
+	opts := ContainerCreateOptions{
+		ImageTrust: ImageTrustOptions{
+			Mode: "enforce",
+			AllowedSigningKeys: []SigningKeyOptions{
+				{PEM: pemStr},
+			},
+			VerifyTimeout: "30s",
+		},
+	}
+
+	policy := newContainerCreatePolicy(opts)
+
+	if policy.imageTrustInitErr != nil {
+		t.Fatalf("imageTrustInitErr = %v, want nil", policy.imageTrustInitErr)
+	}
+	want := 30 * time.Second
+	if policy.imageTrustTimeout != want {
+		t.Fatalf("imageTrustTimeout = %v, want %v — mutant `imageTrustTimeout != 0` would replace the configured 30s with imagetrust.VerifyTimeout (%v)", policy.imageTrustTimeout, want, imagetrust.VerifyTimeout)
 	}
 }

@@ -3,6 +3,8 @@ interface ComparisonRow {
   tecnativa: string;
   linuxserver: string;
   wollomatic: string;
+  elevenNotes: string;
+  cetusguard: string;
   sockguard: string;
   planned?: boolean;
 }
@@ -13,6 +15,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "Yes",
     linuxserver: "Yes",
     wollomatic: "Yes (regex)",
+    elevenNotes: "Read-only (fixed)",
+    cetusguard: "Yes (regex)",
     sockguard: "Yes",
   },
   {
@@ -20,6 +24,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "Partial",
     wollomatic: "Via regex",
+    elevenNotes: "No (read-only)",
+    cetusguard: "Via regex",
     sockguard: "Yes",
   },
   {
@@ -27,14 +33,18 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "Partial (bind-mount restrictions)",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard:
-      "Yes (container, image, build, volume, network, secret, config, service, swarm, node, plugin)",
+      "Yes (container, exec, image, build, volume, network, secret, config, service, swarm, node, plugin)",
   },
   {
     feature: "Per-client policies",
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "IP/hostname + labels",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "CIDR + labels + cert selectors incl. SPKI + unix peer",
   },
   {
@@ -42,20 +52,36 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (workload + control plane)",
   },
   {
-    feature: "Remote TCP mTLS",
+    feature: "Remote TCP mTLS (listener)",
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No (plaintext TCP)",
+    cetusguard: "Yes",
     sockguard: "Yes (TLS 1.3)",
+  },
+  {
+    feature: "Remote daemon upstream (TLS)",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "Yes",
+    sockguard: "Roadmap (v1.1)",
+    planned: true,
   },
   {
     feature: "Read-side visibility / redaction",
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "Partial (blocks 7 risky GETs)",
+    cetusguard: "No",
     sockguard: "Yes (visibility + protected JSON redaction)",
   },
   {
@@ -63,6 +89,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "Yes (JSON option)",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (request + trace correlation)",
   },
   {
@@ -70,13 +98,17 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (JSON schema + reason codes)",
   },
   {
     feature: "Prometheus metrics",
     tecnativa: "HAProxy stats",
-    linuxserver: "nginx status",
+    linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (socket-proxy metrics)",
   },
   {
@@ -84,6 +116,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "Yes",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (+ /health + metrics)",
   },
   {
@@ -91,6 +125,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (W3C traceparent)",
   },
   {
@@ -98,13 +134,35 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes",
+  },
+  {
+    feature: "Rate limits / concurrency caps",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
+    sockguard: "Yes (per-profile token-bucket + global priority gate)",
+  },
+  {
+    feature: "Rollout modes (enforce / warn / audit)",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
+    sockguard: "Yes (per-profile shadow + would_deny audit)",
   },
   {
     feature: "Signed policy bundles",
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (cosign keyed + keyless, Rekor inclusion)",
   },
   {
@@ -112,6 +170,8 @@ export const comparisonRows: ComparisonRow[] = [
     tecnativa: "No",
     linuxserver: "No",
     wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
     sockguard: "Yes (fsnotify/SIGHUP, validate endpoint, policy version)",
   },
 ];

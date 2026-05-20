@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/glob"
 	"github.com/codeswhat/sockguard/internal/pkipin"
 )
 
@@ -34,66 +34,103 @@ func Validate(cfg *Config) error {
 
 func validateBasic(cfg *Config) []string {
 	var errs []string
+	errs = append(errs, validateListeners(cfg)...)
+	errs = append(errs, validateUpstream(cfg)...)
+	errs = append(errs, validateLogging(cfg)...)
+	errs = append(errs, validateResponse(cfg)...)
+	errs = append(errs, validateHealthMetrics(cfg)...)
+	if cfg.Admin.Enabled {
+		errs = append(errs, validateAdmin(cfg)...)
+	}
+	errs = append(errs, validateReload(cfg)...)
+	errs = append(errs, validatePolicyBundle(cfg)...)
+	errs = append(errs, validateRequestBody(cfg)...)
+	errs = append(errs, validateRules(cfg)...)
+	return errs
+}
 
-	// At least one listener
+func validateListeners(cfg *Config) []string {
+	var errs []string
 	if cfg.Listen.Socket == "" && cfg.Listen.Address == "" {
 		errs = append(errs, "at least one listener is required (listen.socket or listen.address)")
 	}
-
 	if cfg.Listen.Socket != "" {
 		errs = append(errs, validateUnixSocketListenerSecurity(cfg)...)
 	}
-
 	if cfg.Listen.Socket == "" && cfg.Listen.Address != "" {
 		errs = append(errs, validateTCPListenerSecurity(cfg)...)
 	}
+	return errs
+}
 
-	// Non-empty upstream
-	if cfg.Upstream.Socket == "" {
-		errs = append(errs, "upstream.socket is required")
+// plainTCPListenerErrors validates a non-loopback TCP listener that is not
+// protected by mutual TLS. label is the human noun ("TCP listener" /
+// "TCP admin listener") and prefix is the config path ("listen" /
+// "admin.listen"). Legacy plaintext beyond loopback is permitted only behind
+// BOTH insecure opt-ins: insecure_allow_plain_tcp acknowledges the unencrypted
+// transport and insecure_allow_unauthenticated_clients acknowledges that any
+// host able to reach the port can impersonate a client. Requiring two
+// deliberate acknowledgments means a single fat-fingered flag cannot reach the
+// dangerous mode.
+func plainTCPListenerErrors(label, prefix string, listen ListenConfig) []string {
+	if !IsNonLoopbackTCPAddress(listen.Address) || listen.TLS.Complete() {
+		return nil
 	}
+	if listen.InsecureAllowPlainTCP && listen.InsecureAllowUnauthenticatedClients {
+		return nil
+	}
+	return []string{fmt.Sprintf(
+		"non-loopback %s %q requires %s.tls mutual TLS configuration, or — for legacy plaintext on a private trusted network — both %s.insecure_allow_plain_tcp=true and %s.insecure_allow_unauthenticated_clients=true (one acknowledgment without the other is rejected)",
+		label, listen.Address, prefix, prefix, prefix,
+	)}
+}
 
-	// Valid log level
+func validateUpstream(cfg *Config) []string {
+	if cfg.Upstream.Socket == "" {
+		return []string{"upstream.socket is required"}
+	}
+	return nil
+}
+
+func validateLogging(cfg *Config) []string {
+	var errs []string
 	switch cfg.Log.Level {
 	case "debug", "info", "warn", "error":
-		// OK
 	default:
 		errs = append(errs, enumValueError("log.level", cfg.Log.Level, "debug", "info", "warn", "error"))
 	}
-
-	// Valid log format
 	switch cfg.Log.Format {
 	case "json", "text":
-		// OK
 	default:
 		errs = append(errs, enumValueError("log.format", cfg.Log.Format, "json", "text"))
 	}
-
-	// Log output must resolve to stderr, stdout, or a local file path.
 	if err := validateLogOutput(cfg.Log.Output); err != nil {
 		errs = append(errs, err.Error())
 	}
 	if cfg.Log.Audit.Enabled {
-		switch cfg.Log.Audit.Format {
-		case "json":
-			// OK
-		default:
+		if cfg.Log.Audit.Format != "json" {
 			errs = append(errs, fmt.Sprintf("log.audit.format must be json, got %q", cfg.Log.Audit.Format))
 		}
-		if err := validateLogOutput(cfg.Log.Audit.Output); err != nil {
-			errs = append(errs, strings.Replace(err.Error(), "log output", "log.audit.output", 1))
+		if err := validateLogOutputField("log.audit.output", cfg.Log.Audit.Output); err != nil {
+			errs = append(errs, err.Error())
 		}
 	}
+	return errs
+}
 
+func validateResponse(cfg *Config) []string {
+	var errs []string
 	switch cfg.Response.DenyVerbosity {
 	case "minimal", "verbose":
-		// OK
 	default:
 		errs = append(errs, enumValueError("response.deny_verbosity", cfg.Response.DenyVerbosity, "minimal", "verbose"))
 	}
 	errs = append(errs, validateVisibleResourceLabels("response.visible_resource_labels", cfg.Response.VisibleResourceLabels)...)
+	return errs
+}
 
-	// Health path starts with /
+func validateHealthMetrics(cfg *Config) []string {
+	var errs []string
 	if cfg.Health.Enabled && !strings.HasPrefix(cfg.Health.Path, "/") {
 		errs = append(errs, fmt.Sprintf("health.path must start with /, got %q", cfg.Health.Path))
 	}
@@ -109,68 +146,95 @@ func validateBasic(cfg *Config) []string {
 	if cfg.Health.Enabled && cfg.Metrics.Enabled && cfg.Health.Path == cfg.Metrics.Path {
 		errs = append(errs, fmt.Sprintf("metrics.path must not equal health.path when both endpoints are enabled, got %q", cfg.Metrics.Path))
 	}
+	return errs
+}
 
-	if cfg.Admin.Enabled {
-		if !strings.HasPrefix(cfg.Admin.Path, "/") {
-			errs = append(errs, fmt.Sprintf("admin.path must start with /, got %q", cfg.Admin.Path))
-		}
-		if cfg.Admin.MaxBodyBytes <= 0 {
-			errs = append(errs, fmt.Sprintf("admin.max_body_bytes must be > 0, got %d", cfg.Admin.MaxBodyBytes))
-		}
-		if cfg.Health.Enabled && cfg.Admin.Path == cfg.Health.Path {
-			errs = append(errs, fmt.Sprintf("admin.path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.Path))
-		}
-		if cfg.Metrics.Enabled && cfg.Admin.Path == cfg.Metrics.Path {
-			errs = append(errs, fmt.Sprintf("admin.path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.Path))
-		}
-		if !strings.HasPrefix(cfg.Admin.PolicyVersionPath, "/") {
-			errs = append(errs, fmt.Sprintf("admin.policy_version_path must start with /, got %q", cfg.Admin.PolicyVersionPath))
-		}
-		if cfg.Admin.PolicyVersionPath == cfg.Admin.Path {
-			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal admin.path, got %q", cfg.Admin.PolicyVersionPath))
-		}
-		if cfg.Health.Enabled && cfg.Admin.PolicyVersionPath == cfg.Health.Path {
-			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
-		}
-		if cfg.Metrics.Enabled && cfg.Admin.PolicyVersionPath == cfg.Metrics.Path {
-			errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
-		}
-		errs = append(errs, validateAdminListener(cfg)...)
+func validateAdmin(cfg *Config) []string {
+	var errs []string
+	if !strings.HasPrefix(cfg.Admin.Path, "/") {
+		errs = append(errs, fmt.Sprintf("admin.path must start with /, got %q", cfg.Admin.Path))
 	}
-
-	if cfg.Reload.Enabled && cfg.Reload.DebounceMs < 0 {
-		errs = append(errs, fmt.Sprintf("reload.debounce_ms must be >= 0, got %d", cfg.Reload.DebounceMs))
+	if cfg.Admin.MaxRequestBytes <= 0 {
+		errs = append(errs, fmt.Sprintf("admin.max_request_bytes must be > 0, got %d", cfg.Admin.MaxRequestBytes))
 	}
-	if cfg.Reload.Enabled && cfg.Reload.PollIntervalMs < 0 {
-		errs = append(errs, fmt.Sprintf("reload.poll_interval_ms must be >= 0, got %d", cfg.Reload.PollIntervalMs))
+	if cfg.Health.Enabled && cfg.Admin.Path == cfg.Health.Path {
+		errs = append(errs, fmt.Sprintf("admin.path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.Path))
 	}
+	if cfg.Metrics.Enabled && cfg.Admin.Path == cfg.Metrics.Path {
+		errs = append(errs, fmt.Sprintf("admin.path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.Path))
+	}
+	if !strings.HasPrefix(cfg.Admin.PolicyVersionPath, "/") {
+		errs = append(errs, fmt.Sprintf("admin.policy_version_path must start with /, got %q", cfg.Admin.PolicyVersionPath))
+	}
+	if cfg.Admin.PolicyVersionPath == cfg.Admin.Path {
+		errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal admin.path, got %q", cfg.Admin.PolicyVersionPath))
+	}
+	if cfg.Health.Enabled && cfg.Admin.PolicyVersionPath == cfg.Health.Path {
+		errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal health.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
+	}
+	if cfg.Metrics.Enabled && cfg.Admin.PolicyVersionPath == cfg.Metrics.Path {
+		errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
+	}
+	errs = append(errs, validateAdminListener(cfg)...)
+	return errs
+}
 
-	errs = append(errs, validatePolicyBundle(cfg)...)
+func validateReload(cfg *Config) []string {
+	if !cfg.Reload.Enabled {
+		return nil
+	}
+	var errs []string
+	if cfg.Reload.Debounce != "" {
+		if d, err := time.ParseDuration(cfg.Reload.Debounce); err != nil {
+			errs = append(errs, fmt.Sprintf("reload.debounce must be a valid Go duration string, got %q", cfg.Reload.Debounce))
+		} else if d < 0 {
+			errs = append(errs, fmt.Sprintf("reload.debounce must be >= 0, got %q", cfg.Reload.Debounce))
+		}
+	}
+	if cfg.Reload.PollInterval != "" {
+		if d, err := time.ParseDuration(cfg.Reload.PollInterval); err != nil {
+			errs = append(errs, fmt.Sprintf("reload.poll_interval must be a valid Go duration string, got %q", cfg.Reload.PollInterval))
+		} else if d < 0 {
+			errs = append(errs, fmt.Sprintf("reload.poll_interval must be >= 0, got %q", cfg.Reload.PollInterval))
+		}
+	}
+	return errs
+}
 
-	errs = append(errs, validateRequestBody(cfg)...)
-
-	// At least one rule
+func validateRules(cfg *Config) []string {
+	var errs []string
 	if len(cfg.Rules) == 0 {
 		errs = append(errs, containsAtLeastOneError("rules", "rule"))
 	}
-
-	// Validate each rule
 	for i, r := range cfg.Rules {
 		if r.Match.Method == "" {
 			errs = append(errs, fmt.Sprintf("rule %d: match.method is required", i+1))
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, fmt.Sprintf("rule %d: match.path is required", i+1))
+		} else if strings.Contains(r.Match.Path, "%") {
+			errs = append(errs, literalPercentRuleError(fmt.Sprintf("rule %d", i+1), r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":
-			// OK
 		default:
 			errs = append(errs, fmt.Sprintf("rule %d: %s", i+1, enumValueError("action", r.Action, "allow", "deny")))
 		}
 	}
-
 	return errs
+}
+
+// literalPercentRuleError reports a rule path pattern that contains a literal
+// '%'. sockguard matches the request path as the daemon routes it — decoded
+// exactly once by the HTTP layer — so a '%XX' in a pattern only ever matches a
+// doubly-encoded request, never normal traffic. The rule the author meant is
+// therefore silently dead, a security-intent gap, so it fails config
+// validation rather than logging a warning.
+func literalPercentRuleError(label, pattern string) string {
+	return fmt.Sprintf(
+		"%s: match.path %q contains a literal '%%'; sockguard matches the path as the daemon routes it (decoded once at the HTTP layer), so a '%%XX' here matches only a doubly-encoded request and never normal traffic — write the decoded form",
+		label, pattern,
+	)
 }
 
 func validateUnixSocketListenerSecurity(cfg *Config) []string {
@@ -192,7 +256,8 @@ func validateUnixSocketListenerSecurity(cfg *Config) []string {
 // hardened owner-only socket mode, a partially-configured TLS block is
 // rejected, a complete TLS block is constructively validated by loading the
 // material, and a non-loopback plaintext TCP listener requires the same
-// explicit opt-in (admin.listen.insecure_allow_plain_tcp=true) that the main
+// two-flag insecure opt-in (admin.listen.insecure_allow_plain_tcp=true plus
+// admin.listen.insecure_allow_unauthenticated_clients=true) that the main
 // listener requires. The admin listener must also point at a different
 // socket/address than the main listener — otherwise the two http.Servers
 // would race for the same bind and the dedicated-listener model would be a
@@ -222,16 +287,12 @@ func validateAdminListener(cfg *Config) []string {
 		if listen.TLS.Enabled() && !listen.TLS.Complete() {
 			errs = append(errs, requiresError("admin.listen.tls", "cert_file, key_file, and client_ca_file together"))
 		} else if listen.TLS.Complete() {
-			if _, err := BuildMutualTLSServerConfig(listen.TLS); err != nil {
-				errs = append(errs, strings.Replace(err.Error(), "listen.tls", "admin.listen.tls", 1))
+			if _, err := BuildMutualTLSServerConfigForField("admin.listen.tls", listen.TLS); err != nil {
+				errs = append(errs, err.Error())
 			}
 		}
 
-		if IsNonLoopbackTCPAddress(listen.Address) && !listen.InsecureAllowPlainTCP && !listen.TLS.Complete() {
-			errs = append(errs,
-				fmt.Sprintf("non-loopback TCP admin listener %q requires admin.listen.tls mTLS config or admin.listen.insecure_allow_plain_tcp=true", listen.Address),
-			)
-		}
+		errs = append(errs, plainTCPListenerErrors("TCP admin listener", "admin.listen", listen.ListenConfig)...)
 
 		if cfg.Listen.Address != "" && cfg.Listen.Socket == "" && cfg.Listen.Address == listen.Address {
 			errs = append(errs, fmt.Sprintf("admin.listen.address must differ from listen.address, got %q", listen.Address))
@@ -255,14 +316,57 @@ func validateTCPListenerSecurity(cfg *Config) []string {
 		}
 	}
 
-	if IsNonLoopbackTCPAddress(cfg.Listen.Address) && !cfg.Listen.InsecureAllowPlainTCP && !cfg.Listen.TLS.Complete() {
-		errs = append(errs,
-			fmt.Sprintf("non-loopback TCP listener %q requires listen.tls mTLS config or listen.insecure_allow_plain_tcp=true", cfg.Listen.Address),
-		)
+	errs = append(errs, plainTCPListenerErrors("TCP listener", "listen", cfg.Listen)...)
+
+	return errs
+}
+
+// validateKeylessTrustEntries validates the common structure shared between
+// policy_bundle and container_create.image_trust: a list of signing keys
+// (each requiring a non-empty PEM field) and a list of keyless identities
+// (each requiring a non-empty issuer and a valid subject_pattern regexp).
+// prefix is the dot-separated config path of the parent block (e.g.
+// "policy_bundle" or "request_body.container_create.image_trust") and
+// appears verbatim in every returned error string.
+func validateKeylessTrustEntries(prefix string, keys []signingKeyEntry, keyless []keylessEntry) []string {
+	var errs []string
+
+	for i, k := range keys {
+		if strings.TrimSpace(k.PEM) == "" {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_signing_keys[%d].pem is required", prefix, i),
+			)
+		}
+	}
+
+	for i, kl := range keyless {
+		if strings.TrimSpace(kl.Issuer) == "" {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_keyless[%d].issuer is required", prefix, i),
+			)
+		}
+		if strings.TrimSpace(kl.SubjectPattern) == "" {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern is required", prefix, i),
+			)
+		} else if _, err := regexp.Compile(kl.SubjectPattern); err != nil {
+			errs = append(errs,
+				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern: %v", prefix, i, err),
+			)
+		}
 	}
 
 	return errs
 }
+
+// signingKeyEntry is the minimal shape shared by PolicyBundleSigningKey and
+// SigningKeyConfig. It exists solely so validateKeylessTrustEntries can
+// operate on both without duplicating logic.
+type signingKeyEntry struct{ PEM string }
+
+// keylessEntry is the minimal shape shared by PolicyBundleKeyless and
+// KeylessConfig.
+type keylessEntry struct{ Issuer, SubjectPattern string }
 
 // validatePolicyBundle validates the policy_bundle sub-block. The verifier
 // itself enforces deeper structural checks (PEM parsing, regex compilation,
@@ -286,30 +390,15 @@ func validatePolicyBundle(cfg *Config) []string {
 		)
 	}
 
+	keys := make([]signingKeyEntry, len(pb.AllowedSigningKeys))
 	for i, k := range pb.AllowedSigningKeys {
-		if strings.TrimSpace(k.PEM) == "" {
-			errs = append(errs,
-				fmt.Sprintf("policy_bundle.allowed_signing_keys[%d].pem is required", i),
-			)
-		}
+		keys[i] = signingKeyEntry(k)
 	}
-
+	kls := make([]keylessEntry, len(pb.AllowedKeyless))
 	for i, kl := range pb.AllowedKeyless {
-		if strings.TrimSpace(kl.Issuer) == "" {
-			errs = append(errs,
-				fmt.Sprintf("policy_bundle.allowed_keyless[%d].issuer is required", i),
-			)
-		}
-		if strings.TrimSpace(kl.SubjectPattern) == "" {
-			errs = append(errs,
-				fmt.Sprintf("policy_bundle.allowed_keyless[%d].subject_pattern is required", i),
-			)
-		} else if _, err := regexp.Compile(kl.SubjectPattern); err != nil {
-			errs = append(errs,
-				fmt.Sprintf("policy_bundle.allowed_keyless[%d].subject_pattern: %v", i, err),
-			)
-		}
+		kls[i] = keylessEntry(kl)
 	}
+	errs = append(errs, validateKeylessTrustEntries("policy_bundle", keys, kls)...)
 
 	if pb.VerifyTimeout != "" {
 		d, err := time.ParseDuration(pb.VerifyTimeout)
@@ -323,53 +412,108 @@ func validatePolicyBundle(cfg *Config) []string {
 	return errs
 }
 
+// validateRequestBody runs the request-body inspection schema check plus the
+// full client-routing / ownership cross-field validation. The work is split
+// into focused helpers below so each section's preconditions are visible at
+// the call site rather than buried 100+ lines deep in one function.
 func validateRequestBody(cfg *Config) []string {
 	var errs []string
-
 	errs = append(errs, validateRequestBodyConfig("request_body", cfg.RequestBody)...)
-
-	for _, rawCIDR := range cfg.Clients.AllowedCIDRs {
-		if _, err := netip.ParsePrefix(strings.TrimSpace(rawCIDR)); err == nil {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf("clients.allowed_cidrs entries must be valid CIDR prefixes, got %q", rawCIDR),
-		)
+	errs = append(errs, validateClientsConfig(cfg)...)
+	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
+		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))
 	}
+	return errs
+}
 
-	if cfg.Clients.ContainerLabels.Enabled && cfg.Clients.ContainerLabels.LabelPrefix == "" {
-		errs = append(errs, requiredWhenError("clients.container_labels.label_prefix", "clients.container_labels.enabled is true"))
-	}
-
-	if cfg.Listen.Socket != "" && len(cfg.Clients.AllowedCIDRs) > 0 {
-		errs = append(errs, "clients.allowed_cidrs requires a TCP listener; remove listen.socket or clear clients.allowed_cidrs")
-	}
-
-	if cfg.Listen.Socket != "" && cfg.Clients.ContainerLabels.Enabled {
-		errs = append(errs, "clients.container_labels requires a TCP listener; remove listen.socket or disable clients.container_labels")
-	}
+// validateClientsConfig validates the entire `clients:` block: the global
+// CIDR allowlist, container-label peer attribution, the profile list itself,
+// global concurrency cap, default profile, and each profile-assignment kind
+// (source-IP, client certificate, unix peer). Profile-name uniqueness is
+// gathered once into profilesByName and passed to each assignment validator
+// so they can report assignments referencing undefined profiles.
+func validateClientsConfig(cfg *Config) []string {
+	var errs []string
+	errs = append(errs, validateClientsAllowedCIDRs(cfg)...)
+	errs = append(errs, validateClientsContainerLabels(cfg)...)
+	errs = append(errs, validateClientsListenerExclusions(cfg)...)
 
 	profilesByName := make(map[string]struct{}, len(cfg.Clients.Profiles))
 	for i, profile := range cfg.Clients.Profiles {
 		errs = append(errs, validateClientProfile(i, profile, profilesByName)...)
 	}
 
-	if cfg.Clients.GlobalConcurrency != nil {
-		if cfg.Clients.GlobalConcurrency.MaxInflight <= 0 {
-			errs = append(errs, fmt.Sprintf("clients.global_concurrency.max_inflight must be > 0, got %d", cfg.Clients.GlobalConcurrency.MaxInflight))
-		}
-	}
+	errs = append(errs, validateClientsGlobalConcurrency(cfg)...)
+	errs = append(errs, validateClientsDefaultProfile(cfg, profilesByName)...)
+	errs = append(errs, validateClientsSourceIPProfiles(cfg, profilesByName)...)
+	errs = append(errs, validateClientsCertificateProfiles(cfg, profilesByName)...)
+	errs = append(errs, validateClientsUnixPeerProfiles(cfg, profilesByName)...)
+	return errs
+}
 
-	if cfg.Clients.DefaultProfile != "" {
-		if _, ok := profilesByName[cfg.Clients.DefaultProfile]; !ok {
-			errs = append(errs, configuredMatchError("clients.default_profile", "client profile", cfg.Clients.DefaultProfile))
+func validateClientsAllowedCIDRs(cfg *Config) []string {
+	var errs []string
+	for _, rawCIDR := range cfg.Clients.AllowedCIDRs {
+		if _, err := netip.ParsePrefix(strings.TrimSpace(rawCIDR)); err == nil {
+			continue
 		}
+		errs = append(errs, fmt.Sprintf("clients.allowed_cidrs entries must be valid CIDR prefixes, got %q", rawCIDR))
 	}
+	return errs
+}
 
+func validateClientsContainerLabels(cfg *Config) []string {
+	if cfg.Clients.ContainerLabels.Enabled && cfg.Clients.ContainerLabels.LabelPrefix == "" {
+		return []string{requiredWhenError("clients.container_labels.label_prefix", "clients.container_labels.enabled is true")}
+	}
+	return nil
+}
+
+// validateClientsListenerExclusions checks the listener-kind constraints that
+// would otherwise be reported as cryptic per-feature errors. Each rule is the
+// same shape: feature X requires (or forbids) a TCP/unix listener.
+func validateClientsListenerExclusions(cfg *Config) []string {
+	var errs []string
+	if cfg.Listen.Socket != "" && len(cfg.Clients.AllowedCIDRs) > 0 {
+		errs = append(errs, "clients.allowed_cidrs requires a TCP listener; remove listen.socket or clear clients.allowed_cidrs")
+	}
+	if cfg.Listen.Socket != "" && cfg.Clients.ContainerLabels.Enabled {
+		errs = append(errs, "clients.container_labels requires a TCP listener; remove listen.socket or disable clients.container_labels")
+	}
 	if cfg.Listen.Socket != "" && len(cfg.Clients.SourceIPProfiles) > 0 {
 		errs = append(errs, "clients.source_ip_profiles requires a TCP listener; remove listen.socket or clear clients.source_ip_profiles")
 	}
+	if cfg.Listen.Socket != "" && len(cfg.Clients.ClientCertificateProfiles) > 0 {
+		errs = append(errs, "clients.client_certificate_profiles requires a TCP listener; remove listen.socket or clear clients.client_certificate_profiles")
+	}
+	if cfg.Listen.Socket == "" && len(cfg.Clients.UnixPeerProfiles) > 0 {
+		errs = append(errs, "clients.unix_peer_profiles requires a unix listener; set listen.socket or clear clients.unix_peer_profiles")
+	}
+	return errs
+}
+
+func validateClientsGlobalConcurrency(cfg *Config) []string {
+	if cfg.Clients.GlobalConcurrency == nil {
+		return nil
+	}
+	if cfg.Clients.GlobalConcurrency.MaxInflight <= 0 {
+		return []string{fmt.Sprintf("clients.global_concurrency.max_inflight must be > 0, got %d", cfg.Clients.GlobalConcurrency.MaxInflight)}
+	}
+	return nil
+}
+
+func validateClientsDefaultProfile(cfg *Config, profilesByName map[string]struct{}) []string {
+	if cfg.Clients.DefaultProfile == "" {
+		return nil
+	}
+	if _, ok := profilesByName[cfg.Clients.DefaultProfile]; !ok {
+		return []string{configuredMatchError("clients.default_profile", "client profile", cfg.Clients.DefaultProfile)}
+	}
+	return nil
+}
+
+func validateClientsSourceIPProfiles(cfg *Config, profilesByName map[string]struct{}) []string {
+	var errs []string
 	for i, assignment := range cfg.Clients.SourceIPProfiles {
 		prefix := fmt.Sprintf("clients.source_ip_profiles[%d]", i)
 		if assignment.Profile == "" {
@@ -387,12 +531,13 @@ func validateRequestBody(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("%s.cidrs entries must be valid CIDR prefixes, got %q", prefix, rawCIDR))
 		}
 	}
+	return errs
+}
 
+func validateClientsCertificateProfiles(cfg *Config, profilesByName map[string]struct{}) []string {
+	var errs []string
 	if len(cfg.Clients.ClientCertificateProfiles) > 0 && !cfg.Listen.TLS.Complete() {
 		errs = append(errs, requiresError("clients.client_certificate_profiles", "listen.tls mutual TLS configuration"))
-	}
-	if cfg.Listen.Socket != "" && len(cfg.Clients.ClientCertificateProfiles) > 0 {
-		errs = append(errs, "clients.client_certificate_profiles requires a TCP listener; remove listen.socket or clear clients.client_certificate_profiles")
 	}
 	for i, assignment := range cfg.Clients.ClientCertificateProfiles {
 		prefix := fmt.Sprintf("clients.client_certificate_profiles[%d]", i)
@@ -401,59 +546,69 @@ func validateRequestBody(cfg *Config) []string {
 		} else if _, ok := profilesByName[assignment.Profile]; !ok {
 			errs = append(errs, configuredMatchError(prefix+".profile", "client profile", assignment.Profile))
 		}
-		selectorCount := 0
-		for _, value := range assignment.CommonNames {
-			if strings.TrimSpace(value) == "" {
-				errs = append(errs, prefix+".common_names entries must be non-empty")
-				continue
-			}
-			selectorCount++
-		}
-		for _, value := range assignment.DNSNames {
-			if strings.TrimSpace(value) == "" {
-				errs = append(errs, prefix+".dns_names entries must be non-empty")
-				continue
-			}
-			selectorCount++
-		}
-		for _, value := range assignment.IPAddresses {
-			if _, err := netip.ParseAddr(strings.TrimSpace(value)); err != nil {
-				errs = append(errs, fmt.Sprintf("%s.ip_addresses entries must be valid IP addresses, got %q", prefix, value))
-				continue
-			}
-			selectorCount++
-		}
-		for _, value := range assignment.URISANs {
-			parsed, err := url.Parse(strings.TrimSpace(value))
-			if err != nil || parsed.String() == "" {
-				errs = append(errs, fmt.Sprintf("%s.uri_sans entries must be valid URIs, got %q", prefix, value))
-				continue
-			}
-			selectorCount++
-		}
-		for _, value := range assignment.SPIFFEIDs {
-			parsed, err := url.Parse(strings.TrimSpace(value))
-			if err != nil || parsed.String() == "" || parsed.Scheme != "spiffe" {
-				errs = append(errs, fmt.Sprintf("%s.spiffe_ids entries must be valid SPIFFE IDs, got %q", prefix, value))
-				continue
-			}
-			selectorCount++
-		}
-		for _, value := range assignment.PublicKeySHA256Pins {
-			if _, err := pkipin.NormalizeSubjectPublicKeySHA256Pin(value); err != nil {
-				errs = append(errs, fmt.Sprintf("%s.public_key_sha256_pins entries must be hex SHA-256 SPKI pins, got %q", prefix, value))
-				continue
-			}
-			selectorCount++
-		}
-		if selectorCount == 0 {
-			errs = append(errs, containsAtLeastOneError(prefix, "client certificate identity selector"))
-		}
+		errs = append(errs, validateClientCertificateSelectors(prefix, assignment)...)
 	}
+	return errs
+}
 
-	if cfg.Listen.Socket == "" && len(cfg.Clients.UnixPeerProfiles) > 0 {
-		errs = append(errs, "clients.unix_peer_profiles requires a unix listener; set listen.socket or clear clients.unix_peer_profiles")
+// validateClientCertificateSelectors checks the per-selector identity rules
+// for one client-certificate profile assignment and verifies that at least
+// one selector is configured.
+func validateClientCertificateSelectors(prefix string, assignment ClientCertificateProfileAssignmentConfig) []string {
+	var errs []string
+	selectorCount := 0
+	for _, value := range assignment.CommonNames {
+		if strings.TrimSpace(value) == "" {
+			errs = append(errs, prefix+".common_names entries must be non-empty")
+			continue
+		}
+		selectorCount++
 	}
+	for _, value := range assignment.DNSNames {
+		if strings.TrimSpace(value) == "" {
+			errs = append(errs, prefix+".dns_names entries must be non-empty")
+			continue
+		}
+		selectorCount++
+	}
+	for _, value := range assignment.IPAddresses {
+		if _, err := netip.ParseAddr(strings.TrimSpace(value)); err != nil {
+			errs = append(errs, fmt.Sprintf("%s.ip_addresses entries must be valid IP addresses, got %q", prefix, value))
+			continue
+		}
+		selectorCount++
+	}
+	for _, value := range assignment.URISANs {
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		if err != nil || parsed.String() == "" {
+			errs = append(errs, fmt.Sprintf("%s.uri_sans entries must be valid URIs, got %q", prefix, value))
+			continue
+		}
+		selectorCount++
+	}
+	for _, value := range assignment.SPIFFEIDs {
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		if err != nil || parsed.String() == "" || parsed.Scheme != "spiffe" {
+			errs = append(errs, fmt.Sprintf("%s.spiffe_ids entries must be valid SPIFFE IDs, got %q", prefix, value))
+			continue
+		}
+		selectorCount++
+	}
+	for _, value := range assignment.PublicKeySHA256Pins {
+		if _, err := pkipin.NormalizeSubjectPublicKeySHA256Pin(value); err != nil {
+			errs = append(errs, fmt.Sprintf("%s.public_key_sha256_pins entries must be hex SHA-256 SPKI pins, got %q", prefix, value))
+			continue
+		}
+		selectorCount++
+	}
+	if selectorCount <= 0 {
+		errs = append(errs, containsAtLeastOneError(prefix, "client certificate identity selector"))
+	}
+	return errs
+}
+
+func validateClientsUnixPeerProfiles(cfg *Config, profilesByName map[string]struct{}) []string {
+	var errs []string
 	for i, assignment := range cfg.Clients.UnixPeerProfiles {
 		prefix := fmt.Sprintf("clients.unix_peer_profiles[%d]", i)
 		if assignment.Profile == "" {
@@ -471,11 +626,6 @@ func validateRequestBody(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("%s.pids entries must be positive process IDs, got %d", prefix, pid))
 		}
 	}
-
-	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
-		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))
-	}
-
 	return errs
 }
 
@@ -561,7 +711,7 @@ func validateEndpointCosts(prefix string, costs []EndpointCostConfig, effectiveB
 		if strings.TrimSpace(ec.Path) == "" {
 			errs = append(errs, requiredFieldError(entryPfx+".path"))
 		} else {
-			regex := "^" + filter.GlobToRegexString(ec.Path) + "$"
+			regex := "^" + glob.ToRegexString(ec.Path) + "$"
 			if _, err := regexp.Compile(regex); err != nil {
 				errs = append(errs, fmt.Sprintf("%s.path %q is not a valid glob: %v", entryPfx, ec.Path, err))
 			}
@@ -584,169 +734,113 @@ func validateEndpointCosts(prefix string, costs []EndpointCostConfig, effectiveB
 
 func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	var errs []string
+	errs = append(errs, validateContainerCreateConfig(prefix, cfg.ContainerCreate)...)
+	errs = append(errs, validateExecConfig(prefix, cfg.Exec)...)
+	errs = append(errs, validateImagePullConfig(prefix, cfg.ImagePull)...)
+	errs = append(errs, validateServiceConfig(prefix, cfg.Service)...)
+	errs = append(errs, validateSwarmConfig(prefix, cfg.Swarm)...)
+	errs = append(errs, validatePluginConfig(prefix, cfg.Plugin)...)
+	return errs
+}
 
-	for _, rawPath := range cfg.ContainerCreate.AllowedBindMounts {
+// validateHostPathEntries flags any entries that don't normalize to absolute
+// host paths via normalizeAllowedBindMount. Shared by bind-mount and device
+// allowlists across container_create / service / plugin.
+func validateHostPathEntries(prefix, entries string, paths []string) []string {
+	var errs []string
+	for _, rawPath := range paths {
 		if _, ok := normalizeAllowedBindMount(rawPath); ok {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf(
-				"%s.container_create.allowed_bind_mounts entries must be absolute host paths, got %q",
-				prefix,
-				rawPath,
-			),
-		)
+		errs = append(errs, fmt.Sprintf("%s.%s entries must be absolute host paths, got %q", prefix, entries, rawPath))
 	}
+	return errs
+}
 
-	for _, rawPath := range cfg.ContainerCreate.AllowedDevices {
-		if _, ok := normalizeAllowedBindMount(rawPath); ok {
+// validateRegistryHostEntries flags any entries that don't normalize to a
+// bare registry host via normalizeAllowedRegistryHost.
+func validateRegistryHostEntries(prefix, entries string, registries []string) []string {
+	var errs []string
+	for _, registry := range registries {
+		if _, ok := normalizeAllowedRegistryHost(registry); ok {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf(
-				"%s.container_create.allowed_devices entries must be absolute host paths, got %q",
-				prefix,
-				rawPath,
-			),
-		)
+		errs = append(errs, fmt.Sprintf("%s.%s entries must be bare registry hosts, got %q", prefix, entries, registry))
 	}
+	return errs
+}
 
-	for i, entry := range cfg.ContainerCreate.AllowedDeviceRequests {
+func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBodyConfig) []string {
+	var errs []string
+	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
+	errs = append(errs, validateHostPathEntries(prefix, "container_create.allowed_devices", cfg.AllowedDevices)...)
+	for i, entry := range cfg.AllowedDeviceRequests {
 		if strings.TrimSpace(entry.Driver) == "" {
-			errs = append(errs,
-				fmt.Sprintf("%s.container_create.allowed_device_requests[%d].driver is required", prefix, i),
-			)
+			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].driver is required", prefix, i))
 		}
 		for j, capSet := range entry.AllowedCapabilities {
 			if len(capSet) == 0 {
-				errs = append(errs,
-					fmt.Sprintf("%s.container_create.allowed_device_requests[%d].allowed_capabilities[%d] must be a non-empty capability set", prefix, i, j),
-				)
+				errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].allowed_capabilities[%d] must be a non-empty capability set", prefix, i, j))
 			}
 		}
 		if entry.MaxCount != nil && *entry.MaxCount < -1 {
-			errs = append(errs,
-				fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount),
-			)
+			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount))
 		}
 	}
+	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ImageTrust)...)
+	return errs
+}
 
-	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ContainerCreate.ImageTrust)...)
-
-	for i, command := range cfg.Exec.AllowedCommands {
+func validateExecConfig(prefix string, cfg ExecRequestBodyConfig) []string {
+	var errs []string
+	for i, command := range cfg.AllowedCommands {
 		if validExecCommand(command) {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.exec.allowed_commands entries must contain at least one non-empty argv token, got entry %d", prefix, i+1),
-		)
+		errs = append(errs, fmt.Sprintf("%s.exec.allowed_commands entries must contain at least one non-empty argv token, got entry %d", prefix, i+1))
 	}
+	return errs
+}
 
-	for _, registry := range cfg.ImagePull.AllowedRegistries {
-		if _, ok := normalizeAllowedRegistryHost(registry); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.image_pull.allowed_registries entries must be bare registry hosts, got %q", prefix, registry),
-		)
-	}
+func validateImagePullConfig(prefix string, cfg ImagePullRequestBodyConfig) []string {
+	return validateRegistryHostEntries(prefix, "image_pull.allowed_registries", cfg.AllowedRegistries)
+}
 
-	for _, rawPath := range cfg.Service.AllowedBindMounts {
-		if _, ok := normalizeAllowedBindMount(rawPath); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf(
-				"%s.service.allowed_bind_mounts entries must be absolute host paths, got %q",
-				prefix,
-				rawPath,
-			),
-		)
-	}
+func validateServiceConfig(prefix string, cfg ServiceRequestBodyConfig) []string {
+	var errs []string
+	errs = append(errs, validateHostPathEntries(prefix, "service.allowed_bind_mounts", cfg.AllowedBindMounts)...)
+	errs = append(errs, validateRegistryHostEntries(prefix, "service.allowed_registries", cfg.AllowedRegistries)...)
+	return errs
+}
 
-	for _, registry := range cfg.Service.AllowedRegistries {
-		if _, ok := normalizeAllowedRegistryHost(registry); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.service.allowed_registries entries must be bare registry hosts, got %q", prefix, registry),
-		)
-	}
-
-	for _, remoteAddr := range cfg.Swarm.AllowedJoinRemoteAddrs {
+func validateSwarmConfig(prefix string, cfg SwarmRequestBodyConfig) []string {
+	var errs []string
+	for _, remoteAddr := range cfg.AllowedJoinRemoteAddrs {
 		if validRemoteAddress(remoteAddr) {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.swarm.allowed_join_remote_addrs entries must be bare host[:port] values, got %q", prefix, remoteAddr),
-		)
+		errs = append(errs, fmt.Sprintf("%s.swarm.allowed_join_remote_addrs entries must be bare host[:port] values, got %q", prefix, remoteAddr))
 	}
+	return errs
+}
 
-	for _, registry := range cfg.Plugin.AllowedRegistries {
-		if _, ok := normalizeAllowedRegistryHost(registry); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.plugin.allowed_registries entries must be bare registry hosts, got %q", prefix, registry),
-		)
-	}
-
-	for _, rawPath := range cfg.Plugin.AllowedBindMounts {
-		if _, ok := normalizeAllowedBindMount(rawPath); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf(
-				"%s.plugin.allowed_bind_mounts entries must be absolute host paths, got %q",
-				prefix,
-				rawPath,
-			),
-		)
-	}
-
-	for _, rawPath := range cfg.Plugin.AllowedDevices {
-		if _, ok := normalizeAllowedBindMount(rawPath); ok {
-			continue
-		}
-		errs = append(
-			errs,
-			fmt.Sprintf(
-				"%s.plugin.allowed_devices entries must be absolute host paths, got %q",
-				prefix,
-				rawPath,
-			),
-		)
-	}
-
-	for _, capability := range cfg.Plugin.AllowedCapabilities {
+func validatePluginConfig(prefix string, cfg PluginRequestBodyConfig) []string {
+	var errs []string
+	errs = append(errs, validateRegistryHostEntries(prefix, "plugin.allowed_registries", cfg.AllowedRegistries)...)
+	errs = append(errs, validateHostPathEntries(prefix, "plugin.allowed_bind_mounts", cfg.AllowedBindMounts)...)
+	errs = append(errs, validateHostPathEntries(prefix, "plugin.allowed_devices", cfg.AllowedDevices)...)
+	for _, capability := range cfg.AllowedCapabilities {
 		if validPluginCapability(capability) {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.plugin.allowed_capabilities entries must be non-empty capability names, got %q", prefix, capability),
-		)
+		errs = append(errs, fmt.Sprintf("%s.plugin.allowed_capabilities entries must be non-empty capability names, got %q", prefix, capability))
 	}
-
-	for _, rawPrefix := range cfg.Plugin.AllowedSetEnvPrefixes {
+	for _, rawPrefix := range cfg.AllowedSetEnvPrefixes {
 		if validPluginSetEnvPrefix(rawPrefix) {
 			continue
 		}
-		errs = append(
-			errs,
-			fmt.Sprintf("%s.plugin.allowed_set_env_prefixes entries must be non-empty env assignment prefixes, got %q", prefix, rawPrefix),
-		)
+		errs = append(errs, fmt.Sprintf("%s.plugin.allowed_set_env_prefixes entries must be non-empty env assignment prefixes, got %q", prefix, rawPrefix))
 	}
-
 	return errs
 }
 
@@ -759,6 +853,8 @@ func validateRuleConfigs(rules []RuleConfig, prefix string) []string {
 		}
 		if r.Match.Path == "" {
 			errs = append(errs, rulePrefix+".match.path is required")
+		} else if strings.Contains(r.Match.Path, "%") {
+			errs = append(errs, literalPercentRuleError(rulePrefix, r.Match.Path))
 		}
 		switch r.Action {
 		case "allow", "deny":
@@ -879,30 +975,15 @@ func validateImageTrustConfig(prefix string, cfg ImageTrustConfig) []string {
 		)
 	}
 
+	keys := make([]signingKeyEntry, len(cfg.AllowedSigningKeys))
 	for i, k := range cfg.AllowedSigningKeys {
-		if strings.TrimSpace(k.PEM) == "" {
-			errs = append(errs,
-				fmt.Sprintf("%s.allowed_signing_keys[%d].pem is required", prefix, i),
-			)
-		}
+		keys[i] = signingKeyEntry(k)
 	}
-
+	kls := make([]keylessEntry, len(cfg.AllowedKeyless))
 	for i, kl := range cfg.AllowedKeyless {
-		if strings.TrimSpace(kl.Issuer) == "" {
-			errs = append(errs,
-				fmt.Sprintf("%s.allowed_keyless[%d].issuer is required", prefix, i),
-			)
-		}
-		if strings.TrimSpace(kl.SubjectPattern) == "" {
-			errs = append(errs,
-				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern is required", prefix, i),
-			)
-		} else if _, err := regexp.Compile(kl.SubjectPattern); err != nil {
-			errs = append(errs,
-				fmt.Sprintf("%s.allowed_keyless[%d].subject_pattern: %v", prefix, i, err),
-			)
-		}
+		kls[i] = keylessEntry(kl)
 	}
+	errs = append(errs, validateKeylessTrustEntries(prefix, keys, kls)...)
 
 	if cfg.VerifyTimeout != "" {
 		d, err := time.ParseDuration(cfg.VerifyTimeout)
@@ -914,6 +995,17 @@ func validateImageTrustConfig(prefix string, cfg ImageTrustConfig) []string {
 	}
 
 	return errs
+}
+
+// validateLogOutputField validates a log output value under the given config
+// field path. It wraps validateLogOutput so callers can pass a field-specific
+// prefix (e.g. "log.audit.output") and receive errors that reference that
+// path directly, without post-hoc string replacement.
+func validateLogOutputField(fieldPath, output string) error {
+	if err := validateLogOutput(output); err != nil {
+		return fmt.Errorf("%s: %w", fieldPath, err)
+	}
+	return nil
 }
 
 func validateVisibleResourceLabels(prefix string, values []string) []string {

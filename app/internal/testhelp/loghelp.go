@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 )
 
 // LogRecord is a single captured slog record from a CollectingHandler.
@@ -17,8 +18,17 @@ type LogRecord struct {
 // CollectingHandler is an slog.Handler that captures structured records into memory
 // so tests can assert on message, level, and attribute values without parsing text output.
 type CollectingHandler struct {
-	mu      sync.Mutex
-	records []LogRecord
+	mu        sync.Mutex
+	records   []LogRecord
+	condReady bool
+	cond      *sync.Cond
+}
+
+func (h *CollectingHandler) condInit() {
+	if !h.condReady {
+		h.cond = sync.NewCond(&h.mu)
+		h.condReady = true
+	}
 }
 
 // Enabled always returns true so all levels are captured.
@@ -34,6 +44,8 @@ func (h *CollectingHandler) Handle(_ context.Context, r slog.Record) error {
 
 	h.mu.Lock()
 	h.records = append(h.records, LogRecord{Message: r.Message, Level: r.Level, Attrs: attrs})
+	h.condInit()
+	h.cond.Broadcast()
 	h.mu.Unlock()
 	return nil
 }
@@ -69,6 +81,44 @@ func (h *CollectingHandler) FindMessage(msg string) []LogRecord {
 // HasMessage reports whether any captured record has Message == msg.
 func (h *CollectingHandler) HasMessage(msg string) bool {
 	return len(h.FindMessage(msg)) > 0
+}
+
+// WaitForMessage blocks until a record with Message == msg arrives or the
+// deadline elapses. Returns true if the message was seen. Eliminates the
+// sleep-poll-sleep pattern in tests that wait for asynchronous log output.
+func (h *CollectingHandler) WaitForMessage(msg string, timeout time.Duration) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.condInit()
+
+	for _, r := range h.records {
+		if r.Message == msg {
+			return true
+		}
+	}
+
+	deadline := time.Now().Add(timeout)
+	// A goroutine timer broadcasts the cond when the deadline fires so the
+	// waiter wakes up even if no further records arrive. The timer is
+	// stopped on return so we don't leak it on the success path.
+	timer := time.AfterFunc(timeout, func() {
+		h.mu.Lock()
+		h.cond.Broadcast()
+		h.mu.Unlock()
+	})
+	defer timer.Stop()
+
+	for {
+		h.cond.Wait()
+		for _, r := range h.records {
+			if r.Message == msg {
+				return true
+			}
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+	}
 }
 
 // Logger returns a new *slog.Logger backed by this handler.

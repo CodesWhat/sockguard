@@ -27,6 +27,7 @@ func newFailValidator(errs ...string) Validator {
 }
 
 func TestInterceptorPassesThroughNonMatchingPath(t *testing.T) {
+	t.Parallel()
 	called := false
 	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) { called = true })
 
@@ -45,6 +46,7 @@ func TestInterceptorPassesThroughNonMatchingPath(t *testing.T) {
 }
 
 func TestInterceptorRejectsNonPOST(t *testing.T) {
+	t.Parallel()
 	handler := NewValidateInterceptor(Options{Path: testPath, Validate: newOKValidator()})(noopHandler())
 
 	req := httptest.NewRequest(http.MethodGet, testPath, nil)
@@ -60,6 +62,7 @@ func TestInterceptorRejectsNonPOST(t *testing.T) {
 }
 
 func TestInterceptorReturns200OnValidationSuccess(t *testing.T) {
+	t.Parallel()
 	handler := NewValidateInterceptor(Options{Path: testPath, Validate: newOKValidator()})(noopHandler())
 
 	req := httptest.NewRequest(http.MethodPost, testPath, strings.NewReader("rules: []\n"))
@@ -79,6 +82,7 @@ func TestInterceptorReturns200OnValidationSuccess(t *testing.T) {
 }
 
 func TestInterceptorReturns422OnValidationFailure(t *testing.T) {
+	t.Parallel()
 	handler := NewValidateInterceptor(Options{
 		Path:     testPath,
 		Validate: newFailValidator("listen.socket and listen.address are both empty", "rule 1: match.method is required"),
@@ -101,10 +105,11 @@ func TestInterceptorReturns422OnValidationFailure(t *testing.T) {
 }
 
 func TestInterceptorReturns413OnOversizeBody(t *testing.T) {
+	t.Parallel()
 	handler := NewValidateInterceptor(Options{
-		Path:         testPath,
-		MaxBodyBytes: 16,
-		Validate:     newOKValidator(),
+		Path:            testPath,
+		MaxRequestBytes: 16,
+		Validate:        newOKValidator(),
 	})(noopHandler())
 
 	big := bytes.Repeat([]byte("a"), 1024)
@@ -118,6 +123,7 @@ func TestInterceptorReturns413OnOversizeBody(t *testing.T) {
 }
 
 func TestInterceptorPassesEmptyBodyThroughToValidator(t *testing.T) {
+	t.Parallel()
 	var seen []byte
 	handler := NewValidateInterceptor(Options{
 		Path: testPath,
@@ -140,6 +146,7 @@ func TestInterceptorPassesEmptyBodyThroughToValidator(t *testing.T) {
 }
 
 func TestInterceptorReturns503WhenValidatorNotConfigured(t *testing.T) {
+	t.Parallel()
 	handler := NewValidateInterceptor(Options{Path: testPath, Validate: nil})(noopHandler())
 
 	req := httptest.NewRequest(http.MethodPost, testPath, strings.NewReader(""))
@@ -152,6 +159,7 @@ func TestInterceptorReturns503WhenValidatorNotConfigured(t *testing.T) {
 }
 
 func TestInterceptorSurfacesCompatActive(t *testing.T) {
+	t.Parallel()
 	handler := NewValidateInterceptor(Options{
 		Path: testPath,
 		Validate: func(_ []byte) ValidateResponse {
@@ -169,6 +177,7 @@ func TestInterceptorSurfacesCompatActive(t *testing.T) {
 }
 
 func TestNilValidatorMiddleware_FallsThroughForUnrelatedPaths(t *testing.T) {
+	t.Parallel()
 	// When Validate is nil the middleware must NOT 503 every request — only
 	// requests to the configured admin path should fail closed. Docker API
 	// traffic hitting an unrelated path must still reach next.
@@ -207,6 +216,7 @@ func TestNilValidatorMiddleware_FallsThroughForUnrelatedPaths(t *testing.T) {
 }
 
 func TestValidatePOSTAcceptsAnyContentType(t *testing.T) {
+	t.Parallel()
 	// The endpoint uses config.LoadBytes which handles both YAML and JSON
 	// (YAML is a superset of JSON). We intentionally do NOT gate on
 	// Content-Type so operators can POST application/json without friction;
@@ -224,6 +234,7 @@ func TestValidatePOSTAcceptsAnyContentType(t *testing.T) {
 }
 
 func TestValidatePOSTConcurrentRequests(t *testing.T) {
+	t.Parallel()
 	// Fire 10 goroutines concurrently to detect data races and goroutine-
 	// safety regressions in the validate handler.
 	const workers = 10
@@ -270,6 +281,7 @@ func TestValidatePOSTConcurrentRequests(t *testing.T) {
 // policy-version interceptor on the main ServeMux would break isolation — this
 // test would start seeing 200/422 on the "main" side instead of 404.
 func TestMainListenerDisabled_DedicatedListenerEnabled_HappyPath(t *testing.T) {
+	t.Parallel()
 	const validatePath = "/admin/validate"
 	const versionPath = "/admin/policy/version"
 

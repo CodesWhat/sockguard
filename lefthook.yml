@@ -5,19 +5,20 @@
 #   1. Clean-tree check (no stray artifacts before push)
 #   2. GoReleaser snapshot dry-run (full release pipeline, skip publish)
 #   3. Go lint + test
-#   4. Go fuzz smoke (5 s per fuzzer, all 8 fuzzers) — tier 0 of the
+#   4. Go vulnerability scan (govulncheck — reachable CVEs in deps + stdlib)
+#   5. Go fuzz smoke (5 s per fuzzer, all 8 fuzzers) — tier 0 of the
 #      fuzz strategy. Catches broken fuzz drivers and stale seed corpora
 #      before the push even leaves the machine. The real coverage tiers
 #      are in `.github/workflows/ci-verify.yml` (60 s per fuzzer in a
 #      matrix, on every PR/push), `quality-fuzz-nightly.yml` (15 min
 #      per fuzzer, daily), and `quality-fuzz-monthly.yml` (1 h per
 #      fuzzer, monthly + manual).
-#   5. Lockfile dedupe check (catches orphaned hoisted packages)
-#   6. Knip (unused files/exports/deps in TS workspaces)
-#   7. Biome lint for TS/JS
-#   8. TS workspace tests
-#   9. Build all workspaces
-#  10. Zizmor (workflow security)
+#   6. Lockfile dedupe check (catches orphaned hoisted packages)
+#   7. Knip (unused files/exports/deps in TS workspaces)
+#   8. Biome lint for TS/JS
+#   9. TS workspace tests
+#  10. Build all workspaces
+#  11. Zizmor (workflow security)
 
 pre-commit:
   piped: true
@@ -70,6 +71,19 @@ pre-push:
       priority: 3
       timeout: 3m
 
+    # govulncheck — flags known-vulnerable dependencies and stdlib CVEs
+    # that are actually reachable from sockguard's code. `go vet` is
+    # already clean; this closes the supply-chain loop before a push
+    # leaves the machine. Skipped when govulncheck isn't installed,
+    # matching the goreleaser/zizmor steps (install once with
+    # `go install golang.org/x/vuln/cmd/govulncheck@latest`).
+    govulncheck:
+      run: cd app && govulncheck ./...
+      skip:
+        - run: '! command -v govulncheck >/dev/null 2>&1'
+      priority: 4
+      timeout: 2m
+
     # Fuzz smoke — 5 s per fuzzer, all 8 in series. Tier 0 of the fuzz
     # strategy: catches broken fuzz drivers and stale seed corpora before
     # the push leaves the machine. Real coverage (60 s, 15 min, 1 h)
@@ -91,7 +105,7 @@ pre-push:
           set -- $entry
           go test -run='^$' -fuzz="^$1\$" -fuzztime=5s -timeout=1m "$2"
         done
-      priority: 4
+      priority: 5
       timeout: 2m
 
     # Lockfile hygiene — catches orphaned hoisted packages (e.g. a stale
@@ -140,7 +154,7 @@ pre-push:
           echo "$out"
           exit 1
         fi
-      priority: 5
+      priority: 6
       timeout: 30s
 
     # Knip — finds unused files, exports, types, and unlisted/unused
@@ -148,22 +162,22 @@ pre-push:
     # phantom deps that biome/tsc don't see. Config in knip.json.
     knip:
       run: npx knip
-      priority: 6
+      priority: 7
       timeout: 1m
 
     biome:
       run: npx biome check .
-      priority: 7
+      priority: 8
       timeout: 30s
 
     ts-test:
       run: npm test
-      priority: 8
+      priority: 9
       timeout: 1m
 
     build:
       run: npx turbo build
-      priority: 9
+      priority: 10
       timeout: 3m
 
     zizmor:
@@ -171,5 +185,5 @@ pre-push:
       run: zizmor .github/workflows/
       skip:
         - run: '! command -v zizmor >/dev/null 2>&1'
-      priority: 10
+      priority: 11
       timeout: 30s

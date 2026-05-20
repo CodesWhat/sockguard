@@ -280,6 +280,7 @@ func FuzzHijackBidirectionalStream(f *testing.F) {
 }
 
 func TestFuzzHeaderNameIsBounded(t *testing.T) {
+	t.Parallel()
 	got := fuzzHeaderName(strings.Repeat("z", maxFuzzHeaderNameSuffixBytes*4))
 	if len(got) > len("X-Fuzz-")+maxFuzzHeaderNameSuffixBytes {
 		t.Fatalf("header name len = %d, want <= %d", len(got), len("X-Fuzz-")+maxFuzzHeaderNameSuffixBytes)
@@ -290,6 +291,7 @@ func TestFuzzHeaderNameIsBounded(t *testing.T) {
 }
 
 func TestSanitizeHeaderValueIsBounded(t *testing.T) {
+	t.Parallel()
 	got := sanitizeHeaderValue(strings.Repeat("Z", maxFuzzHeaderValueBytes*4))
 	if len(got) > maxFuzzHeaderValueBytes {
 		t.Fatalf("header value len = %d, want <= %d", len(got), maxFuzzHeaderValueBytes)
@@ -302,7 +304,7 @@ func TestSanitizeHeaderValueIsBounded(t *testing.T) {
 func startFuzzEchoUpstream(f *testing.F) string {
 	f.Helper()
 
-	socketPath := "/tmp/sockguard-fuzz-" + time.Now().Format("20060102150405.000000000") + ".sock"
+	socketPath := fmt.Sprintf("/tmp/sockguard-fuzz-echo-%d-%d.sock", os.Getpid(), time.Now().UnixNano())
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		f.Fatalf("listen unix socket: %v", err)

@@ -100,14 +100,14 @@ func TestBuildMutualTLSServerConfig(t *testing.T) {
 		}
 
 		cfg, err := BuildMutualTLSServerConfig(ListenTLSConfig{
-			CertFile:                   bundle.ServerCertFile,
-			KeyFile:                    bundle.ServerKeyFile,
-			ClientCAFile:               bundle.CAFile,
-			AllowedCommonNames:         []string{"allowed-client"},
-			AllowedDNSNames:            []string{"client.example.com"},
-			AllowedIPAddresses:         []string{"10.0.0.7"},
-			AllowedURISANs:             []string{"spiffe://sockguard/client"},
-			AllowedPublicKeySHA256Pins: []string{subjectPublicKeySHA256Hex(allowedLeaf)},
+			CertFile:            bundle.ServerCertFile,
+			KeyFile:             bundle.ServerKeyFile,
+			ClientCAFile:        bundle.CAFile,
+			CommonNames:         []string{"allowed-client"},
+			DNSNames:            []string{"client.example.com"},
+			IPAddresses:         []string{"10.0.0.7"},
+			URISANs:             []string{"spiffe://sockguard/client"},
+			PublicKeySHA256Pins: []string{subjectPublicKeySHA256Hex(allowedLeaf)},
 		})
 		if err != nil {
 			t.Fatalf("BuildMutualTLSServerConfig() error = %v", err)
@@ -134,12 +134,12 @@ func TestBuildMutualTLSServerConfig(t *testing.T) {
 
 	t.Run("invalid public key pin", func(t *testing.T) {
 		_, err := BuildMutualTLSServerConfig(ListenTLSConfig{
-			CertFile:                   bundle.ServerCertFile,
-			KeyFile:                    bundle.ServerKeyFile,
-			ClientCAFile:               bundle.CAFile,
-			AllowedPublicKeySHA256Pins: []string{"not-a-pin"},
+			CertFile:            bundle.ServerCertFile,
+			KeyFile:             bundle.ServerKeyFile,
+			ClientCAFile:        bundle.CAFile,
+			PublicKeySHA256Pins: []string{"not-a-pin"},
 		})
-		if err == nil || !strings.Contains(err.Error(), "allowed_public_key_sha256_pins") {
+		if err == nil || !strings.Contains(err.Error(), "public_key_sha256_pins") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
@@ -350,6 +350,40 @@ func TestCompiledConstraintsMatchesMutantKills(t *testing.T) {
 			t.Error("matches() = false when publicKeySHA256Pins is empty and commonNames matches, want true")
 		}
 	})
+}
+
+func TestVerifyConnectionRejectsEmptyChain(t *testing.T) {
+	dir := t.TempDir()
+	bundle, err := testcert.WriteMutualTLSBundle(dir, "127.0.0.1", "localhost")
+	if err != nil {
+		t.Fatalf("WriteMutualTLSBundle: %v", err)
+	}
+
+	// Build a TLS config with at least one identity selector so that
+	// VerifyConnection is set on the returned config.
+	cfg, err := BuildMutualTLSServerConfig(ListenTLSConfig{
+		CertFile:     bundle.ServerCertFile,
+		KeyFile:      bundle.ServerKeyFile,
+		ClientCAFile: bundle.CAFile,
+		CommonNames:  []string{"some-client"},
+	})
+	if err != nil {
+		t.Fatalf("BuildMutualTLSServerConfig() error = %v", err)
+	}
+	if cfg.VerifyConnection == nil {
+		t.Fatal("VerifyConnection = nil, want callback")
+	}
+
+	// VerifiedChains: nil — simulates a connection where the TLS stack did
+	// not produce a verified chain (e.g. the peer certificate is absent or
+	// failed chain construction). The callback must reject this.
+	err = cfg.VerifyConnection(tls.ConnectionState{
+		VerifiedChains:   nil,
+		PeerCertificates: nil,
+	})
+	if err == nil {
+		t.Fatal("VerifyConnection(empty chain) = nil, want error")
+	}
 }
 
 func TestValidateLogOutputAcceptsStdoutAndLocalPath(t *testing.T) {

@@ -1,18 +1,24 @@
 // Package admin implements sockguard's in-band admin HTTP endpoints.
 //
-// At v0.8.0 the admin surface is a single endpoint:
+// The admin surface exposes two endpoints:
 //
-//	POST <path>   parse + validate + compile a candidate YAML config and
-//	              return a structured JSON report; running policy is
-//	              unaffected.
+//	POST <admin.path>                 parse + validate + compile a candidate
+//	                                  YAML config and return a structured JSON
+//	                                  report; the running policy is unaffected.
 //
-// The endpoint is opt-in (admin.enabled=false by default) and rides the main
-// listener, so it inherits the listener's CIDR allowlist, mTLS posture, and
-// the per-profile rate-limit / concurrency gates configured under
-// clients.profiles[*].limits. Wire-up in internal/cmd/serve.go places this
-// interceptor between the rate-limit middleware and the filter middleware so
-// admin requests are rate-limited like every other caller but never reach the
-// Docker-API rule evaluator.
+//	GET  <admin.policy_version_path>  return the current policy generation as a
+//	                                  JSON PolicySnapshot (version counter,
+//	                                  rule/profile counts, load timestamp, and
+//	                                  optional bundle provenance metadata).
+//
+// Both endpoints are opt-in (admin.enabled=false by default) and can either
+// ride the main listener or be bound to a dedicated admin.listen socket.
+// When riding the main listener they inherit its CIDR allowlist, mTLS
+// posture, and the per-profile rate-limit / concurrency gates configured
+// under clients.profiles[*].limits. Wire-up in internal/cmd/serve.go places
+// both interceptors between the rate-limit middleware and the filter
+// middleware so admin requests are rate-limited like every other caller but
+// never reach the Docker-API rule evaluator.
 package admin
 
 import (
@@ -49,29 +55,29 @@ type Validator func(yaml []byte) ValidateResponse
 
 // Options configures Interceptor.
 //
-// Path must start with "/". MaxBodyBytes caps the request body to prevent
+// Path must start with "/". MaxRequestBytes caps the request body to prevent
 // abusive callers from forcing sockguard to parse arbitrarily large YAML.
 // Validate is required.
 type Options struct {
-	Path         string
-	MaxBodyBytes int64
-	Validate     Validator
-	Logger       *slog.Logger
+	Path            string
+	MaxRequestBytes int64
+	Validate        Validator
+	Logger          *slog.Logger
 }
 
 // NewValidateInterceptor returns a middleware that short-circuits POST <path>
 // to the configured validator. All other requests pass through to next.
 //
 // Method gating: anything other than POST on <path> returns 405 with
-// Allow: POST. The body is hard-capped at MaxBodyBytes via
+// Allow: POST. The body is hard-capped at MaxRequestBytes via
 // http.MaxBytesReader; oversize bodies return 413. YAML parse / validation
 // failures return 422 with a structured ValidateResponse.
 func NewValidateInterceptor(opts Options) func(http.Handler) http.Handler {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	if opts.MaxBodyBytes <= 0 {
-		opts.MaxBodyBytes = 524288
+	if opts.MaxRequestBytes <= 0 {
+		opts.MaxRequestBytes = 524288
 	}
 	if opts.Validate == nil {
 		// A nil validator is a programmer error; fail closed at construction
@@ -100,16 +106,16 @@ func NewValidateInterceptor(opts Options) func(http.Handler) http.Handler {
 
 func handlePOST(w http.ResponseWriter, r *http.Request, opts Options) {
 	// MaxBytesReader returns http.MaxBytesError on overflow, which we surface as 413.
-	limited := http.MaxBytesReader(w, r.Body, opts.MaxBodyBytes)
+	limited := http.MaxBytesReader(w, r.Body, opts.MaxRequestBytes)
 	defer func() { _ = limited.Close() }()
 
 	body, err := io.ReadAll(limited)
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
-			logging.SetDeniedWithCode(w, r, "admin_body_too_large", "request body exceeds admin.max_body_bytes", nil)
+			logging.SetDeniedWithCode(w, r, "admin_body_too_large", "request body exceeds admin.max_request_bytes", nil)
 			_ = httpjson.Write(w, http.StatusRequestEntityTooLarge, httpjson.ErrorResponse{
-				Message: "request body exceeds admin.max_body_bytes",
+				Message: "request body exceeds admin.max_request_bytes",
 			})
 			return
 		}

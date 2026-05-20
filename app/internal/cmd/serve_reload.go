@@ -13,10 +13,14 @@ import (
 	"github.com/codeswhat/sockguard/internal/admin"
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/logging"
-	"github.com/codeswhat/sockguard/internal/metrics"
 	"github.com/codeswhat/sockguard/internal/policybundle"
 	"github.com/codeswhat/sockguard/internal/reload"
 )
+
+// discardLogger is a package-level slog.Logger that writes to io.Discard.
+// Used in hot-reload paths (e.g. ApplyCompat) where compat-expansion noise
+// must be suppressed without allocating a new handler per reload call.
+var discardLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 // reloadCoordinator owns the hot-reload state for a running sockguard
 // process: the current chain teardown, the active config snapshot, and
@@ -33,6 +37,12 @@ type reloadCoordinator struct {
 	chainTeardown func()
 	activeCfg     *config.Config
 
+	// rootCtx is the cobra command context; bundle re-verification on
+	// reload must derive its timeout from this so SIGTERM cancels an
+	// in-flight verifier rather than blocking on the per-bundle deadline.
+	// Nil is tolerated for test fixtures that don't exercise verifyBundle.
+	rootCtx context.Context
+
 	// Bindings that live for the whole process lifetime. None of these
 	// change across reloads — the immutable-field gate rejects any
 	// reload whose YAML would mutate these inputs.
@@ -42,7 +52,6 @@ type reloadCoordinator struct {
 	auditLogger *logging.AuditLogger
 	deps        *serveDeps
 	runtime     *serveRuntime
-	registry    *metrics.Registry
 	// versioner is shared with the admin policy-version handler. Updating it
 	// after a successful swap is what makes the new generation visible to
 	// GET /admin/policy/version and to sockguard_policy_version. Nil-safe so
@@ -57,36 +66,43 @@ type reloadCoordinator struct {
 	bundleVerifier policybundle.Verifier
 }
 
+// reloadCoordinatorParams bundles the inputs newReloadCoordinator needs.
+// The set is large because the coordinator pulls together every piece of
+// reload-time state — the running config, the swappable handler, every
+// per-process singleton — and grouping them here keeps call sites compact.
+type reloadCoordinatorParams struct {
+	RootCtx         context.Context
+	Cfg             *config.Config
+	CfgFile         string
+	Swappable       *reload.SwappableHandler
+	InitialTeardown func()
+	Logger          *slog.Logger
+	AuditLogger     *logging.AuditLogger
+	Deps            *serveDeps
+	Runtime         *serveRuntime
+	Versioner       *admin.PolicyVersioner
+	BundleVerifier  policybundle.Verifier
+}
+
 // newReloadCoordinator returns a coordinator wired up with the initial
 // chain teardown and current config snapshot. The caller must arrange for
 // stop to be invoked once at process shutdown.
-func newReloadCoordinator(
-	cfg *config.Config,
-	cfgFile string,
-	swappable *reload.SwappableHandler,
-	initialTeardown func(),
-	logger *slog.Logger,
-	auditLogger *logging.AuditLogger,
-	deps *serveDeps,
-	runtime *serveRuntime,
-	versioner *admin.PolicyVersioner,
-	bundleVerifier policybundle.Verifier,
-) *reloadCoordinator {
-	if initialTeardown == nil {
-		initialTeardown = func() {}
+func newReloadCoordinator(p reloadCoordinatorParams) *reloadCoordinator {
+	if p.InitialTeardown == nil {
+		p.InitialTeardown = func() {}
 	}
 	return &reloadCoordinator{
-		chainTeardown:  initialTeardown,
-		activeCfg:      cfg,
-		swappable:      swappable,
-		cfgFile:        cfgFile,
-		logger:         logger,
-		auditLogger:    auditLogger,
-		deps:           deps,
-		runtime:        runtime,
-		registry:       runtime.metrics,
-		versioner:      versioner,
-		bundleVerifier: bundleVerifier,
+		chainTeardown:  p.InitialTeardown,
+		activeCfg:      p.Cfg,
+		rootCtx:        p.RootCtx,
+		swappable:      p.Swappable,
+		cfgFile:        p.CfgFile,
+		logger:         p.Logger,
+		auditLogger:    p.AuditLogger,
+		deps:           p.Deps,
+		runtime:        p.Runtime,
+		versioner:      p.Versioner,
+		bundleVerifier: p.BundleVerifier,
 	}
 }
 
@@ -130,7 +146,7 @@ func (c *reloadCoordinator) reload() {
 			"signature_path", c.activeCfg.PolicyBundle.SignaturePath,
 			"error", err.Error(),
 		)
-		c.registry.ObserveConfigReload("reject_signature")
+		c.runtime.metrics.ObserveConfigReload("reject_signature")
 		return
 	}
 
@@ -141,7 +157,7 @@ func (c *reloadCoordinator) reload() {
 			"path", c.cfgFile,
 			"error", err.Error(),
 		)
-		c.registry.ObserveConfigReload("reject_load")
+		c.runtime.metrics.ObserveConfigReload("reject_load")
 		return
 	}
 
@@ -156,7 +172,7 @@ func (c *reloadCoordinator) reload() {
 			"path", c.cfgFile,
 			"changed_fields", strings.Join(changed, ","),
 		)
-		c.registry.ObserveConfigReload("reject_immutable")
+		c.runtime.metrics.ObserveConfigReload("reject_immutable")
 		return
 	}
 
@@ -164,8 +180,7 @@ func (c *reloadCoordinator) reload() {
 	// discard logger here so reload-time compat noise doesn't drown out
 	// the operator's real reload signal; the compat-active state is
 	// reflected in the candidate's rules, which validation will judge.
-	discard := slog.New(slog.NewTextHandler(io.Discard, nil))
-	compatActive := config.ApplyCompat(newCfg, discard)
+	compatActive := config.ApplyCompat(newCfg, discardLogger)
 
 	newRules, err := c.deps.validateRules(newCfg)
 	if err != nil {
@@ -174,13 +189,19 @@ func (c *reloadCoordinator) reload() {
 			"path", c.cfgFile,
 			"error", err.Error(),
 		)
-		c.registry.ObserveConfigReload("reject_validation")
+		c.runtime.metrics.ObserveConfigReload("reject_validation")
 		return
 	}
 
-	newHandler, newTeardown := buildServeHandlerChainWithRuntime(
-		newCfg, c.logger, c.auditLogger, newRules, c.deps, c.runtime, c.versioner,
-	)
+	newHandler, newTeardown := buildServeHandlerChainWithRuntime(serveHandlerBuild{
+		Cfg:         newCfg,
+		Logger:      c.logger,
+		AuditLogger: c.auditLogger,
+		Rules:       newRules,
+		Deps:        c.deps,
+		Runtime:     c.runtime,
+		Versioner:   c.versioner,
+	})
 
 	oldTeardown := c.chainTeardown
 	c.chainTeardown = newTeardown
@@ -216,7 +237,7 @@ func (c *reloadCoordinator) reload() {
 			snap.BundleDigest = bundleResult.DigestHex
 		}
 		newVersion = c.versioner.Update(snap)
-		c.registry.SetPolicyVersion(newVersion)
+		c.runtime.metrics.SetPolicyVersion(newVersion)
 	}
 
 	c.logger.Info("config reload applied",
@@ -226,7 +247,7 @@ func (c *reloadCoordinator) reload() {
 		"profiles", len(newCfg.Clients.Profiles),
 		"policy_version", newVersion,
 	)
-	c.registry.ObserveConfigReload("ok")
+	c.runtime.metrics.ObserveConfigReload("ok")
 }
 
 // verifyBundle returns (nil, nil) when bundle verification is disabled,
@@ -249,7 +270,11 @@ func (c *reloadCoordinator) verifyBundle() (*policybundle.VerifyResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), bundleVerifyDeadline(c.activeCfg.PolicyBundle))
+	parent := c.rootCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, bundleVerifyDeadline(c.activeCfg.PolicyBundle))
 	defer cancel()
 	res, err := c.bundleVerifier.Verify(ctx, yamlBytes, entity)
 	if err != nil {
@@ -293,4 +318,3 @@ func startReloader(ctx context.Context, cfgFile string, debounce, pollInterval t
 	}
 	return stop, nil
 }
-

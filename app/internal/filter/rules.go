@@ -2,12 +2,13 @@ package filter
 
 import (
 	"net/http"
-	"net/url"
 	"path"
 	"regexp"
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/codeswhat/sockguard/internal/glob"
 )
 
 // regexpCompileHook is the package-level hook for regexp compilation.
@@ -23,6 +24,13 @@ const (
 	ActionAllow Action = "allow"
 	ActionDeny  Action = "deny"
 )
+
+// ReasonNoMatchingAllowRule is the human-readable reason stamped on the
+// default-deny outcome (no rule matched). Exported so the reason-code
+// classifier can compare against a constant rather than a magic string;
+// changing this string requires updating both this constant and the
+// downstream classifier.
+const ReasonNoMatchingAllowRule = "no matching allow rule"
 
 // Rule represents a single access control rule.
 type Rule struct {
@@ -76,10 +84,19 @@ type CompiledRule struct {
 	Index int
 }
 
-// NormalizePath sanitizes and strips the Docker API version prefix from a path.
-// It decodes one additional layer of path escaping, resolves ".." and "."
-// segments, and collapses redundant slashes before stripping the version
-// prefix so encoded separators cannot bypass path-based policy checks.
+// NormalizePath canonicalizes a request path into the form policy rules are
+// matched against: it resolves "." and ".." segments and collapses redundant
+// slashes (path.Clean), then strips a leading Docker API version prefix.
+//
+// It deliberately does NOT percent-decode. The path it receives is r.URL.Path,
+// which net/http's request parser has already decoded exactly once — the same
+// single decode the Docker daemon's request parser applies. Decoding again
+// would let sockguard resolve an escape the daemon leaves literal: a
+// double-encoded "%252e", for instance, would become a "." segment that
+// path.Clean collapses for sockguard while the daemon still routes it as a
+// real path segment, so the two would disagree on which endpoint the request
+// targets. Matching the daemon's single decode keeps sockguard's policy view
+// byte-identical to the daemon's routing view.
 func NormalizePath(p string) string {
 	if p == "" {
 		return ""
@@ -87,13 +104,10 @@ func NormalizePath(p string) string {
 	return stripVersionPrefix(canonicalizePath(p))
 }
 
+// canonicalizePath resolves "." / ".." segments and collapses redundant
+// slashes via path.Clean, fronted by the allocation-free pathNeedsClean fast
+// path. It does not percent-decode — see NormalizePath for why.
 func canonicalizePath(p string) string {
-	if strings.IndexByte(p, '%') >= 0 {
-		unescaped, err := url.PathUnescape(p)
-		if err == nil {
-			p = unescaped
-		}
-	}
 	if pathNeedsClean(p) {
 		p = path.Clean(p)
 	}
@@ -162,7 +176,7 @@ func pathSegmentNeedsClean(p string, start, end int, absolutePath, hasNormalSegm
 // path from the first slash after the version. Uses a hand-rolled check so the
 // common case (no prefix) avoids regexp overhead entirely.
 func stripVersionPrefix(p string) string {
-	// Minimum version prefix is /vN/ (4 chars).
+	// Minimum version prefix is /vN/ (4 chars). Docker uses lowercase 'v' only.
 	if len(p) < 4 || p[0] != '/' || p[1] != 'v' {
 		return p
 	}
@@ -304,7 +318,7 @@ func evaluateNormalized(rules []*CompiledRule, method, normalizedPath string) (A
 			return rule.Action, rule.Index, rule.Reason
 		}
 	}
-	return ActionDeny, -1, "no matching allow rule"
+	return ActionDeny, -1, ReasonNoMatchingAllowRule
 }
 
 func httpMethodBit(method string) httpMethodMask {
@@ -456,39 +470,13 @@ func literalPrefixForPattern(pattern string) string {
 	return pattern
 }
 
-// GlobToRegexString converts a simple glob pattern to a regex string using the
-// same dialect used for path-rule matching. Callers that need to compile the
-// pattern into a *regexp.Regexp should wrap the result with "^" + ... + "$".
-// Exported so other packages (e.g. visibility) can reuse the same glob dialect
-// without importing a third-party glob library.
+// GlobToRegexString converts the sockguard glob dialect to a regex string.
+// Kept as a thin re-export of glob.ToRegexString for callers that already
+// depend on the filter package.
 func GlobToRegexString(pattern string) string {
-	return globToRegex(pattern)
+	return glob.ToRegexString(pattern)
 }
 
-// globToRegex converts a simple glob pattern to a regex string.
-// Supports * (single path segment) and ** (any path segments).
-// The sequence /** also matches the bare path without the trailing slash,
-// so /containers/** matches both /containers and /containers/anything.
 func globToRegex(pattern string) string {
-	var b strings.Builder
-	runes := []rune(pattern)
-	i := 0
-	for i < len(runes) {
-		switch {
-		case i+2 < len(runes) && runes[i] == '/' && runes[i+1] == '*' && runes[i+2] == '*':
-			// /** matches the bare path OR /anything/deeper
-			b.WriteString("(/.*)?")
-			i += 3
-		case i+1 < len(runes) && runes[i] == '*' && runes[i+1] == '*':
-			b.WriteString(".*")
-			i += 2
-		case runes[i] == '*':
-			b.WriteString("[^/]*")
-			i++
-		default:
-			b.WriteString(regexp.QuoteMeta(string(runes[i])))
-			i++
-		}
-	}
-	return b.String()
+	return glob.ToRegexString(pattern)
 }
