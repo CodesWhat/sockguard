@@ -116,8 +116,11 @@ func TestGitLabRunner(t *testing.T) {
 		{http.MethodPost, "/swarm/init", false},
 	}
 
+	// The GitLab Runner preset declares its own explicit catch-all rule with reason
+	// "not allowed by gitlab-runner preset" (configs/gitlab-runner.yaml), so override
+	// the default Tecnativa-compat catch-all substring.
 	for _, exp := range ruleExpectations {
-		runPresetExpectation(t, handler, "gitlab-runner", exp)
+		runPresetExpectationWithReason(t, handler, "gitlab-runner", exp, "not allowed by gitlab-runner preset")
 	}
 
 	// ── Body-inspection assertions ───────────────────────────────────────────
@@ -183,7 +186,7 @@ func TestGitLabRunner(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 
 		deniedByCatchAll := rec.Code == http.StatusForbidden &&
-			strings.Contains(rec.Body.String(), "no matching allow rule")
+			strings.Contains(rec.Body.String(), "not allowed by gitlab-runner preset")
 		deniedByBodyInspector := rec.Code == http.StatusForbidden &&
 			strings.Contains(rec.Body.String(), "container create denied")
 

@@ -112,8 +112,11 @@ func TestGitHubActionsRunner(t *testing.T) {
 		{http.MethodPost, "/swarm/init", false},
 	}
 
+	// The GHA preset declares its own explicit catch-all rule with reason
+	// "not allowed by github-actions-runner preset" (configs/github-actions-runner.yaml),
+	// so override the default Tecnativa-compat catch-all substring.
 	for _, exp := range ruleExpectations {
-		runPresetExpectation(t, handler, "github-actions-runner", exp)
+		runPresetExpectationWithReason(t, handler, "github-actions-runner", exp, "not allowed by github-actions-runner preset")
 	}
 
 	// ── Body-inspection assertions ───────────────────────────────────────────
@@ -162,7 +165,7 @@ func TestGitHubActionsRunner(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 
 		deniedByCatchAll := rec.Code == http.StatusForbidden &&
-			strings.Contains(rec.Body.String(), "no matching allow rule")
+			strings.Contains(rec.Body.String(), "not allowed by github-actions-runner preset")
 		deniedByBodyInspector := rec.Code == http.StatusForbidden &&
 			strings.Contains(rec.Body.String(), "container create denied")
 

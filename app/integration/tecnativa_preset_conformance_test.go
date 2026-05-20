@@ -282,7 +282,21 @@ func snapshotCompatEnv() func() {
 // reason — any other 403 (body inspector, upstream) is reported back, so a
 // test that thinks it's checking the rule layer but actually trips a body
 // inspector fails loudly with the daemon's response body.
+//
+// This form uses the default Tecnativa-compat catch-all reason text. Presets
+// that declare their own explicit catch-all rule with custom reason text should
+// call runPresetExpectationWithReason instead.
 func runPresetExpectation(t *testing.T, handler http.Handler, presetName string, exp presetExpectation) {
+	t.Helper()
+	runPresetExpectationWithReason(t, handler, presetName, exp, "no matching allow rule")
+}
+
+// runPresetExpectationWithReason is the same as runPresetExpectation but allows
+// the caller to override the catch-all reason substring that identifies a
+// rule-layer denial. Presets that ship their own explicit catch-all rule (e.g.
+// "not allowed by CIS Docker Benchmark preset") use this form so the
+// assertion does not collide with body-inspector or upstream 403s.
+func runPresetExpectationWithReason(t *testing.T, handler http.Handler, presetName string, exp presetExpectation, catchAllReason string) {
 	t.Helper()
 
 	var body io.Reader
@@ -320,7 +334,7 @@ func runPresetExpectation(t *testing.T, handler http.Handler, presetName string,
 	handler.ServeHTTP(rec, req)
 
 	deniedByCatchAll := rec.Code == http.StatusForbidden &&
-		strings.Contains(rec.Body.String(), "no matching allow rule")
+		strings.Contains(rec.Body.String(), catchAllReason)
 
 	if exp.wantAllowed {
 		if deniedByCatchAll {

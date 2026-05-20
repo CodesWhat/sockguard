@@ -112,8 +112,11 @@ func TestCISDockerBenchmark(t *testing.T) {
 		{http.MethodPost, "/swarm/init", false},
 	}
 
+	// The CIS preset declares its own explicit catch-all rule with reason
+	// "not allowed by CIS Docker Benchmark preset" (configs/cis-docker-benchmark.yaml),
+	// so override the default Tecnativa-compat catch-all substring.
 	for _, exp := range ruleExpectations {
-		runPresetExpectation(t, handler, "cis-docker-benchmark", exp)
+		runPresetExpectationWithReason(t, handler, "cis-docker-benchmark", exp, "not allowed by CIS Docker Benchmark preset")
 	}
 
 	// ── Body-inspection assertions (CIS Section 5 controls) ─────────────────
@@ -201,7 +204,7 @@ func TestCISDockerBenchmark(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 
 		deniedByCatchAll := rec.Code == http.StatusForbidden &&
-			strings.Contains(rec.Body.String(), "no matching allow rule")
+			strings.Contains(rec.Body.String(), "not allowed by CIS Docker Benchmark preset")
 		deniedByBodyInspector := rec.Code == http.StatusForbidden &&
 			strings.Contains(rec.Body.String(), "container create denied")
 
