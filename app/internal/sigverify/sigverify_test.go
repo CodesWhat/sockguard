@@ -1,6 +1,7 @@
 package sigverify
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -12,8 +13,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sigstore/sigstore-go/pkg/bundle"
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
+	"github.com/sigstore/sigstore-go/pkg/tlog"
+	"github.com/sigstore/sigstore-go/pkg/verify"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
+	sigsig "github.com/sigstore/sigstore/pkg/signature"
 )
 
 // TestCompileKey covers the PEM parsing surface: trimmed empty input,
@@ -204,6 +209,101 @@ func TestVerifyKeylessSANMismatch(t *testing.T) {
 	)
 	if err == nil {
 		t.Fatal("VerifyKeyless with mismatched SAN returned nil; want error")
+	}
+}
+
+// keyedTestEntity implements verify.SignedEntity for raw public-key (non-Fulcio)
+// signing tests. It wraps a MessageSignature and surfaces a bundle.PublicKey so
+// that sigstore-go's keyed verification path is exercised.
+type keyedTestEntity struct {
+	verify.BaseSignedEntity
+	msgSig *bundle.MessageSignature
+}
+
+func (e *keyedTestEntity) VerificationContent() (verify.VerificationContent, error) {
+	return &bundle.PublicKey{}, nil
+}
+
+func (e *keyedTestEntity) SignatureContent() (verify.SignatureContent, error) {
+	return e.msgSig, nil
+}
+
+func (e *keyedTestEntity) Timestamps() ([][]byte, error) { return nil, nil }
+
+func (e *keyedTestEntity) TlogEntries() ([]*tlog.Entry, error) { return nil, nil }
+
+func (e *keyedTestEntity) Version() (string, error) { return "v0.3", nil }
+
+// newKeyedSignedEntity signs artifact with the given ECDSA private key and
+// returns a SignedEntity and the compiled sigsig.Verifier ready for VerifyKeyed.
+func newKeyedSignedEntity(t *testing.T, priv *ecdsa.PrivateKey, artifact []byte) (verify.SignedEntity, sigsig.Verifier) {
+	t.Helper()
+
+	sv, err := sigsig.LoadECDSASignerVerifier(priv, crypto.SHA256)
+	if err != nil {
+		t.Fatalf("LoadECDSASignerVerifier: %v", err)
+	}
+
+	sig, err := sv.SignMessage(strings.NewReader(string(artifact)))
+	if err != nil {
+		t.Fatalf("SignMessage: %v", err)
+	}
+
+	digest := sha256.Sum256(artifact)
+	msgSig := bundle.NewMessageSignature(digest[:], "SHA2_256", sig)
+	entity := &keyedTestEntity{msgSig: msgSig}
+
+	// Build the compiled verifier the same way CompileKey would, so the test
+	// exercises the production path.
+	pubPEM, err := cryptoutils.MarshalPublicKeyToPEM(priv.Public())
+	if err != nil {
+		t.Fatalf("MarshalPublicKeyToPEM: %v", err)
+	}
+	verifier, _, err := CompileKey(string(pubPEM))
+	if err != nil {
+		t.Fatalf("CompileKey: %v", err)
+	}
+	return entity, verifier
+}
+
+// TestVerifyKeyedSuccess confirms that VerifyKeyed returns nil when the entity
+// was signed with the key that the compiled verifier corresponds to and the
+// digest matches the signed artifact.
+func TestVerifyKeyedSuccess(t *testing.T) {
+	t.Parallel()
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	artifact := []byte("payload bytes")
+	entity, verifier := newKeyedSignedEntity(t, priv, artifact)
+
+	digest := sha256.Sum256(artifact)
+	if err := VerifyKeyed(entity, digest[:], verifier); err != nil {
+		t.Fatalf("VerifyKeyed(valid) error = %v, want nil", err)
+	}
+}
+
+// TestVerifyKeyedDigestMismatch confirms that VerifyKeyed returns a non-nil
+// error when the supplied digest does not match what was signed — i.e. the
+// payload has been tampered with.
+func TestVerifyKeyedDigestMismatch(t *testing.T) {
+	t.Parallel()
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+
+	artifact := []byte("payload bytes")
+	entity, verifier := newKeyedSignedEntity(t, priv, artifact)
+
+	tampered := []byte("tampered bytes")
+	digest := sha256.Sum256(tampered)
+	if err := VerifyKeyed(entity, digest[:], verifier); err == nil {
+		t.Fatal("VerifyKeyed(digest mismatch) returned nil; want error")
 	}
 }
 

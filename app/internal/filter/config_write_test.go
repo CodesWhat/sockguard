@@ -119,6 +119,18 @@ func TestConfigWriteInspectAllowsTemplateDriverWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestConfigInspectAllowsCustomDriverWhenConfigured(t *testing.T) {
+	policy := newConfigPolicy(ConfigOptions{AllowCustomDrivers: true})
+	req := httptest.NewRequest(http.MethodPost, "/configs/create", strings.NewReader(`{"Name":"tls-cert","Driver":"vault"}`))
+	reason, err := policy.inspect(nil, req, "/configs/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty (AllowCustomDrivers=true should permit non-default driver)", reason)
+	}
+}
+
 func TestConfigWriteInspectBodyReadErrorPropagates(t *testing.T) {
 	// Exercises the non-tooLarge error branch from readBoundedBody (line 48).
 	policy := newConfigPolicy(ConfigOptions{})
