@@ -107,6 +107,49 @@ Minimal access for [docker-autoheal](https://github.com/willfarrell/docker-autoh
 # Denies: everything else — the most restrictive write preset
 ```
 
+## GitHub Actions Self-Hosted Runner (`github-actions-runner.yaml`)
+
+For the `actions/runner` process on a self-hosted runner that needs Docker
+socket access to spawn `jobs.*.container` + `jobs.*.services` containers.
+
+**Use for:** self-hosted GitHub Actions runners that handle untrusted
+workflows (i.e. anything from a fork PR or a low-trust org member).
+
+```yaml
+# Allows: container lifecycle, exec, attach, image pull, per-job networks,
+#         named volumes for cache
+# Denies: privileged containers, host namespace sharing, bind mounts,
+#         capability additions, build, swarm, secrets, plugins, raw export
+```
+
+The preset enforces what a workflow can *do* once admitted. Pair it
+with `clients.allowed_cidrs` (TCP listener) or `clients.unix_peer_profiles`
+(unix listener) to authenticate which process is connecting — sockguard
+on its own does not know which runner identity is on the other end.
+
+## GitLab Runner (Docker Executor) (`gitlab-runner.yaml`)
+
+For `gitlab-runner` with `executor = "docker"` in `config.toml`. Spawns
+build + service + helper containers per CI job and uses `docker exec`
+to inject job steps.
+
+**Use for:** GitLab Runner deployments handling untrusted CI jobs.
+
+```yaml
+# Allows: container lifecycle, exec, attach, image pull, per-job networks,
+#         named volumes
+# Denies: privileged containers (even if config.toml asks for them),
+#         host namespace sharing, bind mounts, build, swarm, secrets,
+#         plugins, raw export
+```
+
+Notable: the preset **deliberately rejects privileged containers** even
+if the runner's `config.toml` has `privileged = true`. DinD-style jobs
+that require a privileged build container will fail through the proxy
+until the operator either removes the flag or moves the affected
+project to a different runner. This is the secure default; widening it
+is an audit-trail-bearing edit.
+
 ## CIS Docker Benchmark (`cis-docker-benchmark.yaml`)
 
 Turns sockguard into an admission gate for the inspectable subset of
