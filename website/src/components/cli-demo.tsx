@@ -121,7 +121,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {bold("sockguard")} {dim("v1.0.0-rc.2")}
+            {bold("sockguard")} {dim("v1.0.0")}
           </>
         ),
       },
@@ -408,8 +408,8 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {bold("sockguard")} v1.0.0-rc.2{"  "}
-            {dim("(commit a8c742f, built 2026-05-14T00:00:00Z, go1.26.3)")}
+            {bold("sockguard")} v1.0.0{"  "}
+            {dim("(commit bf59572, built 2026-05-20T00:00:00Z, go1.26.3)")}
           </>
         ),
       },
@@ -469,7 +469,7 @@ function buildLogLines(): RawFrameLine[] {
       level: "INFO",
       msg: "sockguard started",
       fields: [
-        ["version", "v1.0.0-rc.2"],
+        ["version", "v1.0.0"],
         ["listen", "unix:/var/run/sockguard/sockguard.sock"],
         ["upstream", "/var/run/docker.sock"],
         ["rules", "6"],

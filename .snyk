@@ -35,3 +35,16 @@ exclude:
     # during `git commit` — anyone who could influence argv[2] already
     # has shell access, making "read arbitrary files" a non-threat.
     - scripts/validate-commit-msg.mjs
+
+    # Owner-isolation middleware. upstreamInspector.inspectResource /
+    # inspectExec build a request URL from a client-supplied resource
+    # identifier and pass it to http.NewRequestWithContext, which Snyk
+    # Code's taint analysis flags as SSRF (CWE-918). It is a false
+    # positive: the URL host is the hardcoded literal "http://docker",
+    # so only the request *path* is dynamic — the host can never be
+    # attacker-redirected — and u.client's transport is pinned to the
+    # Docker unix socket via a custom DialContext that ignores the host
+    # entirely. The path segment is additionally url.PathEscape'd. No
+    # outbound request can reach anything but the configured Docker
+    # socket. CodeQL and Gosec still scan this file.
+    - app/internal/ownership/middleware.go
