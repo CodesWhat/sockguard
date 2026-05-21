@@ -4,6 +4,7 @@ import {
   BadgeCheck,
   EyeOff,
   FileText,
+  Fingerprint,
   Gauge,
   LockKeyhole,
   type LucideIcon,
@@ -136,6 +137,15 @@ export const features: Feature[] = [
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
       "Treat the on-disk YAML config as untrusted until a cosign / sigstore bundle confirms it. Supports keyed (PEM ECDSA/RSA/ed25519) and keyless (Fulcio + Rekor) verification. Bundle is checked at startup and on every hot reload — a bad signature rejects the reload and leaves the running policy untouched.",
+    category: "security",
+  },
+  {
+    icon: Fingerprint,
+    title: "Container Image Trust",
+    color: "text-rose-500 dark:text-rose-400",
+    bg: "bg-rose-100 dark:bg-rose-900/50",
+    description:
+      "Verify cosign signatures on a container's image before `POST /containers/create` reaches the daemon. Keyed (PEM ECDSA/RSA/ed25519) and keyless (Fulcio issuer + SAN, optional Rekor inclusion) verification, configurable per client profile. `enforce` denies unsigned or wrong-signer images; `warn` logs the failure and forwards the request.",
     category: "security",
   },
   {

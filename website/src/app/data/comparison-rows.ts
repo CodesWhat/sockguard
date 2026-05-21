@@ -166,6 +166,15 @@ export const comparisonRows: ComparisonRow[] = [
     sockguard: "Yes (cosign keyed + keyless, Rekor inclusion)",
   },
   {
+    feature: "Container image trust",
+    tecnativa: "No",
+    linuxserver: "No",
+    wollomatic: "No",
+    elevenNotes: "No",
+    cetusguard: "No",
+    sockguard: "Yes (cosign keyed + keyless, enforce / warn)",
+  },
+  {
     feature: "Hot-reload + admin API",
     tecnativa: "No",
     linuxserver: "No",
