@@ -86,7 +86,7 @@ digest rather than by tag — a tag can be re-pointed, a digest cannot.
 ```bash
 # Resolve the current digest for a tag
 digest=$(docker buildx imagetools inspect \
-  ghcr.io/codeswhat/sockguard:0.5.1 --format '{{json .Manifest.Digest}}' \
+  ghcr.io/codeswhat/sockguard:<TAG> --format '{{json .Manifest.Digest}}' \
   | tr -d '"')
 
 # Verify against the digest

@@ -42,7 +42,7 @@ the deny reason naming the specific knob:
 
 (The preset uses `deny_verbosity: minimal` so the response never echoes
 the violating field; the structured access log in
-[Observability](/docs/observability) records the full deny reason.)
+[Observability](/observability) records the full deny reason.)
 
 ## What sockguard enforces
 
@@ -75,7 +75,7 @@ from the benchmark.
 
 | CIS control | Description | How sockguard contributes |
 |---|---|---|
-| **2.6** | TLS authentication for Docker daemon | mTLS on the sockguard TCP listener (see [Configuration → mTLS](/docs/configuration#mtls)) replaces direct daemon TLS for in-cluster consumers |
+| **2.6** | TLS authentication for Docker daemon | mTLS on the sockguard TCP listener (see [Configuration → mTLS](/configuration#mtls-client-selectors)) replaces direct daemon TLS for in-cluster consumers |
 | **4.5** | Content trust for Docker | `request_body.container_create.image_trust.mode: enforce` verifies cosign signatures on image references before the create reaches the daemon |
 | **5.22/5.23** | Exec hardening | When a rule permits exec, the `request_body.exec` block applies the same admission gates documented above |
 | **7.x** | Swarm controls (operations) | This preset denies the entire `/swarm/**`, `/services/**`, `/nodes/**`, `/configs/**`, `/secrets/**` surface — meeting 7.1–7.10 by exclusion. Re-enable per rule for clusters that actually use Swarm |

@@ -174,6 +174,17 @@ export default function Home() {
                   />
                 </a>
                 <a
+                  href="https://quay.io/repository/codeswhat/sockguard"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {/* biome-ignore lint/performance/noImgElement: external badge */}
+                  <img
+                    src="https://img.shields.io/badge/Quay.io-image-ee0000?logo=redhat&logoColor=white"
+                    alt="Quay.io"
+                  />
+                </a>
+                <a
                   href="https://github.com/orgs/CodesWhat/packages/container/package/sockguard"
                   target="_blank"
                   rel="noopener noreferrer"
