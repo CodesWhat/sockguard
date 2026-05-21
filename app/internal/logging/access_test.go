@@ -1284,45 +1284,37 @@ func TestAppendCorrelationAttrsRolloutModeOmitted(t *testing.T) {
 // differs only at equality. This test exercises `len == threshold`: original
 // proceeds to refill, mutant returns early. We assert the fill function was
 // invoked.
+//
+// The generator is built directly, without a run() goroutine, so nothing races
+// the setup or the assertion — TestNextSignalRefillBoundary takes the same
+// approach and explains why.
 func TestRefillSyncBoundaryLenEqualsThreshold(t *testing.T) {
-	var fillCalled int32
+	var fillCalled int
 
-	// pool=4, threshold=2. Initial async fill will fill all 4 IDs.
-	gen := newRequestIDGenerator(4, 2, func(dst []byte) (int, error) {
-		atomic.AddInt32(&fillCalled, 1)
-		for i := range dst {
-			dst[i] = byte(i + 1)
-		}
-		return len(dst), nil
-	})
-	defer gen.close()
-
-	// Wait for initial fill via a refillSync barrier. After this, len(ids)=4.
-	gen.refillSync()
-
-	// Drain two IDs so len(ids)=2 == threshold.
-	_ = gen.Next()
-	// Next() at len==threshold triggers signalRefill; drain refillCh so the
-	// background goroutine doesn't beat us to the assertion below.
-	select {
-	case <-gen.refillCh:
-	default:
-	}
-	_ = gen.Next()
-	select {
-	case <-gen.refillCh:
-	default:
+	// pool=4, threshold=2.
+	gen := &requestIDGenerator{
+		ids:             make(chan string, 4),
+		refillCh:        make(chan struct{}, 1),
+		stopCh:          make(chan struct{}),
+		refillThreshold: 2,
+		fill: func(dst []byte) (int, error) {
+			fillCalled++
+			for i := range dst {
+				dst[i] = byte(i + 1)
+			}
+			return len(dst), nil
+		},
 	}
 
-	if got := len(gen.ids); got != 2 {
-		t.Fatalf("setup error: len(ids)=%d, want 2 (== threshold)", got)
-	}
+	// Pre-fill ids to len=2 == threshold.
+	gen.ids <- "id"
+	gen.ids <- "id"
 
-	before := atomic.LoadInt32(&fillCalled)
+	before := fillCalled
 	// At the equality boundary: original `len > threshold` (2>2=false) proceeds
 	// to refill; mutant `len >= threshold` (2>=2=true) returns without refilling.
 	gen.refillSync()
-	after := atomic.LoadInt32(&fillCalled)
+	after := fillCalled
 
 	if after <= before {
 		t.Fatalf("refillSync at len==threshold did not call fill (before=%d after=%d) — mutant `>=` would yield this", before, after)
