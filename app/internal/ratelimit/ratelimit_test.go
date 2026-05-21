@@ -605,32 +605,34 @@ func TestCompileEndpointCosts_AllInputsCompile(t *testing.T) {
 }
 
 // TestBucket_CASStress runs 32 goroutines hammering AllowN on a single bucket
-// for 100 ms and asserts that total tokens granted ≈ initialBurst +
-// (elapsed × rate). It exercises the CAS loop under real contention and checks
-// that the lock-free implementation neither over-grants nor under-grants by
-// more than a small absolute tolerance.
+// and asserts the lock-free CAS loop grants exactly `burst` tokens — never more
+// (a lost update would let two goroutines both claim the same token) and never
+// fewer (a dropped grant).
+//
+// The clock is frozen, so the bucket never refills: it holds exactly `burst`
+// tokens for the whole run and the expected total is independent of scheduling,
+// CI load, or the race detector. burst is kept below maxCASRetries so the retry
+// safety valve cannot trip and swallow an otherwise-grantable token.
 func TestBucket_CASStress(t *testing.T) {
 	t.Parallel()
 	const (
 		goroutines   = 32
-		rate         = 500.0 // tokens/s — high enough to keep up with 32 workers
-		burst        = 100.0 // initial bucket fill
-		runDuration  = 100 * time.Millisecond
-		tolerancePct = 0.10 // ±10 % of expected total
+		burst        = 90   // < maxCASRetries (100): the retry valve never trips
+		attemptsEach = 1000 // total attempts ≫ burst — every token is contested
 	)
 
-	b := newBucket(rate, burst, time.Now)
+	frozen := time.Now()
+	b := newBucket(500, burst, func() time.Time { return frozen })
 
 	var (
 		wg      sync.WaitGroup
 		granted atomic.Int64
-		start   = time.Now()
 	)
 	wg.Add(goroutines)
 	for range goroutines {
 		go func() {
 			defer wg.Done()
-			for time.Since(start) < runDuration {
+			for range attemptsEach {
 				if ok, _ := b.AllowN(1); ok {
 					granted.Add(1)
 				}
@@ -639,16 +641,10 @@ func TestBucket_CASStress(t *testing.T) {
 	}
 	wg.Wait()
 
-	elapsed := time.Since(start).Seconds()
-	expected := burst + elapsed*rate
-	got := float64(granted.Load())
-
-	// got must be ≤ expected (never over-grant) and within tolerance below it.
-	if got > expected*(1+tolerancePct) {
-		t.Fatalf("over-granted: expected ≤ %.1f, got %.1f (elapsed=%.3fs)", expected, got, elapsed)
-	}
-	if got < expected*(1-tolerancePct) {
-		t.Fatalf("under-granted: expected ≥ %.1f, got %.1f (elapsed=%.3fs)", expected*(1-tolerancePct), got, elapsed)
+	if got := granted.Load(); got != burst {
+		t.Fatalf("CAS loop granted %d tokens, want exactly %d "+
+			"(>%d = lost-update over-grant; <%d = a grant was dropped)",
+			got, burst, burst, burst)
 	}
 }
 
