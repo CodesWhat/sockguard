@@ -109,7 +109,7 @@ openssl x509 -req -in "${WORK_DIR}/server.csr" \
 # closes early; testssl.sh still records the negotiation.
 cat >"${CONFIG_PATH}" <<EOF
 listen:
-  tcp: "${LISTEN_HOST}:${LISTEN_PORT}"
+  address: "${LISTEN_HOST}:${LISTEN_PORT}"
   tls:
     cert_file: ${WORK_DIR}/server.crt
     key_file: ${WORK_DIR}/server.key
