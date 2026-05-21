@@ -47,13 +47,16 @@ security-testssl.sh dry-run plan:
   listen port:        ${LISTEN_PORT}
   testssl.sh image:   ${TESTSSL_IMAGE}
   cert generator:     openssl (ECDSA P-256)
-  fail conditions:    testssl.sh exit code != 0 AND it found a HIGH/CRITICAL severity finding
+  fail conditions:    testssl.sh reports a HIGH/CRITICAL wire-posture finding
+                      (cert_* PKI findings are excluded — the test certificate
+                      is an ephemeral self-signed fixture, not sockguard's)
 EOF
   exit 0
 fi
 
 # Sanity-check the toolchain before doing anything that needs cleanup.
-for tool in openssl docker go; do
+# jq parses the testssl.sh JSON report for the HIGH/CRITICAL severity gate.
+for tool in openssl docker go jq; do
   if ! command -v "${tool}" >/dev/null; then
     echo "security-testssl.sh: ${tool} not found on PATH" >&2
     exit 1
@@ -66,7 +69,16 @@ CONFIG_PATH="${WORK_DIR}/sockguard.yaml"
 SG_LOG="${WORK_DIR}/sockguard.log"
 MOCK_LOG="${WORK_DIR}/mockdocker.log"
 TESTSSL_LOG="${WORK_DIR}/testssl.log"
-TESTSSL_JSON="${WORK_DIR}/testssl.json"
+# Dedicated output directory bind-mounted into the testssl.sh container. The
+# drwetter/testssl.sh image runs as a non-root user (uid 1000), so the host
+# directory it writes its JSON report into must be world-writable — a bare
+# `mktemp -d` is mode 0700 and the container cannot write to it. Mounting only
+# this directory (not WORK_DIR) also keeps the CA / server private keys out of
+# the container's view.
+TESTSSL_OUT_DIR="${WORK_DIR}/testssl-out"
+TESTSSL_JSON="${TESTSSL_OUT_DIR}/testssl.json"
+mkdir -p "${TESTSSL_OUT_DIR}"
+chmod 0777 "${TESTSSL_OUT_DIR}"
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
 echo "==> Building sockguard, mockdocker"
@@ -109,7 +121,7 @@ openssl x509 -req -in "${WORK_DIR}/server.csr" \
 # closes early; testssl.sh still records the negotiation.
 cat >"${CONFIG_PATH}" <<EOF
 listen:
-  tcp: "${LISTEN_HOST}:${LISTEN_PORT}"
+  address: "${LISTEN_HOST}:${LISTEN_PORT}"
   tls:
     cert_file: ${WORK_DIR}/server.crt
     key_file: ${WORK_DIR}/server.key
@@ -160,13 +172,16 @@ if ! (echo >"/dev/tcp/${LISTEN_HOST}/${LISTEN_PORT}") 2>/dev/null; then
 fi
 
 echo "==> Running testssl.sh against ${LISTEN_HOST}:${LISTEN_PORT}"
-# --host-network so testssl.sh can dial 127.0.0.1 from inside the
-# container; --jsonfile-pretty for parseable severity-tagged output.
+# --network=host so testssl.sh can dial 127.0.0.1 from inside the container.
+# --jsonfile (the flat array format) — each element is a finding object with
+# a top-level .severity field, which the jq severity gate below indexes
+# directly. --jsonfile-pretty produces a nested object instead and would
+# break that gate.
 docker run --rm --network=host \
-  -v "${WORK_DIR}:/work" \
+  -v "${TESTSSL_OUT_DIR}:/work" \
   "${TESTSSL_IMAGE}" \
   --color 0 \
-  --jsonfile-pretty /work/testssl.json \
+  --jsonfile /work/testssl.json \
   "${LISTEN_HOST}:${LISTEN_PORT}" \
   | tee "${TESTSSL_LOG}" || true
 
@@ -175,20 +190,28 @@ if [ ! -s "${TESTSSL_JSON}" ]; then
   exit 1
 fi
 
-# Fail only on HIGH or CRITICAL severity findings. INFO and OK lines are
-# the steady-state output for a Go stdlib TLS 1.3 server; LOW and MEDIUM
-# can surface transient noise on a non-pristine runner.
-HIGH_CRIT_COUNT="$(jq -r '
-  [ .[] | select(.severity == "HIGH" or .severity == "CRITICAL") ] | length
-' "${TESTSSL_JSON}")"
+# Fail only on HIGH or CRITICAL severity findings, EXCLUDING those whose id
+# starts with "cert". This check measures sockguard's wire posture — TLS
+# versions, cipher suites, protocol extensions, downgrade exposure — not the
+# PKI properties of the certificate. The certificate here is an ephemeral
+# self-signed fixture this script mints fresh each run, so testssl.sh always
+# (and correctly) reports cert_chain_of_trust (self-signed CA, chain
+# incomplete), cert_expirationStatus / cert_notAfter (short-lived cert), and
+# cert_revocation (no CRL/OCSP URI) as HIGH/CRITICAL. Those are properties of
+# the test fixture, not of sockguard, so they must not gate the wire-posture
+# check. INFO and OK lines are the steady-state output for a Go stdlib TLS 1.3
+# server; LOW and MEDIUM can surface transient noise on a non-pristine runner.
+SEVERITY_GATE='.[]
+  | select(.severity == "HIGH" or .severity == "CRITICAL")
+  | select(.id | startswith("cert") | not)'
 
-echo "==> testssl.sh HIGH/CRITICAL findings: ${HIGH_CRIT_COUNT}"
+HIGH_CRIT_COUNT="$(jq -r "[ ${SEVERITY_GATE} ] | length" "${TESTSSL_JSON}")"
+
+echo "==> testssl.sh wire-posture HIGH/CRITICAL findings: ${HIGH_CRIT_COUNT}"
 if [ "${HIGH_CRIT_COUNT}" -gt 0 ]; then
-  jq -r '
-    .[] | select(.severity == "HIGH" or .severity == "CRITICAL")
-        | "  - [\(.severity)] \(.id): \(.finding)"
-  ' "${TESTSSL_JSON}" >&2
-  echo "==> FAIL: testssl.sh found HIGH/CRITICAL TLS issues" >&2
+  jq -r "${SEVERITY_GATE} | \"  - [\(.severity)] \(.id): \(.finding)\"" \
+    "${TESTSSL_JSON}" >&2
+  echo "==> FAIL: testssl.sh found HIGH/CRITICAL TLS wire-posture issues" >&2
   exit 1
 fi
 

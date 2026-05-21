@@ -76,3 +76,9 @@ website/public/docs/
 forensics/
 app/forensics/
 app/internal/**/forensics/
+
+# testssl.sh DAST scan output, written to the repo root by
+# scripts/security-testssl.sh. CI uploads it as a build artifact; it is
+# local triage output and should never be committed.
+testssl-output.json
+testssl-output.txt
