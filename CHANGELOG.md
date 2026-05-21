@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Bumped two transitive test-only dependencies to clear Grype Go-module CVEs.** `github.com/jackc/pgx/v5` v5.7.5 → v5.9.2 (GHSA-9jj7-4m8r-rfcm critical, GHSA-j88v-2chj-qfwx low) and `go.opentelemetry.io/otel/sdk` v1.41.0 → v1.42.0 (GHSA-hfvc-g4fc-pqhx high). Both modules are reached only through `.test` packages of sigstore-go's dependency tree — `go mod why` confirms the final hop into each is via a `*.test` package — so neither is compiled into the sockguard binary, and the Grype container-image scan was already clean. The bumps keep the source-directory module graph CVE-free regardless; `otel/sdk` v1.42.0 also matches the otel core version already pinned.
+
 ## [1.0.0] - 2026-05-20
 
 v1.0.0 ships the proxy contract `v1.0.0-rc.2` froze on 2026-05-16. Three small binary deltas land on top: the Go toolchain pin moves from "latest 1.26.x" to a fixed `1.26.3` (clears 17 HIGH stdlib CVEs the 2026-05-18 weekly Grype scan surfaced), `internal/sigverify` no longer silently skips its belt-and-suspenders issuer / SAN re-check when a sigstore-go result returns with a nil certificate, and `github.com/sigstore/sigstore` is bumped from v1.10.5 to v1.10.6 (a cosmetic OAuth success-page template fix in upstream sigstore; no behavior change in policy-bundle or image-trust). Everything else below is non-binary hardening that accumulated on top — new tests, new CI workflows, new policy presets and compose examples, and docs polish.
