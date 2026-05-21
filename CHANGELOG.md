@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Bumped two transitive test-only dependencies to clear Grype Go-module CVEs.** `github.com/jackc/pgx/v5` v5.7.5 → v5.9.2 (GHSA-9jj7-4m8r-rfcm critical, GHSA-j88v-2chj-qfwx low) and `go.opentelemetry.io/otel/sdk` v1.41.0 → v1.42.0 (GHSA-hfvc-g4fc-pqhx high). Both modules are reached only through `.test` packages of sigstore-go's dependency tree — `go mod why` confirms the final hop into each is via a `*.test` package — so neither is compiled into the sockguard binary, and the Grype container-image scan was already clean. The bumps keep the source-directory module graph CVE-free regardless; `otel/sdk` v1.42.0 also matches the otel core version already pinned.
+- **Bumped transitive test-only dependencies to clear Grype Go-module CVEs.** `github.com/jackc/pgx/v5` v5.7.5 → v5.9.2 (GHSA-9jj7-4m8r-rfcm critical, GHSA-j88v-2chj-qfwx low) and the `go.opentelemetry.io/otel` family v1.42.0 → v1.43.0, which moves `otel/sdk` past the GHSA-hfvc-g4fc-pqhx (high) fix in v1.43.0. Both modules are reached only through `.test` packages of sigstore-go's dependency tree — `go mod why` confirms the final hop into each is via a `*.test` package — so neither is compiled into the sockguard binary, and the Grype container-image scan was already clean. The bumps keep the source-directory module graph CVE-free regardless.
 
 ## [1.0.0] - 2026-05-20
 
