@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, and read-only dashboards.
+description: Ready-made sockguard configs for drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -167,7 +167,7 @@ before dockerd executes it.
 # Denies:  exec, build, swarm, secrets, plugins, raw archive/log/attach
 ```
 
-See [the dedicated CIS Docker Benchmark guide](/docs/cis-docker-benchmark)
+See [the dedicated CIS Docker Benchmark guide](/cis-docker-benchmark)
 for the full control-by-control mapping, the negative-test recipe, and
 notes on companion tools for the host/daemon/image controls sockguard
 cannot inspect.
