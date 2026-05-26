@@ -20,29 +20,38 @@ import (
 	"os"
 	"runtime"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 type result struct {
-	Scenario         string        `json:"scenario"`
-	Socket           string        `json:"socket"`
-	Method           string        `json:"method"`
-	Path             string        `json:"path"`
-	Concurrency      int           `json:"concurrency"`
-	DurationSeconds  float64       `json:"duration_seconds"`
-	TotalRequests    int64         `json:"total_requests"`
-	ErrorRequests    int64         `json:"error_requests"`
-	StatusCodeCounts map[int]int64 `json:"status_code_counts"`
-	RPS              float64       `json:"rps"`
-	LatencyP50Micros int64         `json:"latency_p50_us"`
-	LatencyP90Micros int64         `json:"latency_p90_us"`
-	LatencyP99Micros int64         `json:"latency_p99_us"`
-	LatencyMaxMicros int64         `json:"latency_max_us"`
-	GoroutinesStart  int           `json:"goroutines_start"`
-	GoroutinesEnd    int           `json:"goroutines_end"`
+	Scenario         string           `json:"scenario"`
+	Socket           string           `json:"socket"`
+	Method           string           `json:"method"`
+	Path             string           `json:"path"`
+	Concurrency      int              `json:"concurrency"`
+	DurationSeconds  float64          `json:"duration_seconds"`
+	TotalRequests    int64            `json:"total_requests"`
+	ErrorRequests    int64            `json:"error_requests"`
+	ErrorCounts      map[string]int64 `json:"error_counts,omitempty"`
+	StatusCodeCounts map[int]int64    `json:"status_code_counts"`
+	RPS              float64          `json:"rps"`
+	LatencyP50Micros int64            `json:"latency_p50_us"`
+	LatencyP90Micros int64            `json:"latency_p90_us"`
+	LatencyP99Micros int64            `json:"latency_p99_us"`
+	LatencyMaxMicros int64            `json:"latency_max_us"`
+	GoroutinesStart  int              `json:"goroutines_start"`
+	GoroutinesEnd    int              `json:"goroutines_end"`
+}
+
+type benchmarkOptions struct {
+	Socket      string
+	Method      string
+	Path        string
+	Concurrency int
+	Duration    time.Duration
+	Scenario    string
 }
 
 func main() {
@@ -56,19 +65,42 @@ func main() {
 	)
 	flag.Parse()
 
+	out := runBenchmark(benchmarkOptions{
+		Socket:      *socket,
+		Method:      *method,
+		Path:        *path,
+		Concurrency: *concurrency,
+		Duration:    *duration,
+		Scenario:    *scenario,
+	})
+
+	enc := json.NewEncoder(os.Stdout)
+	if err := enc.Encode(out); err != nil {
+		log.Fatalf("encode: %v", err)
+	}
+	fmt.Fprintf(os.Stderr, "%-20s conc=%-3d rps=%.0f p50=%dus p99=%dus max=%dus errs=%d\n",
+		*scenario, *concurrency, out.RPS, out.LatencyP50Micros, out.LatencyP99Micros, out.LatencyMaxMicros, out.ErrorRequests)
+}
+
+func runBenchmark(opts benchmarkOptions) result {
 	runtime.GC()
 	goStart := runtime.NumGoroutine()
 
-	ctx, cancel := context.WithTimeout(context.Background(), *duration)
-	defer cancel()
+	stop := make(chan struct{})
+	timer := time.NewTimer(opts.Duration)
+	defer timer.Stop()
+	go func() {
+		<-timer.C
+		close(stop)
+	}()
 
 	// One client per worker, each pinned to the same unix socket.
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", *socket)
+			return (&net.Dialer{}).DialContext(ctx, "unix", opts.Socket)
 		},
-		MaxIdleConns:        *concurrency * 2,
-		MaxIdleConnsPerHost: *concurrency * 2,
+		MaxIdleConns:        opts.Concurrency * 2,
+		MaxIdleConnsPerHost: opts.Concurrency * 2,
 		IdleConnTimeout:     90 * time.Second,
 	}
 	defer transport.CloseIdleConnections()
@@ -77,6 +109,8 @@ func main() {
 		totalReqs atomic.Int64
 		totalErrs atomic.Int64
 	)
+	errorMu := &sync.Mutex{}
+	errorCounts := make(map[string]int64)
 	statusMu := &sync.Mutex{}
 	statusCounts := make(map[int]int64)
 
@@ -84,21 +118,26 @@ func main() {
 	latencies := make([]int64, 0, 1<<20)
 
 	var wg sync.WaitGroup
-	wg.Add(*concurrency)
+	wg.Add(opts.Concurrency)
 	started := time.Now()
 
-	for i := 0; i < *concurrency; i++ {
+	for i := 0; i < opts.Concurrency; i++ {
 		go func() {
 			defer wg.Done()
 			client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
 			for {
-				if ctx.Err() != nil {
+				select {
+				case <-stop:
 					return
+				default:
 				}
-				req, err := http.NewRequestWithContext(ctx, *method, "http://unix"+*path, nil)
+				req, err := http.NewRequest(opts.Method, "http://unix"+opts.Path, nil)
 				if err != nil {
 					totalErrs.Add(1)
 					totalReqs.Add(1)
+					errorMu.Lock()
+					errorCounts[err.Error()]++
+					errorMu.Unlock()
 					continue
 				}
 				t0 := time.Now()
@@ -106,9 +145,10 @@ func main() {
 				dur := time.Since(t0).Microseconds()
 				totalReqs.Add(1)
 				if err != nil {
-					if !strings.Contains(err.Error(), "context deadline exceeded") {
-						totalErrs.Add(1)
-					}
+					totalErrs.Add(1)
+					errorMu.Lock()
+					errorCounts[err.Error()]++
+					errorMu.Unlock()
 					continue
 				}
 				_, _ = io.Copy(io.Discard, resp.Body)
@@ -146,14 +186,15 @@ func main() {
 	goEnd := runtime.NumGoroutine()
 
 	out := result{
-		Scenario:         *scenario,
-		Socket:           *socket,
-		Method:           *method,
-		Path:             *path,
-		Concurrency:      *concurrency,
+		Scenario:         opts.Scenario,
+		Socket:           opts.Socket,
+		Method:           opts.Method,
+		Path:             opts.Path,
+		Concurrency:      opts.Concurrency,
 		DurationSeconds:  elapsed.Seconds(),
 		TotalRequests:    totalReqs.Load(),
 		ErrorRequests:    totalErrs.Load(),
+		ErrorCounts:      errorCounts,
 		StatusCodeCounts: statusCounts,
 		RPS:              float64(totalReqs.Load()) / elapsed.Seconds(),
 		LatencyP50Micros: p(0.50),
@@ -164,10 +205,5 @@ func main() {
 		GoroutinesEnd:    goEnd,
 	}
 
-	enc := json.NewEncoder(os.Stdout)
-	if err := enc.Encode(out); err != nil {
-		log.Fatalf("encode: %v", err)
-	}
-	fmt.Fprintf(os.Stderr, "%-20s conc=%-3d rps=%.0f p50=%dus p99=%dus max=%dus errs=%d\n",
-		*scenario, *concurrency, out.RPS, out.LatencyP50Micros, out.LatencyP99Micros, out.LatencyMaxMicros, out.ErrorRequests)
+	return out
 }

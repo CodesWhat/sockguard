@@ -22,19 +22,21 @@ through a fast path.
 
 ## Setup
 
-- **Hardware:** Apple M4 Pro, 14 cores, macOS 25.4.
-- **Go:** 1.26.2.
-- **Run date:** 2026-05-14 (against `feat/v1.0-prep` HEAD; effectively v0.8.1 + the v1.0-prep rename / dep / quality commits).
-- **Sockguard:** current branch HEAD at the time of the run (built from
-  `app/cmd/sockguard`). Config at
+- **Hardware:** Apple M4 Pro, 14 cores, macOS 26.5.
+- **Go:** 1.26.3.
+- **Run date:** 2026-05-25.
+- **Sockguard:** app code at `8aed5dd` plus the benchmark-harness updates in
+  this changeset, built from `app/cmd/sockguard`. Config at
   [`benchmarks/config.yaml`](benchmarks/config.yaml) — allows `GET /_ping` and
   `GET /containers/json`, denies everything else by default-deny rule with
   `response.deny_verbosity: minimal`, access log disabled, health endpoint
   disabled.
 - **Wollomatic:** `github.com/wollomatic/socket-proxy` installed via
-  `go install`. Config passed via flags in `benchmarks/run.sh`: `-allowGET`
-  regex matching `/_ping$|/containers/json$`, no `-allowPOST` (so every POST
-  is denied by default, matching sockguard's posture).
+  `go install` at
+  `v0.0.0-20260518091831-61fc4e8da2d1`. Config passed via flags in
+  `benchmarks/run.sh`: `-allowGET` regex matching
+  `/_ping$|/containers/json$`, no `-allowPOST` (so every POST is denied by
+  default, matching sockguard's posture).
 - **Upstream:** a tiny Go mock Docker daemon
   ([`benchmarks/cmd/mockdocker`](benchmarks/cmd/mockdocker/main.go)) listening
   on a loopback unix socket, serving three endpoints:
@@ -46,7 +48,9 @@ through a fast path.
   ([`benchmarks/cmd/loadgen`](benchmarks/cmd/loadgen/main.go)) that pins a
   persistent `http.Client` per worker to the unix socket under test. Measures
   p50/p90/p99/max latency, RPS, error counts, and goroutine growth. Emits
-  one JSON line per scenario.
+  one JSON line per scenario. The run timer stops launching new requests but
+  lets already-started requests finish, so benchmark-window shutdown is not
+  counted as a client-observed error.
 - **Scenarios:** 3 endpoints × 3 concurrency levels (10, 50, 200) × 20s each,
   with a 2 s warmup against sockguard before the real runs so connection
   pools are primed. Baseline ("no proxy") runs hit the mock directly to
@@ -58,24 +62,24 @@ network RTT.
 
 ## Results
 
-Full JSON output at
-[`benchmarks/results.jsonl`](benchmarks/results.jsonl). Summary below.
+The harness writes full JSON output to `benchmarks/results.jsonl`, which is
+ignored by git. Summary below.
 
 ### Allow path — `GET /_ping`
 
 | Concurrency | Baseline (direct) | Sockguard | Wollomatic |
 |---|---|---|---|
-| 10  | 104.2k rps, p50 82µs  | 30.9k rps, p50 262µs  | 19.1k rps, p50 462µs  |
-| 50  | 169.1k rps, p50 193µs | 42.3k rps, p50 866µs  | 33.1k rps, p50 1312µs |
-| 200 | 221.3k rps, p50 516µs | 56.9k rps, p50 2352µs | 44.7k rps, p50 3807µs |
+| 10  | 110.8k rps, p50 79µs  | 33.9k rps, p50 249µs  | 25.7k rps, p50 356µs  |
+| 50  | 216.1k rps, p50 157µs | 52.5k rps, p50 696µs  | 36.9k rps, p50 1173µs |
+| 200 | 251.3k rps, p50 428µs | 65.8k rps, p50 1995µs | 57.5k rps, p50 2885µs |
 
 ### Allow path — `GET /containers/json`
 
 | Concurrency | Baseline (direct) | Sockguard | Wollomatic |
 |---|---|---|---|
-| 10  | 101.3k rps, p50 84µs  | 24.7k rps, p50 356µs  | 18.3k rps, p50 484µs  |
-| 50  | 175.4k rps, p50 187µs | 37.9k rps, p50 1085µs | 31.0k rps, p50 1399µs |
-| 200 | 217.4k rps, p50 527µs | 47.6k rps, p50 3590µs | 42.4k rps, p50 4076µs |
+| 10  | 109.1k rps, p50 80µs  | 26.8k rps, p50 343µs  | 25.5k rps, p50 358µs  |
+| 50  | 219.2k rps, p50 156µs | 41.6k rps, p50 1001µs | 36.8k rps, p50 1174µs |
+| 200 | 247.4k rps, p50 437µs | 54.3k rps, p50 3036µs | 58.1k rps, p50 2867µs |
 
 ### Deny path — `POST /exec/x/start`
 
@@ -85,59 +89,50 @@ semantics, same effect.
 
 | Concurrency | Baseline (direct 204) | Sockguard (403) | Wollomatic (405) |
 |---|---|---|---|
-| 10  | 104.8k rps, p50 87µs  | 95.3k rps,  p50 89µs  | 81.4k rps,  p50 102µs |
-| 50  | 192.2k rps, p50 199µs | 194.3k rps, p50 174µs | 172.7k rps, p50 190µs |
-| 200 | 232.2k rps, p50 623µs | 230.0k rps, p50 482µs | 226.7k rps, p50 513µs |
+| 10  | 112.6k rps, p50 82µs  | 104.0k rps, p50 83µs  | 110.4k rps, p50 79µs  |
+| 50  | 226.1k rps, p50 175µs | 216.4k rps, p50 160µs | 213.4k rps, p50 159µs |
+| 200 | 259.8k rps, p50 543µs | 247.0k rps, p50 421µs | 247.7k rps, p50 427µs |
 
 ### Errors
 
 Across all 18 proxy runs (3 scenarios × 3 concurrencies × 2 proxies):
 
 - **Sockguard:** 0 non-2xx/403 responses, 0 client-observed errors.
-- **Wollomatic:** **1,497 spurious `502 Bad Gateway` responses** at
-  `concurrency=200` on the allow-path scenarios (1,031 on `/_ping`, 466 on
-  `/containers/json`) — roughly 0.08 % of requests on those scenarios. Plus
-  487 client-observed errors on the deny path at `concurrency=200`. Likely
-  upstream connection-pool exhaustion under sustained concurrency; the mock
-  daemon is healthy and sockguard against the same upstream on the same run
-  saw zero such errors. Not a reason to switch proxies, but a useful
-  operational data point.
+- **Wollomatic:** 314 spurious `502 Bad Gateway` responses at
+  `concurrency=200` on the allow-path scenarios (28 on `/_ping`, 286 on
+  `/containers/json`) plus 46 client-observed dial errors on `/_ping`
+  (`connect: connection refused`). That is a small fraction of the sustained
+  200-way run, but it is still a useful operational signal: the same mock
+  daemon and the same load generator saw zero Sockguard errors.
 
 ## What the numbers say
 
-1. **Sockguard now leads wollomatic on every scenario.** On allow paths,
-   sockguard is meaningfully faster — 22-62 % higher RPS and 12-43 % lower
-   p50 latency depending on concurrency, widening at low concurrency where
-   per-request overhead dominates. On the deny path, sockguard is 1-17 %
-   ahead in RPS with p50 latency consistently equal or lower. The v0.8.x
-   hot-path work (method-keyed inspector dispatch, lock-free
-   `sockguard_inflight_requests` gauge, `sync.Map` rate-limit buckets,
-   lock-free `metrics.Registry` between observe and scrape) shows up
-   directly in these numbers — compared with the prior recorded numbers
-   the same hardware now runs ~35-50 % more RPS through the sockguard
-   allow path.
-2. **Both proxies add ~4-5× allow-path overhead over direct upstream.**
+1. **Sockguard leads most allow-path scenarios, with a tighter race at
+   concurrency 200.** On `GET /_ping`, Sockguard is 14-42 % ahead of
+   Wollomatic in RPS and has lower p50 latency at every concurrency. On
+   `GET /containers/json`, Sockguard is ahead at concurrency 10 and 50;
+   Wollomatic edges ahead by about 7 % at concurrency 200 on this run.
+2. **Deny-path performance is effectively tied.** Wollomatic is ahead at
+   concurrency 10, Sockguard is narrowly ahead at concurrency 50, and the
+   200-way run is a wash. Both proxies short-circuit denied requests without
+   forwarding to upstream, which is the behavior that matters for a hardened
+   default-deny config.
+3. **Both proxies add ~4-5× allow-path overhead over direct upstream.**
    This is the cost of a full Go `httputil.ReverseProxy` chain with rule
    evaluation, access-log meta, and request-body inspection plumbing. It
    is not a bug, and it is not unique to sockguard. If you need
    near-zero overhead you want HAProxy; if you need rules, you want a
-   Go-based proxy — and on this benchmark sockguard is faster than
-   wollomatic on every measured scenario.
-3. **Deny is cheaper than allow.** Both proxies short-circuit without
-   dialing upstream, so denied requests run at or near direct-upstream
-   throughput. This is the expected behavior for a default-deny proxy and
-   is reassuring for hardened configs where most traffic is refused.
+   Go-based proxy.
 4. **Sockguard has a cleaner error profile under load.** Zero non-2xx/3xx
    beyond the expected 403 denies, across 20 s × 9 sockguard scenarios.
-   Wollomatic's 1,500-ish 502 responses + 487 client errors at
-   `concurrency=200` are a reminder that operational stability under
-   burst concurrency matters as much as peak RPS.
+   Wollomatic's 314 `502` responses plus 46 client-side dial failures at
+   `concurrency=200` are a reminder that operational stability under burst
+   concurrency matters as much as peak RPS.
 
 This is *not* a "sockguard wins everything" story; both proxies pay the
-same Go reverse-proxy overhead and both deny paths short-circuit
-correctly. But on this run sockguard is the faster of the two same-class
-Go proxies on every scenario, with a cleaner error profile under
-sustained 200-way concurrency.
+same Go reverse-proxy overhead and both deny paths short-circuit correctly.
+On this run Sockguard is the cleaner and usually faster same-class Go proxy,
+while Wollomatic wins one high-concurrency allow-path row.
 
 ## What this does NOT measure
 
@@ -162,7 +157,8 @@ sustained 200-way concurrency.
 ```bash
 # 1. Install wollomatic/socket-proxy (optional — the harness skips it if
 #    /tmp/socket-proxy is missing, but then the comparison table is empty).
-GOBIN=/tmp go install github.com/wollomatic/socket-proxy/cmd/socket-proxy@latest
+GOBIN=/tmp go install \
+  github.com/wollomatic/socket-proxy/cmd/socket-proxy@v0.0.0-20260518091831-61fc4e8da2d1
 
 # 2. Run the benchmark. Default duration is 20 s per scenario; pass an
 #    override as the first argument (Go time.Duration syntax) for a faster
@@ -179,5 +175,6 @@ temporary directory that is cleaned up on exit; log files for each process
 are captured in `benchmarks/sockguard.log`, `benchmarks/wollomatic.log`, and
 `benchmarks/mockdocker.log` for debugging.
 
-No external dependencies, no Docker daemon required, no containers. The
-whole harness is stdlib Go.
+No Docker daemon required, no containers. The Sockguard/mockdocker/loadgen
+harness is stdlib Go; the Wollomatic binary is optional and pinned above for
+the comparison run.
