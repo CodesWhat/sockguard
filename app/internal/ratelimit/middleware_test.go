@@ -52,12 +52,14 @@ func TestMiddleware_RateLimit_AllowAndDeny(t *testing.T) {
 	reg := metrics.NewRegistry()
 	sampler, stop := NewAuditSampler()
 	defer stop()
+	clk := newFixedClock(time.Unix(0, 0))
 
 	opts := MiddlewareOptions{
 		Profiles: map[string]ProfileOptions{
 			"ci": {Rate: &RateOptions{TokensPerSecond: 100, Burst: 2}},
 		},
 		ResolveProfile: resolveProfileFn("ci"),
+		Now:            clk.Now,
 	}
 	h := mustMiddleware(t, newTestLogger(), reg, sampler, opts)(okHandler)
 
@@ -164,6 +166,7 @@ func TestMiddleware_ConcurrencyCap_AllowAndDeny(t *testing.T) {
 func TestMiddleware_AnonymousClientID(t *testing.T) {
 	t.Parallel()
 	reg := metrics.NewRegistry()
+	clk := newFixedClock(time.Unix(0, 0))
 
 	// Requests with empty profile are bucketed under _anonymous.
 	opts := MiddlewareOptions{
@@ -171,6 +174,7 @@ func TestMiddleware_AnonymousClientID(t *testing.T) {
 			AnonymousClientID: {Rate: &RateOptions{TokensPerSecond: 100, Burst: 1}},
 		},
 		ResolveProfile: resolveProfileFn(""), // empty → anonymous
+		Now:            clk.Now,
 	}
 	h := mustMiddleware(t, newTestLogger(), reg, nil, opts)(okHandler)
 
@@ -220,6 +224,7 @@ func TestMiddleware_DeniedRateRequestNotCountedAsInflight(t *testing.T) {
 	reg := metrics.NewRegistry()
 	sampler, stop := NewAuditSampler()
 	defer stop()
+	clk := newFixedClock(time.Unix(0, 0))
 
 	opts := MiddlewareOptions{
 		Profiles: map[string]ProfileOptions{
@@ -229,6 +234,7 @@ func TestMiddleware_DeniedRateRequestNotCountedAsInflight(t *testing.T) {
 			},
 		},
 		ResolveProfile: resolveProfileFn("ci"),
+		Now:            clk.Now,
 	}
 
 	h := mustMiddleware(t, newTestLogger(), reg, sampler, opts)(okHandler)
@@ -260,12 +266,14 @@ func TestMiddleware_DeniedRateRequestNotCountedAsInflight(t *testing.T) {
 func TestMiddleware_BurstZeroDefaultsToRate(t *testing.T) {
 	t.Parallel()
 	reg := metrics.NewRegistry()
+	clk := newFixedClock(time.Unix(0, 0))
 	opts := MiddlewareOptions{
 		Profiles: map[string]ProfileOptions{
 			// Burst=0 → defaults to TokensPerSecond=2 in compileProfile.
 			"ci": {Rate: &RateOptions{TokensPerSecond: 2, Burst: 0}},
 		},
 		ResolveProfile: resolveProfileFn("ci"),
+		Now:            clk.Now,
 	}
 	h := mustMiddleware(t, newTestLogger(), reg, nil, opts)(okHandler)
 
@@ -395,6 +403,7 @@ func TestMiddleware_EndpointCost_MethodFilter(t *testing.T) {
 func TestMiddleware_EndpointCost_UnmatchedFallsBackToOne(t *testing.T) {
 	t.Parallel()
 	reg := metrics.NewRegistry()
+	clk := newFixedClock(time.Unix(0, 0))
 
 	opts := MiddlewareOptions{
 		Profiles: map[string]ProfileOptions{
@@ -409,6 +418,7 @@ func TestMiddleware_EndpointCost_UnmatchedFallsBackToOne(t *testing.T) {
 			},
 		},
 		ResolveProfile: resolveProfileFn("ci"),
+		Now:            clk.Now,
 	}
 	h := mustMiddleware(t, newTestLogger(), reg, nil, opts)(okHandler)
 
@@ -431,6 +441,7 @@ func TestMiddleware_EndpointCost_UnmatchedFallsBackToOne(t *testing.T) {
 func TestMiddleware_EndpointCost_FirstMatchWins(t *testing.T) {
 	t.Parallel()
 	reg := metrics.NewRegistry()
+	clk := newFixedClock(time.Unix(0, 0))
 
 	// Two overlapping rules: the first (cost=10) is matched, even though the
 	// second (cost=1) also matches /build. Order in declaration is authoritative.
@@ -448,6 +459,7 @@ func TestMiddleware_EndpointCost_FirstMatchWins(t *testing.T) {
 			},
 		},
 		ResolveProfile: resolveProfileFn("ci"),
+		Now:            clk.Now,
 	}
 	h := mustMiddleware(t, newTestLogger(), reg, nil, opts)(okHandler)
 
@@ -546,12 +558,14 @@ func TestMiddleware_RolloutMode_RateLimitPassesThrough(t *testing.T) {
 			reg := metrics.NewRegistry()
 			sampler, stop := NewAuditSampler()
 			defer stop()
+			clk := newFixedClock(time.Unix(0, 0))
 
 			opts := MiddlewareOptions{
 				Profiles: map[string]ProfileOptions{
 					"ci": {Rate: &RateOptions{TokensPerSecond: 100, Burst: 1}},
 				},
 				ResolveProfile: resolveProfileFn("ci"),
+				Now:            clk.Now,
 			}
 			reached := 0
 			h := mustMiddleware(t, newTestLogger(), reg, sampler, opts)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

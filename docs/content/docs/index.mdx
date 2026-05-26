@@ -58,7 +58,7 @@ volumes:
   sockguard-socket:
 ```
 
-> The published image runs as UID 65532 (Chainguard `nonroot`) inside the container. On stock Docker hosts where `/var/run/docker.sock` is owned by the `docker` group you may need a `group_add: [docker]` override or a matching GID. The meaningful hardening levers are the proxy policy, `read_only`, dropped capabilities, `no-new-privileges`, and your runtime's seccomp/AppArmor/SELinux defaults.
+> The published image runs as UID 65532 (Chainguard `nonroot`) inside the container. On stock Docker hosts where `/var/run/docker.sock` is owned by the `docker` group you may need a `group_add` override with the socket's numeric group ID or a matching `user:` override. The meaningful hardening levers are the proxy policy, `read_only`, dropped capabilities, `no-new-privileges`, and your runtime's seccomp/AppArmor/SELinux defaults.
 
 > `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` is only there to preserve broad `CONTAINERS=1` / `IMAGES=1` compatibility, including raw archive/export and log/attach streaming endpoints. Remove it once you switch to tighter YAML list/inspect rules.
 
