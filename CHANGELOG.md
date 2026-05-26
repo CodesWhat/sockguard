@@ -9,12 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Enabled the CodeQL `actions` language in `ci-verify.yml`.** The CodeQL job now analyzes `actions` alongside `go` and `javascript-typescript`, so every PR and main-branch push gets workflow-level static analysis for the patterns CodeQL flags here (script injection via `${{ github.event.* }}` in `run:` blocks, missing `permissions:` blocks, unpinned third-party actions, unsafe `actions/checkout` ref handling, etc.). Closes the "configuration available but not running" gap on the `actions` language. Today's workflows already pass — risky context refs (`github.event.inputs.*`) are routed through `env:` rather than interpolated into shell — so the analysis is preventive, not corrective.
 - **Bumped `golang.org/x/crypto`, `golang.org/x/net`, and `golang.org/x/sys` to clear 20 OSSF Scorecard / Go vuln-DB advisories** ([code-scanning alert #8](https://github.com/CodesWhat/sockguard/security/code-scanning/8)). `golang.org/x/crypto` v0.50.0 → v0.52.0 (GO-2026-5005, GO-2026-5006, GO-2026-5013..21, GO-2026-5023, GO-2026-5033 — 13 advisories), `golang.org/x/net` v0.53.0 → v0.55.0 (GO-2026-5025..30 — 6 advisories), `golang.org/x/sys` v0.43.0 → v0.45.0 (GO-2026-5024). Follow-on bumps from the dependency closure: `golang.org/x/mod` v0.34.0 → v0.35.0, `golang.org/x/term` v0.42.0 → v0.43.0, `golang.org/x/text` v0.36.0 → v0.37.0. `govulncheck ./...` confirmed all 20 were unreachable from sockguard's code (they sit behind sigstore-go / cert-transparency / fsnotify call paths none of our packages reach), so this is supply-chain hygiene rather than a runtime exposure fix. Post-bump scan is clean: `govulncheck` now reports zero vulnerabilities (was 20 unreachable, 0 reachable).
 - **Bumped transitive test-only dependencies to clear Grype Go-module CVEs.** `github.com/jackc/pgx/v5` v5.7.5 → v5.9.2 (GHSA-9jj7-4m8r-rfcm critical, GHSA-j88v-2chj-qfwx low) and the `go.opentelemetry.io/otel` family v1.42.0 → v1.43.0, which moves `otel/sdk` past the GHSA-hfvc-g4fc-pqhx (high) fix in v1.43.0. Both modules are reached only through `.test` packages of sigstore-go's dependency tree — `go mod why` confirms the final hop into each is via a `*.test` package — so neither is compiled into the sockguard binary, and the Grype container-image scan was already clean. The bumps keep the source-directory module graph CVE-free regardless.
 
 ### Quality
 
+- **Hardened the synthetic benchmark load generator.** The run timer now stops
+  launching new requests while allowing in-flight requests to finish, preventing
+  end-of-window context cancellation from being misreported as proxy errors.
+  The loadgen JSON also includes per-error-string counts for future anomaly
+  triage, with a Unix-socket regression test covering the shutdown behavior.
+- **De-flaked rate-limit middleware denial tests.** Tests that assert a token
+  bucket stays exhausted now inject the existing fixed clock instead of relying
+  on real time with high refill rates, where a slow package run could refill the
+  bucket and turn the expected `429` into a valid `200`.
 - **De-flaked two CI tests that depended on wall-clock timing.** `TestBucket_CASStress` (`internal/ratelimit`) previously ran 32 goroutines for a 100 ms wall-clock window and derived its expected grant count from the *actual* elapsed time — under the race detector on a loaded CI runner the workers could not drain the token bucket fast enough, so refilled tokens spilled past the burst cap and the lower-bound assertion tripped (`under-granted: expected ≥ 176.8, got 151.0`). It now runs against a frozen clock with `burst` held below `maxCASRetries` and asserts an *exact* grant total — a stronger, fully deterministic check of the lock-free CAS loop (catches both lost-update over-grants and dropped grants). `TestRefillSyncBoundaryLenEqualsThreshold` (`internal/logging`) raced the request-ID generator's background refill goroutine during setup; it now builds the generator directly with no `run()` goroutine, the same approach `TestNextSignalRefillBoundary` already documents. Both are test-only — the proxy binary is unaffected.
+
+### Docs
+
+- **Refreshed the public README to match the fuller CodesWhat project structure.** Adds Sockguard-scoped status/funding badges, a collapsed recent-updates section, supported-profile and documentation indexes, collapsed comparison/migration/roadmap sections, star history, and the same sponsor links used by drydock while also updating the stale v1.0 soak language now that v1.0.0 has shipped.
+- **Reran and refreshed `BENCHMARKS.md` for the current checkout.** The report now records the 2026-05-25 Apple M4 Pro / Go 1.26.3 run, pins the Wollomatic comparator version used for reproduction, removes the stale pre-v1.0 baseline warning, and updates the results and interpretation to match the new numbers.
+- **Audited the remaining public docs for stale post-v1.0 references.** Aligned README and security-policy runtime-user language with the current non-root image, made Docker-socket group guidance numeric-GID based, refreshed the bug-report version placeholder, generalized release-tarball verification examples, clarified the admin policy-version `503` wording, and made the generated benchmark log ignore list complete.
 
 ## [1.0.0] - 2026-05-20
 
