@@ -45,10 +45,11 @@ docker run -d \
 
 Sockguard runs as UID 65532 (Chainguard `nonroot`) inside the container.
 On stock Docker hosts where `/var/run/docker.sock` is owned by the `docker`
-group you may need a `--group-add docker` override or a matching GID. The
-hardening knobs that matter in practice are `--read-only`, `--cap-drop=ALL`,
-`--security-opt no-new-privileges:true`, and your runtime's
-seccomp/AppArmor/SELinux defaults.
+group you may need `--group-add <docker-socket-gid>` or a matching `--user`
+override. For Compose, add `group_add: ["<docker-socket-gid>"]` to the
+Sockguard service. The hardening knobs that matter in practice are
+`--read-only`, `--cap-drop=ALL`, `--security-opt no-new-privileges:true`, and
+your runtime's seccomp/AppArmor/SELinux defaults.
 
 ### Binary
 

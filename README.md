@@ -10,6 +10,7 @@
 
 <p align="center">
   <a href="https://github.com/CodesWhat/sockguard/releases"><img src="https://img.shields.io/github/v/release/CodesWhat/sockguard?include_prereleases&label=release" alt="Release"></a>
+  <a href="https://github.com/CodesWhat/sockguard/releases"><img src="https://img.shields.io/github/downloads/CodesWhat/sockguard/total?label=downloads" alt="Release downloads"></a>
   <a href="https://github.com/CodesWhat/sockguard/pkgs/container/sockguard"><img src="https://img.shields.io/badge/GHCR-image-2ea44f?logo=github&logoColor=white" alt="GHCR"></a>
   <a href="https://hub.docker.com/r/codeswhat/sockguard"><img src="https://img.shields.io/docker/pulls/codeswhat/sockguard?logo=docker&logoColor=white&label=Docker+Hub" alt="Docker Hub pulls"></a>
   <a href="https://quay.io/repository/codeswhat/sockguard"><img src="https://img.shields.io/badge/Quay.io-image-ee0000?logo=redhat&logoColor=white" alt="Quay.io"></a>
@@ -28,14 +29,18 @@
   <br>
   <a href="https://github.com/CodesWhat/sockguard/discussions"><img src="https://img.shields.io/github/discussions/CodesWhat/sockguard?style=flat" alt="Discussions"></a>
   <a href="https://github.com/CodesWhat/sockguard"><img src="https://img.shields.io/github/repo-size/CodesWhat/sockguard?style=flat" alt="Repo size"></a>
+  <img src="https://komarev.com/ghpvc/?username=CodesWhat-sockguard&label=repo+views&style=flat" alt="Repo views">
 </p>
 
 <p align="center">
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-integration.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/quality-integration.yml/badge.svg?branch=main" alt="Integration"></a>
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-fuzz-nightly.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/quality-fuzz-nightly.yml/badge.svg?branch=main" alt="Nightly fuzz"></a>
+  <br>
   <a href="https://goreportcard.com/report/github.com/CodesWhat/sockguard/app"><img src="https://goreportcard.com/badge/github.com/CodesWhat/sockguard/app" alt="Go Report Card"></a>
   <a href="https://pkg.go.dev/github.com/CodesWhat/sockguard"><img src="https://pkg.go.dev/badge/github.com/CodesWhat/sockguard.svg" alt="Go Reference"></a>
-  <br>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/CodesWhat/sockguard"><img src="https://img.shields.io/ossf-scorecard/github.com/CodesWhat/sockguard?label=openssf+scorecard&style=flat" alt="OpenSSF Scorecard"></a>
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/security-grype-weekly.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/security-grype-weekly.yml/badge.svg?branch=main" alt="Weekly Grype"></a>
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-mutation-monthly.yml"><img src="https://img.shields.io/badge/mutation%20score-96%25-brightgreen?logo=go&logoColor=white" alt="Mutation score"></a>
 </p>
 
@@ -46,22 +51,24 @@
 - [📖 Documentation](https://getsockguard.com/docs)
 - [🌐 Website](https://getsockguard.com)
 - [🚀 Quick Start](#quick-start)
+- [🆕 Recent Updates](#recent-updates)
 - [🤔 Why Sockguard](#why-sockguard)
 - [✨ Features](#features)
-- [⚖️ Comparison](#comparison)
+- [🔌 Supported Profiles](#supported-profiles)
+- [⚖️ Feature Comparison](#feature-comparison)
 - [⚙️ Configuration](#configuration)
-- [📈 Observability](https://getsockguard.com/docs/observability)
 - [🔧 CLI](#cli)
-- [🔄 Migrating from Tecnativa](#migrating-from-tecnativa)
+- [🔄 Migration](#migration)
 - [🗺️ Roadmap](#roadmap)
+- [📖 Documentation](#documentation)
+- [⭐ Star History](#star-history)
 - [🛠️ Built With](#built-with)
-- [🤝 Contributing](#contributing)
-- [🔒 Security](#security)
+- [🤝 Community & Support](#community--support)
 
 <hr>
 
 > [!NOTE]
-> **v1.0 soak.** The v1.0 contract is locked — YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names will not change before v1.0 ships. Active 0.x releases are bug fixes and operational polish only; the v1.0 tag will be cut once the locked surface has soaked in production deployments. See the [changelog](CHANGELOG.md) for the latest breaking changes (collapsed into the `Unreleased` section).
+> **v1.0 is released.** The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the latest release notes and the current `Unreleased` work.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -108,13 +115,20 @@ If you run sockguard directly on a host, keep `SOCKGUARD_LISTEN_ADDRESS=127.0.0.
 <details>
 <summary>Container runtime hardening</summary>
 
-Sockguard runs as root inside the container by default so it can open `/var/run/docker.sock` on stock Docker hosts without `user` or `group_add` overrides. For this class of tool, the meaningful hardening levers are the proxy policy, a read-only root filesystem, dropped capabilities, `no-new-privileges`, and the host runtime's seccomp/AppArmor/SELinux confinement.
+Sockguard runs as UID 65532 (Chainguard `nonroot`) inside the container. On stock Linux Docker hosts where `/var/run/docker.sock` is `0660 root:docker`, add the container to the socket's numeric group ID with `group_add` or run Sockguard as a user/group that can open the socket. For this class of tool, the meaningful hardening levers are the proxy policy, a read-only root filesystem, dropped capabilities, `no-new-privileges`, and the host runtime's seccomp/AppArmor/SELinux confinement.
 
 The examples in this README already opt into the container-level controls sockguard actually benefits from:
 
 - `read_only: true`
 - `cap_drop: [ALL]`
 - `security_opt: ["no-new-privileges:true"]`
+
+On Linux, one common pattern is:
+
+```yaml
+group_add:
+  - "${DOCKER_GID:?set this to the numeric group owner of /var/run/docker.sock}"
+```
 
 Keep Docker's default seccomp profile or replace it with a stricter custom profile via `security_opt`. On AppArmor or SELinux hosts, keep the runtime's default confinement enabled or replace it with a stricter host policy. If the host runs rootless dockerd, a compromised Docker API client inherits the daemon's reduced authority instead of full host root.
 
@@ -194,6 +208,23 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 
 <hr>
 
+<h2 align="center" id="recent-updates">🆕 Recent Updates</h2>
+
+<details>
+<summary><strong>Latest release highlights</strong></summary>
+
+- **v1.0.0 shipped on 2026-05-20** with the public proxy contract locked: YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are now under the v1.x compatibility promise.
+- **12 bundled presets** cover drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, and GitLab Runner.
+- **Expanded QA hardening** added proxy-vs-daemon differential tests, real-dockerd preset conformance, fuzz corpora for routing and visibility, weekly soak testing, and TLS edge-case coverage.
+- **Supply-chain verification** covers release images across GHCR, Docker Hub, and Quay.io using the same cosign commands documented for operators.
+- **Current Unreleased work** is test-only hardening: transitive test dependency bumps for cleaner Grype source scans and deterministic replacements for two wall-clock-sensitive CI tests.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full itemized history.
+
+</details>
+
+<hr>
+
 <h2 align="center" id="why-sockguard">🤔 Why Sockguard</h2>
 
 The Docker socket is **root access to your host**. Every container with socket access can escape containment, mount the host filesystem, and pivot to other containers. Yet tools like Traefik, Portainer, and drydock need socket access to function.
@@ -231,7 +262,29 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 
 <hr>
 
-<h2 align="center" id="comparison">⚖️ Comparison</h2>
+<h2 align="center" id="supported-profiles">🔌 Supported Profiles</h2>
+
+### Bundled presets (12)
+
+[drydock](app/configs/drydock.yaml) · [Traefik](app/configs/traefik.yaml) · [Portainer](app/configs/portainer.yaml) · [Watchtower](app/configs/watchtower.yaml) · [Homepage](app/configs/homepage.yaml) · [Homarr](app/configs/homarr.yaml) · [Diun](app/configs/diun.yaml) · [Autoheal](app/configs/autoheal.yaml) · [read-only](app/configs/readonly.yaml) · [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) · [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml) · [GitLab Runner](app/configs/gitlab-runner.yaml)
+
+### Ready-to-run compose examples
+
+[drydock](examples/compose/drydock/) · [Traefik](examples/compose/traefik/) · [Portainer](examples/compose/portainer/) · [Watchtower](examples/compose/watchtower/) · [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/) · [GitLab Runner](examples/compose/gitlab-runner/) · [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/)
+
+Each example pairs a downstream Docker API consumer with a `sockguard.yaml` overlay and a short README covering audience, exposed API surface, and security tradeoffs.
+
+### Policy surfaces
+
+Rules can cover method/path filters, body-aware write inspection, read-side redaction and visibility, per-client profile selection, rate limits, concurrency caps, owner-label isolation, rollout modes, hot reload, signed policy bundles, and admin validation.
+
+<hr>
+
+<a id="comparison"></a>
+<h2 align="center" id="feature-comparison">⚖️ Feature Comparison</h2>
+
+<details>
+<summary><strong>How does Sockguard compare to other Docker socket proxies?</strong></summary>
 
 How we stack up against other Docker socket proxies:
 
@@ -253,7 +306,9 @@ How we stack up against other Docker socket proxies:
 | YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ✅ |
 
-`11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules and run non-root ourselves, but we additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Where we go further is body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction. CetusGuard, in turn, can dial a remote Docker daemon over backend TLS today — our upstream is the local socket, with remote TCP upstreams on the v1.1 roadmap.
+`11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules, but additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Where we go further is body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction. CetusGuard, in turn, can dial a remote Docker daemon over backend TLS today — our upstream is the local socket, with remote TCP upstreams on the v1.1 roadmap.
+
+</details>
 
 <hr>
 
@@ -310,9 +365,7 @@ Beyond these essentials, every knob is documented in full on the docs site rathe
 - **[Observability](https://getsockguard.com/docs/observability)** — Prometheus metrics, access/audit log fields, and trace/log correlation.
 - **[Security model](https://getsockguard.com/docs/security)** — the defense-in-depth layers and known limitations.
 
-Preset configs included for [drydock](app/configs/drydock.yaml), [Traefik](app/configs/traefik.yaml), [Portainer](app/configs/portainer.yaml), [Watchtower](app/configs/watchtower.yaml), [Homepage](app/configs/homepage.yaml), [Homarr](app/configs/homarr.yaml), [Diun](app/configs/diun.yaml), [Autoheal](app/configs/autoheal.yaml), [read-only](app/configs/readonly.yaml), [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) (admission-gates CIS Section 5 runtime controls — see [the dedicated guide](https://getsockguard.com/docs/cis-docker-benchmark)), [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml), and [GitLab Runner (Docker executor)](app/configs/gitlab-runner.yaml).
-
-Ready-to-run compose stacks pairing sockguard with a downstream consumer live under [`examples/compose/`](examples/compose/) — one directory per stack with its own `docker-compose.yml`, `sockguard.yaml` overlay, and `README.md` (audience, exposed surface, security tradeoffs). Currently shipped: [drydock](examples/compose/drydock/), [Traefik](examples/compose/traefik/), [Portainer](examples/compose/portainer/), [Watchtower](examples/compose/watchtower/), [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/), [GitLab Runner](examples/compose/gitlab-runner/), and a generic [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/) you can drop in front of any Docker consumer.
+Bundled presets and ready-to-run compose stacks are summarized in [Supported Profiles](#supported-profiles).
 
 <hr>
 
@@ -334,7 +387,11 @@ Output is text by default or JSON via `-o json`.
 
 <hr>
 
-<h2 align="center" id="migrating-from-tecnativa">🔄 Migrating from Tecnativa</h2>
+<a id="migrating-from-tecnativa"></a>
+<h2 align="center" id="migration">🔄 Migration</h2>
+
+<details>
+<summary><strong>Migrating from Tecnativa or LinuxServer socket proxies</strong></summary>
 
 Replace the image — your current Tecnativa env surface maps over directly, with two explicit security acknowledgements for the non-loopback plaintext TCP listener plus a third for broad archive/export or log/attach streaming parity:
 
@@ -355,13 +412,20 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
        - POST=0
 ```
 
+LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the broad section toggles Sockguard consumes. For tighter policies, migrate from broad env vars to YAML rules plus body-inspection settings.
+
+</details>
+
 <hr>
 
 <h2 align="center" id="roadmap">🗺️ Roadmap</h2>
 
-**v1.0 contract is locked** — the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names visible today are what v1.0 will ship. Soak period is underway; tag follows once production deployments validate the surface. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+<details>
+<summary><strong>Version themes & highlights</strong></summary>
 
-### Shipped through v0.8.1
+**v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+
+### Shipped in v1.0.0
 
 | Track | Surface |
 |---|---|
@@ -385,41 +449,81 @@ Replace the image — your current Tecnativa env surface maps over directly, wit
 | Multi-host (v1.1) | Remote Docker TCP upstreams, multi-upstream fan-out, remote daemon health checking, connection pooling, automatic failover |
 | Extensibility (v1.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
 
-<hr>
-
-<h2 align="center" id="built-with">🛠️ Built With</h2>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/Go-00ADD8?logo=go&logoColor=white" alt="Go">
-  <img src="https://img.shields.io/badge/Cobra-00ADD8?logo=go&logoColor=white" alt="Cobra">
-  <img src="https://img.shields.io/badge/Viper-00ADD8?logo=go&logoColor=white" alt="Viper">
-  <img src="https://img.shields.io/badge/Wolfi-4A4A55?logo=chainguard&logoColor=white" alt="Wolfi">
-  <img src="https://img.shields.io/badge/Cosign-FFC107?logo=sigstore&logoColor=black" alt="Cosign">
-  <br>
-  <img src="https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=white" alt="Next.js">
-  <img src="https://img.shields.io/badge/Fumadocs-000000?logo=nextdotjs&logoColor=white" alt="Fumadocs">
-  <img src="https://img.shields.io/badge/Tailwind-06B6D4?logo=tailwindcss&logoColor=white" alt="Tailwind">
-  <img src="https://img.shields.io/badge/Turborepo-EF4444?logo=turborepo&logoColor=white" alt="Turborepo">
-  <img src="https://img.shields.io/badge/Biome-60A5FA?logo=biome&logoColor=white" alt="Biome">
-</p>
+</details>
 
 <hr>
 
-<h2 align="center" id="contributing">🤝 Contributing</h2>
+<h2 align="center" id="documentation">📖 Documentation</h2>
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Issues, ideas, and pull requests welcome.
-
-For local fuzz triage, run `scripts/local-fuzz.sh --suite ci --fuzztime 2m`. Use `--suite ultra` for every fuzzer, `--timeout` to set the Go watchdog explicitly, and `--docker --platform linux/amd64` when you want closer GitHub Actions parity.
+| Resource | Link |
+| --- | --- |
+| Website | [getsockguard.com](https://getsockguard.com/) |
+| Docs | [getsockguard.com/docs](https://getsockguard.com/docs) |
+| Getting Started | [Getting Started](https://getsockguard.com/docs/getting-started) |
+| Configuration | [Configuration](https://getsockguard.com/docs/configuration) |
+| Presets | [Presets](https://getsockguard.com/docs/presets) |
+| CIS Docker Benchmark | [CIS Docker Benchmark](https://getsockguard.com/docs/cis-docker-benchmark) |
+| Admin API | [Admin API](https://getsockguard.com/docs/admin) |
+| Observability | [Observability](https://getsockguard.com/docs/observability) |
+| Security Model | [Security Model](https://getsockguard.com/docs/security) |
+| Image Verification | [Image Verification](https://getsockguard.com/docs/verification) |
+| Changelog | [`CHANGELOG.md`](CHANGELOG.md) |
+| Contributing | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| Security Policy | [`SECURITY.md`](SECURITY.md) |
+| Issues | [GitHub Issues](https://github.com/CodesWhat/sockguard/issues) |
+| Discussions | [GitHub Discussions](https://github.com/CodesWhat/sockguard/discussions) |
 
 <hr>
 
-<h2 align="center" id="security">🔒 Security</h2>
+<a id="star-history"></a>
 
-- **Responsible disclosure** — see [SECURITY.md](SECURITY.md) for scope, supported versions, and how to report a vulnerability privately.
-- **Image verification** — every release is cosign-signed via GitHub Actions OIDC. Before running a sockguard image in production, verify it with the canonical invocation in the [image verification guide](docs/content/docs/verification.mdx).
+<div align="center">
+  <a href="https://star-history.com/#CodesWhat/sockguard&Date">
+    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=CodesWhat/sockguard&type=Date" />
+  </a>
+</div>
+
+---
 
 <div align="center">
 
-Built by <a href="https://codeswhat.com">CodesWhat</a> · Licensed under <a href="LICENSE">Apache-2.0</a>
+[![SemVer](https://img.shields.io/badge/semver-2.0.0-blue)](https://semver.org/)
+[![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=fff)](https://www.conventionalcommits.org/)
+[![Keep a Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-E05735)](https://keepachangelog.com/)
+
+### Built With
+
+[![Go 1.26](https://img.shields.io/badge/Go_1.26-00ADD8?logo=go&logoColor=fff)](https://go.dev/)
+[![Cobra](https://img.shields.io/badge/Cobra-00ADD8?logo=go&logoColor=fff)](https://github.com/spf13/cobra)
+[![Viper](https://img.shields.io/badge/Viper-00ADD8?logo=go&logoColor=fff)](https://github.com/spf13/viper)
+[![fsnotify](https://img.shields.io/badge/fsnotify-00ADD8?logo=go&logoColor=fff)](https://github.com/fsnotify/fsnotify)
+[![Sigstore](https://img.shields.io/badge/Sigstore-FFC107?logo=sigstore&logoColor=000)](https://www.sigstore.dev/)
+[![Wolfi](https://img.shields.io/badge/Wolfi-4A4A55?logo=chainguard&logoColor=fff)](https://edu.chainguard.dev/open-source/wolfi/overview/)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=fff)](https://www.docker.com/)
+[![GoReleaser](https://img.shields.io/badge/GoReleaser-00ADD8?logo=go&logoColor=fff)](https://goreleaser.com/)
+<br>
+[![Next.js](https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=fff)](https://nextjs.org/)
+[![Fumadocs](https://img.shields.io/badge/Fumadocs-000000?logo=nextdotjs&logoColor=fff)](https://fumadocs.dev/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-06B6D4?logo=tailwindcss&logoColor=fff)](https://tailwindcss.com/)
+[![Turborepo](https://img.shields.io/badge/Turborepo-EF4444?logo=turborepo&logoColor=fff)](https://turbo.build/repo)
+[![Biome](https://img.shields.io/badge/Biome_2-60a5fa?logo=biome&logoColor=fff)](https://biomejs.dev/)
+
+### Community & Support
+
+Issues, ideas, and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), use [SECURITY.md](SECURITY.md) for private vulnerability disclosure, and use [GitHub Discussions](https://github.com/CodesWhat/sockguard/discussions) for design questions.
+
+For local fuzz triage, run `scripts/local-fuzz.sh --suite ci --fuzztime 2m`. Use `--suite ultra` for every fuzzer, `--timeout` to set the Go watchdog explicitly, and `--docker --platform linux/amd64` when you want closer GitHub Actions parity.
+
+Every release image is cosign-signed via GitHub Actions OIDC. Before running a sockguard image in production, verify it with the canonical invocation in the [image verification guide](docs/content/docs/verification.mdx).
+
+**[Apache-2.0 License](LICENSE)**
+
+Built by <a href="https://codeswhat.com">CodesWhat</a>
+
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/codeswhat)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/codeswhat)
+[![Sponsor](https://img.shields.io/badge/Sponsor-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/CodesWhat)
+
+<a href="#sockguard">Back to top</a>
 
 </div>

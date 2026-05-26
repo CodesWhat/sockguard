@@ -124,11 +124,11 @@ cosign-signed. The release workflow uploads a detached signature
 
 ```bash
 cosign verify-blob \
-  --certificate "sockguard-v1.0.0.tar.gz.pem" \
-  --signature   "sockguard-v1.0.0.tar.gz.sig" \
+  --certificate "sockguard-v<TAG>.tar.gz.pem" \
+  --signature   "sockguard-v<TAG>.tar.gz.sig" \
   --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
-  "sockguard-v1.0.0.tar.gz"
+  "sockguard-v<TAG>.tar.gz"
 ```
 
 Same interpretation as the image verify: a clean exit code is a
