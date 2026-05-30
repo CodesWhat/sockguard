@@ -159,7 +159,7 @@ GET /admin/policy/version
 |--------|---------|
 | `200 OK` | Snapshot available |
 | `405 Method Not Allowed` | Non-GET method; `Allow: GET` header is set |
-| `503 Service Unavailable` | Version not yet published (should not occur post-startup) |
+| `503 Service Unavailable` | Policy snapshot not initialized yet (should not occur after startup) |
 
 ### Response body
 

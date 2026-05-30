@@ -104,7 +104,7 @@ The 11notes environment variables configure the process, not the policy, so they
 | `SOCKET_PROXY_DOCKER_SOCKET` | `upstream.socket` (env: `SOCKGUARD_UPSTREAM_SOCKET`) |
 | `SOCKET_PROXY_VOLUME` | `listen.socket` (env: `SOCKGUARD_LISTEN_SOCKET`) |
 | `SOCKET_PROXY_HTTP_LISTEN_IP` | `listen.address` — mTLS is required for any non-loopback bind |
-| `SOCKET_PROXY_UID` / `SOCKET_PROXY_GID` | Set via the container runtime `user:`; Sockguard's image already runs non-root |
+| `SOCKET_PROXY_UID` / `SOCKET_PROXY_GID` | Sockguard's image already runs as UID 65532; set container runtime `user:` / `group_add` only when you need to match the host Docker socket's numeric UID/GID |
 | `DEBUG` | `log.level: debug` (env: `SOCKGUARD_LOG_LEVEL`) |
 
 Once migrated, tighten the broad `GET /**` allow into the specific list/inspect endpoints your client actually needs, then re-enable individual writes with body inspection instead of leaving the whole API read-only.

@@ -169,10 +169,10 @@ Sockguard's container image is built on [Wolfi](https://www.chainguard.dev/chain
 
 Sockguard runs as UID 65532 (Chainguard `nonroot`) inside the container.
 On stock Docker hosts where `/var/run/docker.sock` is owned by the `docker`
-group you may need a `group_add: [docker]` override or a matching GID. For a
-Docker socket proxy, the real security frontier is what the daemon will accept
-through the proxy, not the UID the proxy process reports after it has already
-opened the upstream socket.
+group you may need a `group_add` override with the socket's numeric group ID
+or a matching `user:` / supplemental group. For a Docker socket proxy, the real
+security frontier is what the daemon will accept through the proxy, not the UID
+the proxy process reports after it has already opened the upstream socket.
 
 The runtime controls that matter are:
 
