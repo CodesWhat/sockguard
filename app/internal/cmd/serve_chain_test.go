@@ -774,9 +774,9 @@ func newFullProxyChainHandler(t *testing.T, socketPath string, rules []config.Ru
 	collector := &testhelp.CollectingHandler{}
 	logger := testhelp.NewTeeLogger(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}), collector)
 
-	var handler http.Handler = proxy.New(socketPath, logger)
+	var handler http.Handler = proxy.NewWithOptions(socketPath, logger, proxy.Options{})
 	handler = proxy.HijackHandler(socketPath, logger, handler)
-	handler = filter.Middleware(compiled, logger)(handler)
+	handler = filter.MiddlewareWithOptions(compiled, logger, filter.Options{})(handler)
 	handler = logging.AccessLogMiddleware(logger)(handler)
 
 	return handler, &logBuf, collector

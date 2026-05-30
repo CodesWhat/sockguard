@@ -112,7 +112,7 @@ func HijackHandler(upstreamSocket string, logger *slog.Logger, next http.Handler
 	})
 }
 
-// IsHijackEndpoint returns true if the request targets a Docker API endpoint
+// isHijackEndpoint returns true if the request targets a Docker API endpoint
 // that upgrades to a raw TCP stream via 101 Switching Protocols.
 //
 // Matched endpoints:
@@ -120,7 +120,7 @@ func HijackHandler(upstreamSocket string, logger *slog.Logger, next http.Handler
 //   - POST /exec/{id}/start
 //
 // Docker API version prefixes (/v1.XX/) are stripped before matching.
-func IsHijackEndpoint(method, path string) bool {
+func isHijackEndpoint(method, path string) bool {
 	return isHijackEndpointNormalized(method, filter.NormalizePath(path))
 }
 

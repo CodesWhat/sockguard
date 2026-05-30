@@ -178,13 +178,9 @@ type Limiter struct {
 	wg     sync.WaitGroup
 }
 
-// NewLimiter creates a Limiter with the given rate parameters and real-clock
-// time source. It starts a background eviction goroutine; the caller MUST
-// invoke (*Limiter).Stop on shutdown to halt it.
-func NewLimiter(tokensPerSecond, burst float64) *Limiter {
-	return newLimiterWithClock(tokensPerSecond, burst, time.Now)
-}
-
+// newLimiterWithClock creates a Limiter with the given rate parameters and an
+// injectable time source. It starts a background eviction goroutine; the caller
+// MUST invoke (*Limiter).Stop on shutdown to halt it.
 func newLimiterWithClock(tokensPerSecond, burst float64, now nowFn) *Limiter {
 	l := &Limiter{
 		tokensPerSecond: tokensPerSecond,
@@ -233,11 +229,6 @@ func (l *Limiter) evict(ttl time.Duration) {
 		}
 		return true
 	})
-}
-
-// Allow is shorthand for AllowN(clientID, 1) — withdraws a single token.
-func (l *Limiter) Allow(clientID string) (ok bool, retryAfter int) {
-	return l.AllowN(clientID, 1)
 }
 
 // AllowN checks whether clientID may proceed at the given token cost.

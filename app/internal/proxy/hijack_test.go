@@ -213,7 +213,7 @@ func TestIsHijackEndpoint(t *testing.T) {
 	for _, tt := range tests {
 		name := tt.method + " " + tt.path
 		t.Run(name, func(t *testing.T) {
-			got := IsHijackEndpoint(tt.method, tt.path)
+			got := isHijackEndpoint(tt.method, tt.path)
 			if got != tt.want {
 				t.Errorf("IsHijackEndpoint(%q, %q) = %v, want %v", tt.method, tt.path, got, tt.want)
 			}
@@ -233,12 +233,12 @@ func TestIsHijackEndpointDoesNotAllocateForHijackPaths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if !IsHijackEndpoint(tt.method, tt.path) {
+			if !isHijackEndpoint(tt.method, tt.path) {
 				t.Fatalf("IsHijackEndpoint(%q, %q) = false, want true", tt.method, tt.path)
 			}
 
 			allocs := testing.AllocsPerRun(1000, func() {
-				IsHijackEndpoint(tt.method, tt.path)
+				isHijackEndpoint(tt.method, tt.path)
 			})
 
 			if allocs > 0 {
@@ -2788,7 +2788,7 @@ func TestHijackConstantsArePinned(t *testing.T) {
 // docker events/logs/attach, and a shortened idle timeout would prematurely
 // recycle pooled connections.
 func TestNewProxyTransportTunings(t *testing.T) {
-	rp := New("/tmp/does-not-matter.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	rp := NewWithOptions("/tmp/does-not-matter.sock", slog.New(slog.NewTextHandler(io.Discard, nil)), Options{})
 
 	if got, want := rp.FlushInterval, time.Duration(-1); got != want {
 		t.Errorf("FlushInterval = %v, want %v (immediate flush for streaming)", got, want)

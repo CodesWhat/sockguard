@@ -966,11 +966,11 @@ func TestOwnershipSetDenied(t *testing.T) {
 	// already stamped meta.NormPath by the time ownership fires.
 	meta := &logging.RequestMeta{}
 	req := httptest.NewRequest(http.MethodGet, "/containers/abc123/json", nil)
-	logging.SetDenied(&metaWriter{meta: meta}, req, "nope", nil)
+	logging.SetDeniedWithCode(&metaWriter{meta: meta}, req, "", "nope", nil)
 	if meta.Decision != "deny" || meta.Reason != "nope" {
 		t.Fatalf("meta = %#v, want deny/nope", meta)
 	}
-	logging.SetDenied(httptest.NewRecorder(), req, "ignored", nil)
+	logging.SetDeniedWithCode(httptest.NewRecorder(), req, "", "ignored", nil)
 }
 
 func TestIdentifierHelpers(t *testing.T) {

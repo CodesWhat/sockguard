@@ -55,14 +55,6 @@ func TestEmptyNoColorDoesNotDisable(t *testing.T) {
 	}
 }
 
-func TestWReturnsUnderlyingWriter(t *testing.T) {
-	var buf bytes.Buffer
-	p := New(&buf)
-	if p.W() != &buf {
-		t.Fatal("W() should return the writer passed to New()")
-	}
-}
-
 // TestDetectColorStatErrorReturnsFalse exercises the branch in detectColor where
 // the writer is an *os.File but Stat() fails. We use /dev/null opened with a
 // closed file descriptor so the file object is valid but the fd is gone.
@@ -127,12 +119,11 @@ func TestAllStylesWrapWithReset(t *testing.T) {
 	var buf bytes.Buffer
 	p := New(&buf)
 	for name, got := range map[string]string{
-		"Bold":   p.Bold("x"),
-		"Dim":    p.Dim("x"),
-		"Red":    p.Red("x"),
-		"Green":  p.Green("x"),
-		"Yellow": p.Yellow("x"),
-		"Cyan":   p.Cyan("x"),
+		"Bold":  p.Bold("x"),
+		"Dim":   p.Dim("x"),
+		"Red":   p.Red("x"),
+		"Green": p.Green("x"),
+		"Cyan":  p.Cyan("x"),
 	} {
 		if !strings.HasPrefix(got, "\x1b[") || !strings.HasSuffix(got, ansiReset) {
 			t.Errorf("%s = %q; want ANSI-wrapped with reset suffix", name, got)

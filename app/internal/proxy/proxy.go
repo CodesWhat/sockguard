@@ -24,11 +24,6 @@ type Options struct {
 	ModifyResponse func(*http.Response) error
 }
 
-// New creates a reverse proxy that forwards requests to the upstream Docker socket.
-func New(upstreamSocket string, logger *slog.Logger) *httputil.ReverseProxy {
-	return NewWithOptions(upstreamSocket, logger, Options{})
-}
-
 // NewWithOptions creates a reverse proxy that forwards requests to the upstream
 // Docker socket and optionally enforces response-side policy.
 func NewWithOptions(upstreamSocket string, logger *slog.Logger, opts Options) *httputil.ReverseProxy {

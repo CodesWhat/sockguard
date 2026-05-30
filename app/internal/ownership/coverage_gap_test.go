@@ -215,7 +215,7 @@ func TestSetDeniedWithNormalizeFillsNormPath(t *testing.T) {
 	t.Parallel()
 	meta := &logging.RequestMeta{}
 	req := httptest.NewRequest(http.MethodGet, "/v1.45/containers/json", nil)
-	logging.SetDenied(&metaWriter{meta: meta}, req, "test reason", func(path string) string {
+	logging.SetDeniedWithCode(&metaWriter{meta: meta}, req, "", "test reason", func(path string) string {
 		return "/containers/json"
 	})
 	if meta.NormPath != "/containers/json" {
@@ -227,7 +227,7 @@ func TestSetDeniedNilMeta(t *testing.T) {
 	t.Parallel()
 	// Plain recorder has no RequestMeta — should be a no-op
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
-	logging.SetDenied(httptest.NewRecorder(), req, "ignored", nil)
+	logging.SetDeniedWithCode(httptest.NewRecorder(), req, "", "ignored", nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ func TestSetDeniedPopulatesDecisionAndReason(t *testing.T) {
 	t.Parallel()
 	meta := &logging.RequestMeta{}
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
-	logging.SetDenied(&metaWriter{meta: meta}, req, "test deny reason", nil)
+	logging.SetDeniedWithCode(&metaWriter{meta: meta}, req, "", "test deny reason", nil)
 
 	if meta.Decision != "deny" {
 		t.Fatalf("Decision = %q, want deny", meta.Decision)

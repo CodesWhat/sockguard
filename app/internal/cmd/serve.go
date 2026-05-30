@@ -395,10 +395,6 @@ type serveHandlerBuild struct {
 	ClientProfiles map[string]filter.Policy
 }
 
-func buildServeHandlerWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
-	return buildServeHandlerChainWithRuntime(b)
-}
-
 // buildServeHandlerChainWithRuntime is the production / reload entry point:
 // it returns both the composed http.Handler and a teardown closure that stops
 // every chain-scoped goroutine (the rate-limit sampler and per-profile
@@ -413,8 +409,8 @@ func buildServeHandlerWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
 // pass nil; in that case the layer is skipped.
 //
 // Tests that don't care about teardown should continue calling
-// buildServeHandler / buildServeHandlerWithRuntime which discard it — the
-// goroutines die with the test process anyway.
+// buildServeHandler which discards it — the goroutines die with the test
+// process anyway.
 func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
 	clientProfiles, err := buildServeClientProfiles(b.Cfg)
 	if err != nil {

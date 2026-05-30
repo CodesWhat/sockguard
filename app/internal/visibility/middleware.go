@@ -598,13 +598,6 @@ func visibilityLabelFilterKey(normPath string) string {
 	return "label"
 }
 
-// requestVisible is the original label-selector-only check. Kept for backward
-// compatibility with existing tests that call it directly.
-func requestVisible(ctx context.Context, normPath string, selectors []compiledSelector, deps visibilityDeps) (bool, error) {
-	policy := &compiledPolicy{selectors: selectors}
-	return requestVisibleWithPolicy(ctx, normPath, policy, deps)
-}
-
 // requestVisibleWithPolicy checks the full policy (label selectors AND name/
 // image patterns) for a single-resource inspect or log path. Returns true if
 // the resource should be visible, false if it should be hidden.

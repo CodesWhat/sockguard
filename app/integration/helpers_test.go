@@ -107,7 +107,7 @@ func newIntegrationProxyHandlerWithOptions(t *testing.T, socketPath string, rule
 
 	logger := newIntegrationLogger()
 
-	var handler http.Handler = proxy.New(socketPath, logger)
+	var handler http.Handler = proxy.NewWithOptions(socketPath, logger, proxy.Options{})
 	handler = proxy.HijackHandler(socketPath, logger, handler)
 	handler = ownership.Middleware(socketPath, logger, ownerOpts)(handler)
 	handler = filter.MiddlewareWithOptions(compiled, logger, filterOpts)(handler)

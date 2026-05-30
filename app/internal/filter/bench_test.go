@@ -162,7 +162,7 @@ func TestBenchmarkResponseWriterReset(t *testing.T) {
 func BenchmarkMiddlewareAllow(b *testing.B) {
 	b.ReportAllocs()
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	handler := Middleware(benchRules, benchLogger)(next)
+	handler := MiddlewareWithOptions(benchRules, benchLogger, Options{})(next)
 
 	req := httptest.NewRequest("GET", "/v1.45/containers/json", nil)
 	w := newBenchmarkResponseWriter()
@@ -176,7 +176,7 @@ func BenchmarkMiddlewareAllow(b *testing.B) {
 func BenchmarkMiddlewareDeny(b *testing.B) {
 	b.ReportAllocs()
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
-	handler := Middleware(benchRules, benchLogger)(next)
+	handler := MiddlewareWithOptions(benchRules, benchLogger, Options{})(next)
 
 	req := httptest.NewRequest("DELETE", "/containers/abc123", nil)
 	w := newBenchmarkResponseWriter()
@@ -194,7 +194,7 @@ func BenchmarkMiddlewareAllowLargePayload(b *testing.B) {
 			b.Fatalf("copy request body: %v", err)
 		}
 	})
-	handler := Middleware(benchRules, benchLogger)(next)
+	handler := MiddlewareWithOptions(benchRules, benchLogger, Options{})(next)
 	payload := bytes.Repeat([]byte("sockguard-payload-"), 1<<15)
 	w := newBenchmarkResponseWriter()
 
@@ -210,7 +210,7 @@ func BenchmarkMiddlewareDenyLargePayload(b *testing.B) {
 	next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		b.Fatal("deny path should not reach next handler")
 	})
-	handler := Middleware(benchRules, benchLogger)(next)
+	handler := MiddlewareWithOptions(benchRules, benchLogger, Options{})(next)
 	payload := bytes.Repeat([]byte("sockguard-payload-"), 1<<15)
 	w := newBenchmarkResponseWriter()
 

@@ -37,7 +37,7 @@ type fuzzEchoResponse struct {
 
 func FuzzProxyHeadersAndBody(f *testing.F) {
 	socketPath := startFuzzEchoUpstream(f)
-	handler := New(socketPath, testLogger())
+	handler := NewWithOptions(socketPath, testLogger(), Options{})
 
 	f.Add("trace", "alpha", []byte("hello"))
 	f.Add("contenttype", "application/json", []byte(`{"name":"demo"}`))

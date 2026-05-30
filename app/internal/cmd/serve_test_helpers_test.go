@@ -30,7 +30,7 @@ func indexAfter(s, sub string) int {
 
 func buildServeHandler(t *testing.T, cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
 	t.Helper()
-	handler, teardown := buildServeHandlerWithRuntime(serveHandlerBuild{
+	handler, teardown := buildServeHandlerChainWithRuntime(serveHandlerBuild{
 		Cfg:         cfg,
 		Logger:      logger,
 		AuditLogger: auditLogger,
