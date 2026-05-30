@@ -1,12 +1,12 @@
-name: "⚡ Quality: Go Benchmarks & Extended Fuzzing"
+name: "⚡ Quality: Go Benchmarks"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '⚡ Quality: Benchmarks & Fuzzing — Monthly schedule' ||
-    format('⚡ Quality: Benchmarks & Fuzzing — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && '⚡ Quality: Benchmarks — Monthly schedule' ||
+    format('⚡ Quality: Benchmarks — Manual by {0}', github.actor)
   }}
 
-# Monthly quality signal: run extended fuzz testing and benchmarks
-# to catch regressions and edge cases that short CI fuzz runs miss.
+# Monthly quality signal: run benchmarks to catch performance regressions.
+# Deep fuzzing lives in quality-fuzz-monthly.yml (every fuzzer, 1h each).
 on:
   workflow_dispatch:
   schedule:
@@ -60,79 +60,4 @@ jobs:
             echo '```'
             grep -E '^Benchmark' app/benchmark-results.txt | head -50 || echo "No benchmark results"
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  extended-fuzz:
-    name: "🔀 Quality: Extended Fuzz (${{ matrix.target }})"
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    continue-on-error: true  # advisory — review failures, don't block
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: FuzzPathMatch
-            package: ./internal/filter/
-          - target: FuzzGlobToRegex
-            package: ./internal/filter/
-          - target: FuzzNormalizePath
-            package: ./internal/filter/
-          - target: FuzzCompileRule
-            package: ./internal/filter/
-          - target: FuzzProxyHeadersAndBody
-            package: ./internal/proxy/
-
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
-        with:
-          egress-policy: audit
-
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
-        with:
-          go-version-file: app/go.mod
-
-      - name: Restore fuzz corpus cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
-        with:
-          path: app/internal/**/testdata/fuzz
-          key: fuzz-corpus-${{ matrix.target }}-${{ github.ref_name }}
-          restore-keys: |
-            fuzz-corpus-${{ matrix.target }}-
-
-      - name: Run extended fuzz (5 minutes)
-        working-directory: app
-        run: |
-          # Keep the monthly extended-fuzz invocation aligned with the other
-          # fuzz tiers: skip normal tests, but keep a finite Go watchdog so
-          # hung inputs fail with a stack dump.
-          go test -run='^$' \
-            -fuzz="^${{ matrix.target }}$" \
-            -fuzztime=5m \
-            -timeout=15m \
-            "${{ matrix.package }}"
-
-      - name: Upload fuzz corpus
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
-          path: app/internal/**/testdata/fuzz/${{ matrix.target }}
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Summarize
-        if: always()
-        run: |
-          {
-            echo "### Extended Fuzz: ${{ matrix.target }}"
-            echo "- Duration: 5 minutes"
-            echo "- Package: ${{ matrix.package }}"
-            echo "- Mode: advisory (non-blocking)"
           } >> "$GITHUB_STEP_SUMMARY"

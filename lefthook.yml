@@ -127,17 +127,19 @@ pre-push:
             "/docs/node_modules/postcss",
             "/website/node_modules/postcss",
           ];
+          // Match on package + path only, not pinned versions: Next vendors its
+          // own postcss under next/node_modules and the workspaces hoist a newer
+          // one, so npm dedupe always reports this churn. Hardcoding the versions
+          // here meant every postcss bump silently broke the guard until the
+          // literals were updated by hand.
           const isIgnoredPostcssOverrideDrift = (entry) => {
             const from = entry.from ?? entry;
             const to = entry.to ?? entry;
             const isNextOverrideDowngrade = from.name === "postcss" &&
               to.name === "postcss" &&
               from.path?.endsWith(postcssOverridePath) &&
-              to.path?.endsWith(postcssOverridePath) &&
-              from.version === "8.5.10" &&
-              to.version === "8.4.31";
+              to.path?.endsWith(postcssOverridePath);
             const isWorkspacePostcssHoist = entry.name === "postcss" &&
-              entry.version === "8.5.10" &&
               workspacePostcssPaths.some((path) => entry.path?.endsWith(path));
             return isNextOverrideDowngrade || isWorkspacePostcssHoist;
           };
