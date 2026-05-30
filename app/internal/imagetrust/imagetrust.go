@@ -13,10 +13,13 @@
 //   - Keyless: Fulcio-issued cert chain with issuer + SAN matching.
 //     sigstore-go verifies the Fulcio chain and transparency log inclusion.
 //
-// The caller (filter/container_create.go) is responsible for resolving
-// the image reference to a digest and building a Sigstore bundle before
-// calling Verify. In production that bundle comes from the OCI registry's
-// cosign-artifact layer; in tests it is synthesized using VirtualSigstore.
+// The caller (filter/container_create.go) is responsible for resolving the
+// image reference to a digest and building a Sigstore bundle before calling
+// Verify. In production that resolution and bundle reconstruction is done by
+// internal/imagefetch, which fetches the cosign signatures from the OCI
+// registry and binds each to the resolved manifest digest; in tests the bundle
+// is synthesized using VirtualSigstore. Use VerifyCandidatesWithMode to apply
+// mode semantics over the set of fetched signatures.
 package imagetrust
 
 import (
@@ -30,6 +33,7 @@ import (
 	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/root"
+	"github.com/sigstore/sigstore-go/pkg/tuf"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
 
@@ -192,6 +196,31 @@ type VerifyOutcome struct {
 	ElapsedMS  int64
 }
 
+// Candidate is a single fetched signature to try against the configured
+// verifiers: the hex sha256 digest of the signed payload plus the reconstructed
+// sigstore bundle. The internal/imagefetch package produces these from the OCI
+// registry; the image passes if any candidate verifies.
+type Candidate struct {
+	DigestHex string
+	Entity    verify.SignedEntity
+}
+
+// LoadLiveTrustedRoot fetches the Sigstore public-good trust root via TUF, for
+// use as Config.TrustedMaterial when keyless identities are configured. It
+// performs network I/O and requires a writable TUF cache directory, so callers
+// should invoke it once at startup and fail closed if it errors. The returned
+// material refreshes itself in the background.
+//
+// Keyed-only verification never needs this; only call it when keyless
+// identities are present.
+func LoadLiveTrustedRoot() (root.TrustedMaterial, error) {
+	tr, err := root.NewLiveTrustedRoot(tuf.DefaultOptions())
+	if err != nil {
+		return nil, fmt.Errorf("fetch sigstore trust root via TUF: %w", err)
+	}
+	return tr, nil
+}
+
 // New builds and returns a Verifier from a Config. If cfg.Mode is ModeOff it
 // returns a no-op verifier that always passes without any network calls.
 func New(cfg Config) (Verifier, error) {
@@ -226,6 +255,58 @@ func VerifyWithMode(ctx context.Context, v Verifier, cfg Config, logger *slog.Lo
 			logger.WarnContext(ctx, "image trust verification failed (warn mode — request allowed)",
 				"image_ref", imageRef,
 				"digest", digestHex,
+				"error", failMsg,
+				"elapsed_ms", elapsed,
+			)
+		}
+		return VerifyOutcome{Allowed: true, Verifier: "warn-bypass", FailureMsg: failMsg, ElapsedMS: elapsed}
+	default: // ModeEnforce
+		return VerifyOutcome{Allowed: false, Verifier: "denied", FailureMsg: failMsg, ElapsedMS: elapsed}
+	}
+}
+
+// VerifyCandidatesWithMode applies mode semantics over the set of signatures
+// fetched for an image:
+//   - ModeOff: returns Allowed=true without checking anything.
+//   - otherwise: tries each candidate; the first that verifies wins. If none
+//     verify (or none were fetched), the failure is reported per mode — warn
+//     logs and allows, enforce denies.
+//
+// fetchErr is the error from the fetch step (e.g. unsigned image, registry
+// unreachable); it is surfaced in the failure message when no candidates are
+// present so the operator sees why verification could not proceed.
+func VerifyCandidatesWithMode(ctx context.Context, v Verifier, cfg Config, logger *slog.Logger, imageRef string, candidates []Candidate, fetchErr error) VerifyOutcome {
+	start := time.Now()
+
+	if cfg.Mode == ModeOff {
+		return VerifyOutcome{Allowed: true, Verifier: "off", ElapsedMS: time.Since(start).Milliseconds()}
+	}
+
+	var verifyErrs []string
+	for _, c := range candidates {
+		if err := v.Verify(ctx, imageRef, c.DigestHex, c.Entity); err != nil {
+			verifyErrs = append(verifyErrs, err.Error())
+			continue
+		}
+		return VerifyOutcome{Allowed: true, Verifier: "verified", ElapsedMS: time.Since(start).Milliseconds()}
+	}
+
+	var failMsg string
+	switch {
+	case len(candidates) == 0 && fetchErr != nil:
+		failMsg = fetchErr.Error()
+	case len(candidates) == 0:
+		failMsg = fmt.Sprintf("no signatures found for %s", imageRef)
+	default:
+		failMsg = fmt.Sprintf("no configured signer matched %s: %s", imageRef, strings.Join(verifyErrs, "; "))
+	}
+
+	elapsed := time.Since(start).Milliseconds()
+	switch cfg.Mode {
+	case ModeWarn:
+		if logger != nil {
+			logger.WarnContext(ctx, "image trust verification failed (warn mode — request allowed)",
+				"image_ref", imageRef,
 				"error", failMsg,
 				"elapsed_ms", elapsed,
 			)

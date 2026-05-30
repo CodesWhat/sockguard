@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/imagefetch"
 	"github.com/codeswhat/sockguard/internal/imagetrust"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
@@ -53,6 +54,13 @@ type KeylessOptions struct {
 // can inject a stub without a real registry or Rekor connection.
 type imageVerifier interface {
 	Verify(ctx context.Context, imageRef, digestHex string, entity verify.SignedEntity) error
+}
+
+// signatureFetcher resolves an image reference to the set of cosign signature
+// candidates attached to it in the registry. The production implementation is
+// internal/imagefetch.Fetcher; tests inject a stub to avoid registry I/O.
+type signatureFetcher interface {
+	FetchCandidates(ctx context.Context, imageRef string) ([]imagetrust.Candidate, error)
 }
 
 // ContainerCreateOptions configures request-body policy checks for
@@ -126,6 +134,7 @@ type containerCreatePolicy struct {
 
 	// Image trust — non-nil when mode != off.
 	imageTrustVerifier imageVerifier
+	imageFetcher       signatureFetcher
 	imageTrustCfg      imagetrust.Config
 	imageTrustTimeout  time.Duration
 	// imageTrustInitErr holds any error that occurred while building the image
@@ -215,18 +224,35 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	if mode := imagetrust.Mode(opts.ImageTrust.Mode); mode != imagetrust.ModeOff && mode != "" {
 		raw := buildImageTrustRaw(opts.ImageTrust)
 		cfg, err := imagetrust.BuildConfig(raw)
-		if err != nil {
+		switch {
+		case err != nil:
 			p.imageTrustInitErr = fmt.Errorf("image trust policy build failed: %w", err)
-		} else {
-			v, err := imagetrust.New(cfg)
-			if err != nil {
-				p.imageTrustInitErr = fmt.Errorf("image trust verifier construction failed: %w", err)
-			} else {
-				p.imageTrustVerifier = v
-				p.imageTrustCfg = cfg
-				p.imageTrustTimeout = cfg.VerifyTimeout
-				if p.imageTrustTimeout == 0 {
-					p.imageTrustTimeout = imagetrust.VerifyTimeout
+		default:
+			// Keyless verification needs a TUF-backed trust root for the Fulcio
+			// and Rekor public keys. Fetch it once here; a failure (no network,
+			// read-only TUF cache) must fail closed rather than allow unverified
+			// keyless images. Keyed-only configs skip this entirely.
+			if len(cfg.AllowedKeyless) > 0 {
+				tm, tmErr := imagetrust.LoadLiveTrustedRoot()
+				if tmErr != nil {
+					p.imageTrustInitErr = fmt.Errorf("image trust keyless trust root load failed: %w", tmErr)
+				} else {
+					cfg.TrustedMaterial = tm
+				}
+			}
+
+			if p.imageTrustInitErr == nil {
+				v, verr := imagetrust.New(cfg)
+				if verr != nil {
+					p.imageTrustInitErr = fmt.Errorf("image trust verifier construction failed: %w", verr)
+				} else {
+					p.imageTrustVerifier = v
+					p.imageFetcher = imagefetch.NewFetcher()
+					p.imageTrustCfg = cfg
+					p.imageTrustTimeout = cfg.VerifyTimeout
+					if p.imageTrustTimeout == 0 {
+						p.imageTrustTimeout = imagetrust.VerifyTimeout
+					}
 				}
 			}
 		}
@@ -358,7 +384,21 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 			ctx, cancel = context.WithTimeout(ctx, p.imageTrustTimeout)
 			defer cancel()
 		}
-		outcome := imagetrust.VerifyWithMode(ctx, p.imageTrustVerifier, p.imageTrustCfg, logger, imageRef, "", nil)
+		// Fetch the cosign signatures attached to the image in the registry and
+		// reconstruct a verifiable bundle for each, then verify under the
+		// configured mode. A fetch failure (unsigned image, registry
+		// unreachable) is surfaced to the verifier as a verification failure so
+		// enforce mode denies and warn mode logs-and-allows.
+		var (
+			candidates []imagetrust.Candidate
+			fetchErr   error
+		)
+		if p.imageFetcher != nil {
+			candidates, fetchErr = p.imageFetcher.FetchCandidates(ctx, imageRef)
+		} else {
+			fetchErr = fmt.Errorf("image trust misconfigured: no signature fetcher")
+		}
+		outcome := imagetrust.VerifyCandidatesWithMode(ctx, p.imageTrustVerifier, p.imageTrustCfg, logger, imageRef, candidates, fetchErr)
 		if !outcome.Allowed {
 			return fmt.Sprintf("container create denied: image trust verification failed for %s: %s", imageRef, outcome.FailureMsg), nil
 		}

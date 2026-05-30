@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Wired up cosign image-trust verification end to end.** `request_body.container_create.image_trust` previously compiled its keyed/keyless policy but verified against an empty digest and a nil bundle, so `enforce` mode failed every container create closed and `warn` mode logged a permanent bypass — the feature was a no-op. A new `internal/imagefetch` package now resolves the image to its registry manifest digest, discovers the cosign signatures attached to it (classic `sha256-<digest>.sig` tag **and** OCI 1.1 referrers), reconstructs a Sigstore verification bundle from the cosign annotations for each signature, and binds every signature to the resolved digest before handing it to the verifier — so a valid signature for one image can't be transplanted onto another. Keyed (PEM) and keyless (Fulcio + Rekor, with the Sigstore trust root fetched via TUF at startup) paths both verify through the existing sigstore-go stack. `go-containerregistry` and `protobuf-specs` are promoted to direct dependencies. Verification is exercised end to end against an in-memory registry, including tamper, signature-transplant, and unsigned-image rejection.
+
 ### Security
 
 - **Enabled the CodeQL `actions` language in `ci-verify.yml`.** The CodeQL job now analyzes `actions` alongside `go` and `javascript-typescript`, so every PR and main-branch push gets workflow-level static analysis for the patterns CodeQL flags here (script injection via `${{ github.event.* }}` in `run:` blocks, missing `permissions:` blocks, unpinned third-party actions, unsafe `actions/checkout` ref handling, etc.). Closes the "configuration available but not running" gap on the `actions` language. Today's workflows already pass — risky context refs (`github.event.inputs.*`) are routed through `env:` rather than interpolated into shell — so the analysis is preventive, not corrective.

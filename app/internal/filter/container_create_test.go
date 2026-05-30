@@ -1105,6 +1105,26 @@ func (m *ctxRecordingImageVerifier) Verify(ctx context.Context, _, _ string, _ v
 	return m.err
 }
 
+// mockSignatureFetcher stands in for internal/imagefetch.Fetcher so inspect()
+// tests reach the verifier without registry I/O. By default it returns a single
+// dummy candidate so the configured verifier is invoked once.
+type mockSignatureFetcher struct {
+	candidates []imagetrust.Candidate
+	err        error
+	lastRef    string
+}
+
+func (m *mockSignatureFetcher) FetchCandidates(_ context.Context, imageRef string) ([]imagetrust.Candidate, error) {
+	m.lastRef = imageRef
+	return m.candidates, m.err
+}
+
+// oneCandidateFetcher returns a fetcher yielding a single dummy candidate; the
+// stub verifiers ignore the digest/entity, so a placeholder digest is fine.
+func oneCandidateFetcher() *mockSignatureFetcher {
+	return &mockSignatureFetcher{candidates: []imagetrust.Candidate{{DigestHex: "00"}}}
+}
+
 // makeInspectRequest builds a minimal POST /containers/create request with the
 // given JSON body string.
 func makeInspectRequest(t *testing.T, body string) *http.Request {
@@ -1140,6 +1160,7 @@ func TestImageTrust_Enforce_VerifierCalledWithImageRef(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 		imageTrustTimeout:      0,
 	}
@@ -1171,6 +1192,7 @@ func TestImageTrust_Enforce_DeniesOnVerifierError(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
 
@@ -1205,6 +1227,7 @@ func TestImageTrust_Warn_AllowsOnVerifierError(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
 
@@ -1234,6 +1257,7 @@ func TestImageTrust_EmptyImage_DeniedWhenVerifierConfigured(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
 
@@ -1267,6 +1291,7 @@ func TestImageTrust_BodyInspectedWhenVerifierPresent(t *testing.T) {
 		allowDeviceRequests:    true,
 		allowDeviceCgroupRules: true,
 		imageTrustVerifier:     mv,
+		imageFetcher:           oneCandidateFetcher(),
 		imageTrustCfg:          cfg,
 	}
 	body := `{"Image":"registry.example.com/app:v1","HostConfig":{}}`
@@ -1301,6 +1326,7 @@ func TestImageTrust_TimeoutGateRespectsZero(t *testing.T) {
 		mv := &ctxRecordingImageVerifier{}
 		policy := containerCreatePolicy{
 			imageTrustVerifier: mv,
+			imageFetcher:       oneCandidateFetcher(),
 			imageTrustCfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
 			imageTrustTimeout:  0,
 		}
@@ -1320,6 +1346,7 @@ func TestImageTrust_TimeoutGateRespectsZero(t *testing.T) {
 		mv := &ctxRecordingImageVerifier{}
 		policy := containerCreatePolicy{
 			imageTrustVerifier: mv,
+			imageFetcher:       oneCandidateFetcher(),
 			imageTrustCfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
 			imageTrustTimeout:  10 * time.Second,
 		}
