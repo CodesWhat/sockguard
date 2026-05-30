@@ -462,6 +462,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 | Getting Started | [Getting Started](https://getsockguard.com/docs/getting-started) |
 | Configuration | [Configuration](https://getsockguard.com/docs/configuration) |
 | Presets | [Presets](https://getsockguard.com/docs/presets) |
+| Migration | [Migration](https://getsockguard.com/docs/migration) |
 | CIS Docker Benchmark | [CIS Docker Benchmark](https://getsockguard.com/docs/cis-docker-benchmark) |
 | Admin API | [Admin API](https://getsockguard.com/docs/admin) |
 | Observability | [Observability](https://getsockguard.com/docs/observability) |
@@ -514,7 +515,7 @@ Issues, ideas, and pull requests are welcome. Start with [CONTRIBUTING.md](CONTR
 
 For local fuzz triage, run `scripts/local-fuzz.sh --suite ci --fuzztime 2m`. Use `--suite ultra` for every fuzzer, `--timeout` to set the Go watchdog explicitly, and `--docker --platform linux/amd64` when you want closer GitHub Actions parity.
 
-Every release image is cosign-signed via GitHub Actions OIDC. Before running a sockguard image in production, verify it with the canonical invocation in the [image verification guide](docs/content/docs/verification.mdx).
+Every release image is cosign-signed via GitHub Actions OIDC. Before running a sockguard image in production, verify it with the canonical invocation in the [image verification guide](https://getsockguard.com/docs/verification).
 
 **[Apache-2.0 License](LICENSE)**
 

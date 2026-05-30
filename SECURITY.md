@@ -2,9 +2,9 @@
 
 ## Supported Versions
 
-Security fixes are shipped on the **latest release line only**. Now that v1.0
-is tagged we maintain a rolling two-minor-version window (current + one prior
-minor).
+Security fixes are shipped on the **latest release line only**. Currently only
+**v1.0.x** receives patches. Once v1.1 ships, support will follow a rolling
+two-minor-version window (current + one prior minor).
 
 | Version           | Supported          |
 | ----------------- | ------------------ |

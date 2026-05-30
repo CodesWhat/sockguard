@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Reran and refreshed `BENCHMARKS.md` for the current checkout.** The report now records the 2026-05-25 Apple M4 Pro / Go 1.26.3 run, pins the Wollomatic comparator version used for reproduction, removes the stale pre-v1.0 baseline warning, and updates the results and interpretation to match the new numbers.
 - **Audited the remaining public docs for stale post-v1.0 references.** Aligned README and security-policy runtime-user language with the current non-root image, made Docker-socket group guidance numeric-GID based, refreshed the bug-report version placeholder, generalized release-tarball verification examples, clarified the admin policy-version `503` wording, and made the generated benchmark log ignore list complete.
 
+### Fixed
+
+- `scripts/security-testssl.sh` now completes a full TLS scan end-to-end without exiting early (#66).
+
+### Changed
+
+- The landing page now surfaces container image-trust / cosign verification status (#70).
+
 ## [1.0.0] - 2026-05-20
 
 v1.0.0 ships the proxy contract `v1.0.0-rc.2` froze on 2026-05-16. Three small binary deltas land on top: the Go toolchain pin moves from "latest 1.26.x" to a fixed `1.26.3` (clears 17 HIGH stdlib CVEs the 2026-05-18 weekly Grype scan surfaced), `internal/sigverify` no longer silently skips its belt-and-suspenders issuer / SAN re-check when a sigstore-go result returns with a nil certificate, and `github.com/sigstore/sigstore` is bumped from v1.10.5 to v1.10.6 (a cosmetic OAuth success-page template fix in upstream sigstore; no behavior change in policy-bundle or image-trust). Everything else below is non-binary hardening that accumulated on top — new tests, new CI workflows, new policy presets and compose examples, and docs polish.
