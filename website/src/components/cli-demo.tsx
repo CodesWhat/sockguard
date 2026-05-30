@@ -130,7 +130,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("commit")} {"  "}a8c742f
+            {dim("commit")} {"  "}bf59572
           </>
         ),
       },
@@ -139,7 +139,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("built ")} {"  "}2026-05-14T00:00:00Z
+            {dim("built ")} {"  "}2026-05-20T00:00:00Z
           </>
         ),
       },
