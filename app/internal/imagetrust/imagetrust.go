@@ -194,6 +194,11 @@ type VerifyOutcome struct {
 	Verifier   string // "keyed:<fingerprint>" | "keyless:<issuer>/<san>" | "off" | "warn-bypass" | "denied"
 	FailureMsg string
 	ElapsedMS  int64
+	// VerifiedDigest is the resolved image manifest digest ("sha256:<hex>") that
+	// the winning signature vouched for, when verification succeeded against a
+	// fetched candidate. Callers pin the outgoing image reference to this digest
+	// to close the verify→pull TOCTOU. Empty for off/warn-bypass outcomes.
+	VerifiedDigest string
 }
 
 // Candidate is a single fetched signature to try against the configured
@@ -203,6 +208,10 @@ type VerifyOutcome struct {
 type Candidate struct {
 	DigestHex string
 	Entity    verify.SignedEntity
+	// ImageDigest is the resolved image manifest digest ("sha256:<hex>") that
+	// this signature's payload binds to. Surfaced in VerifyOutcome.VerifiedDigest
+	// so the caller can pin the outgoing image reference to the verified digest.
+	ImageDigest string
 }
 
 // LoadLiveTrustedRoot fetches the Sigstore public-good trust root via TUF, for
@@ -288,7 +297,7 @@ func VerifyCandidatesWithMode(ctx context.Context, v Verifier, cfg Config, logge
 			verifyErrs = append(verifyErrs, err.Error())
 			continue
 		}
-		return VerifyOutcome{Allowed: true, Verifier: "verified", ElapsedMS: time.Since(start).Milliseconds()}
+		return VerifyOutcome{Allowed: true, Verifier: "verified", VerifiedDigest: c.ImageDigest, ElapsedMS: time.Since(start).Milliseconds()}
 	}
 
 	var failMsg string

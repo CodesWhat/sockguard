@@ -125,7 +125,7 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 		if err := redactMountObjects(payload, "Mounts"); err != nil {
 			return rejectResponse(err)
 		}
-		if err := redactHostConfigBinds(payload); err != nil {
+		if err := redactHostConfigMountSources(payload); err != nil {
 			return rejectResponse(err)
 		}
 	}
@@ -522,13 +522,20 @@ func (f *Filter) redactContainerSpec(containerSpec map[string]any) error {
 }
 
 func (f *Filter) redactServicePayload(payload map[string]any) error {
-	containerSpec, found, err := nestedMapValue(payload, "Spec", "TaskTemplate", "ContainerSpec")
-	if err != nil {
-		return err
-	}
-	if found {
-		if err := f.redactContainerSpec(containerSpec); err != nil {
+	// A service inspect surfaces both the active Spec and the PreviousSpec (the
+	// spec before the most recent update). Both carry the same ContainerSpec
+	// shape (env, mount sources, secret/config references), so PreviousSpec must
+	// be redacted too — otherwise an update leaves the prior secrets/host paths
+	// readable under PreviousSpec.
+	for _, specKey := range []string{"Spec", "PreviousSpec"} {
+		containerSpec, found, err := nestedMapValue(payload, specKey, "TaskTemplate", "ContainerSpec")
+		if err != nil {
 			return err
+		}
+		if found {
+			if err := f.redactContainerSpec(containerSpec); err != nil {
+				return err
+			}
 		}
 	}
 	if f.opts.RedactNetworkTopology {
@@ -1018,7 +1025,13 @@ func redactMountObjects(payload map[string]any, field string) error {
 	return nil
 }
 
-func redactHostConfigBinds(payload map[string]any) error {
+// redactHostConfigMountSources redacts host-path leaks from a container's
+// HostConfig: both the legacy string Binds ("/host/src:/ctr/dst") and the
+// structured Mounts array (each entry's "Source"). The structured Mounts API
+// (docker run --mount type=bind,source=...) surfaces the host source under
+// HostConfig.Mounts, a distinct field from the top-level runtime Mounts list,
+// so it must be redacted here too or the host path leaks despite RedactMountPaths.
+func redactHostConfigMountSources(payload map[string]any) error {
 	hostConfigValue, ok := payload["HostConfig"]
 	if !ok || hostConfigValue == nil {
 		return nil
@@ -1027,6 +1040,10 @@ func redactHostConfigBinds(payload map[string]any) error {
 	hostConfig, ok := hostConfigValue.(map[string]any)
 	if !ok {
 		return fmt.Errorf("HostConfig has unexpected type %T", hostConfigValue)
+	}
+
+	if err := redactMountObjects(hostConfig, "Mounts"); err != nil {
+		return err
 	}
 
 	bindsValue, ok := hostConfig["Binds"]

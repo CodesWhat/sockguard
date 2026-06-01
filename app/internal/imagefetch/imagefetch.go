@@ -164,6 +164,23 @@ func (f *Fetcher) FetchCandidates(ctx context.Context, imageRef string) ([]image
 	return candidates, nil
 }
 
+// PinnedReference rewrites imageRef (which may carry a mutable tag) to a
+// digest-pinned reference of the form "registry/repo@sha256:<hex>", using the
+// supplied digest ("sha256:<hex>"). Callers use this after a successful trust
+// verification so the reference forwarded to dockerd resolves to exactly the
+// digest that was verified, closing the verify→pull TOCTOU.
+func PinnedReference(imageRef, digest string) (string, error) {
+	ref, err := name.ParseReference(strings.TrimSpace(imageRef), name.WeakValidation)
+	if err != nil {
+		return "", fmt.Errorf("parse image reference %q: %w", imageRef, err)
+	}
+	pinned, err := name.NewDigest(ref.Context().Name()+"@"+strings.TrimSpace(digest), name.WeakValidation)
+	if err != nil {
+		return "", fmt.Errorf("build digest reference for %q: %w", imageRef, err)
+	}
+	return pinned.Name(), nil
+}
+
 // discoverSignatureImages returns the distinct signature manifests attached to
 // imageDigest via the classic .sig tag and via OCI 1.1 referrers. Discovery
 // failures from either method are non-fatal: a registry without referrers
@@ -258,8 +275,9 @@ func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash) ([]imagetrust.
 
 		digest := sha256.Sum256(payload)
 		out = append(out, imagetrust.Candidate{
-			DigestHex: hex.EncodeToString(digest[:]),
-			Entity:    b,
+			DigestHex:   hex.EncodeToString(digest[:]),
+			Entity:      b,
+			ImageDigest: imageDigest.String(),
 		})
 	}
 	return out, nil

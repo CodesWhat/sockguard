@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/codeswhat/sockguard/internal/imagetrust"
 )
 
 func TestServiceInspectDeniesBindMountSource(t *testing.T) {
@@ -228,5 +230,129 @@ func TestServiceInspectNonBindMountIsSkipped(t *testing.T) {
 	}
 	if reason != "" {
 		t.Fatalf("reason = %q, want empty (volume mount allowed)", reason)
+	}
+}
+
+func TestServiceInspectDeniesCapabilityAdd(t *testing.T) {
+	// Swarm task ContainerSpec.CapabilityAdd must obey the same allowlist as
+	// /containers/create: with no allowlist, any added capability is denied.
+	policy := newServicePolicy(ServiceOptions{AllowOfficial: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","CapabilityAdd":["SYS_ADMIN"]}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if !strings.Contains(reason, `capability "SYS_ADMIN" is not in the allowed list`) {
+		t.Fatalf("reason = %q, want capability denial", reason)
+	}
+}
+
+func TestServiceInspectAllowsAllowlistedCapability(t *testing.T) {
+	// CAP_-prefixed and lowercase requests normalize to the allowlist entry.
+	policy := newServicePolicy(ServiceOptions{
+		AllowAllRegistries:  true,
+		AllowedCapabilities: []string{"NET_ADMIN"},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"registry.example.com/app:v1","CapabilityAdd":["cap_net_admin"]}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want allow (capability allowlisted)", reason)
+	}
+}
+
+func TestServiceInspectDeniesSysctls(t *testing.T) {
+	policy := newServicePolicy(ServiceOptions{AllowOfficial: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Sysctls":{"net.ipv4.ip_forward":"1"}}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "service denied: setting sysctls is not allowed" {
+		t.Fatalf("reason = %q, want sysctls denial", reason)
+	}
+}
+
+func TestServiceInspectAllowsSysctlsWhenPermitted(t *testing.T) {
+	policy := newServicePolicy(ServiceOptions{AllowAllRegistries: true, AllowSysctls: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"registry.example.com/app:v1","Sysctls":{"net.ipv4.ip_forward":"1"}}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want allow (sysctls permitted)", reason)
+	}
+}
+
+func TestServiceInspectImageTrustDeniesUnverified(t *testing.T) {
+	// A swarm service whose ContainerSpec.Image fails cosign verification is
+	// denied in enforce mode — services must not bypass image trust.
+	policy := newServicePolicy(ServiceOptions{AllowAllRegistries: true})
+	policy.imageTrust = imageTrustFields{
+		verifier: &mockImageVerifier{err: errors.New("no valid signature found")},
+		fetcher:  oneCandidateFetcher(),
+		cfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"registry.example.com/app:v1"}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if !strings.Contains(reason, "image trust verification failed") {
+		t.Fatalf("reason = %q, want image-trust denial", reason)
+	}
+	if !strings.Contains(reason, "registry.example.com/app:v1") {
+		t.Fatalf("reason = %q, want image ref in denial", reason)
+	}
+}
+
+func TestServiceInspectImageTrustPinsVerifiedDigest(t *testing.T) {
+	// On successful verification the mutable tag in ContainerSpec.Image is
+	// rewritten to the verified digest, closing the verify→pull TOCTOU.
+	const digest = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	policy := newServicePolicy(ServiceOptions{AllowAllRegistries: true})
+	policy.imageTrust = imageTrustFields{
+		verifier: &mockImageVerifier{},
+		fetcher:  &mockSignatureFetcher{candidates: []imagetrust.Candidate{{DigestHex: "00", ImageDigest: digest}}},
+		cfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
+	}
+	body := `{"TaskTemplate":{"ContainerSpec":{"Image":"registry.example.com/app:v1"}},"Mode":{"Replicated":{"Replicas":3}}}`
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(body))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want allow", reason)
+	}
+	got, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read rewritten body: %v", err)
+	}
+	if !strings.Contains(string(got), "registry.example.com/app@"+digest) {
+		t.Fatalf("rewritten body = %s, want pinned digest reference", got)
+	}
+	if strings.Contains(string(got), `"registry.example.com/app:v1"`) {
+		t.Fatalf("rewritten body still contains the mutable tag: %s", got)
+	}
+	if !strings.Contains(string(got), `"Replicas":3`) {
+		t.Fatalf("rewritten body dropped sibling fields: %s", got)
+	}
+	if req.ContentLength != int64(len(got)) {
+		t.Fatalf("ContentLength = %d, want %d", req.ContentLength, len(got))
 	}
 }

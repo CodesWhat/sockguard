@@ -350,6 +350,29 @@ func TestPluginPolicyInspectCreateDeniesMultipartFormUpload(t *testing.T) {
 	}
 }
 
+func TestPluginPolicyInspectCreateMultipartNoBoundaryStillInspected(t *testing.T) {
+	policy := newPluginPolicy(PluginOptions{
+		AllowedBindMounts:   []string{"/allowed"},
+		AllowedDevices:      []string{"/dev/allowed"},
+		AllowedCapabilities: []string{"NET_ADMIN"},
+	})
+
+	// Docker ignores Content-Type on /plugins/create and reads the body as a tar.
+	// A multipart media type with no boundary parameter must therefore NOT bypass
+	// policy inspection — the tar body still has to be examined.
+	payload := mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":["SYS_ADMIN"]}}`, false)
+	req := httptest.NewRequest(http.MethodPost, "/plugins/create?name=acme/plugin", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "multipart/form-data")
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != `plugin create denied: capability "SYS_ADMIN" is not allowlisted` {
+		t.Fatalf("reason = %q, want SYS_ADMIN denial (bypass via empty boundary)", reason)
+	}
+}
+
 func TestParsePluginSetting(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -1287,25 +1310,31 @@ func TestDenyReasonForPrivilegesEmptyCapability(t *testing.T) {
 }
 
 func TestExtractPluginConfigMultipartEmptyBoundary(t *testing.T) {
-	// Exercises lines 439-441: multipart/form-data with empty boundary → (nil, false, nil).
+	// A multipart/form-data media type with no boundary parameter must NOT skip
+	// inspection. Docker ignores Content-Type on /plugins/create and reads the
+	// body as a tar, so extractPluginConfig falls through to the tar probe and
+	// still extracts config.json rather than returning (nil, false, nil).
+	payload := mustPluginCreateContextPayload(t, `{"Linux":{"Capabilities":["SYS_ADMIN"]}}`, false)
 	file, err := os.CreateTemp("", "sockguard-plugin-*")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
 	}
 	t.Cleanup(func() { _ = file.Close(); _ = os.Remove(file.Name()) })
-	if _, err := file.Write([]byte("some content")); err != nil {
+	if _, err := file.Write(payload); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
-	// Content type with no boundary param → boundary == "".
+	// Content type with no boundary param → boundary == "" → tar probe.
 	config, ok, err := defaultIODeps().extractPluginConfig(file, "multipart/form-data")
 	if err != nil {
 		t.Fatalf("extractPluginConfig() error = %v, want nil", err)
 	}
-	if ok {
-		t.Fatalf("extractPluginConfig() ok = true, want false")
+	if !ok {
+		t.Fatalf("extractPluginConfig() ok = false, want true (tar body must be inspected)")
 	}
-	_ = config
+	if !bytes.Contains(config, []byte("SYS_ADMIN")) {
+		t.Fatalf("extractPluginConfig() config = %q, want extracted config.json", config)
+	}
 }
 
 func TestExtractPluginConfigFromMultipartEOF(t *testing.T) {

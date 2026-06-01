@@ -150,6 +150,7 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowHostUserNS            bool             `mapstructure:"allow_host_userns"`
 	AllowSysctls               bool             `mapstructure:"allow_sysctls"`
 	RequiredLabels             []string         `mapstructure:"required_labels"`
+	AllowedRuntimes            []string         `mapstructure:"allowed_runtimes"`
 	ImageTrust                 ImageTrustConfig `mapstructure:"image_trust"`
 }
 
@@ -282,11 +283,15 @@ type ConfigRequestBodyConfig struct {
 
 // ServiceRequestBodyConfig configures inspection for service create/update.
 type ServiceRequestBodyConfig struct {
-	AllowHostNetwork   bool     `mapstructure:"allow_host_network"`
-	AllowedBindMounts  []string `mapstructure:"allowed_bind_mounts"`
-	AllowAllRegistries bool     `mapstructure:"allow_all_registries"`
-	AllowOfficial      bool     `mapstructure:"allow_official"`
-	AllowedRegistries  []string `mapstructure:"allowed_registries"`
+	AllowHostNetwork     bool             `mapstructure:"allow_host_network"`
+	AllowedBindMounts    []string         `mapstructure:"allowed_bind_mounts"`
+	AllowAllRegistries   bool             `mapstructure:"allow_all_registries"`
+	AllowOfficial        bool             `mapstructure:"allow_official"`
+	AllowedRegistries    []string         `mapstructure:"allowed_registries"`
+	AllowAllCapabilities bool             `mapstructure:"allow_all_capabilities"`
+	AllowedCapabilities  []string         `mapstructure:"allowed_capabilities"`
+	AllowSysctls         bool             `mapstructure:"allow_sysctls"`
+	ImageTrust           ImageTrustConfig `mapstructure:"image_trust"`
 }
 
 // SwarmRequestBodyConfig configures inspection for swarm writes.

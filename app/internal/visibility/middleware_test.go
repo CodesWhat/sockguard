@@ -111,6 +111,86 @@ func TestMiddlewareReturnsNotFoundForInvisibleContainerInspect(t *testing.T) {
 	}
 }
 
+// TestMiddlewareHidesContainerReadSubresources asserts that read endpoints
+// beyond /json (logs, stats, top, changes, export, archive, attach/ws) are
+// gated by visibility too — otherwise a hidden container leaks data through
+// them. Each must 404 without reaching upstream.
+func TestMiddlewareHidesContainerReadSubresources(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{
+		"/v1.53/containers/abc123/logs?stdout=1",
+		"/v1.53/containers/abc123/stats?stream=0",
+		"/v1.53/containers/abc123/top",
+		"/v1.53/containers/abc123/changes",
+		"/v1.53/containers/abc123/export",
+		"/v1.53/containers/abc123/archive?path=/etc",
+		"/v1.53/containers/abc123/attach/ws",
+	} {
+		t.Run(path, func(t *testing.T) {
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			nextCalled := false
+			handler := middlewareWithDeps(logger, Options{
+				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+			}, visibilityDeps{
+				inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+					return map[string]string{"com.sockguard.visible": "false"}, true, nil
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if nextCalled {
+				t.Fatalf("%s: hidden container sub-resource reached upstream", path)
+			}
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s: status = %d, want 404; body: %s", path, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestMiddlewareHidesImageReadSubresources is the image-side counterpart:
+// history and single-image export of a hidden image must 404, not leak.
+func TestMiddlewareHidesImageReadSubresources(t *testing.T) {
+	t.Parallel()
+	for _, path := range []string{
+		"/v1.53/images/secretimg/history",
+		"/v1.53/images/secretimg/get",
+		"/v1.53/images/registry.io/team/app/get",
+	} {
+		t.Run(path, func(t *testing.T) {
+			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+			nextCalled := false
+			handler := middlewareWithDeps(logger, Options{
+				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+			}, visibilityDeps{
+				inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+					return map[string]string{"com.sockguard.visible": "false"}, true, nil
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if nextCalled {
+				t.Fatalf("%s: hidden image sub-resource reached upstream", path)
+			}
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s: status = %d, want 404; body: %s", path, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 // TestMiddlewareRolloutModePassesInvisibleInspectThrough asserts that in warn /
 // audit rollout mode an invisible single-resource inspect is forwarded to the
 // upstream with a would_deny verdict, instead of being hard-404'd — consistent
@@ -530,23 +610,72 @@ func TestMatchesSelectorsKeyPresentNoValueConstraint(t *testing.T) {
 
 // ---- identifier helpers — uncovered branches ----
 
-func TestImageInspectIdentifierBranches(t *testing.T) {
+func TestImageReadIdentifierBranches(t *testing.T) {
 	t.Parallel()
 	// Wrong prefix
-	if _, ok := imageInspectIdentifier("/containers/foo/json"); ok {
+	if _, ok := imageReadIdentifier("/containers/foo/json"); ok {
 		t.Fatal("wrong prefix should not match")
 	}
-	// No trailing /json
-	if _, ok := imageInspectIdentifier("/images/foo/notjson"); ok {
+	// No recognized read suffix
+	if _, ok := imageReadIdentifier("/images/foo/notjson"); ok {
 		t.Fatal("/images/id/notjson should not match")
 	}
-	// No slash at all (no Cut separator)
-	if _, ok := imageInspectIdentifier("/images/justid"); ok {
-		t.Fatal("/images/justid (no slash) should not match")
+	// No suffix at all
+	if _, ok := imageReadIdentifier("/images/justid"); ok {
+		t.Fatal("/images/justid (no read suffix) should not match")
 	}
-	// Happy path
-	if id, ok := imageInspectIdentifier("/images/sha256:abc/json"); !ok || id != "sha256:abc" {
+	// Bare collection endpoints must not match
+	if _, ok := imageReadIdentifier("/images/get"); ok {
+		t.Fatal("bare /images/get (multi-export) should not match a single id")
+	}
+	if _, ok := imageReadIdentifier("/images/json"); ok {
+		t.Fatal("bare /images/json (list) should not match a single id")
+	}
+	// Happy path: inspect
+	if id, ok := imageReadIdentifier("/images/sha256:abc/json"); !ok || id != "sha256:abc" {
 		t.Fatalf("expected match with sha256:abc, got id=%q ok=%v", id, ok)
+	}
+	// Read sub-resources: history + single-image export must gate too
+	if id, ok := imageReadIdentifier("/images/sha256:abc/history"); !ok || id != "sha256:abc" {
+		t.Fatalf("history: expected sha256:abc, got id=%q ok=%v", id, ok)
+	}
+	if id, ok := imageReadIdentifier("/images/sha256:abc/get"); !ok || id != "sha256:abc" {
+		t.Fatalf("get: expected sha256:abc, got id=%q ok=%v", id, ok)
+	}
+	// Namespaced image ref (contains "/") must be preserved, not truncated
+	if id, ok := imageReadIdentifier("/images/registry.io/team/app/json"); !ok || id != "registry.io/team/app" {
+		t.Fatalf("namespaced: expected registry.io/team/app, got id=%q ok=%v", id, ok)
+	}
+}
+
+func TestContainerReadIdentifierGatesSubresources(t *testing.T) {
+	t.Parallel()
+	// Every read sub-resource of a container must resolve to the container id so
+	// the visibility gate hides it for a hidden container.
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{"/containers/abc/json", "abc"},
+		{"/containers/abc/logs", "abc"},
+		{"/containers/abc/stats", "abc"},
+		{"/containers/abc/top", "abc"},
+		{"/containers/abc/changes", "abc"},
+		{"/containers/abc/export", "abc"},
+		{"/containers/abc/archive", "abc"},
+		{"/containers/abc/attach/ws", "abc"},
+	} {
+		id, ok := containerReadIdentifier(tc.path)
+		if !ok || id != tc.want {
+			t.Fatalf("containerReadIdentifier(%q) = (%q, %v), want (%q, true)", tc.path, id, ok, tc.want)
+		}
+	}
+	// The list endpoint and write-only paths must not match a single id.
+	if _, ok := containerReadIdentifier("/containers/json"); ok {
+		t.Fatal("bare /containers/json (list) should not match a single id")
+	}
+	if _, ok := containerReadIdentifier("/containers/create"); ok {
+		t.Fatal("/containers/create should not match a read sub-resource")
 	}
 }
 

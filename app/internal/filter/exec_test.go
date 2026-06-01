@@ -61,6 +61,7 @@ func TestMiddlewareAllowsAllowlistedExecCreateCommand(t *testing.T) {
 		PolicyConfig: PolicyConfig{
 			Exec: ExecOptions{
 				AllowedCommands: [][]string{{"/usr/local/bin/pre-update", "--check"}},
+				AllowRootUser:   true,
 			},
 		},
 	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +102,13 @@ func TestMiddlewareDeniesPrivilegedAndRootExecCreate(t *testing.T) {
 		{
 			name:    "root user exec",
 			payload: `{"Cmd":["/usr/local/bin/pre-update"],"User":"root"}`,
+			want:    "root",
+		},
+		{
+			// Omitting User makes Docker run the exec as the container's
+			// configured user (commonly root); it must not bypass AllowRootUser=false.
+			name:    "omitted user exec defaults to root",
+			payload: `{"Cmd":["/usr/local/bin/pre-update"]}`,
 			want:    "root",
 		},
 	}
@@ -182,6 +190,7 @@ func TestMiddlewareDeniesExecStartWhenInspectedExecViolatesPolicy(t *testing.T) 
 			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
 			Exec: ExecOptions{
 				AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+				AllowRootUser:   true,
 				InspectStart: func(context.Context, string) (ExecInspectResult, bool, error) {
 					return ExecInspectResult{
 						Command:    []string{"/bin/sh", "-c", "id"},
@@ -251,6 +260,7 @@ func TestExecCommandAllowlistOverlapHandling(t *testing.T) {
 							{"/usr/local/bin/pre-update"},
 							{"/usr/local/bin/pre-update", "--check"},
 						},
+						AllowRootUser: true,
 					},
 				},
 			})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -323,6 +333,7 @@ func TestExecAttachHijackStreamInterruption(t *testing.T) {
 					DenyResponseVerbosity: DenyResponseVerbosityVerbose,
 					Exec: ExecOptions{
 						AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+						AllowRootUser:   true,
 						InspectStart: func(_ context.Context, execID string) (ExecInspectResult, bool, error) {
 							inspectCalls++
 							if execID != tt.wantInspectID {
@@ -520,7 +531,9 @@ func TestExecAllowlistGlobMatching(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			policy := newExecPolicy(ExecOptions{AllowedCommands: tt.allowed})
+			// AllowRootUser so the empty-User (root-by-default) check does not
+			// short-circuit before command-allowlist matching is exercised.
+			policy := newExecPolicy(ExecOptions{AllowedCommands: tt.allowed, AllowRootUser: true})
 			reason := policy.denyReason(ExecInspectResult{Command: tt.command})
 			switch {
 			case tt.wantOK && reason != "":

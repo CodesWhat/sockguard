@@ -1052,7 +1052,7 @@ func TestRedactMountObjects_EntryWrongType(t *testing.T) {
 func TestRedactHostConfigBinds_WrongHostConfigType(t *testing.T) {
 	t.Parallel()
 	payload := map[string]any{"HostConfig": "bad"}
-	err := redactHostConfigBinds(payload)
+	err := redactHostConfigMountSources(payload)
 	if err == nil {
 		t.Fatal("want error for wrong HostConfig type, got nil")
 	}
@@ -1061,7 +1061,7 @@ func TestRedactHostConfigBinds_WrongHostConfigType(t *testing.T) {
 func TestRedactHostConfigBinds_WrongBindsType(t *testing.T) {
 	t.Parallel()
 	payload := map[string]any{"HostConfig": map[string]any{"Binds": "bad"}}
-	err := redactHostConfigBinds(payload)
+	err := redactHostConfigMountSources(payload)
 	if err == nil {
 		t.Fatal("want error for wrong Binds type, got nil")
 	}
@@ -1070,7 +1070,7 @@ func TestRedactHostConfigBinds_WrongBindsType(t *testing.T) {
 func TestRedactHostConfigBinds_WrongBindEntryType(t *testing.T) {
 	t.Parallel()
 	payload := map[string]any{"HostConfig": map[string]any{"Binds": []any{123}}}
-	err := redactHostConfigBinds(payload)
+	err := redactHostConfigMountSources(payload)
 	if err == nil {
 		t.Fatal("want error for wrong bind entry type, got nil")
 	}
@@ -2323,7 +2323,7 @@ func TestRedactHostConfigBinds_NilBinds(t *testing.T) {
 	payload := map[string]any{
 		"HostConfig": map[string]any{"Binds": nil},
 	}
-	if err := redactHostConfigBinds(payload); err != nil {
+	if err := redactHostConfigMountSources(payload); err != nil {
 		t.Fatalf("nil Binds: %v", err)
 	}
 }
@@ -2553,7 +2553,7 @@ func TestRedactPluginEnvObjects_MissingField(t *testing.T) {
 func TestRedactHostConfigBinds_NoHostConfigKey(t *testing.T) {
 	t.Parallel()
 	payload := map[string]any{"Other": "value"}
-	if err := redactHostConfigBinds(payload); err != nil {
+	if err := redactHostConfigMountSources(payload); err != nil {
 		t.Fatalf("no HostConfig key: %v", err)
 	}
 }

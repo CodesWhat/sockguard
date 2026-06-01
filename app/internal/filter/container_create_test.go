@@ -1013,6 +1013,30 @@ func TestContainerCreatePolicyDenyDeviceRequestsReason(t *testing.T) {
 			opts: ContainerCreateOptions{},
 			body: `{"HostConfig":{}}`,
 		},
+		{
+			// (n) empty Capabilities must NOT vacuously satisfy a constraining
+			// allowlist: runtimes expand empty caps to a default set, so a request
+			// with no capabilities against a capability-constrained entry is denied.
+			name: "empty capabilities denied against constrained allowlist",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1,"Capabilities":[]}]}}`,
+			wantReason: `container create denied: device request 0 (driver "nvidia") is not permitted by the allowlist`,
+		},
+		{
+			// (o) all-empty capability sets are equivalent to empty → still denied
+			name: "all-empty capability sets denied against constrained allowlist",
+			opts: ContainerCreateOptions{
+				AllowedDeviceRequests: []AllowedDeviceRequestEntry{
+					{Driver: "nvidia", AllowedCapabilities: [][]string{{"gpu"}}},
+				},
+			},
+			body:       `{"HostConfig":{"DeviceRequests":[{"Driver":"nvidia","Count":1,"Capabilities":[[""]]}]}}`,
+			wantReason: `container create denied: device request 0 (driver "nvidia") is not permitted by the allowlist`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1304,6 +1328,52 @@ func TestImageTrust_BodyInspectedWhenVerifierPresent(t *testing.T) {
 	}
 	if mv.lastCalled != "registry.example.com/app:v1" {
 		t.Fatalf("verifier lastCalled = %q, want registry.example.com/app:v1 — body was not inspected", mv.lastCalled)
+	}
+}
+
+func TestImageTrust_Enforce_PinsVerifiedDigest(t *testing.T) {
+	// On successful verification the mutable tag in Image is rewritten to the
+	// verified manifest digest, closing the verify→pull TOCTOU window. Sibling
+	// fields (including large integers) must survive byte-for-byte.
+	const digest = "sha256:" + "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	policy := containerCreatePolicy{
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier:     &mockImageVerifier{},
+		imageFetcher:           &mockSignatureFetcher{candidates: []imagetrust.Candidate{{DigestHex: "00", ImageDigest: digest}}},
+		imageTrustCfg:          imagetrust.Config{Mode: imagetrust.ModeEnforce},
+	}
+	body := `{"Image":"registry.example.com/app:v1","HostConfig":{"Memory":9223372036854775807}}`
+	req := makeInspectRequest(t, body)
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want allow", reason)
+	}
+	got, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read rewritten body: %v", err)
+	}
+	if !strings.Contains(string(got), "registry.example.com/app@"+digest) {
+		t.Fatalf("rewritten body = %s, want pinned digest reference", got)
+	}
+	if strings.Contains(string(got), `"registry.example.com/app:v1"`) {
+		t.Fatalf("rewritten body still contains the mutable tag: %s", got)
+	}
+	if !strings.Contains(string(got), `9223372036854775807`) {
+		t.Fatalf("rewritten body corrupted the Memory field: %s", got)
+	}
+	if req.ContentLength != int64(len(got)) {
+		t.Fatalf("ContentLength = %d, want %d", req.ContentLength, len(got))
 	}
 }
 

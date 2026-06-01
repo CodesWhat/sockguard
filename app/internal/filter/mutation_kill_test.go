@@ -431,9 +431,9 @@ func TestExtractImageLoadRepoTags_ManifestAtExactLimit(t *testing.T) {
 
 	manifest := `[{"RepoTags":["reg.example.com/app:1"]}]`
 	payload := mustImageLoadTar(t, manifest)
-	_, _, err := iod.extractImageLoadRepoTags(bytes.NewReader(payload))
+	_, _, err := iod.extractImageLoadRepoTagsFromTar(tar.NewReader(bytes.NewReader(payload)))
 	if err != nil {
-		t.Fatalf("extractImageLoadRepoTags error = %v", err)
+		t.Fatalf("extractImageLoadRepoTagsFromTar error = %v", err)
 	}
 	if capturedLimit != maxImageLoadManifestBytes+1 {
 		t.Fatalf("readAllLimited called with limit=%d, want %d", capturedLimit, maxImageLoadManifestBytes+1)
@@ -460,9 +460,9 @@ func TestExtractImageLoadRepoTags_ManifestExactlyAtLimit(t *testing.T) {
 
 	manifest := `[{"RepoTags":["reg.io/a:1"]}]`
 	payload := mustImageLoadTar(t, manifest)
-	tags, found, err := iod.extractImageLoadRepoTags(bytes.NewReader(payload))
+	tags, found, err := iod.extractImageLoadRepoTagsFromTar(tar.NewReader(bytes.NewReader(payload)))
 	if err != nil {
-		t.Fatalf("extractImageLoadRepoTags error = %v (should succeed at exact limit)", err)
+		t.Fatalf("extractImageLoadRepoTagsFromTar error = %v (should succeed at exact limit)", err)
 	}
 	if !found {
 		t.Fatal("manifest should be found")
@@ -861,8 +861,9 @@ func TestVolumeInspect_OnlyOpts(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // CONDITIONALS_NEGATION exec.go:207:32
-// isRootUser: `name == "root" || name == "0"` — mutant negates.
-// Verify: "root" → true, "0" → true, "1000" → false, "" → false.
+// isRootUser: `EqualFold(name, "root") || name == "0"` — mutant negates.
+// Verify: "root" → true, "0" → true, "1000" → false. Empty defaults to the
+// container's user (commonly root), so it is conservatively treated as root.
 func TestIsRootUser_Boundaries(t *testing.T) {
 	tests := []struct {
 		user string
@@ -874,7 +875,9 @@ func TestIsRootUser_Boundaries(t *testing.T) {
 		{"0:0", true},
 		{"1000", false},
 		{"admin", false},
-		{"", false},
+		{"", true},
+		{"  ", true},
+		{"ROOT", true},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("user=%q", tt.user), func(t *testing.T) {

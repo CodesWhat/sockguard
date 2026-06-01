@@ -217,7 +217,7 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 - **12 bundled presets** cover drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, and GitLab Runner.
 - **Expanded QA hardening** added proxy-vs-daemon differential tests, real-dockerd preset conformance, fuzz corpora for routing and visibility, weekly soak testing, and TLS edge-case coverage.
 - **Supply-chain verification** covers release images across GHCR, Docker Hub, and Quay.io using the same cosign commands documented for operators.
-- **Current Unreleased work** is test-only hardening: transitive test dependency bumps for cleaner Grype source scans and deterministic replacements for two wall-clock-sensitive CI tests.
+- **Current Unreleased work** wires cosign image-trust verification end to end (registry digest resolution, signature discovery, and digest-pinned forwarding) and lands a 21-finding security audit: closed request-inspection bypasses (plugin multipart, BuildKit `# syntax=`, gzip bombs, swarm-service capability/sysctl/image-trust escapes), tightened read-side isolation (visibility sub-resources, image-export ownership, negative-cache window), and hardened config/admin paths (signed-bundle TOCTOU + env override, PID-only peer profiles, dedicated admin-listener CIDR backstop).
 
 See [CHANGELOG.md](CHANGELOG.md) for the full itemized history.
 

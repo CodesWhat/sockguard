@@ -50,6 +50,7 @@ func TestMiddlewareUsesResolvedProfileBodyPolicy(t *testing.T) {
 				PolicyConfig: PolicyConfig{
 					Exec: ExecOptions{
 						AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+						AllowRootUser:   true,
 					},
 				},
 			},

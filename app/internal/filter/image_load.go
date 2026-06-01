@@ -2,17 +2,24 @@ package filter
 
 import (
 	"archive/tar"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 )
 
-const maxImageLoadBodyBytes = 512 << 20   // 512 MiB
-const maxImageLoadManifestBytes = 1 << 20 // 1 MiB
+const maxImageLoadBodyBytes = 512 << 20       // 512 MiB
+const maxImageLoadManifestBytes = 1 << 20     // 1 MiB
+const maxImageLoadDecompressedBytes = 2 << 30 // 2 GiB (gzip-bomb guard)
+
+// errImageLoadDecompressedTooLarge is the loud sentinel returned when a
+// gzip-compressed image archive expands past maxImageLoadDecompressedBytes.
+var errImageLoadDecompressedTooLarge = errors.New("decompressed image archive exceeds byte limit")
 
 // ImageLoadOptions configures request-body inspection for POST /images/load.
 type ImageLoadOptions struct {
@@ -71,6 +78,9 @@ func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 	tags, foundManifest, err := p.io.extractImageLoadRepoTags(spool.file)
 	if err != nil {
 		spool.closeAndRemove()
+		if errors.Is(err, errImageLoadDecompressedTooLarge) {
+			return fmt.Sprintf("image load denied: decompressed image archive exceeds %d byte limit", maxImageLoadDecompressedBytes), nil
+		}
 		return "", fmt.Errorf("inspect image load manifest: %w", err)
 	}
 	if !foundManifest {
@@ -122,8 +132,54 @@ type imageLoadManifestEntry struct {
 	RepoTags []string `json:"RepoTags"`
 }
 
-func (io_ ioDeps) extractImageLoadRepoTags(reader io.Reader) ([]string, bool, error) {
-	tr := tar.NewReader(reader)
+// extractImageLoadRepoTags reads manifest.json's RepoTags from a docker-save
+// archive. Docker's /images/load accepts both a raw tar and a
+// gzip-compressed tar (e.g. `docker save img | gzip | docker load`), so probe
+// gzip first and fall back to a plain tar walk on a non-gzip header — otherwise
+// a legitimate, policy-compliant gzipped archive would be falsely denied as
+// "image manifest is not inspectable".
+func (io_ ioDeps) extractImageLoadRepoTags(file *os.File) ([]string, bool, error) {
+	if tags, found, err := io_.extractImageLoadRepoTagsFromGzip(file); found || err != nil {
+		return tags, found, err
+	}
+	if err := io_.SeekToStart(file); err != nil {
+		return nil, false, fmt.Errorf("rewind image load body: %w", err)
+	}
+	return io_.extractImageLoadRepoTagsFromTar(tar.NewReader(file))
+}
+
+// extractImageLoadRepoTagsFromGzip decompresses a gzip-wrapped tar through a
+// loud, decompressed-byte-bounded reader (gzip-bomb guard) and walks it for
+// manifest.json. A non-gzip header returns (nil,false,nil) so the caller
+// rewinds and reads the body as a plain tar.
+func (io_ ioDeps) extractImageLoadRepoTagsFromGzip(file *os.File) ([]string, bool, error) {
+	gzr, err := gzip.NewReader(file)
+	if err != nil {
+		if errors.Is(err, gzip.ErrHeader) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("create gzip reader: %w", err)
+	}
+
+	limited := &limitedReader{r: gzr, remaining: maxImageLoadDecompressedBytes, tooLarge: errImageLoadDecompressedTooLarge}
+	tags, found, err := io_.extractImageLoadRepoTagsFromTar(tar.NewReader(limited))
+	if err == nil {
+		if drainErr := io_.DrainReader(limited); drainErr != nil {
+			err = fmt.Errorf("drain gzip stream: %w", drainErr)
+		}
+	}
+	if closeErr := io_.CloseReadCloser(gzr); err == nil && closeErr != nil {
+		err = fmt.Errorf("close gzip reader: %w", closeErr)
+	}
+	if errors.Is(err, errImageLoadDecompressedTooLarge) {
+		// Surface the sentinel unwrapped so inspect maps it to a clean 403 deny
+		// rather than a 500.
+		return nil, false, errImageLoadDecompressedTooLarge
+	}
+	return tags, found, err
+}
+
+func (io_ ioDeps) extractImageLoadRepoTagsFromTar(tr *tar.Reader) ([]string, bool, error) {
 	var tags []string
 	found := false
 

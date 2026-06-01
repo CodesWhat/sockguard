@@ -65,6 +65,7 @@ type containerCreateHostConfig struct {
 	CgroupParent      string                  `json:"CgroupParent"`
 	GroupAdd          []string                `json:"GroupAdd"`
 	ExtraHosts        []string                `json:"ExtraHosts"`
+	Runtime           string                  `json:"Runtime"`
 }
 
 type containerCreateMount struct {

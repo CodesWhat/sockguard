@@ -996,6 +996,19 @@ func TestIdentifierHelpers(t *testing.T) {
 	if id, ok := imageIdentifier("/images/custom"); !ok || id != "custom" {
 		t.Fatalf("imageIdentifier(raw) = (%q, %v), want (custom, true)", id, ok)
 	}
+	// Single-image export (data exfiltration): /images/{name}/get must resolve
+	// to {name} so the owner-isolation check applies to the exported image.
+	if id, ok := imageIdentifier("/images/busybox:latest/get"); !ok || id != "busybox:latest" {
+		t.Fatalf("imageIdentifier(get) = (%q, %v), want (busybox:latest, true)", id, ok)
+	}
+	if id, ok := imageIdentifier("/images/registry.io/team/app/get"); !ok || id != "registry.io/team/app" {
+		t.Fatalf("imageIdentifier(namespaced get) = (%q, %v), want (registry.io/team/app, true)", id, ok)
+	}
+	// Bare multi-image export (/images/get?names=) takes query params, not a
+	// path identifier, and must stay excluded.
+	if _, ok := imageIdentifier("/images/get"); ok {
+		t.Fatal("expected bare /images/get to be excluded")
+	}
 	if _, ok := imageIdentifier("/images/prune"); ok {
 		t.Fatal("expected /images/prune to be excluded")
 	}

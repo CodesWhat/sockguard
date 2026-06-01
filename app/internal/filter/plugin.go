@@ -436,14 +436,16 @@ func (p pluginPolicy) setEnvAllowed(setting string) bool {
 
 func (io_ ioDeps) extractPluginConfig(file *os.File, contentType string) ([]byte, bool, error) {
 	if mediaType, params, err := mime.ParseMediaType(contentType); err == nil && strings.EqualFold(mediaType, "multipart/form-data") {
-		boundary := strings.TrimSpace(params["boundary"])
-		if boundary == "" {
-			return nil, false, nil
+		if boundary := strings.TrimSpace(params["boundary"]); boundary != "" {
+			if err := io_.SeekToStart(file); err != nil {
+				return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
+			}
+			return io_.extractPluginConfigFromMultipart(file, boundary)
 		}
-		if err := io_.SeekToStart(file); err != nil {
-			return nil, false, fmt.Errorf("rewind plugin reader: %w", err)
-		}
-		return io_.extractPluginConfigFromMultipart(file, boundary)
+		// A multipart media type with no boundary is not something Docker honors:
+		// /plugins/create ignores Content-Type and always reads the body as a
+		// (optionally gzipped) tar. Fall through to the tar probe so we still inspect
+		// the config.json rather than skipping policy enforcement entirely.
 	}
 
 	if err := io_.SeekToStart(file); err != nil {

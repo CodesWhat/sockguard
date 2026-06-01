@@ -14,11 +14,13 @@ import (
 	"strings"
 )
 
-const maxBuildContextBytes = 512 << 20  // 512 MiB
-const maxBuildDockerfileBytes = 1 << 20 // 1 MiB
+const maxBuildContextBytes = 512 << 20           // 512 MiB (compressed/on-wire cap)
+const maxBuildDockerfileBytes = 1 << 20          // 1 MiB
+const maxBuildContextDecompressedBytes = 1 << 30 // 1 GiB (gzip-bomb guard)
 const defaultBuildDockerfilePath = "Dockerfile"
 
 var errBuildDockerfileTooLarge = errors.New("dockerfile exceeds byte limit")
+var errBuildContextDecompressedTooLarge = errors.New("decompressed build context exceeds byte limit")
 
 // BuildOptions configures request-body/query inspection for POST /build.
 type BuildOptions struct {
@@ -90,11 +92,23 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 	dockerfile, ok, err := p.io.extractBuildDockerfile(spool.file, r.Header.Get("Content-Type"), dockerfilePath)
 	if err != nil {
 		spool.closeAndRemove()
+		if errors.Is(err, errBuildContextDecompressedTooLarge) {
+			return fmt.Sprintf("build denied: decompressed build context exceeds %d byte limit", maxBuildContextDecompressedBytes), nil
+		}
 		return "", fmt.Errorf("extract Dockerfile: %w", err)
 	}
 	if !ok {
 		spool.closeAndRemove()
 		return fmt.Sprintf("build denied: unable to inspect Dockerfile %q", dockerfilePath), nil
+	}
+
+	// A BuildKit `# syntax=` parser directive delegates parsing to an external
+	// frontend image that can treat arbitrary tokens as shell execution, so our
+	// RUN-instruction scan cannot be trusted. Deny it for the same reason remote
+	// contexts are denied while RUN is restricted: the content can't be inspected.
+	if frontend := dockerfileSyntaxFrontend(dockerfile); frontend != "" {
+		spool.closeAndRemove()
+		return fmt.Sprintf("build denied: BuildKit syntax frontend %q cannot be inspected while RUN instructions are restricted", frontend), nil
 	}
 
 	if dockerfileContainsRunInstruction(dockerfile) {
@@ -243,16 +257,86 @@ func (io_ ioDeps) extractDockerfileFromGzipTar(file *os.File, dockerfilePath str
 		return nil, false, fmt.Errorf("create gzip reader: %w", err)
 	}
 
-	dockerfile, ok, err := io_.extractDockerfileFromTarReader(tar.NewReader(gzr), dockerfilePath)
+	// Bound the *decompressed* byte count to defuse gzip bombs: a body within
+	// the compressed maxBuildContextBytes cap can still expand to hundreds of
+	// GiB. Both the tar walk and the drain below read through this limit.
+	limited := &limitedReader{r: gzr, remaining: maxBuildContextDecompressedBytes}
+
+	dockerfile, ok, err := io_.extractDockerfileFromTarReader(tar.NewReader(limited), dockerfilePath)
 	if err == nil {
-		if drainErr := io_.DrainReader(gzr); drainErr != nil {
+		if drainErr := io_.DrainReader(limited); drainErr != nil {
 			err = fmt.Errorf("drain gzip stream: %w", drainErr)
 		}
 	}
 	if closeErr := io_.CloseReadCloser(gzr); err == nil && closeErr != nil {
 		err = fmt.Errorf("close gzip reader: %w", closeErr)
 	}
+	if errors.Is(err, errBuildContextDecompressedTooLarge) {
+		// Surface the sentinel unwrapped so the caller can map it to a clean
+		// 403 deny reason rather than a 500.
+		return nil, false, errBuildContextDecompressedTooLarge
+	}
 	return dockerfile, ok, err
+}
+
+// limitedReader returns its tooLarge sentinel once more than `remaining` bytes
+// have been read from r. Unlike io.LimitReader (which signals EOF and silently
+// truncates), it fails loud so a decompression bomb is denied rather than
+// mistaken for a stream that simply lacks the file being probed. A stream of
+// exactly `remaining` bytes is read cleanly (no off-by-one false positive).
+//
+// tooLarge lets each decompression path surface its own deny message; when nil
+// it defaults to errBuildContextDecompressedTooLarge so the build-path callers
+// (and their tests) keep their sentinel without restating it.
+type limitedReader struct {
+	r         io.Reader
+	remaining int64
+	tooLarge  error
+}
+
+func (l *limitedReader) Read(p []byte) (int, error) {
+	limitErr := l.tooLarge
+	if limitErr == nil {
+		limitErr = errBuildContextDecompressedTooLarge
+	}
+	if l.remaining < 0 {
+		return 0, limitErr
+	}
+	n, err := l.r.Read(p)
+	l.remaining -= int64(n)
+	if l.remaining < 0 {
+		return n, limitErr
+	}
+	return n, err
+}
+
+// dockerfileSyntaxFrontend returns the value of a BuildKit `# syntax=` parser
+// directive when one is in force, else "". Directives are only honored by
+// Docker at the very top of the file — the first blank line, regular comment,
+// instruction, or unrecognized directive ends the directive block — so this
+// mirrors that to avoid both bypasses and false positives on later comments.
+func dockerfileSyntaxFrontend(raw []byte) string {
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "#") {
+			return "" // blank line or instruction ends the directive block
+		}
+		key, value, ok := strings.Cut(strings.TrimSpace(strings.TrimPrefix(trimmed, "#")), "=")
+		if !ok {
+			return "" // a plain comment (no '=') ends the directive block
+		}
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "syntax":
+			if v := strings.TrimSpace(value); v != "" {
+				return v
+			}
+		case "escape":
+			// recognized directive; keep scanning the leading block
+		default:
+			return "" // unknown directive → treated as a comment, ends the block
+		}
+	}
+	return ""
 }
 
 func (io_ ioDeps) extractDockerfileFromTar(file *os.File, dockerfilePath string) ([]byte, bool, error) {

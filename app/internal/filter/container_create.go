@@ -1,9 +1,11 @@
 package filter
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"path"
@@ -94,6 +96,14 @@ type ContainerCreateOptions struct {
 	AllowHostUserNS            bool
 	RequiredLabels             []string
 
+	// AllowedRuntimes allowlists HostConfig.Runtime values. An empty Runtime
+	// selects the daemon default and is always permitted; any other (non-empty)
+	// runtime is denied unless listed here. This prevents a client from silently
+	// selecting an alternate OCI runtime with different (or absent) seccomp/
+	// AppArmor defaults to escape the profile policy enforced for the default
+	// runtime. Runtime names are matched case-sensitively (as in daemon.json).
+	AllowedRuntimes []string
+
 	// AllowSysctls permits setting kernel parameters via HostConfig.Sysctls.
 	// Default false: any non-empty Sysctls map is denied.
 	AllowSysctls bool
@@ -131,6 +141,7 @@ type containerCreatePolicy struct {
 	allowHostUserNS            bool
 	requiredLabels             []string
 	allowSysctls               bool
+	allowedRuntimes            []string
 
 	// Image trust — non-nil when mode != off.
 	imageTrustVerifier imageVerifier
@@ -216,49 +227,126 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowHostUserNS:            opts.AllowHostUserNS,
 		requiredLabels:             normalizeStringList(opts.RequiredLabels),
 		allowSysctls:               opts.AllowSysctls,
+		allowedRuntimes:            normalizeStringList(opts.AllowedRuntimes),
 	}
 
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so
 	// that inspect can return a denial reason instead of silently allowing
 	// requests through (fail-closed rather than fail-open).
-	if mode := imagetrust.Mode(opts.ImageTrust.Mode); mode != imagetrust.ModeOff && mode != "" {
-		raw := buildImageTrustRaw(opts.ImageTrust)
-		cfg, err := imagetrust.BuildConfig(raw)
-		switch {
-		case err != nil:
-			p.imageTrustInitErr = fmt.Errorf("image trust policy build failed: %w", err)
-		default:
-			// Keyless verification needs a TUF-backed trust root for the Fulcio
-			// and Rekor public keys. Fetch it once here; a failure (no network,
-			// read-only TUF cache) must fail closed rather than allow unverified
-			// keyless images. Keyed-only configs skip this entirely.
-			if len(cfg.AllowedKeyless) > 0 {
-				tm, tmErr := imagetrust.LoadLiveTrustedRoot()
-				if tmErr != nil {
-					p.imageTrustInitErr = fmt.Errorf("image trust keyless trust root load failed: %w", tmErr)
-				} else {
-					cfg.TrustedMaterial = tm
-				}
-			}
-
-			if p.imageTrustInitErr == nil {
-				v, verr := imagetrust.New(cfg)
-				if verr != nil {
-					p.imageTrustInitErr = fmt.Errorf("image trust verifier construction failed: %w", verr)
-				} else {
-					p.imageTrustVerifier = v
-					p.imageFetcher = imagefetch.NewFetcher()
-					p.imageTrustCfg = cfg
-					p.imageTrustTimeout = cfg.VerifyTimeout
-					if p.imageTrustTimeout == 0 {
-						p.imageTrustTimeout = imagetrust.VerifyTimeout
-					}
-				}
-			}
-		}
-	}
+	itf := buildImageTrustFields(opts.ImageTrust)
+	p.imageTrustVerifier = itf.verifier
+	p.imageFetcher = itf.fetcher
+	p.imageTrustCfg = itf.cfg
+	p.imageTrustTimeout = itf.timeout
+	p.imageTrustInitErr = itf.initErr
 
 	return p
+}
+
+// imageTrustFields holds the constructed cosign verification machinery shared
+// by the container-create and service inspectors.
+type imageTrustFields struct {
+	verifier imageVerifier
+	fetcher  signatureFetcher
+	cfg      imagetrust.Config
+	timeout  time.Duration
+	initErr  error
+}
+
+// buildImageTrustFields constructs the cosign verifier and signature fetcher for
+// the given options. Any construction error is returned in initErr so callers
+// fail closed (deny) rather than silently allowing unverified images. When the
+// mode is off/empty the zero value is returned (inactive).
+func buildImageTrustFields(opts ImageTrustOptions) imageTrustFields {
+	var f imageTrustFields
+	if mode := imagetrust.Mode(opts.Mode); mode == imagetrust.ModeOff || mode == "" {
+		return f
+	}
+	cfg, err := imagetrust.BuildConfig(buildImageTrustRaw(opts))
+	if err != nil {
+		f.initErr = fmt.Errorf("image trust policy build failed: %w", err)
+		return f
+	}
+	// Keyless verification needs a TUF-backed trust root for the Fulcio and
+	// Rekor public keys. Fetch it once here; a failure (no network, read-only
+	// TUF cache) must fail closed rather than allow unverified keyless images.
+	// Keyed-only configs skip this entirely.
+	if len(cfg.AllowedKeyless) > 0 {
+		tm, tmErr := imagetrust.LoadLiveTrustedRoot()
+		if tmErr != nil {
+			f.initErr = fmt.Errorf("image trust keyless trust root load failed: %w", tmErr)
+			return f
+		}
+		cfg.TrustedMaterial = tm
+	}
+	v, verr := imagetrust.New(cfg)
+	if verr != nil {
+		f.initErr = fmt.Errorf("image trust verifier construction failed: %w", verr)
+		return f
+	}
+	f.verifier = v
+	f.fetcher = imagefetch.NewFetcher()
+	f.cfg = cfg
+	f.timeout = cfg.VerifyTimeout
+	if f.timeout == 0 {
+		f.timeout = imagetrust.VerifyTimeout
+	}
+	return f
+}
+
+// verifyImageTrust fetches and verifies the cosign signatures for imageRef under
+// the configured mode, returning a deny reason ("" when allowed) and the
+// verified image manifest digest ("" when nothing was verified, e.g. an empty
+// ref or warn-mode bypass). subject prefixes the deny reason.
+func verifyImageTrust(ctx context.Context, logger *slog.Logger, f imageTrustFields, imageRef, subject string) (denyReason, verifiedDigest string) {
+	imageRef = strings.TrimSpace(imageRef)
+	if imageRef == "" {
+		// Require an explicit image reference when trust verification is
+		// configured. Docker itself rejects creates without an image, but the
+		// explicit deny preserves fail-closed behavior at the Sockguard layer
+		// and avoids skipping the verifier call entirely.
+		return fmt.Sprintf("%s denied: image field is required when image trust is configured", subject), ""
+	}
+	if f.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, f.timeout)
+		defer cancel()
+	}
+	// Fetch the cosign signatures attached to the image in the registry and
+	// reconstruct a verifiable bundle for each, then verify under the configured
+	// mode. A fetch failure (unsigned image, registry unreachable) is surfaced to
+	// the verifier as a verification failure so enforce mode denies and warn mode
+	// logs-and-allows.
+	var (
+		candidates []imagetrust.Candidate
+		fetchErr   error
+	)
+	if f.fetcher != nil {
+		candidates, fetchErr = f.fetcher.FetchCandidates(ctx, imageRef)
+	} else {
+		fetchErr = fmt.Errorf("image trust misconfigured: no signature fetcher")
+	}
+	outcome := imagetrust.VerifyCandidatesWithMode(ctx, f.verifier, f.cfg, logger, imageRef, candidates, fetchErr)
+	if !outcome.Allowed {
+		return fmt.Sprintf("%s denied: image trust verification failed for %s: %s", subject, imageRef, outcome.FailureMsg), ""
+	}
+	return "", outcome.VerifiedDigest
+}
+
+// rewriteJSONImageField returns body with its top-level "Image" field replaced
+// by pinned. Other fields are preserved byte-for-byte (RawMessage) so large
+// integer fields such as Memory are not corrupted by a float round-trip.
+func rewriteJSONImageField(body []byte, pinned string) ([]byte, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(pinned)
+	if err != nil {
+		return nil, err
+	}
+	fields["Image"] = encoded
+	return json.Marshal(fields)
 }
 
 func buildImageTrustRaw(opts ImageTrustOptions) imagetrust.RawConfig {
@@ -347,6 +435,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if len(createReq.HostConfig.ExtraHosts) > 0 {
 		return "container create denied: ExtraHosts is not allowed", nil
 	}
+	if runtime := strings.TrimSpace(createReq.HostConfig.Runtime); runtime != "" && !slices.Contains(p.allowedRuntimes, runtime) {
+		return fmt.Sprintf("container create denied: runtime %q is not allowlisted", runtime), nil
+	}
 	if denyReason := p.denyDeviceReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
@@ -371,36 +462,28 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 
 	if p.imageTrustVerifier != nil {
 		imageRef := strings.TrimSpace(createReq.Image)
-		if imageRef == "" {
-			// Require an explicit image reference when trust verification is
-			// configured. Docker itself rejects creates without an image, but
-			// the explicit deny here preserves fail-closed behavior at the
-			// Sockguard layer and avoids skipping the verifier call entirely.
-			return "container create denied: image field is required when image trust is configured", nil
+		fields := imageTrustFields{
+			verifier: p.imageTrustVerifier,
+			fetcher:  p.imageFetcher,
+			cfg:      p.imageTrustCfg,
+			timeout:  p.imageTrustTimeout,
 		}
-		ctx := r.Context()
-		if p.imageTrustTimeout > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, p.imageTrustTimeout)
-			defer cancel()
+		denyReason, verifiedDigest := verifyImageTrust(r.Context(), logger, fields, imageRef, "container create")
+		if denyReason != "" {
+			return denyReason, nil
 		}
-		// Fetch the cosign signatures attached to the image in the registry and
-		// reconstruct a verifiable bundle for each, then verify under the
-		// configured mode. A fetch failure (unsigned image, registry
-		// unreachable) is surfaced to the verifier as a verification failure so
-		// enforce mode denies and warn mode logs-and-allows.
-		var (
-			candidates []imagetrust.Candidate
-			fetchErr   error
-		)
-		if p.imageFetcher != nil {
-			candidates, fetchErr = p.imageFetcher.FetchCandidates(ctx, imageRef)
-		} else {
-			fetchErr = fmt.Errorf("image trust misconfigured: no signature fetcher")
-		}
-		outcome := imagetrust.VerifyCandidatesWithMode(ctx, p.imageTrustVerifier, p.imageTrustCfg, logger, imageRef, candidates, fetchErr)
-		if !outcome.Allowed {
-			return fmt.Sprintf("container create denied: image trust verification failed for %s: %s", imageRef, outcome.FailureMsg), nil
+		// Close the verify→pull TOCTOU: forward the digest-pinned reference that
+		// was actually verified, so a registry that swaps the tag after
+		// verification cannot make dockerd pull an unsigned image.
+		if verifiedDigest != "" {
+			if pinned, perr := imagefetch.PinnedReference(imageRef, verifiedDigest); perr == nil && pinned != imageRef {
+				rewritten, rerr := rewriteJSONImageField(body, pinned)
+				if rerr != nil {
+					return "", fmt.Errorf("pin verified image digest: %w", rerr)
+				}
+				r.Body = io.NopCloser(bytes.NewReader(rewritten))
+				r.ContentLength = int64(len(rewritten))
+			}
 		}
 	}
 
@@ -496,12 +579,27 @@ func countAllowed(reqCount int, maxCount *int) bool {
 // capabilitySetsAllowed reports whether all capability sets in the request are
 // covered by the allowlist. Each request set must be a subset of at least one
 // allowlisted set (OR-of-subsets).
+//
+// A request with no effective capabilities (empty Capabilities, or sets that
+// canonicalize to empty) is NOT treated as "no privilege": device runtimes such
+// as the NVIDIA container runtime expand an empty request to a default capability
+// set (gpu, utility, …). Such a request must therefore not vacuously satisfy an
+// allowlist that constrains capabilities — it is permitted only when the matching
+// allowlist entry itself declares no capability constraint.
 func capabilitySetsAllowed(reqSets [][]string, allowedSets [][]string) bool {
+	hasEffectiveCapability := false
 	for _, reqSet := range reqSets {
 		canonReq := canonicalizeCapabilitySet(reqSet)
+		if len(canonReq) == 0 {
+			continue
+		}
+		hasEffectiveCapability = true
 		if !capabilitySetCoveredByAny(canonReq, allowedSets) {
 			return false
 		}
+	}
+	if !hasEffectiveCapability {
+		return len(allowedSets) == 0
 	}
 	return true
 }
@@ -775,16 +873,23 @@ func (p containerCreatePolicy) denyHardeningReason(req containerCreateRequest) s
 // denyCapabilityReason enforces the CapAdd allowlist. RequireDropAll is
 // handled by denyHardeningReason.
 func (p containerCreatePolicy) denyCapabilityReason(hostConfig containerCreateHostConfig) string {
-	if p.allowAllCapabilities {
+	return capabilityAddDenyReason(hostConfig.CapAdd, p.allowAllCapabilities, p.allowedCapabilities, "container create")
+}
+
+// capabilityAddDenyReason enforces a CapAdd-style allowlist against the
+// requested capabilities, shared by the container-create and service
+// inspectors. subject prefixes the deny reason; "" means allowed.
+func capabilityAddDenyReason(requested []string, allowAll bool, allowed []string, subject string) string {
+	if allowAll {
 		return ""
 	}
-	for _, raw := range hostConfig.CapAdd {
+	for _, raw := range requested {
 		capability := normalizeCapability(raw)
 		if capability == "" {
 			continue
 		}
-		if !slices.Contains(p.allowedCapabilities, capability) {
-			return fmt.Sprintf("container create denied: capability %q is not in the allowed list", capability)
+		if !slices.Contains(allowed, capability) {
+			return fmt.Sprintf("%s denied: capability %q is not in the allowed list", subject, capability)
 		}
 	}
 	return ""
