@@ -1207,6 +1207,93 @@ func TestExtractDockerfileFromTarReaderReadError(t *testing.T) {
 	}
 }
 
+func TestDockerfileSyntaxFrontend(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no directive", "FROM busybox\n", ""},
+		{"standard frontend", "# syntax=docker/dockerfile:1\nFROM busybox\n", "docker/dockerfile:1"},
+		{"custom frontend", "# syntax=evil/frontend:latest\nFROM busybox\n", "evil/frontend:latest"},
+		{"case-insensitive key with spaces", "#   SYNTAX = ghcr.io/x/y:1 \nFROM busybox\n", "ghcr.io/x/y:1"},
+		{"escape before syntax still detected", "# escape=`\n# syntax=evil/frontend\nFROM busybox\n", "evil/frontend"},
+		{"syntax after blank line is a comment", "\n# syntax=evil/frontend\nFROM busybox\n", ""},
+		{"syntax after instruction ignored", "FROM busybox\n# syntax=evil/frontend\n", ""},
+		{"syntax after plain comment ignored", "# hello\n# syntax=evil/frontend\nFROM busybox\n", ""},
+		{"empty syntax value ignored", "# syntax=\nFROM busybox\n", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := dockerfileSyntaxFrontend([]byte(tt.in)); got != tt.want {
+				t.Fatalf("dockerfileSyntaxFrontend(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesBuildWithSyntaxFrontendByDefault(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected build with a syntax frontend to be denied")
+	}))
+
+	// No literal RUN: the parser directive is the bypass vector, since BuildKit
+	// delegates parsing to the (attacker-named) frontend image.
+	dockerfile := "# syntax=evil/frontend:latest\nFROM busybox\nCOPY . /app\n"
+	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(mustBuildContextTar(t, "Dockerfile", dockerfile)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	var resp DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(resp.Reason, "syntax frontend") {
+		t.Fatalf("reason = %q, want syntax-frontend denial", resp.Reason)
+	}
+}
+
+func TestLimitedReaderFailsLoudPastCap(t *testing.T) {
+	// More bytes than the cap → loud sentinel error (gzip-bomb guard).
+	lr := &limitedReader{r: bytes.NewReader(bytes.Repeat([]byte("A"), 100)), remaining: 10}
+	if _, err := io.ReadAll(lr); !errors.Is(err, errBuildContextDecompressedTooLarge) {
+		t.Fatalf("err = %v, want errBuildContextDecompressedTooLarge", err)
+	}
+
+	// Exactly the cap → read cleanly, no false positive.
+	lr = &limitedReader{r: bytes.NewReader(bytes.Repeat([]byte("B"), 10)), remaining: 10}
+	got, err := io.ReadAll(lr)
+	if err != nil {
+		t.Fatalf("unexpected err = %v", err)
+	}
+	if len(got) != 10 {
+		t.Fatalf("read %d bytes, want 10", len(got))
+	}
+}
+
+func TestLimitedReaderHonorsCustomSentinel(t *testing.T) {
+	// A non-nil tooLarge sentinel lets each decompression path surface its own
+	// deny message (e.g. image-load vs build) instead of the build default.
+	sentinel := errors.New("image-load specific too large")
+	lr := &limitedReader{r: bytes.NewReader(bytes.Repeat([]byte("A"), 100)), remaining: 10, tooLarge: sentinel}
+	if _, err := io.ReadAll(lr); !errors.Is(err, sentinel) {
+		t.Fatalf("err = %v, want custom sentinel %v", err, sentinel)
+	}
+
+	// A nil tooLarge still defaults to the build sentinel (back-compat).
+	lr = &limitedReader{r: bytes.NewReader(bytes.Repeat([]byte("A"), 100)), remaining: 10}
+	if _, err := io.ReadAll(lr); !errors.Is(err, errBuildContextDecompressedTooLarge) {
+		t.Fatalf("err = %v, want default build sentinel", err)
+	}
+}
+
 func mustBuildContextTar(t *testing.T, dockerfilePath string, dockerfile string) []byte {
 	t.Helper()
 

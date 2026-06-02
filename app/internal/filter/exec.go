@@ -238,12 +238,18 @@ func decodeExecCommand(raw json.RawMessage) ([]string, error) {
 	return fields, nil
 }
 
+// isRootUser reports whether the exec User selects (or defaults to) root. An
+// empty value means Docker runs the exec as the container's configured user,
+// which is root for most base images, so Sockguard conservatively treats empty
+// as root — matching isNonRootUser on the container-create path. Numeric "0" /
+// "0:N" and the literal name "root" (any case) are root.
 func isRootUser(user string) bool {
-	if user == "" {
-		return false
+	name, _, _ := strings.Cut(strings.TrimSpace(user), ":")
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return true
 	}
-	name, _, _ := strings.Cut(user, ":")
-	return name == "root" || name == "0"
+	return strings.EqualFold(name, "root") || name == "0"
 }
 
 func isExecCreatePath(normalizedPath string) bool {

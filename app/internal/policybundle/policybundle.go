@@ -202,9 +202,9 @@ func LoadBundle(path string) (verify.SignedEntity, error) {
 	return b, nil
 }
 
-// DigestYAML returns the sha256 hex digest of yaml. Exposed so wiring code
+// digestYAML returns the sha256 hex digest of yaml. Exposed so wiring code
 // can stamp PolicySnapshot.BundleDigest even when verification is disabled.
-func DigestYAML(yaml []byte) string {
+func digestYAML(yaml []byte) string {
 	h := sha256.Sum256(yaml)
 	return hex.EncodeToString(h[:])
 }

@@ -156,7 +156,7 @@ func buildChain(t *testing.T, socketPath string, rules ...filter.Rule) http.Hand
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	var h http.Handler = proxy.New(socketPath, logger)
+	var h http.Handler = proxy.NewWithOptions(socketPath, logger, proxy.Options{})
 	h = proxy.HijackHandler(socketPath, logger, h)
 	h = filter.MiddlewareWithOptions(compiled, logger, filter.Options{})(h)
 	return h

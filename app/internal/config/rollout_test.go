@@ -30,22 +30,3 @@ func TestParseRolloutMode(t *testing.T) {
 		})
 	}
 }
-
-func TestRolloutMode_AllowsPassThrough(t *testing.T) {
-	tests := []struct {
-		mode RolloutMode
-		want bool
-	}{
-		{RolloutEnforce, false},
-		{RolloutWarn, true},
-		{RolloutAudit, true},
-		{RolloutMode("unknown"), false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.mode.String(), func(t *testing.T) {
-			if got := tt.mode.AllowsPassThrough(); got != tt.want {
-				t.Fatalf("AllowsPassThrough() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}

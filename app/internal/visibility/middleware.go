@@ -598,13 +598,6 @@ func visibilityLabelFilterKey(normPath string) string {
 	return "label"
 }
 
-// requestVisible is the original label-selector-only check. Kept for backward
-// compatibility with existing tests that call it directly.
-func requestVisible(ctx context.Context, normPath string, selectors []compiledSelector, deps visibilityDeps) (bool, error) {
-	policy := &compiledPolicy{selectors: selectors}
-	return requestVisibleWithPolicy(ctx, normPath, policy, deps)
-}
-
 // requestVisibleWithPolicy checks the full policy (label selectors AND name/
 // image patterns) for a single-resource inspect or log path. Returns true if
 // the resource should be visible, false if it should be hidden.
@@ -615,10 +608,10 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 	if !hasSelectors && !hasPatterns {
 		return true, nil
 	}
-	if identifier, ok := containerInspectIdentifier(normPath); ok {
+	if identifier, ok := containerReadIdentifier(normPath); ok {
 		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindContainer, identifier, policy)
 	}
-	if identifier, ok := imageInspectIdentifier(normPath); ok {
+	if identifier, ok := imageReadIdentifier(normPath); ok {
 		return resourceVisibleWithPolicy(ctx, deps, dockerresource.KindImage, identifier, policy)
 	}
 	// Pattern axes only apply to containers and images. All other resource
@@ -824,12 +817,42 @@ func suffixedIdentifier(normPath, prefix, suffix string) (string, bool) {
 	return identifier, ok && identifier != "" && tail == suffix
 }
 
-func containerInspectIdentifier(normPath string) (string, bool) {
-	return suffixedIdentifier(normPath, "/containers/", "json")
+// readSubresourceIdentifier matches `/<prefix>/<id>/<suffix>` for any of the
+// given read-operation suffixes, trimming the suffix from the END so that
+// identifiers which themselves contain "/" (namespaced image refs such as
+// "registry.io/team/app") are preserved. The bare collection endpoints
+// (e.g. "/containers/json", "/images/get") never match because their remainder
+// lacks the leading "/<id>" segment.
+func readSubresourceIdentifier(normPath, prefix string, suffixes ...string) (string, bool) {
+	if !strings.HasPrefix(normPath, prefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(normPath, prefix)
+	for _, suffix := range suffixes {
+		trimmed := strings.TrimSuffix(rest, "/"+suffix)
+		if trimmed != rest && trimmed != "" {
+			return trimmed, true
+		}
+	}
+	return "", false
 }
 
-func imageInspectIdentifier(normPath string) (string, bool) {
-	return suffixedIdentifier(normPath, "/images/", "json")
+// containerReadIdentifier matches every GET/HEAD container read endpoint that
+// discloses or exfiltrates container data — inspect (/json), logs, stats, top,
+// filesystem changes, export, archive (read), and websocket attach — so the
+// visibility gate hides all of them for a hidden container, not just /json.
+// The visibility middleware only runs on GET/HEAD, so the write variants of
+// attach/archive never reach this matcher.
+func containerReadIdentifier(normPath string) (string, bool) {
+	return readSubresourceIdentifier(normPath, "/containers/",
+		"json", "logs", "stats", "top", "changes", "export", "archive", "attach/ws")
+}
+
+// imageReadIdentifier matches every GET image read endpoint that discloses or
+// exfiltrates image data — inspect (/json), history, and single-image export
+// (/get) — so a hidden image is hidden across all of them.
+func imageReadIdentifier(normPath string) (string, bool) {
+	return readSubresourceIdentifier(normPath, "/images/", "json", "history", "get")
 }
 
 func networkInspectIdentifier(normPath string) (string, bool) {

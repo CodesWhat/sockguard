@@ -306,6 +306,55 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadDefaultRequireRekorInclusion pins the secure-by-default Rekor
+// inclusion requirement for both image-trust verification paths. These are
+// wired via Viper SetDefault (not the Defaults() struct), so they only take
+// effect through Load — a regression that drops the SetDefault call would
+// silently make keyless verification accept signatures with no transparency
+// log proof.
+func TestLoadDefaultRequireRekorInclusion(t *testing.T) {
+	cfg, err := Load("/nonexistent/path.yaml")
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.RequestBody.ContainerCreate.ImageTrust.RequireRekorInclusion {
+		t.Error("RequestBody.ContainerCreate.ImageTrust.RequireRekorInclusion = false, want true by default")
+	}
+	if !cfg.RequestBody.Service.ImageTrust.RequireRekorInclusion {
+		t.Error("RequestBody.Service.ImageTrust.RequireRekorInclusion = false, want true by default")
+	}
+}
+
+// TestLoadDefaultRequireRekorInclusionExplicitOptOut confirms an operator can
+// still disable the Rekor requirement explicitly — the default must be an
+// override-able default, not a hard floor.
+func TestLoadDefaultRequireRekorInclusionExplicitOptOut(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "test.yaml")
+	yaml := `
+request_body:
+  container_create:
+    image_trust:
+      require_rekor_inclusion: false
+  service:
+    image_trust:
+      require_rekor_inclusion: false
+`
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.RequestBody.ContainerCreate.ImageTrust.RequireRekorInclusion {
+		t.Error("container_create require_rekor_inclusion = true, want false after explicit opt-out")
+	}
+	if cfg.RequestBody.Service.ImageTrust.RequireRekorInclusion {
+		t.Error("service require_rekor_inclusion = true, want false after explicit opt-out")
+	}
+}
+
 func TestLoadYAMLOverrides(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "test.yaml")

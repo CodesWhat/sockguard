@@ -169,17 +169,6 @@ type requestInspectPolicy struct {
 	denyReasonOnError string
 }
 
-// Middleware is the stable convenience API for callers that want filter middleware
-// with default options. Use MiddlewareWithOptions only when overriding deny
-// response behavior.
-//
-// Denied requests get a JSON response: most policy denials are 403, while
-// request-body size rejections return 413. Allowed requests pass through to
-// next. Decision metadata is written to the access log RequestMeta when present.
-func Middleware(rules []*CompiledRule, logger *slog.Logger) func(http.Handler) http.Handler {
-	return MiddlewareWithOptions(rules, logger, Options{})
-}
-
 // MiddlewareWithOptions returns HTTP middleware that evaluates each request
 // against compiled rules and allows deny response detail to be configured.
 func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {

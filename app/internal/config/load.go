@@ -108,6 +108,7 @@ func setLoadDefaults(v *viper.Viper, defaults Config) {
 	v.SetDefault("request_body.container_create.deny_unconfined_apparmor", defaults.RequestBody.ContainerCreate.DenyUnconfinedAppArmor)
 	v.SetDefault("request_body.container_create.allow_host_userns", defaults.RequestBody.ContainerCreate.AllowHostUserNS)
 	v.SetDefault("request_body.container_create.required_labels", defaults.RequestBody.ContainerCreate.RequiredLabels)
+	v.SetDefault("request_body.container_create.allowed_runtimes", defaults.RequestBody.ContainerCreate.AllowedRuntimes)
 	v.SetDefault("request_body.exec.allow_privileged", defaults.RequestBody.Exec.AllowPrivileged)
 	v.SetDefault("request_body.exec.allow_root_user", defaults.RequestBody.Exec.AllowRootUser)
 	v.SetDefault("request_body.exec.allowed_commands", defaults.RequestBody.Exec.AllowedCommands)
@@ -154,6 +155,14 @@ func setLoadDefaults(v *viper.Viper, defaults Config) {
 	v.SetDefault("request_body.service.allow_all_registries", defaults.RequestBody.Service.AllowAllRegistries)
 	v.SetDefault("request_body.service.allow_official", defaults.RequestBody.Service.AllowOfficial)
 	v.SetDefault("request_body.service.allowed_registries", defaults.RequestBody.Service.AllowedRegistries)
+	v.SetDefault("request_body.service.allow_all_capabilities", defaults.RequestBody.Service.AllowAllCapabilities)
+	v.SetDefault("request_body.service.allowed_capabilities", defaults.RequestBody.Service.AllowedCapabilities)
+	v.SetDefault("request_body.service.allow_sysctls", defaults.RequestBody.Service.AllowSysctls)
+	// Image trust defaults to requiring a Rekor inclusion proof for keyless
+	// signatures (matching policy_bundle), so old/revoked signatures cannot be
+	// replayed without a transparency-log entry. Operators must opt out explicitly.
+	v.SetDefault("request_body.container_create.image_trust.require_rekor_inclusion", true)
+	v.SetDefault("request_body.service.image_trust.require_rekor_inclusion", true)
 	v.SetDefault("request_body.swarm.allow_force_new_cluster", defaults.RequestBody.Swarm.AllowForceNewCluster)
 	v.SetDefault("request_body.swarm.allow_external_ca", defaults.RequestBody.Swarm.AllowExternalCA)
 	v.SetDefault("request_body.swarm.allowed_join_remote_addrs", defaults.RequestBody.Swarm.AllowedJoinRemoteAddrs)
@@ -227,9 +236,14 @@ func setLoadDefaults(v *viper.Viper, defaults Config) {
 }
 
 // LoadBytes parses YAML config from the provided bytes and returns the merged
-// Config with defaults applied. Unlike Load, env-var overrides are NOT applied:
-// the admin /admin/validate endpoint validates a candidate YAML body in
-// isolation, so the result depends only on what the caller submitted.
+// Config with defaults applied. Unlike Load, env-var overrides are NOT applied,
+// which makes it the loader for two distinct callers:
+//   - the admin /admin/validate endpoint, which validates a candidate YAML body
+//     in isolation, so the result depends only on what the caller submitted; and
+//   - the signed-policy-bundle path, where the on-disk YAML is authoritative.
+//     Parsing the verified bytes here (rather than re-reading the file with the
+//     SOCKGUARD_* overlay) guarantees the applied config equals the signed
+//     config: environment variables cannot silently override signed policy (#16).
 //
 // An empty body returns the built-in defaults — useful for CI pipelines that
 // want to confirm the proxy's defaults still validate. Malformed YAML returns

@@ -73,6 +73,7 @@ Allow or deny specific Docker API endpoint paths using glob patterns. Before mat
 - `HostConfig.IpcMode: host`
 - `HostConfig.UsernsMode: host`
 - A non-empty `HostConfig.Sysctls` map (kernel parameter tuning), unless `request_body.container_create.allow_sysctls` is set
+- A non-empty `HostConfig.Runtime` value not present in `request_body.container_create.allowed_runtimes` (defends against runtime-escape via alternative OCI runtimes; an empty/unset runtime selects the daemon default and is always permitted)
 - Any bind mount whose source is outside `request_body.container_create.allowed_bind_mounts`
 - Any `HostConfig.Devices` host path outside `request_body.container_create.allowed_devices`
 - `HostConfig.DeviceRequests` unless explicitly allowed
@@ -88,7 +89,7 @@ The exec-start re-inspection is necessarily best effort: Docker exposes metadata
 
 `POST /build` is inspected by default. Sockguard blocks remote build contexts, `networkmode=host`, and Dockerfiles containing `RUN` instructions unless those behaviors are explicitly allowed.
 
-`POST /services/create` and `POST /services/*/update` are inspected by default. Sockguard blocks host-network services, bind mounts outside `request_body.service.allowed_bind_mounts`, and service images outside the configured official/allowlisted registry set.
+`POST /services/create` and `POST /services/*/update` are inspected by default. Sockguard blocks host-network services, bind mounts outside `request_body.service.allowed_bind_mounts`, and service images outside the configured official/allowlisted registry set. The same `allowed_capabilities` / `allow_all_capabilities` capability allowlist, `allow_sysctls` sysctl gate, and `image_trust` cosign verification that apply to container-create are also enforced against the service's ContainerSpec, so swarm workloads cannot bypass container-create policy by going through the service API.
 
 `POST /volumes/create`, `POST /secrets/create`, and `POST /configs/create` are inspected by default. Sockguard blocks non-local volume drivers and driver options unless explicitly allowed, and blocks custom or template drivers on secrets/configs unless explicitly allowed.
 

@@ -91,6 +91,28 @@ func TestContainerCreatePolicyEnforcesHardeningRails(t *testing.T) {
 			opts: ContainerCreateOptions{AllowAllCapabilities: true, AllowHostUserNS: true},
 			body: `{"HostConfig":{"UsernsMode":"host"}}`,
 		},
+		{
+			name:       "non-default runtime denied by default",
+			opts:       ContainerCreateOptions{AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"Runtime":"kata-runtime"}}`,
+			wantReason: `container create denied: runtime "kata-runtime" is not allowlisted`,
+		},
+		{
+			name: "empty runtime is the default and allowed",
+			opts: ContainerCreateOptions{AllowAllCapabilities: true},
+			body: `{"HostConfig":{"Runtime":""}}`,
+		},
+		{
+			name: "allowlisted runtime permitted",
+			opts: ContainerCreateOptions{AllowAllCapabilities: true, AllowedRuntimes: []string{"runsc"}},
+			body: `{"HostConfig":{"Runtime":"runsc"}}`,
+		},
+		{
+			name:       "runtime not in allowlist denied",
+			opts:       ContainerCreateOptions{AllowAllCapabilities: true, AllowedRuntimes: []string{"runsc"}},
+			body:       `{"HostConfig":{"Runtime":"nvidia"}}`,
+			wantReason: `container create denied: runtime "nvidia" is not allowlisted`,
+		},
 	}
 
 	for _, tt := range tests {

@@ -199,14 +199,6 @@ func (g *requestIDGenerator) signalRefill() {
 	}
 }
 
-func (g *requestIDGenerator) close() {
-	if g == nil {
-		return
-	}
-	close(g.stopCh)
-	g.wg.Wait()
-}
-
 // accessLogAttrs leaves headroom beyond today's max log field count so adding
 // one or two attrs later does not force a new backing slice allocation.
 type accessLogAttrs [16]slog.Attr
@@ -248,17 +240,6 @@ func MetaForRequest(w http.ResponseWriter, r *http.Request) *RequestMeta {
 		return nil
 	}
 	return Meta(r.Context())
-}
-
-// SetDenied stamps a deny verdict onto the request metadata so the access
-// log records the decision and reason. If the matching meta is missing its
-// NormPath (which happens when a middleware that runs before `filter`
-// evaluates the deny) and `normalize` is non-nil, the callback is used to
-// populate NormPath so the access log still carries a clean path. Keeping
-// the normalization as a callback avoids an import cycle between `logging`
-// and `filter`.
-func SetDenied(w http.ResponseWriter, r *http.Request, reason string, normalize func(string) string) {
-	SetDeniedWithCode(w, r, "", reason, normalize)
 }
 
 // SetDeniedWithCode stamps a deny verdict plus a stable machine-readable

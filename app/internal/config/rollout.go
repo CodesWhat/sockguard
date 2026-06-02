@@ -28,12 +28,6 @@ const (
 // String returns the canonical lowercase form of the mode.
 func (m RolloutMode) String() string { return string(m) }
 
-// AllowsPassThrough reports whether a deny decision under this mode should let
-// the request continue to the upstream rather than write a deny response.
-func (m RolloutMode) AllowsPassThrough() bool {
-	return m == RolloutWarn || m == RolloutAudit
-}
-
 // ParseRolloutMode normalizes the operator-supplied value. An empty string is
 // treated as RolloutEnforce so omitting the field in YAML is equivalent to
 // configuring mode=enforce. Unknown values return (RolloutEnforce, false) so

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/sigstore/sigstore-go/pkg/tlog"
@@ -38,16 +39,17 @@ func (s *stubBundleVerifier) Verify(_ context.Context, _ []byte, _ verify.Signed
 // bundle verifier + a fake sigstore-bundle loader so the policy_bundle
 // reload paths can be exercised in isolation.
 type policyBundleFixture struct {
-	coordinator *reloadCoordinator
-	registry    *metrics.Registry
-	versioner   *admin.PolicyVersioner
-	swappable   *reload.SwappableHandler
-	cfgPath     string
-	sigPath     string
-	verifier    *stubBundleVerifier
-	yamlBytes   []byte
-	loadErr     error
-	loadCfg     *config.Config
+	coordinator  *reloadCoordinator
+	registry     *metrics.Registry
+	versioner    *admin.PolicyVersioner
+	swappable    *reload.SwappableHandler
+	cfgPath      string
+	sigPath      string
+	verifier     *stubBundleVerifier
+	yamlBytes    []byte
+	loadErr      error
+	loadCfg      *config.Config
+	loadBytesArg []byte
 }
 
 func newPolicyBundleFixture(t *testing.T, initial *config.Config, verifier *stubBundleVerifier) *policyBundleFixture {
@@ -82,6 +84,21 @@ func newPolicyBundleFixture(t *testing.T, initial *config.Config, verifier *stub
 		return &stubEntity{}, nil
 	}
 	deps.loadConfig = func(_ string) (*config.Config, error) {
+		if fixture.loadErr != nil {
+			return nil, fixture.loadErr
+		}
+		if fixture.loadCfg != nil {
+			return fixture.loadCfg, nil
+		}
+		clone := *initial
+		return &clone, nil
+	}
+	// With a bundle enabled, the reload parses the verified bytes via
+	// loadConfigBytes rather than re-reading the file. Mirror loadConfig so the
+	// fixture's loadErr/loadCfg knobs still drive the bundle path; also record
+	// the bytes handed in so a test can assert they are the verified ones.
+	deps.loadConfigBytes = func(b []byte) (*config.Config, error) {
+		fixture.loadBytesArg = append([]byte(nil), b...)
 		if fixture.loadErr != nil {
 			return nil, fixture.loadErr
 		}
@@ -221,6 +238,34 @@ func TestPolicyBundleReload_VerifyRunsBeforeConfigLoad(t *testing.T) {
 	}
 }
 
+// TestPolicyBundleReload_ParsesVerifiedBytesNotFile pins the #8/#16 reload fix:
+// when a bundle is enabled the reload parses the EXACT bytes it verified (via
+// loadConfigBytes) and never re-reads the file with loadConfig — so a concurrent
+// file swap or SOCKGUARD_* env vars cannot divert the applied config.
+func TestPolicyBundleReload_ParsesVerifiedBytesNotFile(t *testing.T) {
+	verifier := &stubBundleVerifier{res: policybundle.VerifyResult{Signer: "keyed:1"}}
+	f := newPolicyBundleFixture(t, policyBundleInitialConfig(), verifier)
+	f.yamlBytes = []byte("rules: []\n# signed-marker\n")
+
+	loadCalled := false
+	f.coordinator.deps.loadConfig = func(_ string) (*config.Config, error) {
+		loadCalled = true
+		return nil, errors.New("file re-read MUST NOT happen on the bundle path")
+	}
+
+	f.coordinator.reload()
+
+	if loadCalled {
+		t.Fatal("loadConfig (file re-read) must not run on the signed-bundle path")
+	}
+	if string(f.loadBytesArg) != string(f.yamlBytes) {
+		t.Fatalf("loadConfigBytes parsed %q, want the verified bytes %q", f.loadBytesArg, f.yamlBytes)
+	}
+	if got, ok := metricsReloadCount(t, f.registry, "ok"); !ok || got != 1 {
+		t.Fatalf("ok count = %d (found=%v), want 1", got, ok)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // verifyPolicyBundleAtStartup — exhaustive branch coverage.
 // Every failure branch of the signature gate aborts startup, so each one
@@ -239,19 +284,22 @@ func newStartupCfg() *config.Config {
 func TestVerifyPolicyBundleAtStartup_Disabled(t *testing.T) {
 	cfg := config.Defaults()
 	deps := newServeTestDeps()
-	res, err := verifyPolicyBundleAtStartup(context.Background(), &cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	res, signedCfg, err := verifyPolicyBundleAtStartup(context.Background(), &cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
 	if err != nil {
 		t.Fatalf("err = %v, want nil for disabled", err)
 	}
 	if res != nil {
 		t.Fatalf("res = %+v, want nil for disabled", res)
 	}
+	if signedCfg != nil {
+		t.Fatalf("signedCfg = %+v, want nil for disabled", signedCfg)
+	}
 }
 
 func TestVerifyPolicyBundleAtStartup_NoCfgFile(t *testing.T) {
 	cfg := newStartupCfg()
 	deps := newServeTestDeps()
-	res, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "", deps, &stubBundleVerifier{}, newDiscardLogger())
+	res, _, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "", deps, &stubBundleVerifier{}, newDiscardLogger())
 	if err == nil {
 		t.Fatal("err = nil, want failure when --config is empty")
 	}
@@ -264,7 +312,7 @@ func TestVerifyPolicyBundleAtStartup_NoSignaturePath(t *testing.T) {
 	cfg := newStartupCfg()
 	cfg.PolicyBundle.SignaturePath = ""
 	deps := newServeTestDeps()
-	_, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	_, _, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
 	if err == nil {
 		t.Fatal("err = nil, want failure when signature_path is empty")
 	}
@@ -275,7 +323,7 @@ func TestVerifyPolicyBundleAtStartup_ReadError(t *testing.T) {
 	deps := newServeTestDeps()
 	sentinel := errors.New("read failed")
 	deps.readConfigBytes = func(string) ([]byte, error) { return nil, sentinel }
-	_, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	_, _, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want wrapped %v", err, sentinel)
 	}
@@ -287,7 +335,7 @@ func TestVerifyPolicyBundleAtStartup_LoadEntityError(t *testing.T) {
 	deps.readConfigBytes = func(string) ([]byte, error) { return []byte("rules: []\n"), nil }
 	sentinel := errors.New("load entity failed")
 	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return nil, sentinel }
-	_, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
+	_, _, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want %v", err, sentinel)
 	}
@@ -300,7 +348,7 @@ func TestVerifyPolicyBundleAtStartup_VerifyError(t *testing.T) {
 	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return &stubEntity{}, nil }
 	sentinel := errors.New("signature mismatch")
 	verifier := &stubBundleVerifier{err: sentinel}
-	_, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
+	_, _, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want %v", err, sentinel)
 	}
@@ -314,7 +362,7 @@ func TestVerifyPolicyBundleAtStartup_Success(t *testing.T) {
 	want := policybundle.VerifyResult{Signer: "keyed:1234", DigestHex: "abcd", ElapsedMS: 42}
 	verifier := &stubBundleVerifier{res: want}
 
-	got, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
+	got, signedCfg, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -323,6 +371,61 @@ func TestVerifyPolicyBundleAtStartup_Success(t *testing.T) {
 	}
 	if got.Signer != want.Signer || got.DigestHex != want.DigestHex {
 		t.Fatalf("got = %+v, want %+v", got, want)
+	}
+	if signedCfg == nil {
+		t.Fatal("signedCfg = nil, want config parsed from verified bytes")
+	}
+}
+
+// TestVerifyPolicyBundleAtStartup_ParsesVerifiedBytesNotFile pins the #8/#16
+// fix: the returned config is parsed from the exact bytes that were verified
+// (via loadConfigBytes), never a fresh file read, and the SOCKGUARD_* env
+// overlay is not applied to signed policy.
+func TestVerifyPolicyBundleAtStartup_ParsesVerifiedBytesNotFile(t *testing.T) {
+	cfg := newStartupCfg()
+	deps := newServeTestDeps()
+
+	const verifiedYAML = "upstream:\n  socket: /verified/docker.sock\n"
+	var verifiedBytes []byte
+	deps.readConfigBytes = func(string) ([]byte, error) {
+		verifiedBytes = []byte(verifiedYAML)
+		return verifiedBytes, nil
+	}
+	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return &stubEntity{}, nil }
+	verifier := &stubBundleVerifier{res: policybundle.VerifyResult{Signer: "keyed:1"}}
+
+	// loadConfigBytes must receive the exact bytes that were verified — not a
+	// re-read of the file (which a TOCTOU attacker could have swapped).
+	var gotBytes []byte
+	deps.loadConfigBytes = func(b []byte) (*config.Config, error) {
+		gotBytes = b
+		return config.LoadBytes(b)
+	}
+
+	_, signedCfg, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if string(gotBytes) != verifiedYAML {
+		t.Fatalf("loadConfigBytes received %q, want the verified bytes %q", gotBytes, verifiedYAML)
+	}
+	if signedCfg == nil || signedCfg.Upstream.Socket != "/verified/docker.sock" {
+		t.Fatalf("signedCfg = %+v, want config parsed from the verified bytes", signedCfg)
+	}
+}
+
+// TestVerifyPolicyBundleAtStartup_ParseError surfaces a malformed verified body
+// as a startup failure rather than silently applying a partial config.
+func TestVerifyPolicyBundleAtStartup_ParseError(t *testing.T) {
+	cfg := newStartupCfg()
+	deps := newServeTestDeps()
+	deps.readConfigBytes = func(string) ([]byte, error) { return []byte("rules: [:"), nil }
+	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return &stubEntity{}, nil }
+	verifier := &stubBundleVerifier{res: policybundle.VerifyResult{Signer: "keyed:1"}}
+
+	_, _, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, verifier, newDiscardLogger())
+	if err == nil || !strings.Contains(err.Error(), "parse verified config") {
+		t.Fatalf("err = %v, want parse-verified-config failure", err)
 	}
 }
 

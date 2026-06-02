@@ -157,7 +157,13 @@ func TestCacheDoesNotCacheErrors(t *testing.T) {
 	}
 }
 
-func TestCacheCachesNotFound(t *testing.T) {
+// TestCacheDoesNotCacheNotFound pins the owner-isolation fix: not-found
+// verdicts must NOT be memoized. Caching found=false would let an attacker
+// inspect a not-yet-existing name (pass-through), then within the TTL a victim
+// creates a resource with that name and the attacker's later operations would
+// hit the stale negative entry and bypass ownership. Each sequential lookup of
+// a missing resource therefore re-resolves upstream.
+func TestCacheDoesNotCacheNotFound(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int32
 	cache := New(
@@ -176,8 +182,40 @@ func TestCacheCachesNotFound(t *testing.T) {
 	if _, found, err := cache.Lookup(context.Background(), "containers", "missing"); err != nil || found {
 		t.Fatalf("second lookup = (%v, found=%v), want (nil, found=false)", err, found)
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("resolver calls for cached not-found = %d, want 1", got)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("resolver calls for uncached not-found = %d, want 2 (negatives not memoized)", got)
+	}
+}
+
+// TestCacheResolvesAfterMissThenCreate is the regression test for the
+// isolation window itself: a not-found lookup followed by the resource coming
+// into existence within the TTL must reflect the new (found) state, not a
+// stale negative.
+func TestCacheResolvesAfterMissThenCreate(t *testing.T) {
+	t.Parallel()
+	var exists atomic.Bool
+	cache := New(
+		10*time.Second,
+		4,
+		time.Now,
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			if exists.Load() {
+				return map[string]string{"owner": "victim"}, true, nil
+			}
+			return nil, false, nil
+		},
+	)
+
+	if _, found, err := cache.Lookup(context.Background(), "containers", "shared-name"); err != nil || found {
+		t.Fatalf("pre-create lookup = (%v, found=%v), want (nil, found=false)", err, found)
+	}
+	exists.Store(true)
+	labels, found, err := cache.Lookup(context.Background(), "containers", "shared-name")
+	if err != nil || !found {
+		t.Fatalf("post-create lookup = (%v, found=%v), want (nil, found=true)", err, found)
+	}
+	if labels["owner"] != "victim" {
+		t.Fatalf("post-create labels = %v, want owner=victim (no stale negative)", labels)
 	}
 }
 

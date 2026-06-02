@@ -71,7 +71,12 @@ func imageIdentifier(normPath string) (string, bool) {
 		return "", false
 	}
 
-	for _, suffix := range []string{"/json", "/history", "/push", "/tag"} {
+	// "/get" exports a single image as a tarball (GET /images/{name}/get) — a
+	// data-exfiltration path that must be owner-checked against {name}. Without
+	// it here, imageIdentifier would return "{name}/get", the ownership inspect
+	// would 404, and the request would pass through unfiltered, letting a client
+	// export another owner's image.
+	for _, suffix := range []string{"/json", "/history", "/push", "/tag", "/get"} {
 		if strings.HasSuffix(rest, suffix) {
 			return strings.TrimSuffix(rest, suffix), true
 		}

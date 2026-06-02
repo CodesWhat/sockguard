@@ -26,6 +26,7 @@ import (
 
 type serveDeps struct {
 	loadConfig          func(string) (*config.Config, error)
+	loadConfigBytes     func([]byte) (*config.Config, error)
 	readConfigBytes     func(string) ([]byte, error)
 	newLogger           func(string, string, string) (*slog.Logger, io.Closer, error)
 	newAuditLogger      func(string, string) (*logging.AuditLogger, io.Closer, error)
@@ -53,6 +54,7 @@ var processUmaskMu sync.Mutex
 func newServeDeps() *serveDeps {
 	deps := &serveDeps{
 		loadConfig:          config.Load,
+		loadConfigBytes:     config.LoadBytes,
 		readConfigBytes:     os.ReadFile,
 		newLogger:           logging.New,
 		newAuditLogger:      logging.NewAudit,

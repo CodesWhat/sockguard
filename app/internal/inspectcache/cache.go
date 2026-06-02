@@ -39,7 +39,9 @@ type key struct {
 }
 
 // Cache coalesces concurrent upstream inspect calls for the same resource
-// and memoizes successful/not-found results for a short TTL.
+// and memoizes successful (found) results for a short TTL. Not-found results
+// are intentionally never memoized — see Lookup — to avoid an owner-isolation
+// window where a name created within the TTL is still treated as nonexistent.
 //
 // Eviction is approximate LRU: storeLocked drops the tail when the map hits
 // maxSize and re-promotes refreshed entries, but cache hits do NOT promote.
@@ -77,7 +79,8 @@ func New(
 }
 
 // Lookup returns cached labels for a resource when they are still fresh and
-// shares any in-flight miss with concurrent callers. Errors are never cached.
+// shares any in-flight miss with concurrent callers. Errors and not-found
+// results are never cached (only found results are memoized).
 //
 // The returned map is shared with the cache and any concurrent waiter — it is
 // MUST NOT be mutated by the caller. Each lookup is invariably followed by a
@@ -109,7 +112,14 @@ func (c *Cache) Lookup(ctx context.Context, kind, identifier string) (map[string
 	labels, found, err := c.resolve(ctx, kind, identifier)
 
 	c.mu.Lock()
-	if err == nil {
+	// Only memoize positive (found) results. Caching a not-found verdict would
+	// open an owner-isolation window: an attacker could inspect a not-yet-
+	// existing name (caching found=false → pass-through), then within the TTL a
+	// victim creates a resource with that name, and the attacker's subsequent
+	// operations would hit the stale negative entry and bypass the ownership
+	// check. Concurrent identical misses are still coalesced via inFlight; they
+	// just are not persisted past that in-flight window.
+	if err == nil && found {
 		c.storeLocked(cacheKey, labels, found, c.now())
 	}
 	delete(c.inFlight, cacheKey)

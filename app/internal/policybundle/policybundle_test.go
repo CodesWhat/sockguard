@@ -205,10 +205,10 @@ func TestDisabledVerifier_RejectsCalls(t *testing.T) {
 
 func TestDigestYAML_Deterministic(t *testing.T) {
 	t.Parallel()
-	got := DigestYAML([]byte("hello world"))
+	got := digestYAML([]byte("hello world"))
 	want := "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
 	if got != want {
-		t.Fatalf("DigestYAML(hello world) = %q, want %q", got, want)
+		t.Fatalf("digestYAML(hello world) = %q, want %q", got, want)
 	}
 }
 
@@ -247,8 +247,8 @@ func TestVerify_KeylessHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if res.DigestHex != DigestYAML(yaml) {
-		t.Fatalf("DigestHex = %q, want %q", res.DigestHex, DigestYAML(yaml))
+	if res.DigestHex != digestYAML(yaml) {
+		t.Fatalf("DigestHex = %q, want %q", res.DigestHex, digestYAML(yaml))
 	}
 	if res.Signer == "" {
 		t.Fatal("Signer must be populated on success")

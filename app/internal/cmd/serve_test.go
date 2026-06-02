@@ -1686,7 +1686,7 @@ func TestFullMiddlewareChainIntegration(t *testing.T) {
 	})
 
 	var handler http.Handler = upstream
-	handler = filter.Middleware(rules, logger)(handler)
+	handler = filter.MiddlewareWithOptions(rules, logger, filter.Options{})(handler)
 	handler = pathInterceptor("/health", healthHandler, handler)
 	handler = logging.RequestIDMiddleware()(handler)
 	handler = logging.AccessLogMiddleware(logger)(handler)

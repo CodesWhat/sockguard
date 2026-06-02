@@ -2,13 +2,12 @@
 
 ## Supported Versions
 
-Security fixes are shipped on the **latest release line only**. Now that v1.0
-is tagged we maintain a rolling two-minor-version window (current + one prior
-minor).
+Security fixes are shipped on the **latest release line only**. Support follows a rolling two-minor-version window (current + one prior minor).
 
 | Version           | Supported          |
 | ----------------- | ------------------ |
-| 1.0.x (latest)    | :white_check_mark: |
+| 1.1.x (latest)    | :white_check_mark: |
+| 1.0.x             | :white_check_mark: |
 | 0.8.x             | :x:                |
 | < 0.8             | :x:                |
 

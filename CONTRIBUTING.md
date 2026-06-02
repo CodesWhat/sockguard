@@ -119,7 +119,7 @@ Scope is optional. Subject line should be imperative, lowercase, no trailing per
 - **Table-driven tests** using stdlib `testing` package
 - **`httptest`** for HTTP handler and middleware tests
 - **Fuzz tests** for filter/config parsing
-- Coverage target: 90%+
+- Coverage target: 96%+
 
 ### TypeScript
 
@@ -135,7 +135,8 @@ Scope is optional. Subject line should be imperative, lowercase, no trailing per
 | `goreleaser-snapshot` | Release dry-run (skipped if goreleaser not installed) |
 | `go-lint` | golangci-lint on Go code |
 | `go-test` | Full test suite with race detector |
-| `go-fuzz` | 5 s smoke run across all 8 fuzz targets |
+| `govulncheck` | Scan for known-vulnerable reachable deps and stdlib CVEs (skipped if not installed) |
+| `go-fuzz` | 5 s smoke run across a subset of fuzz targets |
 | `lockfile-dedupe` | Detect lockfile drift (`npm dedupe --dry-run`) |
 | `knip` | Unused files/exports/deps in TS workspaces |
 | `biome` | Biome lint and format check on TS/JS |

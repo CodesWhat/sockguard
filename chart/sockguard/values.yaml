@@ -3,8 +3,13 @@
 
 image:
   repository: codeswhat/sockguard
-  tag: latest
+  # Empty defaults to the chart's appVersion (a pinned release tag) rather than
+  # the mutable "latest". Override with --set image.tag=… to track another tag.
+  tag: ""
   pullPolicy: IfNotPresent
+
+# Path the liveness/readiness probes hit. Must match config.health.path below.
+healthPath: /health
 
 # Sockguard configuration — passed verbatim as sockguard.yaml via ConfigMap.
 # The upstream socket must be /var/run/docker.sock because the DaemonSet

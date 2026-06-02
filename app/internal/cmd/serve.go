@@ -96,6 +96,33 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		}
 	}()
 
+	// Bundle verification, when configured, runs BEFORE anything consumes the
+	// config (audit logger, compat expansion, rule compilation, the handler
+	// chain). A startup that cannot verify the signature is fatal: sockguard
+	// would otherwise be serving rules an attacker may have tampered with on
+	// disk. The verifier itself is reload-immutable (trust material is in
+	// [[reload-immutable-fields]]) so the same instance is reused for
+	// SIGHUP/fsnotify reloads.
+	bundleVerifier, err := deps.buildBundleVerifier(cfg.PolicyBundle)
+	if err != nil {
+		return fmt.Errorf("policy bundle verifier: %w", err)
+	}
+	bundleResult, signedCfg, err := verifyPolicyBundleAtStartup(cmd.Context(), cfg, cfgFile, deps, bundleVerifier, logger)
+	if err != nil {
+		return fmt.Errorf("policy bundle: %w", err)
+	}
+	if signedCfg != nil {
+		// The signed YAML is authoritative. Re-apply CLI flag overrides — still
+		// the highest-precedence operator input, supplied at launch — on top of
+		// the signed config, then drop the env-overlaid gate config entirely so
+		// every downstream consumer (audit logger, compat, rule compiler, chain,
+		// reload coordinator) reads only verified policy.
+		if err := applyFlagOverrides(cmd, signedCfg); err != nil {
+			return fmt.Errorf("apply flag overrides: %w", err)
+		}
+		cfg = signedCfg
+	}
+
 	var auditLogger *logging.AuditLogger
 	var auditLogOutputCloser io.Closer
 	if cfg.Log.Audit.Enabled {
@@ -123,21 +150,6 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	if err := deps.verifyUpstreamReachable(cfg.Upstream.Socket, logger); err != nil {
 		return err
-	}
-
-	// Bundle verification, when configured, runs BEFORE the proxy starts
-	// taking traffic. A startup that cannot verify the signature is fatal:
-	// sockguard would otherwise be serving rules an attacker may have
-	// tampered with on disk. The verifier itself is reload-immutable
-	// (trust material is in [[reload-immutable-fields]]) so the same
-	// instance is reused for SIGHUP/fsnotify reloads.
-	bundleVerifier, err := deps.buildBundleVerifier(cfg.PolicyBundle)
-	if err != nil {
-		return fmt.Errorf("policy bundle verifier: %w", err)
-	}
-	bundleResult, err := verifyPolicyBundleAtStartup(cmd.Context(), cfg, cfgFile, deps, bundleVerifier, logger)
-	if err != nil {
-		return fmt.Errorf("policy bundle: %w", err)
 	}
 
 	// Versioner publishes the initial generation BEFORE the chain is built so
@@ -358,6 +370,8 @@ func startAdminServer(
 		return nil, nil, func() {}, fmt.Errorf("admin listener: %w", err)
 	}
 
+	warnIfAdminListenerWideOpen(cfg, logger)
+
 	adminHandler := buildAdminHandlerChain(cfg, logger, auditLogger, versioner)
 	adminServer := newAdminHTTPServer(adminHandler)
 	adminErrCh := make(chan error, 1)
@@ -395,10 +409,6 @@ type serveHandlerBuild struct {
 	ClientProfiles map[string]filter.Policy
 }
 
-func buildServeHandlerWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
-	return buildServeHandlerChainWithRuntime(b)
-}
-
 // buildServeHandlerChainWithRuntime is the production / reload entry point:
 // it returns both the composed http.Handler and a teardown closure that stops
 // every chain-scoped goroutine (the rate-limit sampler and per-profile
@@ -413,8 +423,8 @@ func buildServeHandlerWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
 // pass nil; in that case the layer is skipped.
 //
 // Tests that don't care about teardown should continue calling
-// buildServeHandler / buildServeHandlerWithRuntime which discard it — the
-// goroutines die with the test process anyway.
+// buildServeHandler which discards it — the goroutines die with the test
+// process anyway.
 func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
 	clientProfiles, err := buildServeClientProfiles(b.Cfg)
 	if err != nil {
@@ -688,6 +698,20 @@ func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) h
 	return clientacl.Middleware(cfg.Upstream.Socket, logger, serveClientACLOptions(cfg))
 }
 
+// withAdminClientACL applies ONLY the client CIDR allowlist to the dedicated
+// admin listener. The dedicated admin chain intentionally omits the full
+// clientacl middleware — container-label ACLs and per-profile selection are
+// Docker-API concepts with no meaning for admin endpoints — but a TCP admin
+// listener must still enforce the same clients.allowed_cidrs gate the main
+// listener applies (#21). Passing only AllowedCIDRs yields a CIDR-only
+// middleware; when no CIDRs are configured clientacl.Middleware compiles to a
+// pass-through, so this is a no-op until an operator sets clients.allowed_cidrs.
+func withAdminClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+	return clientacl.Middleware(cfg.Upstream.Socket, logger, clientacl.Options{
+		AllowedCIDRs: cfg.Clients.AllowedCIDRs,
+	})
+}
+
 func withAdminEndpoint(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
 	return admin.NewValidateInterceptor(admin.Options{
 		Path:            cfg.Admin.Path,
@@ -719,6 +743,15 @@ func withPolicyVersionEndpoint(cfg *config.Config, logger *slog.Logger, versione
 // The supplied ctx is the cobra command context; SIGINT/SIGTERM during
 // startup verification must cancel the verifier rather than block until the
 // per-bundle deadline expires.
+// verifyPolicyBundleAtStartup verifies the signed policy bundle and, on success,
+// returns the authoritative *config.Config parsed from the exact bytes that were
+// verified. The signed YAML is read once: the same byte slice is both checked
+// against the signature and parsed (via deps.loadConfigBytes, which applies no
+// SOCKGUARD_* environment overlay). This closes the verify-then-load TOCTOU
+// (#8) — verification and application can no longer see different file contents
+// — and stops environment variables from silently overriding signed policy
+// (#16). When policy_bundle is disabled it returns (nil, nil, nil) and the
+// caller keeps using the env-overlaid config.
 func verifyPolicyBundleAtStartup(
 	parent context.Context,
 	cfg *config.Config,
@@ -726,24 +759,24 @@ func verifyPolicyBundleAtStartup(
 	deps *serveDeps,
 	verifier policybundle.Verifier,
 	logger *slog.Logger,
-) (*policybundle.VerifyResult, error) {
+) (*policybundle.VerifyResult, *config.Config, error) {
 	if !cfg.PolicyBundle.Enabled {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if cfgFile == "" {
-		return nil, errors.New("policy_bundle.enabled=true but no --config file was supplied; sockguard cannot verify an in-memory default")
+		return nil, nil, errors.New("policy_bundle.enabled=true but no --config file was supplied; sockguard cannot verify an in-memory default")
 	}
 	if cfg.PolicyBundle.SignaturePath == "" {
-		return nil, errors.New("policy_bundle.signature_path is required when policy_bundle.enabled=true")
+		return nil, nil, errors.New("policy_bundle.signature_path is required when policy_bundle.enabled=true")
 	}
 
 	yamlBytes, err := deps.readConfigBytes(cfgFile)
 	if err != nil {
-		return nil, fmt.Errorf("read config YAML for verification: %w", err)
+		return nil, nil, fmt.Errorf("read config YAML for verification: %w", err)
 	}
 	entity, err := deps.loadBundleEntity(cfg.PolicyBundle.SignaturePath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if parent == nil {
@@ -753,15 +786,23 @@ func verifyPolicyBundleAtStartup(
 	defer cancel()
 	result, err := verifier.Verify(ctx, yamlBytes, entity)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+
+	// Parse the verified bytes — never a fresh re-read — so the applied config is
+	// exactly what was signed, with no environment overlay.
+	signedCfg, err := deps.loadConfigBytes(yamlBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse verified config: %w", err)
+	}
+
 	logger.Info("policy bundle verified",
 		"signature_path", cfg.PolicyBundle.SignaturePath,
 		"signer", result.Signer,
 		"digest", result.DigestHex,
 		"elapsed_ms", result.ElapsedMS,
 	)
-	return &result, nil
+	return &result, signedCfg, nil
 }
 
 // bundleVerifyDeadline returns the wall-clock budget for one verification
@@ -1014,6 +1055,17 @@ func buildAdminHandlerChain(cfg *config.Config, logger *slog.Logger, auditLogger
 	if versioner != nil {
 		h = withPolicyVersionEndpoint(cfg, logger, versioner)(h)
 	}
+	// CIDR backstop (#21): a dedicated TCP admin listener must still honor the
+	// listen-wide client CIDR allowlist the main listener enforces, otherwise
+	// relocating admin to its own port silently drops the IP gate the struct
+	// docs promise admin "inherits". Wrapped inside the audit/request-id/access
+	// layers so a denial is still logged with full metadata, but outside the
+	// admin endpoints so a disallowed IP never reaches the YAML validator.
+	// Unix-socket admin listeners are owner-only and carry no meaningful client
+	// IP, so the guard is TCP-only.
+	if cfg.Admin.Listen.Address != "" {
+		h = withAdminClientACL(cfg, logger)(h)
+	}
 	if cfg.Log.Audit.Enabled && auditLogger != nil {
 		h = withAuditLog(auditLogger, cfg)(h)
 	}
@@ -1042,6 +1094,29 @@ func newAdminHTTPServer(handler http.Handler) *http.Server {
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
 	}
+}
+
+// warnIfAdminListenerWideOpen emits a startup warning when the dedicated admin
+// listener is a non-loopback plaintext (non-mTLS) TCP listener with no client
+// CIDR allowlist. In that configuration the admin endpoints — which accept YAML
+// for parsing and expose policy metadata — are reachable by any host that can
+// route to the port, with neither authentication nor an IP backstop (#21). The
+// CIDR guard in buildAdminHandlerChain closes the gap when clients.allowed_cidrs
+// is set; this warning covers the remaining case where it is empty.
+func warnIfAdminListenerWideOpen(cfg *config.Config, logger *slog.Logger) {
+	listen := cfg.Admin.Listen
+	if listen.Address == "" || listen.TLS.Complete() {
+		return
+	}
+	if config.IsLoopbackTCPAddress(listen.Address) {
+		return
+	}
+	if len(cfg.Clients.AllowedCIDRs) > 0 {
+		return
+	}
+	logger.Warn("admin listener is non-loopback plaintext TCP with no client CIDR allowlist: admin endpoints are reachable without authentication from any source IP — configure admin.listen.tls (mutual TLS) or clients.allowed_cidrs",
+		"address", listen.Address,
+	)
 }
 
 // adminListenerAddr returns a human-readable address for the dedicated admin

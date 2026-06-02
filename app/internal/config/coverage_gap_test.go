@@ -320,7 +320,24 @@ func TestValidateRequestBodyUnixPeerProfileRequiresKnownProfile(t *testing.T) {
 	}
 }
 
-func TestValidateRequestBodyUnixPeerProfileAcceptsPositivePID(t *testing.T) {
+func TestValidateRequestBodyUnixPeerProfileAcceptsPIDNarrowingUIDMatch(t *testing.T) {
+	cfg := Defaults()
+	cfg.Listen.Socket = "/tmp/sockguard.sock"
+	cfg.Listen.Address = ""
+	cfg.Clients.Profiles = []ClientProfileConfig{
+		{Name: "ro", Rules: []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"}}},
+	}
+	// A positive PID is allowed only when it narrows a UID (or GID) match.
+	cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{
+		{Profile: "ro", UIDs: []uint32{1000}, PIDs: []int32{1}},
+	}
+
+	if errs := validateRequestBody(&cfg); len(errs) != 0 {
+		t.Fatalf("validateRequestBody() errors = %v, want none", errs)
+	}
+}
+
+func TestValidateRequestBodyUnixPeerProfileRejectsPIDOnly(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Socket = "/tmp/sockguard.sock"
 	cfg.Listen.Address = ""
@@ -328,11 +345,12 @@ func TestValidateRequestBodyUnixPeerProfileAcceptsPositivePID(t *testing.T) {
 		{Name: "ro", Rules: []RuleConfig{{Match: MatchConfig{Method: "GET", Path: "/_ping"}, Action: "allow"}}},
 	}
 	cfg.Clients.UnixPeerProfiles = []ClientUnixPeerProfileAssignmentConfig{
-		{Profile: "ro", PIDs: []int32{1}},
+		{Profile: "ro", PIDs: []int32{4242}},
 	}
 
-	if errs := validateRequestBody(&cfg); len(errs) != 0 {
-		t.Fatalf("validateRequestBody() errors = %v, want none", errs)
+	errs := validateRequestBody(&cfg)
+	if !containsSubstring(errs, "must not select by pid alone") {
+		t.Fatalf("expected PID-only rejection, got %v", errs)
 	}
 }
 

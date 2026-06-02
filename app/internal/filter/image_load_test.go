@@ -1,7 +1,9 @@
 package filter
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -48,6 +50,51 @@ func TestImageLoadAllowsWhenConfiguredAndPreservesBody(t *testing.T) {
 	}
 	if req.ContentLength != int64(len(payload)) {
 		t.Fatalf("content length = %d, want %d", req.ContentLength, len(payload))
+	}
+}
+
+func TestImageLoadAllowsGzippedArchiveAndPreservesBody(t *testing.T) {
+	// `docker save img | gzip | docker load` sends a gzip-compressed tar. The
+	// manifest must be inspected through the gzip layer (not falsely denied as
+	// "image manifest is not inspectable"), and the original compressed body
+	// must be forwarded byte-for-byte.
+	payload := mustGzip(t, mustImageLoadTar(t, `[{"RepoTags":["registry.example.com/acme/app:latest"]}]`))
+	wantDigest := sha256.Sum256(payload)
+	req := httptest.NewRequest(http.MethodPost, "/v1.45/images/load", bytes.NewReader(payload))
+
+	reason, err := newImageLoadPolicy(ImageLoadOptions{AllowAllRegistries: true}).inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty (gzipped archive must be inspectable)", reason)
+	}
+
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if gotDigest := sha256.Sum256(body); gotDigest != wantDigest {
+		t.Fatalf("body sha256 = %s, want %s (compressed body must be preserved)", hex.EncodeToString(gotDigest[:]), hex.EncodeToString(wantDigest[:]))
+	}
+	if req.ContentLength != int64(len(payload)) {
+		t.Fatalf("content length = %d, want %d", req.ContentLength, len(payload))
+	}
+}
+
+func TestImageLoadInspectsGzippedArchiveForPolicy(t *testing.T) {
+	// A gzipped archive whose tag is not allowlisted must still be denied by the
+	// registry policy — proving the manifest was actually read through gzip,
+	// rather than the request slipping through uninspected.
+	payload := mustGzip(t, mustImageLoadTar(t, `[{"RepoTags":["registry.example.com/acme/app:latest"]}]`))
+	req := httptest.NewRequest(http.MethodPost, "/images/load", bytes.NewReader(payload))
+
+	reason, err := newImageLoadPolicy(ImageLoadOptions{AllowedRegistries: []string{"ghcr.io"}}).inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != `image load denied: registry "registry.example.com" is not allowlisted` {
+		t.Fatalf("reason = %q, want registry denial from inspected gzip manifest", reason)
 	}
 }
 
@@ -231,9 +278,9 @@ func TestExtractImageLoadRepoTagsManifestErrors(t *testing.T) {
 			return nil, sentinel
 		}
 
-		_, _, err := iod.extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `[]`)))
+		_, _, err := iod.extractImageLoadRepoTagsFromTar(tar.NewReader(bytes.NewReader(mustImageLoadTar(t, `[]`))))
 		if !errors.Is(err, sentinel) {
-			t.Fatalf("extractImageLoadRepoTags() error = %v, want wrapped %v", err, sentinel)
+			t.Fatalf("extractImageLoadRepoTagsFromTar() error = %v, want wrapped %v", err, sentinel)
 		}
 	})
 
@@ -243,16 +290,16 @@ func TestExtractImageLoadRepoTagsManifestErrors(t *testing.T) {
 			return bytes.Repeat([]byte{'x'}, maxImageLoadManifestBytes+1), nil
 		}
 
-		_, _, err := iod.extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `[]`)))
+		_, _, err := iod.extractImageLoadRepoTagsFromTar(tar.NewReader(bytes.NewReader(mustImageLoadTar(t, `[]`))))
 		if err == nil || !strings.Contains(err.Error(), "manifest.json exceeds") {
-			t.Fatalf("extractImageLoadRepoTags() error = %v, want manifest size error", err)
+			t.Fatalf("extractImageLoadRepoTagsFromTar() error = %v, want manifest size error", err)
 		}
 	})
 
 	t.Run("decode manifest error", func(t *testing.T) {
-		_, _, err := defaultIODeps().extractImageLoadRepoTags(bytes.NewReader(mustImageLoadTar(t, `{`)))
+		_, _, err := defaultIODeps().extractImageLoadRepoTagsFromTar(tar.NewReader(bytes.NewReader(mustImageLoadTar(t, `{`))))
 		if err == nil || !strings.Contains(err.Error(), "decode manifest.json") {
-			t.Fatalf("extractImageLoadRepoTags() error = %v, want decode error", err)
+			t.Fatalf("extractImageLoadRepoTagsFromTar() error = %v, want decode error", err)
 		}
 	})
 }
@@ -281,4 +328,18 @@ func mustImageLoadTar(t *testing.T, manifest string) []byte {
 		containerArchiveTestEntry{name: "manifest.json", body: manifest},
 		containerArchiveTestEntry{name: "sha256/layer.tar", body: fmt.Sprintf("layer for %s", manifest)},
 	)
+}
+
+func mustGzip(t *testing.T, raw []byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write(raw); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
 }

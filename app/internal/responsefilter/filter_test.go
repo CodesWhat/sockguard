@@ -73,7 +73,12 @@ func TestFilterModifyResponse_RedactsContainerInspectResponse(t *testing.T) {
 
 	resp := newResponseForTest(t, http.MethodGet, "/v1.53/containers/abc123/json", `{
 		"Config":{"Env":["SECRET_TOKEN=shh","PATH=/usr/bin"]},
-		"HostConfig":{"Binds":["/srv/secrets:/run/secrets:ro","named-cache:/cache"]},
+		"HostConfig":{
+			"Binds":["/srv/secrets:/run/secrets:ro","named-cache:/cache"],
+			"Mounts":[
+				{"Type":"bind","Source":"/srv/host-secrets","Target":"/run/secrets"}
+			]
+		},
 		"Mounts":[
 			{"Type":"bind","Source":"/srv/secrets","Destination":"/run/secrets"},
 			{"Type":"volume","Name":"named-cache","Source":"/var/lib/docker/volumes/named-cache/_data","Destination":"/cache"}
@@ -104,6 +109,16 @@ func TestFilterModifyResponse_RedactsContainerInspectResponse(t *testing.T) {
 		t.Fatalf("HostConfig.Binds[1] = %q, want named volume bind unchanged", gotBind)
 	}
 
+	// HostConfig.Mounts[*].Source (the structured --mount API) must be redacted
+	// too — it is a distinct field from the top-level runtime Mounts list.
+	hostMounts, _ := hostConfig["Mounts"].([]any)
+	if len(hostMounts) != 1 {
+		t.Fatalf("HostConfig.Mounts len = %d, want 1", len(hostMounts))
+	}
+	if hm, _ := hostMounts[0].(map[string]any); hm["Source"] != "<redacted>" {
+		t.Fatalf("HostConfig.Mounts[0].Source = %v, want <redacted>", hm["Source"])
+	}
+
 	mounts, _ := got["Mounts"].([]any)
 	if len(mounts) != 2 {
 		t.Fatalf("Mounts len = %d, want 2", len(mounts))
@@ -113,6 +128,60 @@ func TestFilterModifyResponse_RedactsContainerInspectResponse(t *testing.T) {
 		if gotSource, _ := mount["Source"].(string); gotSource != "<redacted>" {
 			t.Fatalf("Mounts[%d].Source = %q, want %q", i, gotSource, "<redacted>")
 		}
+	}
+}
+
+func TestFilterModifyResponse_RedactsServicePreviousSpec(t *testing.T) {
+	t.Parallel()
+	filter := New(Options{
+		RedactContainerEnv:  true,
+		RedactMountPaths:    true,
+		RedactSensitiveData: true,
+	})
+
+	resp := newResponseForTest(t, http.MethodGet, "/v1.53/services/svc-1", `{
+		"Spec":{"TaskTemplate":{"ContainerSpec":{
+			"Env":["NEW_TOKEN=now"],
+			"Mounts":[{"Type":"bind","Source":"/srv/new","Target":"/data"}]
+		}}},
+		"PreviousSpec":{"TaskTemplate":{"ContainerSpec":{
+			"Env":["OLD_TOKEN=before"],
+			"Mounts":[{"Type":"bind","Source":"/srv/old-secrets","Target":"/data"}],
+			"Secrets":[{"SecretID":"sec-old","SecretName":"db-password"}]
+		}}}
+	}`)
+
+	if err := filter.ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+
+	got := decodeBodyForTest(t, resp)
+	for _, specKey := range []string{"Spec", "PreviousSpec"} {
+		spec, _ := got[specKey].(map[string]any)
+		tt, _ := spec["TaskTemplate"].(map[string]any)
+		cs, _ := tt["ContainerSpec"].(map[string]any)
+		if env, _ := cs["Env"].([]any); len(env) != 0 {
+			t.Fatalf("%s ContainerSpec.Env = %#v, want redacted empty", specKey, cs["Env"])
+		}
+		mounts, _ := cs["Mounts"].([]any)
+		if len(mounts) != 1 {
+			t.Fatalf("%s ContainerSpec.Mounts len = %d, want 1", specKey, len(mounts))
+		}
+		if m, _ := mounts[0].(map[string]any); m["Source"] != "<redacted>" {
+			t.Fatalf("%s ContainerSpec.Mounts[0].Source = %v, want <redacted>", specKey, m["Source"])
+		}
+	}
+
+	// The previous spec's secret references must be redacted, not left readable.
+	prev, _ := got["PreviousSpec"].(map[string]any)
+	tt, _ := prev["TaskTemplate"].(map[string]any)
+	cs, _ := tt["ContainerSpec"].(map[string]any)
+	secrets, _ := cs["Secrets"].([]any)
+	if len(secrets) != 1 {
+		t.Fatalf("PreviousSpec Secrets len = %d, want 1", len(secrets))
+	}
+	if s, _ := secrets[0].(map[string]any); s["SecretName"] != "<redacted>" {
+		t.Fatalf("PreviousSpec Secrets[0].SecretName = %v, want <redacted>", s["SecretName"])
 	}
 }
 

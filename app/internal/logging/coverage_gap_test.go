@@ -20,7 +20,7 @@ func TestSetDeniedPopulatesDecisionAndReason(t *testing.T) {
 	rc := &responseCapture{ResponseWriter: httptest.NewRecorder(), meta: meta}
 
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
-	SetDenied(rc, req, "test reason", nil)
+	SetDeniedWithCode(rc, req, "", "test reason", nil)
 
 	if meta.Decision != "deny" {
 		t.Fatalf("Decision = %q, want deny", meta.Decision)
@@ -51,7 +51,7 @@ func TestSetDeniedWithCodePopulatesReasonCode(t *testing.T) {
 func TestSetDeniedNilMetaIsNoop(t *testing.T) {
 	// Plain recorder has no RequestMeta — should be a no-op
 	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
-	SetDenied(httptest.NewRecorder(), req, "ignored", nil)
+	SetDeniedWithCode(httptest.NewRecorder(), req, "", "ignored", nil)
 	// No panic or error means it worked
 }
 
@@ -60,7 +60,7 @@ func TestSetDeniedWithNormalizeFillsNormPath(t *testing.T) {
 	rc := &responseCapture{ResponseWriter: httptest.NewRecorder(), meta: meta}
 
 	req := httptest.NewRequest(http.MethodGet, "/v1.45/containers/json", nil)
-	SetDenied(rc, req, "denied", func(path string) string {
+	SetDeniedWithCode(rc, req, "", "denied", func(path string) string {
 		return "/containers/json"
 	})
 
@@ -75,7 +75,7 @@ func TestSetDeniedSkipsNormalizeWhenNormPathAlreadySet(t *testing.T) {
 
 	called := false
 	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
-	SetDenied(rc, req, "denied", func(path string) string {
+	SetDeniedWithCode(rc, req, "", "denied", func(path string) string {
 		called = true
 		return path
 	})
@@ -94,7 +94,7 @@ func TestSetDeniedNilRequest(t *testing.T) {
 
 	called := false
 	// r is nil — normalize callback must NOT be called (r guard)
-	SetDenied(rc, nil, "denied", func(path string) string {
+	SetDeniedWithCode(rc, nil, "", "denied", func(path string) string {
 		called = true
 		return path
 	})

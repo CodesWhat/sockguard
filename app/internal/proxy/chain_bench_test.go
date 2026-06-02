@@ -107,7 +107,7 @@ func buildChain(tb testing.TB, sock string) http.Handler {
 
 	opts := filter.Options{PolicyConfig: permissivePolicyConfig()}
 
-	var handler http.Handler = New(sock, logger)
+	var handler http.Handler = NewWithOptions(sock, logger, Options{})
 	handler = HijackHandler(sock, logger, handler)
 	handler = filter.MiddlewareWithOptions(compiled, logger, opts)(handler)
 	handler = logging.AccessLogMiddleware(logger)(handler)

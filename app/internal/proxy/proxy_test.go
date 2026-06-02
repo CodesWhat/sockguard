@@ -47,7 +47,7 @@ func TestNew_ErrorHandler(t *testing.T) {
 	t.Parallel()
 	// Point at a socket that does not exist so the error handler fires.
 	socketPath := "/tmp/dp-nonexistent-socket.sock"
-	rp := New(socketPath, testLogger())
+	rp := NewWithOptions(socketPath, testLogger(), Options{})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
@@ -75,7 +75,7 @@ func TestNew_ErrorHandler(t *testing.T) {
 
 func TestNew_ErrorHandlerEncodeFailure(t *testing.T) {
 	t.Parallel()
-	rp := New("/tmp/does-not-matter.sock", testLogger())
+	rp := NewWithOptions("/tmp/does-not-matter.sock", testLogger(), Options{})
 	writer := &erroringResponseWriter{}
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
@@ -94,7 +94,7 @@ func TestNew_ErrorHandlerDoesNotLogWarnOnSuccessfulEncode(t *testing.T) {
 	t.Parallel()
 	var logBuf strings.Builder
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	rp := New("/tmp/does-not-matter.sock", logger)
+	rp := NewWithOptions("/tmp/does-not-matter.sock", logger, Options{})
 
 	// Use a normal recorder — httpjson.Write succeeds, so encErr == nil.
 	rec := httptest.NewRecorder()
@@ -119,7 +119,7 @@ func TestNew_ErrorHandlerLogsWarnOnEncodeFailure(t *testing.T) {
 	t.Parallel()
 	var logBuf strings.Builder
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	rp := New("/tmp/does-not-matter.sock", logger)
+	rp := NewWithOptions("/tmp/does-not-matter.sock", logger, Options{})
 
 	// erroringResponseWriter.Write always returns io.ErrClosedPipe, causing
 	// httpjson.Write to return an error.
@@ -136,7 +136,7 @@ func TestNew_ErrorHandlerLogsRequestCorrelation(t *testing.T) {
 	t.Parallel()
 	var logBuf strings.Builder
 	logger := slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	rp := New("/tmp/does-not-matter.sock", logger)
+	rp := NewWithOptions("/tmp/does-not-matter.sock", logger, Options{})
 
 	meta := &logging.RequestMeta{
 		Decision:        "allow",
@@ -174,7 +174,7 @@ func TestNew_ErrorHandlerLogsRequestCorrelation(t *testing.T) {
 
 func TestNew_ErrorHandlerStampsRequestMetaReasonCode(t *testing.T) {
 	t.Parallel()
-	rp := New("/tmp/does-not-matter.sock", testLogger())
+	rp := NewWithOptions("/tmp/does-not-matter.sock", testLogger(), Options{})
 
 	meta := &logging.RequestMeta{Decision: "allow", ReasonCode: "matched_allow_rule", Reason: "allow"}
 	req := httptest.NewRequest(http.MethodGet, "/info", nil)
@@ -193,7 +193,7 @@ func TestNew_ErrorHandlerStampsRequestMetaReasonCode(t *testing.T) {
 
 func TestNew_ErrorHandlerStampsResponseRejectedReasonCode(t *testing.T) {
 	t.Parallel()
-	rp := New("/tmp/does-not-matter.sock", testLogger())
+	rp := NewWithOptions("/tmp/does-not-matter.sock", testLogger(), Options{})
 
 	meta := &logging.RequestMeta{Decision: "allow", ReasonCode: "matched_allow_rule", Reason: "allow"}
 	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
@@ -238,7 +238,7 @@ func startMockDocker(t *testing.T) string {
 func TestNew_ForwardsRequests(t *testing.T) {
 	t.Parallel()
 	socketPath := startMockDocker(t)
-	rp := New(socketPath, testLogger())
+	rp := NewWithOptions(socketPath, testLogger(), Options{})
 
 	tests := []struct {
 		method string
@@ -287,7 +287,7 @@ func TestNew_ForwardsRequests(t *testing.T) {
 func TestNew_PreservesResponseBody(t *testing.T) {
 	t.Parallel()
 	socketPath := startMockDocker(t)
-	rp := New(socketPath, testLogger())
+	rp := NewWithOptions(socketPath, testLogger(), Options{})
 
 	req := httptest.NewRequest("GET", "/version", nil)
 	rec := httptest.NewRecorder()
@@ -456,7 +456,7 @@ func TestNew_UpstreamDown(t *testing.T) {
 	t.Parallel()
 	// Point at a socket that does not exist.
 	socketPath := "/tmp/dp-nonexistent-socket.sock"
-	rp := New(socketPath, testLogger())
+	rp := NewWithOptions(socketPath, testLogger(), Options{})
 
 	req := httptest.NewRequest("GET", "/info", nil)
 	rec := httptest.NewRecorder()
@@ -497,7 +497,7 @@ func TestNew_UpstreamGoesAway(t *testing.T) {
 	ln.Close()
 	os.Remove(socketPath)
 
-	rp := New(socketPath, testLogger())
+	rp := NewWithOptions(socketPath, testLogger(), Options{})
 	req := httptest.NewRequest("GET", "/info", nil)
 	rec := httptest.NewRecorder()
 	rp.ServeHTTP(rec, req)
@@ -533,7 +533,7 @@ func TestNew_ConcurrentRequestsRemainIsolated(t *testing.T) {
 	go srv.Serve(ln)
 	t.Cleanup(func() { srv.Close() })
 
-	rp := New(socketPath, testLogger())
+	rp := NewWithOptions(socketPath, testLogger(), Options{})
 
 	const requestCount = 32
 
@@ -671,7 +671,7 @@ func TestNew_ClientCancelMidResponsePropagates(t *testing.T) {
 	go func() { _ = upstream.Serve(ln) }()
 	t.Cleanup(func() { _ = upstream.Close() })
 
-	rp := New(socketPath, testLogger())
+	rp := NewWithOptions(socketPath, testLogger(), Options{})
 	proxySrv := httptest.NewServer(rp)
 	t.Cleanup(proxySrv.Close)
 

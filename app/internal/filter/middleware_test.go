@@ -1264,7 +1264,7 @@ func TestMiddlewareWrapperDelegates(t *testing.T) {
 	})
 
 	// Middleware is the thin public wrapper around MiddlewareWithOptions.
-	handler := Middleware(rules, testLogger())(inner)
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{})(inner)
 	req := httptest.NewRequest("GET", "/_ping", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -1285,7 +1285,7 @@ func TestMiddlewareWrapperDenies(t *testing.T) {
 		t.Error("should not reach inner handler")
 	})
 
-	handler := Middleware(rules, testLogger())(inner)
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{})(inner)
 	req := httptest.NewRequest("POST", "/containers/create", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

@@ -17,7 +17,7 @@ func BenchmarkIsHijackEndpoint(b *testing.B) {
 		b.Run(c.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
-				IsHijackEndpoint(c.method, c.path)
+				isHijackEndpoint(c.method, c.path)
 			}
 		})
 	}

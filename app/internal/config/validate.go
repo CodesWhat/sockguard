@@ -619,6 +619,13 @@ func validateClientsUnixPeerProfiles(cfg *Config, profilesByName map[string]stru
 		if len(assignment.UIDs) == 0 && len(assignment.GIDs) == 0 && len(assignment.PIDs) == 0 {
 			errs = append(errs, containsAtLeastOneError(prefix, "unix peer credential selector"))
 		}
+		// A PID alone is not a stable identity: the kernel recycles process IDs,
+		// so a process that inherits a previously-trusted PID would silently
+		// acquire its profile. PIDs may only narrow a UID/GID match, never select
+		// a profile on their own — require at least one uid or gid alongside them.
+		if len(assignment.PIDs) > 0 && len(assignment.UIDs) == 0 && len(assignment.GIDs) == 0 {
+			errs = append(errs, fmt.Sprintf("%s must not select by pid alone: process IDs are recycled by the kernel and are not a stable identity; add a uid and/or gid selector", prefix))
+		}
 		for _, pid := range assignment.PIDs {
 			if pid > 0 {
 				continue

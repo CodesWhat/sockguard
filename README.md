@@ -68,7 +68,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.0 is released.** The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the latest release notes and the current `Unreleased` work.
+> **v1.1.0 is released.** The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the latest release notes and the current `Unreleased` work.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -213,11 +213,11 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 <details>
 <summary><strong>Latest release highlights</strong></summary>
 
+- **v1.1.0 shipped on 2026-06-01** — image-trust verification wired end to end: registry digest resolution, cosign signature discovery (classic tag + OCI 1.1 referrers), digest-pinned forwarding, keyed (PEM) and keyless (Fulcio + Rekor) both enforced, swarm-service create/update now subject to the same image-trust policy as container create. A 21-finding security audit landed alongside: closed request-inspection bypasses (plugin multipart, BuildKit `# syntax=`, gzip bombs, swarm-service capability/sysctl/image-trust escapes), read-side sub-resource visibility gating, new `allowed_runtimes` allowlist, hardened config/admin paths (signed-bundle TOCTOU, PID-only peer rejection, admin-listener CIDR backstop), response redaction extended to `HostConfig.Mounts[].Source` and service `PreviousSpec`. CodeQL `actions` analysis and supply-chain dependency hygiene (`govulncheck` reports zero vulnerabilities) round out the release.
 - **v1.0.0 shipped on 2026-05-20** with the public proxy contract locked: YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are now under the v1.x compatibility promise.
 - **12 bundled presets** cover drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, and GitLab Runner.
 - **Expanded QA hardening** added proxy-vs-daemon differential tests, real-dockerd preset conformance, fuzz corpora for routing and visibility, weekly soak testing, and TLS edge-case coverage.
 - **Supply-chain verification** covers release images across GHCR, Docker Hub, and Quay.io using the same cosign commands documented for operators.
-- **Current Unreleased work** is test-only hardening: transitive test dependency bumps for cleaner Grype source scans and deterministic replacements for two wall-clock-sensitive CI tests.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full itemized history.
 
@@ -296,7 +296,7 @@ How we stack up against other Docker socket proxies:
 | Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (blocks 7 risky GETs) | ❌ | ✅ (visibility + protected JSON redaction) |
 | Remote TCP mTLS (listener) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (TLS 1.3) |
-| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | Roadmap (v1.1) |
+| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | Roadmap (v1.2) |
 | Structured access logs | ❌ | ❌ | ✅ (JSON option) | ❌ | ❌ | ✅ (request + trace correlation) |
 | Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
 | Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
@@ -306,7 +306,7 @@ How we stack up against other Docker socket proxies:
 | YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ✅ |
 
-`11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules, but additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Where we go further is body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction. CetusGuard, in turn, can dial a remote Docker daemon over backend TLS today — our upstream is the local socket, with remote TCP upstreams on the v1.1 roadmap.
+`11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules, but additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Where we go further is body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction. CetusGuard, in turn, can dial a remote Docker daemon over backend TLS today — our upstream is the local socket, with remote TCP upstreams on the v1.2 roadmap.
 
 </details>
 
@@ -423,7 +423,15 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+**v1.1.0 shipped on 2026-06-01** and is the latest release. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+
+### Shipped in v1.1.0
+
+| Track | Surface |
+|---|---|
+| **Image trust (end-to-end)** | Registry manifest digest resolution via `internal/imagefetch`; cosign signature discovery (classic `sha256-<digest>.sig` tag + OCI 1.1 referrers); Sigstore bundle reconstruction and digest-binding before verify; keyed (PEM public key) and keyless (Fulcio + Rekor, TUF-fetched trust root) both enforced; `require_rekor_inclusion` defaults to `true` for keyless; verified images digest-pinned (`registry/repo@sha256:…`) before forwarding to close the verify→pull TOCTOU; image-trust policy now also applied to **swarm service create/update** (ContainerSpec) |
+| **Security audit (21 findings)** | Plugin multipart-boundary inspection bypass closed; read-side visibility gates container/image sub-resources (logs/stats/top/changes/export/archive/attach, image history/get); new `allowed_runtimes` allowlist for `HostConfig.Runtime`; empty/whitespace exec `User` treated as root; capability-enforcement fixes; BuildKit `# syntax=` directive denial + gzip-bomb decompression cap; swarm services enforce capability allowlist, `allow_sysctls` gate, and image-trust; keyless SAN patterns anchored; `docker load` gzipped archive false-deny fixed; image `/get` export owner-filtered; inspect cache no longer memoizes not-found verdicts; response redaction extended to `HostConfig.Mounts[].Source` and service `PreviousSpec`; signed-bundle verify-then-load TOCTOU closed + env vars cannot override signed policy; PID-only unix-peer profile assignment rejected; dedicated admin TCP listener enforces `clients.allowed_cidrs` |
+| **CI / supply chain** | CodeQL `actions` language enabled for workflow static analysis; 20 OSSF Scorecard / Go vuln-DB advisory dependency bumps (x/crypto, x/net, x/sys + closure); `govulncheck` reports zero vulnerabilities |
 
 ### Shipped in v1.0.0
 
@@ -432,7 +440,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 | **Foundation** | Default-deny proxy, glob path rules, Tecnativa env compatibility, structured access + audit logging, health endpoint, hardened Wolfi image, multi-arch |
 | **Transport** | Unix socket and mTLS-protected TCP listener, TLS 1.3 minimum, loopback by default, SPKI pins, plaintext non-loopback rejected without explicit opt-in |
 | **Body inspection** | Every Docker write surface with a meaningful body shape — `containers/create`, exec, build, services, swarm, configs/secrets, volumes, plugins, networks, image load, container update, archive write, node update |
-| **Container enforcement** | `Privileged` / host namespaces / `CapAdd` / device passthrough denied by default; `no-new-privileges`, non-root, readonly rootfs, drop-all-capabilities, memory / CPU / PIDs limits, seccomp + AppArmor allowlists; cosign image-trust verification (keyed + keyless via Fulcio + Rekor) |
+| **Container enforcement** | `Privileged` / host namespaces / `CapAdd` / device passthrough denied by default; `no-new-privileges`, non-root, readonly rootfs, drop-all-capabilities, memory / CPU / PIDs limits, seccomp + AppArmor allowlists; cosign image-trust policy schema and rule compiler (end-to-end enforcement wired in v1.1.0) |
 | **Per-client policy** | Source-IP, mTLS (CN/DNS/IP/URI/SPIFFE/SPKI), unix `SO_PEERCRED`, container-label resolution; named profiles with rollout modes (`enforce` / `warn` / `audit`) |
 | **Read-side visibility** | Response filtering across containers/services/tasks/configs/secrets/nodes/plugins/swarm/info/system-df with generic protected-JSON mediation |
 | **Abuse controls** | Per-client token-bucket rate limits, burst budgets, concurrency caps, endpoint-cost weighting, system-wide priority-aware fairness gate |
@@ -446,7 +454,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 | Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators |
 | Policy refinement (v1.x) | Multiple frontend listeners on the main proxy, named rule path aliases |
 | Compliance (v1.x) | CIS Docker Benchmark control mapping, audit-ready policy templates |
-| Multi-host (v1.1) | Remote Docker TCP upstreams, multi-upstream fan-out, remote daemon health checking, connection pooling, automatic failover |
+| Multi-host (v1.2) | Remote Docker TCP upstreams, multi-upstream fan-out, remote daemon health checking, connection pooling, automatic failover |
 | Extensibility (v1.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
 
 </details>
@@ -462,6 +470,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 | Getting Started | [Getting Started](https://getsockguard.com/docs/getting-started) |
 | Configuration | [Configuration](https://getsockguard.com/docs/configuration) |
 | Presets | [Presets](https://getsockguard.com/docs/presets) |
+| Migration | [Migration](https://getsockguard.com/docs/migration) |
 | CIS Docker Benchmark | [CIS Docker Benchmark](https://getsockguard.com/docs/cis-docker-benchmark) |
 | Admin API | [Admin API](https://getsockguard.com/docs/admin) |
 | Observability | [Observability](https://getsockguard.com/docs/observability) |
@@ -514,7 +523,7 @@ Issues, ideas, and pull requests are welcome. Start with [CONTRIBUTING.md](CONTR
 
 For local fuzz triage, run `scripts/local-fuzz.sh --suite ci --fuzztime 2m`. Use `--suite ultra` for every fuzzer, `--timeout` to set the Go watchdog explicitly, and `--docker --platform linux/amd64` when you want closer GitHub Actions parity.
 
-Every release image is cosign-signed via GitHub Actions OIDC. Before running a sockguard image in production, verify it with the canonical invocation in the [image verification guide](docs/content/docs/verification.mdx).
+Every release image is cosign-signed via GitHub Actions OIDC. Before running a sockguard image in production, verify it with the canonical invocation in the [image verification guide](https://getsockguard.com/docs/verification).
 
 **[Apache-2.0 License](LICENSE)**
 

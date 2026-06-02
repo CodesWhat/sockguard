@@ -176,6 +176,167 @@ func TestBuildAdminHandlerChainReturns404ForUnknownPath(t *testing.T) {
 	}
 }
 
+// TestBuildAdminHandlerChainEnforcesCIDRAllowlist proves the #21 backstop:
+// when a dedicated TCP admin listener is paired with clients.allowed_cidrs,
+// the admin chain rejects a source IP outside the allowlist (403) before the
+// request can reach the YAML validator, and admits one inside it. Without the
+// guard the dedicated listener would silently ignore the CIDR gate the main
+// listener enforces.
+func TestBuildAdminHandlerChainEnforcesCIDRAllowlist(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "admin-cidr")
+	cfg.Admin.Enabled = true
+	cfg.Admin.Listen.Address = "127.0.0.1:0"
+	cfg.Clients.AllowedCIDRs = []string{"10.0.0.0/8"}
+
+	versioner := admin.NewPolicyVersioner()
+	versioner.Update(admin.PolicySnapshot{Rules: 1, Source: "startup"})
+
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner)
+
+	t.Run("disallowed IP denied", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, cfg.Admin.PolicyVersionPath, nil)
+		req.RemoteAddr = "192.0.2.10:1234"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want 403 for IP outside allowlist. body=%s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "client IP not allowed") {
+			t.Fatalf("body = %q, want client IP not allowed", rec.Body.String())
+		}
+	})
+
+	t.Run("allowed IP served", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, cfg.Admin.PolicyVersionPath, nil)
+		req.RemoteAddr = "10.1.2.3:1234"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200 for IP inside allowlist. body=%s", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+// TestBuildAdminHandlerChainNoCIDRGuardWhenAllowlistEmpty pins that the #21
+// backstop is a no-op until an operator configures clients.allowed_cidrs: with
+// no allowlist, a TCP admin listener must not start denying arbitrary source
+// IPs. This kills an always-deny mutant in the guard wiring.
+func TestBuildAdminHandlerChainNoCIDRGuardWhenAllowlistEmpty(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "admin-nocidr")
+	cfg.Admin.Enabled = true
+	cfg.Admin.Listen.Address = "127.0.0.1:0"
+	// cfg.Clients.AllowedCIDRs intentionally empty.
+
+	versioner := admin.NewPolicyVersioner()
+	versioner.Update(admin.PolicySnapshot{Rules: 1, Source: "startup"})
+
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner)
+
+	req := httptest.NewRequest(http.MethodGet, cfg.Admin.PolicyVersionPath, nil)
+	req.RemoteAddr = "192.0.2.10:1234"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (no CIDR allowlist → no IP gate). body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestBuildAdminHandlerChainSkipsCIDRGuardForUnixListener confirms the guard
+// is TCP-only: a unix-socket admin listener carries no meaningful client IP,
+// so applying the CIDR gate would falsely deny every request. With an allowlist
+// set but Address empty, the request must still be served.
+func TestBuildAdminHandlerChainSkipsCIDRGuardForUnixListener(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = shortSocketPath(t, "admin-unix-up")
+	cfg.Admin.Enabled = true
+	cfg.Admin.Listen.Socket = shortSocketPath(t, "admin-unix")
+	cfg.Clients.AllowedCIDRs = []string{"10.0.0.0/8"}
+
+	versioner := admin.NewPolicyVersioner()
+	versioner.Update(admin.PolicySnapshot{Rules: 1, Source: "startup"})
+
+	handler := buildAdminHandlerChain(&cfg, newDiscardLogger(), nil, versioner)
+
+	req := httptest.NewRequest(http.MethodGet, cfg.Admin.PolicyVersionPath, nil)
+	// An IP outside the allowlist: a 403 here would mean the TCP-only gate
+	// leaked onto the unix-socket path.
+	req.RemoteAddr = "192.0.2.10:1234"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (unix admin listener must skip the CIDR gate). body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestWarnIfAdminListenerWideOpen exercises the #21 startup warning: it fires
+// only when the dedicated admin listener is a non-loopback plaintext TCP
+// listener with no CIDR allowlist — the one configuration where admin
+// endpoints are reachable with neither authentication nor an IP backstop.
+func TestWarnIfAdminListenerWideOpen(t *testing.T) {
+	const wantMsg = "admin listener is non-loopback plaintext TCP"
+	completeTLS := config.ListenTLSConfig{CertFile: "cert.pem", KeyFile: "key.pem", ClientCAFile: "ca.pem"}
+
+	tests := []struct {
+		name     string
+		mutate   func(*config.Config)
+		wantWarn bool
+	}{
+		{
+			name:     "non-loopback plaintext no cidr warns",
+			mutate:   func(c *config.Config) { c.Admin.Listen.Address = "0.0.0.0:9000" },
+			wantWarn: true,
+		},
+		{
+			name: "non-loopback plaintext with cidr is guarded",
+			mutate: func(c *config.Config) {
+				c.Admin.Listen.Address = "0.0.0.0:9000"
+				c.Clients.AllowedCIDRs = []string{"10.0.0.0/8"}
+			},
+			wantWarn: false,
+		},
+		{
+			name: "non-loopback mtls is authenticated",
+			mutate: func(c *config.Config) {
+				c.Admin.Listen.Address = "0.0.0.0:9000"
+				c.Admin.Listen.TLS = completeTLS
+			},
+			wantWarn: false,
+		},
+		{
+			name:     "loopback plaintext is not exposed",
+			mutate:   func(c *config.Config) { c.Admin.Listen.Address = "127.0.0.1:9000" },
+			wantWarn: false,
+		},
+		{
+			name:     "unix socket has no client IP surface",
+			mutate:   func(c *config.Config) { c.Admin.Listen.Socket = "/tmp/sockguard-admin.sock" },
+			wantWarn: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			tt.mutate(&cfg)
+
+			var buf strings.Builder
+			logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			warnIfAdminListenerWideOpen(&cfg, logger)
+
+			gotWarn := strings.Contains(buf.String(), wantMsg)
+			if gotWarn != tt.wantWarn {
+				t.Fatalf("warn emitted = %v, want %v. log=%s", gotWarn, tt.wantWarn, buf.String())
+			}
+		})
+	}
+}
+
 // TestStartAdminServerNoopWhenAdminDisabled proves the early-return guard:
 // admin off OR admin.listen unconfigured must NOT bind a listener and must
 // return a stop func that is safe to defer.

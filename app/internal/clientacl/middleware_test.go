@@ -1476,13 +1476,13 @@ func TestClientACLSetDeniedNormalizesPath(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1.45/containers/json", nil)
 	writer := &metaCarrierWriter{meta: meta}
 
-	logging.SetDenied(writer, req, "nope", filter.NormalizePath)
+	logging.SetDeniedWithCode(writer, req, "", "nope", filter.NormalizePath)
 	if meta.Decision != "deny" || meta.Reason != "nope" || meta.NormPath != "/containers/json" {
 		t.Fatalf("meta after SetDenied = %#v", meta)
 	}
 
 	// No panic when there is no meta to stamp.
-	logging.SetDenied(httptest.NewRecorder(), req, "ignored", filter.NormalizePath)
+	logging.SetDeniedWithCode(httptest.NewRecorder(), req, "", "ignored", filter.NormalizePath)
 }
 
 type metaCarrierWriter struct {

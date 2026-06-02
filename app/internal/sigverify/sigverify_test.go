@@ -123,6 +123,43 @@ func TestCompileKeyless(t *testing.T) {
 			t.Fatal("compiled pattern matches a SAN it should reject")
 		}
 	})
+
+	t.Run("unanchored pattern is anchored to the full SAN", func(t *testing.T) {
+		// A config author who writes an unanchored pattern must not get
+		// substring matching: "ci@acme.com" must not match a Fulcio SAN that
+		// merely contains it, e.g. "ci@acme.com.attacker.test".
+		_, re, err := CompileKeyless("https://token.actions.githubusercontent.com", `ci@acme\.com`)
+		if err != nil {
+			t.Fatalf("CompileKeyless(unanchored): %v", err)
+		}
+		if !re.MatchString("ci@acme.com") {
+			t.Fatal("anchored pattern must still match the exact SAN")
+		}
+		for _, evil := range []string{
+			"ci@acme.com.attacker.test",
+			"attacker.test/ci@acme.com",
+			"prefix-ci@acme.com-suffix",
+		} {
+			if re.MatchString(evil) {
+				t.Fatalf("anchored pattern wrongly matched substring SAN %q", evil)
+			}
+		}
+	})
+
+	t.Run("pattern with alternation is anchored as a group", func(t *testing.T) {
+		// The anchoring wraps the pattern in a non-capturing group so a
+		// top-level alternation cannot escape the anchors (e.g. "a|.*").
+		_, re, err := CompileKeyless("https://example.com", `ops@a\.com|ops@b\.com`)
+		if err != nil {
+			t.Fatalf("CompileKeyless(alternation): %v", err)
+		}
+		if !re.MatchString("ops@a.com") || !re.MatchString("ops@b.com") {
+			t.Fatal("anchored alternation must match each listed identity exactly")
+		}
+		if re.MatchString("ops@a.com.evil") {
+			t.Fatal("anchored alternation leaked into a substring match")
+		}
+	})
 }
 
 // TestVerifyKeylessRequiresTrustedMaterial pins the explicit nil-guard

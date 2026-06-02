@@ -105,7 +105,7 @@ Runs piped (sequential, fail-fast): go-lint → go-test → biome → build.
 
 ## Key Constraints
 
-- The proxy's request hot path — filtering, proxying, logging — uses only the Go stdlib. The binary's direct external dependencies are Cobra+Viper (CLI/config), fsnotify (config hot-reload), and sigstore/sigstore-go (image-trust and signed-policy-bundle verification).
+- The proxy's request hot path — filtering, proxying, logging — uses only the Go stdlib. The binary's direct external dependencies are Cobra+Viper (CLI/config), fsnotify (config hot-reload), sigstore/sigstore-go + sigstore/protobuf-specs (image-trust and signed-policy-bundle verification), and go-containerregistry (OCI registry fetch for image-trust signatures — only on the opt-in `image_trust` path, never the core proxy path).
 - Container image is **Wolfi-based** (Chainguard) for near-zero CVEs and built-in SBOM/provenance.
 - Biome is a direct devDependency in the root workspace for TS/JS linting.
 - `.planning/` is gitignored — local-only working notes; never reference its contents in committed files.

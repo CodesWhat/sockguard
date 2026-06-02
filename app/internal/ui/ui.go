@@ -12,13 +12,12 @@ import (
 )
 
 const (
-	ansiReset  = "\x1b[0m"
-	ansiBold   = "\x1b[1m"
-	ansiDim    = "\x1b[2m"
-	ansiRed    = "\x1b[31m"
-	ansiGreen  = "\x1b[32m"
-	ansiYellow = "\x1b[33m"
-	ansiCyan   = "\x1b[36m"
+	ansiReset = "\x1b[0m"
+	ansiBold  = "\x1b[1m"
+	ansiDim   = "\x1b[2m"
+	ansiRed   = "\x1b[31m"
+	ansiGreen = "\x1b[32m"
+	ansiCyan  = "\x1b[36m"
 )
 
 // UTF-8 glyphs emitted regardless of color state. Every modern terminal
@@ -26,9 +25,6 @@ const (
 const (
 	Check = "✓"
 	Cross = "✗"
-	Arrow = "→"
-	Warn  = "⚠"
-	Info  = "ℹ"
 )
 
 // Printer wraps an io.Writer with color-aware styling helpers.
@@ -46,9 +42,6 @@ func New(w io.Writer) *Printer {
 	return &Printer{w: w, enabled: detectColor(w)}
 }
 
-// W returns the underlying writer.
-func (p *Printer) W() io.Writer { return p.w }
-
 // Enabled reports whether ANSI escapes will be emitted.
 func (p *Printer) Enabled() bool { return p.enabled }
 
@@ -59,12 +52,11 @@ func (p *Printer) style(code, s string) string {
 	return code + s + ansiReset
 }
 
-func (p *Printer) Bold(s string) string   { return p.style(ansiBold, s) }
-func (p *Printer) Dim(s string) string    { return p.style(ansiDim, s) }
-func (p *Printer) Red(s string) string    { return p.style(ansiRed, s) }
-func (p *Printer) Green(s string) string  { return p.style(ansiGreen, s) }
-func (p *Printer) Yellow(s string) string { return p.style(ansiYellow, s) }
-func (p *Printer) Cyan(s string) string   { return p.style(ansiCyan, s) }
+func (p *Printer) Bold(s string) string  { return p.style(ansiBold, s) }
+func (p *Printer) Dim(s string) string   { return p.style(ansiDim, s) }
+func (p *Printer) Red(s string) string   { return p.style(ansiRed, s) }
+func (p *Printer) Green(s string) string { return p.style(ansiGreen, s) }
+func (p *Printer) Cyan(s string) string  { return p.style(ansiCyan, s) }
 
 func detectColor(w io.Writer) bool {
 	if v, ok := os.LookupEnv("NO_COLOR"); ok && v != "" {
