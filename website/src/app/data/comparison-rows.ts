@@ -72,7 +72,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "Yes",
-    sockguard: "Roadmap (v1.1)",
+    sockguard: "Roadmap (v1.2)",
     planned: true,
   },
   {
