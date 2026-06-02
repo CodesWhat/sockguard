@@ -59,7 +59,13 @@ jobs:
         id: base
         run: |
           set -euo pipefail
-          latest_tag="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          # Latest STABLE release only. Prerelease tags carry a semver hyphen
+          # (e.g. v1.0.0-rc.2); git's default version sort orders them ABOVE the
+          # final release (v1.0.0-rc.2 > v1.0.0), so an unfiltered head -n1 picked
+          # a prerelease as the baseline and computed a colliding next version.
+          # awk '!/-/' drops prereleases and always exits 0 (no pipefail trap on
+          # an all-prerelease repo, where the empty result falls back to v0.0.0).
+          latest_tag="$(git tag --list 'v*' --sort=-v:refname | awk '!/-/' | head -n1)"
           if [ -z "${latest_tag}" ]; then
             latest_tag="v0.0.0"
           fi
