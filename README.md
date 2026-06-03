@@ -68,7 +68,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.1.0 is released.** The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the latest release notes and the current `Unreleased` work.
+> **v1.2.0 is released.** The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the latest release notes and the current `Unreleased` work.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -213,6 +213,7 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 <details>
 <summary><strong>Latest release highlights</strong></summary>
 
+- **v1.2.0 shipped on 2026-06-02** — operational resilience for a wedged daemon. An opt-in **readiness probe** (`health.readiness.*`, default `/ready`) issues a real `GET /containers/json` against the Docker API and returns `503` when the daemon accepts connections but no longer answers — the gap the raw-dial `/health` watchdog misses. An opt-in **`upstream.request_timeout`** bounds finite proxied requests with a total deadline, converting a hung body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`) while exempting streaming and long-lived endpoints. New metrics `sockguard_upstream_api_up` + `sockguard_upstream_readiness_checks_total` mirror the watchdog. The bundled **drydock preset** now allowlists the stock `runc` runtime so drydock recreation stops getting 403'd out of the box. Dependency hygiene: the Go toolchain moves to `1.26.4` (clearing two *reachable* stdlib advisories, GO-2026-5037 / GO-2026-5039), plus the `go-minor` / `npm-minor` / `actions-minor` groups; `govulncheck` reports zero vulnerabilities.
 - **v1.1.0 shipped on 2026-06-01** — image-trust verification wired end to end: registry digest resolution, cosign signature discovery (classic tag + OCI 1.1 referrers), digest-pinned forwarding, keyed (PEM) and keyless (Fulcio + Rekor) both enforced, swarm-service create/update now subject to the same image-trust policy as container create. A 21-finding security audit landed alongside: closed request-inspection bypasses (plugin multipart, BuildKit `# syntax=`, gzip bombs, swarm-service capability/sysctl/image-trust escapes), read-side sub-resource visibility gating, new `allowed_runtimes` allowlist, hardened config/admin paths (signed-bundle TOCTOU, PID-only peer rejection, admin-listener CIDR backstop), response redaction extended to `HostConfig.Mounts[].Source` and service `PreviousSpec`. CodeQL `actions` analysis and supply-chain dependency hygiene (`govulncheck` reports zero vulnerabilities) round out the release.
 - **v1.0.0 shipped on 2026-05-20** with the public proxy contract locked: YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are now under the v1.x compatibility promise.
 - **12 bundled presets** cover drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, and GitLab Runner.
@@ -255,8 +256,9 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | ✍️ | **Signed Policy Bundles** | `policy_bundle.enabled: true` requires a cosign sigstore bundle to vouch for the YAML config bytes. Keyed (PEM) and keyless (Fulcio + Rekor) trust paths reuse the same sigstore-go stack as image trust. Verification runs at startup before any rule compiles and again on every hot reload — unsigned or tampered bundles abort startup and reject reloads with `reject_signature` on `sockguard_config_reload_total`. The verified signer and YAML digest are stamped on the policy-version snapshot. |
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image. Cosign-signed with SBOM and build provenance. |
 | ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
-| 🩺 | **Health Check + Watchdog** | `/health` endpoint with cached upstream reachability probes and an opt-in active Docker socket watchdog that logs state transitions. |
-| 📈 | **Prometheus Metrics** | Opt-in `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, active request gauge, upstream watchdog state/check metrics, plus `sockguard_build_info` and `sockguard_start_time_seconds` gauges for version panels and uptime alerts. |
+| 🩺 | **Health, Watchdog + Readiness** | `/health` endpoint with cached upstream reachability probes, an opt-in active Docker socket watchdog that logs state transitions, and an opt-in `/ready` probe that issues a real `GET /containers/json` against the Docker API — returning `503` when the daemon accepts connections but has stopped answering, the wedged-daemon case a raw socket dial misses. |
+| ⏱️ | **Upstream Request Timeout** | Opt-in `upstream.request_timeout` bounds finite proxied requests with a total deadline, turning a hung response body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`). Streaming and long-lived endpoints (events, follow logs/stats, pull/build/push/load, export, attach, container wait) are exempt. |
+| 📈 | **Prometheus Metrics** | Opt-in `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, active request gauge, upstream watchdog + readiness state/check metrics, plus `sockguard_build_info` and `sockguard_start_time_seconds` gauges for version panels and uptime alerts. |
 | 🔗 | **Trace/Log Correlation** | Preserves valid W3C `traceparent` context or generates local context, forwards a proxy-local span ID, and records trace fields in access, audit, and upstream error logs without an OTLP exporter. |
 | 🧪 | **Battle-Tested** | 96%+ statement coverage, race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
 
@@ -296,7 +298,7 @@ How we stack up against other Docker socket proxies:
 | Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (blocks 7 risky GETs) | ❌ | ✅ (visibility + protected JSON redaction) |
 | Remote TCP mTLS (listener) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (TLS 1.3) |
-| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | Roadmap (v1.2) |
+| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | Roadmap (v1.3) |
 | Structured access logs | ❌ | ❌ | ✅ (JSON option) | ❌ | ❌ | ✅ (request + trace correlation) |
 | Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
 | Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
@@ -306,7 +308,7 @@ How we stack up against other Docker socket proxies:
 | YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ✅ |
 
-`11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules, but additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Where we go further is body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction. CetusGuard, in turn, can dial a remote Docker daemon over backend TLS today — our upstream is the local socket, with remote TCP upstreams on the v1.2 roadmap.
+`11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules, but additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Where we go further is body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction. CetusGuard, in turn, can dial a remote Docker daemon over backend TLS today — our upstream is the local socket, with remote TCP upstreams on the v1.3 roadmap.
 
 </details>
 
@@ -423,7 +425,15 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.1.0 shipped on 2026-06-01** and is the latest release. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+**v1.2.0 shipped on 2026-06-02** and is the latest release. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+
+### Shipped in v1.2.0
+
+| Track | Surface |
+|---|---|
+| **Operational resilience** | Opt-in readiness probe (`health.readiness.*`, default `/ready`) that issues a real `GET /containers/json` against the Docker API and returns `503` on a daemon that connects but no longer answers; opt-in `upstream.request_timeout` total per-request deadline that converts a hung body / heavy read into a `504` (`reason_code=upstream_request_timeout`) while exempting streaming and long-lived endpoints; new `sockguard_upstream_api_up` gauge + `sockguard_upstream_readiness_checks_total{result}` counter |
+| **Preset fix** | `drydock` preset allowlists the stock `runc` runtime so drydock's recreate-from-inspect updates stop getting 403'd at `POST /containers/create` out of the box |
+| **Dependencies** | Go toolchain `1.26.3` → `1.26.4` (builder image + `go.mod` directive), clearing reachable stdlib advisories GO-2026-5037 / GO-2026-5039; `go-minor` group (go-containerregistry, sigstore, protobuf-specs + closure); `npm-minor` group (12, website/docs/tooling); `actions-minor` group (4, SHA-pinned); `govulncheck` reports zero vulnerabilities |
 
 ### Shipped in v1.1.0
 
@@ -454,7 +464,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 | Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators |
 | Policy refinement (v1.x) | Multiple frontend listeners on the main proxy, named rule path aliases |
 | Compliance (v1.x) | CIS Docker Benchmark control mapping, audit-ready policy templates |
-| Multi-host (v1.2) | Remote Docker TCP upstreams, multi-upstream fan-out, remote daemon health checking, connection pooling, automatic failover |
+| Multi-host (v1.3) | Remote Docker TCP upstreams, multi-upstream fan-out, remote daemon health checking, connection pooling, automatic failover |
 | Extensibility (v1.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
 
 </details>

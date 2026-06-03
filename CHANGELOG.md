@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-02
+
+### Added
+
+- **Added an opt-in upstream readiness probe (`health.readiness.*`).** Both `/health` and the active watchdog judge the upstream by a raw socket *dial* — a liveness signal that only proves the socket accepts connections. That misses the failure mode behind a recent silent outage: the daemon kept accepting connections (so `/_ping` and the dial stayed green) while `GET /containers/json` hung, and every consumer that trusted health to stay accurate kept routing into a wedged proxy. The new readiness endpoint (`health.readiness.{enabled,path,interval,timeout}`, default `/ready`, **disabled** by default) issues a real `GET /containers/json?limit=1` through the shared Docker transport and reports **unready (HTTP 503)** on any transport error or non-2xx — returning `200` only when the daemon is actually answering the API. It reuses the existing Monitor state / watchdog / handler machinery; only the probe differs (a pluggable probe hook, leaving the dial path unchanged). Two new metrics mirror the watchdog and are emitted when `metrics.enabled` is also true: the `sockguard_upstream_api_up` gauge and the `sockguard_upstream_readiness_checks_total{result="ready|unreachable"}` counter. The whole `health.*` block remains reload-immutable, so readiness changes take effect on restart. Validation rejects a readiness path that collides with `health.path`, `metrics.path`, or `admin.path`, and requires positive `interval` / `timeout` durations.
+- **Added `upstream.request_timeout` to bound hung proxied requests.** `ResponseHeaderTimeout` only caps the wait for upstream response *headers*; a Docker daemon that sends headers promptly and then hangs the body (or hangs a heavy read like `GET /containers/json`) can still pin a proxied request indefinitely — the same wedged-daemon failure mode the readiness probe detects. The new opt-in `upstream.request_timeout` (Go duration string, empty = disabled, validated as a positive duration) applies a total per-request deadline to ordinary finite requests; on expiry the transport aborts the upstream connection and the proxy returns **`504 Gateway Timeout`** (`reason_code=upstream_request_timeout`), distinct from the `502` an unreachable socket yields. Long-lived endpoints are exempt so the deadline never severs a legitimately long response: event streams, follow/stream logs and stats, image pull/build/push/load, container export, image get, websocket attach, and the blocking `/containers/{id}/wait`. Hijacked attach/exec-start connections already bypass this handler, and client cancellation (`context.Canceled`) keeps its existing `502` path. Unlike the `health.*` block, this field is reload-mutable (only `upstream.socket` is immutable), so it takes effect on hot reload.
+
+### Fixed
+
+- **The `drydock` preset now allowlists the stock `runc` runtime.** Since 1.1.0 a non-empty `HostConfig.Runtime` is denied unless it appears in `allowed_runtimes`, and drydock recreates each container from its own inspect spec — which on most daemons carries an explicit `Runtime: "runc"`. Out of the box that meant every drydock update was rejected at `POST /containers/create` with `403 "runtime \"runc\" is not allowlisted"` and rolled back. The preset now allows the stock `runc` runtime (an empty/unset runtime still selects the daemon default and is always permitted) so drydock recreation works without operators hand-patching the policy.
+
+### Security
+
+- **Moved the Go toolchain from 1.26.3 to 1.26.4 to clear two *reachable* standard-library advisories.** The `toolchain` directive in `app/go.mod` and `benchmarks/go.mod` is bumped to `go1.26.4`, and the Docker builder image to `golang:1.26.4-alpine3.23`, so CI and the published binary both build on 1.26.4. This closes **GO-2026-5037** (inefficient candidate hostname parsing in `crypto/x509` — reached from `internal/sigverify` keyless verification and the hijack TLS write path) and **GO-2026-5039** (arbitrary inputs included unescaped in `net/textproto` errors — reached from the hijack reader's `ReadMIMEHeader`). `govulncheck ./...` reported both as reachable on 1.26.3 and reports **zero vulnerabilities** on 1.26.4.
+
+### Dependencies
+
+- **Bumped the Go `go-minor` group** (`/app`): `github.com/google/go-containerregistry` v0.20.7 → v0.21.6, `github.com/sigstore/sigstore` v1.10.6 → v1.10.8, `github.com/sigstore/protobuf-specs` v0.5.0 → v0.5.1, plus the transitive closure. These modules sit on the opt-in image-trust / signed-policy-bundle paths, not the core proxy hot path.
+- **Bumped the npm `npm-minor` group** (12 updates) across the website + docs workspaces and shared tooling: `next` 16.2.6 → 16.2.7, `react` / `react-dom` 19.2.6 → 19.2.7, `fumadocs-core` / `fumadocs-mdx` / `fumadocs-ui`, `@biomejs/biome` 2.4.15 → 2.4.16, `turbo`, `knip`, `lefthook`, and `lucide-react`.
+- **Bumped the GitHub Actions `actions-minor` group** (4 updates, SHA-pinned): `actions/checkout` v6.0.2 → v6.0.3 and `github/codeql-action` v4.36.0 → v4.36.1.
+
 ## [1.1.0] - 2026-06-01
 
 ### Added
