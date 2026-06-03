@@ -54,6 +54,15 @@ response:
 request_body:
   container_create:
     allowed_bind_mounts: []
+    # Drydock recreates a container from its own inspect spec, which on most
+    # daemons carries an explicit HostConfig.Runtime ("runc"). Sockguard's
+    # allowed_runtimes allowlist denies a non-empty runtime unless it is
+    # listed (an empty/unset runtime selects the daemon default and is always
+    # allowed), so without this entry every update is rejected at
+    # POST /containers/create with 403 "runtime \"runc\" is not allowlisted"
+    # and drydock rolls the update back. Allow the stock runtime only.
+    allowed_runtimes:
+      - runc
   image_pull:
     allow_all_registries: true
 

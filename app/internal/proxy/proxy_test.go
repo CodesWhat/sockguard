@@ -210,6 +210,28 @@ func TestNew_ErrorHandlerStampsResponseRejectedReasonCode(t *testing.T) {
 	}
 }
 
+func TestNew_ErrorHandlerMapsDeadlineExceededToGatewayTimeout(t *testing.T) {
+	t.Parallel()
+	rp := NewWithOptions("/tmp/does-not-matter.sock", testLogger(), Options{})
+
+	meta := &logging.RequestMeta{Decision: "allow", ReasonCode: "matched_allow_rule", Reason: "allow"}
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+
+	rp.ErrorHandler(rec, req, fmt.Errorf("proxy: %w", context.DeadlineExceeded))
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusGatewayTimeout)
+	}
+	if meta.ReasonCode != reasonCodeUpstreamRequestTimeout {
+		t.Fatalf("ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeUpstreamRequestTimeout)
+	}
+	if meta.Reason != "upstream request timed out" {
+		t.Fatalf("Reason = %q, want %q", meta.Reason, "upstream request timed out")
+	}
+}
+
 // startMockDocker creates a Unix socket with an HTTP server that echoes
 // the request method and path as JSON. Returns the socket path; the
 // server is shut down via t.Cleanup.

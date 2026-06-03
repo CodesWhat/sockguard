@@ -22,6 +22,9 @@ Optimized for the [drydock](https://github.com/CodesWhat/drydock) container upda
 # while still denying image imports via fromSrc
 # container updates are inspected; restart-policy/resource/device/capability changes
 # stay denied unless you explicitly allow them under request_body.container_update
+# the stock "runc" runtime is allowlisted (request_body.container_create.allowed_runtimes)
+# because drydock recreates containers from their inspect spec, which usually carries an
+# explicit HostConfig.Runtime — without it every update would 403 at /containers/create
 ```
 
 ## Traefik (`traefik.yaml`)

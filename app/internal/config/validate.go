@@ -86,10 +86,17 @@ func plainTCPListenerErrors(label, prefix string, listen ListenConfig) []string 
 }
 
 func validateUpstream(cfg *Config) []string {
+	var errs []string
 	if cfg.Upstream.Socket == "" {
-		return []string{"upstream.socket is required"}
+		errs = append(errs, "upstream.socket is required")
 	}
-	return nil
+	if cfg.Upstream.RequestTimeout != "" {
+		timeout, err := time.ParseDuration(cfg.Upstream.RequestTimeout)
+		if err != nil || timeout <= 0 {
+			errs = append(errs, fmt.Sprintf("upstream.request_timeout must be a positive duration, got %q", cfg.Upstream.RequestTimeout))
+		}
+	}
+	return errs
 }
 
 func validateLogging(cfg *Config) []string {
@@ -138,6 +145,26 @@ func validateHealthMetrics(cfg *Config) []string {
 		interval, err := time.ParseDuration(cfg.Health.Watchdog.Interval)
 		if err != nil || interval <= 0 {
 			errs = append(errs, fmt.Sprintf("health.watchdog.interval must be a positive duration, got %q", cfg.Health.Watchdog.Interval))
+		}
+	}
+	if cfg.Health.Readiness.Enabled {
+		if !strings.HasPrefix(cfg.Health.Readiness.Path, "/") {
+			errs = append(errs, fmt.Sprintf("health.readiness.path must start with /, got %q", cfg.Health.Readiness.Path))
+		}
+		if interval, err := time.ParseDuration(cfg.Health.Readiness.Interval); err != nil || interval <= 0 {
+			errs = append(errs, fmt.Sprintf("health.readiness.interval must be a positive duration, got %q", cfg.Health.Readiness.Interval))
+		}
+		if timeout, err := time.ParseDuration(cfg.Health.Readiness.Timeout); err != nil || timeout <= 0 {
+			errs = append(errs, fmt.Sprintf("health.readiness.timeout must be a positive duration, got %q", cfg.Health.Readiness.Timeout))
+		}
+		if cfg.Health.Enabled && cfg.Health.Readiness.Path == cfg.Health.Path {
+			errs = append(errs, fmt.Sprintf("health.readiness.path must not equal health.path, got %q", cfg.Health.Readiness.Path))
+		}
+		if cfg.Metrics.Enabled && cfg.Health.Readiness.Path == cfg.Metrics.Path {
+			errs = append(errs, fmt.Sprintf("health.readiness.path must not equal metrics.path, got %q", cfg.Health.Readiness.Path))
+		}
+		if cfg.Admin.Enabled && cfg.Health.Readiness.Path == cfg.Admin.Path {
+			errs = append(errs, fmt.Sprintf("health.readiness.path must not equal admin.path, got %q", cfg.Health.Readiness.Path))
 		}
 	}
 	if cfg.Metrics.Enabled && !strings.HasPrefix(cfg.Metrics.Path, "/") {

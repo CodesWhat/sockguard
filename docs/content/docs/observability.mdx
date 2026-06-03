@@ -1,6 +1,6 @@
 ---
 title: Observability
-description: Prometheus metrics, the active upstream watchdog, and W3C trace correlation. Wire Sockguard into Prometheus, Grafana, and your existing tracing pipeline without an OTLP exporter.
+description: Prometheus metrics, the active upstream watchdog, the Docker API readiness probe, and W3C trace correlation. Wire Sockguard into Prometheus, Grafana, and your existing tracing pipeline without an OTLP exporter.
 ---
 
 Sockguard exposes three observability surfaces, all opt-in or always-on with zero
@@ -12,7 +12,11 @@ external dependencies:
 2. **Active upstream watchdog** — periodically dials the Docker socket, logs
    reachable/unreachable transitions, exports state via `/health` and metrics.
    Opt-in via `health.watchdog.enabled`.
-3. **Trace/log correlation** — preserves valid W3C `traceparent` context or
+3. **Readiness probe** — periodically issues a real `GET /containers/json`
+   against the Docker API and serves the result at `/ready`, catching a daemon
+   that accepts connections but no longer answers. Opt-in via
+   `health.readiness.enabled`.
+4. **Trace/log correlation** — preserves valid W3C `traceparent` context or
    generates a fresh local trace, forwards a proxy-local span ID to Docker,
    and tags access, audit, and upstream-error logs with `trace_id`,
    `trace_span_id`, `trace_parent_id`, and `trace_sampled`. Always on, no
@@ -35,6 +39,11 @@ health:
   watchdog:
     enabled: true
     interval: 5s      # positive duration; 1s–30s is typical
+  readiness:
+    enabled: true     # opt-in /ready probe against the Docker API
+    path: /ready      # must differ from health.path, metrics.path, admin.path
+    interval: 10s     # positive duration
+    timeout: 5s       # positive duration; per-probe deadline
 ```
 
 Equivalent environment variables:
@@ -44,10 +53,14 @@ SOCKGUARD_METRICS_ENABLED=true
 SOCKGUARD_METRICS_PATH=/metrics
 SOCKGUARD_HEALTH_WATCHDOG_ENABLED=true
 SOCKGUARD_HEALTH_WATCHDOG_INTERVAL=5s
+SOCKGUARD_HEALTH_READINESS_ENABLED=true
+SOCKGUARD_HEALTH_READINESS_PATH=/ready
+SOCKGUARD_HEALTH_READINESS_INTERVAL=10s
+SOCKGUARD_HEALTH_READINESS_TIMEOUT=5s
 ```
 
-`metrics.enabled` and `health.watchdog.enabled` default to `false`, so existing
-deployments stay quiet until you opt in.
+`metrics.enabled`, `health.watchdog.enabled`, and `health.readiness.enabled`
+all default to `false`, so existing deployments stay quiet until you opt in.
 
 ## Metric reference
 
@@ -61,6 +74,8 @@ deployments stay quiet until you opt in.
 | `sockguard_http_requests_active`             | gauge     | —                                                       | Currently in-flight requests. Spikes during streaming endpoints (logs/attach/events).              |
 | `sockguard_upstream_socket_up`               | gauge     | —                                                       | `1` reachable, `0` unreachable. Only emitted when `health.watchdog.enabled` is true.               |
 | `sockguard_upstream_watchdog_checks_total`   | counter   | `result`                                                | `result` ∈ `{connected, unreachable}`. Increments every interval; ratio is your error budget.      |
+| `sockguard_upstream_api_up`                  | gauge     | —                                                       | `1` the Docker API answered the readiness probe, `0` it did not. Only emitted when `health.readiness.enabled` is true. |
+| `sockguard_upstream_readiness_checks_total`  | counter   | `result`                                                | `result` ∈ `{ready, unreachable}`. One per readiness probe interval; `unreachable` covers transport errors and non-2xx API responses. |
 | `sockguard_throttle_requests_total`          | counter   | `profile`, `reason_code`, `mode`                        | Throttle denials. `reason_code` ∈ `{rate_limit_exceeded, concurrency_cap, priority_floor}`. `mode` ∈ `{enforce, warn, audit}`. |
 | `sockguard_inflight_requests`                | gauge     | `profile`                                               | In-flight count for profiles with `max_inflight` configured. Reflects real concurrency, including `warn`/`audit`-mode requests that would have been denied. |
 | `sockguard_policy_version`                   | gauge     | —                                                       | Monotonic policy generation counter. Ticks once at startup and once per successful hot reload. Matches the `version` field in `GET /admin/policy/version`. |
@@ -152,6 +167,16 @@ sum(rate(sockguard_upstream_watchdog_checks_total[1h]))
 A value below `1.0` means the upstream socket flapped during the window even
 if it currently reads `up=1`.
 
+**Daemon answering the API but unready (wedged daemon):**
+
+```text
+sockguard_upstream_api_up == 0 and sockguard_upstream_socket_up == 1
+```
+
+The socket is dialable but the Docker API is not answering the readiness probe —
+the wedged-daemon case `/health` alone cannot see. Wire it to Alertmanager with
+`for: 30s`.
+
 **Throttle rate by profile and reason:**
 
 ```text
@@ -224,6 +249,36 @@ monitoring:
 State-change semantics are once-per-edge: the watchdog logs only when the
 reachability flips, not on every interval, so log volume scales with outages
 rather than with the configured interval.
+
+## Readiness probe
+
+The watchdog *dials* the upstream socket — a liveness signal that only proves
+the socket accepts connections. That misses the failure mode where the daemon
+keeps accepting connections (so the dial and `/_ping` stay green) while request
+handling has wedged and `GET /containers/json` hangs. The readiness probe closes
+that gap:
+
+- A goroutine issues a real `GET /containers/json?limit=1` against the upstream
+  Docker API every `health.readiness.interval`, each call bounded by
+  `health.readiness.timeout`.
+- `/ready` (default path; `health.readiness.path`) returns the latest result.
+  Answering: HTTP 200, `{"status":"healthy","upstream":"ready",...}`. Wedged or
+  unreachable: HTTP 503, `{"status":"unhealthy","upstream":"unreachable",...}` —
+  any transport error or non-2xx API response counts as unready.
+- When `metrics.enabled` is also true, Sockguard exports
+  `sockguard_upstream_api_up` (gauge) and
+  `sockguard_upstream_readiness_checks_total{result=...}` (counter).
+
+`/health` (and the watchdog) remain your **liveness** signal — "the process is
+up and the socket is dialable." `/ready` is your **readiness** signal — "the
+daemon is actually answering the API." In Kubernetes, point a liveness probe at
+`/health` and a readiness probe at `/ready` so a wedged daemon drains the pod
+from the Service endpoints (stop sending it traffic) without triggering a
+restart loop. Behind a load balancer, route the backend health check to
+`/ready` for the same reason.
+
+The `health.*` block — readiness included — is immutable across hot reload, so
+changing the probe path, interval, or timeout requires a restart.
 
 ## Trace and log correlation
 
@@ -302,6 +357,11 @@ generates a fresh local trace:
   Docker daemon restart (i.e. always). The 5-second default is fine; lower
   it only if you expect sub-5s detection requirements.
 - Wire `sockguard_upstream_socket_up == 0 for 30s` into Alertmanager.
+- Set `health.readiness.enabled: true` and point your orchestrator's readiness
+  check (Kubernetes readiness probe, load-balancer backend health) at `/ready`,
+  leaving liveness on `/health`. This drains traffic from a proxy whose daemon
+  has wedged without restart-looping it. Alert on
+  `sockguard_upstream_api_up == 0 and sockguard_upstream_socket_up == 1 for 30s`.
 - Send Sockguard's structured logs to your existing log pipeline; the
   `trace_id` field joins them to whatever tracing system the caller uses.
 - If the same listener serves clients and Prometheus, gate the metrics path

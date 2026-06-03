@@ -62,6 +62,16 @@ type ListenTLSConfig struct {
 // UpstreamConfig configures the upstream Docker socket.
 type UpstreamConfig struct {
 	Socket string `mapstructure:"socket"`
+	// RequestTimeout bounds the total lifetime of a single proxied upstream
+	// request as a Go duration string (e.g. "30s"). ResponseHeaderTimeout only
+	// caps the wait for response headers; a daemon that sends headers and then
+	// hangs the body can still pin a request indefinitely. A non-empty value
+	// converts that hang into a fast 504 for ordinary finite requests.
+	// Long-lived endpoints (/events, log/stats streams, image pull/build/push,
+	// container export/get, and the blocking /containers/{id}/wait) are exempt
+	// so the deadline never severs a legitimately long response. Empty (the
+	// default) disables the per-request deadline.
+	RequestTimeout string `mapstructure:"request_timeout"`
 }
 
 // LogConfig configures logging.
@@ -480,15 +490,28 @@ type OwnershipConfig struct {
 
 // HealthConfig configures the health check endpoint.
 type HealthConfig struct {
-	Enabled  bool                 `mapstructure:"enabled"`
-	Path     string               `mapstructure:"path"`
-	Watchdog HealthWatchdogConfig `mapstructure:"watchdog"`
+	Enabled   bool                  `mapstructure:"enabled"`
+	Path      string                `mapstructure:"path"`
+	Watchdog  HealthWatchdogConfig  `mapstructure:"watchdog"`
+	Readiness HealthReadinessConfig `mapstructure:"readiness"`
 }
 
 // HealthWatchdogConfig configures active upstream socket monitoring.
 type HealthWatchdogConfig struct {
 	Enabled  bool   `mapstructure:"enabled"`
 	Interval string `mapstructure:"interval"`
+}
+
+// HealthReadinessConfig configures the optional readiness endpoint. Unlike the
+// watchdog (which dials the upstream socket — a liveness signal), readiness
+// issues a real GET /containers/json against the upstream Docker API, so a
+// daemon that accepts connections but no longer answers the API is reported
+// unready. Disabled by default; the whole health.* block is reload-immutable.
+type HealthReadinessConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	Path     string `mapstructure:"path"`
+	Interval string `mapstructure:"interval"`
+	Timeout  string `mapstructure:"timeout"`
 }
 
 // MetricsConfig configures the Prometheus metrics endpoint.
@@ -706,6 +729,12 @@ func Defaults() Config {
 			Watchdog: HealthWatchdogConfig{
 				Enabled:  false,
 				Interval: "5s",
+			},
+			Readiness: HealthReadinessConfig{
+				Enabled:  false,
+				Path:     "/ready",
+				Interval: "10s",
+				Timeout:  "5s",
 			},
 		},
 		Metrics: MetricsConfig{

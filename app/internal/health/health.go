@@ -3,12 +3,15 @@ package health
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/dockerclient"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/version"
 )
@@ -34,6 +37,10 @@ type upstreamHealthChecker struct {
 	timeout    time.Duration
 	now        func() time.Time
 	dial       dialContextFunc
+	// probe, when non-nil, replaces the raw socket dial with a richer upstream
+	// check (the readiness monitor probes the Docker API). It returns the status
+	// string to surface and a non-nil error when the upstream is not usable.
+	probe func(ctx context.Context) (string, error)
 
 	// onWaiterJoined is called (without the mu lock held) each time a caller
 	// joins an already-in-flight check rather than starting a new dial.
@@ -137,12 +144,19 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 	dialCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	conn, err := c.dial(dialCtx, "unix", upstreamSocket)
-	status := "connected"
-	if err == nil {
-		conn.Close()
+	var status string
+	var err error
+	if c.probe != nil {
+		status, err = c.probe(dialCtx)
 	} else {
-		status = "unreachable"
+		var conn net.Conn
+		conn, err = c.dial(dialCtx, "unix", upstreamSocket)
+		status = "connected"
+		if err == nil {
+			conn.Close()
+		} else {
+			status = "unreachable"
+		}
 	}
 
 	c.mu.Lock()
@@ -303,4 +317,53 @@ func (m *Monitor) storeState(status string, err error) WatchdogState {
 // Handler returns an HTTP handler for the /health endpoint.
 func Handler(upstreamSocket string, startTime time.Time, logger *slog.Logger) http.HandlerFunc {
 	return NewMonitor(upstreamSocket, startTime, logger).Handler()
+}
+
+func newReadinessChecker(timeout time.Duration, now func() time.Time, probe func(context.Context) (string, error)) *upstreamHealthChecker {
+	return &upstreamHealthChecker{
+		ttl:        healthCacheTTL,
+		failureTTL: healthFailureCacheTTL,
+		timeout:    timeout,
+		now:        now,
+		probe:      probe,
+	}
+}
+
+// NewReadinessMonitor constructs a Monitor that probes the upstream Docker API
+// (GET /containers/json) instead of dialing the socket. The raw dial behind
+// /health is a liveness signal — it only proves the socket accepts connections.
+// Readiness proves the daemon still answers the API, catching the failure mode
+// where the socket stays connectable but request handling has wedged. It reuses
+// the Monitor watchdog/state/handler machinery; only the probe differs. A
+// non-positive timeout falls back to the default dial timeout.
+func NewReadinessMonitor(upstreamSocket string, startTime time.Time, logger *slog.Logger, timeout time.Duration) *Monitor {
+	if timeout <= 0 {
+		timeout = healthDialTimeout
+	}
+	client := dockerclient.New(upstreamSocket)
+	checker := newReadinessChecker(timeout, time.Now, func(ctx context.Context) (string, error) {
+		return probeUpstreamAPI(ctx, client)
+	})
+	return newMonitorWithChecker(upstreamSocket, startTime, logger, checker)
+}
+
+// probeUpstreamAPI issues a minimal GET /containers/json?limit=1 against the
+// upstream Docker API. Any transport error or non-2xx status is reported as
+// unready. The host in the URL is arbitrary — the client dials the unix socket.
+func probeUpstreamAPI(ctx context.Context, client *http.Client) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/json?limit=1", nil)
+	if err != nil {
+		return "unreachable", err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "unreachable", err
+	}
+	defer resp.Body.Close()
+	// Drain the body so the keep-alive connection can be reused by the next probe.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "unreachable", fmt.Errorf("upstream /containers/json returned status %d", resp.StatusCode)
+	}
+	return "ready", nil
 }

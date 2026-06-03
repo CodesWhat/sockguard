@@ -196,6 +196,31 @@ func TestRegistryRecordsUpstreamWatchdogState(t *testing.T) {
 	assertContains(t, out, `sockguard_upstream_watchdog_checks_total{result="connected"} 1`)
 }
 
+func TestRegistryRecordsUpstreamReadinessState(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+
+	registry.ObserveUpstreamReadiness(false)
+	registry.SetUpstreamAPIState(false)
+	registry.ObserveUpstreamReadiness(true)
+	registry.SetUpstreamAPIState(true)
+
+	out := renderMetrics(t, registry)
+	assertContains(t, out, "sockguard_upstream_api_up 1")
+	assertContains(t, out, `sockguard_upstream_readiness_checks_total{result="unreachable"} 1`)
+	assertContains(t, out, `sockguard_upstream_readiness_checks_total{result="ready"} 1`)
+}
+
+func TestRegistryOmitsUpstreamAPIGaugeUntilObserved(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+
+	out := renderMetrics(t, registry)
+	if strings.Contains(out, "sockguard_upstream_api_up") {
+		t.Fatalf("expected sockguard_upstream_api_up to be omitted before first probe, got:\n%s", out)
+	}
+}
+
 func TestNilRegistryNoOps(t *testing.T) {
 	t.Parallel()
 	var registry *Registry

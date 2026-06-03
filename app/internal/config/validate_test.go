@@ -17,6 +17,64 @@ func TestValidateDefaults(t *testing.T) {
 	}
 }
 
+func TestValidateAcceptsEnabledReadiness(t *testing.T) {
+	cfg := Defaults()
+	cfg.Health.Readiness.Enabled = true
+	if err := Validate(&cfg); err != nil {
+		t.Errorf("Validate(readiness enabled) = %v, want nil", err)
+	}
+}
+
+func TestValidateRejectsBadReadinessConfig(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+		want   string
+	}{
+		{
+			name:   "path without leading slash",
+			mutate: func(c *Config) { c.Health.Readiness.Path = "ready" },
+			want:   "health.readiness.path must start with /",
+		},
+		{
+			name:   "non-positive interval",
+			mutate: func(c *Config) { c.Health.Readiness.Interval = "0s" },
+			want:   "health.readiness.interval must be a positive duration",
+		},
+		{
+			name:   "unparseable timeout",
+			mutate: func(c *Config) { c.Health.Readiness.Timeout = "soon" },
+			want:   "health.readiness.timeout must be a positive duration",
+		},
+		{
+			name:   "path collides with health.path",
+			mutate: func(c *Config) { c.Health.Readiness.Path = c.Health.Path },
+			want:   "health.readiness.path must not equal health.path",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Health.Readiness.Enabled = true
+			tc.mutate(&cfg)
+			err := Validate(&cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want error containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateIgnoresReadinessConfigWhenDisabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.Health.Readiness.Enabled = false
+	cfg.Health.Readiness.Path = "no-slash"
+	cfg.Health.Readiness.Interval = "nonsense"
+	if err := Validate(&cfg); err != nil {
+		t.Errorf("Validate(readiness disabled) = %v, want nil (disabled readiness must not validate)", err)
+	}
+}
+
 func TestValidateRejectsNonLoopbackPlainTCPWithoutOptIn(t *testing.T) {
 	cfg := Defaults()
 	cfg.Listen.Address = ":2375"

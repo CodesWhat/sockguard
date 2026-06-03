@@ -222,6 +222,8 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	errCh := make(chan error, 1)
 	stopWatchdog := runtime.startWatchdog(cmd.Context(), cfg)
 	defer stopWatchdog()
+	stopReadiness := runtime.startReadiness(cmd.Context(), cfg)
+	defer stopReadiness()
 	go deps.startServing(server, listener, errCh)
 
 	adminServer, adminErrCh, stopAdmin, err := startAdminServer(cfg, logger, auditLogger, versioner, deps)
@@ -448,8 +450,9 @@ func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func(
 // rebuild happens. Chain-scoped goroutines (rate-limit sampler, per-profile
 // Limiter eviction) are tracked separately by reloadCoordinator.
 type serveRuntime struct {
-	metrics *metrics.Registry
-	health  *health.Monitor
+	metrics   *metrics.Registry
+	health    *health.Monitor
+	readiness *health.Monitor
 }
 
 func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) *serveRuntime {
@@ -459,6 +462,10 @@ func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) *
 	}
 	if cfg.Health.Enabled || cfg.Health.Watchdog.Enabled {
 		runtime.health = health.NewMonitor(cfg.Upstream.Socket, deps.now(), logger)
+	}
+	if cfg.Health.Readiness.Enabled {
+		timeout, _ := time.ParseDuration(cfg.Health.Readiness.Timeout)
+		runtime.readiness = health.NewReadinessMonitor(cfg.Upstream.Socket, deps.now(), logger, timeout)
 	}
 	return runtime
 }
@@ -479,6 +486,26 @@ func (r *serveRuntime) startWatchdog(ctx context.Context, cfg *config.Config) fu
 		}
 		r.metrics.ObserveUpstreamWatchdog(state.Up)
 		r.metrics.SetUpstreamSocketState(state.Up)
+	})
+	return cancel
+}
+
+func (r *serveRuntime) startReadiness(ctx context.Context, cfg *config.Config) func() {
+	if r == nil || r.readiness == nil || !cfg.Health.Readiness.Enabled {
+		return func() {}
+	}
+	interval, err := time.ParseDuration(cfg.Health.Readiness.Interval)
+	if err != nil || interval <= 0 {
+		return func() {}
+	}
+
+	readinessCtx, cancel := context.WithCancel(ctx)
+	r.readiness.StartWatchdog(readinessCtx, interval, func(state health.WatchdogState) {
+		if r.metrics == nil {
+			return
+		}
+		r.metrics.ObserveUpstreamReadiness(state.Up)
+		r.metrics.SetUpstreamAPIState(state.Up)
 	})
 	return cancel
 }
@@ -519,9 +546,21 @@ func attachRuntimeInspectors(cfg *config.Config, policy filter.PolicyConfig) fil
 }
 
 func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handler {
-	return proxy.NewWithOptions(cfg.Upstream.Socket, logger, proxy.Options{
+	rp := proxy.NewWithOptions(cfg.Upstream.Socket, logger, proxy.Options{
 		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
 	})
+	// Bound finite upstream requests with a total deadline when configured.
+	// request_timeout is validated at load, so parse errors here degrade to
+	// "disabled" rather than aborting the chain rebuild. Wrapping the proxy
+	// itself (rather than adding a chain layer) keeps the deadline off the
+	// hijack path: HijackHandler short-circuits before this handler runs.
+	var requestTimeout time.Duration
+	if cfg.Upstream.RequestTimeout != "" {
+		if d, err := time.ParseDuration(cfg.Upstream.RequestTimeout); err == nil && d > 0 {
+			requestTimeout = d
+		}
+	}
+	return proxy.WithRequestTimeout(rp, requestTimeout)
 }
 
 func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLayer, func()) {
@@ -573,6 +612,9 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 
 	if cfg.Health.Enabled {
 		layers = append(layers, namedServeHandlerLayer("withHealth", withHealth(cfg, runtime)))
+	}
+	if runtime.readiness != nil {
+		layers = append(layers, namedServeHandlerLayer("withReadiness", withReadiness(cfg, runtime)))
 	}
 	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetricsEndpoint", withMetricsEndpoint(cfg, runtime.metrics)))
@@ -680,6 +722,16 @@ func withHealth(cfg *config.Config, runtime *serveRuntime) func(http.Handler) ht
 	healthHandler := runtime.health.Handler()
 	return func(next http.Handler) http.Handler {
 		return pathInterceptor(cfg.Health.Path, healthHandler, next)
+	}
+}
+
+// withReadiness wires the readiness endpoint onto the runtime's readiness
+// monitor. Precondition: runtime.readiness is non-nil (cfg.Health.Readiness
+// .Enabled), guaranteed by the caller as with withHealth.
+func withReadiness(cfg *config.Config, runtime *serveRuntime) func(http.Handler) http.Handler {
+	readinessHandler := runtime.readiness.Handler()
+	return func(next http.Handler) http.Handler {
+		return pathInterceptor(cfg.Health.Readiness.Path, readinessHandler, next)
 	}
 }
 

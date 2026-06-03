@@ -17,6 +17,7 @@ import (
 const (
 	reasonCodeUpstreamSocketUnreachable = "upstream_socket_unreachable"
 	reasonCodeUpstreamResponseRejected  = "upstream_response_rejected_by_policy"
+	reasonCodeUpstreamRequestTimeout    = "upstream_request_timeout"
 )
 
 // Options configures reverse-proxy behavior beyond the fixed upstream socket.
@@ -58,16 +59,28 @@ func NewWithOptions(upstreamSocket string, logger *slog.Logger, opts Options) *h
 
 			message := "upstream Docker socket unreachable"
 			reasonCode := reasonCodeUpstreamSocketUnreachable
-			if errors.Is(err, responsefilter.ErrResponseRejected) {
+			status := http.StatusBadGateway
+			switch {
+			case errors.Is(err, responsefilter.ErrResponseRejected):
 				message = "upstream Docker response rejected by sockguard policy"
 				reasonCode = reasonCodeUpstreamResponseRejected
+			case errors.Is(err, context.DeadlineExceeded):
+				// The per-request upstream deadline (WithRequestTimeout) fired:
+				// the daemon accepted the request but did not finish it in time.
+				// Surface it as a Gateway Timeout, distinct from an unreachable
+				// socket, so callers and access logs can tell a hung daemon apart
+				// from a dead one. Client-initiated cancellation surfaces as
+				// context.Canceled and stays on the 502 path.
+				message = "upstream request timed out"
+				reasonCode = reasonCodeUpstreamRequestTimeout
+				status = http.StatusGatewayTimeout
 			}
 			if meta := logging.MetaForRequest(w, r); meta != nil {
 				meta.ReasonCode = reasonCode
 				meta.Reason = message
 			}
 
-			if encErr := httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: message}); encErr != nil {
+			if encErr := httpjson.Write(w, status, httpjson.ErrorResponse{Message: message}); encErr != nil {
 				attrs := logging.AppendCorrelationAttrsForResponseWriter(nil, r, w)
 				attrs = append(attrs, slog.Any("error", encErr))
 				logger.LogAttrs(r.Context(), slog.LevelWarn, "failed to encode error response", attrs...)
