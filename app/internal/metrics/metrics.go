@@ -49,6 +49,8 @@ type Registry struct {
 	activeRequests atomic.Int64
 	upstreamKnown  atomic.Bool
 	upstreamUp     atomic.Int64
+	apiKnown       atomic.Bool
+	apiUp          atomic.Int64
 
 	// configReloadLastKnown distinguishes "never reloaded" (still 0) from
 	// "reloaded successfully at the start of the Unix epoch", so the gauge
@@ -77,6 +79,7 @@ type Registry struct {
 	requests      sync.Map // map[requestLabels]*atomic.Uint64
 	denies        sync.Map // map[denyLabels]*atomic.Uint64
 	upstream      sync.Map // map[upstreamWatchdogLabels]*atomic.Uint64
+	readiness     sync.Map // map[upstreamWatchdogLabels]*atomic.Uint64
 	throttles     sync.Map // map[throttleLabels]*atomic.Uint64
 	configReloads sync.Map // map[configReloadLabels]*atomic.Uint64
 
@@ -332,6 +335,31 @@ func (r *Registry) SetUpstreamSocketState(up bool) {
 	r.upstreamKnown.Store(true)
 }
 
+// ObserveUpstreamReadiness records one upstream readiness (API) probe result.
+func (r *Registry) ObserveUpstreamReadiness(up bool) {
+	if r == nil {
+		return
+	}
+	result := "unreachable"
+	if up {
+		result = "ready"
+	}
+	addCounter(&r.readiness, upstreamWatchdogLabels{result: result})
+}
+
+// SetUpstreamAPIState updates the current upstream Docker API readiness state.
+func (r *Registry) SetUpstreamAPIState(up bool) {
+	if r == nil {
+		return
+	}
+	if up {
+		r.apiUp.Store(1)
+	} else {
+		r.apiUp.Store(0)
+	}
+	r.apiKnown.Store(true)
+}
+
 func (r *Registry) observe(req *http.Request, meta *logging.RequestMeta, status int, seconds float64) {
 	decision := decisionLabel(meta, status)
 	method := methodLabel(req)
@@ -386,12 +414,15 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	denies := collectCounters[denyLabels](&r.denies)
 	durations := snapshotHistograms(&r.duration)
 	upstream := collectCounters[upstreamWatchdogLabels](&r.upstream)
+	readiness := collectCounters[upstreamWatchdogLabels](&r.readiness)
 	throttles := collectCounters[throttleLabels](&r.throttles)
 	reloads := collectCounters[configReloadLabels](&r.configReloads)
 
 	active := r.activeRequests.Load()
 	upstreamKnown := r.upstreamKnown.Load()
 	upstreamUp := r.upstreamUp.Load()
+	apiKnown := r.apiKnown.Load()
+	apiUp := r.apiUp.Load()
 	reloadLastKnown := r.configReloadLastKnown.Load()
 	reloadLastNanos := r.configReloadLastNanos.Load()
 	policyVersionKnown := r.policyVersionKnown.Load()
@@ -452,6 +483,18 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	fmt.Fprintln(w, "# TYPE sockguard_upstream_watchdog_checks_total counter")
 	for _, key := range sortedUpstreamWatchdogLabels(upstream) {
 		fmt.Fprintf(w, "sockguard_upstream_watchdog_checks_total{result=%s} %d\n", labelValue(key.result), upstream[key])
+	}
+
+	if apiKnown {
+		fmt.Fprintln(w, "# HELP sockguard_upstream_api_up Whether the upstream Docker API readiness probe currently reports the daemon as answering requests.")
+		fmt.Fprintln(w, "# TYPE sockguard_upstream_api_up gauge")
+		fmt.Fprintf(w, "sockguard_upstream_api_up %d\n", apiUp)
+	}
+
+	fmt.Fprintln(w, "# HELP sockguard_upstream_readiness_checks_total Total upstream Docker API readiness probes.")
+	fmt.Fprintln(w, "# TYPE sockguard_upstream_readiness_checks_total counter")
+	for _, key := range sortedUpstreamWatchdogLabels(readiness) {
+		fmt.Fprintf(w, "sockguard_upstream_readiness_checks_total{result=%s} %d\n", labelValue(key.result), readiness[key])
 	}
 
 	fmt.Fprintln(w, "# HELP sockguard_throttle_requests_total Total requests denied by rate limiting or concurrency caps. mode is enforce (request was blocked with 429) or warn / audit (passed through under rollout mode).")

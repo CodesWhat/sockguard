@@ -490,15 +490,28 @@ type OwnershipConfig struct {
 
 // HealthConfig configures the health check endpoint.
 type HealthConfig struct {
-	Enabled  bool                 `mapstructure:"enabled"`
-	Path     string               `mapstructure:"path"`
-	Watchdog HealthWatchdogConfig `mapstructure:"watchdog"`
+	Enabled   bool                  `mapstructure:"enabled"`
+	Path      string                `mapstructure:"path"`
+	Watchdog  HealthWatchdogConfig  `mapstructure:"watchdog"`
+	Readiness HealthReadinessConfig `mapstructure:"readiness"`
 }
 
 // HealthWatchdogConfig configures active upstream socket monitoring.
 type HealthWatchdogConfig struct {
 	Enabled  bool   `mapstructure:"enabled"`
 	Interval string `mapstructure:"interval"`
+}
+
+// HealthReadinessConfig configures the optional readiness endpoint. Unlike the
+// watchdog (which dials the upstream socket — a liveness signal), readiness
+// issues a real GET /containers/json against the upstream Docker API, so a
+// daemon that accepts connections but no longer answers the API is reported
+// unready. Disabled by default; the whole health.* block is reload-immutable.
+type HealthReadinessConfig struct {
+	Enabled  bool   `mapstructure:"enabled"`
+	Path     string `mapstructure:"path"`
+	Interval string `mapstructure:"interval"`
+	Timeout  string `mapstructure:"timeout"`
 }
 
 // MetricsConfig configures the Prometheus metrics endpoint.
@@ -716,6 +729,12 @@ func Defaults() Config {
 			Watchdog: HealthWatchdogConfig{
 				Enabled:  false,
 				Interval: "5s",
+			},
+			Readiness: HealthReadinessConfig{
+				Enabled:  false,
+				Path:     "/ready",
+				Interval: "10s",
+				Timeout:  "5s",
 			},
 		},
 		Metrics: MetricsConfig{
