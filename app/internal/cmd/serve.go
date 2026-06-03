@@ -519,9 +519,21 @@ func attachRuntimeInspectors(cfg *config.Config, policy filter.PolicyConfig) fil
 }
 
 func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handler {
-	return proxy.NewWithOptions(cfg.Upstream.Socket, logger, proxy.Options{
+	rp := proxy.NewWithOptions(cfg.Upstream.Socket, logger, proxy.Options{
 		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
 	})
+	// Bound finite upstream requests with a total deadline when configured.
+	// request_timeout is validated at load, so parse errors here degrade to
+	// "disabled" rather than aborting the chain rebuild. Wrapping the proxy
+	// itself (rather than adding a chain layer) keeps the deadline off the
+	// hijack path: HijackHandler short-circuits before this handler runs.
+	var requestTimeout time.Duration
+	if cfg.Upstream.RequestTimeout != "" {
+		if d, err := time.ParseDuration(cfg.Upstream.RequestTimeout); err == nil && d > 0 {
+			requestTimeout = d
+		}
+	}
+	return proxy.WithRequestTimeout(rp, requestTimeout)
 }
 
 func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLayer, func()) {

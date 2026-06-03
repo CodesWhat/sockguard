@@ -62,6 +62,16 @@ type ListenTLSConfig struct {
 // UpstreamConfig configures the upstream Docker socket.
 type UpstreamConfig struct {
 	Socket string `mapstructure:"socket"`
+	// RequestTimeout bounds the total lifetime of a single proxied upstream
+	// request as a Go duration string (e.g. "30s"). ResponseHeaderTimeout only
+	// caps the wait for response headers; a daemon that sends headers and then
+	// hangs the body can still pin a request indefinitely. A non-empty value
+	// converts that hang into a fast 504 for ordinary finite requests.
+	// Long-lived endpoints (/events, log/stats streams, image pull/build/push,
+	// container export/get, and the blocking /containers/{id}/wait) are exempt
+	// so the deadline never severs a legitimately long response. Empty (the
+	// default) disables the per-request deadline.
+	RequestTimeout string `mapstructure:"request_timeout"`
 }
 
 // LogConfig configures logging.

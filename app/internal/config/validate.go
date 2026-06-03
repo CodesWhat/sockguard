@@ -86,10 +86,17 @@ func plainTCPListenerErrors(label, prefix string, listen ListenConfig) []string 
 }
 
 func validateUpstream(cfg *Config) []string {
+	var errs []string
 	if cfg.Upstream.Socket == "" {
-		return []string{"upstream.socket is required"}
+		errs = append(errs, "upstream.socket is required")
 	}
-	return nil
+	if cfg.Upstream.RequestTimeout != "" {
+		timeout, err := time.ParseDuration(cfg.Upstream.RequestTimeout)
+		if err != nil || timeout <= 0 {
+			errs = append(errs, fmt.Sprintf("upstream.request_timeout must be a positive duration, got %q", cfg.Upstream.RequestTimeout))
+		}
+	}
+	return errs
 }
 
 func validateLogging(cfg *Config) []string {
