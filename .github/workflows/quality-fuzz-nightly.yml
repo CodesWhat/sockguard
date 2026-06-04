@@ -22,6 +22,12 @@ run-name: >-
 # input is recoverable. The triage workflow is: download the artifact,
 # commit the minimized input under `app/internal/<pkg>/testdata/fuzz/<Fuzz*>/`
 # so it enters the seed corpus for all future runs, fix the bug, push.
+#
+# One narrow exception to "every failure is a crasher": a bare "context
+# deadline exceeded" at the -fuzztime boundary with no crasher is a known Go
+# fuzzing-engine flake (golang/go#48591) that strikes a random fuzzer under
+# shared-runner load. The Fuzz step retries that single case once; only a real
+# crasher or a genuine hang reds the run.
 
 on:
   workflow_dispatch:
@@ -47,9 +53,9 @@ jobs:
     name: "🔀 Fuzz ${{ matrix.fuzzer.name }}"
     runs-on: ubuntu-latest
     # Job-level cap is the hard ceiling regardless of what -fuzztime asks
-    # for. Keep it comfortably above the default 15m + setup overhead and
-    # above the longest documented manual budget plus the fuzz watchdog
-    # cushion.
+    # for. Keep it comfortably above the default budget run twice (the Fuzz
+    # step retries the known boundary flake once → ~2×15m + setup) and above
+    # the longest documented manual budget plus the fuzz watchdog cushion.
     timeout-minutes: 75
 
     strategy:
@@ -109,6 +115,7 @@ jobs:
           echo "Running ${{ matrix.fuzzer.name }} for ${FUZZTIME} with ${TEST_TIMEOUT} watchdog"
 
       - name: Fuzz ${{ matrix.fuzzer.name }}
+        id: fuzz
         working-directory: app
         env:
           FUZZER: ${{ matrix.fuzzer.name }}
@@ -119,11 +126,54 @@ jobs:
           # -run=^$ skips normal unit tests in the package so only the fuzz
           # driver runs. TEST_TIMEOUT is FUZZTIME plus a cushion, so hangs
           # produce Go's goroutine dump before the job-level ceiling fires.
-          go test -run='^$' \
-            -fuzz="^${FUZZER}\$" \
-            -fuzztime="${FUZZTIME}" \
-            -timeout="${TEST_TIMEOUT}" \
-            "${PKG}"
+          #
+          # A bare "context deadline exceeded" at the -fuzztime boundary with no
+          # crasher is a known Go fuzzing flake (golang/go#48591): under
+          # shared-runner load a worker can miss the coordinator's stop deadline
+          # even though no input failed. We retry that one case ONCE. A real
+          # crasher (Go prints "Failing input written to testdata/...") or a
+          # genuine hang (the -timeout watchdog prints "test timed out") fails
+          # immediately and is never retried.
+          LOG="${RUNNER_TEMP}/fuzz-${FUZZER}.log"
+
+          run_fuzz() {
+            go test -run='^$' \
+              -fuzz="^${FUZZER}\$" \
+              -fuzztime="${FUZZTIME}" \
+              -timeout="${TEST_TIMEOUT}" \
+              "${PKG}" 2>&1 | tee "${LOG}"
+            return "${PIPESTATUS[0]}"
+          }
+
+          emit() { echo "kind=$1" >> "$GITHUB_OUTPUT"; }
+
+          for attempt in 1 2; do
+            rc=0
+            run_fuzz || rc=$?
+
+            if [ "${rc}" -eq 0 ]; then
+              emit pass
+              exit 0
+            fi
+
+            if grep -q "Failing input written to testdata" "${LOG}"; then
+              emit crash
+              echo "::error::${FUZZER} found a crashing input — commit it to the seed corpus and fix the regression."
+              exit "${rc}"
+            fi
+
+            if ! grep -q "context deadline exceeded" "${LOG}"; then
+              emit error
+              echo "::error::${FUZZER} failed for a non-flake reason (exit ${rc})."
+              exit "${rc}"
+            fi
+
+            echo "::warning::${FUZZER}: known -fuzztime boundary flake (context deadline exceeded, no crasher) on attempt ${attempt}/2."
+          done
+
+          emit flake
+          echo "::error::${FUZZER} hit the -fuzztime boundary flake on both attempts; failing so it stays visible."
+          exit 1
 
       - name: Upload fuzz corpus on failure or cancel
         # `cancelled()` covers manual cancels and job-level timeout-minutes
@@ -145,6 +195,7 @@ jobs:
           FUZZTIME: ${{ steps.budget.outputs.fuzztime }}
           TEST_TIMEOUT: ${{ steps.budget.outputs.test_timeout }}
           STATUS: ${{ job.status }}
+          KIND: ${{ steps.fuzz.outputs.kind }}
           RUN_ID: ${{ github.run_id }}
         run: |
           {
@@ -155,11 +206,18 @@ jobs:
             echo "- Timeout: ${TEST_TIMEOUT}"
             echo "- Result:  ${STATUS}"
             echo ""
-            if [ "${STATUS}" = "failure" ]; then
+            if [ "${KIND}" = "crash" ]; then
               echo "A crashing input was saved to \`testdata/fuzz/${FUZZER}/\`"
               echo "and uploaded as artifact"
               echo "\`fuzz-corpus-${FUZZER}-${RUN_ID}\`."
               echo "Download it, commit the minimized input to the seed corpus,"
               echo "fix the regression, and push."
+            elif [ "${KIND}" = "flake" ]; then
+              echo "Failed twice on the known \`-fuzztime\` boundary flake"
+              echo "(\`context deadline exceeded\`, no crasher — golang/go#48591)."
+              echo "Re-run the job to clear it."
+            elif [ "${STATUS}" = "failure" ]; then
+              echo "Failed before the fuzz driver produced a verdict (setup/build error)."
+              echo "Check the job logs."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
