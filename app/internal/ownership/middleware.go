@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/dockerclient"
+	"github.com/codeswhat/sockguard/internal/dockerfilters"
 	"github.com/codeswhat/sockguard/internal/dockerresource"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
@@ -302,7 +303,10 @@ func addOwnerLabelToBuildQuery(r *http.Request, labelKey, owner string) error {
 		}
 	}
 	labels[labelKey] = owner
-	encoded, _ := json.Marshal(labels)
+	encoded, err := json.Marshal(labels)
+	if err != nil {
+		return fmt.Errorf("encode build labels: %w", err)
+	}
 	query.Set("labels", string(encoded))
 	r.URL.RawQuery = query.Encode()
 	return nil
@@ -310,7 +314,7 @@ func addOwnerLabelToBuildQuery(r *http.Request, labelKey, owner string) error {
 
 func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	query := r.URL.Query()
-	filters, err := decodeDockerFilters(query.Get("filters"))
+	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
 		return err
 	}
@@ -319,63 +323,13 @@ func addOwnerLabelFilter(r *http.Request, labelKey, owner string) error {
 	// Unconditional replacement ensures a client-supplied owner label cannot
 	// coexist with the proxy-enforced label, preventing OR-semantics bypass.
 	filters[filterKey] = []string{label}
-	encoded, _ := json.Marshal(filters)
+	encoded, err := json.Marshal(filters)
+	if err != nil {
+		return fmt.Errorf("encode filters: %w", err)
+	}
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
 	return nil
-}
-
-// decodeDockerFilters parses Docker's `filters` query parameter into a
-// normalized map[string][]string that we can append our owner-label
-// filter to. Docker's wire format for filters has two shapes in use:
-//
-//  1. map[string][]string — the modern encoding, e.g.
-//     `{"label":["com.sockguard.owner=alice","status=running"]}`.
-//     Negation (`label!=foo`) lives inside the string value, so it's
-//     transparent to us — we don't need to parse the `!=` sentinel.
-//
-//  2. map[string]map[string]bool — the legacy encoding still accepted by
-//     the Docker daemon, e.g.
-//     `{"label":{"com.sockguard.owner=alice":true}}`. We flatten the
-//     object's keys into a []string so downstream code sees one shape.
-//
-// Any other encoding returns an error: a filter type we don't know how to
-// render safely is a fail-fast, not a silent drop, so a future Docker API
-// extension surfaces here instead of silently skipping ownership checks.
-func decodeDockerFilters(encoded string) (map[string][]string, error) {
-	filters := make(map[string][]string)
-	if encoded == "" {
-		return filters, nil
-	}
-
-	var raw map[string]any
-	if err := json.NewDecoder(strings.NewReader(encoded)).Decode(&raw); err != nil {
-		return nil, fmt.Errorf("decode filters: %w", err)
-	}
-
-	for key, value := range raw {
-		switch typed := value.(type) {
-		case []any:
-			values := make([]string, 0, len(typed))
-			for _, item := range typed {
-				str, ok := item.(string)
-				if !ok {
-					return nil, fmt.Errorf("decode filters: unexpected %s filter element type %T", key, item)
-				}
-				values = append(values, str)
-			}
-			filters[key] = values
-		case map[string]any:
-			values := make([]string, 0, len(typed))
-			for item := range typed {
-				values = append(values, item)
-			}
-			filters[key] = values
-		default:
-			return nil, fmt.Errorf("decode filters: unexpected %s filter type %T", key, value)
-		}
-	}
-	return filters, nil
 }
 
 func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {

@@ -700,7 +700,13 @@ func Defaults() Config {
 			RedactSensitiveData:   true,
 		},
 		RequestBody: RequestBodyConfig{
-			ContainerCreate: ContainerCreateRequestBodyConfig{},
+			// Image trust defaults to requiring a Rekor inclusion proof for
+			// keyless signatures (matching policy_bundle), so old/revoked
+			// signatures cannot be replayed without a transparency-log entry.
+			// Operators must opt out explicitly.
+			ContainerCreate: ContainerCreateRequestBodyConfig{
+				ImageTrust: ImageTrustConfig{RequireRekorInclusion: true},
+			},
 			ImagePull: ImagePullRequestBodyConfig{
 				AllowOfficial: true,
 			},
@@ -709,6 +715,7 @@ func Defaults() Config {
 			},
 			Service: ServiceRequestBodyConfig{
 				AllowOfficial: true,
+				ImageTrust:    ImageTrustConfig{RequireRekorInclusion: true},
 			},
 			Plugin: PluginRequestBodyConfig{
 				AllowOfficial: true,
