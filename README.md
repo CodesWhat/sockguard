@@ -461,8 +461,9 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 
 | Tier | Theme |
 |---|---|
-| Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators |
+| Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators; swarm `ContainerSpec.User` / `Privileges` enforcement parity with container create; wide-open admin listener promoted from startup warning to error behind an explicit opt-in flag |
 | Policy refinement (v1.x) | Multiple frontend listeners on the main proxy, named rule path aliases |
+| Internals (v1.x) | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth (generated Viper defaults); allocation-free rate-limit bucket state (packed `atomic.Uint64`); profiling-gated JSON redaction fast path |
 | Compliance (v1.x) | CIS Docker Benchmark control mapping, audit-ready policy templates |
 | Multi-host (v1.3) | Remote Docker TCP upstreams, multi-upstream fan-out, remote daemon health checking, connection pooling, automatic failover |
 | Extensibility (v1.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
