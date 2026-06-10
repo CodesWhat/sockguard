@@ -45,6 +45,33 @@ func TestInterceptorPassesThroughNonMatchingPath(t *testing.T) {
 	}
 }
 
+func TestInterceptorMatchesPathVariants(t *testing.T) {
+	t.Parallel()
+	for _, variant := range []string{
+		testPath + "/",
+		"/admin//validate",
+		"/admin/./validate",
+		"/admin/x/../validate",
+	} {
+		t.Run(variant, func(t *testing.T) {
+			t.Parallel()
+			next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				t.Fatalf("path variant %q leaked past the admin interceptor", variant)
+			})
+			handler := NewValidateInterceptor(Options{Path: testPath, Validate: newOKValidator()})(next)
+
+			req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("rules: []"))
+			req.URL.Path = variant
+			rec := newRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+		})
+	}
+}
+
 func TestInterceptorRejectsNonPOST(t *testing.T) {
 	t.Parallel()
 	handler := NewValidateInterceptor(Options{Path: testPath, Validate: newOKValidator()})(noopHandler())

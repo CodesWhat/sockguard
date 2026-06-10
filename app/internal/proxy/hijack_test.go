@@ -1071,6 +1071,32 @@ func TestWriteNonUpgradeHijackResponse_NilBody(t *testing.T) {
 	}
 }
 
+func TestWriteNonUpgradeHijackResponse_StripsHopByHopHeaders(t *testing.T) {
+	writer := httptest.NewRecorder()
+
+	writeNonUpgradeHijackResponse(writer, &http.Response{
+		StatusCode: http.StatusConflict,
+		Header: http.Header{
+			"Content-Type": []string{"text/plain"},
+			"Connection":   []string{"X-Injected-Header"},
+			"Keep-Alive":   []string{"timeout=5"},
+			"Upgrade":      []string{"tcp"},
+			// Listed in Connection above, so it must be stripped too.
+			"X-Injected-Header": []string{"malicious"},
+		},
+		Body: nil,
+	}, &funcConn{}, slog.New(slog.NewTextHandler(io.Discard, nil)), "/containers/abc/attach")
+
+	for _, name := range []string{"Connection", "Keep-Alive", "Upgrade", "X-Injected-Header"} {
+		if got := writer.Header().Get(name); got != "" {
+			t.Errorf("hop-by-hop header %s forwarded to client: %q", name, got)
+		}
+	}
+	if got := writer.Header().Get("Content-Type"); got != "text/plain" {
+		t.Errorf("Content-Type = %q, want text/plain", got)
+	}
+}
+
 func TestUpgradeHijackConnectionReturnsReadySession(t *testing.T) {
 	restoreHijackHooks(t)
 

@@ -309,6 +309,10 @@ func writeNonUpgradeHijackResponse(
 	// otherwise-unbuffered responses — the bufio.Reader has only the bytes
 	// it happened to prefetch when headers were parsed.
 	defer closeConn(logger, upstreamConn, "upstream connection", path)
+	// The upstream response is hop-terminated here, not tunneled: forwarding
+	// Connection et al. verbatim would let upstream inject connection-scoped
+	// headers into the client response.
+	removeHopByHopHeaders(resp.Header)
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			w.Header().Add(k, v)

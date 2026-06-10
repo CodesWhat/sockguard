@@ -120,7 +120,7 @@ func NewPolicyVersionInterceptor(opts PolicyVersionOptions) func(http.Handler) h
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != opts.Path {
+			if !matchesAdminPath(r.URL.Path, opts.Path) {
 				next.ServeHTTP(w, r)
 				return
 			}
