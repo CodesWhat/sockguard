@@ -1157,53 +1157,8 @@ func TestAddOwnerLabelToBodyAndFilterHelpers(t *testing.T) {
 	}
 }
 
-func TestDecodeDockerFilters(t *testing.T) {
-	t.Parallel()
-	if filters, err := decodeDockerFilters(""); err != nil || len(filters) != 0 {
-		t.Fatalf("decodeDockerFilters(empty) = (%#v, %v), want empty nil", filters, err)
-	}
-
-	filters, err := decodeDockerFilters(`{"label":["a=1"],"dangling":{"b=2":true}}`)
-	if err != nil {
-		t.Fatalf("decodeDockerFilters() error = %v", err)
-	}
-	if len(filters["label"]) != 1 || filters["label"][0] != "a=1" {
-		t.Fatalf("label filters = %#v, want [a=1]", filters["label"])
-	}
-	if len(filters["dangling"]) != 1 || filters["dangling"][0] != "b=2" {
-		t.Fatalf("dangling filters = %#v, want [b=2]", filters["dangling"])
-	}
-
-	if _, err := decodeDockerFilters(`{"label":[1]}`); err == nil {
-		t.Fatal("expected invalid filter element error")
-	}
-	if _, err := decodeDockerFilters(`{"label":"bad"}`); err == nil {
-		t.Fatal("expected invalid filter type error")
-	}
-	if _, err := decodeDockerFilters(`{`); err == nil {
-		t.Fatal("expected invalid JSON error")
-	}
-
-	// Negation (key!=value) must pass through verbatim. Docker treats `!=`
-	// as an in-string sentinel; ownership doesn't parse it, so round-
-	// tripping the literal string keeps the original semantics.
-	negated, err := decodeDockerFilters(`{"label":["com.example.role!=worker"]}`)
-	if err != nil {
-		t.Fatalf("decodeDockerFilters(negated) error = %v", err)
-	}
-	if len(negated["label"]) != 1 || negated["label"][0] != "com.example.role!=worker" {
-		t.Fatalf("negated label filters = %#v, want [com.example.role!=worker]", negated["label"])
-	}
-
-	// Unknown future shapes (numbers, booleans) must be rejected so the
-	// decoder never silently drops a filter and weakens ownership checks.
-	if _, err := decodeDockerFilters(`{"label":42}`); err == nil {
-		t.Fatal("expected number filter value to be rejected")
-	}
-	if _, err := decodeDockerFilters(`{"label":true}`); err == nil {
-		t.Fatal("expected bool filter value to be rejected")
-	}
-}
+// Direct decoder coverage lives in internal/dockerfilters; ownership tests
+// exercise it through addOwnerLabelFilter.
 
 func TestMutateJSONBody(t *testing.T) {
 	t.Parallel()

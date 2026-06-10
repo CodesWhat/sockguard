@@ -155,8 +155,6 @@ type containerCreatePolicy struct {
 	imageTrustInitErr error
 }
 
-// AllowedDeviceRequestEntry is the public form of a device request allowlist
-// entry, used in ContainerCreateOptions.
 func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy {
 	allowed := make([]string, 0, len(opts.AllowedBindMounts))
 	for _, bindMount := range opts.AllowedBindMounts {

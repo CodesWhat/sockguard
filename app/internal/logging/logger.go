@@ -14,11 +14,13 @@ import (
 
 // logBufferSize is the size of the bufio.Writer used when logging to a file.
 // stderr and stdout are left unbuffered so dev/debug output appears immediately.
-const logBufferSize = 4096
+// 64 KiB keeps busy hosts from flushing (and holding the writer mutex) every
+// dozen access-log lines; logFlushInterval still bounds record staleness.
+const logBufferSize = 64 * 1024
 
 // logFlushInterval bounds the worst-case delay between a log record being
 // written and reaching disk on a low-throughput host. Busy hosts flush
-// implicitly when the 4 KiB buffer fills; the periodic flush is the safety
+// implicitly when the buffer fills; the periodic flush is the safety
 // net for hosts where records trickle in.
 const logFlushInterval = time.Second
 

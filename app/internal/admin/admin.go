@@ -26,10 +26,19 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path"
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
+
+// matchesAdminPath reports whether a request path addresses the admin
+// endpoint at configured. Cleaning the request path first means variants
+// like a trailing slash or doubled separators are still intercepted here
+// instead of leaking through to the Docker-API rule evaluator.
+func matchesAdminPath(requestPath, configured string) bool {
+	return path.Clean(requestPath) == path.Clean(configured)
+}
 
 // ValidateResponse is the JSON body returned by the validate endpoint.
 //
@@ -89,7 +98,7 @@ func NewValidateInterceptor(opts Options) func(http.Handler) http.Handler {
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != opts.Path {
+			if !matchesAdminPath(r.URL.Path, opts.Path) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -141,10 +150,10 @@ func handlePOST(w http.ResponseWriter, r *http.Request, opts Options) {
 // requests whose path matches path and passes all other requests through to
 // next. Scoping the 503 to a specific path prevents a misconfigured admin
 // endpoint from blocking unrelated Docker API traffic on the same listener.
-func serviceUnavailableMiddleware(path, reason string, logger *slog.Logger) func(http.Handler) http.Handler {
+func serviceUnavailableMiddleware(endpoint, reason string, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != path {
+			if !matchesAdminPath(r.URL.Path, endpoint) {
 				next.ServeHTTP(w, r)
 				return
 			}

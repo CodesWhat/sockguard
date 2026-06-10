@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1328,67 +1327,8 @@ func TestMiddlewareProfileResolveReturnsFalse(t *testing.T) {
 	}
 }
 
-func TestDecodeDockerFilters(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		input   string
-		want    map[string][]string
-		wantErr string
-	}{
-		{
-			name:  "empty",
-			input: "",
-			want:  map[string][]string{},
-		},
-		{
-			name:  "modern array syntax",
-			input: `{"label":["a=b"],"type":["container"]}`,
-			want: map[string][]string{
-				"label": {"a=b"},
-				"type":  {"container"},
-			},
-		},
-		{
-			name:  "legacy object syntax",
-			input: `{"label":{"a=b":true,"c=d":true}}`,
-			want: map[string][]string{
-				"label": {"a=b", "c=d"},
-			},
-		},
-		{
-			name:    "non string array entry",
-			input:   `{"label":[true]}`,
-			wantErr: "unexpected label filter element type",
-		},
-		{
-			name:    "unsupported top level filter type",
-			input:   `{"label":true}`,
-			wantErr: "unexpected label filter type",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := decodeDockerFilters(tt.input)
-			if tt.wantErr != "" {
-				if err == nil {
-					t.Fatalf("decodeDockerFilters(%q) error = nil, want %q", tt.input, tt.wantErr)
-				}
-				if !strings.Contains(err.Error(), tt.wantErr) {
-					t.Fatalf("decodeDockerFilters(%q) error = %v, want substring %q", tt.input, err, tt.wantErr)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("decodeDockerFilters(%q) error = %v, want nil", tt.input, err)
-			}
-			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("decodeDockerFilters(%q) = %#v, want %#v", tt.input, got, tt.want)
-			}
-		})
-	}
-}
+// Direct decoder coverage lives in internal/dockerfilters; visibility tests
+// exercise it through addVisibilityLabelFilters.
 
 func TestAddVisibilityLabelFiltersLeavesQueryUntouchedWhenSelectorsAlreadyPresent(t *testing.T) {
 	t.Parallel()

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/dockerclient"
+	"github.com/codeswhat/sockguard/internal/dockerfilters"
 	"github.com/codeswhat/sockguard/internal/dockerresource"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
@@ -496,12 +497,27 @@ func newVisibilityDeps(upstreamSocket string) visibilityDeps {
 			return inspector.inspectResource(ctx, dockerresource.Kind(kind), identifier)
 		},
 	)
+	// Meta lookups (name/image pattern axes) get their own cache instance:
+	// without it every item in a list response costs one upstream inspect per
+	// poll, so a 50-container /containers/json from a monitoring tool fans out
+	// to 50 daemon round-trips. Same TTL/coalescing semantics as the label
+	// cache above.
+	metaCache := inspectcache.New(
+		inspectcache.DefaultTTL,
+		inspectcache.DefaultMaxSize,
+		time.Now,
+		func(ctx context.Context, kind, identifier string) (*resourceMeta, bool, error) {
+			return inspector.inspectResourceMeta(ctx, dockerresource.Kind(kind), identifier)
+		},
+	)
 	return visibilityDeps{
 		inspectResource: func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
 			return cache.Lookup(ctx, string(kind), identifier)
 		},
-		inspectExec:         inspector.inspectExec,
-		inspectResourceMeta: inspector.inspectResourceMeta,
+		inspectExec: inspector.inspectExec,
+		inspectResourceMeta: func(ctx context.Context, kind dockerresource.Kind, identifier string) (*resourceMeta, bool, error) {
+			return metaCache.Lookup(ctx, string(kind), identifier)
+		},
 	}
 }
 
@@ -566,7 +582,7 @@ func needsVisibilityLabelFilter(normPath string) bool {
 
 func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []compiledSelector) error {
 	query := r.URL.Query()
-	filters, err := decodeDockerFilters(query.Get("filters"))
+	filters, err := dockerfilters.Decode(query.Get("filters"))
 	if err != nil {
 		return err
 	}
@@ -585,7 +601,10 @@ func addVisibilityLabelFilters(r *http.Request, normPath string, selectors []com
 	if !changed {
 		return nil
 	}
-	encoded, _ := json.Marshal(filters)
+	encoded, err := json.Marshal(filters)
+	if err != nil {
+		return fmt.Errorf("encode filters: %w", err)
+	}
 	query.Set("filters", string(encoded))
 	r.URL.RawQuery = query.Encode()
 	return nil
@@ -897,44 +916,6 @@ func nodeInspectIdentifier(normPath string) (string, bool) {
 
 func isSwarmInspectPath(normPath string) bool {
 	return normPath == "/swarm"
-}
-
-func decodeDockerFilters(encoded string) (map[string][]string, error) {
-	filters := make(map[string][]string)
-	if encoded == "" {
-		return filters, nil
-	}
-
-	var raw map[string]any
-	if err := json.Unmarshal([]byte(encoded), &raw); err != nil {
-		return nil, fmt.Errorf("decode filters: %w", err)
-	}
-
-	for key, value := range raw {
-		switch typed := value.(type) {
-		case []any:
-			values := make([]string, 0, len(typed))
-			for _, item := range typed {
-				str, ok := item.(string)
-				if !ok {
-					return nil, fmt.Errorf("decode filters: unexpected %s filter element type %T", key, item)
-				}
-				values = append(values, str)
-			}
-			filters[key] = values
-		case map[string]any:
-			values := make([]string, 0, len(typed))
-			for item := range typed {
-				values = append(values, item)
-			}
-			slices.Sort(values)
-			filters[key] = values
-		default:
-			return nil, fmt.Errorf("decode filters: unexpected %s filter type %T", key, value)
-		}
-	}
-
-	return filters, nil
 }
 
 func (i upstreamInspector) inspectResource(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {

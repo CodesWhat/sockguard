@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Admin endpoint paths are now normalized before matching.** The validate and policy-version interceptors compared `r.URL.Path` to the configured path with an exact string match, so variants like `/admin/validate/` (trailing slash) or `/admin//validate` fell through to the Docker-API rule evaluator instead of being handled by the admin layer. Default-deny meant they were still rejected, but any future `/admin/**` allow rule would have exposed them upstream. Paths are now `path.Clean`-normalized on both sides, with regression coverage for trailing-slash, doubled-separator, and dot-segment variants.
+- **Non-upgrade hijack responses strip hop-by-hop headers.** When the daemon rejects an attach/exec upgrade (non-101), the fallback response copied every upstream header verbatim — including `Connection`, `Upgrade`, `Keep-Alive`, and any header named in `Connection`, letting a hostile or misconfigured upstream inject connection-scoped headers into the client response. The fallback now applies the same hop-by-hop stripping the upgrade path already used.
+- **Container-label ACLs now log an exclusivity warning at startup.** Label grants (`com.sockguard.allow.*`) are only trustworthy when sockguard is the *only* consumer of the Docker socket — a workload with raw socket access can create a container with arbitrary permission labels and self-grant access. Sockguard cannot detect other socket consumers, so enabling `clients.container_labels` now emits an explicit warning stating the invariant.
+
+### Fixed
+
+- **`Defaults()` and the load-time Viper defaults disagreed on `image_trust.require_rekor_inclusion`.** The Viper default was a hardcoded `true` while `config.Defaults()` returned `false` for the same field. Loading was unaffected (the Viper value won), but any consumer of `Defaults()` saw the wrong posture. `Defaults()` now carries `true` for both `container_create` and `service` image trust, and load defaults read from it — one source of truth.
+
+### Changed
+
+- **The Docker builder stage now cross-compiles (`--platform=$BUILDPLATFORM` + `GOOS`/`GOARCH` from BuildKit target args)** instead of running the Go toolchain under emulation for non-native platforms. Multi-arch builds get native-speed compiles; this also fixes Go runtime faults observed when emulating the amd64 toolchain under qemu/Rosetta.
+- **`filters` query decoding is now a single shared decoder (`internal/dockerfilters`).** Ownership and visibility had drifted copies; the canonical version sorts legacy map-format (`{"label":{"k=v":true}}`) keys, so owner-label filter rewrites now produce deterministic ordering for legacy-format requests too.
+
+### Performance
+
+- **Name/image pattern visibility checks no longer cost one daemon round-trip per list item.** Resource-meta inspects (`name_patterns` / `image_patterns` axes) now go through the same TTL-LRU, request-coalescing cache as label lookups, so a monitoring tool polling `GET /containers/json` against 50 containers triggers at most one upstream inspect per resource per 10-second TTL window instead of 50 per poll.
+- **File logging uses a 64 KiB buffer (up from 4 KiB),** cutting flush frequency and writer-mutex hold time on busy hosts; the 1-second periodic flush still bounds record staleness on quiet ones.
+
 ## [1.2.0] - 2026-06-02
 
 ### Added

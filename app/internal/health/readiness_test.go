@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -15,7 +16,14 @@ import (
 
 func startUnixUpstream(t *testing.T, handler http.Handler) string {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "upstream.sock")
+	// macOS caps sun_path at 104 bytes; t.TempDir() under /var/folders
+	// overflows it, so anchor the socket in a short os.MkdirTemp dir.
+	dir, err := os.MkdirTemp("/tmp", "sg-health")
+	if err != nil {
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	sock := filepath.Join(dir, "upstream.sock")
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)

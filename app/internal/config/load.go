@@ -158,11 +158,8 @@ func setLoadDefaults(v *viper.Viper, defaults Config) {
 	v.SetDefault("request_body.service.allow_all_capabilities", defaults.RequestBody.Service.AllowAllCapabilities)
 	v.SetDefault("request_body.service.allowed_capabilities", defaults.RequestBody.Service.AllowedCapabilities)
 	v.SetDefault("request_body.service.allow_sysctls", defaults.RequestBody.Service.AllowSysctls)
-	// Image trust defaults to requiring a Rekor inclusion proof for keyless
-	// signatures (matching policy_bundle), so old/revoked signatures cannot be
-	// replayed without a transparency-log entry. Operators must opt out explicitly.
-	v.SetDefault("request_body.container_create.image_trust.require_rekor_inclusion", true)
-	v.SetDefault("request_body.service.image_trust.require_rekor_inclusion", true)
+	v.SetDefault("request_body.container_create.image_trust.require_rekor_inclusion", defaults.RequestBody.ContainerCreate.ImageTrust.RequireRekorInclusion)
+	v.SetDefault("request_body.service.image_trust.require_rekor_inclusion", defaults.RequestBody.Service.ImageTrust.RequireRekorInclusion)
 	v.SetDefault("request_body.swarm.allow_force_new_cluster", defaults.RequestBody.Swarm.AllowForceNewCluster)
 	v.SetDefault("request_body.swarm.allow_external_ca", defaults.RequestBody.Swarm.AllowExternalCA)
 	v.SetDefault("request_body.swarm.allowed_join_remote_addrs", defaults.RequestBody.Swarm.AllowedJoinRemoteAddrs)

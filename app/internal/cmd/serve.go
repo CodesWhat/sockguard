@@ -747,7 +747,23 @@ func withMetrics(registry *metrics.Registry) func(http.Handler) http.Handler {
 }
 
 func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+	warnIfLabelACLEnabled(cfg, logger)
 	return clientacl.Middleware(cfg.Upstream.Socket, logger, serveClientACLOptions(cfg))
+}
+
+// warnIfLabelACLEnabled reminds operators that container-label ACLs are only
+// trustworthy when sockguard is the exclusive path to the Docker socket: a
+// workload that can reach the raw socket can create a container carrying
+// arbitrary <label_prefix>* permission labels and self-grant access the
+// policy never approved. Sockguard cannot detect other socket consumers, so
+// the invariant is stated at chain-build time rather than enforced.
+func warnIfLabelACLEnabled(cfg *config.Config, logger *slog.Logger) {
+	if !cfg.Clients.ContainerLabels.Enabled {
+		return
+	}
+	logger.Warn("container-label ACLs are enabled: label grants are only trustworthy if sockguard is the ONLY consumer of the Docker socket — any workload with raw socket access can self-grant permissions via labels",
+		"label_prefix", cfg.Clients.ContainerLabels.LabelPrefix,
+	)
 }
 
 // withAdminClientACL applies ONLY the client CIDR allowlist to the dedicated
