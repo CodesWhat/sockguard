@@ -5,8 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"io"
-	"net/http/httptest"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
