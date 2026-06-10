@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The Docker builder stage now cross-compiles (`--platform=$BUILDPLATFORM` + `GOOS`/`GOARCH` from BuildKit target args)** instead of running the Go toolchain under emulation for non-native platforms. Multi-arch builds get native-speed compiles; this also fixes Go runtime faults observed when emulating the amd64 toolchain under qemu/Rosetta.
 - **`filters` query decoding is now a single shared decoder (`internal/dockerfilters`).** Ownership and visibility had drifted copies; the canonical version sorts legacy map-format (`{"label":{"k=v":true}}`) keys, so owner-label filter rewrites now produce deterministic ordering for legacy-format requests too.
 
 ### Performance
