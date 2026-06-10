@@ -496,12 +496,27 @@ func newVisibilityDeps(upstreamSocket string) visibilityDeps {
 			return inspector.inspectResource(ctx, dockerresource.Kind(kind), identifier)
 		},
 	)
+	// Meta lookups (name/image pattern axes) get their own cache instance:
+	// without it every item in a list response costs one upstream inspect per
+	// poll, so a 50-container /containers/json from a monitoring tool fans out
+	// to 50 daemon round-trips. Same TTL/coalescing semantics as the label
+	// cache above.
+	metaCache := inspectcache.New(
+		inspectcache.DefaultTTL,
+		inspectcache.DefaultMaxSize,
+		time.Now,
+		func(ctx context.Context, kind, identifier string) (*resourceMeta, bool, error) {
+			return inspector.inspectResourceMeta(ctx, dockerresource.Kind(kind), identifier)
+		},
+	)
 	return visibilityDeps{
 		inspectResource: func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
 			return cache.Lookup(ctx, string(kind), identifier)
 		},
-		inspectExec:         inspector.inspectExec,
-		inspectResourceMeta: inspector.inspectResourceMeta,
+		inspectExec: inspector.inspectExec,
+		inspectResourceMeta: func(ctx context.Context, kind dockerresource.Kind, identifier string) (*resourceMeta, bool, error) {
+			return metaCache.Lookup(ctx, string(kind), identifier)
+		},
 	}
 }
 
