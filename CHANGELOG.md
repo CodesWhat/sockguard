@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0-rc.2] - 2026-06-10
+
 ### Security
 
 - **Admin endpoint paths are now normalized before matching.** The validate and policy-version interceptors compared `r.URL.Path` to the configured path with an exact string match, so variants like `/admin/validate/` (trailing slash) or `/admin//validate` fell through to the Docker-API rule evaluator instead of being handled by the admin layer. Default-deny meant they were still rejected, but any future `/admin/**` allow rule would have exposed them upstream. Paths are now `path.Clean`-normalized on both sides, with regression coverage for trailing-slash, doubled-separator, and dot-segment variants.
