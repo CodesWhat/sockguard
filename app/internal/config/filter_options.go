@@ -194,6 +194,9 @@ func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 		RequireNoNewPrivileges:     c.RequireNoNewPrivileges,
 		RequireReadonlyRootfs:      c.RequireReadonlyRootfs,
 		RequireDropAllCapabilities: c.RequireDropAllCapabilities,
+		DenyUnconfinedSeccomp:      c.DenyUnconfinedSeccomp,
+		DenyCustomSeccompProfiles:  c.DenyCustomSeccompProfiles,
+		DenyUnconfinedAppArmor:     c.DenyUnconfinedAppArmor,
 		ImageTrust:                 c.ImageTrust.toFilterOptions(),
 	}
 }

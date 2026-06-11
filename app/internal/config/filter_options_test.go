@@ -91,6 +91,9 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			RequireNoNewPrivileges:     true,
 			RequireReadonlyRootfs:      true,
 			RequireDropAllCapabilities: true,
+			DenyUnconfinedSeccomp:      true,
+			DenyCustomSeccompProfiles:  true,
+			DenyUnconfinedAppArmor:     true,
 		},
 		Swarm: SwarmRequestBodyConfig{
 			AllowForceNewCluster:          true,
@@ -209,6 +212,9 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			RequireNoNewPrivileges:     true,
 			RequireReadonlyRootfs:      true,
 			RequireDropAllCapabilities: true,
+			DenyUnconfinedSeccomp:      true,
+			DenyCustomSeccompProfiles:  true,
+			DenyUnconfinedAppArmor:     true,
 		},
 		Swarm: filter.SwarmOptions{
 			AllowForceNewCluster:          true,
