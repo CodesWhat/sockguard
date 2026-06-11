@@ -293,15 +293,19 @@ type ConfigRequestBodyConfig struct {
 
 // ServiceRequestBodyConfig configures inspection for service create/update.
 type ServiceRequestBodyConfig struct {
-	AllowHostNetwork     bool             `mapstructure:"allow_host_network"`
-	AllowedBindMounts    []string         `mapstructure:"allowed_bind_mounts"`
-	AllowAllRegistries   bool             `mapstructure:"allow_all_registries"`
-	AllowOfficial        bool             `mapstructure:"allow_official"`
-	AllowedRegistries    []string         `mapstructure:"allowed_registries"`
-	AllowAllCapabilities bool             `mapstructure:"allow_all_capabilities"`
-	AllowedCapabilities  []string         `mapstructure:"allowed_capabilities"`
-	AllowSysctls         bool             `mapstructure:"allow_sysctls"`
-	ImageTrust           ImageTrustConfig `mapstructure:"image_trust"`
+	AllowHostNetwork           bool             `mapstructure:"allow_host_network"`
+	AllowedBindMounts          []string         `mapstructure:"allowed_bind_mounts"`
+	AllowAllRegistries         bool             `mapstructure:"allow_all_registries"`
+	AllowOfficial              bool             `mapstructure:"allow_official"`
+	AllowedRegistries          []string         `mapstructure:"allowed_registries"`
+	AllowAllCapabilities       bool             `mapstructure:"allow_all_capabilities"`
+	AllowedCapabilities        []string         `mapstructure:"allowed_capabilities"`
+	AllowSysctls               bool             `mapstructure:"allow_sysctls"`
+	RequireNonRootUser         bool             `mapstructure:"require_non_root_user"`
+	RequireNoNewPrivileges     bool             `mapstructure:"require_no_new_privileges"`
+	RequireReadonlyRootfs      bool             `mapstructure:"require_readonly_rootfs"`
+	RequireDropAllCapabilities bool             `mapstructure:"require_drop_all_capabilities"`
+	ImageTrust                 ImageTrustConfig `mapstructure:"image_trust"`
 }
 
 // SwarmRequestBodyConfig configures inspection for swarm writes.

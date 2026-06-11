@@ -179,15 +179,19 @@ func (c ConfigRequestBodyConfig) ToFilterOptions() filter.ConfigOptions {
 
 func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 	return filter.ServiceOptions{
-		AllowHostNetwork:     c.AllowHostNetwork,
-		AllowedBindMounts:    c.AllowedBindMounts,
-		AllowAllRegistries:   c.AllowAllRegistries,
-		AllowOfficial:        c.AllowOfficial,
-		AllowedRegistries:    c.AllowedRegistries,
-		AllowAllCapabilities: c.AllowAllCapabilities,
-		AllowedCapabilities:  c.AllowedCapabilities,
-		AllowSysctls:         c.AllowSysctls,
-		ImageTrust:           c.ImageTrust.toFilterOptions(),
+		AllowHostNetwork:           c.AllowHostNetwork,
+		AllowedBindMounts:          c.AllowedBindMounts,
+		AllowAllRegistries:         c.AllowAllRegistries,
+		AllowOfficial:              c.AllowOfficial,
+		AllowedRegistries:          c.AllowedRegistries,
+		AllowAllCapabilities:       c.AllowAllCapabilities,
+		AllowedCapabilities:        c.AllowedCapabilities,
+		AllowSysctls:               c.AllowSysctls,
+		RequireNonRootUser:         c.RequireNonRootUser,
+		RequireNoNewPrivileges:     c.RequireNoNewPrivileges,
+		RequireReadonlyRootfs:      c.RequireReadonlyRootfs,
+		RequireDropAllCapabilities: c.RequireDropAllCapabilities,
+		ImageTrust:                 c.ImageTrust.toFilterOptions(),
 	}
 }
 

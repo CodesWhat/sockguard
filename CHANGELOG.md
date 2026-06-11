@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Swarm service create/update now enforces the container-create identity/privilege rails.** Four opt-in `request_body.service` knobs mirror their container-create counterparts onto the swarm `ContainerSpec`, closing a bypass where a service could request a workload posture that `/containers/create` would have denied: `require_non_root_user` (`ContainerSpec.User`), `require_no_new_privileges` (`ContainerSpec.Privileges.NoNewPrivileges`), `require_readonly_rootfs` (`ContainerSpec.ReadOnly`), and `require_drop_all_capabilities` (`ContainerSpec.CapabilityDrop` must include `ALL`). All default off. The root-user check reuses the same numeric-UID parsing as container-create, so zero-padded `"00"`/`"0:0"` forms are rejected. (Swarm has no privileged mode, per-service namespace sharing, or runtime/device selection, so those container-create rails have no service equivalent.)
+
 ### Security
 
 - **Zero-padded numeric UIDs can no longer bypass root-user enforcement.** `require_non_root_user` (container create) and `allow_root_user: false` (exec) compared the user field to the exact string `"0"`, but Docker parses `Config.User` numerically — so `"00"`, `"000"`, or `"0000:5"` all run as root while slipping past the check. Both inspectors now parse the UID and treat any value resolving to 0 as root.
