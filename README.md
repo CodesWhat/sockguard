@@ -68,7 +68,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.2.0 is released.** The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the latest release notes and the current `Unreleased` work.
+> **v1.3.0 is released.** The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the latest release notes and the current `Unreleased` work.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -213,6 +213,7 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 <details>
 <summary><strong>Latest release highlights</strong></summary>
 
+- **v1.3.0 shipped on 2026-06-11** — swarm posture parity and admin-surface hardening. Swarm **service create/update now enforces the container-create identity/privilege rails** (`require_non_root_user`, `require_no_new_privileges`, `require_readonly_rootfs`, `require_drop_all_capabilities` on `ContainerSpec`), closing the bypass where a service could request a workload shape `/containers/create` would deny. A **zero-padded-UID root bypass** (`"00"`, `"0000:5"`) is sealed across container create and exec. A **wide-open dedicated admin listener is now a validation error**; admin paths are normalized before matching; non-upgrade hijack responses strip hop-by-hop headers. Operational fixes: the `signature_path` hot-reload wedge, three silently-ignored `SOCKGUARD_*` env vars, oversized bodies returning `403` instead of `413`, and release images now carrying real `commit`/`built` metadata. Multi-arch images cross-compile natively (no more emulated toolchain faults).
 - **v1.2.0 shipped on 2026-06-02** — operational resilience for a wedged daemon. An opt-in **readiness probe** (`health.readiness.*`, default `/ready`) issues a real `GET /containers/json` against the Docker API and returns `503` when the daemon accepts connections but no longer answers — the gap the raw-dial `/health` watchdog misses. An opt-in **`upstream.request_timeout`** bounds finite proxied requests with a total deadline, converting a hung body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`) while exempting streaming and long-lived endpoints. New metrics `sockguard_upstream_api_up` + `sockguard_upstream_readiness_checks_total` mirror the watchdog. The bundled **drydock preset** now allowlists the stock `runc` runtime so drydock recreation stops getting 403'd out of the box. Dependency hygiene: the Go toolchain moves to `1.26.4` (clearing two *reachable* stdlib advisories, GO-2026-5037 / GO-2026-5039), plus the `go-minor` / `npm-minor` / `actions-minor` groups; `govulncheck` reports zero vulnerabilities.
 - **v1.1.0 shipped on 2026-06-01** — image-trust verification wired end to end: registry digest resolution, cosign signature discovery (classic tag + OCI 1.1 referrers), digest-pinned forwarding, keyed (PEM) and keyless (Fulcio + Rekor) both enforced, swarm-service create/update now subject to the same image-trust policy as container create. A 21-finding security audit landed alongside: closed request-inspection bypasses (plugin multipart, BuildKit `# syntax=`, gzip bombs, swarm-service capability/sysctl/image-trust escapes), read-side sub-resource visibility gating, new `allowed_runtimes` allowlist, hardened config/admin paths (signed-bundle TOCTOU, PID-only peer rejection, admin-listener CIDR backstop), response redaction extended to `HostConfig.Mounts[].Source` and service `PreviousSpec`. CodeQL `actions` analysis and supply-chain dependency hygiene (`govulncheck` reports zero vulnerabilities) round out the release.
 - **v1.0.0 shipped on 2026-05-20** with the public proxy contract locked: YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are now under the v1.x compatibility promise.
@@ -425,7 +426,16 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.2.0 shipped on 2026-06-02** and is the latest release. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+**v1.3.0 shipped on 2026-06-11** and is the latest release. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+
+### Shipped in v1.3.0
+
+| Track | Surface |
+|---|---|
+| **Swarm posture parity** | Service create/update enforces the container-create identity/privilege rails on `ContainerSpec`: `require_non_root_user` (numeric-UID parsing, zero-padded forms rejected), `require_no_new_privileges`, `require_readonly_rootfs`, `require_drop_all_capabilities` — all opt-in, closing the bypass where a service could request a workload shape `/containers/create` would deny |
+| **Security fixes** | Zero-padded-UID root bypass sealed (container create `require_non_root_user` + exec `allow_root_user` parse the UID instead of comparing to `"0"`); wide-open dedicated admin listener (non-loopback plaintext, no CIDR backstop) is a validation error unless explicitly acknowledged; admin endpoint paths `path.Clean`-normalized before matching; non-upgrade hijack fallbacks strip hop-by-hop headers; container-label ACL exclusivity warning at startup; `filters` query params capped at 64 KiB |
+| **Operational fixes** | `signature_path` hot-reload no longer wedges subsequent reloads; three silently-ignored `SOCKGUARD_*` env vars registered; oversized bodies return `413` (was `403`) on node-update and build; coalesced inspect-cache waiters honor their own context; release images carry real `commit`/`built` metadata |
+| **Build & internals** | Multi-arch images cross-compile natively (`--platform=$BUILDPLATFORM`), fixing emulated-toolchain faults; shared `internal/dockerfilters` decoder with deterministic legacy-format ordering; upstream inspect responses drained for keep-alive reuse |
 
 ### Shipped in v1.2.0
 
