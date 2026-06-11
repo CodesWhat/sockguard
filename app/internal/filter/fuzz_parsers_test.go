@@ -49,9 +49,29 @@ func FuzzContainerCreate(f *testing.F) {
 	f.Add([]byte(`{"Image":"busybox:1.37","HostConfig":{"Binds":["/srv/sockguard/data:/data:rw","named-cache:/cache"],"Mounts":[{"Type":"bind","Source":"/srv/sockguard/config","Target":"/config"},{"Type":"volume","Source":"build-cache","Target":"/var/cache"}]}}`))
 	f.Add([]byte(`{"HostConfig":`))
 	f.Add(bytes.Repeat([]byte("a"), maxContainerCreateBodyBytes+1))
+	// SELinux and systempaths seeds — tested against the strict policy below
+	// to exercise both the JSON decode path and the denial logic branches.
+	f.Add([]byte(`{"HostConfig":{"SecurityOpt":["label=disable"]}}`))
+	f.Add([]byte(`{"HostConfig":{"SecurityOpt":["label:disable"]}}`))
+	f.Add([]byte(`{"HostConfig":{"SecurityOpt":["label=user:system_u"]}}`))
+	f.Add([]byte(`{"HostConfig":{"SecurityOpt":["systempaths=unconfined"]}}`))
+	f.Add([]byte(`{"HostConfig":{"MaskedPaths":[]}}`))
+	f.Add([]byte(`{"HostConfig":{"ReadonlyPaths":[]}}`))
+	f.Add([]byte(`{"HostConfig":{"MaskedPaths":null}}`))
 
+	// permissive policy: exercises JSON decode and existing checks.
 	policy := newContainerCreatePolicy(ContainerCreateOptions{
 		AllowedBindMounts: []string{"/srv/sockguard"},
+	})
+
+	// strict policy: exercises the new denial branches for the SELinux and
+	// systempaths seeds above.
+	strictPolicy := newContainerCreatePolicy(ContainerCreateOptions{
+		AllowedBindMounts:         []string{"/srv/sockguard"},
+		AllowAllCapabilities:      true,
+		DenySelinuxDisable:        true,
+		DenySelinuxLabelOverride:  true,
+		DenyUnconfinedSystemPaths: true,
 	})
 
 	f.Fuzz(func(t *testing.T, body []byte) {
@@ -63,6 +83,14 @@ func FuzzContainerCreate(f *testing.F) {
 		if req.Body != nil {
 			_, _ = io.Copy(io.Discard, req.Body)
 			_ = req.Body.Close()
+		}
+
+		req2 := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(body))
+		_, _ = strictPolicy.inspect(nil, req2, "/containers/create")
+
+		if req2.Body != nil {
+			_, _ = io.Copy(io.Discard, req2.Body)
+			_ = req2.Body.Close()
 		}
 	})
 }

@@ -162,6 +162,9 @@ type ContainerCreateRequestBodyConfig struct {
 	RequiredLabels             []string         `mapstructure:"required_labels"`
 	AllowedRuntimes            []string         `mapstructure:"allowed_runtimes"`
 	ImageTrust                 ImageTrustConfig `mapstructure:"image_trust"`
+	DenySelinuxDisable         bool             `mapstructure:"deny_selinux_disable"`
+	DenySelinuxLabelOverride   bool             `mapstructure:"deny_selinux_label_override"`
+	DenyUnconfinedSystemPaths  bool             `mapstructure:"deny_unconfined_system_paths"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images

@@ -248,6 +248,24 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 	}
 }
 
+func TestContainerCreateRequestBodyConfigToFilterOptionsMapsSelinuxAndSystemPaths(t *testing.T) {
+	cfg := ContainerCreateRequestBodyConfig{
+		DenySelinuxDisable:        true,
+		DenySelinuxLabelOverride:  true,
+		DenyUnconfinedSystemPaths: true,
+	}
+	got := cfg.ToFilterOptions()
+	if !got.DenySelinuxDisable {
+		t.Error("DenySelinuxDisable not propagated")
+	}
+	if !got.DenySelinuxLabelOverride {
+		t.Error("DenySelinuxLabelOverride not propagated")
+	}
+	if !got.DenyUnconfinedSystemPaths {
+		t.Error("DenyUnconfinedSystemPaths not propagated")
+	}
+}
+
 func TestExecRequestBodyConfigToFilterOptionsLeavesRuntimeInspectorUnset(t *testing.T) {
 	got := (ExecRequestBodyConfig{
 		AllowPrivileged: true,

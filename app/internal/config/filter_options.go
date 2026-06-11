@@ -56,6 +56,9 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		RequiredLabels:             c.RequiredLabels,
 		AllowedRuntimes:            c.AllowedRuntimes,
 		ImageTrust:                 c.ImageTrust.toFilterOptions(),
+		DenySelinuxDisable:         c.DenySelinuxDisable,
+		DenySelinuxLabelOverride:   c.DenySelinuxLabelOverride,
+		DenyUnconfinedSystemPaths:  c.DenyUnconfinedSystemPaths,
 	}
 }
 
