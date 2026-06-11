@@ -534,6 +534,112 @@ func assertContains(t *testing.T, got, want string) {
 	}
 }
 
+// TestDeleteInflightProfileRemovesSeriesFromScrape verifies that
+// DeleteInflightProfile removes a profile's series from exposition.
+func TestDeleteInflightProfileRemovesSeriesFromScrape(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	r.SetInflight("ci", 3)
+
+	out := renderMetrics(t, r)
+	assertContains(t, out, `sockguard_inflight_requests{profile="ci"} 3`)
+
+	r.DeleteInflightProfile("ci")
+	out = renderMetrics(t, r)
+	if strings.Contains(out, `sockguard_inflight_requests{profile="ci"}`) {
+		t.Fatalf("profile ci series still present after DeleteInflightProfile: %s", out)
+	}
+}
+
+// TestDeleteInflightProfileThenSetInflightReCreatesAtZero verifies the
+// race-safety property: a completing old-chain request that calls SetInflight
+// after deletion re-creates the entry at the tracker's clamped count (0 for a
+// drained request), not at a negative value.
+func TestDeleteInflightProfileThenSetInflightReCreatesAtZero(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	r.SetInflight("ci", 1)
+
+	r.DeleteInflightProfile("ci")
+
+	// Simulate old-chain profileReleaser.done(): tracker.Current() returns 0
+	// after Release() because the last request finished.
+	r.SetInflight("ci", 0)
+
+	out := renderMetrics(t, r)
+	// Re-created at 0 is correct and visible; the next reload will delete it.
+	assertContains(t, out, `sockguard_inflight_requests{profile="ci"} 0`)
+
+	// Verify no negative values appear.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, `sockguard_inflight_requests{profile="ci"}`) {
+			if strings.HasSuffix(strings.TrimSpace(line), "-1") {
+				t.Fatalf("inflight gauge went negative: %s", line)
+			}
+		}
+	}
+}
+
+// TestNilRegistryDeleteInflightIsNoop verifies nil-safety.
+func TestNilRegistryDeleteInflightIsNoop(t *testing.T) {
+	t.Parallel()
+	var r *Registry
+	r.DeleteInflightProfile("ci") // must not panic
+}
+
+// TestDeleteInflightProfileConcurrentSetInflightIsRaceSafe hammers concurrent
+// SetInflight and DeleteInflightProfile under the race detector to verify no
+// data races between the sync.Map Delete and concurrent LoadOrStore/Store pairs.
+func TestDeleteInflightProfileConcurrentSetInflightIsRaceSafe(t *testing.T) {
+	t.Parallel()
+	r := NewRegistry()
+	r.SetInflight("ci", 5)
+
+	const goroutines = 8
+	const iters = 200
+	var wg sync.WaitGroup
+	wg.Add(goroutines + 1)
+
+	// Concurrent SetInflight callers (simulating old-chain completions).
+	for i := 0; i < goroutines; i++ {
+		go func(n int) {
+			defer wg.Done()
+			for j := 0; j < iters; j++ {
+				r.SetInflight("ci", int64(n%3))
+			}
+		}(i)
+	}
+
+	// Concurrent DeleteInflightProfile caller (simulating reload).
+	go func() {
+		defer wg.Done()
+		for j := 0; j < iters; j++ {
+			r.DeleteInflightProfile("ci")
+		}
+	}()
+
+	wg.Wait()
+	// After all goroutines finish, the gauge is either present at some
+	// non-negative value or absent. Neither is a correctness failure.
+	out := renderMetrics(t, r)
+	for _, line := range strings.Split(out, "\n") {
+		if !strings.HasPrefix(line, `sockguard_inflight_requests{profile="ci"}`) {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		val, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil {
+			t.Fatalf("non-numeric inflight value: %s", line)
+		}
+		if val < 0 {
+			t.Fatalf("inflight gauge is negative: %s", line)
+		}
+	}
+}
+
 // TestRegistryConcurrentObserveAndScrape exercises the v0.8.1 lock-free
 // observation path: many goroutines hammer observe / ObserveThrottle /
 // ObserveConfigReload / ObserveUpstreamWatchdog while another goroutine
