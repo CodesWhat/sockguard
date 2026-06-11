@@ -95,9 +95,14 @@ func TestValidateAdminListenAcceptsNonLoopbackWithBothOptIns(t *testing.T) {
 	cfg.Admin.Listen.Address = "0.0.0.0:9000"
 	cfg.Admin.Listen.InsecureAllowPlainTCP = true
 	cfg.Admin.Listen.InsecureAllowUnauthenticatedClients = true
+	// The plaintext opt-ins are necessary but no longer sufficient for the
+	// admin listener: a wide-open admin surface (no CIDR allowlist) needs the
+	// third explicit acknowledgment now that it is a validation error rather
+	// than a startup warning. See validate_admin_wideopen_test.go.
+	cfg.Admin.Listen.InsecureAllowWideOpen = true
 
 	if err := Validate(&cfg); err != nil {
-		t.Fatalf("Validate() = %v, want nil with both admin insecure opt-ins", err)
+		t.Fatalf("Validate() = %v, want nil with both admin insecure opt-ins + wide-open ack", err)
 	}
 }
 

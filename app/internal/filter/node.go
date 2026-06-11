@@ -59,7 +59,7 @@ func (p nodePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath
 	body, err := readBoundedBody(r, maxNodeBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
-			return fmt.Sprintf("%s: request body exceeds %d byte limit", nodeUpdateDenyPrefix, maxNodeBodyBytes), nil
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("%s: request body exceeds %d byte limit", nodeUpdateDenyPrefix, maxNodeBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
 	}

@@ -749,6 +749,8 @@ recommended posture.
 The `admin.*` block including `admin.listen.*` is immutable across hot reload
 — restart is required to change the listener binding.
 
+> **Security note — a wide-open admin listener is rejected at startup.** A non-loopback plaintext `admin.listen.address` with no `clients.allowed_cidrs` would let any host that can reach the port submit candidate YAML and read policy metadata with no authentication and no IP backstop — unlike the main listener, whose unauthenticated requests still face the full policy filter chain, the admin surface is gated only by CIDRs. Validation therefore rejects that combination. Resolve it by setting `clients.allowed_cidrs`, configuring `admin.listen.tls` (mutual TLS), or — only on a private, trusted network — explicitly acknowledging the exposure with `admin.listen.insecure_allow_wide_open: true`.
+
 ## Signed Policy Bundles
 
 Sockguard can refuse to start (or reload) unless the on-disk YAML config is
@@ -908,6 +910,7 @@ even when not enumerated here.
 | `SOCKGUARD_ADMIN_MAX_REQUEST_BYTES`            | `admin.max_request_bytes`             | `524288`                        | Hard cap on candidate-YAML body size. Bodies above this return `413`.                                        |
 | `SOCKGUARD_ADMIN_LISTEN_SOCKET`                | `admin.listen.socket`                 | _(unset)_                       | Serve admin endpoints on a dedicated unix socket instead of the main listener.                               |
 | `SOCKGUARD_ADMIN_LISTEN_ADDRESS`               | `admin.listen.address`                | _(unset)_                       | Serve admin endpoints on a dedicated TCP listener (mTLS via `admin.listen.tls.*`).                           |
+| `SOCKGUARD_ADMIN_LISTEN_INSECURE_ALLOW_WIDE_OPEN` | `admin.listen.insecure_allow_wide_open` | `false`                     | Acknowledge a non-loopback plaintext admin listener with no `clients.allowed_cidrs`. Without this (or a CIDR allowlist / mTLS) such a config is a validation error. Private trusted networks only. |
 | `SOCKGUARD_RELOAD_ENABLED`                     | `reload.enabled`                      | `false`                         | Watch the config file via fsnotify and reload on SIGHUP. Enabling this changes SIGHUP from "terminate" to "reload". |
 | `SOCKGUARD_RELOAD_DEBOUNCE`                    | `reload.debounce`                     | `"250ms"`                       | Coalesce a burst of fsnotify events into a single reload. Must be a valid Go duration string `>= 0`.         |
 | `SOCKGUARD_RELOAD_POLL_INTERVAL`               | `reload.poll_interval`                | `""`                            | Opt-in stat-based fallback for inotify-unreliable filesystems (Synology btrfs bind-mounts, some FUSE / NFS backends). Periodically re-stats the config file and fires a reload when size, mtime, or inode changes. Empty string disables polling. Must be a valid Go duration string `>= 0`. |

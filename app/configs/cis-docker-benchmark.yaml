@@ -115,8 +115,9 @@ request_body:
   # 5.22 / 5.23 — no privileged exec, no root exec).
   exec:
     allow_privileged: false
-    # allowed_users left empty = no `User:` override on exec. Combine
-    # with allow_root_user: false below for full CIS 5.23 enforcement.
+    # allow_root_user: false denies any exec whose User resolves to root
+    # (empty, "root", or numeric 0 incl. zero-padded). For full CIS 5.23
+    # enforcement, also pin the permitted argv with allowed_commands.
     allow_root_user: false
 
 # Read responses: redact host paths, env, network topology, and other

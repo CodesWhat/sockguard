@@ -249,7 +249,7 @@ func isRootUser(user string) bool {
 	if name == "" {
 		return true
 	}
-	return strings.EqualFold(name, "root") || name == "0"
+	return strings.EqualFold(name, "root") || isNumericRootUID(name)
 }
 
 func isExecCreatePath(normalizedPath string) bool {

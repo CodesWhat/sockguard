@@ -236,12 +236,21 @@ func TestNodeInspectOversizedBody(t *testing.T) {
 	payload := strings.Repeat("x", maxNodeBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/nodes/node-1/update", strings.NewReader(payload))
 
+	// An oversized body is a 413 rejection, not a 403 string denial — matching
+	// the other body-limited inspectors.
 	reason, err := policy.inspect(nil, req, "/nodes/node-1/update")
-	if err != nil {
-		t.Fatalf("inspect() error = %v", err)
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty (rejection carried by error)", reason)
 	}
-	if reason == "" || !strings.HasPrefix(reason, "node update denied: request body exceeds") {
-		t.Fatalf("reason = %q, want oversized body denial", reason)
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspect() error = %v, want request rejection", err)
+	}
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
+	}
+	if !strings.HasPrefix(rejection.reason, "node update denied: request body exceeds") {
+		t.Fatalf("rejection reason = %q, want oversized body denial", rejection.reason)
 	}
 }
 

@@ -266,6 +266,41 @@ func TestPolicyBundleReload_ParsesVerifiedBytesNotFile(t *testing.T) {
 	}
 }
 
+func TestPolicyBundleReload_ResolvesSignaturePathFromCandidate(t *testing.T) {
+	// Regression: verifyBundle must load the bundle entity from the CANDIDATE
+	// config's signature_path, not the last-applied config's. signature_path is
+	// reload-mutable so an operator can rotate the bundle; reading it from
+	// activeCfg loaded the wrong (old) bundle for the new YAML and — because
+	// activeCfg only advances on success — wedged every subsequent reload.
+	initial := policyBundleInitialConfig()
+	initial.PolicyBundle.SignaturePath = "/old/sig.bundle.json"
+
+	verifier := &stubBundleVerifier{res: policybundle.VerifyResult{Signer: "keyed:x", DigestHex: "ab"}}
+	f := newPolicyBundleFixture(t, initial, verifier)
+
+	// The candidate (parsed from the verified bytes) points at the rotated path.
+	candidate := config.Defaults()
+	candidate.PolicyBundle.Enabled = true
+	candidate.PolicyBundle.SignaturePath = "/new/sig.bundle.json"
+	candidate.PolicyBundle.AllowedSigningKeys = []config.PolicyBundleSigningKey{{PEM: "stub"}}
+	f.loadCfg = &candidate
+
+	var gotPath string
+	f.coordinator.deps.loadBundleEntity = func(p string) (verify.SignedEntity, error) {
+		gotPath = p
+		return &stubEntity{}, nil
+	}
+
+	f.coordinator.reload()
+
+	if gotPath != "/new/sig.bundle.json" {
+		t.Fatalf("loadBundleEntity path = %q, want the candidate's /new/sig.bundle.json (not active /old)", gotPath)
+	}
+	if got, ok := metricsReloadCount(t, f.registry, "ok"); !ok || got != 1 {
+		t.Fatalf("ok count = %d (found=%v), want 1", got, ok)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // verifyPolicyBundleAtStartup — exhaustive branch coverage.
 // Every failure branch of the signature gate aborts startup, so each one

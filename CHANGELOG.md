@@ -7,8 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Zero-padded numeric UIDs can no longer bypass root-user enforcement.** `require_non_root_user` (container create) and `allow_root_user: false` (exec) compared the user field to the exact string `"0"`, but Docker parses `Config.User` numerically — so `"00"`, `"000"`, or `"0000:5"` all run as root while slipping past the check. Both inspectors now parse the UID and treat any value resolving to 0 as root.
+- **A wide-open dedicated admin listener is now a validation error, not just a startup warning.** A non-loopback plaintext admin listener with no `clients.allowed_cidrs` exposes candidate-YAML submission and policy metadata with no authentication and no IP backstop. Validation now rejects that shape unless the operator sets `clients.allowed_cidrs`, configures `admin.listen.tls`, or explicitly acknowledges the exposure with the new `admin.listen.insecure_allow_wide_open: true`.
+
 ### Fixed
 
+- **A hot reload that rotates `policy_bundle.signature_path` no longer wedges every subsequent reload.** Bundle verification resolved the signature file from the last-applied config instead of the candidate, so changing `signature_path` (which is intentionally reload-mutable) loaded the wrong bundle, failed the digest check, and — because the active config only advances on success — left the operator permanently stuck until a restart. Verification now reads the path from the candidate config.
+- **`SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_SYSCTLS` and the `image_trust.verify_timeout` env vars are no longer silently ignored.** Three `request_body` keys were missing their `SetDefault` registration, and Viper only unmarshals registered keys — so configuring those fields purely through their `SOCKGUARD_*` env vars (no config file) had no effect. All three are now registered.
+- **Oversized `POST /nodes/{id}/update` and `POST /build` request bodies now return `413` instead of `403`,** matching every other body-limited inspector (a policy `403` implied the request was forbidden by rule rather than too large).
 - **Release images now carry real `commit` and `built` metadata.** The release workflow's Docker build only passed the `VERSION` build arg, so `sockguard version` in published images reported `commit unknown / built unknown`. The workflow now passes `COMMIT` (the tagged SHA) and `BUILD_DATE` (UTC build timestamp) through to the existing ldflags wiring.
 - **The container-label ACL exclusivity warning now fires once per process instead of on every hot-reload.** It was wired into the handler-chain build, which reruns on each config reload, so long-running deployments with reload enabled accumulated duplicate warnings. The warning is now gated by a process-lifetime guard (and finally has test coverage for both the enable-check and the once semantics).
 - **Coalesced inspect-cache waiters now honor their own context.** A request that joined an in-flight upstream inspect blocked unconditionally until that inspect finished — a slow daemon could pin waiter goroutines past their own deadlines. Waiters now return `ctx.Err()` promptly on cancellation while the in-flight resolve (and its cache fill) continues for future callers.
@@ -17,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Test coverage for review-flagged gaps:** legacy (map-format) Docker filter encoding through the ownership and visibility rewrites end-to-end, the visibility meta-cache's one-inspect-per-TTL-window behavior, admin path-normalization variants on the policy-version interceptor (the validate interceptor already had them), and double-encoded `%252f` admin paths pinning the fail-closed pass-through. Corrected the visibility meta-cache code comment and the 1.3.0-rc.2 changelog wording: the cache accelerates repeated single-resource reads — list responses are filtered from their own payload and never inspect upstream.
+- **Upstream inspect responses are now drained before close** on the ownership and visibility owner-isolation paths, so idle keep-alive connections to the daemon are reused instead of discarded after each inspect.
+- **Corrected misleading exec comments in the `cis-docker-benchmark` and `gitlab-runner` presets** that referenced a non-existent `allowed_users` field; exec identity is controlled by `allow_root_user` and the argv `allowed_commands` allowlist.
 
 ## [1.3.0-rc.2] - 2026-06-10
 

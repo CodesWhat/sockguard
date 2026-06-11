@@ -11,6 +11,7 @@ import (
 	"path"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1038,10 +1039,19 @@ func isNonRootUser(user string) bool {
 	if strings.EqualFold(userPart, "root") {
 		return false
 	}
-	if userPart == "0" {
+	if isNumericRootUID(userPart) {
 		return false
 	}
 	return true
+}
+
+// isNumericRootUID reports whether userPart parses as the numeric UID 0.
+// Docker resolves a numeric Config.User with strconv, so "00", "000", and any
+// other zero-padded form all run as root — an exact "0" string compare would
+// miss them and let require_non_root_user / allow_root_user:false be bypassed.
+func isNumericRootUID(userPart string) bool {
+	n, err := strconv.ParseUint(userPart, 10, 32)
+	return err == nil && n == 0
 }
 
 // capDropContainsAll returns true when CapDrop includes the literal "ALL"

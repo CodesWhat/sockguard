@@ -878,6 +878,12 @@ func TestIsRootUser_Boundaries(t *testing.T) {
 		{"", true},
 		{"  ", true},
 		{"ROOT", true},
+		// Zero-padded numeric UIDs resolve to root in Docker (strconv parse),
+		// so the allowlist must treat them as root too.
+		{"00", true},
+		{"000", true},
+		{"00:00", true},
+		{"0000:1", true},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("user=%q", tt.user), func(t *testing.T) {
@@ -885,6 +891,24 @@ func TestIsRootUser_Boundaries(t *testing.T) {
 				t.Fatalf("isRootUser(%q) = %v, want %v", tt.user, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsNonRootUser_ZeroPaddedUIDIsRoot(t *testing.T) {
+	// require_non_root_user must not be bypassable with a zero-padded UID:
+	// Docker parses "00"/"000" numerically as 0 and runs the container as
+	// root, so isNonRootUser must report false for them.
+	rootForms := []string{"0", "00", "000", "0000", "00:00", "000:5", "0:1000", "root", "ROOT", ""}
+	for _, u := range rootForms {
+		if isNonRootUser(u) {
+			t.Errorf("isNonRootUser(%q) = true, want false (resolves to root)", u)
+		}
+	}
+	nonRoot := []string{"1", "1000", "01", "admin"}
+	for _, u := range nonRoot {
+		if !isNonRootUser(u) {
+			t.Errorf("isNonRootUser(%q) = false, want true (non-root)", u)
+		}
 	}
 }
 

@@ -147,8 +147,8 @@ request_body:
     # is still denied; the runner never requests it in normal operation.
     allow_privileged: false
     # Most official CI images (alpine, ubuntu, node, python) run job scripts
-    # as root. Set allow_root_user: false and provide allowed_users if your
-    # pipeline enforces a non-root image standard.
+    # as root. Set allow_root_user: false if your pipeline enforces a non-root
+    # image standard; pair with allowed_commands to pin the permitted argv.
     allow_root_user: true
 
   image_pull:

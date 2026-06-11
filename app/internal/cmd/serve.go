@@ -1186,7 +1186,10 @@ func newAdminHTTPServer(handler http.Handler) *http.Server {
 // for parsing and expose policy metadata — are reachable by any host that can
 // route to the port, with neither authentication nor an IP backstop (#21). The
 // CIDR guard in buildAdminHandlerChain closes the gap when clients.allowed_cidrs
-// is set; this warning covers the remaining case where it is empty.
+// is set. Config validation now rejects this shape outright unless
+// admin.listen.insecure_allow_wide_open acknowledges it, so by the time this
+// warning fires the operator has explicitly opted in — it keeps the exposure
+// visible in the logs rather than gating startup.
 func warnIfAdminListenerWideOpen(cfg *config.Config, logger *slog.Logger) {
 	listen := cfg.Admin.Listen
 	if listen.Address == "" || listen.TLS.Complete() {

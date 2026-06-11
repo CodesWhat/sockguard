@@ -424,7 +424,7 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 	if err != nil {
 		return nil, false, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, false, nil
@@ -449,7 +449,7 @@ func (u upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 	if err != nil {
 		return "", false, err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return "", false, nil

@@ -935,7 +935,7 @@ func (i upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 	if err != nil {
 		return nil, false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, false, nil
@@ -960,7 +960,7 @@ func (i upstreamInspector) inspectExec(ctx context.Context, identifier string) (
 	if err != nil {
 		return "", false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return "", false, nil
@@ -999,7 +999,7 @@ func (i upstreamInspector) inspectResourceMeta(ctx context.Context, kind dockerr
 	if err != nil {
 		return nil, false, err
 	}
-	defer resp.Body.Close()
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, false, nil
