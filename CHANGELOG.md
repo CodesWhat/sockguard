@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release images now carry real `commit` and `built` metadata.** The release workflow's Docker build only passed the `VERSION` build arg, so `sockguard version` in published images reported `commit unknown / built unknown`. The workflow now passes `COMMIT` (the tagged SHA) and `BUILD_DATE` (UTC build timestamp) through to the existing ldflags wiring.
+
 ## [1.3.0-rc.2] - 2026-06-10
 
 ### Security
