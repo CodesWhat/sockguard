@@ -15,15 +15,15 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.16",
-    "knip": "6.15.0",
+    "knip": "6.16.1",
     "lefthook": "^2.1.9",
-    "turbo": "^2.9.16"
+    "turbo": "^2.9.17"
   },
   "overrides": {
     "next": {
-      "postcss": "^8.5.14"
+      "postcss": "^8.5.15"
     },
-    "postcss": "^8.5.14"
+    "postcss": "^8.5.15"
   },
   "packageManager": "npm@11.13.0",
   "engines": {
