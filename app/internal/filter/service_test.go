@@ -295,6 +295,178 @@ func TestServiceInspectAllowsSysctlsWhenPermitted(t *testing.T) {
 	}
 }
 
+func TestServiceInspectDeniesRootUser(t *testing.T) {
+	// require_non_root_user parity: an absent ContainerSpec.User defaults to the
+	// image's user, which Sockguard treats as root, so the service is denied.
+	policy := newServicePolicy(ServiceOptions{AllowOfficial: true, RequireNonRootUser: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if !strings.Contains(reason, "non-root user is required") {
+		t.Fatalf("reason = %q, want non-root denial", reason)
+	}
+}
+
+func TestServiceInspectDeniesZeroPaddedRootUID(t *testing.T) {
+	// Docker resolves a numeric User with strconv, so "00" and "0:0" both run as
+	// root; the parity check must reject them, not just the literal "0".
+	for _, user := range []string{"0", "00", "0:0", "root"} {
+		policy := newServicePolicy(ServiceOptions{AllowOfficial: true, RequireNonRootUser: true})
+		body := `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","User":"` + user + `"}}}`
+		req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(body))
+
+		reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+		if err != nil {
+			t.Fatalf("user %q: inspect() error = %v", user, err)
+		}
+		if !strings.Contains(reason, "non-root user is required") {
+			t.Fatalf("user %q: reason = %q, want non-root denial", user, reason)
+		}
+	}
+}
+
+func TestServiceInspectAllowsNonRootUser(t *testing.T) {
+	policy := newServicePolicy(ServiceOptions{AllowOfficial: true, RequireNonRootUser: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","User":"1000:1000"}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want allow (non-root user)", reason)
+	}
+}
+
+func TestServiceInspectDeniesMissingNoNewPrivileges(t *testing.T) {
+	// A nil Privileges block means NoNewPrivileges is unset → denied.
+	policy := newServicePolicy(ServiceOptions{AllowOfficial: true, RequireNoNewPrivileges: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if !strings.Contains(reason, "no-new-privileges is required") {
+		t.Fatalf("reason = %q, want no-new-privileges denial", reason)
+	}
+}
+
+func TestServiceInspectDeniesNoNewPrivilegesFalse(t *testing.T) {
+	// Privileges present but NoNewPrivileges explicitly false is still denied.
+	policy := newServicePolicy(ServiceOptions{AllowOfficial: true, RequireNoNewPrivileges: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"NoNewPrivileges":false}}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if !strings.Contains(reason, "no-new-privileges is required") {
+		t.Fatalf("reason = %q, want no-new-privileges denial", reason)
+	}
+}
+
+func TestServiceInspectAllowsNoNewPrivileges(t *testing.T) {
+	policy := newServicePolicy(ServiceOptions{AllowOfficial: true, RequireNoNewPrivileges: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"NoNewPrivileges":true}}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want allow (no-new-privileges set)", reason)
+	}
+}
+
+func TestServiceInspectDeniesWritableRootfs(t *testing.T) {
+	policy := newServicePolicy(ServiceOptions{AllowOfficial: true, RequireReadonlyRootfs: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if !strings.Contains(reason, "read-only root filesystem is required") {
+		t.Fatalf("reason = %q, want readonly-rootfs denial", reason)
+	}
+}
+
+func TestServiceInspectAllowsReadonlyRootfs(t *testing.T) {
+	policy := newServicePolicy(ServiceOptions{AllowOfficial: true, RequireReadonlyRootfs: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","ReadOnly":true}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want allow (readonly rootfs)", reason)
+	}
+}
+
+func TestServiceInspectDeniesMissingCapDropAll(t *testing.T) {
+	policy := newServicePolicy(ServiceOptions{AllowOfficial: true, RequireDropAllCapabilities: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","CapabilityDrop":["NET_RAW"]}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if !strings.Contains(reason, `CapabilityDrop must include "ALL"`) {
+		t.Fatalf("reason = %q, want drop-all denial", reason)
+	}
+}
+
+func TestServiceInspectAllowsCapDropAll(t *testing.T) {
+	// "ALL" is matched case-insensitively, mirroring capDropContainsAll.
+	policy := newServicePolicy(ServiceOptions{AllowOfficial: true, RequireDropAllCapabilities: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","CapabilityDrop":["all"]}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want allow (CapDrop ALL)", reason)
+	}
+}
+
+func TestServiceInspectHardeningRailsComposeOnUpdate(t *testing.T) {
+	// All four rails satisfied together on the update path must allow.
+	policy := newServicePolicy(ServiceOptions{
+		AllowOfficial:              true,
+		RequireNonRootUser:         true,
+		RequireNoNewPrivileges:     true,
+		RequireReadonlyRootfs:      true,
+		RequireDropAllCapabilities: true,
+	})
+	body := `{"TaskTemplate":{"ContainerSpec":{` +
+		`"Image":"nginx:latest","User":"1000","ReadOnly":true,` +
+		`"CapabilityDrop":["ALL"],"Privileges":{"NoNewPrivileges":true}}}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1.53/services/web/update?version=7", strings.NewReader(body))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want allow (all rails satisfied)", reason)
+	}
+}
+
 func TestServiceInspectImageTrustDeniesUnverified(t *testing.T) {
 	// A swarm service whose ContainerSpec.Image fails cosign verification is
 	// denied in enforce mode — services must not bypass image trust.

@@ -28,32 +28,61 @@ type ServiceOptions struct {
 	AllowedCapabilities  []string
 	// AllowSysctls permits ContainerSpec.Sysctls; default false denies any.
 	AllowSysctls bool
+	// RequireNonRootUser / RequireNoNewPrivileges / RequireReadonlyRootfs /
+	// RequireDropAllCapabilities mirror the container-create hardening rails for
+	// swarm task containers, enforced against ContainerSpec.User,
+	// ContainerSpec.Privileges.NoNewPrivileges, ContainerSpec.ReadOnly, and
+	// ContainerSpec.CapabilityDrop respectively.
+	RequireNonRootUser         bool
+	RequireNoNewPrivileges     bool
+	RequireReadonlyRootfs      bool
+	RequireDropAllCapabilities bool
 	// ImageTrust applies cosign verification to ContainerSpec.Image, matching
 	// the container-create path so swarm services cannot escape image trust.
 	ImageTrust ImageTrustOptions
 }
 
 type servicePolicy struct {
-	allowHostNetwork     bool
-	allowedBindMounts    []string
-	imagePolicy          imagePullPolicy
-	allowAllCapabilities bool
-	allowedCapabilities  []string
-	allowSysctls         bool
-	imageTrust           imageTrustFields
+	allowHostNetwork           bool
+	allowedBindMounts          []string
+	imagePolicy                imagePullPolicy
+	allowAllCapabilities       bool
+	allowedCapabilities        []string
+	allowSysctls               bool
+	requireNonRootUser         bool
+	requireNoNewPrivileges     bool
+	requireReadonlyRootfs      bool
+	requireDropAllCapabilities bool
+	imageTrust                 imageTrustFields
 }
 
 type serviceRequest struct {
 	TaskTemplate struct {
-		ContainerSpec struct {
-			Image          string            `json:"Image"`
-			Mounts         []serviceMount    `json:"Mounts"`
-			CapabilityAdd  []string          `json:"CapabilityAdd"`
-			CapabilityDrop []string          `json:"CapabilityDrop"`
-			Sysctls        map[string]string `json:"Sysctls"`
-		} `json:"ContainerSpec"`
+		ContainerSpec serviceContainerSpec `json:"ContainerSpec"`
 	} `json:"TaskTemplate"`
 	Networks []serviceNetwork `json:"Networks"`
+}
+
+// serviceContainerSpec mirrors the subset of Docker's swarm ContainerSpec that
+// Sockguard inspects. Identity/privilege fields (User, ReadOnly, Privileges,
+// CapabilityDrop) carry the swarm equivalents of the container-create hardening
+// rails so service create/update cannot bypass them.
+type serviceContainerSpec struct {
+	Image          string                      `json:"Image"`
+	User           string                      `json:"User"`
+	Mounts         []serviceMount              `json:"Mounts"`
+	CapabilityAdd  []string                    `json:"CapabilityAdd"`
+	CapabilityDrop []string                    `json:"CapabilityDrop"`
+	Sysctls        map[string]string           `json:"Sysctls"`
+	ReadOnly       bool                        `json:"ReadOnly"`
+	Privileges     *serviceContainerPrivileges `json:"Privileges"`
+}
+
+// serviceContainerPrivileges captures the swarm ContainerSpec.Privileges fields
+// Sockguard enforces. NoNewPrivileges is a direct boolean here, unlike the
+// container-create path where it is encoded as a HostConfig.SecurityOpt string.
+type serviceContainerPrivileges struct {
+	NoNewPrivileges bool `json:"NoNewPrivileges"`
 }
 
 type serviceMount struct {
@@ -83,11 +112,36 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 			AllowOfficial:      opts.AllowOfficial,
 			AllowedRegistries:  opts.AllowedRegistries,
 		}),
-		allowAllCapabilities: opts.AllowAllCapabilities,
-		allowedCapabilities:  normalizeCapabilityList(opts.AllowedCapabilities),
-		allowSysctls:         opts.AllowSysctls,
-		imageTrust:           buildImageTrustFields(opts.ImageTrust),
+		allowAllCapabilities:       opts.AllowAllCapabilities,
+		allowedCapabilities:        normalizeCapabilityList(opts.AllowedCapabilities),
+		allowSysctls:               opts.AllowSysctls,
+		requireNonRootUser:         opts.RequireNonRootUser,
+		requireNoNewPrivileges:     opts.RequireNoNewPrivileges,
+		requireReadonlyRootfs:      opts.RequireReadonlyRootfs,
+		requireDropAllCapabilities: opts.RequireDropAllCapabilities,
+		imageTrust:                 buildImageTrustFields(opts.ImageTrust),
 	}
+}
+
+// denyHardeningReason enforces the swarm equivalents of the container-create
+// boolean rails against ContainerSpec. It reuses the same isNonRootUser and
+// capDropContainsAll helpers so service and container policy stay in lockstep.
+// NoNewPrivileges is a direct ContainerSpec.Privileges boolean rather than a
+// SecurityOpt string; a nil Privileges block means the flag is unset (denied).
+func (p servicePolicy) denyHardeningReason(spec serviceContainerSpec) string {
+	if p.requireNoNewPrivileges && (spec.Privileges == nil || !spec.Privileges.NoNewPrivileges) {
+		return "service denied: no-new-privileges is required (set ContainerSpec.Privileges.NoNewPrivileges to true)"
+	}
+	if p.requireNonRootUser && !isNonRootUser(spec.User) {
+		return "service denied: non-root user is required (set ContainerSpec.User to a non-zero UID or non-root username)"
+	}
+	if p.requireReadonlyRootfs && !spec.ReadOnly {
+		return "service denied: read-only root filesystem is required (set ContainerSpec.ReadOnly to true)"
+	}
+	if p.requireDropAllCapabilities && !capDropContainsAll(spec.CapabilityDrop) {
+		return "service denied: ContainerSpec.CapabilityDrop must include \"ALL\""
+	}
+	return ""
 }
 
 func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
@@ -132,6 +186,14 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 			continue
 		}
 		return fmt.Sprintf("service denied: bind mount source %q is not allowlisted", source), nil
+	}
+
+	// Identity/privilege rails: ContainerSpec carries swarm equivalents of the
+	// container-create hardening knobs (User, Privileges.NoNewPrivileges,
+	// ReadOnly, CapabilityDrop). Enforce them so service create/update is not a
+	// bypass of require_non_root_user and friends.
+	if denyReason := p.denyHardeningReason(req.TaskTemplate.ContainerSpec); denyReason != "" {
+		return denyReason, nil
 	}
 
 	// Swarm task containers can grant Linux capabilities and set sysctls via
