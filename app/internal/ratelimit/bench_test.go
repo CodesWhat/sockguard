@@ -28,7 +28,10 @@ import (
 const parallelClientCount = 1000
 
 func BenchmarkLimiterAllowNParallel(b *testing.B) {
-	l := newLimiterWithClock(1e9, 1e9, time.Now) // effectively unlimited tokens
+	// 65535 is the packed-design ceiling (MaxPackedBurst): values above it
+	// truncate in the 16.16 fixed-point encoding and corrupt token counts, so
+	// "effectively unlimited" sentinels like 1e9 are no longer valid here.
+	l := newLimiterWithClock(65535, 65535, time.Now)
 	defer l.Stop()
 
 	// Pre-warm all buckets so we're not measuring cold-path allocation.
@@ -57,7 +60,11 @@ func BenchmarkLimiterAllowNParallel(b *testing.B) {
 // ---------------------------------------------------------------------------
 
 func BenchmarkLimiterAllowNHot(b *testing.B) {
-	l := newLimiterWithClock(1e9, 1e9, time.Now) // effectively unlimited tokens
+	// 65535 = MaxPackedBurst; larger sentinels truncate in the packed encoding.
+	// At ~tens of ns per call the bucket drains quickly, so most iterations
+	// measure the deny branch — which is also the allocation-free path this
+	// benchmark guards.
+	l := newLimiterWithClock(65535, 65535, time.Now)
 	defer l.Stop()
 
 	// Warm the bucket.
@@ -155,12 +162,13 @@ func TestLimiterStop_MidFlightRace(t *testing.T) {
 //
 // ---------------------------------------------------------------------------
 
-// BenchmarkBucket_AllowNPacked measures the admit path of the packed bucket.
-// The bucket uses a real clock advancing naturally so the bucket keeps
-// refilling (tpsFP = 65535*65536 grants ~65535 tokens per second). Most calls
-// will observe elapsedMS > 0 and hit the refill+admit branch. A small fraction
-// near drain boundaries will measure the deny path; both branches are
-// allocation-free in the packed design.
+// BenchmarkBucket_AllowNPacked hammers the packed bucket with a real clock.
+// At ~tens of ns per call the initial 65535 tokens drain within the first
+// ~65k iterations and refills add only ~65 tokens per elapsed millisecond, so
+// the overwhelming majority of iterations (>99%) measure the DENY branch;
+// elapsedMS > 0 is observed on well under 1% of calls. That is acceptable for
+// this benchmark's purpose — proving both branches of the packed design are
+// allocation-free — but the ns/op figure is dominated by denials, not admits.
 func BenchmarkBucket_AllowNPacked(b *testing.B) {
 	bkt := newBucket(65535, 65535, time.Now)
 	b.ResetTimer()
@@ -171,8 +179,9 @@ func BenchmarkBucket_AllowNPacked(b *testing.B) {
 }
 
 // BenchmarkBucket_AllowNPackedParallel exercises the CAS retry loop under
-// concurrent access. Uses a real clock so the bucket refills between calls.
-// Verify allocs/op = 0 with -benchmem.
+// concurrent access. As with the serial variant, the bucket spends most of
+// the run drained, so this predominantly measures contended CAS on the deny
+// branch. Verify allocs/op = 0 with -benchmem.
 func BenchmarkBucket_AllowNPackedParallel(b *testing.B) {
 	bkt := newBucket(65535, 65535, time.Now)
 	b.ResetTimer()
