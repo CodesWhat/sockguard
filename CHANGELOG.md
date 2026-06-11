@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The rate-limit token bucket hot path is now allocation-free.** Bucket state (token count + refill timestamp) packs into a single `atomic.Uint64` (16.16 fixed-point tokens, millisecond timestamp), eliminating the per-admission heap allocation: the hot-path benchmark went from 1 alloc/16 B to 0 allocs/0 B per op (~47 → ~36 ns/op). Two consequences: `limits.rate.burst` now has a validated upper bound of 65535 (configs above it are rejected at startup with a descriptive error; `tokens_per_second` is implicitly bounded the same way since burst ≥ tps), and refill granularity is milliseconds rather than nanoseconds — negligible for every supported rate.
 
+## [1.3.0] - 2026-06-11
+
+v1.3.0 promotes `1.3.0-rc.3` to stable with no binary delta — the release content is the `[1.3.0-rc.2]` and `[1.3.0-rc.3]` entries below, validated during the rc soak behind a live drydock deployment. Headlines: swarm service create/update now enforces the same identity/privilege rails as container create (closing the posture bypass where a service could request a workload shape `/containers/create` would deny), a zero-padded-UID root-user bypass is sealed across container create and exec, a wide-open dedicated admin listener is rejected at validation rather than just warned about, admin endpoint paths are normalized before matching, non-upgrade hijack responses strip hop-by-hop headers, the `signature_path` hot-reload wedge and three silently-ignored `SOCKGUARD_*` env vars are fixed, release images carry real `commit`/`built` metadata, and multi-arch images cross-compile natively.
+
 ## [1.3.0-rc.3] - 2026-06-11
 
 ### Added
