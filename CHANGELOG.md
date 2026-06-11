@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0-rc.3] - 2026-06-11
+
 ### Added
 
 - **Swarm service create/update now enforces the container-create identity/privilege rails.** Four opt-in `request_body.service` knobs mirror their container-create counterparts onto the swarm `ContainerSpec`, closing a bypass where a service could request a workload posture that `/containers/create` would have denied: `require_non_root_user` (`ContainerSpec.User`), `require_no_new_privileges` (`ContainerSpec.Privileges.NoNewPrivileges`), `require_readonly_rootfs` (`ContainerSpec.ReadOnly`), and `require_drop_all_capabilities` (`ContainerSpec.CapabilityDrop` must include `ALL`). All default off. The root-user check reuses the same numeric-UID parsing as container-create, so zero-padded `"00"`/`"0:0"` forms are rejected. (Swarm has no privileged mode, per-service namespace sharing, or runtime/device selection, so those container-create rails have no service equivalent.)
