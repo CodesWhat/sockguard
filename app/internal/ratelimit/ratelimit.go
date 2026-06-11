@@ -9,27 +9,10 @@
 package ratelimit
 
 import (
-	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 )
-
-// bucketState is the immutable snapshot that the CAS loop swaps atomically.
-// Both fields are packed into a single heap allocation that is replaced on
-// every successful AllowN transition; the old allocation is reclaimed by GC.
-//
-// Why not a sync.Pool? Returning the OLD pointer to a pool after a CAS
-// succeeds is unsafe: a concurrent reader that already loaded that pointer
-// may still be reading its fields when a fresh consumer pulls it out of
-// the pool and overwrites them, producing a torn read. Pooling only the
-// failed-CAS `next` candidates is sound but saves nothing on the hot path
-// because steady-state CAS succeeds on the first try. The 16-byte
-// per-admit allocation is left to the GC, which handles it efficiently.
-type bucketState struct {
-	tokens       float64
-	lastRefillNs int64 // Unix nanoseconds
-}
 
 // AnonymousClientID is the bucket key used for requests with no resolved
 // profile. This ensures anonymous callers cannot bypass limits by skipping
@@ -58,32 +41,97 @@ const (
 	limiterEvictTTL = 10 * time.Minute
 )
 
+// Packed-state constants for the atomic.Uint64 token bucket.
+// Encoding:
+//
+//	bits [63:32]  uint32  millisecond timestamp mod 2^32 (wraps every ~49.7 days)
+//	bits [31:0]   uint32  16.16 fixed-point token count
+//	  bits [31:16]  uint16  integer part  (0..65535 tokens)
+//	  bits [15:0]   uint16  fractional part (0..65535/65536)
+//
+// Overflow safety: the worst-case intermediate in refill is
+// int64(elapsedMS) * int64(tpsFP).
+// With elapsedMS <= int32 max (~24.8 days) and tpsFP <= 65535*65536 = 4,294,901,760,
+// the product is at most ~9.2e18, which fits in int64 (max ~9.2e18).
+//
+// Timestamp wraparound: the uint32 ms counter wraps at ~49.7 days. The signed
+// elapsed computation is uint32(nowMS) - uint32(lastMS) reinterpreted as int32.
+// Modular subtraction gives the correct signed result as long as the real elapsed
+// time is within (-24.8 days, +24.8 days). The eviction TTL is 10 minutes, so
+// no bucket lives long enough to encounter the ~24.8-day half-window. Worst case
+// (a bucket somehow surviving past 24.8 days idle): one refill cycle is skipped;
+// the bucket recovers on the next call. This is benign.
+const (
+	packedFracBits  = 16
+	packedFracScale = uint64(1 << packedFracBits) // 65536
+
+	// MaxPackedBurst is the maximum configurable burst (and tokens_per_second).
+	// The packed token field is 32 bits of 16.16 fixed-point, so the integer
+	// part overflows at 65536. The config validator enforces this at startup;
+	// AllowN does not re-check at runtime.
+	MaxPackedBurst = float64((1 << 16) - 1) // 65535
+)
+
+// packState assembles a packed state word from a fixed-point token count and a
+// millisecond timestamp.
+func packState(tokenFP uint32, ms uint32) uint64 {
+	return uint64(ms)<<32 | uint64(tokenFP)
+}
+
+// unpackTokenFP extracts the 16.16 fixed-point token count from a packed word.
+func unpackTokenFP(w uint64) uint32 { return uint32(w) } //nolint:gosec // G115: intentional truncation to lower 32 bits (token field)
+
+// unpackMS extracts the millisecond timestamp from a packed word.
+func unpackMS(w uint64) uint32 { return uint32(w >> 32) }
+
 // nowFn is the time source used by token buckets. It can be replaced in tests
 // via newBucketWithClock.
 type nowFn func() time.Time
 
 // bucket is a single per-client token bucket. It is safe for concurrent use.
 //
-// Token state (current count + last-refill timestamp) is held in a
-// *bucketState that is swapped via atomic.Pointer CAS so AllowN is
-// lock-free on the hot path. lastAccessNs is a separate atomic so eviction
-// reads never contend with AllowN writes.
+// Token state (current count + last-refill timestamp) is packed into a single
+// atomic.Uint64:
+//
+//	bits [63:32] — millisecond timestamp mod 2^32 (wraps every 49.7 days)
+//	bits [31:0]  — 16.16 fixed-point token count (integer in [31:16], fractional in [15:0])
+//
+// Packing eliminates the per-admitted-request heap allocation that the former
+// atomic.Pointer[bucketState] design incurred. AllowN remains lock-free.
+//
+// Refill granularity: timestamps are millisecond-precision. Sub-millisecond
+// calls see elapsedMS=0 and skip refill; the stored timestamp is not advanced
+// until at least 1ms has elapsed since the last refill. This is a behavioral
+// change from the nanosecond-precision predecessor: sub-ms traffic patterns
+// at very high rates accumulate tokens only at 1ms resolution rather than
+// continuously. For all rates the config accepts (max 65535 t/s = 1 token per
+// ~15µs), this is negligible.
+//
+// lastAccessNs is a separate atomic so eviction reads never contend with AllowN writes.
 type bucket struct {
-	state           atomic.Pointer[bucketState]
-	lastAccessNs    atomic.Int64 // Unix nanoseconds; updated on every AllowN
-	tokensPerSecond float64
-	burst           float64
-	now             nowFn
+	state        atomic.Uint64
+	lastAccessNs atomic.Int64 // Unix nanoseconds; updated on every AllowN
+	tpsFP        uint64       // tokensPerSecond * packedFracScale, pre-computed
+	burstFP      uint64       // burst * packedFracScale, pre-computed
+	now          nowFn
 }
 
 func newBucket(tokensPerSecond, burst float64, now nowFn) *bucket {
 	t := now()
 	b := &bucket{
-		tokensPerSecond: tokensPerSecond,
-		burst:           burst,
-		now:             now,
+		tpsFP:   uint64(tokensPerSecond * float64(packedFracScale)),
+		burstFP: uint64(burst * float64(packedFracScale)),
+		now:     now,
 	}
-	b.state.Store(&bucketState{tokens: burst, lastRefillNs: t.UnixNano()})
+	// Guard: tpsFP must be at least 1 to avoid division by zero in retryAfter.
+	// This handles rates below 1/65536 t/s (~1 token/18h); the effective minimum
+	// is quantized to 1/65536 t/s.
+	if b.tpsFP == 0 {
+		b.tpsFP = 1
+	}
+	initialFP := uint32(burst * float64(packedFracScale))
+	ms := uint32(t.UnixMilli()) //nolint:gosec // G115: intentional mod-2^32 truncation of ms timestamp (wraps every ~49.7 days)
+	b.state.Store(packState(initialFP, ms))
 	b.lastAccessNs.Store(t.UnixNano())
 	return b
 }
@@ -102,48 +150,75 @@ func (b *bucket) Allow() (ok bool, retryAfter int) {
 // internal/config rejects that configuration at startup. AllowN does not
 // re-check it here — defensive logic in a hot path would just hide config bugs.
 //
-// Implementation: lock-free CAS loop. Each iteration reads the current
-// *bucketState, computes the next state, and attempts a CAS swap. On CAS
-// failure (another goroutine raced us) the loop retries with the fresh value.
+// Implementation: lock-free CAS loop. Each iteration reads the current packed
+// state, computes the next state, and attempts a CAS swap. On CAS failure
+// (another goroutine raced us) the loop retries with the fresh value.
 // After maxCASRetries unsuccessful swaps the request is conservatively denied;
 // this is an extremely rare safety-valve — in practice contention resolves
 // within one or two retries.
+//
+// retryAfter formula: ceil(deficitFP / tpsFP). Both deficitFP and tpsFP carry
+// the same ×packedFracScale factor, so the quotient is in units of seconds.
 const maxCASRetries = 100
 
 func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
 	if cost < 1 {
 		cost = 1
 	}
+	costFP := uint64(cost * float64(packedFracScale))
 
 	nowT := b.now()
 	nowNs := nowT.UnixNano()
 	b.lastAccessNs.Store(nowNs)
+	nowMS := uint32(nowT.UnixMilli()) //nolint:gosec // G115: intentional mod-2^32 truncation of ms timestamp
 
 	for i := 0; i < maxCASRetries; i++ {
 		old := b.state.Load()
+		lastMS := unpackMS(old)
+		tokenFP := uint64(unpackTokenFP(old))
 
-		// Refill based on elapsed time since last refill.
-		elapsedSec := float64(nowNs-old.lastRefillNs) / 1e9
-		newTokens := old.tokens
-		newRefillNs := old.lastRefillNs
-		if elapsedSec > 0 {
-			newTokens = math.Min(old.tokens+elapsedSec*b.tokensPerSecond, b.burst)
-			newRefillNs = nowNs
+		// Compute signed elapsed milliseconds via modular subtraction.
+		// Casting the unsigned difference to int32 handles backwards-clock
+		// steps (negative elapsed → no refill) and the uint32 wraparound at
+		// ~49.7 days (see package-level comment).
+		elapsedMS := int32(nowMS - lastMS) //nolint:gosec // G115: intentional signed-modular-diff for backwards-clock detection
+
+		var newTokenFP uint64
+		var newMS uint32
+		if elapsedMS > 0 {
+			// refill = elapsed_ms * tpsFP / 1000
+			// Both elapsed_ms (int32, max ~2.1e9) and tpsFP (max ~4.3e9) fit
+			// in int64 when multiplied (~9.2e18 < int64 max).
+			refillFP := uint64(int64(elapsedMS)*int64(b.tpsFP)) / 1000 //nolint:gosec // G115: tpsFP <= 65535*65536 = 4,294,901,760 fits int64; product fits int64 (max ~9.2e18)
+			newTokenFP = tokenFP + refillFP
+			if newTokenFP > b.burstFP {
+				newTokenFP = b.burstFP
+			}
+			newMS = nowMS
+		} else {
+			newTokenFP = tokenFP
+			newMS = lastMS
 		}
 
-		if newTokens >= cost {
-			next := &bucketState{tokens: newTokens - cost, lastRefillNs: newRefillNs}
+		if newTokenFP >= costFP {
+			remainingFP := newTokenFP - costFP
+			// Defensive mask: ensures the token bits never spill into the
+			// timestamp half of the word even if a caller bypasses the
+			// config validator (e.g., a direct newBucket call with burst>65535).
+			next := uint64(newMS)<<32 | (uint64(remainingFP) & 0xFFFFFFFF)
 			if b.state.CompareAndSwap(old, next) {
 				return true, 0
 			}
-			// CAS lost — retry.
+			// CAS lost — retry with fresh state.
 			continue
 		}
 
-		// Not enough tokens; compute wait time from the refilled amount.
-		deficit := cost - newTokens
-		waitSeconds := deficit / b.tokensPerSecond
-		return false, int(math.Ceil(waitSeconds))
+		// Not enough tokens; compute wait in seconds using ceiling division.
+		// deficitFP and tpsFP both carry ×packedFracScale, so the quotient is
+		// in seconds.
+		deficitFP := costFP - newTokenFP
+		retrySeconds := int((deficitFP + b.tpsFP - 1) / b.tpsFP) //nolint:gosec // G115: quotient is seconds; burst <= 65535 bounds deficitFP
+		return false, retrySeconds
 	}
 
 	// Exhausted retries under extreme contention — deny conservatively.

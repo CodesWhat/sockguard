@@ -91,6 +91,9 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			RequireNoNewPrivileges:     true,
 			RequireReadonlyRootfs:      true,
 			RequireDropAllCapabilities: true,
+			DenyUnconfinedSeccomp:      true,
+			DenyCustomSeccompProfiles:  true,
+			DenyUnconfinedAppArmor:     true,
 		},
 		Swarm: SwarmRequestBodyConfig{
 			AllowForceNewCluster:          true,
@@ -209,6 +212,9 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			RequireNoNewPrivileges:     true,
 			RequireReadonlyRootfs:      true,
 			RequireDropAllCapabilities: true,
+			DenyUnconfinedSeccomp:      true,
+			DenyCustomSeccompProfiles:  true,
+			DenyUnconfinedAppArmor:     true,
 		},
 		Swarm: filter.SwarmOptions{
 			AllowForceNewCluster:          true,
@@ -245,6 +251,24 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("RequestBodyConfig.ToFilterOptions() = %#v, want %#v", got, want)
+	}
+}
+
+func TestContainerCreateRequestBodyConfigToFilterOptionsMapsSelinuxAndSystemPaths(t *testing.T) {
+	cfg := ContainerCreateRequestBodyConfig{
+		DenySelinuxDisable:        true,
+		DenySelinuxLabelOverride:  true,
+		DenyUnconfinedSystemPaths: true,
+	}
+	got := cfg.ToFilterOptions()
+	if !got.DenySelinuxDisable {
+		t.Error("DenySelinuxDisable not propagated")
+	}
+	if !got.DenySelinuxLabelOverride {
+		t.Error("DenySelinuxLabelOverride not propagated")
+	}
+	if !got.DenyUnconfinedSystemPaths {
+		t.Error("DenyUnconfinedSystemPaths not propagated")
 	}
 }
 

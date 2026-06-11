@@ -278,6 +278,22 @@ func (r *Registry) SetInflight(profile string, count int64) {
 	val.(*atomic.Int64).Store(count)
 }
 
+// DeleteInflightProfile removes the in-flight gauge series for profile from
+// the Prometheus exposition. Called during hot reload when a profile that had
+// a concurrency cap is absent from the new config, so the stale series does
+// not persist after the swap.
+//
+// A completing request from the old chain that calls SetInflight(profile, n)
+// after deletion will re-create the entry at n (the tracker's clamped
+// non-negative count). That re-created entry drains to 0 as the last
+// in-flight request completes; the next reload cycle will delete it again.
+func (r *Registry) DeleteInflightProfile(profile string) {
+	if r == nil {
+		return
+	}
+	r.inflight.Delete(profile)
+}
+
 // Middleware records one metrics observation for each completed HTTP request.
 func (r *Registry) Middleware() func(http.Handler) http.Handler {
 	if r == nil {

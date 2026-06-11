@@ -162,6 +162,9 @@ type ContainerCreateRequestBodyConfig struct {
 	RequiredLabels             []string         `mapstructure:"required_labels"`
 	AllowedRuntimes            []string         `mapstructure:"allowed_runtimes"`
 	ImageTrust                 ImageTrustConfig `mapstructure:"image_trust"`
+	DenySelinuxDisable         bool             `mapstructure:"deny_selinux_disable"`
+	DenySelinuxLabelOverride   bool             `mapstructure:"deny_selinux_label_override"`
+	DenyUnconfinedSystemPaths  bool             `mapstructure:"deny_unconfined_system_paths"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images
@@ -293,19 +296,32 @@ type ConfigRequestBodyConfig struct {
 
 // ServiceRequestBodyConfig configures inspection for service create/update.
 type ServiceRequestBodyConfig struct {
-	AllowHostNetwork           bool             `mapstructure:"allow_host_network"`
-	AllowedBindMounts          []string         `mapstructure:"allowed_bind_mounts"`
-	AllowAllRegistries         bool             `mapstructure:"allow_all_registries"`
-	AllowOfficial              bool             `mapstructure:"allow_official"`
-	AllowedRegistries          []string         `mapstructure:"allowed_registries"`
-	AllowAllCapabilities       bool             `mapstructure:"allow_all_capabilities"`
-	AllowedCapabilities        []string         `mapstructure:"allowed_capabilities"`
-	AllowSysctls               bool             `mapstructure:"allow_sysctls"`
-	RequireNonRootUser         bool             `mapstructure:"require_non_root_user"`
-	RequireNoNewPrivileges     bool             `mapstructure:"require_no_new_privileges"`
-	RequireReadonlyRootfs      bool             `mapstructure:"require_readonly_rootfs"`
-	RequireDropAllCapabilities bool             `mapstructure:"require_drop_all_capabilities"`
-	ImageTrust                 ImageTrustConfig `mapstructure:"image_trust"`
+	AllowHostNetwork           bool     `mapstructure:"allow_host_network"`
+	AllowedBindMounts          []string `mapstructure:"allowed_bind_mounts"`
+	AllowAllRegistries         bool     `mapstructure:"allow_all_registries"`
+	AllowOfficial              bool     `mapstructure:"allow_official"`
+	AllowedRegistries          []string `mapstructure:"allowed_registries"`
+	AllowAllCapabilities       bool     `mapstructure:"allow_all_capabilities"`
+	AllowedCapabilities        []string `mapstructure:"allowed_capabilities"`
+	AllowSysctls               bool     `mapstructure:"allow_sysctls"`
+	RequireNonRootUser         bool     `mapstructure:"require_non_root_user"`
+	RequireNoNewPrivileges     bool     `mapstructure:"require_no_new_privileges"`
+	RequireReadonlyRootfs      bool     `mapstructure:"require_readonly_rootfs"`
+	RequireDropAllCapabilities bool     `mapstructure:"require_drop_all_capabilities"`
+	// DenyUnconfinedSeccomp denies service create/update when
+	// ContainerSpec.Privileges.Seccomp.Mode is "unconfined". Default false (opt-in).
+	DenyUnconfinedSeccomp bool `mapstructure:"deny_unconfined_seccomp"`
+	// DenyCustomSeccompProfiles denies service create/update when
+	// ContainerSpec.Privileges.Seccomp.Mode is "custom". A "custom" profile can
+	// encode an allow-everything policy equivalent to "unconfined"; enable this
+	// alongside deny_unconfined_seccomp for full seccomp confinement enforcement.
+	// Default false (opt-in).
+	DenyCustomSeccompProfiles bool `mapstructure:"deny_custom_seccomp_profiles"`
+	// DenyUnconfinedAppArmor denies service create/update when
+	// ContainerSpec.Privileges.AppArmor.Mode is "disabled" (the swarm equivalent
+	// of "unconfined" AppArmor). Default false (opt-in).
+	DenyUnconfinedAppArmor bool             `mapstructure:"deny_unconfined_apparmor"`
+	ImageTrust             ImageTrustConfig `mapstructure:"image_trust"`
 }
 
 // SwarmRequestBodyConfig configures inspection for swarm writes.

@@ -47,6 +47,62 @@ func TestLoadHonorsServiceHardeningEnvVars(t *testing.T) {
 	}
 }
 
+func TestLoadHonorsDenySelinuxDisableEnvVar(t *testing.T) {
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_DENY_SELINUX_DISABLE", "true")
+	cfg, err := Load("/nonexistent-so-defaults-and-env-only.yaml")
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if !cfg.RequestBody.ContainerCreate.DenySelinuxDisable {
+		t.Fatal("DenySelinuxDisable = false, want true from env var")
+	}
+}
+
+func TestLoadHonorsDenySelinuxLabelOverrideEnvVar(t *testing.T) {
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_DENY_SELINUX_LABEL_OVERRIDE", "true")
+	cfg, err := Load("/nonexistent-so-defaults-and-env-only.yaml")
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if !cfg.RequestBody.ContainerCreate.DenySelinuxLabelOverride {
+		t.Fatal("DenySelinuxLabelOverride = false, want true from env var")
+	}
+}
+
+func TestLoadHonorsDenyUnconfinedSystemPathsEnvVar(t *testing.T) {
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_DENY_UNCONFINED_SYSTEM_PATHS", "true")
+	cfg, err := Load("/nonexistent-so-defaults-and-env-only.yaml")
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if !cfg.RequestBody.ContainerCreate.DenyUnconfinedSystemPaths {
+		t.Fatal("DenyUnconfinedSystemPaths = false, want true from env var")
+	}
+}
+
+func TestLoadHonorsServiceSeccompAppArmorEnvVars(t *testing.T) {
+	// Guard: new service seccomp/AppArmor knobs require SetDefault registration
+	// in setLoadDefaults — without it, SOCKGUARD_* env vars are silently dropped.
+	t.Setenv("SOCKGUARD_REQUEST_BODY_SERVICE_DENY_UNCONFINED_SECCOMP", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_SERVICE_DENY_CUSTOM_SECCOMP_PROFILES", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_SERVICE_DENY_UNCONFINED_APPARMOR", "true")
+
+	cfg, err := Load("/nonexistent-so-defaults-and-env-only.yaml")
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	svc := cfg.RequestBody.Service
+	if !svc.DenyUnconfinedSeccomp {
+		t.Error("DenyUnconfinedSeccomp = false, want true from env")
+	}
+	if !svc.DenyCustomSeccompProfiles {
+		t.Error("DenyCustomSeccompProfiles = false, want true from env")
+	}
+	if !svc.DenyUnconfinedAppArmor {
+		t.Error("DenyUnconfinedAppArmor = false, want true from env")
+	}
+}
+
 func TestLoadHonorsImageTrustVerifyTimeoutEnvVar(t *testing.T) {
 	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_IMAGE_TRUST_VERIFY_TIMEOUT", "30s")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_SERVICE_IMAGE_TRUST_VERIFY_TIMEOUT", "45s")

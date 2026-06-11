@@ -56,6 +56,9 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		RequiredLabels:             c.RequiredLabels,
 		AllowedRuntimes:            c.AllowedRuntimes,
 		ImageTrust:                 c.ImageTrust.toFilterOptions(),
+		DenySelinuxDisable:         c.DenySelinuxDisable,
+		DenySelinuxLabelOverride:   c.DenySelinuxLabelOverride,
+		DenyUnconfinedSystemPaths:  c.DenyUnconfinedSystemPaths,
 	}
 }
 
@@ -191,6 +194,9 @@ func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 		RequireNoNewPrivileges:     c.RequireNoNewPrivileges,
 		RequireReadonlyRootfs:      c.RequireReadonlyRootfs,
 		RequireDropAllCapabilities: c.RequireDropAllCapabilities,
+		DenyUnconfinedSeccomp:      c.DenyUnconfinedSeccomp,
+		DenyCustomSeccompProfiles:  c.DenyCustomSeccompProfiles,
+		DenyUnconfinedAppArmor:     c.DenyUnconfinedAppArmor,
 		ImageTrust:                 c.ImageTrust.toFilterOptions(),
 	}
 }

@@ -358,6 +358,104 @@ func TestReloadCoordinatorPreservesPolicyVersionOnReject(t *testing.T) {
 	}
 }
 
+// TestReloadCoordinatorClearsInflightGaugeWhenProfileRemoved verifies that a
+// successful reload that drops a profile with a concurrency cap causes the
+// profile's sockguard_inflight_requests series to disappear from the next scrape.
+func TestReloadCoordinatorClearsInflightGaugeWhenProfileRemoved(t *testing.T) {
+	t.Parallel()
+
+	// Build initial config with a profile that has a concurrency cap.
+	initial := config.Defaults()
+	initial.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"},
+	}
+	initial.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name:   "ci",
+			Limits: config.LimitsConfig{Concurrency: &config.ConcurrencyConfig{MaxInflight: 5}},
+		},
+	}
+	f := newReloadCoordinatorFixture(t, &initial)
+
+	// Simulate the profile being in-flight: stamp the gauge directly.
+	f.registry.SetInflight("ci", 2)
+
+	// Confirm the series is present before reload.
+	rec := httptest.NewRecorder()
+	f.registry.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), `sockguard_inflight_requests{profile="ci"} 2`) {
+		t.Fatalf("pre-reload: ci inflight gauge not present: %s", rec.Body.String())
+	}
+
+	// Reload to a config without the ci profile.
+	newCfg := initial
+	newCfg.Clients.Profiles = nil
+	f.loadCfg = &newCfg
+	f.coordinator.reload()
+
+	if got, ok := f.reloadCount("ok"); !ok || got != 1 {
+		t.Fatalf("reload did not succeed: ok=%d found=%v", got, ok)
+	}
+
+	// The series must be gone after reload.
+	rec = httptest.NewRecorder()
+	f.registry.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if strings.Contains(rec.Body.String(), `sockguard_inflight_requests{profile="ci"}`) {
+		t.Fatalf("post-reload: ci inflight gauge still present after profile removal: %s", rec.Body.String())
+	}
+}
+
+// TestReloadCoordinatorRetainsInflightGaugeForRemainingProfile verifies that
+// a reload that removes one profile with a concurrency cap but keeps another
+// only deletes the removed profile's series.
+func TestReloadCoordinatorRetainsInflightGaugeForRemainingProfile(t *testing.T) {
+	t.Parallel()
+
+	initial := config.Defaults()
+	initial.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"},
+	}
+	initial.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name:   "ci",
+			Limits: config.LimitsConfig{Concurrency: &config.ConcurrencyConfig{MaxInflight: 5}},
+		},
+		{
+			Name:   "prod",
+			Limits: config.LimitsConfig{Concurrency: &config.ConcurrencyConfig{MaxInflight: 10}},
+		},
+	}
+	f := newReloadCoordinatorFixture(t, &initial)
+
+	f.registry.SetInflight("ci", 1)
+	f.registry.SetInflight("prod", 3)
+
+	// Reload keeping prod, removing ci.
+	newCfg := initial
+	newCfg.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name:   "prod",
+			Limits: config.LimitsConfig{Concurrency: &config.ConcurrencyConfig{MaxInflight: 10}},
+		},
+	}
+	f.loadCfg = &newCfg
+	f.coordinator.reload()
+
+	if got, ok := f.reloadCount("ok"); !ok || got != 1 {
+		t.Fatalf("reload did not succeed: ok=%d found=%v", got, ok)
+	}
+
+	rec := httptest.NewRecorder()
+	f.registry.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	if strings.Contains(body, `sockguard_inflight_requests{profile="ci"}`) {
+		t.Fatalf("post-reload: ci inflight gauge still present after profile removal: %s", body)
+	}
+	if !strings.Contains(body, `sockguard_inflight_requests{profile="prod"} 3`) {
+		t.Fatalf("post-reload: prod inflight gauge missing or wrong: %s", body)
+	}
+}
+
 // TestNewReloadCoordinatorPreservesNonNilInitialTeardown pins the
 // CONDITIONALS_NEGATION mutant at serve_reload.go:78 (`initialTeardown ==
 // nil` → `!= nil`). The constructor's intent is "default a nil teardown

@@ -573,3 +573,134 @@ func TestNewContainerCreatePolicyDeduplicatesCapabilityList(t *testing.T) {
 		}
 	}
 }
+
+func TestContainerCreatePolicyEnforcesSelinuxAndSystemPathsPolicy(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		// ── label=disable ──
+		{
+			name:       "label=disable denied when configured",
+			opts:       ContainerCreateOptions{DenySelinuxDisable: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"SecurityOpt":["label=disable"]}}`,
+			wantReason: "container create denied: label=disable (SELinux disable) is not allowed",
+		},
+		{
+			name: "label=disable allowed by default (backward compat)",
+			opts: ContainerCreateOptions{AllowAllCapabilities: true},
+			body: `{"HostConfig":{"SecurityOpt":["label=disable"]}}`,
+		},
+		{
+			name:       "legacy colon form label:disable denied when configured",
+			opts:       ContainerCreateOptions{DenySelinuxDisable: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"SecurityOpt":["label:disable"]}}`,
+			wantReason: "container create denied: label=disable (SELinux disable) is not allowed",
+		},
+		{
+			name:       "label=disable case-insensitive match",
+			opts:       ContainerCreateOptions{DenySelinuxDisable: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"SecurityOpt":["label=DISABLE"]}}`,
+			wantReason: "container create denied: label=disable (SELinux disable) is not allowed",
+		},
+		// ── label=user:/role:/type:/level: overrides ──
+		{
+			name: "label=user allowed when DenySelinuxLabelOverride false (default)",
+			opts: ContainerCreateOptions{AllowAllCapabilities: true},
+			body: `{"HostConfig":{"SecurityOpt":["label=user:system_u"]}}`,
+		},
+		{
+			name:       "label=user denied when DenySelinuxLabelOverride true",
+			opts:       ContainerCreateOptions{DenySelinuxLabelOverride: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"SecurityOpt":["label=user:system_u"]}}`,
+			wantReason: `container create denied: selinux label override "user:system_u" is not allowed (set deny_selinux_label_override: false to permit)`,
+		},
+		{
+			name:       "label=type denied when DenySelinuxLabelOverride true",
+			opts:       ContainerCreateOptions{DenySelinuxLabelOverride: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"SecurityOpt":["label=type:svirt_lxc_net_t:s0"]}}`,
+			wantReason: `container create denied: selinux label override "type:svirt_lxc_net_t:s0" is not allowed (set deny_selinux_label_override: false to permit)`,
+		},
+		{
+			name: "label=level allowed when DenySelinuxLabelOverride false (default)",
+			opts: ContainerCreateOptions{AllowAllCapabilities: true},
+			body: `{"HostConfig":{"SecurityOpt":["label=level:s0:c100,c200"]}}`,
+		},
+		{
+			// All-defaults: zero-value opts must not deny label= overrides.
+			// Proves zero behavior change for existing deployments.
+			name: "all-defaults policy passes label=user override (zero behavior change)",
+			opts: ContainerCreateOptions{AllowAllCapabilities: true},
+			body: `{"HostConfig":{"SecurityOpt":["label=user:system_u"]}}`,
+		},
+		// ── systempaths=unconfined SecurityOpt ──
+		{
+			name:       "systempaths=unconfined in SecurityOpt denied when configured",
+			opts:       ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"SecurityOpt":["systempaths=unconfined"]}}`,
+			wantReason: "container create denied: systempaths=unconfined is not allowed",
+		},
+		{
+			name: "systempaths=unconfined allowed by default (backward compat)",
+			opts: ContainerCreateOptions{AllowAllCapabilities: true},
+			body: `{"HostConfig":{"SecurityOpt":["systempaths=unconfined"]}}`,
+		},
+		{
+			name: "systempaths=unknown value passes through (not unconfined)",
+			opts: ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
+			body: `{"HostConfig":{"SecurityOpt":["systempaths=other"]}}`,
+		},
+		{
+			// Note: the Docker CLI only translates --security-opt systempaths=unconfined
+			// (the = form) to MaskedPaths=[]. The colon form is caught here via
+			// SecurityOpt parsing but does NOT trigger the MaskedPaths/ReadonlyPaths path.
+			name:       "colon form systempaths:unconfined also denied when configured",
+			opts:       ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"SecurityOpt":["systempaths:unconfined"]}}`,
+			wantReason: "container create denied: systempaths=unconfined is not allowed",
+		},
+		// ── direct-API MaskedPaths/ReadonlyPaths bypass ──
+		{
+			name:       "empty MaskedPaths denied when DenyUnconfinedSystemPaths configured",
+			opts:       ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"MaskedPaths":[]}}`,
+			wantReason: "container create denied: clearing MaskedPaths (systempaths=unconfined equivalent) is not allowed",
+		},
+		{
+			name: "empty MaskedPaths allowed by default (backward compat)",
+			opts: ContainerCreateOptions{AllowAllCapabilities: true},
+			body: `{"HostConfig":{"MaskedPaths":[]}}`,
+		},
+		{
+			name:       "empty ReadonlyPaths denied when DenyUnconfinedSystemPaths configured",
+			opts:       ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"ReadonlyPaths":[]}}`,
+			wantReason: "container create denied: clearing ReadonlyPaths (systempaths=unconfined equivalent) is not allowed",
+		},
+		{
+			name: "absent MaskedPaths (null/omitted) allowed even when DenyUnconfinedSystemPaths",
+			opts: ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
+			body: `{"HostConfig":{}}`,
+		},
+		{
+			name: "non-empty MaskedPaths allowed (customization, not full removal)",
+			opts: ContainerCreateOptions{DenyUnconfinedSystemPaths: true, AllowAllCapabilities: true},
+			body: `{"HostConfig":{"MaskedPaths":["/proc/kcore"]}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}

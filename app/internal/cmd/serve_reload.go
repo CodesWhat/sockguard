@@ -213,6 +213,16 @@ func (c *reloadCoordinator) reload() {
 		Versioner:   c.versioner,
 	})
 
+	// Capture the old concurrency-capped profile set before activeCfg
+	// advances. Only profiles with a concurrency cap can have contributed
+	// in-flight gauge series (SetInflight is called only after a successful
+	// Acquire, which only happens when cp.tracker != nil, which only exists
+	// when opts.Concurrency != nil && MaxInflight > 0).
+	var oldInflightProfiles map[string]struct{}
+	if c.runtime.metrics != nil {
+		oldInflightProfiles = profileNamesWithConcurrency(c.activeCfg)
+	}
+
 	oldTeardown := c.chainTeardown
 	c.chainTeardown = newTeardown
 	c.activeCfg = newCfg
@@ -224,6 +234,21 @@ func (c *reloadCoordinator) reload() {
 	// during that window — tearing them down after the swap is safe
 	// because they perform no per-request work for in-flight calls.
 	c.swappable.Swap(newHandler)
+
+	// Delete gauge series for profiles removed from the new config. This
+	// runs after Swap so new requests are already dispatched to the new
+	// chain; the removed profile cannot receive new SetInflight calls from
+	// the new chain. Completing requests from the old chain that call
+	// SetInflight(profile, n) after deletion re-create the entry at n
+	// (always >= 0, clamped by InflightTracker.Release); the series is
+	// reaped on the next reload cycle.
+	if c.runtime.metrics != nil {
+		newInflightProfiles := profileNamesWithConcurrency(newCfg)
+		for _, name := range removedProfiles(oldInflightProfiles, newInflightProfiles) {
+			c.runtime.metrics.DeleteInflightProfile(name)
+		}
+	}
+
 	oldTeardown()
 
 	// Publish the new generation AFTER the swap so an admin GET to
@@ -310,6 +335,40 @@ func (c *reloadCoordinator) verifyBundle() (*policybundle.VerifyResult, []byte, 
 		return nil, nil, err
 	}
 	return &res, yamlBytes, nil
+}
+
+// profileNamesWithConcurrency returns the set of profile names in cfg that
+// have a concurrency cap configured (Limits.Concurrency != nil with
+// MaxInflight > 0). Only these profiles contribute in-flight gauge series
+// because SetInflight is only called from checkProfileConcurrency after a
+// successful Acquire, which only occurs when opts.Concurrency != nil.
+func profileNamesWithConcurrency(cfg *config.Config) map[string]struct{} {
+	if cfg == nil {
+		return nil
+	}
+	out := make(map[string]struct{}, len(cfg.Clients.Profiles))
+	for _, p := range cfg.Clients.Profiles {
+		if p.Limits.Concurrency != nil && p.Limits.Concurrency.MaxInflight > 0 {
+			out[p.Name] = struct{}{}
+		}
+	}
+	return out
+}
+
+// removedProfiles returns the profile names present in oldSet but absent from
+// newSet. These are profiles whose in-flight gauge series are orphaned and
+// should be cleared.
+func removedProfiles(oldSet, newSet map[string]struct{}) []string {
+	if len(oldSet) == 0 {
+		return nil
+	}
+	var removed []string
+	for name := range oldSet {
+		if _, stillPresent := newSet[name]; !stillPresent {
+			removed = append(removed, name)
+		}
+	}
+	return removed
 }
 
 // startReloader wires the coordinator into a reload.Reloader and runs it

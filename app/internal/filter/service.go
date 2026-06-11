@@ -37,6 +37,20 @@ type ServiceOptions struct {
 	RequireNoNewPrivileges     bool
 	RequireReadonlyRootfs      bool
 	RequireDropAllCapabilities bool
+	// DenyUnconfinedSeccomp denies service create/update when
+	// ContainerSpec.Privileges.Seccomp.Mode == "unconfined". Default false.
+	// Note: does not automatically deny Mode=="custom" — see DenyCustomSeccompProfiles.
+	DenyUnconfinedSeccomp bool
+	// DenyCustomSeccompProfiles denies service create/update when
+	// ContainerSpec.Privileges.Seccomp.Mode == "custom". Operators who use
+	// carefully vetted custom seccomp profiles must leave this false.
+	// When both DenyUnconfinedSeccomp and DenyCustomSeccompProfiles are true,
+	// only Mode=="default" (or an absent Seccomp block) is permitted.
+	DenyCustomSeccompProfiles bool
+	// DenyUnconfinedAppArmor denies service create/update when
+	// ContainerSpec.Privileges.AppArmor.Mode == "disabled". Swarm has no
+	// "unconfined" AppArmor mode; "disabled" is the equivalent. Default false.
+	DenyUnconfinedAppArmor bool
 	// ImageTrust applies cosign verification to ContainerSpec.Image, matching
 	// the container-create path so swarm services cannot escape image trust.
 	ImageTrust ImageTrustOptions
@@ -53,6 +67,9 @@ type servicePolicy struct {
 	requireNoNewPrivileges     bool
 	requireReadonlyRootfs      bool
 	requireDropAllCapabilities bool
+	denyUnconfinedSeccomp      bool
+	denyCustomSeccompProfiles  bool
+	denyUnconfinedAppArmor     bool
 	imageTrust                 imageTrustFields
 }
 
@@ -79,10 +96,28 @@ type serviceContainerSpec struct {
 }
 
 // serviceContainerPrivileges captures the swarm ContainerSpec.Privileges fields
-// Sockguard enforces. NoNewPrivileges is a direct boolean here, unlike the
-// container-create path where it is encoded as a HostConfig.SecurityOpt string.
+// Sockguard enforces. NoNewPrivileges is a direct ContainerSpec.Privileges boolean rather than a
+// SecurityOpt string; a nil Privileges block means the flag is unset (denied).
 type serviceContainerPrivileges struct {
-	NoNewPrivileges bool `json:"NoNewPrivileges"`
+	NoNewPrivileges bool                 `json:"NoNewPrivileges"`
+	Seccomp         *serviceSeccompOpts  `json:"Seccomp"`
+	AppArmor        *serviceAppArmorOpts `json:"AppArmor"`
+}
+
+// serviceSeccompOpts mirrors the subset of swarm SeccompOpts that Sockguard inspects.
+// Profile []byte is intentionally omitted — the proxy cannot safely decode or
+// evaluate the binary blob, and the presence of Mode=="custom" is sufficient to
+// enforce deny_custom_seccomp_profiles without parsing the profile content.
+// Exception: a non-nil Seccomp with empty Mode and non-empty Profile is treated
+// as implicit "custom" (fail-closed) when deny_custom_seccomp_profiles is true.
+type serviceSeccompOpts struct {
+	Mode    string          `json:"Mode"`
+	Profile json.RawMessage `json:"Profile,omitempty"`
+}
+
+// serviceAppArmorOpts mirrors the subset of swarm AppArmorOpts that Sockguard inspects.
+type serviceAppArmorOpts struct {
+	Mode string `json:"Mode"`
 }
 
 type serviceMount struct {
@@ -119,6 +154,9 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 		requireNoNewPrivileges:     opts.RequireNoNewPrivileges,
 		requireReadonlyRootfs:      opts.RequireReadonlyRootfs,
 		requireDropAllCapabilities: opts.RequireDropAllCapabilities,
+		denyUnconfinedSeccomp:      opts.DenyUnconfinedSeccomp,
+		denyCustomSeccompProfiles:  opts.DenyCustomSeccompProfiles,
+		denyUnconfinedAppArmor:     opts.DenyUnconfinedAppArmor,
 		imageTrust:                 buildImageTrustFields(opts.ImageTrust),
 	}
 }
@@ -140,6 +178,56 @@ func (p servicePolicy) denyHardeningReason(spec serviceContainerSpec) string {
 	}
 	if p.requireDropAllCapabilities && !capDropContainsAll(spec.CapabilityDrop) {
 		return "service denied: ContainerSpec.CapabilityDrop must include \"ALL\""
+	}
+	if denyReason := p.denySeccompModeReason(spec.Privileges); denyReason != "" {
+		return denyReason
+	}
+	if denyReason := p.denyAppArmorModeReason(spec.Privileges); denyReason != "" {
+		return denyReason
+	}
+	return ""
+}
+
+// denySeccompModeReason enforces deny_unconfined_seccomp and
+// deny_custom_seccomp_profiles against ContainerSpec.Privileges.Seccomp.Mode.
+// A nil Seccomp block means no explicit mode was set (Docker uses its default)
+// and is always allowed. Mode comparison is case-insensitive; moby emits
+// lowercase constants but third-party clients may vary.
+// Fail-closed: a non-nil Seccomp with empty Mode but non-empty Profile is
+// treated as implicit "custom" when deny_custom_seccomp_profiles is true,
+// because the proxy cannot determine confinement intent from a bare blob.
+func (p servicePolicy) denySeccompModeReason(priv *serviceContainerPrivileges) string {
+	if priv == nil || priv.Seccomp == nil {
+		return ""
+	}
+	mode := strings.TrimSpace(priv.Seccomp.Mode)
+	if p.denyUnconfinedSeccomp && strings.EqualFold(mode, "unconfined") {
+		return "service denied: unconfined seccomp mode is not allowed (ContainerSpec.Privileges.Seccomp.Mode)"
+	}
+	if p.denyCustomSeccompProfiles {
+		if strings.EqualFold(mode, "custom") {
+			return "service denied: custom seccomp profiles are not allowed (ContainerSpec.Privileges.Seccomp.Mode)"
+		}
+		// A non-nil Seccomp with empty Mode and a non-empty Profile blob is an
+		// unvettable custom profile; treat as implicit "custom" (fail-closed).
+		if mode == "" && len(priv.Seccomp.Profile) > 0 {
+			return "service denied: custom seccomp profiles are not allowed (ContainerSpec.Privileges.Seccomp.Mode)"
+		}
+	}
+	return ""
+}
+
+// denyAppArmorModeReason enforces deny_unconfined_apparmor against
+// ContainerSpec.Privileges.AppArmor.Mode. Swarm uses "disabled" where
+// container-create uses "unconfined"; both mean "no AppArmor confinement".
+// A nil AppArmor block means no explicit mode was set and is always allowed.
+func (p servicePolicy) denyAppArmorModeReason(priv *serviceContainerPrivileges) string {
+	if priv == nil || priv.AppArmor == nil {
+		return ""
+	}
+	mode := strings.TrimSpace(priv.AppArmor.Mode)
+	if p.denyUnconfinedAppArmor && strings.EqualFold(mode, "disabled") {
+		return "service denied: disabled apparmor mode is not allowed (ContainerSpec.Privileges.AppArmor.Mode)"
 	}
 	return ""
 }
