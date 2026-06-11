@@ -497,11 +497,14 @@ func newVisibilityDeps(upstreamSocket string) visibilityDeps {
 			return inspector.inspectResource(ctx, dockerresource.Kind(kind), identifier)
 		},
 	)
-	// Meta lookups (name/image pattern axes) get their own cache instance:
-	// without it every item in a list response costs one upstream inspect per
-	// poll, so a 50-container /containers/json from a monitoring tool fans out
-	// to 50 daemon round-trips. Same TTL/coalescing semantics as the label
-	// cache above.
+	// Meta lookups (name/image pattern axes) get their own cache instance.
+	// Only single-resource reads reach this path (resourceVisibleWithPolicy
+	// for GET /containers/{id}/json and friends) — list responses are
+	// filtered from their own payload via itemVisibleByPatterns and never
+	// inspect upstream. The cache flattens repeated polls of the same
+	// resource (and exec→container resolution) to one upstream inspect per
+	// TTL window, with the same coalescing semantics as the label cache
+	// above.
 	metaCache := inspectcache.New(
 		inspectcache.DefaultTTL,
 		inspectcache.DefaultMaxSize,

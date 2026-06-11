@@ -29,10 +29,20 @@ import (
 // render safely is a fail-fast, not a silent drop, so a future Docker API
 // extension surfaces here instead of silently skipping ownership or
 // visibility checks.
+//
+// MaxEncodedBytes bounds the input before JSON parsing. Real Docker clients
+// encode at most a handful of short filter terms; the request-header limit
+// (1 MiB) is the only other bound, and parsing attacker-sized JSON on every
+// list request is avoidable work.
+const MaxEncodedBytes = 64 * 1024
+
 func Decode(encoded string) (map[string][]string, error) {
 	filters := make(map[string][]string)
 	if encoded == "" {
 		return filters, nil
+	}
+	if len(encoded) > MaxEncodedBytes {
+		return nil, fmt.Errorf("decode filters: parameter is %d bytes, exceeds %d byte limit", len(encoded), MaxEncodedBytes)
 	}
 
 	var raw map[string]any

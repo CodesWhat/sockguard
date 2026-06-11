@@ -332,6 +332,13 @@ func writeNonUpgradeHijackResponse(
 	}
 }
 
+// finalizeHijackUpgrade writes the upstream's 101 response to the hijacked
+// client connection verbatim — INCLUDING Connection/Upgrade and any other
+// hop-by-hop headers. That is deliberate, not an oversight next to the
+// hop-by-hop stripping on the non-upgrade path (writeNonUpgradeHijackResponse):
+// a 101 Switching Protocols response is only valid with `Connection: Upgrade`
+// and `Upgrade: tcp` present, and after the hijack this is a raw byte tunnel
+// with no next hop those headers could confuse.
 func finalizeHijackUpgrade(w http.ResponseWriter, logger *slog.Logger, state hijackUpgradeState) (*hijackSession, bool) {
 	hj, ok := w.(http.Hijacker)
 	if !ok {

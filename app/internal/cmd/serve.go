@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -751,19 +752,34 @@ func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) h
 	return clientacl.Middleware(cfg.Upstream.Socket, logger, serveClientACLOptions(cfg))
 }
 
+// labelACLWarnOnce gates warnIfLabelACLEnabled to a single emission per
+// process. The handler chain is rebuilt on every config hot-reload, so an
+// unguarded warning at the chain-build site would repeat on each reload.
+var labelACLWarnOnce sync.Once
+
 // warnIfLabelACLEnabled reminds operators that container-label ACLs are only
 // trustworthy when sockguard is the exclusive path to the Docker socket: a
 // workload that can reach the raw socket can create a container carrying
 // arbitrary <label_prefix>* permission labels and self-grant access the
 // policy never approved. Sockguard cannot detect other socket consumers, so
-// the invariant is stated at chain-build time rather than enforced.
+// the invariant is stated rather than enforced — once per process, on the
+// first chain build (startup or hot-reload) that has the feature enabled.
 func warnIfLabelACLEnabled(cfg *config.Config, logger *slog.Logger) {
+	warnLabelACLOnce(cfg, logger, &labelACLWarnOnce)
+}
+
+// warnLabelACLOnce is the testable core of warnIfLabelACLEnabled: the Once is
+// injected so tests can verify both the enable-check and the once-per-process
+// gating without racing other tests for the package-level guard.
+func warnLabelACLOnce(cfg *config.Config, logger *slog.Logger, once *sync.Once) {
 	if !cfg.Clients.ContainerLabels.Enabled {
 		return
 	}
-	logger.Warn("container-label ACLs are enabled: label grants are only trustworthy if sockguard is the ONLY consumer of the Docker socket — any workload with raw socket access can self-grant permissions via labels",
-		"label_prefix", cfg.Clients.ContainerLabels.LabelPrefix,
-	)
+	once.Do(func() {
+		logger.Warn("container-label ACLs are enabled: label grants are only trustworthy if sockguard is the ONLY consumer of the Docker socket — any workload with raw socket access can self-grant permissions via labels",
+			"label_prefix", cfg.Clients.ContainerLabels.LabelPrefix,
+		)
+	})
 }
 
 // withAdminClientACL applies ONLY the client CIDR allowlist to the dedicated

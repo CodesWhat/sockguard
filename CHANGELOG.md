@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Release images now carry real `commit` and `built` metadata.** The release workflow's Docker build only passed the `VERSION` build arg, so `sockguard version` in published images reported `commit unknown / built unknown`. The workflow now passes `COMMIT` (the tagged SHA) and `BUILD_DATE` (UTC build timestamp) through to the existing ldflags wiring.
+- **The container-label ACL exclusivity warning now fires once per process instead of on every hot-reload.** It was wired into the handler-chain build, which reruns on each config reload, so long-running deployments with reload enabled accumulated duplicate warnings. The warning is now gated by a process-lifetime guard (and finally has test coverage for both the enable-check and the once semantics).
+- **Coalesced inspect-cache waiters now honor their own context.** A request that joined an in-flight upstream inspect blocked unconditionally until that inspect finished — a slow daemon could pin waiter goroutines past their own deadlines. Waiters now return `ctx.Err()` promptly on cancellation while the in-flight resolve (and its cache fill) continues for future callers.
+- **`dockerfilters.Decode` now rejects `filters` parameters over 64 KiB before JSON parsing.** Real clients encode a handful of short terms; the only previous bound was the 1 MiB header limit.
+
+### Changed
+
+- **Test coverage for review-flagged gaps:** legacy (map-format) Docker filter encoding through the ownership and visibility rewrites end-to-end, the visibility meta-cache's one-inspect-per-TTL-window behavior, admin path-normalization variants on the policy-version interceptor (the validate interceptor already had them), and double-encoded `%252f` admin paths pinning the fail-closed pass-through. Corrected the visibility meta-cache code comment and the 1.3.0-rc.2 changelog wording: the cache accelerates repeated single-resource reads — list responses are filtered from their own payload and never inspect upstream.
 
 ## [1.3.0-rc.2] - 2026-06-10
 
@@ -30,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Performance
 
-- **Name/image pattern visibility checks no longer cost one daemon round-trip per list item.** Resource-meta inspects (`name_patterns` / `image_patterns` axes) now go through the same TTL-LRU, request-coalescing cache as label lookups, so a monitoring tool polling `GET /containers/json` against 50 containers triggers at most one upstream inspect per resource per 10-second TTL window instead of 50 per poll.
+- **Name/image pattern visibility checks on single-resource reads no longer cost one daemon round-trip per request.** Resource-meta inspects (`name_patterns` / `image_patterns` axes on `GET /containers/{id}/json` and other single-resource paths) now go through the same TTL-LRU, request-coalescing cache as label lookups, so repeated polls of the same resource trigger at most one upstream inspect per 10-second TTL window. (List responses were never affected — they are filtered from their own payload without upstream inspects.)
 - **File logging uses a 64 KiB buffer (up from 4 KiB),** cutting flush frequency and writer-mutex hold time on busy hosts; the 1-second periodic flush still bounds record staleness on quiet ones.
 
 ## [1.2.0] - 2026-06-02
