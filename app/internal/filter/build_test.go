@@ -319,8 +319,10 @@ func TestMiddlewareDeniesOversizedBuildContext(t *testing.T) {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	// An oversized request entity is 413, not a 403 policy denial — matching
+	// every other body-limited inspector (service, swarm, exec, container).
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusRequestEntityTooLarge, rec.Body.String())
 	}
 
 	var body DenialResponse

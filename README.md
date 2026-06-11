@@ -461,9 +461,9 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 
 | Tier | Theme |
 |---|---|
-| Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators; swarm `ContainerSpec.User` / `Privileges` enforcement parity with container create; wide-open admin listener promoted from startup warning to error behind an explicit opt-in flag |
+| Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators; swarm `ContainerSpec.User` / `Privileges` enforcement parity with container create; `HostConfig.SecurityOpt` `label=`/`systempaths=` policy evaluation (currently passed through) |
 | Policy refinement (v1.x) | Multiple frontend listeners on the main proxy, named rule path aliases |
-| Internals (v1.x) | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth (generated Viper defaults); allocation-free rate-limit bucket state (packed `atomic.Uint64`); profiling-gated JSON redaction fast path |
+| Internals (v1.x) | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth (generated Viper defaults); allocation-free rate-limit bucket state (packed `atomic.Uint64`); profiling-gated JSON redaction fast path; clear per-profile in-flight gauges when a hot reload removes the profile |
 | Compliance (v1.x) | CIS Docker Benchmark control mapping, audit-ready policy templates |
 | Multi-host (v1.3) | Remote Docker TCP upstreams, multi-upstream fan-out, remote daemon health checking, connection pooling, automatic failover |
 | Extensibility (v1.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |

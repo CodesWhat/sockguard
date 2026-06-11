@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -273,14 +274,28 @@ func (c *reloadCoordinator) verifyBundle() (*policybundle.VerifyResult, []byte, 
 	if c.bundleVerifier == nil || !c.activeCfg.PolicyBundle.Enabled {
 		return nil, nil, nil
 	}
-	if c.activeCfg.PolicyBundle.SignaturePath == "" {
-		return nil, nil, errors.New("policy_bundle.signature_path is empty")
-	}
 	yamlBytes, err := c.deps.readConfigBytes(c.cfgFile)
 	if err != nil {
 		return nil, nil, err
 	}
-	entity, err := c.deps.loadBundleEntity(c.activeCfg.PolicyBundle.SignaturePath)
+	// Resolve the bundle path from the CANDIDATE config, not c.activeCfg.
+	// signature_path is intentionally reload-mutable (reload/diff.go) so an
+	// operator can rotate the bundle file; reading it from the last-applied
+	// config would load the wrong (old) bundle for the new YAML, fail the
+	// digest check, and — because activeCfg only advances on success — leave
+	// every subsequent reload permanently stuck on the stale path until a
+	// restart. The trust root that actually authenticates the bundle is
+	// reload-immutable, so taking the path from the unverified candidate adds
+	// no trust: a forged path still needs a bundle signed by the pinned key.
+	candidate, err := c.deps.loadConfigBytes(yamlBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse candidate config for signature_path: %w", err)
+	}
+	signaturePath := candidate.PolicyBundle.SignaturePath
+	if signaturePath == "" {
+		return nil, nil, errors.New("policy_bundle.signature_path is empty")
+	}
+	entity, err := c.deps.loadBundleEntity(signaturePath)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -171,6 +171,16 @@ func TestInspectorsUseBoundedBodyContentLengthFastPath(t *testing.T) {
 			wantPrefix: "swarm join denied: request body exceeds",
 			wantStatus: http.StatusRequestEntityTooLarge,
 		},
+		{
+			name: "node update",
+			path: "/nodes/abc/update",
+			max:  maxNodeBodyBytes,
+			inspect: func(req *http.Request) (string, error) {
+				return newNodePolicy(NodeOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
+			},
+			wantPrefix: "node update denied: request body exceeds",
+			wantStatus: http.StatusRequestEntityTooLarge,
+		},
 	}
 
 	for _, tt := range tests {

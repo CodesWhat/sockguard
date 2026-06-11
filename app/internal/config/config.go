@@ -564,6 +564,16 @@ type AdminConfig struct {
 // When false the admin endpoints fall back to riding the main listener.
 type AdminListenConfig struct {
 	ListenConfig `mapstructure:",squash"`
+	// InsecureAllowWideOpen is the third acknowledgment a wide-open admin
+	// listener requires. The embedded insecure_allow_plain_tcp /
+	// insecure_allow_unauthenticated_clients flags opt a non-loopback TCP
+	// admin listener out of TLS, but unlike the main listener — where
+	// unauthenticated requests still face the full policy filter chain — the
+	// admin endpoints accept candidate YAML and expose policy metadata with
+	// client CIDRs as their ONLY admission control. A non-loopback plaintext
+	// admin listener with no clients.allowed_cidrs is therefore a validation
+	// error unless this flag explicitly accepts that exposure.
+	InsecureAllowWideOpen bool `mapstructure:"insecure_allow_wide_open"`
 }
 
 // Configured reports whether an admin listener address has been requested.

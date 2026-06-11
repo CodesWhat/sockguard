@@ -81,7 +81,7 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 	}
 	if spool.tooLarge {
 		spool.closeAndRemove()
-		return fmt.Sprintf("build denied: request body exceeds %d byte limit", maxBuildContextBytes), nil
+		return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("build denied: request body exceeds %d byte limit", maxBuildContextBytes))
 	}
 	if size == 0 {
 		spool.closeAndRemove()

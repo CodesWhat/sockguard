@@ -106,8 +106,18 @@ func (c *Cache[V]) Lookup(ctx context.Context, kind, identifier string) (V, bool
 	}
 	if call, ok := c.inFlight[cacheKey]; ok {
 		c.mu.Unlock()
-		<-call.done
-		return call.value, call.found, call.err
+		// Honor the waiter's own context: the in-flight resolve runs on the
+		// FIRST caller's context, so a slow upstream inspect must not pin
+		// every coalesced waiter past its own deadline/cancellation. The
+		// resolve itself continues (and may still populate the cache for
+		// future callers); only this waiter gives up.
+		select {
+		case <-call.done:
+			return call.value, call.found, call.err
+		case <-ctx.Done():
+			var zero V
+			return zero, false, ctx.Err()
+		}
 	}
 	call := &lookup[V]{done: make(chan struct{})}
 	c.inFlight[cacheKey] = call

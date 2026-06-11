@@ -321,6 +321,19 @@ func validateAdminListener(cfg *Config) []string {
 
 		errs = append(errs, plainTCPListenerErrors("TCP admin listener", "admin.listen", listen.ListenConfig)...)
 
+		// A non-loopback plaintext admin listener with no client CIDR
+		// allowlist is wide open: the admin endpoints accept candidate YAML
+		// and expose policy metadata with no authentication and no IP
+		// backstop. Unlike the main listener (whose unauthenticated opt-in
+		// still routes through the policy chain), CIDRs are the admin
+		// surface's only admission control, so this is an error rather than
+		// the startup warning it used to be — acknowledged only by the
+		// explicit insecure_allow_wide_open flag.
+		if !listen.TLS.Complete() && !IsLoopbackTCPAddress(listen.Address) &&
+			len(cfg.Clients.AllowedCIDRs) == 0 && !listen.InsecureAllowWideOpen {
+			errs = append(errs, "admin.listen.address is non-loopback plaintext TCP with no clients.allowed_cidrs: admin endpoints would accept unauthenticated requests from any source IP; configure admin.listen.tls (mutual TLS) or clients.allowed_cidrs, or acknowledge with admin.listen.insecure_allow_wide_open: true")
+		}
+
 		if cfg.Listen.Address != "" && cfg.Listen.Socket == "" && cfg.Listen.Address == listen.Address {
 			errs = append(errs, fmt.Sprintf("admin.listen.address must differ from listen.address, got %q", listen.Address))
 		}
