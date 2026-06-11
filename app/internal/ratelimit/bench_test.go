@@ -93,7 +93,7 @@ func TestLimiterStop_MidFlightRace(t *testing.T) {
 	// Snapshot goroutine count before we start so we can measure the delta.
 	goroutinesBefore := runtime.NumGoroutine()
 
-	l := newLimiterWithClock(1e6, 1e6, time.Now)
+	l := newLimiterWithClock(65535, 65535, time.Now)
 
 	// Spawn workers that hammer AllowN with rotating client IDs.
 	var (
@@ -143,4 +143,43 @@ func TestLimiterStop_MidFlightRace(t *testing.T) {
 		t.Errorf("possible goroutine leak after Limiter.Stop(): before=%d, after=%d (delta=%d, want ≤5)",
 			goroutinesBefore, current, current-goroutinesBefore)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Packed-path micro-benchmarks
+//
+// These benchmarks target the packed atomic.Uint64 token bucket path.
+// Run with -benchmem to verify allocs/op = 0.
+//
+//	go test -bench=BenchmarkBucket_AllowNPacked -benchmem ./internal/ratelimit/
+//
+// ---------------------------------------------------------------------------
+
+// BenchmarkBucket_AllowNPacked measures the admit path of the packed bucket.
+// The bucket uses a real clock advancing naturally so the bucket keeps
+// refilling (tpsFP = 65535*65536 grants ~65535 tokens per second). Most calls
+// will observe elapsedMS > 0 and hit the refill+admit branch. A small fraction
+// near drain boundaries will measure the deny path; both branches are
+// allocation-free in the packed design.
+func BenchmarkBucket_AllowNPacked(b *testing.B) {
+	bkt := newBucket(65535, 65535, time.Now)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		bkt.AllowN(1) //nolint:errcheck
+	}
+}
+
+// BenchmarkBucket_AllowNPackedParallel exercises the CAS retry loop under
+// concurrent access. Uses a real clock so the bucket refills between calls.
+// Verify allocs/op = 0 with -benchmem.
+func BenchmarkBucket_AllowNPackedParallel(b *testing.B) {
+	bkt := newBucket(65535, 65535, time.Now)
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			bkt.AllowN(1) //nolint:errcheck
+		}
+	})
 }

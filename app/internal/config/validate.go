@@ -735,6 +735,18 @@ func validateLimitsConfig(prefix string, cfg LimitsConfig) []string {
 				ratePfx, cfg.Rate.TokensPerSecond, cfg.Rate.Burst))
 		}
 
+		// maxBurstConfig matches the 16-bit integer part of the packed 16.16
+		// fixed-point token field in the ratelimit package. Defined here as a
+		// local constant to avoid an import cycle; ratelimit.MaxPackedBurst
+		// documents the same value but this validator is the enforcement point.
+		// burst >= tokens_per_second is already enforced above, so capping burst
+		// here implicitly caps tokens_per_second too.
+		const maxBurstConfig = 65535.0
+		if effectiveBurst > maxBurstConfig {
+			errs = append(errs, fmt.Sprintf("%s.burst must not exceed %g (packed token field limit), got %v",
+				ratePfx, maxBurstConfig, effectiveBurst))
+		}
+
 		errs = append(errs, validateEndpointCosts(ratePfx+".endpoint_costs", cfg.Rate.EndpointCosts, effectiveBurst)...)
 	}
 
