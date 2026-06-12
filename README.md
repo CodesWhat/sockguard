@@ -527,10 +527,10 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 [![Cobra](https://img.shields.io/badge/Cobra-00ADD8?logo=go&logoColor=fff)](https://github.com/spf13/cobra)
 [![Viper](https://img.shields.io/badge/Viper-00ADD8?logo=go&logoColor=fff)](https://github.com/spf13/viper)
 [![fsnotify](https://img.shields.io/badge/fsnotify-00ADD8?logo=go&logoColor=fff)](https://github.com/fsnotify/fsnotify)
-[![Sigstore](https://img.shields.io/badge/Sigstore-FFC107?logo=sigstore&logoColor=000)](https://www.sigstore.dev/)
+[![Sigstore](https://img.shields.io/badge/Sigstore-FFC107?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxZW0iIGhlaWdodD0iMWVtIiB2aWV3Qm94PSIwIDAgMjQgMjQiPjxwYXRoIGZpbGw9IiMwMDAwMDAiIGQ9Im0xMCAxN2wtNC00bDEuNDEtMS40MUwxMCAxNC4xN2w2LjU5LTYuNTlMMTggOW0tNi04TDMgNXY2YzAgNS41NSAzLjg0IDEwLjc0IDkgMTJjNS4xNi0xLjI2IDktNi40NSA5LTEyVjV6Ii8%2BPC9zdmc%2B)](https://www.sigstore.dev/)
 [![Wolfi](https://img.shields.io/badge/Wolfi-4A4A55?logo=chainguard&logoColor=fff)](https://edu.chainguard.dev/open-source/wolfi/overview/)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=fff)](https://www.docker.com/)
-[![GoReleaser](https://img.shields.io/badge/GoReleaser-00ADD8?logo=go&logoColor=fff)](https://goreleaser.com/)
+[![GoReleaser](https://img.shields.io/badge/GoReleaser-317FE0?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgZmlsbD0iI2ZmZmZmZiIgY2xhc3M9ImJpIGJpLXJvY2tldC10YWtlb2ZmLWZpbGwiIHZpZXdCb3g9IjAgMCAxNiAxNiI%2BCiAgPHBhdGggZD0iTTEyLjE3IDkuNTNjMi4zMDctMi41OTIgMy4yNzgtNC42ODQgMy42NDEtNi4yMTguMjEtLjg4Ny4yMTQtMS41OC4xNi0yLjA2NWEzLjYgMy42IDAgMCAwLS4xMDgtLjU2MyAyIDIgMCAwIDAtLjA3OC0uMjNWLjQ1M2MtLjA3My0uMTY0LS4xNjgtLjIzNC0uMzUyLS4yOTVhMiAyIDAgMCAwLS4xNi0uMDQ1IDQgNCAwIDAgMC0uNTctLjA5M2MtLjQ5LS4wNDQtMS4xOS0uMDMtMi4wOC4xODgtMS41MzYuMzc0LTMuNjE4IDEuMzQzLTYuMTYxIDMuNjA0bC0yLjQuMjM4aC0uMDA2YTIuNTUgMi41NSAwIDAgMC0xLjUyNC43MzRMLjE1IDcuMTdhLjUxMi41MTIgMCAwIDAgLjQzMy44NjhsMS44OTYtLjI3MWMuMjgtLjA0LjU5Mi4wMTMuOTU1LjEzMi4yMzIuMDc2LjQzNy4xNi42NTUuMjQ4bC4yMDMuMDgzYy4xOTYuODE2LjY2IDEuNTggMS4yNzUgMi4xOTUuNjEzLjYxNCAxLjM3NiAxLjA4IDIuMTkxIDEuMjc3bC4wODIuMjAyYy4wODkuMjE4LjE3My40MjQuMjQ5LjY1Ny4xMTguMzYzLjE3Mi42NzYuMTMyLjk1NmwtLjI3MSAxLjlhLjUxMi41MTIgMCAwIDAgLjg2Ny40MzNsMi4zODItMi4zODZjLjQxLS40MS42NjgtLjk0OS43MzItMS41MjZ6bS4xMS0zLjY5OWMtLjc5Ny44LTEuOTMuOTYxLTIuNTI4LjM2Mi0uNTk4LS42LS40MzYtMS43MzMuMzYxLTIuNTMyLjc5OC0uNzk5IDEuOTMtLjk2IDIuNTI4LS4zNjFzLjQzNyAxLjczMi0uMzYgMi41MzFaIi8%2BCiAgPHBhdGggZD0iTTUuMjA1IDEwLjc4N2E3LjYgNy42IDAgMCAwIDEuODA0IDEuMzUyYy0xLjExOCAxLjAwNy00LjkyOSAyLjAyOC01LjA1NCAxLjkwMy0uMTI2LS4xMjcuNzM3LTQuMTg5IDEuODM5LTUuMTguMzQ2LjY5LjgzNyAxLjM1IDEuNDExIDEuOTI1Ii8%2BCjwvc3ZnPg%3D%3D)](https://goreleaser.com/)
 <br>
 [![Next.js](https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=fff)](https://nextjs.org/)
 [![Fumadocs](https://img.shields.io/badge/Fumadocs-000000?logo=nextdotjs&logoColor=fff)](https://fumadocs.dev/)
@@ -548,7 +548,7 @@ Every release image is cosign-signed via GitHub Actions OIDC. Before running a s
 
 **[Apache-2.0 License](LICENSE)**
 
-Built by <a href="https://codeswhat.com">CodesWhat</a>
+<a href="https://github.com/CodesWhat"><img src="docs/assets/codeswhat-logo-original.svg" alt="CodesWhat" height="28"></a>
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/codeswhat)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/codeswhat)
