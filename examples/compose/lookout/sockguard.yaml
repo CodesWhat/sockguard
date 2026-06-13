@@ -1,6 +1,11 @@
 # Sockguard config for lookout — mirrors the shipped lookout preset.
 # Copy of app/configs/lookout.yaml; embedded here so the compose stack
 # is self-contained. Update both files together if you change rules.
+#
+# Log streaming: GET /containers/{id}/logs is required by lookout's
+# GetContainerLogs() API. insecure_allow_read_exfiltration: true acknowledges
+# that container logs can contain secrets; see app/configs/lookout.yaml for
+# the full security-tradeoff rationale.
 
 upstream:
   socket: /var/run/docker.sock
@@ -18,6 +23,8 @@ response:
   redact_mount_paths: false
   redact_container_env: false
   redact_network_topology: false
+
+insecure_allow_read_exfiltration: true
 
 request_body:
   container_create:
@@ -42,6 +49,8 @@ rules:
   - match: { method: GET, path: "/containers/json" }
     action: allow
   - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
     action: allow
   - match: { method: GET, path: "/containers/*/stats" }
     action: allow
