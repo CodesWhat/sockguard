@@ -37,7 +37,7 @@ services:
     volumes:
       - sockguard-socket:/var/run/sockguard:ro
     environment:
-      - LOOKOUT_DOCKER_SOCKET=/var/run/sockguard/sockguard.sock
+      - DOCKER_SOCKET=/var/run/sockguard/sockguard.sock
 
 volumes:
   sockguard-socket:
