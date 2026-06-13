@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -678,5 +680,41 @@ func TestValidateAndCompileRulesReturnsCompileError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "rule 1: boom") {
 		t.Fatalf("expected wrapped compile error, got: %v", err)
+	}
+}
+
+// TestPresetConfigsPassBuildChain verifies that every shipped preset YAML passes
+// the full validateAndCompileRules (BuildChain) check — not just config.Validate.
+// This catches missing insecure_allow_* flags that cause the server to refuse
+// startup even when config.Load + config.Validate both succeed.
+func TestPresetConfigsPassBuildChain(t *testing.T) {
+	presetsDir := filepath.Join("..", "..", "configs")
+
+	entries, err := os.ReadDir(presetsDir)
+	if err != nil {
+		t.Fatalf("failed to read presets directory %s: %v", presetsDir, err)
+	}
+
+	var yamlFiles []string
+	for _, e := range entries {
+		if !e.IsDir() && (filepath.Ext(e.Name()) == ".yaml" || filepath.Ext(e.Name()) == ".yml") {
+			yamlFiles = append(yamlFiles, e.Name())
+		}
+	}
+	if len(yamlFiles) == 0 {
+		t.Fatal("no preset YAML configs found — expected at least one")
+	}
+
+	for _, name := range yamlFiles {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(presetsDir, name)
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load(%s) error: %v", name, err)
+			}
+			if _, err := validateAndCompileRules(cfg); err != nil {
+				t.Fatalf("validateAndCompileRules(%s) error: %v", name, err)
+			}
+		})
 	}
 }

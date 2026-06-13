@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
+description: Ready-made sockguard configs for drydock, drydock with self-update, lookout, lookout with exec, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -25,6 +25,63 @@ Optimized for the [drydock](https://github.com/CodesWhat/drydock) container upda
 # the stock "runc" runtime is allowlisted (request_body.container_create.allowed_runtimes)
 # because drydock recreates containers from their inspect spec, which usually carries an
 # explicit HostConfig.Runtime — without it every update would 403 at /containers/create
+```
+
+## Drydock with Self-Update (`drydock-with-selfupdate.yaml`)
+
+Extends the drydock preset with the exec paths required for drydock's self-update
+finalize flow. The finalize step runs a short-lived `docker exec` inside the new
+container to POST a completion callback to drydock's internal API.
+
+**Use for:** drydock deployments where the sockguard proxy is in the self-update
+path and you need the finalize callback to complete cleanly.
+
+```yaml
+# Extends drydock.yaml with:
+# Allows: POST /containers/{id}/exec, POST /exec/{id}/start, GET /exec/{id}/json
+# Exec body inspection: allow_privileged=false, allow_root_user=false
+# allowed_commands pins exec to the single finalize entrypoint argv
+# If your drydock image runs as root, set allow_root_user: true
+```
+
+Without this preset (using drydock.yaml), the self-update still completes — the
+old container is renamed, the new one starts — but the finalize callback exec is
+denied and drydock logs the failure. Use this preset to get a clean finalize.
+
+## Lookout (`lookout.yaml`)
+
+Optimized for the [lookout](https://github.com/CodesWhat/lookout) Docker agent.
+
+**Use for:** lookout in the tri-tool topology (sockguard → lookout → drydock), or
+any remote Docker agent that needs lifecycle control, image pull, and event streaming.
+
+```yaml
+# Allows: container read (list, inspect, stats, top, changes)
+# Allows: container lifecycle (start, stop, restart, kill, rename, update, wait, create, remove)
+# Allows: image read, pull, remove
+# Allows: network read, volume read, distribution, Swarm service reads
+# Denies: exec, build, swarm writes, secrets, plugins, raw log/archive streams
+# Response redactions disabled (redact_mount_paths=false, redact_container_env=false,
+# redact_network_topology=false) — required for drydock passthrough topology so
+# inspect data forwarded to drydock is not corrupted by "<redacted>" placeholders
+# Standalone operators not paired with drydock can re-enable all three redactions
+```
+
+## Lookout with Exec (`lookout-with-exec.yaml`)
+
+Extends the lookout preset with exec support for interactive terminal access through
+the lookout agent, e.g. terminal-over-websocket or drydock-driven exec in edge mode.
+
+**Use for:** lookout deployments where exec sessions are needed (interactive terminals,
+drydock edge mode exec calls).
+
+```yaml
+# Extends lookout.yaml with:
+# Allows: POST /containers/{id}/exec, POST /exec/{id}/start,
+#         POST /exec/{id}/resize, GET /exec/{id}/json
+# Exec body inspection: allow_privileged=false, allow_root_user=true
+# (most container workloads run as root; set false + use allowed_commands for
+# non-root or command-pinned deployments)
 ```
 
 ## Traefik (`traefik.yaml`)

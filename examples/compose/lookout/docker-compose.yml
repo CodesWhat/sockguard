@@ -1,0 +1,43 @@
+# examples/compose/lookout/docker-compose.yml
+#
+# Sockguard + lookout — unix-socket mode, lookout preset.
+# Sockguard writes a filtered unix socket into a shared named volume;
+# lookout reads that socket rather than mounting /var/run/docker.sock.
+#
+# lookout needs: container list/inspect/stats, lifecycle (start/stop/
+# restart/kill/rename/update/create/remove), image pull/inspect/remove,
+# /events, narrow network/volume/distribution reads, and Swarm service reads.
+# The lookout preset covers all of these without requiring
+# insecure_allow_read_exfiltration; exec, build, secrets, and raw log/
+# archive streams are denied by default.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  lookout:
+    image: codeswhat/lookout:latest
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    ports:
+      - "4000:4000"
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - DOCKER_SOCKET=/var/run/sockguard/sockguard.sock
+
+volumes:
+  sockguard-socket:
