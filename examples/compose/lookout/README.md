@@ -12,7 +12,7 @@
 | No raw socket in lookout container | Yes — named volume unix socket |
 | Exec denied | Yes |
 | Build denied | Yes |
-| Raw log/archive streams denied | Yes — no `insecure_allow_read_exfiltration` |
+| Log streaming allowed; raw archive/export/attach denied | `insecure_allow_read_exfiltration: true` (required for lookout's `GetContainerLogs()`; `/containers/*/archive`, `/export`, `/attach` stay denied) |
 | Image pulls | All registries allowed (lookout tracks arbitrary images) |
 | Bind mounts on container create | Denied unless you add paths to `allowed_bind_mounts` |
 | Response redaction (env, mounts, network topology) | Disabled — required for drydock passthrough topology |
