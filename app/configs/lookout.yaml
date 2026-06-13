@@ -1,0 +1,155 @@
+# Sockguard — Lookout Preset
+#
+# Optimized for the lookout Docker agent (https://github.com/CodesWhat/lookout).
+# Allows: container list/inspect/stats/top/changes, lifecycle (start/stop/restart/
+#         kill/rename/update/wait/create/remove), image pull/inspect/remove,
+#         /events, narrow network/volume/distribution reads, Swarm service reads.
+# Denies: exec, build, secrets, plugins, raw archive/export/logs/attach streams.
+#
+# Redaction posture — redact_mount_paths and redact_container_env are DISABLED
+# here because in the production tri-tool topology (sockguard → lookout → drydock)
+# lookout forwards container inspect data to drydock whose update detection reads
+# HostConfig.Binds and Config.Env to recreate containers. If sockguard redacts
+# those fields to "<redacted>", drydock faithfully forwards the placeholder into
+# POST /containers/create and dockerd rejects with 400. Operators running lookout
+# in standalone mode (not paired with drydock) can safely flip both to true:
+#
+#   response:
+#     redact_mount_paths: true
+#     redact_container_env: true
+#
+# redact_network_topology is also disabled for the same reason: drydock's clone
+# logic reconstructs NetworkMode from the inspect spec.
+#
+# Exec: this preset denies all exec paths. To allow interactive exec sessions
+# through lookout (e.g. for a terminal-over-websocket feature), use the
+# lookout-with-exec.yaml preset instead.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Response redaction — all three disabled for the drydock passthrough topology.
+# See the header comment for when to re-enable them in standalone deployments.
+response:
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
+
+# Lookout needs container creation for its orchestration flows. Container-create
+# bodies are inspected by default; bind-mounted workloads are denied until their
+# host paths are allowlisted here. Image pulls are inspected too; this preset
+# explicitly allows any registry so lookout can track arbitrary images while still
+# denying fromSrc imports. The stock "runc" runtime is allowlisted because lookout
+# (like drydock) recreates containers from inspect specs that carry an explicit
+# HostConfig.Runtime — without it every recreation is rejected at
+# POST /containers/create with 403 "runtime \"runc\" is not allowlisted".
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+    allowed_runtimes:
+      - runc
+  image_pull:
+    allow_all_registries: true
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads — narrow set lookout needs (list + inspect + stats + top + changes).
+  # Deliberately omits /containers/*/logs, /archive, /export, /attach to
+  # keep the exfiltration validator happy.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  # Container lifecycle
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/update" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Container creation (for orchestration and passthrough to drydock)
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  # Image reads — list + inspect + history. Image names can be namespaced
+  # (linuxserver/qbittorrent:latest, ghcr.io/owner/repo:tag), so the
+  # middle is matched with `**`. The trailing /json or /history segment
+  # keeps the exfiltration validator happy by not matching /images/get
+  # or /images/*/get (raw tarball exfil).
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/**" }
+    action: allow
+
+  # Network read — list + inspect only.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+
+  # Volume read — list + inspect only.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+
+  # Distribution (registry digest checks for image freshness). Image
+  # references in the URL can be multi-segment (registry/owner/repo:tag).
+  - match: { method: GET, path: "/distribution/**/json" }
+    action: allow
+
+  # Swarm services — list + inspect. /services/*/logs is intentionally
+  # omitted to keep the exfiltration validator happy.
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by lookout preset"
