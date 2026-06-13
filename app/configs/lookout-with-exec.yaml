@@ -16,6 +16,16 @@
 # If your deployment enforces non-root containers, set allow_root_user: false
 # and optionally add allowed_commands to pin the permitted argv prefixes.
 #
+# insecure_allow_body_blind_writes: true is required because sockguard's
+# startup validator considers exec endpoints "body-blind" unless
+# allowed_commands is non-empty. Interactive sessions cannot be pinned to a
+# fixed command argv, so the flag acknowledges that risk explicitly.
+# The allow_privileged: false / allow_root_user enforcement layer still
+# applies — it gates on the inspect payload, not on argv prefix matching.
+# Operators who can constrain exec to known commands should instead replace
+# allow_root_user with an allowed_commands list (see drydock-with-selfupdate.yaml
+# for the pinned-command pattern) and drop insecure_allow_body_blind_writes.
+#
 # Use this preset instead of lookout.yaml when:
 #   - Lookout's terminal/exec feature is in use
 #   - Drydock drives exec calls through the lookout edge mode
@@ -45,6 +55,12 @@ response:
   redact_container_env: false
   redact_network_topology: false
 
+# Exec without pinned AllowedCommands requires insecure_allow_body_blind_writes;
+# log streaming requires insecure_allow_read_exfiltration. See the header
+# comment for the security-tradeoff rationale for each flag.
+insecure_allow_body_blind_writes: true
+insecure_allow_read_exfiltration: true
+
 # Container-create and image-pull inspection mirrors lookout.yaml.
 # Exec body inspection: allow_privileged denied, root user allowed for
 # interactive sessions. To pin allowed commands, replace allow_root_user
@@ -73,12 +89,15 @@ rules:
   - match: { method: GET, path: "/events" }
     action: allow
 
-  # Container reads — narrow set (list + inspect + stats + top + changes).
-  # Deliberately omits /containers/*/logs, /archive, /export, /attach to
-  # keep the exfiltration validator happy.
+  # Container reads — list, inspect, stats, top, changes, and logs.
+  # /containers/*/logs is required by lookout's GetContainerLogs().
+  # /containers/*/archive, /containers/*/export, and /containers/*/attach
+  # are intentionally omitted — bulk-data exfiltration paths lookout does not use.
   - match: { method: GET, path: "/containers/json" }
     action: allow
   - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
     action: allow
   - match: { method: GET, path: "/containers/*/stats" }
     action: allow
