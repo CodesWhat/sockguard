@@ -140,6 +140,15 @@ request_body:
     allow_all_registries: true
     allow_imports: false
 
+# Exec without pinned AllowedCommands requires insecure_allow_body_blind_writes;
+# log/attach streaming requires insecure_allow_read_exfiltration. Both flags
+# acknowledge deliberate trade-offs: the runner must be able to execute arbitrary
+# workflow steps (not a fixed command list) and stream job output via the logs
+# and attach APIs. Restrict the proxy socket to the runner process UID/IP via
+# clients.unix_peer_profiles or clients.allowed_cidrs to keep the risk bounded.
+insecure_allow_body_blind_writes: true
+insecure_allow_read_exfiltration: true
+
 # Response redactions — leave default-on. The runner reads container
 # inspect output to set up log streaming, not to enumerate host paths or
 # env vars. Keeping redactions on means a compromised workflow step
