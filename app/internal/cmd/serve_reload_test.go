@@ -294,6 +294,7 @@ func TestReloadCoordinatorBumpsPolicyVersionOnSuccess(t *testing.T) {
 	snap := f.versioner.Snapshot()
 	if snap == nil {
 		t.Fatalf("Snapshot() = nil after successful reload")
+		return
 	}
 	if snap.Version != 2 {
 		t.Fatalf("Version = %d, want 2 (startup=1, reload=2)", snap.Version)
