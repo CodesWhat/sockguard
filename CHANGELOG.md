@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0-rc.1] - 2026-06-16
+
 ### Added
 
 - **`SecurityOpt` SELinux and system-paths directives are now policy-evaluable.** Three opt-in `request_body.container_create` knobs (all default off — zero behavior change): `deny_selinux_disable` denies `label=disable` and the legacy `label:disable` colon form (which turn off SELinux confinement); `deny_selinux_label_override` denies `label=user:`/`role:`/`type:`/`level:` SELinux context customization; `deny_unconfined_system_paths` denies `systempaths=unconfined` **and** requests that set `MaskedPaths`/`ReadonlyPaths` to an explicit empty array — the Docker CLI translates `--security-opt systempaths=unconfined` into `MaskedPaths: []` client-side, so direct API callers could otherwise clear the masked-path protections without ever sending the SecurityOpt string. Both vectors are covered.
