@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="sockguard-logo.png" alt="sockguard" width="180">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="sockguard-logo-dark.png">
+  <img src="sockguard-logo.png" alt="sockguard" width="180">
+</picture>
 
 <h1>sockguard</h1>
 
