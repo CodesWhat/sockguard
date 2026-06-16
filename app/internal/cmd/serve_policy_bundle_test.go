@@ -171,7 +171,6 @@ func TestPolicyBundleReload_AcceptsSignedYAML(t *testing.T) {
 	snap := f.versioner.Snapshot()
 	if snap == nil {
 		t.Fatal("no snapshot published")
-		return
 	}
 	if snap.BundleSigner != "keyed:abcd" {
 		t.Fatalf("BundleSigner = %q, want keyed:abcd", snap.BundleSigner)
@@ -404,7 +403,6 @@ func TestVerifyPolicyBundleAtStartup_Success(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("got = nil, want VerifyResult")
-		return
 	}
 	if got.Signer != want.Signer || got.DigestHex != want.DigestHex {
 		t.Fatalf("got = %+v, want %+v", got, want)

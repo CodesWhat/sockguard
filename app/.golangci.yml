@@ -80,3 +80,14 @@ linters:
           - errcheck
           - gosec
           - bodyclose
+      # SA5011 false-positives in tests: staticcheck (as built into some
+      # golangci-lint release binaries) doesn't model `t.Fatal`/`t.Fatalf` as
+      # terminating, so it flags `if x == nil { t.Fatal(...) }; x.field` as a
+      # possible nil deref even though t.Fatal ends the test via runtime.Goexit.
+      # It's a test-only idiom and the behaviour differs across linter builds
+      # (locally clean, red in CI), so scope the suppression to test files.
+      # Kept active on non-test code, where SA5011 is a genuinely useful check.
+      - path: _test\.go
+        linters:
+          - staticcheck
+        text: SA5011
