@@ -116,7 +116,7 @@ func TestSubjectPublicKeySHA256HexHandlesNilAndMissingSPKI(t *testing.T) {
 func makeTestCertificate(t *testing.T) *x509.Certificate {
 	t.Helper()
 
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("rsa.GenerateKey: %v", err)
 	}
