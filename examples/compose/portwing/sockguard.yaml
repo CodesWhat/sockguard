@@ -1,10 +1,10 @@
-# Sockguard config for lookout — mirrors the shipped lookout preset.
-# Copy of app/configs/lookout.yaml; embedded here so the compose stack
+# Sockguard config for Portwing — mirrors the shipped portwing preset.
+# Copy of app/configs/portwing.yaml; embedded here so the compose stack
 # is self-contained. Update both files together if you change rules.
 #
-# Log streaming: GET /containers/{id}/logs is required by lookout's
+# Log streaming: GET /containers/{id}/logs is required by Portwing's
 # GetContainerLogs() API. insecure_allow_read_exfiltration: true acknowledges
-# that container logs can contain secrets; see app/configs/lookout.yaml for
+# that container logs can contain secrets; see app/configs/portwing.yaml for
 # the full security-tradeoff rationale.
 
 upstream:
@@ -109,4 +109,4 @@ rules:
 
   - match: { method: "*", path: "/**" }
     action: deny
-    reason: "not allowed by lookout preset"
+    reason: "not allowed by portwing preset"

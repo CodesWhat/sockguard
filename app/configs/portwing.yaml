@@ -1,13 +1,13 @@
-# Sockguard — Lookout Preset
+# Sockguard — Portwing Preset
 #
-# Optimized for the lookout Docker agent (https://github.com/CodesWhat/lookout).
+# Optimized for the Portwing Docker agent (https://github.com/CodesWhat/portwing).
 # Allows: container list/inspect/stats/top/changes/logs, lifecycle (start/stop/
 #         restart/kill/rename/update/wait/create/remove), image pull/inspect/
 #         remove, /events, narrow network/volume/distribution reads, Swarm
 #         service reads.
 # Denies: exec, build, secrets, plugins, raw archive/export/attach streams.
 #
-# Log streaming: lookout's GetContainerLogs() calls GET /containers/{id}/logs
+# Log streaming: Portwing's GetContainerLogs() calls GET /containers/{id}/logs
 # (including follow=1 for live streaming). This path is classified as a
 # read-exfiltration endpoint by sockguard's startup validator because logs can
 # contain secrets. insecure_allow_read_exfiltration: true below acknowledges
@@ -18,11 +18,11 @@
 # flag and accept that GetContainerLogs() will return 403.
 #
 # Redaction posture — redact_mount_paths and redact_container_env are DISABLED
-# here because in the production tri-tool topology (sockguard → lookout → drydock)
-# lookout forwards container inspect data to drydock whose update detection reads
+# here because in the production tri-tool topology (sockguard → Portwing → drydock)
+# Portwing forwards container inspect data to drydock whose update detection reads
 # HostConfig.Binds and Config.Env to recreate containers. If sockguard redacts
 # those fields to "<redacted>", drydock faithfully forwards the placeholder into
-# POST /containers/create and dockerd rejects with 400. Operators running lookout
+# POST /containers/create and dockerd rejects with 400. Operators running Portwing
 # in standalone mode (not paired with drydock) can safely flip both to true:
 #
 #   response:
@@ -33,16 +33,16 @@
 # logic reconstructs NetworkMode from the inspect spec.
 #
 # Exec: this preset denies all exec paths. To allow interactive exec sessions
-# through lookout (e.g. for a terminal-over-websocket feature), use the
-# lookout-with-exec.yaml preset instead.
+# through Portwing (e.g. for a terminal-over-websocket feature), use the
+# portwing-with-exec.yaml preset instead.
 #
 # Security tradeoff acknowledgment — log streaming:
 # GET /containers/{id}/logs is allowed below. sockguard requires
 # insecure_allow_read_exfiltration: true for this path because container logs
 # can contain environment-variable secrets or other sensitive output that
-# should not be forwarded in all deployments. In the lookout topology the
+# should not be forwarded in all deployments. In the Portwing topology the
 # agent is the sole consumer of the proxy socket and its own access controls
-# gate who can reach the lookout HTTP API — this is an acceptable tradeoff.
+# gate who can reach the Portwing HTTP API — this is an acceptable tradeoff.
 insecure_allow_read_exfiltration: true
 
 upstream:
@@ -64,11 +64,11 @@ response:
   redact_container_env: false
   redact_network_topology: false
 
-# Lookout needs container creation for its orchestration flows. Container-create
+# Portwing needs container creation for its orchestration flows. Container-create
 # bodies are inspected by default; bind-mounted workloads are denied until their
 # host paths are allowlisted here. Image pulls are inspected too; this preset
-# explicitly allows any registry so lookout can track arbitrary images while still
-# denying fromSrc imports. The stock "runc" runtime is allowlisted because lookout
+# explicitly allows any registry so Portwing can track arbitrary images while still
+# denying fromSrc imports. The stock "runc" runtime is allowlisted because Portwing
 # (like drydock) recreates containers from inspect specs that carry an explicit
 # HostConfig.Runtime — without it every recreation is rejected at
 # POST /containers/create with 403 "runtime \"runc\" is not allowlisted".
@@ -94,10 +94,10 @@ rules:
     action: allow
 
   # Container reads — list, inspect, stats, top, changes, and logs.
-  # /containers/*/logs is required by lookout's GetContainerLogs() call.
+  # /containers/*/logs is required by Portwing's GetContainerLogs() call.
   # /containers/*/archive, /containers/*/export, and /containers/*/attach
   # are intentionally omitted — those are bulk-data exfiltration paths that
-  # lookout does not use. insecure_allow_read_exfiltration: true (set above)
+  # Portwing does not use. insecure_allow_read_exfiltration: true (set above)
   # satisfies sockguard's startup validator for the logs path.
   - match: { method: GET, path: "/containers/json" }
     action: allow
@@ -177,4 +177,4 @@ rules:
   # Deny everything else
   - match: { method: "*", path: "/**" }
     action: deny
-    reason: "not allowed by lookout preset"
+    reason: "not allowed by portwing preset"

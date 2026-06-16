@@ -1,14 +1,14 @@
-# examples/compose/lookout/docker-compose.yml
+# examples/compose/portwing/docker-compose.yml
 #
-# Sockguard + lookout — unix-socket mode, lookout preset.
+# Sockguard + Portwing — unix-socket mode, portwing preset.
 # Sockguard writes a filtered unix socket into a shared named volume;
-# lookout reads that socket rather than mounting /var/run/docker.sock.
+# Portwing reads that socket rather than mounting /var/run/docker.sock.
 #
-# lookout needs: container list/inspect/stats, lifecycle (start/stop/
+# Portwing needs: container list/inspect/stats, lifecycle (start/stop/
 # restart/kill/rename/update/create/remove), image pull/inspect/remove,
 # /events, narrow network/volume/distribution reads, and Swarm service reads.
-# The lookout preset covers all of these. Log streaming (GET /containers/*/logs)
-# is allowed because lookout's GetContainerLogs() API needs it, and
+# The portwing preset covers all of these. Log streaming (GET /containers/*/logs)
+# is allowed because Portwing's GetContainerLogs() API needs it, and
 # insecure_allow_read_exfiltration: true acknowledges that tradeoff; exec, build,
 # secrets, and raw archive/export/attach streams stay denied.
 
@@ -28,8 +28,8 @@ services:
     environment:
       - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
 
-  lookout:
-    image: codeswhat/lookout:latest
+  portwing:
+    image: codeswhat/portwing:latest
     restart: unless-stopped
     depends_on:
       - sockguard
