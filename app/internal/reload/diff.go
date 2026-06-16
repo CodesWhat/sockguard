@@ -19,6 +19,8 @@ import (
 var ImmutableFields = []string{
 	"listen",
 	"upstream.socket",
+	"upstream.endpoints",
+	"upstream.failover",
 	"log",
 	"health",
 	"metrics",
@@ -49,6 +51,16 @@ func ImmutableDiff(oldCfg, newCfg *config.Config) []string {
 	}
 	if oldCfg.Upstream.Socket != newCfg.Upstream.Socket {
 		changed = append(changed, "upstream.socket")
+	}
+	// Endpoints and the failover health loop bind to the long-lived Resolver and
+	// its background goroutine at startup, so they cannot change under a reload.
+	// upstream.request_timeout stays mutable: it is rebuilt with the handler
+	// chain on every reload.
+	if !reflect.DeepEqual(oldCfg.Upstream.Endpoints, newCfg.Upstream.Endpoints) {
+		changed = append(changed, "upstream.endpoints")
+	}
+	if !reflect.DeepEqual(oldCfg.Upstream.Failover, newCfg.Upstream.Failover) {
+		changed = append(changed, "upstream.failover")
 	}
 	if !reflect.DeepEqual(oldCfg.Log, newCfg.Log) {
 		changed = append(changed, "log")

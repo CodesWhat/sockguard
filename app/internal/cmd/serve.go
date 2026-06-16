@@ -34,6 +34,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/ratelimit"
 	"github.com/codeswhat/sockguard/internal/reload"
 	"github.com/codeswhat/sockguard/internal/responsefilter"
+	"github.com/codeswhat/sockguard/internal/upstream"
 	"github.com/codeswhat/sockguard/internal/version"
 	"github.com/codeswhat/sockguard/internal/visibility"
 )
@@ -149,7 +150,11 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	if err != nil {
 		return fmt.Errorf("config validation: %w", err)
 	}
-	if err := deps.verifyUpstreamReachable(cfg.Upstream.Socket, logger); err != nil {
+	runtime, err := newServeRuntime(cfg, logger, deps)
+	if err != nil {
+		return fmt.Errorf("upstream: %w", err)
+	}
+	if err := verifyUpstreamReachableForRuntime(cmd.Context(), deps, runtime, cfg, logger); err != nil {
 		return err
 	}
 
@@ -159,7 +164,6 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	versioner := admin.NewPolicyVersioner()
 	initialVersion := versioner.Update(buildInitialPolicySnapshot(deps, cfg, rules, compatActive, bundleResult))
 
-	runtime := newServeRuntime(cfg, logger, deps)
 	runtime.metrics.SetPolicyVersion(initialVersion)
 	handler, chainTeardown := buildServeHandlerChainWithRuntime(serveHandlerBuild{
 		Cfg:         cfg,
@@ -204,9 +208,10 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 
 	server := newHTTPServer(swappable)
 	listen := listenerAddr(cfg)
+	upstreamName := upstreamLabel(runtime.resolver)
 	banner.Render(cmd.ErrOrStderr(), banner.Info{
 		Listen:    listen,
-		Upstream:  cfg.Upstream.Socket,
+		Upstream:  upstreamName,
 		Rules:     len(cfg.Rules),
 		LogFormat: cfg.Log.Format,
 		LogLevel:  cfg.Log.Level,
@@ -215,12 +220,14 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	logger.Info("sockguard started",
 		"version", version.Version,
 		"listen", listen,
-		"upstream", cfg.Upstream.Socket,
+		"upstream", upstreamName,
 		"rules", len(cfg.Rules),
 		"log_level", cfg.Log.Level,
 	)
 
 	errCh := make(chan error, 1)
+	stopResolver := runtime.startResolver(cmd.Context())
+	defer stopResolver()
 	stopWatchdog := runtime.startWatchdog(cmd.Context(), cfg)
 	defer stopWatchdog()
 	stopReadiness := runtime.startReadiness(cmd.Context(), cfg)
@@ -429,13 +436,14 @@ type serveHandlerBuild struct {
 // buildServeHandler which discards it — the goroutines die with the test
 // process anyway.
 func buildServeHandlerChainWithRuntime(b serveHandlerBuild) (http.Handler, func()) {
-	clientProfiles, err := buildServeClientProfiles(b.Cfg)
+	resolver := runtimeResolver(b.Runtime, b.Cfg)
+	clientProfiles, err := buildServeClientProfiles(b.Cfg, resolver)
 	if err != nil {
 		b.Logger.Error("invalid client profile config", "error", err)
 		return invalidClientProfileHandler(), func() {}
 	}
 
-	handler := newServeUpstreamHandler(b.Cfg, b.Logger)
+	handler := newServeUpstreamHandler(b.Cfg, resolver, b.Logger)
 	b.ClientProfiles = clientProfiles
 	layers, teardown := buildServeHandlerLayersWithRuntime(b)
 	for _, layer := range layers {
@@ -454,21 +462,49 @@ type serveRuntime struct {
 	metrics   *metrics.Registry
 	health    *health.Monitor
 	readiness *health.Monitor
+	// resolver is the shared upstream dial seam (endpoint selection, pooling,
+	// TLS, failover). All request paths and side channels route through it so
+	// failover is coherent across the proxy, hijack, and inspect calls.
+	resolver *upstream.Resolver
+	// legacyUpstreamSocket records that the upstream is the single local socket
+	// (no endpoints, no DOCKER_HOST), so startup keeps the original fail-fast
+	// reachability check.
+	legacyUpstreamSocket bool
 }
 
-func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) *serveRuntime {
+func newServeRuntime(cfg *config.Config, logger *slog.Logger, deps *serveDeps) (*serveRuntime, error) {
 	runtime := &serveRuntime{}
 	if cfg.Metrics.Enabled {
 		runtime.metrics = metrics.NewRegistry()
 	}
+
+	resolver, legacy, err := buildUpstreamResolver(cfg, logger, os.Getenv)
+	if err != nil {
+		return nil, err
+	}
+	runtime.resolver = resolver
+	runtime.legacyUpstreamSocket = legacy
+	label := upstreamLabel(resolver)
+
 	if cfg.Health.Enabled || cfg.Health.Watchdog.Enabled {
-		runtime.health = health.NewMonitor(cfg.Upstream.Socket, deps.now(), logger)
+		runtime.health = health.NewMonitorWithDialer(label, resolver, deps.now(), logger)
 	}
 	if cfg.Health.Readiness.Enabled {
 		timeout, _ := time.ParseDuration(cfg.Health.Readiness.Timeout)
-		runtime.readiness = health.NewReadinessMonitor(cfg.Upstream.Socket, deps.now(), logger, timeout)
+		runtime.readiness = health.NewReadinessMonitorWithRoundTripper(label, resolver, deps.now(), logger, timeout)
 	}
-	return runtime
+	return runtime, nil
+}
+
+// startResolver launches the resolver's background health/failover probe loop.
+// It returns a stop func; the loop also exits when ctx is canceled.
+func (r *serveRuntime) startResolver(ctx context.Context) func() {
+	if r == nil || r.resolver == nil {
+		return func() {}
+	}
+	resolverCtx, cancel := context.WithCancel(ctx)
+	r.resolver.Start(resolverCtx)
+	return cancel
 }
 
 func (r *serveRuntime) startWatchdog(ctx context.Context, cfg *config.Config) func() {
@@ -523,31 +559,34 @@ func invalidClientProfileHandler() http.Handler {
 	})
 }
 
-func buildServeClientProfiles(cfg *config.Config) (map[string]filter.Policy, error) {
+func buildServeClientProfiles(cfg *config.Config, res *upstream.Resolver) (map[string]filter.Policy, error) {
 	clientProfiles, err := compileClientProfiles(cfg)
 	if err != nil {
 		return nil, err
 	}
 	for name, profile := range clientProfiles {
-		profile.PolicyConfig = attachRuntimeInspectors(cfg, profile.PolicyConfig)
+		profile.PolicyConfig = attachRuntimeInspectors(cfg, res, profile.PolicyConfig)
 		clientProfiles[name] = profile
 	}
 	return clientProfiles, nil
 }
 
 // attachRuntimeInspectors wires the runtime-bound inspectors (currently just
-// the exec-start inspector that needs the upstream socket) onto a PolicyConfig
-// shaped by config translation. Centralized so every call path that produces
-// a filter.PolicyConfig destined for live request evaluation gets the same
-// wiring — a future runtime dependency added here propagates to both the
-// default policy and every client profile without revisiting two call sites.
-func attachRuntimeInspectors(cfg *config.Config, policy filter.PolicyConfig) filter.PolicyConfig {
-	policy.Exec.InspectStart = filter.NewDockerExecInspector(cfg.Upstream.Socket)
+// the exec-start inspector that needs the upstream) onto a PolicyConfig shaped
+// by config translation. The inspector issues its GET through the shared
+// upstream resolver so exec-identity lookups follow the same active endpoint as
+// the exec-create/start they guard under failover. Centralized so every call
+// path that produces a filter.PolicyConfig destined for live request evaluation
+// gets the same wiring — a future runtime dependency added here propagates to
+// both the default policy and every client profile without revisiting two call
+// sites.
+func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy filter.PolicyConfig) filter.PolicyConfig {
+	policy.Exec.InspectStart = filter.NewDockerExecInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
 	return policy
 }
 
-func newServeUpstreamHandler(cfg *config.Config, logger *slog.Logger) http.Handler {
-	rp := proxy.NewWithOptions(cfg.Upstream.Socket, logger, proxy.Options{
+func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) http.Handler {
+	rp := proxy.NewWithTransport(upstreamResolverFor(res, cfg), logger, proxy.Options{
 		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
 	})
 	// Bound finite upstream requests with a total deadline when configured.
@@ -568,11 +607,12 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	cfg, logger, auditLogger := b.Cfg, b.Logger, b.AuditLogger
 	runtime, versioner := b.Runtime, b.Versioner
 	rules, clientProfiles := b.Rules, b.ClientProfiles
+	resolver := runtimeResolver(runtime, cfg)
 	layers := []serveHandlerLayer{
-		namedServeHandlerLayer("withHijack", withHijack(cfg, logger)),
-		namedServeHandlerLayer("withOwnership", withOwnership(cfg, logger)),
-		namedServeHandlerLayer("withVisibility", withVisibility(cfg, logger)),
-		namedServeHandlerLayer("withFilter", withFilter(cfg, logger, rules, clientProfiles)),
+		namedServeHandlerLayer("withHijack", withHijack(resolver, logger)),
+		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger)),
+		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger)),
+		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles)),
 	}
 
 	// Admin endpoints sit inside filter (so the filter never sees admin paths)
@@ -621,7 +661,7 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 		layers = append(layers, namedServeHandlerLayer("withMetricsEndpoint", withMetricsEndpoint(cfg, runtime.metrics)))
 	}
 	layers = append(layers,
-		namedServeHandlerLayer("withClientACL", withClientACL(cfg, logger)),
+		namedServeHandlerLayer("withClientACL", withClientACL(cfg, resolver, logger)),
 	)
 	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetrics", withMetrics(runtime.metrics)))
@@ -683,24 +723,25 @@ func namedServeHandlerLayer(name string, with func(http.Handler) http.Handler) s
 	return serveHandlerLayer{name: name, with: with}
 }
 
-func withHijack(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+func withHijack(res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		// Hijack handler: intercepts attach/exec endpoints for native bidirectional
-		// streaming with optimized buffers and TCP half-close signaling.
-		return proxy.HijackHandler(cfg.Upstream.Socket, logger, next)
+		// streaming with optimized buffers and TCP half-close signaling. Dials the
+		// same active upstream endpoint as the rest of the proxy.
+		return proxy.HijackHandlerWithDialer(res, logger, next)
 	}
 }
 
-func withOwnership(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
-	return ownership.Middleware(cfg.Upstream.Socket, logger, ownership.Options{
+func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+	return ownership.MiddlewareWithRoundTripper(res, logger, ownership.Options{
 		Owner:              cfg.Ownership.Owner,
 		LabelKey:           cfg.Ownership.LabelKey,
 		AllowUnownedImages: cfg.Ownership.AllowUnownedImages,
 	})
 }
 
-func withVisibility(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
-	return visibility.Middleware(cfg.Upstream.Socket, logger, visibility.Options{
+func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+	return visibility.MiddlewareWithRoundTripper(res, logger, visibility.Options{
 		VisibleResourceLabels: cfg.Response.VisibleResourceLabels,
 		NamePatterns:          cfg.Response.NamePatterns,
 		ImagePatterns:         cfg.Response.ImagePatterns,
@@ -709,8 +750,8 @@ func withVisibility(cfg *config.Config, logger *slog.Logger) func(http.Handler) 
 	})
 }
 
-func withFilter(cfg *config.Config, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy) func(http.Handler) http.Handler {
-	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, clientProfiles))
+func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy) func(http.Handler) http.Handler {
+	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, res, clientProfiles))
 }
 
 // withHealth wires the /health endpoint onto the runtime monitor.
@@ -747,9 +788,9 @@ func withMetrics(registry *metrics.Registry) func(http.Handler) http.Handler {
 	return registry.Middleware()
 }
 
-func withClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
+func withClientACL(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
 	warnIfLabelACLEnabled(cfg, logger)
-	return clientacl.Middleware(cfg.Upstream.Socket, logger, serveClientACLOptions(cfg))
+	return clientacl.MiddlewareWithRoundTripper(upstreamResolverFor(res, cfg), logger, serveClientACLOptions(cfg))
 }
 
 // labelACLWarnOnce gates warnIfLabelACLEnabled to a single emission per
@@ -790,6 +831,12 @@ func warnLabelACLOnce(cfg *config.Config, logger *slog.Logger, once *sync.Once) 
 // listener applies (#21). Passing only AllowedCIDRs yields a CIDR-only
 // middleware; when no CIDRs are configured clientacl.Middleware compiles to a
 // pass-through, so this is a no-op until an operator sets clients.allowed_cidrs.
+//
+// Because container-label ACLs are never enabled here, the middleware never
+// resolves a client by source IP and so never dials the upstream — the socket
+// argument is inert (it is not the shared resolver, by design, and is never
+// used to reach Docker). It stays on the single-socket constructor deliberately
+// so the admin trust boundary carries no dependency on the upstream resolver.
 func withAdminClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {
 	return clientacl.Middleware(cfg.Upstream.Socket, logger, clientacl.Options{
 		AllowedCIDRs: cfg.Clients.AllowedCIDRs,
@@ -1010,18 +1057,18 @@ func serveResponseFilterOptions(cfg *config.Config) responsefilter.Options {
 	}
 }
 
-func serveFilterOptions(cfg *config.Config, clientProfiles map[string]filter.Policy) filter.Options {
+func serveFilterOptions(cfg *config.Config, res *upstream.Resolver, clientProfiles map[string]filter.Policy) filter.Options {
 	return filter.Options{
-		PolicyConfig:   servePolicyConfig(cfg),
+		PolicyConfig:   servePolicyConfig(cfg, res),
 		Profiles:       clientProfiles,
 		ResolveProfile: clientacl.RequestProfile,
 	}
 }
 
-func servePolicyConfig(cfg *config.Config) filter.PolicyConfig {
+func servePolicyConfig(cfg *config.Config, res *upstream.Resolver) filter.PolicyConfig {
 	policy := cfg.RequestBody.ToFilterOptions()
 	policy.DenyResponseVerbosity = filter.ParseDenyResponseVerbosity(cfg.Response.DenyVerbosity)
-	return attachRuntimeInspectors(cfg, policy)
+	return attachRuntimeInspectors(cfg, res, policy)
 }
 
 func serveClientACLOptions(cfg *config.Config) clientacl.Options {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/codeswhat/sockguard/internal/glob"
 	"github.com/codeswhat/sockguard/internal/pkipin"
+	"github.com/codeswhat/sockguard/internal/upstream"
 )
 
 // ValidationError holds multiple validation errors.
@@ -87,8 +88,15 @@ func plainTCPListenerErrors(label, prefix string, listen ListenConfig) []string 
 
 func validateUpstream(cfg *Config) []string {
 	var errs []string
-	if cfg.Upstream.Socket == "" {
-		errs = append(errs, "upstream.socket is required")
+	// Either the legacy single socket or at least one endpoint must be set.
+	// endpoints takes precedence; socket is the fallback when endpoints is empty.
+	if len(cfg.Upstream.Endpoints) == 0 && cfg.Upstream.Socket == "" {
+		errs = append(errs, "upstream requires either upstream.socket or at least one upstream.endpoints entry")
+	}
+	for i, ep := range cfg.Upstream.Endpoints {
+		if err := upstream.ValidateSpec(endpointSpec(ep)); err != nil {
+			errs = append(errs, fmt.Sprintf("upstream.endpoints[%d]: %v", i, err))
+		}
 	}
 	if cfg.Upstream.RequestTimeout != "" {
 		timeout, err := time.ParseDuration(cfg.Upstream.RequestTimeout)
@@ -96,7 +104,36 @@ func validateUpstream(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("upstream.request_timeout must be a positive duration, got %q", cfg.Upstream.RequestTimeout))
 		}
 	}
+	if d := cfg.Upstream.Failover.HealthInterval; d != "" {
+		// Zero is ambiguous: durationOrZero maps it to the resolver default (5s),
+		// not "disabled", which surprises an operator who writes "0s" meaning off.
+		// Reject it and steer them to a negative value (disable) or omission
+		// (default). Negative parses fine and is intentionally allowed.
+		if parsed, err := time.ParseDuration(d); err != nil {
+			errs = append(errs, fmt.Sprintf("upstream.failover.health_interval must be a Go duration, got %q", d))
+		} else if parsed == 0 {
+			errs = append(errs, "upstream.failover.health_interval must be non-zero: use a negative duration to disable probing, or omit it for the 5s default")
+		}
+	}
+	if d := cfg.Upstream.Failover.HealthTimeout; d != "" {
+		if t, err := time.ParseDuration(d); err != nil || t <= 0 {
+			errs = append(errs, fmt.Sprintf("upstream.failover.health_timeout must be a positive duration, got %q", d))
+		}
+	}
 	return errs
+}
+
+// endpointSpec adapts a config UpstreamEndpoint to an upstream.EndpointSpec.
+func endpointSpec(ep UpstreamEndpoint) upstream.EndpointSpec {
+	return upstream.EndpointSpec{
+		Address:               ep.Address,
+		CAFile:                ep.TLS.CAFile,
+		CertFile:              ep.TLS.CertFile,
+		KeyFile:               ep.TLS.KeyFile,
+		ServerName:            ep.TLS.ServerName,
+		InsecureAllowPlainTCP: ep.InsecureAllowPlainTCP,
+		InsecureSkipTLSVerify: ep.InsecureSkipTLSVerify,
+	}
 }
 
 func validateLogging(cfg *Config) []string {

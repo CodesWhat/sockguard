@@ -6,12 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
+
+	"github.com/codeswhat/sockguard/internal/upstream"
 )
 
 const maxExecBodyBytes = 64 << 10 // 64 KiB
@@ -282,17 +282,19 @@ func execStartIdentifier(normalizedPath string) (string, bool) {
 	return id, true
 }
 
-// NewDockerExecInspector returns an exec inspector backed by the Docker unix socket.
+// NewDockerExecInspector returns an exec inspector backed by the Docker unix
+// socket. It is the single-local-socket shorthand; the multi-endpoint/remote
+// path uses NewDockerExecInspectorWithRoundTripper.
 func NewDockerExecInspector(upstreamSocket string) ExecInspectFunc {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", upstreamSocket)
-		},
-		// The exec-inspect call is a short JSON GET; bound the wait for upstream
-		// headers so an unresponsive daemon cannot pin this goroutine.
-		ResponseHeaderTimeout: 30 * time.Second,
-	}
-	client := &http.Client{Transport: transport}
+	return NewDockerExecInspectorWithRoundTripper(upstream.NewSingleSocket(upstreamSocket))
+}
+
+// NewDockerExecInspectorWithRoundTripper returns an exec inspector that issues
+// its short JSON GET through the shared upstream RoundTripper (typically an
+// *upstream.Resolver), so exec-identity inspection follows the same active
+// endpoint as the exec-create/start it guards under failover.
+func NewDockerExecInspectorWithRoundTripper(rt http.RoundTripper) ExecInspectFunc {
+	client := &http.Client{Transport: rt}
 
 	return func(ctx context.Context, id string) (ExecInspectResult, bool, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/exec/"+url.PathEscape(id)+"/json", nil)

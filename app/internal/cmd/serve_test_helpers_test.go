@@ -30,26 +30,34 @@ func indexAfter(s, sub string) int {
 
 func buildServeHandler(t *testing.T, cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps) http.Handler {
 	t.Helper()
+	runtime, err := newServeRuntime(cfg, logger, deps)
+	if err != nil {
+		t.Fatalf("newServeRuntime: %v", err)
+	}
 	handler, teardown := buildServeHandlerChainWithRuntime(serveHandlerBuild{
 		Cfg:         cfg,
 		Logger:      logger,
 		AuditLogger: auditLogger,
 		Rules:       rules,
 		Deps:        deps,
-		Runtime:     newServeRuntime(cfg, logger, deps),
+		Runtime:     runtime,
 	})
 	t.Cleanup(teardown)
 	return handler
 }
 
 func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogger *logging.AuditLogger, rules []*filter.CompiledRule, deps *serveDeps, clientProfiles map[string]filter.Policy) []serveHandlerLayer {
+	runtime, err := newServeRuntime(cfg, logger, deps)
+	if err != nil {
+		panic("newServeRuntime: " + err.Error())
+	}
 	layers, _ := buildServeHandlerLayersWithRuntime(serveHandlerBuild{
 		Cfg:            cfg,
 		Logger:         logger,
 		AuditLogger:    auditLogger,
 		Rules:          rules,
 		Deps:           deps,
-		Runtime:        newServeRuntime(cfg, logger, deps),
+		Runtime:        runtime,
 		ClientProfiles: clientProfiles,
 	})
 	return layers

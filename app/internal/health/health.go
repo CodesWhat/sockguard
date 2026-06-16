@@ -13,6 +13,7 @@ import (
 
 	"github.com/codeswhat/sockguard/internal/dockerclient"
 	"github.com/codeswhat/sockguard/internal/httpjson"
+	"github.com/codeswhat/sockguard/internal/upstream"
 	"github.com/codeswhat/sockguard/internal/version"
 )
 
@@ -102,6 +103,19 @@ func NewMonitor(upstreamSocket string, startTime time.Time, logger *slog.Logger)
 	)
 }
 
+// NewMonitorWithDialer constructs a liveness monitor that dials the upstream
+// through dialer (typically an *upstream.Resolver), so /health reflects whether
+// the proxy can currently reach an upstream — the active failover endpoint, not
+// a fixed socket. label is used only for log/metric identification.
+func NewMonitorWithDialer(label string, dialer upstream.Dialer, startTime time.Time, logger *slog.Logger) *Monitor {
+	return newMonitorWithChecker(
+		label,
+		startTime,
+		logger,
+		newUpstreamHealthChecker(healthCacheTTL, healthDialTimeout, time.Now, dialer.DialContext),
+	)
+}
+
 func newMonitorWithChecker(upstreamSocket string, startTime time.Time, logger *slog.Logger, checker *upstreamHealthChecker) *Monitor {
 	if logger == nil {
 		logger = slog.Default()
@@ -149,6 +163,10 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 	if c.probe != nil {
 		status, err = c.probe(dialCtx)
 	} else {
+		// For the legacy net.Dialer these (network, address) args select the unix
+		// socket. For the resolver-backed dialer (NewMonitorWithDialer) they are
+		// ignored — the active failover endpoint is chosen by health — and
+		// upstreamSocket here is just the log/metric label.
 		var conn net.Conn
 		conn, err = c.dial(dialCtx, "unix", upstreamSocket)
 		status = "connected"
@@ -345,6 +363,21 @@ func NewReadinessMonitor(upstreamSocket string, startTime time.Time, logger *slo
 		return probeUpstreamAPI(ctx, client)
 	})
 	return newMonitorWithChecker(upstreamSocket, startTime, logger, checker)
+}
+
+// NewReadinessMonitorWithRoundTripper is NewReadinessMonitor over the shared
+// upstream RoundTripper (typically an *upstream.Resolver): the GET
+// /containers/json probe runs against the active failover endpoint. label is
+// used only for log/metric identification.
+func NewReadinessMonitorWithRoundTripper(label string, rt http.RoundTripper, startTime time.Time, logger *slog.Logger, timeout time.Duration) *Monitor {
+	if timeout <= 0 {
+		timeout = healthDialTimeout
+	}
+	client := dockerclient.NewWithRoundTripper(rt)
+	checker := newReadinessChecker(timeout, time.Now, func(ctx context.Context) (string, error) {
+		return probeUpstreamAPI(ctx, client)
+	})
+	return newMonitorWithChecker(label, startTime, logger, checker)
 }
 
 // probeUpstreamAPI issues a minimal GET /containers/json?limit=1 against the

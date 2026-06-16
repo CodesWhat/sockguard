@@ -4,14 +4,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httputil"
-	"time"
 
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/responsefilter"
+	"github.com/codeswhat/sockguard/internal/upstream"
 )
 
 const (
@@ -26,30 +25,28 @@ type Options struct {
 }
 
 // NewWithOptions creates a reverse proxy that forwards requests to the upstream
-// Docker socket and optionally enforces response-side policy.
+// Docker socket and optionally enforces response-side policy. It is the
+// single-local-socket shorthand: callers with a plain socket path get a
+// one-endpoint resolver. The multi-endpoint/remote path uses NewWithTransport.
 func NewWithOptions(upstreamSocket string, logger *slog.Logger, opts Options) *httputil.ReverseProxy {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", upstreamSocket)
-		},
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     90 * time.Second,
-		// Bound the wait for upstream response headers so a Docker daemon that
-		// accepts the connection but never replies cannot pin a goroutine until
-		// context cancellation. Streaming endpoints (logs follow, events, stats)
-		// send headers promptly and then stream the body, so this does not cap
-		// long-lived responses; hijacked attach/exec-start connections bypass
-		// this pooled transport entirely.
-		ResponseHeaderTimeout: 30 * time.Second,
-	}
+	return NewWithTransport(upstream.NewSingleSocket(upstreamSocket), logger, opts)
+}
 
+// NewWithTransport creates a reverse proxy that forwards requests through rt —
+// typically an *upstream.Resolver, which owns endpoint selection, per-endpoint
+// connection pooling (MaxIdleConns 100, IdleConnTimeout 90s, ResponseHeader
+// timeout 30s, matching the historical single-socket transport), client TLS,
+// and automatic failover. Streaming endpoints (logs follow, events, stats) send
+// headers promptly and stream the body, so the header timeout does not cap
+// long-lived responses; hijacked attach/exec-start connections bypass this
+// pooled transport entirely.
+func NewWithTransport(rt http.RoundTripper, logger *slog.Logger, opts Options) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL.Scheme = "http"
 			pr.Out.URL.Host = "docker"
 		},
-		Transport:      transport,
+		Transport:      rt,
 		ModifyResponse: opts.ModifyResponse,
 		FlushInterval:  -1, // immediate flush for streaming endpoints
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
