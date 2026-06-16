@@ -299,7 +299,7 @@ How we stack up against other Docker socket proxies:
 | Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (blocks 7 risky GETs) | ❌ | ✅ (visibility + protected JSON redaction) |
 | Remote TCP mTLS (listener) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (TLS 1.3) |
-| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | Roadmap (v1.3) |
+| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (failover) |
 | Structured access logs | ❌ | ❌ | ✅ (JSON option) | ❌ | ❌ | ✅ (request + trace correlation) |
 | Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
 | Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
@@ -309,7 +309,7 @@ How we stack up against other Docker socket proxies:
 | YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ✅ |
 
-`11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules, but additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Where we go further is body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction. CetusGuard, in turn, can dial a remote Docker daemon over backend TLS today — our upstream is the local socket, with remote TCP upstreams on the v1.3 roadmap.
+`11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules, but additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Where we go further is body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction. CetusGuard can dial a remote Docker daemon over backend TLS, and sockguard now does too — remote `tcp://host:port` endpoints with per-endpoint mTLS, configured under `upstream.endpoints[]`. We go further with health-checked active/passive failover across redundant endpoints (a swarm VIP, an HA pair), which CetusGuard does not have.
 
 </details>
 
@@ -467,6 +467,13 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 | **Observability** | Prometheus `/metrics`, dedicated audit schema, trusted request IDs, deny-reason enums, W3C trace/log correlation, active upstream socket watchdog, lock-free hot path |
 | **Dynamic policy** | `POST /admin/validate` CI gate, `fsnotify` + SIGHUP hot reload with immutable-field gate, monotonic policy versioning, optional dedicated admin listener, cosign-signed policy bundles |
 
+### Shipping in v1.4
+
+| Track | Surface |
+|---|---|
+| **Remote upstreams & failover** | `upstream.endpoints[]` — ordered failover set of Docker daemons (`unix://` or `tcp://host:port`), per-endpoint mTLS (`tls.ca_file`/`cert_file`/`key_file`/`server_name`), per-endpoint insecure opt-ins; active connect-level health probes on configurable `failover.health_interval`/`health_timeout`; request-failure demotes the active endpoint for immediate failover; TLS inside the dialer so the reverse proxy, hijack, and inspect paths are all covered; designed for active/passive redundancy across equivalent daemons (swarm managers, HA pairs) — not cross-daemon fan-out; `DOCKER_HOST`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` auto-detected when no endpoints are set |
+| **SecurityOpt policy rails** | `deny_selinux_disable`, `deny_selinux_label_override`, `deny_unconfined_system_paths` for `containers/create`; `deny_unconfined_seccomp`, `deny_custom_seccomp_profiles`, `deny_unconfined_apparmor` for `services/create/update`; swarm `ContainerSpec.Privileges` confinement parity with container create |
+
 ### Post-1.0 preview
 
 | Tier | Theme |
@@ -475,7 +482,6 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 | Policy refinement (v1.x) | Multiple frontend listeners on the main proxy, named rule path aliases |
 | Internals (v1.x) | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth (generated Viper defaults); profiling-gated JSON redaction fast path |
 | Compliance (v1.x) | CIS Docker Benchmark control mapping, audit-ready policy templates |
-| Multi-host (v1.3) | Remote Docker TCP upstreams, multi-upstream fan-out, remote daemon health checking, connection pooling, automatic failover |
 | Extensibility (v1.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
 
 </details>

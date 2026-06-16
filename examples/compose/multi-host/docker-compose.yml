@@ -1,0 +1,56 @@
+# examples/compose/multi-host/docker-compose.yml
+#
+# Sockguard + remote Docker daemon over TCP+TLS with active/passive failover.
+#
+# Topology:
+#   downstream tool
+#     └─ unix socket (local, filtered)
+#          └─ sockguard
+#               ├─ dockerd-primary:2376  (active)   ← first healthy wins
+#               └─ dockerd-standby:2376 (standby)   ← promoted if primary fails
+#
+# Both endpoints MUST be the same logical Docker daemon or Swarm (e.g. an
+# active/standby HA pair sharing storage). This is ordered failover, not
+# load-balancing: container IDs, exec sessions, and owner labels are all
+# daemon-local. Routing the same client across two different daemons would
+# break them.
+#
+# mTLS is the standard auth mechanism for Docker over TCP. Sockguard mounts
+# the client cert/key and CA read-only; downstream tools see only the local
+# unix socket and never touch the remote endpoint or its TLS material.
+#
+# Bring your own certs: drop ca.pem, cert.pem, and key.pem into ./certs/
+# and replace the service names in sockguard.yaml with real hostnames or IPs.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./certs:/certs:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  # Example downstream consumer: a docker CLI container that uses the
+  # sockguard socket instead of a raw Docker socket.
+  docker-cli:
+    image: docker:cli
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - DOCKER_HOST=unix:///var/run/sockguard/sockguard.sock
+    # Keep the container alive so you can exec in and run docker commands.
+    entrypoint: ["sh", "-c", "echo 'sockguard socket ready'; sleep infinity"]
+
+volumes:
+  sockguard-socket:

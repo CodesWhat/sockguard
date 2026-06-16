@@ -4,9 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -71,8 +74,16 @@ func (e Endpoint) newTransport() *http.Transport {
 type endpointState struct {
 	ep        Endpoint
 	transport *http.Transport
-	healthy   atomic.Bool
-	known     atomic.Bool
+	// mu serializes setHealth's swap-and-notify so a flapping endpoint never
+	// fires OnChange in an order that contradicts the final healthy value.
+	// Routing reads (healthy/known Load) stay lock-free.
+	mu      sync.Mutex
+	healthy atomic.Bool
+	known   atomic.Bool
+	// reprobing gates the asynchronous re-probe demote() launches to at most one
+	// in-flight goroutine per endpoint, so a dead endpoint under heavy traffic
+	// cannot spawn a goroutine/FD storm.
+	reprobing atomic.Bool
 }
 
 // Options configures a Resolver's health loop and observation hooks.
@@ -109,6 +120,10 @@ type Resolver struct {
 	onChange func(ep Endpoint, healthy bool)
 	probe    func(ctx context.Context, ep Endpoint) error
 	started  atomic.Bool
+	// baseCtx is the Start context (nil until Start runs). demote's re-probe
+	// goroutines derive from it so they unwind promptly on shutdown instead of
+	// outliving the resolver by up to one probe timeout.
+	baseCtx atomic.Pointer[context.Context]
 }
 
 // New builds a Resolver over the ordered endpoints. The first endpoint is the
@@ -174,6 +189,34 @@ func (r *Resolver) Endpoints() []Endpoint {
 	return out
 }
 
+// CheckReachable probes every endpoint once, seeding their health state, and
+// returns nil when at least one endpoint answers. When all endpoints fail it
+// returns an aggregated error naming each unreachable endpoint. This lets a
+// multi-endpoint failover set boot as long as one daemon responds, while a
+// fully dark upstream still fails fast at startup.
+func (r *Resolver) CheckReachable(ctx context.Context) error {
+	if len(r.states) == 0 {
+		return ErrNoEndpoints
+	}
+	reachable := false
+	failures := make([]string, 0, len(r.states))
+	for _, s := range r.states {
+		pctx, cancel := context.WithTimeout(ctx, r.timeout)
+		err := r.probe(pctx, s.ep)
+		cancel()
+		r.setHealth(s, err == nil)
+		if err == nil {
+			reachable = true
+			continue
+		}
+		failures = append(failures, fmt.Sprintf("%s: %v", s.ep.String(), err))
+	}
+	if reachable {
+		return nil
+	}
+	return fmt.Errorf("no upstream endpoint reachable: %s", strings.Join(failures, "; "))
+}
+
 // Active returns the endpoint requests currently route to: the first
 // known-healthy endpoint, else the first not-yet-probed endpoint, else the
 // primary as a last resort so a request is still attempted.
@@ -204,14 +247,17 @@ func (r *Resolver) activeState() *endpointState {
 }
 
 // RoundTrip implements http.RoundTripper, routing the request to the active
-// endpoint's pooled transport.
+// endpoint's pooled transport. A request that fails for a request-scoped reason
+// (client disconnect, or the per-request request_timeout deadline firing) does
+// NOT demote the endpoint — those say nothing about upstream reachability, and
+// demoting on them would flap a healthy primary on every long-running request.
 func (r *Resolver) RoundTrip(req *http.Request) (*http.Response, error) {
 	s := r.activeState()
 	if s == nil {
 		return nil, ErrNoEndpoints
 	}
 	resp, err := s.transport.RoundTrip(req)
-	if err != nil {
+	if err != nil && !isRequestScopedError(err) {
 		r.demote(s)
 	}
 	return resp, err
@@ -219,42 +265,69 @@ func (r *Resolver) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // DialContext dials the active endpoint, returning a raw (TLS-wrapped where
 // applicable) net.Conn for the hijack path. The network/address arguments are
-// ignored; the endpoint is chosen by health.
+// ignored; the endpoint is chosen by health. A dial that exceeds the caller's
+// dial deadline DOES demote (a slow/dead endpoint is a reachability signal),
+// but an explicit cancellation (context.Canceled) does not.
 func (r *Resolver) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
 	s := r.activeState()
 	if s == nil {
 		return nil, ErrNoEndpoints
 	}
 	conn, err := s.ep.dial(ctx)
-	if err != nil {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		r.demote(s)
 	}
 	return conn, err
+}
+
+// isRequestScopedError reports whether err originates from the request's own
+// context (client cancellation or the per-request deadline) rather than an
+// upstream-side failure. Such errors must not demote the active endpoint.
+func isRequestScopedError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // demote marks an endpoint unhealthy after a live request/dial failure so the
 // next request routes elsewhere. It is a no-op for a single-endpoint resolver
 // (there is nowhere to fail over to, so flapping the only endpoint's state would
 // just add noise) and triggers an asynchronous re-probe so a transient blip
-// recovers without waiting a full interval.
+// recovers without waiting a full interval. The re-probe is gated to one
+// in-flight goroutine per endpoint (reprobing CAS) so a dead endpoint under
+// heavy traffic cannot spawn a goroutine/FD storm, and it derives from the
+// resolver's Start context so it unwinds on shutdown.
 func (r *Resolver) demote(s *endpointState) {
 	if len(r.states) < 2 {
 		return
 	}
 	r.setHealth(s, false)
+	if !s.reprobing.CompareAndSwap(false, true) {
+		return
+	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), r.timeout)
+		defer s.reprobing.Store(false)
+		ctx, cancel := context.WithTimeout(r.reprobeBaseContext(), r.timeout)
 		defer cancel()
 		r.setHealth(s, r.probe(ctx, s.ep) == nil)
 	}()
 }
 
+// reprobeBaseContext returns the resolver's Start context, or context.Background
+// when Start has not run yet (the demote path can fire on a request that races
+// startup, or in tests that never call Start).
+func (r *Resolver) reprobeBaseContext() context.Context {
+	if p := r.baseCtx.Load(); p != nil {
+		return *p
+	}
+	return context.Background()
+}
+
 // Start launches the background health loop. It is idempotent; the loop exits
-// when ctx is cancelled.
+// when ctx is canceled.
 func (r *Resolver) Start(ctx context.Context) {
 	if !r.started.CompareAndSwap(false, true) {
 		return
 	}
+	r.baseCtx.Store(&ctx)
 	go r.loop(ctx)
 }
 
@@ -288,6 +361,11 @@ func (r *Resolver) probeAll(ctx context.Context) {
 }
 
 func (r *Resolver) setHealth(s *endpointState, healthy bool) {
+	// Serialize the swap-and-notify so concurrent probes (background loop + a
+	// demote re-probe) can't fire onChange in an order that contradicts the
+	// final healthy value. Routing reads stay lock-free on the atomics.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	was := s.healthy.Swap(healthy)
 	first := !s.known.Swap(true)
 	if !first && was == healthy {

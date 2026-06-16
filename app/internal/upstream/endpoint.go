@@ -83,6 +83,13 @@ type EndpointSpec struct {
 	// certificate. Useful for self-signed homelab daemons; dangerous in
 	// production because it defeats authentication of the upstream.
 	InsecureSkipTLSVerify bool
+	// TLSSystemRoots requests verified TLS using the host's system root CA pool
+	// and no client certificate — the server-authentication-only case produced
+	// by DOCKER_TLS_VERIFY with no DOCKER_CERT_PATH. It makes a tcp:// endpoint
+	// valid without any explicit CA/cert/key material (the CA defaults to the
+	// system roots). Not exposed as a YAML knob; it only originates from the
+	// DOCKER_* environment drop-in.
+	TLSSystemRoots bool
 }
 
 // BuildEndpoint parses spec.Address, loads any TLS material, and returns a
@@ -134,7 +141,7 @@ func ValidateSpec(spec EndpointSpec) error {
 		if (spec.CertFile == "") != (spec.KeyFile == "") {
 			return fmt.Errorf("upstream endpoint %q: tls.cert_file and tls.key_file must be set together", spec.Address)
 		}
-		hasAnyTLS := spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" || spec.InsecureSkipTLSVerify
+		hasAnyTLS := spec.CertFile != "" || spec.KeyFile != "" || spec.CAFile != "" || spec.InsecureSkipTLSVerify || spec.TLSSystemRoots
 		if !hasAnyTLS && !spec.InsecureAllowPlainTCP {
 			return fmt.Errorf("upstream endpoint %q: TCP requires TLS (set tls.ca_file/cert_file/key_file) or insecure_allow_plain_tcp: true", spec.Address)
 		}
@@ -196,7 +203,7 @@ func parseAddress(raw string) (network, address string, err error) {
 // returns nil only when plaintext TCP is explicitly acknowledged.
 func buildClientTLS(spec EndpointSpec, address string) (*tls.Config, error) {
 	hasCert := spec.CertFile != "" || spec.KeyFile != ""
-	hasAnyTLS := hasCert || spec.CAFile != "" || spec.InsecureSkipTLSVerify
+	hasAnyTLS := hasCert || spec.CAFile != "" || spec.InsecureSkipTLSVerify || spec.TLSSystemRoots
 
 	if !hasAnyTLS {
 		if spec.InsecureAllowPlainTCP {
@@ -286,15 +293,22 @@ func SpecsFromDockerEnv(getenv func(string) string) (EndpointSpec, bool) {
 		spec.CertFile = filepath.Join(certPath, "cert.pem")
 		spec.KeyFile = filepath.Join(certPath, "key.pem")
 	}
-	if !tlsVerify {
-		// DOCKER_TLS_VERIFY unset/empty means the daemon cert is not verified,
-		// matching docker CLI semantics. With no cert material at all this is a
-		// plaintext connection.
-		if certPath == "" {
-			spec.InsecureAllowPlainTCP = true
-		} else {
-			spec.InsecureSkipTLSVerify = true
-		}
+	switch {
+	case tlsVerify && certPath == "":
+		// DOCKER_TLS_VERIFY with no DOCKER_CERT_PATH: verify the daemon against
+		// the system root CAs and present no client cert (server-auth only).
+		// Without this signal the spec would carry no TLS material and be
+		// rejected as plain TCP, breaking the documented env drop-in.
+		spec.TLSSystemRoots = true
+	case !tlsVerify && certPath == "":
+		// No verification and no cert material → plaintext TCP, matching the
+		// docker CLI when neither TLS env var is set.
+		spec.InsecureAllowPlainTCP = true
+	case !tlsVerify && certPath != "":
+		// Cert material present but verification off → encrypted, unverified.
+		spec.InsecureSkipTLSVerify = true
 	}
+	// tlsVerify && certPath != "" → verified mTLS loaded from the cert files,
+	// no insecure flag needed.
 	return spec, true
 }

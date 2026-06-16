@@ -58,7 +58,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 func printHeader(out io.Writer, p *ui.Printer, cfg *config.Config, compatActive bool) {
 	fmt.Fprintf(out, "  %s  %s\n", p.Dim("Config  "), cfgFile)
 	fmt.Fprintf(out, "  %s  %s\n", p.Dim("Listen  "), listenerAddr(cfg))
-	fmt.Fprintf(out, "  %s  %s\n", p.Dim("Upstream"), cfg.Upstream.Socket)
+	fmt.Fprintf(out, "  %s  %s\n", p.Dim("Upstream"), upstreamDisplayFromConfig(cfg))
 	if compatActive {
 		fmt.Fprintf(out, "  %s  %s\n", p.Dim("Mode    "), "tecnativa compatibility")
 	}

@@ -131,6 +131,13 @@ func Middleware(upstreamSocket string, logger *slog.Logger, opts Options) func(h
 	return middlewareWithDeps(logger, opts, newVisibilityDeps(upstreamSocket))
 }
 
+// MiddlewareWithRoundTripper is Middleware over the shared upstream RoundTripper
+// (typically an *upstream.Resolver) so visibility inspects follow the same
+// active endpoint as the proxied request under failover.
+func MiddlewareWithRoundTripper(rt http.RoundTripper, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {
+	return middlewareWithDeps(logger, opts, newVisibilityDepsClient(dockerclient.NewWithRoundTripper(rt)))
+}
+
 func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) func(http.Handler) http.Handler {
 	defaultPolicy, mergedProfilePolicies, ok := compileVisibilityPolicies(logger, opts)
 	if !ok {
@@ -486,8 +493,12 @@ func imageItemVisibleByPatterns(raw json.RawMessage, policy *compiledPolicy) (bo
 }
 
 func newVisibilityDeps(upstreamSocket string) visibilityDeps {
+	return newVisibilityDepsClient(dockerclient.New(upstreamSocket))
+}
+
+func newVisibilityDepsClient(client *http.Client) visibilityDeps {
 	inspector := upstreamInspector{
-		client: dockerclient.New(upstreamSocket),
+		client: client,
 	}
 	cache := inspectcache.New(
 		inspectcache.DefaultTTL,

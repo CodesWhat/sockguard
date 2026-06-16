@@ -219,6 +219,13 @@ func Middleware(upstreamSocket string, logger *slog.Logger, opts Options) func(h
 	return middlewareWithDeps(logger, opts, newACLResolveClient(upstreamSocket, resolvedLabelPrefix(opts)))
 }
 
+// MiddlewareWithRoundTripper is Middleware over the shared upstream RoundTripper
+// (typically an *upstream.Resolver) so container-label ACL resolution follows
+// the same active endpoint as the proxied request under failover.
+func MiddlewareWithRoundTripper(rt http.RoundTripper, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {
+	return middlewareWithDeps(logger, opts, newACLResolveClientForClient(dockerclient.NewWithRoundTripper(rt), resolvedLabelPrefix(opts)))
+}
+
 // resolvedLabelPrefix replicates the label-prefix resolution from
 // compileOptions so newACLResolveClient can pre-bind a compile hook on the
 // cache without standing up the full compiled options pipeline first.
@@ -374,8 +381,12 @@ func resolveLabelACLRules(client resolvedClient, labelPrefix string) ([]*filter.
 }
 
 func newACLResolveClient(upstreamSocket, labelPrefix string) func(context.Context, netip.Addr) (resolvedClient, bool, error) {
+	return newACLResolveClientForClient(dockerclient.New(upstreamSocket), labelPrefix)
+}
+
+func newACLResolveClientForClient(client *http.Client, labelPrefix string) func(context.Context, netip.Addr) (resolvedClient, bool, error) {
 	resolver := upstreamResolver{
-		client: dockerclient.New(upstreamSocket),
+		client: client,
 	}
 	cache := newClientCache(clientCacheTTL, clientCacheMaxSize, time.Now, resolver.resolveClient)
 	if labelPrefix != "" {

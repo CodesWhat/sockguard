@@ -24,6 +24,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/testhelp"
+	"github.com/codeswhat/sockguard/internal/upstream"
 )
 
 const wantHijackInactivityTimeout = 10 * time.Minute
@@ -2808,22 +2809,19 @@ func TestHijackConstantsArePinned(t *testing.T) {
 	}
 }
 
-// TestNewProxyTransportTunings pins the IdleConnTimeout on the upstream
-// transport and the FlushInterval=-1 on the ReverseProxy. Both are required
-// for correct streaming behavior: a non-streaming FlushInterval would buffer
-// docker events/logs/attach, and a shortened idle timeout would prematurely
-// recycle pooled connections.
+// TestNewProxyTransportTunings pins the FlushInterval=-1 on the ReverseProxy
+// and that the proxy routes through the shared upstream resolver. FlushInterval
+// is required for correct streaming behavior: a non-streaming value would buffer
+// docker events/logs/attach. The connection-pool tunings (IdleConnTimeout, etc.)
+// now live on the resolver's per-endpoint transport and are pinned in
+// internal/upstream's TestEndpoint_NewTransport_PoolTunings.
 func TestNewProxyTransportTunings(t *testing.T) {
 	rp := NewWithOptions("/tmp/does-not-matter.sock", slog.New(slog.NewTextHandler(io.Discard, nil)), Options{})
 
 	if got, want := rp.FlushInterval, time.Duration(-1); got != want {
 		t.Errorf("FlushInterval = %v, want %v (immediate flush for streaming)", got, want)
 	}
-	tr, ok := rp.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("Transport type = %T, want *http.Transport", rp.Transport)
-	}
-	if got, want := tr.IdleConnTimeout, 90*time.Second; got != want {
-		t.Errorf("IdleConnTimeout = %v, want %v", got, want)
+	if _, ok := rp.Transport.(*upstream.Resolver); !ok {
+		t.Fatalf("Transport type = %T, want *upstream.Resolver", rp.Transport)
 	}
 }

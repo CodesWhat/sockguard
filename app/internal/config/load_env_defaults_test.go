@@ -103,6 +103,25 @@ func TestLoadHonorsServiceSeccompAppArmorEnvVars(t *testing.T) {
 	}
 }
 
+func TestLoadHonorsUpstreamFailoverEnvVars(t *testing.T) {
+	// The nested failover timing fields are env-only unless registered in
+	// setLoadDefaults; guard both so a dropped SetDefault can't silently strip
+	// SOCKGUARD_UPSTREAM_FAILOVER_* overrides.
+	t.Setenv("SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_INTERVAL", "7s")
+	t.Setenv("SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_TIMEOUT", "3s")
+
+	cfg, err := Load("/nonexistent-so-defaults-and-env-only.yaml")
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if got := cfg.Upstream.Failover.HealthInterval; got != "7s" {
+		t.Fatalf("upstream.failover.health_interval = %q, want 7s from env", got)
+	}
+	if got := cfg.Upstream.Failover.HealthTimeout; got != "3s" {
+		t.Fatalf("upstream.failover.health_timeout = %q, want 3s from env", got)
+	}
+}
+
 func TestLoadHonorsImageTrustVerifyTimeoutEnvVar(t *testing.T) {
 	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_IMAGE_TRUST_VERIFY_TIMEOUT", "30s")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_SERVICE_IMAGE_TRUST_VERIFY_TIMEOUT", "45s")

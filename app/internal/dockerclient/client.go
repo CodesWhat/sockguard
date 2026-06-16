@@ -1,33 +1,29 @@
 // Package dockerclient provides a shared *http.Client for side-channel calls
-// to the upstream Docker socket (ownership inspection, client ACL resolution,
-// visibility label look-ups). All three callers use the same unix-socket
-// transport configuration so idle connections are reused across requests.
+// to the upstream Docker daemon (ownership inspection, client ACL resolution,
+// visibility label look-ups). All callers route through the same upstream
+// transport so idle connections are reused and — when the upstream is a
+// failover set — so the side channels follow the same active endpoint as the
+// main proxy (a split between the request path and its owner-label inspect
+// would break owner isolation).
 package dockerclient
 
 import (
-	"context"
-	"net"
 	"net/http"
-	"time"
+
+	"github.com/codeswhat/sockguard/internal/upstream"
 )
 
-// New returns an *http.Client that dials the Docker unix socket at path.
-// The transport is tuned to match the main reverse-proxy transport:
-//   - MaxIdleConnsPerHost: 10    — caps idle connections per host bucket
-//   - IdleConnTimeout: 90s       — matches net/http DefaultTransport
-//   - ResponseHeaderTimeout: 30s — bounds the wait for upstream headers so an
-//     unresponsive Docker daemon cannot pin a side-channel goroutine
-//
-// Callers must not mutate the returned client after construction.
+// NewWithRoundTripper returns an *http.Client whose transport is the shared
+// upstream RoundTripper (typically an *upstream.Resolver). Routing, pooling,
+// TLS, and failover all live in that transport. Callers must not mutate the
+// returned client after construction.
+func NewWithRoundTripper(rt http.RoundTripper) *http.Client {
+	return &http.Client{Transport: rt}
+}
+
+// New returns an *http.Client that dials the Docker unix socket at path. It is
+// the single-local-socket shorthand retained for callers and tests that have a
+// plain socket path; it builds a one-endpoint resolver under the hood.
 func New(socketPath string) *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
-			},
-			MaxIdleConnsPerHost:   10,
-			IdleConnTimeout:       90 * time.Second,
-			ResponseHeaderTimeout: 30 * time.Second,
-		},
-	}
+	return NewWithRoundTripper(upstream.NewSingleSocket(socketPath))
 }

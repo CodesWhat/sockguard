@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +17,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
 	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/upstream"
 )
 
 // hijackBufSize is the buffer size for bidirectional copy on hijacked connections.
@@ -112,6 +114,19 @@ func HijackHandler(upstreamSocket string, logger *slog.Logger, next http.Handler
 	})
 }
 
+// HijackHandlerWithDialer is HijackHandler over an upstream.Dialer (typically an
+// *upstream.Resolver), so the hijack path dials the same active endpoint — local
+// socket or remote TCP+TLS — and fails over together with the rest of the proxy.
+func HijackHandlerWithDialer(dialer upstream.Dialer, logger *slog.Logger, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isHijackRequest(w, r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		handleHijackDialer(w, r, dialer, logger)
+	})
+}
+
 // isHijackEndpoint returns true if the request targets a Docker API endpoint
 // that upgrades to a raw TCP stream via 101 Switching Protocols.
 //
@@ -183,6 +198,15 @@ func handleHijack(w http.ResponseWriter, r *http.Request, upstreamSocket string,
 	proxyHijackStreams(session, logger)
 }
 
+func handleHijackDialer(w http.ResponseWriter, r *http.Request, dialer upstream.Dialer, logger *slog.Logger) {
+	session, ok := upgradeHijackConnectionDialer(w, r, dialer, logger)
+	if !ok {
+		return
+	}
+
+	proxyHijackStreams(session, logger)
+}
+
 func upgradeHijackConnection(w http.ResponseWriter, r *http.Request, upstreamSocket string, logger *slog.Logger) (*hijackSession, bool) {
 	reqPath := r.URL.Path
 
@@ -193,6 +217,33 @@ func upgradeHijackConnection(w http.ResponseWriter, r *http.Request, upstreamSoc
 		writeHijackBadGateway(w, logger, reqPath, "upstream Docker socket unreachable")
 		return nil, false
 	}
+
+	return finishHijackUpgrade(w, r, upstreamConn, logger)
+}
+
+// upgradeHijackConnectionDialer is upgradeHijackConnection over an
+// upstream.Dialer: it dials the active endpoint (local or remote TCP+TLS) with
+// the same bounded dial timeout, then shares the post-dial upgrade logic.
+func upgradeHijackConnectionDialer(w http.ResponseWriter, r *http.Request, dialer upstream.Dialer, logger *slog.Logger) (*hijackSession, bool) {
+	reqPath := r.URL.Path
+
+	ctx, cancel := context.WithTimeout(context.Background(), hijackDialTimeout)
+	defer cancel()
+	upstreamConn, err := dialer.DialContext(ctx, "", "")
+	if err != nil {
+		logger.Error("hijack: upstream dial failed", "error", err, "path", reqPath)
+		writeHijackBadGateway(w, logger, reqPath, "upstream Docker socket unreachable")
+		return nil, false
+	}
+
+	return finishHijackUpgrade(w, r, upstreamConn, logger)
+}
+
+// finishHijackUpgrade performs the request write, response read, and 101-upgrade
+// finalization shared by the socket and dialer hijack paths once the upstream
+// connection is established.
+func finishHijackUpgrade(w http.ResponseWriter, r *http.Request, upstreamConn net.Conn, logger *slog.Logger) (*hijackSession, bool) {
+	reqPath := r.URL.Path
 
 	if !writeHijackUpstreamRequest(upstreamConn, w, r, logger) {
 		return nil, false

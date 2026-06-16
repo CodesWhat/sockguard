@@ -105,8 +105,14 @@ func validateUpstream(cfg *Config) []string {
 		}
 	}
 	if d := cfg.Upstream.Failover.HealthInterval; d != "" {
-		if _, err := time.ParseDuration(d); err != nil {
+		// Zero is ambiguous: durationOrZero maps it to the resolver default (5s),
+		// not "disabled", which surprises an operator who writes "0s" meaning off.
+		// Reject it and steer them to a negative value (disable) or omission
+		// (default). Negative parses fine and is intentionally allowed.
+		if parsed, err := time.ParseDuration(d); err != nil {
 			errs = append(errs, fmt.Sprintf("upstream.failover.health_interval must be a Go duration, got %q", d))
+		} else if parsed == 0 {
+			errs = append(errs, "upstream.failover.health_interval must be non-zero: use a negative duration to disable probing, or omit it for the 5s default")
 		}
 	}
 	if d := cfg.Upstream.Failover.HealthTimeout; d != "" {

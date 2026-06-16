@@ -67,10 +67,23 @@ type upstreamInspector struct {
 }
 
 // Middleware applies owner-label mutation and enforcement for a single proxy
-// identity. When Owner is empty, it is a no-op.
+// identity. When Owner is empty, it is a no-op. It is the single-local-socket
+// shorthand; MiddlewareWithRoundTripper takes the shared upstream transport so
+// owner-label inspects follow the same active endpoint as the proxied request.
 func Middleware(upstreamSocket string, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {
+	return middlewareWithClient(dockerclient.New(upstreamSocket), logger, opts)
+}
+
+// MiddlewareWithRoundTripper is Middleware over the shared upstream RoundTripper
+// (typically an *upstream.Resolver), keeping owner-label inspection coherent
+// with the request path under failover.
+func MiddlewareWithRoundTripper(rt http.RoundTripper, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {
+	return middlewareWithClient(dockerclient.NewWithRoundTripper(rt), logger, opts)
+}
+
+func middlewareWithClient(client *http.Client, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {
 	inspector := upstreamInspector{
-		client: dockerclient.New(upstreamSocket),
+		client: client,
 	}
 	cache := inspectcache.New(
 		inspectcache.DefaultTTL,

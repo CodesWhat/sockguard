@@ -668,9 +668,11 @@ func (cfg AdminListenConfig) Configured() bool {
 //
 // When Enabled, sockguard watches the config file via fsnotify and reloads
 // on SIGHUP. A reload that mutates any immutable field — listen.*,
-// upstream.socket, log.*, health.*, metrics.*, admin.* — is rejected; the
-// running config is preserved and the operator must restart sockguard to
-// pick the new values up.
+// upstream.socket, upstream.endpoints, upstream.failover, log.*, health.*,
+// metrics.*, admin.* — is rejected; the running config is preserved and the
+// operator must restart sockguard to pick the new values up. (upstream.endpoints
+// and upstream.failover are pinned because the long-lived Resolver and its
+// health loop are built once at startup; upstream.request_timeout stays mutable.)
 //
 // Debounce collapses bursts of filesystem events (editors commonly emit
 // chmod + write + rename + create per save) into a single reload trigger.
