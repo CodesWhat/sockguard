@@ -110,8 +110,9 @@ pre-push:
 
     # Lockfile hygiene — catches orphaned hoisted packages (e.g. a stale
     # next@15.5.15 left behind after a version bump) before they ship to
-    # CI and get flagged by Snyk. Non-mutating: --dry-run only reports
-    # what `npm dedupe` would change; we fail the push if anything would.
+    # CI and surface as stale dependency-scan findings. Non-mutating:
+    # --dry-run only reports what `npm dedupe` would change; we fail the
+    # push if anything would.
     lockfile-dedupe:
       run: |
         out=$(npm dedupe --dry-run --json 2>&1)

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Consolidated dependency/CVE scanning on Grype + govulncheck; dropped Snyk.** Snyk's GitHub integration scanned the full Go *module requirement graph* (`go mod graph`) instead of the compiled build graph, so it reported dozens of advisories in modules that sigstore/go-containerregistry only *require* but sockguard never links in — none reachable, all false positives for the shipped binary. govulncheck (call-graph reachability) and Grype (container scan over the binary's build-info) already cover Go accurately; the Grype workflow now also scans npm lockfiles, runs on pull requests, and uploads distinct-category SARIF to the GitHub Security tab. Removed the three `.snyk` policy files.
+
 ## [1.4.0-rc.1] - 2026-06-16
 
 ### Added
