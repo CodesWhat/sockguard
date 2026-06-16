@@ -59,7 +59,13 @@ type ListenTLSConfig struct {
 	PublicKeySHA256Pins []string `mapstructure:"public_key_sha256_pins"`
 }
 
-// UpstreamConfig configures the upstream Docker socket.
+// UpstreamConfig configures the upstream Docker daemon(s) sockguard proxies to.
+//
+// The legacy single-daemon shorthand is upstream.socket (a local unix socket).
+// upstream.endpoints adds an ordered list of remote (TCP+TLS) or local daemons
+// for the SAME logical daemon/swarm, health-checked with automatic failover to
+// the first reachable endpoint. When endpoints is empty, socket is used. When
+// endpoints is non-empty, it takes precedence and socket is ignored.
 type UpstreamConfig struct {
 	Socket string `mapstructure:"socket"`
 	// RequestTimeout bounds the total lifetime of a single proxied upstream
@@ -72,6 +78,61 @@ type UpstreamConfig struct {
 	// so the deadline never severs a legitimately long response. Empty (the
 	// default) disables the per-request deadline.
 	RequestTimeout string `mapstructure:"request_timeout"`
+	// Endpoints is an ordered failover set. The first entry is the preferred
+	// primary; later entries are tried when earlier ones fail their health
+	// probe. Every endpoint MUST address the same logical daemon/swarm —
+	// container IDs, exec sessions, and owner labels are daemon-local, so
+	// failover only makes sense across redundant endpoints (a swarm VIP plus
+	// its managers, an HA pair behind keepalived), not distinct daemons.
+	Endpoints []UpstreamEndpoint `mapstructure:"endpoints"`
+	// Failover tunes the active health-probe loop that drives endpoint
+	// selection. Ignored unless endpoints is set.
+	Failover UpstreamFailover `mapstructure:"failover"`
+}
+
+// UpstreamEndpoint is one daemon in an ordered failover set.
+type UpstreamEndpoint struct {
+	// Address is a Docker-style upstream address: a unix socket
+	// ("unix:///var/run/docker.sock" or a bare path) or a remote daemon
+	// ("tcp://host:2376").
+	Address string `mapstructure:"address"`
+	// TLS configures the client certificate, key, and CA used to dial a remote
+	// daemon over TLS. Required for tcp:// endpoints unless an insecure opt-in
+	// below is set. Meaningless for unix sockets.
+	TLS UpstreamTLSConfig `mapstructure:"tls"`
+	// InsecureAllowPlainTCP permits a tcp:// endpoint with no TLS material,
+	// exposing the Docker API in plaintext to anyone on the path. Mirrors the
+	// listener-side insecure_allow_plain_tcp acknowledgement.
+	InsecureAllowPlainTCP bool `mapstructure:"insecure_allow_plain_tcp"`
+	// InsecureSkipTLSVerify disables verification of the remote daemon's server
+	// certificate (self-signed homelab daemons). Dangerous in production: it
+	// defeats authentication of the upstream.
+	InsecureSkipTLSVerify bool `mapstructure:"insecure_skip_tls_verify"`
+}
+
+// UpstreamTLSConfig is the client-side TLS material for dialing a remote daemon.
+type UpstreamTLSConfig struct {
+	// CAFile verifies the remote daemon's server certificate. Empty uses the
+	// system roots.
+	CAFile string `mapstructure:"ca_file"`
+	// CertFile and KeyFile present a client certificate to the daemon (mutual
+	// TLS). Both set together or both empty.
+	CertFile string `mapstructure:"cert_file"`
+	KeyFile  string `mapstructure:"key_file"`
+	// ServerName overrides the SNI / verified hostname. Empty derives it from
+	// the address host.
+	ServerName string `mapstructure:"server_name"`
+}
+
+// UpstreamFailover tunes the endpoint health-probe loop.
+type UpstreamFailover struct {
+	// HealthInterval is the active probe period (Go duration, e.g. "5s"). Empty
+	// uses the resolver default. A negative duration disables continuous
+	// probing (a single startup probe still runs).
+	HealthInterval string `mapstructure:"health_interval"`
+	// HealthTimeout bounds each probe (Go duration, e.g. "2s"). Empty uses the
+	// resolver default.
+	HealthTimeout string `mapstructure:"health_timeout"`
 }
 
 // LogConfig configures logging.
