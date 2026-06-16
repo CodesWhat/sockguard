@@ -227,6 +227,13 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee  # v9.2.1
         with:
+          # Pin the linter so Go Lint is deterministic. Leaving it unpinned lets
+          # the action float to a newer golangci-lint whose staticcheck has
+          # regressed SA5011: it false-positives "possible nil pointer
+          # dereference" on `if x == nil { t.Fatal(...) }` guards (t.Fatal ends
+          # the test via Goexit, so the deref below is unreachable). v2.12.2
+          # matches the local lefthook go-lint version and reports 0 issues.
+          version: v2.12.2
           working-directory: app
 
   go-test:
