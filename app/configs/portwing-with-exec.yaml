@@ -1,10 +1,10 @@
-# Sockguard — Lookout with Exec Preset
+# Sockguard — Portwing with Exec Preset
 #
-# Extends the lookout preset with exec support for interactive terminal access
-# through the lookout agent (e.g. terminal-over-websocket or drydock-driven
-# exec sessions in lookout's edge mode).
+# Extends the portwing preset with exec support for interactive terminal access
+# through the Portwing agent (e.g. terminal-over-websocket or drydock-driven
+# exec sessions in Portwing's edge mode).
 #
-# Allows: everything in lookout.yaml plus:
+# Allows: everything in portwing.yaml plus:
 #         POST /containers/{id}/exec — create an exec instance
 #         POST /exec/{id}/start      — start the exec (raw HTTP/1.1 upgrade)
 #         POST /exec/{id}/resize     — resize the PTY
@@ -12,7 +12,7 @@
 #
 # Exec body inspection: allow_privileged is disabled. allow_root_user is
 # enabled because most container workloads run as root and the caller
-# (lookout or drydock) needs unrestricted exec for interactive sessions.
+# (Portwing or drydock) needs unrestricted exec for interactive sessions.
 # If your deployment enforces non-root containers, set allow_root_user: false
 # and optionally add allowed_commands to pin the permitted argv prefixes.
 #
@@ -26,15 +26,15 @@
 # allow_root_user with an allowed_commands list (see drydock-with-selfupdate.yaml
 # for the pinned-command pattern) and drop insecure_allow_body_blind_writes.
 #
-# Use this preset instead of lookout.yaml when:
-#   - Lookout's terminal/exec feature is in use
-#   - Drydock drives exec calls through the lookout edge mode
-#   - You need exec for container debugging via the lookout UI
+# Use this preset instead of portwing.yaml when:
+#   - Portwing's terminal/exec feature is in use
+#   - Drydock drives exec calls through the Portwing edge mode
+#   - You need exec for container debugging via the Portwing UI
 #
 # Security note: exec grants arbitrary command execution inside any container
-# that lookout can reach. Keep the proxy socket access-controlled (unix peer
-# credentials or client CIDR allowlist) so only the lookout process can call
-# the exec paths. See lookout.yaml for the exec-disabled baseline.
+# that Portwing can reach. Keep the proxy socket access-controlled (unix peer
+# credentials or client CIDR allowlist) so only the Portwing process can call
+# the exec paths. See portwing.yaml for the exec-disabled baseline.
 
 upstream:
   socket: /var/run/docker.sock
@@ -49,7 +49,7 @@ health:
   path: /health
 
 # Response redaction — all three disabled for the drydock passthrough topology.
-# See lookout.yaml header for standalone-mode guidance.
+# See portwing.yaml header for standalone-mode guidance.
 response:
   redact_mount_paths: false
   redact_container_env: false
@@ -61,7 +61,7 @@ response:
 insecure_allow_body_blind_writes: true
 insecure_allow_read_exfiltration: true
 
-# Container-create and image-pull inspection mirrors lookout.yaml.
+# Container-create and image-pull inspection mirrors portwing.yaml.
 # Exec body inspection: allow_privileged denied, root user allowed for
 # interactive sessions. To pin allowed commands, replace allow_root_user
 # with an allowed_commands list (argv prefix allowlist).
@@ -90,9 +90,9 @@ rules:
     action: allow
 
   # Container reads — list, inspect, stats, top, changes, and logs.
-  # /containers/*/logs is required by lookout's GetContainerLogs().
+  # /containers/*/logs is required by Portwing's GetContainerLogs().
   # /containers/*/archive, /containers/*/export, and /containers/*/attach
-  # are intentionally omitted — bulk-data exfiltration paths lookout does not use.
+  # are intentionally omitted — bulk-data exfiltration paths Portwing does not use.
   - match: { method: GET, path: "/containers/json" }
     action: allow
   - match: { method: GET, path: "/containers/*/json" }
@@ -178,4 +178,4 @@ rules:
   # Deny everything else
   - match: { method: "*", path: "/**" }
     action: deny
-    reason: "not allowed by lookout-with-exec preset"
+    reason: "not allowed by portwing-with-exec preset"

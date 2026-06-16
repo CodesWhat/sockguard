@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, lookout, lookout with exec, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
+description: Ready-made sockguard configs for drydock, drydock with self-update, Portwing, Portwing with exec, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -48,11 +48,11 @@ Without this preset (using drydock.yaml), the self-update still completes — th
 old container is renamed, the new one starts — but the finalize callback exec is
 denied and drydock logs the failure. Use this preset to get a clean finalize.
 
-## Lookout (`lookout.yaml`)
+## Portwing (`portwing.yaml`)
 
-Optimized for the [lookout](https://github.com/CodesWhat/lookout) Docker agent.
+Optimized for the [Portwing](https://github.com/CodesWhat/portwing) Docker agent.
 
-**Use for:** lookout in the tri-tool topology (sockguard → lookout → drydock), or
+**Use for:** Portwing in the tri-tool topology (sockguard → Portwing → drydock), or
 any remote Docker agent that needs lifecycle control, image pull, and event streaming.
 
 ```yaml
@@ -62,7 +62,7 @@ any remote Docker agent that needs lifecycle control, image pull, and event stre
 # Allows: network read, volume read, distribution, Swarm service reads
 # Denies: exec, build, swarm writes, secrets, plugins, raw archive/export/attach streams
 # insecure_allow_read_exfiltration=true — required because GET /containers/*/logs is allowed
-# (lookout's GetContainerLogs()); container logs can carry secrets. Drop the logs rule and this
+# (Portwing's GetContainerLogs()); container logs can carry secrets. Drop the logs rule and this
 # flag to harden. /containers/*/archive, /export, /attach stay denied (bulk-exfil paths).
 # Response redactions disabled (redact_mount_paths=false, redact_container_env=false,
 # redact_network_topology=false) — required for drydock passthrough topology so
@@ -70,16 +70,16 @@ any remote Docker agent that needs lifecycle control, image pull, and event stre
 # Standalone operators not paired with drydock can re-enable all three redactions
 ```
 
-## Lookout with Exec (`lookout-with-exec.yaml`)
+## Portwing with Exec (`portwing-with-exec.yaml`)
 
-Extends the lookout preset with exec support for interactive terminal access through
-the lookout agent, e.g. terminal-over-websocket or drydock-driven exec in edge mode.
+Extends the Portwing preset with exec support for interactive terminal access through
+the Portwing agent, e.g. terminal-over-websocket or drydock-driven exec in edge mode.
 
-**Use for:** lookout deployments where exec sessions are needed (interactive terminals,
+**Use for:** Portwing deployments where exec sessions are needed (interactive terminals,
 drydock edge mode exec calls).
 
 ```yaml
-# Extends lookout.yaml with:
+# Extends portwing.yaml with:
 # Allows: POST /containers/{id}/exec, POST /exec/{id}/start,
 #         POST /exec/{id}/resize, GET /exec/{id}/json
 # Exec body inspection: allow_privileged=false, allow_root_user=true
@@ -87,8 +87,8 @@ drydock edge mode exec calls).
 # non-root or command-pinned deployments)
 # insecure_allow_body_blind_writes=true — interactive exec can't be pinned to a fixed argv,
 # so the body-blind-write guard is bypassed; the allow_privileged/allow_root_user layer still
-# applies. insecure_allow_read_exfiltration=true is inherited from lookout.yaml for the
-# GET /containers/*/logs rule (see the Lookout section above).
+# applies. insecure_allow_read_exfiltration=true is inherited from portwing.yaml for the
+# GET /containers/*/logs rule (see the Portwing section above).
 ```
 
 ## Traefik (`traefik.yaml`)
