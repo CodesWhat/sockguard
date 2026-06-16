@@ -89,7 +89,7 @@ func TestServePolicyConfigAddsRuntimeFilterOptions(t *testing.T) {
 	cfg.RequestBody.Exec.AllowRootUser = true
 	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/bin/id"}}
 
-	got := servePolicyConfig(&cfg)
+	got := servePolicyConfig(&cfg, nil)
 
 	if got.DenyResponseVerbosity != filter.DenyResponseVerbosityVerbose {
 		t.Fatalf("DenyResponseVerbosity = %q, want %q", got.DenyResponseVerbosity, filter.DenyResponseVerbosityVerbose)
@@ -1510,7 +1510,10 @@ func TestNewServeRuntimeBuildsEnabledObservability(t *testing.T) {
 	cfg.Health.Watchdog.Enabled = true
 	cfg.Metrics.Enabled = true
 
-	runtime := newServeRuntime(&cfg, newDiscardLogger(), newServeTestDeps())
+	runtime, err := newServeRuntime(&cfg, newDiscardLogger(), newServeTestDeps())
+	if err != nil {
+		t.Fatalf("newServeRuntime: %v", err)
+	}
 	if runtime.metrics == nil {
 		t.Fatal("metrics registry is nil, want enabled registry")
 	}
@@ -1521,7 +1524,10 @@ func TestNewServeRuntimeBuildsEnabledObservability(t *testing.T) {
 	cfg.Health.Enabled = false
 	cfg.Health.Watchdog.Enabled = false
 	cfg.Metrics.Enabled = false
-	runtime = newServeRuntime(&cfg, newDiscardLogger(), newServeTestDeps())
+	runtime, err = newServeRuntime(&cfg, newDiscardLogger(), newServeTestDeps())
+	if err != nil {
+		t.Fatalf("newServeRuntime: %v", err)
+	}
 	if runtime.metrics != nil {
 		t.Fatal("metrics registry is non-nil, want disabled registry")
 	}

@@ -1,0 +1,177 @@
+# Sockguard — Drydock with Self-Update Preset
+#
+# Extends the drydock preset with the exec paths required for drydock's
+# self-update finalize flow. Use this instead of drydock.yaml when drydock
+# is configured to update itself through the sockguard proxy.
+#
+# Self-update exec flow (source: drydock/app/triggers/providers/docker/):
+#   1. drydock creates the replacement container (already covered by drydock.yaml)
+#   2. A short-lived helper container is spawned via POST /containers/create
+#      (helper image, AutoRemove: true, bind-mounts the Docker socket)
+#   3. The helper stops the old container, starts the new one, and waits
+#      for it to become healthy — all via the proxy (covered by lifecycle rules)
+#   4. runFinalizeCallbackInContainer(): POST /containers/{id}/exec creates an
+#      exec instance with Cmd: ['node', 'dist/triggers/providers/docker/
+#      self-update-finalize-entrypoint.js']; POST /exec/{id}/start runs it
+#      (Detach: false, Tty: false); GET /exec/{id}/json confirms the exit code
+#   5. The finalize entrypoint POSTs an HTTP callback to drydock's internal API
+#      (DD_SELF_UPDATE_FINALIZE_URL, typically http://127.0.0.1:3000/…) — that
+#      call leaves the proxy, so no extra sockguard rule is needed
+#
+# Security tradeoff: the exec paths below are pinned to the single finalize
+# command argv via allowed_commands. This prevents any other exec invocation
+# even if drydock or the helper container attempted one. If your drydock build
+# uses a different Node entrypoint path, update allowed_commands to match.
+# The finalize exec runs as whatever user the drydock image declares (typically
+# node/nonroot), so allow_root_user is false here — set it to true only if your
+# drydock image runs as root.
+#
+# Expanded API surface vs. drydock.yaml:
+#   + POST /containers/{id}/exec  — create exec for finalize callback
+#   + POST /exec/{id}/start       — run the finalize entrypoint
+#   + GET  /exec/{id}/json        — inspect exit code after finalize
+#
+# Helper container bind-mounts: the helper always bind-mounts the Docker socket
+# path (the same path drydock itself found, typically /var/run/docker.sock) so
+# it can reach dockerd directly during the stop/start/wait sequence. Add that
+# path to allowed_bind_mounts if sockguard is inspecting the helper's create body.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Drydock's update flow inspects the running container, then submits the
+# inspect payload back to dockerd via POST /containers/create. Redactions must
+# be off so HostConfig.Binds / Config.Env / NetworkSettings pass through
+# intact — same reasoning as drydock.yaml.
+response:
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
+
+# Container-create inspection: the helper container always bind-mounts the
+# Docker socket (e.g. /var/run/docker.sock:/var/run/docker.sock). Add that
+# source path to allowed_bind_mounts so sockguard does not block the helper
+# create. If drydock reaches the daemon via TCP (no local socket bind) the
+# helper uses NetworkMode instead, and no bind-mount allowlist entry is needed.
+# The allowed_commands list pins the finalize exec argv prefix — any exec call
+# whose Cmd does not start with this prefix is denied even if the rule allows
+# POST /containers/*/exec.
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+    allowed_runtimes:
+      - runc
+  exec:
+    allow_privileged: false
+    allow_root_user: false
+    allowed_commands:
+      - ["node", "dist/triggers/providers/docker/self-update-finalize-entrypoint.js"]
+  image_pull:
+    allow_all_registries: true
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads — narrow set drydock needs (list + inspect + stats).
+  # Deliberately omits /containers/*/logs, /archive, /export, /attach to
+  # keep the exfiltration validator happy.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  # Container lifecycle
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/update" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Container creation (for updates and the self-update helper container)
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  # Exec — body-inspected per request_body.exec above. The allowed_commands
+  # list restricts exec to the finalize entrypoint only. POST /exec/*/start
+  # is a raw HTTP/1.1 upgrade (Detach: false, Tty: false for the finalize path).
+  - match: { method: POST, path: "/containers/*/exec" }
+    action: allow
+  - match: { method: POST, path: "/exec/*/start" }
+    action: allow
+  - match: { method: GET, path: "/exec/*/json" }
+    action: allow
+
+  # Image reads — list + inspect + history.
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/**" }
+    action: allow
+
+  # Network read — list + inspect only.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+
+  # Volume read — list + inspect only.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+
+  # Distribution (registry digest checks for image freshness).
+  - match: { method: GET, path: "/distribution/**/json" }
+    action: allow
+
+  # Swarm services — list + inspect.
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by drydock-with-selfupdate preset"

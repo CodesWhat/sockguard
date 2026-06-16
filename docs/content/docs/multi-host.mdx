@@ -1,0 +1,187 @@
+---
+title: Remote Upstreams & Failover
+description: Connect sockguard to a remote Docker daemon over TCP+mTLS, or configure two endpoints for active/passive HA failover with automatic health probing.
+---
+
+By default sockguard reaches Docker through a local unix socket. The `upstream.endpoints` block lifts that constraint: you can point sockguard at a remote daemon over TCP+TLS, or list two endpoints so a healthy standby takes over automatically when the primary goes down.
+
+## When to use this
+
+- **Single remote daemon** — Docker runs on a different host than sockguard (a build host, a CI worker, a remote VM). You want mTLS between them so the daemon API is not exposed as plaintext on the wire.
+- **HA / redundancy** — you have two daemon hosts behind keepalived or a Swarm manager HA pair and want sockguard to stay healthy when one goes down.
+- **`docker -H tcp://…` migration** — you already have `DOCKER_HOST` / `DOCKER_TLS_VERIFY` / `DOCKER_CERT_PATH` set and want zero-config drop-in (see [DOCKER_* environment drop-in](#docker-environment-drop-in) below).
+
+## Single remote daemon (TCP + mTLS)
+
+The simplest remote setup: one endpoint, mutual TLS.
+
+```yaml filename="sockguard.yaml"
+upstream:
+  endpoints:
+    - address: tcp://dockerd.internal:2376
+      tls:
+        ca_file: /certs/ca.pem        # verifies the daemon's server cert
+        cert_file: /certs/cert.pem    # client cert sockguard presents
+        key_file: /certs/key.pem
+```
+
+`ca_file` is the CA that issued the daemon's TLS certificate. `cert_file` / `key_file` are the client keypair the daemon uses to authenticate sockguard. This mirrors the standard Docker mTLS setup (`dockerd --tlsverify`).
+
+When `endpoints` is non-empty, `upstream.socket` is ignored. You cannot mix a local socket fallback with remote endpoints.
+
+### SNI / hostname override
+
+By default the hostname for TLS verification is derived from the `address` host. If your cert uses a different name (e.g. a SAN that doesn't match the IP):
+
+```yaml
+upstream:
+  endpoints:
+    - address: tcp://10.0.1.5:2376
+      tls:
+        ca_file: /certs/ca.pem
+        cert_file: /certs/cert.pem
+        key_file: /certs/key.pem
+        server_name: dockerd.internal   # override SNI and verified hostname
+```
+
+## HA failover with two endpoints
+
+List endpoints in priority order. Sockguard picks the first healthy one and routes all traffic through it. If that endpoint fails a health probe or a request dial, it is demoted and the next healthy endpoint takes over.
+
+```yaml filename="sockguard.yaml"
+upstream:
+  endpoints:
+    - address: tcp://dockerd-a:2376
+      tls:
+        ca_file: /certs/ca.pem
+        cert_file: /certs/cert.pem
+        key_file: /certs/key.pem
+    - address: tcp://dockerd-b:2376
+      tls:
+        ca_file: /certs/ca.pem
+        cert_file: /certs/cert.pem
+        key_file: /certs/key.pem
+  failover:
+    health_interval: "5s"   # probe period; empty = 5s default; negative disables continuous probing
+    health_timeout: "2s"    # per-probe deadline; empty = 2s default
+```
+
+### How failover works
+
+- **Active endpoint** — always the first known-healthy endpoint in list order. `dockerd-a` wins when both are healthy.
+- **Health probe** — sockguard dials each endpoint on the `health_interval` (TCP connect + TLS handshake for TLS endpoints). A probe that times out or is refused marks that endpoint unhealthy.
+- **On dial failure during a request** — the active endpoint is demoted immediately. The in-flight request fails and the client sees an error. The next request routes to the next healthy endpoint.
+- **No automatic retry** — the failing request is not retried. Docker writes are not idempotent, so a silent retry after a connection drop could execute an operation twice. Callers are expected to retry if the operation is safe to repeat.
+- **Recovery** — a demoted endpoint is re-probed on the health interval. Once it passes, it resumes its position in the priority order.
+
+> **Set `health_interval` to a negative value to disable continuous probing.** Sockguard will still detect failures at request time, but will not issue background health probes. Useful when probe traffic to the daemon is undesirable (metered links, audit-heavy environments).
+
+## Same-daemon constraint
+
+<Callout type="warn">
+All endpoints in the list MUST point to the same logical Docker daemon or Swarm cluster. This is active/passive redundancy — not load balancing or fan-out across different daemons.
+
+Container IDs, exec sessions, volume state, and sockguard owner labels are daemon-local. Failing a live session from `dockerd-a` to a genuinely different `dockerd-b` would expose the caller to dangling IDs, missing state, and exec sessions that no longer exist. The proxy has no way to detect or compensate for that split.
+
+Correct use cases: a Swarm manager VIP with two manager IPs behind it, a keepalived HA pair sharing state, two addresses for the same daemon on different interfaces.
+
+Incorrect use case: two independent Docker hosts running different containers. Use separate sockguard instances for that.
+</Callout>
+
+## Insecure opt-ins
+
+Two flags loosen the TLS requirement. Both are explicit acknowledgments of the risk and should only appear in controlled environments.
+
+### Plaintext TCP (no TLS)
+
+```yaml
+upstream:
+  endpoints:
+    - address: tcp://dockerd.internal:2376
+      insecure_allow_plain_tcp: true
+```
+
+`insecure_allow_plain_tcp: true` permits a `tcp://` endpoint with no TLS material at all. The Docker API is sent in plaintext — any host on the path can read or inject requests. Only use this on a private, trusted network with no external exposure. The flag mirrors the same acknowledgment on the listener side (`listen.insecure_allow_plain_tcp`).
+
+### Skip server certificate verification
+
+```yaml
+upstream:
+  endpoints:
+    - address: tcp://dockerd.internal:2376
+      tls:
+        cert_file: /certs/cert.pem
+        key_file: /certs/key.pem
+      insecure_skip_tls_verify: true   # endpoint-level, a sibling of `tls`
+```
+
+`insecure_skip_tls_verify: true` skips verification of the daemon's server certificate. Traffic is still encrypted but the daemon's identity is not verified — a man-in-the-middle can present any certificate. Useful for self-signed homelab certs when you control the network and cannot rotate the cert. It is an endpoint-level field (a sibling of `tls`, `address`, and `insecure_allow_plain_tcp`), not a key inside the `tls` block. Prefer providing the correct `ca_file` instead.
+
+## DOCKER_* environment drop-in
+
+If you have a working `docker -H tcp://…` setup with the standard Docker client env vars, sockguard picks them up automatically when no `endpoints` are configured in YAML:
+
+| Environment variable | Effect |
+|---|---|
+| `DOCKER_HOST=tcp://host:port` | Routes to that TCP address |
+| `DOCKER_TLS_VERIFY=1` | Enables TLS verification |
+| `DOCKER_CERT_PATH=/path` | Loads `ca.pem`, `cert.pem`, `key.pem` from that directory |
+
+Precedence: `upstream.endpoints` (YAML) > `DOCKER_HOST` (env) > `upstream.socket` (YAML/default). The env path only activates when `DOCKER_HOST` names a `tcp://` daemon; a `unix://` (or unset) `DOCKER_HOST` falls through to the local-socket default.
+
+Sockguard follows the same semantics as the Docker CLI, so no YAML acknowledgment is needed for the env drop-in:
+
+- **`DOCKER_TLS_VERIFY` set + `DOCKER_CERT_PATH`** → verified mTLS using `ca.pem` / `cert.pem` / `key.pem` from the cert directory.
+- **`DOCKER_TLS_VERIFY` unset + `DOCKER_CERT_PATH` set** → encrypted, but the daemon's server certificate is *not* verified (equivalent to `insecure_skip_tls_verify`), matching the CLI's behavior when verify is off but certs are present.
+- **`DOCKER_TLS_VERIFY` unset + no `DOCKER_CERT_PATH`** → plaintext TCP (equivalent to `insecure_allow_plain_tcp`). The acknowledgment is implicit because your `docker -H` client already talks to that daemon in plaintext.
+
+This means an existing Docker CLI setup works with zero YAML changes — just point sockguard at the same env vars your client uses. To override any of these, set `upstream.endpoints` in YAML, which takes precedence over the environment.
+
+## Reload immutability
+
+`upstream.endpoints` and `upstream.failover` are **reload-immutable**. Adding, removing, or changing endpoints requires a process restart. `upstream.request_timeout` remains reload-mutable and takes effect on hot reload without a restart.
+
+This matches the behavior of `upstream.socket`, which is also pinned at startup. The upstream transport is bound to long-lived connection pools that cannot be swapped safely from within a running process.
+
+## Unix socket endpoints
+
+You can also reference a unix socket explicitly in the `endpoints` list, which is useful when you want the health probing and failover machinery even for a local socket:
+
+```yaml
+upstream:
+  endpoints:
+    - address: unix:///var/run/docker.sock
+    - address: /var/run/docker-secondary.sock   # bare path treated as unix://
+```
+
+A bare path (starting with `/`) is treated as a `unix://` address. No TLS fields apply to unix endpoints.
+
+## Full schema reference
+
+```yaml
+upstream:
+  socket: /var/run/docker.sock     # legacy; used only when endpoints is empty
+  request_timeout: ""              # Go duration (e.g. "30s"); empty = disabled; reload-mutable
+  endpoints:
+    - address: tcp://dockerd-a:2376
+      tls:
+        ca_file: /certs/ca.pem
+        cert_file: /certs/cert.pem
+        key_file: /certs/key.pem
+        server_name: ""                # SNI override; empty = derived from address host
+      insecure_allow_plain_tcp: false  # permit tcp:// with no TLS (plaintext)
+      insecure_skip_tls_verify: false  # skip daemon server-cert verification
+    - address: tcp://dockerd-b:2376
+      tls: { ca_file: /certs/ca.pem, cert_file: /certs/cert.pem, key_file: /certs/key.pem }
+  failover:
+    health_interval: "5s"    # empty = 5s default; negative = disable continuous probing
+    health_timeout: "2s"     # empty = 2s default
+```
+
+Per-endpoint fields inside `endpoints` cannot be set via environment variable — list types require YAML. The failover timing fields have env-var equivalents:
+
+| Variable | YAML field | Default | Description |
+|---|---|---|---|
+| `SOCKGUARD_UPSTREAM_REQUEST_TIMEOUT` | `upstream.request_timeout` | `""` | Total per-request deadline. Empty disables it. Reload-mutable. |
+| `SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_INTERVAL` | `upstream.failover.health_interval` | `""` (resolver default: 5s) | Background probe interval per endpoint. Empty uses the 5s resolver default; negative disables probing. |
+| `SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_TIMEOUT` | `upstream.failover.health_timeout` | `""` (resolver default: 2s) | Per-probe dial+TLS-handshake timeout. Empty uses the 2s resolver default. |

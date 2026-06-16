@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="sockguard-logo.png" alt="sockguard" width="180">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="sockguard-logo-dark.png">
+  <img src="sockguard-logo.png" alt="sockguard" width="180">
+</picture>
 
 <h1>sockguard</h1>
 
@@ -217,7 +220,7 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 - **v1.2.0 shipped on 2026-06-02** — operational resilience for a wedged daemon. An opt-in **readiness probe** (`health.readiness.*`, default `/ready`) issues a real `GET /containers/json` against the Docker API and returns `503` when the daemon accepts connections but no longer answers — the gap the raw-dial `/health` watchdog misses. An opt-in **`upstream.request_timeout`** bounds finite proxied requests with a total deadline, converting a hung body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`) while exempting streaming and long-lived endpoints. New metrics `sockguard_upstream_api_up` + `sockguard_upstream_readiness_checks_total` mirror the watchdog. The bundled **drydock preset** now allowlists the stock `runc` runtime so drydock recreation stops getting 403'd out of the box. Dependency hygiene: the Go toolchain moves to `1.26.4` (clearing two *reachable* stdlib advisories, GO-2026-5037 / GO-2026-5039), plus the `go-minor` / `npm-minor` / `actions-minor` groups; `govulncheck` reports zero vulnerabilities.
 - **v1.1.0 shipped on 2026-06-01** — image-trust verification wired end to end: registry digest resolution, cosign signature discovery (classic tag + OCI 1.1 referrers), digest-pinned forwarding, keyed (PEM) and keyless (Fulcio + Rekor) both enforced, swarm-service create/update now subject to the same image-trust policy as container create. A 21-finding security audit landed alongside: closed request-inspection bypasses (plugin multipart, BuildKit `# syntax=`, gzip bombs, swarm-service capability/sysctl/image-trust escapes), read-side sub-resource visibility gating, new `allowed_runtimes` allowlist, hardened config/admin paths (signed-bundle TOCTOU, PID-only peer rejection, admin-listener CIDR backstop), response redaction extended to `HostConfig.Mounts[].Source` and service `PreviousSpec`. CodeQL `actions` analysis and supply-chain dependency hygiene (`govulncheck` reports zero vulnerabilities) round out the release.
 - **v1.0.0 shipped on 2026-05-20** with the public proxy contract locked: YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are now under the v1.x compatibility promise.
-- **12 bundled presets** cover drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, and GitLab Runner.
+- **15 bundled presets** cover drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, and drydock with self-update.
 - **Expanded QA hardening** added proxy-vs-daemon differential tests, real-dockerd preset conformance, fuzz corpora for routing and visibility, weekly soak testing, and TLS edge-case coverage.
 - **Supply-chain verification** covers release images across GHCR, Docker Hub, and Quay.io using the same cosign commands documented for operators.
 
@@ -241,7 +244,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 |---|---|---|
 | 🛡️ | **Default-Deny Posture** | Everything blocked unless explicitly allowed. No match means deny. |
 | 🎛️ | **Granular Control** | Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching. |
-| 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 12 bundled workload presets (including CIS Docker Benchmark, self-hosted GitHub Actions runners, and GitLab Runner) plus the default config. |
+| 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 15 bundled workload presets (including CIS Docker Benchmark, self-hosted GitHub Actions runners, GitLab Runner, and Portwing) plus the default config. |
 | 📊 | **Structured Access Logging** | JSON access logs with method, raw path, normalized path, decision, matched rule, latency, canonical request ID, W3C `traceparent` correlation fields, and client info. Use `normalized_path` for SIEM correlation and policy analysis; raw `path` is preserved for forensic replay. Canonical request IDs are generated from a buffered pool so request logging does not block on a fresh entropy read per request. |
 | 🔐 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
 | 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks, client-container label ACLs, listener certificate selectors (CN/DNS/IP/URI SAN/SPKI), profile certificate selectors (CN/DNS/IP/URI/SPIFFE/SPKI), and unix peer credentials let one proxy differentiate callers before the global rule set runs. When mTLS is enabled, certificate selectors follow the verified client leaf certificate rather than an unverified peer slice entry. |
@@ -267,13 +270,13 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 
 <h2 align="center" id="supported-profiles">🔌 Supported Profiles</h2>
 
-### Bundled presets (12)
+### Bundled presets (15)
 
-[drydock](app/configs/drydock.yaml) · [Traefik](app/configs/traefik.yaml) · [Portainer](app/configs/portainer.yaml) · [Watchtower](app/configs/watchtower.yaml) · [Homepage](app/configs/homepage.yaml) · [Homarr](app/configs/homarr.yaml) · [Diun](app/configs/diun.yaml) · [Autoheal](app/configs/autoheal.yaml) · [read-only](app/configs/readonly.yaml) · [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) · [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml) · [GitLab Runner](app/configs/gitlab-runner.yaml)
+[drydock](app/configs/drydock.yaml) · [drydock with self-update](app/configs/drydock-with-selfupdate.yaml) · [Portwing](app/configs/portwing.yaml) · [Portwing with exec](app/configs/portwing-with-exec.yaml) · [Traefik](app/configs/traefik.yaml) · [Portainer](app/configs/portainer.yaml) · [Watchtower](app/configs/watchtower.yaml) · [Homepage](app/configs/homepage.yaml) · [Homarr](app/configs/homarr.yaml) · [Diun](app/configs/diun.yaml) · [Autoheal](app/configs/autoheal.yaml) · [read-only](app/configs/readonly.yaml) · [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) · [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml) · [GitLab Runner](app/configs/gitlab-runner.yaml)
 
 ### Ready-to-run compose examples
 
-[drydock](examples/compose/drydock/) · [Traefik](examples/compose/traefik/) · [Portainer](examples/compose/portainer/) · [Watchtower](examples/compose/watchtower/) · [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/) · [GitLab Runner](examples/compose/gitlab-runner/) · [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/)
+[drydock](examples/compose/drydock/) · [Portwing](examples/compose/portwing/) · [Traefik](examples/compose/traefik/) · [Portainer](examples/compose/portainer/) · [Watchtower](examples/compose/watchtower/) · [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/) · [GitLab Runner](examples/compose/gitlab-runner/) · [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/)
 
 Each example pairs a downstream Docker API consumer with a `sockguard.yaml` overlay and a short README covering audience, exposed API surface, and security tradeoffs.
 
@@ -299,7 +302,7 @@ How we stack up against other Docker socket proxies:
 | Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (blocks 7 risky GETs) | ❌ | ✅ (visibility + protected JSON redaction) |
 | Remote TCP mTLS (listener) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (TLS 1.3) |
-| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | Roadmap (v1.3) |
+| Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (failover) |
 | Structured access logs | ❌ | ❌ | ✅ (JSON option) | ❌ | ❌ | ✅ (request + trace correlation) |
 | Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
 | Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
@@ -309,7 +312,7 @@ How we stack up against other Docker socket proxies:
 | YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ✅ |
 
-`11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules, but additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Where we go further is body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction. CetusGuard, in turn, can dial a remote Docker daemon over backend TLS today — our upstream is the local socket, with remote TCP upstreams on the v1.3 roadmap.
+`11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules, but additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Where we go further is body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction. CetusGuard can dial a remote Docker daemon over backend TLS, and sockguard now does too — remote `tcp://host:port` endpoints with per-endpoint mTLS, configured under `upstream.endpoints[]`. We go further with health-checked active/passive failover across redundant endpoints (a swarm VIP, an HA pair), which CetusGuard does not have.
 
 </details>
 
@@ -467,15 +470,21 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 | **Observability** | Prometheus `/metrics`, dedicated audit schema, trusted request IDs, deny-reason enums, W3C trace/log correlation, active upstream socket watchdog, lock-free hot path |
 | **Dynamic policy** | `POST /admin/validate` CI gate, `fsnotify` + SIGHUP hot reload with immutable-field gate, monotonic policy versioning, optional dedicated admin listener, cosign-signed policy bundles |
 
+### Shipping in v1.4
+
+| Track | Surface |
+|---|---|
+| **Remote upstreams & failover** | `upstream.endpoints[]` — ordered failover set of Docker daemons (`unix://` or `tcp://host:port`), per-endpoint mTLS (`tls.ca_file`/`cert_file`/`key_file`/`server_name`), per-endpoint insecure opt-ins; active connect-level health probes on configurable `failover.health_interval`/`health_timeout`; request-failure demotes the active endpoint for immediate failover; TLS inside the dialer so the reverse proxy, hijack, and inspect paths are all covered; designed for active/passive redundancy across equivalent daemons (swarm managers, HA pairs) — not cross-daemon fan-out; `DOCKER_HOST`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` auto-detected when no endpoints are set |
+| **SecurityOpt policy rails** | `deny_selinux_disable`, `deny_selinux_label_override`, `deny_unconfined_system_paths` for `containers/create`; `deny_unconfined_seccomp`, `deny_custom_seccomp_profiles`, `deny_unconfined_apparmor` for `services/create/update`; swarm `ContainerSpec.Privileges` confinement parity with container create |
+
 ### Post-1.0 preview
 
 | Tier | Theme |
 |---|---|
-| Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators; swarm `ContainerSpec` seccomp/AppArmor mode enforcement parity (the `Privileges.NoNewPrivileges`, `User`, `ReadOnly`, and `CapabilityDrop` rails already mirror container-create); `HostConfig.SecurityOpt` `label=`/`systempaths=` policy evaluation (currently passed through) |
+| Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators (swarm `ContainerSpec` confinement parity and `SecurityOpt` `label=`/`systempaths=` evaluation shipped in v1.4) |
 | Policy refinement (v1.x) | Multiple frontend listeners on the main proxy, named rule path aliases |
-| Internals (v1.x) | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth (generated Viper defaults); allocation-free rate-limit bucket state (packed `atomic.Uint64`); profiling-gated JSON redaction fast path; clear per-profile in-flight gauges when a hot reload removes the profile |
+| Internals (v1.x) | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth (generated Viper defaults); profiling-gated JSON redaction fast path |
 | Compliance (v1.x) | CIS Docker Benchmark control mapping, audit-ready policy templates |
-| Multi-host (v1.3) | Remote Docker TCP upstreams, multi-upstream fan-out, remote daemon health checking, connection pooling, automatic failover |
 | Extensibility (v1.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
 
 </details>
@@ -517,26 +526,26 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 
 <div align="center">
 
-[![SemVer](https://img.shields.io/badge/semver-2.0.0-blue)](https://semver.org/)
-[![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=fff)](https://www.conventionalcommits.org/)
-[![Keep a Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-E05735)](https://keepachangelog.com/)
-
 ### Built With
 
 [![Go 1.26](https://img.shields.io/badge/Go_1.26-00ADD8?logo=go&logoColor=fff)](https://go.dev/)
-[![Cobra](https://img.shields.io/badge/Cobra-00ADD8?logo=go&logoColor=fff)](https://github.com/spf13/cobra)
-[![Viper](https://img.shields.io/badge/Viper-00ADD8?logo=go&logoColor=fff)](https://github.com/spf13/viper)
-[![fsnotify](https://img.shields.io/badge/fsnotify-00ADD8?logo=go&logoColor=fff)](https://github.com/fsnotify/fsnotify)
-[![Sigstore](https://img.shields.io/badge/Sigstore-FFC107?logo=sigstore&logoColor=000)](https://www.sigstore.dev/)
+[![Sigstore](https://img.shields.io/badge/Sigstore-FFC107?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxZW0iIGhlaWdodD0iMWVtIiB2aWV3Qm94PSIwIDAgMjQgMjQiPjxwYXRoIGZpbGw9IiMwMDAwMDAiIGQ9Im0xMCAxN2wtNC00bDEuNDEtMS40MUwxMCAxNC4xN2w2LjU5LTYuNTlMMTggOW0tNi04TDMgNXY2YzAgNS41NSAzLjg0IDEwLjc0IDkgMTJjNS4xNi0xLjI2IDktNi40NSA5LTEyVjV6Ii8%2BPC9zdmc%2B)](https://www.sigstore.dev/)
 [![Wolfi](https://img.shields.io/badge/Wolfi-4A4A55?logo=chainguard&logoColor=fff)](https://edu.chainguard.dev/open-source/wolfi/overview/)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=fff)](https://www.docker.com/)
-[![GoReleaser](https://img.shields.io/badge/GoReleaser-00ADD8?logo=go&logoColor=fff)](https://goreleaser.com/)
+[![GoReleaser](https://img.shields.io/badge/GoReleaser-317FE0?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgZmlsbD0iI2ZmZmZmZiIgY2xhc3M9ImJpIGJpLXJvY2tldC10YWtlb2ZmLWZpbGwiIHZpZXdCb3g9IjAgMCAxNiAxNiI%2BCiAgPHBhdGggZD0iTTEyLjE3IDkuNTNjMi4zMDctMi41OTIgMy4yNzgtNC42ODQgMy42NDEtNi4yMTguMjEtLjg4Ny4yMTQtMS41OC4xNi0yLjA2NWEzLjYgMy42IDAgMCAwLS4xMDgtLjU2MyAyIDIgMCAwIDAtLjA3OC0uMjNWLjQ1M2MtLjA3My0uMTY0LS4xNjgtLjIzNC0uMzUyLS4yOTVhMiAyIDAgMCAwLS4xNi0uMDQ1IDQgNCAwIDAgMC0uNTctLjA5M2MtLjQ5LS4wNDQtMS4xOS0uMDMtMi4wOC4xODgtMS41MzYuMzc0LTMuNjE4IDEuMzQzLTYuMTYxIDMuNjA0bC0yLjQuMjM4aC0uMDA2YTIuNTUgMi41NSAwIDAgMC0xLjUyNC43MzRMLjE1IDcuMTdhLjUxMi41MTIgMCAwIDAgLjQzMy44NjhsMS44OTYtLjI3MWMuMjgtLjA0LjU5Mi4wMTMuOTU1LjEzMi4yMzIuMDc2LjQzNy4xNi42NTUuMjQ4bC4yMDMuMDgzYy4xOTYuODE2LjY2IDEuNTggMS4yNzUgMi4xOTUuNjEzLjYxNCAxLjM3NiAxLjA4IDIuMTkxIDEuMjc3bC4wODIuMjAyYy4wODkuMjE4LjE3My40MjQuMjQ5LjY1Ny4xMTguMzYzLjE3Mi42NzYuMTMyLjk1NmwtLjI3MSAxLjlhLjUxMi41MTIgMCAwIDAgLjg2Ny40MzNsMi4zODItMi4zODZjLjQxLS40MS42NjgtLjk0OS43MzItMS41MjZ6bS4xMS0zLjY5OWMtLjc5Ny44LTEuOTMuOTYxLTIuNTI4LjM2Mi0uNTk4LS42LS40MzYtMS43MzMuMzYxLTIuNTMyLjc5OC0uNzk5IDEuOTMtLjk2IDIuNTI4LS4zNjFzLjQzNyAxLjczMi0uMzYgMi41MzFaIi8%2BCiAgPHBhdGggZD0iTTUuMjA1IDEwLjc4N2E3LjYgNy42IDAgMCAwIDEuODA0IDEuMzUyYy0xLjExOCAxLjAwNy00LjkyOSAyLjAyOC01LjA1NCAxLjkwMy0uMTI2LS4xMjcuNzM3LTQuMTg5IDEuODM5LTUuMTguMzQ2LjY5LjgzNyAxLjM1IDEuNDExIDEuOTI1Ii8%2BCjwvc3ZnPg%3D%3D)](https://goreleaser.com/)
 <br>
 [![Next.js](https://img.shields.io/badge/Next.js-000000?logo=nextdotjs&logoColor=fff)](https://nextjs.org/)
 [![Fumadocs](https://img.shields.io/badge/Fumadocs-000000?logo=nextdotjs&logoColor=fff)](https://fumadocs.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-06B6D4?logo=tailwindcss&logoColor=fff)](https://tailwindcss.com/)
 [![Turborepo](https://img.shields.io/badge/Turborepo-EF4444?logo=turborepo&logoColor=fff)](https://turbo.build/repo)
 [![Biome](https://img.shields.io/badge/Biome_2-60a5fa?logo=biome&logoColor=fff)](https://biomejs.dev/)
+
+[![Anthropic](https://img.shields.io/badge/Anthropic-000000?logo=anthropic&logoColor=fff)](https://www.anthropic.com)
+[![OpenAI](https://img.shields.io/badge/OpenAI-000000?logo=data%3Aimage%2Fsvg%2Bxml%3Bbase64%2CPHN2ZyByb2xlPSJpbWciIHZpZXdCb3g9IjAgMCAyNCAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48dGl0bGU%2BT3BlbkFJPC90aXRsZT48cGF0aCBmaWxsPSIjZmZmZmZmIiBkPSJNMjIuMjgxOSA5LjgyMTFhNS45ODQ3IDUuOTg0NyAwIDAgMC0uNTE1Ny00LjkxMDggNi4wNDYyIDYuMDQ2MiAwIDAgMC02LjUwOTgtMi45QTYuMDY1MSA2LjA2NTEgMCAwIDAgNC45ODA3IDQuMTgxOGE1Ljk4NDcgNS45ODQ3IDAgMCAwLTMuOTk3NyAyLjkgNi4wNDYyIDYuMDQ2MiAwIDAgMCAuNzQyNyA3LjA5NjYgNS45OCA1Ljk4IDAgMCAwIC41MTEgNC45MTA3IDYuMDUxIDYuMDUxIDAgMCAwIDYuNTE0NiAyLjkwMDFBNS45ODQ3IDUuOTg0NyAwIDAgMCAxMy4yNTk5IDI0YTYuMDU1NyA2LjA1NTcgMCAwIDAgNS43NzE4LTQuMjA1OCA1Ljk4OTQgNS45ODk0IDAgMCAwIDMuOTk3Ny0yLjkwMDEgNi4wNTU3IDYuMDU1NyAwIDAgMC0uNzQ3NS03LjA3Mjl6bS05LjAyMiAxMi42MDgxYTQuNDc1NSA0LjQ3NTUgMCAwIDEtMi44NzY0LTEuMDQwOGwuMTQxOS0uMDgwNCA0Ljc3ODMtMi43NTgyYS43OTQ4Ljc5NDggMCAwIDAgLjM5MjctLjY4MTN2LTYuNzM2OWwyLjAyIDEuMTY4NmEuMDcxLjA3MSAwIDAgMSAuMDM4LjA1MnY1LjU4MjZhNC41MDQgNC41MDQgMCAwIDEtNC40OTQ1IDQuNDk0NHptLTkuNjYwNy00LjEyNTRhNC40NzA4IDQuNDcwOCAwIDAgMS0uNTM0Ni0zLjAxMzdsLjE0Mi4wODUyIDQuNzgzIDIuNzU4MmEuNzcxMi43NzEyIDAgMCAwIC43ODA2IDBsNS44NDI4LTMuMzY4NXYyLjMzMjRhLjA4MDQuMDgwNCAwIDAgMS0uMDMzMi4wNjE1TDkuNzQgMTkuOTUwMmE0LjQ5OTIgNC40OTkyIDAgMCAxLTYuMTQwOC0xLjY0NjR6TTIuMzQwOCA3Ljg5NTZhNC40ODUgNC40ODUgMCAwIDEgMi4zNjU1LTEuOTcyOFYxMS42YS43NjY0Ljc2NjQgMCAwIDAgLjM4NzkuNjc2NWw1LjgxNDQgMy4zNTQzLTIuMDIwMSAxLjE2ODVhLjA3NTcuMDc1NyAwIDAgMS0uMDcxIDBsLTQuODMwMy0yLjc4NjVBNC41MDQgNC41MDQgMCAwIDEgMi4zNDA4IDcuODcyem0xNi41OTYzIDMuODU1OEwxMy4xMDM4IDguMzY0IDE1LjExOTIgNy4yYS4wNzU3LjA3NTcgMCAwIDEgLjA3MSAwbDQuODMwMyAyLjc5MTNhNC40OTQ0IDQuNDk0NCAwIDAgMS0uNjc2NSA4LjEwNDJ2LTUuNjc3MmEuNzkuNzkgMCAwIDAtLjQwNy0uNjY3em0yLjAxMDctMy4wMjMxbC0uMTQyLS4wODUyLTQuNzczNS0yLjc4MThhLjc3NTkuNzc1OSAwIDAgMC0uNzg1NCAwTDkuNDA5IDkuMjI5N1Y2Ljg5NzRhLjA2NjIuMDY2MiAwIDAgMSAuMDI4NC0uMDYxNWw0LjgzMDMtMi43ODY2YTQuNDk5MiA0LjQ5OTIgMCAwIDEgNi42ODAyIDQuNjZ6TTguMzA2NSAxMi44NjNsLTIuMDItMS4xNjM4YS4wODA0LjA4MDQgMCAwIDEtLjAzOC0uMDU2N1Y2LjA3NDJhNC40OTkyIDQuNDk5MiAwIDAgMSA3LjM3NTctMy40NTM3bC0uMTQyLjA4MDVMOC43MDQgNS40NTlhLjc5NDguNzk0OCAwIDAgMC0uMzkyNy42ODEzem0xLjA5NzYtMi4zNjU0bDIuNjAyLTEuNDk5OCAyLjYwNjkgMS40OTk4djIuOTk5NGwtMi41OTc0IDEuNDk5Ny0yLjYwNjctMS40OTk3WiIvPjwvc3ZnPg%3D%3D)](https://openai.com)
+
+[![SemVer](https://img.shields.io/badge/semver-2.0.0-blue)](https://semver.org/)
+[![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196?logo=conventionalcommits&logoColor=fff)](https://www.conventionalcommits.org/)
+[![Keep a Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-E05735)](https://keepachangelog.com/)
 
 ### Community & Support
 
@@ -546,9 +555,20 @@ For local fuzz triage, run `scripts/local-fuzz.sh --suite ci --fuzztime 2m`. Use
 
 Every release image is cosign-signed via GitHub Actions OIDC. Before running a sockguard image in production, verify it with the canonical invocation in the [image verification guide](https://getsockguard.com/docs/verification).
 
+### Part of the CodesWhat ecosystem
+
+<table>
+  <tr><th>Tool</th><th>Role</th></tr>
+  <tr><td><a href="https://github.com/CodesWhat/drydock"><b>drydock</b></a></td><td>Container update monitoring — web UI and notification engine</td></tr>
+  <tr><td><a href="https://github.com/CodesWhat/lookout"><b>lookout</b></a></td><td>Remote Docker agent — secure socket-level access from Drydock or standalone</td></tr>
+  <tr><td><b>sockguard</b></td><td>Docker socket proxy — default-deny allowlist filter protecting the socket</td></tr>
+</table>
+
+These three tools are designed to layer: sockguard filters the socket, lookout exposes it remotely, and drydock monitors and acts on container state.
+
 **[Apache-2.0 License](LICENSE)**
 
-Built by <a href="https://codeswhat.com">CodesWhat</a>
+<a href="https://github.com/CodesWhat"><img src="docs/assets/codeswhat-logo-original.svg" alt="CodesWhat" height="28"></a>
 
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-ff5e5b?logo=kofi&logoColor=white)](https://ko-fi.com/codeswhat)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/codeswhat)

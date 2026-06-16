@@ -6,6 +6,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRenderContainsRuntimeInfo(t *testing.T) {
@@ -77,20 +78,16 @@ func TestCenterArtPreservesTrailingNewline(t *testing.T) {
 	}
 }
 
-// centerArtBlock wraps centerArt with a controlled artMaxWidth so the
-// tests don't depend on the real banner art's exact dimensions.
+// centerArtBlock wraps centerArt with a width measured from the test input so
+// the tests don't depend on the real banner art's exact dimensions.
 func centerArtBlock(in string, cols int) string {
-	// Save-restore the package-level max width so the test stays
-	// isolated from the real banner.
-	old := artMaxWidth
-	artMaxWidth = 0
+	width := 0
 	for _, line := range strings.Split(strings.TrimRight(in, "\n"), "\n") {
-		if len(line) > artMaxWidth {
-			artMaxWidth = len(line)
+		if w := utf8.RuneCountInString(line); w > width {
+			width = w
 		}
 	}
-	defer func() { artMaxWidth = old }()
-	return centerArt(in, cols)
+	return centerArt(in, cols, width)
 }
 
 func TestTerminalColsNonFileWriterReturnsZero(t *testing.T) {

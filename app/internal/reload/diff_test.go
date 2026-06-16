@@ -39,6 +39,43 @@ func TestImmutableDiffDetectsUpstreamSocketChange(t *testing.T) {
 	}
 }
 
+func TestImmutableDiffDetectsUpstreamEndpointsChange(t *testing.T) {
+	t.Parallel()
+	a := config.Defaults()
+	b := a
+	// Assign a fresh slice rather than appending so a's (shared) backing array
+	// is not mutated by the test.
+	b.Upstream.Endpoints = []config.UpstreamEndpoint{{Address: "tcp://dockerd:2376", InsecureAllowPlainTCP: true}}
+	got := ImmutableDiff(&a, &b)
+	if !equalUnordered(got, []string{"upstream.endpoints"}) {
+		t.Fatalf("ImmutableDiff(endpoints change) = %v, want [upstream.endpoints]", got)
+	}
+}
+
+func TestImmutableDiffDetectsUpstreamFailoverChange(t *testing.T) {
+	t.Parallel()
+	a := config.Defaults()
+	b := a
+	b.Upstream.Failover.HealthInterval = "10s"
+	got := ImmutableDiff(&a, &b)
+	if !equalUnordered(got, []string{"upstream.failover"}) {
+		t.Fatalf("ImmutableDiff(failover change) = %v, want [upstream.failover]", got)
+	}
+}
+
+func TestImmutableDiffUpstreamRequestTimeoutIsMutable(t *testing.T) {
+	t.Parallel()
+	a := config.Defaults()
+	b := a
+	// request_timeout is intentionally NOT immutable — a reload that changes only
+	// it must produce an empty diff so the new deadline takes effect live.
+	b.Upstream.RequestTimeout = "30s"
+	got := ImmutableDiff(&a, &b)
+	if len(got) != 0 {
+		t.Fatalf("ImmutableDiff(request_timeout change) = %v, want empty (mutable field)", got)
+	}
+}
+
 func TestImmutableDiffDetectsLogChange(t *testing.T) {
 	t.Parallel()
 	a := config.Defaults()

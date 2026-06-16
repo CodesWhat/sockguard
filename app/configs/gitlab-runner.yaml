@@ -64,6 +64,15 @@ health:
   enabled: true
   path: /health
 
+# Exec without pinned AllowedCommands requires insecure_allow_body_blind_writes;
+# log/attach streaming requires insecure_allow_read_exfiltration. Both flags
+# acknowledge deliberate trade-offs: the runner must be able to execute arbitrary
+# job steps (not a fixed command list) and stream job output via the logs and
+# attach APIs. Restrict the proxy socket to the runner process UID/IP via
+# clients.unix_peer_profiles or clients.allowed_cidrs to keep the risk bounded.
+insecure_allow_body_blind_writes: true
+insecure_allow_read_exfiltration: true
+
 # Response redactions: ON by default. The runner does not re-submit inspect
 # payloads verbatim the way Watchtower/Drydock do, so redacting host paths,
 # env vars, and network topology from read responses is safe and reduces the

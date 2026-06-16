@@ -11,6 +11,7 @@ import {
   Network,
   RefreshCw,
   ScanSearch,
+  Server,
   Shield,
   ShieldCheck,
   SlidersHorizontal,
@@ -110,7 +111,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Declarative rules in YAML. Glob patterns for paths, first-match-wins evaluation, and 12 bundled workload presets (drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner) plus the default config.",
+      "Declarative rules in YAML. Glob patterns for paths, first-match-wins evaluation, and 15 bundled workload presets (drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, Drydock with self-update) plus the default config.",
     category: "control",
   },
   {
@@ -191,6 +192,15 @@ export const features: Feature[] = [
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
       "fsnotify file watch and SIGHUP reload with immutable-field gating — listener, upstream socket, and trust-material fields require a restart. `POST /admin/validate` dry-runs a candidate config without touching the running policy. `GET /admin/policy/version` returns the generation counter, config SHA-256, and verified bundle signer. Optionally binds the admin API to a dedicated listener so admin traffic never traverses the Docker-API filter chain.",
+    category: "operations",
+  },
+  {
+    icon: Server,
+    title: "Remote Upstreams & Failover",
+    color: "text-emerald-500 dark:text-emerald-400",
+    bg: "bg-emerald-100 dark:bg-emerald-900/50",
+    description:
+      "Dial a remote Docker daemon over TCP with mutual TLS instead of the local socket. Configure an ordered set of redundant endpoints for the same daemon or swarm node with active health checks and automatic failover.",
     category: "operations",
   },
 ];

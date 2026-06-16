@@ -28,7 +28,10 @@ import (
 const parallelClientCount = 1000
 
 func BenchmarkLimiterAllowNParallel(b *testing.B) {
-	l := newLimiterWithClock(1e9, 1e9, time.Now) // effectively unlimited tokens
+	// 65535 is the packed-design ceiling (MaxPackedBurst): values above it
+	// truncate in the 16.16 fixed-point encoding and corrupt token counts, so
+	// "effectively unlimited" sentinels like 1e9 are no longer valid here.
+	l := newLimiterWithClock(65535, 65535, time.Now)
 	defer l.Stop()
 
 	// Pre-warm all buckets so we're not measuring cold-path allocation.
@@ -57,7 +60,11 @@ func BenchmarkLimiterAllowNParallel(b *testing.B) {
 // ---------------------------------------------------------------------------
 
 func BenchmarkLimiterAllowNHot(b *testing.B) {
-	l := newLimiterWithClock(1e9, 1e9, time.Now) // effectively unlimited tokens
+	// 65535 = MaxPackedBurst; larger sentinels truncate in the packed encoding.
+	// At ~tens of ns per call the bucket drains quickly, so most iterations
+	// measure the deny branch — which is also the allocation-free path this
+	// benchmark guards.
+	l := newLimiterWithClock(65535, 65535, time.Now)
 	defer l.Stop()
 
 	// Warm the bucket.
@@ -93,7 +100,7 @@ func TestLimiterStop_MidFlightRace(t *testing.T) {
 	// Snapshot goroutine count before we start so we can measure the delta.
 	goroutinesBefore := runtime.NumGoroutine()
 
-	l := newLimiterWithClock(1e6, 1e6, time.Now)
+	l := newLimiterWithClock(65535, 65535, time.Now)
 
 	// Spawn workers that hammer AllowN with rotating client IDs.
 	var (
@@ -143,4 +150,45 @@ func TestLimiterStop_MidFlightRace(t *testing.T) {
 		t.Errorf("possible goroutine leak after Limiter.Stop(): before=%d, after=%d (delta=%d, want ≤5)",
 			goroutinesBefore, current, current-goroutinesBefore)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Packed-path micro-benchmarks
+//
+// These benchmarks target the packed atomic.Uint64 token bucket path.
+// Run with -benchmem to verify allocs/op = 0.
+//
+//	go test -bench=BenchmarkBucket_AllowNPacked -benchmem ./internal/ratelimit/
+//
+// ---------------------------------------------------------------------------
+
+// BenchmarkBucket_AllowNPacked hammers the packed bucket with a real clock.
+// At ~tens of ns per call the initial 65535 tokens drain within the first
+// ~65k iterations and refills add only ~65 tokens per elapsed millisecond, so
+// the overwhelming majority of iterations (>99%) measure the DENY branch;
+// elapsedMS > 0 is observed on well under 1% of calls. That is acceptable for
+// this benchmark's purpose — proving both branches of the packed design are
+// allocation-free — but the ns/op figure is dominated by denials, not admits.
+func BenchmarkBucket_AllowNPacked(b *testing.B) {
+	bkt := newBucket(65535, 65535, time.Now)
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		bkt.AllowN(1) //nolint:errcheck
+	}
+}
+
+// BenchmarkBucket_AllowNPackedParallel exercises the CAS retry loop under
+// concurrent access. As with the serial variant, the bucket spends most of
+// the run drained, so this predominantly measures contended CAS on the deny
+// branch. Verify allocs/op = 0 with -benchmem.
+func BenchmarkBucket_AllowNPackedParallel(b *testing.B) {
+	bkt := newBucket(65535, 65535, time.Now)
+	b.ResetTimer()
+	b.ReportAllocs()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			bkt.AllowN(1) //nolint:errcheck
+		}
+	})
 }

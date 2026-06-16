@@ -51,20 +51,22 @@
 Go to **Actions → Release: Cut** → **Run workflow** on `main`. The workflow:
 
 - Polls until `ci-verify.yml` has a successful run on HEAD
-- Computes the next semver from conventional-commit history
-- Validates the CHANGELOG entry is non-empty for the computed tag
-- Creates and pushes a signed annotated tag using the repo bot identity
+- Computes the next **stable** semver from conventional-commit history — **or**, if you supply the optional `release_tag` input (e.g. `v1.4.0-rc.1`), cuts that exact tag instead. This is how prereleases / rc's are cut: the auto-computer only emits stable versions.
+- Validates the CHANGELOG entry is non-empty for the tag
+- Creates and pushes an annotated tag using the repo bot identity
 
 This automatically triggers `release-from-tag.yml`.
 
-**Manual path** (if you need to override the computed version):
+> Tags are **not** GPG-signed — the bot pushes a plain annotated tag (`git tag -a`). Release provenance comes from cosign keyless signing of the image plus SLSA attestation in `release-from-tag.yml`, not from a git-tag signature.
+
+**Manual path** (fallback if you can't use the workflow):
 
 ```
-git tag -s v<version> -m "v<version>"
+git tag -a v<version> -m "v<version>"
 git push origin v<version>
 ```
 
-Signed tags require your GPG key. The `release-from-tag.yml` workflow fires on any `v*` tag push.
+Swap `-a` for `-s` if you want to GPG-sign locally, but signing is optional and not enforced anywhere. The `release-from-tag.yml` workflow fires on any `v*` tag push and gates the release on a green `ci-verify` run for the tag SHA.
 
 ---
 

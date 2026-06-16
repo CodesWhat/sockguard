@@ -1820,3 +1820,55 @@ func TestValidateEndpointCosts(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateLimitsConfig_PackedBurstLimit verifies the upper bound on burst
+// introduced by the packed 16.16 token field. The integer part of the field is
+// 16 bits, so burst (and therefore tokens_per_second, since burst >= tps) must
+// not exceed 65535.
+func TestValidateLimitsConfig_PackedBurstLimit(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        LimitsConfig
+		wantSubstr string // empty = want no error
+	}{
+		{
+			name: "burst at packed field limit is valid",
+			cfg:  LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 65535, Burst: 65535}},
+		},
+		{
+			name:       "burst one above packed field limit is rejected",
+			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 65535, Burst: 65536}},
+			wantSubstr: "must not exceed 65535",
+		},
+		{
+			name: "burst zero (defaults to tps) at limit is valid",
+			cfg:  LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 65535, Burst: 0}},
+		},
+		{
+			name:       "burst zero (defaults to tps) above limit is rejected",
+			cfg:        LimitsConfig{Rate: &RateLimitConfig{TokensPerSecond: 65536, Burst: 0}},
+			wantSubstr: "must not exceed 65535",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			errs := validateLimitsConfig("clients.profiles[0].limits", tt.cfg)
+			if tt.wantSubstr == "" {
+				if len(errs) != 0 {
+					t.Fatalf("expected no errors, got: %v", errs)
+				}
+				return
+			}
+			found := false
+			for _, e := range errs {
+				if strings.Contains(e, tt.wantSubstr) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected error containing %q, got: %v", tt.wantSubstr, errs)
+			}
+		})
+	}
+}

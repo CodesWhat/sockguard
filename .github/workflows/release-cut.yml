@@ -3,6 +3,12 @@ run-name: "🏷️ Release: Cut — manual by ${{ github.actor }}"
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Explicit tag to cut, e.g. v1.4.0-rc.1 (supports prereleases the auto-computer cannot emit). Leave blank to auto-compute the next stable version from commit history. Must have a non-empty CHANGELOG entry and must not already exist."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   actions: read
@@ -85,12 +91,27 @@ jobs:
           CURRENT_VERSION: ${{ steps.base.outputs.current_version }}
           LATEST_TAG: ${{ steps.base.outputs.latest_tag }}
           TARGET_SHA: ${{ steps.target.outputs.sha }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
 
-          if [ "${BUMP}" = "auto" ] && [ "${LATEST_TAG}" = "v0.0.0" ]; then
+          if [ -n "${RELEASE_TAG_INPUT}" ]; then
+            # Operator-supplied tag (the drydock-style explicit path). Supports
+            # prereleases like v1.4.0-rc.1 that the auto-computer cannot emit.
+            release_tag="${RELEASE_TAG_INPUT}"
+            if ! printf '%s' "${release_tag}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+              echo "::error::Invalid release_tag '${release_tag}'. Expected vMAJOR.MINOR.PATCH[-prerelease]."
+              exit 1
+            fi
+            next_version="${release_tag#v}"
+            case "${next_version}" in
+              *-*) release_level="prerelease" ;;
+              *) release_level="explicit" ;;
+            esac
+          elif [ "${BUMP}" = "auto" ] && [ "${LATEST_TAG}" = "v0.0.0" ]; then
             release_level="patch"
             next_version="0.0.1"
+            release_tag="v${next_version}"
           else
             mapfile -t vars < <(node scripts/release-next-version.mjs \
               --current "${CURRENT_VERSION}" \
@@ -106,9 +127,9 @@ jobs:
                 next_version) next_version="${value}" ;;
               esac
             done
+            release_tag="v${next_version}"
           fi
 
-          release_tag="v${next_version}"
           if git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null; then
             echo "::error::Tag already exists: ${release_tag}"
             exit 1

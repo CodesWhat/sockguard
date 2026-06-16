@@ -467,6 +467,272 @@ func TestServiceInspectHardeningRailsComposeOnUpdate(t *testing.T) {
 	}
 }
 
+func TestServiceInspectDenyUnconfinedSeccomp(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       ServiceOptions
+		body       string
+		wantDenied bool
+		wantSubstr string
+	}{
+		{
+			name:       "unconfined seccomp denied when knob enabled",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedSeccomp: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"unconfined"}}}}}`,
+			wantDenied: true,
+			wantSubstr: "unconfined seccomp mode is not allowed",
+		},
+		{
+			name:       "unconfined seccomp case-insensitive (UNCONFINED)",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedSeccomp: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"UNCONFINED"}}}}}`,
+			wantDenied: true,
+			wantSubstr: "unconfined seccomp mode is not allowed",
+		},
+		{
+			name:       "unconfined seccomp allowed when knob disabled",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedSeccomp: false},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"unconfined"}}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "default seccomp always allowed",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedSeccomp: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"default"}}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "nil Seccomp block always allowed",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedSeccomp: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"NoNewPrivileges":true}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "nil Privileges block always allowed",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedSeccomp: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "custom seccomp NOT denied by deny_unconfined_seccomp alone",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedSeccomp: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"custom"}}}}}`,
+			wantDenied: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := newServicePolicy(tc.opts)
+			req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(tc.body))
+			reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if tc.wantDenied {
+				if reason == "" {
+					t.Fatalf("reason = empty, want denial containing %q", tc.wantSubstr)
+				}
+				if !strings.Contains(reason, tc.wantSubstr) {
+					t.Fatalf("reason = %q, want substring %q", reason, tc.wantSubstr)
+				}
+			} else {
+				if reason != "" {
+					t.Fatalf("reason = %q, want empty (allowed)", reason)
+				}
+			}
+		})
+	}
+}
+
+func TestServiceInspectDenyCustomSeccompProfiles(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       ServiceOptions
+		body       string
+		wantDenied bool
+		wantSubstr string
+	}{
+		{
+			name:       "custom seccomp denied when deny_custom_seccomp_profiles enabled",
+			opts:       ServiceOptions{AllowOfficial: true, DenyCustomSeccompProfiles: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"custom"}}}}}`,
+			wantDenied: true,
+			wantSubstr: "custom seccomp profiles are not allowed",
+		},
+		{
+			name:       "custom seccomp case-insensitive (CUSTOM)",
+			opts:       ServiceOptions{AllowOfficial: true, DenyCustomSeccompProfiles: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"CUSTOM"}}}}}`,
+			wantDenied: true,
+			wantSubstr: "custom seccomp profiles are not allowed",
+		},
+		{
+			name:       "custom seccomp allowed when knob disabled",
+			opts:       ServiceOptions{AllowOfficial: true, DenyCustomSeccompProfiles: false},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"custom"}}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "unconfined not affected by deny_custom_seccomp_profiles alone",
+			opts:       ServiceOptions{AllowOfficial: true, DenyCustomSeccompProfiles: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"unconfined"}}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "both knobs together deny both unconfined and custom",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedSeccomp: true, DenyCustomSeccompProfiles: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"custom"}}}}}`,
+			wantDenied: true,
+			wantSubstr: "custom seccomp profiles are not allowed",
+		},
+		{
+			name:       "profile without mode treated as implicit custom (fail-closed)",
+			opts:       ServiceOptions{AllowOfficial: true, DenyCustomSeccompProfiles: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Profile":"e30K"}}}}}`,
+			wantDenied: true,
+			wantSubstr: "custom seccomp profiles are not allowed",
+		},
+		{
+			name:       "nil seccomp with empty mode and nil profile allowed",
+			opts:       ServiceOptions{AllowOfficial: true, DenyCustomSeccompProfiles: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{}}}}}`,
+			wantDenied: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := newServicePolicy(tc.opts)
+			req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(tc.body))
+			reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if tc.wantDenied {
+				if reason == "" {
+					t.Fatalf("reason = empty, want denial containing %q", tc.wantSubstr)
+				}
+				if !strings.Contains(reason, tc.wantSubstr) {
+					t.Fatalf("reason = %q, want substring %q", reason, tc.wantSubstr)
+				}
+			} else {
+				if reason != "" {
+					t.Fatalf("reason = %q, want empty (allowed)", reason)
+				}
+			}
+		})
+	}
+}
+
+func TestServiceInspectDenyUnconfinedAppArmor(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       ServiceOptions
+		body       string
+		wantDenied bool
+		wantSubstr string
+	}{
+		{
+			name:       "disabled apparmor denied when knob enabled",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedAppArmor: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"AppArmor":{"Mode":"disabled"}}}}}`,
+			wantDenied: true,
+			wantSubstr: "disabled apparmor mode is not allowed",
+		},
+		{
+			name:       "disabled apparmor case-insensitive (DISABLED)",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedAppArmor: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"AppArmor":{"Mode":"DISABLED"}}}}}`,
+			wantDenied: true,
+			wantSubstr: "disabled apparmor mode is not allowed",
+		},
+		{
+			name:       "disabled apparmor allowed when knob off",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedAppArmor: false},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"AppArmor":{"Mode":"disabled"}}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "default apparmor always allowed",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedAppArmor: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"AppArmor":{"Mode":"default"}}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "nil AppArmor block always allowed",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedAppArmor: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"NoNewPrivileges":true}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "nil Privileges block always allowed with apparmor knob enabled",
+			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedAppArmor: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}}}`,
+			wantDenied: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := newServicePolicy(tc.opts)
+			req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(tc.body))
+			reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if tc.wantDenied {
+				if reason == "" {
+					t.Fatalf("reason = empty, want denial containing %q", tc.wantSubstr)
+				}
+				if !strings.Contains(reason, tc.wantSubstr) {
+					t.Fatalf("reason = %q, want substring %q", reason, tc.wantSubstr)
+				}
+			} else {
+				if reason != "" {
+					t.Fatalf("reason = %q, want empty (allowed)", reason)
+				}
+			}
+		})
+	}
+}
+
+func TestServiceInspectSeccompAndAppArmorRailsCompose(t *testing.T) {
+	// All new rails satisfied together must allow.
+	policy := newServicePolicy(ServiceOptions{
+		AllowOfficial:             true,
+		DenyUnconfinedSeccomp:     true,
+		DenyCustomSeccompProfiles: true,
+		DenyUnconfinedAppArmor:    true,
+	})
+	body := `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"default"},"AppArmor":{"Mode":"default"}}}}}`
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(body))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want allow (all confinement rails satisfied)", reason)
+	}
+}
+
+func TestServiceInspectSeccompDenialOnUpdatePath(t *testing.T) {
+	// Seccomp/AppArmor denial must also fire on the /services/{id}/update path,
+	// confirming isServiceWritePath routes update requests to policy inspection.
+	policy := newServicePolicy(ServiceOptions{
+		AllowOfficial:         true,
+		DenyUnconfinedSeccomp: true,
+	})
+	body := `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"unconfined"}}}}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1.53/services/web/update?version=7", strings.NewReader(body))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if !strings.Contains(reason, "unconfined seccomp mode is not allowed") {
+		t.Fatalf("reason = %q, want unconfined seccomp denial on update path", reason)
+	}
+}
+
 func TestServiceInspectImageTrustDeniesUnverified(t *testing.T) {
 	// A swarm service whose ContainerSpec.Image fails cosign verification is
 	// denied in enforce mode — services must not bypass image trust.

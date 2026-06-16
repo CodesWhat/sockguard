@@ -117,7 +117,7 @@ func TestBuildServeClientProfiles_Error(t *testing.T) {
 		},
 	}
 
-	_, err := buildServeClientProfiles(&cfg)
+	_, err := buildServeClientProfiles(&cfg, nil)
 	if err == nil {
 		t.Fatal("expected buildServeClientProfiles() to fail")
 	}

@@ -109,6 +109,22 @@ type ContainerCreateOptions struct {
 	// Default false: any non-empty Sysctls map is denied.
 	AllowSysctls bool
 
+	// DenySelinuxDisable prevents label=disable (and label:disable) which
+	// turns off SELinux confinement for the container. Default false
+	// (pass-through) for backward-compatibility.
+	DenySelinuxDisable bool
+
+	// DenySelinuxLabelOverride denies label=user:, label=role:, label=type:,
+	// label=level: SecurityOpt entries that customize the SELinux context.
+	// Default false (pass-through). Independent of DenySelinuxDisable.
+	DenySelinuxLabelOverride bool
+
+	// DenyUnconfinedSystemPaths prevents systempaths=unconfined in SecurityOpt
+	// AND rejects requests that set MaskedPaths or ReadonlyPaths to an empty
+	// slice (the direct-API equivalent of systempaths=unconfined). Default false
+	// for backward-compatibility.
+	DenyUnconfinedSystemPaths bool
+
 	// ImageTrust configures cosign-backed signature verification.
 	ImageTrust ImageTrustOptions
 }
@@ -143,6 +159,10 @@ type containerCreatePolicy struct {
 	requiredLabels             []string
 	allowSysctls               bool
 	allowedRuntimes            []string
+
+	denySelinuxDisable        bool
+	denySelinuxLabelOverride  bool
+	denyUnconfinedSystemPaths bool
 
 	// Image trust — non-nil when mode != off.
 	imageTrustVerifier imageVerifier
@@ -227,6 +247,9 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		requiredLabels:             normalizeStringList(opts.RequiredLabels),
 		allowSysctls:               opts.AllowSysctls,
 		allowedRuntimes:            normalizeStringList(opts.AllowedRuntimes),
+		denySelinuxDisable:         opts.DenySelinuxDisable,
+		denySelinuxLabelOverride:   opts.DenySelinuxLabelOverride,
+		denyUnconfinedSystemPaths:  opts.DenyUnconfinedSystemPaths,
 	}
 
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so
@@ -444,6 +467,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return denyReason, nil
 	}
 	if denyReason := p.denySecurityOptReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denySystemPathsReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denyCapabilityReason(createReq.HostConfig); denyReason != "" {
@@ -939,6 +965,25 @@ func (p containerCreatePolicy) denySecurityOptReason(hostConfig containerCreateH
 			} else if p.denyUnconfinedAppArmor && strings.EqualFold(value, "unconfined") {
 				return "container create denied: unconfined apparmor profile is not allowed"
 			}
+		case "label":
+			labelValue := strings.ToLower(strings.TrimSpace(value))
+			if labelValue == "disable" {
+				if p.denySelinuxDisable {
+					return "container create denied: label=disable (SELinux disable) is not allowed"
+				}
+				// Otherwise pass through — existing behavior.
+			} else {
+				// Any other label= entry (user:, role:, type:, level:) is a
+				// SELinux context override.
+				if p.denySelinuxLabelOverride {
+					return fmt.Sprintf("container create denied: selinux label override %q is not allowed (set deny_selinux_label_override: false to permit)", value)
+				}
+			}
+		case "systempaths":
+			sysValue := strings.ToLower(strings.TrimSpace(value))
+			if sysValue == "unconfined" && p.denyUnconfinedSystemPaths {
+				return "container create denied: systempaths=unconfined is not allowed"
+			}
 		}
 	}
 
@@ -953,6 +998,26 @@ func (p containerCreatePolicy) denySecurityOptReason(hostConfig containerCreateH
 			!slices.Contains(p.allowedAppArmorProfiles, "runtime/default") {
 			return "container create denied: an apparmor profile is required (set HostConfig.SecurityOpt to include apparmor=<profile>)"
 		}
+	}
+	return ""
+}
+
+// denySystemPathsReason rejects requests that set MaskedPaths or ReadonlyPaths
+// to an explicit empty slice. The Docker CLI translates
+// --security-opt systempaths=unconfined into HostConfig.MaskedPaths=[] and
+// HostConfig.ReadonlyPaths=[] client-side (using the =unconfined form only).
+// Direct API clients can achieve the same effect without the SecurityOpt string.
+// A non-nil empty slice means the default masked/readonly path sets are being
+// deliberately cleared; nil means the field was absent and daemon defaults apply.
+func (p containerCreatePolicy) denySystemPathsReason(hostConfig containerCreateHostConfig) string {
+	if !p.denyUnconfinedSystemPaths {
+		return ""
+	}
+	if hostConfig.MaskedPaths != nil && len(*hostConfig.MaskedPaths) == 0 {
+		return "container create denied: clearing MaskedPaths (systempaths=unconfined equivalent) is not allowed"
+	}
+	if hostConfig.ReadonlyPaths != nil && len(*hostConfig.ReadonlyPaths) == 0 {
+		return "container create denied: clearing ReadonlyPaths (systempaths=unconfined equivalent) is not allowed"
 	}
 	return ""
 }

@@ -4,6 +4,7 @@
     "index",
     "getting-started",
     "configuration",
+    "multi-host",
     "presets",
     "cis-docker-benchmark",
     "observability",

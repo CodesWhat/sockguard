@@ -1,0 +1,44 @@
+# examples/compose/portwing/docker-compose.yml
+#
+# Sockguard + Portwing — unix-socket mode, portwing preset.
+# Sockguard writes a filtered unix socket into a shared named volume;
+# Portwing reads that socket rather than mounting /var/run/docker.sock.
+#
+# Portwing needs: container list/inspect/stats, lifecycle (start/stop/
+# restart/kill/rename/update/create/remove), image pull/inspect/remove,
+# /events, narrow network/volume/distribution reads, and Swarm service reads.
+# The portwing preset covers all of these. Log streaming (GET /containers/*/logs)
+# is allowed because Portwing's GetContainerLogs() API needs it, and
+# insecure_allow_read_exfiltration: true acknowledges that tradeoff; exec, build,
+# secrets, and raw archive/export/attach streams stay denied.
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  portwing:
+    image: codeswhat/portwing:latest
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    ports:
+      - "4000:4000"
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+    environment:
+      - DOCKER_SOCKET=/var/run/sockguard/sockguard.sock
+
+volumes:
+  sockguard-socket:

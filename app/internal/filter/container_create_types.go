@@ -66,6 +66,14 @@ type containerCreateHostConfig struct {
 	GroupAdd          []string                `json:"GroupAdd"`
 	ExtraHosts        []string                `json:"ExtraHosts"`
 	Runtime           string                  `json:"Runtime"`
+	// MaskedPaths overrides the default set of paths that Docker masks inside
+	// the container. An empty slice signals systempaths=unconfined intent
+	// delivered via the direct API path (the Docker CLI converts
+	// --security-opt systempaths=unconfined to MaskedPaths=[] client-side).
+	// The pointer distinguishes "not set" (nil) from "explicitly set to empty"
+	// (non-nil, zero length).
+	MaskedPaths   *[]string `json:"MaskedPaths"`
+	ReadonlyPaths *[]string `json:"ReadonlyPaths"`
 }
 
 type containerCreateMount struct {

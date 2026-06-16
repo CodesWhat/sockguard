@@ -5,7 +5,7 @@ import { comparisonRows } from "./data/comparison-rows.ts";
 import { features } from "./data/features.ts";
 
 test("website features live in extracted data modules", () => {
-  assert.equal(features.length, 18);
+  assert.equal(features.length, 19);
   assert.deepEqual(
     features.map((feature) => feature.title),
     [
@@ -27,6 +27,7 @@ test("website features live in extracted data modules", () => {
       "Rate Limits & Concurrency Caps",
       "Per-Profile Rollout Modes",
       "Hot-Reload + Admin API",
+      "Remote Upstreams & Failover",
     ],
   );
   assert.deepEqual(

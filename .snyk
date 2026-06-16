@@ -1,6 +1,21 @@
 # Snyk (https://snyk.io) policy file
 version: v1.25.0
-ignore: {}
+ignore:
+  # next pins postcss 8.4.31 exactly, but npm overrides (root and
+  # workspace package.json) force ^8.5.15 — the installed tree and
+  # package-lock.json contain no postcss below 8.5.15. Snyk's PR check
+  # resolves workspace manifests standalone without applying npm
+  # overrides, so it reports a version that is never installed. Mirror
+  # copies of this policy live in docs/.snyk and website/.snyk because
+  # manifest-only projects read policy from the manifest's directory.
+  SNYK-JS-POSTCSS-16189065:
+    - '*':
+        reason: >-
+          Not installed: npm overrides pin postcss to ^8.5.15; the
+          lockfile has no 8.4.31. Snyk manifest-only resolution does
+          not apply npm overrides.
+        expires: 2026-09-15T00:00:00.000Z
+        created: 2026-06-11T00:00:00.000Z
 patch: {}
 
 # Snyk Code findings cannot be ignored via the `ignore:` section above —

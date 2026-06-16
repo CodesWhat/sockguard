@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
+description: Ready-made sockguard configs for drydock, drydock with self-update, Portwing, Portwing with exec, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -25,6 +25,70 @@ Optimized for the [drydock](https://github.com/CodesWhat/drydock) container upda
 # the stock "runc" runtime is allowlisted (request_body.container_create.allowed_runtimes)
 # because drydock recreates containers from their inspect spec, which usually carries an
 # explicit HostConfig.Runtime — without it every update would 403 at /containers/create
+```
+
+## Drydock with Self-Update (`drydock-with-selfupdate.yaml`)
+
+Extends the drydock preset with the exec paths required for drydock's self-update
+finalize flow. The finalize step runs a short-lived `docker exec` inside the new
+container to POST a completion callback to drydock's internal API.
+
+**Use for:** drydock deployments where the sockguard proxy is in the self-update
+path and you need the finalize callback to complete cleanly.
+
+```yaml
+# Extends drydock.yaml with:
+# Allows: POST /containers/{id}/exec, POST /exec/{id}/start, GET /exec/{id}/json
+# Exec body inspection: allow_privileged=false, allow_root_user=false
+# allowed_commands pins exec to the single finalize entrypoint argv
+# If your drydock image runs as root, set allow_root_user: true
+```
+
+Without this preset (using drydock.yaml), the self-update still completes — the
+old container is renamed, the new one starts — but the finalize callback exec is
+denied and drydock logs the failure. Use this preset to get a clean finalize.
+
+## Portwing (`portwing.yaml`)
+
+Optimized for the [Portwing](https://github.com/CodesWhat/portwing) Docker agent.
+
+**Use for:** Portwing in the tri-tool topology (sockguard → Portwing → drydock), or
+any remote Docker agent that needs lifecycle control, image pull, and event streaming.
+
+```yaml
+# Allows: container read (list, inspect, stats, top, changes, logs)
+# Allows: container lifecycle (start, stop, restart, kill, rename, update, wait, create, remove)
+# Allows: image read, pull, remove
+# Allows: network read, volume read, distribution, Swarm service reads
+# Denies: exec, build, swarm writes, secrets, plugins, raw archive/export/attach streams
+# insecure_allow_read_exfiltration=true — required because GET /containers/*/logs is allowed
+# (Portwing's GetContainerLogs()); container logs can carry secrets. Drop the logs rule and this
+# flag to harden. /containers/*/archive, /export, /attach stay denied (bulk-exfil paths).
+# Response redactions disabled (redact_mount_paths=false, redact_container_env=false,
+# redact_network_topology=false) — required for drydock passthrough topology so
+# inspect data forwarded to drydock is not corrupted by "<redacted>" placeholders
+# Standalone operators not paired with drydock can re-enable all three redactions
+```
+
+## Portwing with Exec (`portwing-with-exec.yaml`)
+
+Extends the Portwing preset with exec support for interactive terminal access through
+the Portwing agent, e.g. terminal-over-websocket or drydock-driven exec in edge mode.
+
+**Use for:** Portwing deployments where exec sessions are needed (interactive terminals,
+drydock edge mode exec calls).
+
+```yaml
+# Extends portwing.yaml with:
+# Allows: POST /containers/{id}/exec, POST /exec/{id}/start,
+#         POST /exec/{id}/resize, GET /exec/{id}/json
+# Exec body inspection: allow_privileged=false, allow_root_user=true
+# (most container workloads run as root; set false + use allowed_commands for
+# non-root or command-pinned deployments)
+# insecure_allow_body_blind_writes=true — interactive exec can't be pinned to a fixed argv,
+# so the body-blind-write guard is bypassed; the allow_privileged/allow_root_user layer still
+# applies. insecure_allow_read_exfiltration=true is inherited from portwing.yaml for the
+# GET /containers/*/logs rule (see the Portwing section above).
 ```
 
 ## Traefik (`traefik.yaml`)
@@ -119,10 +183,15 @@ socket access to spawn `jobs.*.container` + `jobs.*.services` containers.
 workflows (i.e. anything from a fork PR or a low-trust org member).
 
 ```yaml
-# Allows: container lifecycle, exec, attach, image pull, per-job networks,
-#         named volumes for cache
-# Denies: privileged containers, host namespace sharing, bind mounts,
-#         capability additions, build, swarm, secrets, plugins, raw export
+# Allows: container lifecycle, exec, attach, log streaming (GET /containers/*/logs),
+#         image pull, per-job networks, named volumes for cache
+# Denies: privileged containers, privileged exec, host namespace sharing, bind mounts,
+#         capability additions, build, swarm, secrets, plugins,
+#         raw tarball export (/containers/*/export, /images/*/get)
+# insecure_allow_body_blind_writes=true — exec argv is not command-pinned (workflow steps are
+# arbitrary); only privileged exec is denied. insecure_allow_read_exfiltration=true — the runner
+# streams job output via the logs and attach APIs. Gate the proxy socket to the runner process
+# via clients.unix_peer_profiles or clients.allowed_cidrs to bound both.
 ```
 
 The preset enforces what a workflow can *do* once admitted. Pair it
@@ -139,11 +208,15 @@ to inject job steps.
 **Use for:** GitLab Runner deployments handling untrusted CI jobs.
 
 ```yaml
-# Allows: container lifecycle, exec, attach, image pull, per-job networks,
-#         named volumes
-# Denies: privileged containers (even if config.toml asks for them),
+# Allows: container lifecycle, exec, attach, log streaming (GET /containers/*/logs),
+#         image pull, per-job networks, named volumes
+# Denies: privileged containers (even if config.toml asks for them), privileged exec,
 #         host namespace sharing, bind mounts, build, swarm, secrets,
-#         plugins, raw export
+#         plugins, raw tarball export (/containers/*/export, /images/*/get)
+# insecure_allow_body_blind_writes=true — exec argv is not command-pinned; the runner injects
+# arbitrary job-step commands. insecure_allow_read_exfiltration=true — job trace output streams
+# via the logs and attach APIs. Gate the proxy socket to the runner via clients.unix_peer_profiles
+# or clients.allowed_cidrs to bound both.
 ```
 
 Notable: the preset **deliberately rejects privileged containers** even

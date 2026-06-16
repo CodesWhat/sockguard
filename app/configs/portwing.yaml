@@ -1,0 +1,180 @@
+# Sockguard — Portwing Preset
+#
+# Optimized for the Portwing Docker agent (https://github.com/CodesWhat/portwing).
+# Allows: container list/inspect/stats/top/changes/logs, lifecycle (start/stop/
+#         restart/kill/rename/update/wait/create/remove), image pull/inspect/
+#         remove, /events, narrow network/volume/distribution reads, Swarm
+#         service reads.
+# Denies: exec, build, secrets, plugins, raw archive/export/attach streams.
+#
+# Log streaming: Portwing's GetContainerLogs() calls GET /containers/{id}/logs
+# (including follow=1 for live streaming). This path is classified as a
+# read-exfiltration endpoint by sockguard's startup validator because logs can
+# contain secrets. insecure_allow_read_exfiltration: true below acknowledges
+# that tradeoff. The /containers/*/archive, /containers/*/export, and
+# /containers/*/attach paths are intentionally not allowed — those are the
+# bulk-data exfil vectors. Operators who want to suppress log access should
+# remove the /containers/*/logs rule and the insecure_allow_read_exfiltration
+# flag and accept that GetContainerLogs() will return 403.
+#
+# Redaction posture — redact_mount_paths and redact_container_env are DISABLED
+# here because in the production tri-tool topology (sockguard → Portwing → drydock)
+# Portwing forwards container inspect data to drydock whose update detection reads
+# HostConfig.Binds and Config.Env to recreate containers. If sockguard redacts
+# those fields to "<redacted>", drydock faithfully forwards the placeholder into
+# POST /containers/create and dockerd rejects with 400. Operators running Portwing
+# in standalone mode (not paired with drydock) can safely flip both to true:
+#
+#   response:
+#     redact_mount_paths: true
+#     redact_container_env: true
+#
+# redact_network_topology is also disabled for the same reason: drydock's clone
+# logic reconstructs NetworkMode from the inspect spec.
+#
+# Exec: this preset denies all exec paths. To allow interactive exec sessions
+# through Portwing (e.g. for a terminal-over-websocket feature), use the
+# portwing-with-exec.yaml preset instead.
+#
+# Security tradeoff acknowledgment — log streaming:
+# GET /containers/{id}/logs is allowed below. sockguard requires
+# insecure_allow_read_exfiltration: true for this path because container logs
+# can contain environment-variable secrets or other sensitive output that
+# should not be forwarded in all deployments. In the Portwing topology the
+# agent is the sole consumer of the proxy socket and its own access controls
+# gate who can reach the Portwing HTTP API — this is an acceptable tradeoff.
+insecure_allow_read_exfiltration: true
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Response redaction — all three disabled for the drydock passthrough topology.
+# See the header comment for when to re-enable them in standalone deployments.
+response:
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
+
+# Portwing needs container creation for its orchestration flows. Container-create
+# bodies are inspected by default; bind-mounted workloads are denied until their
+# host paths are allowlisted here. Image pulls are inspected too; this preset
+# explicitly allows any registry so Portwing can track arbitrary images while still
+# denying fromSrc imports. The stock "runc" runtime is allowlisted because Portwing
+# (like drydock) recreates containers from inspect specs that carry an explicit
+# HostConfig.Runtime — without it every recreation is rejected at
+# POST /containers/create with 403 "runtime \"runc\" is not allowlisted".
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+    allowed_runtimes:
+      - runc
+  image_pull:
+    allow_all_registries: true
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads — list, inspect, stats, top, changes, and logs.
+  # /containers/*/logs is required by Portwing's GetContainerLogs() call.
+  # /containers/*/archive, /containers/*/export, and /containers/*/attach
+  # are intentionally omitted — those are bulk-data exfiltration paths that
+  # Portwing does not use. insecure_allow_read_exfiltration: true (set above)
+  # satisfies sockguard's startup validator for the logs path.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  # Container lifecycle
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/update" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Container creation (for orchestration and passthrough to drydock)
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  # Image reads — list + inspect + history. Image names can be namespaced
+  # (linuxserver/qbittorrent:latest, ghcr.io/owner/repo:tag), so the
+  # middle is matched with `**`. The trailing /json or /history segment
+  # keeps the exfiltration validator happy by not matching /images/get
+  # or /images/*/get (raw tarball exfil).
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/**" }
+    action: allow
+
+  # Network read — list + inspect only.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+
+  # Volume read — list + inspect only.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+
+  # Distribution (registry digest checks for image freshness). Image
+  # references in the URL can be multi-segment (registry/owner/repo:tag).
+  - match: { method: GET, path: "/distribution/**/json" }
+    action: allow
+
+  # Swarm services — list + inspect. /services/*/logs is intentionally
+  # omitted to keep the exfiltration validator happy.
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by portwing preset"
