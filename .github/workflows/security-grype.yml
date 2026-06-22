@@ -2,11 +2,27 @@ name: "🛡️ Security: Grype & Govulncheck"
 run-name: >-
   ${{
     github.event_name == 'schedule' && '🛡️ Security: Grype & Govulncheck — Weekly run' ||
+    github.event_name == 'pull_request' && format('🛡️ Security: Grype & Govulncheck — PR #{0}', github.event.pull_request.number) ||
     format('🛡️ Security: Grype & Govulncheck — Manual by {0}', github.actor)
   }}
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main, 'dev/*']
+    # Dependency / source / build changes are what move the security
+    # surface — scope PR runs to those so doc-only PRs stay fast.
+    paths:
+      - 'app/**/*.go'
+      - 'app/go.mod'
+      - 'app/go.sum'
+      - 'benchmarks/go.mod'
+      - 'benchmarks/go.sum'
+      - 'package.json'
+      - 'package-lock.json'
+      - '**/package.json'
+      - 'Dockerfile'
+      - '.github/workflows/security-grype.yml'
   schedule:
     - cron: '15 7 * * 1'  # Weekly on Monday at 07:15 UTC
 
@@ -17,7 +33,7 @@ env:
   GOVULNCHECK_VERSION: v1.2.0
 
 concurrency:
-  group: security-weekly-${{ github.workflow }}
+  group: security-grype-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,7 +48,7 @@ jobs:
           egress-policy: audit
 
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
@@ -53,13 +69,17 @@ jobs:
         run: |
           {
             echo "### Govulncheck"
-            echo "- Scanned Go dependencies for known vulnerabilities"
+            echo "- Reachability-based scan of Go dependencies (call-graph aware)"
             echo "- Tool version: ${GOVULNCHECK_VERSION}"
             echo "- Database: Go Vulnerability Database (vuln.go.dev)"
           } >> "$GITHUB_STEP_SUMMARY"
 
   grype-image:
     name: "🐳 Security: Grype Container Scan"
+    # Image build is the heavy step; keep it on scheduled/manual runs.
+    # PRs get fast, accurate dependency coverage from grype-deps +
+    # govulncheck without paying for a Docker build on every push.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -72,7 +92,7 @@ jobs:
           egress-policy: audit
 
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
@@ -104,18 +124,19 @@ jobs:
         uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype-image
 
       - name: Summarize
         if: always()
         run: |
           {
             echo "### Grype Container Scan"
-            echo "- Scanned container image for HIGH and CRITICAL CVEs"
+            echo "- Scanned the built image (binary build-info → real shipped deps) for HIGH/CRITICAL CVEs"
             echo "- Base image: Wolfi (Chainguard)"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  grype-sbom:
-    name: "📦 Security: Grype Go Module Scan"
+  grype-deps:
+    name: "📦 Security: Grype Dependency Scan (Go + npm)"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -128,24 +149,38 @@ jobs:
           egress-policy: audit
 
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
-      - name: Run Grype on source directory
+      - name: Run Grype across the repository (Go modules + npm lockfiles)
+        # Scanning the repo root catalogs every go.mod and package-lock.json,
+        # so a single pass covers both ecosystems. Grype matches the
+        # lockfile-resolved versions (not the full module graph), so it does
+        # not emit the phantom-dependency findings the manifest-graph scanners do.
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
-        id: grype-src
+        id: grype-deps
         with:
-          path: app/
+          path: .
           severity-cutoff: high
           fail-build: true
           output-format: sarif
 
-      - name: Upload Grype source SARIF
+      - name: Upload Grype dependency SARIF
         if: always() && github.event.repository.visibility == 'public'
         uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
         with:
-          sarif_file: ${{ steps.grype-src.outputs.sarif }}
+          sarif_file: ${{ steps.grype-deps.outputs.sarif }}
+          category: grype-deps
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Grype Dependency Scan (Go + npm)"
+            echo "- Scanned Go modules and npm lockfiles across the repo for HIGH/CRITICAL CVEs"
+            echo "- Matches lockfile-resolved versions (no module-graph false positives)"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   gosec:
     name: "🔐 Security: Gosec SAST"
@@ -161,7 +196,7 @@ jobs:
           egress-policy: audit
 
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 
@@ -175,6 +210,7 @@ jobs:
         uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e  # v4.36.2
         with:
           sarif_file: gosec-results.sarif
+          category: gosec
 
   testssl:
     # QA-4's DAST-class drift detector for the production mTLS posture:
@@ -186,6 +222,9 @@ jobs:
     # the wire posture from production config or a future env var that
     # the code-level tests would not exercise.
     name: "🔒 Security: testssl.sh (sockguard TLS posture)"
+    # DAST is heavy (builds sockguard, pulls the testssl image, probes a
+    # live listener) — keep it on scheduled/manual runs, not every PR.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -195,7 +234,7 @@ jobs:
           egress-policy: audit
 
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           persist-credentials: false
 

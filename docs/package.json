@@ -10,9 +10,9 @@
   },
   "dependencies": {
     "@vercel/analytics": "^2.0.1",
-    "fumadocs-core": "^16.10.3",
+    "fumadocs-core": "^16.10.5",
     "fumadocs-mdx": "^15.0.12",
-    "fumadocs-ui": "^16.10.3",
+    "fumadocs-ui": "^16.10.5",
     "next": "16.2.9",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
@@ -20,7 +20,7 @@
   "devDependencies": {
     "@tailwindcss/postcss": "4.3.1",
     "@types/mdx": "2.0.14",
-    "@types/node": "^25.9.3",
+    "@types/node": "^26.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "19.2.3",
     "postcss": "^8.5.15",

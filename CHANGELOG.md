@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0-rc.2] - 2026-06-22
+
+### Changed
+
+- **Consolidated dependency/CVE scanning on Grype + govulncheck; dropped Snyk.** Snyk's GitHub integration scanned the full Go *module requirement graph* (`go mod graph`) instead of the compiled build graph, so it reported dozens of advisories in modules that sigstore/go-containerregistry only *require* but sockguard never links in — none reachable, all false positives for the shipped binary. govulncheck (call-graph reachability) and Grype (container scan over the binary's build-info) already cover Go accurately; the Grype workflow now also scans npm lockfiles, runs on pull requests, and uploads distinct-category SARIF to the GitHub Security tab. Removed the three `.snyk` policy files.
+- **Dependency refresh.** Bumped `go-containerregistry` v0.21.6 → v0.21.7 (image-trust path; no behavior change), which pulls its required transitive updates `docker/cli` v29.4.3 → v29.5.3 and `golang.org/x/{mod,sync,sys}`. Refreshed the docs/website toolchain — fumadocs-core/ui 16.10.3 → 16.10.5, knip 6.16.1 → 6.18.0, lucide-react 1.18 → 1.21, and `@types/node` 25 → 26 (devDep). Pinned the CI actions forward — `actions/checkout` v6.0.3 → v7.0.0 and `zizmorcore/zizmor-action` v0.5.6 → v0.5.7. Lockfile regenerated and deduped (`npm audit` reports 0 vulnerabilities).
+- **Test cert helper now generates 2048-bit RSA keys** (pkipin test fixtures), up from a weaker key size — test-only hardening, no shipped-binary impact.
+
 ## [1.4.0-rc.1] - 2026-06-16
 
 ### Added
