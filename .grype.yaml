@@ -1,0 +1,19 @@
+# Grype configuration — false-positive suppressions for the dependency scan.
+#
+# Each ignore rule below is a vetted false positive, not a silenced real risk.
+# Coverage is unaffected: govulncheck (build-graph reachability) and gosec/CodeQL
+# still run with no suppressions, and any NEW advisory on these packages surfaces
+# normally — only the specific advisory ID listed here is ignored.
+ignore:
+  # GO-2026-4610 — "Docker CLI Plugins: Uncontrolled Search Path Element Leads to
+  # Local Privilege Escalation on Windows." Fixed in docker/cli 29.2.0; sockguard
+  # pins v29.5.3 (indirect), well past the fix. Grype's go-module matcher
+  # mis-compares the `+incompatible` semver suffix and flags every docker/cli
+  # version regardless of the fix, so a version bump can't clear it. docker/cli is
+  # never linked into the shipped binary (`go mod why github.com/docker/cli` →
+  # "main module does not need package github.com/docker/cli") and govulncheck
+  # reports no vulnerabilities. Windows-only vector; sockguard ships a Linux binary.
+  - vulnerability: GO-2026-4610
+    package:
+      name: github.com/docker/cli
+      type: go-module
