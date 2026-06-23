@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0-rc.4] - 2026-06-22
+
+Drydock-integration audit of the shipped drydock presets against drydock v1.5.0's real Docker API surface — four confirmed defects fixed, plus regression guards.
+
+### Fixed
+
+- **Drydock self-update finalize exec is no longer denied unconditionally.** `drydock-with-selfupdate.yaml` set `allow_root_user: false`, but drydock's finalize exec sends no `User` field and sockguard conservatively treats an empty exec User as root — so the root-user gate denied the exec before the `allowed_commands` allowlist was ever consulted, breaking the self-update finalize in the very preset built for it. Flipped to `allow_root_user: true`; the exact-argv `allowed_commands` pin still constrains exec to the single finalize command, so it runs as the container's own (nonroot) default user.
+- **Drydock compose example no longer breaks every container update.** `examples/compose/drydock/sockguard.yaml` was missing `allowed_runtimes: [runc]` (present in the canonical `app/configs/drydock.yaml`), so a recreate whose inspect spec carried `HostConfig.Runtime: "runc"` — most daemons — was denied at `POST /containers/create` and drydock rolled the update back.
+- **Drydock presets now allow `POST /networks/{id}/connect`.** A recreated container on more than one network attaches its secondary networks via separate connect calls; both presets and the compose example previously dropped those to default-deny, silently leaving multi-network containers attached only to their primary network.
+- **Drydock self-update socket bind-mount allowlisted by default.** `drydock-with-selfupdate.yaml` now ships `allowed_bind_mounts: [/var/run/docker.sock]`, so a socket-mode self-update recreate is not denied on the first run.
+
+### Changed
+
+- **Drydock preset comments corrected for drydock v1.5.0.** Dropped the stale "short-lived helper container over TCP" model (current drydock issues the lifecycle calls directly and finalizes via a `docker exec` inside the new container); the `allowed_commands` note now says it pins an exact argv (not a prefix), and the `allow_root_user` rationale explains the empty-exec-User-reads-as-root behavior.
+
+### Tests
+
+- **Drydock preset conformance test.** `TestDrydockPresetConformance` fires drydock v1.5.0's real Docker API surface at a filter chain built from each shipped preset, asserting the recreate runtime, multi-network connect, and self-update finalize exec all pass while non-allowlisted runtimes/commands and exfiltration streams stay denied. `TestDrydockComposeExampleInSync` fails if the compose example drifts from the canonical `drydock.yaml` policy.
+
 ## [1.4.0-rc.3] - 2026-06-22
 
 Internal multi-axis audit of the v1.4 release candidate (security, performance, tests, supply chain) — no critical or high findings; this section collects the resulting hardening.

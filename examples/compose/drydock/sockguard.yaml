@@ -22,6 +22,11 @@ response:
 request_body:
   container_create:
     allowed_bind_mounts: []
+    # Mirror app/configs/drydock.yaml: drydock recreates from the inspect spec,
+    # which carries HostConfig.Runtime "runc" on most daemons, so allowlist it
+    # or POST /containers/create is denied. Keep in sync with the canonical preset.
+    allowed_runtimes:
+      - runc
   image_pull:
     allow_all_registries: true
 
@@ -81,6 +86,8 @@ rules:
   - match: { method: GET, path: "/networks" }
     action: allow
   - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
     action: allow
 
   - match: { method: GET, path: "/volumes" }
