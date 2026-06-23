@@ -949,21 +949,22 @@ func (p containerCreatePolicy) denySecurityOptReason(hostConfig containerCreateH
 		switch kind {
 		case "seccomp":
 			seenSeccomp = true
-			if len(p.allowedSeccompProfiles) > 0 {
-				if !slices.Contains(p.allowedSeccompProfiles, value) {
-					return fmt.Sprintf("container create denied: seccomp profile %q is not in the allowed list", value)
-				}
-			} else if p.denyUnconfinedSeccomp && strings.EqualFold(value, "unconfined") {
+			// The deny-unconfined flag wins independently of the allowlist: an
+			// admin who set deny_unconfined_seccomp must not be silently
+			// overridden by an allowlist that happens to include "unconfined".
+			if p.denyUnconfinedSeccomp && strings.EqualFold(value, "unconfined") {
 				return "container create denied: unconfined seccomp profile is not allowed"
+			}
+			if len(p.allowedSeccompProfiles) > 0 && !slices.Contains(p.allowedSeccompProfiles, value) {
+				return fmt.Sprintf("container create denied: seccomp profile %q is not in the allowed list", value)
 			}
 		case "apparmor":
 			seenAppArmor = true
-			if len(p.allowedAppArmorProfiles) > 0 {
-				if !slices.Contains(p.allowedAppArmorProfiles, value) {
-					return fmt.Sprintf("container create denied: apparmor profile %q is not in the allowed list", value)
-				}
-			} else if p.denyUnconfinedAppArmor && strings.EqualFold(value, "unconfined") {
+			if p.denyUnconfinedAppArmor && strings.EqualFold(value, "unconfined") {
 				return "container create denied: unconfined apparmor profile is not allowed"
+			}
+			if len(p.allowedAppArmorProfiles) > 0 && !slices.Contains(p.allowedAppArmorProfiles, value) {
+				return fmt.Sprintf("container create denied: apparmor profile %q is not in the allowed list", value)
 			}
 		case "label":
 			labelValue := strings.ToLower(strings.TrimSpace(value))

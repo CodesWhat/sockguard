@@ -282,6 +282,20 @@ func TestContainerCreatePolicyEnforcesSecurityProfiles(t *testing.T) {
 			body: `{"HostConfig":{"SecurityOpt":["seccomp=runtime/default"]}}`,
 		},
 		{
+			// The deny-unconfined flag must win even when an allowlist is
+			// configured that (mis)includes "unconfined".
+			name:       "seccomp deny-unconfined wins over allowlist",
+			opts:       ContainerCreateOptions{DenyUnconfinedSeccomp: true, AllowedSeccompProfiles: []string{"unconfined", "runtime/default"}, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"SecurityOpt":["seccomp=unconfined"]}}`,
+			wantReason: "container create denied: unconfined seccomp profile is not allowed",
+		},
+		{
+			name:       "apparmor deny-unconfined wins over allowlist",
+			opts:       ContainerCreateOptions{DenyUnconfinedAppArmor: true, AllowedAppArmorProfiles: []string{"unconfined", "my-profile"}, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"SecurityOpt":["apparmor=unconfined"]}}`,
+			wantReason: "container create denied: unconfined apparmor profile is not allowed",
+		},
+		{
 			name:       "seccomp profile missing entirely when allowlist set",
 			opts:       ContainerCreateOptions{AllowedSeccompProfiles: []string{"runtime/default"}, AllowAllCapabilities: true},
 			body:       `{"HostConfig":{}}`,
