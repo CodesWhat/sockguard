@@ -242,11 +242,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    # Mapped to job-level env so the Qlty publish step's `if` can detect a
-    # missing secret and skip cleanly on fork PRs. A step's own `if` can't see
-    # step-level env, so the mapping has to live at the job level.
-    env:
-      QLTY_COVERAGE_TOKEN: ${{ secrets.QLTY_COVERAGE_TOKEN }}
+    # OIDC lets the Qlty coverage upload authenticate with no stored secret:
+    # id-token:write mints the OIDC token, contents:read is for checkout.
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Harden Runner
@@ -279,13 +279,16 @@ jobs:
           retention-days: 14
 
       - name: Publish coverage to Qlty
-        # Sends the Go coverprofile to Qlty Cloud for the dashboard, badge, and
-        # per-PR diff coverage. Skips automatically on fork PRs, where the
-        # coverage token is not exposed (the env check below is false).
-        if: ${{ env.QLTY_COVERAGE_TOKEN != '' }}
+        # OIDC auth — no token/secret to store or rotate. Skipped on fork PRs,
+        # which GitHub does not grant id-token:write. Non-blocking until the
+        # project's OIDC trust is confirmed in Qlty Cloud, so a publish hiccup
+        # can't redden the release-gating job during the rc soak; the coverage
+        # gate below still enforces the floor regardless.
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        continue-on-error: true
         uses: qltysh/qlty-action/coverage@fd52dc852530a708d68c3b7342f8d33d1df4cd55  # v2.2.1
         with:
-          token: ${{ secrets.QLTY_COVERAGE_TOKEN }}
+          oidc: true
           files: app/coverage.txt
           format: coverprofile
 
