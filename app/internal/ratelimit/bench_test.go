@@ -34,9 +34,17 @@ func BenchmarkLimiterAllowNParallel(b *testing.B) {
 	l := newLimiterWithClock(65535, 65535, time.Now)
 	defer l.Stop()
 
+	// Pre-generate the client IDs so the measured loop indexes a slice instead
+	// of allocating a string via Sprintf each iteration — otherwise the per-call
+	// Sprintf alloc would mask AllowN's own allocation profile.
+	ids := make([]string, parallelClientCount)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("client-%d", i)
+	}
+
 	// Pre-warm all buckets so we're not measuring cold-path allocation.
 	for i := 0; i < parallelClientCount; i++ {
-		l.AllowN(fmt.Sprintf("client-%d", i), 1) //nolint:errcheck
+		l.AllowN(ids[i], 1) //nolint:errcheck
 	}
 
 	var idx atomic.Int64
@@ -46,7 +54,7 @@ func BenchmarkLimiterAllowNParallel(b *testing.B) {
 			// Round-robin across the client pool to exercise many distinct
 			// sync.Map entries per goroutine.
 			i := int(idx.Add(1)) % parallelClientCount
-			l.AllowN(fmt.Sprintf("client-%d", i), 1) //nolint:errcheck
+			l.AllowN(ids[i], 1) //nolint:errcheck
 		}
 	})
 }

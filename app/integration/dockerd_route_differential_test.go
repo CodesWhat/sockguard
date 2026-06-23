@@ -43,7 +43,7 @@ func TestDockerdRouteClassifierOracle(t *testing.T) {
 	// positively identifiable array, so observeDockerRoute can confirm a 200
 	// response really is the container list and not some other list endpoint.
 	sentinelID := createDockerContainer(t, socketPath, dockerContainerCreateRequest{
-		Image: "busybox:1.37",
+		Image: busyboxPinnedRef,
 		Cmd:   []string{"sh", "-c", "sleep 300"},
 	})
 	startDockerContainer(t, socketPath, sentinelID)

@@ -51,6 +51,17 @@ type ServiceOptions struct {
 	// ContainerSpec.Privileges.AppArmor.Mode == "disabled". Swarm has no
 	// "unconfined" AppArmor mode; "disabled" is the equivalent. Default false.
 	DenyUnconfinedAppArmor bool
+	// DenySelinuxDisable denies service create/update when
+	// ContainerSpec.Privileges.SELinuxContext.Disable is true — the swarm
+	// equivalent of the container-create SecurityOpt label=disable that turns off
+	// SELinux confinement. Default false (opt-in).
+	DenySelinuxDisable bool
+	// DenySelinuxLabelOverride denies service create/update that customizes the
+	// SELinux context via any of ContainerSpec.Privileges.SELinuxContext.{User,
+	// Role,Type,Level} — the swarm equivalent of the container-create SecurityOpt
+	// label=user:/role:/type:/level: override. Default false. Independent of
+	// DenySelinuxDisable.
+	DenySelinuxLabelOverride bool
 	// ImageTrust applies cosign verification to ContainerSpec.Image, matching
 	// the container-create path so swarm services cannot escape image trust.
 	ImageTrust ImageTrustOptions
@@ -70,6 +81,8 @@ type servicePolicy struct {
 	denyUnconfinedSeccomp      bool
 	denyCustomSeccompProfiles  bool
 	denyUnconfinedAppArmor     bool
+	denySelinuxDisable         bool
+	denySelinuxLabelOverride   bool
 	imageTrust                 imageTrustFields
 }
 
@@ -99,9 +112,23 @@ type serviceContainerSpec struct {
 // Sockguard enforces. NoNewPrivileges is a direct ContainerSpec.Privileges boolean rather than a
 // SecurityOpt string; a nil Privileges block means the flag is unset (denied).
 type serviceContainerPrivileges struct {
-	NoNewPrivileges bool                 `json:"NoNewPrivileges"`
-	Seccomp         *serviceSeccompOpts  `json:"Seccomp"`
-	AppArmor        *serviceAppArmorOpts `json:"AppArmor"`
+	NoNewPrivileges bool                   `json:"NoNewPrivileges"`
+	Seccomp         *serviceSeccompOpts    `json:"Seccomp"`
+	AppArmor        *serviceAppArmorOpts   `json:"AppArmor"`
+	SELinuxContext  *serviceSELinuxContext `json:"SELinuxContext"`
+}
+
+// serviceSELinuxContext mirrors swarm ContainerSpec.Privileges.SELinuxContext.
+// Disable turns off SELinux confinement (equivalent to the container-create
+// SecurityOpt label=disable); User/Role/Type/Level customize the SELinux context
+// (equivalent to label=user:/role:/type:/level:). A nil block means no explicit
+// SELinux context was set and is always allowed.
+type serviceSELinuxContext struct {
+	Disable bool   `json:"Disable"`
+	User    string `json:"User"`
+	Role    string `json:"Role"`
+	Type    string `json:"Type"`
+	Level   string `json:"Level"`
 }
 
 // serviceSeccompOpts mirrors the subset of swarm SeccompOpts that Sockguard inspects.
@@ -157,6 +184,8 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 		denyUnconfinedSeccomp:      opts.DenyUnconfinedSeccomp,
 		denyCustomSeccompProfiles:  opts.DenyCustomSeccompProfiles,
 		denyUnconfinedAppArmor:     opts.DenyUnconfinedAppArmor,
+		denySelinuxDisable:         opts.DenySelinuxDisable,
+		denySelinuxLabelOverride:   opts.DenySelinuxLabelOverride,
 		imageTrust:                 buildImageTrustFields(opts.ImageTrust),
 	}
 }
@@ -185,6 +214,30 @@ func (p servicePolicy) denyHardeningReason(spec serviceContainerSpec) string {
 	if denyReason := p.denyAppArmorModeReason(spec.Privileges); denyReason != "" {
 		return denyReason
 	}
+	if denyReason := p.denySelinuxContextReason(spec.Privileges); denyReason != "" {
+		return denyReason
+	}
+	return ""
+}
+
+// denySelinuxContextReason enforces deny_selinux_disable and
+// deny_selinux_label_override against ContainerSpec.Privileges.SELinuxContext,
+// the swarm equivalents of the container-create SecurityOpt label=disable and
+// label=user:/role:/type:/level: overrides. A nil Privileges or SELinuxContext
+// block means no explicit context was set and is always allowed.
+func (p servicePolicy) denySelinuxContextReason(priv *serviceContainerPrivileges) string {
+	if priv == nil || priv.SELinuxContext == nil {
+		return ""
+	}
+	sel := priv.SELinuxContext
+	if p.denySelinuxDisable && sel.Disable {
+		return "service denied: SELinux disable is not allowed (ContainerSpec.Privileges.SELinuxContext.Disable)"
+	}
+	if p.denySelinuxLabelOverride &&
+		(strings.TrimSpace(sel.User) != "" || strings.TrimSpace(sel.Role) != "" ||
+			strings.TrimSpace(sel.Type) != "" || strings.TrimSpace(sel.Level) != "") {
+		return "service denied: SELinux context override is not allowed (ContainerSpec.Privileges.SELinuxContext.User/Role/Type/Level)"
+	}
 	return ""
 }
 
@@ -210,11 +263,21 @@ func (p servicePolicy) denySeccompModeReason(priv *serviceContainerPrivileges) s
 		}
 		// A non-nil Seccomp with empty Mode and a non-empty Profile blob is an
 		// unvettable custom profile; treat as implicit "custom" (fail-closed).
-		if mode == "" && len(priv.Seccomp.Profile) > 0 {
+		// JSON "Profile": null decodes to the 4-byte literal RawMessage("null")
+		// rather than nil, so guard against it explicitly to avoid a false deny.
+		if mode == "" && hasSeccompProfileBlob(priv.Seccomp.Profile) {
 			return "service denied: custom seccomp profiles are not allowed (ContainerSpec.Privileges.Seccomp.Mode)"
 		}
 	}
 	return ""
+}
+
+// hasSeccompProfileBlob reports whether a raw Seccomp.Profile carries an actual
+// inline profile. JSON null decodes to RawMessage("null") (len 4, non-nil), so a
+// bare length check would misread "Profile": null as a custom profile.
+func hasSeccompProfileBlob(profile json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(profile)
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
 }
 
 // denyAppArmorModeReason enforces deny_unconfined_apparmor against
@@ -333,9 +396,15 @@ func rewriteServiceImage(body []byte, pinned string) ([]byte, error) {
 	if err := json.Unmarshal(body, &top); err != nil {
 		return nil, err
 	}
+	if _, ok := top["TaskTemplate"]; !ok {
+		return nil, fmt.Errorf("service body missing TaskTemplate")
+	}
 	var taskTemplate map[string]json.RawMessage
 	if err := json.Unmarshal(top["TaskTemplate"], &taskTemplate); err != nil {
 		return nil, fmt.Errorf("decode TaskTemplate: %w", err)
+	}
+	if _, ok := taskTemplate["ContainerSpec"]; !ok {
+		return nil, fmt.Errorf("service body missing TaskTemplate.ContainerSpec")
 	}
 	var containerSpec map[string]json.RawMessage
 	if err := json.Unmarshal(taskTemplate["ContainerSpec"], &containerSpec); err != nil {

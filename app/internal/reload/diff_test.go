@@ -226,6 +226,21 @@ func TestImmutableDiffMultipleChanges(t *testing.T) {
 	}
 }
 
+func TestImmutableDiffDetectsReloadFields(t *testing.T) {
+	t.Parallel()
+	a := config.Defaults()
+	b := a
+	b.Reload.Enabled = !a.Reload.Enabled
+	b.Reload.Debounce = "999ms"
+	b.Reload.PollInterval = "30s"
+
+	got := ImmutableDiff(&a, &b)
+	want := []string{"reload.enabled", "reload.debounce", "reload.poll_interval"}
+	if !equalUnordered(got, want) {
+		t.Fatalf("ImmutableDiff(reload change) = %v, want %v", got, want)
+	}
+}
+
 func TestImmutableDiffNilInputs(t *testing.T) {
 	t.Parallel()
 	a := config.Defaults()

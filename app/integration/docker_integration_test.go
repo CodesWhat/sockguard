@@ -100,7 +100,7 @@ func TestProxyAllowsSafeContainerCreateByRequestBodyPolicyAgainstRealDocker(t *t
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "no matching allow rule"},
 	})
 
-	payload := `{"Image":"busybox:1.37","Cmd":["sh","-c","sleep 1"]}`
+	payload := `{"Image":"` + busyboxPinnedRef + `","Cmd":["sh","-c","sleep 1"]}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
@@ -181,7 +181,7 @@ func TestProxyEnforcesContainerOwnerLabelsAgainstRealDocker(t *testing.T) {
 	})
 
 	createRec := httptest.NewRecorder()
-	createReq := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"busybox:1.37","Cmd":["sh","-c","sleep 1"]}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"`+busyboxPinnedRef+`","Cmd":["sh","-c","sleep 1"]}`))
 	createReq.Header.Set("Content-Type", "application/json")
 	ownerA.ServeHTTP(createRec, createReq)
 
@@ -230,7 +230,7 @@ func TestProxyEnforcesContainerOwnerLabelsAgainstRealDocker(t *testing.T) {
 func TestProxyAllowsDockerAttachEndToEndHijack(t *testing.T) {
 	socketPath := dockerSocketForIntegration(t)
 	containerID := createDockerContainer(t, socketPath, dockerContainerCreateRequest{
-		Image:        "busybox:1.37",
+		Image:        busyboxPinnedRef,
 		Cmd:          []string{"sh", "-c", "sleep 1; printf hello; sleep 1"},
 		AttachStdout: true,
 		AttachStderr: true,

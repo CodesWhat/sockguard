@@ -17,9 +17,24 @@ import (
 	"strings"
 )
 
-const maxPluginBodyBytes = 512 << 20  // 512 MiB
-const maxPluginConfigBytes = 64 << 10 // 64 KiB
+const maxPluginBodyBytes = 512 << 20 // 512 MiB
+// maxPluginPrivilegesBodyBytes caps the JSON-only plugin endpoints
+// (/plugins/pull, /plugins/{id}/upgrade, /plugins/{id}/set), whose bodies are a
+// small []pluginPrivilege / []string. Far below maxPluginBodyBytes — which is
+// sized for the binary plugin-create archive that spools to disk — so a single
+// request cannot force a half-gigabyte heap allocation via io.ReadAll.
+const maxPluginPrivilegesBodyBytes = 1 << 20 // 1 MiB
+// maxPluginDecompressedBytes bounds the *decompressed* size of a plugin-create
+// archive to defuse gzip bombs: a body within the compressed maxPluginBodyBytes
+// cap can otherwise expand to hundreds of GiB during the tar walk + drain.
+const maxPluginDecompressedBytes = 4 << 30 // 4 GiB (gzip-bomb guard)
+const maxPluginConfigBytes = 64 << 10      // 64 KiB
 const pluginConfigName = "config.json"
+
+// errPluginDecompressedTooLarge is surfaced (unwrapped) by the gzip-tar probe
+// when a plugin-create archive expands past maxPluginDecompressedBytes, so
+// inspectPluginCreate can map it to a clean deny rather than a 500.
+var errPluginDecompressedTooLarge = errors.New("decompressed plugin archive exceeds limit")
 
 // PluginOptions configures request-body/query inspection for plugin writes.
 type PluginOptions struct {
@@ -147,10 +162,10 @@ func (p pluginPolicy) inspectPrivileges(logger *slog.Logger, r *http.Request, su
 		return "", nil
 	}
 
-	body, err := readBoundedBody(r, maxPluginBodyBytes)
+	body, err := readBoundedBody(r, maxPluginPrivilegesBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
-			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("%s denied: request body exceeds %d byte limit", subject, maxPluginBodyBytes))
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("%s denied: request body exceeds %d byte limit", subject, maxPluginPrivilegesBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
@@ -175,10 +190,10 @@ func (p pluginPolicy) inspectPluginSet(logger *slog.Logger, r *http.Request) (st
 		return "", nil
 	}
 
-	body, err := readBoundedBody(r, maxPluginBodyBytes)
+	body, err := readBoundedBody(r, maxPluginPrivilegesBodyBytes)
 	if err != nil {
 		if isBodyTooLargeError(err) {
-			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("plugin set denied: request body exceeds %d byte limit", maxPluginBodyBytes))
+			return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("plugin set denied: request body exceeds %d byte limit", maxPluginPrivilegesBodyBytes))
 		}
 		return "", fmt.Errorf("read body: %w", err)
 	}
@@ -190,9 +205,12 @@ func (p pluginPolicy) inspectPluginSet(logger *slog.Logger, r *http.Request) (st
 	var settings []string
 	if err := decodePolicySubsetJSON(body, &settings); err != nil {
 		if logger != nil {
-			logger.DebugContext(r.Context(), "plugin set body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+			logger.DebugContext(r.Context(), "plugin set body could not be decoded for Sockguard policy inspection; denying (fail-closed)", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
-		return "", nil
+		// Fail closed: a body that is valid JSON but not a []string (e.g. {} or an
+		// array of non-strings) would otherwise skip every AllowedSetEnvPrefixes /
+		// bind-mount / device allowlist check. Deny, matching inspectPrivileges.
+		return "plugin set denied: request body could not be inspected", nil
 	}
 
 	for _, setting := range settings {
@@ -232,7 +250,7 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 	}
 	if spool.tooLarge {
 		spool.closeAndRemove()
-		return fmt.Sprintf("plugin create denied: request body exceeds %d byte limit", maxPluginBodyBytes), nil
+		return "", newRequestRejectionError(http.StatusRequestEntityTooLarge, fmt.Sprintf("plugin create denied: request body exceeds %d byte limit", maxPluginBodyBytes))
 	}
 	if size == 0 {
 		spool.closeAndRemove()
@@ -242,18 +260,28 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 	configBytes, ok, err := p.io.extractPluginConfig(spool.file, r.Header.Get("Content-Type"))
 	if err != nil {
 		spool.closeAndRemove()
+		if errors.Is(err, errPluginDecompressedTooLarge) {
+			return fmt.Sprintf("plugin create denied: decompressed plugin archive exceeds %d byte limit", maxPluginDecompressedBytes), nil
+		}
 		return "", fmt.Errorf("extract plugin config: %w", err)
 	}
-	if ok {
-		var cfg pluginCreateConfig
-		if err := decodePolicySubsetJSON(configBytes, &cfg); err != nil {
-			if logger != nil {
-				logger.DebugContext(r.Context(), "plugin config.json could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
-			}
-		} else if denyReason := p.denyReasonForCreateConfig(cfg); denyReason != "" {
-			spool.closeAndRemove()
-			return denyReason, nil
+	if !ok {
+		// Fail closed: every installable plugin carries config.json at the archive
+		// root. If we can't find/inspect it, deny rather than forward an
+		// uninspectable archive — consistent with the image-load path, which
+		// denies when no manifest is found.
+		spool.closeAndRemove()
+		return "plugin create denied: plugin config could not be inspected", nil
+	}
+
+	var cfg pluginCreateConfig
+	if err := decodePolicySubsetJSON(configBytes, &cfg); err != nil {
+		if logger != nil {
+			logger.DebugContext(r.Context(), "plugin config.json could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
 		}
+	} else if denyReason := p.denyReasonForCreateConfig(cfg); denyReason != "" {
+		spool.closeAndRemove()
+		return denyReason, nil
 	}
 
 	if err := p.io.SeekToStart(spool.file); err != nil {
@@ -514,14 +542,23 @@ func (io_ ioDeps) extractPluginConfigFromGzipReader(reader io.Reader) ([]byte, b
 		return nil, false, fmt.Errorf("create gzip reader: %w", err)
 	}
 
-	config, ok, err := io_.extractPluginConfigFromTarReader(tar.NewReader(gzr))
+	// Bound the *decompressed* byte count to defuse gzip bombs. Both the tar walk
+	// and the drain below read through this limit; the limitedReader fails loud
+	// with errPluginDecompressedTooLarge rather than silently truncating.
+	limited := &limitedReader{r: gzr, remaining: maxPluginDecompressedBytes, tooLarge: errPluginDecompressedTooLarge}
+
+	config, ok, err := io_.extractPluginConfigFromTarReader(tar.NewReader(limited))
 	if err == nil {
-		if drainErr := io_.DrainReader(gzr); drainErr != nil {
+		if drainErr := io_.DrainReader(limited); drainErr != nil {
 			err = fmt.Errorf("drain gzip stream: %w", drainErr)
 		}
 	}
 	if closeErr := io_.CloseReadCloser(gzr); err == nil && closeErr != nil {
 		err = fmt.Errorf("close gzip reader: %w", closeErr)
+	}
+	if errors.Is(err, errPluginDecompressedTooLarge) {
+		// Surface the sentinel unwrapped so inspectPluginCreate maps it to a deny.
+		return nil, false, errPluginDecompressedTooLarge
 	}
 	return config, ok, err
 }

@@ -790,7 +790,40 @@ func withMetrics(registry *metrics.Registry) func(http.Handler) http.Handler {
 
 func withClientACL(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
 	warnIfLabelACLEnabled(cfg, logger)
+	warnIfRulesHaveVersionPrefix(cfg, logger)
 	return clientacl.MiddlewareWithRoundTripper(upstreamResolverFor(res, cfg), logger, serveClientACLOptions(cfg))
+}
+
+// rulesVersionPrefixWarnOnce gates warnIfRulesHaveVersionPrefix to a single
+// emission per process, like labelACLWarnOnce. The guard before once.Do means
+// the Once is only consumed when there is actually a prefixed rule to warn
+// about, so a hot reload that introduces one still warns.
+var rulesVersionPrefixWarnOnce sync.Once
+
+// warnIfRulesHaveVersionPrefix flags rule patterns that begin with a Docker API
+// version prefix (e.g. "/v1.45/..."). NormalizePath strips version prefixes from
+// the request path before matching, so such a pattern can never match real
+// traffic — the rule is silently dead, an intent gap worth surfacing.
+func warnIfRulesHaveVersionPrefix(cfg *config.Config, logger *slog.Logger) {
+	warnRulesVersionPrefixOnce(cfg, logger, &rulesVersionPrefixWarnOnce)
+}
+
+func warnRulesVersionPrefixOnce(cfg *config.Config, logger *slog.Logger, once *sync.Once) {
+	var prefixed []string
+	for _, r := range cfg.Rules {
+		if filter.HasVersionPrefix(r.Match.Path) {
+			prefixed = append(prefixed, r.Match.Path)
+		}
+	}
+	if len(prefixed) == 0 {
+		return
+	}
+	once.Do(func() {
+		logger.Warn("one or more rule patterns begin with a Docker API version prefix (e.g. /v1.45/...); "+
+			"sockguard strips version prefixes before matching, so these patterns never match real traffic — write the unversioned path",
+			"patterns", prefixed,
+		)
+	})
 }
 
 // labelACLWarnOnce gates warnIfLabelACLEnabled to a single emission per

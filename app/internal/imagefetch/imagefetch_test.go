@@ -160,7 +160,7 @@ func TestFetchCandidates_ClassicKeyed_Success(t *testing.T) {
 		cosignSignatureAnnotation: base64.StdEncoding.EncodeToString(sig),
 	})
 
-	candidates, err := NewFetcher().FetchCandidates(ctx, ref.Name())
+	candidates, err := NewFetcher().FetchCandidates(ctx, nil, ref.Name())
 	if err != nil {
 		t.Fatalf("FetchCandidates: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestFetchCandidates_ClassicKeyed_TamperedSignatureFails(t *testing.T) {
 		cosignSignatureAnnotation: base64.StdEncoding.EncodeToString(sig),
 	})
 
-	candidates, err := NewFetcher().FetchCandidates(ctx, ref.Name())
+	candidates, err := NewFetcher().FetchCandidates(ctx, nil, ref.Name())
 	if err != nil {
 		t.Fatalf("FetchCandidates: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestFetchCandidates_DigestBindingMismatchRejected(t *testing.T) {
 
 	// A cryptographically valid signature that binds to another image must not
 	// produce a candidate for this image.
-	_, err = NewFetcher().FetchCandidates(ctx, ref.Name())
+	_, err = NewFetcher().FetchCandidates(ctx, nil, ref.Name())
 	if !errors.Is(err, ErrNoSignatures) {
 		t.Fatalf("got err %v, want ErrNoSignatures (transplanted signature must be rejected)", err)
 	}
@@ -235,7 +235,7 @@ func TestFetchCandidates_UnsignedImageReturnsErrNoSignatures(t *testing.T) {
 	host := testRegistry(t)
 	ref, _ := pushSubjectImage(t, host, "app")
 
-	_, err := NewFetcher().FetchCandidates(ctx, ref.Name())
+	_, err := NewFetcher().FetchCandidates(ctx, nil, ref.Name())
 	if !errors.Is(err, ErrNoSignatures) {
 		t.Fatalf("got err %v, want ErrNoSignatures for an unsigned image", err)
 	}
@@ -272,7 +272,7 @@ func TestFetchCandidates_GoodAndBadLayers_GoodWins(t *testing.T) {
 		t.Fatalf("push sig image: %v", err)
 	}
 
-	candidates, err := NewFetcher().FetchCandidates(ctx, ref.Name())
+	candidates, err := NewFetcher().FetchCandidates(ctx, nil, ref.Name())
 	if err != nil {
 		t.Fatalf("FetchCandidates: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestFetchCandidates_GoodAndBadLayers_GoodWins(t *testing.T) {
 }
 
 func TestFetchCandidates_InvalidReference(t *testing.T) {
-	_, err := NewFetcher().FetchCandidates(context.Background(), "::::not a ref::::")
+	_, err := NewFetcher().FetchCandidates(context.Background(), nil, "::::not a ref::::")
 	if err == nil {
 		t.Fatal("expected an error for an unparseable reference")
 	}

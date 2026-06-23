@@ -492,10 +492,10 @@ func TestResolver_Active_KnownHealthyFirst(t *testing.T) {
 	ep0 := Endpoint{Name: "ep0", Network: "unix", Address: "/tmp/ep0.sock"}
 	ep1 := Endpoint{Name: "ep1", Network: "unix", Address: "/tmp/ep1.sock"}
 
-	// Probe: ep0 unhealthy, ep1 healthy.
-	callCount := 0
+	// Probe: ep0 unhealthy, ep1 healthy. probeAll now invokes the probe
+	// concurrently across endpoints, so the closure must hold no unsynchronized
+	// shared state.
 	probe := func(_ context.Context, ep Endpoint) error {
-		callCount++
 		if ep.Name == "ep0" {
 			return errors.New("down")
 		}
@@ -544,8 +544,8 @@ func TestResolver_RoutesToFirstEndpointWhenBothHealthy(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	// Mark both known+healthy directly.
-	r.setHealth(r.states[0], true)
-	r.setHealth(r.states[1], true)
+	r.setHealth(context.Background(), r.states[0], true)
+	r.setHealth(context.Background(), r.states[1], true)
 
 	got := doRoundTrip(t, r, sock0)
 	if got != body0 {
@@ -570,8 +570,8 @@ func TestResolver_FailoverToSecondWhenFirstUnhealthy(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	// Mark ep0 known+unhealthy, ep1 known+healthy.
-	r.setHealth(r.states[0], false)
-	r.setHealth(r.states[1], true)
+	r.setHealth(context.Background(), r.states[0], false)
+	r.setHealth(context.Background(), r.states[1], true)
 
 	got := doRoundTrip(t, r, sock1)
 	if got != body1 {
@@ -590,7 +590,7 @@ func TestResolver_DialContext_UsesActiveEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	r.setHealth(r.states[0], true)
+	r.setHealth(context.Background(), r.states[0], true)
 
 	ctx := context.Background()
 	conn, err := r.DialContext(ctx, "ignored", "ignored")
@@ -654,8 +654,8 @@ func TestResolver_Demote_TwoEndpoints_FlipsSelection(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	// Both known healthy to start so ep0 is active.
-	r.setHealth(r.states[0], true)
-	r.setHealth(r.states[1], true)
+	r.setHealth(context.Background(), r.states[0], true)
+	r.setHealth(context.Background(), r.states[1], true)
 
 	if r.Active().Name != sock0 {
 		t.Fatalf("expected ep0 active before demote, got %q", r.Active().Name)
@@ -687,7 +687,7 @@ func TestResolver_Demote_SingleEndpoint_IsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	r.setHealth(r.states[0], true)
+	r.setHealth(context.Background(), r.states[0], true)
 
 	// Demote should be a no-op: the single endpoint stays in whatever state it's in.
 	r.demote(r.states[0])

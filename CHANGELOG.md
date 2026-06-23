@@ -5,7 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0-rc.3] - 2026-06-22
+
+Internal multi-axis audit of the v1.4 release candidate (security, performance, tests, supply chain) — no critical or high findings; this section collects the resulting hardening.
+
+### Added
+
+- **Swarm service SELinux confinement parity.** Two opt-in `request_body.service` knobs (default off, zero behavior change): `deny_selinux_disable` denies `ContainerSpec.Privileges.SELinuxContext.Disable=true` (the swarm equivalent of the container-create `label=disable` that turns off SELinux confinement), and `deny_selinux_label_override` denies any `SELinuxContext.{User,Role,Type,Level}` context customization. Closes the gap where an operator who enabled `deny_selinux_disable` for container creates got no equivalent enforcement against swarm services.
+
+### Fixed
+
+- **Plugin inspection now fails closed across the board.** `POST /plugins/{id}/set` denies a body that is valid JSON but not a `[]string` (previously such a body skipped the env-prefix/bind-mount/device allowlists entirely), and `POST /plugins/create` denies an archive with no inspectable `config.json` instead of forwarding it unchecked — both matching the deny-on-uninspectable posture every other inspector already uses.
+- **Plugin-create gzip-bomb guard.** The `/plugins/create` archive walk now bounds the *decompressed* byte count (4 GiB cap) like the build and image-load paths, so a small compressed body can no longer expand to hundreds of GiB during the tar walk/drain and exhaust memory.
+- **Right-sized plugin JSON body limits.** `/plugins/pull`, `/plugins/{id}/upgrade`, and `/plugins/{id}/set` now cap their (small JSON) bodies at 1 MiB instead of the 512 MiB archive limit, removing a per-request half-gigabyte heap-allocation DoS vector; the 512 MiB limit stays only on `/plugins/create`, which spools to disk. Oversized `/plugins/create` bodies now return `413` (was `403`), matching the build/node-update convention.
+- **Service seccomp `Profile: null` no longer false-denies.** JSON `"Profile": null` decodes to the 4-byte literal `null` rather than an empty blob; the implicit-custom-profile fail-closed check now treats it as "no inline profile" so `deny_custom_seccomp_profiles` doesn't reject a bare `null`.
+- **Clearer error when pinning a verified service image** that is missing `TaskTemplate`/`ContainerSpec`, instead of an opaque `unexpected end of JSON input`.
+- **Node-update inspection now fails closed.** `POST /nodes/{id}/update` denied on a body it could not decode is now denied (was forwarded to Docker) — both the whole-body decode failure and a field-level type mismatch (e.g. `Role`/`Name` sent as a number, `Labels` sent as an array) return `node update denied: request body could not be inspected`, matching the deny-on-uninspectable posture every swarm inspector already uses.
+- **`deny_unconfined_seccomp`/`deny_unconfined_apparmor` now win over a seccomp/AppArmor allowlist.** When both an allowlist and the deny-unconfined flag were configured, the allowlist branch short-circuited the deny check — so an allowlist that (mis)included `unconfined` silently let an unconfined profile through even though the operator had explicitly denied it. The deny-unconfined check now evaluates independently and takes precedence.
+- **Response redaction now empties `HostConfig.MaskedPaths`/`ReadonlyPaths` under `redact_mount_paths`.** Those arrays expose the container's exact masked/read-only filesystem-hardening shape; they're now emptied alongside the existing `Binds`/`Mounts` source redaction so a read-side consumer under a mount-path redaction profile can't read them back.
+- **Public-key pin comparison is now constant-time.** Client-certificate `public_key_sha256_pins` matching used a plain string compare; it now uses `crypto/subtle.ConstantTimeCompare` and evaluates every configured pin without early-return, so neither the digest bytes nor which pin matched is observable through timing.
+- **Image-trust verification is now deadline-bounded when the caller set none.** `sigstoreVerifier.Verify` applies `image_trust.verify_timeout` if the inbound context carries no deadline, mirroring the policy-bundle verifier, so a keyless path that reaches Rekor can't hang unbounded.
+- **Malformed cosign signature manifests now leave a debug breadcrumb.** `FetchCandidates` silently skipped a signature manifest it couldn't parse (correct — a sibling valid signature must still verify), but logged nothing; it now emits a debug log with the image ref, resolved digest, and parse error so a verification miss is distinguishable from a silently-dropped manifest.
+- **`admin.listen.insecure_allow_wide_open` set purely via env var is no longer ignored.** The key had no `SetDefault` registration, and Viper only unmarshals registered keys, so `SOCKGUARD_ADMIN_LISTEN_INSECURE_ALLOW_WIDE_OPEN=true` with no config-file entry had no effect. It is now registered.
+- **`reload.enabled`/`reload.debounce`/`reload.poll_interval` are now reload-immutable.** The watcher reads them once at startup to wire its fsnotify watch and debounce/poll timers, so changing them via a hot reload silently had no effect; a reload that mutates any of them is now rejected with a restart-required message instead.
+
+### Changed
+
+- **Startup warning for a patterns-only visibility policy.** A visibility policy with `name_patterns`/`image_patterns` but no `visible_resource_labels` selector now logs a warning at construction: pattern response-filtering only covers `/containers/json` and `/images/json`, so `/events` and the other list endpoints would stay unrestricted unless a label selector is added.
+- **Clearer validation errors for the two global insecure acknowledgement flags.** The per-profile `insecure_allow_body_blind_writes` / `insecure_allow_read_exfiltration` validation messages no longer imply the flag lives on the profile — both now say it is a top-level (global) setting.
+- **Startup warning for an insecure upstream Docker endpoint.** A `tcp://` upstream configured with `insecure_allow_plain_tcp` (unencrypted) or `insecure_skip_tls_verify` (unverified) now logs a warning at startup — for both explicit `upstream.endpoints` and the `DOCKER_HOST` env drop-in — so an accidental transport downgrade is visible rather than silent.
+- **Startup warning for a rule pattern carrying a Docker API version prefix.** A rule whose `match.path` begins with `/vN.N/` (e.g. `/v1.45/containers/json`) can never match — sockguard strips version prefixes from the request path before matching — so it now warns once at startup with the offending pattern instead of being a silently-dead rule.
+
+### Performance
+
+- **Audit sampler no longer allocates on the hot path.** The `AuditSampler` stored last-emit timestamps as `*time.Time`, heap-allocating one on every `ShouldEmit` call (including the common in-window rejection branch). It now keeps a single `*atomic.Int64` (Unix nanos) per `(client, reason)` key, allocated once and mutated in place — the steady-state rejection branch is allocation-free.
+- **Health probes now run concurrently.** The upstream failover resolver probed endpoints sequentially, so a stalled daemon delayed the health update for every other endpoint by up to one timeout. `probeAll` now fans out across endpoints, bounding a tick's cost to the slowest single probe.
+- **Metrics middleware returns its pooled response writer on panic.** The pooled response writer and the request observation moved into a `defer`, so a panic in a downstream handler no longer leaks the writer back-pressure or drops the metric.
+- **Smaller hot-path allocations.** Hijacked exec/attach requests forward the query string verbatim (`RawQuery`) instead of re-parsing and re-encoding it, and the Prometheus exposition sort keys compare field-by-field with `cmp.Or` instead of building throwaway `\x00`-joined strings per comparison. The duration-histogram observe path also increments `count` before its buckets so a concurrent scrape can never momentarily report a bucket larger than the count (Prometheus invariant).
+
+### Tests
+
+- **Multi-host hijack path now has integration coverage.** `HijackHandlerWithDialer` — the dialer-based hijack used by the multi-host upstream resolver — gets an end-to-end full-upgrade test (101 switch + bidirectional byte proxy through a mock dockerd over a unix socket), closing a 0%-covered branch, and the test drains the proxy's copy goroutines before returning so it never leaks a goroutine that races a sibling test's hook restore.
+- **TLS dial handshake is exercised end-to-end.** New `Endpoint.dial` tests stand up a real TLS echo server and assert the handshake completes inside `dial` (returning a live `*tls.Conn`), plus a negative case proving a verification failure returns an error and no connection (no leaked socket).
+- **`FuzzService` reaches the privilege-hardening branches.** The service fuzz target now also runs every input through a strict policy (all seccomp/AppArmor/SELinux/no-new-privileges guardrails on) and seeds the corpus with `ContainerSpec.Privileges` payloads (unconfined/custom/null seccomp, disabled AppArmor, SELinux disable/label-override), so the hardening deny paths are fuzzed rather than just the allowlist paths.
+
+### Documentation
+
+- **`HEAD /_ping`** is added to the recommended rules template — the Docker SDK/CLI pings with `HEAD` (falling back to `GET`), so a `GET`-only `/_ping` rule could leave the SDK's health check denied.
+- **DOCKER_* drop-in TLS matrix is complete.** The multi-host guide now documents the fourth case — `DOCKER_TLS_VERIFY` set with no `DOCKER_CERT_PATH` → verified, server-auth-only TLS against the host's system root CAs with no client certificate — alongside the existing mTLS, skip-verify, and plaintext cases.
+- **Negative `health_interval` still runs one startup probe.** The failover docs now note that disabling continuous probing (`health_interval` < 0) still seeds endpoint health once at startup, so the first active endpoint is chosen from real probe results rather than list order alone.
+- **Upstream client TLS floor documented.** Both the configuration and multi-host guides now state that the upstream Docker client floors at TLS 1.2 (for daemon compatibility), distinct from the inbound listener's TLS 1.3 minimum.
+
+### Dependencies
+
+- **Pinned the `drwetter/testssl.sh:3.2` DAST scanner and the `busybox:1.37` integration-test image by digest** (tag kept alongside the digest) in the security workflow, the testssl script, and the integration tests that actually pull, so CI/test pulls are reproducible and a retag of a floating tag can't silently change what runs.
 
 ## [1.4.0-rc.2] - 2026-06-22
 

@@ -346,19 +346,30 @@ func TestRouteCategoryCoversDockerRouteFamiliesAndPathEdges(t *testing.T) {
 
 func TestSortKeysBucketFormattingAndLabelEscaping(t *testing.T) {
 	t.Parallel()
+	// The label comparators order field-by-field with later fields breaking ties.
+	// Equal keys compare 0; a difference in the last field still orders them.
 	requestKey := requestLabels{decision: "allow", method: "GET", profile: "default", route: "/_ping", status: "200"}
-	if got := requestLabelSortKey(requestKey); got != "allow\x00GET\x00default\x00/_ping\x00200" {
-		t.Fatalf("requestLabelSortKey() = %q", got)
+	if got := requestLabelCompare(requestKey, requestKey); got != 0 {
+		t.Fatalf("requestLabelCompare(self) = %d, want 0", got)
+	}
+	requestKeyHigher := requestKey
+	requestKeyHigher.status = "201"
+	if got := requestLabelCompare(requestKey, requestKeyHigher); got >= 0 {
+		t.Fatalf("requestLabelCompare did not break ties on status: %d", got)
 	}
 
 	denyKey := denyLabels{mode: "enforce", profile: "default", reasonCode: "matched", route: "/containers/{id}/start"}
-	if got := denyLabelSortKey(denyKey); got != "enforce\x00default\x00matched\x00/containers/{id}/start" {
-		t.Fatalf("denyLabelSortKey() = %q", got)
+	denyKeyHigher := denyKey
+	denyKeyHigher.route = "/containers/{id}/stop"
+	if got := denyLabelCompare(denyKey, denyKeyHigher); got >= 0 {
+		t.Fatalf("denyLabelCompare did not break ties on route: %d", got)
 	}
 
 	durationKey := durationLabels{decision: "deny", method: "POST", profile: "admin", route: "/build"}
-	if got := durationLabelSortKey(durationKey); got != "deny\x00POST\x00admin\x00/build" {
-		t.Fatalf("durationLabelSortKey() = %q", got)
+	durationKeyLower := durationKey
+	durationKeyLower.decision = "allow"
+	if got := durationLabelCompare(durationKeyLower, durationKey); got >= 0 {
+		t.Fatalf("durationLabelCompare did not order by decision: %d", got)
 	}
 
 	if got := formatBucket(math.Inf(1)); got != "+Inf" {
@@ -424,24 +435,24 @@ func TestSortedLabelHelpersOrderDeterministically(t *testing.T) {
 		{decision: "deny", method: "POST", profile: "b", route: "/z", status: "403"}: 1,
 		{decision: "allow", method: "GET", profile: "a", route: "/a", status: "200"}: 1,
 	})
-	if got := requestLabelSortKey(requests[0]); got != "allow\x00GET\x00a\x00/a\x00200" {
-		t.Fatalf("first sorted request key = %q", got)
+	if want := (requestLabels{decision: "allow", method: "GET", profile: "a", route: "/a", status: "200"}); requests[0] != want {
+		t.Fatalf("first sorted request label = %+v, want %+v", requests[0], want)
 	}
 
 	denies := sortedDenyLabels(map[denyLabels]uint64{
 		{mode: "enforce", profile: "b", reasonCode: "z", route: "/z"}: 1,
 		{mode: "enforce", profile: "a", reasonCode: "a", route: "/a"}: 1,
 	})
-	if got := denyLabelSortKey(denies[0]); got != "enforce\x00a\x00a\x00/a" {
-		t.Fatalf("first sorted deny key = %q", got)
+	if want := (denyLabels{mode: "enforce", profile: "a", reasonCode: "a", route: "/a"}); denies[0] != want {
+		t.Fatalf("first sorted deny label = %+v, want %+v", denies[0], want)
 	}
 
 	durations := sortedDurationLabels(map[durationLabels]histogramSnapshot{
 		{decision: "deny", method: "POST", profile: "b", route: "/z"}: {},
 		{decision: "allow", method: "GET", profile: "a", route: "/a"}: {},
 	})
-	if got := durationLabelSortKey(durations[0]); got != "allow\x00GET\x00a\x00/a" {
-		t.Fatalf("first sorted duration key = %q", got)
+	if want := (durationLabels{decision: "allow", method: "GET", profile: "a", route: "/a"}); durations[0] != want {
+		t.Fatalf("first sorted duration label = %+v, want %+v", durations[0], want)
 	}
 }
 

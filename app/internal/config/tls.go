@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -177,10 +178,23 @@ func (c compiledClientCertificateIdentityConstraints) matches(cert *x509.Certifi
 	if len(c.uriSANs) > 0 && !intersectsStrings(c.uriSANs, certmatch.CertificateURIStrings(cert)) {
 		return false
 	}
-	if len(c.publicKeySHA256Pins) > 0 && !containsExactString(c.publicKeySHA256Pins, subjectPublicKeySHA256Hex(cert)) {
+	if len(c.publicKeySHA256Pins) > 0 && !containsPinConstantTime(c.publicKeySHA256Pins, subjectPublicKeySHA256Hex(cert)) {
 		return false
 	}
 	return true
+}
+
+// containsPinConstantTime reports whether candidate matches any configured
+// public-key pin using a constant-time byte comparison. It evaluates every pin
+// (no early return) so neither the per-byte digest comparison nor the position
+// of a matching pin within the set is observable through timing.
+func containsPinConstantTime(pins []string, candidate string) bool {
+	candidateBytes := []byte(candidate)
+	matched := 0
+	for _, pin := range pins {
+		matched |= subtle.ConstantTimeCompare([]byte(pin), candidateBytes)
+	}
+	return matched == 1
 }
 
 func verifiedClientCertificateLeaf(state tls.ConnectionState) (*x509.Certificate, error) {

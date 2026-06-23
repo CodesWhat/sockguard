@@ -71,13 +71,17 @@ func (p nodePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath
 	var req nodeUpdateRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
 		logNodeDecodeDefer(logger, r, err)
-		return "", nil
+		return nodeUpdateDenyPrefix + ": request body could not be inspected", nil
 	}
 
+	// A field-level type mismatch (e.g. Role/Name as a number, Labels as an
+	// array) surfaces here because nodeUpdateRequest captures fields as
+	// json.RawMessage. Fail closed — deny rather than forward an uninspectable
+	// body — matching every swarm inspector.
 	denyReason, err := p.denyReason(req)
 	if err != nil {
 		logNodeDecodeDefer(logger, r, err)
-		return "", nil
+		return nodeUpdateDenyPrefix + ": request body could not be inspected", nil
 	}
 	return denyReason, nil
 }

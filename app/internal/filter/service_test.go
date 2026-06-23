@@ -598,6 +598,12 @@ func TestServiceInspectDenyCustomSeccompProfiles(t *testing.T) {
 			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{}}}}}`,
 			wantDenied: false,
 		},
+		{
+			name:       "empty mode with explicit null profile is not a custom profile",
+			opts:       ServiceOptions{AllowOfficial: true, DenyCustomSeccompProfiles: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"Seccomp":{"Mode":"","Profile":null}}}}}`,
+			wantDenied: false,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -666,6 +672,90 @@ func TestServiceInspectDenyUnconfinedAppArmor(t *testing.T) {
 		{
 			name:       "nil Privileges block always allowed with apparmor knob enabled",
 			opts:       ServiceOptions{AllowOfficial: true, DenyUnconfinedAppArmor: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}}}`,
+			wantDenied: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := newServicePolicy(tc.opts)
+			req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(tc.body))
+			reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if tc.wantDenied {
+				if reason == "" {
+					t.Fatalf("reason = empty, want denial containing %q", tc.wantSubstr)
+				}
+				if !strings.Contains(reason, tc.wantSubstr) {
+					t.Fatalf("reason = %q, want substring %q", reason, tc.wantSubstr)
+				}
+			} else {
+				if reason != "" {
+					t.Fatalf("reason = %q, want empty (allowed)", reason)
+				}
+			}
+		})
+	}
+}
+
+func TestServiceInspectDenySelinuxContext(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       ServiceOptions
+		body       string
+		wantDenied bool
+		wantSubstr string
+	}{
+		{
+			name:       "selinux disable denied when deny_selinux_disable enabled",
+			opts:       ServiceOptions{AllowOfficial: true, DenySelinuxDisable: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"SELinuxContext":{"Disable":true}}}}}`,
+			wantDenied: true,
+			wantSubstr: "SELinux disable is not allowed",
+		},
+		{
+			name:       "selinux disable allowed when knob off",
+			opts:       ServiceOptions{AllowOfficial: true, DenySelinuxDisable: false},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"SELinuxContext":{"Disable":true}}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "selinux label override denied when deny_selinux_label_override enabled",
+			opts:       ServiceOptions{AllowOfficial: true, DenySelinuxLabelOverride: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"SELinuxContext":{"Type":"spc_t"}}}}}`,
+			wantDenied: true,
+			wantSubstr: "SELinux context override is not allowed",
+		},
+		{
+			name:       "selinux level override denied when deny_selinux_label_override enabled",
+			opts:       ServiceOptions{AllowOfficial: true, DenySelinuxLabelOverride: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"SELinuxContext":{"Level":"s0"}}}}}`,
+			wantDenied: true,
+			wantSubstr: "SELinux context override is not allowed",
+		},
+		{
+			name:       "label override knob does not deny a bare disable",
+			opts:       ServiceOptions{AllowOfficial: true, DenySelinuxLabelOverride: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"SELinuxContext":{"Disable":true}}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "disable knob does not deny a context override",
+			opts:       ServiceOptions{AllowOfficial: true, DenySelinuxDisable: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"SELinuxContext":{"User":"system_u"}}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "nil SELinuxContext always allowed with both knobs enabled",
+			opts:       ServiceOptions{AllowOfficial: true, DenySelinuxDisable: true, DenySelinuxLabelOverride: true},
+			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","Privileges":{"NoNewPrivileges":true}}}}`,
+			wantDenied: false,
+		},
+		{
+			name:       "nil Privileges block always allowed with selinux knobs enabled",
+			opts:       ServiceOptions{AllowOfficial: true, DenySelinuxDisable: true, DenySelinuxLabelOverride: true},
 			body:       `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}}}`,
 			wantDenied: false,
 		},

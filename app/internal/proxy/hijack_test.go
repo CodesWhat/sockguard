@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -456,6 +457,149 @@ func TestHijackHandler_FullUpgrade(t *testing.T) {
 	serverWg.Wait()
 }
 
+// unixSocketDialer adapts a unix socket path to the upstream.Dialer seam so the
+// HijackHandlerWithDialer path can be exercised against an in-test mock daemon.
+type unixSocketDialer struct{ socketPath string }
+
+func (d unixSocketDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
+	return (&net.Dialer{}).DialContext(ctx, "unix", d.socketPath)
+}
+
+// TestHijackHandlerWithDialer_FullUpgrade mirrors TestHijackHandler_FullUpgrade
+// for the multi-host dialer path: the hijack must dial the active endpoint via
+// the upstream.Dialer, complete the 101 upgrade, and proxy bytes bidirectionally.
+func TestHijackHandlerWithDialer_FullUpgrade(t *testing.T) {
+	baseline := runtime.NumGoroutine()
+
+	socketPath := tempSocketPath(t, "dialer-upgrade")
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	const echoPayload = "hello from dialer upstream"
+
+	var serverWg sync.WaitGroup
+	serverWg.Add(1)
+	go func() {
+		defer serverWg.Done()
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		reader := bufio.NewReader(conn)
+		req, err := http.ReadRequest(reader)
+		if err != nil {
+			t.Errorf("mock: read request: %v", err)
+			return
+		}
+		req.Body.Close()
+
+		resp := &http.Response{
+			StatusCode: http.StatusSwitchingProtocols,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{},
+		}
+		resp.Header.Set("Connection", "Upgrade")
+		resp.Header.Set("Upgrade", "tcp")
+		resp.Header.Set("Content-Type", "application/vnd.docker.raw-stream")
+		if err := resp.Write(conn); err != nil {
+			t.Errorf("mock: write 101: %v", err)
+			return
+		}
+
+		buf := make([]byte, 256)
+		n, _ := reader.Read(buf)
+		conn.Write(buf[:n])
+		conn.Write([]byte(echoPayload))
+	}()
+
+	var logs safeBuffer
+	collector := &testhelp.CollectingHandler{}
+	logger := testhelp.NewTeeLogger(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}), collector)
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("next handler should not be called for hijack endpoint")
+	})
+	handler := HijackHandlerWithDialer(unixSocketDialer{socketPath: socketPath}, logger, next)
+
+	clientLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("client listen: %v", err)
+	}
+	defer clientLn.Close()
+
+	srv := &http.Server{Handler: handler}
+	serveDone := make(chan struct{})
+	go func() {
+		defer close(serveDone)
+		_ = srv.Serve(clientLn)
+	}()
+	defer srv.Close()
+
+	clientConn, err := net.Dial("tcp", clientLn.Addr().String())
+	if err != nil {
+		t.Fatalf("client dial: %v", err)
+	}
+	defer clientConn.Close()
+
+	reqStr := "POST /containers/abc/attach?stream=1 HTTP/1.1\r\nHost: localhost\r\n\r\n"
+	if _, err := clientConn.Write([]byte(reqStr)); err != nil {
+		t.Fatalf("client write request: %v", err)
+	}
+
+	clientBuf := bufio.NewReader(clientConn)
+	resp, err := http.ReadResponse(clientBuf, nil)
+	if err != nil {
+		t.Fatalf("client read response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101, got %d", resp.StatusCode)
+	}
+	if upgrade := resp.Header.Get("Upgrade"); upgrade != "tcp" {
+		t.Errorf("expected Upgrade: tcp, got %q", upgrade)
+	}
+
+	clientMsg := "ping"
+	clientConn.Write([]byte(clientMsg))
+
+	expected := clientMsg + echoPayload
+	if err := clientConn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	result := make([]byte, len(expected))
+	if _, err := io.ReadFull(clientBuf, result); err != nil {
+		t.Fatalf("client read: %v", err)
+	}
+	if got := string(result); got != expected {
+		t.Errorf("expected %q, got %q", expected, got)
+	}
+
+	// Tear down deterministically so the proxy's copy goroutines finish (and
+	// run their deferred putHijackBuffer) before the test returns — otherwise a
+	// leaked copy goroutine reads the package-level hijackBufferPool while a
+	// sibling test's restoreHijackHooks cleanup writes it (a cross-test race).
+	if err := clientConn.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	serverWg.Wait()
+	if err := srv.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		t.Fatalf("close server: %v", err)
+	}
+	select {
+	case <-serveDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP server did not stop after teardown")
+	}
+	if !collector.WaitForMessage("hijack: connection closed", 2*time.Second) {
+		t.Fatalf("expected 'connection closed' log within 2s; captured = %q", logs.String())
+	}
+	waitForGoroutineDrain(t, baseline, 2*time.Second)
+}
+
 func TestHijackHandler_Non101Fallbacks(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -825,15 +969,17 @@ func TestHandleHijack_RebuildsUpstreamRequestTargetFromNormalizedPath(t *testing
 	if gotReq.URL.Path != "/containers/abc/attach" {
 		t.Fatalf("URL.Path = %q, want %q", gotReq.URL.Path, "/containers/abc/attach")
 	}
-	if gotReq.URL.RawQuery != "stderr=1&stream=1" {
-		t.Fatalf("URL.RawQuery = %q, want %q", gotReq.URL.RawQuery, "stderr=1&stream=1")
+	// The query is forwarded verbatim (RawQuery passthrough), preserving the
+	// client's original parameter order rather than re-encoding/reordering it.
+	if gotReq.URL.RawQuery != "stream=1&stderr=1" {
+		t.Fatalf("URL.RawQuery = %q, want %q", gotReq.URL.RawQuery, "stream=1&stderr=1")
 	}
 
 	rawForwarded := rawRequest.String()
-	if !strings.Contains(rawForwarded, "POST /containers/abc/attach?stderr=1&stream=1 HTTP/1.1") {
-		t.Fatalf("forwarded request target was not rebuilt from normalized path and canonical query:\n%s", rawForwarded)
+	if !strings.Contains(rawForwarded, "POST /containers/abc/attach?stream=1&stderr=1 HTTP/1.1") {
+		t.Fatalf("forwarded request target was not rebuilt from normalized path with the verbatim query:\n%s", rawForwarded)
 	}
-	for _, disallowed := range []string{"client.example", "/v1.45/", "?stream=1&stderr=1"} {
+	for _, disallowed := range []string{"client.example", "/v1.45/"} {
 		if strings.Contains(rawForwarded, disallowed) {
 			t.Fatalf("forwarded request leaked %q:\n%s", disallowed, rawForwarded)
 		}

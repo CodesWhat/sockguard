@@ -84,19 +84,45 @@ func FuzzService(f *testing.F) {
 	f.Add("/services/svc-1/update", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"registry.example.com/acme/web:latest","Mounts":[{"Type":"bind","Source":"/allowed"}]}},"Networks":[{"Target":"host"}]}`))
 	f.Add("/v1.54/services/create", []byte(`{`))
 	f.Add("/services/create", bytes.Repeat([]byte("a"), maxServiceBodyBytes+1))
+	// Privileges block seeds — exercise the seccomp/AppArmor/SELinux/NoNewPrivileges
+	// hardening paths that the strict policy enforces.
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Privileges":{"Seccomp":{"Mode":"unconfined"}}}}}`))
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Privileges":{"Seccomp":{"Mode":"custom","Profile":{"defaultAction":"SCMP_ACT_ALLOW"}}}}}}`))
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Privileges":{"Seccomp":{"Profile":"c2VjY29tcA=="}}}}}`))
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Privileges":{"Seccomp":{"Mode":"","Profile":null}}}}}`))
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Privileges":{"AppArmor":{"Mode":"disabled"}}}}}`))
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Privileges":{"SELinuxContext":{"Disable":true}}}}}`))
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Privileges":{"SELinuxContext":{"User":"system_u","Role":"system_r","Type":"spc_t","Level":"s0"}}}}}`))
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Privileges":{"NoNewPrivileges":false}}}}`))
 
-	policy := newServicePolicy(ServiceOptions{
+	// Lenient policy: registry/mount allowlists only, no privilege hardening.
+	lenient := newServicePolicy(ServiceOptions{
 		AllowedBindMounts: []string{"/allowed"},
 		AllowOfficial:     true,
 		AllowedRegistries: []string{"registry.example.com"},
+	})
+	// Strict policy: every privilege guardrail engaged so the seccomp/AppArmor/
+	// SELinux/NoNewPrivileges deny branches are reachable from the same corpus.
+	strict := newServicePolicy(ServiceOptions{
+		AllowedBindMounts:         []string{"/allowed"},
+		AllowOfficial:             true,
+		AllowedRegistries:         []string{"registry.example.com"},
+		RequireNoNewPrivileges:    true,
+		DenyUnconfinedSeccomp:     true,
+		DenyCustomSeccompProfiles: true,
+		DenyUnconfinedAppArmor:    true,
+		DenySelinuxDisable:        true,
+		DenySelinuxLabelOverride:  true,
 	})
 
 	f.Fuzz(func(t *testing.T, path string, body []byte) {
 		body = truncateParserFuzzBytes(body, maxJSONInspectorFuzzBytes)
 
-		req := newJSONInspectorFuzzRequest(http.MethodPost, path, "", body)
-		_, _ = policy.inspect(nil, req, NormalizePath(path))
-		drainFuzzRequestBody(req)
+		for _, policy := range []servicePolicy{lenient, strict} {
+			req := newJSONInspectorFuzzRequest(http.MethodPost, path, "", body)
+			_, _ = policy.inspect(nil, req, NormalizePath(path))
+			drainFuzzRequestBody(req)
+		}
 	})
 }
 

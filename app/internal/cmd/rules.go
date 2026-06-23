@@ -149,7 +149,7 @@ func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBo
 	}
 
 	return fmt.Errorf(
-		"client profile %q allows body-sensitive write endpoints without request body inspection; set insecure_allow_body_blind_writes=true to acknowledge this risk: %s",
+		"client profile %q allows body-sensitive write endpoints without request body inspection; set the top-level insecure_allow_body_blind_writes=true to acknowledge this risk (it is a global setting, not per-profile): %s",
 		scope,
 		strings.Join(exposed, ", "),
 	)
@@ -179,8 +179,9 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 	return fmt.Errorf(
 		"client profile %q allows raw archive/export or log/attach streaming endpoints "+
 			"(these can exfiltrate container files, environment variables, and secrets); "+
-			"either tighten the profile's allow rules to omit these paths or set "+
-			"insecure_allow_read_exfiltration: true on the profile to acknowledge the risk. "+
+			"either tighten the profile's allow rules to omit these paths or set the "+
+			"top-level insecure_allow_read_exfiltration: true to acknowledge the risk "+
+			"(it is a global setting, not per-profile). "+
 			"Exposed endpoints: %s",
 		scope,
 		strings.Join(exposed, ", "),

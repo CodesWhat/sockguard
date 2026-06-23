@@ -197,6 +197,8 @@ func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 		DenyUnconfinedSeccomp:      c.DenyUnconfinedSeccomp,
 		DenyCustomSeccompProfiles:  c.DenyCustomSeccompProfiles,
 		DenyUnconfinedAppArmor:     c.DenyUnconfinedAppArmor,
+		DenySelinuxDisable:         c.DenySelinuxDisable,
+		DenySelinuxLabelOverride:   c.DenySelinuxLabelOverride,
 		ImageTrust:                 c.ImageTrust.toFilterOptions(),
 	}
 }

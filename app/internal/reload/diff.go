@@ -30,6 +30,9 @@ var ImmutableFields = []string{
 	"policy_bundle.allowed_keyless",
 	"policy_bundle.require_rekor_inclusion",
 	"policy_bundle.verify_timeout",
+	"reload.enabled",
+	"reload.debounce",
+	"reload.poll_interval",
 }
 
 // ImmutableDiff returns the names of immutable config fields whose values
@@ -93,6 +96,19 @@ func ImmutableDiff(oldCfg, newCfg *config.Config) []string {
 	}
 	if oldCfg.PolicyBundle.VerifyTimeout != newCfg.PolicyBundle.VerifyTimeout {
 		changed = append(changed, "policy_bundle.verify_timeout")
+	}
+	// The reload watcher reads these once at startup to wire its fsnotify watch
+	// plus the debounce/poll timers; a reload can't reconfigure the already-
+	// running watcher, so a change here has no effect until restart. Treat it as
+	// immutable rather than silently ignoring it.
+	if oldCfg.Reload.Enabled != newCfg.Reload.Enabled {
+		changed = append(changed, "reload.enabled")
+	}
+	if oldCfg.Reload.Debounce != newCfg.Reload.Debounce {
+		changed = append(changed, "reload.debounce")
+	}
+	if oldCfg.Reload.PollInterval != newCfg.Reload.PollInterval {
+		changed = append(changed, "reload.poll_interval")
 	}
 	return changed
 }

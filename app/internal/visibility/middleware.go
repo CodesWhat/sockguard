@@ -186,6 +186,8 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 		logger.Error("invalid visibility config", "error", err)
 		return compiledPolicy{}, nil, false
 	}
+	warnPatternsWithoutSelectors(logger, "default", defaultPolicy)
+	defaultWarned := defaultPolicy.hasPatternAxes() && len(defaultPolicy.selectors) == 0
 	merged := make(map[string]compiledPolicy, len(opts.Profiles))
 	for name, policy := range opts.Profiles {
 		compiled, err := compilePolicy(policy.VisibleResourceLabels, policy.NamePatterns, policy.ImagePatterns)
@@ -193,13 +195,37 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 			logger.Error("invalid visibility profile config", "profile", name, "error", err)
 			return compiledPolicy{}, nil, false
 		}
-		merged[name] = compiledPolicy{
+		mergedPolicy := compiledPolicy{
 			selectors:     append(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
 			namePatterns:  append(slices.Clone(defaultPolicy.namePatterns), compiled.namePatterns...),
 			imagePatterns: append(slices.Clone(defaultPolicy.imagePatterns), compiled.imagePatterns...),
 		}
+		// Skip the per-profile warning when the default already warned — every
+		// profile inherits the default's pattern axes, so it would just repeat
+		// the same root cause N times.
+		if !defaultWarned {
+			warnPatternsWithoutSelectors(logger, "profile "+name, mergedPolicy)
+		}
+		merged[name] = mergedPolicy
 	}
 	return defaultPolicy, merged, true
+}
+
+// warnPatternsWithoutSelectors logs once at construction when a visibility
+// policy carries name/image patterns but no label selector. Pattern response
+// filtering only covers /containers/json and /images/json (see
+// needsPatternResponseFilter); every other visibility-aware list endpoint —
+// /events in particular — is constrained solely by the label selectors injected
+// into the upstream filter. So a patterns-only policy silently leaves /events
+// (and /networks, /volumes, /services, …) unrestricted.
+func warnPatternsWithoutSelectors(logger *slog.Logger, scope string, policy compiledPolicy) {
+	if logger == nil || !policy.hasPatternAxes() || len(policy.selectors) > 0 {
+		return
+	}
+	logger.Warn("visibility name/image patterns are set without any visible_resource_labels selector; "+
+		"pattern filtering only applies to /containers/json and /images/json, so /events and the other list "+
+		"endpoints stay unrestricted — add a label selector to constrain them",
+		"scope", scope)
 }
 
 func misconfiguredVisibilityMiddleware() func(http.Handler) http.Handler {

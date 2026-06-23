@@ -183,8 +183,8 @@ func TestNodeInspectMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred to Docker)", reason)
+	if !strings.Contains(reason, "request body could not be inspected") {
+		t.Fatalf("reason = %q, want deny (fail-closed)", reason)
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
@@ -267,7 +267,9 @@ func TestNodeInspectEmptyBodyReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestNodeInspectFieldDecodeErrorsDeferToDocker(t *testing.T) {
+func TestNodeInspectFieldDecodeErrorsFailClosed(t *testing.T) {
+	// A field-level type mismatch must deny (fail-closed), consistent with the
+	// swarm inspectors, rather than forward an uninspectable body to Docker.
 	tests := []struct {
 		name string
 		body string
@@ -276,6 +278,7 @@ func TestNodeInspectFieldDecodeErrorsDeferToDocker(t *testing.T) {
 		{name: "availability", body: `{"Availability":42}`},
 		{name: "name", body: `{"Name":42}`},
 		{name: "labels", body: `{"Labels":[]}`},
+		{name: "non-object body", body: `[1,2,3]`},
 	}
 
 	for _, tt := range tests {
@@ -289,8 +292,8 @@ func TestNodeInspectFieldDecodeErrorsDeferToDocker(t *testing.T) {
 			if err != nil {
 				t.Fatalf("inspect() error = %v", err)
 			}
-			if reason != "" {
-				t.Fatalf("reason = %q, want empty", reason)
+			if !strings.Contains(reason, "request body could not be inspected") {
+				t.Fatalf("reason = %q, want deny", reason)
 			}
 			if records := logs.snapshot(); len(records) != 1 {
 				t.Fatalf("log records = %d, want 1", len(records))

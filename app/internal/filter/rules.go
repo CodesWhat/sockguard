@@ -205,6 +205,15 @@ func stripVersionPrefix(p string) string {
 	return p[i:]
 }
 
+// HasVersionPrefix reports whether p begins with a Docker API version prefix
+// (e.g. "/v1.45/") that NormalizePath strips before rule matching. A rule
+// pattern carrying such a prefix can never match real traffic — the request
+// path is normalized first — so it is almost always an authoring mistake worth
+// flagging.
+func HasVersionPrefix(p string) bool {
+	return stripVersionPrefix(p) != p
+}
+
 // CompileRule compiles a Rule into a CompiledRule for efficient matching.
 func CompileRule(r Rule) (*CompiledRule, error) {
 	var methodMask httpMethodMask
