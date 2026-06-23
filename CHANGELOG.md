@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0-rc.5] - 2026-06-23
+
+CI and contributor-tooling pass — no proxy behavior change. Adds an enforced coverage floor and Qlty Cloud coverage reporting, and corrects the advertised coverage number to match reality.
+
+### Added
+
+- **CI coverage gate.** The Go test job now fails when the weighted statement-coverage total drops below a 95% floor (computed with `go tool cover`), turning the documented coverage number into an enforced check rather than an honor-system target.
+- **Qlty Cloud coverage reporting.** The Go coverprofile is published to Qlty Cloud (dashboard, badge, and per-PR diff coverage), authenticated via GitHub OIDC so there is no stored coverage token to manage or rotate. A coverage badge was added to the README.
+
+### Changed
+
+- **Coverage claim corrected to the real number.** README and CONTRIBUTING advertised "96%+"; the actual weighted statement total is 95.5%. Updated to "95%+" and tied to the new CI gate.
+
 ## [1.4.0-rc.4] - 2026-06-22
 
 Drydock-integration audit of the shipped drydock presets against drydock v1.5.0's real Docker API surface — four confirmed defects fixed, plus regression guards.

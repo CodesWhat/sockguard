@@ -242,6 +242,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    # OIDC lets the Qlty coverage upload authenticate with no stored secret:
+    # id-token:write mints the OIDC token, contents:read is for checkout.
+    permissions:
+      contents: read
+      id-token: write
+
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
@@ -265,11 +271,54 @@ jobs:
         working-directory: app
 
       - name: Upload coverage
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: go-coverage
           path: app/coverage.txt
           retention-days: 14
+
+      - name: Normalize coverage paths for Qlty
+        # The Go module lives in app/, so coverprofile paths are module-relative
+        # (github.com/codeswhat/sockguard/internal/…). Qlty resolves file paths
+        # against the repo root, where the sources are under app/ — without this
+        # rewrite it reports 100% of files "missing on disk" and fails validation.
+        # Rewriting the module path to app/ makes them resolve; we publish the
+        # copy and leave the pristine coverage.txt for the gate below (go tool
+        # cover needs the real import paths).
+        working-directory: app
+        run: sed 's#github.com/codeswhat/sockguard/#app/#g' coverage.txt > coverage.qlty.txt
+
+      - name: Publish coverage to Qlty
+        # OIDC auth — no token/secret to store or rotate (verified working on
+        # PR #115). Skipped on fork PRs, which GitHub does not grant
+        # id-token:write. Non-blocking until a green run confirms coverage lands
+        # in the dashboard, so a publish hiccup can't redden the release-gating
+        # job during the rc soak; the coverage gate below still enforces the
+        # floor regardless.
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        continue-on-error: true
+        uses: qltysh/qlty-action/coverage@fd52dc852530a708d68c3b7342f8d33d1df4cd55  # v2.2.1
+        with:
+          oidc: true
+          files: app/coverage.qlty.txt
+          format: coverprofile
+
+      - name: Coverage gate
+        # Vendor-free floor: fails the job when the weighted statement total
+        # drops below COVERAGE_MIN, independent of Qlty Cloud being reachable.
+        # Kept a touch under the real total (95.5% as of 2026-06) so ordinary
+        # churn does not trip it; ratchet up as coverage climbs.
+        working-directory: app
+        env:
+          COVERAGE_MIN: "95"
+        run: |
+          total=$(go tool cover -func=coverage.txt | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "Total statement coverage: ${total}% (floor ${COVERAGE_MIN}%)"
+          awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN { exit (t+0 >= m+0) ? 0 : 1 }' || {
+            echo "::error::coverage ${total}% is below the ${COVERAGE_MIN}% floor"
+            exit 1
+          }
 
   go-fuzz:
     # Tier 1 — per-PR smoke-level fuzzing. Each fuzzer gets a fixed 60 s
