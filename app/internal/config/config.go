@@ -381,8 +381,17 @@ type ServiceRequestBodyConfig struct {
 	// DenyUnconfinedAppArmor denies service create/update when
 	// ContainerSpec.Privileges.AppArmor.Mode is "disabled" (the swarm equivalent
 	// of "unconfined" AppArmor). Default false (opt-in).
-	DenyUnconfinedAppArmor bool             `mapstructure:"deny_unconfined_apparmor"`
-	ImageTrust             ImageTrustConfig `mapstructure:"image_trust"`
+	DenyUnconfinedAppArmor bool `mapstructure:"deny_unconfined_apparmor"`
+	// DenySelinuxDisable denies service create/update when
+	// ContainerSpec.Privileges.SELinuxContext.Disable is true — the swarm
+	// equivalent of the container-create deny_selinux_disable. Default false (opt-in).
+	DenySelinuxDisable bool `mapstructure:"deny_selinux_disable"`
+	// DenySelinuxLabelOverride denies service create/update that customizes the
+	// SELinux context via ContainerSpec.Privileges.SELinuxContext.{User,Role,Type,
+	// Level} — the swarm equivalent of container-create deny_selinux_label_override.
+	// Default false (opt-in).
+	DenySelinuxLabelOverride bool             `mapstructure:"deny_selinux_label_override"`
+	ImageTrust               ImageTrustConfig `mapstructure:"image_trust"`
 }
 
 // SwarmRequestBodyConfig configures inspection for swarm writes.

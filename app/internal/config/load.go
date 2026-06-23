@@ -173,6 +173,8 @@ func setLoadDefaults(v *viper.Viper, defaults Config) {
 	v.SetDefault("request_body.service.deny_unconfined_seccomp", defaults.RequestBody.Service.DenyUnconfinedSeccomp)
 	v.SetDefault("request_body.service.deny_custom_seccomp_profiles", defaults.RequestBody.Service.DenyCustomSeccompProfiles)
 	v.SetDefault("request_body.service.deny_unconfined_apparmor", defaults.RequestBody.Service.DenyUnconfinedAppArmor)
+	v.SetDefault("request_body.service.deny_selinux_disable", defaults.RequestBody.Service.DenySelinuxDisable)
+	v.SetDefault("request_body.service.deny_selinux_label_override", defaults.RequestBody.Service.DenySelinuxLabelOverride)
 	v.SetDefault("request_body.container_create.image_trust.require_rekor_inclusion", defaults.RequestBody.ContainerCreate.ImageTrust.RequireRekorInclusion)
 	v.SetDefault("request_body.container_create.image_trust.verify_timeout", defaults.RequestBody.ContainerCreate.ImageTrust.VerifyTimeout)
 	v.SetDefault("request_body.service.image_trust.require_rekor_inclusion", defaults.RequestBody.Service.ImageTrust.RequireRekorInclusion)

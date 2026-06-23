@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Internal multi-axis audit of the v1.4 release candidate (security, performance, tests, supply chain) — no critical or high findings; this section collects the resulting hardening.
+
+### Added
+
+- **Swarm service SELinux confinement parity.** Two opt-in `request_body.service` knobs (default off, zero behavior change): `deny_selinux_disable` denies `ContainerSpec.Privileges.SELinuxContext.Disable=true` (the swarm equivalent of the container-create `label=disable` that turns off SELinux confinement), and `deny_selinux_label_override` denies any `SELinuxContext.{User,Role,Type,Level}` context customization. Closes the gap where an operator who enabled `deny_selinux_disable` for container creates got no equivalent enforcement against swarm services.
+
+### Fixed
+
+- **Service seccomp `Profile: null` no longer false-denies.** JSON `"Profile": null` decodes to the 4-byte literal `null` rather than an empty blob; the implicit-custom-profile fail-closed check now treats it as "no inline profile" so `deny_custom_seccomp_profiles` doesn't reject a bare `null`.
+- **Clearer error when pinning a verified service image** that is missing `TaskTemplate`/`ContainerSpec`, instead of an opaque `unexpected end of JSON input`.
+
 ## [1.4.0-rc.2] - 2026-06-22
 
 ### Changed
