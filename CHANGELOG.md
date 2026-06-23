@@ -15,6 +15,9 @@ Internal multi-axis audit of the v1.4 release candidate (security, performance, 
 
 ### Fixed
 
+- **Plugin inspection now fails closed across the board.** `POST /plugins/{id}/set` denies a body that is valid JSON but not a `[]string` (previously such a body skipped the env-prefix/bind-mount/device allowlists entirely), and `POST /plugins/create` denies an archive with no inspectable `config.json` instead of forwarding it unchecked — both matching the deny-on-uninspectable posture every other inspector already uses.
+- **Plugin-create gzip-bomb guard.** The `/plugins/create` archive walk now bounds the *decompressed* byte count (4 GiB cap) like the build and image-load paths, so a small compressed body can no longer expand to hundreds of GiB during the tar walk/drain and exhaust memory.
+- **Right-sized plugin JSON body limits.** `/plugins/pull`, `/plugins/{id}/upgrade`, and `/plugins/{id}/set` now cap their (small JSON) bodies at 1 MiB instead of the 512 MiB archive limit, removing a per-request half-gigabyte heap-allocation DoS vector; the 512 MiB limit stays only on `/plugins/create`, which spools to disk. Oversized `/plugins/create` bodies now return `413` (was `403`), matching the build/node-update convention.
 - **Service seccomp `Profile: null` no longer false-denies.** JSON `"Profile": null` decodes to the 4-byte literal `null` rather than an empty blob; the implicit-custom-profile fail-closed check now treats it as "no inline profile" so `deny_custom_seccomp_profiles` doesn't reject a bare `null`.
 - **Clearer error when pinning a verified service image** that is missing `TaskTemplate`/`ContainerSpec`, instead of an opaque `unexpected end of JSON input`.
 

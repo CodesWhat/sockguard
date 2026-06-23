@@ -713,12 +713,32 @@ func TestInspectPluginCreateOversizedBodyDenied(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{})
 	payload := bytes.Repeat([]byte("x"), maxPluginBodyBytes+1)
 	req := httptest.NewRequest(http.MethodPost, "/plugins/create", bytes.NewReader(payload))
+	_, err := policy.inspectPluginCreate(nil, req)
+	rejection, ok := requestRejectionFromError(err)
+	if !ok {
+		t.Fatalf("inspectPluginCreate() error = %v, want request rejection", err)
+	}
+	if rejection.status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("rejection status = %d, want %d", rejection.status, http.StatusRequestEntityTooLarge)
+	}
+}
+
+func TestInspectPluginCreateMissingConfigDenied(t *testing.T) {
+	// A non-empty archive with no config.json must fail closed.
+	policy := newPluginPolicy(PluginOptions{})
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	content := []byte("rootfs data")
+	_ = tw.WriteHeader(&tar.Header{Name: "rootfs/data", Typeflag: tar.TypeReg, Size: int64(len(content)), Mode: 0o644})
+	_, _ = tw.Write(content)
+	_ = tw.Close()
+	req := httptest.NewRequest(http.MethodPost, "/plugins/create", bytes.NewReader(buf.Bytes()))
 	reason, err := policy.inspectPluginCreate(nil, req)
 	if err != nil {
 		t.Fatalf("inspectPluginCreate() error = %v", err)
 	}
 	if reason == "" {
-		t.Fatal("expected denial for oversized create body")
+		t.Fatal("expected denial for plugin archive without config.json")
 	}
 }
 
@@ -760,6 +780,23 @@ func TestInspectPluginSetDeniesDeviceSetting(t *testing.T) {
 	}
 	if reason == "" {
 		t.Fatal("expected denial for denied device in plugin set")
+	}
+}
+
+func TestInspectPluginCreateDecompressedTooLargeDenied(t *testing.T) {
+	// The gzip-bomb guard surfaces errPluginDecompressedTooLarge; inspectPluginCreate
+	// must map it to a clean deny rather than a 500. Inject the sentinel via the
+	// drain hook so the test doesn't need a multi-GiB payload.
+	payload := mustPluginCreateContextPayloadWithConfig(t, `{"Linux":{"Capabilities":[]}}`, true)
+	policy := newPluginPolicy(PluginOptions{})
+	policy.io.DrainReader = func(io.Reader) error { return errPluginDecompressedTooLarge }
+	req := httptest.NewRequest(http.MethodPost, "/plugins/create", bytes.NewReader(payload))
+	reason, err := policy.inspectPluginCreate(nil, req)
+	if err != nil {
+		t.Fatalf("inspectPluginCreate() error = %v, want deny (nil error)", err)
+	}
+	if !strings.Contains(reason, "decompressed plugin archive exceeds") {
+		t.Fatalf("reason = %q, want decompressed-too-large deny", reason)
 	}
 }
 
@@ -1071,7 +1108,9 @@ func TestInspectPluginSetIgnoresBodyCloseErrorAfterRead(t *testing.T) {
 }
 
 func TestInspectPluginSetMalformedJSONWithLogger(t *testing.T) {
-	// Exercises lines 202-206: logger debug when plugin set JSON cannot be decoded.
+	// A body that is not a []string must fail closed (deny), not skip the
+	// AllowedSetEnvPrefixes/mount/device allowlists. The logger still records the
+	// decode failure at debug.
 	policy := newPluginPolicy(PluginOptions{})
 	logs := &collectingHandler{}
 	req := httptest.NewRequest(http.MethodPost, "/plugins/acme/set", strings.NewReader("{not json}"))
@@ -1079,11 +1118,28 @@ func TestInspectPluginSetMalformedJSONWithLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspectPluginSet() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	const wantReason = "plugin set denied: request body could not be inspected"
+	if reason != wantReason {
+		t.Fatalf("reason = %q, want %q", reason, wantReason)
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
+	}
+}
+
+func TestInspectPluginSetNonStringArrayDenied(t *testing.T) {
+	// Valid JSON that is not []string (an object, an array of non-strings) must
+	// be denied rather than bypassing the per-setting allowlists.
+	policy := newPluginPolicy(PluginOptions{})
+	for _, body := range []string{`{}`, `[1,2,3]`, `{"DEBUG":"1"}`} {
+		req := httptest.NewRequest(http.MethodPost, "/plugins/acme/set", strings.NewReader(body))
+		reason, err := policy.inspectPluginSet(nil, req)
+		if err != nil {
+			t.Fatalf("inspectPluginSet(%s) error = %v", body, err)
+		}
+		if reason == "" {
+			t.Fatalf("inspectPluginSet(%s) reason = empty, want deny", body)
+		}
 	}
 }
 
