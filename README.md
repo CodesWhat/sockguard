@@ -265,7 +265,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | ⏱️ | **Upstream Request Timeout** | Opt-in `upstream.request_timeout` bounds finite proxied requests with a total deadline, turning a hung response body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`). Streaming and long-lived endpoints (events, follow logs/stats, pull/build/push/load, export, attach, container wait) are exempt. |
 | 📈 | **Prometheus Metrics** | Opt-in `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, active request gauge, upstream watchdog + readiness state/check metrics, plus `sockguard_build_info` and `sockguard_start_time_seconds` gauges for version panels and uptime alerts. |
 | 🔗 | **Trace/Log Correlation** | Preserves valid W3C `traceparent` context or generates local context, forwards a proxy-local span ID, and records trace fields in access, audit, and upstream error logs without an OTLP exporter. |
-| 🧪 | **Battle-Tested** | 95%+ statement coverage (enforced by a CI coverage gate), race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
+| 🧪 | **Battle-Tested** | 96%+ statement coverage (enforced by a CI coverage gate), race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
 
 <hr>
 

@@ -884,3 +884,46 @@ func TestServiceInspectImageTrustPinsVerifiedDigest(t *testing.T) {
 		t.Fatalf("ContentLength = %d, want %d", req.ContentLength, len(got))
 	}
 }
+
+func TestRewriteServiceImage(t *testing.T) {
+	t.Run("replaces ContainerSpec Image", func(t *testing.T) {
+		body := []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","User":"nobody"},"Resources":{"Limits":{"MemoryBytes":134217728}}},"Replicas":2}`)
+		result, err := rewriteServiceImage(body, "nginx@sha256:deadbeef")
+		if err != nil {
+			t.Fatalf("rewriteServiceImage() error = %v", err)
+		}
+		if !strings.Contains(string(result), `"nginx@sha256:deadbeef"`) {
+			t.Errorf("rewriteServiceImage() missing pinned ref: %s", result)
+		}
+		// Other fields must be preserved.
+		if !strings.Contains(string(result), `"nobody"`) {
+			t.Errorf("rewriteServiceImage() dropped User field: %s", result)
+		}
+		if !strings.Contains(string(result), "134217728") {
+			t.Errorf("rewriteServiceImage() corrupted MemoryBytes: %s", result)
+		}
+	})
+
+	t.Run("missing TaskTemplate returns error", func(t *testing.T) {
+		body := []byte(`{"Replicas":1}`)
+		_, err := rewriteServiceImage(body, "pinned:ref")
+		if err == nil {
+			t.Fatal("expected error for missing TaskTemplate, got nil")
+		}
+	})
+
+	t.Run("missing ContainerSpec returns error", func(t *testing.T) {
+		body := []byte(`{"TaskTemplate":{"Resources":{}}}`)
+		_, err := rewriteServiceImage(body, "pinned:ref")
+		if err == nil {
+			t.Fatal("expected error for missing ContainerSpec, got nil")
+		}
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		_, err := rewriteServiceImage([]byte("{bad"), "pinned:ref")
+		if err == nil {
+			t.Fatal("expected error for invalid JSON, got nil")
+		}
+	})
+}

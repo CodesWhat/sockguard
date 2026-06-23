@@ -2102,3 +2102,151 @@ func TestFilterWriterFlushFilteredPassesThroughNon2xx(t *testing.T) {
 		t.Fatalf("body = %q, want %q (body must be forwarded byte-for-byte)", got, errBody)
 	}
 }
+
+// TestAcquireReleasePatternBuffer exercises the pool acquire/release cycle so
+// the nil-guard in releasePatternBuffer is covered.
+func TestAcquireReleasePatternBuffer(t *testing.T) {
+	t.Parallel()
+
+	// Acquire produces a non-nil, reset buffer.
+	buf := acquirePatternBuffer()
+	if buf == nil {
+		t.Fatal("acquirePatternBuffer() returned nil")
+	}
+
+	// Write something so we can verify Reset is called on re-acquire.
+	buf.WriteString("stale data")
+	releasePatternBuffer(buf)
+
+	buf2 := acquirePatternBuffer()
+	if buf2.Len() != 0 {
+		t.Errorf("re-acquired buffer not reset: len = %d", buf2.Len())
+	}
+	releasePatternBuffer(buf2)
+
+	// Releasing nil must not panic.
+	releasePatternBuffer(nil)
+}
+
+// TestResourceMetaMatchesPatternsUnknownKind covers the default branch that
+// returns true for any kind that is neither KindContainer nor KindImage.
+func TestResourceMetaMatchesPatternsUnknownKind(t *testing.T) {
+	t.Parallel()
+
+	namePatterns, err := compilePatterns([]string{"traefik"})
+	if err != nil {
+		t.Fatalf("compilePatterns: %v", err)
+	}
+	policy := &compiledPolicy{namePatterns: namePatterns}
+	meta := &resourceMeta{names: []string{"/unrelated"}}
+
+	// A volume or service kind should always return true (no name/image meta).
+	if !resourceMetaMatchesPatterns(meta, dockerresource.KindVolume, policy) {
+		t.Error("expected true for unknown kind, got false")
+	}
+}
+
+// TestImageMetaMatchesPatternsNameAndImage exercises the imageMetaMatchesPatterns
+// branches: no tags → false when namePatterns require a match; matching tag → true.
+func TestImageMetaMatchesPatternsNameAndImage(t *testing.T) {
+	t.Parallel()
+
+	namePatterns, err := compilePatterns([]string{"traefik*"})
+	if err != nil {
+		t.Fatalf("compilePatterns(name): %v", err)
+	}
+	imagePatterns, err := compilePatterns([]string{"ghcr.io/**"})
+	if err != nil {
+		t.Fatalf("compilePatterns(image): %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		repoTags []string
+		policy   *compiledPolicy
+		want     bool
+	}{
+		{
+			name:     "name pattern matches short name",
+			repoTags: []string{"traefik:v2.10"},
+			policy:   &compiledPolicy{namePatterns: namePatterns},
+			want:     true,
+		},
+		{
+			name:     "name pattern no match",
+			repoTags: []string{"nginx:latest"},
+			policy:   &compiledPolicy{namePatterns: namePatterns},
+			want:     false,
+		},
+		{
+			name:     "image pattern matches full ref",
+			repoTags: []string{"ghcr.io/org/app:1.0"},
+			policy:   &compiledPolicy{imagePatterns: imagePatterns},
+			want:     true,
+		},
+		{
+			name:     "image pattern no match",
+			repoTags: []string{"docker.io/library/nginx:latest"},
+			policy:   &compiledPolicy{imagePatterns: imagePatterns},
+			want:     false,
+		},
+		{
+			name:     "empty repoTags with name pattern returns false",
+			repoTags: nil,
+			policy:   &compiledPolicy{namePatterns: namePatterns},
+			want:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			meta := &resourceMeta{repoTags: tt.repoTags}
+			got := imageMetaMatchesPatterns(meta, tt.policy)
+			if got != tt.want {
+				t.Errorf("imageMetaMatchesPatterns() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestAnyRepoTagMatchesWithTransform covers the transform-applied path in anyRepoTagMatches.
+func TestAnyRepoTagMatchesWithTransform(t *testing.T) {
+	t.Parallel()
+
+	shortNamePatterns, err := compilePatterns([]string{"traefik*"})
+	if err != nil {
+		t.Fatalf("compilePatterns: %v", err)
+	}
+
+	refs := []string{"ghcr.io/traefik/traefik:v2.10", "nginx:latest"}
+
+	// With imageShortName transform: "ghcr.io/traefik/traefik:v2.10" → "traefik:v2.10"
+	if !anyRepoTagMatches(refs, shortNamePatterns, imageShortName) {
+		t.Error("anyRepoTagMatches with imageShortName transform should return true")
+	}
+
+	// Without transform: full refs don't match "traefik*"
+	if anyRepoTagMatches(refs, shortNamePatterns, nil) {
+		t.Error("anyRepoTagMatches without transform should return false for full refs")
+	}
+}
+
+// TestResourceVisibleNotFound covers the !found → (true, nil) branch in resourceVisible.
+func TestResourceVisibleNotFound(t *testing.T) {
+	t.Parallel()
+
+	deps := visibilityDeps{
+		inspectResource: func(_ context.Context, _ dockerresource.Kind, _ string) (map[string]string, bool, error) {
+			return nil, false, nil // not found
+		},
+	}
+	selectors := []compiledSelector{{key: "env", value: "prod", hasValue: true}}
+
+	visible, err := resourceVisible(context.Background(), deps, dockerresource.KindContainer, "missing-id", selectors)
+	if err != nil {
+		t.Fatalf("resourceVisible() error = %v, want nil", err)
+	}
+	if !visible {
+		t.Error("resourceVisible() = false for not-found resource, want true (treat as visible)")
+	}
+}

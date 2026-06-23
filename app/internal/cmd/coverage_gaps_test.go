@@ -579,6 +579,99 @@ func TestCompileClientProfiles_CompileRuleError(t *testing.T) {
 	}
 }
 
+// ---- durationOrZero ----
+
+func TestDurationOrZero(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string // duration string for comparison
+	}{
+		{"", "0s"},
+		{"30s", "30s"},
+		{"1m", "1m0s"},
+		{"not-a-duration", "0s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := durationOrZero(tt.input)
+			if got.String() != tt.want {
+				t.Errorf("durationOrZero(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---- resolveUpstreamSpecs ----
+
+func TestResolveUpstreamSpecs(t *testing.T) {
+	discardLogger := newDiscardLogger()
+
+	t.Run("explicit endpoints take precedence", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Upstream.Endpoints = []config.UpstreamEndpoint{
+			{Address: "tcp://host1:2376"},
+			{Address: "tcp://host2:2376"},
+		}
+		specs, legacy := resolveUpstreamSpecs(&cfg, func(string) string { return "" }, discardLogger)
+		if legacy {
+			t.Error("expected legacy=false for explicit endpoints")
+		}
+		if len(specs) != 2 {
+			t.Fatalf("specs len = %d, want 2", len(specs))
+		}
+		if specs[0].Address != "tcp://host1:2376" {
+			t.Errorf("specs[0].Address = %q, want tcp://host1:2376", specs[0].Address)
+		}
+	})
+
+	t.Run("falls back to socket when no endpoints and no DOCKER_HOST", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Upstream.Socket = "/var/run/docker.sock"
+		specs, legacy := resolveUpstreamSpecs(&cfg, func(string) string { return "" }, discardLogger)
+		if !legacy {
+			t.Error("expected legacy=true for socket fallback")
+		}
+		if len(specs) != 1 || specs[0].Address != "/var/run/docker.sock" {
+			t.Fatalf("specs = %v, want [{Address: /var/run/docker.sock}]", specs)
+		}
+	})
+}
+
+// ---- upstreamDisplayFromConfig ----
+
+func TestUpstreamDisplayFromConfig(t *testing.T) {
+	t.Run("no endpoints returns socket", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Upstream.Socket = "/var/run/docker.sock"
+		got := upstreamDisplayFromConfig(&cfg)
+		if got != "/var/run/docker.sock" {
+			t.Errorf("upstreamDisplayFromConfig() = %q, want %q", got, "/var/run/docker.sock")
+		}
+	})
+
+	t.Run("single endpoint returns address", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Upstream.Endpoints = []config.UpstreamEndpoint{{Address: "tcp://primary:2376"}}
+		got := upstreamDisplayFromConfig(&cfg)
+		if got != "tcp://primary:2376" {
+			t.Errorf("upstreamDisplayFromConfig() = %q, want %q", got, "tcp://primary:2376")
+		}
+	})
+
+	t.Run("multiple endpoints shows failover count", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Upstream.Endpoints = []config.UpstreamEndpoint{
+			{Address: "tcp://primary:2376"},
+			{Address: "tcp://secondary:2376"},
+			{Address: "tcp://tertiary:2376"},
+		}
+		got := upstreamDisplayFromConfig(&cfg)
+		if got != "tcp://primary:2376 (+2 failover)" {
+			t.Errorf("upstreamDisplayFromConfig() = %q, want %q", got, "tcp://primary:2376 (+2 failover)")
+		}
+	})
+}
+
 // ---- helpers ----------------------------------------------------------------
 
 func newVersionCmdForTest() *cobra.Command {

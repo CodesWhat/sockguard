@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Coverage gate now measures production code only; floor raised to 96%.** The gate and the Qlty dashboard exclude packages that ship in no binary — the `differential` proxy-vs-daemon test harness, `internal/testcert`, and `internal/testhelp` — so the number reflects shipping code, not test scaffolding (their tests still run as regression checks). Production statement coverage is 96.7%; the floor is 96% (was a 95% floor measured over all packages).
+- **Coverage badge switched to the live Qlty Cloud badge** instead of a static shields.io image, so it tracks real coverage rather than a hardcoded number.
+
+### Tests
+
+- **Edge-case tests for the container-create security parsers** (device-cgroup rules, security-options, capability / no-new-privileges / non-root checks), the API-version-prefix path helper, and service-image rewriting — the production coverage added to clear the 96% floor.
+
 ## [1.4.0-rc.5] - 2026-06-23
 
 CI and contributor-tooling pass — no proxy behavior change. Adds an enforced coverage floor and Qlty Cloud coverage reporting, and corrects the advertised coverage number to match reality.

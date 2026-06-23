@@ -1494,3 +1494,426 @@ func containsSubstring(s, sub string) bool {
 		return false
 	}()
 }
+
+// TestSplitDeviceCgroupRuleEdgeCases covers the branches not hit by the
+// higher-level canonicalize tests: malformed inputs that trip the inner
+// splitDeviceCgroupRule directly.
+func TestSplitDeviceCgroupRuleEdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantOK   bool
+		wantType string
+		wantMaj  string
+		wantMin  string
+		wantPerm string
+	}{
+		{"valid rule", "b 8:0 rw", true, "b", "8", "0", "rw"},
+		{"too few fields", "b 8:0", false, "", "", "", ""},
+		{"too many fields", "b 8:0 rw extra", false, "", "", "", ""},
+		{"empty string", "", false, "", "", "", ""},
+		{"missing colon in major:minor", "b 80 rw", false, "", "", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			devType, maj, min, perm, ok := splitDeviceCgroupRule(tt.input)
+			if ok != tt.wantOK {
+				t.Fatalf("splitDeviceCgroupRule(%q) ok=%v, want %v", tt.input, ok, tt.wantOK)
+			}
+			if ok {
+				if devType != tt.wantType || maj != tt.wantMaj || min != tt.wantMin || perm != tt.wantPerm {
+					t.Errorf("splitDeviceCgroupRule(%q) = (%q,%q,%q,%q), want (%q,%q,%q,%q)",
+						tt.input, devType, maj, min, perm, tt.wantType, tt.wantMaj, tt.wantMin, tt.wantPerm)
+				}
+			}
+		})
+	}
+}
+
+func TestIsDeviceCgroupNumber(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"*", true},
+		{"0", true},
+		{"8", true},
+		{"255", true},
+		{"", false},
+		{"-1", false},
+		{"1a", false},
+		{"a", false},
+		{"1.5", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := isDeviceCgroupNumber(tt.input)
+			if got != tt.want {
+				t.Errorf("isDeviceCgroupNumber(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsValidDeviceCgroupPerms(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"r", true},
+		{"w", true},
+		{"m", true},
+		{"rw", true},
+		{"rwm", true},
+		{"mrw", true},
+		{"", false},
+		{"x", false},
+		{"rq", false},
+		{"rwx", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := isValidDeviceCgroupPerms(tt.input)
+			if got != tt.want {
+				t.Errorf("isValidDeviceCgroupPerms(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCgroupPermOrder(t *testing.T) {
+	// r < w < m; any other byte maps to 3 (higher than all valid perms).
+	if cgroupPermOrder('r') >= cgroupPermOrder('w') {
+		t.Error("expected r < w")
+	}
+	if cgroupPermOrder('w') >= cgroupPermOrder('m') {
+		t.Error("expected w < m")
+	}
+	// Default case: any non-rwm byte returns 3.
+	if got := cgroupPermOrder('x'); got != 3 {
+		t.Errorf("cgroupPermOrder('x') = %d, want 3", got)
+	}
+	if got := cgroupPermOrder(0); got != 3 {
+		t.Errorf("cgroupPermOrder(0) = %d, want 3", got)
+	}
+}
+
+func TestDeviceCgroupRuleAllowedWildcardAndMismatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		canonical string
+		allowlist []string
+		want      bool
+	}{
+		{
+			name:      "exact match",
+			canonical: "b 8:0 rw",
+			allowlist: []string{"b 8:0 rw"},
+			want:      true,
+		},
+		{
+			name:      "allowlist wildcard major matches numeric request",
+			canonical: "b 8:0 rw",
+			allowlist: []string{"b *:0 rw"},
+			want:      true,
+		},
+		{
+			name:      "allowlist wildcard minor matches numeric request",
+			canonical: "b 8:0 rw",
+			allowlist: []string{"b 8:* rw"},
+			want:      true,
+		},
+		{
+			name:      "request wildcard major denied when allowlist is numeric",
+			canonical: "b *:0 rw",
+			allowlist: []string{"b 8:0 rw"},
+			want:      false,
+		},
+		{
+			name:      "type mismatch",
+			canonical: "c 8:0 rw",
+			allowlist: []string{"b 8:0 rw"},
+			want:      false,
+		},
+		{
+			name:      "perms mismatch",
+			canonical: "b 8:0 r",
+			allowlist: []string{"b 8:0 rw"},
+			want:      false,
+		},
+		{
+			name:      "malformed canonical rule rejected",
+			canonical: "not-valid",
+			allowlist: []string{"b 8:0 rw"},
+			want:      false,
+		},
+		{
+			name:      "malformed allowlist entry skipped",
+			canonical: "b 8:0 rw",
+			allowlist: []string{"bad-entry", "b 8:0 rw"},
+			want:      true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deviceCgroupRuleAllowed(tt.canonical, tt.allowlist)
+			if got != tt.want {
+				t.Errorf("deviceCgroupRuleAllowed(%q, %v) = %v, want %v", tt.canonical, tt.allowlist, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseSecurityOptEdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantKind  string
+		wantValue string
+		wantOK    bool
+	}{
+		{"empty string returns false", "", "", "", false},
+		{"whitespace-only returns false", "   ", "", "", false},
+		{"bare token no separator returns false", "no-new-privileges", "", "", false},
+		{"equals separator", "seccomp=unconfined", "seccomp", "unconfined", true},
+		{"colon separator", "apparmor:docker-default", "apparmor", "docker-default", true},
+		{"key is lowercased", "Seccomp=default", "seccomp", "default", true},
+		{"value whitespace trimmed", "seccomp= default ", "seccomp", "default", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind, value, ok := parseSecurityOpt(tt.input)
+			if ok != tt.wantOK {
+				t.Fatalf("parseSecurityOpt(%q) ok=%v, want %v", tt.input, ok, tt.wantOK)
+			}
+			if ok && (kind != tt.wantKind || value != tt.wantValue) {
+				t.Errorf("parseSecurityOpt(%q) = (%q, %q), want (%q, %q)", tt.input, kind, value, tt.wantKind, tt.wantValue)
+			}
+		})
+	}
+}
+
+func TestHasNoNewPrivilegesEdgeCases(t *testing.T) {
+	tests := []struct {
+		name        string
+		securityOpt []string
+		want        bool
+	}{
+		{"nil slice returns false", nil, false},
+		{"empty slice returns false", []string{}, false},
+		{"empty string entry is skipped", []string{""}, false},
+		{"whitespace-only entry is skipped", []string{"   "}, false},
+		{"bare token true", []string{"no-new-privileges"}, true},
+		{"colon true", []string{"no-new-privileges:true"}, true},
+		{"equals true", []string{"no-new-privileges=true"}, true},
+		{"colon false", []string{"no-new-privileges:false"}, false},
+		{"case insensitive key match", []string{"No-New-Privileges:true"}, true},
+		{"different key ignored", []string{"seccomp=unconfined"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasNoNewPrivileges(tt.securityOpt)
+			if got != tt.want {
+				t.Errorf("hasNoNewPrivileges(%v) = %v, want %v", tt.securityOpt, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsNonRootUserEdgeCases(t *testing.T) {
+	tests := []struct {
+		name string
+		user string
+		want bool
+	}{
+		{"empty is root", "", false},
+		{"whitespace only is root", "   ", false},
+		{"root by name", "root", false},
+		{"ROOT uppercase", "ROOT", false},
+		{"uid 0 is root", "0", false},
+		{"uid 00 is root (zero-padded)", "00", false},
+		{"non-root name", "nobody", true},
+		{"non-root uid", "1000", true},
+		{"user:group form non-root", "1000:1000", true},
+		{"user:group root uid", "0:1000", false},
+		{"empty user part colon form", ":1000", false},
+		{"root name with group", "root:staff", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isNonRootUser(tt.user)
+			if got != tt.want {
+				t.Errorf("isNonRootUser(%q) = %v, want %v", tt.user, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeStringListEdgeCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []string
+		want  []string
+	}{
+		{"nil input", nil, []string{}},
+		{"empty string omitted", []string{""}, []string{}},
+		{"whitespace-only omitted", []string{"  "}, []string{}},
+		{"duplicates removed", []string{"a", "a", "b"}, []string{"a", "b"}},
+		{"whitespace trimmed", []string{"  hello  "}, []string{"hello"}},
+		{"whitespace duplicates deduplicated", []string{"a", " a "}, []string{"a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeStringList(tt.input)
+			if len(got) != len(tt.want) {
+				t.Fatalf("normalizeStringList(%v) = %v (len %d), want %v (len %d)", tt.input, got, len(got), tt.want, len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("normalizeStringList(%v)[%d] = %q, want %q", tt.input, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestCapabilityAddDenyReasonEdgeCases(t *testing.T) {
+	tests := []struct {
+		name           string
+		requested      []string
+		allowAll       bool
+		allowed        []string
+		subject        string
+		wantDenyReason string
+	}{
+		{
+			name:      "allowAll skips all checks",
+			requested: []string{"NET_ADMIN"},
+			allowAll:  true,
+			allowed:   nil,
+			subject:   "container create",
+		},
+		{
+			name:      "empty capability in requested is skipped",
+			requested: []string{""},
+			allowAll:  false,
+			allowed:   nil,
+			subject:   "container create",
+		},
+		{
+			name:           "capability not in allowlist denied",
+			requested:      []string{"NET_ADMIN"},
+			allowAll:       false,
+			allowed:        []string{"SYS_PTRACE"},
+			subject:        "container create",
+			wantDenyReason: `container create denied: capability "NET_ADMIN" is not in the allowed list`,
+		},
+		{
+			name:      "capability in allowlist passes",
+			requested: []string{"NET_ADMIN"},
+			allowAll:  false,
+			allowed:   []string{"NET_ADMIN"},
+			subject:   "container create",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := capabilityAddDenyReason(tt.requested, tt.allowAll, tt.allowed, tt.subject)
+			if got != tt.wantDenyReason {
+				t.Errorf("capabilityAddDenyReason() = %q, want %q", got, tt.wantDenyReason)
+			}
+		})
+	}
+}
+
+func TestRewriteJSONImageField(t *testing.T) {
+	t.Run("replaces Image field", func(t *testing.T) {
+		body := []byte(`{"Image":"nginx:latest","HostConfig":{"Memory":134217728}}`)
+		result, err := rewriteJSONImageField(body, "nginx@sha256:abc123")
+		if err != nil {
+			t.Fatalf("rewriteJSONImageField() error = %v", err)
+		}
+		// The Image field must be updated.
+		if !strings.Contains(string(result), `"nginx@sha256:abc123"`) {
+			t.Errorf("rewriteJSONImageField() result missing pinned ref: %s", result)
+		}
+		// Memory must survive without float corruption.
+		if !strings.Contains(string(result), "134217728") {
+			t.Errorf("rewriteJSONImageField() corrupted Memory field: %s", result)
+		}
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		_, err := rewriteJSONImageField([]byte("{bad json"), "pinned:ref")
+		if err == nil {
+			t.Fatal("expected error for malformed JSON, got nil")
+		}
+	})
+}
+
+func TestBuildImageTrustRawMapping(t *testing.T) {
+	opts := ImageTrustOptions{
+		Mode: "enforce",
+		AllowedSigningKeys: []SigningKeyOptions{
+			{PEM: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----"},
+		},
+		AllowedKeyless: []KeylessOptions{
+			{Issuer: "https://accounts.google.com", SubjectPattern: ".*@example.com"},
+		},
+		RequireRekorInclusion: true,
+		VerifyTimeout:         "30s",
+	}
+
+	raw := buildImageTrustRaw(opts)
+
+	if len(raw.AllowedSigningKeys) != 1 {
+		t.Errorf("AllowedSigningKeys len = %d, want 1", len(raw.AllowedSigningKeys))
+	}
+	if raw.AllowedSigningKeys[0].PEM != opts.AllowedSigningKeys[0].PEM {
+		t.Errorf("AllowedSigningKeys[0].PEM mismatch")
+	}
+	if len(raw.AllowedKeyless) != 1 {
+		t.Errorf("AllowedKeyless len = %d, want 1", len(raw.AllowedKeyless))
+	}
+	if raw.AllowedKeyless[0].Issuer != "https://accounts.google.com" {
+		t.Errorf("AllowedKeyless[0].Issuer = %q, want %q", raw.AllowedKeyless[0].Issuer, "https://accounts.google.com")
+	}
+	if !raw.RequireRekorInclusion {
+		t.Error("RequireRekorInclusion not propagated")
+	}
+	if raw.VerifyTimeoutStr != "30s" {
+		t.Errorf("VerifyTimeoutStr = %q, want %q", raw.VerifyTimeoutStr, "30s")
+	}
+}
+
+func TestBuildImageTrustFieldsOffMode(t *testing.T) {
+	// mode="" and mode="off" both return the zero value (inactive).
+	for _, mode := range []string{"", "off"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			f := buildImageTrustFields(ImageTrustOptions{Mode: mode})
+			if f.verifier != nil {
+				t.Error("expected nil verifier for off mode")
+			}
+			if f.fetcher != nil {
+				t.Error("expected nil fetcher for off mode")
+			}
+			if f.initErr != nil {
+				t.Errorf("expected nil initErr for off mode, got %v", f.initErr)
+			}
+		})
+	}
+}
+
+func TestBuildImageTrustFieldsInvalidKeyFails(t *testing.T) {
+	// An enforce mode with an invalid PEM key must produce an initErr (fail-closed).
+	f := buildImageTrustFields(ImageTrustOptions{
+		Mode: "enforce",
+		AllowedSigningKeys: []SigningKeyOptions{
+			{PEM: "not-a-valid-pem"},
+		},
+	})
+	if f.initErr == nil {
+		t.Fatal("expected initErr for invalid PEM key, got nil")
+	}
+}
