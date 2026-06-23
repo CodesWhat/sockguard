@@ -348,6 +348,15 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, imageRef, digestHex strin
 		return fmt.Errorf("image trust: invalid digest %q: %w", digestHex, err)
 	}
 
+	// Bound the verification if the caller didn't already set a deadline, so a
+	// keyless path that reaches out to Rekor can't hang unbounded. Mirrors the
+	// policy-bundle verifier's guard.
+	if _, ok := ctx.Deadline(); !ok && s.cfg.VerifyTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.cfg.VerifyTimeout)
+		defer cancel()
+	}
+
 	var keyedErr, keylessErr error
 
 	for _, kv := range s.cfg.AllowedSigningKeys {

@@ -22,6 +22,15 @@ Internal multi-axis audit of the v1.4 release candidate (security, performance, 
 - **Clearer error when pinning a verified service image** that is missing `TaskTemplate`/`ContainerSpec`, instead of an opaque `unexpected end of JSON input`.
 - **Node-update inspection now fails closed.** `POST /nodes/{id}/update` denied on a body it could not decode is now denied (was forwarded to Docker) — both the whole-body decode failure and a field-level type mismatch (e.g. `Role`/`Name` sent as a number, `Labels` sent as an array) return `node update denied: request body could not be inspected`, matching the deny-on-uninspectable posture every swarm inspector already uses.
 - **`deny_unconfined_seccomp`/`deny_unconfined_apparmor` now win over a seccomp/AppArmor allowlist.** When both an allowlist and the deny-unconfined flag were configured, the allowlist branch short-circuited the deny check — so an allowlist that (mis)included `unconfined` silently let an unconfined profile through even though the operator had explicitly denied it. The deny-unconfined check now evaluates independently and takes precedence.
+- **Response redaction now empties `HostConfig.MaskedPaths`/`ReadonlyPaths` under `redact_mount_paths`.** Those arrays expose the container's exact masked/read-only filesystem-hardening shape; they're now emptied alongside the existing `Binds`/`Mounts` source redaction so a read-side consumer under a mount-path redaction profile can't read them back.
+- **Public-key pin comparison is now constant-time.** Client-certificate `public_key_sha256_pins` matching used a plain string compare; it now uses `crypto/subtle.ConstantTimeCompare` and evaluates every configured pin without early-return, so neither the digest bytes nor which pin matched is observable through timing.
+- **Image-trust verification is now deadline-bounded when the caller set none.** `sigstoreVerifier.Verify` applies `image_trust.verify_timeout` if the inbound context carries no deadline, mirroring the policy-bundle verifier, so a keyless path that reaches Rekor can't hang unbounded.
+- **Malformed cosign signature manifests now leave a debug breadcrumb.** `FetchCandidates` silently skipped a signature manifest it couldn't parse (correct — a sibling valid signature must still verify), but logged nothing; it now emits a debug log with the image ref, resolved digest, and parse error so a verification miss is distinguishable from a silently-dropped manifest.
+
+### Changed
+
+- **Startup warning for a patterns-only visibility policy.** A visibility policy with `name_patterns`/`image_patterns` but no `visible_resource_labels` selector now logs a warning at construction: pattern response-filtering only covers `/containers/json` and `/images/json`, so `/events` and the other list endpoints would stay unrestricted unless a label selector is added.
+- **Clearer validation errors for the two global insecure acknowledgement flags.** The per-profile `insecure_allow_body_blind_writes` / `insecure_allow_read_exfiltration` validation messages no longer imply the flag lives on the profile — both now say it is a top-level (global) setting.
 
 ## [1.4.0-rc.2] - 2026-06-22
 

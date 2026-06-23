@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
@@ -130,7 +131,7 @@ func (f *Fetcher) opts(ctx context.Context) []remote.Option {
 // signatures, and reconstructs a verification bundle for each signature layer
 // whose simple-signing payload binds to that digest. It returns ErrNoSignatures
 // (wrapped) when the image is reachable but unsigned.
-func (f *Fetcher) FetchCandidates(ctx context.Context, imageRef string) ([]imagetrust.Candidate, error) {
+func (f *Fetcher) FetchCandidates(ctx context.Context, logger *slog.Logger, imageRef string) ([]imagetrust.Candidate, error) {
 	ref, err := name.ParseReference(strings.TrimSpace(imageRef), f.nameOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("parse image reference %q: %w", imageRef, err)
@@ -152,7 +153,12 @@ func (f *Fetcher) FetchCandidates(ctx context.Context, imageRef string) ([]image
 		cs, err := candidatesFromSigImage(sigImg, imageDigest)
 		if err != nil {
 			// A malformed signature manifest must not mask a sibling valid one;
-			// skip it and keep scanning.
+			// skip it and keep scanning. Leave a debug breadcrumb so an operator
+			// can tell a verification miss apart from a silently-dropped manifest.
+			if logger != nil {
+				logger.DebugContext(ctx, "skipping malformed cosign signature manifest",
+					"image_ref", imageRef, "resolved_digest", imageDigest.String(), "error", err)
+			}
 			continue
 		}
 		candidates = append(candidates, cs...)

@@ -63,7 +63,7 @@ type imageVerifier interface {
 // candidates attached to it in the registry. The production implementation is
 // internal/imagefetch.Fetcher; tests inject a stub to avoid registry I/O.
 type signatureFetcher interface {
-	FetchCandidates(ctx context.Context, imageRef string) ([]imagetrust.Candidate, error)
+	FetchCandidates(ctx context.Context, logger *slog.Logger, imageRef string) ([]imagetrust.Candidate, error)
 }
 
 // ContainerCreateOptions configures request-body policy checks for
@@ -344,7 +344,7 @@ func verifyImageTrust(ctx context.Context, logger *slog.Logger, f imageTrustFiel
 		fetchErr   error
 	)
 	if f.fetcher != nil {
-		candidates, fetchErr = f.fetcher.FetchCandidates(ctx, imageRef)
+		candidates, fetchErr = f.fetcher.FetchCandidates(ctx, logger, imageRef)
 	} else {
 		fetchErr = fmt.Errorf("image trust misconfigured: no signature fetcher")
 	}

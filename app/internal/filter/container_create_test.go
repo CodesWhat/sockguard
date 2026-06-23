@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1138,7 +1139,7 @@ type mockSignatureFetcher struct {
 	lastRef    string
 }
 
-func (m *mockSignatureFetcher) FetchCandidates(_ context.Context, imageRef string) ([]imagetrust.Candidate, error) {
+func (m *mockSignatureFetcher) FetchCandidates(_ context.Context, _ *slog.Logger, imageRef string) ([]imagetrust.Candidate, error) {
 	m.lastRef = imageRef
 	return m.candidates, m.err
 }

@@ -1031,6 +1031,9 @@ func redactMountObjects(payload map[string]any, field string) error {
 // (docker run --mount type=bind,source=...) surfaces the host source under
 // HostConfig.Mounts, a distinct field from the top-level runtime Mounts list,
 // so it must be redacted here too or the host path leaks despite RedactMountPaths.
+// MaskedPaths/ReadonlyPaths (the container's masked/read-only filesystem-path
+// hardening) are emptied too: they expose the exact security-hardening shape of
+// the container, which a read-side consumer under RedactMountPaths shouldn't see.
 func redactHostConfigMountSources(payload map[string]any) error {
 	hostConfigValue, ok := payload["HostConfig"]
 	if !ok || hostConfigValue == nil {
@@ -1045,6 +1048,9 @@ func redactHostConfigMountSources(payload map[string]any) error {
 	if err := redactMountObjects(hostConfig, "Mounts"); err != nil {
 		return err
 	}
+
+	redactArrayField(hostConfig, "MaskedPaths")
+	redactArrayField(hostConfig, "ReadonlyPaths")
 
 	bindsValue, ok := hostConfig["Binds"]
 	if !ok || bindsValue == nil {
