@@ -38,7 +38,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BENCH_DIR="${REPO_ROOT}/benchmarks"
 LISTEN_HOST="127.0.0.1"
 LISTEN_PORT="${SOCKGUARD_TESTSSL_PORT:-18443}"
-TESTSSL_IMAGE="${TESTSSL_IMAGE:-drwetter/testssl.sh:3.2}"
+# Pinned by digest (kept alongside the 3.2 tag) so the DAST run is reproducible
+# and a retag of drwetter/testssl.sh:3.2 can't silently change the scanner.
+# Bump the tag and digest together when refreshing.
+TESTSSL_IMAGE="${TESTSSL_IMAGE:-drwetter/testssl.sh:3.2@sha256:76df1f7e31c305032b1d412aa420260ff7d9094710351854d7db0e0e4abbde3e}"
 
 if [ "${DRY_RUN}" -eq 1 ]; then
   cat <<EOF

@@ -49,6 +49,17 @@ Internal multi-axis audit of the v1.4 release candidate (security, performance, 
 - **TLS dial handshake is exercised end-to-end.** New `Endpoint.dial` tests stand up a real TLS echo server and assert the handshake completes inside `dial` (returning a live `*tls.Conn`), plus a negative case proving a verification failure returns an error and no connection (no leaked socket).
 - **`FuzzService` reaches the privilege-hardening branches.** The service fuzz target now also runs every input through a strict policy (all seccomp/AppArmor/SELinux/no-new-privileges guardrails on) and seeds the corpus with `ContainerSpec.Privileges` payloads (unconfined/custom/null seccomp, disabled AppArmor, SELinux disable/label-override), so the hardening deny paths are fuzzed rather than just the allowlist paths.
 
+### Documentation
+
+- **`HEAD /_ping`** is added to the recommended rules template — the Docker SDK/CLI pings with `HEAD` (falling back to `GET`), so a `GET`-only `/_ping` rule could leave the SDK's health check denied.
+- **DOCKER_* drop-in TLS matrix is complete.** The multi-host guide now documents the fourth case — `DOCKER_TLS_VERIFY` set with no `DOCKER_CERT_PATH` → verified, server-auth-only TLS against the host's system root CAs with no client certificate — alongside the existing mTLS, skip-verify, and plaintext cases.
+- **Negative `health_interval` still runs one startup probe.** The failover docs now note that disabling continuous probing (`health_interval` < 0) still seeds endpoint health once at startup, so the first active endpoint is chosen from real probe results rather than list order alone.
+- **Upstream client TLS floor documented.** Both the configuration and multi-host guides now state that the upstream Docker client floors at TLS 1.2 (for daemon compatibility), distinct from the inbound listener's TLS 1.3 minimum.
+
+### Dependencies
+
+- **Pinned the `drwetter/testssl.sh:3.2` DAST scanner and the `busybox:1.37` integration-test image by digest** (tag kept alongside the digest) in the security workflow, the testssl script, and the integration tests that actually pull, so CI/test pulls are reproducible and a retag of a floating tag can't silently change what runs.
+
 ## [1.4.0-rc.2] - 2026-06-22
 
 ### Changed

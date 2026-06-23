@@ -28,6 +28,14 @@ import (
 
 const defaultDockerSocket = "/var/run/docker.sock"
 
+// busyboxPinnedRef is the busybox image used by integration tests that actually
+// pull and run a container against the real daemon. Pinned by digest (kept
+// alongside the human-readable tag) so the pulled bytes are reproducible and a
+// retag of the floating tag can't silently change what the suite runs. Deny-path
+// fixtures that never reach the registry keep the bare tag — pinning them adds
+// nothing. Bump both the tag and the digest together when refreshing.
+const busyboxPinnedRef = "busybox:1.37@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
+
 type dockerVersionResponse struct {
 	APIVersion string `json:"ApiVersion"`
 	Version    string `json:"Version"`

@@ -244,7 +244,9 @@ jobs:
           go-version-file: app/go.mod
 
       - name: Pull testssl.sh image
-        run: docker pull drwetter/testssl.sh:3.2
+        # Pinned by digest (alongside the 3.2 tag) to match scripts/security-testssl.sh
+        # so CI pulls exactly the scanner the script runs; bump both together.
+        run: docker pull drwetter/testssl.sh:3.2@sha256:76df1f7e31c305032b1d412aa420260ff7d9094710351854d7db0e0e4abbde3e
 
       - name: Run testssl.sh against a sockguard TLS listener
         run: scripts/security-testssl.sh
