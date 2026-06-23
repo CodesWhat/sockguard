@@ -26,11 +26,15 @@ Internal multi-axis audit of the v1.4 release candidate (security, performance, 
 - **Public-key pin comparison is now constant-time.** Client-certificate `public_key_sha256_pins` matching used a plain string compare; it now uses `crypto/subtle.ConstantTimeCompare` and evaluates every configured pin without early-return, so neither the digest bytes nor which pin matched is observable through timing.
 - **Image-trust verification is now deadline-bounded when the caller set none.** `sigstoreVerifier.Verify` applies `image_trust.verify_timeout` if the inbound context carries no deadline, mirroring the policy-bundle verifier, so a keyless path that reaches Rekor can't hang unbounded.
 - **Malformed cosign signature manifests now leave a debug breadcrumb.** `FetchCandidates` silently skipped a signature manifest it couldn't parse (correct — a sibling valid signature must still verify), but logged nothing; it now emits a debug log with the image ref, resolved digest, and parse error so a verification miss is distinguishable from a silently-dropped manifest.
+- **`admin.listen.insecure_allow_wide_open` set purely via env var is no longer ignored.** The key had no `SetDefault` registration, and Viper only unmarshals registered keys, so `SOCKGUARD_ADMIN_LISTEN_INSECURE_ALLOW_WIDE_OPEN=true` with no config-file entry had no effect. It is now registered.
+- **`reload.enabled`/`reload.debounce`/`reload.poll_interval` are now reload-immutable.** The watcher reads them once at startup to wire its fsnotify watch and debounce/poll timers, so changing them via a hot reload silently had no effect; a reload that mutates any of them is now rejected with a restart-required message instead.
 
 ### Changed
 
 - **Startup warning for a patterns-only visibility policy.** A visibility policy with `name_patterns`/`image_patterns` but no `visible_resource_labels` selector now logs a warning at construction: pattern response-filtering only covers `/containers/json` and `/images/json`, so `/events` and the other list endpoints would stay unrestricted unless a label selector is added.
 - **Clearer validation errors for the two global insecure acknowledgement flags.** The per-profile `insecure_allow_body_blind_writes` / `insecure_allow_read_exfiltration` validation messages no longer imply the flag lives on the profile — both now say it is a top-level (global) setting.
+- **Startup warning for an insecure upstream Docker endpoint.** A `tcp://` upstream configured with `insecure_allow_plain_tcp` (unencrypted) or `insecure_skip_tls_verify` (unverified) now logs a warning at startup — for both explicit `upstream.endpoints` and the `DOCKER_HOST` env drop-in — so an accidental transport downgrade is visible rather than silent.
+- **Startup warning for a rule pattern carrying a Docker API version prefix.** A rule whose `match.path` begins with `/vN.N/` (e.g. `/v1.45/containers/json`) can never match — sockguard strips version prefixes from the request path before matching — so it now warns once at startup with the offending pattern instead of being a silently-dead rule.
 
 ## [1.4.0-rc.2] - 2026-06-22
 

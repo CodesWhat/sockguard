@@ -234,6 +234,7 @@ func setLoadDefaults(v *viper.Viper, defaults Config) {
 	v.SetDefault("admin.listen.address", defaults.Admin.Listen.Address)
 	v.SetDefault("admin.listen.insecure_allow_plain_tcp", defaults.Admin.Listen.InsecureAllowPlainTCP)
 	v.SetDefault("admin.listen.insecure_allow_unauthenticated_clients", defaults.Admin.Listen.InsecureAllowUnauthenticatedClients)
+	v.SetDefault("admin.listen.insecure_allow_wide_open", defaults.Admin.Listen.InsecureAllowWideOpen)
 	v.SetDefault("admin.listen.tls.cert_file", defaults.Admin.Listen.TLS.CertFile)
 	v.SetDefault("admin.listen.tls.key_file", defaults.Admin.Listen.TLS.KeyFile)
 	v.SetDefault("admin.listen.tls.client_ca_file", defaults.Admin.Listen.TLS.ClientCAFile)

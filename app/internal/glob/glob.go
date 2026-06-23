@@ -3,9 +3,11 @@
 // The dialect supports:
 //   - "*" matches a single path segment (no "/").
 //   - "**" matches any sequence of characters, including "/".
-//   - "/**" at the end of a pattern also matches the bare path without a
-//     trailing slash (so "/containers/**" matches both "/containers" and
-//     "/containers/anything").
+//   - "/**" compiles to an optional path group "(/.*)?" — the leading slash and
+//     everything after it are optional — at ANY position, not only the end. So
+//     "/containers/**" matches both "/containers" and "/containers/anything",
+//     and a non-trailing "/foo/**/bar" matches "/foo/bar" (the "/**" collapsing
+//     to nothing) as well as "/foo/x/y/bar".
 //
 // Callers that need a compiled *regexp.Regexp should wrap the result with
 // "^" + ToRegexString(pattern) + "$".

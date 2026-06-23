@@ -32,13 +32,39 @@ func resolveUpstreamSpecs(cfg *config.Config, getenv func(string) string, logger
 				InsecureSkipTLSVerify: ep.InsecureSkipTLSVerify,
 			}
 		}
+		warnInsecureUpstreamSpecs(logger, specs, "upstream.endpoints config")
 		return specs, false
 	}
 	if spec, ok := upstream.SpecsFromDockerEnv(getenv); ok {
 		logger.Info("using remote upstream from DOCKER_HOST environment", "address", spec.Address)
+		warnInsecureUpstreamSpecs(logger, []upstream.EndpointSpec{spec}, "DOCKER_HOST environment")
 		return []upstream.EndpointSpec{spec}, false
 	}
 	return []upstream.EndpointSpec{{Address: cfg.Upstream.Socket}}, true
+}
+
+// warnInsecureUpstreamSpecs logs a startup warning for each endpoint that
+// transports Docker API traffic without proper TLS — plaintext TCP, or TLS with
+// certificate verification disabled. Both leave exec streams, secrets, and
+// container data exposed (unencrypted, or encrypted but MITM-susceptible), so an
+// operator who reaches them via a DOCKER_HOST drop-in (not just explicit config)
+// gets a visible breadcrumb rather than a silent downgrade.
+func warnInsecureUpstreamSpecs(logger *slog.Logger, specs []upstream.EndpointSpec, source string) {
+	if logger == nil {
+		return
+	}
+	for _, spec := range specs {
+		switch {
+		case spec.InsecureAllowPlainTCP:
+			logger.Warn("upstream Docker endpoint uses plaintext TCP with no TLS; "+
+				"Docker API traffic (exec streams, secrets, container data) is unencrypted and unauthenticated on the wire",
+				"address", spec.Address, "source", source)
+		case spec.InsecureSkipTLSVerify:
+			logger.Warn("upstream Docker endpoint skips TLS certificate verification; "+
+				"the connection is encrypted but the daemon's identity is not checked (MITM-susceptible)",
+				"address", spec.Address, "source", source)
+		}
+	}
 }
 
 // buildUpstreamResolver constructs the shared upstream resolver from config,
