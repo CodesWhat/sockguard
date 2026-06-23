@@ -6,35 +6,39 @@
 #
 # Self-update exec flow (source: drydock/app/triggers/providers/docker/):
 #   1. drydock creates the replacement container (already covered by drydock.yaml)
-#   2. A short-lived helper container is spawned via POST /containers/create
-#      (helper image, AutoRemove: true, bind-mounts the Docker socket)
-#   3. The helper stops the old container, starts the new one, and waits
-#      for it to become healthy — all via the proxy (covered by lifecycle rules)
-#   4. runFinalizeCallbackInContainer(): POST /containers/{id}/exec creates an
-#      exec instance with Cmd: ['node', 'dist/triggers/providers/docker/
-#      self-update-finalize-entrypoint.js']; POST /exec/{id}/start runs it
-#      (Detach: false, Tty: false); GET /exec/{id}/json confirms the exit code
-#   5. The finalize entrypoint POSTs an HTTP callback to drydock's internal API
+#   2. drydock issues the stop/start/wait lifecycle calls directly through the
+#      proxy (covered by the lifecycle rules) — current drydock does not spawn a
+#      separate helper container for the transition
+#   3. runFinalizeCallbackInContainer(): POST /containers/{id}/exec creates an
+#      exec INSIDE the new drydock container with Cmd: ['node',
+#      'dist/triggers/providers/docker/self-update-finalize-entrypoint.js'];
+#      POST /exec/{id}/start runs it (Detach: false, Tty: false);
+#      GET /exec/{id}/json confirms the exit code
+#   4. The finalize entrypoint POSTs an HTTP callback to drydock's internal API
 #      (DD_SELF_UPDATE_FINALIZE_URL, typically http://127.0.0.1:3000/…) — that
 #      call leaves the proxy, so no extra sockguard rule is needed
 #
 # Security tradeoff: the exec paths below are pinned to the single finalize
 # command argv via allowed_commands. This prevents any other exec invocation
-# even if drydock or the helper container attempted one. If your drydock build
-# uses a different Node entrypoint path, update allowed_commands to match.
-# The finalize exec runs as whatever user the drydock image declares (typically
-# node/nonroot), so allow_root_user is false here — set it to true only if your
-# drydock image runs as root.
+# even if drydock attempted one. If your drydock build uses a different Node
+# entrypoint path, update allowed_commands to match.
+# allow_root_user must be true here: drydock's exec create body sets no User
+# field, and sockguard conservatively treats an empty exec User as root (it
+# cannot see the image's USER — Docker does not echo it into the exec
+# ProcessConfig). With allow_root_user false the finalize exec is denied before
+# allowed_commands is ever checked. Safety is preserved by the exact-argv pin:
+# only the one finalize command can run, as the container's own (nonroot) user.
 #
 # Expanded API surface vs. drydock.yaml:
 #   + POST /containers/{id}/exec  — create exec for finalize callback
 #   + POST /exec/{id}/start       — run the finalize entrypoint
 #   + GET  /exec/{id}/json        — inspect exit code after finalize
 #
-# Helper container bind-mounts: the helper always bind-mounts the Docker socket
-# path (the same path drydock itself found, typically /var/run/docker.sock) so
-# it can reach dockerd directly during the stop/start/wait sequence. Add that
-# path to allowed_bind_mounts if sockguard is inspecting the helper's create body.
+# Container bind-mounts: in socket mode drydock bind-mounts the Docker socket
+# (typically /var/run/docker.sock), and the replacement container it creates
+# during self-update carries that same bind. allowed_bind_mounts lists the path
+# so sockguard does not block the recreate. If drydock reaches the daemon over
+# TCP (no socket bind) you can set allowed_bind_mounts back to an empty list.
 
 upstream:
   socket: /var/run/docker.sock
@@ -57,22 +61,27 @@ response:
   redact_container_env: false
   redact_network_topology: false
 
-# Container-create inspection: the helper container always bind-mounts the
-# Docker socket (e.g. /var/run/docker.sock:/var/run/docker.sock). Add that
-# source path to allowed_bind_mounts so sockguard does not block the helper
-# create. If drydock reaches the daemon via TCP (no local socket bind) the
-# helper uses NetworkMode instead, and no bind-mount allowlist entry is needed.
-# The allowed_commands list pins the finalize exec argv prefix — any exec call
-# whose Cmd does not start with this prefix is denied even if the rule allows
+# Container-create inspection: in socket mode drydock (and the replacement
+# container it recreates during self-update) bind-mounts the Docker socket
+# (e.g. /var/run/docker.sock:/var/run/docker.sock), so that source path is
+# listed in allowed_bind_mounts below. If drydock reaches the daemon via TCP
+# (no local socket bind) you can set allowed_bind_mounts back to []. The
+# allowed_commands list pins the finalize exec to an EXACT argv — sockguard's
+# exec matcher requires the same token count and every token to match, so any
+# other Cmd (extra trailing args included) is denied even though the rule allows
 # POST /containers/*/exec.
 request_body:
   container_create:
-    allowed_bind_mounts: []
+    allowed_bind_mounts:
+      - /var/run/docker.sock
     allowed_runtimes:
       - runc
   exec:
     allow_privileged: false
-    allow_root_user: false
+    # See the allow_root_user note in the header: drydock sets no exec User and
+    # sockguard treats an empty User as root, so this must be true for the
+    # finalize exec to run. The exact-argv allowed_commands pin keeps it safe.
+    allow_root_user: true
     allowed_commands:
       - ["node", "dist/triggers/providers/docker/self-update-finalize-entrypoint.js"]
   image_pull:
@@ -149,10 +158,14 @@ rules:
   - match: { method: DELETE, path: "/images/**" }
     action: allow
 
-  # Network read — list + inspect only.
+  # Network read — list + inspect. Plus connect: drydock attaches the recreated
+  # container to its extra networks via POST /networks/{id}/connect when the
+  # container belongs to more than one network.
   - match: { method: GET, path: "/networks" }
     action: allow
   - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
     action: allow
 
   # Volume read — list + inspect only.
