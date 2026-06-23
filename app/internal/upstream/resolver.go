@@ -120,9 +120,10 @@ type Resolver struct {
 	onChange func(ep Endpoint, healthy bool)
 	probe    func(ctx context.Context, ep Endpoint) error
 	started  atomic.Bool
-	// baseCtx is the Start context (nil until Start runs). demote's re-probe
-	// goroutines derive from it so they unwind promptly on shutdown instead of
-	// outliving the resolver by up to one probe timeout.
+	// baseCtx is the Start context (nil until Start runs; reprobeBaseContext
+	// falls back to context.Background until then). demote's re-probe goroutines
+	// derive from it so they unwind promptly on shutdown instead of outliving the
+	// resolver by up to one probe timeout.
 	baseCtx atomic.Pointer[context.Context]
 }
 
@@ -204,7 +205,7 @@ func (r *Resolver) CheckReachable(ctx context.Context) error {
 		pctx, cancel := context.WithTimeout(ctx, r.timeout)
 		err := r.probe(pctx, s.ep)
 		cancel()
-		r.setHealth(s, err == nil)
+		r.setHealth(ctx, s, err == nil)
 		if err == nil {
 			reachable = true
 			continue
@@ -299,7 +300,7 @@ func (r *Resolver) demote(s *endpointState) {
 	if len(r.states) < 2 {
 		return
 	}
-	r.setHealth(s, false)
+	r.setHealth(context.Background(), s, false)
 	if !s.reprobing.CompareAndSwap(false, true) {
 		return
 	}
@@ -307,7 +308,7 @@ func (r *Resolver) demote(s *endpointState) {
 		defer s.reprobing.Store(false)
 		ctx, cancel := context.WithTimeout(r.reprobeBaseContext(), r.timeout)
 		defer cancel()
-		r.setHealth(s, r.probe(ctx, s.ep) == nil)
+		r.setHealth(ctx, s, r.probe(ctx, s.ep) == nil)
 	}()
 }
 
@@ -349,18 +350,28 @@ func (r *Resolver) loop(ctx context.Context) {
 }
 
 func (r *Resolver) probeAll(ctx context.Context) {
-	for _, s := range r.states {
-		if ctx.Err() != nil {
-			return
-		}
-		pctx, cancel := context.WithTimeout(ctx, r.timeout)
-		err := r.probe(pctx, s.ep)
-		cancel()
-		r.setHealth(s, err == nil)
+	if ctx.Err() != nil {
+		return
 	}
+	// Probe every endpoint concurrently so the tick's wall-clock cost is the
+	// slowest single probe, not the sum across endpoints — a stalled daemon no
+	// longer delays the health update for the others. setHealth is mutex-guarded,
+	// so the concurrent result reporting is safe. Endpoint count is small (an HA
+	// set), so this is a bounded fan-out, not an unbounded goroutine spawn.
+	var wg sync.WaitGroup
+	for _, s := range r.states {
+		wg.Add(1)
+		go func(s *endpointState) {
+			defer wg.Done()
+			pctx, cancel := context.WithTimeout(ctx, r.timeout)
+			defer cancel()
+			r.setHealth(pctx, s, r.probe(pctx, s.ep) == nil)
+		}(s)
+	}
+	wg.Wait()
 }
 
-func (r *Resolver) setHealth(s *endpointState, healthy bool) {
+func (r *Resolver) setHealth(ctx context.Context, s *endpointState, healthy bool) {
 	// Serialize the swap-and-notify so concurrent probes (background loop + a
 	// demote re-probe) can't fire onChange in an order that contradicts the
 	// final healthy value. Routing reads stay lock-free on the atomics.
@@ -376,7 +387,7 @@ func (r *Resolver) setHealth(s *endpointState, healthy bool) {
 		if !healthy {
 			level = slog.LevelWarn
 		}
-		r.logger.LogAttrs(context.Background(), level, "upstream endpoint health changed",
+		r.logger.LogAttrs(ctx, level, "upstream endpoint health changed",
 			slog.String("endpoint", s.ep.String()),
 			slog.Bool("healthy", healthy),
 		)

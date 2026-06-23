@@ -462,7 +462,11 @@ func newUpstreamHijackRequest(r *http.Request, normalizedPath string) *http.Requ
 		normalizedPath = filter.NormalizePath(r.URL.Path)
 	}
 	if r.URL != nil {
-		rawQuery = r.URL.Query().Encode()
+		// Forward the query verbatim rather than Query().Encode(), which would
+		// re-parse and reorder the parameters (and allocate). This matches the
+		// main reverse-proxy path and preserves the exact exec/attach query the
+		// client sent.
+		rawQuery = r.URL.RawQuery
 	}
 
 	upstreamReq := &http.Request{

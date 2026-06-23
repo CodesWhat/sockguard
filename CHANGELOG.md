@@ -36,6 +36,13 @@ Internal multi-axis audit of the v1.4 release candidate (security, performance, 
 - **Startup warning for an insecure upstream Docker endpoint.** A `tcp://` upstream configured with `insecure_allow_plain_tcp` (unencrypted) or `insecure_skip_tls_verify` (unverified) now logs a warning at startup — for both explicit `upstream.endpoints` and the `DOCKER_HOST` env drop-in — so an accidental transport downgrade is visible rather than silent.
 - **Startup warning for a rule pattern carrying a Docker API version prefix.** A rule whose `match.path` begins with `/vN.N/` (e.g. `/v1.45/containers/json`) can never match — sockguard strips version prefixes from the request path before matching — so it now warns once at startup with the offending pattern instead of being a silently-dead rule.
 
+### Performance
+
+- **Audit sampler no longer allocates on the hot path.** The `AuditSampler` stored last-emit timestamps as `*time.Time`, heap-allocating one on every `ShouldEmit` call (including the common in-window rejection branch). It now keeps a single `*atomic.Int64` (Unix nanos) per `(client, reason)` key, allocated once and mutated in place — the steady-state rejection branch is allocation-free.
+- **Health probes now run concurrently.** The upstream failover resolver probed endpoints sequentially, so a stalled daemon delayed the health update for every other endpoint by up to one timeout. `probeAll` now fans out across endpoints, bounding a tick's cost to the slowest single probe.
+- **Metrics middleware returns its pooled response writer on panic.** The pooled response writer and the request observation moved into a `defer`, so a panic in a downstream handler no longer leaks the writer back-pressure or drops the metric.
+- **Smaller hot-path allocations.** Hijacked exec/attach requests forward the query string verbatim (`RawQuery`) instead of re-parsing and re-encoding it, and the Prometheus exposition sort keys compare field-by-field with `cmp.Or` instead of building throwaway `\x00`-joined strings per comparison. The duration-histogram observe path also increments `count` before its buckets so a concurrent scrape can never momentarily report a bucket larger than the count (Prometheus invariant).
+
 ## [1.4.0-rc.2] - 2026-06-22
 
 ### Changed

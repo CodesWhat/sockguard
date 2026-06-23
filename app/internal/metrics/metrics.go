@@ -147,12 +147,17 @@ func newAtomicHistogram() *atomicHistogram {
 }
 
 func (h *atomicHistogram) observe(seconds float64) {
+	// Increment count BEFORE the per-bucket counters. snapshot() reads the
+	// buckets first and count last, so with this ordering a concurrent scrape can
+	// only ever see a bucket that lags count (bucket <= count) — never a bucket
+	// that exceeds it, which would violate the Prometheus histogram invariant
+	// (every le bucket <= _count, and le="+Inf" == _count).
+	h.count.Add(1)
 	for i, bucket := range defaultDurationBuckets {
 		if seconds <= bucket {
 			h.buckets[i].Add(1)
 		}
 	}
-	h.count.Add(1)
 	// CAS loop to add seconds into a float64 stored as its uint64 bits. Under
 	// contention this retries; under typical load (one observation per
 	// request, no shared writers across histograms) the loop exits on the
@@ -167,9 +172,10 @@ func (h *atomicHistogram) observe(seconds float64) {
 }
 
 // snapshot reads the histogram fields atomically into a plain struct for the
-// scrape path. Bucket reads happen left-to-right, so the snapshot can show a
-// later-bucket count that lags the count field by one observation; that is
-// acceptable for Prometheus exposition (the scrape is approximate anyway).
+// scrape path. Buckets are read first and count last; paired with observe()
+// incrementing count before the buckets, a concurrent observation can only make
+// a bucket lag count (bucket <= count), never exceed it — preserving the
+// Prometheus invariant. The scrape is otherwise approximate, which is fine.
 type histogramSnapshot struct {
 	buckets []uint64
 	count   uint64
@@ -307,9 +313,15 @@ func (r *Registry) Middleware() func(http.Handler) http.Handler {
 			defer r.activeRequests.Add(-1)
 
 			mw := acquireResponseWriter(w, req)
+			// Observe and release in a defer so a panic in a downstream handler
+			// still records the observation and, critically, returns the pooled
+			// response writer instead of leaking it. observe runs before release
+			// (LIFO within one defer) while mw is still valid.
+			defer func() {
+				r.observe(req, mw.meta, mw.status, time.Since(start).Seconds())
+				releaseResponseWriter(mw)
+			}()
 			next.ServeHTTP(mw, req)
-			r.observe(req, mw.meta, mw.status, time.Since(start).Seconds())
-			releaseResponseWriter(mw)
 		})
 	}
 }
@@ -576,9 +588,11 @@ func sortedThrottleLabels(values map[throttleLabels]uint64) []throttleLabels {
 		keys = append(keys, key)
 	}
 	slices.SortFunc(keys, func(a, b throttleLabels) int {
-		ka := a.mode + "\x00" + a.profile + "\x00" + a.reasonCode
-		kb := b.mode + "\x00" + b.profile + "\x00" + b.reasonCode
-		return cmp.Compare(ka, kb)
+		return cmp.Or(
+			cmp.Compare(a.mode, b.mode),
+			cmp.Compare(a.profile, b.profile),
+			cmp.Compare(a.reasonCode, b.reasonCode),
+		)
 	})
 	return keys
 }
@@ -609,9 +623,7 @@ func sortedRequestLabels(values map[requestLabels]uint64) []requestLabels {
 	for key := range values {
 		keys = append(keys, key)
 	}
-	slices.SortFunc(keys, func(a, b requestLabels) int {
-		return cmp.Compare(requestLabelSortKey(a), requestLabelSortKey(b))
-	})
+	slices.SortFunc(keys, requestLabelCompare)
 	return keys
 }
 
@@ -620,9 +632,7 @@ func sortedDenyLabels(values map[denyLabels]uint64) []denyLabels {
 	for key := range values {
 		keys = append(keys, key)
 	}
-	slices.SortFunc(keys, func(a, b denyLabels) int {
-		return cmp.Compare(denyLabelSortKey(a), denyLabelSortKey(b))
-	})
+	slices.SortFunc(keys, denyLabelCompare)
 	return keys
 }
 
@@ -631,9 +641,7 @@ func sortedDurationLabels(values map[durationLabels]histogramSnapshot) []duratio
 	for key := range values {
 		keys = append(keys, key)
 	}
-	slices.SortFunc(keys, func(a, b durationLabels) int {
-		return cmp.Compare(durationLabelSortKey(a), durationLabelSortKey(b))
-	})
+	slices.SortFunc(keys, durationLabelCompare)
 	return keys
 }
 
@@ -648,16 +656,36 @@ func sortedUpstreamWatchdogLabels(values map[upstreamWatchdogLabels]uint64) []up
 	return keys
 }
 
-func requestLabelSortKey(key requestLabels) string {
-	return strings.Join([]string{key.decision, key.method, key.profile, key.route, key.status}, "\x00")
+// requestLabelCompare / denyLabelCompare / durationLabelCompare order keys
+// field-by-field with cmp.Or, which short-circuits on the first non-equal field.
+// This is the same lexicographic order a "\x00"-joined sort key would give, but
+// without allocating two throwaway strings per comparison on the scrape path.
+func requestLabelCompare(a, b requestLabels) int {
+	return cmp.Or(
+		cmp.Compare(a.decision, b.decision),
+		cmp.Compare(a.method, b.method),
+		cmp.Compare(a.profile, b.profile),
+		cmp.Compare(a.route, b.route),
+		cmp.Compare(a.status, b.status),
+	)
 }
 
-func denyLabelSortKey(key denyLabels) string {
-	return strings.Join([]string{key.mode, key.profile, key.reasonCode, key.route}, "\x00")
+func denyLabelCompare(a, b denyLabels) int {
+	return cmp.Or(
+		cmp.Compare(a.mode, b.mode),
+		cmp.Compare(a.profile, b.profile),
+		cmp.Compare(a.reasonCode, b.reasonCode),
+		cmp.Compare(a.route, b.route),
+	)
 }
 
-func durationLabelSortKey(key durationLabels) string {
-	return strings.Join([]string{key.decision, key.method, key.profile, key.route}, "\x00")
+func durationLabelCompare(a, b durationLabels) int {
+	return cmp.Or(
+		cmp.Compare(a.decision, b.decision),
+		cmp.Compare(a.method, b.method),
+		cmp.Compare(a.profile, b.profile),
+		cmp.Compare(a.route, b.route),
+	)
 }
 
 func formatBucket(bucket float64) string {

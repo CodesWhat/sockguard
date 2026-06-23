@@ -235,7 +235,7 @@ func (b *bucket) idleSince(now time.Time) time.Duration {
 // Limiter maintains per-client token buckets, lazily created on first use.
 //
 // Buckets that go idle for longer than limiterEvictTTL are dropped by a
-// background eviction goroutine started in NewLimiter. The key space today
+// background eviction goroutine started in newLimiterWithClock. The key space today
 // is bounded by configured profile names (low cardinality), but eviction is
 // wired in as defense-in-depth so future changes to the key space cannot
 // create an OOM vector via attacker-influenced identities.
@@ -435,10 +435,19 @@ type clientReasonKey struct {
 // AuditSampler also runs a background eviction goroutine to prevent unbounded
 // memory growth from many unique client IDs.
 type AuditSampler struct {
-	// lastHit maps clientReasonKey → *time.Time. Pointer values let
-	// CompareAndSwap detect races without re-reading under a lock.
+	// lastHit maps clientReasonKey → *atomic.Int64 holding the last-emit time in
+	// Unix nanoseconds. The pointer is allocated once per key; ShouldEmit then
+	// mutates the int64 in place via CompareAndSwap, so the steady-state hot path
+	// (the in-window rejection branch) allocates nothing — unlike the previous
+	// *time.Time design, which heap-allocated a timestamp on every call.
 	lastHit sync.Map
 	now     nowFn
+}
+
+func newAuditTimestamp(ns int64) *atomic.Int64 {
+	a := &atomic.Int64{}
+	a.Store(ns)
+	return a
 }
 
 // NewAuditSampler creates a sampler with a real-clock time source and starts
@@ -482,37 +491,49 @@ func (s *AuditSampler) ShouldEmit(clientID string, reason ThrottleReason) bool {
 		clientID = AnonymousClientID
 	}
 	key := clientReasonKey{clientID: clientID, reason: reason}
-	now := s.now()
-	nowPtr := &now
+	nowNs := s.now().UnixNano()
 
-	// First-time emission: LoadOrStore returns loaded=false and the win.
-	prev, loaded := s.lastHit.LoadOrStore(key, nowPtr)
+	v, loaded := s.lastHit.Load(key)
 	if !loaded {
-		return true
+		// First-ever emission for this key. Allocate the timestamp cell once and
+		// claim it; a caller that raced us to create the entry is respected.
+		stored, raced := s.lastHit.LoadOrStore(key, newAuditTimestamp(nowNs))
+		if !raced {
+			return true
+		}
+		v = stored
 	}
 
-	lastPtr, ok := prev.(*time.Time)
-	if !ok || now.Sub(*lastPtr) < auditEmitWindow {
+	last := v.(*atomic.Int64)
+	prev := last.Load()
+	if nowNs-prev < int64(auditEmitWindow) {
 		return false
 	}
-	// Window has elapsed; race the swap. Losing the race means another
+	// Window has elapsed; race the in-place swap. Losing the race means another
 	// goroutine emitted ~simultaneously, which is the correct outcome —
 	// 1 emit per window per key, not 1-per-caller.
-	return s.lastHit.CompareAndSwap(key, lastPtr, nowPtr)
+	return last.CompareAndSwap(prev, nowNs)
 }
 
 // evict removes entries older than ttl from the sampler map. The Range
 // iteration is unsynchronized, which is fine because CompareAndDelete only
 // removes entries whose pointer hasn't been swapped by a racing ShouldEmit.
 func (s *AuditSampler) evict(ttl time.Duration) {
-	cutoff := s.now().Add(-ttl)
+	cutoffNs := s.now().Add(-ttl).UnixNano()
 	s.lastHit.Range(func(k, v any) bool {
-		t, ok := v.(*time.Time)
+		a, ok := v.(*atomic.Int64)
 		if !ok {
 			s.lastHit.Delete(k)
 			return true
 		}
-		if t.Before(cutoff) {
+		// CompareAndDelete matches on pointer identity. Because ShouldEmit now
+		// refreshes the timestamp in place (same pointer) rather than swapping in
+		// a new one, a refresh that races between this Load and the delete can be
+		// evicted spuriously. The only consequence is one extra audit emit when
+		// the key is next seen — audit sampling is a best-effort log-volume bound,
+		// not an exactness guarantee — and the window (1s) is far below the evict
+		// TTL (60s), so the race is vanishingly rare in practice.
+		if a.Load() < cutoffNs {
 			s.lastHit.CompareAndDelete(k, v)
 		}
 		return true

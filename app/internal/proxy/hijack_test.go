@@ -825,15 +825,17 @@ func TestHandleHijack_RebuildsUpstreamRequestTargetFromNormalizedPath(t *testing
 	if gotReq.URL.Path != "/containers/abc/attach" {
 		t.Fatalf("URL.Path = %q, want %q", gotReq.URL.Path, "/containers/abc/attach")
 	}
-	if gotReq.URL.RawQuery != "stderr=1&stream=1" {
-		t.Fatalf("URL.RawQuery = %q, want %q", gotReq.URL.RawQuery, "stderr=1&stream=1")
+	// The query is forwarded verbatim (RawQuery passthrough), preserving the
+	// client's original parameter order rather than re-encoding/reordering it.
+	if gotReq.URL.RawQuery != "stream=1&stderr=1" {
+		t.Fatalf("URL.RawQuery = %q, want %q", gotReq.URL.RawQuery, "stream=1&stderr=1")
 	}
 
 	rawForwarded := rawRequest.String()
-	if !strings.Contains(rawForwarded, "POST /containers/abc/attach?stderr=1&stream=1 HTTP/1.1") {
-		t.Fatalf("forwarded request target was not rebuilt from normalized path and canonical query:\n%s", rawForwarded)
+	if !strings.Contains(rawForwarded, "POST /containers/abc/attach?stream=1&stderr=1 HTTP/1.1") {
+		t.Fatalf("forwarded request target was not rebuilt from normalized path with the verbatim query:\n%s", rawForwarded)
 	}
-	for _, disallowed := range []string{"client.example", "/v1.45/", "?stream=1&stderr=1"} {
+	for _, disallowed := range []string{"client.example", "/v1.45/"} {
 		if strings.Contains(rawForwarded, disallowed) {
 			t.Fatalf("forwarded request leaked %q:\n%s", disallowed, rawForwarded)
 		}
