@@ -119,7 +119,7 @@ Scope is optional. Subject line should be imperative, lowercase, no trailing per
 - **Table-driven tests** using stdlib `testing` package
 - **`httptest`** for HTTP handler and middleware tests
 - **Fuzz tests** for filter/config parsing
-- Coverage target: 96%+
+- Coverage floor: 95%+ (enforced by the CI coverage gate in `ci-verify.yml`; ratchet up as coverage climbs)
 
 ### TypeScript
 

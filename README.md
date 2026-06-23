@@ -42,6 +42,7 @@
   <br>
   <a href="https://goreportcard.com/report/github.com/CodesWhat/sockguard/app"><img src="https://goreportcard.com/badge/github.com/CodesWhat/sockguard/app" alt="Go Report Card"></a>
   <a href="https://pkg.go.dev/github.com/CodesWhat/sockguard"><img src="https://pkg.go.dev/badge/github.com/CodesWhat/sockguard.svg" alt="Go Reference"></a>
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml"><img src="https://img.shields.io/badge/coverage-95%25-brightgreen?logo=go&logoColor=white" alt="Coverage"></a>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/CodesWhat/sockguard"><img src="https://img.shields.io/ossf-scorecard/github.com/CodesWhat/sockguard?label=openssf+scorecard&style=flat" alt="OpenSSF Scorecard"></a>
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/security-grype-weekly.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/security-grype-weekly.yml/badge.svg?branch=main" alt="Weekly Grype"></a>
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-mutation-monthly.yml"><img src="https://img.shields.io/badge/mutation%20score-96%25-brightgreen?logo=go&logoColor=white" alt="Mutation score"></a>
@@ -264,7 +265,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | ⏱️ | **Upstream Request Timeout** | Opt-in `upstream.request_timeout` bounds finite proxied requests with a total deadline, turning a hung response body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`). Streaming and long-lived endpoints (events, follow logs/stats, pull/build/push/load, export, attach, container wait) are exempt. |
 | 📈 | **Prometheus Metrics** | Opt-in `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, active request gauge, upstream watchdog + readiness state/check metrics, plus `sockguard_build_info` and `sockguard_start_time_seconds` gauges for version panels and uptime alerts. |
 | 🔗 | **Trace/Log Correlation** | Preserves valid W3C `traceparent` context or generates local context, forwards a proxy-local span ID, and records trace fields in access, audit, and upstream error logs without an OTLP exporter. |
-| 🧪 | **Battle-Tested** | 96%+ statement coverage, race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
+| 🧪 | **Battle-Tested** | 95%+ statement coverage (enforced by a CI coverage gate), race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
 
 <hr>
 

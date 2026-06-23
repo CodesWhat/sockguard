@@ -242,6 +242,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    # Mapped to job-level env so the Qlty publish step's `if` can detect a
+    # missing secret and skip cleanly on fork PRs. A step's own `if` can't see
+    # step-level env, so the mapping has to live at the job level.
+    env:
+      QLTY_COVERAGE_TOKEN: ${{ secrets.QLTY_COVERAGE_TOKEN }}
+
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
@@ -265,11 +271,39 @@ jobs:
         working-directory: app
 
       - name: Upload coverage
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: go-coverage
           path: app/coverage.txt
           retention-days: 14
+
+      - name: Publish coverage to Qlty
+        # Sends the Go coverprofile to Qlty Cloud for the dashboard, badge, and
+        # per-PR diff coverage. Skips automatically on fork PRs, where the
+        # coverage token is not exposed (the env check below is false).
+        if: ${{ env.QLTY_COVERAGE_TOKEN != '' }}
+        uses: qltysh/qlty-action/coverage@fd52dc852530a708d68c3b7342f8d33d1df4cd55  # v2.2.1
+        with:
+          token: ${{ secrets.QLTY_COVERAGE_TOKEN }}
+          files: app/coverage.txt
+          format: coverprofile
+
+      - name: Coverage gate
+        # Vendor-free floor: fails the job when the weighted statement total
+        # drops below COVERAGE_MIN, independent of Qlty Cloud being reachable.
+        # Kept a touch under the real total (95.5% as of 2026-06) so ordinary
+        # churn does not trip it; ratchet up as coverage climbs.
+        working-directory: app
+        env:
+          COVERAGE_MIN: "95"
+        run: |
+          total=$(go tool cover -func=coverage.txt | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "Total statement coverage: ${total}% (floor ${COVERAGE_MIN}%)"
+          awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN { exit (t+0 >= m+0) ? 0 : 1 }' || {
+            echo "::error::coverage ${total}% is below the ${COVERAGE_MIN}% floor"
+            exit 1
+          }
 
   go-fuzz:
     # Tier 1 — per-PR smoke-level fuzzing. Each fuzzer gets a fixed 60 s
