@@ -42,7 +42,7 @@
   <br>
   <a href="https://goreportcard.com/report/github.com/CodesWhat/sockguard/app"><img src="https://goreportcard.com/badge/github.com/CodesWhat/sockguard/app" alt="Go Report Card"></a>
   <a href="https://pkg.go.dev/github.com/CodesWhat/sockguard"><img src="https://pkg.go.dev/badge/github.com/CodesWhat/sockguard.svg" alt="Go Reference"></a>
-  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml"><img src="https://img.shields.io/badge/coverage-95%25-brightgreen?logo=go&logoColor=white" alt="Coverage"></a>
+  <a href="https://qlty.sh/gh/CodesWhat/projects/sockguard"><img src="https://qlty.sh/badges/5a115b54-7404-4e0e-b09d-2652fb1816e5/coverage.svg" alt="Coverage"></a>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/CodesWhat/sockguard"><img src="https://img.shields.io/ossf-scorecard/github.com/CodesWhat/sockguard?label=openssf+scorecard&style=flat" alt="OpenSSF Scorecard"></a>
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/security-grype-weekly.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/security-grype-weekly.yml/badge.svg?branch=main" alt="Weekly Grype"></a>
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-mutation-monthly.yml"><img src="https://img.shields.io/badge/mutation%20score-96%25-brightgreen?logo=go&logoColor=white" alt="Mutation score"></a>
