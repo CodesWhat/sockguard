@@ -278,18 +278,30 @@ jobs:
           path: app/coverage.txt
           retention-days: 14
 
+      - name: Normalize coverage paths for Qlty
+        # The Go module lives in app/, so coverprofile paths are module-relative
+        # (github.com/codeswhat/sockguard/internal/…). Qlty resolves file paths
+        # against the repo root, where the sources are under app/ — without this
+        # rewrite it reports 100% of files "missing on disk" and fails validation.
+        # Rewriting the module path to app/ makes them resolve; we publish the
+        # copy and leave the pristine coverage.txt for the gate below (go tool
+        # cover needs the real import paths).
+        working-directory: app
+        run: sed 's#github.com/codeswhat/sockguard/#app/#g' coverage.txt > coverage.qlty.txt
+
       - name: Publish coverage to Qlty
-        # OIDC auth — no token/secret to store or rotate. Skipped on fork PRs,
-        # which GitHub does not grant id-token:write. Non-blocking until the
-        # project's OIDC trust is confirmed in Qlty Cloud, so a publish hiccup
-        # can't redden the release-gating job during the rc soak; the coverage
-        # gate below still enforces the floor regardless.
+        # OIDC auth — no token/secret to store or rotate (verified working on
+        # PR #115). Skipped on fork PRs, which GitHub does not grant
+        # id-token:write. Non-blocking until a green run confirms coverage lands
+        # in the dashboard, so a publish hiccup can't redden the release-gating
+        # job during the rc soak; the coverage gate below still enforces the
+        # floor regardless.
         if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         continue-on-error: true
         uses: qltysh/qlty-action/coverage@fd52dc852530a708d68c3b7342f8d33d1df4cd55  # v2.2.1
         with:
           oidc: true
-          files: app/coverage.txt
+          files: app/coverage.qlty.txt
           format: coverprofile
 
       - name: Coverage gate
