@@ -43,6 +43,12 @@ Internal multi-axis audit of the v1.4 release candidate (security, performance, 
 - **Metrics middleware returns its pooled response writer on panic.** The pooled response writer and the request observation moved into a `defer`, so a panic in a downstream handler no longer leaks the writer back-pressure or drops the metric.
 - **Smaller hot-path allocations.** Hijacked exec/attach requests forward the query string verbatim (`RawQuery`) instead of re-parsing and re-encoding it, and the Prometheus exposition sort keys compare field-by-field with `cmp.Or` instead of building throwaway `\x00`-joined strings per comparison. The duration-histogram observe path also increments `count` before its buckets so a concurrent scrape can never momentarily report a bucket larger than the count (Prometheus invariant).
 
+### Tests
+
+- **Multi-host hijack path now has integration coverage.** `HijackHandlerWithDialer` — the dialer-based hijack used by the multi-host upstream resolver — gets an end-to-end full-upgrade test (101 switch + bidirectional byte proxy through a mock dockerd over a unix socket), closing a 0%-covered branch, and the test drains the proxy's copy goroutines before returning so it never leaks a goroutine that races a sibling test's hook restore.
+- **TLS dial handshake is exercised end-to-end.** New `Endpoint.dial` tests stand up a real TLS echo server and assert the handshake completes inside `dial` (returning a live `*tls.Conn`), plus a negative case proving a verification failure returns an error and no connection (no leaked socket).
+- **`FuzzService` reaches the privilege-hardening branches.** The service fuzz target now also runs every input through a strict policy (all seccomp/AppArmor/SELinux/no-new-privileges guardrails on) and seeds the corpus with `ContainerSpec.Privileges` payloads (unconfined/custom/null seccomp, disabled AppArmor, SELinux disable/label-override), so the hardening deny paths are fuzzed rather than just the allowlist paths.
+
 ## [1.4.0-rc.2] - 2026-06-22
 
 ### Changed
