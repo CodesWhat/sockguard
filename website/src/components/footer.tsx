@@ -10,7 +10,7 @@ import { GITHUB_RELEASES_URL, GITHUB_URL, SITE_CONFIG } from "@/lib/site-config"
 const CODESWHAT = "https://github.com/CodesWhat";
 const YEAR = new Date().getFullYear();
 const BLURB =
-  "Open-source Docker socket proxy. Default-deny filtering with signed policy bundles, per-profile rollout modes, and Prometheus metrics — lean Go binary, zero daemon deps.";
+  "We built an open-source Docker socket proxy that blocks every request by default. Drop it in front of your socket and control exactly what gets through. Signed policy bundles, per-profile rollout modes, Prometheus metrics, all in one lean Go binary with zero daemon dependencies.";
 
 type FooterLink = { label: string; href: string; external?: boolean };
 

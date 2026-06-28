@@ -48,7 +48,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "Container, image, build, volume, network, secret, config, service, swarm, node, and plugin writes are parsed to block privileged or host-namespace workloads, non-allowlisted mounts/devices, device requests, device cgroup rules, commands, remotes, unsafe network/swarm/node controls, archive writes, and tar imports. Multipart plugin uploads are inspected too, and oversized bounded bodies are rejected with 413 before the inspector runs.",
+      "We parse every container, image, build, volume, network, secret, config, service, swarm, node, and plugin write to block privileged or host-namespace workloads, non-allowlisted mounts/devices, device requests, device cgroup rules, commands, remotes, unsafe network/swarm/node controls, archive writes, and tar imports. We inspect multipart plugin uploads too, and reject oversized bounded bodies with 413 before the inspector runs.",
     category: "security",
   },
   {
@@ -57,7 +57,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "Non-loopback TCP listeners require mutual TLS 1.3 by default. Plaintext remote TCP is explicit legacy opt-in only.",
+      "We require mutual TLS 1.3 on non-loopback TCP listeners by default. Plaintext remote TCP is an explicit legacy opt-in only.",
     category: "security",
   },
   {
@@ -84,7 +84,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching.",
+      "You can allow start/stop while blocking create/exec. We give you per-operation POST controls with glob matching.",
     category: "control",
   },
   {
@@ -93,7 +93,7 @@ export const features: Feature[] = [
     color: "text-emerald-500 dark:text-emerald-400",
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
-      "JSON access logs with method, raw and normalized paths, decision, matched rule index, latency, canonical request_id, preserved client request IDs, and W3C trace correlation fields.",
+      "We emit JSON access logs with method, raw and normalized paths, decision, matched rule index, latency, canonical request_id, preserved client request IDs, and W3C trace correlation fields.",
     category: "operations",
   },
   {
@@ -102,7 +102,7 @@ export const features: Feature[] = [
     color: "text-emerald-500 dark:text-emerald-400",
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
-      "Opt-in Prometheus metrics expose request totals, deny counts, latency buckets, active requests, watchdog state, plus build_info and start_time gauges for version panels and uptime alerts. The active Docker socket watchdog feeds /health and logs state transitions, while trace/log correlation works without an OTLP exporter.",
+      "Our opt-in Prometheus metrics expose request totals, deny counts, latency buckets, active requests, watchdog state, plus build_info and start_time gauges for version panels and uptime alerts. We feed /health from the active Docker socket watchdog and log state transitions; trace/log correlation works without an OTLP exporter.",
     category: "operations",
   },
   {
@@ -111,7 +111,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Declarative rules in YAML. Glob patterns for paths, first-match-wins evaluation, and 15 bundled workload presets (drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, Drydock with self-update) plus the default config.",
+      "We use declarative YAML rules with glob patterns, first-match-wins evaluation, and 15 bundled workload presets (drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, Drydock with self-update) plus the default config.",
     category: "control",
   },
   {
@@ -120,7 +120,7 @@ export const features: Feature[] = [
     color: "text-emerald-500 dark:text-emerald-400",
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
-      "Drop-in replacement for the current Tecnativa env surface, including section vars, ALLOW_RESTARTS, SOCKET_PATH, and LOG_LEVEL.",
+      "Migrating from Tecnativa? We match its full env surface: section vars, ALLOW_RESTARTS, SOCKET_PATH, and LOG_LEVEL. Swap us in without touching your config.",
     category: "operations",
   },
   {
@@ -128,7 +128,7 @@ export const features: Feature[] = [
     title: "Minimal Attack Surface",
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
-    description: "Wolfi-based image. Cosign-signed with SBOM and build provenance.",
+    description: "We ship a Wolfi-based image, cosign-signed with SBOM and build provenance.",
     category: "security",
   },
   {
@@ -155,7 +155,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "Label selectors hide labeled list, inspect, and selected service/task log reads for non-matching resources, env/mount/network/config/plugin/swarm-sensitive metadata is redacted by default, and raw archive/export reads stay behind explicit opt-in.",
+      "We use label selectors to hide labeled list, inspect, and selected service/task log reads for non-matching resources. Env/mount/network/config/plugin/swarm-sensitive metadata is redacted by default, and raw archive/export reads stay behind explicit opt-in.",
     category: "security",
   },
   {
@@ -173,7 +173,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Per-profile token-bucket rate limiting (`limits.rate`) and in-flight concurrency caps (`limits.concurrency`) return `429 Too Many Requests` with `Retry-After` when exhausted. A system-wide priority fairness gate (`clients.global_concurrency`) prevents low-priority callers from starving high-priority profiles. Anonymous callers bucket under `_anonymous` so they cannot bypass limits by skipping identification.",
+      "We return `429 Too Many Requests` with `Retry-After` when per-profile token-bucket rate limits (`limits.rate`) or in-flight concurrency caps (`limits.concurrency`) are exhausted. A system-wide priority fairness gate (`clients.global_concurrency`) prevents low-priority callers from starving high-priority profiles. Anonymous callers bucket under `_anonymous` so they can't bypass limits by skipping identification.",
     category: "control",
   },
   {
@@ -191,7 +191,7 @@ export const features: Feature[] = [
     color: "text-emerald-500 dark:text-emerald-400",
     bg: "bg-emerald-100 dark:bg-emerald-900/50",
     description:
-      "fsnotify file watch and SIGHUP reload with immutable-field gating — listener, upstream socket, and trust-material fields require a restart. `POST /admin/validate` dry-runs a candidate config without touching the running policy. `GET /admin/policy/version` returns the generation counter, config SHA-256, and verified bundle signer. Optionally binds the admin API to a dedicated listener so admin traffic never traverses the Docker-API filter chain.",
+      "We watch for config changes with fsnotify and support SIGHUP reload with immutable-field gating: listener, upstream socket, and trust-material fields require a restart. `POST /admin/validate` dry-runs a candidate config without touching the running policy. `GET /admin/policy/version` returns the generation counter, config SHA-256, and verified bundle signer. Optionally bind the admin API to a dedicated listener so admin traffic never traverses the Docker-API filter chain.",
     category: "operations",
   },
   {

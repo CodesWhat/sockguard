@@ -20,7 +20,7 @@ export const SITE_CONFIG = {
   tagline: "Control what gets through",
   /** Default meta / OpenGraph / Twitter description. */
   description:
-    "A default-deny Docker socket proxy built in Go. Filter Docker API requests by method, path, and request body, then layer on signed policy bundles, per-profile rollout modes, rate limits, hot-reload, and Prometheus metrics.",
+    "We built a default-deny Docker socket proxy in Go. Filter Docker API requests by method, path, and body, then layer on signed policy bundles, per-profile rollout modes, rate limits, hot-reload, and Prometheus metrics.",
   /** Production domain (no protocol, no trailing slash). */
   domain: "getsockguard.com",
   /** GitHub owner/org. */

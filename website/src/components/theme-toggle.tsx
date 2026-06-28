@@ -3,6 +3,7 @@
 import { Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
+import { iconButtonCn } from "@/lib/class-names";
 
 export function ThemeToggle() {
   const { resolvedTheme, setTheme } = useTheme();
@@ -19,7 +20,7 @@ export function ThemeToggle() {
         mounted ? (isDark ? "Switch to light theme" : "Switch to dark theme") : "Toggle theme"
       }
       onClick={() => setTheme(isDark ? "light" : "dark")}
-      className="rounded-full p-2 text-neutral-600 transition-colors hover:bg-neutral-200 hover:text-neutral-900 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:rounded-sm"
+      className={iconButtonCn}
     >
       {mounted ? (
         isDark ? (

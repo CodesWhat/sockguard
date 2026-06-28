@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { SITE_CONFIG } from "@/lib/site-config";
 
 // ───────────────────────────────────────────────────────────────
 // Terminal color tokens. Tailwind-free JSX so the component is
@@ -121,7 +122,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {bold("sockguard")} {dim("v1.0.0")}
+            {bold("sockguard")} {dim(`v${SITE_CONFIG.version}`)}
           </>
         ),
       },
@@ -408,7 +409,8 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {bold("sockguard")} v1.0.0{"  "}
+            {bold("sockguard")} v{SITE_CONFIG.version}
+            {"  "}
             {dim("(commit bf59572, built 2026-05-20T00:00:00Z, go1.26.3)")}
           </>
         ),
@@ -469,7 +471,7 @@ function buildLogLines(): RawFrameLine[] {
       level: "INFO",
       msg: "sockguard started",
       fields: [
-        ["version", "v1.0.0"],
+        ["version", `v${SITE_CONFIG.version}`],
         ["listen", "unix:/var/run/sockguard/sockguard.sock"],
         ["upstream", "/var/run/docker.sock"],
         ["rules", "6"],

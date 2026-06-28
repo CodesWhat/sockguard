@@ -37,13 +37,14 @@ const categoryLabels: Record<FeatureCategory, { label: string; color: string; bo
 
 const dockerCompose = `services:
   sockguard:
-    image: codeswhat/sockguard:latest
+    image: ${SITE_CONFIG.dockerImage}:latest
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - sockguard-socket:/var/run/sockguard
     environment:
       - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+      - SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true
       - CONTAINERS=1
       - EVENTS=1
 
@@ -59,11 +60,11 @@ volumes:
   sockguard-socket:`;
 
 const stats = [
-  { value: "19", label: "features" },
+  { value: String(features.length), label: "features" },
   { value: "5", label: "alternatives compared" },
-  { value: "100%", label: "coverage" },
+  { value: "96%+", label: "coverage" },
   { value: "Apache-2.0", label: "license" },
-] as const;
+];
 
 function ComparisonCell({ value, planned }: { value: string; planned?: boolean }) {
   if (planned) {
@@ -223,7 +224,7 @@ export default function Home() {
               <SectionHeading
                 eyebrow="Batteries included"
                 title="What we enforce"
-                subtitle="Default-deny Docker socket proxy — a lean Go binary with a stdlib request hot path and zero daemon dependencies."
+                subtitle="We ship a lean Go binary with a stdlib request hot path and zero daemon dependencies. Default-deny, ready to drop in front of your socket."
               />
 
               <div className="overflow-hidden rounded-xl border border-neutral-300 dark:border-neutral-700">
@@ -298,7 +299,7 @@ export default function Home() {
               </div>
 
               <p className="mt-4 text-center text-sm text-neutral-500 dark:text-neutral-400">
-                sockguard owns the real socket. Your app only sees what you allow.{" "}
+                We own the real socket. Your app only sees what you allow.{" "}
                 <a
                   href="/docs"
                   className="font-medium text-neutral-900 underline-offset-4 hover:underline dark:text-neutral-100"
