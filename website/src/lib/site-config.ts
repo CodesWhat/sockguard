@@ -35,8 +35,8 @@ export const SITE_CONFIG = {
   logo: "/sockguard-logo.png",
   /** Whether the logo inverts in dark mode (adds `dark:invert`). */
   logoInvertOnDark: false,
-  /** Default OpenGraph / Twitter share image in /public. No dedicated OG image yet — falls back to logo. */
-  ogImage: "/sockguard-logo.png",
+  /** Default OpenGraph / Twitter share image in /public (1200x630 banner). */
+  ogImage: "/og-image.png",
   /** OpenGraph locale. */
   locale: "en_US",
   /** Live demo URL (overridable per-environment via NEXT_PUBLIC_DEMO_URL). Empty = no demo. */

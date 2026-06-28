@@ -36,16 +36,15 @@ export const metadata: Metadata = {
     type: "website",
     images: [
       {
-        // TODO: replace with a 1200x630 OG banner
         url: SITE_CONFIG.ogImage,
-        width: 1023,
-        height: 1023,
+        width: 1200,
+        height: 630,
         alt: `${SITE_CONFIG.name} - ${SITE_CONFIG.tagline}`,
       },
     ],
   },
   twitter: {
-    card: "summary",
+    card: "summary_large_image",
     title: `${SITE_CONFIG.name} - ${SITE_CONFIG.tagline}`,
     description: SITE_CONFIG.description,
     creator: SITE_CONFIG.twitterCreator,
