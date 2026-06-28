@@ -58,7 +58,7 @@ export const metadata: Metadata = {
     ],
     apple: [{ url: `/apple-touch-icon.png?v=${ICON_VERSION}`, sizes: "180x180" }],
   },
-  manifest: "/site.webmanifest",
+  manifest: `/site.webmanifest?v=${ICON_VERSION}`,
 };
 
 export const viewport: Viewport = {
@@ -92,7 +92,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           href={`/apple-touch-icon.png?v=${ICON_VERSION}`}
         />
         <meta name="apple-mobile-web-app-title" content={SITE_CONFIG.name} />
-        <link rel="manifest" href="/site.webmanifest" />
+        <link rel="manifest" href={`/site.webmanifest?v=${ICON_VERSION}`} />
       </head>
       <body className={`${ibmPlexSans.className} ${ibmPlexMono.variable}`}>
         <script dangerouslySetInnerHTML={{ __html: REVEAL_BOOTSTRAP }} />
