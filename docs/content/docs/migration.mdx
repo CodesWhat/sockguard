@@ -135,4 +135,4 @@ Key differences:
 - Sockguard auto-strips Docker API version prefixes (`/v1.45/…`) before matching, so patterns never account for them
 - Glob patterns (`*`, `**`) with auto-anchoring instead of regex
 - CetusGuard filters on method + path only; Sockguard adds request-body inspection, named per-client profiles, owner isolation, read-side visibility/redaction, rate limits, and metrics on top
-- CetusGuard can dial a remote daemon over backend TLS today; Sockguard's upstream is the local Unix socket
+- Both tools support remote daemon upstreams; Sockguard uses `upstream.endpoints` (YAML) or the `DOCKER_HOST`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` drop-in — see [Remote Upstreams & Failover](/multi-host) for the full guide.

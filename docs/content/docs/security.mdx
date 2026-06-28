@@ -13,7 +13,7 @@ The Docker socket (`/var/run/docker.sock`) is equivalent to root access on the h
 - Pull and run malicious images
 - Manipulate Swarm clusters
 
-A socket proxy sits between consumers and the raw socket, filtering requests to limit what each consumer can do.
+Sockguard sits between consumers and the raw socket, inspecting and filtering every request before it reaches the daemon.
 
 ## Defense in Depth
 
