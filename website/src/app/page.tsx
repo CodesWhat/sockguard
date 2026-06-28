@@ -189,9 +189,10 @@ export default function Home() {
               <Image
                 src={SITE_CONFIG.logo}
                 alt=""
+                aria-hidden="true"
                 width={200}
                 height={200}
-                className="animate-float drop-shadow-2xl"
+                className="animate-dog-bark drop-shadow-2xl"
                 priority
               />
             </div>

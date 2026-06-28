@@ -176,6 +176,31 @@
   50% { transform: translateY(-12px); }
 }
 
+/*
+ * Dog-bark: the mascot rears up on its hind legs then fires two sharp bark
+ * pulses before settling back. Transform-origin is set near the feet so the
+ * whole body pivots from the bottom — the front/top lifts on rear-up and
+ * snaps forward on each bark. A 35 % rest window provides the looping pause.
+ */
+@keyframes dog-bark {
+  /* rest */
+  0%, 12% { transform: translateY(0) rotate(0deg); }
+  /* rear up — body tilts back, front lifts */
+  27%     { transform: translateY(-12px) rotate(-16deg); }
+  /* bark 1 — snap forward */
+  35%     { transform: translateY(-5px)  rotate(-4deg) scaleY(0.95); }
+  /* pull back */
+  43%     { transform: translateY(-11px) rotate(-15deg); }
+  /* bark 2 — slightly softer */
+  51%     { transform: translateY(-4px)  rotate(-3deg) scaleY(0.96); }
+  /* overshoot settle */
+  60%     { transform: translateY(3px)   rotate(2deg); }
+  /* land */
+  68%     { transform: translateY(0)     rotate(0deg); }
+  /* pause before next loop */
+  100%    { transform: translateY(0)     rotate(0deg); }
+}
+
 /* Slow aurora drift — opt in via [data-aurora-motion="true"] on an ancestor. */
 @keyframes aurora-drift {
   0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
@@ -207,8 +232,10 @@ html.js .reveal.visible {
   .aurora-mesh,
   .animate-float,
   .animate-bounce-slow,
-  .animate-wiggle {
+  .animate-wiggle,
+  .animate-dog-bark {
     animation: none !important;
+    transform: none !important;
   }
   .reveal {
     transition: none !important;
@@ -226,6 +253,11 @@ html.js .reveal.visible {
   }
   .animate-bounce-slow {
     animation: bounce-slow 2s ease-in-out infinite;
+  }
+  /* Dog mascot: rears up + double bark, pivots from near the feet */
+  .animate-dog-bark {
+    transform-origin: 50% 90%;
+    animation: dog-bark 5s ease-in-out infinite;
   }
   /* Aurora mesh — palette colors come from the --au-* vars set per [data-bg] */
   .aurora-mesh {

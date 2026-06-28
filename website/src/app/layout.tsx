@@ -18,7 +18,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 
 // Bump this whenever the favicon/app icons change so browsers re-fetch them
 // instead of serving a stale cached icon (favicons cache aggressively).
-const ICON_VERSION = "20260615";
+const ICON_VERSION = "20260628";
 
 export const metadata: Metadata = {
   title: {
