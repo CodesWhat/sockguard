@@ -27,7 +27,7 @@ export const faqItems: Array<{ question: string; answer: string }> = [
   {
     question: "Is Sockguard production-ready and what license does it use?",
     answer:
-      "Sockguard is Apache-2.0 licensed and has been in production use since v1.0.0. The proxy binary ships as a minimal Wolfi-based container image, cosign-signed with an SBOM and build provenance attached. We enforce a 96%+ Go statement-coverage floor in CI, run a proxy-vs-daemon differential fuzz harness on every PR, and have a published security policy at security@getdrydock.com. The v1.0.0 release incorporated fixes for 21 HIGH and MEDIUM audit findings before it shipped.",
+      "Sockguard is Apache-2.0 licensed and has been in production use since v1.0.0. The proxy binary ships as a minimal Wolfi-based container image, cosign-signed with an SBOM and build provenance attached. We enforce a 96%+ Go statement-coverage floor in CI, run a proxy-vs-daemon differential fuzz harness on every PR, and have a published security policy at security@getsockguard.com. The v1.0.0 release incorporated fixes for 21 HIGH and MEDIUM audit findings before it shipped.",
   },
   {
     question: "How do I migrate from Tecnativa's docker-socket-proxy?",

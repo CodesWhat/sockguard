@@ -90,8 +90,8 @@ export const features: Feature[] = [
   {
     icon: Zap,
     title: "Structured Access Logging",
-    color: "text-emerald-500 dark:text-emerald-400",
-    bg: "bg-emerald-100 dark:bg-emerald-900/50",
+    color: "text-amber-500 dark:text-amber-400",
+    bg: "bg-amber-100 dark:bg-amber-900/50",
     description:
       "We emit JSON access logs with method, raw and normalized paths, decision, matched rule index, latency, canonical request_id, preserved client request IDs, and W3C trace correlation fields.",
     category: "operations",
@@ -99,8 +99,8 @@ export const features: Feature[] = [
   {
     icon: Activity,
     title: "Operator Observability",
-    color: "text-emerald-500 dark:text-emerald-400",
-    bg: "bg-emerald-100 dark:bg-emerald-900/50",
+    color: "text-amber-500 dark:text-amber-400",
+    bg: "bg-amber-100 dark:bg-amber-900/50",
     description:
       "Our opt-in Prometheus metrics expose request totals, deny counts, latency buckets, active requests, watchdog state, plus build_info and start_time gauges for version panels and uptime alerts. We feed /health from the active Docker socket watchdog and log state transitions; trace/log correlation works without an OTLP exporter.",
     category: "operations",
@@ -117,8 +117,8 @@ export const features: Feature[] = [
   {
     icon: ArrowRight,
     title: "Tecnativa Compatible",
-    color: "text-emerald-500 dark:text-emerald-400",
-    bg: "bg-emerald-100 dark:bg-emerald-900/50",
+    color: "text-amber-500 dark:text-amber-400",
+    bg: "bg-amber-100 dark:bg-amber-900/50",
     description:
       "Migrating from Tecnativa? We match its full env surface: section vars, ALLOW_RESTARTS, SOCKET_PATH, and LOG_LEVEL. Swap us in without touching your config.",
     category: "operations",
@@ -188,8 +188,8 @@ export const features: Feature[] = [
   {
     icon: RefreshCw,
     title: "Hot-Reload + Admin API",
-    color: "text-emerald-500 dark:text-emerald-400",
-    bg: "bg-emerald-100 dark:bg-emerald-900/50",
+    color: "text-amber-500 dark:text-amber-400",
+    bg: "bg-amber-100 dark:bg-amber-900/50",
     description:
       "We watch for config changes with fsnotify and support SIGHUP reload with immutable-field gating: listener, upstream socket, and trust-material fields require a restart. `POST /admin/validate` dry-runs a candidate config without touching the running policy. `GET /admin/policy/version` returns the generation counter, config SHA-256, and verified bundle signer. Optionally bind the admin API to a dedicated listener so admin traffic never traverses the Docker-API filter chain.",
     category: "operations",
@@ -197,8 +197,8 @@ export const features: Feature[] = [
   {
     icon: Server,
     title: "Remote Upstreams & Failover",
-    color: "text-emerald-500 dark:text-emerald-400",
-    bg: "bg-emerald-100 dark:bg-emerald-900/50",
+    color: "text-amber-500 dark:text-amber-400",
+    bg: "bg-amber-100 dark:bg-amber-900/50",
     description:
       "Dial a remote Docker daemon over TCP with mutual TLS instead of the local socket. Configure an ordered set of redundant endpoints for the same daemon or swarm node with active health checks and automatic failover.",
     category: "operations",

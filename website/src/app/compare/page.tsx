@@ -27,6 +27,7 @@ export const metadata: Metadata = {
     siteName: SITE_CONFIG.name,
     locale: SITE_CONFIG.locale,
     type: "website",
+    images: [{ url: SITE_CONFIG.ogImage, width: 1200, height: 630 }],
   },
   twitter: {
     card: "summary_large_image",
@@ -34,6 +35,7 @@ export const metadata: Metadata = {
     description:
       "Compare Sockguard to Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard.",
     creator: SITE_CONFIG.twitterCreator,
+    images: [SITE_CONFIG.ogImage],
   },
   alternates: {
     canonical: `${BASE_URL}/compare`,

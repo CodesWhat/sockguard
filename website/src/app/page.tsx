@@ -1,4 +1,3 @@
-import { Terminal } from "lucide-react";
 import type { Metadata } from "next";
 import Image from "next/image";
 import { CliDemo } from "@/components/cli-demo";
@@ -6,13 +5,13 @@ import { CompareSection } from "@/components/compare-section";
 import { CtaButtons } from "@/components/cta-buttons";
 import { Ecosystem } from "@/components/ecosystem";
 import { FAQ } from "@/components/faq";
+import { GetStarted } from "@/components/get-started";
 import { GitHubBadges } from "@/components/github-badges";
 import { MarketingShell } from "@/components/marketing-shell";
 import { Roadmap } from "@/components/roadmap";
 import { SectionHeading } from "@/components/section-heading";
 import { StarHistory } from "@/components/star-history";
 import { Badge } from "@/components/ui/badge";
-import { YamlBlock } from "@/components/yaml-block";
 import { BASE_URL, GITHUB_RELEASES_URL, GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
 import { faqItems } from "./data/faq";
 import { type FeatureCategory, features } from "./data/features";
@@ -36,34 +35,10 @@ const categoryLabels: Record<FeatureCategory, { label: string; color: string; bo
   },
   operations: {
     label: "Operations",
-    color: "text-emerald-600 dark:text-emerald-400",
-    border: "border-emerald-500/30",
+    color: "text-amber-600 dark:text-amber-400",
+    border: "border-amber-500/30",
   },
 };
-
-const dockerCompose = `services:
-  sockguard:
-    image: ${SITE_CONFIG.dockerImage}:latest
-    restart: unless-stopped
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - sockguard-socket:/var/run/sockguard
-    environment:
-      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
-      - SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true
-      - CONTAINERS=1
-      - EVENTS=1
-
-  your-app:
-    depends_on:
-      - sockguard
-    volumes:
-      - sockguard-socket:/var/run/sockguard:ro
-    environment:
-      - DOCKER_HOST=unix:///var/run/sockguard/sockguard.sock
-
-volumes:
-  sockguard-socket:`;
 
 const stats = [
   { value: String(features.length), label: "features" },
@@ -240,7 +215,7 @@ export default function Home() {
 
               <div className="overflow-hidden rounded-xl border border-neutral-300 dark:border-neutral-700">
                 <div className="flex items-center gap-2 border-b border-neutral-300 bg-neutral-100 px-5 py-3 dark:border-neutral-700 dark:bg-neutral-900">
-                  <div className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                  <div className="h-2.5 w-2.5 rounded-full bg-amber-500" />
                   <span className="font-mono text-xs text-neutral-500 dark:text-neutral-400">
                     sockguard capabilities
                   </span>
@@ -290,37 +265,7 @@ export default function Home() {
 
         {/* ── Quick Start ───────────────────────────────────────────────────────── */}
         <div className="reveal" suppressHydrationWarning>
-          <section className="border-t border-border/60 px-4 py-16">
-            <div className="mx-auto max-w-3xl">
-              <SectionHeading
-                eyebrow="Get running"
-                title="Get started in minutes"
-                subtitle="Add sockguard to your compose file and point your app at its scoped socket."
-                align="right"
-              />
-
-              <div className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950 shadow-2xl">
-                <div className="flex items-center gap-2 border-b border-neutral-800 px-4 py-3">
-                  <Terminal className="h-4 w-4 text-neutral-500" />
-                  <span className="text-xs font-medium text-neutral-500">docker-compose.yml</span>
-                </div>
-                <YamlBlock
-                  code={dockerCompose}
-                  className="overflow-x-auto p-6 font-[family-name:var(--font-mono)] text-sm leading-relaxed text-neutral-300"
-                />
-              </div>
-
-              <p className="mt-4 text-center text-sm text-neutral-500 dark:text-neutral-400">
-                We own the real socket. Your app only sees what you allow.{" "}
-                <a
-                  href="/docs"
-                  className="font-medium text-neutral-900 underline-offset-4 hover:underline dark:text-neutral-100"
-                >
-                  Full configuration docs →
-                </a>
-              </p>
-            </div>
-          </section>
+          <GetStarted />
         </div>
 
         {/* ── Roadmap ───────────────────────────────────────────────────────────── */}

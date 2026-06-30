@@ -41,7 +41,7 @@ type Props = {
 
 function VerdictIcon({ verdict }: { verdict: ComparisonRow["verdict"] }) {
   if (verdict === "self" || verdict === "competitor") {
-    return <Check className="h-4 w-4 text-emerald-500" />;
+    return <Check className="h-4 w-4 text-amber-500" />;
   }
   return <Minus className="h-4 w-4 text-neutral-400" />;
 }
@@ -136,7 +136,7 @@ export function ComparisonPage({
                           ) : row.verdict === "self" ? (
                             <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
                           ) : row.verdict === "competitor" ? (
-                            <Check className="h-4 w-4 shrink-0 text-emerald-500" />
+                            <Check className="h-4 w-4 shrink-0 text-amber-500" />
                           ) : (
                             <VerdictIcon verdict="tie" />
                           )}
@@ -146,7 +146,7 @@ export function ComparisonPage({
                       <td className="px-4 py-3 sm:px-6">
                         <span className="flex items-center gap-2 text-neutral-900 dark:text-neutral-100">
                           {row.verdict === "self" ? (
-                            <Check className="h-4 w-4 shrink-0 text-emerald-500" />
+                            <Check className="h-4 w-4 shrink-0 text-amber-500" />
                           ) : row.verdict === "competitor" ? (
                             <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
                           ) : (
@@ -210,9 +210,9 @@ export function ComparisonPage({
                     <Clock className="h-5 w-5 text-amber-500 dark:text-amber-400" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <h3 className="mb-2 text-lg font-semibold text-neutral-900 dark:text-neutral-100">
+                    <h2 className="mb-2 text-lg font-semibold text-neutral-900 dark:text-neutral-100">
                       {migrationTitle}
-                    </h3>
+                    </h2>
                     <p className="mb-4 text-sm text-neutral-600 dark:text-neutral-400">
                       {migrationDescription}
                     </p>

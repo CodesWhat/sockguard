@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
 
-// Sockguard "ember" palette — warm amber keys + rose values, matching the
-// site's brand (drydock's get-started.tsx uses the cool sky/lime twin).
+// Sockguard "ember" palette — warm amber keys + rose values, matching the site's brand.
 const KEY = "text-amber-300"; // YAML keys
 const VAL = "text-rose-300"; // image refs, quoted strings, numbers, booleans
 const COM = "text-neutral-600"; // comments
