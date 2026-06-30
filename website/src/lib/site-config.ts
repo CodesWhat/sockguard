@@ -31,6 +31,8 @@ export const SITE_CONFIG = {
   twitterCreator: "@codeswhat",
   /** Twitter/X profile URL (used in JSON-LD sameAs). */
   twitterUrl: "https://twitter.com/codeswhat",
+  /** CodesWhat Discord community invite URL. */
+  discordUrl: "https://discord.gg/mWHCPJRzSx",
   /** Logo asset in /public. */
   logo: "/sockguard-logo.png",
   /** Whether the logo inverts in dark mode (adds `dark:invert`). */
