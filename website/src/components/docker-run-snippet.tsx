@@ -27,13 +27,17 @@ export function DockerRunSnippet({
         <pre className="overflow-x-auto text-sm">
           <code className="text-neutral-300">
             <span className="text-neutral-500">$</span>{" "}
-            <span className="text-[#C4FF00]">docker run</span> -d \{"\n"}
-            {"  "}--name sockguard \{"\n"}
-            {"  "}-v /var/run/docker.sock:/var/run/docker.sock:ro \{"\n"}
-            {"  "}-v /var/run/sockguard:/var/run/sockguard \{"\n"}
-            {"  "}-e SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock \{"\n"}
+            <span className="text-amber-300">docker run</span> -d \{"\n"}
+            {"  "}--name <span className="text-rose-300">sockguard</span> \{"\n"}
+            {"  "}-v{" "}
+            <span className="text-rose-300">/var/run/docker.sock:/var/run/docker.sock:ro</span> \
+            {"\n"}
+            {"  "}-v <span className="text-rose-300">/var/run/sockguard:/var/run/sockguard</span> \
+            {"\n"}
+            {"  "}-e SOCKGUARD_LISTEN_SOCKET=
+            <span className="text-rose-300">/var/run/sockguard/sockguard.sock</span> \{"\n"}
             {"  "}
-            {SITE_CONFIG.dockerImage}
+            <span className="text-rose-300">{SITE_CONFIG.dockerImage}</span>
           </code>
         </pre>
       </CardContent>
