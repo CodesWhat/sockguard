@@ -23,6 +23,10 @@ export const SITE_CONFIG = {
   githubOwner,
   /** GitHub repository name. */
   githubRepo,
+  /** Default OpenGraph / Twitter share image in /public (1200x630 banner). */
+  ogImage: "/og-image.png",
+  /** OpenGraph locale. */
+  locale: "en_US",
   /** Logo asset in /public. */
   logo: "/sockguard-logo.png",
   /** Whether the logo inverts in dark mode (adds `dark:invert`). */

@@ -32,5 +32,22 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "weekly" as const,
       priority: 0.7,
     },
+    ...[
+      "getting-started",
+      "configuration",
+      "security",
+      "verification",
+      "presets",
+      "cis-docker-benchmark",
+      "observability",
+      "admin",
+      "migration",
+      "multi-host",
+    ].map((slug) => ({
+      url: `${BASE_URL}/docs/${slug}`,
+      lastModified: new Date(),
+      changeFrequency: "weekly" as const,
+      priority: 0.7,
+    })),
   ];
 }

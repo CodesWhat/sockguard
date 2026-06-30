@@ -21,6 +21,10 @@ const ibmPlexMono = IBM_Plex_Mono({
   variable: "--font-mono",
 });
 
+// Bump this whenever the favicon/app icons change so browsers re-fetch them
+// instead of serving a stale cached icon (favicons cache aggressively).
+const ICON_VERSION = "20260630";
+
 export const metadata: Metadata = {
   title: {
     default: `${SITE_CONFIG.name} Docs`,
@@ -28,6 +32,24 @@ export const metadata: Metadata = {
   },
   description: SITE_CONFIG.description,
   metadataBase: new URL(BASE_URL),
+  openGraph: {
+    siteName: SITE_CONFIG.name,
+    type: "website",
+    locale: SITE_CONFIG.locale,
+    images: [{ url: SITE_CONFIG.ogImage, width: 1200, height: 630 }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    images: [SITE_CONFIG.ogImage],
+  },
+  icons: {
+    icon: [
+      { url: `/favicon.ico?v=${ICON_VERSION}`, sizes: "any" },
+      { url: `/favicon-96x96.png?v=${ICON_VERSION}`, sizes: "96x96", type: "image/png" },
+    ],
+    apple: [{ url: `/apple-touch-icon.png?v=${ICON_VERSION}`, sizes: "180x180" }],
+  },
+  manifest: `/site.webmanifest?v=${ICON_VERSION}`,
 };
 
 export const viewport: Viewport = {
