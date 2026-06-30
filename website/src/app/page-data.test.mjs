@@ -3,6 +3,8 @@ import test from "node:test";
 
 import { comparisonRows } from "./data/comparison-rows.ts";
 import { features } from "./data/features.ts";
+import { faqItems } from "./data/faq.ts";
+import { roadmap } from "../lib/site-content.ts";
 
 test("website features live in extracted data modules", () => {
   assert.equal(features.length, 19);
@@ -51,7 +53,7 @@ test("website comparison rows live in extracted data modules", () => {
   const perClientRow = comparisonRows.find((row) => row.feature === "Per-client policies");
   assert.ok(perClientRow);
   assert.equal(perClientRow.sockguard, "CIDR + labels + cert selectors incl. SPKI + unix peer");
-  assert.equal(perClientRow.wollomatic, "IP/hostname + labels");
+  assert.equal(perClientRow.wollomatic, "Partial (IP/hostname + labels)");
 
   assert.ok(comparisonRows.find((row) => row.feature === "Resource owner labels"));
   assert.ok(comparisonRows.find((row) => row.feature === "Remote TCP mTLS (listener)"));
@@ -69,4 +71,43 @@ test("website comparison rows live in extracted data modules", () => {
   assert.ok(comparisonRows.find((row) => row.feature === "Hot-reload + admin API"));
 
   assert.equal(comparisonRows.at(-1)?.feature, "Hot-reload + admin API");
+});
+
+test("roadmap data is valid and matches expected milestones", () => {
+  assert.ok(roadmap.length > 0, "roadmap must be non-empty");
+
+  // Latest released milestone must be v1.3.0
+  const releasedMilestones = roadmap.filter((m) => m.status === "released");
+  assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
+  const latestReleased = releasedMilestones[releasedMilestones.length - 1];
+  assert.equal(latestReleased.version, "v1.3.0", "latest released milestone must be v1.3.0");
+  assert.equal(latestReleased.status, "released");
+
+  // Must reference v1.4.0
+  const v140 = roadmap.find((m) => m.version === "v1.4.0");
+  assert.ok(v140, "roadmap must include a v1.4.0 milestone");
+
+  // Every milestone must have a non-empty items array
+  for (const milestone of roadmap) {
+    assert.ok(
+      Array.isArray(milestone.items) && milestone.items.length > 0,
+      `milestone ${milestone.version} must have non-empty items array`,
+    );
+  }
+});
+
+test("faqItems data is valid", () => {
+  assert.ok(Array.isArray(faqItems), "faqItems must be an array");
+  assert.ok(faqItems.length >= 5, "faqItems must have at least 5 items");
+
+  for (const item of faqItems) {
+    assert.ok(
+      typeof item.question === "string" && item.question.length > 0,
+      "each faq item must have a non-empty question",
+    );
+    assert.ok(
+      typeof item.answer === "string" && item.answer.length > 0,
+      "each faq item must have a non-empty answer",
+    );
+  }
 });

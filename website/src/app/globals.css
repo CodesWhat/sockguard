@@ -158,28 +158,37 @@
 }
 
 /*
- * Dog-bark: the mascot rears up on its hind legs then fires two sharp bark
- * pulses before settling back. Transform-origin is set near the feet so the
- * whole body pivots from the bottom — the front/top lifts on rear-up and
- * snaps forward on each bark. A 35 % rest window provides the looping pause.
+ * Dog-bark: the mascot rears up on its hind legs — front legs and head lift
+ * UP — then fires two sharp bark pulses before settling back. Transform-origin
+ * sits on the hind legs (right/bottom, the dog faces left) so the front of the
+ * body pivots upward off the ground on rear-up and jabs on each bark. Positive
+ * rotation = front swings up. A 12 % rest window provides the looping pause.
  */
 @keyframes dog-bark {
   /* rest */
   0%, 12% { transform: translateY(0) rotate(0deg); }
-  /* rear up — body tilts back, front lifts */
-  27%     { transform: translateY(-12px) rotate(-16deg); animation-timing-function: ease-in; }
-  /* bark 1 — snap forward */
-  35%     { transform: translateY(-5px)  rotate(-4deg) scaleX(1.04) scaleY(0.95); animation-timing-function: ease-out; }
-  /* pull back */
-  43%     { transform: translateY(-11px) rotate(-15deg); animation-timing-function: ease-in; }
-  /* bark 2 — slightly softer */
-  51%     { transform: translateY(-4px)  rotate(-3deg) scaleX(1.03) scaleY(0.96); animation-timing-function: ease-out; }
+  /* rear up — front legs lift, head swings up */
+  27%     { transform: translateY(-12px) rotate(16deg); animation-timing-function: ease-in; }
+  /* bark 1 — sharp jab down from the reared pose */
+  35%     { transform: translateY(-5px)  rotate(4deg) scaleX(1.04) scaleY(0.95); animation-timing-function: ease-out; }
+  /* rear back up */
+  43%     { transform: translateY(-11px) rotate(15deg); animation-timing-function: ease-in; }
+  /* bark 2 — slightly softer jab */
+  51%     { transform: translateY(-4px)  rotate(3deg) scaleX(1.03) scaleY(0.96); animation-timing-function: ease-out; }
   /* overshoot settle */
-  60%     { transform: translateY(3px)   rotate(2deg); }
+  60%     { transform: translateY(3px)   rotate(-2deg); }
   /* land */
   68%     { transform: translateY(0)     rotate(0deg); }
   /* pause before next loop */
   100%    { transform: translateY(0)     rotate(0deg); }
+}
+
+/* Print-down: wipe the CLI banner art in top-to-bottom so it draws like a
+   terminal printing it row by row, rather than popping in as a whole image.
+   Stepped so the reveal reads as discrete printed lines. */
+@keyframes print-down {
+  from { clip-path: inset(0 0 100% 0); }
+  to   { clip-path: inset(0 0 0 0); }
 }
 
 /* Slow aurora drift — opt in via [data-aurora-motion="true"] on an ancestor. */
@@ -211,9 +220,11 @@ html.js .reveal.visible {
 /* Respect reduced motion */
 @media (prefers-reduced-motion: reduce) {
   .aurora-mesh,
-  .animate-dog-bark {
+  .animate-dog-bark,
+  .animate-print-down {
     animation: none !important;
     transform: none !important;
+    clip-path: none !important;
   }
   .reveal {
     transition: none !important;
@@ -223,11 +234,15 @@ html.js .reveal.visible {
 }
 
 @layer utilities {
-  /* Dog mascot: rears up + double bark, pivots from near the feet */
+  /* Dog mascot: rears up + double bark, pivots on the hind legs (dog faces left) */
   .animate-dog-bark {
-    transform-origin: 50% 90%;
+    transform-origin: 70% 90%;
     will-change: transform;
     animation: dog-bark 5s ease-in-out infinite;
+  }
+  /* CLI banner art print-in — see @keyframes print-down above */
+  .animate-print-down {
+    animation: print-down 0.6s steps(16) both;
   }
   /* Aurora mesh — palette colors come from the --au-* vars set per [data-bg] */
   .aurora-mesh {

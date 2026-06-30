@@ -39,7 +39,12 @@
   },
   "overrides": [
     {
-      "includes": ["website/src/app/page.tsx", "website/src/app/layout.tsx"],
+      "includes": [
+        "website/src/app/page.tsx",
+        "website/src/app/layout.tsx",
+        "website/src/app/compare/page.tsx",
+        "website/src/components/comparison-page.tsx"
+      ],
       "linter": {
         "rules": {
           "security": {

@@ -1,4 +1,4 @@
-import { Download, GitFork, Star } from "lucide-react";
+import { Download, GitFork, Heart, Star } from "lucide-react";
 import { DOCKER_HUB_URL, GITHUB_URL, REPO_SLUG } from "@/lib/site-config";
 
 type Badge = { href: string; src: string; alt: string };
@@ -97,6 +97,17 @@ function StatTiles() {
           </a>
         );
       })}
+
+      {/* Lone funding CTA — accent treatment so it reads as an action, not a stat */}
+      <a
+        href="https://github.com/sponsors/CodesWhat"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="group flex items-center gap-2 rounded-xl border border-rose-200 bg-rose-50/70 px-4 py-2.5 backdrop-blur-sm transition-colors hover:border-rose-300 hover:bg-rose-50 dark:border-rose-900/50 dark:bg-rose-950/30 dark:hover:border-rose-800 dark:hover:bg-rose-950/50"
+      >
+        <Heart className="h-4 w-4 shrink-0 text-rose-500" />
+        <span className="text-sm font-medium text-rose-700 dark:text-rose-300">Sponsor</span>
+      </a>
     </div>
   );
 }

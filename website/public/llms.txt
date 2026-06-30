@@ -1,0 +1,39 @@
+# Sockguard
+
+> A default-deny Docker socket proxy built in Go. Filter Docker API requests by method, path, and body — then layer on signed policy bundles, per-profile rollout modes, rate limits, hot-reload, and Prometheus metrics.
+
+Sockguard sits between your Docker daemon socket and any process that needs Docker API access. Every request is filtered by method, path, and request body before it reaches the daemon. You get per-client policies (CIDR, labels, certificate selectors), signed policy bundles (cosign keyed + keyless with Rekor), container image trust verification, rollout modes (enforce/warn/audit), and Prometheus metrics.
+
+## Key capabilities
+
+- Default-deny: requests are blocked unless explicitly permitted by a YAML policy rule
+- Method + path filtering: allow or block specific HTTP methods and URL path patterns
+- Request body inspection: filter container create, exec, image pull, volume, network, secret, config, service, swarm, node, and plugin requests on body content
+- Per-client policies: different rule sets per CIDR range, Docker label, TLS certificate selector (including SPKI pinning), or Unix peer credential
+- Read-side redaction: strip sensitive fields from GET responses so callers only see what their policy allows
+- Signed policy bundles: cosign keyed and keyless signatures, Rekor transparency log inclusion — unsigned or tampered bundles are rejected at load time
+- Container image trust: block exec or create calls for images that aren't signed or don't match a trusted digest (enforce or warn mode)
+- Rollout modes: enforce (deny), warn (allow + log), audit (shadow policy check without blocking) — per-profile
+- Rate limits: per-profile token-bucket rate limits and global priority gates
+- Hot-reload: SIGHUP or fsnotify watches reload config without restarting the proxy
+- Prometheus metrics: socket-proxy request counts, deny counts, and latency histograms
+- TLS 1.3 mTLS listener: expose a remote TCP listener with mutual TLS for multi-host setups
+- Audit log: structured JSON audit log with reason codes and W3C traceparent correlation
+- Active upstream watchdog: detects and reports Docker daemon unavailability via /health endpoint
+
+## License
+
+Apache-2.0 — https://www.apache.org/licenses/LICENSE-2.0
+
+## Links
+
+- Website: https://getsockguard.com
+- GitHub: https://github.com/CodesWhat/sockguard
+- Releases: https://github.com/CodesWhat/sockguard/releases
+- Documentation: https://getsockguard.com/docs
+- Compare to alternatives: https://getsockguard.com/compare
+- vs Tecnativa docker-socket-proxy: https://getsockguard.com/compare/tecnativa
+- vs LinuxServer docker-socket-proxy: https://getsockguard.com/compare/linuxserver
+- vs wollomatic socket-proxy: https://getsockguard.com/compare/wollomatic
+- vs 11notes docker-socket-proxy: https://getsockguard.com/compare/11notes
+- vs CetusGuard: https://getsockguard.com/compare/cetusguard

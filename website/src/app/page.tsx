@@ -1,14 +1,20 @@
-import { Check, Clock, Minus, Terminal } from "lucide-react";
+import { Terminal } from "lucide-react";
 import type { Metadata } from "next";
 import Image from "next/image";
 import { CliDemo } from "@/components/cli-demo";
+import { CompareSection } from "@/components/compare-section";
 import { CtaButtons } from "@/components/cta-buttons";
+import { Ecosystem } from "@/components/ecosystem";
+import { FAQ } from "@/components/faq";
 import { GitHubBadges } from "@/components/github-badges";
 import { MarketingShell } from "@/components/marketing-shell";
+import { Roadmap } from "@/components/roadmap";
 import { SectionHeading } from "@/components/section-heading";
+import { StarHistory } from "@/components/star-history";
 import { Badge } from "@/components/ui/badge";
+import { YamlBlock } from "@/components/yaml-block";
 import { BASE_URL, GITHUB_RELEASES_URL, GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
-import { comparisonRows } from "./data/comparison-rows";
+import { faqItems } from "./data/faq";
 import { type FeatureCategory, features } from "./data/features";
 
 export const metadata: Metadata = {
@@ -66,34 +72,6 @@ const stats = [
   { value: "Apache-2.0", label: "license" },
 ];
 
-function ComparisonCell({ value, planned }: { value: string; planned?: boolean }) {
-  if (planned) {
-    return (
-      <Badge variant="outline" className="border-amber-500/30 text-amber-600 dark:text-amber-400">
-        <Clock className="size-3" />
-        {value}
-      </Badge>
-    );
-  }
-  if (value === "Yes") {
-    return (
-      <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-        <Check className="size-4" />
-        Yes
-      </span>
-    );
-  }
-  if (value === "No") {
-    return (
-      <span className="inline-flex items-center gap-1 text-neutral-400 dark:text-neutral-600">
-        <Minus className="size-4" />
-        No
-      </span>
-    );
-  }
-  return <span className="text-neutral-600 dark:text-neutral-400">{value}</span>;
-}
-
 export default function Home() {
   const softwareAppJsonLd = {
     "@context": "https://schema.org",
@@ -101,7 +79,7 @@ export default function Home() {
     name: SITE_CONFIG.name,
     url: BASE_URL,
     description:
-      "A default-deny Docker socket proxy built in Go. Filter requests by method, path, and body with signed policy bundles and per-profile rollout modes.",
+      "A default-deny Docker socket proxy built in Go. Filter Docker API requests by method, path, and body with signed policy bundles and per-profile rollout modes.",
     applicationCategory: "DeveloperApplication",
     operatingSystem: "Docker",
     license: SITE_CONFIG.licenseUrl,
@@ -125,11 +103,43 @@ export default function Home() {
     },
   };
 
+  const websiteJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: SITE_CONFIG.name,
+    url: BASE_URL,
+    publisher: {
+      "@type": "Organization",
+      name: "CodesWhat",
+    },
+  };
+
+  const faqPageJsonLd = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: faqItems.map((item) => ({
+      "@type": "Question",
+      name: item.question,
+      acceptedAnswer: {
+        "@type": "Answer",
+        text: item.answer,
+      },
+    })),
+  };
+
   return (
     <>
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(softwareAppJsonLd) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(faqPageJsonLd) }}
       />
       <MarketingShell aurora="ember">
         {/* ── Hero ──────────────────────────────────────────────────────────────── */}
@@ -205,7 +215,7 @@ export default function Home() {
         </section>
 
         {/* ── CLI Demo ──────────────────────────────────────────────────────────── */}
-        <div className="reveal">
+        <div className="reveal" suppressHydrationWarning>
           <section className="border-t border-border/60 px-4 py-16">
             <div className="mx-auto max-w-5xl">
               <SectionHeading
@@ -219,7 +229,7 @@ export default function Home() {
         </div>
 
         {/* ── Features ──────────────────────────────────────────────────────────── */}
-        <div className="reveal">
+        <div className="reveal" suppressHydrationWarning>
           <section className="border-t border-border/60 px-4 py-16">
             <div className="mx-auto max-w-5xl">
               <SectionHeading
@@ -279,7 +289,7 @@ export default function Home() {
         </div>
 
         {/* ── Quick Start ───────────────────────────────────────────────────────── */}
-        <div className="reveal">
+        <div className="reveal" suppressHydrationWarning>
           <section className="border-t border-border/60 px-4 py-16">
             <div className="mx-auto max-w-3xl">
               <SectionHeading
@@ -294,9 +304,10 @@ export default function Home() {
                   <Terminal className="h-4 w-4 text-neutral-500" />
                   <span className="text-xs font-medium text-neutral-500">docker-compose.yml</span>
                 </div>
-                <pre className="overflow-x-auto p-6 font-[family-name:var(--font-mono)] text-sm leading-relaxed text-neutral-300">
-                  {dockerCompose}
-                </pre>
+                <YamlBlock
+                  code={dockerCompose}
+                  className="overflow-x-auto p-6 font-[family-name:var(--font-mono)] text-sm leading-relaxed text-neutral-300"
+                />
               </div>
 
               <p className="mt-4 text-center text-sm text-neutral-500 dark:text-neutral-400">
@@ -312,77 +323,29 @@ export default function Home() {
           </section>
         </div>
 
-        {/* ── Comparison ────────────────────────────────────────────────────────── */}
-        <div className="reveal">
-          <section className="border-t border-border/60 px-4 py-16">
-            <div className="mx-auto max-w-5xl">
-              <SectionHeading
-                eyebrow="vs. the field"
-                title="How we stack up"
-                subtitle="Compared against the five most common Docker socket proxies. We built sockguard because none of them did request body inspection or per-client policy routing."
-              />
+        {/* ── Roadmap ───────────────────────────────────────────────────────────── */}
+        <div className="reveal" suppressHydrationWarning>
+          <Roadmap />
+        </div>
 
-              <div className="overflow-x-auto rounded-xl border border-neutral-200 bg-white/50 backdrop-blur-sm dark:border-neutral-800 dark:bg-neutral-900/50">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-neutral-200 dark:border-neutral-800">
-                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-neutral-500">
-                        Feature
-                      </th>
-                      <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-500">
-                        Tecnativa
-                      </th>
-                      <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-500">
-                        LinuxServer
-                      </th>
-                      <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-500">
-                        wollomatic
-                      </th>
-                      <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-500">
-                        11notes
-                      </th>
-                      <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-500">
-                        CetusGuard
-                      </th>
-                      <th className="px-4 py-3 text-center text-xs font-semibold uppercase tracking-wider text-neutral-900 dark:text-neutral-50">
-                        Sockguard
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {comparisonRows.map((row) => (
-                      <tr
-                        key={row.feature}
-                        className="border-b border-neutral-100 transition-colors hover:bg-neutral-50 last:border-0 dark:border-neutral-800/50 dark:hover:bg-neutral-900/50"
-                      >
-                        <td className="px-4 py-3 font-medium text-neutral-900 dark:text-neutral-100">
-                          {row.feature}
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <ComparisonCell value={row.tecnativa} />
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <ComparisonCell value={row.linuxserver} />
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <ComparisonCell value={row.wollomatic} />
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <ComparisonCell value={row.elevenNotes} />
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <ComparisonCell value={row.cetusguard} />
-                        </td>
-                        <td className="px-4 py-3 text-center">
-                          <ComparisonCell value={row.sockguard} planned={row.planned} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
+        {/* ── Star History ──────────────────────────────────────────────────────── */}
+        <div className="reveal" suppressHydrationWarning>
+          <StarHistory />
+        </div>
+
+        {/* ── Compare ───────────────────────────────────────────────────────────── */}
+        <div className="reveal" suppressHydrationWarning>
+          <CompareSection />
+        </div>
+
+        {/* ── Ecosystem ─────────────────────────────────────────────────────────── */}
+        <div className="reveal" suppressHydrationWarning>
+          <Ecosystem />
+        </div>
+
+        {/* ── FAQ ───────────────────────────────────────────────────────────────── */}
+        <div className="reveal" suppressHydrationWarning>
+          <FAQ />
         </div>
       </MarketingShell>
     </>
