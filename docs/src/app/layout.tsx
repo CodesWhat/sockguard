@@ -6,7 +6,7 @@ import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import { Footer } from "@/components/footer";
 import { SiteBackground } from "@/components/site-background";
 import { SiteHeader } from "@/components/site-header";
-import { BASE_URL, SITE_CONFIG } from "@/lib/site-config";
+import { BASE_PATH, BASE_URL, SITE_CONFIG } from "@/lib/site-config";
 import { source } from "@/lib/source";
 import "./globals.css";
 
@@ -44,12 +44,16 @@ export const metadata: Metadata = {
   },
   icons: {
     icon: [
-      { url: `/favicon.ico?v=${ICON_VERSION}`, sizes: "any" },
-      { url: `/favicon-96x96.png?v=${ICON_VERSION}`, sizes: "96x96", type: "image/png" },
+      { url: `${BASE_PATH}/favicon.ico?v=${ICON_VERSION}`, sizes: "any" },
+      {
+        url: `${BASE_PATH}/favicon-96x96.png?v=${ICON_VERSION}`,
+        sizes: "96x96",
+        type: "image/png",
+      },
     ],
-    apple: [{ url: `/apple-touch-icon.png?v=${ICON_VERSION}`, sizes: "180x180" }],
+    apple: [{ url: `${BASE_PATH}/apple-touch-icon.png?v=${ICON_VERSION}`, sizes: "180x180" }],
   },
-  manifest: `/site.webmanifest?v=${ICON_VERSION}`,
+  manifest: `${BASE_PATH}/site.webmanifest?v=${ICON_VERSION}`,
 };
 
 export const viewport: Viewport = {

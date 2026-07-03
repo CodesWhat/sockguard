@@ -2,7 +2,7 @@ import { ArrowUpRight, BookOpen } from "lucide-react";
 import Image from "next/image";
 import { GithubIcon } from "@/components/github-icon";
 import { iconButtonCn, navLinkCn } from "@/lib/class-names";
-import { GITHUB_RELEASES_URL, GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
+import { BASE_PATH, GITHUB_RELEASES_URL, GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
 
 // NOTE: All navigation links here are plain <a> anchors, not Next <Link>.
 // The docs app runs under basePath="/docs", which causes Next <Link> to prefix
@@ -83,7 +83,7 @@ function SocialIcons() {
 function Coin({ size }: { size: number }) {
   return (
     <Image
-      src="/codeswhat-logo.png"
+      src={`${BASE_PATH}/codeswhat-logo.png`}
       alt="CodesWhat"
       width={size}
       height={size}

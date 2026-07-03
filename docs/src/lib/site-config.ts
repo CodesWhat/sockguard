@@ -9,6 +9,15 @@
 const githubOwner = "CodesWhat";
 const githubRepo = "sockguard";
 
+/**
+ * Deploy base path for this app — must match `basePath` in next.config.ts.
+ * Next.js does NOT prepend basePath to metadata asset URLs or string
+ * `<Image src>` values, so anything served from /public must carry this
+ * prefix explicitly to resolve both in standalone dev and when the static
+ * export is served under getsockguard.com/docs.
+ */
+export const BASE_PATH = "/docs";
+
 export type AuroraPalette = "ember" | "ocean" | "violet" | "forest" | "mono";
 
 export const SITE_CONFIG = {
@@ -24,11 +33,11 @@ export const SITE_CONFIG = {
   /** GitHub repository name. */
   githubRepo,
   /** Default OpenGraph / Twitter share image in /public (1200x630 banner). */
-  ogImage: "/og-image.png",
+  ogImage: `${BASE_PATH}/og-image.png`,
   /** OpenGraph locale. */
   locale: "en_US",
   /** Logo asset in /public. */
-  logo: "/sockguard-logo.png",
+  logo: `${BASE_PATH}/sockguard-logo.png`,
   /** Whether the logo inverts in dark mode (adds `dark:invert`). */
   logoInvertOnDark: false,
   /** License link shown in the footer. */
