@@ -4,7 +4,7 @@ contact_links:
     url: mailto:security@getsockguard.com?subject=Sockguard%20security%20report
     about: Privately report a security issue without opening a public issue
   - name: General Contact
-    url: mailto:hello@getsockguard.com?subject=Sockguard%20contact
+    url: mailto:hi@getsockguard.com?subject=Sockguard%20contact
     about: Contact CodesWhat for non-security questions that do not fit Discussions
   - name: Feature Request
     url: https://github.com/CodesWhat/sockguard/discussions/categories/ideas
