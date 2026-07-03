@@ -69,7 +69,7 @@ var colorArt string
 
 // colorArtWidth is the fixed display width (columns) of colorArt. Its rows
 // carry ANSI escapes, so this is a known constant rather than a rune count.
-const colorArtWidth = 50
+const colorArtWidth = 72
 
 // Info is the runtime summary rendered beneath the ASCII art.
 type Info struct {

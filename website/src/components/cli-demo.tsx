@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { SITE_CONFIG } from "@/lib/site-config";
 
 // ───────────────────────────────────────────────────────────────
 // Terminal color tokens. Tailwind-free JSX so the component is
@@ -19,7 +20,7 @@ const tok = {
 
 type RawFrameLine =
   | { kind: "text"; content: React.ReactNode }
-  | { kind: "art"; content: string }
+  | { kind: "colorart" }
   | { kind: "blank" };
 
 type FrameLine = RawFrameLine & { id: string };
@@ -33,65 +34,11 @@ type RawFrame = {
 
 type Frame = Omit<RawFrame, "output"> & { output: FrameLine[] };
 
-// TERMINAL_COLS is the notional terminal width the CliDemo pretends
-// to run inside. The real CLI detects the live tty's column count
-// via TIOCGWINSZ and pads the banner to center the dog; this demo
-// mirrors that exact logic against a fixed 100-col target so the
-// visual result matches what a user running `sockguard serve` in a
-// 100×32 terminal would see. Bump this if the real CLI's banner padding ever changes width.
-const TERMINAL_COLS = 100;
-
-// padArt mirrors banner.centerArt from the Go side — left-pads every
-// non-empty row by the same number of spaces so the full block is
-// centered inside a `cols`-wide terminal. Narrow targets return the
-// art unchanged, same fallback as the real binary.
-function padArt(block: string, cols: number): string {
-  const lines = block.split("\n");
-  let max = 0;
-  for (const line of lines) {
-    if (line.length > max) max = line.length;
-  }
-  if (cols <= max) return block;
-  const pad = " ".repeat((cols - max) >> 1);
-  return lines.map((l) => (l === "" ? l : pad + l)).join("\n");
-}
-
-// The real sockguard serve banner. Kept in sync with
-// app/internal/banner/banner.go so the demo stays true-to-life.
-const RAW_ART = `                ...                              ...
-         .=+=..                           .=+=..
-       ..=--**..                        ..=*--+.:
-       .:=-:=#*:..                     .:*#+:--=..
-      .:+--..+++=:..:..................=+++:.:-=:.
-     :.-=--...=+=:.-+***************=::-++:..:-=+..
-     ..==--....:***++++++++++++####*+***=... ---+:.
-     ..==--..-+++++++++++++++++++***++++++=:.:--+:.
-     ..:+=::++++++++++++++++++++++++++++++++=.-=+..
-      ....:++++%@%++#@%++++++++++@@%**#@%++++=.. ..
-        ..+++++*%@@@@@*+++++++++++%@@@@@*+++++-.:
-       :.:=+++++#@@@@#*++.++++=-++%@@@@#+++++==..
-       ..-=++++%@@#*@%#:.:::::::.+%@**@@@*+++==:..
-      ..:++++++++++::%@%..:**=:.-%@=.=+++++++++=...
-     ..=+==+=.:%@@%@@@.==.... .:=:-@@%@@@+..+===+:..
-    ..:+===.*@@%:@*+@@:..:+...+...*@@:@*=@@@-:===+..
-    ..====.#%%@@%:@==@@@*.. ...:%@@%:@=*@@@#%::===:.:
-    ...==-.#%-%%@@@@@%%%%%%=.*%%%%%@@@@@@%**%=.==-..:
-     ...:..+*#:.:-----::=*:::=*:::-----::.*%*..=-...
-       ..-====+#@*.#@@=:-:...::=:#@@@.=:#%*:.......
-     ..:+**%@#*===*+.:#%@@@@@@@@%=:::*%#:#@@@@%=..
-    ..+%#*====+#@#===#@@@@@@@@@@@@=%%%@@%:+@@@@@@:.
-   ..*@@@@@@@%+==+%%+==%@%%%%%%%%%+*@@@@@@*.*%%%%:.
-  ..#@%%@@@@@@@@%===%@=-=+:........:%@@@@@@@=.....:
-  ..**...:*#%@@@@@@===%=.:**#***++=.#@@@@@@@@@=..
-   ..**:.....=%%@@@@*-..-==========.*%@@@@@@@@@-.:
-    ...=#*:.. .-%%%%*.......:::... ..#%%%@@@@%%:.:
-       ...:*%#=:-%%-..     :...:    ..:*#%%%#=...
-           .........                  ... . ..`;
-
-// ART is the banner string after runtime-style centering has been
-// applied — what `sockguard serve` would print into a 100-col tty.
-// Computed once at module load so React renders cheap.
-const ART = padArt(RAW_ART, TERMINAL_COLS);
+// The serve-banner dog is the real 24-bit truecolor banner art from
+// app/internal/banner/dog_color.ans, rendered to /sockguard-dog-banner.png by
+// scripts/gen-dog-png.mjs (the same pixels `sockguard serve` prints) and shown
+// as a crisp pixelated <img>. A browser <pre> of half-blocks adds sub-pixel
+// scanlines and warps the aspect; an image reproduces the terminal exactly.
 
 // ───────────────────────────────────────────────────────────────
 // Output helpers — build lines that mirror what the real CLI
@@ -113,6 +60,56 @@ const CROSS = "✗";
 // ───────────────────────────────────────────────────────────────
 const RAW_FRAMES: RawFrame[] = [
   {
+    comment: "One command, and every Docker API call runs through your rules.",
+    command: "sockguard serve --config ./sockguard.yaml",
+    output: [
+      { kind: "colorart" },
+      {
+        kind: "text",
+        content: (
+          <>
+            {"  "}
+            {bold("sockguard")} v{SITE_CONFIG.version}
+            {"  "}
+            {dim("(commit fe0a643, built 2026-06-11T00:00:00Z, go1.26.4)")}
+          </>
+        ),
+      },
+      { kind: "blank" },
+      {
+        kind: "text",
+        content: (
+          <>
+            {"  "}
+            {dim("listen   ")} unix:/var/run/sockguard/sockguard.sock
+          </>
+        ),
+      },
+      {
+        kind: "text",
+        content: (
+          <>
+            {"  "}
+            {dim("upstream ")} /var/run/docker.sock
+          </>
+        ),
+      },
+      {
+        kind: "text",
+        content: (
+          <>
+            {"  "}
+            {dim("rules    ")} 6{"  "}
+            {dim("(log text/info, access=on)")}
+          </>
+        ),
+      },
+      { kind: "blank" },
+      ...buildLogLines(),
+    ],
+    pauseAfterMs: 5000,
+  },
+  {
     comment: "What version are we running?",
     command: "sockguard version",
     output: [
@@ -121,7 +118,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {bold("sockguard")} {dim("v1.0.0")}
+            {bold("sockguard")} {dim(`v${SITE_CONFIG.version}`)}
           </>
         ),
       },
@@ -130,7 +127,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("commit")} {"  "}bf59572
+            {dim("commit")} {"  "}fe0a643
           </>
         ),
       },
@@ -139,7 +136,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("built ")} {"  "}2026-05-20T00:00:00Z
+            {dim("built ")} {"  "}2026-06-11T00:00:00Z
           </>
         ),
       },
@@ -148,7 +145,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("go    ")} {"  "}go1.26.3
+            {dim("go    ")} {"  "}go1.26.4
           </>
         ),
       },
@@ -398,55 +395,6 @@ const RAW_FRAMES: RawFrame[] = [
     ],
     pauseAfterMs: 2400,
   },
-  {
-    comment: "Time to actually run it.",
-    command: "sockguard serve --config ./sockguard.yaml",
-    output: [
-      { kind: "art", content: ART },
-      {
-        kind: "text",
-        content: (
-          <>
-            {"  "}
-            {bold("sockguard")} v1.0.0{"  "}
-            {dim("(commit bf59572, built 2026-05-20T00:00:00Z, go1.26.3)")}
-          </>
-        ),
-      },
-      { kind: "blank" },
-      {
-        kind: "text",
-        content: (
-          <>
-            {"  "}
-            {dim("listen   ")} unix:/var/run/sockguard/sockguard.sock
-          </>
-        ),
-      },
-      {
-        kind: "text",
-        content: (
-          <>
-            {"  "}
-            {dim("upstream ")} /var/run/docker.sock
-          </>
-        ),
-      },
-      {
-        kind: "text",
-        content: (
-          <>
-            {"  "}
-            {dim("rules    ")} 6{"  "}
-            {dim("(log text/info, access=on)")}
-          </>
-        ),
-      },
-      { kind: "blank" },
-      ...buildLogLines(),
-    ],
-    pauseAfterMs: 5000,
-  },
 ];
 
 // buildLogLines builds the fake sockguard runtime access log stream
@@ -469,7 +417,7 @@ function buildLogLines(): RawFrameLine[] {
       level: "INFO",
       msg: "sockguard started",
       fields: [
-        ["version", "v1.0.0"],
+        ["version", `v${SITE_CONFIG.version}`],
         ["listen", "unix:/var/run/sockguard/sockguard.sock"],
         ["upstream", "/var/run/docker.sock"],
         ["rules", "6"],
@@ -886,14 +834,24 @@ export function CliDemo({ className, typeMs = 35, lineMs = 55, autoStart = true 
                 if (line.kind === "blank") {
                   return <div key={line.id}>&nbsp;</div>;
                 }
-                if (line.kind === "art") {
+                if (line.kind === "colorart") {
                   return (
-                    <pre
+                    // The real CLI banner art (app/internal/banner/dog_color.ans),
+                    // rendered to a PNG by scripts/gen-dog-png.mjs — the exact pixels
+                    // `sockguard serve` prints. Shown crisp/pixelated so it matches the
+                    // terminal (a <pre> of half-blocks gets sub-pixel scanlines + the
+                    // wrong cell aspect in browsers). `animate-print-down` wipes it in
+                    // top-to-bottom so it draws like the terminal is printing it.
+                    // biome-ignore lint/performance/noImgElement: tiny static pixel-art asset
+                    <img
                       key={line.id}
-                      className={`${tok.cyan} whitespace-pre font-mono text-[0.52rem] leading-[1.02] tracking-normal`}
-                    >
-                      {line.content}
-                    </pre>
+                      src="/sockguard-dog-banner.png"
+                      alt=""
+                      aria-hidden="true"
+                      width={72}
+                      height={74}
+                      className="animate-print-down mx-auto my-1 block h-auto w-72 [image-rendering:pixelated]"
+                    />
                   );
                 }
                 return (

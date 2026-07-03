@@ -24,7 +24,7 @@ or email **<security@getsockguard.com>**. GitHub private reports are
 preferred because they keep report details private and tie disclosure to
 the advisory and fix workflow.
 
-For non-security contact, email **<hello@getsockguard.com>**.
+For non-security contact, email **<hi@getsockguard.com>**.
 
 You can expect:
 

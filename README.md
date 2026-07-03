@@ -525,6 +525,12 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
   </a>
 </div>
 
+## Community
+
+Questions, feedback, and early support: [CodesWhat Discord](https://discord.gg/mWHCPJRzSx)
+
+Please file concrete bugs and feature requests in [GitHub Issues](https://github.com/CodesWhat/sockguard/issues) so they do not get lost in chat.
+
 ---
 
 <div align="center">
