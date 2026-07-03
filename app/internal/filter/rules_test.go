@@ -1108,3 +1108,31 @@ func TestGlobToRegexSpecialSequences(t *testing.T) {
 		})
 	}
 }
+
+func TestHasVersionPrefix(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"no prefix", "/containers/json", false},
+		{"v1.45 prefix", "/v1.45/containers/json", true},
+		{"v1 major-only prefix", "/v1/containers/json", true},
+		{"ping no prefix", "/_ping", false},
+		{"root path no prefix", "/", false},
+		{"version literal path no strip", "/version", false},
+		{"uppercase V not a prefix", "/V1.45/containers/json", false},
+		{"empty path", "", false},
+		{"v without digits not a prefix", "/v/containers/json", false},
+		{"v digits no trailing slash not a prefix", "/v1.45", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := HasVersionPrefix(tt.path)
+			if got != tt.want {
+				t.Errorf("HasVersionPrefix(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}

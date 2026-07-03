@@ -171,6 +171,30 @@ func TestTerminalColsTTY(t *testing.T) {
 	}
 }
 
+func TestTruecolor(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		want     bool
+	}{
+		{"truecolor value", "truecolor", true},
+		{"24bit value", "24bit", true},
+		{"empty value", "", false},
+		{"xterm-256color is not truecolor", "xterm-256color", false},
+		{"case mismatch not recognized", "Truecolor", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("COLORTERM", tt.envValue)
+			got := truecolor()
+			if got != tt.want {
+				t.Errorf("truecolor() with COLORTERM=%q = %v, want %v", tt.envValue, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestShortCommit(t *testing.T) {
 	tests := []struct {
 		in, want string

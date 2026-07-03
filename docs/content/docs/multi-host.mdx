@@ -9,7 +9,7 @@ By default sockguard reaches Docker through a local unix socket. The `upstream.e
 
 - **Single remote daemon** — Docker runs on a different host than sockguard (a build host, a CI worker, a remote VM). You want mTLS between them so the daemon API is not exposed as plaintext on the wire.
 - **HA / redundancy** — you have two daemon hosts behind keepalived or a Swarm manager HA pair and want sockguard to stay healthy when one goes down.
-- **`docker -H tcp://…` migration** — you already have `DOCKER_HOST` / `DOCKER_TLS_VERIFY` / `DOCKER_CERT_PATH` set and want zero-config drop-in (see [DOCKER_* environment drop-in](#docker-environment-drop-in) below).
+- **`docker -H tcp://…` migration** — you already have `DOCKER_HOST` / `DOCKER_TLS_VERIFY` / `DOCKER_CERT_PATH` set and want zero-config drop-in (see [DOCKER_* environment drop-in](#docker_-environment-drop-in) below).
 
 ## Single remote daemon (TCP + mTLS)
 

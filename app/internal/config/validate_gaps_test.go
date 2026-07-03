@@ -3,7 +3,41 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/codeswhat/sockguard/internal/upstream"
 )
+
+// TestEndpointSpecMapping exercises the endpointSpec function which adapts a
+// config UpstreamEndpoint to an upstream.EndpointSpec.
+func TestEndpointSpecMapping(t *testing.T) {
+	ep := UpstreamEndpoint{
+		Address: "tcp://daemon.example.com:2376",
+		TLS: UpstreamTLSConfig{
+			CAFile:     "/etc/certs/ca.pem",
+			CertFile:   "/etc/certs/client.pem",
+			KeyFile:    "/etc/certs/client-key.pem",
+			ServerName: "daemon.example.com",
+		},
+		InsecureAllowPlainTCP: true,
+		InsecureSkipTLSVerify: false,
+	}
+
+	got := endpointSpec(ep)
+
+	want := upstream.EndpointSpec{
+		Address:               "tcp://daemon.example.com:2376",
+		CAFile:                "/etc/certs/ca.pem",
+		CertFile:              "/etc/certs/client.pem",
+		KeyFile:               "/etc/certs/client-key.pem",
+		ServerName:            "daemon.example.com",
+		InsecureAllowPlainTCP: true,
+		InsecureSkipTLSVerify: false,
+	}
+
+	if got != want {
+		t.Errorf("endpointSpec() = %+v, want %+v", got, want)
+	}
+}
 
 // TestValidateUpstreamRequestTimeout exercises the validateUpstream branches
 // for upstream.request_timeout that are not covered by existing tests.

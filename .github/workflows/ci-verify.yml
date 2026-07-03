@@ -278,16 +278,20 @@ jobs:
           path: app/coverage.txt
           retention-days: 14
 
-      - name: Normalize coverage paths for Qlty
-        # The Go module lives in app/, so coverprofile paths are module-relative
-        # (github.com/codeswhat/sockguard/internal/…). Qlty resolves file paths
-        # against the repo root, where the sources are under app/ — without this
-        # rewrite it reports 100% of files "missing on disk" and fails validation.
-        # Rewriting the module path to app/ makes them resolve; we publish the
-        # copy and leave the pristine coverage.txt for the gate below (go tool
-        # cover needs the real import paths).
+      - name: Build production-only coverage profile
+        # Drop non-production packages — those in NO binary's import closure:
+        # differential (proxy-vs-daemon test harness), internal/testcert (test
+        # certs), internal/testhelp (test helpers). Their *tests* still run as
+        # regression checks; only their own statements are excluded so the gate
+        # and dashboard reflect shipping code. coverage.prod.txt keeps the real
+        # import paths for the gate (go tool cover needs them); coverage.qlty.txt
+        # additionally rewrites the module path to app/ because Qlty resolves
+        # paths against the repo root (sources under app/) and would otherwise
+        # report 100% of files "missing on disk" and fail validation.
         working-directory: app
-        run: sed 's#github.com/codeswhat/sockguard/#app/#g' coverage.txt > coverage.qlty.txt
+        run: |
+          grep -vE 'github.com/codeswhat/sockguard/(differential|internal/testcert|internal/testhelp)/' coverage.txt > coverage.prod.txt
+          sed 's#github.com/codeswhat/sockguard/#app/#g' coverage.prod.txt > coverage.qlty.txt
 
       - name: Publish coverage to Qlty
         # OIDC auth — no token/secret to store or rotate (verified working on
@@ -305,18 +309,20 @@ jobs:
           format: coverprofile
 
       - name: Coverage gate
-        # Vendor-free floor: fails the job when the weighted statement total
-        # drops below COVERAGE_MIN, independent of Qlty Cloud being reachable.
-        # Kept a touch under the real total (95.5% as of 2026-06) so ordinary
-        # churn does not trip it; ratchet up as coverage climbs.
+        # Vendor-free floor on PRODUCTION code: fails the job when the weighted
+        # statement total of shipping packages drops below COVERAGE_MIN,
+        # independent of Qlty Cloud being reachable. Uses coverage.prod.txt
+        # (test harnesses/helpers excluded). Kept a touch under the real total
+        # (96.7% production-only as of 2026-06) so ordinary churn does not trip
+        # it; ratchet up as coverage climbs.
         working-directory: app
         env:
-          COVERAGE_MIN: "95"
+          COVERAGE_MIN: "96"
         run: |
-          total=$(go tool cover -func=coverage.txt | awk '/^total:/ {print $3}' | tr -d '%')
-          echo "Total statement coverage: ${total}% (floor ${COVERAGE_MIN}%)"
+          total=$(go tool cover -func=coverage.prod.txt | awk '/^total:/ {print $3}' | tr -d '%')
+          echo "Production statement coverage: ${total}% (floor ${COVERAGE_MIN}%)"
           awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN { exit (t+0 >= m+0) ? 0 : 1 }' || {
-            echo "::error::coverage ${total}% is below the ${COVERAGE_MIN}% floor"
+            echo "::error::production coverage ${total}% is below the ${COVERAGE_MIN}% floor"
             exit 1
           }
 

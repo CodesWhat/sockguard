@@ -1856,3 +1856,52 @@ func TestInspectAllowedRequestOverflowDoesNotPanic(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
 	_, _, _ = p.inspectAllowedRequest(testLogger(), req, "/containers/create")
 }
+
+// TestResolveNormalizedPathUsesCachedMeta exercises the meta != nil && NormPath != ""
+// fast-path that avoids re-normalizing the path when access logging already did it.
+func TestResolveNormalizedPathUsesCachedMeta(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/v1.45/containers/json", nil)
+
+	// Case 1: meta is nil — falls through to NormalizePath.
+	got := resolveNormalizedPath(nil, req)
+	if got != "/containers/json" {
+		t.Errorf("resolveNormalizedPath(nil, req) = %q, want %q", got, "/containers/json")
+	}
+
+	// Case 2: meta has a pre-computed NormPath — must return that value verbatim
+	// without re-normalizing the URL.
+	meta := &logging.RequestMeta{NormPath: "/cached/path"}
+	got = resolveNormalizedPath(meta, req)
+	if got != "/cached/path" {
+		t.Errorf("resolveNormalizedPath(meta with NormPath) = %q, want %q", got, "/cached/path")
+	}
+
+	// Case 3: meta exists but NormPath is empty — falls through to NormalizePath.
+	emptyMeta := &logging.RequestMeta{}
+	got = resolveNormalizedPath(emptyMeta, req)
+	if got != "/containers/json" {
+		t.Errorf("resolveNormalizedPath(meta without NormPath) = %q, want %q", got, "/containers/json")
+	}
+}
+
+// TestRunAllowedInspectionReturnsEmptyForPassThrough exercises the happy path
+// where inspection finds nothing wrong, confirming runAllowedInspection
+// returns ("", "", 0).
+func TestRunAllowedInspectionReturnsEmptyForPassThrough(t *testing.T) {
+	// Use a real httptest.ResponseRecorder which supports SetReadDeadline via
+	// http.NewResponseController returning http.ErrNotSupported.
+	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
+	w := httptest.NewRecorder()
+
+	p := compileRuntimePolicy(nil, PolicyConfig{})
+	reason, reasonCode, status := runAllowedInspection(p, testLogger(), w, req, "/containers/json")
+	if reason != "" {
+		t.Errorf("runAllowedInspection() reason = %q, want empty", reason)
+	}
+	if reasonCode != "" {
+		t.Errorf("runAllowedInspection() reasonCode = %q, want empty", reasonCode)
+	}
+	if status != 0 {
+		t.Errorf("runAllowedInspection() status = %d, want 0", status)
+	}
+}
