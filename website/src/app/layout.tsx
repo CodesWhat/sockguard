@@ -18,7 +18,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 
 // Bump this whenever the favicon/app icons change so browsers re-fetch them
 // instead of serving a stale cached icon (favicons cache aggressively).
-const ICON_VERSION = "20260628";
+const ICON_VERSION = "20260630";
 
 export const metadata: Metadata = {
   title: {
@@ -53,11 +53,15 @@ export const metadata: Metadata = {
   icons: {
     icon: [
       { url: `/favicon.ico?v=${ICON_VERSION}`, sizes: "any" },
+      { url: `/favicon.svg?v=${ICON_VERSION}`, type: "image/svg+xml" },
       { url: `/favicon-96x96.png?v=${ICON_VERSION}`, sizes: "96x96", type: "image/png" },
     ],
     apple: [{ url: `/apple-touch-icon.png?v=${ICON_VERSION}`, sizes: "180x180" }],
   },
   manifest: `/site.webmanifest?v=${ICON_VERSION}`,
+  appleWebApp: {
+    title: SITE_CONFIG.name,
+  },
 };
 
 export const viewport: Viewport = {
@@ -76,23 +80,6 @@ const REVEAL_BOOTSTRAP =
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <head>
-        <link
-          rel="icon"
-          type="image/png"
-          href={`/favicon-96x96.png?v=${ICON_VERSION}`}
-          sizes="96x96"
-        />
-        <link rel="icon" type="image/svg+xml" href={`/favicon.svg?v=${ICON_VERSION}`} />
-        <link rel="shortcut icon" href={`/favicon.ico?v=${ICON_VERSION}`} />
-        <link
-          rel="apple-touch-icon"
-          sizes="180x180"
-          href={`/apple-touch-icon.png?v=${ICON_VERSION}`}
-        />
-        <meta name="apple-mobile-web-app-title" content={SITE_CONFIG.name} />
-        <link rel="manifest" href={`/site.webmanifest?v=${ICON_VERSION}`} />
-      </head>
       <body className={`${ibmPlexSans.className} ${ibmPlexMono.variable}`}>
         <script dangerouslySetInnerHTML={{ __html: REVEAL_BOOTSTRAP }} />
         <ThemeProvider>{children}</ThemeProvider>

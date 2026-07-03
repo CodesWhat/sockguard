@@ -20,12 +20,10 @@ const dockerCompose = `services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
       - sockguard-socket:/var/run/sockguard
     environment:
       - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
-      - SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true
-      - CONTAINERS=1
-      - EVENTS=1
 
   your-app:
     depends_on:
@@ -37,6 +35,19 @@ const dockerCompose = `services:
 
 volumes:
   sockguard-socket:`;
+
+const sockguardYaml = `# Default-deny: any request not matched below gets a 403.
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow`;
 
 export function GetStarted() {
   const [tab, setTab] = useState<Tab>("quick");
@@ -105,15 +116,27 @@ export function GetStarted() {
           {tab === "quick" ? (
             <DockerRunSnippet />
           ) : (
-            <div className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950 shadow-2xl">
-              <div className="flex items-center gap-2 border-b border-neutral-800 px-4 py-3">
-                <Terminal className="h-4 w-4 text-neutral-500" />
-                <span className="text-xs font-medium text-neutral-500">docker-compose.yml</span>
+            <div className="space-y-4">
+              <div className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950 shadow-2xl">
+                <div className="flex items-center gap-2 border-b border-neutral-800 px-4 py-3">
+                  <Terminal className="h-4 w-4 text-neutral-500" />
+                  <span className="text-xs font-medium text-neutral-500">docker-compose.yml</span>
+                </div>
+                <YamlBlock
+                  code={dockerCompose}
+                  className="overflow-x-auto p-6 font-[family-name:var(--font-mono)] text-sm leading-relaxed text-neutral-300"
+                />
               </div>
-              <YamlBlock
-                code={dockerCompose}
-                className="overflow-x-auto p-6 font-[family-name:var(--font-mono)] text-sm leading-relaxed text-neutral-300"
-              />
+              <div className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950 shadow-2xl">
+                <div className="flex items-center gap-2 border-b border-neutral-800 px-4 py-3">
+                  <ShieldCheck className="h-4 w-4 text-neutral-500" />
+                  <span className="text-xs font-medium text-neutral-500">sockguard.yaml</span>
+                </div>
+                <YamlBlock
+                  code={sockguardYaml}
+                  className="overflow-x-auto p-6 font-[family-name:var(--font-mono)] text-sm leading-relaxed text-neutral-300"
+                />
+              </div>
             </div>
           )}
 

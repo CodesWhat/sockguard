@@ -71,7 +71,7 @@ const RAW_FRAMES: RawFrame[] = [
             {"  "}
             {bold("sockguard")} v{SITE_CONFIG.version}
             {"  "}
-            {dim("(commit bf59572, built 2026-05-20T00:00:00Z, go1.26.3)")}
+            {dim("(commit fe0a643, built 2026-06-11T00:00:00Z, go1.26.4)")}
           </>
         ),
       },
@@ -127,7 +127,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("commit")} {"  "}bf59572
+            {dim("commit")} {"  "}fe0a643
           </>
         ),
       },
@@ -136,7 +136,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("built ")} {"  "}2026-05-20T00:00:00Z
+            {dim("built ")} {"  "}2026-06-11T00:00:00Z
           </>
         ),
       },
@@ -145,7 +145,7 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("go    ")} {"  "}go1.26.3
+            {dim("go    ")} {"  "}go1.26.4
           </>
         ),
       },

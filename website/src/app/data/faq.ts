@@ -17,7 +17,7 @@ export const faqItems: Array<{ question: string; answer: string }> = [
   {
     question: "Can Sockguard listen over TCP, and is remote access secure?",
     answer:
-      "Yes. Sockguard can listen on a TCP port in addition to (or instead of) a unix socket. For any non-loopback TCP listener we require mutual TLS 1.3 by default — plaintext remote TCP needs two explicit insecure acknowledgement flags before we accept it. Client identity on TCP is established via mTLS certificate selectors (CN, DNS/IP/URI SAN, SHA-256 SPKI pin). Starting in v1.4.0, Sockguard can also dial a remote Docker daemon over TCP with mTLS and automatic endpoint failover.",
+      "Yes. Sockguard can listen on a TCP port in addition to (or instead of) a unix socket. For any non-loopback TCP listener we require mutual TLS 1.3 by default — plaintext remote TCP needs two explicit insecure acknowledgement flags before we accept it. Client identity on TCP is established via mTLS certificate selectors (CN, DNS/IP/URI SAN, SHA-256 SPKI pin). The upcoming v1.4.0 release (in release-candidate testing now) adds dialing a remote Docker daemon over TCP with mTLS and automatic endpoint failover.",
   },
   {
     question: "What are signed policy bundles and container image trust?",
@@ -27,7 +27,7 @@ export const faqItems: Array<{ question: string; answer: string }> = [
   {
     question: "Is Sockguard production-ready and what license does it use?",
     answer:
-      "Sockguard is Apache-2.0 licensed and has been in production use since v1.0.0. The proxy binary ships as a minimal Wolfi-based container image, cosign-signed with an SBOM and build provenance attached. We enforce a 96%+ Go statement-coverage floor in CI, run a proxy-vs-daemon differential fuzz harness on every PR, and have a published security policy at security@getsockguard.com. The v1.0.0 release incorporated fixes for 21 HIGH and MEDIUM audit findings before it shipped.",
+      "Sockguard is Apache-2.0 licensed and has been in production use since v1.0.0. The proxy binary ships as a minimal Wolfi-based container image, cosign-signed with an SBOM and build provenance attached. We enforce a 96%+ Go statement-coverage floor in CI, run a proxy-vs-daemon differential fuzz harness on every PR, and have a published security policy at security@getsockguard.com. The v1.1.0 release incorporated fixes for 21 HIGH and MEDIUM findings from a full multi-axis security audit.",
   },
   {
     question: "How do I migrate from Tecnativa's docker-socket-proxy?",
