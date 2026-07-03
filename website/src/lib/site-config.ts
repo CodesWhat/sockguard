@@ -53,8 +53,6 @@ export const SITE_CONFIG = {
   storagePrefix: "sg",
 } as const;
 
-export type SiteConfig = typeof SITE_CONFIG;
-
 /** "owner/repo" slug — used in shields.io / OpenSSF scorecard badge URLs. */
 export const REPO_SLUG = `${SITE_CONFIG.githubOwner}/${SITE_CONFIG.githubRepo}`;
 /** Canonical GitHub repository URL. */
@@ -70,5 +68,3 @@ export const DOCKER_HUB_URL = `https://hub.docker.com/r/${SITE_CONFIG.dockerImag
  * set-but-empty env var falls back too.
  */
 export const BASE_URL = process.env.NEXT_PUBLIC_SITE_URL || `https://${SITE_CONFIG.domain}`;
-/** Live demo URL, overridable per-environment. */
-export const DEMO_URL = process.env.NEXT_PUBLIC_DEMO_URL || SITE_CONFIG.demoUrl;

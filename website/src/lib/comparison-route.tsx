@@ -53,7 +53,7 @@ const competitorBadgeClassName =
 const selfBadgeClassName =
   "bg-amber-100 px-3 py-1 text-sm text-amber-700 dark:bg-amber-900/50 dark:text-amber-400";
 
-export function buildComparisonMetadata({
+function buildComparisonMetadata({
   slug,
   title,
   description,
@@ -88,7 +88,7 @@ export function buildComparisonMetadata({
   };
 }
 
-export function buildComparisonJsonLd({
+function buildComparisonJsonLd({
   slug,
   name,
   description,
@@ -184,7 +184,7 @@ export function createComparisonRoute(config: ComparisonRouteConfig) {
   return { metadata, RoutePage };
 }
 
-export function row(
+function row(
   feature: string,
   competitor: string,
   self: string,
@@ -193,7 +193,7 @@ export function row(
   return { feature, competitor, self, verdict };
 }
 
-export function highlight(icon: LucideIcon, title: string, description: string): Highlight {
+function highlight(icon: LucideIcon, title: string, description: string): Highlight {
   return { icon, title, description };
 }
 

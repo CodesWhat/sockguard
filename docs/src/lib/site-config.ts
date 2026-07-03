@@ -46,8 +46,6 @@ export const SITE_CONFIG = {
   aurora: "ember" as AuroraPalette,
 } as const;
 
-export type SiteConfig = typeof SITE_CONFIG;
-
 /** "owner/repo" slug — intermediate value for GITHUB_URL. */
 const REPO_SLUG = `${SITE_CONFIG.githubOwner}/${SITE_CONFIG.githubRepo}`;
 /** Canonical GitHub repository URL. */
