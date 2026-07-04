@@ -32,9 +32,17 @@
 #      now issues the call
 #
 # Security tradeoff: the exec paths below are pinned to the single finalize
-# command argv via allowed_commands. This prevents any other exec invocation
-# even if drydock attempted one. If your drydock build uses a different Node
-# entrypoint path, update allowed_commands to match.
+# command argv via allowed_commands. This alone is NOT sufficient for an
+# interpreter command like "node": exec Env rides in the same request body,
+# and Node reads several env vars that change what the pinned argv actually
+# executes — NODE_OPTIONS can --require arbitrary code before the script body
+# even runs, NODE_PATH can redirect module resolution. So allowed_env_vars
+# below pins Env to exactly the DD_SELF_UPDATE_* names drydock's
+# buildFinalizeExecEnv() sends (self-update-controller.ts) — anything else,
+# including NODE_OPTIONS/NODE_PATH, is denied. If your drydock build uses a
+# different Node entrypoint path, update allowed_commands to match; if it
+# adds a new DD_SELF_UPDATE_* variable to buildFinalizeExecEnv(), add it here
+# too or the finalize exec will start failing closed.
 # allow_root_user must be true here: drydock's exec create body sets no User
 # field, and sockguard conservatively treats an empty exec User as root (it
 # cannot see the image's USER — Docker does not echo it into the exec
@@ -82,7 +90,10 @@ response:
 # allowed_commands list pins the finalize exec to an EXACT argv — sockguard's
 # exec matcher requires the same token count and every token to match, so any
 # other Cmd (extra trailing args included) is denied even though the rule allows
-# POST /containers/*/exec.
+# POST /containers/*/exec. allowed_env_vars pins exec Env to the same narrow
+# DD_SELF_UPDATE_* set the finalize entrypoint actually reads (see the header's
+# Security tradeoff note) — an exec-create body that matches allowed_commands
+# but carries an unlisted Env name (e.g. NODE_OPTIONS) is still denied.
 request_body:
   container_create:
     allowed_bind_mounts:
@@ -93,10 +104,24 @@ request_body:
     allow_privileged: false
     # See the allow_root_user note in the header: drydock sets no exec User and
     # sockguard treats an empty User as root, so this must be true for the
-    # finalize exec to run. The exact-argv allowed_commands pin keeps it safe.
+    # finalize exec to run. Safety comes from the exact-argv allowed_commands
+    # pin below PLUS allowed_env_vars pinning Env to the same narrow set.
     allow_root_user: true
     allowed_commands:
       - ["node", "dist/triggers/providers/docker/self-update-finalize-entrypoint.js"]
+    # Narrow allowlist matching buildFinalizeExecEnv() in drydock's
+    # self-update-controller.ts exactly — DD_SELF_UPDATE_FINALIZE_URL/SECRET,
+    # OPERATION_ID, STATUS, and the optional PHASE/LAST_ERROR. Everything
+    # else (NODE_OPTIONS, NODE_PATH, PATH, ...) is denied: the exact-argv pin
+    # above only constrains Cmd, not Env, and an interpreter command's
+    # behavior is not fixed by argv alone.
+    allowed_env_vars:
+      - DD_SELF_UPDATE_FINALIZE_URL
+      - DD_SELF_UPDATE_FINALIZE_SECRET
+      - DD_SELF_UPDATE_OPERATION_ID
+      - DD_SELF_UPDATE_STATUS
+      - DD_SELF_UPDATE_PHASE
+      - DD_SELF_UPDATE_LAST_ERROR
   image_pull:
     allow_all_registries: true
 
