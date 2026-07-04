@@ -1,0 +1,192 @@
+# Sockguard — Drydock with Compose Preset
+#
+# Extends the drydock preset with network and volume lifecycle so drydock's
+# own compose-stack deploys hit the same gap portwing-with-compose.yaml fixes:
+# plain container recreate/update already works against drydock.yaml, but a
+# compose stack additionally needs to create/remove its own networks and named
+# volumes, which drydock.yaml denies.
+#
+# Allows: everything in drydock.yaml plus:
+#         POST   /networks/create      — compose creates the stack's network(s)
+#         DELETE /networks/*           — compose tears them down on `down`
+#         POST   /networks/*/disconnect — compose detaches services before
+#                                         removing a network (connect already
+#                                         allowed by drydock.yaml — untouched)
+#         POST   /volumes/create       — compose creates named volumes
+#         DELETE /volumes/*            — compose removes them on `down -v`
+#
+# Body inspection for the new endpoints reuses the same guardrails already in
+# effect for drydock.yaml's container_create/image_pull blocks — the
+# network/volume create policies default to denying custom drivers and driver
+# opts unless explicitly widened here, and this preset does not widen them.
+#
+# Still denied: /build. `docker compose up --build` additionally needs
+# BuildKit's classic builder fallback, which requires POST /build; a buildx
+# (BuildKit) build additionally needs the /session and /grpc endpoints for the
+# frontend/grpc bridge. Neither is modeled by this preset — see
+# portwing-with-compose.yaml's identical header note. Operators who need
+# `--build` support require a further variant that is not built today.
+#
+# Self-update: same caveat as drydock.yaml — the finalize exec
+# (runFinalizeCallbackInContainer) is still denied here. Use
+# drydock-with-selfupdate.yaml if you need that, layered with these
+# network/volume rules by hand if you need both.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Drydock's update flow inspects the running container, then submits the
+# inspect payload back to dockerd via POST /containers/create. If sockguard
+# redacts HostConfig.Binds / Config.Env / NetworkSettings to "<redacted>" in
+# the inspect response, drydock faithfully forwards that placeholder string
+# into the create body and dockerd rejects it (400 "includes invalid
+# characters for a local volume name"). Disable all three response
+# redactions for this preset — they are mutually exclusive with the
+# auto-updater use case this preset is designed for.
+response:
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
+
+# Drydock needs container creation during update flows. Container-create bodies
+# are inspected by default, but bind-mounted workloads are denied until you
+# allowlist their host paths here. Image pulls are inspected too; this preset
+# explicitly allows any registry so Drydock can continue tracking arbitrary
+# images while still denying `fromSrc` imports. Container updates are inspected
+# too; restart-policy/resource-control/device/capability changes stay denied
+# unless you explicitly allow them under request_body.container_update.
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+    # Drydock recreates a container from its own inspect spec, which on most
+    # daemons carries an explicit HostConfig.Runtime ("runc"). Sockguard's
+    # allowed_runtimes allowlist denies a non-empty runtime unless it is
+    # listed (an empty/unset runtime selects the daemon default and is always
+    # allowed), so without this entry every update is rejected at
+    # POST /containers/create with 403 "runtime \"runc\" is not allowlisted"
+    # and drydock rolls the update back. Allow the stock runtime only.
+    allowed_runtimes:
+      - runc
+  image_pull:
+    allow_all_registries: true
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads — narrow set drydock needs (list + inspect + stats).
+  # Deliberately omits /containers/*/logs, /archive, /export, /attach to
+  # keep the exfiltration validator happy.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  # Container lifecycle
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/update" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Container creation (for updates)
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  # Image reads — list + inspect + history. Image names can be namespaced
+  # (linuxserver/qbittorrent:latest, ghcr.io/owner/repo:tag), so the
+  # middle is matched with `**`. The trailing /json or /history segment
+  # keeps the exfiltration validator happy by not matching /images/get
+  # or /images/*/get (raw tarball exfil).
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/**" }
+    action: allow
+
+  # Network read + lifecycle. list/inspect/connect carried over from
+  # drydock.yaml (connect: when the recreated container belongs to more than
+  # one network, drydock attaches the extra networks via
+  # POST /networks/{id}/connect — the create body only carries the first
+  # network). create/delete/disconnect are new here so compose can own its
+  # stack network's full lifecycle.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: POST, path: "/networks/create" }
+    action: allow
+  - match: { method: DELETE, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+
+  # Volume read + lifecycle. list/inspect carried over from drydock.yaml;
+  # create/delete are new here for compose-managed named volumes.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+  - match: { method: POST, path: "/volumes/create" }
+    action: allow
+  - match: { method: DELETE, path: "/volumes/*" }
+    action: allow
+
+  # Distribution (registry digest checks for image freshness). Image
+  # references in the URL can be multi-segment (registry/owner/repo:tag).
+  - match: { method: GET, path: "/distribution/**/json" }
+    action: allow
+
+  # Swarm services — list + inspect. /services/*/logs is intentionally
+  # omitted to keep the exfiltration validator happy.
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+
+  # Deny everything else
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by drydock-with-compose preset"
