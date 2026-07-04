@@ -11,6 +11,16 @@
 # is allowed because Portwing's GetContainerLogs() API needs it, and
 # insecure_allow_read_exfiltration: true acknowledges that tradeoff; exec, build,
 # secrets, and raw archive/export/attach streams stay denied.
+#
+# Hardening mirrors portwing's own examples/docker-compose.with-sockguard.yml:
+# Portwing's image runs as non-root UID 65532; read_only + cap_drop: ALL +
+# no-new-privileges keep the container itself minimal; PORT=4000 makes the
+# listen port explicit (this example keeps port 4000 rather than portwing's
+# 3000 default so the README's existing http://localhost:4000 references
+# don't churn); TOKEN_FILE reads a Docker secret instead of running the API
+# with no auth. Generate a token before starting:
+#   openssl rand -hex 32 > portwing_token.txt
+#   sudo chown 65532:65532 portwing_token.txt && sudo chmod 0400 portwing_token.txt
 
 services:
   sockguard:
@@ -35,12 +45,30 @@ services:
     restart: unless-stopped
     depends_on:
       - sockguard
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    user: "65532:65532"  # image default; explicit so it survives image overrides
     ports:
       - "4000:4000"
     volumes:
       - sockguard-socket:/var/run/sockguard:ro
+      - portwing-stacks:/data/stacks
     environment:
       - DOCKER_SOCKET=/var/run/sockguard/sockguard.sock
+      - PORT=4000
+      - TOKEN_FILE=/run/secrets/portwing_token
+    secrets:
+      - portwing_token
+
+secrets:
+  portwing_token:
+    file: ./portwing_token.txt
 
 volumes:
   sockguard-socket:
+  portwing-stacks:

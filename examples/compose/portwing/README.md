@@ -9,7 +9,9 @@
 | Control | Status |
 |---|---|
 | sockguard: `read_only`, `cap_drop: ALL`, `no-new-privileges` | Enabled |
+| Portwing: `read_only`, `cap_drop: ALL`, `no-new-privileges`, explicit non-root `user` | Enabled |
 | No raw socket in Portwing container | Yes — named volume unix socket |
+| Portwing API auth | Required — `TOKEN_FILE` reads a generated token from a Docker secret, not hardcoded |
 | Exec denied | Yes |
 | Build denied | Yes |
 | Log streaming allowed; raw archive/export/attach denied | `insecure_allow_read_exfiltration: true` (required for Portwing's `GetContainerLogs()`; `/containers/*/archive`, `/export`, `/attach` stay denied) |
@@ -32,10 +34,12 @@ response:
 
 ## Usage
 
-Set the Docker socket's group GID so sockguard can open `/var/run/docker.sock` (Linux: `stat -c '%g'`; macOS: `stat -f '%g'`):
+Set the Docker socket's group GID so sockguard can open `/var/run/docker.sock` (Linux: `stat -c '%g'`; macOS: `stat -f '%g'`), and generate a Portwing API auth token:
 
 ```bash
 export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
+openssl rand -hex 32 > portwing_token.txt
+sudo chown 65532:65532 portwing_token.txt && sudo chmod 0400 portwing_token.txt
 docker compose up -d
 # Portwing API: http://localhost:4000
 ```
