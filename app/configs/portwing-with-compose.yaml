@@ -27,11 +27,11 @@
 # Body inspection for the new endpoints reuses the same guardrails already in
 # effect for portwing.yaml's container_create/image_pull blocks — the
 # network/volume create policies default to denying custom drivers and driver
-# opts (see request_body.network_create / request_body.volume_create in
-# internal/config) unless explicitly widened here, and this preset does not
-# widen them. allowed_bind_mounts and allowed_runtimes below are carried over
-# unchanged from portwing.yaml; a compose stack's own container-create calls
-# still go through that same bind-mount/runtime allowlist.
+# opts (see request_body.network / request_body.volume in internal/config)
+# unless explicitly widened here, and this preset does not widen them.
+# allowed_bind_mounts and allowed_runtimes below are carried over unchanged
+# from portwing.yaml; a compose stack's own container-create calls still go
+# through that same bind-mount/runtime allowlist.
 #
 # Still denied: /build. `docker compose up --build` additionally needs
 # BuildKit's classic builder fallback, which requires POST /build; a buildx
