@@ -32,7 +32,10 @@ response:
 
 ## Usage
 
+Set the Docker socket's group GID so sockguard can open `/var/run/docker.sock` (Linux: `stat -c '%g'`; macOS: `stat -f '%g'`):
+
 ```bash
+export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
 docker compose up -d
 # Portwing API: http://localhost:4000
 ```

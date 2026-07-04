@@ -23,6 +23,8 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro

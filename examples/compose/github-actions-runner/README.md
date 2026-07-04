@@ -23,6 +23,7 @@ Copy the example env file and fill in your runner registration details:
 ```bash
 cp .env.example .env
 # Edit .env — set REPO_URL, RUNNER_NAME, RUNNER_TOKEN, LABELS, RUNNER_WORKDIR
+export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
 docker compose up -d
 ```
 
