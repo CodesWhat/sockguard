@@ -16,6 +16,12 @@ health:
   enabled: true
   path: /health
 
+# Exec without pinned AllowedCommands requires insecure_allow_body_blind_writes;
+# log/attach streaming requires insecure_allow_read_exfiltration. Mirrors
+# app/configs/gitlab-runner.yaml — keep both flags in sync with it.
+insecure_allow_body_blind_writes: true
+insecure_allow_read_exfiltration: true
+
 # Response redactions are ON. The runner does not re-submit inspect payloads
 # verbatim, so redacting host paths, env vars, and network topology from read
 # responses is safe and reduces the blast radius of a compromised job container

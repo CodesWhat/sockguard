@@ -271,9 +271,9 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 
 <h2 align="center" id="supported-profiles">🔌 Supported Profiles</h2>
 
-### Bundled presets (15)
+### Bundled presets (17)
 
-[drydock](app/configs/drydock.yaml) · [drydock with self-update](app/configs/drydock-with-selfupdate.yaml) · [Portwing](app/configs/portwing.yaml) · [Portwing with exec](app/configs/portwing-with-exec.yaml) · [Traefik](app/configs/traefik.yaml) · [Portainer](app/configs/portainer.yaml) · [Watchtower](app/configs/watchtower.yaml) · [Homepage](app/configs/homepage.yaml) · [Homarr](app/configs/homarr.yaml) · [Diun](app/configs/diun.yaml) · [Autoheal](app/configs/autoheal.yaml) · [read-only](app/configs/readonly.yaml) · [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) · [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml) · [GitLab Runner](app/configs/gitlab-runner.yaml)
+[drydock](app/configs/drydock.yaml) · [drydock with self-update](app/configs/drydock-with-selfupdate.yaml) · [drydock with compose](app/configs/drydock-with-compose.yaml) · [Portwing](app/configs/portwing.yaml) · [Portwing with exec](app/configs/portwing-with-exec.yaml) · [Portwing with compose](app/configs/portwing-with-compose.yaml) · [Traefik](app/configs/traefik.yaml) · [Portainer](app/configs/portainer.yaml) · [Watchtower](app/configs/watchtower.yaml) · [Homepage](app/configs/homepage.yaml) · [Homarr](app/configs/homarr.yaml) · [Diun](app/configs/diun.yaml) · [Autoheal](app/configs/autoheal.yaml) · [read-only](app/configs/readonly.yaml) · [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) · [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml) · [GitLab Runner](app/configs/gitlab-runner.yaml)
 
 ### Ready-to-run compose examples
 

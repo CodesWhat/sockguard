@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, Portwing, Portwing with exec, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
+description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, Portwing, Portwing with exec, Portwing with compose, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -51,6 +51,28 @@ Without this preset (using drydock.yaml), the self-update still completes — th
 old container is renamed, the new one starts — but the finalize callback exec is
 denied and drydock logs the failure. Use this preset to get a clean finalize.
 
+## Drydock with Compose (`drydock-with-compose.yaml`)
+
+Extends the drydock preset with the network and volume lifecycle a
+`docker compose` stack needs — the same gap `portwing-with-compose.yaml`
+closes for Portwing.
+
+**Use for:** drydock deployments that recreate a `docker-compose.yml` stack
+through this proxy, not just a single standalone container.
+
+```yaml
+# Extends drydock.yaml with:
+# Allows: POST /networks/create, DELETE /networks/*, POST /networks/*/disconnect
+#         POST /volumes/create, DELETE /volumes/*
+# (POST /networks/*/connect is already allowed by drydock.yaml — untouched)
+# Body inspection for the new endpoints reuses drydock.yaml's existing
+# network/volume create guardrails (deny custom drivers/driver opts by default)
+# Still denies /build — compose's BuildKit fallback needs /session + /grpc too,
+# which this preset does not model
+# Self-update finalize exec is still denied, same caveat as drydock.yaml;
+# combine with drydock-with-selfupdate.yaml by hand if you need both
+```
+
 ## Portwing (`portwing.yaml`)
 
 Optimized for the [Portwing](https://github.com/CodesWhat/portwing) Docker agent.
@@ -92,6 +114,31 @@ drydock edge mode exec calls).
 # so the body-blind-write guard is bypassed; the allow_privileged/allow_root_user layer still
 # applies. insecure_allow_read_exfiltration=true is inherited from portwing.yaml for the
 # GET /containers/*/logs rule (see the Portwing section above).
+```
+
+## Portwing with Compose (`portwing-with-compose.yaml`)
+
+Extends the Portwing preset with the network and volume lifecycle a
+`docker compose` stack needs, so Portwing can deploy compose stacks through
+this proxy, not just standalone containers.
+
+**Use for:** Portwing deployments that create/remove compose-managed
+networks and named volumes (`docker compose up`/`down`), in addition to
+plain container orchestration.
+
+```yaml
+# Extends portwing.yaml with:
+# Allows: POST /networks/create, POST /networks/*/connect,
+#         POST /networks/*/disconnect, DELETE /networks/*
+#         POST /volumes/create, DELETE /volumes/*
+# Body inspection for the new endpoints reuses portwing.yaml's existing
+# network/volume create guardrails (deny custom drivers/driver opts by default)
+# Still denies /build — compose's BuildKit fallback needs /session + /grpc too,
+# which this preset does not model
+# insecure_allow_read_exfiltration=true is inherited from portwing.yaml for the
+# GET /containers/*/logs rule (see the Portwing section above)
+# Exec is denied, same as portwing.yaml — combine with portwing-with-exec.yaml's
+# request_body.exec block by hand if you need both compose deploys and exec
 ```
 
 ## Traefik (`traefik.yaml`)
