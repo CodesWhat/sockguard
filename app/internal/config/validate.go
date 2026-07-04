@@ -98,10 +98,10 @@ func validateUpstream(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("upstream.endpoints[%d]: %v", i, err))
 		}
 	}
-	if cfg.Upstream.RequestTimeout != "" {
+	if !cfg.Upstream.RequestTimeoutDisabled() {
 		timeout, err := time.ParseDuration(cfg.Upstream.RequestTimeout)
 		if err != nil || timeout <= 0 {
-			errs = append(errs, fmt.Sprintf("upstream.request_timeout must be a positive duration, got %q", cfg.Upstream.RequestTimeout))
+			errs = append(errs, fmt.Sprintf(`upstream.request_timeout must be a positive duration or "off" to disable, got %q`, cfg.Upstream.RequestTimeout))
 		}
 	}
 	if d := cfg.Upstream.Failover.HealthInterval; d != "" {

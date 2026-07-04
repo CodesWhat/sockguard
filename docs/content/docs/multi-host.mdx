@@ -142,7 +142,7 @@ This means an existing Docker CLI setup works with zero YAML changes — just po
 
 ## Reload immutability
 
-`upstream.endpoints` and `upstream.failover` are **reload-immutable**. Adding, removing, or changing endpoints requires a process restart. `upstream.request_timeout` remains reload-mutable and takes effect on hot reload without a restart.
+`upstream.endpoints` and `upstream.failover` are **reload-immutable**. Adding, removing, or changing endpoints requires a process restart. `upstream.request_timeout` remains reload-mutable and takes effect on hot reload without a restart — only its **default** value changed in v1.5 (unlimited → `60s`); the field's mutability is unchanged.
 
 This matches the behavior of `upstream.socket`, which is also pinned at startup. The upstream transport is bound to long-lived connection pools that cannot be swapped safely from within a running process.
 
@@ -164,7 +164,7 @@ A bare path (starting with `/`) is treated as a `unix://` address. No TLS fields
 ```yaml
 upstream:
   socket: /var/run/docker.sock     # legacy; used only when endpoints is empty
-  request_timeout: ""              # Go duration (e.g. "30s"); empty = disabled; reload-mutable
+  request_timeout: "60s"            # Go duration (e.g. "30s"); default "60s"; set "off" (or "") to disable; reload-mutable
   endpoints:
     - address: tcp://dockerd-a:2376
       tls:
@@ -185,6 +185,6 @@ Per-endpoint fields inside `endpoints` cannot be set via environment variable �
 
 | Variable | YAML field | Default | Description |
 |---|---|---|---|
-| `SOCKGUARD_UPSTREAM_REQUEST_TIMEOUT` | `upstream.request_timeout` | `""` | Total per-request deadline. Empty disables it. Reload-mutable. |
+| `SOCKGUARD_UPSTREAM_REQUEST_TIMEOUT` | `upstream.request_timeout` | `"60s"` | Total per-request deadline. Set `off` (or `""`) to disable — prefer `off` via env var since an explicitly empty value is treated as unset. Reload-mutable. |
 | `SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_INTERVAL` | `upstream.failover.health_interval` | `""` (resolver default: 5s) | Background probe interval per endpoint. Empty uses the 5s resolver default; negative disables probing. |
 | `SOCKGUARD_UPSTREAM_FAILOVER_HEALTH_TIMEOUT` | `upstream.failover.health_timeout` | `""` (resolver default: 2s) | Per-probe dial+TLS-handshake timeout. Empty uses the 2s resolver default. |

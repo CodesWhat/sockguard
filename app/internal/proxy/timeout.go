@@ -20,10 +20,11 @@ import (
 //
 // A non-positive timeout disables the wrapper entirely — next is returned
 // unchanged. Long-lived endpoints (event streams, follow/stream reads, image
-// pull/build/push, container export/get, websocket attach, and the blocking
-// container wait) are exempt, because a deadline would sever a legitimately
-// long response. Hijacked endpoints (attach, exec start) never reach this
-// handler: HijackHandler short-circuits them earlier in the chain.
+// pull/build/push, container export/get, container archive i.e. docker cp,
+// websocket attach, and the blocking container wait) are exempt, because a
+// deadline would sever a legitimately long response. Hijacked endpoints
+// (attach, exec start) never reach this handler: HijackHandler short-circuits
+// them earlier in the chain.
 func WithRequestTimeout(next http.Handler, timeout time.Duration) http.Handler {
 	if timeout <= 0 {
 		return next
@@ -60,11 +61,20 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 			return !isFalseyQuery(r, "stream")
 		case matchContainerAction(path, "export"):
 			return true
+		case matchContainerAction(path, "archive"):
+			// GET /containers/{id}/archive is docker cp FROM the container; a
+			// large filesystem tarball can legitimately take longer than the
+			// deadline to stream.
+			return true
 		case strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/get"):
 			return true
 		case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/attach/ws"):
 			return true
 		}
+	case http.MethodPut:
+		// PUT /containers/{id}/archive is docker cp INTO the container;
+		// exempt for the same large-transfer reason as the GET form.
+		return matchContainerAction(path, "archive")
 	case http.MethodPost:
 		switch {
 		case path == "/build" || path == "/images/create" || path == "/images/load":
