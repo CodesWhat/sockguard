@@ -313,6 +313,20 @@ type ExecRequestBodyConfig struct {
 	AllowPrivileged bool       `mapstructure:"allow_privileged"`
 	AllowRootUser   bool       `mapstructure:"allow_root_user"`
 	AllowedCommands [][]string `mapstructure:"allowed_commands"`
+	// AllowedEnvVars, when non-empty, restricts the exec-create Env array to
+	// these variable names — matched by name only (the substring before the
+	// first "="), exact string comparison, case-sensitive; the value is
+	// never inspected. Default empty means no restriction at all: unlike
+	// AllowedCommands (whose empty default denies every exec), an empty
+	// AllowedEnvVars is a deliberate zero-behavior-change default so
+	// enabling exec command allowlisting does not also silently start
+	// denying every exec session's environment.
+	AllowedEnvVars []string `mapstructure:"allowed_env_vars"`
+	// DeniedEnvVars variable names are always blocked and are checked
+	// before AllowedEnvVars, so a name present in both lists is denied
+	// (fail closed on operator misconfiguration). Default empty means
+	// nothing is blocked.
+	DeniedEnvVars []string `mapstructure:"denied_env_vars"`
 }
 
 // ImagePullRequestBodyConfig configures inspection for POST /images/create.

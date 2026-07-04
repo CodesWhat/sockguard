@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/codeswhat/sockguard/internal/upstream"
@@ -24,10 +25,19 @@ var (
 
 // ExecInspectResult captures the effective exec command metadata Docker stores
 // after POST /containers/{id}/exec and returns from GET /exec/{id}/json.
+//
+// Env is populated only on the exec-create path: Docker's GET /exec/{id}/json
+// ProcessConfig does not expose the exec's environment, so the exec-start
+// re-check (inspectExisting) always leaves it nil. That is safe rather than a
+// gap — exec instances are immutable after creation (same reasoning already
+// documented for Cmd/Privileged/User above inspectExisting), so there is
+// nothing for a start-time Env re-check to catch that create-time didn't
+// already see.
 type ExecInspectResult struct {
 	Command    []string
 	Privileged bool
 	User       string
+	Env        []string
 }
 
 // ExecInspectFunc looks up an existing exec instance by id.
@@ -43,13 +53,29 @@ type ExecOptions struct {
 	// token count equals an entry's and every token matches the glob at that
 	// position.
 	AllowedCommands [][]string
-	InspectStart    ExecInspectFunc
+	// AllowedEnvVars, when non-empty, restricts the exec-create Env array to
+	// these variable names. Matching is by name only — the substring before
+	// the first "=" in each Env entry — exact string comparison,
+	// case-sensitive; the value is never inspected. Default empty means no
+	// restriction: unlike AllowedCommands, an empty AllowedEnvVars does NOT
+	// deny all Env content — this is a deliberate zero-behavior-change
+	// default, since enabling exec command allowlisting should not also
+	// silently start denying every exec session's environment.
+	AllowedEnvVars []string
+	// DeniedEnvVars variable names are always blocked and are checked before
+	// AllowedEnvVars, so a name present in both lists is denied — fail
+	// closed on operator misconfiguration. Default empty means nothing is
+	// blocked.
+	DeniedEnvVars []string
+	InspectStart  ExecInspectFunc
 }
 
 type execPolicy struct {
 	allowPrivileged bool
 	allowRootUser   bool
 	allowedCommands []execCommandMatcher
+	allowedEnvVars  []string
+	deniedEnvVars   []string
 	inspectStart    ExecInspectFunc
 }
 
@@ -76,6 +102,14 @@ type execCreateRequest struct {
 	Cmd        json.RawMessage `json:"Cmd"`
 	Privileged bool            `json:"Privileged"`
 	User       string          `json:"User"`
+	// Env is strictly typed as []string, unlike Cmd's json.RawMessage dual
+	// array/string decoding: Docker's exec Env has only ever been an array of
+	// strings, so a request whose Env is present but not shaped that way
+	// (an object, or an array of non-strings) fails the execCreateRequest
+	// unmarshal entirely and falls into the existing fail-closed "request
+	// body could not be inspected" branch in inspectCreate — the same
+	// outcome as any other malformed exec-create body.
+	Env []string `json:"Env"`
 }
 
 type execInspectResponse struct {
@@ -109,8 +143,27 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 		allowPrivileged: opts.AllowPrivileged,
 		allowRootUser:   opts.AllowRootUser,
 		allowedCommands: allowed,
+		allowedEnvVars:  normalizeExecEnvNames(opts.AllowedEnvVars),
+		deniedEnvVars:   normalizeExecEnvNames(opts.DeniedEnvVars),
 		inspectStart:    opts.InspectStart,
 	}
+}
+
+// normalizeExecEnvNames trims whitespace and dedupes env-var name entries,
+// preserving first-seen order. Matching is exact and case-sensitive per the
+// v1 spec (no case-folding, no glob support) — literal-only, mirroring the
+// convention used by allowed_capabilities/allowed_registries/allowed_runtimes
+// elsewhere in the schema.
+func normalizeExecEnvNames(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" || slices.Contains(normalized, trimmed) {
+			continue
+		}
+		normalized = append(normalized, trimmed)
+	}
+	return normalized
 }
 
 func (p execPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
@@ -165,6 +218,7 @@ func (p execPolicy) inspectCreate(logger *slog.Logger, r *http.Request) (string,
 		Command:    command,
 		Privileged: req.Privileged,
 		User:       req.User,
+		Env:        req.Env,
 	}), nil
 }
 
@@ -205,12 +259,52 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 	if !p.allowRootUser && isRootUser(result.User) {
 		return "exec denied: root exec user is not allowed"
 	}
+	if reason := p.envDenyReason(result.Env); reason != "" {
+		return reason
+	}
 	for _, allowed := range p.allowedCommands {
 		if allowed.matches(result.Command) {
 			return ""
 		}
 	}
 	return fmt.Sprintf("exec denied: command %q is not allowlisted", strings.Join(result.Command, " "))
+}
+
+// envDenyReason checks each exec-create Env entry's variable name — the
+// substring before the first "=", or the whole entry when no "=" is present —
+// against deniedEnvVars and then allowedEnvVars. deniedEnvVars is checked
+// first, so a name present in both lists is denied (fail closed on operator
+// misconfiguration). Values are never inspected or logged.
+//
+// When both lists are empty (the default), this always returns "" regardless
+// of Env content — the core zero-behavior-change guarantee: enabling
+// AllowedCommands must not also start filtering Env unless the operator
+// opted into one of these two lists.
+func (p execPolicy) envDenyReason(env []string) string {
+	if len(p.allowedEnvVars) == 0 && len(p.deniedEnvVars) == 0 {
+		return ""
+	}
+	for _, entry := range env {
+		name := execEnvVarName(entry)
+		if slices.Contains(p.deniedEnvVars, name) {
+			return fmt.Sprintf("exec denied: environment variable %q is denylisted", name)
+		}
+		if len(p.allowedEnvVars) > 0 && !slices.Contains(p.allowedEnvVars, name) {
+			return fmt.Sprintf("exec denied: environment variable %q is not allowlisted", name)
+		}
+	}
+	return ""
+}
+
+// execEnvVarName extracts an exec Env entry's variable name: the substring
+// before the first "=", or the whole entry when no "=" is present — matching
+// the os.Environ/Docker NAME=VALUE convention. The value half is discarded
+// entirely; only the name is ever compared against allowed_env_vars /
+// denied_env_vars, so a secret carried in a value can never leak into a
+// deny reason.
+func execEnvVarName(entry string) string {
+	name, _, _ := strings.Cut(entry, "=")
+	return name
 }
 
 func decodeExecCommand(raw json.RawMessage) ([]string, error) {

@@ -220,6 +220,208 @@ func TestMiddlewareDeniesExecStartWhenInspectedExecViolatesPolicy(t *testing.T) 
 	}
 }
 
+func TestMiddlewareAllowsExecCreateEnvVarInAllowlist(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/exec", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			Exec: ExecOptions{
+				AllowedCommands: [][]string{{"/bin/sh"}},
+				AllowRootUser:   true,
+				AllowedEnvVars:  []string{"PATH", "HOME"},
+			},
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", strings.NewReader(`{"Cmd":["/bin/sh"],"Env":["PATH=/usr/bin","HOME=/root"]}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
+func TestMiddlewareDeniesExecCreateEnvVarNotInAllowlist(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/exec", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			Exec: ExecOptions{
+				AllowedCommands: [][]string{{"/bin/sh"}},
+				AllowRootUser:   true,
+				AllowedEnvVars:  []string{"PATH", "HOME"},
+			},
+		},
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected exec create to be denied")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", strings.NewReader(`{"Cmd":["/bin/sh"],"Env":["PATH=/usr/bin","LD_PRELOAD=/tmp/x.so"]}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(body.Reason, "not allowlisted") {
+		t.Fatalf("reason = %q, want 'not allowlisted' denial", body.Reason)
+	}
+}
+
+func TestMiddlewareDeniesExecCreateEnvVarInDenylist(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/exec", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			Exec: ExecOptions{
+				AllowedCommands: [][]string{{"/bin/sh"}},
+				AllowRootUser:   true,
+				DeniedEnvVars:   []string{"LD_PRELOAD"},
+			},
+		},
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected exec create to be denied")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", strings.NewReader(`{"Cmd":["/bin/sh"],"Env":["LD_PRELOAD=/tmp/x.so"]}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(body.Reason, "denylisted") {
+		t.Fatalf("reason = %q, want 'denylisted' denial", body.Reason)
+	}
+}
+
+func TestMiddlewareDeniesExecCreateEnvVarDenylistWinsOverAllowlist(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/exec", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			Exec: ExecOptions{
+				AllowedCommands: [][]string{{"/bin/sh"}},
+				AllowRootUser:   true,
+				// LD_PRELOAD is present in both lists — denylist must win.
+				AllowedEnvVars: []string{"LD_PRELOAD"},
+				DeniedEnvVars:  []string{"LD_PRELOAD"},
+			},
+		},
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected exec create to be denied")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", strings.NewReader(`{"Cmd":["/bin/sh"],"Env":["LD_PRELOAD=/tmp/x.so"]}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(body.Reason, "denylisted") {
+		t.Fatalf("reason = %q, want 'denylisted' denial (denylist wins over allowlist)", body.Reason)
+	}
+	if strings.Contains(body.Reason, "not allowlisted") {
+		t.Fatalf("reason = %q, must not be the allowlist denial", body.Reason)
+	}
+}
+
+func TestMiddlewareAllowsExecCreateWhenEnvAllowlistAndDenylistBothEmpty(t *testing.T) {
+	// Core backward-compat guarantee: with neither list configured, Env
+	// passes through completely unfiltered — even names like LD_PRELOAD that
+	// would be denied by an explicit denylist. This must be its own explicit
+	// test, not inferred from the other cases above.
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/exec", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			Exec: ExecOptions{
+				AllowedCommands: [][]string{{"/bin/sh"}},
+				AllowRootUser:   true,
+			},
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", strings.NewReader(`{"Cmd":["/bin/sh"],"Env":["LD_PRELOAD=/tmp/x.so","ARBITRARY=value"]}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+}
+
+func TestMiddlewareDeniesExecStartUnaffectedByEnvAllowlist(t *testing.T) {
+	// Docker's GET /exec/{id}/json ProcessConfig omits Env entirely, so the
+	// exec-start re-check (InspectStart) always sees Env == nil. A restrictive
+	// AllowedEnvVars must not deny exec-start on that basis — this documents
+	// the create-time-only enforcement boundary explicitly.
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/exec/*/start", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			Exec: ExecOptions{
+				AllowedCommands: [][]string{{"/usr/local/bin/pre-update"}},
+				AllowRootUser:   true,
+				AllowedEnvVars:  []string{"ONLY_THIS_NAME_IS_ALLOWED"},
+				InspectStart: func(context.Context, string) (ExecInspectResult, bool, error) {
+					return ExecInspectResult{
+						Command:    []string{"/usr/local/bin/pre-update"},
+						Privileged: false,
+					}, true, nil
+				},
+			},
+		},
+	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/exec/exec-123/start", strings.NewReader(`{"Detach":false,"Tty":false}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
 func TestExecCommandAllowlistOverlapHandling(t *testing.T) {
 	allowExec, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/exec", Action: ActionAllow, Index: 0})
 	denyContainers, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/**", Action: ActionDeny, Reason: "container deny", Index: 1})
@@ -448,6 +650,22 @@ func TestNewExecPolicyFiltersEmptyCommands(t *testing.T) {
 	}
 }
 
+func TestNewExecPolicyNormalizesEnvVarNames(t *testing.T) {
+	// Whitespace is trimmed and duplicates are dropped (first occurrence
+	// wins), mirroring TestNewExecPolicyFiltersEmptyCommands above and
+	// normalizePluginSetEnvPrefixes elsewhere in this package.
+	policy := newExecPolicy(ExecOptions{
+		AllowedEnvVars: []string{" PATH ", "PATH", "HOME", "", "  "},
+		DeniedEnvVars:  []string{"LD_PRELOAD", "LD_PRELOAD", " ", "LD_LIBRARY_PATH"},
+	})
+	if got := policy.allowedEnvVars; len(got) != 2 || got[0] != "PATH" || got[1] != "HOME" {
+		t.Fatalf("allowedEnvVars = %#v, want [PATH HOME]", got)
+	}
+	if got := policy.deniedEnvVars; len(got) != 2 || got[0] != "LD_PRELOAD" || got[1] != "LD_LIBRARY_PATH" {
+		t.Fatalf("deniedEnvVars = %#v, want [LD_PRELOAD LD_LIBRARY_PATH]", got)
+	}
+}
+
 func TestExecAllowlistGlobMatching(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -544,6 +762,82 @@ func TestExecAllowlistGlobMatching(t *testing.T) {
 				t.Fatalf("denyReason(%v) = %q, want an 'not allowlisted' denial", tt.command, reason)
 			}
 		})
+	}
+}
+
+func TestExecEnvDenyReasonNameOnlyIgnoresValue(t *testing.T) {
+	// Same allowlisted name, different values — the decision must never
+	// depend on the value half of a NAME=VALUE Env entry.
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{{"/bin/sh"}},
+		AllowRootUser:   true,
+		AllowedEnvVars:  []string{"PATH"},
+	})
+
+	tests := []struct {
+		name string
+		env  []string
+	}{
+		{name: "simple value", env: []string{"PATH=/usr/bin"}},
+		{name: "value containing colons and slashes", env: []string{"PATH=/opt/bin:/usr/local/bin:/usr/bin"}},
+		{name: "empty value", env: []string{"PATH="}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason := policy.denyReason(ExecInspectResult{Command: []string{"/bin/sh"}, Env: tt.env})
+			if reason != "" {
+				t.Fatalf("denyReason(env=%v) = %q, want allowed (value must never gate the decision)", tt.env, reason)
+			}
+		})
+	}
+}
+
+func TestExecEnvDenyReasonBareNameEntryNoEquals(t *testing.T) {
+	// An Env entry with no "=" at all is matched/denied by its whole string
+	// as the name, exactly like a NAME=VALUE entry's name half.
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{{"/bin/sh"}},
+		AllowRootUser:   true,
+		DeniedEnvVars:   []string{"LD_PRELOAD"},
+	})
+
+	reason := policy.denyReason(ExecInspectResult{Command: []string{"/bin/sh"}, Env: []string{"LD_PRELOAD"}})
+	if !strings.Contains(reason, "denylisted") {
+		t.Fatalf("denyReason(env with no '=') = %q, want a denylisted denial", reason)
+	}
+	if !strings.Contains(reason, `"LD_PRELOAD"`) {
+		t.Fatalf("denyReason(env with no '=') = %q, want it to name LD_PRELOAD", reason)
+	}
+}
+
+func TestExecEnvVarNameExtraction(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry string
+		want  string
+	}{
+		{name: "value contains an embedded equals", entry: "FOO=bar=baz", want: "FOO"},
+		{name: "no equals at all", entry: "FOO", want: "FOO"},
+		{name: "empty string entry", entry: "", want: ""},
+		{name: "leading equals yields an empty name", entry: "=leading", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := execEnvVarName(tt.entry); got != tt.want {
+				t.Fatalf("execEnvVarName(%q) = %q, want %q", tt.entry, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExecEnvDenyReasonEmptyBothListsAlwaysAllows(t *testing.T) {
+	// Explicit regression test for the zero-behavior-change guarantee: with
+	// both lists empty (the default), envDenyReason must return "" for any
+	// Env content, including names that look dangerous.
+	policy := newExecPolicy(ExecOptions{})
+	env := []string{"LD_PRELOAD=/tmp/x.so", "PATH=/evil", "", "=leading", "NO_EQUALS_AT_ALL"}
+	if reason := policy.envDenyReason(env); reason != "" {
+		t.Fatalf("envDenyReason(%v) = %q, want empty when both lists are unset", env, reason)
 	}
 }
 
@@ -964,6 +1258,46 @@ func TestExecInspectCreateDeniesUnparseableCmdField(t *testing.T) {
 		{
 			name:    "Cmd is a nested object",
 			payload: `{"Cmd":{"exec":"/bin/sh"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", strings.NewReader(tt.payload))
+			reason, err := policy.inspectCreate(nil, req)
+			if err != nil {
+				t.Fatalf("inspectCreate() error = %v", err)
+			}
+			const wantReason = "exec denied: request body could not be inspected"
+			if reason != wantReason {
+				t.Fatalf("reason = %q, want %q", reason, wantReason)
+			}
+		})
+	}
+}
+
+func TestExecInspectCreateDeniesUnparseableEnvField(t *testing.T) {
+	// Env is strictly typed as []string on execCreateRequest (unlike Cmd's
+	// json.RawMessage dual array/string decoding), so a wrong-shaped Env
+	// fails the whole execCreateRequest unmarshal. inspectCreate must deny
+	// (fail-closed), not silently forward the request evaluated on Cmd/
+	// Privileged/User alone.
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{{"/safe/cmd"}},
+		DeniedEnvVars:   []string{"LD_PRELOAD"},
+	})
+
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{
+			name:    "Env is an object",
+			payload: `{"Cmd":["/safe/cmd"],"Env":{"FOO":"bar"}}`,
+		},
+		{
+			name:    "Env is an array of non-strings",
+			payload: `{"Cmd":["/safe/cmd"],"Env":[1,2,3]}`,
 		},
 	}
 

@@ -137,3 +137,26 @@ func TestLoadHonorsImageTrustVerifyTimeoutEnvVar(t *testing.T) {
 		t.Fatalf("service image_trust verify_timeout = %q, want 45s", got)
 	}
 }
+
+// TestLoadHonorsExecEnvVarAllowlistAndDenylistEnvVars confirms
+// allowed_env_vars/denied_env_vars are reachable purely via their
+// SOCKGUARD_* env vars. Unlike the guards above, these two fields don't need
+// a manual SetDefault — registerDefaults (load.go) walks Defaults() via
+// reflection off their mapstructure tags — but this end-to-end check still
+// proves the comma-separated env var plumbing (env → viper → StringSlice)
+// works for the new fields.
+func TestLoadHonorsExecEnvVarAllowlistAndDenylistEnvVars(t *testing.T) {
+	t.Setenv("SOCKGUARD_REQUEST_BODY_EXEC_ALLOWED_ENV_VARS", "PATH,HOME")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_EXEC_DENIED_ENV_VARS", "LD_PRELOAD,LD_LIBRARY_PATH")
+
+	cfg, err := Load("/nonexistent-so-defaults-and-env-only.yaml")
+	if err != nil {
+		t.Fatalf("Load() = %v", err)
+	}
+	if got := cfg.RequestBody.Exec.AllowedEnvVars; len(got) != 2 || got[0] != "PATH" || got[1] != "HOME" {
+		t.Fatalf("RequestBody.Exec.AllowedEnvVars = %#v, want [PATH HOME] from env", got)
+	}
+	if got := cfg.RequestBody.Exec.DeniedEnvVars; len(got) != 2 || got[0] != "LD_PRELOAD" || got[1] != "LD_LIBRARY_PATH" {
+		t.Fatalf("RequestBody.Exec.DeniedEnvVars = %#v, want [LD_PRELOAD LD_LIBRARY_PATH] from env", got)
+	}
+}

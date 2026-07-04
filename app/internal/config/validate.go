@@ -895,6 +895,18 @@ func validateExecConfig(prefix string, cfg ExecRequestBodyConfig) []string {
 		}
 		errs = append(errs, fmt.Sprintf("%s.exec.allowed_commands entries must contain at least one non-empty argv token, got entry %d", prefix, i+1))
 	}
+	for _, name := range cfg.AllowedEnvVars {
+		if validExecEnvVarName(name) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.exec.allowed_env_vars entries must be a bare variable name (no '=', no whitespace), got %q", prefix, name))
+	}
+	for _, name := range cfg.DeniedEnvVars {
+		if validExecEnvVarName(name) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.exec.denied_env_vars entries must be a bare variable name (no '=', no whitespace), got %q", prefix, name))
+	}
 	return errs
 }
 
@@ -1020,6 +1032,18 @@ func validExecCommand(command []string) bool {
 		}
 	}
 	return true
+}
+
+// validExecEnvVarName reports whether value is a bare environment variable
+// name suitable for allowed_env_vars/denied_env_vars: non-empty after
+// trimming, no "=" (a "=" strongly suggests the operator pasted a KEY=VALUE
+// pair rather than a bare name — these fields are name-only), and no
+// embedded whitespace. No POSIX identifier-shape enforcement is applied —
+// Docker itself doesn't require one, and the schema's other string-list
+// fields stay similarly lenient.
+func validExecEnvVarName(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	return trimmed != "" && !strings.Contains(trimmed, "=") && !strings.ContainsAny(trimmed, " \t\r\n")
 }
 
 func normalizeAllowedRegistryHost(value string) (string, bool) {

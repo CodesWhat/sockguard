@@ -95,6 +95,8 @@ func (c ExecRequestBodyConfig) ToFilterOptions() filter.ExecOptions {
 		AllowPrivileged: c.AllowPrivileged,
 		AllowRootUser:   c.AllowRootUser,
 		AllowedCommands: c.AllowedCommands,
+		AllowedEnvVars:  c.AllowedEnvVars,
+		DeniedEnvVars:   c.DeniedEnvVars,
 	}
 }
 
