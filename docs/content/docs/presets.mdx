@@ -39,9 +39,12 @@ path and you need the finalize callback to complete cleanly.
 ```yaml
 # Extends drydock.yaml with:
 # Allows: POST /containers/{id}/exec, POST /exec/{id}/start, GET /exec/{id}/json
-# Exec body inspection: allow_privileged=false, allow_root_user=false
-# allowed_commands pins exec to the single finalize entrypoint argv
-# If your drydock image runs as root, set allow_root_user: true
+# Exec body inspection: allow_privileged=false, allow_root_user=true
+# (drydock's exec create sets no User field, and sockguard treats an empty
+# User as root, so allow_root_user must be true or the finalize exec is
+# denied before allowed_commands is ever checked)
+# allowed_commands pins exec to the single finalize entrypoint argv, so the
+# root-user allowance is safe: only that exact command can run
 ```
 
 Without this preset (using drydock.yaml), the self-update still completes — the
