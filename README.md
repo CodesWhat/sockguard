@@ -576,11 +576,13 @@ Every release image is cosign-signed via GitHub Actions OIDC. Before running a s
 <table>
   <tr><th>Tool</th><th>Role</th></tr>
   <tr><td><a href="https://github.com/CodesWhat/drydock"><b>drydock</b></a></td><td>Container update monitoring — web UI and notification engine</td></tr>
-  <tr><td><a href="https://github.com/CodesWhat/lookout"><b>lookout</b></a></td><td>Remote Docker agent — secure socket-level access from Drydock or standalone</td></tr>
+  <tr><td><a href="https://github.com/CodesWhat/portwing"><b>portwing</b></a></td><td>Remote Docker agent — secure socket-level access from Drydock or standalone</td></tr>
   <tr><td><b>sockguard</b></td><td>Docker socket proxy — default-deny allowlist filter protecting the socket</td></tr>
 </table>
 
-These three tools are designed to layer: sockguard filters the socket, lookout exposes it remotely, and drydock monitors and acts on container state.
+These three tools are designed to layer: sockguard filters the socket, portwing exposes it remotely, and drydock monitors and acts on container state.
+
+See [portwing's COMPATIBILITY.md](https://github.com/CodesWhat/portwing/blob/main/COMPATIBILITY.md) for the full compatibility matrix across all three tools.
 
 **[Apache-2.0 License](LICENSE)**
 

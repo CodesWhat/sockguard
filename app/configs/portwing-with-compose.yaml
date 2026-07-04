@@ -1,0 +1,219 @@
+# Sockguard — Portwing with Compose Preset
+#
+# Extends the portwing preset with network and volume lifecycle so Portwing
+# can deploy docker-compose stacks through this proxy, not just standalone
+# containers. Plain container orchestration (list/inspect/lifecycle/create)
+# already works against portwing.yaml; a compose stack additionally needs to
+# create/remove its own networks and named volumes, which portwing.yaml denies.
+#
+# Allows: everything in portwing.yaml plus:
+#         POST   /networks/create       — compose creates the stack's network(s)
+#         DELETE /networks/*            — compose tears them down on `down`
+#         POST   /networks/*/connect    — a compose service attached to more
+#                                          than one network is only carried on
+#                                          its primary network by the
+#                                          container-create body; extra
+#                                          networks are attached via connect
+#                                          after create, same as drydock.yaml's
+#                                          multi-network recreate flow. Note:
+#                                          portwing.yaml itself has no connect
+#                                          rule (unlike drydock.yaml) — this is
+#                                          new here, not carried over.
+#         POST   /networks/*/disconnect — compose detaches services before
+#                                         removing a network
+#         POST   /volumes/create       — compose creates named volumes
+#         DELETE /volumes/*            — compose removes them on `down -v`
+#
+# Body inspection for the new endpoints reuses the same guardrails already in
+# effect for portwing.yaml's container_create/image_pull blocks — the
+# network/volume create policies default to denying custom drivers and driver
+# opts (see request_body.network_create / request_body.volume_create in
+# internal/config) unless explicitly widened here, and this preset does not
+# widen them. allowed_bind_mounts and allowed_runtimes below are carried over
+# unchanged from portwing.yaml; a compose stack's own container-create calls
+# still go through that same bind-mount/runtime allowlist.
+#
+# Still denied: /build. `docker compose up --build` additionally needs
+# BuildKit's classic builder fallback, which requires POST /build; a buildx
+# (BuildKit) build additionally needs the /session and /grpc endpoints for the
+# frontend/grpc bridge. Neither is modeled by this preset — see
+# portwing.yaml's exec-tradeoff comment for the same "extend deliberately,
+# don't bypass the filter" posture. Operators who need `--build` support
+# require a further variant that is not built today; do not add /build here
+# without also reasoning through /session and /grpc.
+#
+# Log streaming: Portwing's GetContainerLogs() calls GET /containers/{id}/logs
+# (including follow=1 for live streaming). This path is classified as a
+# read-exfiltration endpoint by sockguard's startup validator because logs can
+# contain secrets. insecure_allow_read_exfiltration: true below acknowledges
+# that tradeoff. The /containers/*/archive, /containers/*/export, and
+# /containers/*/attach paths are intentionally not allowed — those are the
+# bulk-data exfil vectors. Operators who want to suppress log access should
+# remove the /containers/*/logs rule and the insecure_allow_read_exfiltration
+# flag and accept that GetContainerLogs() will return 403.
+#
+# Redaction posture — redact_mount_paths and redact_container_env are DISABLED
+# here for the same drydock-passthrough reason documented in portwing.yaml's
+# header comment: Portwing forwards container inspect data to drydock, whose
+# update detection reads HostConfig.Binds and Config.Env to recreate
+# containers. Operators running Portwing standalone (no drydock) can safely
+# flip both to true; see portwing.yaml for the exact snippet.
+#
+# Exec: this preset denies all exec paths, same as portwing.yaml. Combine with
+# portwing-with-exec.yaml's request_body.exec block manually if you need both
+# compose deploys and interactive exec through the same proxy instance.
+insecure_allow_read_exfiltration: true
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Response redaction — all three disabled for the drydock passthrough topology.
+# See portwing.yaml header for standalone-mode guidance.
+response:
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
+
+# Portwing needs container creation for its orchestration flows. Container-create
+# bodies are inspected by default; bind-mounted workloads are denied until their
+# host paths are allowlisted here. Image pulls are inspected too; this preset
+# explicitly allows any registry so Portwing can track arbitrary images while still
+# denying fromSrc imports. The stock "runc" runtime is allowlisted because Portwing
+# (like drydock) recreates containers from inspect specs that carry an explicit
+# HostConfig.Runtime — without it every recreation is rejected at
+# POST /containers/create with 403 "runtime \"runc\" is not allowlisted".
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+    allowed_runtimes:
+      - runc
+  image_pull:
+    allow_all_registries: true
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads — list, inspect, stats, top, changes, and logs.
+  # /containers/*/logs is required by Portwing's GetContainerLogs() call.
+  # /containers/*/archive, /containers/*/export, and /containers/*/attach
+  # are intentionally omitted — those are bulk-data exfiltration paths that
+  # Portwing does not use. insecure_allow_read_exfiltration: true (set above)
+  # satisfies sockguard's startup validator for the logs path.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  # Container lifecycle
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/update" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Container creation (for orchestration and passthrough to drydock)
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  # Image reads — list + inspect + history. Image names can be namespaced
+  # (linuxserver/qbittorrent:latest, ghcr.io/owner/repo:tag), so the
+  # middle is matched with `**`. The trailing /json or /history segment
+  # keeps the exfiltration validator happy by not matching /images/get
+  # or /images/*/get (raw tarball exfil).
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/**" }
+    action: allow
+
+  # Network read + lifecycle. list/inspect carried over from portwing.yaml;
+  # create/connect/delete/disconnect are new here so compose can own its
+  # stack network's full lifecycle, including multi-network service attach
+  # (see header comment). Body inspection defaults (deny custom drivers, deny
+  # driver opts) still apply to POST /networks/create.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/create" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: DELETE, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+
+  # Volume read + lifecycle. list/inspect carried over from portwing.yaml;
+  # create/delete are new here for compose-managed named volumes. Body
+  # inspection defaults (deny custom drivers, deny driver opts) still apply
+  # to POST /volumes/create.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+  - match: { method: POST, path: "/volumes/create" }
+    action: allow
+  - match: { method: DELETE, path: "/volumes/*" }
+    action: allow
+
+  # Distribution (registry digest checks for image freshness). Image
+  # references in the URL can be multi-segment (registry/owner/repo:tag).
+  - match: { method: GET, path: "/distribution/**/json" }
+    action: allow
+
+  # Swarm services — list + inspect. /services/*/logs is intentionally
+  # omitted to keep the exfiltration validator happy.
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+
+  # Deny everything else — /build (see header comment above), exec, secrets,
+  # plugins, and raw archive/export/attach streams.
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by portwing-with-compose preset"

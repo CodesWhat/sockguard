@@ -69,6 +69,14 @@ resources: {}
   #   cpu: 100m
   #   memory: 64Mi
 
+# Pod-level securityContext. The DaemonSet mounts the host's
+# /var/run/docker.sock, which is typically owned by a non-root "docker"
+# group; sockguard's image runs as a non-root user, so it needs that group's
+# GID added as a supplemental group to open the socket.
+# podSecurityContext:
+#   supplementalGroups: [999]  # GID of /var/run/docker.sock on the host — run `stat -c '%g' /var/run/docker.sock` to find it
+podSecurityContext: {}
+
 # DaemonSet tolerations — tolerate control-plane nodes to proxy on every node.
 tolerations: []
   # - key: node-role.kubernetes.io/control-plane
