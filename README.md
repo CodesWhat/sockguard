@@ -277,7 +277,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 
 ### Ready-to-run compose examples
 
-[drydock](examples/compose/drydock/) · [Portwing](examples/compose/portwing/) · [Traefik](examples/compose/traefik/) · [Portainer](examples/compose/portainer/) · [Watchtower](examples/compose/watchtower/) · [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/) · [GitLab Runner](examples/compose/gitlab-runner/) · [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/)
+[drydock](examples/compose/drydock/) · [Portwing](examples/compose/portwing/) · [Portwing + drydock (tri-tool)](examples/compose/tri-tool/) · [Traefik](examples/compose/traefik/) · [Portainer](examples/compose/portainer/) · [Watchtower](examples/compose/watchtower/) · [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/) · [GitLab Runner](examples/compose/gitlab-runner/) · [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/)
 
 Each example pairs a downstream Docker API consumer with a `sockguard.yaml` overlay and a short README covering audience, exposed API surface, and security tradeoffs.
 
