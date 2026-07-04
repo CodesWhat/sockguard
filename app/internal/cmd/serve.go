@@ -223,6 +223,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		"upstream", upstreamName,
 		"rules", len(cfg.Rules),
 		"log_level", cfg.Log.Level,
+		"upstream_request_timeout", upstreamRequestTimeoutLogValue(cfg),
 	)
 
 	errCh := make(chan error, 1)
@@ -590,17 +591,38 @@ func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger 
 		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
 	})
 	// Bound finite upstream requests with a total deadline when configured.
-	// request_timeout is validated at load, so parse errors here degrade to
-	// "disabled" rather than aborting the chain rebuild. Wrapping the proxy
-	// itself (rather than adding a chain layer) keeps the deadline off the
-	// hijack path: HijackHandler short-circuits before this handler runs.
-	var requestTimeout time.Duration
-	if cfg.Upstream.RequestTimeout != "" {
-		if d, err := time.ParseDuration(cfg.Upstream.RequestTimeout); err == nil && d > 0 {
-			requestTimeout = d
-		}
+	// Wrapping the proxy itself (rather than adding a chain layer) keeps the
+	// deadline off the hijack path: HijackHandler short-circuits before this
+	// handler runs.
+	return proxy.WithRequestTimeout(rp, effectiveUpstreamRequestTimeout(cfg))
+}
+
+// effectiveUpstreamRequestTimeout resolves cfg.Upstream.RequestTimeout to the
+// time.Duration proxy.WithRequestTimeout consumes. RequestTimeoutDisabled is
+// the single source of truth for the "off"/legacy-empty disabled spelling,
+// shared with config.validateUpstream so the two call sites can't drift.
+// request_timeout is validated at config load, so a parse failure here
+// degrades to "disabled" (0) rather than aborting the chain rebuild.
+func effectiveUpstreamRequestTimeout(cfg *config.Config) time.Duration {
+	if cfg.Upstream.RequestTimeoutDisabled() {
+		return 0
 	}
-	return proxy.WithRequestTimeout(rp, requestTimeout)
+	d, err := time.ParseDuration(cfg.Upstream.RequestTimeout)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// upstreamRequestTimeoutLogValue renders the effective upstream.request_timeout
+// for the "sockguard started" log line: "off" when the deadline is disabled
+// (including a degraded invalid value, which is validated away at load time
+// in normal operation), otherwise the configured duration string verbatim.
+func upstreamRequestTimeoutLogValue(cfg *config.Config) string {
+	if effectiveUpstreamRequestTimeout(cfg) <= 0 {
+		return "off"
+	}
+	return cfg.Upstream.RequestTimeout
 }
 
 func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLayer, func()) {

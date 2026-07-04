@@ -71,12 +71,28 @@ type UpstreamConfig struct {
 	// RequestTimeout bounds the total lifetime of a single proxied upstream
 	// request as a Go duration string (e.g. "30s"). ResponseHeaderTimeout only
 	// caps the wait for response headers; a daemon that sends headers and then
-	// hangs the body can still pin a request indefinitely. A non-empty value
+	// hangs the body can still pin a request indefinitely. A non-disabled value
 	// converts that hang into a fast 504 for ordinary finite requests.
 	// Long-lived endpoints (/events, log/stats streams, image pull/build/push,
-	// container export/get, and the blocking /containers/{id}/wait) are exempt
-	// so the deadline never severs a legitimately long response. Empty (the
-	// default) disables the per-request deadline.
+	// container export/get, container archive i.e. docker cp, and the blocking
+	// /containers/{id}/wait) are exempt so the deadline never severs a
+	// legitimately long response.
+	//
+	// Default is "60s" (changed from unlimited default prior to v1.5). Set
+	// "off" to explicitly disable the deadline; the legacy empty string ("")
+	// remains valid for backward compatibility with configs written before
+	// "off" existed. Use RequestTimeoutDisabled to check either spelling — it
+	// is the single source of truth validate.go and cmd/serve.go both consult.
+	// Any other value must parse as a positive Go duration; 0 and negative
+	// durations are validation errors.
+	//
+	// Caveat: SOCKGUARD_UPSTREAM_REQUEST_TIMEOUT="" (an explicitly empty env
+	// var) is treated as UNSET by Viper and falls through to the "60s"
+	// default rather than disabling it — only the literal "off" reliably
+	// disables the deadline via environment variable. An explicit
+	// request_timeout: "" in YAML does correctly disable it, since YAML
+	// values bypass Viper's env-emptiness gate. Prefer "off" in both
+	// channels.
 	RequestTimeout string `mapstructure:"request_timeout"`
 	// Endpoints is an ordered failover set. The first entry is the preferred
 	// primary; later entries are tried when earlier ones fail their health
@@ -88,6 +104,18 @@ type UpstreamConfig struct {
 	// Failover tunes the active health-probe loop that drives endpoint
 	// selection. Ignored unless endpoints is set.
 	Failover UpstreamFailover `mapstructure:"failover"`
+}
+
+// RequestTimeoutDisabled reports whether the per-request upstream deadline is
+// explicitly disabled: the canonical "off" sentinel or the legacy empty
+// string, both of which mean "no deadline". Centralizing the check here
+// means validate.go and cmd/serve.go read the same definition of "disabled"
+// and cannot drift on it. Comparison is exact-case, matching the existing
+// enum style elsewhere in config (log.level, response.deny_verbosity) — "OFF"
+// or "Off" is not recognized and falls through to duration parsing, where it
+// fails validation.
+func (u UpstreamConfig) RequestTimeoutDisabled() bool {
+	return u.RequestTimeout == "" || u.RequestTimeout == "off"
 }
 
 // UpstreamEndpoint is one daemon in an ordered failover set.
@@ -776,6 +804,10 @@ func Defaults() Config {
 		},
 		Upstream: UpstreamConfig{
 			Socket: "/var/run/docker.sock",
+			// 60s bounds a hung upstream body or heavy read by default; set
+			// "off" (or the legacy "") to disable. See RequestTimeout's doc
+			// comment for the full migration story.
+			RequestTimeout: "60s",
 		},
 		Log: LogConfig{
 			Level:     "info",
