@@ -108,6 +108,28 @@ func TestServePolicyConfigAddsRuntimeFilterOptions(t *testing.T) {
 	}
 }
 
+// TestServePolicyConfigWiresInsecureAllowBodyBlindWrites covers gap G-exec:
+// insecure_allow_body_blind_writes previously only gated the startup
+// validator (rules.go) and was never propagated into filter.ExecOptions, so
+// setting it had no effect on the actual request-time exec decision. Both
+// states must be asserted, not just the "on" case, so a future change that
+// always sets AllowBlindWrites: true can't slip through.
+func TestServePolicyConfigWiresInsecureAllowBodyBlindWrites(t *testing.T) {
+	off := config.Defaults()
+	off.Upstream.Socket = "/tmp/docker.sock"
+	off.InsecureAllowBodyBlindWrites = false
+	if got := servePolicyConfig(&off, nil); got.Exec.AllowBlindWrites {
+		t.Fatal("Exec.AllowBlindWrites = true, want false when insecure_allow_body_blind_writes is unset")
+	}
+
+	on := config.Defaults()
+	on.Upstream.Socket = "/tmp/docker.sock"
+	on.InsecureAllowBodyBlindWrites = true
+	if got := servePolicyConfig(&on, nil); !got.Exec.AllowBlindWrites {
+		t.Fatal("Exec.AllowBlindWrites = false, want true when insecure_allow_body_blind_writes is set")
+	}
+}
+
 func TestListenUnixSocketCreatesNewSocket(t *testing.T) {
 	path := shortSocketPath(t, "new")
 

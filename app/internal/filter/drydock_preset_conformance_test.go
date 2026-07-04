@@ -18,6 +18,23 @@ import (
 // every token). Source: drydock app/triggers/providers/docker/self-update-controller.ts.
 const drydockFinalizeArgvBody = `{"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"]}`
 
+// drydockFinalizeExecCreateBody is the full exec-create body drydock's helper
+// container issues for runFinalizeCallbackInContainer, including the Env
+// array buildFinalizeExecEnv assembles (DD_SELF_UPDATE_FINALIZE_URL/SECRET/
+// OPERATION_ID/STATUS/PHASE) and the AttachStdout/AttachStderr flags. The
+// preset sets neither allowed_env_vars nor denied_env_vars, so this body must
+// pass identically to drydockFinalizeArgvBody — Env is proven irrelevant to
+// the verdict, not merely absent from the test body. Source: drydock
+// app/triggers/providers/docker/self-update-controller.ts (runFinalizeCallbackInContainer,
+// buildFinalizeExecEnv).
+const drydockFinalizeExecCreateBody = `{` +
+	`"AttachStdout":true,"AttachStderr":true,` +
+	`"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"],` +
+	`"Env":["DD_SELF_UPDATE_FINALIZE_URL=http://127.0.0.1:3000/internal/self-update/finalize",` +
+	`"DD_SELF_UPDATE_FINALIZE_SECRET=s3cr3t","DD_SELF_UPDATE_OPERATION_ID=op-1",` +
+	`"DD_SELF_UPDATE_STATUS=succeeded","DD_SELF_UPDATE_PHASE=succeeded"]` +
+	`}`
+
 // presetCase is one (method, path, body) request and whether the drydock preset's
 // filter chain (rule layer + request-body inspectors) should let it reach upstream.
 type presetCase struct {
@@ -127,6 +144,10 @@ func TestDrydockPresetConformance(t *testing.T) {
 			// The finalize exec: exact argv, no User field. Allowed only because
 			// allow_root_user is true (empty User reads as root). Guards B2.
 			presetCase{"finalize-exec-allowed", http.MethodPost, "/containers/abc/exec", drydockFinalizeArgvBody, true},
+			// The real body the helper container sends, Env included: the
+			// preset restricts neither allowed_env_vars nor denied_env_vars,
+			// so the DD_SELF_UPDATE_* Env entries must not change the verdict.
+			presetCase{"finalize-exec-allowed-full-body", http.MethodPost, "/containers/abc/exec", drydockFinalizeExecCreateBody, true},
 			// Any other exec command stays denied by the exact-argv allowlist.
 			presetCase{"exec-shell-denied", http.MethodPost, "/containers/abc/exec", `{"Cmd":["sh","-c","id"]}`, false},
 			presetCase{"exec-other-node-denied", http.MethodPost, "/containers/abc/exec", `{"Cmd":["node","evil.js"]}`, false},
@@ -152,6 +173,12 @@ func buildDrydockPresetHandler(t *testing.T, presetFile string) http.Handler {
 
 	policy := cfg.RequestBody.ToFilterOptions()
 	policy.DenyResponseVerbosity = filter.DenyResponseVerbosityVerbose
+	// insecure_allow_body_blind_writes is a top-level Config field (not part
+	// of RequestBodyConfig), wired at serve time by
+	// internal/cmd/serve.go's attachRuntimeInspectors. Mirror that single
+	// assignment here so preset conformance tests exercise the same
+	// production wiring instead of a stub that always leaves it false.
+	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	opts := filter.Options{PolicyConfig: policy}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
