@@ -583,6 +583,12 @@ func buildServeClientProfiles(cfg *config.Config, res *upstream.Resolver) (map[s
 // sites.
 func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy filter.PolicyConfig) filter.PolicyConfig {
 	policy.Exec.InspectStart = filter.NewDockerExecInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
+	// insecure_allow_body_blind_writes is a global, not-per-profile setting
+	// (validateBodyBlindWriteRulesForPolicy in rules.go says as much), so it
+	// is wired here rather than through RequestBodyConfig.ToFilterOptions —
+	// the same as every client profile's PolicyConfig, since this function
+	// runs for both the default policy and every named profile.
+	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	return policy
 }
 
@@ -773,7 +779,38 @@ func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Log
 }
 
 func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy) func(http.Handler) http.Handler {
+	warnIfBodyBlindWritesEnabled(cfg, logger)
 	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, res, clientProfiles))
+}
+
+// bodyBlindWritesWarnOnce gates warnIfBodyBlindWritesEnabled to a single
+// emission per process, like labelACLWarnOnce — the handler chain is rebuilt
+// on every config hot-reload, so an unguarded warning at the chain-build site
+// would repeat on each reload.
+var bodyBlindWritesWarnOnce sync.Once
+
+// warnIfBodyBlindWritesEnabled surfaces the runtime consequence of
+// insecure_allow_body_blind_writes: true at chain-build time (startup or
+// hot-reload). The startup validator (validateBodyBlindWriteRulesForPolicy in
+// rules.go) already refuses to start without this acknowledgment when a
+// body-blind endpoint is reachable; this is the loud runtime echo of that same
+// acknowledgment, visible in the running process's logs rather than only at
+// validate time.
+func warnIfBodyBlindWritesEnabled(cfg *config.Config, logger *slog.Logger) {
+	warnBodyBlindWritesOnce(cfg, logger, &bodyBlindWritesWarnOnce)
+}
+
+// warnBodyBlindWritesOnce is the testable core of warnIfBodyBlindWritesEnabled:
+// the Once is injected so tests can verify both the enable-check and the
+// once-per-process gating without racing other tests for the package-level
+// guard.
+func warnBodyBlindWritesOnce(cfg *config.Config, logger *slog.Logger, once *sync.Once) {
+	if !cfg.InsecureAllowBodyBlindWrites {
+		return
+	}
+	once.Do(func() {
+		logger.Warn("insecure_allow_body_blind_writes is enabled: body-sensitive write endpoints with no request-body allowlist configured (e.g. exec with an empty allowed_commands) are reachable without that allowlist check — other configured gates (allow_privileged, allow_root_user, allowed_env_vars/denied_env_vars, allowed_join_remote_addrs, allowed_set_env_prefixes) still apply in full")
+	})
 }
 
 // withHealth wires the /health endpoint onto the runtime monitor.

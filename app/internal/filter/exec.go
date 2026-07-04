@@ -51,7 +51,8 @@ type ExecOptions struct {
 	// sockguard glob (see internal/glob): "*" matches a run of non-slash
 	// characters, "**" matches any sequence. A command is allowed when its
 	// token count equals an entry's and every token matches the glob at that
-	// position.
+	// position. Empty (the default) denies every exec unless AllowBlindWrites
+	// is also set.
 	AllowedCommands [][]string
 	// AllowedEnvVars, when non-empty, restricts the exec-create Env array to
 	// these variable names. Matching is by name only — the substring before
@@ -67,16 +68,28 @@ type ExecOptions struct {
 	// closed on operator misconfiguration. Default empty means nothing is
 	// blocked.
 	DeniedEnvVars []string
-	InspectStart  ExecInspectFunc
+	// AllowBlindWrites wires the top-level insecure_allow_body_blind_writes
+	// config flag: when true AND AllowedCommands is empty, exec create/start
+	// is no longer hard-denied purely for lacking a command allowlist. This
+	// ONLY lifts the "no commands are allowlisted" gate — AllowPrivileged,
+	// AllowRootUser, and the AllowedEnvVars/DeniedEnvVars gates below still
+	// apply exactly as configured, matching the documented scope of the
+	// blind-write opt-in (it acknowledges "we cannot pin the argv", not "skip
+	// every other exec check"). When AllowedCommands is non-empty this field
+	// has no effect: an operator who pinned commands is inspecting the body,
+	// so the blind-write concern the flag addresses does not apply.
+	AllowBlindWrites bool
+	InspectStart     ExecInspectFunc
 }
 
 type execPolicy struct {
-	allowPrivileged bool
-	allowRootUser   bool
-	allowedCommands []execCommandMatcher
-	allowedEnvVars  []string
-	deniedEnvVars   []string
-	inspectStart    ExecInspectFunc
+	allowPrivileged  bool
+	allowRootUser    bool
+	allowedCommands  []execCommandMatcher
+	allowedEnvVars   []string
+	deniedEnvVars    []string
+	allowBlindWrites bool
+	inspectStart     ExecInspectFunc
 }
 
 // execCommandMatcher is a compiled allowlist entry: one anchored regex per
@@ -140,12 +153,13 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 	}
 
 	return execPolicy{
-		allowPrivileged: opts.AllowPrivileged,
-		allowRootUser:   opts.AllowRootUser,
-		allowedCommands: allowed,
-		allowedEnvVars:  normalizeExecEnvNames(opts.AllowedEnvVars),
-		deniedEnvVars:   normalizeExecEnvNames(opts.DeniedEnvVars),
-		inspectStart:    opts.InspectStart,
+		allowPrivileged:  opts.AllowPrivileged,
+		allowRootUser:    opts.AllowRootUser,
+		allowedCommands:  allowed,
+		allowedEnvVars:   normalizeExecEnvNames(opts.AllowedEnvVars),
+		deniedEnvVars:    normalizeExecEnvNames(opts.DeniedEnvVars),
+		allowBlindWrites: opts.AllowBlindWrites,
+		inspectStart:     opts.InspectStart,
 	}
 }
 
@@ -250,7 +264,7 @@ func (p execPolicy) inspectExisting(ctx context.Context, normalizedPath string) 
 }
 
 func (p execPolicy) denyReason(result ExecInspectResult) string {
-	if len(p.allowedCommands) == 0 {
+	if len(p.allowedCommands) == 0 && !p.allowBlindWrites {
 		return "exec denied: no commands are allowlisted"
 	}
 	if !p.allowPrivileged && result.Privileged {
@@ -261,6 +275,14 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 	}
 	if reason := p.envDenyReason(result.Env); reason != "" {
 		return reason
+	}
+	if len(p.allowedCommands) == 0 {
+		// allowBlindWrites is true here (the guard above would have returned
+		// otherwise): no argv allowlist is configured, but every other gate —
+		// privileged, root user, env — was just checked and passed, so this is
+		// exactly the "acknowledged blind write" the flag documents, not an
+		// unconditional bypass.
+		return ""
 	}
 	for _, allowed := range p.allowedCommands {
 		if allowed.matches(result.Command) {

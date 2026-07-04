@@ -18,6 +18,37 @@ import (
 // every token). Source: drydock app/triggers/providers/docker/self-update-controller.ts.
 const drydockFinalizeArgvBody = `{"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"]}`
 
+// drydockFinalizeExecCreateBody is the full exec-create body drydock's helper
+// container issues for runFinalizeCallbackInContainer, including the Env
+// array buildFinalizeExecEnv assembles (DD_SELF_UPDATE_FINALIZE_URL/SECRET/
+// OPERATION_ID/STATUS/PHASE) and the AttachStdout/AttachStderr flags. The
+// preset's allowed_env_vars allowlists exactly this set, so this body must
+// pass identically to drydockFinalizeArgvBody. Source: drydock
+// app/triggers/providers/docker/self-update-controller.ts (runFinalizeCallbackInContainer,
+// buildFinalizeExecEnv).
+const drydockFinalizeExecCreateBody = `{` +
+	`"AttachStdout":true,"AttachStderr":true,` +
+	`"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"],` +
+	`"Env":["DD_SELF_UPDATE_FINALIZE_URL=http://127.0.0.1:3000/internal/self-update/finalize",` +
+	`"DD_SELF_UPDATE_FINALIZE_SECRET=s3cr3t","DD_SELF_UPDATE_OPERATION_ID=op-1",` +
+	`"DD_SELF_UPDATE_STATUS=succeeded","DD_SELF_UPDATE_PHASE=succeeded"]` +
+	`}`
+
+// drydockFinalizeExecCreateBodyWithNodeOptions is the same real-world body as
+// drydockFinalizeExecCreateBody but with an extra, non-allowlisted Env entry
+// (NODE_OPTIONS) appended. Cmd still matches allowed_commands exactly, so
+// this proves allowed_env_vars is enforced independently of the argv pin —
+// pinning Cmd alone would not have caught this, since NODE_OPTIONS changes
+// what the pinned "node" argv executes without changing argv itself.
+const drydockFinalizeExecCreateBodyWithNodeOptions = `{` +
+	`"AttachStdout":true,"AttachStderr":true,` +
+	`"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"],` +
+	`"Env":["DD_SELF_UPDATE_FINALIZE_URL=http://127.0.0.1:3000/internal/self-update/finalize",` +
+	`"DD_SELF_UPDATE_FINALIZE_SECRET=s3cr3t","DD_SELF_UPDATE_OPERATION_ID=op-1",` +
+	`"DD_SELF_UPDATE_STATUS=succeeded","DD_SELF_UPDATE_PHASE=succeeded",` +
+	`"NODE_OPTIONS=--require /tmp/evil.js"]` +
+	`}`
+
 // presetCase is one (method, path, body) request and whether the drydock preset's
 // filter chain (rule layer + request-body inspectors) should let it reach upstream.
 type presetCase struct {
@@ -127,9 +158,17 @@ func TestDrydockPresetConformance(t *testing.T) {
 			// The finalize exec: exact argv, no User field. Allowed only because
 			// allow_root_user is true (empty User reads as root). Guards B2.
 			presetCase{"finalize-exec-allowed", http.MethodPost, "/containers/abc/exec", drydockFinalizeArgvBody, true},
+			// The real body the helper container sends, Env included: the
+			// preset's allowed_env_vars allowlists exactly the DD_SELF_UPDATE_*
+			// names it carries, so the verdict is unchanged.
+			presetCase{"finalize-exec-allowed-full-body", http.MethodPost, "/containers/abc/exec", drydockFinalizeExecCreateBody, true},
 			// Any other exec command stays denied by the exact-argv allowlist.
 			presetCase{"exec-shell-denied", http.MethodPost, "/containers/abc/exec", `{"Cmd":["sh","-c","id"]}`, false},
 			presetCase{"exec-other-node-denied", http.MethodPost, "/containers/abc/exec", `{"Cmd":["node","evil.js"]}`, false},
+			// Same allowlisted argv, but with an extra non-allowlisted Env
+			// entry (NODE_OPTIONS): allowed_env_vars must deny this even
+			// though allowed_commands alone would have let it through.
+			presetCase{"finalize-exec-denied-node-options-env", http.MethodPost, "/containers/abc/exec", drydockFinalizeExecCreateBodyWithNodeOptions, false},
 			// The exec inspect rule is present (start needs a daemon, so not asserted).
 			presetCase{"exec-inspect", http.MethodGet, "/exec/abc/json", "", true},
 		)
@@ -152,6 +191,12 @@ func buildDrydockPresetHandler(t *testing.T, presetFile string) http.Handler {
 
 	policy := cfg.RequestBody.ToFilterOptions()
 	policy.DenyResponseVerbosity = filter.DenyResponseVerbosityVerbose
+	// insecure_allow_body_blind_writes is a top-level Config field (not part
+	// of RequestBodyConfig), wired at serve time by
+	// internal/cmd/serve.go's attachRuntimeInspectors. Mirror that single
+	// assignment here so preset conformance tests exercise the same
+	// production wiring instead of a stub that always leaves it false.
+	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	opts := filter.Options{PolicyConfig: policy}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

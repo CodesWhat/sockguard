@@ -123,6 +123,37 @@ func TestBuildServeClientProfiles_Error(t *testing.T) {
 	}
 }
 
+// TestBuildServeClientProfiles_PropagatesInsecureAllowBodyBlindWrites covers
+// gap G-exec for the per-profile path: insecure_allow_body_blind_writes is a
+// global setting (not per-profile, per rules.go), so every compiled profile's
+// PolicyConfig.Exec.AllowBlindWrites must reflect the top-level flag, not just
+// the default policy built by servePolicyConfig.
+func TestBuildServeClientProfiles_PropagatesInsecureAllowBodyBlindWrites(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.InsecureAllowBodyBlindWrites = true
+	cfg.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name: "blind-exec",
+			Rules: []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/exec"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			},
+		},
+	}
+
+	profiles, err := buildServeClientProfiles(&cfg, nil)
+	if err != nil {
+		t.Fatalf("buildServeClientProfiles() error = %v", err)
+	}
+	profile, ok := profiles["blind-exec"]
+	if !ok {
+		t.Fatal("expected \"blind-exec\" profile to compile")
+	}
+	if !profile.Exec.AllowBlindWrites {
+		t.Fatal("profile PolicyConfig.Exec.AllowBlindWrites = false, want true (global flag must propagate to profiles)")
+	}
+}
+
 // ---- clientCertificateProfiles: non-empty input ----
 
 func TestClientCertificateProfiles_NonEmpty(t *testing.T) {

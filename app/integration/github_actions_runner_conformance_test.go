@@ -40,6 +40,11 @@ func newGHAPresetHandler(t *testing.T, socketPath string) http.Handler {
 
 	policyConfig := cfg.RequestBody.ToFilterOptions()
 	policyConfig.DenyResponseVerbosity = filter.DenyResponseVerbosityVerbose
+	// insecure_allow_body_blind_writes is a top-level Config field, wired at
+	// serve time by internal/cmd/serve.go's attachRuntimeInspectors. Mirror
+	// that assignment here so this preset's own opt-in (see
+	// configs/github-actions-runner.yaml) takes effect in this handler too.
+	policyConfig.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 
 	return newIntegrationProxyHandlerWithOptions(
 		t,

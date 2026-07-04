@@ -8,16 +8,22 @@
 #         needing insecure_allow_read_exfiltration: true.
 # Denies: exec, build, secrets, plugins, raw archive/export/logs/attach streams.
 #
-# Self-update: when Drydock updates itself it issues the container-lifecycle
-# calls directly through this proxy (stop/start/rename/remove/create) — current
-# Drydock does not spawn a separate helper container for this. The replacement
-# container is created through the proxy carrying Drydock's own volumes, so its
-# host path must be listed under request_body.container_create.allowed_bind_mounts.
-# Drydock then finalizes via a `docker exec` INSIDE the new container
-# (runFinalizeCallbackInContainer), which this preset denies — the update
-# container still starts, but Drydock's self-update state stays pending instead
-# of being marked complete. For a clean finalize use the
-# drydock-with-selfupdate.yaml preset, which allowlists exactly that exec argv.
+# Self-update: the rename/create call that replaces Drydock's own container
+# goes directly through this proxy (source:
+# drydock/app/triggers/providers/docker/SelfUpdateTransitionShared.ts). As of
+# drydock dev/v1.6, Drydock then spawns a separate, AutoRemove, ephemeral
+# helper container ("drydock-self-update-<ts>", labeled dd.self-update.helper)
+# that reuses the same Docker socket bind and itself issues the
+# stop-old/start-new/health-poll/finalize-exec/remove-old sequence
+# (self-update-controller.ts) — it is the HELPER, not Drydock's own process,
+# that calls exec. The replacement container is created through the proxy
+# carrying Drydock's own volumes, so its host path must be listed under
+# request_body.container_create.allowed_bind_mounts. The helper finalizes via
+# a `docker exec` INSIDE the new container (runFinalizeCallbackInContainer),
+# which this preset denies — the update container still starts, but Drydock's
+# self-update state stays pending instead of being marked complete. For a
+# clean finalize use the drydock-with-selfupdate.yaml preset, which
+# allowlists exactly that exec argv.
 
 upstream:
   socket: /var/run/docker.sock

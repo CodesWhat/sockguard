@@ -20,17 +20,19 @@ import (
 //   - the bulk-data exfiltration surface (archive, export, attach) and
 //     /secrets stay denied on both presets, same as /build.
 //
-// POST /containers/{id}/exec (exec create): empirically, portwing-with-exec.yaml
-// ships with request_body.exec.allowed_commands empty, and sockguard's exec
-// policy (internal/filter/exec.go denyReason, also covered by the repo's own
-// TestMiddlewareDeniesUnallowlistedExecCreateCommand) unconditionally denies
-// exec creation whenever allowed_commands is empty — insecure_allow_body_blind_
-// writes only satisfies a startup validator (internal/cmd/rules.go) and is
-// never wired into filter.ExecOptions (internal/config/filter_options.go).
-// So exec creation is denied on portwing-with-exec.yaml today, contrary to
-// its header comment's stated intent of unpinned "blind" exec. That gap
-// predates this test and is out of scope here; this test asserts the true
-// current behavior instead of the aspirational one so the suite stays honest.
+// POST /containers/{id}/exec (exec create): portwing-with-exec.yaml ships with
+// request_body.exec.allowed_commands empty and insecure_allow_body_blind_writes:
+// true. insecure_allow_body_blind_writes is wired all the way into
+// filter.ExecOptions.AllowBlindWrites (see attachRuntimeInspectors in
+// internal/cmd/serve.go and buildDrydockPresetHandler below, which mirrors that
+// wiring), so an otherwise-clean exec create is allowed even with an empty
+// allowlist. The flag only lifts the "no commands are allowlisted" gate —
+// allow_privileged/allow_root_user/allowed_env_vars/denied_env_vars still apply
+// exactly as configured (see TestPortwingWithExecPresetStillDeniesPrivilegedExec
+// below and the unit-level TestExecDenyReasonAllowBlindWritesOnBypassesOnlyTheAllowlistGate
+// in exec_test.go). TestMiddlewareDeniesUnallowlistedExecCreateCommand in
+// exec_test.go keeps the flag-off default-deny behavior covered independently
+// of any preset.
 //
 // POST /exec/{id}/start needs a docker-backed InspectStart lookup (wired at
 // serve time, not by config) to re-inspect the exec's Cmd/Privileged/User; the
@@ -83,9 +85,13 @@ func TestPortwingPresetConformance(t *testing.T) {
 		handler := buildDrydockPresetHandler(t, "portwing-with-exec.yaml")
 		cases := append([]presetCase{}, base...)
 		cases = append(cases,
-			// See the function doc comment: this is the true current
-			// behavior, not the preset's aspirational "blind exec" claim.
-			presetCase{"exec-create-denied-empty-allowlist", http.MethodPost, "/containers/abc/exec", `{"Cmd":["sh","-c","id"]}`, false},
+			// insecure_allow_body_blind_writes: true + empty allowed_commands:
+			// an otherwise-clean exec is now genuinely allowed — the preset's
+			// header claim delivers.
+			presetCase{"exec-create-allowed-blind-write-flag", http.MethodPost, "/containers/abc/exec", `{"Cmd":["sh","-c","id"]}`, true},
+			// The blind-write flag only lifts the allowlist gate: privileged
+			// exec still hits allow_privileged: false and is denied.
+			presetCase{"exec-create-privileged-still-denied", http.MethodPost, "/containers/abc/exec", `{"Cmd":["sh"],"Privileged":true}`, false},
 			// Resize and inspect carry no exec-specific body inspection
 			// (isExecCreatePath/isExecStartPath don't match them), so the
 			// rule layer alone governs — both are genuinely allowed here.
