@@ -66,6 +66,17 @@ the violating field; the structured access log in
 | **5.30** | Host user namespace not shared | `allow_host_userns: false` — rejects `UsernsMode: "host"` |
 | **5.31** | Docker socket not mounted inside containers | Satisfied **structurally** by deploying sockguard — workloads see the proxy socket, not the real `/var/run/docker.sock` |
 
+> **CPU priority vs. a hard cap.** CIS 5.11 only requires that *some* CPU
+> constraint be set — `CpuShares` (a relative scheduling weight) satisfies
+> it just as well as `NanoCpus` or `CpuQuota` (an absolute CFS budget). This
+> preset intentionally leaves `require_cpu_limit_hard: false`: enabling it
+> would reject `CpuShares`-only containers that are still fully CIS 5.11
+> compliant. If your threat model cares about bounding *how much* CPU a
+> container can consume — not just that a priority was set — add
+> `require_cpu_limit_hard: true` on top of this preset; see
+> [Configuration → Container-create body inspection](/configuration#container-create-body-inspection)
+> for the distinction.
+
 The preset wires every row above to its CIS-compliant default. Edit the
 preset to widen a knob only when a workload genuinely requires it; that
 edit is itself the auditable record of why your CIS posture diverges

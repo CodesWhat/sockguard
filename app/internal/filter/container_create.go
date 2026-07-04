@@ -89,13 +89,17 @@ type ContainerCreateOptions struct {
 	AllowedCapabilities        []string
 	RequireMemoryLimit         bool
 	RequireCPULimit            bool
-	RequirePidsLimit           bool
-	AllowedSeccompProfiles     []string
-	DenyUnconfinedSeccomp      bool
-	AllowedAppArmorProfiles    []string
-	DenyUnconfinedAppArmor     bool
-	AllowHostUserNS            bool
-	RequiredLabels             []string
+	// RequireCPULimitHard narrows RequireCPULimit to accept only a genuine
+	// CPU-time cap (NanoCpus or CpuQuota); CpuShares alone does not satisfy
+	// it. Independent of RequireCPULimit — see hasHardCPULimit.
+	RequireCPULimitHard     bool
+	RequirePidsLimit        bool
+	AllowedSeccompProfiles  []string
+	DenyUnconfinedSeccomp   bool
+	AllowedAppArmorProfiles []string
+	DenyUnconfinedAppArmor  bool
+	AllowHostUserNS         bool
+	RequiredLabels          []string
 
 	// AllowedRuntimes allowlists HostConfig.Runtime values. An empty Runtime
 	// selects the daemon default and is always permitted; any other (non-empty)
@@ -150,6 +154,7 @@ type containerCreatePolicy struct {
 	allowedCapabilities        []string
 	requireMemoryLimit         bool
 	requireCPULimit            bool
+	requireCPULimitHard        bool
 	requirePidsLimit           bool
 	allowedSeccompProfiles     []string
 	denyUnconfinedSeccomp      bool
@@ -238,6 +243,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowedCapabilities:        normalizeCapabilityList(opts.AllowedCapabilities),
 		requireMemoryLimit:         opts.RequireMemoryLimit,
 		requireCPULimit:            opts.RequireCPULimit,
+		requireCPULimitHard:        opts.RequireCPULimitHard,
 		requirePidsLimit:           opts.RequirePidsLimit,
 		allowedSeccompProfiles:     normalizeStringList(opts.AllowedSeccompProfiles),
 		denyUnconfinedSeccomp:      opts.DenyUnconfinedSeccomp,
@@ -928,6 +934,9 @@ func (p containerCreatePolicy) denyResourceLimitReason(hostConfig containerCreat
 	if p.requireCPULimit && !hasCPULimit(hostConfig) {
 		return "container create denied: a CPU limit is required (set HostConfig.NanoCpus, CpuQuota, CpuPeriod, or CpuShares)"
 	}
+	if p.requireCPULimitHard && !hasHardCPULimit(hostConfig) {
+		return "container create denied: a hard CPU cap is required (set HostConfig.NanoCpus or CpuQuota; CpuShares is a relative priority weight, not a cap, and does not satisfy this check)"
+	}
 	if p.requirePidsLimit {
 		if hostConfig.PidsLimit == nil || *hostConfig.PidsLimit <= 0 {
 			return "container create denied: a PIDs limit is required (set HostConfig.PidsLimit to a positive value)"
@@ -1138,6 +1147,24 @@ func capDropContainsAll(capDrop []string) bool {
 // it for the same purpose, so we accept it as evidence of intent.
 func hasCPULimit(h containerCreateHostConfig) bool {
 	return h.NanoCpus > 0 || h.CpuQuota > 0 || h.CpuPeriod > 0 || h.CpuShares > 0
+}
+
+// hasHardCPULimit returns true only when a genuine CPU-time cap is set:
+// NanoCpus or CpuQuota. Unlike hasCPULimit, a lone CpuPeriod does not count
+// (it is only the denominator for CpuQuota and enforces nothing without it),
+// and CpuShares does not count (it sets relative scheduling priority under
+// contention, not an absolute ceiling — a CpuShares-only container can still
+// consume 100% of every CPU it can reach on an idle host).
+//
+// CpuQuota is accepted without a paired CpuPeriod: per Docker's own docs
+// (docs.docker.com/engine/containers/resource_constraints — "--cpu-period
+// ... Defaults to 100000 microseconds (100 milliseconds)"), the CFS period
+// defaults to 100000us (the same value the kernel's CFS bandwidth
+// controller already applies to a cgroup) whenever CpuPeriod is left at its
+// zero value, so CpuQuota alone still yields a real, computable CPU-time
+// ceiling (CpuQuota / 100000).
+func hasHardCPULimit(h containerCreateHostConfig) bool {
+	return h.NanoCpus > 0 || h.CpuQuota > 0
 }
 
 // parseSecurityOpt extracts the (key, value) tuple from a Docker SecurityOpt

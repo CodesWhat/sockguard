@@ -272,6 +272,15 @@ func TestContainerCreateRequestBodyConfigToFilterOptionsMapsSelinuxAndSystemPath
 	}
 }
 
+func TestContainerCreateRequestBodyConfigToFilterOptionsMapsRequireCPULimitHard(t *testing.T) {
+	got := (ContainerCreateRequestBodyConfig{
+		RequireCPULimitHard: true,
+	}).ToFilterOptions()
+	if !got.RequireCPULimitHard {
+		t.Error("RequireCPULimitHard not propagated")
+	}
+}
+
 func TestExecRequestBodyConfigToFilterOptionsLeavesRuntimeInspectorUnset(t *testing.T) {
 	got := (ExecRequestBodyConfig{
 		AllowPrivileged: true,

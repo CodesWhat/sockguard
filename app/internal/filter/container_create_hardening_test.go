@@ -220,6 +220,49 @@ func TestContainerCreatePolicyEnforcesResourceLimits(t *testing.T) {
 			body: `{"HostConfig":{"CpuShares":512}}`,
 		},
 		{
+			name:       "hard cpu cap required missing",
+			opts:       ContainerCreateOptions{RequireCPULimitHard: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{}}`,
+			wantReason: "container create denied: a hard CPU cap is required (set HostConfig.NanoCpus or CpuQuota; CpuShares is a relative priority weight, not a cap, and does not satisfy this check)",
+		},
+		{
+			name:       "hard cpu cap not satisfied by CpuShares alone",
+			opts:       ContainerCreateOptions{RequireCPULimitHard: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"CpuShares":512}}`,
+			wantReason: "container create denied: a hard CPU cap is required (set HostConfig.NanoCpus or CpuQuota; CpuShares is a relative priority weight, not a cap, and does not satisfy this check)",
+		},
+		{
+			name: "hard cpu cap satisfied by NanoCpus",
+			opts: ContainerCreateOptions{RequireCPULimitHard: true, AllowAllCapabilities: true},
+			body: `{"HostConfig":{"NanoCpus":500000000}}`,
+		},
+		{
+			// CpuQuota alone (no CpuPeriod) must satisfy the check — Docker
+			// defaults CpuPeriod to 100000us when omitted, so CpuQuota alone
+			// is still a genuine CPU-time cap. See hasHardCPULimit.
+			name: "hard cpu cap satisfied by CpuQuota alone",
+			opts: ContainerCreateOptions{RequireCPULimitHard: true, AllowAllCapabilities: true},
+			body: `{"HostConfig":{"CpuQuota":50000}}`,
+		},
+		{
+			// Unlike hasCPULimit, hasHardCPULimit does not treat a lone
+			// CpuPeriod as evidence of a cap — it is only the denominator for
+			// CpuQuota and enforces nothing by itself.
+			name:       "hard cpu cap not satisfied by CpuPeriod alone",
+			opts:       ContainerCreateOptions{RequireCPULimitHard: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"CpuPeriod":100000}}`,
+			wantReason: "container create denied: a hard CPU cap is required (set HostConfig.NanoCpus or CpuQuota; CpuShares is a relative priority weight, not a cap, and does not satisfy this check)",
+		},
+		{
+			// When both knobs are enabled and only CpuShares is set, the soft
+			// check (requireCPULimit) passes but the stricter, independent
+			// hard check still denies — its more specific message wins.
+			name:       "both require_cpu_limit and require_cpu_limit_hard enabled, CpuShares only, hard message wins",
+			opts:       ContainerCreateOptions{RequireCPULimit: true, RequireCPULimitHard: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"CpuShares":512}}`,
+			wantReason: "container create denied: a hard CPU cap is required (set HostConfig.NanoCpus or CpuQuota; CpuShares is a relative priority weight, not a cap, and does not satisfy this check)",
+		},
+		{
 			name:       "pids limit required missing",
 			opts:       ContainerCreateOptions{RequirePidsLimit: true, AllowAllCapabilities: true},
 			body:       `{"HostConfig":{}}`,
@@ -398,6 +441,7 @@ func TestContainerCreatePolicyHardeningSkipsNonCreateRequests(t *testing.T) {
 		RequireDropAllCapabilities: true,
 		RequireMemoryLimit:         true,
 		RequireCPULimit:            true,
+		RequireCPULimitHard:        true,
 		RequirePidsLimit:           true,
 		DenyUnconfinedSeccomp:      true,
 		DenyUnconfinedAppArmor:     true,
@@ -473,6 +517,23 @@ func TestContainerCreatePolicyBoundaryMutationCoverage(t *testing.T) {
 			name: "memory limit one accepted (boundary above <=0)",
 			opts: ContainerCreateOptions{RequireMemoryLimit: true, AllowAllCapabilities: true},
 			body: `{"HostConfig":{"Memory":1}}`,
+		},
+		// hasHardCPULimit: `h.NanoCpus > 0` — mutation `> 0` → `>= 0` would
+		// accept NanoCpus=0; the strict-on-boundary case is NanoCpus=1 (must
+		// pass).
+		{
+			name: "hard cpu cap NanoCpus one accepted (boundary above >0)",
+			opts: ContainerCreateOptions{RequireCPULimitHard: true, AllowAllCapabilities: true},
+			body: `{"HostConfig":{"NanoCpus":1}}`,
+		},
+		// hasHardCPULimit: `h.CpuQuota > 0` — explicitly set to 0 (not via the
+		// "missing" default) kills a `> 0` → `>= 0` mutation on the other
+		// operand.
+		{
+			name:       "hard cpu cap CpuQuota zero rejected explicitly",
+			opts:       ContainerCreateOptions{RequireCPULimitHard: true, AllowAllCapabilities: true},
+			body:       `{"HostConfig":{"CpuQuota":0}}`,
+			wantReason: "container create denied: a hard CPU cap is required (set HostConfig.NanoCpus or CpuQuota; CpuShares is a relative priority weight, not a cap, and does not satisfy this check)",
 		},
 		// denyHardeningReason: `requireNoNewPrivileges && !hasNoNewPrivileges`
 		// — explicitly check the satisfied path. SecurityOpt with

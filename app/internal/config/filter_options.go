@@ -46,6 +46,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		AllowedCapabilities:        c.AllowedCapabilities,
 		RequireMemoryLimit:         c.RequireMemoryLimit,
 		RequireCPULimit:            c.RequireCPULimit,
+		RequireCPULimitHard:        c.RequireCPULimitHard,
 		RequirePidsLimit:           c.RequirePidsLimit,
 		AllowedSeccompProfiles:     c.AllowedSeccompProfiles,
 		DenyUnconfinedSeccomp:      c.DenyUnconfinedSeccomp,
