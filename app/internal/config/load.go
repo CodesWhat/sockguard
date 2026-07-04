@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"os"
+	"reflect"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -54,206 +55,86 @@ func Load(configPath string) (*Config, error) {
 // setLoadDefaults registers every default value with the Viper instance.
 // Shared by Load (file-based, with env overlay) and LoadBytes (in-memory,
 // no env overlay) so the two paths cannot drift as the schema grows.
+//
+// Defaults are derived by reflection off Config's mapstructure tags (see
+// registerDefaults) rather than a hand-maintained list of v.SetDefault
+// calls, so a newly added field can no longer silently lose its Viper
+// registration — and with it, its SOCKGUARD_* environment-variable override
+// — by omission. That exact failure mode has shipped three times
+// (allow_sysctls, the service-hardening rails, the SELinux/
+// deny_unconfined_system_paths trio); see load_defaults_completeness_test.go.
 func setLoadDefaults(v *viper.Viper, defaults Config) {
-	v.SetDefault("listen.socket", defaults.Listen.Socket)
-	v.SetDefault("listen.socket_mode", defaults.Listen.SocketMode)
-	v.SetDefault("listen.address", defaults.Listen.Address)
-	v.SetDefault("listen.insecure_allow_plain_tcp", defaults.Listen.InsecureAllowPlainTCP)
-	v.SetDefault("listen.insecure_allow_unauthenticated_clients", defaults.Listen.InsecureAllowUnauthenticatedClients)
-	v.SetDefault("listen.tls.cert_file", defaults.Listen.TLS.CertFile)
-	v.SetDefault("listen.tls.key_file", defaults.Listen.TLS.KeyFile)
-	v.SetDefault("listen.tls.client_ca_file", defaults.Listen.TLS.ClientCAFile)
-	v.SetDefault("listen.tls.common_names", defaults.Listen.TLS.CommonNames)
-	v.SetDefault("listen.tls.dns_names", defaults.Listen.TLS.DNSNames)
-	v.SetDefault("listen.tls.ip_addresses", defaults.Listen.TLS.IPAddresses)
-	v.SetDefault("listen.tls.uri_sans", defaults.Listen.TLS.URISANs)
-	v.SetDefault("listen.tls.public_key_sha256_pins", defaults.Listen.TLS.PublicKeySHA256Pins)
-	v.SetDefault("upstream.socket", defaults.Upstream.Socket)
-	v.SetDefault("upstream.request_timeout", defaults.Upstream.RequestTimeout)
-	v.SetDefault("upstream.endpoints", defaults.Upstream.Endpoints)
-	v.SetDefault("upstream.failover.health_interval", defaults.Upstream.Failover.HealthInterval)
-	v.SetDefault("upstream.failover.health_timeout", defaults.Upstream.Failover.HealthTimeout)
-	v.SetDefault("log.level", defaults.Log.Level)
-	v.SetDefault("log.format", defaults.Log.Format)
-	v.SetDefault("log.output", defaults.Log.Output)
-	v.SetDefault("log.access_log", defaults.Log.AccessLog)
-	v.SetDefault("log.audit.enabled", defaults.Log.Audit.Enabled)
-	v.SetDefault("log.audit.format", defaults.Log.Audit.Format)
-	v.SetDefault("log.audit.output", defaults.Log.Audit.Output)
-	v.SetDefault("response.deny_verbosity", defaults.Response.DenyVerbosity)
-	v.SetDefault("response.redact_container_env", defaults.Response.RedactContainerEnv)
-	v.SetDefault("response.redact_mount_paths", defaults.Response.RedactMountPaths)
-	v.SetDefault("response.redact_network_topology", defaults.Response.RedactNetworkTopology)
-	v.SetDefault("response.redact_sensitive_data", defaults.Response.RedactSensitiveData)
-	v.SetDefault("response.visible_resource_labels", defaults.Response.VisibleResourceLabels)
-	v.SetDefault("response.name_patterns", defaults.Response.NamePatterns)
-	v.SetDefault("response.image_patterns", defaults.Response.ImagePatterns)
-	v.SetDefault("request_body.container_create.allow_privileged", defaults.RequestBody.ContainerCreate.AllowPrivileged)
-	v.SetDefault("request_body.container_create.allow_host_network", defaults.RequestBody.ContainerCreate.AllowHostNetwork)
-	v.SetDefault("request_body.container_create.allow_host_pid", defaults.RequestBody.ContainerCreate.AllowHostPID)
-	v.SetDefault("request_body.container_create.allow_host_ipc", defaults.RequestBody.ContainerCreate.AllowHostIPC)
-	v.SetDefault("request_body.container_create.allowed_bind_mounts", defaults.RequestBody.ContainerCreate.AllowedBindMounts)
-	v.SetDefault("request_body.container_create.allow_all_devices", defaults.RequestBody.ContainerCreate.AllowAllDevices)
-	v.SetDefault("request_body.container_create.allowed_devices", defaults.RequestBody.ContainerCreate.AllowedDevices)
-	v.SetDefault("request_body.container_create.allow_device_requests", defaults.RequestBody.ContainerCreate.AllowDeviceRequests)
-	v.SetDefault("request_body.container_create.allow_device_cgroup_rules", defaults.RequestBody.ContainerCreate.AllowDeviceCgroupRules)
-	v.SetDefault("request_body.container_create.require_no_new_privileges", defaults.RequestBody.ContainerCreate.RequireNoNewPrivileges)
-	v.SetDefault("request_body.container_create.require_non_root_user", defaults.RequestBody.ContainerCreate.RequireNonRootUser)
-	v.SetDefault("request_body.container_create.require_readonly_rootfs", defaults.RequestBody.ContainerCreate.RequireReadonlyRootfs)
-	v.SetDefault("request_body.container_create.require_drop_all_capabilities", defaults.RequestBody.ContainerCreate.RequireDropAllCapabilities)
-	v.SetDefault("request_body.container_create.allow_all_capabilities", defaults.RequestBody.ContainerCreate.AllowAllCapabilities)
-	v.SetDefault("request_body.container_create.allowed_capabilities", defaults.RequestBody.ContainerCreate.AllowedCapabilities)
-	v.SetDefault("request_body.container_create.require_memory_limit", defaults.RequestBody.ContainerCreate.RequireMemoryLimit)
-	v.SetDefault("request_body.container_create.require_cpu_limit", defaults.RequestBody.ContainerCreate.RequireCPULimit)
-	v.SetDefault("request_body.container_create.require_pids_limit", defaults.RequestBody.ContainerCreate.RequirePidsLimit)
-	v.SetDefault("request_body.container_create.allowed_seccomp_profiles", defaults.RequestBody.ContainerCreate.AllowedSeccompProfiles)
-	v.SetDefault("request_body.container_create.deny_unconfined_seccomp", defaults.RequestBody.ContainerCreate.DenyUnconfinedSeccomp)
-	v.SetDefault("request_body.container_create.allowed_apparmor_profiles", defaults.RequestBody.ContainerCreate.AllowedAppArmorProfiles)
-	v.SetDefault("request_body.container_create.deny_unconfined_apparmor", defaults.RequestBody.ContainerCreate.DenyUnconfinedAppArmor)
-	v.SetDefault("request_body.container_create.allow_host_userns", defaults.RequestBody.ContainerCreate.AllowHostUserNS)
-	v.SetDefault("request_body.container_create.allow_sysctls", defaults.RequestBody.ContainerCreate.AllowSysctls)
-	v.SetDefault("request_body.container_create.required_labels", defaults.RequestBody.ContainerCreate.RequiredLabels)
-	v.SetDefault("request_body.container_create.allowed_runtimes", defaults.RequestBody.ContainerCreate.AllowedRuntimes)
-	v.SetDefault("request_body.container_create.deny_selinux_disable", defaults.RequestBody.ContainerCreate.DenySelinuxDisable)
-	v.SetDefault("request_body.container_create.deny_selinux_label_override", defaults.RequestBody.ContainerCreate.DenySelinuxLabelOverride)
-	v.SetDefault("request_body.container_create.deny_unconfined_system_paths", defaults.RequestBody.ContainerCreate.DenyUnconfinedSystemPaths)
-	v.SetDefault("request_body.exec.allow_privileged", defaults.RequestBody.Exec.AllowPrivileged)
-	v.SetDefault("request_body.exec.allow_root_user", defaults.RequestBody.Exec.AllowRootUser)
-	v.SetDefault("request_body.exec.allowed_commands", defaults.RequestBody.Exec.AllowedCommands)
-	v.SetDefault("request_body.image_pull.allow_imports", defaults.RequestBody.ImagePull.AllowImports)
-	v.SetDefault("request_body.image_pull.allow_all_registries", defaults.RequestBody.ImagePull.AllowAllRegistries)
-	v.SetDefault("request_body.image_pull.allow_official", defaults.RequestBody.ImagePull.AllowOfficial)
-	v.SetDefault("request_body.image_pull.allowed_registries", defaults.RequestBody.ImagePull.AllowedRegistries)
-	v.SetDefault("request_body.build.allow_remote_context", defaults.RequestBody.Build.AllowRemoteContext)
-	v.SetDefault("request_body.build.allow_host_network", defaults.RequestBody.Build.AllowHostNetwork)
-	v.SetDefault("request_body.build.allow_run_instructions", defaults.RequestBody.Build.AllowRunInstructions)
-	v.SetDefault("request_body.container_update.allow_privileged", defaults.RequestBody.ContainerUpdate.AllowPrivileged)
-	v.SetDefault("request_body.container_update.allow_all_devices", defaults.RequestBody.ContainerUpdate.AllowAllDevices)
-	v.SetDefault("request_body.container_update.allow_capabilities", defaults.RequestBody.ContainerUpdate.AllowCapabilities)
-	v.SetDefault("request_body.container_update.allow_resource_updates", defaults.RequestBody.ContainerUpdate.AllowResourceUpdates)
-	v.SetDefault("request_body.container_update.allow_restart_policy", defaults.RequestBody.ContainerUpdate.AllowRestartPolicy)
-	v.SetDefault("request_body.container_archive.allowed_paths", defaults.RequestBody.ContainerArchive.AllowedPaths)
-	v.SetDefault("request_body.container_archive.allow_setid", defaults.RequestBody.ContainerArchive.AllowSetID)
-	v.SetDefault("request_body.container_archive.allow_device_nodes", defaults.RequestBody.ContainerArchive.AllowDeviceNodes)
-	v.SetDefault("request_body.container_archive.allow_escaping_links", defaults.RequestBody.ContainerArchive.AllowEscapingLinks)
-	v.SetDefault("request_body.image_load.allow_all_registries", defaults.RequestBody.ImageLoad.AllowAllRegistries)
-	v.SetDefault("request_body.image_load.allow_official", defaults.RequestBody.ImageLoad.AllowOfficial)
-	v.SetDefault("request_body.image_load.allowed_registries", defaults.RequestBody.ImageLoad.AllowedRegistries)
-	v.SetDefault("request_body.image_load.allow_untagged", defaults.RequestBody.ImageLoad.AllowUntagged)
-	v.SetDefault("request_body.volume.allow_custom_drivers", defaults.RequestBody.Volume.AllowCustomDrivers)
-	v.SetDefault("request_body.volume.allow_driver_opts", defaults.RequestBody.Volume.AllowDriverOpts)
-	v.SetDefault("request_body.network.allow_custom_drivers", defaults.RequestBody.Network.AllowCustomDrivers)
-	v.SetDefault("request_body.network.allow_swarm_scope", defaults.RequestBody.Network.AllowSwarmScope)
-	v.SetDefault("request_body.network.allow_ingress", defaults.RequestBody.Network.AllowIngress)
-	v.SetDefault("request_body.network.allow_attachable", defaults.RequestBody.Network.AllowAttachable)
-	v.SetDefault("request_body.network.allow_config_only", defaults.RequestBody.Network.AllowConfigOnly)
-	v.SetDefault("request_body.network.allow_config_from", defaults.RequestBody.Network.AllowConfigFrom)
-	v.SetDefault("request_body.network.allow_custom_ipam_drivers", defaults.RequestBody.Network.AllowCustomIPAMDrivers)
-	v.SetDefault("request_body.network.allow_custom_ipam_config", defaults.RequestBody.Network.AllowCustomIPAMConfig)
-	v.SetDefault("request_body.network.allow_ipam_options", defaults.RequestBody.Network.AllowIPAMOptions)
-	v.SetDefault("request_body.network.allow_driver_options", defaults.RequestBody.Network.AllowDriverOptions)
-	v.SetDefault("request_body.network.allow_endpoint_config", defaults.RequestBody.Network.AllowEndpointConfig)
-	v.SetDefault("request_body.network.allow_disconnect_force", defaults.RequestBody.Network.AllowDisconnectForce)
-	v.SetDefault("request_body.secret.allow_custom_drivers", defaults.RequestBody.Secret.AllowCustomDrivers)
-	v.SetDefault("request_body.secret.allow_template_drivers", defaults.RequestBody.Secret.AllowTemplateDrivers)
-	v.SetDefault("request_body.config.allow_custom_drivers", defaults.RequestBody.Config.AllowCustomDrivers)
-	v.SetDefault("request_body.config.allow_template_drivers", defaults.RequestBody.Config.AllowTemplateDrivers)
-	v.SetDefault("request_body.service.allow_host_network", defaults.RequestBody.Service.AllowHostNetwork)
-	v.SetDefault("request_body.service.allowed_bind_mounts", defaults.RequestBody.Service.AllowedBindMounts)
-	v.SetDefault("request_body.service.allow_all_registries", defaults.RequestBody.Service.AllowAllRegistries)
-	v.SetDefault("request_body.service.allow_official", defaults.RequestBody.Service.AllowOfficial)
-	v.SetDefault("request_body.service.allowed_registries", defaults.RequestBody.Service.AllowedRegistries)
-	v.SetDefault("request_body.service.allow_all_capabilities", defaults.RequestBody.Service.AllowAllCapabilities)
-	v.SetDefault("request_body.service.allowed_capabilities", defaults.RequestBody.Service.AllowedCapabilities)
-	v.SetDefault("request_body.service.allow_sysctls", defaults.RequestBody.Service.AllowSysctls)
-	v.SetDefault("request_body.service.require_non_root_user", defaults.RequestBody.Service.RequireNonRootUser)
-	v.SetDefault("request_body.service.require_no_new_privileges", defaults.RequestBody.Service.RequireNoNewPrivileges)
-	v.SetDefault("request_body.service.require_readonly_rootfs", defaults.RequestBody.Service.RequireReadonlyRootfs)
-	v.SetDefault("request_body.service.require_drop_all_capabilities", defaults.RequestBody.Service.RequireDropAllCapabilities)
-	v.SetDefault("request_body.service.deny_unconfined_seccomp", defaults.RequestBody.Service.DenyUnconfinedSeccomp)
-	v.SetDefault("request_body.service.deny_custom_seccomp_profiles", defaults.RequestBody.Service.DenyCustomSeccompProfiles)
-	v.SetDefault("request_body.service.deny_unconfined_apparmor", defaults.RequestBody.Service.DenyUnconfinedAppArmor)
-	v.SetDefault("request_body.service.deny_selinux_disable", defaults.RequestBody.Service.DenySelinuxDisable)
-	v.SetDefault("request_body.service.deny_selinux_label_override", defaults.RequestBody.Service.DenySelinuxLabelOverride)
-	v.SetDefault("request_body.container_create.image_trust.require_rekor_inclusion", defaults.RequestBody.ContainerCreate.ImageTrust.RequireRekorInclusion)
-	v.SetDefault("request_body.container_create.image_trust.verify_timeout", defaults.RequestBody.ContainerCreate.ImageTrust.VerifyTimeout)
-	v.SetDefault("request_body.service.image_trust.require_rekor_inclusion", defaults.RequestBody.Service.ImageTrust.RequireRekorInclusion)
-	v.SetDefault("request_body.service.image_trust.verify_timeout", defaults.RequestBody.Service.ImageTrust.VerifyTimeout)
-	v.SetDefault("request_body.swarm.allow_force_new_cluster", defaults.RequestBody.Swarm.AllowForceNewCluster)
-	v.SetDefault("request_body.swarm.allow_external_ca", defaults.RequestBody.Swarm.AllowExternalCA)
-	v.SetDefault("request_body.swarm.allowed_join_remote_addrs", defaults.RequestBody.Swarm.AllowedJoinRemoteAddrs)
-	v.SetDefault("request_body.swarm.allow_token_rotation", defaults.RequestBody.Swarm.AllowTokenRotation)
-	v.SetDefault("request_body.swarm.allow_manager_unlock_key_rotation", defaults.RequestBody.Swarm.AllowManagerUnlockKeyRotation)
-	v.SetDefault("request_body.swarm.allow_auto_lock_managers", defaults.RequestBody.Swarm.AllowAutoLockManagers)
-	v.SetDefault("request_body.swarm.allow_signing_ca_update", defaults.RequestBody.Swarm.AllowSigningCAUpdate)
-	v.SetDefault("request_body.swarm.allow_unlock", defaults.RequestBody.Swarm.AllowUnlock)
-	v.SetDefault("request_body.node.allow_name_change", defaults.RequestBody.Node.AllowNameChange)
-	v.SetDefault("request_body.node.allow_role_change", defaults.RequestBody.Node.AllowRoleChange)
-	v.SetDefault("request_body.node.allow_availability_change", defaults.RequestBody.Node.AllowAvailabilityChange)
-	v.SetDefault("request_body.node.allow_label_mutation", defaults.RequestBody.Node.AllowLabelMutation)
-	v.SetDefault("request_body.node.allowed_label_keys", defaults.RequestBody.Node.AllowedLabelKeys)
-	v.SetDefault("request_body.plugin.allow_host_network", defaults.RequestBody.Plugin.AllowHostNetwork)
-	v.SetDefault("request_body.plugin.allow_host_ipc", defaults.RequestBody.Plugin.AllowHostIPC)
-	v.SetDefault("request_body.plugin.allow_host_pid", defaults.RequestBody.Plugin.AllowHostPID)
-	v.SetDefault("request_body.plugin.allow_all_devices", defaults.RequestBody.Plugin.AllowAllDevices)
-	v.SetDefault("request_body.plugin.allowed_bind_mounts", defaults.RequestBody.Plugin.AllowedBindMounts)
-	v.SetDefault("request_body.plugin.allowed_devices", defaults.RequestBody.Plugin.AllowedDevices)
-	v.SetDefault("request_body.plugin.allow_all_capabilities", defaults.RequestBody.Plugin.AllowAllCapabilities)
-	v.SetDefault("request_body.plugin.allowed_capabilities", defaults.RequestBody.Plugin.AllowedCapabilities)
-	v.SetDefault("request_body.plugin.allow_all_registries", defaults.RequestBody.Plugin.AllowAllRegistries)
-	v.SetDefault("request_body.plugin.allow_official", defaults.RequestBody.Plugin.AllowOfficial)
-	v.SetDefault("request_body.plugin.allowed_registries", defaults.RequestBody.Plugin.AllowedRegistries)
-	v.SetDefault("request_body.plugin.allowed_set_env_prefixes", defaults.RequestBody.Plugin.AllowedSetEnvPrefixes)
-	v.SetDefault("clients.allowed_cidrs", defaults.Clients.AllowedCIDRs)
-	v.SetDefault("clients.container_labels.enabled", defaults.Clients.ContainerLabels.Enabled)
-	v.SetDefault("clients.container_labels.label_prefix", defaults.Clients.ContainerLabels.LabelPrefix)
-	v.SetDefault("clients.default_profile", defaults.Clients.DefaultProfile)
-	v.SetDefault("clients.source_ip_profiles", defaults.Clients.SourceIPProfiles)
-	v.SetDefault("clients.client_certificate_profiles", defaults.Clients.ClientCertificateProfiles)
-	v.SetDefault("clients.unix_peer_profiles", defaults.Clients.UnixPeerProfiles)
-	v.SetDefault("clients.profiles", defaults.Clients.Profiles)
-	v.SetDefault("ownership.owner", defaults.Ownership.Owner)
-	v.SetDefault("ownership.label_key", defaults.Ownership.LabelKey)
-	v.SetDefault("ownership.allow_unowned_images", defaults.Ownership.AllowUnownedImages)
-	v.SetDefault("health.enabled", defaults.Health.Enabled)
-	v.SetDefault("health.path", defaults.Health.Path)
-	v.SetDefault("health.watchdog.enabled", defaults.Health.Watchdog.Enabled)
-	v.SetDefault("health.watchdog.interval", defaults.Health.Watchdog.Interval)
-	v.SetDefault("health.readiness.enabled", defaults.Health.Readiness.Enabled)
-	v.SetDefault("health.readiness.path", defaults.Health.Readiness.Path)
-	v.SetDefault("health.readiness.interval", defaults.Health.Readiness.Interval)
-	v.SetDefault("health.readiness.timeout", defaults.Health.Readiness.Timeout)
-	v.SetDefault("metrics.enabled", defaults.Metrics.Enabled)
-	v.SetDefault("metrics.path", defaults.Metrics.Path)
-	v.SetDefault("admin.enabled", defaults.Admin.Enabled)
-	v.SetDefault("admin.path", defaults.Admin.Path)
-	v.SetDefault("admin.max_request_bytes", defaults.Admin.MaxRequestBytes)
-	v.SetDefault("admin.policy_version_path", defaults.Admin.PolicyVersionPath)
-	v.SetDefault("admin.listen.socket", defaults.Admin.Listen.Socket)
-	v.SetDefault("admin.listen.socket_mode", defaults.Admin.Listen.SocketMode)
-	v.SetDefault("admin.listen.address", defaults.Admin.Listen.Address)
-	v.SetDefault("admin.listen.insecure_allow_plain_tcp", defaults.Admin.Listen.InsecureAllowPlainTCP)
-	v.SetDefault("admin.listen.insecure_allow_unauthenticated_clients", defaults.Admin.Listen.InsecureAllowUnauthenticatedClients)
-	v.SetDefault("admin.listen.insecure_allow_wide_open", defaults.Admin.Listen.InsecureAllowWideOpen)
-	v.SetDefault("admin.listen.tls.cert_file", defaults.Admin.Listen.TLS.CertFile)
-	v.SetDefault("admin.listen.tls.key_file", defaults.Admin.Listen.TLS.KeyFile)
-	v.SetDefault("admin.listen.tls.client_ca_file", defaults.Admin.Listen.TLS.ClientCAFile)
-	v.SetDefault("admin.listen.tls.common_names", defaults.Admin.Listen.TLS.CommonNames)
-	v.SetDefault("admin.listen.tls.dns_names", defaults.Admin.Listen.TLS.DNSNames)
-	v.SetDefault("admin.listen.tls.ip_addresses", defaults.Admin.Listen.TLS.IPAddresses)
-	v.SetDefault("admin.listen.tls.uri_sans", defaults.Admin.Listen.TLS.URISANs)
-	v.SetDefault("admin.listen.tls.public_key_sha256_pins", defaults.Admin.Listen.TLS.PublicKeySHA256Pins)
-	v.SetDefault("reload.enabled", defaults.Reload.Enabled)
-	v.SetDefault("reload.debounce", defaults.Reload.Debounce)
-	v.SetDefault("reload.poll_interval", defaults.Reload.PollInterval)
-	v.SetDefault("policy_bundle.enabled", defaults.PolicyBundle.Enabled)
-	v.SetDefault("policy_bundle.signature_path", defaults.PolicyBundle.SignaturePath)
-	v.SetDefault("policy_bundle.require_rekor_inclusion", defaults.PolicyBundle.RequireRekorInclusion)
-	v.SetDefault("policy_bundle.verify_timeout", defaults.PolicyBundle.VerifyTimeout)
-	v.SetDefault("policy_bundle.allowed_signing_keys", defaults.PolicyBundle.AllowedSigningKeys)
-	v.SetDefault("policy_bundle.allowed_keyless", defaults.PolicyBundle.AllowedKeyless)
-	v.SetDefault("insecure_allow_body_blind_writes", defaults.InsecureAllowBodyBlindWrites)
-	v.SetDefault("insecure_allow_read_exfiltration", defaults.InsecureAllowReadExfiltration)
+	registerDefaults(v, "", reflect.ValueOf(defaults))
+}
+
+// registerDefaults recursively walks val — a struct value reflecting some
+// (sub)tree of Config — and registers every leaf field as a Viper default
+// under the dotted key built from its mapstructure tags.
+//
+// A field is recursed into only when it is a plain (non-pointer, non-slice)
+// struct; every other kind — bool, string, numeric, []string, []T, and
+// pointer-to-struct fields alike — is a leaf, registered whole via
+// v.SetDefault. A ",squash" mapstructure tag (AdminListenConfig's embedded
+// ListenConfig) recurses at the same key prefix instead of nesting one
+// level deeper, matching how the mapstructure decoder treats it.
+//
+// Two exclusions preserve pre-existing behavior exactly rather than
+// "fixing" it as a side effect of the walk:
+//   - The top-level Rules field is skipped: it is populated post-unmarshal
+//     by the `if len(cfg.Rules) == 0` fallback in Load/LoadBytes below, not
+//     by a Viper default.
+//   - A nil pointer leaf (clients.global_concurrency; limits.rate and
+//     limits.concurrency inside clients.profiles[], which never reach this
+//     branch because Profiles is itself a slice leaf) is skipped rather
+//     than registered with a zero value, because those blocks are not
+//     env-var-configurable today — registering one would silently make
+//     every deploy see a present-but-empty block instead of an absent one.
+func registerDefaults(v *viper.Viper, prefix string, val reflect.Value) {
+	typ := val.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		name, squash := mapstructureTag(field)
+
+		// Rules is populated post-unmarshal (see the doc comment above), not
+		// via a Viper default.
+		if prefix == "" && name == "rules" {
+			continue
+		}
+
+		key := prefix
+		if !squash {
+			if prefix == "" {
+				key = name
+			} else {
+				key = prefix + "." + name
+			}
+		}
+
+		fv := val.Field(i)
+		if fv.Kind() == reflect.Struct {
+			registerDefaults(v, key, fv)
+			continue
+		}
+		if fv.Kind() == reflect.Pointer && fv.IsNil() {
+			continue
+		}
+
+		v.SetDefault(key, fv.Interface())
+	}
+}
+
+// mapstructureTag splits a struct field's mapstructure tag into its key
+// name and whether it carries the ",squash" option.
+func mapstructureTag(field reflect.StructField) (name string, squash bool) {
+	tag := field.Tag.Get("mapstructure")
+	parts := strings.Split(tag, ",")
+	name = parts[0]
+	for _, opt := range parts[1:] {
+		if opt == "squash" {
+			squash = true
+		}
+	}
+	return name, squash
 }
 
 // LoadBytes parses YAML config from the provided bytes and returns the merged
