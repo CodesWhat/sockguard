@@ -97,6 +97,12 @@ request_body:
     allow_all_registries: true
     allow_imports: false
 
+# Exec without pinned AllowedCommands requires insecure_allow_body_blind_writes;
+# log/attach streaming requires insecure_allow_read_exfiltration. Mirrors
+# app/configs/github-actions-runner.yaml — keep both flags in sync with it.
+insecure_allow_body_blind_writes: true
+insecure_allow_read_exfiltration: true
+
 # Response redactions — leave default-on. The runner reads container
 # inspect output to set up log streaming, not to enumerate host paths or
 # env vars. Keeping redactions on means a compromised workflow step
