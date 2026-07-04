@@ -87,6 +87,22 @@ When a client sends `Cmd` as a single JSON string instead of an array, Sockguard
 
 The exec-start re-inspection is necessarily best effort: Docker exposes metadata inspection and exec start as separate API calls, so Sockguard cannot make the check atomic with the eventual start operation. Treat this as a narrow TOCTOU window inherent to Docker's API shape, and prefer tight exec allowlists plus conservative per-client profile assignment for clients that do not need interactive command execution.
 
+`request_body.exec.allowed_env_vars` and `request_body.exec.denied_env_vars` optionally restrict the `Env` array on exec create by variable **name** only — values are never inspected, matched, or logged, so a secret carried in an allowed variable's value never leaks into a deny reason. `denied_env_vars` is checked first and always wins: a name on that list is blocked even if it also appears in `allowed_env_vars`. If `allowed_env_vars` is non-empty, any `Env` entry whose name isn't listed is denied. Both default to empty, meaning no restriction — unlike `allowed_commands`, which denies all exec once inspection is active, an empty env allowlist/denylist is a pure no-op. Name matching is exact and case-sensitive against the substring before the first `=`; there is no glob support and no curated built-in denylist — operators own the list. A common defense-in-depth denylist targets dynamic-linker and interpreter hijack vectors that let an attacker redirect what code an exec'd binary loads:
+
+```yaml
+request_body:
+  exec:
+    denied_env_vars:
+      - LD_PRELOAD
+      - LD_LIBRARY_PATH
+      - LD_AUDIT
+      - DYLD_INSERT_LIBRARIES
+      - PYTHONPATH
+      - PATH
+```
+
+This filtering only applies at exec create — see Known Limitations below for why it cannot be re-checked at exec start.
+
 `POST /images/create` is inspected by default. Sockguard blocks `fromSrc` imports unless explicitly allowed and constrains pulls to Docker Hub official images unless the operator opts into `allow_all_registries` or an explicit registry allowlist.
 
 `POST /build` is inspected by default. Sockguard blocks remote build contexts, `networkmode=host`, and Dockerfiles containing `RUN` instructions unless those behaviors are explicitly allowed.
@@ -226,6 +242,15 @@ between the create and start calls is an unavoidable time-of-check/time-of-use
 window inherent to Docker's API shape. Keep exec allowlists narrow and
 client profile assignments conservative for clients that do not need
 interactive command execution.
+
+**Exec Env allowlisting is create-time only.** `request_body.exec.allowed_env_vars`
+and `denied_env_vars` are enforced on `POST /containers/*/exec`, not on the
+`POST /exec/*/start` re-check. This isn't a gap in the re-check logic —
+`GET /exec/{id}/json` (the metadata the start-time re-check reads) never
+exposes the original `Env`, and exec instances are immutable once created, so
+there is no later point at which the environment could change. Once an exec
+is created with an allowed `Env`, that environment is fixed for the life of
+the exec instance.
 
 **Hijacked-stream redaction limits.** Sockguard's response filter — including
 the `response.redact_container_env`, `response.redact_mount_paths`,

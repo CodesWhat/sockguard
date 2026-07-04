@@ -24,6 +24,8 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowPrivileged: true,
 			AllowRootUser:   true,
 			AllowedCommands: [][]string{{"/usr/local/bin/deploy", "--check"}},
+			AllowedEnvVars:  []string{"PATH", "HOME"},
+			DeniedEnvVars:   []string{"LD_PRELOAD", "LD_LIBRARY_PATH"},
 		},
 		ImagePull: ImagePullRequestBodyConfig{
 			AllowImports:       true,
@@ -145,6 +147,8 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowPrivileged: true,
 			AllowRootUser:   true,
 			AllowedCommands: [][]string{{"/usr/local/bin/deploy", "--check"}},
+			AllowedEnvVars:  []string{"PATH", "HOME"},
+			DeniedEnvVars:   []string{"LD_PRELOAD", "LD_LIBRARY_PATH"},
 		},
 		ImagePull: filter.ImagePullOptions{
 			AllowImports:       true,
@@ -272,6 +276,15 @@ func TestContainerCreateRequestBodyConfigToFilterOptionsMapsSelinuxAndSystemPath
 	}
 }
 
+func TestContainerCreateRequestBodyConfigToFilterOptionsMapsRequireCPULimitHard(t *testing.T) {
+	got := (ContainerCreateRequestBodyConfig{
+		RequireCPULimitHard: true,
+	}).ToFilterOptions()
+	if !got.RequireCPULimitHard {
+		t.Error("RequireCPULimitHard not propagated")
+	}
+}
+
 func TestExecRequestBodyConfigToFilterOptionsLeavesRuntimeInspectorUnset(t *testing.T) {
 	got := (ExecRequestBodyConfig{
 		AllowPrivileged: true,
@@ -281,5 +294,19 @@ func TestExecRequestBodyConfigToFilterOptionsLeavesRuntimeInspectorUnset(t *test
 
 	if got.InspectStart != nil {
 		t.Fatal("ExecRequestBodyConfig.ToFilterOptions().InspectStart is set, want nil")
+	}
+}
+
+func TestExecRequestBodyConfigToFilterOptionsMapsEnvAllowlists(t *testing.T) {
+	got := (ExecRequestBodyConfig{
+		AllowedEnvVars: []string{"PATH", "HOME"},
+		DeniedEnvVars:  []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PATH", "PYTHONPATH"},
+	}).ToFilterOptions()
+
+	if want := []string{"PATH", "HOME"}; !reflect.DeepEqual(got.AllowedEnvVars, want) {
+		t.Fatalf("AllowedEnvVars = %#v, want %#v", got.AllowedEnvVars, want)
+	}
+	if want := []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PATH", "PYTHONPATH"}; !reflect.DeepEqual(got.DeniedEnvVars, want) {
+		t.Fatalf("DeniedEnvVars = %#v, want %#v", got.DeniedEnvVars, want)
 	}
 }

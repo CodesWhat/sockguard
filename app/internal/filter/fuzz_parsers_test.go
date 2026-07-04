@@ -101,10 +101,14 @@ func FuzzExec(f *testing.F) {
 	f.Add([]byte(`{"Cmd":[]}`))
 	f.Add([]byte(`{"Cmd":null}`))
 	f.Add([]byte(`{"Cmd":{"bad":true}}`))
+	f.Add([]byte(`{"Cmd":["/bin/sh"],"Env":["LD_PRELOAD=/tmp/x.so"]}`))
+	f.Add([]byte(`{"Cmd":["/bin/sh"],"Env":[123]}`))
+	f.Add([]byte(`{"Cmd":["/bin/sh"],"Env":"FOO=bar"}`))
 	f.Add(bytes.Repeat([]byte("a"), maxExecBodyBytes+1))
 
 	policy := newExecPolicy(ExecOptions{
 		AllowedCommands: [][]string{{"/usr/local/bin/pre-update", "--check"}},
+		DeniedEnvVars:   []string{"LD_PRELOAD"},
 	})
 
 	f.Fuzz(func(t *testing.T, body []byte) {

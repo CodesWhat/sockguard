@@ -233,27 +233,35 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowDeviceCgroupRules   bool                   `mapstructure:"allow_device_cgroup_rules"`
 	AllowedDeviceCgroupRules []string               `mapstructure:"allowed_device_cgroup_rules"`
 
-	RequireNoNewPrivileges     bool             `mapstructure:"require_no_new_privileges"`
-	RequireNonRootUser         bool             `mapstructure:"require_non_root_user"`
-	RequireReadonlyRootfs      bool             `mapstructure:"require_readonly_rootfs"`
-	RequireDropAllCapabilities bool             `mapstructure:"require_drop_all_capabilities"`
-	AllowAllCapabilities       bool             `mapstructure:"allow_all_capabilities"`
-	AllowedCapabilities        []string         `mapstructure:"allowed_capabilities"`
-	RequireMemoryLimit         bool             `mapstructure:"require_memory_limit"`
-	RequireCPULimit            bool             `mapstructure:"require_cpu_limit"`
-	RequirePidsLimit           bool             `mapstructure:"require_pids_limit"`
-	AllowedSeccompProfiles     []string         `mapstructure:"allowed_seccomp_profiles"`
-	DenyUnconfinedSeccomp      bool             `mapstructure:"deny_unconfined_seccomp"`
-	AllowedAppArmorProfiles    []string         `mapstructure:"allowed_apparmor_profiles"`
-	DenyUnconfinedAppArmor     bool             `mapstructure:"deny_unconfined_apparmor"`
-	AllowHostUserNS            bool             `mapstructure:"allow_host_userns"`
-	AllowSysctls               bool             `mapstructure:"allow_sysctls"`
-	RequiredLabels             []string         `mapstructure:"required_labels"`
-	AllowedRuntimes            []string         `mapstructure:"allowed_runtimes"`
-	ImageTrust                 ImageTrustConfig `mapstructure:"image_trust"`
-	DenySelinuxDisable         bool             `mapstructure:"deny_selinux_disable"`
-	DenySelinuxLabelOverride   bool             `mapstructure:"deny_selinux_label_override"`
-	DenyUnconfinedSystemPaths  bool             `mapstructure:"deny_unconfined_system_paths"`
+	RequireNoNewPrivileges     bool     `mapstructure:"require_no_new_privileges"`
+	RequireNonRootUser         bool     `mapstructure:"require_non_root_user"`
+	RequireReadonlyRootfs      bool     `mapstructure:"require_readonly_rootfs"`
+	RequireDropAllCapabilities bool     `mapstructure:"require_drop_all_capabilities"`
+	AllowAllCapabilities       bool     `mapstructure:"allow_all_capabilities"`
+	AllowedCapabilities        []string `mapstructure:"allowed_capabilities"`
+	RequireMemoryLimit         bool     `mapstructure:"require_memory_limit"`
+	RequireCPULimit            bool     `mapstructure:"require_cpu_limit"`
+	// RequireCPULimitHard, unlike RequireCPULimit, only accepts a genuine
+	// CPU-time cap: HostConfig.NanoCpus or CpuQuota. CpuShares (and CpuPeriod
+	// set without CpuQuota) only set relative priority under contention — an
+	// uncontended host still lets the container consume every CPU it can
+	// schedule onto — so neither satisfies this stricter check. Independent
+	// of RequireCPULimit: enabling this alone is sufficient; you do not also
+	// need RequireCPULimit: true. Default false (opt-in).
+	RequireCPULimitHard       bool             `mapstructure:"require_cpu_limit_hard"`
+	RequirePidsLimit          bool             `mapstructure:"require_pids_limit"`
+	AllowedSeccompProfiles    []string         `mapstructure:"allowed_seccomp_profiles"`
+	DenyUnconfinedSeccomp     bool             `mapstructure:"deny_unconfined_seccomp"`
+	AllowedAppArmorProfiles   []string         `mapstructure:"allowed_apparmor_profiles"`
+	DenyUnconfinedAppArmor    bool             `mapstructure:"deny_unconfined_apparmor"`
+	AllowHostUserNS           bool             `mapstructure:"allow_host_userns"`
+	AllowSysctls              bool             `mapstructure:"allow_sysctls"`
+	RequiredLabels            []string         `mapstructure:"required_labels"`
+	AllowedRuntimes           []string         `mapstructure:"allowed_runtimes"`
+	ImageTrust                ImageTrustConfig `mapstructure:"image_trust"`
+	DenySelinuxDisable        bool             `mapstructure:"deny_selinux_disable"`
+	DenySelinuxLabelOverride  bool             `mapstructure:"deny_selinux_label_override"`
+	DenyUnconfinedSystemPaths bool             `mapstructure:"deny_unconfined_system_paths"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images
@@ -305,6 +313,20 @@ type ExecRequestBodyConfig struct {
 	AllowPrivileged bool       `mapstructure:"allow_privileged"`
 	AllowRootUser   bool       `mapstructure:"allow_root_user"`
 	AllowedCommands [][]string `mapstructure:"allowed_commands"`
+	// AllowedEnvVars, when non-empty, restricts the exec-create Env array to
+	// these variable names — matched by name only (the substring before the
+	// first "="), exact string comparison, case-sensitive; the value is
+	// never inspected. Default empty means no restriction at all: unlike
+	// AllowedCommands (whose empty default denies every exec), an empty
+	// AllowedEnvVars is a deliberate zero-behavior-change default so
+	// enabling exec command allowlisting does not also silently start
+	// denying every exec session's environment.
+	AllowedEnvVars []string `mapstructure:"allowed_env_vars"`
+	// DeniedEnvVars variable names are always blocked and are checked
+	// before AllowedEnvVars, so a name present in both lists is denied
+	// (fail closed on operator misconfiguration). Default empty means
+	// nothing is blocked.
+	DeniedEnvVars []string `mapstructure:"denied_env_vars"`
 }
 
 // ImagePullRequestBodyConfig configures inspection for POST /images/create.
