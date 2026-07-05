@@ -1,0 +1,63 @@
+# CodeRabbit configuration — sockguard
+language: en-US
+
+reviews:
+  profile: chill
+  auto_review:
+    enabled: true
+  high_level_summary: true
+  collapse_walkthrough: false
+  review_status: true
+  poem: false
+  request_changes_workflow: false
+
+  path_filters:
+    - "!**/node_modules/**"
+    - "!**/dist/**"
+    - "!**/build/**"
+    - "!**/coverage/**"
+    - "!**/*.min.js"
+    - "!**/*.min.css"
+    - "!**/package-lock.json"
+    - "!**/pnpm-lock.yaml"
+    - "!**/*.lock"
+    - "!website/public/**"
+    - "!docs/public/**"
+    - "!CHANGELOG.md"
+
+  path_instructions:
+    - path: "app/internal/**"
+      instructions: |
+        Request-filtering engine with a default-deny posture. Any change to rule matching, path parsing, or method filtering is security-sensitive — flag anything that could widen what reaches the Docker socket.
+    - path: "app/differential/**"
+      instructions: |
+        Differential test harness comparing behavior against Tecnativa. Don't suggest refactors here.
+    - path: "app/integration/**"
+      instructions: |
+        Integration tests. Don't suggest error handling or null checks in test code.
+    - path: "chart/**"
+      instructions: |
+        Helm chart. Check values/template consistency and sane security defaults.
+    - path: "website/**"
+      instructions: |
+        Marketing site. Light review only, skip style nitpicks.
+    - path: "docs/**"
+      instructions: |
+        Docs site. Review for accuracy against the code, not prose style.
+
+knowledge_base:
+  opt_out: false
+  learnings:
+    scope: local
+  issues:
+    scope: local
+  # Default filePatterns already cover CLAUDE.md / AGENTS.md / .cursorrules
+  code_guidelines:
+    enabled: true
+  web_search:
+    enabled: true
+  pull_requests:
+    scope: local
+
+chat:
+  auto_reply: true
