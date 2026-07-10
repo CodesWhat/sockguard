@@ -7,7 +7,7 @@ export const cetusguardComparisonRouteData = {
 Method + path filtering|Yes (regex)|Yes|tie
 Remote TCP mTLS listener|Yes|Yes (TLS 1.3)|tie
 Regex path rules|Yes|Yes|tie
-Remote daemon upstream (TLS)|Yes (in production)|Planned (v1.4)|competitor
+Remote daemon upstream (TLS)|Yes (in production)|Yes (active/passive failover)|self
 Config simplicity|Compact rule files|Full YAML config|competitor
 Request body inspection|No|Yes (12+ resource types)|self
 Per-client policies|No|CIDR + labels + cert selectors + SPKI + unix peer|self
@@ -60,7 +60,8 @@ layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / aud
         request body inspection, per-client certificate selectors, signed policy bundles, and
         Prometheus metrics
       </strong>
-      . Remote daemon TLS is on the v1.4 roadmap — CetusGuard ships it today.
+      . Sockguard now ships remote daemon TLS too — with health-checked active/passive failover
+      across redundant endpoints, which CetusGuard doesn't have.
     </p>
   ),
   migrationTitle: "Coming from CetusGuard?",
