@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -60,6 +61,13 @@ type Options struct {
 	Owner              string
 	LabelKey           string
 	AllowUnownedImages bool
+	// AllowCrossOwnerNamespaceSharing restores the pre-v1.5 pass-through
+	// behavior for POST /containers/create: by default (false), every
+	// HostConfig.NetworkMode/PidMode/IpcMode/UsernsMode "container:<ref>"
+	// namespace-sharing target is resolved and the request is denied if the
+	// referenced container belongs to a different owner. Set true to
+	// restore the old unchecked behavior.
+	AllowCrossOwnerNamespaceSharing bool
 }
 
 type upstreamInspector struct {
@@ -123,13 +131,14 @@ func middlewareWithDeps(
 				normPath = filter.NormalizePath(r.URL.Path)
 			}
 
-			if err := mutateOwnershipRequest(r, normPath, opts); err != nil {
+			namespaceRefs, err := mutateOwnershipRequest(r, normPath, opts)
+			if err != nil {
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerRequestInvalid, err.Error(), nil)
 				_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 				return
 			}
 
-			verdict, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, inspectResource, inspectExec)
+			verdict, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, inspectResource, inspectExec, namespaceRefs)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyLookupFailed, "owner policy lookup failed", nil)
@@ -160,20 +169,27 @@ func (o Options) normalized() Options {
 	return o
 }
 
-func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) error {
+// mutateOwnershipRequest injects the owner label (and, for
+// /containers/create, extracts every namespace-sharing container: ref in
+// the same decode pass — see addOwnerLabelToContainerCreateBody). The
+// returned []string is only ever non-nil for /containers/create; every
+// other case returns nil refs alongside its error.
+func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) ([]string, error) {
 	switch {
-	case normPath == "/containers/create", normPath == "/networks/create", normPath == "/volumes/create", normPath == "/secrets/create", normPath == "/configs/create":
-		return addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
+	case normPath == "/containers/create":
+		return addOwnerLabelToContainerCreateBody(r, opts.LabelKey, opts.Owner)
+	case normPath == "/networks/create", normPath == "/volumes/create", normPath == "/secrets/create", normPath == "/configs/create":
+		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case normPath == "/services/create", isServiceUpdatePath(normPath):
-		return addOwnerLabelToServiceBody(r, opts.LabelKey, opts.Owner)
+		return nil, addOwnerLabelToServiceBody(r, opts.LabelKey, opts.Owner)
 	case isNodeUpdatePath(normPath), isSwarmUpdatePath(normPath):
-		return addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
+		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case normPath == "/build":
-		return addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
+		return nil, addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
 	case needsOwnerFilter(normPath):
-		return addOwnerLabelFilter(r, opts.LabelKey, opts.Owner)
+		return nil, addOwnerLabelFilter(r, opts.LabelKey, opts.Owner)
 	default:
-		return nil
+		return nil, nil
 	}
 }
 
@@ -183,7 +199,14 @@ func allowOwnershipRequest(
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
+	namespaceRefs []string,
 ) (ownershipVerdict, string, error) {
+	if normPath == "/containers/create" {
+		if opts.AllowCrossOwnerNamespaceSharing || len(namespaceRefs) == 0 {
+			return verdictPassThrough, "", nil
+		}
+		return checkContainerNamespaceSharingRefs(ctx, inspectResource, namespaceRefs, opts)
+	}
 	if identifier, ok := containerIdentifier(normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, identifier, opts, false)
 	}
@@ -241,6 +264,37 @@ func checkOwnedResource(ctx context.Context, inspectResource func(context.Contex
 	return verdictDeny, fmt.Sprintf("owner policy denied access to %s", singularResource(kind)), nil
 }
 
+// checkContainerNamespaceSharingRefs denies POST /containers/create when any
+// namespace-sharing container: target belongs to a different owner than
+// opts.Owner. allowUnowned is false for each check — same as every other
+// container-targeting ownership check — so an unlabeled target is treated
+// as a cross-owner risk rather than implicitly trusted. Returns the first
+// cross-owner denial encountered; otherwise the strictest verdict across
+// all refs (verdictAllow if at least one ref resolved to an owned
+// container, verdictPassThrough if every ref resolved to nothing sockguard
+// could inspect).
+func checkContainerNamespaceSharingRefs(
+	ctx context.Context,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	refs []string,
+	opts Options,
+) (ownershipVerdict, string, error) {
+	strictest := verdictPassThrough
+	for _, ref := range refs {
+		verdict, _, err := checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, ref, opts, false)
+		if err != nil {
+			return verdictPassThrough, "", err
+		}
+		if verdict == verdictDeny {
+			return verdictDeny, fmt.Sprintf("owner policy denied access to namespace-sharing target container %q", ref), nil
+		}
+		if verdict == verdictAllow {
+			strictest = verdictAllow
+		}
+	}
+	return strictest, "", nil
+}
+
 func ownerMatches(labels map[string]string, labelKey, owner string, allowUnowned bool) bool {
 	if labels == nil {
 		return allowUnowned
@@ -288,6 +342,59 @@ func addOwnerLabelToBody(r *http.Request, labelKey, owner string) error {
 		labels[labelKey] = owner
 		return nil
 	})
+}
+
+// addOwnerLabelToContainerCreateBody injects the owner label into a
+// /containers/create body (same effect as addOwnerLabelToBody) and, in the
+// same decode pass, extracts every namespace-sharing container: ref so the
+// caller can run the cross-owner check without a second body read.
+func addOwnerLabelToContainerCreateBody(r *http.Request, labelKey, owner string) ([]string, error) {
+	var refs []string
+	err := mutateJSONBody(r, func(decoded map[string]any) error {
+		labels, err := nestedObject(decoded, "Labels")
+		if err != nil {
+			return err
+		}
+		labels[labelKey] = owner
+		refs = containerCreateNamespaceRefs(decoded)
+		return nil
+	})
+	return refs, err
+}
+
+// containerCreateNamespaceRefs extracts every distinct "container:<ref>"
+// namespace-sharing target from a decoded /containers/create body's
+// HostConfig.{NetworkMode,PidMode,IpcMode,UsernsMode} fields. Malformed or
+// absent HostConfig, and non-string field values, are treated as "no refs"
+// rather than an error — filter's container_create.go is the layer
+// responsible for rejecting malformed bodies; ownership only needs to know
+// which (if any) foreign containers a well-formed create would join.
+func containerCreateNamespaceRefs(decoded map[string]any) []string {
+	hostConfigAny, ok := decoded["HostConfig"]
+	if !ok {
+		return nil
+	}
+	hostConfig, ok := hostConfigAny.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var refs []string
+	for _, field := range [...]string{"NetworkMode", "PidMode", "IpcMode", "UsernsMode"} {
+		value, ok := hostConfig[field]
+		if !ok {
+			continue
+		}
+		mode, ok := value.(string)
+		if !ok {
+			continue
+		}
+		ref, ok := filter.ContainerNamespaceRef(mode)
+		if !ok || slices.Contains(refs, ref) {
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return refs
 }
 
 func addOwnerLabelToServiceBody(r *http.Request, labelKey, owner string) error {

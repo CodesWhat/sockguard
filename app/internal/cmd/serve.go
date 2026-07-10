@@ -762,9 +762,10 @@ func withHijack(res *upstream.Resolver, logger *slog.Logger) func(http.Handler) 
 
 func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
 	return ownership.MiddlewareWithRoundTripper(res, logger, ownership.Options{
-		Owner:              cfg.Ownership.Owner,
-		LabelKey:           cfg.Ownership.LabelKey,
-		AllowUnownedImages: cfg.Ownership.AllowUnownedImages,
+		Owner:                           cfg.Ownership.Owner,
+		LabelKey:                        cfg.Ownership.LabelKey,
+		AllowUnownedImages:              cfg.Ownership.AllowUnownedImages,
+		AllowCrossOwnerNamespaceSharing: cfg.Ownership.AllowCrossOwnerNamespaceSharing,
 	})
 }
 
