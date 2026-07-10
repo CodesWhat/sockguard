@@ -62,6 +62,8 @@ request_body:
     allow_host_ipc: false
     # CIS 5.30 — host user namespace
     allow_host_userns: false
+    # Defense-in-depth (no dedicated CIS control) — host cgroup namespace
+    allow_host_cgroupns: false
     # CIS 5.5 — sensitive host directories. Default-empty allowlist =
     # bind mounts denied. Add entries here (e.g. "/srv/data:/data") for
     # the specific paths your workload truly needs.

@@ -53,6 +53,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		AllowedAppArmorProfiles:           c.AllowedAppArmorProfiles,
 		DenyUnconfinedAppArmor:            c.DenyUnconfinedAppArmor,
 		AllowHostUserNS:                   c.AllowHostUserNS,
+		AllowHostCgroupNS:                 c.AllowHostCgroupNS,
 		RestrictNamespaceSharing:          c.RestrictNamespaceSharing,
 		AllowedNamespaceSharingContainers: c.AllowedNamespaceSharingContainers,
 		DenyNamespacePathMode:             c.DenyNamespacePathMode,

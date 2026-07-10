@@ -43,6 +43,7 @@ type containerCreateHostConfig struct {
 	PidMode           string                  `json:"PidMode"`
 	IpcMode           string                  `json:"IpcMode"`
 	UsernsMode        string                  `json:"UsernsMode"`
+	CgroupnsMode      string                  `json:"CgroupnsMode"`
 	Binds             []string                `json:"Binds"`
 	Mounts            []containerCreateMount  `json:"Mounts"`
 	Devices           []containerCreateDevice `json:"Devices"`

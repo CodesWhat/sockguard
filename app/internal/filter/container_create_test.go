@@ -273,6 +273,80 @@ func TestContainerCreatePolicyInspectDeniesHostNamespaces(t *testing.T) {
 	}
 }
 
+func TestContainerCreatePolicyInspectCgroupNamespaceModeGate(t *testing.T) {
+	const denyReason = "container create denied: host cgroup namespace mode is not allowed"
+
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "host denied by default",
+			body:       `{"HostConfig":{"CgroupnsMode":"host"}}`,
+			wantReason: denyReason,
+		},
+		{
+			name: "host allowed when configured",
+			opts: ContainerCreateOptions{AllowHostCgroupNS: true},
+			body: `{"HostConfig":{"CgroupnsMode":"host"}}`,
+		},
+		{
+			name:       "host denied case insensitive",
+			body:       `{"HostConfig":{"CgroupnsMode":"HOST"}}`,
+			wantReason: denyReason,
+		},
+		{
+			name:       "host denied with surrounding spaces",
+			body:       `{"HostConfig":{"CgroupnsMode":" host "}}`,
+			wantReason: denyReason,
+		},
+		{
+			name: "private allowed by default",
+			body: `{"HostConfig":{"CgroupnsMode":"private"}}`,
+		},
+		{
+			name: "private allowed when configured",
+			opts: ContainerCreateOptions{AllowHostCgroupNS: true},
+			body: `{"HostConfig":{"CgroupnsMode":"private"}}`,
+		},
+		{
+			name: "empty allowed by default",
+			body: `{"HostConfig":{"CgroupnsMode":""}}`,
+		},
+		{
+			name: "absent allowed by default",
+			body: `{"HostConfig":{}}`,
+		},
+		{
+			name: "other host namespace gates do not allow cgroupns host",
+			opts: ContainerCreateOptions{
+				AllowHostNetwork: true,
+				AllowHostPID:     true,
+				AllowHostIPC:     true,
+				AllowHostUserNS:  true,
+			},
+			body:       `{"HostConfig":{"CgroupnsMode":"host"}}`,
+			wantReason: denyReason,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestContainerCreatePolicyInspectDeniesNetworkModeHost(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(`{"HostConfig":{"NetworkMode":"host"}}`))
 	reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")
