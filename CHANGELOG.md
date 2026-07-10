@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-07-10
+
+v1.4.0 promotes `1.4.0-rc.6` to stable with no binary delta — the release content is the `[1.4.0-rc.1]` through `[1.4.0-rc.6]` entries below, validated across the rc soak (rc.6 tagged 2026-07-03, seven days of clean nightly deep-fuzz and integration runs on `main`). Headlines: remote Docker TCP+TLS upstreams with active/passive failover (`upstream.endpoints[]`, per-endpoint mTLS and connect-level health probes); `SecurityOpt` SELinux/system-paths policy rails plus swarm seccomp/AppArmor confinement modes, completing `ContainerSpec` privilege parity with container create; an allocation-free rate-limit hot path (0 allocs/op, `burst` now validated at ≤ 65535); three new Portwing/drydock presets (12 → 15); CVE scanning consolidated on Grype + govulncheck with Snyk dropped; the rc.3 multi-axis security/performance/supply-chain audit hardening; a drydock-preset audit against drydock v1.5.0's real API surface; and an enforced 96% production-coverage floor with live Qlty Cloud reporting.
+
 ## [1.4.0-rc.6] - 2026-07-03
 
 Cosmetic, tooling, and website pass — no proxy behavior change relative to rc.5. Cut so the soak candidate matches the `dev/v1.4` tip exactly.
