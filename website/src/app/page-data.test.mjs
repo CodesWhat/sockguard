@@ -86,6 +86,7 @@ test("roadmap data is valid and matches expected milestones", () => {
   // Must reference the current in-progress milestone v1.5.0
   const v150 = roadmap.find((m) => m.version === "v1.5.0");
   assert.ok(v150, "roadmap must include a v1.5.0 milestone");
+  assert.equal(v150.status, "next", "v1.5.0 must be the next milestone");
 
   // Every milestone must have a non-empty items array
   for (const milestone of roadmap) {
