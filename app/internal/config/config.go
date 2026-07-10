@@ -255,6 +255,7 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowedAppArmorProfiles []string `mapstructure:"allowed_apparmor_profiles"`
 	DenyUnconfinedAppArmor  bool     `mapstructure:"deny_unconfined_apparmor"`
 	AllowHostUserNS         bool     `mapstructure:"allow_host_userns"`
+	AllowHostCgroupNS       bool     `mapstructure:"allow_host_cgroupns"`
 	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
 	// UsernsMode values of the form "container:<ref>" (join another
 	// container's namespace) against AllowedNamespaceSharingContainers.

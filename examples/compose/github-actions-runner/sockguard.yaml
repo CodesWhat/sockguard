@@ -30,6 +30,7 @@ request_body:
     allow_host_pid: false
     allow_host_ipc: false
     allow_host_userns: false
+    allow_host_cgroupns: false
 
     # Bind mounts — disabled. GHA cache actions use named volumes (see
     # volumes/create below); host paths are off-limits. If your runner

@@ -99,6 +99,7 @@ type ContainerCreateOptions struct {
 	AllowedAppArmorProfiles []string
 	DenyUnconfinedAppArmor  bool
 	AllowHostUserNS         bool
+	AllowHostCgroupNS       bool
 	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
 	// UsernsMode values of the form "container:<ref>" (join another
 	// container's namespace) against AllowedNamespaceSharingContainers.
@@ -182,6 +183,7 @@ type containerCreatePolicy struct {
 	allowedAppArmorProfiles           []string
 	denyUnconfinedAppArmor            bool
 	allowHostUserNS                   bool
+	allowHostCgroupNS                 bool
 	restrictNamespaceSharing          bool
 	allowedNamespaceSharingContainers []string
 	denyNamespacePathMode             bool
@@ -274,6 +276,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		allowedAppArmorProfiles:           normalizeStringList(opts.AllowedAppArmorProfiles),
 		denyUnconfinedAppArmor:            opts.DenyUnconfinedAppArmor,
 		allowHostUserNS:                   opts.AllowHostUserNS,
+		allowHostCgroupNS:                 opts.AllowHostCgroupNS,
 		restrictNamespaceSharing:          opts.RestrictNamespaceSharing,
 		allowedNamespaceSharingContainers: normalizeStringList(opts.AllowedNamespaceSharingContainers),
 		denyNamespacePathMode:             opts.DenyNamespacePathMode,
@@ -471,6 +474,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	}
 	if !p.allowHostUserNS && isHostNamespaceMode(createReq.HostConfig.UsernsMode) {
 		return "container create denied: host user namespace mode is not allowed", nil
+	}
+	if !p.allowHostCgroupNS && isHostNamespaceMode(createReq.HostConfig.CgroupnsMode) {
+		return "container create denied: host cgroup namespace mode is not allowed", nil
 	}
 	if denyReason := p.denyNamespaceSharingReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
