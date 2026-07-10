@@ -72,8 +72,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "No",
     cetusguard: "Yes",
-    sockguard: "v1.4",
-    planned: true,
+    sockguard: "Yes (active/passive failover)",
   },
   {
     feature: "Read-side visibility / redaction",
