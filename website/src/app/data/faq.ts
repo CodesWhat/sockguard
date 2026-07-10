@@ -17,7 +17,7 @@ export const faqItems: Array<{ question: string; answer: string }> = [
   {
     question: "Can Sockguard listen over TCP, and is remote access secure?",
     answer:
-      "Yes. Sockguard can listen on a TCP port in addition to (or instead of) a unix socket. For any non-loopback TCP listener we require mutual TLS 1.3 by default — plaintext remote TCP needs two explicit insecure acknowledgement flags before we accept it. Client identity on TCP is established via mTLS certificate selectors (CN, DNS/IP/URI SAN, SHA-256 SPKI pin). The upcoming v1.4.0 release (in release-candidate testing now) adds dialing a remote Docker daemon over TCP with mTLS and automatic endpoint failover.",
+      "Yes. Sockguard can listen on a TCP port in addition to (or instead of) a unix socket. For any non-loopback TCP listener we require mutual TLS 1.3 by default — plaintext remote TCP needs two explicit insecure acknowledgement flags before we accept it. Client identity on TCP is established via mTLS certificate selectors (CN, DNS/IP/URI SAN, SHA-256 SPKI pin). Sockguard can also dial a remote Docker daemon over TCP with mTLS and automatic endpoint failover (added in v1.4.0).",
   },
   {
     question: "What are signed policy bundles and container image trust?",
@@ -32,6 +32,6 @@ export const faqItems: Array<{ question: string; answer: string }> = [
   {
     question: "How do I migrate from Tecnativa's docker-socket-proxy?",
     answer:
-      "We match Tecnativa's full environment-variable surface — CONTAINERS, EVENTS, SERVICES, NETWORKS, VOLUMES, TASKS, NODES, CONFIGS, SECRETS, ALLOW_RESTARTS, SOCKET_PATH, LOG_LEVEL, and the full section-variable set. Point DOCKER_HOST at the Sockguard socket instead of Tecnativa's and your existing env config continues to work. The shipped 'tecnativa-compatible' preset covers the same allow surface. Once migrated you can layer on body inspection, per-client profiles, and signed policies incrementally without breaking running workloads — use a profile in warn mode to measure what would have been denied before flipping to enforce.",
+      "We match Tecnativa's full environment-variable surface — CONTAINERS, EVENTS, SERVICES, NETWORKS, VOLUMES, TASKS, NODES, CONFIGS, SECRETS, ALLOW_RESTARTS, SOCKET_PATH, LOG_LEVEL, and the full section-variable set. Point DOCKER_HOST at the Sockguard socket instead of Tecnativa's and your existing env config continues to work. Sockguard's built-in Tecnativa env-var compatibility layer covers the same allow surface. Once migrated you can layer on body inspection, per-client profiles, and signed policies incrementally without breaking running workloads — use a profile in warn mode to measure what would have been denied before flipping to enforce.",
   },
 ];
