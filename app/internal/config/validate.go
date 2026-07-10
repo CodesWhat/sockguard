@@ -883,6 +883,12 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount))
 		}
 	}
+	for _, entry := range cfg.AllowedNamespaceSharingContainers {
+		if strings.TrimSpace(entry) != "" {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.container_create.allowed_namespace_sharing_containers entries must be non-empty container ID or name values, got %q", prefix, entry))
+	}
 	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ImageTrust)...)
 	return errs
 }

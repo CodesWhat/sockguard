@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -348,6 +350,190 @@ func TestContainerCreatePolicyInspectAllowsHostNamespacesWhenConfigured(t *testi
 	}
 	if reason != "" {
 		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+func TestContainerNamespaceRef(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		wantRef string
+		wantOK  bool
+	}{
+		{name: "valid id", mode: "container:abc123", wantRef: "abc123", wantOK: true},
+		{name: "case insensitive prefix", mode: "Container:web", wantRef: "web", wantOK: true},
+		{name: "upper case prefix", mode: "CONTAINER:worker-1", wantRef: "worker-1", wantOK: true},
+		{name: "surrounding whitespace", mode: "  container:/service-api  ", wantRef: "/service-api", wantOK: true},
+		{name: "empty ref", mode: "container:", wantOK: false},
+		{name: "whitespace ref", mode: "container:   ", wantOK: false},
+		{name: "non matching bridge", mode: "bridge", wantOK: false},
+		{name: "non matching host", mode: "host", wantOK: false},
+		{name: "non matching ns path", mode: "ns:/proc/1/ns/net", wantOK: false},
+		{name: "prefix only too short", mode: "container", wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotRef, gotOK := ContainerNamespaceRef(tt.mode)
+			if gotOK != tt.wantOK {
+				t.Fatalf("ContainerNamespaceRef(%q) ok = %v, want %v", tt.mode, gotOK, tt.wantOK)
+			}
+			if gotRef != tt.wantRef {
+				t.Fatalf("ContainerNamespaceRef(%q) ref = %q, want %q", tt.mode, gotRef, tt.wantRef)
+			}
+		})
+	}
+}
+
+func TestIsNamespacePathMode(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{name: "lowercase ns", mode: "ns:/proc/1/ns/net", want: true},
+		{name: "uppercase ns", mode: "NS:/var/run/netns/build", want: true},
+		{name: "surrounding whitespace", mode: "  Ns:/var/run/netns/build  ", want: true},
+		{name: "prefix without path still matches", mode: "ns:", want: true},
+		{name: "container mode", mode: "container:abc123", want: false},
+		{name: "host mode", mode: "host", want: false},
+		{name: "empty", mode: "", want: false},
+		{name: "not prefix", mode: "xns:/proc/1/ns/net", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isNamespacePathMode(tt.mode); got != tt.want {
+				t.Fatalf("isNamespacePathMode(%q) = %v, want %v", tt.mode, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContainerCreatePolicyInspectNamespaceSharingGate(t *testing.T) {
+	fields := []struct {
+		name           string
+		jsonField      string
+		hostDenyReason string
+		emptyDenyLabel string
+	}{
+		{name: "network", jsonField: "NetworkMode", hostDenyReason: "container create denied: host network mode is not allowed", emptyDenyLabel: "network"},
+		{name: "pid", jsonField: "PidMode", hostDenyReason: "container create denied: host PID mode is not allowed", emptyDenyLabel: "PID"},
+		{name: "ipc", jsonField: "IpcMode", hostDenyReason: "container create denied: host IPC mode is not allowed", emptyDenyLabel: "IPC"},
+		{name: "userns", jsonField: "UsernsMode", hostDenyReason: "container create denied: host user namespace mode is not allowed", emptyDenyLabel: "user"},
+	}
+	values := []struct {
+		name  string
+		value string
+	}{
+		{name: "allowed container", value: "container:allowed-id"},
+		{name: "other container", value: "container:other-id"},
+		{name: "host", value: "host"},
+		{name: "bridge", value: "bridge"},
+		{name: "empty", value: ""},
+	}
+	policies := []struct {
+		name      string
+		restrict  bool
+		allowlist []string
+	}{
+		{name: "restrict off empty allowlist", restrict: false, allowlist: nil},
+		{name: "restrict off populated allowlist", restrict: false, allowlist: []string{"allowed-id"}},
+		{name: "restrict on empty allowlist", restrict: true, allowlist: nil},
+		{name: "restrict on populated allowlist", restrict: true, allowlist: []string{"allowed-id"}},
+	}
+
+	for _, field := range fields {
+		for _, policy := range policies {
+			for _, value := range values {
+				t.Run(field.name+"/"+policy.name+"/"+value.name, func(t *testing.T) {
+					opts := ContainerCreateOptions{
+						RestrictNamespaceSharing:          policy.restrict,
+						AllowedNamespaceSharingContainers: policy.allowlist,
+					}
+					body := fmt.Sprintf(`{"HostConfig":{%q:%q}}`, field.jsonField, value.value)
+					req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+
+					reason, err := newContainerCreatePolicy(opts).inspect(nil, req, "/containers/create")
+					if err != nil {
+						t.Fatalf("inspect() error = %v", err)
+					}
+
+					wantReason := ""
+					switch {
+					case value.value == "host":
+						wantReason = field.hostDenyReason
+					case strings.HasPrefix(value.value, "container:") && policy.restrict && len(policy.allowlist) == 0:
+						wantReason = fmt.Sprintf("container create denied: %s namespace sharing with another container is not allowed", field.emptyDenyLabel)
+					case strings.HasPrefix(value.value, "container:") && policy.restrict && !slices.Contains(policy.allowlist, "allowed-id"):
+						wantReason = `container create denied: namespace-sharing target "other-id" is not in the allowed list`
+					case value.value == "container:other-id" && policy.restrict:
+						wantReason = `container create denied: namespace-sharing target "other-id" is not in the allowed list`
+					}
+
+					if reason != wantReason {
+						t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+					}
+					if !policy.restrict && strings.HasPrefix(value.value, "container:") {
+						gotBody, readErr := io.ReadAll(req.Body)
+						if readErr != nil {
+							t.Fatalf("ReadAll() error = %v", readErr)
+						}
+						if string(gotBody) != body {
+							t.Fatalf("body after inspect = %q, want unchanged %q", string(gotBody), body)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestContainerCreatePolicyInspectDenyNamespacePathMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		{
+			name: "off passes network ns path",
+			body: `{"HostConfig":{"NetworkMode":"ns:/proc/1/ns/net"}}`,
+		},
+		{
+			name:       "on denies network ns path",
+			opts:       ContainerCreateOptions{DenyNamespacePathMode: true},
+			body:       `{"HostConfig":{"NetworkMode":"ns:/proc/1/ns/net"}}`,
+			wantReason: "container create denied: ns: namespace path mode is not allowed",
+		},
+		{
+			name: "off passes uppercase network ns path",
+			body: `{"HostConfig":{"NetworkMode":"NS:/var/run/netns/build"}}`,
+		},
+		{
+			name:       "on denies uppercase network ns path",
+			opts:       ContainerCreateOptions{DenyNamespacePathMode: true},
+			body:       `{"HostConfig":{"NetworkMode":"NS:/var/run/netns/build"}}`,
+			wantReason: "container create denied: ns: namespace path mode is not allowed",
+		},
+		{
+			name: "on is scoped to NetworkMode only",
+			opts: ContainerCreateOptions{DenyNamespacePathMode: true},
+			body: `{"HostConfig":{"PidMode":"ns:/proc/1/ns/pid","IpcMode":"ns:/proc/1/ns/ipc","UsernsMode":"ns:/proc/1/ns/user"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
 	}
 }
 

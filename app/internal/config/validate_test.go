@@ -549,6 +549,31 @@ func TestValidateRejectsRelativeContainerCreateDeviceAllowlist(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsBlankContainerCreateNamespaceSharingAllowlistEntries(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry string
+	}{
+		{name: "empty", entry: ""},
+		{name: "whitespace only", entry: "   "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.RequestBody.ContainerCreate.AllowedNamespaceSharingContainers = []string{tt.entry}
+
+			err := Validate(&cfg)
+			if err == nil {
+				t.Fatal("expected error for blank namespace-sharing allowlist entry")
+			}
+			if !strings.Contains(err.Error(), "request_body.container_create.allowed_namespace_sharing_containers") {
+				t.Fatalf("expected request_body.container_create.allowed_namespace_sharing_containers in error, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateAllowsExecCommandAndImageRegistryAllowlists(t *testing.T) {
 	cfg := Defaults()
 	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/local/bin/pre-update", "--check"}}

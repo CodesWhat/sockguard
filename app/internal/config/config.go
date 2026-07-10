@@ -248,13 +248,31 @@ type ContainerCreateRequestBodyConfig struct {
 	// schedule onto — so neither satisfies this stricter check. Independent
 	// of RequireCPULimit: enabling this alone is sufficient; you do not also
 	// need RequireCPULimit: true. Default false (opt-in).
-	RequireCPULimitHard       bool             `mapstructure:"require_cpu_limit_hard"`
-	RequirePidsLimit          bool             `mapstructure:"require_pids_limit"`
-	AllowedSeccompProfiles    []string         `mapstructure:"allowed_seccomp_profiles"`
-	DenyUnconfinedSeccomp     bool             `mapstructure:"deny_unconfined_seccomp"`
-	AllowedAppArmorProfiles   []string         `mapstructure:"allowed_apparmor_profiles"`
-	DenyUnconfinedAppArmor    bool             `mapstructure:"deny_unconfined_apparmor"`
-	AllowHostUserNS           bool             `mapstructure:"allow_host_userns"`
+	RequireCPULimitHard     bool     `mapstructure:"require_cpu_limit_hard"`
+	RequirePidsLimit        bool     `mapstructure:"require_pids_limit"`
+	AllowedSeccompProfiles  []string `mapstructure:"allowed_seccomp_profiles"`
+	DenyUnconfinedSeccomp   bool     `mapstructure:"deny_unconfined_seccomp"`
+	AllowedAppArmorProfiles []string `mapstructure:"allowed_apparmor_profiles"`
+	DenyUnconfinedAppArmor  bool     `mapstructure:"deny_unconfined_apparmor"`
+	AllowHostUserNS         bool     `mapstructure:"allow_host_userns"`
+	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
+	// UsernsMode values of the form "container:<ref>" (join another
+	// container's namespace) against AllowedNamespaceSharingContainers.
+	// Default false: container:<ref> values continue to pass through
+	// unchecked exactly as before this knob existed — AllowHostNetwork/PID/
+	// IPC/UserNS above only ever match the literal "host" value and still
+	// only do; this is an independent, orthogonal gate.
+	RestrictNamespaceSharing bool `mapstructure:"restrict_namespace_sharing"`
+	// AllowedNamespaceSharingContainers allowlists the container:<ref>
+	// targets permitted when RestrictNamespaceSharing is true. Only
+	// consulted when RestrictNamespaceSharing is true; empty denies every
+	// container: ref.
+	AllowedNamespaceSharingContainers []string `mapstructure:"allowed_namespace_sharing_containers"`
+	// DenyNamespacePathMode denies HostConfig.NetworkMode values with an
+	// "ns:" prefix (case-insensitive): Docker's raw host-namespace-file
+	// attachment form, which bypasses the "host" literal check entirely.
+	// Default false.
+	DenyNamespacePathMode     bool             `mapstructure:"deny_namespace_path_mode"`
 	AllowSysctls              bool             `mapstructure:"allow_sysctls"`
 	RequiredLabels            []string         `mapstructure:"required_labels"`
 	AllowedRuntimes           []string         `mapstructure:"allowed_runtimes"`
@@ -626,6 +644,18 @@ type OwnershipConfig struct {
 	Owner              string `mapstructure:"owner"`
 	LabelKey           string `mapstructure:"label_key"`
 	AllowUnownedImages bool   `mapstructure:"allow_unowned_images"`
+	// AllowCrossOwnerNamespaceSharing restores the pre-v1.5 pass-through
+	// behavior for POST /containers/create when Owner is configured. By
+	// default (false — a security-relevant default, see CHANGELOG),
+	// sockguard resolves every HostConfig.NetworkMode/PidMode/IpcMode/
+	// UsernsMode "container:<ref>" namespace-sharing target and denies the
+	// request if the referenced container belongs to a different owner —
+	// joining a foreign container's namespace is a full cross-tenant
+	// compromise (shared sockets, process visibility, shared /dev/shm),
+	// strictly worse than the access ownership already gates on every other
+	// endpoint. Set true to restore the old unchecked behavior. Same-owner
+	// and unlabeled-target refs are unaffected either way.
+	AllowCrossOwnerNamespaceSharing bool `mapstructure:"allow_cross_owner_namespace_sharing"`
 }
 
 // HealthConfig configures the health check endpoint.
