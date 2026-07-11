@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0-rc.1] - 2026-07-10
+
 ### Added
 
 - **`examples/compose/tri-tool/` — the full sockguard → Portwing → drydock stack in one compose file.** Sockguard filters the Docker socket (unix-socket mode, same embedded preset as `examples/compose/portwing/`); Portwing reads sockguard's proxied socket instead of mounting `/var/run/docker.sock`; drydock never touches Docker at all — it connects to Portwing over HTTP in Standard Mode (`DD_AGENT_PORTWING_HOST`/`PORT`/`SECRET__FILE`, `DD_LOCAL_WATCHER=false`) and gets every container fact secondhand, already filtered. The Portwing<->drydock shared secret is a single Docker secret mounted into both containers (`TOKEN_FILE` / `DD_AGENT_PORTWING_SECRET__FILE`) rather than a plaintext env var. Defaults to no exec (the plain `portwing` preset); the README notes the `portwing-with-exec.yaml` preset and drydock's experimental Edge Mode as the variants this bundle deliberately doesn't ship.
