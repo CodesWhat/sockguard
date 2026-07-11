@@ -866,6 +866,65 @@ func TestContainerCreatePolicyDenyNetworkingConfigReasonSkipsNilEndpoint(t *test
 	}
 }
 
+// TestContainerCreatePolicyInspectDeniesRootMacAddressByDefault proves the
+// legacy top-level (deprecated, pre-API-1.44) MacAddress field on POST
+// /containers/create carries the same MAC-pinning gate as
+// NetworkingConfig.EndpointsConfig[*].MacAddress. Docker still honors this
+// root field, applying it to the container's primary network endpoint
+// exactly like the EndpointsConfig field does, so leaving it unchecked was
+// an asymmetric bypass of the exact class this inspector exists to close: a
+// client could pin a MAC by putting it on the deprecated root field instead
+// of NetworkingConfig, and the create-time gate never saw it.
+func TestContainerCreatePolicyInspectDeniesRootMacAddressByDefault(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	body := `{"Image":"x","MacAddress":"02:42:ac:1e:00:0a"}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	const wantReason = "container create denied: container MAC address is not allowed"
+	if reason != wantReason {
+		t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+	}
+}
+
+// TestContainerCreatePolicyInspectAllowsRootMacAddressWhenConfigured proves
+// AllowEndpointConfig also lifts the legacy root-level MacAddress field,
+// mirroring its effect on NetworkingConfig.EndpointsConfig[*].MacAddress —
+// the same single config knob governs both.
+func TestContainerCreatePolicyInspectAllowsRootMacAddressWhenConfigured(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{AllowEndpointConfig: true})
+	body := `{"Image":"x","MacAddress":"02:42:ac:1e:00:0a"}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+// TestContainerCreatePolicyInspectAllowsEmptyRootMacAddressByDefault proves
+// an empty-string MacAddress (Docker's zero value / an explicit but blank
+// field) is not denied — only a non-empty value is a MAC-pinning attempt.
+func TestContainerCreatePolicyInspectAllowsEmptyRootMacAddressByDefault(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	body := `{"Image":"x","MacAddress":""}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
 func TestExtractAndValidateBindSource(t *testing.T) {
 	tests := []struct {
 		name   string

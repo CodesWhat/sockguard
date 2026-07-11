@@ -709,6 +709,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyNetworkingConfigReason(createReq.NetworkingConfig); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.denyRootMacAddressReason(createReq.MacAddress); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := p.denySecurityOptReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
@@ -1224,6 +1227,24 @@ func (p containerCreatePolicy) denyNetworkingConfigReason(networkingConfig conta
 		}
 	}
 	return ""
+}
+
+// denyRootMacAddressReason gates the deprecated, top-level (pre-API-1.44)
+// MacAddress field POST /containers/create still accepts alongside
+// NetworkingConfig. The daemon applies it to the container's primary network
+// endpoint exactly the way a NetworkingConfig.EndpointsConfig[*].MacAddress
+// entry does, so it carries the identical MAC-pinning attack surface and
+// must be governed by the same allow_endpoint_config flag — otherwise a
+// client denied on EndpointsConfig could simply move the MAC address to
+// this legacy field and sail through unchecked.
+func (p containerCreatePolicy) denyRootMacAddressReason(macAddress string) string {
+	if p.allowEndpointConfig {
+		return ""
+	}
+	if strings.TrimSpace(macAddress) == "" {
+		return ""
+	}
+	return "container create denied: container MAC address is not allowed"
 }
 
 // denyHardeningReason enforces the simple boolean "rails": no-new-privileges,

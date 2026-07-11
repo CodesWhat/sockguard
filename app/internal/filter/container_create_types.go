@@ -31,10 +31,17 @@ type dockerDeviceRequest struct {
 }
 
 type containerCreateRequest struct {
-	Image            string                          `json:"Image"`
-	HostConfig       containerCreateHostConfig       `json:"HostConfig"`
-	User             string                          `json:"User"`
-	Labels           map[string]string               `json:"Labels"`
+	Image      string                    `json:"Image"`
+	HostConfig containerCreateHostConfig `json:"HostConfig"`
+	User       string                    `json:"User"`
+	Labels     map[string]string         `json:"Labels"`
+	// MacAddress is the deprecated, top-level (pre-API-1.44) container-wide
+	// MAC address field. The daemon still honors it, applying it to the
+	// container's primary network endpoint exactly like
+	// NetworkingConfig.EndpointsConfig[*].MacAddress does — see
+	// denyRootMacAddressReason in container_create.go for why it is gated
+	// identically to that field rather than left as an unchecked bypass.
+	MacAddress       string                          `json:"MacAddress"`
 	NetworkingConfig containerCreateNetworkingConfig `json:"NetworkingConfig"`
 }
 
