@@ -132,6 +132,10 @@ func TestDrydockPresetConformance(t *testing.T) {
 		// also opening static IP/MAC/DriverOpts), breaking every such recreate.
 		// Must pass by default now — neither drydock preset sets
 		// allow_endpoint_config.
+		// This is also the realistic shape for drydock >=1.5.3: it no longer
+		// forwards a daemon-auto-assigned MAC address on recreate (see the
+		// MacAddress cases further down), so its default multi-network connect
+		// body is Aliases-only, with no MacAddress at all.
 		{"network-connect-aliases-only-allowed", http.MethodPost, "/networks/abc/connect", `{"Container":"abc","EndpointConfig":{"Aliases":["myapp"]}}`, true},
 		// The real incident shape: a macvlan connect carrying a static IP
 		// (IPAMConfig.IPv4Address) alongside the Aliases Compose always sets.
@@ -143,6 +147,28 @@ func TestDrydockPresetConformance(t *testing.T) {
 		// must explicitly set allow_endpoint_config: true (see the preset
 		// header comments).
 		{"network-connect-macvlan-static-ip-denied", http.MethodPost, "/networks/abc/connect", `{"Container":"abc","EndpointConfig":{"IPAMConfig":{"IPv4Address":"172.20.0.50"},"Aliases":["myapp"]}}`, false},
+
+		// Two recreate shapes exist depending on the drydock version, and both
+		// must stay denied by default. drydock >=1.5.3 only forwards a
+		// MacAddress when the user explicitly configured one (the Aliases-only
+		// case above is its default shape). Versions before 1.5.3 instead clone
+		// the *operational* MAC address off the running container's inspect
+		// output and forward it on every recreate, even when the user never
+		// configured one - so their connect/create calls carry Aliases plus a
+		// MacAddress even for an ordinary, non-macvlan multi-network recreate.
+		// The two cases below document that this pre-1.5.3 shape, run against
+		// the current default sockguard policy, still fails with the MAC
+		// address denial reason - operators on an older drydock need either an
+		// upgrade to >=1.5.3 or allow_endpoint_config: true (see
+		// TestDrydockPresetNetworkConnectAllowEndpointConfigEscapeHatch).
+		//
+		// (a) the pre-1.5.3 connect shape.
+		{"network-connect-aliases-and-macaddress-denied-legacy-drydock", http.MethodPost, "/networks/abc/connect", `{"Container":"abc","EndpointConfig":{"Aliases":["myapp"],"MacAddress":"02:42:ac:14:00:0a"}}`, false},
+		// (b) the same shape carried on the primary network at create time via
+		// NetworkingConfig.EndpointsConfig instead of a follow-up connect call -
+		// pre-1.5.3 drydock can put the cloned MacAddress here too. Must be
+		// denied identically (see denyNetworkingConfigReason).
+		{"create-networkingconfig-aliases-and-macaddress-denied-legacy-drydock", http.MethodPost, "/containers/create", `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"bridge":{"Aliases":["myapp"],"MacAddress":"02:42:ac:14:00:0a"}}}}`, false},
 
 		// Volumes + distribution + services reads.
 		{"volumes-list", http.MethodGet, "/volumes", "", true},
