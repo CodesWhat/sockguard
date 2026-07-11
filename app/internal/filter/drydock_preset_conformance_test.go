@@ -122,6 +122,27 @@ func TestDrydockPresetConformance(t *testing.T) {
 		{"networks-list", http.MethodGet, "/networks", "", true},
 		{"network-inspect", http.MethodGet, "/networks/abc", "", true},
 		{"network-connect", http.MethodPost, "/networks/abc/connect", `{"Container":"abc"}`, true},
+		// Aliases-only secondary-network connect — the regression test that would
+		// have caught the drydock incident this preset suite guards against.
+		// Docker Compose sets Aliases: [serviceName] on every endpoint it
+		// creates, so a multi-network Compose recreate's connect call for its
+		// secondary network(s) always carries an Aliases-only EndpointConfig.
+		// Before the endpoint-config/aliases fix, this was unconditionally
+		// denied (no allow_endpoint_config escape hatch could fix it without
+		// also opening static IP/MAC/DriverOpts), breaking every such recreate.
+		// Must pass by default now — neither drydock preset sets
+		// allow_endpoint_config.
+		{"network-connect-aliases-only-allowed", http.MethodPost, "/networks/abc/connect", `{"Container":"abc","EndpointConfig":{"Aliases":["myapp"]}}`, true},
+		// The real incident shape: a macvlan connect carrying a static IP
+		// (IPAMConfig.IPv4Address) alongside the Aliases Compose always sets.
+		// drydock recreating a macvlan+static-IP container issues exactly this
+		// on POST /networks/{id}/connect for its extra network(s); neither
+		// drydock preset opts into allow_endpoint_config, so this must stay
+		// denied by default — with the static-IP reason, not the (now-removed)
+		// aliases denial — and operators who need macvlan/static-IP recreates
+		// must explicitly set allow_endpoint_config: true (see the preset
+		// header comments).
+		{"network-connect-macvlan-static-ip-denied", http.MethodPost, "/networks/abc/connect", `{"Container":"abc","EndpointConfig":{"IPAMConfig":{"IPv4Address":"172.20.0.50"},"Aliases":["myapp"]}}`, false},
 
 		// Volumes + distribution + services reads.
 		{"volumes-list", http.MethodGet, "/volumes", "", true},
@@ -178,6 +199,30 @@ func TestDrydockPresetConformance(t *testing.T) {
 	})
 }
 
+// TestDrydockPresetNetworkConnectAllowEndpointConfigEscapeHatch proves the
+// documented escape hatch actually works against the shipped drydock
+// presets: an operator who sets request_body.network.allow_endpoint_config:
+// true gets the real-incident macvlan+static-IP connect admitted, on both
+// presets. Neither preset sets the flag itself (see the header-comment
+// operator guidance added alongside this test), so this exercises the
+// override path rather than a preset default.
+func TestDrydockPresetNetworkConnectAllowEndpointConfigEscapeHatch(t *testing.T) {
+	const macvlanStaticIPBody = `{"Container":"abc","EndpointConfig":{"IPAMConfig":{"IPv4Address":"172.20.0.50"},"Aliases":["myapp"]}}`
+
+	for _, presetFile := range []string{"drydock.yaml", "drydock-with-selfupdate.yaml"} {
+		t.Run(presetFile, func(t *testing.T) {
+			handler := buildDrydockPresetHandlerWithNetworkAllowEndpointConfig(t, presetFile)
+			fireDrydockCase(t, handler, presetCase{
+				name:    "network-connect-macvlan-static-ip-allowed",
+				method:  http.MethodPost,
+				path:    "/networks/abc/connect",
+				body:    macvlanStaticIPBody,
+				allowed: true,
+			})
+		})
+	}
+}
+
 // buildDrydockPresetHandler loads a preset from app/configs and assembles the
 // filter middleware the way serve.go does (rules + request-body inspectors),
 // wrapping a stub upstream that 200s when a request is allowed through.
@@ -188,6 +233,37 @@ func buildDrydockPresetHandler(t *testing.T, presetFile string) http.Handler {
 	if err != nil {
 		t.Fatalf("load preset %s: %v", presetFile, err)
 	}
+
+	return drydockPresetHandlerFromConfig(t, cfg)
+}
+
+// buildDrydockPresetHandlerWithNetworkAllowEndpointConfig loads a preset the
+// same way buildDrydockPresetHandler does, then overrides
+// request_body.network.allow_endpoint_config to true before compiling the
+// filter chain — simulating an operator who has explicitly opted into the
+// macvlan/static-IP/MAC/DriverOpts escape hatch documented in the preset
+// header comments, without needing a second on-disk preset variant just for
+// this one test.
+func buildDrydockPresetHandlerWithNetworkAllowEndpointConfig(t *testing.T, presetFile string) http.Handler {
+	t.Helper()
+
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", presetFile))
+	if err != nil {
+		t.Fatalf("load preset %s: %v", presetFile, err)
+	}
+	cfg.RequestBody.Network.AllowEndpointConfig = true
+
+	return drydockPresetHandlerFromConfig(t, cfg)
+}
+
+// drydockPresetHandlerFromConfig assembles the filter middleware the way
+// serve.go does (rules + request-body inspectors) from an already-loaded
+// preset config, wrapping a stub upstream that 200s when a request is
+// allowed through. Shared by buildDrydockPresetHandler and its
+// allow-endpoint-config-override sibling so both build the handler
+// identically apart from the one field they intentionally differ on.
+func drydockPresetHandlerFromConfig(t *testing.T, cfg *config.Config) http.Handler {
+	t.Helper()
 
 	policy := cfg.RequestBody.ToFilterOptions()
 	policy.DenyResponseVerbosity = filter.DenyResponseVerbosityVerbose
