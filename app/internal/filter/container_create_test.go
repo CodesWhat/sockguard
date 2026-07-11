@@ -495,6 +495,7 @@ func TestContainerCreatePolicyInspectNamespaceSharingGate(t *testing.T) {
 		{name: "network", jsonField: "NetworkMode", hostDenyReason: "container create denied: host network mode is not allowed", emptyDenyLabel: "network"},
 		{name: "pid", jsonField: "PidMode", hostDenyReason: "container create denied: host PID mode is not allowed", emptyDenyLabel: "PID"},
 		{name: "ipc", jsonField: "IpcMode", hostDenyReason: "container create denied: host IPC mode is not allowed", emptyDenyLabel: "IPC"},
+		{name: "uts", jsonField: "UTSMode", hostDenyReason: "container create denied: host UTS mode is not allowed", emptyDenyLabel: "UTS"},
 		{name: "userns", jsonField: "UsernsMode", hostDenyReason: "container create denied: host user namespace mode is not allowed", emptyDenyLabel: "user"},
 	}
 	values := []struct {
@@ -503,6 +504,7 @@ func TestContainerCreatePolicyInspectNamespaceSharingGate(t *testing.T) {
 	}{
 		{name: "allowed container", value: "container:allowed-id"},
 		{name: "other container", value: "container:other-id"},
+		{name: "foo container", value: "container:foo"},
 		{name: "host", value: "host"},
 		{name: "bridge", value: "bridge"},
 		{name: "empty", value: ""},
@@ -516,6 +518,7 @@ func TestContainerCreatePolicyInspectNamespaceSharingGate(t *testing.T) {
 		{name: "restrict off populated allowlist", restrict: false, allowlist: []string{"allowed-id"}},
 		{name: "restrict on empty allowlist", restrict: true, allowlist: nil},
 		{name: "restrict on populated allowlist", restrict: true, allowlist: []string{"allowed-id"}},
+		{name: "restrict on foo allowlist", restrict: true, allowlist: []string{"foo"}},
 	}
 
 	for _, field := range fields {
@@ -535,21 +538,20 @@ func TestContainerCreatePolicyInspectNamespaceSharingGate(t *testing.T) {
 					}
 
 					wantReason := ""
+					ref, isContainerRef := ContainerNamespaceRef(value.value)
 					switch {
 					case value.value == "host":
 						wantReason = field.hostDenyReason
-					case strings.HasPrefix(value.value, "container:") && policy.restrict && len(policy.allowlist) == 0:
+					case isContainerRef && policy.restrict && len(policy.allowlist) == 0:
 						wantReason = fmt.Sprintf("container create denied: %s namespace sharing with another container is not allowed", field.emptyDenyLabel)
-					case strings.HasPrefix(value.value, "container:") && policy.restrict && !slices.Contains(policy.allowlist, "allowed-id"):
-						wantReason = `container create denied: namespace-sharing target "other-id" is not in the allowed list`
-					case value.value == "container:other-id" && policy.restrict:
-						wantReason = `container create denied: namespace-sharing target "other-id" is not in the allowed list`
+					case isContainerRef && policy.restrict && !slices.Contains(policy.allowlist, ref):
+						wantReason = fmt.Sprintf("container create denied: namespace-sharing target %q is not in the allowed list", ref)
 					}
 
 					if reason != wantReason {
 						t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
 					}
-					if !policy.restrict && strings.HasPrefix(value.value, "container:") {
+					if !policy.restrict && isContainerRef {
 						gotBody, readErr := io.ReadAll(req.Body)
 						if readErr != nil {
 							t.Fatalf("ReadAll() error = %v", readErr)
@@ -2347,6 +2349,25 @@ func TestRejectDuplicateCaseVariantJSONKeys(t *testing.T) {
 			}
 		})
 	}
+}
+
+func FuzzRejectDuplicateCaseVariantJSONKeys(f *testing.F) {
+	for _, body := range []string{
+		`{"HostConfig":{"a":1},"hostconfig":{"b":2}}`,
+		`{"Labels":{"Foo":"1","foo":"2"}}`,
+		`{"IPAM":{"Config":[{"Subnet":"x","subnet":"y"}]}}`,
+		`{"HostConfig":{"Sysctls":{"net.Core.somaxconn":"1024","net.core.somaxconn":"512"},"LogConfig":{"Config":{"max-size":"10m","Max-Size":"20m"}}}}`,
+		`{"NetworkingConfig":{"EndpointsConfig":{"Frontend":{"Aliases":["a"],"DriverOpts":{"Opt":"1","opt":"2"}},"frontend":{"Aliases":["b"]}}}}`,
+		`{"Env":[{"Name":"A","name":"B"},{"Labels":{"Foo":"1","foo":"2"}}]}`,
+		`{"A":{"B":[{"C":{"D":[{"E":"x","e":"y"}]}}]}}`,
+		`[{"HostConfig":{"UTSMode":"container:sidecar"}},{"hostconfig":{"PidMode":"container:other"}}]`,
+		`{"HostConfig":{"PortBindings":{"80/TCP":[{"HostPort":"8080","hostport":"9090"}]}}}`,
+	} {
+		f.Add(body)
+	}
+	f.Fuzz(func(t *testing.T, body string) {
+		_ = RejectDuplicateCaseVariantJSONKeys([]byte(body))
+	})
 }
 
 func TestRewriteJSONImageField(t *testing.T) {

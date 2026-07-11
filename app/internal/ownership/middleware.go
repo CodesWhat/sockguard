@@ -363,12 +363,15 @@ func addOwnerLabelToContainerCreateBody(r *http.Request, labelKey, owner string)
 }
 
 // namespaceModeFields are the HostConfig fields whose "container:<ref>" form
-// joins another container's namespace.
-var namespaceModeFields = [...]string{"NetworkMode", "PidMode", "IpcMode", "UsernsMode"}
+// joins another container's namespace. NetworkMode/PidMode/IpcMode/UTSMode all
+// document the container: form; UsernsMode is included defensively (stock
+// Docker's support there is unconfirmed, and matching a non-container: value
+// never yields a ref, so a spurious entry costs nothing).
+var namespaceModeFields = [...]string{"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode"}
 
 // containerCreateNamespaceRefs extracts every distinct "container:<ref>"
 // namespace-sharing target from a decoded /containers/create body's
-// HostConfig.{NetworkMode,PidMode,IpcMode,UsernsMode} fields. Malformed or
+// HostConfig.{NetworkMode,PidMode,IpcMode,UTSMode,UsernsMode} fields. Malformed or
 // absent HostConfig, and non-string field values, are treated as "no refs"
 // rather than an error — filter's container_create.go is the layer
 // responsible for rejecting malformed bodies; ownership only needs to know

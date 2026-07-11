@@ -775,12 +775,11 @@ func isNamespacePathMode(mode string) bool {
 
 // denyNamespaceSharingReason enforces restrictNamespaceSharing against every
 // HostConfig field that can join another container's namespace via
-// "container:<ref>": NetworkMode, PidMode, IpcMode, and (defensively —
-// stock Docker's support for a container: form here is unconfirmed)
-// UsernsMode. UTSMode is deliberately excluded: it has no allow_host_uts
-// escape hatch to parallel (host UTS mode is always denied above,
-// unconditionally), and Docker does not document a container: join form for
-// it.
+// "container:<ref>": NetworkMode, PidMode, IpcMode, UTSMode, and (defensively —
+// stock Docker's support for a container: form here is unconfirmed) UsernsMode.
+// UTSMode is included because Docker does honor a "container:<ref>" join for it
+// (moby's UTSMode has an IsContainer/Container form); the separate host-UTS mode
+// is denied unconditionally above and is a different attack surface.
 func (p containerCreatePolicy) denyNamespaceSharingReason(hostConfig containerCreateHostConfig) string {
 	if !p.restrictNamespaceSharing {
 		return ""
@@ -792,6 +791,7 @@ func (p containerCreatePolicy) denyNamespaceSharingReason(hostConfig containerCr
 		{"network", hostConfig.NetworkMode},
 		{"PID", hostConfig.PidMode},
 		{"IPC", hostConfig.IpcMode},
+		{"UTS", hostConfig.UTSMode},
 		{"user", hostConfig.UsernsMode},
 	}
 	for _, f := range fields {
