@@ -153,6 +153,19 @@ type ContainerCreateOptions struct {
 
 	// ImageTrust configures cosign-backed signature verification.
 	ImageTrust ImageTrustOptions
+
+	// AllowEndpointConfig permits static IP, MAC address, Links, and
+	// DriverOpts in NetworkingConfig.EndpointsConfig entries carried on
+	// POST /containers/create. Docker connects every entry here the same way
+	// POST /networks/*/connect does, so without this the same fields
+	// network.AllowEndpointConfig gates at connect time were an unchecked
+	// bypass via create's NetworkingConfig — put the same config on the
+	// primary network at create instead of a follow-up connect call, and it
+	// sailed through. Shares a single config knob
+	// (request_body.network.allow_endpoint_config) with the network
+	// inspector; see config.RequestBodyConfig.ToFilterOptions. Aliases are
+	// never gated regardless of this flag — see denyEndpointConfigReason.
+	AllowEndpointConfig bool
 }
 
 type containerCreatePolicy struct {
@@ -194,6 +207,8 @@ type containerCreatePolicy struct {
 	denySelinuxDisable        bool
 	denySelinuxLabelOverride  bool
 	denyUnconfinedSystemPaths bool
+
+	allowEndpointConfig bool
 
 	// Image trust — non-nil when mode != off.
 	imageTrustVerifier imageVerifier
@@ -286,6 +301,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denySelinuxDisable:                opts.DenySelinuxDisable,
 		denySelinuxLabelOverride:          opts.DenySelinuxLabelOverride,
 		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
+		allowEndpointConfig:               opts.AllowEndpointConfig,
 	}
 
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so
@@ -688,6 +704,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return denyReason, nil
 	}
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyNetworkingConfigReason(createReq.NetworkingConfig); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denySecurityOptReason(createReq.HostConfig); denyReason != "" {
@@ -1173,6 +1192,37 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
 	}
 
+	return ""
+}
+
+// denyNetworkingConfigReason applies the same endpoint-config policy
+// network.inspectConnect enforces on POST /networks/*/connect to every entry
+// of NetworkingConfig.EndpointsConfig carried on POST /containers/create.
+// Docker attaches each entry here identically to a connect call, so without
+// this check the connect-time gate was a bypassable illusion: the same
+// static-IP/MAC/Links/DriverOpts configuration reached the daemon unchecked
+// by putting it on the primary (or any) network at create time instead of a
+// follow-up connect. Map keys (network names) are iterated in sorted order
+// so a request with multiple networks produces a deterministic denial
+// message regardless of Go's randomized map iteration order.
+func (p containerCreatePolicy) denyNetworkingConfigReason(networkingConfig containerCreateNetworkingConfig) string {
+	if len(networkingConfig.EndpointsConfig) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(networkingConfig.EndpointsConfig))
+	for name := range networkingConfig.EndpointsConfig {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		endpoint := networkingConfig.EndpointsConfig[name]
+		if endpoint == nil {
+			continue
+		}
+		if reason := denyEndpointConfigReason(*endpoint, p.allowEndpointConfig, "container create"); reason != "" {
+			return reason
+		}
+	}
 	return ""
 }
 

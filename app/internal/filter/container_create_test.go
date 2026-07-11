@@ -719,6 +719,153 @@ func TestContainerCreatePolicyDenyBindMountReasonRejectsBindMountSource(t *testi
 	}
 }
 
+// TestContainerCreatePolicyInspectDeniesEndpointConfigByDefault proves
+// POST /containers/create's NetworkingConfig.EndpointsConfig carries the same
+// endpoint-config gate as POST /networks/*/connect — the create-side policy
+// bypass this closes (real incident: drydock recreating a macvlan+static-IP
+// container had its POST /networks/*/connect denied by the connect-side gate,
+// but the identical config on create's primary network went unchecked).
+func TestContainerCreatePolicyInspectDeniesEndpointConfigByDefault(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "static IP via IPAMConfig",
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}}}`,
+			wantReason: "container create denied: endpoint static IP configuration is not allowed",
+		},
+		{
+			name:       "static IP via IPAddress",
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAddress":"172.30.0.10"}}}}`,
+			wantReason: "container create denied: endpoint static IP configuration is not allowed",
+		},
+		{
+			name:       "MAC address",
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"MacAddress":"02:42:ac:1e:00:0a"}}}}`,
+			wantReason: "container create denied: endpoint MAC address is not allowed",
+		},
+		{
+			name:       "links",
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"bridge":{"Links":["db:database"]}}}}`,
+			wantReason: "container create denied: endpoint links are not allowed",
+		},
+		{
+			name:       "driver options",
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"bridge":{"DriverOpts":{"foo":"bar"}}}}}`,
+			wantReason: "container create denied: endpoint driver options are not allowed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+
+			reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestContainerCreatePolicyInspectAllowsEndpointConfigWhenConfigured proves
+// AllowEndpointConfig lifts every gated field (static IP, MAC, links, driver
+// opts) on create's NetworkingConfig, mirroring network.AllowEndpointConfig's
+// effect on connect — the same single config knob governs both endpoints.
+func TestContainerCreatePolicyInspectAllowsEndpointConfigWhenConfigured(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{AllowEndpointConfig: true})
+	body := `{
+		"Image": "x",
+		"NetworkingConfig": {
+			"EndpointsConfig": {
+				"macvlan0": {
+					"IPAMConfig": {"IPv4Address": "172.30.0.10"},
+					"MacAddress": "02:42:ac:1e:00:0a",
+					"Links": ["db:database"],
+					"DriverOpts": {"foo": "bar"}
+				}
+			}
+		}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+// TestContainerCreatePolicyInspectAllowsAliasesOnlyEndpointConfigByDefault
+// proves Aliases are never gated on create's NetworkingConfig either — Docker
+// Compose sets Aliases: [serviceName] on every endpoint it creates, so a
+// multi-network Compose recreate (which drives its secondary networks through
+// this exact NetworkingConfig.EndpointsConfig shape) must pass without the
+// flag.
+func TestContainerCreatePolicyInspectAllowsAliasesOnlyEndpointConfigByDefault(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	body := `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"app-net":{"Aliases":["web"]}}}}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+// TestContainerCreatePolicyInspectDeniesEndpointConfigAcrossMultipleNetworks
+// proves every entry of EndpointsConfig is inspected, not just the first map
+// key encountered: "backend" (alphabetically first, clean) must not shadow
+// "frontend" (alphabetically second, carries a static IP). Iteration is over
+// sorted keys, so the denial is deterministic across runs despite Go's
+// randomized map order.
+func TestContainerCreatePolicyInspectDeniesEndpointConfigAcrossMultipleNetworks(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	body := `{
+		"Image": "x",
+		"NetworkingConfig": {
+			"EndpointsConfig": {
+				"backend": {"Aliases": ["db"]},
+				"frontend": {"IPAddress": "172.30.0.10"}
+			}
+		}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	const wantReason = "container create denied: endpoint static IP configuration is not allowed"
+	if reason != wantReason {
+		t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+	}
+}
+
+// TestContainerCreatePolicyDenyNetworkingConfigReasonSkipsNilEndpoint proves a
+// null EndpointsConfig map value (valid JSON: {"EndpointsConfig":{"net":null}})
+// is skipped rather than dereferenced, so a NetworkingConfig entry with no
+// EndpointSettings object cannot panic the inspector.
+func TestContainerCreatePolicyDenyNetworkingConfigReasonSkipsNilEndpoint(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	reason := policy.denyNetworkingConfigReason(containerCreateNetworkingConfig{
+		EndpointsConfig: map[string]*networkEndpointConfig{"app-net": nil},
+	})
+	if reason != "" {
+		t.Fatalf("denyNetworkingConfigReason() = %q, want empty", reason)
+	}
+}
+
 func TestExtractAndValidateBindSource(t *testing.T) {
 	tests := []struct {
 		name   string
