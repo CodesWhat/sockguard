@@ -374,7 +374,15 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 			return denyReason, nil
 		}
 		if verifiedDigest != "" {
-			if pinned, perr := imagefetch.PinnedReference(imageRef, verifiedDigest); perr == nil && pinned != imageRef {
+			pinned, perr := imagefetch.PinnedReference(imageRef, verifiedDigest)
+			if perr != nil {
+				// Verification succeeded but the verified reference cannot be
+				// digest-pinned. Forwarding the original tag would reopen the
+				// verify→pull TOCTOU this block exists to close, so deny rather
+				// than fall through and forward an unpinned reference.
+				return "", fmt.Errorf("pin verified image digest: %w", perr)
+			}
+			if pinned != imageRef {
 				rewritten, rerr := rewriteServiceImage(body, pinned)
 				if rerr != nil {
 					return "", fmt.Errorf("pin verified image digest: %w", rerr)
@@ -391,36 +399,58 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 // rewriteServiceImage replaces TaskTemplate.ContainerSpec.Image with pinned,
 // preserving every other field byte-for-byte (RawMessage) so resource limits
 // and other numeric fields are not corrupted by a float round-trip.
+//
+// Every level is navigated case-insensitively, and a duplicate case-variant
+// key at any level (TaskTemplate, ContainerSpec, or the Image leaf) is rejected
+// fail-closed: Docker decodes these keys case-insensitively and honors the last
+// duplicate after our re-marshal, so a shadow lowercase "image"/"containerspec"
+// key would otherwise let a client run an image the cosign policy check — which
+// decodes the same body via a struct — never verified. Collapsing the leaf to a
+// single canonical "Image" key pins exactly the verified image at the daemon.
 func rewriteServiceImage(body []byte, pinned string) ([]byte, error) {
+	if err := RejectDuplicateCaseVariantJSONKeys(body); err != nil {
+		return nil, err
+	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(body, &top); err != nil {
 		return nil, err
 	}
-	if _, ok := top["TaskTemplate"]; !ok {
-		return nil, fmt.Errorf("service body missing TaskTemplate")
+	ttKey, err := soleFoldedRawKey(top, "TaskTemplate")
+	if err != nil {
+		return nil, fmt.Errorf("service body: %w", err)
 	}
 	var taskTemplate map[string]json.RawMessage
-	if err := json.Unmarshal(top["TaskTemplate"], &taskTemplate); err != nil {
+	if err := json.Unmarshal(top[ttKey], &taskTemplate); err != nil {
 		return nil, fmt.Errorf("decode TaskTemplate: %w", err)
 	}
-	if _, ok := taskTemplate["ContainerSpec"]; !ok {
-		return nil, fmt.Errorf("service body missing TaskTemplate.ContainerSpec")
+	csKey, err := soleFoldedRawKey(taskTemplate, "ContainerSpec")
+	if err != nil {
+		return nil, fmt.Errorf("service body: %w", err)
 	}
 	var containerSpec map[string]json.RawMessage
-	if err := json.Unmarshal(taskTemplate["ContainerSpec"], &containerSpec); err != nil {
+	if err := json.Unmarshal(taskTemplate[csKey], &containerSpec); err != nil {
 		return nil, fmt.Errorf("decode ContainerSpec: %w", err)
 	}
-	encoded, err := json.Marshal(pinned)
+	if err := collapseImageKey(containerSpec, pinned); err != nil {
+		return nil, err
+	}
+	// Collapse the parent keys to canonical case as well, matching collapseImageKey's
+	// treatment of the Image leaf. The reject guard above already forbids duplicate
+	// case-variant keys, so soleFoldedRawKey found exactly one variant at each level;
+	// rewriting it to the canonical name keeps the pinned body unambiguous instead of
+	// leaving a lowercase "tasktemplate"/"containerspec" the daemon only reads by fold.
+	csRaw, err := json.Marshal(containerSpec)
 	if err != nil {
 		return nil, err
 	}
-	containerSpec["Image"] = encoded
-	if taskTemplate["ContainerSpec"], err = json.Marshal(containerSpec); err != nil {
+	delete(taskTemplate, csKey)
+	taskTemplate["ContainerSpec"] = csRaw
+	ttRaw, err := json.Marshal(taskTemplate)
+	if err != nil {
 		return nil, err
 	}
-	if top["TaskTemplate"], err = json.Marshal(taskTemplate); err != nil {
-		return nil, err
-	}
+	delete(top, ttKey)
+	top["TaskTemplate"] = ttRaw
 	return json.Marshal(top)
 }
 

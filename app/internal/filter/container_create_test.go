@@ -3,6 +3,7 @@ package filter
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -1378,6 +1379,35 @@ func TestImageTrust_Enforce_PinsVerifiedDigest(t *testing.T) {
 	}
 }
 
+func TestImageTrust_Enforce_DeniesWhenVerifiedDigestCannotBePinned(t *testing.T) {
+	policy := containerCreatePolicy{
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier:     &mockImageVerifier{},
+		imageFetcher:           &mockSignatureFetcher{candidates: []imagetrust.Candidate{{DigestHex: "00", ImageDigest: "notadigest"}}},
+		imageTrustCfg:          imagetrust.Config{Mode: imagetrust.ModeEnforce},
+	}
+	req := makeInspectRequest(t, `{"Image":"registry.example.com/app:v1","HostConfig":{}}`)
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err == nil {
+		t.Fatal("inspect() error = nil, want digest pinning error")
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty when returning an error", reason)
+	}
+	if !strings.Contains(err.Error(), "pin verified image digest") {
+		t.Fatalf("inspect() error = %v, want digest pinning error", err)
+	}
+}
+
 // TestImageTrust_TimeoutGateRespectsZero pins both surviving mutants at
 // container_create.go:361:26 (CONDITIONALS_BOUNDARY `>` → `>=` and
 // CONDITIONALS_NEGATION `>` → `<=`). The guard is `if p.imageTrustTimeout > 0`
@@ -1827,29 +1857,342 @@ func TestCapabilityAddDenyReasonEdgeCases(t *testing.T) {
 	}
 }
 
-func TestRewriteJSONImageField(t *testing.T) {
-	t.Run("replaces Image field", func(t *testing.T) {
-		body := []byte(`{"Image":"nginx:latest","HostConfig":{"Memory":134217728}}`)
-		result, err := rewriteJSONImageField(body, "nginx@sha256:abc123")
-		if err != nil {
-			t.Fatalf("rewriteJSONImageField() error = %v", err)
-		}
-		// The Image field must be updated.
-		if !strings.Contains(string(result), `"nginx@sha256:abc123"`) {
-			t.Errorf("rewriteJSONImageField() result missing pinned ref: %s", result)
-		}
-		// Memory must survive without float corruption.
-		if !strings.Contains(string(result), "134217728") {
-			t.Errorf("rewriteJSONImageField() corrupted Memory field: %s", result)
-		}
-	})
+func assertDockerContainerImage(t *testing.T, body []byte, want string) {
+	t.Helper()
 
-	t.Run("invalid JSON returns error", func(t *testing.T) {
-		_, err := rewriteJSONImageField([]byte("{bad json"), "pinned:ref")
-		if err == nil {
-			t.Fatal("expected error for malformed JSON, got nil")
+	var got struct {
+		Image string `json:"Image"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode rewritten body as Docker would: %v", err)
+	}
+	if got.Image != want {
+		t.Fatalf("Docker-decoded Image = %q, want %q", got.Image, want)
+	}
+}
+
+func assertSingleCanonicalContainerImageKey(t *testing.T, body []byte) map[string]json.RawMessage {
+	t.Helper()
+
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatalf("decode rewritten body as map: %v", err)
+	}
+
+	var variants []string
+	for key := range fields {
+		if strings.EqualFold(key, "Image") {
+			variants = append(variants, key)
 		}
-	})
+	}
+	if len(variants) != 1 || variants[0] != "Image" {
+		t.Fatalf("rewritten body image keys = %v, want exactly [Image]; body=%s", variants, body)
+	}
+	return fields
+}
+
+func TestRejectDuplicateCaseVariantJSONKeys(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{
+			name:    "top-level HostConfig duplicate",
+			body:    `{"HostConfig":{"a":1},"hostconfig":{"b":2}}`,
+			wantErr: true,
+		},
+		{
+			name:    "nested HostConfig field duplicate",
+			body:    `{"HostConfig":{"Privileged":true,"privileged":false}}`,
+			wantErr: true,
+		},
+		{
+			name:    "array element object duplicate",
+			body:    `{"Env":[{"K":1,"k":2}]}`,
+			wantErr: true,
+		},
+		{
+			name:    "label keys are case-sensitive data",
+			body:    `{"Labels":{"Foo":"1","foo":"2"}}`,
+			wantErr: false,
+		},
+		{
+			name:    "annotation keys are case-sensitive data",
+			body:    `{"Annotations":{"A":"1","a":"2"}}`,
+			wantErr: false,
+		},
+		{
+			name:    "volumes keys are case-sensitive data",
+			body:    `{"Volumes":{"/Data":{},"/data":{}}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate Volumes field is still rejected",
+			body:    `{"Volumes":{},"volumes":{}}`,
+			wantErr: true,
+		},
+		{
+			name:    "exposed ports keys are case-sensitive data",
+			body:    `{"ExposedPorts":{"80/TCP":{},"80/tcp":{}}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate ExposedPorts field is still rejected",
+			body:    `{"ExposedPorts":{},"exposedports":{}}`,
+			wantErr: true,
+		},
+		{
+			name:    "sysctls keys are case-sensitive data",
+			body:    `{"HostConfig":{"Sysctls":{"net.Core.somaxconn":"1024","net.core.somaxconn":"512"}}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate Sysctls field is still rejected",
+			body:    `{"HostConfig":{"Sysctls":{"a":"1"},"sysctls":{"b":"2"}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "storage opt keys are case-sensitive data",
+			body:    `{"HostConfig":{"StorageOpt":{"Size":"10G","size":"20G"}}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate StorageOpt field is still rejected",
+			body:    `{"HostConfig":{"StorageOpt":{},"storageopt":{}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "tmpfs keys are case-sensitive data",
+			body:    `{"HostConfig":{"Tmpfs":{"/Run":"","/run":""}}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate Tmpfs field is still rejected",
+			body:    `{"HostConfig":{"Tmpfs":{},"tmpfs":{}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "port bindings keys are case-sensitive data",
+			body:    `{"HostConfig":{"PortBindings":{"80/TCP":[{"HostPort":"8080"}],"80/tcp":[{"HostPort":"9090"}]}}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate PortBindings field is still rejected",
+			body:    `{"HostConfig":{"PortBindings":{},"portbindings":{}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "log config options keys are case-sensitive data",
+			body:    `{"Image":"nginx","HostConfig":{"LogConfig":{"Type":"json-file","Config":{"max-size":"10m","Max-Size":"20m"}}}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate LogConfig.Config field is still rejected",
+			body:    `{"HostConfig":{"LogConfig":{"Config":{},"config":{}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "endpoints config keys are case-sensitive data",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"Frontend":{"Aliases":["a"]},"frontend":{"Aliases":["b"]}}}}`,
+			wantErr: false,
+		},
+		{
+			name:    "struct inside EndpointsConfig is still fold-checked",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"net1":{"NetworkID":"a","networkid":"b"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "struct inside EndpointsConfig network named config is still fold-checked",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"config":{"NetworkID":"a","networkid":"b"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "struct inside EndpointsConfig network named options is still fold-checked",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"options":{"NetworkID":"a","networkid":"b"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "struct inside EndpointsConfig network named labels is still fold-checked",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"labels":{"NetworkID":"a","networkid":"b"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "struct inside EndpointsConfig network named opts is still fold-checked",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"opts":{"NetworkID":"a","networkid":"b"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "struct inside EndpointsConfig network named sysctls is still fold-checked",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"sysctls":{"NetworkID":"a","networkid":"b"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "EndpointSettings DriverOpts under colliding network name remain case-sensitive data",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"config":{"DriverOpts":{"Foo":"1","foo":"2"}}}}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate EndpointsConfig field is still rejected",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{},"endpointsconfig":{}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "network create options keys are case-sensitive data",
+			body:    `{"Options":{"Foo":"1","foo":"2"}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate network create Options field is still rejected",
+			body:    `{"Options":{"Foo":"1"},"options":{"foo":"2"}}`,
+			wantErr: true,
+		},
+		{
+			name:    "IPAM options keys are case-sensitive data",
+			body:    `{"IPAM":{"Options":{"Bar":"1","bar":"2"}}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate IPAM Options field is still rejected",
+			body:    `{"IPAM":{"Options":{"Bar":"1"},"options":{"bar":"2"}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "struct inside IPAM.Config is still fold-checked",
+			body:    `{"IPAM":{"Config":[{"Subnet":"10.0.0.0/24","subnet":"192.168.0.0/24"}]}}`,
+			wantErr: true,
+		},
+		{
+			name:    "volume opts keys are case-sensitive data",
+			body:    `{"Opts":{"Type":"nfs","type":"tmpfs"}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate volume Opts field is still rejected",
+			body:    `{"Opts":{},"opts":{}}`,
+			wantErr: true,
+		},
+		{
+			name:    "driver opts keys are case-sensitive data",
+			body:    `{"DriverOpts":{"Type":"nfs","type":"tmpfs"}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate DriverOpts field is still rejected",
+			body:    `{"DriverOpts":{},"driveropts":{}}`,
+			wantErr: true,
+		},
+		{
+			name:    "auxiliary addresses keys are case-sensitive data",
+			body:    `{"IPAM":{"Config":[{"AuxiliaryAddresses":{"Router":"1.2.3.4","router":"5.6.7.8"}}]}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate AuxiliaryAddresses field is still rejected",
+			body:    `{"IPAM":{"Config":[{"AuxiliaryAddresses":{},"auxiliaryaddresses":{}}]}}`,
+			wantErr: true,
+		},
+		{
+			name:    "clean create body",
+			body:    `{"Image":"x","HostConfig":{"Privileged":true},"Labels":{"foo":"bar"}}`,
+			wantErr: false,
+		},
+		{
+			name:    "duplicate Labels field is still rejected",
+			body:    `{"Labels":{"Foo":"1"},"labels":{"foo":"2"}}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := RejectDuplicateCaseVariantJSONKeys([]byte(tt.body))
+			if tt.wantErr && err == nil {
+				t.Fatal("RejectDuplicateCaseVariantJSONKeys() error = nil, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("RejectDuplicateCaseVariantJSONKeys() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestRewriteJSONImageField(t *testing.T) {
+	const pinned = "nginx@sha256:abc123"
+
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+		assert  func(t *testing.T, result []byte)
+	}{
+		{
+			name: "canonical image key pins digest",
+			body: `{"Image":"nginx:latest","HostConfig":{"Memory":134217728}}`,
+			assert: func(t *testing.T, result []byte) {
+				t.Helper()
+				assertDockerContainerImage(t, result, pinned)
+				assertSingleCanonicalContainerImageKey(t, result)
+				if !strings.Contains(string(result), "134217728") {
+					t.Errorf("rewriteJSONImageField() corrupted Memory field: %s", result)
+				}
+			},
+		},
+		{
+			name: "lowercase image key collapsed to canonical",
+			body: `{"image":"nginx:latest","HostConfig":{}}`,
+			assert: func(t *testing.T, result []byte) {
+				t.Helper()
+				assertDockerContainerImage(t, result, pinned)
+				assertSingleCanonicalContainerImageKey(t, result)
+				if strings.Contains(string(result), `"image"`) {
+					t.Fatalf("rewriteJSONImageField() left lowercase image key in body: %s", result)
+				}
+			},
+		},
+		{
+			name:    "duplicate case-variant image keys rejected",
+			body:    `{"Image":"nginx:latest","image":"attacker/evil:1","HostConfig":{}}`,
+			wantErr: true,
+		},
+		{
+			name: "large numeric sibling preserved byte-for-byte",
+			body: `{"Image":"nginx:latest","Memory":9007199254740993}`,
+			assert: func(t *testing.T, result []byte) {
+				t.Helper()
+				assertDockerContainerImage(t, result, pinned)
+				fields := assertSingleCanonicalContainerImageKey(t, result)
+				if got := string(fields["Memory"]); got != "9007199254740993" {
+					t.Fatalf("Memory raw JSON = %q, want byte-for-byte 9007199254740993; body=%s", got, result)
+				}
+			},
+		},
+		{
+			name:    "invalid JSON returns error",
+			body:    `{bad json`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := rewriteJSONImageField([]byte(tt.body), pinned)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("rewriteJSONImageField() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("rewriteJSONImageField() error = %v", err)
+			}
+			if tt.assert != nil {
+				tt.assert(t, result)
+			}
+		})
+	}
 }
 
 func TestBuildImageTrustRawMapping(t *testing.T) {
