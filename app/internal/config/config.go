@@ -655,7 +655,9 @@ type OwnershipConfig struct {
 	// compromise (shared sockets, process visibility, shared /dev/shm),
 	// strictly worse than the access ownership already gates on every other
 	// endpoint. Set true to restore the old unchecked behavior. Same-owner
-	// and unlabeled-target refs are unaffected either way.
+	// refs always pass; an unlabeled target is treated as untrusted and
+	// denied too (consistent with every other container-targeting ownership
+	// check), so only a same-owner ref is allowed when this is false.
 	AllowCrossOwnerNamespaceSharing bool `mapstructure:"allow_cross_owner_namespace_sharing"`
 }
 

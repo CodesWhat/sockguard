@@ -362,6 +362,10 @@ func addOwnerLabelToContainerCreateBody(r *http.Request, labelKey, owner string)
 	return refs, err
 }
 
+// namespaceModeFields are the HostConfig fields whose "container:<ref>" form
+// joins another container's namespace.
+var namespaceModeFields = [...]string{"NetworkMode", "PidMode", "IpcMode", "UsernsMode"}
+
 // containerCreateNamespaceRefs extracts every distinct "container:<ref>"
 // namespace-sharing target from a decoded /containers/create body's
 // HostConfig.{NetworkMode,PidMode,IpcMode,UsernsMode} fields. Malformed or
@@ -369,32 +373,54 @@ func addOwnerLabelToContainerCreateBody(r *http.Request, labelKey, owner string)
 // rather than an error — filter's container_create.go is the layer
 // responsible for rejecting malformed bodies; ownership only needs to know
 // which (if any) foreign containers a well-formed create would join.
+//
+// Key matching is case-INSENSITIVE and iterates every case-variant of
+// HostConfig and each mode field, because Docker decodes these keys
+// case-insensitively: an exact-case lookup would let a client smuggle the
+// namespace join past the cross-owner check with a lowercase "hostconfig"/
+// "networkmode" key that Docker still honors.
 func containerCreateNamespaceRefs(decoded map[string]any) []string {
-	hostConfigAny, ok := decoded["HostConfig"]
-	if !ok {
-		return nil
-	}
-	hostConfig, ok := hostConfigAny.(map[string]any)
-	if !ok {
-		return nil
-	}
+	hostConfigs := foldedObjects(decoded, "HostConfig")
 	var refs []string
-	for _, field := range [...]string{"NetworkMode", "PidMode", "IpcMode", "UsernsMode"} {
-		value, ok := hostConfig[field]
-		if !ok {
-			continue
+	// Iterate the mode fields in fixed order for deterministic ref ordering,
+	// scanning every case-variant key inside each HostConfig so a duplicate
+	// lowercase mode key cannot smuggle an unchecked ref past the loop.
+	for _, field := range namespaceModeFields {
+		for _, hostConfig := range hostConfigs {
+			for key, value := range hostConfig {
+				if !strings.EqualFold(key, field) {
+					continue
+				}
+				mode, ok := value.(string)
+				if !ok {
+					continue
+				}
+				ref, ok := filter.ContainerNamespaceRef(mode)
+				if !ok || slices.Contains(refs, ref) {
+					continue
+				}
+				refs = append(refs, ref)
+			}
 		}
-		mode, ok := value.(string)
-		if !ok {
-			continue
-		}
-		ref, ok := filter.ContainerNamespaceRef(mode)
-		if !ok || slices.Contains(refs, ref) {
-			continue
-		}
-		refs = append(refs, ref)
 	}
 	return refs
+}
+
+// foldedObjects returns every object value in m whose key case-folds to key,
+// in map-iteration order. Docker decodes duplicate case-variant keys and lets
+// the last win, so a security check must inspect all variants rather than an
+// exact-case single lookup.
+func foldedObjects(m map[string]any, key string) []map[string]any {
+	var out []map[string]any
+	for k, v := range m {
+		if !strings.EqualFold(k, key) {
+			continue
+		}
+		if obj, ok := v.(map[string]any); ok {
+			out = append(out, obj)
+		}
+	}
+	return out
 }
 
 func addOwnerLabelToServiceBody(r *http.Request, labelKey, owner string) error {
@@ -471,6 +497,15 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	if len(body) == 0 {
 		return fmt.Errorf("request body is required")
 	}
+	// Owner-label stamping re-marshals the whole body through a map, and
+	// json.Marshal re-sorts the keys — so a duplicate case-variant key (e.g.
+	// "hostconfig" beside the filter-inspected "HostConfig") could be reordered
+	// into the last position the daemon honors, smuggling a value the filter
+	// already cleared past its check. Reject such a body fail-closed before we
+	// touch it. See filter.RejectDuplicateCaseVariantJSONKeys.
+	if err := filter.RejectDuplicateCaseVariantJSONKeys(body); err != nil {
+		return fmt.Errorf("ambiguous request body: %w", err)
+	}
 
 	// UseNumber preserves JSON numbers as json.Number (underlying string)
 	// instead of coercing them to float64. That matters because the default
@@ -504,18 +539,40 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	return nil
 }
 
+// nestedObject returns the object stored under key, creating it when absent.
+// Key matching is case-INSENSITIVE and collision-collapsing. Docker decodes
+// JSON object keys case-insensitively and, on duplicate case-variant keys,
+// lets the last one win. A client could otherwise smuggle a lowercase
+// "labels" alongside the proxy-injected "Labels" and — because json.Marshal
+// emits map keys in sorted order, placing "labels" after "Labels" — have
+// Docker prefer the client's forged owner label. To close that spoof, every
+// key that case-folds to key is merged into a single object stored under the
+// exact canonical key, and all variant keys are removed, so the re-encoded
+// body carries exactly one unambiguous key that Docker reads verbatim.
 func nestedObject(decoded map[string]any, key string) (map[string]any, error) {
-	value, ok := decoded[key]
-	if !ok || value == nil {
-		obj := map[string]any{}
-		decoded[key] = obj
-		return obj, nil
+	merged := map[string]any{}
+	var variants []string
+	for k, v := range decoded {
+		if !strings.EqualFold(k, key) {
+			continue
+		}
+		variants = append(variants, k)
+		if v == nil {
+			continue
+		}
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s must be an object", key)
+		}
+		for kk, vv := range obj {
+			merged[kk] = vv
+		}
 	}
-	obj, ok := value.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("%s must be an object", key)
+	for _, k := range variants {
+		delete(decoded, k)
 	}
-	return obj, nil
+	decoded[key] = merged
+	return merged, nil
 }
 
 func nestedObjectPath(decoded map[string]any, keys ...string) (map[string]any, error) {
