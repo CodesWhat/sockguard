@@ -121,10 +121,147 @@ func TestMiddlewareAddsOwnerLabelToContainerCreate(t *testing.T) {
 	}
 }
 
+func TestMiddlewareRejectsDuplicateCaseVariantContainerCreateKeys(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	forwarded := false
+	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		forwarded = true
+		t.Fatal("duplicate case-variant container create body was forwarded")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"busybox:1.37","Labels":{"existing":"value"},"labels":{"com.sockguard.owner":"attacker"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if forwarded {
+		t.Fatal("duplicate case-variant body was forwarded")
+	}
+}
+
+func TestMiddlewareNormalizesSingleVariantContainerCreateLabels(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		body       string
+		wantLabels map[string]string
+	}{
+		{
+			name: "lowercase labels only canonicalized",
+			body: `{"Image":"busybox:1.37","labels":{"existing":"value"}}`,
+			wantLabels: map[string]string{
+				"com.sockguard.owner": "job-123",
+				"existing":            "value",
+			},
+		},
+		{
+			name: "label keys remain case sensitive",
+			body: `{"Image":"busybox:1.37","Labels":{"MyApp":"1","myapp":"2"}}`,
+			wantLabels: map[string]string{
+				"com.sockguard.owner": "job-123",
+				"MyApp":               "1",
+				"myapp":               "2",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read body: %v", err)
+				}
+				if strings.Contains(string(raw), `"labels":`) {
+					t.Fatalf("rewritten body retained lowercase labels key: %s", raw)
+				}
+
+				var body map[string]any
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				var foldedLabelKeys []string
+				for key := range body {
+					if strings.EqualFold(key, "Labels") {
+						foldedLabelKeys = append(foldedLabelKeys, key)
+					}
+				}
+				if len(foldedLabelKeys) != 1 || foldedLabelKeys[0] != "Labels" {
+					t.Fatalf("case-folded label keys = %#v, want exactly [Labels]", foldedLabelKeys)
+				}
+
+				labels := nestedMapAnyForTest(t, body, "Labels")
+				for key, want := range tt.wantLabels {
+					if got := labels[key]; got != want {
+						t.Fatalf("%s label = %#v, want %s", key, got, want)
+					}
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+			}
+		})
+	}
+}
+
+func TestMiddlewareRejectsDuplicateCaseVariantContainerCreateHostConfigKeys(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "top-level HostConfig shadow",
+			body: `{"Image":"x","HostConfig":{"Privileged":false},"hostconfig":{"Privileged":true}}`,
+		},
+		{
+			name: "nested Privileged shadow",
+			body: `{"Image":"x","HostConfig":{"Privileged":false,"privileged":true}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			forwarded := false
+			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				forwarded = true
+				t.Fatal("duplicate case-variant container create body was forwarded")
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if forwarded {
+				t.Fatal("duplicate case-variant body was forwarded")
+			}
+		})
+	}
+}
+
 func TestMiddlewareDeniesCrossOwnerContainerCreateNamespaceSharing(t *testing.T) {
 	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
-	fields := []string{"NetworkMode", "PidMode", "IpcMode", "UsernsMode"}
+	fields := []string{"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode"}
 
 	for _, field := range fields {
 		t.Run(field, func(t *testing.T) {
@@ -142,6 +279,59 @@ func TestMiddlewareDeniesCrossOwnerContainerCreateNamespaceSharing(t *testing.T)
 			body := fmt.Sprintf(`{"Image":"busybox","HostConfig":{%q:"container:target"}}`, field)
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "namespace-sharing target container") || !strings.Contains(rec.Body.String(), "target") {
+				t.Fatalf("deny body = %q, want namespace-sharing target denial", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesCrossOwnerContainerCreateNamespaceSharingCaseInsensitiveKeys(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "exact-case HostConfig NetworkMode",
+			body: `{"Image":"busybox","HostConfig":{"NetworkMode":"container:target"}}`,
+		},
+		{
+			name: "exact-case HostConfig UTSMode",
+			body: `{"Image":"busybox","HostConfig":{"UTSMode":"container:target"}}`,
+		},
+		{
+			name: "lowercase hostconfig networkmode",
+			body: `{"Image":"busybox","hostconfig":{"networkmode":"container:target"}}`,
+		},
+		{
+			name: "lowercase hostconfig utsmode",
+			body: `{"Image":"busybox","hostconfig":{"utsmode":"container:target"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			fi := fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					"containers": {
+						"target": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+					},
+				},
+			}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("expected cross-owner namespace-sharing create to be denied")
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
 			handler.ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusForbidden {
@@ -185,6 +375,44 @@ func TestMiddlewareAllowsSameOwnerContainerCreateNamespaceSharingAndInjectsLabel
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"busybox","Labels":{"existing":"value"},"HostConfig":{"NetworkMode":"container:sidecar"}}`))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+}
+
+func TestMiddlewareAllowsSameOwnerContainerCreateUTSNamespaceSharingAndInjectsLabel(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"containers": {
+				"sidecar": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+		},
+	}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		labels := nestedMapAnyForTest(t, body, "Labels")
+		if got := labels["existing"]; got != "value" {
+			t.Fatalf("existing label = %#v, want value", got)
+		}
+		if got := labels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("owner label = %#v, want job-123", got)
+		}
+		hostConfig := nestedMapAnyForTest(t, body, "HostConfig")
+		if got := hostConfig["UTSMode"]; got != "container:sidecar" {
+			t.Fatalf("UTSMode = %#v, want container:sidecar", got)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"busybox","Labels":{"existing":"value"},"HostConfig":{"UTSMode":"container:sidecar"}}`))
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusAccepted {
@@ -1106,6 +1334,24 @@ func TestContainerCreateNamespaceRefs(t *testing.T) {
 			decoded: map[string]any{"HostConfig": "bad"},
 		},
 		{
+			name: "exact-case HostConfig NetworkMode",
+			decoded: map[string]any{
+				"HostConfig": map[string]any{
+					"NetworkMode": "container:target",
+				},
+			},
+			want: []string{"target"},
+		},
+		{
+			name: "lowercase HostConfig NetworkMode",
+			decoded: map[string]any{
+				"hostconfig": map[string]any{
+					"networkmode": "container:target",
+				},
+			},
+			want: []string{"target"},
+		},
+		{
 			name: "non string field values",
 			decoded: map[string]any{
 				"HostConfig": map[string]any{
@@ -1147,6 +1393,40 @@ func TestContainerCreateNamespaceRefs(t *testing.T) {
 			got := containerCreateNamespaceRefs(tt.decoded)
 			if !slices.Equal(got, tt.want) {
 				t.Fatalf("containerCreateNamespaceRefs() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContainerCreateNamespaceRefsInspectsDuplicateCaseVariantModeKeys(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		decoded map[string]any
+		want    []string
+	}{
+		{
+			name: "NetworkMode case variants",
+			decoded: map[string]any{
+				"HostConfig": map[string]any{
+					"NetworkMode": "container:A",
+					"networkmode": "container:B",
+				},
+			},
+			want: []string{"A", "B"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := containerCreateNamespaceRefs(tt.decoded)
+			if len(got) != len(tt.want) {
+				t.Fatalf("containerCreateNamespaceRefs() = %#v, want set %#v", got, tt.want)
+			}
+			for _, want := range tt.want {
+				if !slices.Contains(got, want) {
+					t.Fatalf("containerCreateNamespaceRefs() = %#v, want ref %q", got, want)
+				}
 			}
 		})
 	}

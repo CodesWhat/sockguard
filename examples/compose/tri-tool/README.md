@@ -58,4 +58,4 @@ drydock should log `Handshake successful. Received N containers.` for the `portw
 
 To allowlist bind mounts for containers Portwing recreates, add host paths to `sockguard.yaml` under `request_body.container_create.allowed_bind_mounts`.
 
-To enable exec sessions (interactive terminal access) through Portwing, switch `sockguard.yaml` here to the [`app/configs/portwing-with-exec.yaml`](../../../app/configs/portwing-with-exec.yaml) preset — see the main README's [bundled presets](../../../README.md#bundled-presets-15) list for the full set.
+To enable exec sessions (interactive terminal access) through Portwing, switch `sockguard.yaml` here to the [`app/configs/portwing-with-exec.yaml`](../../../app/configs/portwing-with-exec.yaml) preset — see the main README's [bundled presets](../../../README.md#bundled-presets-17) list for the full set.
