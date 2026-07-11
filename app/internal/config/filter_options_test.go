@@ -152,6 +152,12 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			RestrictNamespaceSharing:          true,
 			AllowedNamespaceSharingContainers: []string{"sidecar", "abc123"},
 			DenyNamespacePathMode:             true,
+			// AllowEndpointConfig has no ContainerCreateRequestBodyConfig field of
+			// its own — it is cross-wired from cfg.Network.AllowEndpointConfig
+			// (set true above) by RequestBodyConfig.ToFilterOptions. See
+			// TestRequestBodyConfigToFilterOptionsWiresNetworkAllowEndpointConfigIntoContainerCreate
+			// for a focused regression on that cross-wire alone.
+			AllowEndpointConfig: true,
 		},
 		Exec: filter.ExecOptions{
 			AllowPrivileged: true,
@@ -266,6 +272,39 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("RequestBodyConfig.ToFilterOptions() = %#v, want %#v", got, want)
 	}
+}
+
+// TestRequestBodyConfigToFilterOptionsWiresNetworkAllowEndpointConfigIntoContainerCreate
+// proves request_body.network.allow_endpoint_config is the single flag
+// governing both endpoint-config inspectors: RequestBodyConfig.ToFilterOptions
+// must copy it into both filter.NetworkOptions.AllowEndpointConfig (the
+// existing /networks/*/connect gate) and filter.ContainerCreateOptions.AllowEndpointConfig
+// (the new /containers/create NetworkingConfig gate), with no separate
+// container_create YAML key of its own.
+func TestRequestBodyConfigToFilterOptionsWiresNetworkAllowEndpointConfigIntoContainerCreate(t *testing.T) {
+	t.Run("true flows into both policies", func(t *testing.T) {
+		got := (RequestBodyConfig{
+			Network: NetworkRequestBodyConfig{AllowEndpointConfig: true},
+		}).ToFilterOptions()
+
+		if !got.Network.AllowEndpointConfig {
+			t.Error("Network.AllowEndpointConfig = false, want true")
+		}
+		if !got.ContainerCreate.AllowEndpointConfig {
+			t.Error("ContainerCreate.AllowEndpointConfig = false, want true (cross-wired from Network)")
+		}
+	})
+
+	t.Run("false (default) leaves both policies denying", func(t *testing.T) {
+		got := (RequestBodyConfig{}).ToFilterOptions()
+
+		if got.Network.AllowEndpointConfig {
+			t.Error("Network.AllowEndpointConfig = true, want false")
+		}
+		if got.ContainerCreate.AllowEndpointConfig {
+			t.Error("ContainerCreate.AllowEndpointConfig = true, want false")
+		}
+	})
 }
 
 func TestContainerCreateRequestBodyConfigToFilterOptionsMapsSelinuxAndSystemPaths(t *testing.T) {

@@ -158,9 +158,9 @@ func TestNetworkInspectConnectDeniesEndpointConfigByDefault(t *testing.T) {
 			wantReason: "network connect denied: endpoint MAC address is not allowed",
 		},
 		{
-			name:       "aliases",
-			body:       `{"Container":"web","EndpointConfig":{"Aliases":["db"]}}`,
-			wantReason: "network connect denied: endpoint aliases are not allowed",
+			name:       "links",
+			body:       `{"Container":"web","EndpointConfig":{"Links":["db:database"]}}`,
+			wantReason: "network connect denied: endpoint links are not allowed",
 		},
 		{
 			name:       "driver options",
@@ -202,6 +202,42 @@ func TestNetworkInspectConnectAllowsEndpointConfigWhenConfigured(t *testing.T) {
 	}
 	if reason != "" {
 		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+// TestNetworkInspectConnectAllowsAliasesByDefault proves Aliases are never
+// gated, even without allow_endpoint_config. Docker Compose sets
+// Aliases: [serviceName] on every endpoint it creates, so an aliases-only
+// connect (the shape a multi-network Compose recreate sends for its
+// secondary networks) must pass under the default policy.
+func TestNetworkInspectConnectAllowsAliasesByDefault(t *testing.T) {
+	policy := newNetworkPolicy(NetworkOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/networks/app/connect", strings.NewReader(`{"Container":"web","EndpointConfig":{"Aliases":["db","database"]}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+// TestNetworkInspectConnectDeniesStaticIPAlongsideAliases proves Aliases
+// riding alongside a genuinely gated field (static IP) does not mask that
+// field's denial — the aliases exemption only lifts the aliases check
+// itself, not the whole endpoint config.
+func TestNetworkInspectConnectDeniesStaticIPAlongsideAliases(t *testing.T) {
+	policy := newNetworkPolicy(NetworkOptions{})
+	req := httptest.NewRequest(http.MethodPost, "/networks/app/connect", strings.NewReader(`{"Container":"web","EndpointConfig":{"Aliases":["db"],"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	const wantReason = "network connect denied: endpoint static IP configuration is not allowed"
+	if reason != wantReason {
+		t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
 	}
 }
 

@@ -35,6 +35,25 @@ type containerCreateRequest struct {
 	HostConfig containerCreateHostConfig `json:"HostConfig"`
 	User       string                    `json:"User"`
 	Labels     map[string]string         `json:"Labels"`
+	// MacAddress is the deprecated, top-level (pre-API-1.44) container-wide
+	// MAC address field. The daemon still honors it, applying it to the
+	// container's primary network endpoint exactly like
+	// NetworkingConfig.EndpointsConfig[*].MacAddress does — see
+	// denyRootMacAddressReason in container_create.go for why it is gated
+	// identically to that field rather than left as an unchecked bypass.
+	MacAddress       string                          `json:"MacAddress"`
+	NetworkingConfig containerCreateNetworkingConfig `json:"NetworkingConfig"`
+}
+
+// containerCreateNetworkingConfig mirrors the Docker API
+// NetworkingConfig object POST /containers/create accepts alongside
+// HostConfig: a per-network-name map of endpoint settings applied when the
+// container is attached to each network at create time. The daemon connects
+// every entry here the same way POST /networks/*/connect does, so it carries
+// the identical endpoint-config attack surface (static IP, MAC, links,
+// driver opts) — see denyNetworkingConfigReason.
+type containerCreateNetworkingConfig struct {
+	EndpointsConfig map[string]*networkEndpointConfig `json:"EndpointsConfig"`
 }
 
 type containerCreateHostConfig struct {

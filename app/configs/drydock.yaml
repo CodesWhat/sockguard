@@ -140,6 +140,22 @@ rules:
   # Network read — list + inspect. Plus connect: when the recreated container
   # belongs to more than one network, drydock attaches the extra networks via
   # POST /networks/{id}/connect (the create body only carries the first network).
+  #
+  # Endpoint-config policy (request_body.network.allow_endpoint_config, default
+  # false) is enforced identically on this connect call AND on
+  # POST /containers/create's own NetworkingConfig.EndpointsConfig — the same
+  # flag covers both. Endpoint Aliases are always allowed regardless of this
+  # flag, so a plain multi-network recreate (Compose sets Aliases on every
+  # endpoint it creates) works by default with no config change. Operators
+  # whose recreated containers carry a static IP, custom MAC address, or
+  # endpoint DriverOpts (e.g. macvlan with a pinned address) must set
+  # allow_endpoint_config: true here, or the connect/create call for that
+  # network is denied. On drydock >=1.5.3 a denial fails the update and
+  # drydock rolls back to the old container (best-effort: if the rollback
+  # itself fails, drydock records it in its update-operation history/audit
+  # log without a push notification, so check drydock's operation history
+  # after a denied request). Older drydock versions could leave an orphaned
+  # Created container on the network instead.
   - match: { method: GET, path: "/networks" }
     action: allow
   - match: { method: GET, path: "/networks/*" }
