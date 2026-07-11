@@ -160,8 +160,10 @@ rules:
   # Operators whose recreated containers carry a static IP, custom MAC
   # address, or endpoint DriverOpts (e.g. macvlan with a pinned address) must
   # set allow_endpoint_config: true here, or the connect/create call for that
-  # network is denied and the container update is left orphaned on the old
-  # network.
+  # network is denied. On drydock >=1.5.3 a denial fails the update safely —
+  # it rolls back the half-created replacement, so the container stays on
+  # its old image. Older drydock versions could leave an orphaned Created
+  # container on the network instead.
   - match: { method: GET, path: "/networks" }
     action: allow
   - match: { method: GET, path: "/networks/*" }
