@@ -434,12 +434,23 @@ func rewriteServiceImage(body []byte, pinned string) ([]byte, error) {
 	if err := collapseImageKey(containerSpec, pinned); err != nil {
 		return nil, err
 	}
-	if taskTemplate[csKey], err = json.Marshal(containerSpec); err != nil {
+	// Collapse the parent keys to canonical case as well, matching collapseImageKey's
+	// treatment of the Image leaf. The reject guard above already forbids duplicate
+	// case-variant keys, so soleFoldedRawKey found exactly one variant at each level;
+	// rewriting it to the canonical name keeps the pinned body unambiguous instead of
+	// leaving a lowercase "tasktemplate"/"containerspec" the daemon only reads by fold.
+	csRaw, err := json.Marshal(containerSpec)
+	if err != nil {
 		return nil, err
 	}
-	if top[ttKey], err = json.Marshal(taskTemplate); err != nil {
+	delete(taskTemplate, csKey)
+	taskTemplate["ContainerSpec"] = csRaw
+	ttRaw, err := json.Marshal(taskTemplate)
+	if err != nil {
 		return nil, err
 	}
+	delete(top, ttKey)
+	top["TaskTemplate"] = ttRaw
 	return json.Marshal(top)
 }
 
