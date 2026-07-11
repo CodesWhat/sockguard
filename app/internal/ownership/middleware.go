@@ -364,6 +364,15 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	if len(body) == 0 {
 		return fmt.Errorf("request body is required")
 	}
+	// Owner-label stamping re-marshals the whole body through a map, and
+	// json.Marshal re-sorts the keys — so a duplicate case-variant key (e.g.
+	// "hostconfig" beside the filter-inspected "HostConfig") could be reordered
+	// into the last position the daemon honors, smuggling a value the filter
+	// already cleared past its check. Reject such a body fail-closed before we
+	// touch it. See filter.RejectDuplicateCaseVariantJSONKeys.
+	if err := filter.RejectDuplicateCaseVariantJSONKeys(body); err != nil {
+		return fmt.Errorf("ambiguous request body: %w", err)
+	}
 
 	// UseNumber preserves JSON numbers as json.Number (underlying string)
 	// instead of coercing them to float64. That matters because the default
@@ -397,18 +406,40 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	return nil
 }
 
+// nestedObject returns the object stored under key, creating it when absent.
+// Key matching is case-INSENSITIVE and collision-collapsing. Docker decodes
+// JSON object keys case-insensitively and, on duplicate case-variant keys,
+// lets the last one win. A client could otherwise smuggle a lowercase
+// "labels" alongside the proxy-injected "Labels" and — because json.Marshal
+// emits map keys in sorted order, placing "labels" after "Labels" — have
+// Docker prefer the client's forged owner label. To close that spoof, every
+// key that case-folds to key is merged into a single object stored under the
+// exact canonical key, and all variant keys are removed, so the re-encoded
+// body carries exactly one unambiguous key that Docker reads verbatim.
 func nestedObject(decoded map[string]any, key string) (map[string]any, error) {
-	value, ok := decoded[key]
-	if !ok || value == nil {
-		obj := map[string]any{}
-		decoded[key] = obj
-		return obj, nil
+	merged := map[string]any{}
+	var variants []string
+	for k, v := range decoded {
+		if !strings.EqualFold(k, key) {
+			continue
+		}
+		variants = append(variants, k)
+		if v == nil {
+			continue
+		}
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s must be an object", key)
+		}
+		for kk, vv := range obj {
+			merged[kk] = vv
+		}
 	}
-	obj, ok := value.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("%s must be an object", key)
+	for _, k := range variants {
+		delete(decoded, k)
 	}
-	return obj, nil
+	decoded[key] = merged
+	return merged, nil
 }
 
 func nestedObjectPath(decoded map[string]any, keys ...string) (map[string]any, error) {

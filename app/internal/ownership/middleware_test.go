@@ -95,6 +95,143 @@ func TestMiddlewareAddsOwnerLabelToContainerCreate(t *testing.T) {
 	}
 }
 
+func TestMiddlewareRejectsDuplicateCaseVariantContainerCreateKeys(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	forwarded := false
+	handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		forwarded = true
+		t.Fatal("duplicate case-variant container create body was forwarded")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"busybox:1.37","Labels":{"existing":"value"},"labels":{"com.sockguard.owner":"attacker"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if forwarded {
+		t.Fatal("duplicate case-variant body was forwarded")
+	}
+}
+
+func TestMiddlewareNormalizesSingleVariantContainerCreateLabels(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		body       string
+		wantLabels map[string]string
+	}{
+		{
+			name: "lowercase labels only canonicalized",
+			body: `{"Image":"busybox:1.37","labels":{"existing":"value"}}`,
+			wantLabels: map[string]string{
+				"com.sockguard.owner": "job-123",
+				"existing":            "value",
+			},
+		},
+		{
+			name: "label keys remain case sensitive",
+			body: `{"Image":"busybox:1.37","Labels":{"MyApp":"1","myapp":"2"}}`,
+			wantLabels: map[string]string{
+				"com.sockguard.owner": "job-123",
+				"MyApp":               "1",
+				"myapp":               "2",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read body: %v", err)
+				}
+				if strings.Contains(string(raw), `"labels":`) {
+					t.Fatalf("rewritten body retained lowercase labels key: %s", raw)
+				}
+
+				var body map[string]any
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				var foldedLabelKeys []string
+				for key := range body {
+					if strings.EqualFold(key, "Labels") {
+						foldedLabelKeys = append(foldedLabelKeys, key)
+					}
+				}
+				if len(foldedLabelKeys) != 1 || foldedLabelKeys[0] != "Labels" {
+					t.Fatalf("case-folded label keys = %#v, want exactly [Labels]", foldedLabelKeys)
+				}
+
+				labels := nestedMapAnyForTest(t, body, "Labels")
+				for key, want := range tt.wantLabels {
+					if got := labels[key]; got != want {
+						t.Fatalf("%s label = %#v, want %s", key, got, want)
+					}
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusAccepted)
+			}
+		})
+	}
+}
+
+func TestMiddlewareRejectsDuplicateCaseVariantContainerCreateHostConfigKeys(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "top-level HostConfig shadow",
+			body: `{"Image":"x","HostConfig":{"Privileged":false},"hostconfig":{"Privileged":true}}`,
+		},
+		{
+			name: "nested Privileged shadow",
+			body: `{"Image":"x","HostConfig":{"Privileged":false,"privileged":true}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			forwarded := false
+			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				forwarded = true
+				t.Fatal("duplicate case-variant container create body was forwarded")
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if forwarded {
+				t.Fatal("duplicate case-variant body was forwarded")
+			}
+		})
+	}
+}
+
 func TestMiddlewareNoOpWhenOwnerEmpty(t *testing.T) {
 	t.Parallel()
 	reached := false

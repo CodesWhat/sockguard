@@ -355,20 +355,190 @@ func verifyImageTrust(ctx context.Context, logger *slog.Logger, f imageTrustFiel
 	return "", outcome.VerifiedDigest
 }
 
-// rewriteJSONImageField returns body with its top-level "Image" field replaced
-// by pinned. Other fields are preserved byte-for-byte (RawMessage) so large
-// integer fields such as Memory are not corrupted by a float round-trip.
+// rewriteJSONImageField returns body with its (case-insensitive) "Image" field
+// replaced by pinned. Other fields are preserved byte-for-byte (RawMessage) so
+// large integer fields such as Memory are not corrupted by a float round-trip.
 func rewriteJSONImageField(body []byte, pinned string) ([]byte, error) {
+	if err := RejectDuplicateCaseVariantJSONKeys(body); err != nil {
+		return nil, err
+	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
 		return nil, err
 	}
-	encoded, err := json.Marshal(pinned)
-	if err != nil {
+	if err := collapseImageKey(fields, pinned); err != nil {
 		return nil, err
 	}
-	fields["Image"] = encoded
 	return json.Marshal(fields)
+}
+
+// foldedRawKeys returns every key in m that case-folds to canonical. Docker
+// decodes JSON object keys case-insensitively, so a security-relevant rewrite
+// must find "image"/"IMAGE" as well as the canonical "Image".
+func foldedRawKeys(m map[string]json.RawMessage, canonical string) []string {
+	var out []string
+	for k := range m {
+		if strings.EqualFold(k, canonical) {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// collapseImageKey rewrites the (case-insensitive) image field of fields to the
+// pinned digest, leaving exactly one canonical "Image" key. Docker decodes
+// object keys case-insensitively and, on duplicate case-variant keys, honors
+// the last one after our re-marshal — and json.Marshal emits map keys sorted,
+// so a client-supplied lowercase "image" would sort AFTER the pinned "Image"
+// and win at the daemon, running an image the policy check never verified. A
+// body carrying two case-variant image keys is therefore ambiguous and is
+// rejected fail-closed; a single variant (canonical or lowercase) is collapsed
+// to the canonical key so the forwarded body pins exactly the verified image.
+func collapseImageKey(fields map[string]json.RawMessage, pinned string) error {
+	variants := foldedRawKeys(fields, "Image")
+	if len(variants) > 1 {
+		return fmt.Errorf("ambiguous container image: %d case-variant \"Image\" keys", len(variants))
+	}
+	encoded, err := json.Marshal(pinned)
+	if err != nil {
+		return err
+	}
+	for _, k := range variants {
+		delete(fields, k)
+	}
+	fields["Image"] = encoded
+	return nil
+}
+
+// soleFoldedRawKey returns the single key in m that case-folds to canonical.
+// It errors if the key is absent (nothing to navigate into) or if more than
+// one case-variant is present — an ambiguous body the daemon would resolve by
+// last-key order after our re-marshal, rejected fail-closed rather than risk
+// forwarding a subtree the policy check never inspected.
+func soleFoldedRawKey(m map[string]json.RawMessage, canonical string) (string, error) {
+	variants := foldedRawKeys(m, canonical)
+	switch len(variants) {
+	case 0:
+		return "", fmt.Errorf("missing %s", canonical)
+	case 1:
+		return variants[0], nil
+	default:
+		return "", fmt.Errorf("ambiguous body: %d case-variant %s keys", len(variants), canonical)
+	}
+}
+
+// RejectDuplicateCaseVariantJSONKeys returns an error if body contains any JSON
+// object with two keys that case-fold to the same name (e.g. "HostConfig" and
+// "hostconfig"). The daemon decodes object keys case-insensitively and lets the
+// last duplicate win, whereas sockguard inspects a create/update body via a
+// struct decode and then may re-marshal it (owner-label stamping, image-digest
+// pinning) through a map whose keys json.Marshal re-sorts on the way out. That
+// re-sort can move a shadow lowercase key into last position, so the daemon acts
+// on a value the filter never checked — a bypass of every body-inspection rule.
+// No legitimate Docker client emits duplicate case-variant keys, so any body
+// that does is rejected fail-closed before it can be re-marshaled and forwarded.
+func RejectDuplicateCaseVariantJSONKeys(body []byte) error {
+	var v any
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(&v); err != nil {
+		return err
+	}
+	return checkDuplicateCaseVariantKeys(v, false)
+}
+
+// checkDuplicateCaseVariantKeys walks a decoded JSON value and rejects any object
+// whose sibling keys case-fold to the same name. skipKeyCheck suppresses that
+// sibling scan for exactly ONE level: it is set when recursing into the VALUE of
+// a case-sensitive data-map field (Labels, Sysctls, LogConfig.Config, …), whose
+// own keys are user-chosen case-sensitive data rather than daemon-folded struct
+// fields — so two keys there differing only in case are two legitimate distinct
+// entries, not a shadow-key. Crucially the walk still recurses INTO that value,
+// so a struct nested inside a data map — an EndpointSettings under
+// EndpointsConfig, or an IPAMConfig element under IPAM.Config (a []struct) —
+// keeps its own struct-field fold check. That is what lets the exemption be keyed
+// on a bare field name without opening a bypass: a duplicate of the data-map
+// field's own name is still caught by the enclosing object's scan, and only the
+// map's leaf keys are spared. Every non-exempt level is a struct whose fields the
+// daemon folds, so it stays fully checked.
+func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
+	switch t := v.(type) {
+	case map[string]any:
+		if !skipKeyCheck {
+			keys := make([]string, 0, len(t))
+			for k := range t {
+				for _, prev := range keys {
+					if strings.EqualFold(prev, k) {
+						return fmt.Errorf("duplicate case-variant JSON keys %q and %q", prev, k)
+					}
+				}
+				keys = append(keys, k)
+			}
+		}
+		for k, val := range t {
+			if err := checkDuplicateCaseVariantKeys(val, isCaseSensitiveDataMapField(k)); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, item := range t {
+			if err := checkDuplicateCaseVariantKeys(item, false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// isCaseSensitiveDataMapField reports whether key names a Docker body field the
+// daemon decodes as a case-sensitive map (map[string]V or map[nat.Port]V) rather
+// than a struct. The daemon folds struct field names case-insensitively — so a
+// case-variant sibling there is a genuine shadow-key hazard — but map keys are
+// matched exactly, so two case-differing keys are two distinct valid entries and
+// must not be rejected. Every field below is a plain data map in the Docker
+// engine request types (container create Config/HostConfig/NetworkingConfig,
+// swarm service, network create, volume create):
+//
+//	labels, annotations   Config.Labels, swarm Annotations.Labels
+//	volumes               Config.Volumes            map[string]struct{}
+//	exposedports          Config.ExposedPorts       map[nat.Port]struct{}
+//	portbindings          HostConfig.PortBindings   map[nat.Port][]nat.PortBinding
+//	sysctls               HostConfig.Sysctls        map[string]string
+//	storageopt            HostConfig.StorageOpt     map[string]string
+//	tmpfs                 HostConfig.Tmpfs          map[string]string
+//	endpointsconfig       NetworkingConfig.EndpointsConfig map[string]*EndpointSettings
+//	options               network create Options, IPAM Options   map[string]string
+//	driveropts            volume DriverOpts, EndpointSettings.DriverOpts map[string]string
+//	opts                  volume Opts (DriverOpts alias)         map[string]string
+//	config                HostConfig.LogConfig.Config            map[string]string
+//	auxiliaryaddresses    IPAMConfig.AuxAddress     map[string]string
+//
+// Bias is intentionally toward over-listing: a map field mistakenly omitted here
+// only produces a spurious rejection (fail-closed, never a bypass). Listing a
+// name that is elsewhere a struct is also safe — the exemption only suppresses
+// the sibling key-scan at that field's own value and still recurses into it, so
+// nested structs (e.g. the IPAMConfig elements under IPAM.Config, a []struct)
+// keep their fold check; see checkDuplicateCaseVariantKeys.
+func isCaseSensitiveDataMapField(key string) bool {
+	switch strings.ToLower(key) {
+	case "labels",
+		"annotations",
+		"volumes",
+		"exposedports",
+		"portbindings",
+		"sysctls",
+		"storageopt",
+		"tmpfs",
+		"endpointsconfig",
+		"options",
+		"driveropts",
+		"opts",
+		"config",
+		"auxiliaryaddresses":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildImageTrustRaw(opts ImageTrustOptions) imagetrust.RawConfig {
@@ -501,7 +671,15 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		// was actually verified, so a registry that swaps the tag after
 		// verification cannot make dockerd pull an unsigned image.
 		if verifiedDigest != "" {
-			if pinned, perr := imagefetch.PinnedReference(imageRef, verifiedDigest); perr == nil && pinned != imageRef {
+			pinned, perr := imagefetch.PinnedReference(imageRef, verifiedDigest)
+			if perr != nil {
+				// Verification succeeded but the verified reference cannot be
+				// digest-pinned. Forwarding the original tag would reopen the
+				// verify→pull TOCTOU this block exists to close, so deny rather
+				// than fall through and forward an unpinned reference.
+				return "", fmt.Errorf("pin verified image digest: %w", perr)
+			}
+			if pinned != imageRef {
 				rewritten, rerr := rewriteJSONImageField(body, pinned)
 				if rerr != nil {
 					return "", fmt.Errorf("pin verified image digest: %w", rerr)
