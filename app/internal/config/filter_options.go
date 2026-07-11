@@ -6,8 +6,17 @@ import "github.com/codeswhat/sockguard/internal/filter"
 // options. Runtime-only fields, such as exec-start upstream inspection, are
 // intentionally left for the caller to attach.
 func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
+	// container_create.allow_endpoint_config is deliberately NOT its own YAML
+	// key: POST /containers/create's NetworkingConfig.EndpointsConfig carries
+	// the identical static-IP/MAC/Links/DriverOpts attack surface Docker's
+	// POST /networks/*/connect already gates via network.allow_endpoint_config,
+	// so a second knob would let an operator widen one endpoint and forget the
+	// other. One flag governs both — see filter.ContainerCreateOptions.AllowEndpointConfig.
+	containerCreate := c.ContainerCreate.ToFilterOptions()
+	containerCreate.AllowEndpointConfig = c.Network.AllowEndpointConfig
+
 	return filter.PolicyConfig{
-		ContainerCreate:  c.ContainerCreate.ToFilterOptions(),
+		ContainerCreate:  containerCreate,
 		Exec:             c.Exec.ToFilterOptions(),
 		ImagePull:        c.ImagePull.ToFilterOptions(),
 		Build:            c.Build.ToFilterOptions(),
