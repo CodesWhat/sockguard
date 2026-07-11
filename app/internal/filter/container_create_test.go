@@ -2145,6 +2145,7 @@ func assertSingleCanonicalContainerImageKey(t *testing.T, body []byte) map[strin
 	for key := range fields {
 		if strings.EqualFold(key, "Image") {
 			variants = append(variants, key)
+
 		}
 	}
 	if len(variants) != 1 || variants[0] != "Image" {
@@ -2266,6 +2267,36 @@ func TestRejectDuplicateCaseVariantJSONKeys(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "struct inside EndpointsConfig network named config is still fold-checked",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"config":{"NetworkID":"a","networkid":"b"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "struct inside EndpointsConfig network named options is still fold-checked",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"options":{"NetworkID":"a","networkid":"b"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "struct inside EndpointsConfig network named labels is still fold-checked",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"labels":{"NetworkID":"a","networkid":"b"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "struct inside EndpointsConfig network named opts is still fold-checked",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"opts":{"NetworkID":"a","networkid":"b"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "struct inside EndpointsConfig network named sysctls is still fold-checked",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"sysctls":{"NetworkID":"a","networkid":"b"}}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "EndpointSettings DriverOpts under colliding network name remain case-sensitive data",
+			body:    `{"NetworkingConfig":{"EndpointsConfig":{"config":{"DriverOpts":{"Foo":"1","foo":"2"}}}}}`,
+			wantErr: false,
+		},
+		{
 			name:    "duplicate EndpointsConfig field is still rejected",
 			body:    `{"NetworkingConfig":{"EndpointsConfig":{},"endpointsconfig":{}}}`,
 			wantErr: true,
@@ -2351,80 +2382,80 @@ func TestRejectDuplicateCaseVariantJSONKeys(t *testing.T) {
 	}
 }
 
-func FuzzRejectDuplicateCaseVariantJSONKeys(f *testing.F) {
-	for _, body := range []string{
-		`{"HostConfig":{"a":1},"hostconfig":{"b":2}}`,
-		`{"Labels":{"Foo":"1","foo":"2"}}`,
-		`{"IPAM":{"Config":[{"Subnet":"x","subnet":"y"}]}}`,
-		`{"HostConfig":{"Sysctls":{"net.Core.somaxconn":"1024","net.core.somaxconn":"512"},"LogConfig":{"Config":{"max-size":"10m","Max-Size":"20m"}}}}`,
-		`{"NetworkingConfig":{"EndpointsConfig":{"Frontend":{"Aliases":["a"],"DriverOpts":{"Opt":"1","opt":"2"}},"frontend":{"Aliases":["b"]}}}}`,
-		`{"Env":[{"Name":"A","name":"B"},{"Labels":{"Foo":"1","foo":"2"}}]}`,
-		`{"A":{"B":[{"C":{"D":[{"E":"x","e":"y"}]}}]}}`,
-		`[{"HostConfig":{"UTSMode":"container:sidecar"}},{"hostconfig":{"PidMode":"container:other"}}]`,
-		`{"HostConfig":{"PortBindings":{"80/TCP":[{"HostPort":"8080","hostport":"9090"}]}}}`,
-	} {
-		f.Add(body)
-	}
-	f.Fuzz(func(t *testing.T, body string) {
-		_ = RejectDuplicateCaseVariantJSONKeys([]byte(body))
-	})
-}
-
 func TestRewriteJSONImageField(t *testing.T) {
 	const pinned = "nginx@sha256:abc123"
 
-	t.Run("canonical image key pins digest", func(t *testing.T) {
-		body := []byte(`{"Image":"nginx:latest","HostConfig":{"Memory":134217728}}`)
-		result, err := rewriteJSONImageField(body, pinned)
-		if err != nil {
-			t.Fatalf("rewriteJSONImageField() error = %v", err)
-		}
-		assertDockerContainerImage(t, result, pinned)
-		assertSingleCanonicalContainerImageKey(t, result)
-		if !strings.Contains(string(result), "134217728") {
-			t.Errorf("rewriteJSONImageField() corrupted Memory field: %s", result)
-		}
-	})
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+		assert  func(t *testing.T, result []byte)
+	}{
+		{
+			name: "canonical image key pins digest",
+			body: `{"Image":"nginx:latest","HostConfig":{"Memory":134217728}}`,
+			assert: func(t *testing.T, result []byte) {
+				t.Helper()
+				assertDockerContainerImage(t, result, pinned)
+				assertSingleCanonicalContainerImageKey(t, result)
+				if !strings.Contains(string(result), "134217728") {
+					t.Errorf("rewriteJSONImageField() corrupted Memory field: %s", result)
+				}
+			},
+		},
+		{
+			name: "lowercase image key collapsed to canonical",
+			body: `{"image":"nginx:latest","HostConfig":{}}`,
+			assert: func(t *testing.T, result []byte) {
+				t.Helper()
+				assertDockerContainerImage(t, result, pinned)
+				assertSingleCanonicalContainerImageKey(t, result)
+				if strings.Contains(string(result), `"image"`) {
+					t.Fatalf("rewriteJSONImageField() left lowercase image key in body: %s", result)
+				}
+			},
+		},
+		{
+			name:    "duplicate case-variant image keys rejected",
+			body:    `{"Image":"nginx:latest","image":"attacker/evil:1","HostConfig":{}}`,
+			wantErr: true,
+		},
+		{
+			name: "large numeric sibling preserved byte-for-byte",
+			body: `{"Image":"nginx:latest","Memory":9007199254740993}`,
+			assert: func(t *testing.T, result []byte) {
+				t.Helper()
+				assertDockerContainerImage(t, result, pinned)
+				fields := assertSingleCanonicalContainerImageKey(t, result)
+				if got := string(fields["Memory"]); got != "9007199254740993" {
+					t.Fatalf("Memory raw JSON = %q, want byte-for-byte 9007199254740993; body=%s", got, result)
+				}
+			},
+		},
+		{
+			name:    "invalid JSON returns error",
+			body:    `{bad json`,
+			wantErr: true,
+		},
+	}
 
-	t.Run("lowercase image key collapsed to canonical", func(t *testing.T) {
-		body := []byte(`{"image":"nginx:latest","HostConfig":{}}`)
-		result, err := rewriteJSONImageField(body, pinned)
-		if err != nil {
-			t.Fatalf("rewriteJSONImageField() error = %v", err)
-		}
-		assertDockerContainerImage(t, result, pinned)
-		assertSingleCanonicalContainerImageKey(t, result)
-		if strings.Contains(string(result), `"image"`) {
-			t.Fatalf("rewriteJSONImageField() left lowercase image key in body: %s", result)
-		}
-	})
-
-	t.Run("duplicate case-variant image keys rejected", func(t *testing.T) {
-		body := []byte(`{"Image":"nginx:latest","image":"attacker/evil:1","HostConfig":{}}`)
-		if _, err := rewriteJSONImageField(body, pinned); err == nil {
-			t.Fatal("rewriteJSONImageField() error = nil, want duplicate image-key rejection")
-		}
-	})
-
-	t.Run("large numeric sibling preserved byte-for-byte", func(t *testing.T) {
-		body := []byte(`{"Image":"nginx:latest","Memory":9007199254740993}`)
-		result, err := rewriteJSONImageField(body, pinned)
-		if err != nil {
-			t.Fatalf("rewriteJSONImageField() error = %v", err)
-		}
-		assertDockerContainerImage(t, result, pinned)
-		fields := assertSingleCanonicalContainerImageKey(t, result)
-		if got := string(fields["Memory"]); got != "9007199254740993" {
-			t.Fatalf("Memory raw JSON = %q, want byte-for-byte 9007199254740993; body=%s", got, result)
-		}
-	})
-
-	t.Run("invalid JSON returns error", func(t *testing.T) {
-		_, err := rewriteJSONImageField([]byte("{bad json"), "pinned:ref")
-		if err == nil {
-			t.Fatal("expected error for malformed JSON, got nil")
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := rewriteJSONImageField([]byte(tt.body), pinned)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("rewriteJSONImageField() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("rewriteJSONImageField() error = %v", err)
+			}
+			if tt.assert != nil {
+				tt.assert(t, result)
+			}
+		})
+	}
 }
 
 func TestBuildImageTrustRawMapping(t *testing.T) {

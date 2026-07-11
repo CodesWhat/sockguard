@@ -905,108 +905,129 @@ func assertSingleCanonicalServiceImageKey(t *testing.T, body []byte) {
 	if err := json.Unmarshal(body, &top); err != nil {
 		t.Fatalf("decode rewritten service body as map: %v", err)
 	}
-	taskTemplateRaw, ok := top["TaskTemplate"]
-	if !ok {
-		t.Fatalf("rewritten service body missing canonical TaskTemplate: %s", body)
-	}
+	taskTemplateRaw := assertSingleCanonicalRawMessageKey(t, top, "TaskTemplate", body)
 
 	var taskTemplate map[string]json.RawMessage
 	if err := json.Unmarshal(taskTemplateRaw, &taskTemplate); err != nil {
 		t.Fatalf("decode rewritten TaskTemplate: %v", err)
 	}
-	containerSpecRaw, ok := taskTemplate["ContainerSpec"]
-	if !ok {
-		t.Fatalf("rewritten service body missing canonical ContainerSpec: %s", body)
-	}
+	containerSpecRaw := assertSingleCanonicalRawMessageKey(t, taskTemplate, "ContainerSpec", body)
 
 	var containerSpec map[string]json.RawMessage
 	if err := json.Unmarshal(containerSpecRaw, &containerSpec); err != nil {
 		t.Fatalf("decode rewritten ContainerSpec: %v", err)
 	}
+	assertSingleCanonicalRawMessageKey(t, containerSpec, "Image", body)
+}
+
+func assertSingleCanonicalRawMessageKey(t *testing.T, fields map[string]json.RawMessage, canonical string, body []byte) json.RawMessage {
+	t.Helper()
+
 	var variants []string
-	for key := range containerSpec {
-		if strings.EqualFold(key, "Image") {
+	for key := range fields {
+		if strings.EqualFold(key, canonical) {
 			variants = append(variants, key)
 		}
 	}
-	if len(variants) != 1 || variants[0] != "Image" {
-		t.Fatalf("rewritten ContainerSpec image keys = %v, want exactly [Image]; body=%s", variants, body)
+	if len(variants) != 1 || variants[0] != canonical {
+		t.Fatalf("rewritten body %s keys = %v, want exactly [%s]; body=%s", canonical, variants, canonical, body)
 	}
+	return fields[canonical]
 }
 
 func TestRewriteServiceImage(t *testing.T) {
 	const pinned = "nginx@sha256:deadbeef"
 
-	t.Run("canonical nested image key pins digest", func(t *testing.T) {
-		body := []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","User":"nobody"},"Resources":{"Limits":{"MemoryBytes":134217728}}},"Replicas":2}`)
-		result, err := rewriteServiceImage(body, pinned)
-		if err != nil {
-			t.Fatalf("rewriteServiceImage() error = %v", err)
-		}
-		assertDockerServiceImage(t, result, pinned)
-		assertSingleCanonicalServiceImageKey(t, result)
-		if !strings.Contains(string(result), `"nobody"`) {
-			t.Errorf("rewriteServiceImage() dropped User field: %s", result)
-		}
-		if !strings.Contains(string(result), "134217728") {
-			t.Errorf("rewriteServiceImage() corrupted MemoryBytes: %s", result)
-		}
-	})
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+		assert  func(t *testing.T, result []byte)
+	}{
+		{
+			name: "canonical nested image key pins digest",
+			body: `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","User":"nobody"},"Resources":{"Limits":{"MemoryBytes":134217728}}},"Replicas":2}`,
+			assert: func(t *testing.T, result []byte) {
+				t.Helper()
+				assertDockerServiceImage(t, result, pinned)
+				assertSingleCanonicalServiceImageKey(t, result)
+				if !strings.Contains(string(result), `"nobody"`) {
+					t.Errorf("rewriteServiceImage() dropped User field: %s", result)
+				}
+				if !strings.Contains(string(result), "134217728") {
+					t.Errorf("rewriteServiceImage() corrupted MemoryBytes: %s", result)
+				}
+			},
+		},
+		{
+			name: "lowercase image leaf collapsed to canonical",
+			body: `{"TaskTemplate":{"ContainerSpec":{"image":"nginx:latest","User":"nobody"}}}`,
+			assert: func(t *testing.T, result []byte) {
+				t.Helper()
+				assertDockerServiceImage(t, result, pinned)
+				assertSingleCanonicalServiceImageKey(t, result)
+				if strings.Contains(string(result), `"image"`) {
+					t.Fatalf("rewriteServiceImage() left lowercase image key in body: %s", result)
+				}
+			},
+		},
+		{
+			name: "lowercase parent keys collapse to canonical",
+			body: `{"tasktemplate":{"containerspec":{"image":"nginx:1.0","User":"nobody"}}}`,
+			assert: func(t *testing.T, result []byte) {
+				t.Helper()
+				assertDockerServiceImage(t, result, pinned)
+				assertSingleCanonicalServiceImageKey(t, result)
+			},
+		},
+		{
+			name:    "duplicate case-variant image leaf rejected",
+			body:    `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","image":"attacker/evil:1"}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "duplicate case-variant ContainerSpec rejected",
+			body:    `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"},"containerspec":{"Image":"attacker/evil:1"}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "duplicate case-variant TaskTemplate rejected",
+			body:    `{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}},"tasktemplate":{"ContainerSpec":{"Image":"attacker/evil:1"}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "missing TaskTemplate returns error",
+			body:    `{"Replicas":1}`,
+			wantErr: true,
+		},
+		{
+			name:    "missing ContainerSpec returns error",
+			body:    `{"TaskTemplate":{"Resources":{}}}`,
+			wantErr: true,
+		},
+		{
+			name:    "invalid JSON returns error",
+			body:    `{bad`,
+			wantErr: true,
+		},
+	}
 
-	t.Run("lowercase image leaf collapsed to canonical", func(t *testing.T) {
-		body := []byte(`{"TaskTemplate":{"ContainerSpec":{"image":"nginx:latest","User":"nobody"}}}`)
-		result, err := rewriteServiceImage(body, pinned)
-		if err != nil {
-			t.Fatalf("rewriteServiceImage() error = %v", err)
-		}
-		assertDockerServiceImage(t, result, pinned)
-		assertSingleCanonicalServiceImageKey(t, result)
-		if strings.Contains(string(result), `"image"`) {
-			t.Fatalf("rewriteServiceImage() left lowercase image key in body: %s", result)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := rewriteServiceImage([]byte(tt.body), pinned)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("rewriteServiceImage() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("rewriteServiceImage() error = %v", err)
+			}
+			if tt.assert != nil {
+				tt.assert(t, result)
+			}
+		})
+	}
 
-	t.Run("duplicate case-variant image leaf rejected", func(t *testing.T) {
-		body := []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest","image":"attacker/evil:1"}}}`)
-		if _, err := rewriteServiceImage(body, pinned); err == nil {
-			t.Fatal("rewriteServiceImage() error = nil, want duplicate image-key rejection")
-		}
-	})
-
-	t.Run("duplicate case-variant ContainerSpec rejected", func(t *testing.T) {
-		body := []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"},"containerspec":{"Image":"attacker/evil:1"}}}`)
-		if _, err := rewriteServiceImage(body, pinned); err == nil {
-			t.Fatal("rewriteServiceImage() error = nil, want duplicate ContainerSpec-key rejection")
-		}
-	})
-
-	t.Run("duplicate case-variant TaskTemplate rejected", func(t *testing.T) {
-		body := []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"nginx:latest"}},"tasktemplate":{"ContainerSpec":{"Image":"attacker/evil:1"}}}`)
-		if _, err := rewriteServiceImage(body, pinned); err == nil {
-			t.Fatal("rewriteServiceImage() error = nil, want duplicate TaskTemplate-key rejection")
-		}
-	})
-
-	t.Run("missing TaskTemplate returns error", func(t *testing.T) {
-		body := []byte(`{"Replicas":1}`)
-		_, err := rewriteServiceImage(body, pinned)
-		if err == nil {
-			t.Fatal("expected error for missing TaskTemplate, got nil")
-		}
-	})
-
-	t.Run("missing ContainerSpec returns error", func(t *testing.T) {
-		body := []byte(`{"TaskTemplate":{"Resources":{}}}`)
-		_, err := rewriteServiceImage(body, pinned)
-		if err == nil {
-			t.Fatal("expected error for missing ContainerSpec, got nil")
-		}
-	})
-
-	t.Run("invalid JSON returns error", func(t *testing.T) {
-		_, err := rewriteServiceImage([]byte("{bad"), pinned)
-		if err == nil {
-			t.Fatal("expected error for invalid JSON, got nil")
-		}
-	})
 }

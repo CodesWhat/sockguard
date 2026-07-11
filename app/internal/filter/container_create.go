@@ -512,7 +512,16 @@ func checkDuplicateCaseVariantKeys(v any, skipKeyCheck bool) error {
 			}
 		}
 		for k, val := range t {
-			if err := checkDuplicateCaseVariantKeys(val, isCaseSensitiveDataMapField(k)); err != nil {
+			// isCaseSensitiveDataMapField classifies a STRUCT's own field
+			// names. When we are already inside a data map (skipKeyCheck), the
+			// keys are user-controlled data — a network/label/sysctl name — so a
+			// value that happens to be named like an exempt field ("config",
+			// "options", ...) must NOT inherit the exemption: the struct nested
+			// under it (e.g. an EndpointSettings under a network the client
+			// named "config") still needs its fold check. Only a struct level
+			// classifies its children.
+			childSkip := !skipKeyCheck && isCaseSensitiveDataMapField(k)
+			if err := checkDuplicateCaseVariantKeys(val, childSkip); err != nil {
 				return err
 			}
 		}
