@@ -925,6 +925,33 @@ func TestContainerCreatePolicyInspectAllowsEmptyRootMacAddressByDefault(t *testi
 	}
 }
 
+// FuzzContainerCreatePolicyInspectEndpointConfig fuzzes the endpoint-config
+// denial path exercised above (denyNetworkingConfigReason and
+// denyRootMacAddressReason) through the full inspect() entrypoint, seeded
+// with the representative NetworkingConfig/MacAddress shapes covered by the
+// table tests immediately above. Mirrors FuzzContainerCreate's structure;
+// asserts only that inspect never panics.
+func FuzzContainerCreatePolicyInspectEndpointConfig(f *testing.F) {
+	f.Add([]byte(`{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}}}`))
+	f.Add([]byte(`{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"app-net":{"Aliases":["web"]}}}}`))
+	f.Add([]byte(`{"Image":"x","MacAddress":"02:42:ac:1e:00:0a"}`))
+	f.Add([]byte(`{"NetworkingConfig":{"EndpointsConfig":{"Frontend":{"Aliases":["a"]},"frontend":{"Aliases":["b"]}}}}`))
+
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+
+	f.Fuzz(func(t *testing.T, body []byte) {
+		body = truncateParserFuzzBytes(body, maxContainerCreateBodyBytes+1024)
+
+		req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(body))
+		_, _ = policy.inspect(nil, req, "/containers/create")
+
+		if req.Body != nil {
+			_, _ = io.Copy(io.Discard, req.Body)
+			_ = req.Body.Close()
+		}
+	})
+}
+
 func TestExtractAndValidateBindSource(t *testing.T) {
 	tests := []struct {
 		name   string
