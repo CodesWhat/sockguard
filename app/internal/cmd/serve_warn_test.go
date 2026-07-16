@@ -87,6 +87,28 @@ func TestWarnRulesVersionPrefixOnce(t *testing.T) {
 	}
 }
 
+func TestWarnBodyBlindWritesOnce(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+
+	disabled := config.Defaults()
+	warnBodyBlindWritesOnce(&disabled, logger, &once)
+	if buf.Len() != 0 {
+		t.Fatalf("disabled config logged: %q", buf.String())
+	}
+
+	enabled := config.Defaults()
+	enabled.InsecureAllowBodyBlindWrites = true
+	warnBodyBlindWritesOnce(&enabled, logger, &once)
+	warnBodyBlindWritesOnce(&enabled, logger, &once)
+	if got := strings.Count(buf.String(), "insecure_allow_body_blind_writes is enabled"); got != 1 {
+		t.Fatalf("warning count = %d, want 1; log: %q", got, buf.String())
+	}
+}
+
 func TestWarnInsecureUpstreamSpecs(t *testing.T) {
 	t.Parallel()
 

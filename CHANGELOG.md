@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`insecure_allow_body_blind_writes` now actually enables unpinned exec at runtime.** Stable v1.4 accepted the top-level acknowledgement during validation but never propagated it into the exec request policy, so the GitHub Actions, GitLab Runner, Portainer, Portwing-with-exec, and Watchtower presets started successfully and then denied every unpinned `POST /containers/{id}/exec`. The runtime now lifts only the empty `allowed_commands` denial when the opt-in is enabled; `allow_privileged`, `allow_root_user`, and any configured command allowlist remain enforced. The setting is applied to both the default policy and named client profiles, and emits a once-per-process startup warning.
+
 ## [1.4.2] - 2026-07-11
 
 Security patch over v1.4.1. Backports the case-varied-JSON-key filter-bypass fix from the v1.5 line to stable; no other proxy behavior, config, or API change.

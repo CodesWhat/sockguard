@@ -41,16 +41,24 @@ type ExecOptions struct {
 	// sockguard glob (see internal/glob): "*" matches a run of non-slash
 	// characters, "**" matches any sequence. A command is allowed when its
 	// token count equals an entry's and every token matches the glob at that
-	// position.
+	// position. Empty (the default) denies every exec unless AllowBlindWrites
+	// is also set.
 	AllowedCommands [][]string
-	InspectStart    ExecInspectFunc
+	// AllowBlindWrites wires the top-level insecure_allow_body_blind_writes
+	// config flag. When true and AllowedCommands is empty, exec create/start
+	// is no longer denied solely because no command allowlist is configured.
+	// Privileged and root-user checks remain enforced. When AllowedCommands is
+	// non-empty this option has no effect.
+	AllowBlindWrites bool
+	InspectStart     ExecInspectFunc
 }
 
 type execPolicy struct {
-	allowPrivileged bool
-	allowRootUser   bool
-	allowedCommands []execCommandMatcher
-	inspectStart    ExecInspectFunc
+	allowPrivileged  bool
+	allowRootUser    bool
+	allowedCommands  []execCommandMatcher
+	allowBlindWrites bool
+	inspectStart     ExecInspectFunc
 }
 
 // execCommandMatcher is a compiled allowlist entry: one anchored regex per
@@ -106,10 +114,11 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 	}
 
 	return execPolicy{
-		allowPrivileged: opts.AllowPrivileged,
-		allowRootUser:   opts.AllowRootUser,
-		allowedCommands: allowed,
-		inspectStart:    opts.InspectStart,
+		allowPrivileged:  opts.AllowPrivileged,
+		allowRootUser:    opts.AllowRootUser,
+		allowedCommands:  allowed,
+		allowBlindWrites: opts.AllowBlindWrites,
+		inspectStart:     opts.InspectStart,
 	}
 }
 
@@ -196,7 +205,7 @@ func (p execPolicy) inspectExisting(ctx context.Context, normalizedPath string) 
 }
 
 func (p execPolicy) denyReason(result ExecInspectResult) string {
-	if len(p.allowedCommands) == 0 {
+	if len(p.allowedCommands) == 0 && !p.allowBlindWrites {
 		return "exec denied: no commands are allowlisted"
 	}
 	if !p.allowPrivileged && result.Privileged {
@@ -204,6 +213,9 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 	}
 	if !p.allowRootUser && isRootUser(result.User) {
 		return "exec denied: root exec user is not allowed"
+	}
+	if len(p.allowedCommands) == 0 {
+		return ""
 	}
 	for _, allowed := range p.allowedCommands {
 		if allowed.matches(result.Command) {

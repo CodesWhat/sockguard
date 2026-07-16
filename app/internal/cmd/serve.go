@@ -582,6 +582,9 @@ func buildServeClientProfiles(cfg *config.Config, res *upstream.Resolver) (map[s
 // sites.
 func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy filter.PolicyConfig) filter.PolicyConfig {
 	policy.Exec.InspectStart = filter.NewDockerExecInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
+	// This acknowledgement is global rather than part of RequestBodyConfig,
+	// so wire it here for both the default policy and every named profile.
+	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	return policy
 }
 
@@ -751,7 +754,23 @@ func withVisibility(cfg *config.Config, res *upstream.Resolver, logger *slog.Log
 }
 
 func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, rules []*filter.CompiledRule, clientProfiles map[string]filter.Policy) func(http.Handler) http.Handler {
+	warnIfBodyBlindWritesEnabled(cfg, logger)
 	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, res, clientProfiles))
+}
+
+var bodyBlindWritesWarnOnce sync.Once
+
+func warnIfBodyBlindWritesEnabled(cfg *config.Config, logger *slog.Logger) {
+	warnBodyBlindWritesOnce(cfg, logger, &bodyBlindWritesWarnOnce)
+}
+
+func warnBodyBlindWritesOnce(cfg *config.Config, logger *slog.Logger, once *sync.Once) {
+	if !cfg.InsecureAllowBodyBlindWrites {
+		return
+	}
+	once.Do(func() {
+		logger.Warn("insecure_allow_body_blind_writes is enabled: exec with an empty allowed_commands list is reachable without the command allowlist check; configured allow_privileged and allow_root_user gates still apply")
+	})
 }
 
 // withHealth wires the /health endpoint onto the runtime monitor.
