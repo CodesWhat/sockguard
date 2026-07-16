@@ -49,6 +49,52 @@ func TestMiddlewareDeniesUnallowlistedExecCreateCommand(t *testing.T) {
 	}
 }
 
+func TestExecBlindWritesOnlyLiftsCommandAllowlistGate(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       ExecOptions
+		result     ExecInspectResult
+		wantReason string
+	}{
+		{
+			name:       "clean exec is allowed without a command allowlist",
+			opts:       ExecOptions{AllowBlindWrites: true, AllowRootUser: true},
+			result:     ExecInspectResult{Command: []string{"/bin/sh", "-c", "id"}, User: "1000"},
+			wantReason: "",
+		},
+		{
+			name:       "privileged exec remains denied",
+			opts:       ExecOptions{AllowBlindWrites: true, AllowRootUser: true},
+			result:     ExecInspectResult{Command: []string{"/bin/sh"}, Privileged: true, User: "1000"},
+			wantReason: "exec denied: privileged exec is not allowed",
+		},
+		{
+			name:       "root exec remains denied",
+			opts:       ExecOptions{AllowBlindWrites: true},
+			result:     ExecInspectResult{Command: []string{"/bin/sh"}, User: "root"},
+			wantReason: "exec denied: root exec user is not allowed",
+		},
+		{
+			name: "configured command allowlist still wins",
+			opts: ExecOptions{
+				AllowBlindWrites: true,
+				AllowRootUser:    true,
+				AllowedCommands:  [][]string{{"/bin/true"}},
+			},
+			result:     ExecInspectResult{Command: []string{"/bin/sh"}, User: "1000"},
+			wantReason: `exec denied: command "/bin/sh" is not allowlisted`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := newExecPolicy(tt.opts).denyReason(tt.result); got != tt.wantReason {
+				t.Fatalf("denyReason() = %q, want %q", got, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestMiddlewareAllowsAllowlistedExecCreateCommand(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/*/exec", Action: ActionAllow, Index: 0})
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
