@@ -77,6 +77,8 @@ func TestValidateAndCompileRulesAllowsRawReadExfiltrationWithExplicitOptIn(t *te
 	cfg.Rules = []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/containers/**"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/images/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/images/*/push"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/plugins/*/push"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 	}
 
@@ -380,6 +382,8 @@ func TestValidateAndCompileRulesRejectsRawReadExfiltrationRulesWithoutExplicitOp
 		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/tasks/**"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/attach"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/images/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/images/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/plugins/*/push"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 	}
 
@@ -397,6 +401,8 @@ func TestValidateAndCompileRulesRejectsRawReadExfiltrationRulesWithoutExplicitOp
 		"POST /containers/sockguard-test/attach",
 		"GET /images/get",
 		"GET /images/sockguard-test/get",
+		"POST /images/sockguard-test/push",
+		"POST /plugins/sockguard-test/push",
 	} {
 		if !strings.Contains(err.Error(), endpoint) {
 			t.Fatalf("expected %s in error, got: %v", endpoint, err)
@@ -423,6 +429,47 @@ func TestValidateAndCompileRulesRejectsContainerArchiveRuleWithoutReadExfiltrati
 	}
 	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
 		t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
+	}
+}
+
+func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		endpoint string
+	}{
+		{
+			name:     "image push",
+			path:     "/images/*/push",
+			endpoint: "POST /images/sockguard-test/push",
+		},
+		{
+			name:     "plugin push",
+			path:     "/plugins/*/push",
+			endpoint: "POST /plugins/sockguard-test/push",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Defaults()
+			cfg.Rules = []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: tt.path}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			}
+
+			_, err := validateAndCompileRules(&cfg)
+			if err == nil {
+				t.Fatal("expected registry push exfiltration validation to fail")
+			}
+			if !strings.Contains(err.Error(), tt.endpoint) {
+				t.Fatalf("expected guarded endpoint %s in error, got: %v", tt.endpoint, err)
+			}
+			if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+				t.Fatalf("expected explicit exfiltration opt-in hint, got: %v", err)
+			}
+		})
 	}
 }
 
@@ -495,6 +542,8 @@ func TestValidateAndCompileRulesRejectsNamedClientProfileReadExfiltration(t *tes
 				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/tasks/**"}, Action: "allow"},
 				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/containers/*/attach"}, Action: "allow"},
 				{Match: config.MatchConfig{Method: http.MethodGet, Path: "/images/**"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/images/*/push"}, Action: "allow"},
+				{Match: config.MatchConfig{Method: http.MethodPost, Path: "/plugins/*/push"}, Action: "allow"},
 				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
 			},
 		},
@@ -518,6 +567,12 @@ func TestValidateAndCompileRulesRejectsNamedClientProfileReadExfiltration(t *tes
 	}
 	if !strings.Contains(err.Error(), "GET /services/sockguard-test/logs") {
 		t.Fatalf("expected guarded service logs endpoint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "POST /images/sockguard-test/push") {
+		t.Fatalf("expected guarded image push endpoint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "POST /plugins/sockguard-test/push") {
+		t.Fatalf("expected guarded plugin push endpoint in error, got: %v", err)
 	}
 }
 
