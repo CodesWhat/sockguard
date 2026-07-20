@@ -172,12 +172,14 @@ func TestProxyEnforcesContainerOwnerLabelsAgainstRealDocker(t *testing.T) {
 	}
 
 	ownerA := newIntegrationProxyHandlerWithOptions(t, socketPath, rules, filter.Options{}, ownership.Options{
-		Owner:    "tenant-a",
-		LabelKey: "com.sockguard.owner",
+		Owner:              "tenant-a",
+		LabelKey:           "com.sockguard.owner",
+		AllowUnownedImages: true,
 	})
 	ownerB := newIntegrationProxyHandlerWithOptions(t, socketPath, rules, filter.Options{}, ownership.Options{
-		Owner:    "tenant-b",
-		LabelKey: "com.sockguard.owner",
+		Owner:              "tenant-b",
+		LabelKey:           "com.sockguard.owner",
+		AllowUnownedImages: true,
 	})
 
 	createRec := httptest.NewRecorder()

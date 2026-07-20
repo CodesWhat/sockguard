@@ -9,15 +9,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
-	"time"
 
 	"github.com/codeswhat/sockguard/internal/dockerclient"
 	"github.com/codeswhat/sockguard/internal/dockerfilters"
 	"github.com/codeswhat/sockguard/internal/dockerresource"
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/httpjson"
-	"github.com/codeswhat/sockguard/internal/inspectcache"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -55,6 +54,16 @@ const (
 	verdictDeny
 )
 
+type embeddedOwnershipReference struct {
+	kind       dockerresource.Kind
+	identifier string
+	source     string
+}
+
+type ownershipRequestReferences struct {
+	embeddedResources []embeddedOwnershipReference
+}
+
 // Options configures per-proxy resource ownership labeling and enforcement.
 type Options struct {
 	Owner              string
@@ -85,18 +94,11 @@ func middlewareWithClient(client *http.Client, logger *slog.Logger, opts Options
 	inspector := upstreamInspector{
 		client: client,
 	}
-	cache := inspectcache.New(
-		inspectcache.DefaultTTL,
-		inspectcache.DefaultMaxSize,
-		time.Now,
-		func(ctx context.Context, kind, identifier string) (map[string]string, bool, error) {
-			return inspector.inspectResource(ctx, dockerresource.Kind(kind), identifier)
-		},
-	)
-	inspectResource := func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
-		return cache.Lookup(ctx, string(kind), identifier)
-	}
-	return middlewareWithDeps(logger, opts, inspectResource, inspector.inspectExec)
+	// Ownership decisions must observe current daemon state. Docker names and
+	// image tags are mutable, so memoizing a label result can authorize a
+	// different resource after a delete/recreate or retag. Embedded references
+	// are deduplicated per request instead.
+	return middlewareWithDeps(logger, opts, inspector.inspectResource, inspector.inspectExec)
 }
 
 func middlewareWithDeps(
@@ -123,13 +125,14 @@ func middlewareWithDeps(
 				normPath = filter.NormalizePath(r.URL.Path)
 			}
 
-			if err := mutateOwnershipRequest(r, normPath, opts); err != nil {
+			refs, err := mutateOwnershipRequest(r, normPath, opts)
+			if err != nil {
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerRequestInvalid, err.Error(), nil)
 				_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: err.Error()})
 				return
 			}
 
-			verdict, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, inspectResource, inspectExec)
+			verdict, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, inspectResource, inspectExec, refs)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyLookupFailed, "owner policy lookup failed", nil)
@@ -160,24 +163,59 @@ func (o Options) normalized() Options {
 	return o
 }
 
-func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) error {
+// mutateOwnershipRequest injects the owner label and extracts every resource
+// identifier embedded in container/service create or update bodies during the
+// same bounded decode pass. Those references must be authorized before the
+// owner-stamped workload is forwarded.
+func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ownershipRequestReferences, error) {
 	switch {
-	case normPath == "/containers/create", normPath == "/networks/create", normPath == "/volumes/create", normPath == "/secrets/create", normPath == "/configs/create":
-		return addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
+	case normPath == "/containers/create":
+		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
+	case normPath == "/networks/create", normPath == "/volumes/create", normPath == "/secrets/create", normPath == "/configs/create":
+		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case normPath == "/services/create", isServiceUpdatePath(normPath):
-		return addOwnerLabelToServiceBody(r, opts.LabelKey, opts.Owner)
+		return mutateServiceOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case isNodeUpdatePath(normPath), isSwarmUpdatePath(normPath):
-		return addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
+		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case normPath == "/build":
-		return addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
+		return nil, addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
 	case needsOwnerFilter(normPath):
-		return addOwnerLabelFilter(r, opts.LabelKey, opts.Owner)
+		return nil, addOwnerLabelFilter(r, opts.LabelKey, opts.Owner)
 	default:
-		return nil
+		return nil, nil
 	}
 }
 
 func allowOwnershipRequest(
+	ctx context.Context,
+	normPath string,
+	opts Options,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	inspectExec func(context.Context, string) (string, bool, error),
+	refs *ownershipRequestReferences,
+) (ownershipVerdict, string, error) {
+	strictest := verdictPassThrough
+	if refs != nil {
+		verdict, reason, err := checkEmbeddedOwnershipReferences(ctx, inspectResource, refs.embeddedResources, opts)
+		if err != nil || verdict == verdictDeny {
+			return verdict, reason, err
+		}
+		if verdict == verdictAllow {
+			strictest = verdictAllow
+		}
+	}
+
+	verdict, reason, err := allowPathOwnershipRequest(ctx, normPath, opts, inspectResource, inspectExec)
+	if err != nil || verdict == verdictDeny {
+		return verdict, reason, err
+	}
+	if verdict == verdictAllow || strictest == verdictAllow {
+		return verdictAllow, "", nil
+	}
+	return verdictPassThrough, "", nil
+}
+
+func allowPathOwnershipRequest(
 	ctx context.Context,
 	normPath string,
 	opts Options,
@@ -225,6 +263,37 @@ func allowOwnershipRequest(
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSwarm, "", opts, isSwarmUpdatePath(normPath))
 	}
 	return verdictPassThrough, "", nil
+}
+
+func checkEmbeddedOwnershipReferences(
+	ctx context.Context,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	refs []embeddedOwnershipReference,
+	opts Options,
+) (ownershipVerdict, string, error) {
+	strictest := verdictPassThrough
+	for _, ref := range refs {
+		labels, found, err := inspectResource(ctx, ref.kind, ref.identifier)
+		if err != nil {
+			return verdictPassThrough, "", err
+		}
+		if !found {
+			return verdictDeny, fmt.Sprintf(
+				"owner policy could not resolve %s %q referenced by %s",
+				singularResource(ref.kind), ref.identifier, ref.source,
+			), nil
+		}
+
+		allowUnowned := ref.kind == dockerresource.KindImage && opts.AllowUnownedImages
+		if !ownerMatches(labels, opts.LabelKey, opts.Owner, allowUnowned) {
+			return verdictDeny, fmt.Sprintf(
+				"owner policy denied access to %s %q referenced by %s",
+				singularResource(ref.kind), ref.identifier, ref.source,
+			), nil
+		}
+		strictest = verdictAllow
+	}
+	return strictest, "", nil
 }
 
 func checkOwnedResource(ctx context.Context, inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error), kind dockerresource.Kind, identifier string, opts Options, allowUnowned bool) (ownershipVerdict, string, error) {
@@ -290,8 +359,165 @@ func addOwnerLabelToBody(r *http.Request, labelKey, owner string) error {
 	})
 }
 
+func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
+	refs := &ownershipRequestReferences{}
+	err := mutateJSONBody(r, func(decoded map[string]any) error {
+		labels, err := nestedObject(decoded, "Labels")
+		if err != nil {
+			return err
+		}
+		labels[labelKey] = owner
+		refs.embeddedResources = containerCreateEmbeddedOwnershipReferences(decoded)
+		return nil
+	})
+	return refs, err
+}
+
+func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
+	var refs []embeddedOwnershipReference
+	for _, image := range foldedStrings(decoded, "Image") {
+		appendEmbeddedOwnershipReference(&refs, dockerresource.KindImage, image, "container Image")
+	}
+
+	for _, hostConfig := range foldedObjects(decoded, "HostConfig") {
+		for _, binds := range foldedArrays(hostConfig, "Binds") {
+			for _, value := range binds {
+				bind, ok := value.(string)
+				if !ok {
+					continue
+				}
+				source, _, hasTarget := strings.Cut(bind, ":")
+				source = strings.TrimSpace(source)
+				if !hasTarget || source == "" || strings.HasPrefix(source, "/") {
+					continue
+				}
+				appendEmbeddedOwnershipReference(&refs, dockerresource.KindVolume, source, "container HostConfig.Binds")
+			}
+		}
+
+		for _, mounts := range foldedArrays(hostConfig, "Mounts") {
+			for _, value := range mounts {
+				mount, ok := value.(map[string]any)
+				if !ok || !foldedStringEquals(mount, "Type", "volume") {
+					continue
+				}
+				for _, source := range foldedStrings(mount, "Source") {
+					appendEmbeddedOwnershipReference(&refs, dockerresource.KindVolume, source, "container HostConfig.Mounts")
+				}
+			}
+		}
+
+		for _, mode := range foldedStrings(hostConfig, "NetworkMode") {
+			if isCustomNetworkMode(mode) {
+				appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, mode, "container HostConfig.NetworkMode")
+			}
+		}
+	}
+
+	for _, networkingConfig := range foldedObjects(decoded, "NetworkingConfig") {
+		for _, endpoints := range foldedObjects(networkingConfig, "EndpointsConfig") {
+			names := make([]string, 0, len(endpoints))
+			for name := range endpoints {
+				names = append(names, name)
+			}
+			slices.Sort(names)
+			for _, name := range names {
+				if isCustomNetworkMode(name) {
+					appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, name, "container NetworkingConfig.EndpointsConfig")
+				}
+				endpoint, ok := endpoints[name].(map[string]any)
+				if !ok {
+					continue
+				}
+				for _, networkID := range foldedStrings(endpoint, "NetworkID") {
+					appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, networkID, "container NetworkingConfig.EndpointsConfig.NetworkID")
+				}
+			}
+		}
+	}
+	return refs
+}
+
+func foldedObjects(m map[string]any, key string) []map[string]any {
+	var out []map[string]any
+	for k, v := range m {
+		if !strings.EqualFold(k, key) {
+			continue
+		}
+		if object, ok := v.(map[string]any); ok {
+			out = append(out, object)
+		}
+	}
+	return out
+}
+
+func foldedStrings(m map[string]any, key string) []string {
+	var out []string
+	for k, v := range m {
+		if !strings.EqualFold(k, key) {
+			continue
+		}
+		if value, ok := v.(string); ok {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func foldedArrays(m map[string]any, key string) [][]any {
+	var out [][]any
+	for k, v := range m {
+		if !strings.EqualFold(k, key) {
+			continue
+		}
+		if values, ok := v.([]any); ok {
+			out = append(out, values)
+		}
+	}
+	return out
+}
+
+func foldedStringEquals(m map[string]any, key, want string) bool {
+	for _, value := range foldedStrings(m, key) {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
+		}
+	}
+	return false
+}
+
+func appendEmbeddedOwnershipReference(refs *[]embeddedOwnershipReference, kind dockerresource.Kind, identifier, source string) {
+	identifier = strings.TrimSpace(identifier)
+	if identifier == "" || slices.ContainsFunc(*refs, func(ref embeddedOwnershipReference) bool {
+		return ref.kind == kind && ref.identifier == identifier
+	}) {
+		return
+	}
+	*refs = append(*refs, embeddedOwnershipReference{kind: kind, identifier: identifier, source: source})
+}
+
+func isCustomNetworkMode(raw string) bool {
+	mode := strings.TrimSpace(raw)
+	lower := strings.ToLower(mode)
+	if mode == "" || strings.HasPrefix(lower, "container:") || strings.HasPrefix(lower, "ns:") {
+		return false
+	}
+	switch lower {
+	case "default", "bridge", "host", "none", "ingress", "docker_gwbridge":
+		return false
+	default:
+		return true
+	}
+}
+
 func addOwnerLabelToServiceBody(r *http.Request, labelKey, owner string) error {
-	return mutateJSONBody(r, func(decoded map[string]any) error {
+	_, err := mutateServiceOwnershipBody(r, labelKey, owner)
+	return err
+}
+
+func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
+	refs := &ownershipRequestReferences{}
+	err := mutateJSONBody(r, func(decoded map[string]any) error {
 		serviceLabels, err := nestedObject(decoded, "Labels")
 		if err != nil {
 			return err
@@ -303,8 +529,76 @@ func addOwnerLabelToServiceBody(r *http.Request, labelKey, owner string) error {
 			return err
 		}
 		containerLabels[labelKey] = owner
+		refs.embeddedResources = serviceEmbeddedOwnershipReferences(decoded)
 		return nil
 	})
+	return refs, err
+}
+
+func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
+	var refs []embeddedOwnershipReference
+	for _, taskTemplate := range foldedObjects(decoded, "TaskTemplate") {
+		for _, containerSpec := range foldedObjects(taskTemplate, "ContainerSpec") {
+			for _, image := range foldedStrings(containerSpec, "Image") {
+				appendEmbeddedOwnershipReference(&refs, dockerresource.KindImage, image, "service TaskTemplate.ContainerSpec.Image")
+			}
+
+			for _, mounts := range foldedArrays(containerSpec, "Mounts") {
+				for _, value := range mounts {
+					mount, ok := value.(map[string]any)
+					if !ok || !foldedStringEquals(mount, "Type", "volume") {
+						continue
+					}
+					for _, source := range foldedStrings(mount, "Source") {
+						appendEmbeddedOwnershipReference(&refs, dockerresource.KindVolume, source, "service TaskTemplate.ContainerSpec.Mounts")
+					}
+				}
+			}
+
+			appendServiceObjectReferences(&refs, containerSpec, "Secrets", "SecretID", "SecretName", dockerresource.KindSecret)
+			appendServiceObjectReferences(&refs, containerSpec, "Configs", "ConfigID", "ConfigName", dockerresource.KindConfig)
+		}
+	}
+
+	for _, networks := range foldedArrays(decoded, "Networks") {
+		for _, value := range networks {
+			network, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, target := range foldedStrings(network, "Target") {
+				if isCustomNetworkMode(target) {
+					appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, target, "service Networks.Target")
+				}
+			}
+		}
+	}
+	return refs
+}
+
+func appendServiceObjectReferences(
+	refs *[]embeddedOwnershipReference,
+	containerSpec map[string]any,
+	arrayKey, idKey, nameKey string,
+	kind dockerresource.Kind,
+) {
+	for _, values := range foldedArrays(containerSpec, arrayKey) {
+		for _, value := range values {
+			object, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			identifiers := foldedStrings(object, idKey)
+			if !slices.ContainsFunc(identifiers, func(identifier string) bool {
+				return strings.TrimSpace(identifier) != ""
+			}) {
+				identifiers = foldedStrings(object, nameKey)
+			}
+			for _, identifier := range identifiers {
+				appendEmbeddedOwnershipReference(refs, kind, identifier, "service TaskTemplate.ContainerSpec."+arrayKey)
+			}
+		}
+	}
 }
 
 func addOwnerLabelToBuildQuery(r *http.Request, labelKey, owner string) error {

@@ -30,7 +30,7 @@
    - Add a fresh empty `## [Unreleased]` block above it
    - The release workflow (`release-cut.yml`) validates that a non-empty CHANGELOG entry exists for the tag before pushing it; the build will fail if this step is skipped
 
-5. **No source version bump needed** — sockguard does not hardcode its version in source. The binary's `sockguard version` output is injected at build time via goreleaser ldflags:
+5. **Sync release metadata** — sockguard does not hardcode its binary version in source. The binary's `sockguard version` output is injected at build time via goreleaser ldflags:
 
    ```
    -X github.com/codeswhat/sockguard/internal/version.Version={{.Version}}
@@ -38,7 +38,11 @@
    -X github.com/codeswhat/sockguard/internal/version.BuildDate={{.Date}}
    ```
 
-   The only file that needs a manual bump is `chart/sockguard/Chart.yaml` (see [Helm chart](#helm-chart) below).
+   The release-facing files still need explicit updates in the same PR:
+
+   - `website/src/lib/site-config.ts` — current stable version shown by the site
+   - `website/src/lib/site-content.ts` and `README.md` — roadmap/current-release copy
+   - `chart/sockguard/Chart.yaml` — chart version plus the default application image tag (see [Helm chart](#helm-chart) below)
 
 6. **Lefthook pre-push** — runs automatically on `git push`. Sequence: clean-tree → goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails.
 
@@ -92,6 +96,15 @@ Swap `-a` for `-s` if you want to GPG-sign locally, but signing is optional and 
 - Quay.io mirror updated: `quay.io/codeswhat/sockguard:<version>`
 - Cosign verify — see `docs/content/docs/verification.mdx` for the canonical invocation
 
+### Stable patch plus active release-candidate line
+
+When a fix applies to the current stable release while a later release candidate is active, use two tracks instead of tagging the RC branch first:
+
+1. Land and tag the stable patch from `main`; wait for `release-from-tag.yml` and its published-artifact verification to pass.
+2. Merge the stable tag commit forward into the active development branch. Resolve CHANGELOG, site version, roadmap, and chart metadata deliberately — do not drop the stable release history during conflict resolution.
+3. Add an exact prerelease CHANGELOG heading, run the full gates again, and cut the next RC with the explicit `release_tag` workflow input.
+4. Keep the next minor milestone marked as prerelease/next until its soak completes. A security fix resets the promotion clock; it is not a reason to relabel the RC as stable early.
+
 ---
 
 ## Helm chart
@@ -100,7 +113,7 @@ The chart is in `chart/sockguard/`. It is not auto-published by any current work
 
 1. Edit `chart/sockguard/Chart.yaml`:
    - `version:` — chart semver (increment independently of the app version)
-   - `appVersion:` — set to the new release tag (e.g. `"v1.0.0"`)
+   - `appVersion:` — set to the container image tag **without** the git tag's leading `v` (e.g. `"1.4.3"` or `"1.5.0-rc.2"`); the DaemonSet uses this value verbatim when `image.tag` is empty
 2. Commit the change in the same PR or as a follow-up patch commit on `main` before tagging.
 
 There is no chart-release workflow at this time. If you publish to a Helm repository, do so after the Docker images are live.

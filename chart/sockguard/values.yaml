@@ -69,6 +69,17 @@ resources: {}
   #   cpu: 100m
   #   memory: 64Mi
 
+# Pod-level securityContext. These defaults pin the image's Chainguard
+# `nonroot` identity and explicitly select the runtime-default seccomp profile.
+# The DaemonSet mounts /var/run/docker.sock, which is typically owned by a
+# non-root "docker" group; add that GID as a supplemental group when needed:
+#   supplementalGroups: [999]  # run `stat -c '%g' /var/run/docker.sock` on the host to find it
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
 # DaemonSet tolerations — tolerate control-plane nodes to proxy on every node.
 tolerations: []
   # - key: node-role.kubernetes.io/control-plane

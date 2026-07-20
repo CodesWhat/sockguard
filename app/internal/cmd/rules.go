@@ -20,7 +20,7 @@ type bodySensitiveWriteEndpoint struct {
 	path   string
 }
 
-type readSensitiveExfilEndpoint struct {
+type sensitiveExfilEndpoint struct {
 	method string
 	path   string
 }
@@ -52,7 +52,7 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/plugins/create"},
 }
 
-var readSensitiveExfilEndpoints = []readSensitiveExfilEndpoint{
+var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/containers/sockguard-test/archive"},
 	{method: http.MethodGet, path: "/containers/sockguard-test/export"},
 	// Validation only sees method+path, not query strings, so treat the
@@ -65,6 +65,11 @@ var readSensitiveExfilEndpoints = []readSensitiveExfilEndpoint{
 	{method: http.MethodPost, path: "/containers/sockguard-test/attach"},
 	{method: http.MethodGet, path: "/images/get"},
 	{method: http.MethodGet, path: "/images/sockguard-test/get"},
+	// Registry pushes are writes at the Docker API layer, but they read local
+	// artifact content and transmit it to a caller-selected registry. Treat
+	// them as exfiltration surfaces alongside archive/export downloads.
+	{method: http.MethodPost, path: "/images/sockguard-test/push"},
+	{method: http.MethodPost, path: "/plugins/sockguard-test/push"},
 }
 
 func validateAndCompileRules(cfg *config.Config) ([]*filter.CompiledRule, error) {
@@ -160,15 +165,15 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 		return nil
 	}
 
-	exposed := allowedReadSensitiveExfilEndpoints(compiled)
+	exposed := allowedSensitiveExfilEndpoints(compiled)
 	if len(exposed) == 0 {
 		return nil
 	}
 
 	if scope == "" {
 		return fmt.Errorf(
-			"rules allow raw archive/export or log/attach streaming endpoints "+
-				"(these can exfiltrate container files, environment variables, and secrets); "+
+			"rules allow raw archive/export, log/attach streaming, or registry push endpoints "+
+				"(these can exfiltrate container files, images, plugins, environment variables, and secrets); "+
 				"either tighten the allow rules to omit these paths or set "+
 				"insecure_allow_read_exfiltration: true to acknowledge the risk. "+
 				"Exposed endpoints: %s",
@@ -177,8 +182,8 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 	}
 
 	return fmt.Errorf(
-		"client profile %q allows raw archive/export or log/attach streaming endpoints "+
-			"(these can exfiltrate container files, environment variables, and secrets); "+
+		"client profile %q allows raw archive/export, log/attach streaming, or registry push endpoints "+
+			"(these can exfiltrate container files, images, plugins, environment variables, and secrets); "+
 			"either tighten the profile's allow rules to omit these paths or set the "+
 			"top-level insecure_allow_read_exfiltration: true to acknowledge the risk "+
 			"(it is a global setting, not per-profile). "+
@@ -204,9 +209,9 @@ func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, co
 	return allowed
 }
 
-func allowedReadSensitiveExfilEndpoints(compiled []*filter.CompiledRule) []string {
-	allowed := make([]string, 0, len(readSensitiveExfilEndpoints))
-	for _, endpoint := range readSensitiveExfilEndpoints {
+func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule) []string {
+	allowed := make([]string, 0, len(sensitiveExfilEndpoints))
+	for _, endpoint := range sensitiveExfilEndpoints {
 		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
 		action, _, _ := filter.Evaluate(compiled, req)
 		if action != filter.ActionAllow {
