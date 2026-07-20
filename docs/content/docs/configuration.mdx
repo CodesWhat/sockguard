@@ -624,7 +624,7 @@ Setting `ownership.owner` turns on per-proxy resource ownership isolation. Sockg
 
 Unlabeled nodes and swarm state are denied on reads once ownership is enabled. They can still be claimed through `POST /nodes/*/update` and `POST /swarm/update`, where Sockguard stamps the current owner label into the outgoing update body before forwarding it to Docker.
 
-`allow_unowned_images` defaults to `true` so shared base images can still be pulled and inspected without relabeling. Set it to `false` in tighter multi-tenant setups.
+`allow_unowned_images` defaults to `true` so shared base images that Docker can inspect but that lack the ownership label can still be referenced by a container or service. A labeled image owned by somebody else is always denied, and an image reference that Docker cannot resolve is not treated as “unlabeled.” Set the option to `false` in tighter multi-tenant setups. Unlabeled or unresolved volumes, networks, secrets, and configs remain untrusted; create those resources through their owner-stamping endpoints before referencing them from a workload.
 
 ## Rollout Modes
 
@@ -969,7 +969,7 @@ operational reason and a plan to revisit.
 | Variable                                       | YAML field                            | Default                         | Description                                                                                                  |
 | ---------------------------------------------- | ------------------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `SOCKGUARD_INSECURE_ALLOW_BODY_BLIND_WRITES`   | `insecure_allow_body_blind_writes`    | `false`                         | Allow POST endpoints whose bodies Sockguard cannot inspect (currently arbitrary exec without an allowlist and plugin set without allowed prefixes). |
-| `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION`   | `insecure_allow_read_exfiltration`    | `false`                         | Allow rules that match raw archive/export, log/attach, and image-tarball-get endpoints. Tighten the rules instead whenever possible. |
+| `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION`   | `insecure_allow_read_exfiltration`    | `false`                         | Allow rules that match raw archive/export, log/attach, image-tarball-get, or image/plugin registry-push endpoints. The legacy option name includes “read,” but outbound pushes also read local artifact content and can exfiltrate it. Tighten the rules instead whenever possible. |
 
 ### Container-create body inspection
 
