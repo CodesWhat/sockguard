@@ -199,7 +199,7 @@ Use method-specific image and plugin rules. Permit `POST /images/create` for pul
 - Severity: Low
 - Category: Browser security hardening
 - Locations:
-  - `vercel.json`
+  - `website/vercel.json`
   - `scripts/security-headers.test.mjs`
   - `website/next.config.ts`
   - `docs/next.config.ts`
@@ -227,7 +227,7 @@ Configure these headers at the CDN or static hosting layer. Roll out a CSP in re
 
 #### Remediation
 
-A root `vercel.json` now applies a catch-all response-header policy to the marketing site and copied `/docs` export. It includes an enforced CSP, `X-Content-Type-Options: nosniff`, both `frame-ancestors 'none'` and `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, and HSTS. Scripts and analytics connections remain same-origin; external scripts and `unsafe-eval` are disallowed. The static Next.js bootstrap and generated styles require inline compatibility, so `unsafe-inline` is scoped to `script-src` and `style-src` rather than opening external origins.
+`website/vercel.json`, colocated with the configured Vercel project root, now applies a catch-all response-header policy to the marketing site and copied `/docs` export. It includes an enforced CSP, `X-Content-Type-Options: nosniff`, both `frame-ancestors 'none'` and `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, and HSTS. Scripts and analytics connections remain same-origin; external scripts and `unsafe-eval` are disallowed. The static Next.js bootstrap and generated styles require inline compatibility, so `unsafe-inline` is scoped to `script-src` and `style-src` rather than opening external origins.
 
 `scripts/security-headers.test.mjs` parses the actual hosting configuration and verifies the catch-all route, required headers, CSP invariants, and absence of external script origins/`unsafe-eval`. The test and both static Next.js builds pass. Live-header verification remains a post-release gate after the production Vercel deployment.
 
