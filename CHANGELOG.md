@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0-rc.2] - 2026-07-20
+
 ### Security
 
 - **Owner isolation now authorizes workload dependencies embedded in create/update bodies.** `POST /containers/create` resolves the requested image, named bind/structured volumes, custom `NetworkMode`, every `NetworkingConfig.EndpointsConfig` network, and existing `container:<ref>` namespace targets. `POST /services/create` and `/services/*/update` resolve the task image, named volumes, attached networks, secrets, and configs. A reference carrying another owner's label or a dependency Docker cannot resolve is denied before Docker sees the request; only a successfully resolved but unlabeled image can use `ownership.allow_unowned_images`, while other unlabeled resource types remain untrusted. Create new owned volumes/networks/secrets/configs through their owner-stamping endpoints before attaching them.
@@ -77,6 +79,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`container_create_hardening_test.go`** — table-driven cases for `require_cpu_limit_hard`: satisfied by `NanoCpus`, satisfied by `CpuQuota` alone (no `CpuPeriod` needed), NOT satisfied by `CpuShares` alone or a lone `CpuPeriod`, and a both-knobs-enabled case proving the stricter hard-cap denial message wins over the passing soft check. `require_cpu_limit_hard`'s new field is covered by the reflection-based `load_defaults_completeness_test.go` sweep automatically, so no hand-written env-var regression test was needed for it.
 - **`container_create_test.go` / `ownership/middleware_test.go` / `filter_options_test.go` / `validate_test.go`** — table-driven coverage for the namespace-sharing gate: `ContainerNamespaceRef`/`isNamespacePathMode` parsers, the `restrict_namespace_sharing` allow/deny matrix across `NetworkMode`/`PidMode`/`IpcMode`/`UTSMode`/`UsernsMode`, `deny_namespace_path_mode`, filter-options mapping, and blank-entry validation; ownership coverage for cross-owner deny, same-owner/unlabeled/not-found handling, `AllowCrossOwnerNamespaceSharing` opt-out, ref dedup, and fail-closed behavior on an inspect error.
 - **`container_create_test.go` / `filter_options_test.go`** — `TestContainerCreatePolicyInspectCgroupNamespaceModeGate` covers the `allow_host_cgroupns` host-mode gate: `CgroupnsMode=host` denied by default, allowed when opted in, case-insensitive + whitespace-trimmed matching, `private`/empty passing through, and gate independence (other `allow_host_*` opt-ins don't unlock cgroupns). Filter-options mapping asserts `AllowHostCgroupNS` propagates config → `ContainerCreateOptions`; the reflection-based defaults sweep covers the env-var override automatically.
+## [1.4.3] - 2026-07-20
+
+Security and correctness patch over v1.4.2. Closes two high-severity owner-isolation gaps, extends the exfiltration acknowledgement to registry pushes, hardens the public static sites and Helm defaults, and includes the previously-unreleased blind-write runtime fix. Deployments using `ownership.owner` should read the first item carefully: foreign and unresolved workload dependencies that were previously forwarded are now denied before Docker sees the request.
+
+### Security
+
+- **Owner isolation now authorizes workload dependencies embedded in create/update bodies.** `POST /containers/create` resolves the requested image, named bind-string and structured volumes, custom `NetworkMode`, and every `NetworkingConfig.EndpointsConfig` network key/ID. `POST /services/create` and `/services/*/update` resolve the task image, named volumes, attached networks, secrets, and configs. Each unique reference must resolve to the current owner before the request is forwarded; a foreign or unresolved dependency is denied. `ownership.allow_unowned_images` still permits a successfully-resolved image with no owner label, but never a foreign-labeled or missing image. This closes the side door where an owner-stamped workload could consume another owner's volume, network, secret, config, or local image.
+- **Ownership authorization no longer caches positive decisions under mutable Docker names or tags.** Authorization-critical lookups inspect current daemon state on every request, so deleting/recreating a named resource or retagging an image cannot reuse the previous resource's cached owner label during the old ten-second TTL. Visibility-only reads keep their bounded singleflight cache; repeated references inside one create/update payload are deduplicated before inspection.
+- **The exfiltration startup guard now covers registry pushes.** Broad rules matching `POST /images/{name}/push` or `POST /plugins/{name}/push` require `insecure_allow_read_exfiltration: true`, including rules inside named client profiles. The legacy option name is retained for compatibility, but validation now states that these writes read local artifacts and transmit them to a caller-selected registry.
+- **The static website and copied docs export now ship browser defense-in-depth headers from the hosting layer.** A catch-all Vercel policy adds an enforced CSP, `nosniff`, `frame-ancestors 'none'` plus `X-Frame-Options: DENY`, a strict referrer policy, a deny-by-default permissions policy, and HSTS. Scripts and analytics connections remain same-origin; external script origins and `unsafe-eval` stay disallowed.
+- **Helm defaults now pin the image's non-root identity and seccomp posture.** The pod security context sets `runAsNonRoot: true`, UID/GID `65532`, and `seccompProfile.type: RuntimeDefault`, while preserving the documented `supplementalGroups` escape hatch for the host Docker socket's numeric group.
+
+### Fixed
+
+- **`insecure_allow_body_blind_writes` now actually enables unpinned exec at runtime.** Stable v1.4 accepted the top-level acknowledgement during validation but never propagated it into the exec request policy, so the GitHub Actions, GitLab Runner, Portainer, Portwing-with-exec, and Watchtower presets started successfully and then denied every unpinned `POST /containers/{id}/exec`. The runtime now lifts only the empty `allowed_commands` denial when the opt-in is enabled; `allow_privileged`, `allow_root_user`, and any configured command allowlist remain enforced. The setting is applied to both the default policy and named client profiles, and emits a once-per-process startup warning.
+
+### Tests
+
+- Added owner-isolation matrices across container/service images, named volumes, networks, secrets, and configs; a mutable-name integration regression; exact/broad/profile registry-push validation cases; a parser-backed hosting-header contract test; and rendered Helm policy assertions covering pod and container confinement.
 
 ## [1.4.2] - 2026-07-11
 

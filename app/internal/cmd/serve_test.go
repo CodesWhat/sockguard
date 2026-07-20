@@ -130,6 +130,79 @@ func TestServePolicyConfigWiresInsecureAllowBodyBlindWrites(t *testing.T) {
 	}
 }
 
+func TestServePolicyConfigHonorsBlindWriteOptInForExec(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = "/tmp/docker.sock"
+	cfg.InsecureAllowBodyBlindWrites = true
+	cfg.RequestBody.Exec.AllowRootUser = true
+
+	allowExec, err := filter.CompileRule(filter.Rule{
+		Methods: []string{http.MethodPost},
+		Pattern: "/containers/*/exec",
+		Action:  filter.ActionAllow,
+		Index:   0,
+	})
+	if err != nil {
+		t.Fatalf("compile allow rule: %v", err)
+	}
+	denyAll, err := filter.CompileRule(filter.Rule{
+		Methods: []string{"*"},
+		Pattern: "/**",
+		Action:  filter.ActionDeny,
+		Index:   1,
+	})
+	if err != nil {
+		t.Fatalf("compile deny rule: %v", err)
+	}
+
+	reachedUpstream := false
+	handler := filter.MiddlewareWithOptions(
+		[]*filter.CompiledRule{allowExec, denyAll},
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		filter.Options{PolicyConfig: servePolicyConfig(&cfg, nil)},
+	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reachedUpstream = true
+		w.WriteHeader(http.StatusCreated)
+	}))
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/containers/abc123/exec",
+		strings.NewReader(`{"Cmd":["/bin/sh","-c","id"],"User":"1000"}`),
+	)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+	if !reachedUpstream {
+		t.Fatal("blind-write exec opt-in did not reach upstream")
+	}
+}
+
+func TestBuildServeClientProfilesHonorsGlobalBlindWriteOptIn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Upstream.Socket = "/tmp/docker.sock"
+	cfg.InsecureAllowBodyBlindWrites = true
+	cfg.Clients.Profiles = []config.ClientProfileConfig{
+		{
+			Name: "portwing-exec",
+			Rules: []config.RuleConfig{
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			},
+		},
+	}
+
+	profiles, err := buildServeClientProfiles(&cfg, nil)
+	if err != nil {
+		t.Fatalf("buildServeClientProfiles() error: %v", err)
+	}
+	if !profiles["portwing-exec"].Exec.AllowBlindWrites {
+		t.Fatal("named profile did not inherit global insecure_allow_body_blind_writes opt-in")
+	}
+}
+
 func TestListenUnixSocketCreatesNewSocket(t *testing.T) {
 	path := shortSocketPath(t, "new")
 

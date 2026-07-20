@@ -76,7 +76,8 @@ test("website comparison rows live in extracted data modules", () => {
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // Latest released milestone must be v1.4.0 (v1.4.0/v1.4.1 shipped 2026-07-10)
+  // Patch releases stay grouped under the v1.4.0 roadmap milestone; v1.4.3 is
+  // the current stable release while v1.5.0 remains the next milestone.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
