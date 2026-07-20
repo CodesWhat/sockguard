@@ -6,7 +6,7 @@ Date: 2026-07-20
 
 Sockguard has a strong baseline security posture: default-deny routing, canonicalized Docker API paths, bounded body inspectors, race and fuzz coverage, non-root container execution, pinned CI actions and container digests, signed-release verification, and explicit acknowledgements for dangerous compatibility modes.
 
-This pass found five actionable issues. All five are remediated in the working tree; the hosting-layer fix in SEC-004 will become observable on the public site after the next Vercel deployment.
+This pass found five actionable issues. All five are remediated in the v1.4.3 release source and merge forward into the v1.5 release-candidate line; the hosting-layer fix in SEC-004 becomes observable on the public site after the production deployment.
 
 | ID | Severity | Finding | Status |
 | --- | --- | --- | --- |
@@ -61,7 +61,7 @@ Checks run:
 
 #### Evidence
 
-`mutateOwnershipRequest` stamps labels on container and service bodies, but only returns authorization targets for the five `container:<ref>` namespace mode fields. `allowOwnershipRequest` then special-cases those namespace references and otherwise checks identifiers parsed from the request URL.
+`mutateOwnershipRequest` stamped labels on container and service bodies but returned no authorization targets from those payloads. `allowOwnershipRequest` checked only identifiers parsed from the request URL.
 
 The container-create payload also carries resource identifiers in:
 
@@ -92,7 +92,7 @@ A representative data-access path is:
 
 #### Recommended fix
 
-Extract every Docker resource reference from container and service create/update payloads during the existing bounded decode pass, using the same case-insensitive and duplicate-key protections already applied to namespace references. Resolve and authorize each reference before forwarding:
+Extract every Docker resource reference from container and service create/update payloads during the existing bounded decode pass, using the same case-insensitive and duplicate-key protections already applied to owner-label mutation. Resolve and authorize each reference before forwarding:
 
 - container image
 - named volumes in both bind-string and structured mount forms
@@ -195,7 +195,7 @@ Use method-specific image and plugin rules. Permit `POST /images/create` for pul
 
 ### SEC-004 — Public sites lack defense-in-depth browser headers
 
-- Status: Remediated in the working tree on 2026-07-20; public deployment pending
+- Status: Included in v1.4.3 release source on 2026-07-20; public deployment verification pending
 - Severity: Low
 - Category: Browser security hardening
 - Locations:
@@ -229,7 +229,7 @@ Configure these headers at the CDN or static hosting layer. Roll out a CSP in re
 
 A root `vercel.json` now applies a catch-all response-header policy to the marketing site and copied `/docs` export. It includes an enforced CSP, `X-Content-Type-Options: nosniff`, both `frame-ancestors 'none'` and `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, and HSTS. Scripts and analytics connections remain same-origin; external scripts and `unsafe-eval` are disallowed. The static Next.js bootstrap and generated styles require inline compatibility, so `unsafe-inline` is scoped to `script-src` and `style-src` rather than opening external origins.
 
-`scripts/security-headers.test.mjs` parses the actual hosting configuration and verifies the catch-all route, required headers, CSP invariants, and absence of external script origins/`unsafe-eval`. The test and both static Next.js builds pass. Live headers will reflect this policy after the next Vercel deployment; no deployment was performed during this local remediation pass.
+`scripts/security-headers.test.mjs` parses the actual hosting configuration and verifies the catch-all route, required headers, CSP invariants, and absence of external script origins/`unsafe-eval`. The test and both static Next.js builds pass. Live-header verification remains a post-release gate after the production Vercel deployment.
 
 ### SEC-005 — Helm defaults do not enforce the image's non-root identity
 
@@ -286,5 +286,5 @@ Chart defaults now set `runAsNonRoot: true`, `runAsUser: 65532`, `runAsGroup: 65
 1. SEC-001: complete — embedded resource authorization and cross-owner regression coverage added.
 2. SEC-002: complete — authorization cache bypassed and mutable-name regression coverage added.
 3. SEC-003: complete — image/plugin pushes covered by the exfiltration guard and tests.
-4. SEC-004: code/config complete — static policy verification passes; production observation awaits the next Vercel deployment.
+4. SEC-004: code/config complete in v1.4.3 — static policy verification passes; production observation is a required post-release gate.
 5. SEC-005: complete — non-root UID/GID and runtime-default seccomp are rendered and tested.

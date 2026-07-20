@@ -15,7 +15,7 @@ export const SITE_CONFIG = {
   /** Brand name shown in the header, footer, and metadata. */
   name: "Sockguard",
   /** Current release version shown in the hero badge. */
-  version: "1.4.1",
+  version: "1.4.3",
   /** Short product tagline used in page titles and OG metadata. */
   tagline: "Control what gets through",
   /** Default meta / OpenGraph / Twitter description. */

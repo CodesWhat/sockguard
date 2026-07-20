@@ -621,6 +621,9 @@ Setting `ownership.owner` turns on per-proxy resource ownership isolation. Sockg
 - Add the same label to `POST /build` via the `labels` query parameter so build-produced images can carry the owner identity too
 - Inject `label=<owner>` filters into list, prune, and events requests, including `/services`, `/tasks`, `/secrets`, `/configs`, and `/nodes` (`node.label=<owner>` there), so responses only reveal resources owned by this proxy instance
 - Inspect target resources on individual `GET`, `POST`, `PUT`, and `DELETE` paths and deny cross-owner access to owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state
+- Authorize resources embedded in workload payloads before forwarding them: container images, named bind-string/structured volumes, custom network modes, and endpoint-config networks; plus service task images, named volumes, networks, secrets, and configs
+
+Ownership authorization always performs a fresh Docker inspect. It deliberately does not reuse the short-lived visibility cache because Docker names and image tags are mutable: after a delete/recreate or retag, a cached positive label result could otherwise authorize a different resource. Repeated references inside one payload are deduplicated before inspection.
 
 Unlabeled nodes and swarm state are denied on reads once ownership is enabled. They can still be claimed through `POST /nodes/*/update` and `POST /swarm/update`, where Sockguard stamps the current owner label into the outgoing update body before forwarding it to Docker.
 
