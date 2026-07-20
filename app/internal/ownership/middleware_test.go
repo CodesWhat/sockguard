@@ -287,7 +287,7 @@ func TestMiddlewareAddsOwnerLabelToContainerCreate(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 
-	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"busybox:1.37","Labels":{"existing":"value"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Labels":{"existing":"value"}}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -306,7 +306,7 @@ func TestMiddlewareNormalizesSingleVariantContainerCreateLabels(t *testing.T) {
 	}{
 		{
 			name: "lowercase labels only canonicalized",
-			body: `{"Image":"busybox:1.37","labels":{"existing":"value"}}`,
+			body: `{"labels":{"existing":"value"}}`,
 			wantLabels: map[string]string{
 				"com.sockguard.owner": "job-123",
 				"existing":            "value",
@@ -314,7 +314,7 @@ func TestMiddlewareNormalizesSingleVariantContainerCreateLabels(t *testing.T) {
 		},
 		{
 			name: "label keys remain case sensitive",
-			body: `{"Image":"busybox:1.37","Labels":{"MyApp":"1","myapp":"2"}}`,
+			body: `{"Labels":{"MyApp":"1","myapp":"2"}}`,
 			wantLabels: map[string]string{
 				"com.sockguard.owner": "job-123",
 				"MyApp":               "1",
@@ -1198,7 +1198,7 @@ func TestMutateOwnershipRequest(t *testing.T) {
 	t.Parallel()
 	t.Run("build", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/build?labels=%7B%22existing%22%3A%22value%22%7D", nil)
-		if err := mutateOwnershipRequest(req, "/build", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+		if _, err := mutateOwnershipRequest(req, "/build", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
 			t.Fatalf("mutateOwnershipRequest(build) error = %v", err)
 		}
 		var labels map[string]string
@@ -1212,14 +1212,14 @@ func TestMutateOwnershipRequest(t *testing.T) {
 
 	t.Run("noop", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/info", nil)
-		if err := mutateOwnershipRequest(req, "/info", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+		if _, err := mutateOwnershipRequest(req, "/info", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
 			t.Fatalf("mutateOwnershipRequest(noop) error = %v", err)
 		}
 	})
 
 	t.Run("service create", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{"Name":"web"}`))
-		if err := mutateOwnershipRequest(req, "/services/create", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+		if _, err := mutateOwnershipRequest(req, "/services/create", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
 			t.Fatalf("mutateOwnershipRequest(service create) error = %v", err)
 		}
 		var body map[string]any
@@ -1241,7 +1241,7 @@ func TestMutateOwnershipRequest(t *testing.T) {
 			"Labels":{"existing":"value"},
 			"TaskTemplate":{"ContainerSpec":{"Labels":{"workload":"api"}}}
 		}`))
-		if err := mutateOwnershipRequest(req, "/services/web/update", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+		if _, err := mutateOwnershipRequest(req, "/services/web/update", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
 			t.Fatalf("mutateOwnershipRequest(service update) error = %v", err)
 		}
 		var body map[string]any
@@ -1266,7 +1266,7 @@ func TestMutateOwnershipRequest(t *testing.T) {
 
 	t.Run("node update", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/nodes/node-1/update?version=42", strings.NewReader(`{"Name":"node-1"}`))
-		if err := mutateOwnershipRequest(req, "/nodes/node-1/update", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+		if _, err := mutateOwnershipRequest(req, "/nodes/node-1/update", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
 			t.Fatalf("mutateOwnershipRequest(node update) error = %v", err)
 		}
 		var body map[string]any
@@ -1284,7 +1284,7 @@ func TestMutateOwnershipRequest(t *testing.T) {
 
 	t.Run("swarm update", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/swarm/update?version=42", strings.NewReader(`{"Name":"cluster-1"}`))
-		if err := mutateOwnershipRequest(req, "/swarm/update", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+		if _, err := mutateOwnershipRequest(req, "/swarm/update", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
 			t.Fatalf("mutateOwnershipRequest(swarm update) error = %v", err)
 		}
 		var body map[string]any
@@ -1302,7 +1302,7 @@ func TestMutateOwnershipRequest(t *testing.T) {
 
 	t.Run("secret create", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/secrets/create", strings.NewReader(`{"Name":"db-password"}`))
-		if err := mutateOwnershipRequest(req, "/secrets/create", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+		if _, err := mutateOwnershipRequest(req, "/secrets/create", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
 			t.Fatalf("mutateOwnershipRequest(secret create) error = %v", err)
 		}
 		var body map[string]any
@@ -1317,7 +1317,7 @@ func TestMutateOwnershipRequest(t *testing.T) {
 
 	t.Run("config create", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/configs/create", strings.NewReader(`{"Name":"app-config"}`))
-		if err := mutateOwnershipRequest(req, "/configs/create", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
+		if _, err := mutateOwnershipRequest(req, "/configs/create", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}); err != nil {
 			t.Fatalf("mutateOwnershipRequest(config create) error = %v", err)
 		}
 		var body map[string]any
@@ -1346,31 +1346,31 @@ func TestAllowOwnershipRequest(t *testing.T) {
 		},
 	}
 
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/networks/net-1", opts, fi.inspectResource, fi.inspectExec); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/networks/net-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(network) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/volumes/vol-1", opts, fi.inspectResource, fi.inspectExec); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/volumes/vol-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(volume) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", opts, fi.inspectResource, fi.inspectExec); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(image) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/services/svc-1", opts, fi.inspectResource, fi.inspectExec); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/services/svc-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(service) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/services/svc-1/logs", opts, fi.inspectResource, fi.inspectExec); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/services/svc-1/logs", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(service logs) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/tasks/task-1", opts, fi.inspectResource, fi.inspectExec); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/tasks/task-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(task) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/tasks/task-1/logs", opts, fi.inspectResource, fi.inspectExec); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/tasks/task-1/logs", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(task logs) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/secrets/sec-1", opts, fi.inspectResource, fi.inspectExec); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/secrets/sec-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(secret) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/configs/cfg-1", opts, fi.inspectResource, fi.inspectExec); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/configs/cfg-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(config) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
 	nodefi := fakeInspector{
@@ -1378,7 +1378,7 @@ func TestAllowOwnershipRequest(t *testing.T) {
 			"nodes": {"node-1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
 		},
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/nodes/node-1", opts, nodefi.inspectResource, nodefi.inspectExec); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/nodes/node-1", opts, nodefi.inspectResource, nodefi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(node) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
 	swarmfi := fakeInspector{
@@ -1386,19 +1386,19 @@ func TestAllowOwnershipRequest(t *testing.T) {
 			"swarm": {"": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
 		},
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/swarm", opts, swarmfi.inspectResource, swarmfi.inspectExec); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/swarm", opts, swarmfi.inspectResource, swarmfi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(swarm) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, reason, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fi.inspectResource, fi.inspectExec); err != nil || verdict != verdictDeny || !strings.Contains(reason, "owner policy denied access to image") {
+	if verdict, reason, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictDeny || !strings.Contains(reason, "owner policy denied access to image") {
 		t.Fatalf("allowOwnershipRequest(image deny) = (%v, %q, %v), want verdictDeny/image denial/nil", verdict, reason, err)
 	}
 	execfi := fakeInspector{
 		execs: map[string]execResult{"missing": {found: false}},
 	}
-	if verdict, reason, err := allowOwnershipRequest(context.Background(), "/exec/missing/start", opts, execfi.inspectResource, execfi.inspectExec); err != nil || verdict != verdictPassThrough || reason != "" {
+	if verdict, reason, err := allowOwnershipRequest(context.Background(), "/exec/missing/start", opts, execfi.inspectResource, execfi.inspectExec, nil); err != nil || verdict != verdictPassThrough || reason != "" {
 		t.Fatalf("allowOwnershipRequest(exec missing) = (%v, %q, %v), want verdictPassThrough/\"\"/nil", verdict, reason, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/info", opts, fi.inspectResource, fi.inspectExec); err != nil || verdict != verdictPassThrough {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), "/info", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictPassThrough {
 		t.Fatalf("allowOwnershipRequest(no match) = (%v, %v), want verdictPassThrough/nil", verdict, err)
 	}
 }
@@ -2059,7 +2059,7 @@ func TestMiddlewareOverwritesClientSuppliedOwnerLabel(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 
-	body := `{"Image":"busybox:1.37","Labels":{"com.sockguard.owner":"attacker","com.example.team":"data"}}`
+	body := `{"Labels":{"com.sockguard.owner":"attacker","com.example.team":"data"}}`
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
