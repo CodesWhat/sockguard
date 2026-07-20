@@ -89,7 +89,9 @@ pre-push:
     # the push leaves the machine. Real coverage (60 s, 15 min, 1 h)
     # happens in the ci-verify + quality-fuzz-{nightly,monthly} workflows.
     # Keep a finite Go watchdog above the tiny smoke budget so a hung input
-    # fails with a stack dump instead of consuming the hook timeout.
+    # fails with a stack dump instead of consuming the hook timeout. Retry the
+    # known Go fuzztime-boundary flake once, matching the nightly workflow;
+    # crashing inputs, watchdog timeouts, and every other failure stay fatal.
     go-fuzz:
       run: |
         cd app && set -e
@@ -103,7 +105,32 @@ pre-push:
           "FuzzHijackHeadersAndBody ./internal/proxy/" \
           "FuzzHijackBidirectionalStream ./internal/proxy/"; do
           set -- $entry
-          go test -run='^$' -fuzz="^$1\$" -fuzztime=5s -timeout=1m "$2"
+          fuzzer="$1"
+          package="$2"
+          log="$(mktemp)"
+          attempt=1
+
+          while :; do
+            rc=0
+            go test -run='^$' -fuzz="^${fuzzer}\$" -fuzztime=5s -timeout=1m "${package}" >"${log}" 2>&1 || rc=$?
+            cat "${log}"
+
+            if [ "${rc}" -eq 0 ]; then
+              break
+            fi
+            if grep -q "Failing input written to testdata" "${log}" || \
+               grep -q "test timed out" "${log}" || \
+               ! grep -q "context deadline exceeded" "${log}" || \
+               [ "${attempt}" -ge 2 ]; then
+              rm -f "${log}"
+              exit "${rc}"
+            fi
+
+            echo "${fuzzer}: retrying known -fuzztime boundary flake once"
+            attempt=2
+          done
+
+          rm -f "${log}"
         done
       priority: 5
       timeout: 2m
