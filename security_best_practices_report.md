@@ -6,14 +6,14 @@ Date: 2026-07-20
 
 Sockguard has a strong baseline security posture: default-deny routing, canonicalized Docker API paths, bounded body inspectors, race and fuzz coverage, non-root container execution, pinned CI actions and container digests, signed-release verification, and explicit acknowledgements for dangerous compatibility modes.
 
-This pass found five actionable issues. All five are remediated in the working tree; the hosting-layer fix in SEC-004 will become observable on the public site after the next Vercel deployment.
+This pass found five actionable issues. All five are remediated, and the hosting-layer fix in SEC-004 was verified on the production website and copied docs export after the v1.4.3 deployment.
 
 | ID | Severity | Finding | Status |
 | --- | --- | --- | --- |
 | SEC-001 | High | Owner isolation did not authorize resource references embedded in create/update payloads | Remediated |
 | SEC-002 | High | Positive ownership decisions were cached by mutable Docker names for 10 seconds | Remediated |
 | SEC-003 | Medium | Startup exfiltration validation omitted image and plugin push endpoints | Remediated |
-| SEC-004 | Low | The production website and docs lacked browser hardening headers beyond HSTS | Remediated; deployment pending |
+| SEC-004 | Low | The production website and docs lacked browser hardening headers beyond HSTS | Remediated; production verified |
 | SEC-005 | Low | The Helm chart did not pin non-root execution or the runtime-default seccomp profile | Remediated |
 
 The highest-priority issue was SEC-001. Container and service writes now extract and authorize embedded images, volumes, networks, secrets, and configs during the same bounded decode used to stamp owner labels.
@@ -195,11 +195,11 @@ Use method-specific image and plugin rules. Permit `POST /images/create` for pul
 
 ### SEC-004 — Public sites lack defense-in-depth browser headers
 
-- Status: Remediated in the working tree on 2026-07-20; public deployment pending
+- Status: Remediated and verified in production on 2026-07-20
 - Severity: Low
 - Category: Browser security hardening
 - Locations:
-  - `vercel.json`
+  - `website/vercel.json`
   - `scripts/security-headers.test.mjs`
   - `website/next.config.ts`
   - `docs/next.config.ts`
@@ -227,9 +227,9 @@ Configure these headers at the CDN or static hosting layer. Roll out a CSP in re
 
 #### Remediation
 
-A root `vercel.json` now applies a catch-all response-header policy to the marketing site and copied `/docs` export. It includes an enforced CSP, `X-Content-Type-Options: nosniff`, both `frame-ancestors 'none'` and `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, and HSTS. Scripts and analytics connections remain same-origin; external scripts and `unsafe-eval` are disallowed. The static Next.js bootstrap and generated styles require inline compatibility, so `unsafe-inline` is scoped to `script-src` and `style-src` rather than opening external origins.
+`website/vercel.json`, colocated with the configured Vercel project root, now applies a catch-all response-header policy to the marketing site and copied `/docs` export. It includes an enforced CSP, `X-Content-Type-Options: nosniff`, both `frame-ancestors 'none'` and `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, and HSTS. Scripts and analytics connections remain same-origin; external scripts and `unsafe-eval` are disallowed. The static Next.js bootstrap and generated styles require inline compatibility, so `unsafe-inline` is scoped to `script-src` and `style-src` rather than opening external origins.
 
-`scripts/security-headers.test.mjs` parses the actual hosting configuration and verifies the catch-all route, required headers, CSP invariants, and absence of external script origins/`unsafe-eval`. The test and both static Next.js builds pass. Live headers will reflect this policy after the next Vercel deployment; no deployment was performed during this local remediation pass.
+`scripts/security-headers.test.mjs` parses the actual hosting configuration and verifies the catch-all route, required headers, CSP invariants, and absence of external script origins/`unsafe-eval`. The test and both static Next.js builds pass. Production verification after the v1.4.3 deployment confirmed the same contract on both `/` and `/docs`: enforced CSP, `nosniff`, clickjacking protection, strict referrer and permissions policies, HSTS with subdomains, and no `unsafe-eval` allowance.
 
 ### SEC-005 — Helm defaults do not enforce the image's non-root identity
 
@@ -286,5 +286,5 @@ Chart defaults now set `runAsNonRoot: true`, `runAsUser: 65532`, `runAsGroup: 65
 1. SEC-001: complete — embedded resource authorization and cross-owner regression coverage added.
 2. SEC-002: complete — authorization cache bypassed and mutable-name regression coverage added.
 3. SEC-003: complete — image/plugin pushes covered by the exfiltration guard and tests.
-4. SEC-004: code/config complete — static policy verification passes; production observation awaits the next Vercel deployment.
+4. SEC-004: remediated and production verified — static policy checks and live `/` plus `/docs` responses enforce the expected browser-hardening contract.
 5. SEC-005: complete — non-root UID/GID and runtime-default seccomp are rendered and tested.
