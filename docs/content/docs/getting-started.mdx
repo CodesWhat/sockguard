@@ -51,6 +51,8 @@ Set `DOCKER_SOCK_GID` before starting Compose (`export DOCKER_SOCK_GID=$(stat -c
 `--read-only`, `--cap-drop=ALL`, `--security-opt no-new-privileges:true`, and
 your runtime's seccomp/AppArmor/SELinux defaults.
 
+The filtered socket and its named-volume directory are owner-only and owned by UID/GID 65532. A non-root consumer of that socket must also use UID 65532; root consumers can connect as well. If an application must keep another UID, run Sockguard with that matching UID against a pre-owned bind-mounted directory, or use an authenticated TCP listener. The socket mode is deliberately fixed at `0600` and should not be broadened.
+
 ### Binary
 
 Download from [GitHub Releases](https://github.com/CodesWhat/sockguard/releases):

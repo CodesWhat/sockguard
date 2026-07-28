@@ -210,7 +210,7 @@ volumes:
 
 Sockguard hardens its own unix socket to `0600` owner-only permissions. `listen.socket_mode` remains in the config surface as a guardrail and must stay `0600`; broader modes are rejected at startup instead of being applied.
 
-To run fully unprivileged with a unix socket, pre-create a host directory with the uid/gid you want and bind-mount it in place of the named volume.
+The named-volume quick start creates that socket and its parent directory as UID/GID `65532`. A non-root consumer must therefore run as UID `65532` (as the Portwing examples do); a root consumer can also connect. If an application must keep another UID, run Sockguard with that same UID against a pre-owned bind-mounted directory, or use an authenticated TCP listener instead. Do not broaden the socket mode.
 
 </details>
 

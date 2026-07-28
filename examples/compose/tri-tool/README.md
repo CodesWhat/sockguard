@@ -4,7 +4,7 @@
 
 **What's exposed:** A unix socket shared via a named volume. Portwing connects to `/var/run/sockguard/sockguard.sock` instead of `/var/run/docker.sock`. drydock never sees a Docker socket at all — it connects to Portwing over HTTP in **Standard Mode** (drydock is the controller, Portwing is the agent) and gets every container/image fact secondhand, already filtered by sockguard. Port 4000 is the Portwing API; port 3000 is the drydock web UI.
 
-This bundle defaults to **no exec** (the plain `portwing` preset, not `portwing-with-exec`) and to Standard Mode. Portwing Edge's WebSocket dial-out is stable with drydock 1.6; drydock 1.5 treats it as experimental and requires `DD_EXPERIMENTAL_PORTWING=true`.
+This bundle defaults to the audited Sockguard 1.5.1, Portwing 0.8.1, and drydock 1.5.2 releases, **no exec** (the plain `portwing` preset, not `portwing-with-exec`), and Standard Mode. Override `SOCKGUARD_VERSION`, `PORTWING_VERSION`, or `DRYDOCK_VERSION` deliberately when validating an upgrade. Portwing Edge's WebSocket dial-out is stable with drydock 1.6; the pinned drydock 1.5.2 release treats it as experimental and requires `DD_EXPERIMENTAL_PORTWING=true`.
 
 ## Security tradeoffs
 

@@ -97,7 +97,7 @@ test("roadmap data is valid and matches expected milestones", () => {
   assert.equal(latestReleased.version, "v1.5.1", "latest released milestone must be v1.5.1");
   assert.equal(latestReleased.status, "released");
 
-  // Must reference the current stable milestone v1.5.0.
+  // Must retain the previous stable milestone v1.5.0.
   const v150 = roadmap.find((m) => m.version === "v1.5.0");
   assert.ok(v150, "roadmap must include a v1.5.0 milestone");
   assert.equal(v150.status, "released", "v1.5.0 must be released");
