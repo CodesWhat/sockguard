@@ -134,7 +134,7 @@ func middlewareWithDeps(
 
 			verdict, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, inspectResource, inspectExec, refs)
 			if err != nil {
-				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
+				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", logging.SafeString(err.Error()), "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyLookupFailed, "owner policy lookup failed", nil)
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "owner policy lookup failed"})
 				return

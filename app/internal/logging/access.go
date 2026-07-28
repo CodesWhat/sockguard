@@ -327,43 +327,43 @@ func appendCorrelationAttrs(attrs []slog.Attr, r *http.Request, meta *RequestMet
 	// path intentionally preserves the raw client URL path for forensic replay.
 	// Policy decisions use meta.NormPath, emitted below as normalized_path.
 	attrs = append(attrs,
-		slog.String("method", r.Method),
-		slog.String("path", r.URL.Path),
+		slog.String("method", SafeString(r.Method)),
+		slog.String("path", SafeString(r.URL.Path)),
 	)
 
 	if values := r.Header[requestIDHeader]; len(values) > 0 && values[0] != "" {
-		attrs = append(attrs, slog.String("request_id", values[0]))
+		attrs = append(attrs, slog.String("request_id", SafeString(values[0])))
 	}
 	if clientRequestID := clientRequestIDForRequest(r, meta); clientRequestID != "" {
-		attrs = append(attrs, slog.String("client_request_id", clientRequestID))
+		attrs = append(attrs, slog.String("client_request_id", SafeString(clientRequestID)))
 	}
 
 	if meta != nil {
 		attrs = append(attrs,
-			slog.String("normalized_path", meta.NormPath),
-			slog.String("decision", meta.Decision),
+			slog.String("normalized_path", SafeString(meta.NormPath)),
+			slog.String("decision", SafeString(meta.Decision)),
 			slog.Int("rule", meta.Rule),
 		)
 		if meta.Profile != "" {
-			attrs = append(attrs, slog.String("profile", meta.Profile))
+			attrs = append(attrs, slog.String("profile", SafeString(meta.Profile)))
 		}
 		if meta.RolloutMode != "" && meta.RolloutMode != "enforce" {
-			attrs = append(attrs, slog.String("rollout_mode", meta.RolloutMode))
+			attrs = append(attrs, slog.String("rollout_mode", SafeString(meta.RolloutMode)))
 		}
 		if meta.ReasonCode != "" {
-			attrs = append(attrs, slog.String("reason_code", meta.ReasonCode))
+			attrs = append(attrs, slog.String("reason_code", SafeString(meta.ReasonCode)))
 		}
 		if meta.Reason != "" {
-			attrs = append(attrs, slog.String("reason", meta.Reason))
+			attrs = append(attrs, slog.String("reason", SafeString(meta.Reason)))
 		}
 		if meta.TraceID != "" {
-			attrs = append(attrs, slog.String("trace_id", meta.TraceID))
+			attrs = append(attrs, slog.String("trace_id", SafeString(meta.TraceID)))
 		}
 		if meta.TraceParentID != "" {
-			attrs = append(attrs, slog.String("trace_parent_id", meta.TraceParentID))
+			attrs = append(attrs, slog.String("trace_parent_id", SafeString(meta.TraceParentID)))
 		}
 		if meta.TraceSpanID != "" {
-			attrs = append(attrs, slog.String("trace_span_id", meta.TraceSpanID))
+			attrs = append(attrs, slog.String("trace_span_id", SafeString(meta.TraceSpanID)))
 		}
 		if meta.TraceFlags != "" {
 			attrs = append(attrs, slog.Bool("trace_sampled", traceSampled(meta.TraceFlags)))
@@ -522,7 +522,7 @@ func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Int("status", rc.status),
 				slog.Float64("latency_ms", latencyMS),
 				slog.Int("bytes", rc.bytes),
-				slog.String("client", client),
+				slog.String("client", SafeString(client)),
 			)
 			defer putAccessLogAttrs(attrBuf)
 

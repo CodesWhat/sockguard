@@ -51,7 +51,7 @@ func NewWithTransport(rt http.RoundTripper, logger *slog.Logger, opts Options) *
 		FlushInterval:  -1, // immediate flush for streaming endpoints
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			attrs := logging.AppendCorrelationAttrsForResponseWriter(nil, r, w)
-			attrs = append(attrs, slog.Any("error", err))
+			attrs = append(attrs, slog.String("error", logging.SafeString(err.Error())))
 			logger.LogAttrs(r.Context(), slog.LevelError, "upstream request failed", attrs...)
 
 			message := "upstream Docker socket unreachable"
@@ -79,7 +79,7 @@ func NewWithTransport(rt http.RoundTripper, logger *slog.Logger, opts Options) *
 
 			if encErr := httpjson.Write(w, status, httpjson.ErrorResponse{Message: message}); encErr != nil {
 				attrs := logging.AppendCorrelationAttrsForResponseWriter(nil, r, w)
-				attrs = append(attrs, slog.Any("error", encErr))
+				attrs = append(attrs, slog.String("error", logging.SafeString(encErr.Error())))
 				logger.LogAttrs(r.Context(), slog.LevelWarn, "failed to encode error response", attrs...)
 			}
 		},

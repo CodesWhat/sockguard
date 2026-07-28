@@ -314,9 +314,7 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 
 	var req serviceRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), "service request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "service request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", err)
 		return "service denied: request body could not be inspected", nil
 	}
 

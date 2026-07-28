@@ -52,9 +52,7 @@ func (p volumePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPa
 
 	var req volumeCreateRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), "volume create request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "volume create request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", err)
 		return "volume create denied: request body could not be inspected", nil
 	}
 
