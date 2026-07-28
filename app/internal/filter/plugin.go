@@ -272,7 +272,9 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 
 	var cfg pluginCreateConfig
 	if err := decodePolicySubsetJSON(configBytes, &cfg); err != nil {
-		logRequestError(logger, r, slog.LevelDebug, "plugin config.json could not be decoded for Sockguard policy inspection; deferring to Docker validation", err)
+		logRequestError(logger, r, slog.LevelDebug, "plugin config.json could not be decoded for Sockguard policy inspection", err)
+		spool.closeAndRemove()
+		return "plugin create denied: plugin config could not be inspected", nil
 	} else if denyReason := p.denyReasonForCreateConfig(cfg); denyReason != "" {
 		spool.closeAndRemove()
 		return denyReason, nil

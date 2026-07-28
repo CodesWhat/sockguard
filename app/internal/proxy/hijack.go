@@ -444,14 +444,14 @@ func startHijackCopy(
 		defer closeWrite(stream.closeConnOnEOF)
 		defer func() {
 			if v := recover(); v != nil {
-				logger.Error(logging.SafeString("hijack: panic in "+stream.direction+" copy"), "panic", logging.SafeString(fmt.Sprint(v)), "path", logging.SafeString(reqPath))
+				logger.Error("hijack: copy panic", "direction", logging.SafeString(stream.direction), "panic", logging.SafeString(fmt.Sprint(v)), "path", logging.SafeString(reqPath))
 			}
 		}()
 
 		reader := withReadInactivityDeadline(stream.src, stream.readConn, hijackInactivityTimeout)
 		writer := withWriteInactivityDeadline(stream.dst, stream.writeConn, hijackInactivityTimeout)
 		if _, err := copyBufferHook(writer, reader, buf); err != nil {
-			logger.Debug(logging.SafeString("hijack: "+stream.direction+" copy ended"), "error", logging.SafeString(err.Error()), "path", logging.SafeString(reqPath))
+			logger.Debug("hijack: copy ended", "direction", logging.SafeString(stream.direction), "error", logging.SafeString(err.Error()), "path", logging.SafeString(reqPath))
 		}
 	}()
 }
