@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-28
+
+v1.5.0 promotes `1.5.0-rc.3` to stable with no proxy-behavior delta. The v1.5 feature surface has been exercised publicly since rc.1 on 2026-07-11 and rc.2 on 2026-07-20; rc.3 then carried the v1.4.4 scanner-remediation patch forward and passed the complete CI, security, published-artifact, signature, and image-scan gates. Headlines: a safer default 60-second finite-request timeout; owner-aware and policy-constrained container namespace sharing; host cgroup-namespace denial by default; an opt-in hard CPU-time-cap requirement; exec environment allow/denylists; create-time endpoint-config parity; new Compose presets; pod-level Helm security defaults; reflection-generated Viper defaults; fresh embedded-resource ownership authorization; registry-push exfiltration gating; structured-log sanitization; fail-closed plugin inspection; and patched Go and Node dependency graphs.
+
 ## [1.5.0-rc.3] - 2026-07-28
 
 Security release candidate carrying the complete v1.4.4 scanner-remediation patch forward into the v1.5 line. This candidate sanitizes untrusted structured-log fields, makes plugin archive inspection fail closed, refreshes the Go and Node dependency graphs, and restarts the release-candidate soak. The v1.5 feature surface and public configuration described by rc.1 and rc.2 are otherwise unchanged.

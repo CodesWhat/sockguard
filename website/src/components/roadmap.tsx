@@ -115,14 +115,19 @@ function GitLogRow({ milestone }: { milestone: Milestone }) {
 export function Roadmap() {
   // Newest-first — planned at the top, shipped history flowing down to the root
   const logOrder = [...roadmap].reverse();
+  const hasPlannedMilestones = roadmap.some((milestone) => milestone.status !== "released");
 
   return (
     <section className="border-t border-border/60 py-16">
       <div className="mx-auto max-w-3xl px-4">
         <SectionHeading
-          eyebrow="On the horizon"
+          eyebrow={hasPlannedMilestones ? "On the horizon" : "Release history"}
           title="Roadmap"
-          subtitle="Where we've been and where we're headed."
+          subtitle={
+            hasPlannedMilestones
+              ? "Where we've been and where we're headed."
+              : "The committed roadmap through v1.5 is complete."
+          }
           align="right"
         />
 
@@ -136,10 +141,12 @@ export function Roadmap() {
             <span className="h-2 w-2 rounded-full bg-amber-400 ring-2 ring-amber-400/40" />
             Current (HEAD)
           </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-2 w-2 rounded-full border-2 border-dashed border-neutral-400" />
-            Planned
-          </span>
+          {hasPlannedMilestones && (
+            <span className="flex items-center gap-1.5">
+              <span className="h-2 w-2 rounded-full border-2 border-dashed border-neutral-400" />
+              Planned
+            </span>
+          )}
         </div>
 
         {/* Graph frame */}

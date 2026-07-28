@@ -1,7 +1,20 @@
 ---
 title: Migration
-description: Drop-in migration paths from Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard socket proxies — current env compatibility, same intent, stronger inspection underneath.
+description: Upgrade from Sockguard v1.4 to v1.5 or migrate from Tecnativa, LinuxServer, wollomatic, 11notes, and CetusGuard socket proxies.
 ---
+
+## From Sockguard v1.4 to v1.5
+
+v1.5 keeps the v1.x YAML, CLI, environment-variable, admin API, and Prometheus metric compatibility contract. Most existing configurations load unchanged, but four intentional enforcement/default changes deserve review before upgrading:
+
+1. **Finite upstream requests now time out after 60 seconds by default.** Streaming and long-running endpoints remain exempt. If your deployment intentionally needs unlimited finite requests, set `upstream.request_timeout: "off"` (or `SOCKGUARD_UPSTREAM_REQUEST_TIMEOUT=off`).
+2. **Cross-owner `container:<ref>` namespace joins are denied by default when `ownership.owner` is configured.** Same-owner joins continue to work. Set `ownership.allow_cross_owner_namespace_sharing: true` only if you deliberately accept the cross-tenant namespace-sharing risk.
+3. **Host cgroup-namespace mode is denied by default.** A create body with `HostConfig.CgroupnsMode: host` now needs `request_body.container_create.allow_host_cgroupns: true`, matching the existing opt-ins for the other host namespace modes.
+4. **Create-time endpoint configuration now follows the existing network-connect policy.** Static IPs, custom MAC addresses, endpoint driver options, and links inside `POST /containers/create`'s `NetworkingConfig.EndpointsConfig` require `request_body.network.allow_endpoint_config: true`, just as they already did on `POST /networks/*/connect`. Compose endpoint aliases remain allowed without that opt-in.
+
+The other v1.5 policy additions are opt-in: `restrict_namespace_sharing`, `allowed_namespace_sharing_containers`, `deny_namespace_path_mode`, `require_cpu_limit_hard`, and exec `allowed_env_vars`/`denied_env_vars`. See [Configuration](/configuration) for their exact semantics and defaults.
+
+Before switching the image tag, validate the current configuration with `sockguard validate --config /etc/sockguard/config.yaml` or the admin listener's `POST /admin/validate`. Deployments using macvlan/static-IP recreation should pay particular attention to `allow_endpoint_config`; the bundled drydock presets document that compatibility case inline.
 
 ## From Tecnativa/docker-socket-proxy
 
