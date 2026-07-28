@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
 import { SITE_CONFIG } from "../website/src/lib/site-config.ts";
@@ -30,4 +30,17 @@ test("the current stable version is the roadmap HEAD", () => {
 
   const released = roadmap.filter(({ status }) => status === "released");
   assert.equal(released.at(-1)?.version, stableTag, `${stableTag} must be the latest released milestone`);
+});
+
+test("README workflow badges reference existing workflow files", () => {
+  const readme = read("README.md");
+  const workflowBadges = [...readme.matchAll(/\/actions\/workflows\/([^/]+\.ya?ml)\/badge\.svg/g)];
+
+  assert.ok(workflowBadges.length > 0, "README must include at least one workflow badge");
+  for (const [, workflow] of workflowBadges) {
+    assert.ok(
+      existsSync(new URL(`../.github/workflows/${workflow}`, import.meta.url)),
+      `README badge references missing workflow: ${workflow}`,
+    );
+  }
 });
