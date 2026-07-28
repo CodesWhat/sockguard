@@ -97,6 +97,7 @@ request_body:
     allow_host_pid: false
     allow_host_ipc: false
     allow_host_userns: false
+    allow_host_cgroupns: false
 
     # Bind mounts: default-empty. The runner should configure named volumes
     # (cache_dir, builds_dir) in config.toml rather than bind-mounting host

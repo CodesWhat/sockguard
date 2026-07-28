@@ -61,7 +61,8 @@ type embeddedOwnershipReference struct {
 }
 
 type ownershipRequestReferences struct {
-	embeddedResources []embeddedOwnershipReference
+	namespaceContainers []string
+	embeddedResources   []embeddedOwnershipReference
 }
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -69,6 +70,13 @@ type Options struct {
 	Owner              string
 	LabelKey           string
 	AllowUnownedImages bool
+	// AllowCrossOwnerNamespaceSharing restores the pre-v1.5 pass-through
+	// behavior for POST /containers/create: by default (false), every
+	// HostConfig.NetworkMode/PidMode/IpcMode/UTSMode/UsernsMode "container:<ref>"
+	// namespace-sharing target is resolved and the request is denied if the
+	// referenced container belongs to a different owner. Set true to
+	// restore the old unchecked behavior.
+	AllowCrossOwnerNamespaceSharing bool
 }
 
 type upstreamInspector struct {
@@ -95,9 +103,10 @@ func middlewareWithClient(client *http.Client, logger *slog.Logger, opts Options
 		client: client,
 	}
 	// Ownership decisions must observe current daemon state. Docker names and
-	// image tags are mutable, so memoizing a label result can authorize a
-	// different resource after a delete/recreate or retag. Embedded references
-	// are deduplicated per request instead.
+	// image tags are mutable, so memoizing even a positive label result can
+	// authorize a different resource after a delete/recreate or retag. Inspect
+	// every request instead; per-request embedded references are deduplicated
+	// before reaching this boundary.
 	return middlewareWithDeps(logger, opts, inspector.inspectResource, inspector.inspectExec)
 }
 
@@ -165,8 +174,9 @@ func (o Options) normalized() Options {
 
 // mutateOwnershipRequest injects the owner label and extracts every resource
 // identifier embedded in container/service create or update bodies during the
-// same bounded decode pass. Those references must be authorized before the
-// owner-stamped workload is forwarded.
+// same bounded decode pass. Authorization must cover those identifiers as well
+// as the resource named by the URL; otherwise an owner-stamped workload could
+// still consume another owner's image, volume, network, secret, or config.
 func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ownershipRequestReferences, error) {
 	switch {
 	case normPath == "/containers/create":
@@ -196,6 +206,16 @@ func allowOwnershipRequest(
 ) (ownershipVerdict, string, error) {
 	strictest := verdictPassThrough
 	if refs != nil {
+		if !opts.AllowCrossOwnerNamespaceSharing && len(refs.namespaceContainers) > 0 {
+			verdict, reason, err := checkContainerNamespaceSharingRefs(ctx, inspectResource, refs.namespaceContainers, opts)
+			if err != nil || verdict == verdictDeny {
+				return verdict, reason, err
+			}
+			if verdict == verdictAllow {
+				strictest = verdictAllow
+			}
+		}
+
 		verdict, reason, err := checkEmbeddedOwnershipReferences(ctx, inspectResource, refs.embeddedResources, opts)
 		if err != nil || verdict == verdictDeny {
 			return verdict, reason, err
@@ -280,7 +300,9 @@ func checkEmbeddedOwnershipReferences(
 		if !found {
 			return verdictDeny, fmt.Sprintf(
 				"owner policy could not resolve %s %q referenced by %s",
-				singularResource(ref.kind), ref.identifier, ref.source,
+				singularResource(ref.kind),
+				ref.identifier,
+				ref.source,
 			), nil
 		}
 
@@ -288,7 +310,9 @@ func checkEmbeddedOwnershipReferences(
 		if !ownerMatches(labels, opts.LabelKey, opts.Owner, allowUnowned) {
 			return verdictDeny, fmt.Sprintf(
 				"owner policy denied access to %s %q referenced by %s",
-				singularResource(ref.kind), ref.identifier, ref.source,
+				singularResource(ref.kind),
+				ref.identifier,
+				ref.source,
 			), nil
 		}
 		strictest = verdictAllow
@@ -308,6 +332,37 @@ func checkOwnedResource(ctx context.Context, inspectResource func(context.Contex
 		return verdictAllow, "", nil
 	}
 	return verdictDeny, fmt.Sprintf("owner policy denied access to %s", singularResource(kind)), nil
+}
+
+// checkContainerNamespaceSharingRefs denies POST /containers/create when any
+// namespace-sharing container: target belongs to a different owner than
+// opts.Owner. allowUnowned is false for each check — same as every other
+// container-targeting ownership check — so an unlabeled target is treated
+// as a cross-owner risk rather than implicitly trusted. Returns the first
+// cross-owner denial encountered; otherwise the strictest verdict across
+// all refs (verdictAllow if at least one ref resolved to an owned
+// container, verdictPassThrough if every ref resolved to nothing sockguard
+// could inspect).
+func checkContainerNamespaceSharingRefs(
+	ctx context.Context,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	refs []string,
+	opts Options,
+) (ownershipVerdict, string, error) {
+	strictest := verdictPassThrough
+	for _, ref := range refs {
+		verdict, _, err := checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, ref, opts, false)
+		if err != nil {
+			return verdictPassThrough, "", err
+		}
+		if verdict == verdictDeny {
+			return verdictDeny, fmt.Sprintf("owner policy denied access to namespace-sharing target container %q", ref), nil
+		}
+		if verdict == verdictAllow {
+			strictest = verdictAllow
+		}
+	}
+	return strictest, "", nil
 }
 
 func ownerMatches(labels map[string]string, labelKey, owner string, allowUnowned bool) bool {
@@ -359,6 +414,17 @@ func addOwnerLabelToBody(r *http.Request, labelKey, owner string) error {
 	})
 }
 
+// addOwnerLabelToContainerCreateBody is retained for focused mutation tests.
+// Production uses mutateContainerCreateOwnershipBody so the same decode also
+// returns non-namespace Docker resource references for authorization.
+func addOwnerLabelToContainerCreateBody(r *http.Request, labelKey, owner string) ([]string, error) {
+	refs, err := mutateContainerCreateOwnershipBody(r, labelKey, owner)
+	if refs == nil {
+		return nil, err
+	}
+	return refs.namespaceContainers, err
+}
+
 func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
 	err := mutateJSONBody(r, func(decoded map[string]any) error {
@@ -367,6 +433,7 @@ func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string)
 			return err
 		}
 		labels[labelKey] = owner
+		refs.namespaceContainers = containerCreateNamespaceRefs(decoded)
 		refs.embeddedResources = containerCreateEmbeddedOwnershipReferences(decoded)
 		return nil
 	})
@@ -386,9 +453,9 @@ func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embedd
 				if !ok {
 					continue
 				}
-				source, _, hasTarget := strings.Cut(bind, ":")
+				source, _, ok := strings.Cut(bind, ":")
 				source = strings.TrimSpace(source)
-				if !hasTarget || source == "" || strings.HasPrefix(source, "/") {
+				if !ok || source == "" || strings.HasPrefix(source, "/") {
 					continue
 				}
 				appendEmbeddedOwnershipReference(&refs, dockerresource.KindVolume, source, "container HostConfig.Binds")
@@ -408,9 +475,10 @@ func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embedd
 		}
 
 		for _, mode := range foldedStrings(hostConfig, "NetworkMode") {
-			if isCustomNetworkMode(mode) {
-				appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, mode, "container HostConfig.NetworkMode")
+			if !isCustomNetworkMode(mode) {
+				continue
 			}
+			appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, mode, "container HostConfig.NetworkMode")
 		}
 	}
 
@@ -438,14 +506,65 @@ func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embedd
 	return refs
 }
 
+// namespaceModeFields are the HostConfig fields whose "container:<ref>" form
+// joins another container's namespace. NetworkMode/PidMode/IpcMode/UTSMode all
+// document the container: form; UsernsMode is included defensively (stock
+// Docker's support there is unconfirmed, and matching a non-container: value
+// never yields a ref, so a spurious entry costs nothing).
+var namespaceModeFields = [...]string{"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode"}
+
+// containerCreateNamespaceRefs extracts every distinct "container:<ref>"
+// namespace-sharing target from a decoded /containers/create body's
+// HostConfig.{NetworkMode,PidMode,IpcMode,UTSMode,UsernsMode} fields. Malformed or
+// absent HostConfig, and non-string field values, are treated as "no refs"
+// rather than an error — filter's container_create.go is the layer
+// responsible for rejecting malformed bodies; ownership only needs to know
+// which (if any) foreign containers a well-formed create would join.
+//
+// Key matching is case-INSENSITIVE and iterates every case-variant of
+// HostConfig and each mode field, because Docker decodes these keys
+// case-insensitively: an exact-case lookup would let a client smuggle the
+// namespace join past the cross-owner check with a lowercase "hostconfig"/
+// "networkmode" key that Docker still honors.
+func containerCreateNamespaceRefs(decoded map[string]any) []string {
+	hostConfigs := foldedObjects(decoded, "HostConfig")
+	var refs []string
+	// Iterate the mode fields in fixed order for deterministic ref ordering,
+	// scanning every case-variant key inside each HostConfig so a duplicate
+	// lowercase mode key cannot smuggle an unchecked ref past the loop.
+	for _, field := range namespaceModeFields {
+		for _, hostConfig := range hostConfigs {
+			for key, value := range hostConfig {
+				if !strings.EqualFold(key, field) {
+					continue
+				}
+				mode, ok := value.(string)
+				if !ok {
+					continue
+				}
+				ref, ok := filter.ContainerNamespaceRef(mode)
+				if !ok || slices.Contains(refs, ref) {
+					continue
+				}
+				refs = append(refs, ref)
+			}
+		}
+	}
+	return refs
+}
+
+// foldedObjects returns every object value in m whose key case-folds to key,
+// in map-iteration order. Docker decodes duplicate case-variant keys and lets
+// the last win, so a security check must inspect all variants rather than an
+// exact-case single lookup.
 func foldedObjects(m map[string]any, key string) []map[string]any {
 	var out []map[string]any
 	for k, v := range m {
 		if !strings.EqualFold(k, key) {
 			continue
 		}
-		if object, ok := v.(map[string]any); ok {
-			out = append(out, object)
+		if obj, ok := v.(map[string]any); ok {
+			out = append(out, obj)
 		}
 	}
 	return out
@@ -498,11 +617,16 @@ func appendEmbeddedOwnershipReference(refs *[]embeddedOwnershipReference, kind d
 
 func isCustomNetworkMode(raw string) bool {
 	mode := strings.TrimSpace(raw)
-	lower := strings.ToLower(mode)
-	if mode == "" || strings.HasPrefix(lower, "container:") || strings.HasPrefix(lower, "ns:") {
+	if mode == "" {
 		return false
 	}
-	switch lower {
+	if _, ok := filter.ContainerNamespaceRef(mode); ok {
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(mode), "ns:") {
+		return false
+	}
+	switch strings.ToLower(mode) {
 	case "default", "bridge", "host", "none", "ingress", "docker_gwbridge":
 		return false
 	default:

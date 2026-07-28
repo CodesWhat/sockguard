@@ -72,7 +72,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.4.4 is the latest stable release; v1.5.0-rc.2 is the current release candidate.** The stable security patch sanitizes untrusted structured-log fields, makes plugin archive inspection fail closed, and refreshes Go and Node dependencies to clear the current scanner findings. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v1.5.0 is the latest stable release.** It promotes rc.3's fully validated safer-defaults, namespace-hardening, endpoint-config, ownership, and security-remediation work to general availability. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes and the [migration guide](https://getsockguard.com/docs/migration) for the v1.4 → v1.5 upgrade checklist.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -131,7 +131,7 @@ On Linux, one common pattern is:
 
 ```yaml
 group_add:
-  - "${DOCKER_GID:?set this to the numeric group owner of /var/run/docker.sock}"
+  - "${DOCKER_SOCK_GID:?set this to the numeric group owner of /var/run/docker.sock}"
 ```
 
 Keep Docker's default seccomp profile or replace it with a stricter custom profile via `security_opt`. On AppArmor or SELinux hosts, keep the runtime's default confinement enabled or replace it with a stricter host policy. If the host runs rootless dockerd, a compromised Docker API client inherits the daemon's reduced authority instead of full host root.
@@ -217,7 +217,10 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 <details>
 <summary><strong>Latest release highlights</strong></summary>
 
+- **v1.5.0 shipped on 2026-07-28** — promotes rc.3 to stable after the v1.5 feature surface had been exercised since rc.1 on July 11 and rc.2 on July 20, followed by clean CI, security, artifact, signature, and published-image validation on rc.3 plus a final full-delta review. Safer finite-request timeouts, namespace-sharing and host-cgroupns controls, a hard CPU-cap option, exact exec-environment value pinning, endpoint-config parity, Compose presets, Helm security defaults, fresh embedded-resource ownership checks, registry-push exfiltration gating, structured-log sanitization, fail-closed plugin inspection, and patched dependency graphs are now GA.
+- **v1.5.0-rc.3 shipped on 2026-07-28** — forwarded the complete v1.4.4 security patch into the v1.5 line: untrusted structured-log fields escape record delimiters, malformed plugin configuration is denied before forwarding, and the affected Go and Node dependencies move to patched releases. It retained rc.2's endpoint-config symmetry and rc.1's safer defaults and namespace hardening, passed the full release gates, and became the final candidate promoted to v1.5.0.
 - **v1.4.4 shipped on 2026-07-28** — security patch. Every attacker-controlled value crossing into structured logs now escapes CR/LF record delimiters; malformed plugin `config.json` is denied before forwarding instead of bypassing inspection; Next.js, PostCSS, sharp, js-yaml, gRPC, `x/net`, `x/text`, `x/crypto`, and `klauspost/compress` move to patched releases. Main-branch protection now requires two approvals and a code-owner review with no bypass actors. No public configuration or API change.
+- **v1.5.0-rc.2 shipped on 2026-07-20** — the second v1.5 candidate, carrying the full five-finding security pass forward from v1.4.3 alongside the endpoint-config symmetry fix landed after rc.1. It freshly authorizes every embedded workload dependency, removes mutable-name ownership caching, gates registry pushes as exfiltration, hardens Vercel and Helm defaults, and keeps the v1.5 namespace-sharing protections in the same authorization path. Its field time contributed to the completed v1.5 prerelease validation.
 - **v1.4.3 shipped on 2026-07-20** — security and correctness patch. Owner isolation now authorizes the images, named volumes, networks, secrets, and configs embedded inside container/service create/update payloads, denies foreign or unresolved dependencies, and freshly inspects mutable Docker names/tags on every authorization decision instead of reusing a ten-second positive cache entry. The exfiltration acknowledgement now covers image/plugin registry pushes; the Vercel-hosted site and copied docs export gain an enforced CSP plus browser hardening headers; Helm defaults pin UID/GID `65532`, `runAsNonRoot`, and `RuntimeDefault` seccomp. Also fixes the v1.4 runtime wiring for explicitly acknowledged unpinned exec without weakening the privilege, root-user, or configured command rails.
 - **v1.4.2 shipped on 2026-07-11** — security patch. Backports the case-varied-JSON-key filter-bypass fix from the v1.5 line: the daemon decodes body keys case-insensitively and honors the last duplicate after re-encoding, so a shadow lowercase `"image"`/`"labels"`/`"hostconfig"` could survive struct-decode inspection and then win at the daemon on every path that mutates and re-marshals a body (owner-label spoofing, image-trust digest pinning, and whole-body reorder of any container-create/service rule). Create/update bodies carrying duplicate case-variant keys are now rejected fail-closed (`400`/`403`) before re-marshaling, a lone lowercase variant is collapsed to canonical so it stays inspected, and image-trust no longer forwards the original tag when digest pinning fails after a successful verify. No config or API change.
 - **v1.4.1 shipped on 2026-07-10** — security patch. Go toolchain `1.26.4` → `1.26.5` to clear a *reachable* `crypto/tls` ECH advisory ([GO-2026-5856](https://pkg.go.dev/vuln/GO-2026-5856)) in the remote-upstream TLS and connection-hijack paths; the v1.4.0 images carried it, v1.4.1 rebuilds them clean (`govulncheck` reports zero reachable vulnerabilities). No proxy behavior, config, or API change.
@@ -226,7 +229,7 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 - **v1.2.0 shipped on 2026-06-02** — operational resilience for a wedged daemon. An opt-in **readiness probe** (`health.readiness.*`, default `/ready`) issues a real `GET /containers/json` against the Docker API and returns `503` when the daemon accepts connections but no longer answers — the gap the raw-dial `/health` watchdog misses. An opt-in **`upstream.request_timeout`** bounds finite proxied requests with a total deadline, converting a hung body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`) while exempting streaming and long-lived endpoints. New metrics `sockguard_upstream_api_up` + `sockguard_upstream_readiness_checks_total` mirror the watchdog. The bundled **drydock preset** now allowlists the stock `runc` runtime so drydock recreation stops getting 403'd out of the box. Dependency hygiene: the Go toolchain moves to `1.26.4` (clearing two *reachable* stdlib advisories, GO-2026-5037 / GO-2026-5039), plus the `go-minor` / `npm-minor` / `actions-minor` groups; `govulncheck` reports zero vulnerabilities.
 - **v1.1.0 shipped on 2026-06-01** — image-trust verification wired end to end: registry digest resolution, cosign signature discovery (classic tag + OCI 1.1 referrers), digest-pinned forwarding, keyed (PEM) and keyless (Fulcio + Rekor) both enforced, swarm-service create/update now subject to the same image-trust policy as container create. A 21-finding security audit landed alongside: closed request-inspection bypasses (plugin multipart, BuildKit `# syntax=`, gzip bombs, swarm-service capability/sysctl/image-trust escapes), read-side sub-resource visibility gating, new `allowed_runtimes` allowlist, hardened config/admin paths (signed-bundle TOCTOU, PID-only peer rejection, admin-listener CIDR backstop), response redaction extended to `HostConfig.Mounts[].Source` and service `PreviousSpec`. CodeQL `actions` analysis and supply-chain dependency hygiene (`govulncheck` reports zero vulnerabilities) round out the release.
 - **v1.0.0 shipped on 2026-05-20** with the public proxy contract locked: YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names are now under the v1.x compatibility promise.
-- **15 bundled presets** cover drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, and drydock with self-update.
+- **17 bundled presets** cover drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, Portwing with compose, drydock with self-update, and drydock with compose.
 - **Expanded QA hardening** added proxy-vs-daemon differential tests, real-dockerd preset conformance, fuzz corpora for routing and visibility, weekly soak testing, and TLS edge-case coverage.
 - **Supply-chain verification** covers release images across GHCR, Docker Hub, and Quay.io using the same cosign commands documented for operators.
 
@@ -250,7 +253,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 |---|---|---|
 | 🛡️ | **Default-Deny Posture** | Everything blocked unless explicitly allowed. No match means deny. |
 | 🎛️ | **Granular Control** | Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching. |
-| 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 15 bundled workload presets (including CIS Docker Benchmark, self-hosted GitHub Actions runners, GitLab Runner, and Portwing) plus the default config. |
+| 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 17 bundled workload presets (including CIS Docker Benchmark, self-hosted GitHub Actions runners, GitLab Runner, and Portwing) plus the default config. |
 | 📊 | **Structured Access Logging** | JSON access logs with method, raw path, normalized path, decision, matched rule, latency, canonical request ID, W3C `traceparent` correlation fields, and client info. Untrusted string fields escape CR/LF record delimiters as visible `\r`/`\n` sequences before reaching `slog`, preserving forensic content without allowing forged records even through custom handlers. Use `normalized_path` for SIEM correlation and policy analysis; raw `path` is preserved for forensic replay. Canonical request IDs are generated from a buffered pool so request logging does not block on a fresh entropy read per request. |
 | 🔐 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
 | 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks, client-container label ACLs, listener certificate selectors (CN/DNS/IP/URI SAN/SPKI), profile certificate selectors (CN/DNS/IP/URI/SPIFFE/SPKI), and unix peer credentials let one proxy differentiate callers before the global rule set runs. When mTLS is enabled, certificate selectors follow the verified client leaf certificate rather than an unverified peer slice entry. |
@@ -258,7 +261,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | 🔍 | **Request Body Inspection** | `POST /containers/create`, `/containers/*/update`, `/containers/*/exec`, `/exec/*/start`, `PUT /containers/*/archive`, `/images/create`, `/images/load`, `/build`, `/volumes/create`, `/networks/create`, `/networks/*/connect`, `/networks/*/disconnect`, `/secrets/create`, `/configs/create`, `/services/create`, `/services/*/update`, `/swarm/init`, `/swarm/join`, `/swarm/update`, `/swarm/unlock`, `/nodes/*/update`, `/plugins/pull`, `/plugins/*/upgrade`, `/plugins/*/set`, and `/plugins/create` are inspected before Docker sees the request. Sockguard blocks privileged or host-bound workloads, non-allowlisted mounts/devices/commands/remotes, unsafe network/service/swarm/node controls, image archive imports outside registry policy, and unsafe container filesystem archives. `POST /plugins/create` is inspected whether the tar upload arrives as a raw body or `multipart/form-data`. Oversized bodies on bounded JSON/tar inspectors are rejected with `413 Payload Too Large` before any upstream call. These inspectors intentionally decode the policy-relevant subset of Docker's schema and still defer full-schema validation to Docker itself. |
 | 🏷️ | **Owner Label Isolation** | A proxy instance can stamp label-capable creates plus build-produced images with an owner label, auto-filter labeled list/prune/events calls, and deny cross-owner access across containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state — including images, named volumes, networks, secrets, and configs referenced inside container/service payloads. |
 | 🫥 | **Visibility-Controlled Reads** | Redacts env, mount, network, config, plugin, and swarm-sensitive metadata by default, can hide labeled list/inspect plus selected service/task log reads behind per-client visibility rules, and keeps raw archive/export and stream-style reads behind explicit opt-in. |
-| 🧱 | **Body-Blind Write Guardrail** | Any remaining write Sockguard cannot safely constrain stays behind explicit `insecure_allow_body_blind_writes` opt-in instead of being silently exposed. Today that guardrail chiefly covers arbitrary exec without `request_body.exec.allowed_commands`, `POST /swarm/join` without `request_body.swarm.allowed_join_remote_addrs`, and plugin setting writes without explicit allowed assignment prefixes. |
+| 🧱 | **Body-Blind Write Guardrail** | Any remaining write Sockguard cannot safely constrain stays behind explicit `insecure_allow_body_blind_writes` opt-in instead of being silently exposed. Today that guardrail chiefly covers arbitrary exec without `request_body.exec.allowed_commands`, `POST /swarm/join` without `request_body.swarm.allowed_join_remote_addrs`, and plugin setting writes without explicit allowed assignment prefixes. For exec, the flag is wired into request-time enforcement too: with it set, an unpinned exec is admitted instead of denied, but `allow_privileged`/`allow_root_user`/`allowed_env_vars`/`denied_env_vars`/`allowed_env_values` still gate it exactly as configured. |
 | 🔄 | **Tecnativa Compatible** | Drop-in replacement for the current Tecnativa env surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. |
 | 🎚️ | **Rollout Modes** | Per-profile `mode: enforce\|warn\|audit` lets operators stage a tighter policy without breaking callers. `warn`/`audit` pass-through with `decision=would_deny` on the audit record and a `mode` label on the deny/throttle counters, so dashboards compare blocked vs. would-have-been-blocked volume side by side. |
 | 🔁 | **Hot-Reload + Policy Versioning** | `reload.enabled: true` watches the config file via fsnotify (Linux inotify / macOS kqueue) and accepts `SIGHUP`. The new policy goes through the full validator + rule compiler and is atomically swapped behind the running handler; immutable fields (listeners, log, health, metrics, admin, policy-bundle trust material) refuse the reload. A monotonic generation counter is exposed at `GET /admin/policy/version` and via the `sockguard_policy_version` gauge. |
@@ -267,7 +270,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | 🪶 | **Minimal Attack Surface** | Wolfi-based image. Cosign-signed with SBOM and build provenance. |
 | ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
 | 🩺 | **Health, Watchdog + Readiness** | `/health` endpoint with cached upstream reachability probes, an opt-in active Docker socket watchdog that logs state transitions, and an opt-in `/ready` probe that issues a real `GET /containers/json` against the Docker API — returning `503` when the daemon accepts connections but has stopped answering, the wedged-daemon case a raw socket dial misses. |
-| ⏱️ | **Upstream Request Timeout** | Opt-in `upstream.request_timeout` bounds finite proxied requests with a total deadline, turning a hung response body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`). Streaming and long-lived endpoints (events, follow logs/stats, pull/build/push/load, export, attach, container wait) are exempt. |
+| ⏱️ | **Upstream Request Timeout** | `upstream.request_timeout` (default `60s`) bounds finite proxied requests with a total deadline, turning a hung response body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`). Streaming and long-lived endpoints (events, follow logs/stats, pull/build/push/load, export, archive/`docker cp`, attach, container wait) are exempt. Set `"off"` to disable. |
 | 📈 | **Prometheus Metrics** | Opt-in `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, active request gauge, upstream watchdog + readiness state/check metrics, plus `sockguard_build_info` and `sockguard_start_time_seconds` gauges for version panels and uptime alerts. |
 | 🔗 | **Trace/Log Correlation** | Preserves valid W3C `traceparent` context or generates local context, forwards a proxy-local span ID, and records trace fields in access, audit, and upstream error logs without an OTLP exporter. |
 | 🧪 | **Battle-Tested** | 96%+ statement coverage (enforced by a CI coverage gate), race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
@@ -276,13 +279,13 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 
 <h2 align="center" id="supported-profiles">🔌 Supported Profiles</h2>
 
-### Bundled presets (15)
+### Bundled presets (17)
 
-[drydock](app/configs/drydock.yaml) · [drydock with self-update](app/configs/drydock-with-selfupdate.yaml) · [Portwing](app/configs/portwing.yaml) · [Portwing with exec](app/configs/portwing-with-exec.yaml) · [Traefik](app/configs/traefik.yaml) · [Portainer](app/configs/portainer.yaml) · [Watchtower](app/configs/watchtower.yaml) · [Homepage](app/configs/homepage.yaml) · [Homarr](app/configs/homarr.yaml) · [Diun](app/configs/diun.yaml) · [Autoheal](app/configs/autoheal.yaml) · [read-only](app/configs/readonly.yaml) · [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) · [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml) · [GitLab Runner](app/configs/gitlab-runner.yaml)
+[drydock](app/configs/drydock.yaml) · [drydock with self-update](app/configs/drydock-with-selfupdate.yaml) · [drydock with compose](app/configs/drydock-with-compose.yaml) · [Portwing](app/configs/portwing.yaml) · [Portwing with exec](app/configs/portwing-with-exec.yaml) · [Portwing with compose](app/configs/portwing-with-compose.yaml) · [Traefik](app/configs/traefik.yaml) · [Portainer](app/configs/portainer.yaml) · [Watchtower](app/configs/watchtower.yaml) · [Homepage](app/configs/homepage.yaml) · [Homarr](app/configs/homarr.yaml) · [Diun](app/configs/diun.yaml) · [Autoheal](app/configs/autoheal.yaml) · [read-only](app/configs/readonly.yaml) · [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) · [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml) · [GitLab Runner](app/configs/gitlab-runner.yaml)
 
 ### Ready-to-run compose examples
 
-[drydock](examples/compose/drydock/) · [Portwing](examples/compose/portwing/) · [Traefik](examples/compose/traefik/) · [Portainer](examples/compose/portainer/) · [Watchtower](examples/compose/watchtower/) · [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/) · [GitLab Runner](examples/compose/gitlab-runner/) · [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/)
+[drydock](examples/compose/drydock/) · [Portwing](examples/compose/portwing/) · [Portwing + drydock (tri-tool)](examples/compose/tri-tool/) · [Traefik](examples/compose/traefik/) · [Portainer](examples/compose/portainer/) · [Watchtower](examples/compose/watchtower/) · [GitHub Actions self-hosted runner](examples/compose/github-actions-runner/) · [GitLab Runner](examples/compose/gitlab-runner/) · [CIS Docker Benchmark gate](examples/compose/cis-docker-benchmark/)
 
 Each example pairs a downstream Docker API consumer with a `sockguard.yaml` overlay and a short README covering audience, exposed API surface, and security tradeoffs.
 
@@ -435,7 +438,22 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.4.4 shipped on 2026-07-28** — a security patch over v1.4.3 clearing the outstanding log-injection and dependency findings and making plugin inspection fail closed — and is the latest stable release. **v1.5.0 remains in release-candidate soak**: v1.4.4 merges forward into `dev/v1.5`, the next candidate is **v1.5.0-rc.3**, and the security delta restarts the stable-promotion clock rather than skipping it. **v1.4.0 shipped on 2026-07-10** with remote upstreams, confinement-mode parity, and supply-chain consolidation. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+**v1.5.0 shipped on 2026-07-28** and is the latest stable release, promoting the rc.3 safer-defaults, namespace-hardening, endpoint-config, ownership, and security-remediation work to GA. **v1.4.4 shipped on 2026-07-28** as the corresponding stable-line security patch. **v1.4.0 shipped on 2026-07-10** with remote upstreams, confinement-mode parity, and supply-chain consolidation. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+
+### Shipped in v1.5.0
+
+| Track | Surface |
+|---|---|
+| **Safer defaults** | `upstream.request_timeout` defaults to `60s` (was unlimited), so a wedged daemon that hangs a response body is caught out of the box; long-lived endpoints remain exempt, and `"off"` restores unlimited behavior. `ownership.allow_cross_owner_namespace_sharing` defaults to `false`, denying cross-owner `container:<ref>` joins when ownership is enabled. |
+| **Namespace hardening** | `restrict_namespace_sharing` plus `allowed_namespace_sharing_containers` gates `container:<ref>` joins across Network/PID/IPC/User namespaces; `deny_namespace_path_mode` blocks raw `ns:<path>` network namespace attachment; `allow_host_cgroupns` is now required for host cgroup-namespace mode. |
+| **CPU hard limit** | New opt-in `request_body.container_create.require_cpu_limit_hard` requires a genuine CPU-time cap (`HostConfig.NanoCpus` or `CpuQuota`); `CpuShares` alone or a lone `CpuPeriod` does not satisfy it. |
+| **Exec environment policy** | New opt-in `request_body.exec.allowed_env_vars`/`denied_env_vars` restrict exec-create environment entries by name, while `allowed_env_values` can pin selected entries to exact `NAME=VALUE` strings; denials never log or echo values. |
+| **Endpoint-config parity** | Create-time `NetworkingConfig.EndpointsConfig` now enforces the same static-IP, MAC, links, and driver-option policy as `POST /networks/*/connect`; Compose aliases remain allowed by default. |
+| **Integrations** | Adds `portwing-with-compose.yaml`, `drydock-with-compose.yaml`, and the tri-tool Compose example, taking the bundled preset set from 15 to 17. |
+| **Helm security** | The DaemonSet pins `runAsNonRoot`, UID/GID 65532, and `seccompProfile.type: RuntimeDefault` at pod level while allowing the host socket GID to be merged through `podSecurityContext.supplementalGroups`. |
+| **Configuration internals** | Viper-default registration is generated by reflection off `Defaults()` rather than a hand-maintained list; exhaustive tests now prove every mapstructure leaf and `SOCKGUARD_*` override is registered. |
+| **Security release train** | Carries fresh embedded-resource ownership checks, registry-push exfiltration gating, browser and Helm hardening, structured-log sanitization, fail-closed plugin inspection, and patched dependency graphs through rc.3 into stable. |
+| **Validation** | Full Go/TypeScript CI, CodeQL, Grype, govulncheck, gosec, real-dockerd integration, fuzzing, artifact verification, signatures, provenance, and published-image scans passed before GA promotion. |
 
 ### Shipped in v1.4.4
 
@@ -446,14 +464,13 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 | **Repository protection** | `main` requires two approvals, a code-owner review, stale-review dismissal, last-push approval, resolved conversations, strict required checks, and no bypass actors |
 | **Compatibility** | No YAML schema, CLI flag, environment variable, admin endpoint, metric, or other public API change |
 
-### Next: v1.5.0
+### Shipped in v1.4.0
 
-| Gate | Plan |
+| Track | Surface |
 |---|---|
-| **Forward merge** | Merge the v1.4.4 tag commit into `dev/v1.5`, preserving the stable changelog, website version, roadmap, and Helm metadata while carrying every security fix into the minor-release line |
-| **Next candidate** | Cut **v1.5.0-rc.3** from the reconciled v1.5 branch and publish the complete multi-architecture image, binary, checksum, SBOM/provenance, and signature set |
-| **Release validation** | Require the full Go/TypeScript gates, CodeQL, Grype, govulncheck, gosec, real-dockerd integration, fuzz matrix, artifact verification, and clean published-image scans before promotion |
-| **Stable promotion** | Restart the RC soak from rc.3 because the security delta changes the candidate; promote v1.5.0 only after the documented soak completes cleanly, without relabeling an earlier RC as stable |
+| **Remote upstreams & failover** | `upstream.endpoints[]` — ordered failover set of Docker daemons (`unix://` or `tcp://host:port`), per-endpoint mTLS (`tls.ca_file`/`cert_file`/`key_file`/`server_name`), per-endpoint insecure opt-ins; active connect-level health probes on configurable `failover.health_interval`/`health_timeout`; request failure demotes the active endpoint for immediate failover; `DOCKER_HOST`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` auto-detected when no endpoints are set |
+| **SecurityOpt policy rails** | `deny_selinux_disable`, `deny_selinux_label_override`, `deny_unconfined_system_paths` for `containers/create`; `deny_unconfined_seccomp`, `deny_custom_seccomp_profiles`, `deny_unconfined_apparmor` for `services/create/update`; swarm `ContainerSpec.Privileges` confinement parity with container create |
+| **RC hardening pass** | A multi-axis internal audit of the v1.4 RC (security, performance, tests, supply chain) found no critical or high issues and drove plugin-inspection, SPKI comparison, upstream warning, hot-path allocation, DAST, integration, fuzz, and documentation hardening |
 
 ### Shipped in v1.3.0
 
@@ -494,22 +511,16 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 | **Observability** | Prometheus `/metrics`, dedicated audit schema, trusted request IDs, deny-reason enums, W3C trace/log correlation, active upstream socket watchdog, lock-free hot path |
 | **Dynamic policy** | `POST /admin/validate` CI gate, `fsnotify` + SIGHUP hot reload with immutable-field gate, monotonic policy versioning, optional dedicated admin listener, cosign-signed policy bundles |
 
-### Shipped in v1.4.0
+### Future directions
 
-| Track | Surface |
-|---|---|
-| **Remote upstreams & failover** | `upstream.endpoints[]` — ordered failover set of Docker daemons (`unix://` or `tcp://host:port`), per-endpoint mTLS (`tls.ca_file`/`cert_file`/`key_file`/`server_name`), per-endpoint insecure opt-ins; active connect-level health probes on configurable `failover.health_interval`/`health_timeout`; request-failure demotes the active endpoint for immediate failover; TLS inside the dialer so the reverse proxy, hijack, and inspect paths are all covered; designed for active/passive redundancy across equivalent daemons (swarm managers, HA pairs) — not cross-daemon fan-out; `DOCKER_HOST`/`DOCKER_TLS_VERIFY`/`DOCKER_CERT_PATH` auto-detected when no endpoints are set |
-| **SecurityOpt policy rails** | `deny_selinux_disable`, `deny_selinux_label_override`, `deny_unconfined_system_paths` for `containers/create`; `deny_unconfined_seccomp`, `deny_custom_seccomp_profiles`, `deny_unconfined_apparmor` for `services/create/update`; swarm `ContainerSpec.Privileges` confinement parity with container create |
-| **RC hardening pass** | A multi-axis internal audit of the v1.4 RC (security, performance, tests, supply chain) — **no critical or high issues** — drove a hardening sweep: swarm-service `SELinuxContext` confinement parity (closing the SELinux-disable analogue of the SecurityOpt rails above); fail-closed plugin inspection (decompressed-byte cap on the plugin-create gzip path, decode-failure and missing-`config.json` denials, right-sized JSON body limits); constant-time SPKI pin comparison; startup warnings when an upstream endpoint disables TLS verification or runs plaintext TCP; `/events` pattern-visibility warning; hot-path allocation trims on the rate-limit/metrics/hijack paths; digest-pinned DAST and integration-test images; multi-host hijack / TLS-dial / privilege-fuzz test coverage; and the remote-upstream TLS/health documentation |
-
-### Post-1.0 preview
+These themes are not assigned to a scheduled release. The committed roadmap through v1.5 is complete; future milestones will be added only when their scope is concrete.
 
 | Tier | Theme |
 |---|---|
-| Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators (swarm `ContainerSpec` confinement parity and `SecurityOpt` `label=`/`systempaths=` evaluation shipped in v1.4); audit-backlog follow-ups: non-`host` shared-namespace modes (`container:<id>`, `ns:<path>`) under `allow_host_network`, optional exec-`Env` allowlisting (LD_PRELOAD/PATH), `CpuShares`-vs-hard-cap distinction for `require_cpu_limit`, and a default upstream `request_timeout` |
+| Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators; audit-backlog follow-ups include re-validating resource-limit requirements on container update (`allow_resource_updates` can silently strip a hard CPU/memory/PIDs cap set at create time) and adding swarm-service CPU-limit parity (`request_body.service` has no `require_cpu_limit`/`require_cpu_limit_hard` equivalent today) |
 | Supply chain (v1.x) | `egress-policy: block` with curated allow-lists on high-privilege release jobs; SBOM generation for binary release artifacts |
 | Policy refinement (v1.x) | Multiple frontend listeners on the main proxy, named rule path aliases |
-| Internals (v1.x) | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth (generated Viper defaults); profiling-gated JSON redaction fast path |
+| Internals (v1.x) | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |
 | Compliance (v1.x) | CIS Docker Benchmark control mapping, audit-ready policy templates |
 | Extensibility (v1.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
 
@@ -592,11 +603,13 @@ Every release image is cosign-signed via GitHub Actions OIDC. Before running a s
 <table>
   <tr><th>Tool</th><th>Role</th></tr>
   <tr><td><a href="https://github.com/CodesWhat/drydock"><b>drydock</b></a></td><td>Container update monitoring — web UI and notification engine</td></tr>
-  <tr><td><a href="https://github.com/CodesWhat/lookout"><b>lookout</b></a></td><td>Remote Docker agent — secure socket-level access from Drydock or standalone</td></tr>
+  <tr><td><a href="https://github.com/CodesWhat/portwing"><b>portwing</b></a></td><td>Remote Docker agent — secure socket-level access from Drydock or standalone</td></tr>
   <tr><td><b>sockguard</b></td><td>Docker socket proxy — default-deny allowlist filter protecting the socket</td></tr>
 </table>
 
-These three tools are designed to layer: sockguard filters the socket, lookout exposes it remotely, and drydock monitors and acts on container state.
+These three tools are designed to layer: sockguard filters the socket, portwing exposes it remotely, and drydock monitors and acts on container state.
+
+See [portwing's COMPATIBILITY.md](https://github.com/CodesWhat/portwing/blob/main/COMPATIBILITY.md) for the full compatibility matrix across all three tools.
 
 **[Apache-2.0 License](LICENSE)**
 

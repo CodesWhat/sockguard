@@ -6,8 +6,17 @@ import "github.com/codeswhat/sockguard/internal/filter"
 // options. Runtime-only fields, such as exec-start upstream inspection, are
 // intentionally left for the caller to attach.
 func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
+	// container_create.allow_endpoint_config is deliberately NOT its own YAML
+	// key: POST /containers/create's NetworkingConfig.EndpointsConfig carries
+	// the identical static-IP/MAC/Links/DriverOpts attack surface Docker's
+	// POST /networks/*/connect already gates via network.allow_endpoint_config,
+	// so a second knob would let an operator widen one endpoint and forget the
+	// other. One flag governs both — see filter.ContainerCreateOptions.AllowEndpointConfig.
+	containerCreate := c.ContainerCreate.ToFilterOptions()
+	containerCreate.AllowEndpointConfig = c.Network.AllowEndpointConfig
+
 	return filter.PolicyConfig{
-		ContainerCreate:  c.ContainerCreate.ToFilterOptions(),
+		ContainerCreate:  containerCreate,
 		Exec:             c.Exec.ToFilterOptions(),
 		ImagePull:        c.ImagePull.ToFilterOptions(),
 		Build:            c.Build.ToFilterOptions(),
@@ -27,38 +36,43 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 
 func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCreateOptions {
 	return filter.ContainerCreateOptions{
-		AllowPrivileged:            c.AllowPrivileged,
-		AllowHostNetwork:           c.AllowHostNetwork,
-		AllowHostPID:               c.AllowHostPID,
-		AllowHostIPC:               c.AllowHostIPC,
-		AllowedBindMounts:          c.AllowedBindMounts,
-		AllowAllDevices:            c.AllowAllDevices,
-		AllowedDevices:             c.AllowedDevices,
-		AllowDeviceRequests:        c.AllowDeviceRequests,
-		AllowedDeviceRequests:      toFilterAllowedDeviceRequests(c.AllowedDeviceRequests),
-		AllowDeviceCgroupRules:     c.AllowDeviceCgroupRules,
-		AllowedDeviceCgroupRules:   c.AllowedDeviceCgroupRules,
-		RequireNoNewPrivileges:     c.RequireNoNewPrivileges,
-		RequireNonRootUser:         c.RequireNonRootUser,
-		RequireReadonlyRootfs:      c.RequireReadonlyRootfs,
-		RequireDropAllCapabilities: c.RequireDropAllCapabilities,
-		AllowAllCapabilities:       c.AllowAllCapabilities,
-		AllowedCapabilities:        c.AllowedCapabilities,
-		RequireMemoryLimit:         c.RequireMemoryLimit,
-		RequireCPULimit:            c.RequireCPULimit,
-		RequirePidsLimit:           c.RequirePidsLimit,
-		AllowedSeccompProfiles:     c.AllowedSeccompProfiles,
-		DenyUnconfinedSeccomp:      c.DenyUnconfinedSeccomp,
-		AllowedAppArmorProfiles:    c.AllowedAppArmorProfiles,
-		DenyUnconfinedAppArmor:     c.DenyUnconfinedAppArmor,
-		AllowHostUserNS:            c.AllowHostUserNS,
-		AllowSysctls:               c.AllowSysctls,
-		RequiredLabels:             c.RequiredLabels,
-		AllowedRuntimes:            c.AllowedRuntimes,
-		ImageTrust:                 c.ImageTrust.toFilterOptions(),
-		DenySelinuxDisable:         c.DenySelinuxDisable,
-		DenySelinuxLabelOverride:   c.DenySelinuxLabelOverride,
-		DenyUnconfinedSystemPaths:  c.DenyUnconfinedSystemPaths,
+		AllowPrivileged:                   c.AllowPrivileged,
+		AllowHostNetwork:                  c.AllowHostNetwork,
+		AllowHostPID:                      c.AllowHostPID,
+		AllowHostIPC:                      c.AllowHostIPC,
+		AllowedBindMounts:                 c.AllowedBindMounts,
+		AllowAllDevices:                   c.AllowAllDevices,
+		AllowedDevices:                    c.AllowedDevices,
+		AllowDeviceRequests:               c.AllowDeviceRequests,
+		AllowedDeviceRequests:             toFilterAllowedDeviceRequests(c.AllowedDeviceRequests),
+		AllowDeviceCgroupRules:            c.AllowDeviceCgroupRules,
+		AllowedDeviceCgroupRules:          c.AllowedDeviceCgroupRules,
+		RequireNoNewPrivileges:            c.RequireNoNewPrivileges,
+		RequireNonRootUser:                c.RequireNonRootUser,
+		RequireReadonlyRootfs:             c.RequireReadonlyRootfs,
+		RequireDropAllCapabilities:        c.RequireDropAllCapabilities,
+		AllowAllCapabilities:              c.AllowAllCapabilities,
+		AllowedCapabilities:               c.AllowedCapabilities,
+		RequireMemoryLimit:                c.RequireMemoryLimit,
+		RequireCPULimit:                   c.RequireCPULimit,
+		RequireCPULimitHard:               c.RequireCPULimitHard,
+		RequirePidsLimit:                  c.RequirePidsLimit,
+		AllowedSeccompProfiles:            c.AllowedSeccompProfiles,
+		DenyUnconfinedSeccomp:             c.DenyUnconfinedSeccomp,
+		AllowedAppArmorProfiles:           c.AllowedAppArmorProfiles,
+		DenyUnconfinedAppArmor:            c.DenyUnconfinedAppArmor,
+		AllowHostUserNS:                   c.AllowHostUserNS,
+		AllowHostCgroupNS:                 c.AllowHostCgroupNS,
+		RestrictNamespaceSharing:          c.RestrictNamespaceSharing,
+		AllowedNamespaceSharingContainers: c.AllowedNamespaceSharingContainers,
+		DenyNamespacePathMode:             c.DenyNamespacePathMode,
+		AllowSysctls:                      c.AllowSysctls,
+		RequiredLabels:                    c.RequiredLabels,
+		AllowedRuntimes:                   c.AllowedRuntimes,
+		ImageTrust:                        c.ImageTrust.toFilterOptions(),
+		DenySelinuxDisable:                c.DenySelinuxDisable,
+		DenySelinuxLabelOverride:          c.DenySelinuxLabelOverride,
+		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 	}
 }
 
@@ -91,9 +105,12 @@ func (c ImageTrustConfig) toFilterOptions() filter.ImageTrustOptions {
 
 func (c ExecRequestBodyConfig) ToFilterOptions() filter.ExecOptions {
 	return filter.ExecOptions{
-		AllowPrivileged: c.AllowPrivileged,
-		AllowRootUser:   c.AllowRootUser,
-		AllowedCommands: c.AllowedCommands,
+		AllowPrivileged:  c.AllowPrivileged,
+		AllowRootUser:    c.AllowRootUser,
+		AllowedCommands:  c.AllowedCommands,
+		AllowedEnvVars:   c.AllowedEnvVars,
+		DeniedEnvVars:    c.DeniedEnvVars,
+		AllowedEnvValues: c.AllowedEnvValues,
 	}
 }
 

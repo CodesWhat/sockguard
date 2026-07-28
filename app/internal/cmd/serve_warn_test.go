@@ -87,6 +87,9 @@ func TestWarnRulesVersionPrefixOnce(t *testing.T) {
 	}
 }
 
+// warnBodyBlindWritesOnce must fire only when insecure_allow_body_blind_writes
+// is enabled, and only once per Once across reload chain rebuilds — mirroring
+// TestWarnLabelACLOnce for the analogous startup-acknowledgment warning.
 func TestWarnBodyBlindWritesOnce(t *testing.T) {
 	t.Parallel()
 
@@ -103,9 +106,23 @@ func TestWarnBodyBlindWritesOnce(t *testing.T) {
 	enabled := config.Defaults()
 	enabled.InsecureAllowBodyBlindWrites = true
 	warnBodyBlindWritesOnce(&enabled, logger, &once)
+	if got := strings.Count(buf.String(), "insecure_allow_body_blind_writes is enabled"); got != 1 {
+		t.Fatalf("warning count after first enabled build = %d, want 1; log: %q", got, buf.String())
+	}
+
+	// Simulate the chain rebuild a hot-reload performs: same process, same
+	// Once, enabled again — must NOT log a second time.
 	warnBodyBlindWritesOnce(&enabled, logger, &once)
 	if got := strings.Count(buf.String(), "insecure_allow_body_blind_writes is enabled"); got != 1 {
-		t.Fatalf("warning count = %d, want 1; log: %q", got, buf.String())
+		t.Fatalf("warning count after reload rebuild = %d, want still 1; log: %q", got, buf.String())
+	}
+
+	// A fresh Once (fresh process) with the feature enabled warns again.
+	var fresh sync.Once
+	buf.Reset()
+	warnBodyBlindWritesOnce(&enabled, logger, &fresh)
+	if got := strings.Count(buf.String(), "insecure_allow_body_blind_writes is enabled"); got != 1 {
+		t.Fatalf("warning count with fresh Once = %d, want 1; log: %q", got, buf.String())
 	}
 }
 

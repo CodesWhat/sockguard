@@ -91,181 +91,6 @@ func (f *recordingInspector) inspectExec(_ context.Context, _ string) (string, b
 	return "", false, nil
 }
 
-func TestMiddlewareAuthorizesContainerCreateEmbeddedResources(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		body string
-		kind dockerresource.Kind
-		id   string
-	}{
-		{name: "image", body: `{"Image":"registry.example/other/app:latest"}`, kind: dockerresource.KindImage, id: "registry.example/other/app:latest"},
-		{name: "bind named volume", body: `{"HostConfig":{"Binds":["other-data:/data:ro"]}}`, kind: dockerresource.KindVolume, id: "other-data"},
-		{name: "structured named volume", body: `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"other-data","Target":"/data"}]}}`, kind: dockerresource.KindVolume, id: "other-data"},
-		{name: "custom network mode", body: `{"HostConfig":{"NetworkMode":"other-net"}}`, kind: dockerresource.KindNetwork, id: "other-net"},
-		{name: "endpoint network", body: `{"NetworkingConfig":{"EndpointsConfig":{"other-net":{}}}}`, kind: dockerresource.KindNetwork, id: "other-net"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			fi := &recordingInspector{resources: map[string]map[string]inspectResult{
-				string(tt.kind): {tt.id: {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true}},
-			}}
-			handler := middlewareWithDeps(
-				testLogger(),
-				Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: true},
-				fi.inspectResource,
-				fi.inspectExec,
-			)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-				t.Fatal("cross-owner embedded resource reference was forwarded")
-			}))
-
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body)))
-
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
-			}
-			if !slices.Contains(fi.calls, resourceInspectCall{kind: tt.kind, id: tt.id}) {
-				t.Fatalf("inspect calls = %#v, want %s %q", fi.calls, tt.kind, tt.id)
-			}
-		})
-	}
-}
-
-func TestMiddlewareAuthorizesServiceEmbeddedResources(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		path string
-		body string
-		kind dockerresource.Kind
-		id   string
-	}{
-		{name: "image", path: "/services/create", body: `{"TaskTemplate":{"ContainerSpec":{"Image":"registry.example/other/app:latest"}}}`, kind: dockerresource.KindImage, id: "registry.example/other/app:latest"},
-		{name: "named volume", path: "/services/create", body: `{"TaskTemplate":{"ContainerSpec":{"Mounts":[{"Type":"volume","Source":"other-data"}]}}}`, kind: dockerresource.KindVolume, id: "other-data"},
-		{name: "network", path: "/services/create", body: `{"TaskTemplate":{"ContainerSpec":{}},"Networks":[{"Target":"other-net"}]}`, kind: dockerresource.KindNetwork, id: "other-net"},
-		{name: "secret ID", path: "/services/create", body: `{"TaskTemplate":{"ContainerSpec":{"Secrets":[{"SecretID":"other-secret","SecretName":"db-password"}]}}}`, kind: dockerresource.KindSecret, id: "other-secret"},
-		{name: "secret name fallback", path: "/services/create", body: `{"TaskTemplate":{"ContainerSpec":{"Secrets":[{"SecretID":"","SecretName":"other-secret"}]}}}`, kind: dockerresource.KindSecret, id: "other-secret"},
-		{name: "config on update", path: "/services/current/update", body: `{"TaskTemplate":{"ContainerSpec":{"Configs":[{"ConfigID":"other-config"}]}}}`, kind: dockerresource.KindConfig, id: "other-config"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			fi := &recordingInspector{resources: map[string]map[string]inspectResult{
-				string(tt.kind): {tt.id: {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true}},
-				"services":      {"current": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
-			}}
-			handler := middlewareWithDeps(
-				testLogger(),
-				Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: true},
-				fi.inspectResource,
-				fi.inspectExec,
-			)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-				t.Fatal("cross-owner embedded service reference was forwarded")
-			}))
-
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body)))
-
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
-			}
-			if !slices.Contains(fi.calls, resourceInspectCall{kind: tt.kind, id: tt.id}) {
-				t.Fatalf("inspect calls = %#v, want %s %q", fi.calls, tt.kind, tt.id)
-			}
-		})
-	}
-}
-
-func TestMiddlewareAppliesUnownedAndUnresolvedEmbeddedResourcePolicy(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name               string
-		body               string
-		kind               dockerresource.Kind
-		id                 string
-		labels             map[string]string
-		found              bool
-		allowUnownedImages bool
-		wantStatus         int
-	}{
-		{name: "unowned image compatibility", body: `{"Image":"busybox:latest"}`, kind: dockerresource.KindImage, id: "busybox:latest", labels: map[string]string{}, found: true, allowUnownedImages: true, wantStatus: http.StatusNoContent},
-		{name: "unowned image strict", body: `{"Image":"busybox:latest"}`, kind: dockerresource.KindImage, id: "busybox:latest", labels: map[string]string{}, found: true, wantStatus: http.StatusForbidden},
-		{name: "unowned volume", body: `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"shared-data"}]}}`, kind: dockerresource.KindVolume, id: "shared-data", labels: map[string]string{}, found: true, wantStatus: http.StatusForbidden},
-		{name: "unresolved image is not unowned", body: `{"Image":"missing:latest"}`, kind: dockerresource.KindImage, id: "missing:latest", allowUnownedImages: true, wantStatus: http.StatusForbidden},
-		{name: "unresolved network", body: `{"NetworkingConfig":{"EndpointsConfig":{"missing-net":{}}}}`, kind: dockerresource.KindNetwork, id: "missing-net", wantStatus: http.StatusForbidden},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			fi := &recordingInspector{resources: map[string]map[string]inspectResult{
-				string(tt.kind): {tt.id: {labels: tt.labels, found: tt.found}},
-			}}
-			handler := middlewareWithDeps(
-				testLogger(),
-				Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: tt.allowUnownedImages},
-				fi.inspectResource,
-				fi.inspectExec,
-			)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusNoContent)
-			}))
-
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body)))
-
-			if rec.Code != tt.wantStatus {
-				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
-			}
-			if !slices.Contains(fi.calls, resourceInspectCall{kind: tt.kind, id: tt.id}) {
-				t.Fatalf("inspect calls = %#v, want %s %q", fi.calls, tt.kind, tt.id)
-			}
-		})
-	}
-}
-
-func TestMiddlewareDeduplicatesSameOwnerEmbeddedResources(t *testing.T) {
-	t.Parallel()
-	fi := &recordingInspector{resources: map[string]map[string]inspectResult{
-		"images":   {"team/app:latest": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
-		"volumes":  {"team-data": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
-		"networks": {"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
-	}}
-	handler := middlewareWithDeps(
-		testLogger(),
-		Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
-		fi.inspectResource,
-		fi.inspectExec,
-	)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(
-		`{"Image":"team/app:latest","HostConfig":{"Binds":["team-data:/data"],"NetworkMode":"team-net"},"NetworkingConfig":{"EndpointsConfig":{"team-net":{}}}}`,
-	)))
-
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
-	}
-	want := []resourceInspectCall{
-		{kind: dockerresource.KindImage, id: "team/app:latest"},
-		{kind: dockerresource.KindVolume, id: "team-data"},
-		{kind: dockerresource.KindNetwork, id: "team-net"},
-	}
-	for _, call := range want {
-		if !slices.Contains(fi.calls, call) {
-			t.Fatalf("inspect calls = %#v, missing %#v", fi.calls, call)
-		}
-	}
-	if len(fi.calls) != len(want) {
-		t.Fatalf("inspect calls = %#v, want each reference exactly once", fi.calls)
-	}
-}
-
 func TestMiddlewareAddsOwnerLabelToContainerCreate(t *testing.T) {
 	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
@@ -552,6 +377,727 @@ func TestMiddlewareRejectsDuplicateCaseVariantServiceKeys(t *testing.T) {
 				t.Fatal("duplicate case-variant body was forwarded")
 			}
 		})
+	}
+}
+
+func TestMiddlewareRejectsDuplicateCaseVariantContainerCreateHostConfigKeys(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "top-level HostConfig shadow",
+			body: `{"Image":"x","HostConfig":{"Privileged":false},"hostconfig":{"Privileged":true}}`,
+		},
+		{
+			name: "nested Privileged shadow",
+			body: `{"Image":"x","HostConfig":{"Privileged":false,"privileged":true}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			forwarded := false
+			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				forwarded = true
+				t.Fatal("duplicate case-variant container create body was forwarded")
+			}))
+
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+			if forwarded {
+				t.Fatal("duplicate case-variant body was forwarded")
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesCrossOwnerContainerCreateNamespaceSharing(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fields := []string{"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode"}
+
+	for _, field := range fields {
+		t.Run(field, func(t *testing.T) {
+			fi := fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					"containers": {
+						"target": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+					},
+				},
+			}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("expected cross-owner namespace-sharing create to be denied")
+			}))
+
+			body := fmt.Sprintf(`{"Image":"busybox","HostConfig":{%q:"container:target"}}`, field)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "namespace-sharing target container") || !strings.Contains(rec.Body.String(), "target") {
+				t.Fatalf("deny body = %q, want namespace-sharing target denial", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesCrossOwnerContainerCreateEmbeddedResources(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+		kind dockerresource.Kind
+		id   string
+	}{
+		{
+			name: "image",
+			body: `{"Image":"registry.example/other/app:latest"}`,
+			kind: dockerresource.KindImage,
+			id:   "registry.example/other/app:latest",
+		},
+		{
+			name: "bind string named volume",
+			body: `{"HostConfig":{"Binds":["other-data:/data:ro"]}}`,
+			kind: dockerresource.KindVolume,
+			id:   "other-data",
+		},
+		{
+			name: "structured named volume",
+			body: `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"other-data","Target":"/data"}]}}`,
+			kind: dockerresource.KindVolume,
+			id:   "other-data",
+		},
+		{
+			name: "network mode custom network",
+			body: `{"HostConfig":{"NetworkMode":"other-net"}}`,
+			kind: dockerresource.KindNetwork,
+			id:   "other-net",
+		},
+		{
+			name: "create-time network endpoint",
+			body: `{"NetworkingConfig":{"EndpointsConfig":{"other-net":{}}}}`,
+			kind: dockerresource.KindNetwork,
+			id:   "other-net",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: true}
+			fi := &recordingInspector{
+				resources: map[string]map[string]inspectResult{
+					string(tt.kind): {
+						tt.id: {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+					},
+				},
+			}
+			forwarded := false
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				forwarded = true
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if forwarded {
+				t.Fatal("cross-owner embedded resource reference was forwarded")
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !slices.Contains(fi.calls, resourceInspectCall{kind: tt.kind, id: tt.id}) {
+				t.Fatalf("inspect calls = %#v, want %s %q", fi.calls, tt.kind, tt.id)
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesCrossOwnerServiceEmbeddedResources(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		path string
+		body string
+		kind dockerresource.Kind
+		id   string
+	}{
+		{
+			name: "image on create",
+			path: "/services/create",
+			body: `{"TaskTemplate":{"ContainerSpec":{"Image":"registry.example/other/app:latest"}}}`,
+			kind: dockerresource.KindImage,
+			id:   "registry.example/other/app:latest",
+		},
+		{
+			name: "named volume on create",
+			path: "/services/create",
+			body: `{"TaskTemplate":{"ContainerSpec":{"Mounts":[{"Type":"volume","Source":"other-data","Target":"/data"}]}}}`,
+			kind: dockerresource.KindVolume,
+			id:   "other-data",
+		},
+		{
+			name: "network on create",
+			path: "/services/create",
+			body: `{"TaskTemplate":{"ContainerSpec":{}},"Networks":[{"Target":"other-net"}]}`,
+			kind: dockerresource.KindNetwork,
+			id:   "other-net",
+		},
+		{
+			name: "secret on create",
+			path: "/services/create",
+			body: `{"TaskTemplate":{"ContainerSpec":{"Secrets":[{"SecretID":"other-secret","SecretName":"db-password"}]}}}`,
+			kind: dockerresource.KindSecret,
+			id:   "other-secret",
+		},
+		{
+			name: "config on update",
+			path: "/services/current/update",
+			body: `{"TaskTemplate":{"ContainerSpec":{"Configs":[{"ConfigID":"other-config","ConfigName":"app.conf"}]}}}`,
+			kind: dockerresource.KindConfig,
+			id:   "other-config",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: true}
+			fi := &recordingInspector{
+				resources: map[string]map[string]inspectResult{
+					string(tt.kind): {
+						tt.id: {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+					},
+					"services": {
+						"current": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+					},
+				},
+			}
+			forwarded := false
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				forwarded = true
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if forwarded {
+				t.Fatal("cross-owner embedded service resource reference was forwarded")
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !slices.Contains(fi.calls, resourceInspectCall{kind: tt.kind, id: tt.id}) {
+				t.Fatalf("inspect calls = %#v, want %s %q", fi.calls, tt.kind, tt.id)
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesCrossOwnerServiceSecretByNameWhenIDEmpty(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := &recordingInspector{
+		resources: map[string]map[string]inspectResult{
+			"secrets": {
+				"other-secret": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+			},
+		},
+	}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("service secret reference resolved by name was forwarded")
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(
+		`{"TaskTemplate":{"ContainerSpec":{"Secrets":[{"SecretID":"","SecretName":"other-secret"}]}}}`,
+	))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !slices.Contains(fi.calls, resourceInspectCall{kind: dockerresource.KindSecret, id: "other-secret"}) {
+		t.Fatalf("inspect calls = %#v, want secret other-secret", fi.calls)
+	}
+}
+
+func TestMiddlewareAllowsSameOwnerContainerCreateEmbeddedResources(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: true}
+	fi := &recordingInspector{
+		resources: map[string]map[string]inspectResult{
+			"images": {
+				"registry.example/team/app:latest": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+			"volumes": {
+				"team-data": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+			"networks": {
+				"team-net": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+		},
+	}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(
+		`{"Image":"registry.example/team/app:latest","HostConfig":{"Binds":["team-data:/data"],"NetworkMode":"team-net"},"NetworkingConfig":{"EndpointsConfig":{"team-net":{}}}}`,
+	))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	wantCalls := []resourceInspectCall{
+		{kind: dockerresource.KindImage, id: "registry.example/team/app:latest"},
+		{kind: dockerresource.KindVolume, id: "team-data"},
+		{kind: dockerresource.KindNetwork, id: "team-net"},
+	}
+	for _, want := range wantCalls {
+		if !slices.Contains(fi.calls, want) {
+			t.Fatalf("inspect calls = %#v, missing %#v", fi.calls, want)
+		}
+	}
+	if len(fi.calls) != len(wantCalls) {
+		t.Fatalf("inspect calls = %#v, want each embedded resource exactly once", fi.calls)
+	}
+}
+
+func TestMiddlewareAppliesUnownedPolicyToEmbeddedResources(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name               string
+		body               string
+		kind               dockerresource.Kind
+		id                 string
+		allowUnownedImages bool
+		wantStatus         int
+	}{
+		{
+			name:               "unowned image allowed by compatibility option",
+			body:               `{"Image":"busybox:latest"}`,
+			kind:               dockerresource.KindImage,
+			id:                 "busybox:latest",
+			allowUnownedImages: true,
+			wantStatus:         http.StatusNoContent,
+		},
+		{
+			name:       "unowned image denied in strict mode",
+			body:       `{"Image":"busybox:latest"}`,
+			kind:       dockerresource.KindImage,
+			id:         "busybox:latest",
+			wantStatus: http.StatusForbidden,
+		},
+		{
+			name:       "unowned named volume denied",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"shared-data"}]}}`,
+			kind:       dockerresource.KindVolume,
+			id:         "shared-data",
+			wantStatus: http.StatusForbidden,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{
+				Owner:              "job-123",
+				LabelKey:           "com.sockguard.owner",
+				AllowUnownedImages: tt.allowUnownedImages,
+			}
+			fi := fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					string(tt.kind): {
+						tt.id: {labels: map[string]string{}, found: true},
+					},
+				},
+			}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesUnresolvedEmbeddedResources(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+		kind dockerresource.Kind
+		id   string
+	}{
+		{
+			name: "missing image is not an unlabeled image",
+			body: `{"Image":"missing:latest"}`,
+			kind: dockerresource.KindImage,
+			id:   "missing:latest",
+		},
+		{
+			name: "missing named volume",
+			body: `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"missing-data"}]}}`,
+			kind: dockerresource.KindVolume,
+			id:   "missing-data",
+		},
+		{
+			name: "missing custom network",
+			body: `{"NetworkingConfig":{"EndpointsConfig":{"missing-net":{}}}}`,
+			kind: dockerresource.KindNetwork,
+			id:   "missing-net",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fi := &recordingInspector{}
+			handler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowUnownedImages: true},
+				fi.inspectResource,
+				fi.inspectExec,
+			)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("unresolved embedded resource reference was forwarded")
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !slices.Contains(fi.calls, resourceInspectCall{kind: tt.kind, id: tt.id}) {
+				t.Fatalf("inspect calls = %#v, want %s %q", fi.calls, tt.kind, tt.id)
+			}
+			if !strings.Contains(rec.Body.String(), "could not resolve") {
+				t.Fatalf("deny body = %q, want unresolved reference reason", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesCrossOwnerContainerCreateNamespaceSharingCaseInsensitiveKeys(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "exact-case HostConfig NetworkMode",
+			body: `{"Image":"busybox","HostConfig":{"NetworkMode":"container:target"}}`,
+		},
+		{
+			name: "exact-case HostConfig UTSMode",
+			body: `{"Image":"busybox","HostConfig":{"UTSMode":"container:target"}}`,
+		},
+		{
+			name: "lowercase hostconfig networkmode",
+			body: `{"Image":"busybox","hostconfig":{"networkmode":"container:target"}}`,
+		},
+		{
+			name: "lowercase hostconfig utsmode",
+			body: `{"Image":"busybox","hostconfig":{"utsmode":"container:target"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+			fi := fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					"containers": {
+						"target": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+					},
+				},
+			}
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("expected cross-owner namespace-sharing create to be denied")
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "namespace-sharing target container") || !strings.Contains(rec.Body.String(), "target") {
+				t.Fatalf("deny body = %q, want namespace-sharing target denial", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareAllowsSameOwnerContainerCreateNamespaceSharingAndInjectsLabel(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"containers": {
+				"sidecar": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+			"images": {
+				"busybox": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+		},
+	}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		labels := nestedMapAnyForTest(t, body, "Labels")
+		if got := labels["existing"]; got != "value" {
+			t.Fatalf("existing label = %#v, want value", got)
+		}
+		if got := labels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("owner label = %#v, want job-123", got)
+		}
+		hostConfig := nestedMapAnyForTest(t, body, "HostConfig")
+		if got := hostConfig["NetworkMode"]; got != "container:sidecar" {
+			t.Fatalf("NetworkMode = %#v, want container:sidecar", got)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"busybox","Labels":{"existing":"value"},"HostConfig":{"NetworkMode":"container:sidecar"}}`))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+}
+
+func TestMiddlewareAllowsSameOwnerContainerCreateUTSNamespaceSharingAndInjectsLabel(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"containers": {
+				"sidecar": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+			"images": {
+				"busybox": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+		},
+	}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		labels := nestedMapAnyForTest(t, body, "Labels")
+		if got := labels["existing"]; got != "value" {
+			t.Fatalf("existing label = %#v, want value", got)
+		}
+		if got := labels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("owner label = %#v, want job-123", got)
+		}
+		hostConfig := nestedMapAnyForTest(t, body, "HostConfig")
+		if got := hostConfig["UTSMode"]; got != "container:sidecar" {
+			t.Fatalf("UTSMode = %#v, want container:sidecar", got)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"busybox","Labels":{"existing":"value"},"HostConfig":{"UTSMode":"container:sidecar"}}`))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+}
+
+func TestMiddlewareContainerCreateNamespaceSharingLookupMisses(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	tests := []struct {
+		name    string
+		result  inspectResult
+		reached bool
+		code    int
+	}{
+		// A target that resolves to nothing sockguard can inspect passes
+		// through — the daemon rejects a create that joins a nonexistent
+		// container anyway.
+		{name: "not found passes through", result: inspectResult{found: false}, reached: true, code: http.StatusNoContent},
+		// An inspect *error* fails closed with 502, matching every other
+		// ownership check: allowOwnershipRequest propagates the error and the
+		// middleware maps it to reasonCodeOwnerPolicyLookupFailed. A lookup
+		// failure must never silently bypass the cross-owner gate.
+		{name: "inspect error fails closed", result: inspectResult{err: errors.New("inspect failed")}, reached: false, code: http.StatusBadGateway},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fi := fakeInspector{
+				resources: map[string]map[string]inspectResult{
+					"containers": {
+						"target": tt.result,
+					},
+				},
+			}
+			reached := false
+			handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"HostConfig":{"NetworkMode":"container:target"}}`))
+			handler.ServeHTTP(rec, req)
+
+			if reached != tt.reached {
+				t.Fatalf("handler reached = %v, want %v", reached, tt.reached)
+			}
+			if rec.Code != tt.code {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.code, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesUnlabeledContainerCreateNamespaceSharingTarget(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"containers": {
+				"target": {labels: map[string]string{}, found: true},
+			},
+		},
+	}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected unlabeled namespace-sharing target to be denied")
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"HostConfig":{"NetworkMode":"container:target"}}`))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+func TestMiddlewareAllowCrossOwnerNamespaceSharingBypassesTargetLookup(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner", AllowCrossOwnerNamespaceSharing: true}
+	fi := &recordingInspector{
+		resources: map[string]map[string]inspectResult{
+			"containers": {
+				"target": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+			},
+		},
+	}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		labels := nestedMapAnyForTest(t, body, "Labels")
+		if got := labels["com.sockguard.owner"]; got != "job-123" {
+			t.Fatalf("owner label = %#v, want job-123", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"HostConfig":{"NetworkMode":"container:target"}}`))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if len(fi.calls) != 0 {
+		t.Fatalf("namespace target lookups = %#v, want none when AllowCrossOwnerNamespaceSharing is true", fi.calls)
+	}
+}
+
+func TestMiddlewareDeniesFirstCrossOwnerContainerCreateNamespaceSharingRef(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := &recordingInspector{
+		resources: map[string]map[string]inspectResult{
+			"containers": {
+				"cross": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+				"same":  {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+		},
+	}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected first cross-owner namespace-sharing ref to be denied")
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"HostConfig":{"NetworkMode":"container:cross","PidMode":"container:same"}}`))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "namespace-sharing target container") || !strings.Contains(rec.Body.String(), "cross") {
+		t.Fatalf("deny body = %q, want first cross-owner ref", rec.Body.String())
+	}
+	if len(fi.calls) != 1 || fi.calls[0].id != "cross" {
+		t.Fatalf("inspect calls = %#v, want exactly first ref cross", fi.calls)
+	}
+}
+
+func TestMiddlewareDedupesContainerCreateNamespaceSharingRefs(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := &recordingInspector{
+		resources: map[string]map[string]inspectResult{
+			"containers": {
+				"same": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+			},
+		},
+	}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"HostConfig":{"NetworkMode":"container:same","PidMode":" container:same ","IpcMode":"Container:same"}}`))
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if len(fi.calls) != 1 || fi.calls[0].kind != dockerresource.KindContainer || fi.calls[0].id != "same" {
+		t.Fatalf("inspect calls = %#v, want one container lookup for same", fi.calls)
+
 	}
 }
 
@@ -1329,6 +1875,166 @@ func TestMutateOwnershipRequest(t *testing.T) {
 			t.Fatalf("config Labels owner = %#v, want job-123", got)
 		}
 	})
+}
+
+func TestContainerCreateNamespaceRefs(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		decoded map[string]any
+		want    []string
+	}{
+		{
+			name:    "no HostConfig",
+			decoded: map[string]any{"Image": "busybox"},
+		},
+		{
+			name:    "HostConfig non object",
+			decoded: map[string]any{"HostConfig": "bad"},
+		},
+		{
+			name: "exact-case HostConfig NetworkMode",
+			decoded: map[string]any{
+				"HostConfig": map[string]any{
+					"NetworkMode": "container:target",
+				},
+			},
+			want: []string{"target"},
+		},
+		{
+			name: "lowercase HostConfig NetworkMode",
+			decoded: map[string]any{
+				"hostconfig": map[string]any{
+					"networkmode": "container:target",
+				},
+			},
+			want: []string{"target"},
+		},
+		{
+			name: "non string field values",
+			decoded: map[string]any{
+				"HostConfig": map[string]any{
+					"NetworkMode": 123,
+					"PidMode":     true,
+					"IpcMode":     []any{"container:ipc"},
+					"UsernsMode":  nil,
+				},
+			},
+		},
+		{
+			name: "mixed valid and invalid",
+			decoded: map[string]any{
+				"HostConfig": map[string]any{
+					"NetworkMode": "container:net",
+					"PidMode":     "bridge",
+					"IpcMode":     "container:ipc",
+					"UsernsMode":  "container:   ",
+				},
+			},
+			want: []string{"net", "ipc"},
+		},
+		{
+			name: "dedup preserves first occurrence order",
+			decoded: map[string]any{
+				"HostConfig": map[string]any{
+					"NetworkMode": "container:shared",
+					"PidMode":     " container:shared ",
+					"IpcMode":     "Container:other",
+					"UsernsMode":  "CONTAINER:shared",
+				},
+			},
+			want: []string{"shared", "other"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := containerCreateNamespaceRefs(tt.decoded)
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("containerCreateNamespaceRefs() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContainerCreateNamespaceRefsInspectsDuplicateCaseVariantModeKeys(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		decoded map[string]any
+		want    []string
+	}{
+		{
+			name: "NetworkMode case variants",
+			decoded: map[string]any{
+				"HostConfig": map[string]any{
+					"NetworkMode": "container:A",
+					"networkmode": "container:B",
+				},
+			},
+			want: []string{"A", "B"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := containerCreateNamespaceRefs(tt.decoded)
+			if len(got) != len(tt.want) {
+				t.Fatalf("containerCreateNamespaceRefs() = %#v, want set %#v", got, tt.want)
+			}
+			for _, want := range tt.want {
+				if !slices.Contains(got, want) {
+					t.Fatalf("containerCreateNamespaceRefs() = %#v, want ref %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestAddOwnerLabelToContainerCreateBodyInjectsLabelAndExtractsNamespaceRefs(t *testing.T) {
+	t.Parallel()
+	const bodyIn = `{"Image":"busybox","Labels":{"existing":"value"},"HostConfig":{"NetworkMode":"container:sidecar","PidMode":"host","Memory":9007199254740993},"Cmd":["echo","hi"]}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(bodyIn))
+
+	refs, err := addOwnerLabelToContainerCreateBody(req, "com.sockguard.owner", "job-123")
+	if err != nil {
+		t.Fatalf("addOwnerLabelToContainerCreateBody() error = %v", err)
+	}
+	if want := []string{"sidecar"}; !slices.Equal(refs, want) {
+		t.Fatalf("refs = %#v, want %#v", refs, want)
+	}
+
+	var body map[string]any
+	dec := json.NewDecoder(req.Body)
+	dec.UseNumber()
+	if err := dec.Decode(&body); err != nil {
+		t.Fatalf("decode mutated body: %v", err)
+	}
+	if got := body["Image"]; got != "busybox" {
+		t.Fatalf("Image = %#v, want busybox", got)
+	}
+	labels := nestedMapAnyForTest(t, body, "Labels")
+	if got := labels["existing"]; got != "value" {
+		t.Fatalf("existing label = %#v, want value", got)
+	}
+	if got := labels["com.sockguard.owner"]; got != "job-123" {
+		t.Fatalf("owner label = %#v, want job-123", got)
+	}
+	hostConfig := nestedMapAnyForTest(t, body, "HostConfig")
+	if got := hostConfig["NetworkMode"]; got != "container:sidecar" {
+		t.Fatalf("NetworkMode = %#v, want container:sidecar", got)
+	}
+	if got := hostConfig["PidMode"]; got != "host" {
+		t.Fatalf("PidMode = %#v, want host", got)
+	}
+	memory, ok := hostConfig["Memory"].(json.Number)
+	if !ok || memory.String() != "9007199254740993" {
+		t.Fatalf("Memory = %#v, want exact json number 9007199254740993", hostConfig["Memory"])
+	}
+	cmd, ok := body["Cmd"].([]any)
+	if !ok || len(cmd) != 2 || cmd[0] != "echo" || cmd[1] != "hi" {
+		t.Fatalf("Cmd = %#v, want [echo hi]", body["Cmd"])
+	}
 }
 
 func TestAllowOwnershipRequest(t *testing.T) {

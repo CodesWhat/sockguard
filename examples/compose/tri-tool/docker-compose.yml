@@ -1,0 +1,108 @@
+# examples/compose/tri-tool/docker-compose.yml
+#
+# Sockguard + Portwing + drydock — the full tri-tool topology, unix-socket
+# mode, no exec.
+# Sockguard writes a filtered unix socket into a shared named volume; Portwing
+# reads that socket rather than mounting /var/run/docker.sock; drydock never
+# touches Docker directly at all — it connects to Portwing over HTTP in
+# Standard Mode (drydock is the controller, Portwing is the agent) and gets
+# every container/image fact secondhand, through sockguard's filter.
+#
+# Portwing needs: container list/inspect/stats, lifecycle (start/stop/
+# restart/kill/rename/update/create/remove), image pull/inspect/remove,
+# /events, narrow network/volume/distribution reads, and Swarm service reads.
+# The portwing preset (sockguard.yaml, embedded below) covers all of these.
+# Log streaming (GET /containers/*/logs) is allowed because Portwing's
+# GetContainerLogs() API needs it, and insecure_allow_read_exfiltration: true
+# acknowledges that tradeoff; exec, build, secrets, and raw archive/export/
+# attach streams stay denied. This bundle defaults to NO exec — see the
+# README for the exec-enabled preset.
+#
+# Hardening mirrors portwing's own examples/docker-compose.with-sockguard.yml
+# and this repo's examples/compose/portwing/: Portwing's image runs as
+# non-root UID 65532; read_only + cap_drop: ALL + no-new-privileges keep both
+# the sockguard and Portwing containers minimal; PORT=4000 makes Portwing's
+# listen port explicit and avoids colliding with drydock's own port 3000.
+# drydock is NOT hardened the same way (no read_only/cap_drop/user) because
+# its entrypoint drops privileges itself via su-exec after provisioning
+# /store as root — matching this repo's existing examples/compose/drydock/.
+#
+# Generate the shared Portwing<->drydock secret before starting:
+#   openssl rand -hex 32 > portwing_token.txt
+#   sudo chown 65532:65532 portwing_token.txt && sudo chmod 0400 portwing_token.txt
+
+services:
+  sockguard:
+    image: codeswhat/sockguard:latest
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  portwing:
+    image: codeswhat/portwing:latest
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    user: "65532:65532"  # image default; explicit so it survives image overrides
+    ports:
+      - "4000:4000"
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+      - portwing-stacks:/data/stacks
+    environment:
+      - DOCKER_SOCKET=/var/run/sockguard/sockguard.sock
+      - PORT=4000
+      - AGENT_NAME=tri-tool-host
+      - TOKEN_FILE=/run/secrets/portwing_token
+    secrets:
+      - portwing_token
+
+  drydock:
+    image: codeswhat/drydock:latest
+    restart: unless-stopped
+    depends_on:
+      - portwing
+    ports:
+      - "3000:3000"
+    volumes:
+      - drydock-store:/store
+    environment:
+      # Pure aggregator — drydock has no Docker socket of its own in this
+      # stack; every container fact comes from Portwing (Standard Mode).
+      - DD_LOCAL_WATCHER=false
+      - DD_AGENT_PORTWING_HOST=portwing
+      - DD_AGENT_PORTWING_PORT=4000
+      - DD_AGENT_PORTWING_SECRET__FILE=/run/secrets/portwing_token
+      # Plain HTTP inside the compose network only. Use TLS
+      # (DD_AGENT_PORTWING_CAFILE/CERTFILE/KEYFILE) instead of this flag for
+      # any cross-host deployment.
+      - DD_AGENT_ALLOW_INSECURE_SECRET=true
+    secrets:
+      - portwing_token
+
+secrets:
+  portwing_token:
+    file: ./portwing_token.txt
+
+volumes:
+  sockguard-socket:
+  portwing-stacks:
+  drydock-store:

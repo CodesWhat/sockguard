@@ -95,6 +95,17 @@ func newIntegrationProxyHandler(t *testing.T, socketPath string, rules []config.
 	return newIntegrationProxyHandlerWithOptions(t, socketPath, rules, filter.Options{}, ownership.Options{})
 }
 
+// presetPolicyConfig mirrors the production translation from Config into the
+// filter policy, including top-level global flags that do not live under
+// request_body. Keeping it shared prevents preset conformance handlers from
+// silently diverging when another global policy field is added.
+func presetPolicyConfig(cfg *config.Config) filter.PolicyConfig {
+	policyConfig := cfg.RequestBody.ToFilterOptions()
+	policyConfig.DenyResponseVerbosity = filter.DenyResponseVerbosityVerbose
+	policyConfig.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	return policyConfig
+}
+
 func newIntegrationProxyHandlerWithOptions(t *testing.T, socketPath string, rules []config.RuleConfig, filterOpts filter.Options, ownerOpts ownership.Options) http.Handler {
 	t.Helper()
 

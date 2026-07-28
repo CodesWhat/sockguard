@@ -549,9 +549,39 @@ func TestValidateRejectsRelativeContainerCreateDeviceAllowlist(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsBlankContainerCreateNamespaceSharingAllowlistEntries(t *testing.T) {
+	tests := []struct {
+		name  string
+		entry string
+	}{
+		{name: "empty", entry: ""},
+		{name: "whitespace only", entry: "   "},
+		{name: "leading whitespace", entry: " sidecar"},
+		{name: "trailing whitespace", entry: "sidecar "},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.RequestBody.ContainerCreate.AllowedNamespaceSharingContainers = []string{tt.entry}
+
+			err := Validate(&cfg)
+			if err == nil {
+				t.Fatal("expected error for blank namespace-sharing allowlist entry")
+			}
+			if !strings.Contains(err.Error(), "request_body.container_create.allowed_namespace_sharing_containers") {
+				t.Fatalf("expected request_body.container_create.allowed_namespace_sharing_containers in error, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateAllowsExecCommandAndImageRegistryAllowlists(t *testing.T) {
 	cfg := Defaults()
 	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/local/bin/pre-update", "--check"}}
+	cfg.RequestBody.Exec.AllowedEnvVars = []string{"PATH", "HOME"}
+	cfg.RequestBody.Exec.DeniedEnvVars = []string{"LD_PRELOAD", "LD_LIBRARY_PATH"}
+	cfg.RequestBody.Exec.AllowedEnvValues = []string{"CALLBACK_URL=http://127.0.0.1:3000/callback"}
 	cfg.RequestBody.ImagePull.AllowedRegistries = []string{"ghcr.io", "registry.example.com:5000"}
 	cfg.RequestBody.Service.AllowedBindMounts = []string{"/srv/services"}
 	cfg.RequestBody.Service.AllowedRegistries = []string{"ghcr.io", "registry.example.com:5000"}
@@ -567,6 +597,26 @@ func TestValidateAllowsExecCommandAndImageRegistryAllowlists(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsInvalidExecAllowedEnvValue(t *testing.T) {
+	for _, entry := range []string{"CALLBACK_URL", " CALLBACK_URL=http://127.0.0.1", "CALLBACK URL=value", "=value"} {
+		t.Run(entry, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.RequestBody.Exec.AllowedEnvValues = []string{entry}
+
+			err := Validate(&cfg)
+			if err == nil {
+				t.Fatalf("expected error for invalid allowed_env_values entry %q", entry)
+			}
+			if !strings.Contains(err.Error(), "request_body.exec.allowed_env_values") {
+				t.Fatalf("expected allowed_env_values in error, got: %v", err)
+			}
+			if strings.Contains(err.Error(), entry) {
+				t.Fatalf("validation error reflected the rejected environment value: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateRejectsEmptyExecCommandAllowlistEntry(t *testing.T) {
 	cfg := Defaults()
 	cfg.RequestBody.Exec.AllowedCommands = [][]string{{""}}
@@ -577,6 +627,135 @@ func TestValidateRejectsEmptyExecCommandAllowlistEntry(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "request_body.exec.allowed_commands") {
 		t.Fatalf("expected request_body.exec.allowed_commands in error, got: %v", err)
+	}
+}
+
+func TestValidateRejectsExecEnvVarEntryWithEquals(t *testing.T) {
+	tests := []struct {
+		name  string
+		apply func(cfg *Config)
+		field string
+	}{
+		{
+			name:  "allowed_env_vars",
+			apply: func(cfg *Config) { cfg.RequestBody.Exec.AllowedEnvVars = []string{"FOO=bar"} },
+			field: "request_body.exec.allowed_env_vars",
+		},
+		{
+			name:  "denied_env_vars",
+			apply: func(cfg *Config) { cfg.RequestBody.Exec.DeniedEnvVars = []string{"FOO=bar"} },
+			field: "request_body.exec.denied_env_vars",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			tt.apply(&cfg)
+
+			err := Validate(&cfg)
+			if err == nil {
+				t.Fatalf("expected error for %s entry containing '='", tt.field)
+			}
+			if !strings.Contains(err.Error(), tt.field) {
+				t.Fatalf("expected %s in error, got: %v", tt.field, err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsExecEnvVarEntryWithWhitespace(t *testing.T) {
+	tests := []struct {
+		name  string
+		apply func(cfg *Config)
+		field string
+	}{
+		{
+			name:  "allowed_env_vars",
+			apply: func(cfg *Config) { cfg.RequestBody.Exec.AllowedEnvVars = []string{"FOO BAR"} },
+			field: "request_body.exec.allowed_env_vars",
+		},
+		{
+			name:  "denied_env_vars",
+			apply: func(cfg *Config) { cfg.RequestBody.Exec.DeniedEnvVars = []string{"FOO BAR"} },
+			field: "request_body.exec.denied_env_vars",
+		},
+		{
+			name:  "allowed_env_vars leading whitespace",
+			apply: func(cfg *Config) { cfg.RequestBody.Exec.AllowedEnvVars = []string{" PATH"} },
+			field: "request_body.exec.allowed_env_vars",
+		},
+		{
+			name:  "denied_env_vars trailing whitespace",
+			apply: func(cfg *Config) { cfg.RequestBody.Exec.DeniedEnvVars = []string{"LD_PRELOAD "} },
+			field: "request_body.exec.denied_env_vars",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			tt.apply(&cfg)
+
+			err := Validate(&cfg)
+			if err == nil {
+				t.Fatalf("expected error for %s entry containing whitespace", tt.field)
+			}
+			if !strings.Contains(err.Error(), tt.field) {
+				t.Fatalf("expected %s in error, got: %v", tt.field, err)
+			}
+		})
+	}
+}
+
+func TestValidateRejectsEmptyExecEnvVarEntry(t *testing.T) {
+	tests := []struct {
+		name  string
+		apply func(cfg *Config)
+		field string
+	}{
+		{
+			name:  "allowed_env_vars",
+			apply: func(cfg *Config) { cfg.RequestBody.Exec.AllowedEnvVars = []string{"   "} },
+			field: "request_body.exec.allowed_env_vars",
+		},
+		{
+			name:  "denied_env_vars",
+			apply: func(cfg *Config) { cfg.RequestBody.Exec.DeniedEnvVars = []string{""} },
+			field: "request_body.exec.denied_env_vars",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Defaults()
+			tt.apply(&cfg)
+
+			err := Validate(&cfg)
+			if err == nil {
+				t.Fatalf("expected error for empty/whitespace-only %s entry", tt.field)
+			}
+			if !strings.Contains(err.Error(), tt.field) {
+				t.Fatalf("expected %s in error, got: %v", tt.field, err)
+			}
+		})
+	}
+}
+
+// TestValidateAllowsExecEnvVarNameInBothListsAtValidationTime confirms there
+// is no cross-field validation error when the same name appears in both
+// allowed_env_vars and denied_env_vars — that is a legal, deliberate
+// defense-in-depth configuration; deny wins at runtime (see
+// TestMiddlewareDeniesExecCreateEnvVarDenylistWinsOverAllowlist in the filter
+// package), not at validation time.
+func TestValidateAllowsExecEnvVarNameInBothListsAtValidationTime(t *testing.T) {
+	cfg := Defaults()
+	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/bin/sh"}}
+	cfg.RequestBody.Exec.AllowedEnvVars = []string{"LD_PRELOAD"}
+	cfg.RequestBody.Exec.DeniedEnvVars = []string{"LD_PRELOAD"}
+
+	if err := Validate(&cfg); err != nil {
+		t.Fatalf("Validate() error = %v, want nil (overlap between allowed/denied env vars is legal)", err)
 	}
 }
 

@@ -193,23 +193,50 @@ func (p networkPolicy) inspectConnect(logger *slog.Logger, r *http.Request, body
 		return "network connect denied: request body could not be inspected", nil
 	}
 
-	if p.allowEndpointConfig || req.EndpointConfig == nil {
+	if req.EndpointConfig == nil {
 		return "", nil
 	}
-	if endpointHasStaticIPConfig(*req.EndpointConfig) {
-		return "network connect denied: endpoint static IP configuration is not allowed", nil
-	}
-	if strings.TrimSpace(req.EndpointConfig.MacAddress) != "" {
-		return "network connect denied: endpoint MAC address is not allowed", nil
-	}
-	if len(req.EndpointConfig.Aliases)+len(req.EndpointConfig.Links) > 0 {
-		return "network connect denied: endpoint aliases are not allowed", nil
-	}
-	if len(req.EndpointConfig.DriverOpts) > 0 {
-		return "network connect denied: endpoint driver options are not allowed", nil
+	if reason := denyEndpointConfigReason(*req.EndpointConfig, p.allowEndpointConfig, "network connect"); reason != "" {
+		return reason, nil
 	}
 
 	return "", nil
+}
+
+// denyEndpointConfigReason evaluates a single Docker network endpoint config
+// (EndpointSettings) against the allow_endpoint_config policy, returning a
+// "<subject> denied: ..." message (or "" when allowed). subject distinguishes
+// the calling context in the denial grammar — "network connect" for
+// POST /networks/*/connect, "container create" for the primary/extra
+// networks carried in POST /containers/create's NetworkingConfig.EndpointsConfig
+// — mirroring the subject-prefixed pattern capabilityAddDenyReason already
+// uses to share a check between container-create and service inspection.
+//
+// Aliases are deliberately NEVER gated here, independent of allow. Docker
+// Compose sets Aliases: [serviceName] on every endpoint it creates, so
+// gating aliases broke every multi-network Compose recreate under the
+// default policy. Aliases were also never enforced on container-create's
+// primary network (the only inspector that previously existed), so gating
+// them only at connect was a bypassable, low-value control rather than a
+// real guarantee. Links remains gated — joining another container's linked
+// alias namespace is a materially different, higher-privilege primitive.
+func denyEndpointConfigReason(ep networkEndpointConfig, allow bool, subject string) string {
+	if allow {
+		return ""
+	}
+	if endpointHasStaticIPConfig(ep) {
+		return fmt.Sprintf("%s denied: endpoint static IP configuration is not allowed", subject)
+	}
+	if strings.TrimSpace(ep.MacAddress) != "" {
+		return fmt.Sprintf("%s denied: endpoint MAC address is not allowed", subject)
+	}
+	if len(ep.Links) > 0 {
+		return fmt.Sprintf("%s denied: endpoint links are not allowed", subject)
+	}
+	if len(ep.DriverOpts) > 0 {
+		return fmt.Sprintf("%s denied: endpoint driver options are not allowed", subject)
+	}
+	return ""
 }
 
 func (p networkPolicy) inspectDisconnect(logger *slog.Logger, r *http.Request, body []byte) (string, error) {

@@ -76,18 +76,18 @@ test("website comparison rows live in extracted data modules", () => {
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // Patch releases stay grouped under the v1.4.0 roadmap milestone; v1.4.4 is
-  // the current stable release while v1.5.0 remains the next milestone.
+  // Patch releases stay grouped under their minor roadmap milestone; v1.5.0 is
+  // now the current stable release.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v1.4.0", "latest released milestone must be v1.4.0");
+  assert.equal(latestReleased.version, "v1.5.0", "latest released milestone must be v1.5.0");
   assert.equal(latestReleased.status, "released");
 
-  // Must reference the current in-progress milestone v1.5.0
+  // Must reference the current stable milestone v1.5.0.
   const v150 = roadmap.find((m) => m.version === "v1.5.0");
   assert.ok(v150, "roadmap must include a v1.5.0 milestone");
-  assert.equal(v150.status, "next", "v1.5.0 must be the next milestone");
+  assert.equal(v150.status, "released", "v1.5.0 must be released");
 
   // Every milestone must have a non-empty items array
   for (const milestone of roadmap) {

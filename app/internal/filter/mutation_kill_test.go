@@ -660,36 +660,43 @@ func TestInspectAllowedRequest_MatchesFilterSkipsWrongPath(t *testing.T) {
 // network.go mutants
 // ---------------------------------------------------------------------------
 
-// ARITHMETIC_BASE network.go:205:36
-// inspectNetworkConnect: `len(req.EndpointConfig.Aliases)+len(req.EndpointConfig.Links) > 0`
-// mutant changes `+` to `-`. If len(Aliases)-len(Links) > 0 the check would still fire,
-// but if both are equal and non-zero, subtraction = 0 and the check fails.
-// We test: Aliases only (Links=0) → denied; Links only (Aliases=0) → denied;
-//
-//	both equal non-zero → also denied.
+// ARITHMETIC_BASE network.go:205:36 (HISTORICAL — mutant target removed)
+// inspectNetworkConnect used to combine Aliases and Links into one
+// `len(req.EndpointConfig.Aliases)+len(req.EndpointConfig.Links) > 0` check,
+// vulnerable to a `+`→`-` mutant: subtraction of two equal non-zero counts is
+// 0, silently passing the mutant on an "equal aliases and links" input. The
+// endpoint-config/container-create symmetry fix removed that combined check
+// entirely — Aliases are no longer gated at all (Docker Compose sets
+// Aliases: [serviceName] on every endpoint it creates, so gating them broke
+// every multi-network Compose recreate; see denyEndpointConfigReason) and
+// Links is now an independent `len(ep.Links) > 0` check with no adjacent
+// arithmetic for a mutant to hide behind. This test now locks in that split
+// instead of the old combined arithmetic: aliases-only must be ALLOWED
+// (proving the old combined gate is gone), links-only and
+// aliases-plus-links must both be DENIED by the links check alone.
 func TestEndpointAliasesAndLinksArithmetic(t *testing.T) {
 	// Indirect test via inspectNetworkConnect through the network policy.
 	policy := newNetworkPolicy(NetworkOptions{})
 
 	tests := []struct {
-		name string
-		body string
-		want string
+		name       string
+		body       string
+		wantReason string
 	}{
 		{
-			name: "aliases only",
-			body: `{"Container":"abc","EndpointConfig":{"Aliases":["web"]}}`,
-			want: "aliases",
+			name:       "aliases only",
+			body:       `{"Container":"abc","EndpointConfig":{"Aliases":["web"]}}`,
+			wantReason: "",
 		},
 		{
-			name: "links only",
-			body: `{"Container":"abc","EndpointConfig":{"Links":["db:database"]}}`,
-			want: "aliases",
+			name:       "links only",
+			body:       `{"Container":"abc","EndpointConfig":{"Links":["db:database"]}}`,
+			wantReason: "network connect denied: endpoint links are not allowed",
 		},
 		{
-			name: "equal aliases and links",
-			body: `{"Container":"abc","EndpointConfig":{"Aliases":["web"],"Links":["db:database"]}}`,
-			want: "aliases",
+			name:       "equal aliases and links",
+			body:       `{"Container":"abc","EndpointConfig":{"Aliases":["web"],"Links":["db:database"]}}`,
+			wantReason: "network connect denied: endpoint links are not allowed",
 		},
 	}
 
@@ -700,8 +707,8 @@ func TestEndpointAliasesAndLinksArithmetic(t *testing.T) {
 			if err != nil {
 				t.Fatalf("inspect error = %v", err)
 			}
-			if !strings.Contains(reason, tt.want) {
-				t.Fatalf("reason = %q, want substring %q", reason, tt.want)
+			if reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
 			}
 		})
 	}

@@ -20,10 +20,12 @@ import (
 //
 // A non-positive timeout disables the wrapper entirely — next is returned
 // unchanged. Long-lived endpoints (event streams, follow/stream reads, image
-// pull/build/push, container export/get, websocket attach, and the blocking
-// container wait) are exempt, because a deadline would sever a legitimately
-// long response. Hijacked endpoints (attach, exec start) never reach this
-// handler: HijackHandler short-circuits them earlier in the chain.
+// pull/build/push, plugin create/pull/push/upgrade, container export/get, container
+// archive i.e. docker cp, websocket attach, and the blocking container wait)
+// are exempt, because a deadline would sever a legitimately long response.
+// Hijacked endpoints
+// (attach, exec start) never reach this handler: HijackHandler short-circuits
+// them earlier in the chain.
 func WithRequestTimeout(next http.Handler, timeout time.Duration) http.Handler {
 	if timeout <= 0 {
 		return next
@@ -54,22 +56,39 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 		case path == "/events":
 			return true
 		case matchContainerAction(path, "logs"):
-			return isTruthyQuery(r, "follow")
+			return dockerBoolValue(r, "follow")
 		case matchContainerAction(path, "stats"):
-			// Stats streams by default; only stream=0/false makes it one-shot.
-			return !isFalseyQuery(r, "stream")
+			// Stats streams by default; only an explicitly false stream makes it
+			// one-shot — mirror the daemon's BoolValueOrDefault(stream, true).
+			return dockerBoolValueOrDefault(r, "stream", true)
 		case matchContainerAction(path, "export"):
+			return true
+		case matchContainerAction(path, "archive"):
+			// GET /containers/{id}/archive is docker cp FROM the container; a
+			// large filesystem tarball can legitimately take longer than the
+			// deadline to stream.
 			return true
 		case strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/get"):
 			return true
 		case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/attach/ws"):
 			return true
 		}
+	case http.MethodPut:
+		// PUT /containers/{id}/archive is docker cp INTO the container;
+		// exempt for the same large-transfer reason as the GET form.
+		return matchContainerAction(path, "archive")
 	case http.MethodPost:
 		switch {
-		case path == "/build" || path == "/images/create" || path == "/images/load":
+		case path == "/build" || path == "/images/create" || path == "/images/load" || path == "/plugins/create":
 			return true
 		case strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/push"):
+			return true
+		case path == "/plugins/pull":
+			// Plugin pull streams registry download progress like image create.
+			return true
+		case strings.HasPrefix(path, "/plugins/") &&
+			(strings.HasSuffix(path, "/push") || strings.HasSuffix(path, "/upgrade")):
+			// Plugin push/upgrade stream a registry transfer like image push/pull.
 			return true
 		case matchContainerAction(path, "wait"):
 			// /containers/{id}/wait blocks until the container exits.
@@ -92,22 +111,29 @@ func matchContainerAction(path, action string) bool {
 	return act == action
 }
 
-func isTruthyQuery(r *http.Request, key string) bool {
-	switch strings.ToLower(r.URL.Query().Get(key)) {
-	case "1", "true":
-		return true
-	default:
+// dockerBoolValue mirrors the daemon's api/server/httputils.BoolValue: a query
+// value is false only when empty or one of "0"/"no"/"false"/"none"
+// (case-insensitive), and true otherwise. Matching dockerd's own parsing keeps
+// the long-lived-request classification consistent with how the daemon will
+// actually treat ?follow=/?stream= — e.g. follow=yes streams at the daemon, so
+// it must be exempt from the request deadline here too, not just follow=1.
+func dockerBoolValue(r *http.Request, key string) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get(key))) {
+	case "", "0", "no", "false", "none":
 		return false
+	default:
+		return true
 	}
 }
 
-func isFalseyQuery(r *http.Request, key string) bool {
-	switch strings.ToLower(r.URL.Query().Get(key)) {
-	case "0", "false":
-		return true
-	default:
-		return false
+// dockerBoolValueOrDefault mirrors httputils.BoolValueOrDefault: an absent key
+// returns def; a present key (including an empty value) is parsed by
+// dockerBoolValue. Used for ?stream=, which the daemon defaults to true.
+func dockerBoolValueOrDefault(r *http.Request, key string, def bool) bool {
+	if _, ok := r.URL.Query()[key]; !ok {
+		return def
 	}
+	return dockerBoolValue(r, key)
 }
 
 func requestNormalizedPath(w http.ResponseWriter, r *http.Request) string {

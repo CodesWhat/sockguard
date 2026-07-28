@@ -18,6 +18,48 @@ import (
 // every token). Source: drydock app/triggers/providers/docker/self-update-controller.ts.
 const drydockFinalizeArgvBody = `{"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"]}`
 
+// drydockFinalizeExecCreateBody is the full exec-create body drydock's helper
+// container issues for runFinalizeCallbackInContainer, including the Env
+// array buildFinalizeExecEnv assembles (DD_SELF_UPDATE_FINALIZE_URL/SECRET/
+// OPERATION_ID/STATUS/PHASE) and the AttachStdout/AttachStderr flags. The
+// preset's allowed_env_vars allowlists exactly this set, so this body must
+// pass identically to drydockFinalizeArgvBody. Source: drydock
+// app/triggers/providers/docker/self-update-controller.ts (runFinalizeCallbackInContainer,
+// buildFinalizeExecEnv).
+const drydockFinalizeExecCreateBody = `{` +
+	`"AttachStdout":true,"AttachStderr":true,` +
+	`"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"],` +
+	`"Env":["DD_SELF_UPDATE_FINALIZE_URL=http://127.0.0.1:3000/api/v1/internal/self-update/finalize",` +
+	`"DD_SELF_UPDATE_FINALIZE_SECRET=s3cr3t","DD_SELF_UPDATE_OPERATION_ID=op-1",` +
+	`"DD_SELF_UPDATE_STATUS=succeeded","DD_SELF_UPDATE_PHASE=succeeded"]` +
+	`}`
+
+// drydockFinalizeExecCreateBodyWithNodeOptions is the same real-world body as
+// drydockFinalizeExecCreateBody but with an extra, non-allowlisted Env entry
+// (NODE_OPTIONS) appended. Cmd still matches allowed_commands exactly, so
+// this proves allowed_env_vars is enforced independently of the argv pin —
+// pinning Cmd alone would not have caught this, since NODE_OPTIONS changes
+// what the pinned "node" argv executes without changing argv itself.
+const drydockFinalizeExecCreateBodyWithNodeOptions = `{` +
+	`"AttachStdout":true,"AttachStderr":true,` +
+	`"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"],` +
+	`"Env":["DD_SELF_UPDATE_FINALIZE_URL=http://127.0.0.1:3000/api/v1/internal/self-update/finalize",` +
+	`"DD_SELF_UPDATE_FINALIZE_SECRET=s3cr3t","DD_SELF_UPDATE_OPERATION_ID=op-1",` +
+	`"DD_SELF_UPDATE_STATUS=succeeded","DD_SELF_UPDATE_PHASE=succeeded",` +
+	`"NODE_OPTIONS=--require /tmp/evil.js"]` +
+	`}`
+
+// drydockFinalizeExecCreateBodyWithAttackerURL keeps the exact allowed argv
+// and variable names but replaces the trusted loopback callback with an
+// attacker-selected internal destination. The preset must reject this.
+const drydockFinalizeExecCreateBodyWithAttackerURL = `{` +
+	`"AttachStdout":true,"AttachStderr":true,` +
+	`"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"],` +
+	`"Env":["DD_SELF_UPDATE_FINALIZE_URL=http://169.254.169.254/latest/meta-data",` +
+	`"DD_SELF_UPDATE_FINALIZE_SECRET=s3cr3t","DD_SELF_UPDATE_OPERATION_ID=op-1",` +
+	`"DD_SELF_UPDATE_STATUS=succeeded","DD_SELF_UPDATE_PHASE=succeeded"]` +
+	`}`
+
 // presetCase is one (method, path, body) request and whether the drydock preset's
 // filter chain (rule layer + request-body inspectors) should let it reach upstream.
 type presetCase struct {
@@ -26,6 +68,22 @@ type presetCase struct {
 	path    string
 	body    string // JSON body for inspected POSTs; empty for none
 	allowed bool
+}
+
+func TestDrydockPresetEnvValueDenialDoesNotReflectValue(t *testing.T) {
+	handler := buildDrydockPresetHandler(t, "drydock-with-selfupdate.yaml")
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/exec", strings.NewReader(drydockFinalizeExecCreateBodyWithAttackerURL))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if strings.Contains(rec.Body.String(), "169.254.169.254") {
+		t.Fatalf("denial reflected the rejected environment value: %s", rec.Body.String())
+	}
 }
 
 // TestDrydockPresetConformance fires drydock v1.5.0's real Docker Engine API
@@ -91,6 +149,53 @@ func TestDrydockPresetConformance(t *testing.T) {
 		{"networks-list", http.MethodGet, "/networks", "", true},
 		{"network-inspect", http.MethodGet, "/networks/abc", "", true},
 		{"network-connect", http.MethodPost, "/networks/abc/connect", `{"Container":"abc"}`, true},
+		// Aliases-only secondary-network connect — the regression test that would
+		// have caught the drydock incident this preset suite guards against.
+		// Docker Compose sets Aliases: [serviceName] on every endpoint it
+		// creates, so a multi-network Compose recreate's connect call for its
+		// secondary network(s) always carries an Aliases-only EndpointConfig.
+		// Before the endpoint-config/aliases fix, this was unconditionally
+		// denied (no allow_endpoint_config escape hatch could fix it without
+		// also opening static IP/MAC/DriverOpts), breaking every such recreate.
+		// Must pass by default now — neither drydock preset sets
+		// allow_endpoint_config.
+		// This is also the realistic shape for drydock >=1.5.3: it no longer
+		// forwards a daemon-auto-assigned MAC address on recreate (see the
+		// MacAddress cases further down), so its default multi-network connect
+		// body is Aliases-only, with no MacAddress at all.
+		{"network-connect-aliases-only-allowed", http.MethodPost, "/networks/abc/connect", `{"Container":"abc","EndpointConfig":{"Aliases":["myapp"]}}`, true},
+		// The real incident shape: a macvlan connect carrying a static IP
+		// (IPAMConfig.IPv4Address) alongside the Aliases Compose always sets.
+		// drydock recreating a macvlan+static-IP container issues exactly this
+		// on POST /networks/{id}/connect for its extra network(s); neither
+		// drydock preset opts into allow_endpoint_config, so this must stay
+		// denied by default — with the static-IP reason, not the (now-removed)
+		// aliases denial — and operators who need macvlan/static-IP recreates
+		// must explicitly set allow_endpoint_config: true (see the preset
+		// header comments).
+		{"network-connect-macvlan-static-ip-denied", http.MethodPost, "/networks/abc/connect", `{"Container":"abc","EndpointConfig":{"IPAMConfig":{"IPv4Address":"172.20.0.50"},"Aliases":["myapp"]}}`, false},
+
+		// Two recreate shapes exist depending on the drydock version, and both
+		// must stay denied by default. drydock >=1.5.3 only forwards a
+		// MacAddress when the user explicitly configured one (the Aliases-only
+		// case above is its default shape). Versions before 1.5.3 instead clone
+		// the *operational* MAC address off the running container's inspect
+		// output and forward it on every recreate, even when the user never
+		// configured one - so their connect/create calls carry Aliases plus a
+		// MacAddress even for an ordinary, non-macvlan multi-network recreate.
+		// The two cases below document that this pre-1.5.3 shape, run against
+		// the current default sockguard policy, still fails with the MAC
+		// address denial reason - operators on an older drydock need either an
+		// upgrade to >=1.5.3 or allow_endpoint_config: true (see
+		// TestDrydockPresetNetworkConnectAllowEndpointConfigEscapeHatch).
+		//
+		// (a) the pre-1.5.3 connect shape.
+		{"network-connect-aliases-and-macaddress-denied-legacy-drydock", http.MethodPost, "/networks/abc/connect", `{"Container":"abc","EndpointConfig":{"Aliases":["myapp"],"MacAddress":"02:42:ac:14:00:0a"}}`, false},
+		// (b) the same shape carried on the primary network at create time via
+		// NetworkingConfig.EndpointsConfig instead of a follow-up connect call -
+		// pre-1.5.3 drydock can put the cloned MacAddress here too. Must be
+		// denied identically (see denyNetworkingConfigReason).
+		{"create-networkingconfig-aliases-and-macaddress-denied-legacy-drydock", http.MethodPost, "/containers/create", `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"bridge":{"Aliases":["myapp"],"MacAddress":"02:42:ac:14:00:0a"}}}}`, false},
 
 		// Volumes + distribution + services reads.
 		{"volumes-list", http.MethodGet, "/volumes", "", true},
@@ -127,9 +232,20 @@ func TestDrydockPresetConformance(t *testing.T) {
 			// The finalize exec: exact argv, no User field. Allowed only because
 			// allow_root_user is true (empty User reads as root). Guards B2.
 			presetCase{"finalize-exec-allowed", http.MethodPost, "/containers/abc/exec", drydockFinalizeArgvBody, true},
+			// The real body the helper container sends, Env included: the
+			// preset's allowed_env_vars allowlists exactly the DD_SELF_UPDATE_*
+			// names it carries, so the verdict is unchanged.
+			presetCase{"finalize-exec-allowed-full-body", http.MethodPost, "/containers/abc/exec", drydockFinalizeExecCreateBody, true},
 			// Any other exec command stays denied by the exact-argv allowlist.
 			presetCase{"exec-shell-denied", http.MethodPost, "/containers/abc/exec", `{"Cmd":["sh","-c","id"]}`, false},
 			presetCase{"exec-other-node-denied", http.MethodPost, "/containers/abc/exec", `{"Cmd":["node","evil.js"]}`, false},
+			// Same allowlisted argv, but with an extra non-allowlisted Env
+			// entry (NODE_OPTIONS): allowed_env_vars must deny this even
+			// though allowed_commands alone would have let it through.
+			presetCase{"finalize-exec-denied-node-options-env", http.MethodPost, "/containers/abc/exec", drydockFinalizeExecCreateBodyWithNodeOptions, false},
+			// Exact value pinning prevents the finalize callback from becoming
+			// an SSRF primitive even when argv and variable names are valid.
+			presetCase{"finalize-exec-denied-attacker-url", http.MethodPost, "/containers/abc/exec", drydockFinalizeExecCreateBodyWithAttackerURL, false},
 			// The exec inspect rule is present (start needs a daemon, so not asserted).
 			presetCase{"exec-inspect", http.MethodGet, "/exec/abc/json", "", true},
 		)
@@ -137,6 +253,30 @@ func TestDrydockPresetConformance(t *testing.T) {
 			fireDrydockCase(t, handler, c)
 		}
 	})
+}
+
+// TestDrydockPresetNetworkConnectAllowEndpointConfigEscapeHatch proves the
+// documented escape hatch actually works against the shipped drydock
+// presets: an operator who sets request_body.network.allow_endpoint_config:
+// true gets the real-incident macvlan+static-IP connect admitted, on both
+// presets. Neither preset sets the flag itself (see the header-comment
+// operator guidance added alongside this test), so this exercises the
+// override path rather than a preset default.
+func TestDrydockPresetNetworkConnectAllowEndpointConfigEscapeHatch(t *testing.T) {
+	const macvlanStaticIPBody = `{"Container":"abc","EndpointConfig":{"IPAMConfig":{"IPv4Address":"172.20.0.50"},"Aliases":["myapp"]}}`
+
+	for _, presetFile := range []string{"drydock.yaml", "drydock-with-selfupdate.yaml"} {
+		t.Run(presetFile, func(t *testing.T) {
+			handler := buildDrydockPresetHandlerWithNetworkAllowEndpointConfig(t, presetFile)
+			fireDrydockCase(t, handler, presetCase{
+				name:    "network-connect-macvlan-static-ip-allowed",
+				method:  http.MethodPost,
+				path:    "/networks/abc/connect",
+				body:    macvlanStaticIPBody,
+				allowed: true,
+			})
+		})
+	}
 }
 
 // buildDrydockPresetHandler loads a preset from app/configs and assembles the
@@ -150,8 +290,45 @@ func buildDrydockPresetHandler(t *testing.T, presetFile string) http.Handler {
 		t.Fatalf("load preset %s: %v", presetFile, err)
 	}
 
+	return drydockPresetHandlerFromConfig(t, cfg)
+}
+
+// buildDrydockPresetHandlerWithNetworkAllowEndpointConfig loads a preset the
+// same way buildDrydockPresetHandler does, then overrides
+// request_body.network.allow_endpoint_config to true before compiling the
+// filter chain — simulating an operator who has explicitly opted into the
+// macvlan/static-IP/MAC/DriverOpts escape hatch documented in the preset
+// header comments, without needing a second on-disk preset variant just for
+// this one test.
+func buildDrydockPresetHandlerWithNetworkAllowEndpointConfig(t *testing.T, presetFile string) http.Handler {
+	t.Helper()
+
+	cfg, err := config.Load(filepath.Join("..", "..", "configs", presetFile))
+	if err != nil {
+		t.Fatalf("load preset %s: %v", presetFile, err)
+	}
+	cfg.RequestBody.Network.AllowEndpointConfig = true
+
+	return drydockPresetHandlerFromConfig(t, cfg)
+}
+
+// drydockPresetHandlerFromConfig assembles the filter middleware the way
+// serve.go does (rules + request-body inspectors) from an already-loaded
+// preset config, wrapping a stub upstream that 200s when a request is
+// allowed through. Shared by buildDrydockPresetHandler and its
+// allow-endpoint-config-override sibling so both build the handler
+// identically apart from the one field they intentionally differ on.
+func drydockPresetHandlerFromConfig(t *testing.T, cfg *config.Config) http.Handler {
+	t.Helper()
+
 	policy := cfg.RequestBody.ToFilterOptions()
 	policy.DenyResponseVerbosity = filter.DenyResponseVerbosityVerbose
+	// insecure_allow_body_blind_writes is a top-level Config field (not part
+	// of RequestBodyConfig), wired at serve time by
+	// internal/cmd/serve.go's attachRuntimeInspectors. Mirror that single
+	// assignment here so preset conformance tests exercise the same
+	// production wiring instead of a stub that always leaves it false.
+	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	opts := filter.Options{PolicyConfig: policy}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))

@@ -1,29 +1,36 @@
-# Sockguard — Drydock Preset
+# Sockguard — Drydock with Compose Preset
 #
-# Optimized for the drydock container update manager.
-# Allows: container lifecycle (start/stop/restart/kill/rename/update/wait/create/remove),
-#         image pull/inspect/remove, /events, narrow network/volume/distribution
-#         reads, Swarm services. Reads are enumerated path-by-path so this
-#         preset stays clean under sockguard's exfiltration validator without
-#         needing insecure_allow_read_exfiltration: true.
-# Denies: exec, build, secrets, plugins, raw archive/export/logs/attach streams.
+# Extends the drydock preset with network and volume lifecycle so drydock's
+# own compose-stack deploys hit the same gap portwing-with-compose.yaml fixes:
+# plain container recreate/update already works against drydock.yaml, but a
+# compose stack additionally needs to create/remove its own networks and named
+# volumes, which drydock.yaml denies.
 #
-# Self-update: the rename/create call that replaces Drydock's own container
-# goes directly through this proxy (source:
-# drydock/app/triggers/providers/docker/SelfUpdateTransitionShared.ts). As of
-# drydock dev/v1.6, Drydock then spawns a separate, AutoRemove, ephemeral
-# helper container ("drydock-self-update-<ts>", labeled dd.self-update.helper)
-# that reuses the same Docker socket bind and itself issues the
-# stop-old/start-new/health-poll/finalize-exec/remove-old sequence
-# (self-update-controller.ts) — it is the HELPER, not Drydock's own process,
-# that calls exec. The replacement container is created through the proxy
-# carrying Drydock's own volumes, so its host path must be listed under
-# request_body.container_create.allowed_bind_mounts. The helper finalizes via
-# a `docker exec` INSIDE the new container (runFinalizeCallbackInContainer),
-# which this preset denies — the update container still starts, but Drydock's
-# self-update state stays pending instead of being marked complete. For a
-# clean finalize use the drydock-with-selfupdate.yaml preset, which
-# allowlists exactly that exec argv.
+# Allows: everything in drydock.yaml plus:
+#         POST   /networks/create      — compose creates the stack's network(s)
+#         DELETE /networks/*           — compose tears them down on `down`
+#         POST   /networks/*/disconnect — compose detaches services before
+#                                         removing a network (connect already
+#                                         allowed by drydock.yaml — untouched)
+#         POST   /volumes/create       — compose creates named volumes
+#         DELETE /volumes/*            — compose removes them on `down -v`
+#
+# Body inspection for the new endpoints reuses the same guardrails already in
+# effect for drydock.yaml's container_create/image_pull blocks — the
+# network/volume create policies default to denying custom drivers and driver
+# opts unless explicitly widened here, and this preset does not widen them.
+#
+# Still denied: /build. `docker compose up --build` additionally needs
+# BuildKit's classic builder fallback, which requires POST /build; a buildx
+# (BuildKit) build additionally needs the /session and /grpc endpoints for the
+# frontend/grpc bridge. Neither is modeled by this preset — see
+# portwing-with-compose.yaml's identical header note. Operators who need
+# `--build` support require a further variant that is not built today.
+#
+# Self-update: same caveat as drydock.yaml — the finalize exec
+# (runFinalizeCallbackInContainer) is still denied here. Use
+# drydock-with-selfupdate.yaml if you need that, layered with these
+# network/volume rules by hand if you need both.
 
 upstream:
   socket: /var/run/docker.sock
@@ -137,19 +144,22 @@ rules:
   - match: { method: DELETE, path: "/images/**" }
     action: allow
 
-  # Network read — list + inspect. Plus connect: when the recreated container
-  # belongs to more than one network, drydock attaches the extra networks via
-  # POST /networks/{id}/connect (the create body only carries the first network).
+  # Network read + lifecycle. list/inspect/connect carried over from
+  # drydock.yaml (connect: when the recreated container belongs to more than
+  # one network, drydock attaches the extra networks via
+  # POST /networks/{id}/connect — the create body only carries the first
+  # network). create/delete/disconnect are new here so compose can own its
+  # stack network's full lifecycle.
   #
   # Endpoint-config policy (request_body.network.allow_endpoint_config, default
   # false) is enforced identically on this connect call AND on
   # POST /containers/create's own NetworkingConfig.EndpointsConfig — the same
   # flag covers both. Endpoint Aliases are always allowed regardless of this
-  # flag, so a plain multi-network recreate (Compose sets Aliases on every
-  # endpoint it creates) works by default with no config change. Operators
-  # whose recreated containers carry a static IP, custom MAC address, or
-  # endpoint DriverOpts (e.g. macvlan with a pinned address) must set
-  # allow_endpoint_config: true here, or the connect/create call for that
+  # flag, so a plain multi-network compose recreate (Compose sets Aliases on
+  # every endpoint it creates) works by default with no config change.
+  # Operators whose recreated containers carry a static IP, custom MAC
+  # address, or endpoint DriverOpts (e.g. macvlan with a pinned address) must
+  # set allow_endpoint_config: true here, or the connect/create call for that
   # network is denied. On drydock >=1.5.3 a denial fails the update and
   # drydock rolls back to the old container (best-effort: if the rollback
   # itself fails, drydock records it in its update-operation history/audit
@@ -162,11 +172,22 @@ rules:
     action: allow
   - match: { method: POST, path: "/networks/*/connect" }
     action: allow
+  - match: { method: POST, path: "/networks/create" }
+    action: allow
+  - match: { method: DELETE, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
 
-  # Volume read — list + inspect only.
+  # Volume read + lifecycle. list/inspect carried over from drydock.yaml;
+  # create/delete are new here for compose-managed named volumes.
   - match: { method: GET, path: "/volumes" }
     action: allow
   - match: { method: GET, path: "/volumes/*" }
+    action: allow
+  - match: { method: POST, path: "/volumes/create" }
+    action: allow
+  - match: { method: DELETE, path: "/volumes/*" }
     action: allow
 
   # Distribution (registry digest checks for image freshness). Image
@@ -184,4 +205,4 @@ rules:
   # Deny everything else
   - match: { method: "*", path: "/**" }
     action: deny
-    reason: "not allowed by drydock preset"
+    reason: "not allowed by drydock-with-compose preset"

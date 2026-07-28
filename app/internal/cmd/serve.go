@@ -223,6 +223,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		"upstream", upstreamName,
 		"rules", len(cfg.Rules),
 		"log_level", cfg.Log.Level,
+		"upstream_request_timeout", upstreamRequestTimeoutLogValue(cfg),
 	)
 
 	errCh := make(chan error, 1)
@@ -582,8 +583,11 @@ func buildServeClientProfiles(cfg *config.Config, res *upstream.Resolver) (map[s
 // sites.
 func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy filter.PolicyConfig) filter.PolicyConfig {
 	policy.Exec.InspectStart = filter.NewDockerExecInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
-	// This acknowledgement is global rather than part of RequestBodyConfig,
-	// so wire it here for both the default policy and every named profile.
+	// insecure_allow_body_blind_writes is a global, not-per-profile setting
+	// (validateBodyBlindWriteRulesForPolicy in rules.go says as much), so it
+	// is wired here rather than through RequestBodyConfig.ToFilterOptions —
+	// the same as every client profile's PolicyConfig, since this function
+	// runs for both the default policy and every named profile.
 	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	return policy
 }
@@ -593,17 +597,38 @@ func newServeUpstreamHandler(cfg *config.Config, res *upstream.Resolver, logger 
 		ModifyResponse: responsefilter.New(serveResponseFilterOptions(cfg)).ModifyResponse,
 	})
 	// Bound finite upstream requests with a total deadline when configured.
-	// request_timeout is validated at load, so parse errors here degrade to
-	// "disabled" rather than aborting the chain rebuild. Wrapping the proxy
-	// itself (rather than adding a chain layer) keeps the deadline off the
-	// hijack path: HijackHandler short-circuits before this handler runs.
-	var requestTimeout time.Duration
-	if cfg.Upstream.RequestTimeout != "" {
-		if d, err := time.ParseDuration(cfg.Upstream.RequestTimeout); err == nil && d > 0 {
-			requestTimeout = d
-		}
+	// Wrapping the proxy itself (rather than adding a chain layer) keeps the
+	// deadline off the hijack path: HijackHandler short-circuits before this
+	// handler runs.
+	return proxy.WithRequestTimeout(rp, effectiveUpstreamRequestTimeout(cfg))
+}
+
+// effectiveUpstreamRequestTimeout resolves cfg.Upstream.RequestTimeout to the
+// time.Duration proxy.WithRequestTimeout consumes. RequestTimeoutDisabled is
+// the single source of truth for the "off"/legacy-empty disabled spelling,
+// shared with config.validateUpstream so the two call sites can't drift.
+// request_timeout is validated at config load, so a parse failure here
+// degrades to "disabled" (0) rather than aborting the chain rebuild.
+func effectiveUpstreamRequestTimeout(cfg *config.Config) time.Duration {
+	if cfg.Upstream.RequestTimeoutDisabled() {
+		return 0
 	}
-	return proxy.WithRequestTimeout(rp, requestTimeout)
+	d, err := time.ParseDuration(cfg.Upstream.RequestTimeout)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
+}
+
+// upstreamRequestTimeoutLogValue renders the effective upstream.request_timeout
+// for the "sockguard started" log line: "off" when the deadline is disabled
+// (including a degraded invalid value, which is validated away at load time
+// in normal operation), otherwise the configured duration string verbatim.
+func upstreamRequestTimeoutLogValue(cfg *config.Config) string {
+	if effectiveUpstreamRequestTimeout(cfg) <= 0 {
+		return "off"
+	}
+	return cfg.Upstream.RequestTimeout
 }
 
 func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLayer, func()) {
@@ -737,9 +762,10 @@ func withHijack(res *upstream.Resolver, logger *slog.Logger) func(http.Handler) 
 
 func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
 	return ownership.MiddlewareWithRoundTripper(res, logger, ownership.Options{
-		Owner:              cfg.Ownership.Owner,
-		LabelKey:           cfg.Ownership.LabelKey,
-		AllowUnownedImages: cfg.Ownership.AllowUnownedImages,
+		Owner:                           cfg.Ownership.Owner,
+		LabelKey:                        cfg.Ownership.LabelKey,
+		AllowUnownedImages:              cfg.Ownership.AllowUnownedImages,
+		AllowCrossOwnerNamespaceSharing: cfg.Ownership.AllowCrossOwnerNamespaceSharing,
 	})
 }
 
@@ -758,18 +784,33 @@ func withFilter(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger,
 	return filter.MiddlewareWithOptions(rules, logger, serveFilterOptions(cfg, res, clientProfiles))
 }
 
+// bodyBlindWritesWarnOnce gates warnIfBodyBlindWritesEnabled to a single
+// emission per process, like labelACLWarnOnce — the handler chain is rebuilt
+// on every config hot-reload, so an unguarded warning at the chain-build site
+// would repeat on each reload.
 var bodyBlindWritesWarnOnce sync.Once
 
+// warnIfBodyBlindWritesEnabled surfaces the runtime consequence of
+// insecure_allow_body_blind_writes: true at chain-build time (startup or
+// hot-reload). The startup validator (validateBodyBlindWriteRulesForPolicy in
+// rules.go) already refuses to start without this acknowledgment when a
+// body-blind endpoint is reachable; this is the loud runtime echo of that same
+// acknowledgment, visible in the running process's logs rather than only at
+// validate time.
 func warnIfBodyBlindWritesEnabled(cfg *config.Config, logger *slog.Logger) {
 	warnBodyBlindWritesOnce(cfg, logger, &bodyBlindWritesWarnOnce)
 }
 
+// warnBodyBlindWritesOnce is the testable core of warnIfBodyBlindWritesEnabled:
+// the Once is injected so tests can verify both the enable-check and the
+// once-per-process gating without racing other tests for the package-level
+// guard.
 func warnBodyBlindWritesOnce(cfg *config.Config, logger *slog.Logger, once *sync.Once) {
 	if !cfg.InsecureAllowBodyBlindWrites {
 		return
 	}
 	once.Do(func() {
-		logger.Warn("insecure_allow_body_blind_writes is enabled: exec with an empty allowed_commands list is reachable without the command allowlist check; configured allow_privileged and allow_root_user gates still apply")
+		logger.Warn("insecure_allow_body_blind_writes is enabled: body-sensitive write endpoints with no request-body allowlist configured (e.g. exec with an empty allowed_commands) are reachable without that allowlist check — other configured gates (allow_privileged, allow_root_user, allowed_env_vars/denied_env_vars, allowed_join_remote_addrs, allowed_set_env_prefixes) still apply in full")
 	})
 }
 

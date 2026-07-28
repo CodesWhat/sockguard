@@ -80,6 +80,7 @@ podSecurityContext:
   runAsGroup: 65532
   seccompProfile:
     type: RuntimeDefault
+
 # DaemonSet tolerations — tolerate control-plane nodes to proxy on every node.
 tolerations: []
   # - key: node-role.kubernetes.io/control-plane

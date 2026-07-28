@@ -44,6 +44,8 @@
    - `website/src/lib/site-content.ts` and `README.md` — roadmap/current-release copy
    - `chart/sockguard/Chart.yaml` — chart version plus the default application image tag (see [Helm chart](#helm-chart) below)
 
+   `scripts/release-metadata.test.mjs` enforces that the website version, latest released roadmap milestone, Helm chart/application versions, README latest-stable banner, and CHANGELOG release heading all agree.
+
 6. **Lefthook pre-push** — runs automatically on `git push`. Sequence: clean-tree → goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails.
 
 ---

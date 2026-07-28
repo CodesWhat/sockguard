@@ -171,6 +171,18 @@ func TestLoadDefaults(t *testing.T) {
 	if len(cfg.RequestBody.Exec.AllowedCommands) != len(defaults.RequestBody.Exec.AllowedCommands) {
 		t.Errorf("got %d RequestBody.Exec.AllowedCommands, want %d", len(cfg.RequestBody.Exec.AllowedCommands), len(defaults.RequestBody.Exec.AllowedCommands))
 	}
+	if len(cfg.RequestBody.Exec.AllowedEnvVars) != len(defaults.RequestBody.Exec.AllowedEnvVars) {
+		t.Errorf("got %d RequestBody.Exec.AllowedEnvVars, want %d", len(cfg.RequestBody.Exec.AllowedEnvVars), len(defaults.RequestBody.Exec.AllowedEnvVars))
+	}
+	if len(cfg.RequestBody.Exec.AllowedEnvVars) != 0 {
+		t.Errorf("RequestBody.Exec.AllowedEnvVars default must be empty (no restriction), got %v", cfg.RequestBody.Exec.AllowedEnvVars)
+	}
+	if len(cfg.RequestBody.Exec.DeniedEnvVars) != len(defaults.RequestBody.Exec.DeniedEnvVars) {
+		t.Errorf("got %d RequestBody.Exec.DeniedEnvVars, want %d", len(cfg.RequestBody.Exec.DeniedEnvVars), len(defaults.RequestBody.Exec.DeniedEnvVars))
+	}
+	if len(cfg.RequestBody.Exec.DeniedEnvVars) != 0 {
+		t.Errorf("RequestBody.Exec.DeniedEnvVars default must be empty (no restriction), got %v", cfg.RequestBody.Exec.DeniedEnvVars)
+	}
 	if cfg.RequestBody.ImagePull.AllowImports != defaults.RequestBody.ImagePull.AllowImports {
 		t.Errorf("RequestBody.ImagePull.AllowImports = %v, want %v", cfg.RequestBody.ImagePull.AllowImports, defaults.RequestBody.ImagePull.AllowImports)
 	}
@@ -396,6 +408,12 @@ request_body:
     allow_root_user: true
     allowed_commands:
       - ["/usr/local/bin/pre-update", "--check"]
+    allowed_env_vars:
+      - PATH
+      - HOME
+    denied_env_vars:
+      - LD_PRELOAD
+      - LD_LIBRARY_PATH
   image_pull:
     allow_all_registries: true
     allowed_registries:
@@ -538,6 +556,12 @@ rules:
 	}
 	if got := cfg.RequestBody.Exec.AllowedCommands; len(got) != 1 || len(got[0]) != 2 || got[0][0] != "/usr/local/bin/pre-update" || got[0][1] != "--check" {
 		t.Errorf("RequestBody.Exec.AllowedCommands = %#v, want [[/usr/local/bin/pre-update --check]]", got)
+	}
+	if got := cfg.RequestBody.Exec.AllowedEnvVars; len(got) != 2 || got[0] != "PATH" || got[1] != "HOME" {
+		t.Errorf("RequestBody.Exec.AllowedEnvVars = %#v, want [PATH HOME]", got)
+	}
+	if got := cfg.RequestBody.Exec.DeniedEnvVars; len(got) != 2 || got[0] != "LD_PRELOAD" || got[1] != "LD_LIBRARY_PATH" {
+		t.Errorf("RequestBody.Exec.DeniedEnvVars = %#v, want [LD_PRELOAD LD_LIBRARY_PATH]", got)
 	}
 	if !cfg.RequestBody.ImagePull.AllowAllRegistries {
 		t.Errorf("RequestBody.ImagePull.AllowAllRegistries = %v, want true", cfg.RequestBody.ImagePull.AllowAllRegistries)
@@ -733,6 +757,10 @@ clients:
         exec:
           allowed_commands:
             - ["/usr/local/bin/pre-update"]
+          allowed_env_vars:
+            - PATH
+          denied_env_vars:
+            - LD_PRELOAD
       rules:
         - match: { method: POST, path: "/containers/*/exec" }
           action: allow
@@ -809,6 +837,15 @@ clients:
 	}
 	if got := cfg.Clients.Profiles[1].RequestBody.Exec.AllowedCommands; len(got) != 1 || len(got[0]) != 1 || got[0][0] != "/usr/local/bin/pre-update" {
 		t.Fatalf("Clients.Profiles[1].RequestBody.Exec.AllowedCommands = %#v, want [[/usr/local/bin/pre-update]]", got)
+	}
+	if got := cfg.Clients.Profiles[1].RequestBody.Exec.AllowedEnvVars; len(got) != 1 || got[0] != "PATH" {
+		t.Fatalf("Clients.Profiles[1].RequestBody.Exec.AllowedEnvVars = %#v, want [PATH]", got)
+	}
+	if got := cfg.Clients.Profiles[1].RequestBody.Exec.DeniedEnvVars; len(got) != 1 || got[0] != "LD_PRELOAD" {
+		t.Fatalf("Clients.Profiles[1].RequestBody.Exec.DeniedEnvVars = %#v, want [LD_PRELOAD]", got)
+	}
+	if cfg.Clients.Profiles[0].RequestBody.Exec.AllowedEnvVars != nil {
+		t.Fatalf("Clients.Profiles[0].RequestBody.Exec.AllowedEnvVars = %#v, want nil (profile without exec override must not inherit sibling profile's list)", cfg.Clients.Profiles[0].RequestBody.Exec.AllowedEnvVars)
 	}
 }
 

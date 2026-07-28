@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -272,6 +274,80 @@ func TestContainerCreatePolicyInspectDeniesHostNamespaces(t *testing.T) {
 	}
 }
 
+func TestContainerCreatePolicyInspectCgroupNamespaceModeGate(t *testing.T) {
+	const denyReason = "container create denied: host cgroup namespace mode is not allowed"
+
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "host denied by default",
+			body:       `{"HostConfig":{"CgroupnsMode":"host"}}`,
+			wantReason: denyReason,
+		},
+		{
+			name: "host allowed when configured",
+			opts: ContainerCreateOptions{AllowHostCgroupNS: true},
+			body: `{"HostConfig":{"CgroupnsMode":"host"}}`,
+		},
+		{
+			name:       "host denied case insensitive",
+			body:       `{"HostConfig":{"CgroupnsMode":"HOST"}}`,
+			wantReason: denyReason,
+		},
+		{
+			name:       "host denied with surrounding spaces",
+			body:       `{"HostConfig":{"CgroupnsMode":" host "}}`,
+			wantReason: denyReason,
+		},
+		{
+			name: "private allowed by default",
+			body: `{"HostConfig":{"CgroupnsMode":"private"}}`,
+		},
+		{
+			name: "private allowed when configured",
+			opts: ContainerCreateOptions{AllowHostCgroupNS: true},
+			body: `{"HostConfig":{"CgroupnsMode":"private"}}`,
+		},
+		{
+			name: "empty allowed by default",
+			body: `{"HostConfig":{"CgroupnsMode":""}}`,
+		},
+		{
+			name: "absent allowed by default",
+			body: `{"HostConfig":{}}`,
+		},
+		{
+			name: "other host namespace gates do not allow cgroupns host",
+			opts: ContainerCreateOptions{
+				AllowHostNetwork: true,
+				AllowHostPID:     true,
+				AllowHostIPC:     true,
+				AllowHostUserNS:  true,
+			},
+			body:       `{"HostConfig":{"CgroupnsMode":"host"}}`,
+			wantReason: denyReason,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestContainerCreatePolicyInspectDeniesNetworkModeHost(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(`{"HostConfig":{"NetworkMode":"host"}}`))
 	reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")
@@ -349,6 +425,192 @@ func TestContainerCreatePolicyInspectAllowsHostNamespacesWhenConfigured(t *testi
 	}
 	if reason != "" {
 		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+func TestContainerNamespaceRef(t *testing.T) {
+	tests := []struct {
+		name    string
+		mode    string
+		wantRef string
+		wantOK  bool
+	}{
+		{name: "valid id", mode: "container:abc123", wantRef: "abc123", wantOK: true},
+		{name: "case insensitive prefix", mode: "Container:web", wantRef: "web", wantOK: true},
+		{name: "upper case prefix", mode: "CONTAINER:worker-1", wantRef: "worker-1", wantOK: true},
+		{name: "surrounding whitespace", mode: "  container:/service-api  ", wantRef: "/service-api", wantOK: true},
+		{name: "empty ref", mode: "container:", wantOK: false},
+		{name: "whitespace ref", mode: "container:   ", wantOK: false},
+		{name: "non matching bridge", mode: "bridge", wantOK: false},
+		{name: "non matching host", mode: "host", wantOK: false},
+		{name: "non matching ns path", mode: "ns:/proc/1/ns/net", wantOK: false},
+		{name: "prefix only too short", mode: "container", wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotRef, gotOK := ContainerNamespaceRef(tt.mode)
+			if gotOK != tt.wantOK {
+				t.Fatalf("ContainerNamespaceRef(%q) ok = %v, want %v", tt.mode, gotOK, tt.wantOK)
+			}
+			if gotRef != tt.wantRef {
+				t.Fatalf("ContainerNamespaceRef(%q) ref = %q, want %q", tt.mode, gotRef, tt.wantRef)
+			}
+		})
+	}
+}
+
+func TestIsNamespacePathMode(t *testing.T) {
+	tests := []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{name: "lowercase ns", mode: "ns:/proc/1/ns/net", want: true},
+		{name: "uppercase ns", mode: "NS:/var/run/netns/build", want: true},
+		{name: "surrounding whitespace", mode: "  Ns:/var/run/netns/build  ", want: true},
+		{name: "prefix without path still matches", mode: "ns:", want: true},
+		{name: "container mode", mode: "container:abc123", want: false},
+		{name: "host mode", mode: "host", want: false},
+		{name: "empty", mode: "", want: false},
+		{name: "not prefix", mode: "xns:/proc/1/ns/net", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isNamespacePathMode(tt.mode); got != tt.want {
+				t.Fatalf("isNamespacePathMode(%q) = %v, want %v", tt.mode, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestContainerCreatePolicyInspectNamespaceSharingGate(t *testing.T) {
+	fields := []struct {
+		name           string
+		jsonField      string
+		hostDenyReason string
+		emptyDenyLabel string
+	}{
+		{name: "network", jsonField: "NetworkMode", hostDenyReason: "container create denied: host network mode is not allowed", emptyDenyLabel: "network"},
+		{name: "pid", jsonField: "PidMode", hostDenyReason: "container create denied: host PID mode is not allowed", emptyDenyLabel: "PID"},
+		{name: "ipc", jsonField: "IpcMode", hostDenyReason: "container create denied: host IPC mode is not allowed", emptyDenyLabel: "IPC"},
+		{name: "uts", jsonField: "UTSMode", hostDenyReason: "container create denied: host UTS mode is not allowed", emptyDenyLabel: "UTS"},
+		{name: "userns", jsonField: "UsernsMode", hostDenyReason: "container create denied: host user namespace mode is not allowed", emptyDenyLabel: "user"},
+	}
+	values := []struct {
+		name  string
+		value string
+	}{
+		{name: "allowed container", value: "container:allowed-id"},
+		{name: "other container", value: "container:other-id"},
+		{name: "foo container", value: "container:foo"},
+		{name: "host", value: "host"},
+		{name: "bridge", value: "bridge"},
+		{name: "empty", value: ""},
+	}
+	policies := []struct {
+		name      string
+		restrict  bool
+		allowlist []string
+	}{
+		{name: "restrict off empty allowlist", restrict: false, allowlist: nil},
+		{name: "restrict off populated allowlist", restrict: false, allowlist: []string{"allowed-id"}},
+		{name: "restrict on empty allowlist", restrict: true, allowlist: nil},
+		{name: "restrict on populated allowlist", restrict: true, allowlist: []string{"allowed-id"}},
+		{name: "restrict on foo allowlist", restrict: true, allowlist: []string{"foo"}},
+	}
+
+	for _, field := range fields {
+		for _, policy := range policies {
+			for _, value := range values {
+				t.Run(field.name+"/"+policy.name+"/"+value.name, func(t *testing.T) {
+					opts := ContainerCreateOptions{
+						RestrictNamespaceSharing:          policy.restrict,
+						AllowedNamespaceSharingContainers: policy.allowlist,
+					}
+					body := fmt.Sprintf(`{"HostConfig":{%q:%q}}`, field.jsonField, value.value)
+					req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(body))
+
+					reason, err := newContainerCreatePolicy(opts).inspect(nil, req, "/containers/create")
+					if err != nil {
+						t.Fatalf("inspect() error = %v", err)
+					}
+
+					wantReason := ""
+					ref, isContainerRef := ContainerNamespaceRef(value.value)
+					switch {
+					case value.value == "host":
+						wantReason = field.hostDenyReason
+					case isContainerRef && policy.restrict && len(policy.allowlist) == 0:
+						wantReason = fmt.Sprintf("container create denied: %s namespace sharing with another container is not allowed", field.emptyDenyLabel)
+					case isContainerRef && policy.restrict && !slices.Contains(policy.allowlist, ref):
+						wantReason = fmt.Sprintf("container create denied: namespace-sharing target %q is not in the allowed list", ref)
+					}
+
+					if reason != wantReason {
+						t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+					}
+					if !policy.restrict && isContainerRef {
+						gotBody, readErr := io.ReadAll(req.Body)
+						if readErr != nil {
+							t.Fatalf("ReadAll() error = %v", readErr)
+						}
+						if string(gotBody) != body {
+							t.Fatalf("body after inspect = %q, want unchanged %q", string(gotBody), body)
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestContainerCreatePolicyInspectDenyNamespacePathMode(t *testing.T) {
+	tests := []struct {
+		name       string
+		opts       ContainerCreateOptions
+		body       string
+		wantReason string
+	}{
+		{
+			name: "off passes network ns path",
+			body: `{"HostConfig":{"NetworkMode":"ns:/proc/1/ns/net"}}`,
+		},
+		{
+			name:       "on denies network ns path",
+			opts:       ContainerCreateOptions{DenyNamespacePathMode: true},
+			body:       `{"HostConfig":{"NetworkMode":"ns:/proc/1/ns/net"}}`,
+			wantReason: "container create denied: ns: namespace path mode is not allowed",
+		},
+		{
+			name: "off passes uppercase network ns path",
+			body: `{"HostConfig":{"NetworkMode":"NS:/var/run/netns/build"}}`,
+		},
+		{
+			name:       "on denies uppercase network ns path",
+			opts:       ContainerCreateOptions{DenyNamespacePathMode: true},
+			body:       `{"HostConfig":{"NetworkMode":"NS:/var/run/netns/build"}}`,
+			wantReason: "container create denied: ns: namespace path mode is not allowed",
+		},
+		{
+			name: "on is scoped to NetworkMode only",
+			opts: ContainerCreateOptions{DenyNamespacePathMode: true},
+			body: `{"HostConfig":{"PidMode":"ns:/proc/1/ns/pid","IpcMode":"ns:/proc/1/ns/ipc","UsernsMode":"ns:/proc/1/ns/user"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+			reason, err := newContainerCreatePolicy(tt.opts).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
 	}
 }
 
@@ -455,6 +717,239 @@ func TestContainerCreatePolicyDenyBindMountReasonRejectsBindMountSource(t *testi
 	if reason != `container create denied: bind mount source "/denied" is not allowlisted` {
 		t.Fatalf("denyBindMountReason() = %q", reason)
 	}
+}
+
+// TestContainerCreatePolicyInspectDeniesEndpointConfigByDefault proves
+// POST /containers/create's NetworkingConfig.EndpointsConfig carries the same
+// endpoint-config gate as POST /networks/*/connect — the create-side policy
+// bypass this closes (real incident: drydock recreating a macvlan+static-IP
+// container had its POST /networks/*/connect denied by the connect-side gate,
+// but the identical config on create's primary network went unchecked).
+func TestContainerCreatePolicyInspectDeniesEndpointConfigByDefault(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "static IP via IPAMConfig",
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}}}`,
+			wantReason: "container create denied: endpoint static IP configuration is not allowed",
+		},
+		{
+			name:       "static IP via IPAddress",
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAddress":"172.30.0.10"}}}}`,
+			wantReason: "container create denied: endpoint static IP configuration is not allowed",
+		},
+		{
+			name:       "MAC address",
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"MacAddress":"02:42:ac:1e:00:0a"}}}}`,
+			wantReason: "container create denied: endpoint MAC address is not allowed",
+		},
+		{
+			name:       "links",
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"bridge":{"Links":["db:database"]}}}}`,
+			wantReason: "container create denied: endpoint links are not allowed",
+		},
+		{
+			name:       "driver options",
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"bridge":{"DriverOpts":{"foo":"bar"}}}}}`,
+			wantReason: "container create denied: endpoint driver options are not allowed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+
+			reason, err := newContainerCreatePolicy(ContainerCreateOptions{}).inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestContainerCreatePolicyInspectAllowsEndpointConfigWhenConfigured proves
+// AllowEndpointConfig lifts every gated field (static IP, MAC, links, driver
+// opts) on create's NetworkingConfig, mirroring network.AllowEndpointConfig's
+// effect on connect — the same single config knob governs both endpoints.
+func TestContainerCreatePolicyInspectAllowsEndpointConfigWhenConfigured(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{AllowEndpointConfig: true})
+	body := `{
+		"Image": "x",
+		"NetworkingConfig": {
+			"EndpointsConfig": {
+				"macvlan0": {
+					"IPAMConfig": {"IPv4Address": "172.30.0.10"},
+					"MacAddress": "02:42:ac:1e:00:0a",
+					"Links": ["db:database"],
+					"DriverOpts": {"foo": "bar"}
+				}
+			}
+		}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+// TestContainerCreatePolicyInspectAllowsAliasesOnlyEndpointConfigByDefault
+// proves Aliases are never gated on create's NetworkingConfig either — Docker
+// Compose sets Aliases: [serviceName] on every endpoint it creates, so a
+// multi-network Compose recreate (which drives its secondary networks through
+// this exact NetworkingConfig.EndpointsConfig shape) must pass without the
+// flag.
+func TestContainerCreatePolicyInspectAllowsAliasesOnlyEndpointConfigByDefault(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	body := `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"app-net":{"Aliases":["web"]}}}}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+// TestContainerCreatePolicyInspectDeniesEndpointConfigAcrossMultipleNetworks
+// proves every entry of EndpointsConfig is inspected, not just the first map
+// key encountered: "backend" (alphabetically first, clean) must not shadow
+// "frontend" (alphabetically second, carries a static IP). Iteration is over
+// sorted keys, so the denial is deterministic across runs despite Go's
+// randomized map order.
+func TestContainerCreatePolicyInspectDeniesEndpointConfigAcrossMultipleNetworks(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	body := `{
+		"Image": "x",
+		"NetworkingConfig": {
+			"EndpointsConfig": {
+				"backend": {"Aliases": ["db"]},
+				"frontend": {"IPAddress": "172.30.0.10"}
+			}
+		}
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	const wantReason = "container create denied: endpoint static IP configuration is not allowed"
+	if reason != wantReason {
+		t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+	}
+}
+
+// TestContainerCreatePolicyDenyNetworkingConfigReasonSkipsNilEndpoint proves a
+// null EndpointsConfig map value (valid JSON: {"EndpointsConfig":{"net":null}})
+// is skipped rather than dereferenced, so a NetworkingConfig entry with no
+// EndpointSettings object cannot panic the inspector.
+func TestContainerCreatePolicyDenyNetworkingConfigReasonSkipsNilEndpoint(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	reason := policy.denyNetworkingConfigReason(containerCreateNetworkingConfig{
+		EndpointsConfig: map[string]*networkEndpointConfig{"app-net": nil},
+	})
+	if reason != "" {
+		t.Fatalf("denyNetworkingConfigReason() = %q, want empty", reason)
+	}
+}
+
+// TestContainerCreatePolicyInspectDeniesRootMacAddressByDefault proves the
+// legacy top-level (deprecated, pre-API-1.44) MacAddress field on POST
+// /containers/create carries the same MAC-pinning gate as
+// NetworkingConfig.EndpointsConfig[*].MacAddress. Docker still honors this
+// root field, applying it to the container's primary network endpoint
+// exactly like the EndpointsConfig field does, so leaving it unchecked was
+// an asymmetric bypass of the exact class this inspector exists to close: a
+// client could pin a MAC by putting it on the deprecated root field instead
+// of NetworkingConfig, and the create-time gate never saw it.
+func TestContainerCreatePolicyInspectDeniesRootMacAddressByDefault(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	body := `{"Image":"x","MacAddress":"02:42:ac:1e:00:0a"}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	const wantReason = "container create denied: container MAC address is not allowed"
+	if reason != wantReason {
+		t.Fatalf("inspect() reason = %q, want %q", reason, wantReason)
+	}
+}
+
+// TestContainerCreatePolicyInspectAllowsRootMacAddressWhenConfigured proves
+// AllowEndpointConfig also lifts the legacy root-level MacAddress field,
+// mirroring its effect on NetworkingConfig.EndpointsConfig[*].MacAddress —
+// the same single config knob governs both.
+func TestContainerCreatePolicyInspectAllowsRootMacAddressWhenConfigured(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{AllowEndpointConfig: true})
+	body := `{"Image":"x","MacAddress":"02:42:ac:1e:00:0a"}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+// TestContainerCreatePolicyInspectAllowsEmptyRootMacAddressByDefault proves
+// an empty-string MacAddress (Docker's zero value / an explicit but blank
+// field) is not denied — only a non-empty value is a MAC-pinning attempt.
+func TestContainerCreatePolicyInspectAllowsEmptyRootMacAddressByDefault(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+	body := `{"Image":"x","MacAddress":""}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
+// FuzzContainerCreatePolicyInspectEndpointConfig fuzzes the endpoint-config
+// denial path exercised above (denyNetworkingConfigReason and
+// denyRootMacAddressReason) through the full inspect() entrypoint, seeded
+// with the representative NetworkingConfig/MacAddress shapes covered by the
+// table tests immediately above. Mirrors FuzzContainerCreate's structure;
+// asserts only that inspect never panics.
+func FuzzContainerCreatePolicyInspectEndpointConfig(f *testing.F) {
+	f.Add([]byte(`{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}}}`))
+	f.Add([]byte(`{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"app-net":{"Aliases":["web"]}}}}`))
+	f.Add([]byte(`{"Image":"x","MacAddress":"02:42:ac:1e:00:0a"}`))
+	f.Add([]byte(`{"NetworkingConfig":{"EndpointsConfig":{"Frontend":{"Aliases":["a"]},"frontend":{"Aliases":["b"]}}}}`))
+
+	policy := newContainerCreatePolicy(ContainerCreateOptions{})
+
+	f.Fuzz(func(t *testing.T, body []byte) {
+		body = truncateParserFuzzBytes(body, maxContainerCreateBodyBytes+1024)
+
+		req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(body))
+		_, _ = policy.inspect(nil, req, "/containers/create")
+
+		if req.Body != nil {
+			_, _ = io.Copy(io.Discard, req.Body)
+			_ = req.Body.Close()
+		}
+	})
 }
 
 func TestExtractAndValidateBindSource(t *testing.T) {
@@ -1883,6 +2378,7 @@ func assertSingleCanonicalContainerImageKey(t *testing.T, body []byte) map[strin
 	for key := range fields {
 		if strings.EqualFold(key, "Image") {
 			variants = append(variants, key)
+
 		}
 	}
 	if len(variants) != 1 || variants[0] != "Image" {

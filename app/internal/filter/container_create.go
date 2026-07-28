@@ -89,13 +89,39 @@ type ContainerCreateOptions struct {
 	AllowedCapabilities        []string
 	RequireMemoryLimit         bool
 	RequireCPULimit            bool
-	RequirePidsLimit           bool
-	AllowedSeccompProfiles     []string
-	DenyUnconfinedSeccomp      bool
-	AllowedAppArmorProfiles    []string
-	DenyUnconfinedAppArmor     bool
-	AllowHostUserNS            bool
-	RequiredLabels             []string
+	// RequireCPULimitHard narrows RequireCPULimit to accept only a genuine
+	// CPU-time cap (NanoCpus or CpuQuota); CpuShares alone does not satisfy
+	// it. Independent of RequireCPULimit — see hasHardCPULimit.
+	RequireCPULimitHard     bool
+	RequirePidsLimit        bool
+	AllowedSeccompProfiles  []string
+	DenyUnconfinedSeccomp   bool
+	AllowedAppArmorProfiles []string
+	DenyUnconfinedAppArmor  bool
+	AllowHostUserNS         bool
+	AllowHostCgroupNS       bool
+	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
+	// UsernsMode values of the form "container:<ref>" (join another
+	// container's namespace) against AllowedNamespaceSharingContainers.
+	// Default false: container:<ref> values continue to pass through
+	// unchecked, matching today's behavior exactly — an independent,
+	// orthogonal gate from AllowHostNetwork/PID/IPC/UserNS, which only ever
+	// match the literal "host" value and continue to do so unchanged.
+	RestrictNamespaceSharing bool
+	// AllowedNamespaceSharingContainers allowlists the container:<ref>
+	// targets permitted when RestrictNamespaceSharing is true. Only
+	// consulted when RestrictNamespaceSharing is true; empty denies every
+	// container: ref. Mirrors the AllowDeviceRequests/AllowedDeviceRequests
+	// bool-escape-hatch-plus-allowlist shape, not AllowedRuntimes (which
+	// denies non-empty values by default) — this field defaults to
+	// pass-through, not deny-by-default.
+	AllowedNamespaceSharingContainers []string
+	// DenyNamespacePathMode denies HostConfig.NetworkMode values with an
+	// "ns:" prefix (case-insensitive) — Docker's raw host-namespace-file
+	// attachment form, which bypasses the "host" literal check entirely.
+	// Scoped to NetworkMode only. Default false (pass-through).
+	DenyNamespacePathMode bool
+	RequiredLabels        []string
 
 	// AllowedRuntimes allowlists HostConfig.Runtime values. An empty Runtime
 	// selects the daemon default and is always permitted; any other (non-empty)
@@ -127,6 +153,19 @@ type ContainerCreateOptions struct {
 
 	// ImageTrust configures cosign-backed signature verification.
 	ImageTrust ImageTrustOptions
+
+	// AllowEndpointConfig permits static IP, MAC address, Links, and
+	// DriverOpts in NetworkingConfig.EndpointsConfig entries carried on
+	// POST /containers/create. Docker connects every entry here the same way
+	// POST /networks/*/connect does, so without this the same fields
+	// network.AllowEndpointConfig gates at connect time were an unchecked
+	// bypass via create's NetworkingConfig — put the same config on the
+	// primary network at create instead of a follow-up connect call, and it
+	// sailed through. Shares a single config knob
+	// (request_body.network.allow_endpoint_config) with the network
+	// inspector; see config.RequestBodyConfig.ToFilterOptions. Aliases are
+	// never gated regardless of this flag — see denyEndpointConfigReason.
+	AllowEndpointConfig bool
 }
 
 type containerCreatePolicy struct {
@@ -142,27 +181,34 @@ type containerCreatePolicy struct {
 	allowDeviceCgroupRules   bool
 	allowedDeviceCgroupRules []string
 
-	requireNoNewPrivileges     bool
-	requireNonRootUser         bool
-	requireReadonlyRootfs      bool
-	requireDropAllCapabilities bool
-	allowAllCapabilities       bool
-	allowedCapabilities        []string
-	requireMemoryLimit         bool
-	requireCPULimit            bool
-	requirePidsLimit           bool
-	allowedSeccompProfiles     []string
-	denyUnconfinedSeccomp      bool
-	allowedAppArmorProfiles    []string
-	denyUnconfinedAppArmor     bool
-	allowHostUserNS            bool
-	requiredLabels             []string
-	allowSysctls               bool
-	allowedRuntimes            []string
+	requireNoNewPrivileges            bool
+	requireNonRootUser                bool
+	requireReadonlyRootfs             bool
+	requireDropAllCapabilities        bool
+	allowAllCapabilities              bool
+	allowedCapabilities               []string
+	requireMemoryLimit                bool
+	requireCPULimit                   bool
+	requireCPULimitHard               bool
+	requirePidsLimit                  bool
+	allowedSeccompProfiles            []string
+	denyUnconfinedSeccomp             bool
+	allowedAppArmorProfiles           []string
+	denyUnconfinedAppArmor            bool
+	allowHostUserNS                   bool
+	allowHostCgroupNS                 bool
+	restrictNamespaceSharing          bool
+	allowedNamespaceSharingContainers []string
+	denyNamespacePathMode             bool
+	requiredLabels                    []string
+	allowSysctls                      bool
+	allowedRuntimes                   []string
 
 	denySelinuxDisable        bool
 	denySelinuxLabelOverride  bool
 	denyUnconfinedSystemPaths bool
+
+	allowEndpointConfig bool
 
 	// Image trust — non-nil when mode != off.
 	imageTrustVerifier imageVerifier
@@ -219,37 +265,43 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 	}
 
 	p := containerCreatePolicy{
-		allowPrivileged:            opts.AllowPrivileged,
-		allowHostNetwork:           opts.AllowHostNetwork,
-		allowHostPID:               opts.AllowHostPID,
-		allowHostIPC:               opts.AllowHostIPC,
-		allowedBindMounts:          allowed,
-		allowAllDevices:            opts.AllowAllDevices,
-		allowedDevices:             allowedDevices,
-		allowDeviceRequests:        opts.AllowDeviceRequests,
-		allowedDeviceRequests:      allowedDeviceRequests,
-		allowDeviceCgroupRules:     opts.AllowDeviceCgroupRules,
-		allowedDeviceCgroupRules:   allowedDeviceCgroupRules,
-		requireNoNewPrivileges:     opts.RequireNoNewPrivileges,
-		requireNonRootUser:         opts.RequireNonRootUser,
-		requireReadonlyRootfs:      opts.RequireReadonlyRootfs,
-		requireDropAllCapabilities: opts.RequireDropAllCapabilities,
-		allowAllCapabilities:       opts.AllowAllCapabilities,
-		allowedCapabilities:        normalizeCapabilityList(opts.AllowedCapabilities),
-		requireMemoryLimit:         opts.RequireMemoryLimit,
-		requireCPULimit:            opts.RequireCPULimit,
-		requirePidsLimit:           opts.RequirePidsLimit,
-		allowedSeccompProfiles:     normalizeStringList(opts.AllowedSeccompProfiles),
-		denyUnconfinedSeccomp:      opts.DenyUnconfinedSeccomp,
-		allowedAppArmorProfiles:    normalizeStringList(opts.AllowedAppArmorProfiles),
-		denyUnconfinedAppArmor:     opts.DenyUnconfinedAppArmor,
-		allowHostUserNS:            opts.AllowHostUserNS,
-		requiredLabels:             normalizeStringList(opts.RequiredLabels),
-		allowSysctls:               opts.AllowSysctls,
-		allowedRuntimes:            normalizeStringList(opts.AllowedRuntimes),
-		denySelinuxDisable:         opts.DenySelinuxDisable,
-		denySelinuxLabelOverride:   opts.DenySelinuxLabelOverride,
-		denyUnconfinedSystemPaths:  opts.DenyUnconfinedSystemPaths,
+		allowPrivileged:                   opts.AllowPrivileged,
+		allowHostNetwork:                  opts.AllowHostNetwork,
+		allowHostPID:                      opts.AllowHostPID,
+		allowHostIPC:                      opts.AllowHostIPC,
+		allowedBindMounts:                 allowed,
+		allowAllDevices:                   opts.AllowAllDevices,
+		allowedDevices:                    allowedDevices,
+		allowDeviceRequests:               opts.AllowDeviceRequests,
+		allowedDeviceRequests:             allowedDeviceRequests,
+		allowDeviceCgroupRules:            opts.AllowDeviceCgroupRules,
+		allowedDeviceCgroupRules:          allowedDeviceCgroupRules,
+		requireNoNewPrivileges:            opts.RequireNoNewPrivileges,
+		requireNonRootUser:                opts.RequireNonRootUser,
+		requireReadonlyRootfs:             opts.RequireReadonlyRootfs,
+		requireDropAllCapabilities:        opts.RequireDropAllCapabilities,
+		allowAllCapabilities:              opts.AllowAllCapabilities,
+		allowedCapabilities:               normalizeCapabilityList(opts.AllowedCapabilities),
+		requireMemoryLimit:                opts.RequireMemoryLimit,
+		requireCPULimit:                   opts.RequireCPULimit,
+		requireCPULimitHard:               opts.RequireCPULimitHard,
+		requirePidsLimit:                  opts.RequirePidsLimit,
+		allowedSeccompProfiles:            normalizeStringList(opts.AllowedSeccompProfiles),
+		denyUnconfinedSeccomp:             opts.DenyUnconfinedSeccomp,
+		allowedAppArmorProfiles:           normalizeStringList(opts.AllowedAppArmorProfiles),
+		denyUnconfinedAppArmor:            opts.DenyUnconfinedAppArmor,
+		allowHostUserNS:                   opts.AllowHostUserNS,
+		allowHostCgroupNS:                 opts.AllowHostCgroupNS,
+		restrictNamespaceSharing:          opts.RestrictNamespaceSharing,
+		allowedNamespaceSharingContainers: normalizeStringList(opts.AllowedNamespaceSharingContainers),
+		denyNamespacePathMode:             opts.DenyNamespacePathMode,
+		requiredLabels:                    normalizeStringList(opts.RequiredLabels),
+		allowSysctls:                      opts.AllowSysctls,
+		allowedRuntimes:                   normalizeStringList(opts.AllowedRuntimes),
+		denySelinuxDisable:                opts.DenySelinuxDisable,
+		denySelinuxLabelOverride:          opts.DenySelinuxLabelOverride,
+		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
+		allowEndpointConfig:               opts.AllowEndpointConfig,
 	}
 
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so
@@ -616,6 +668,15 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if !p.allowHostUserNS && isHostNamespaceMode(createReq.HostConfig.UsernsMode) {
 		return "container create denied: host user namespace mode is not allowed", nil
 	}
+	if !p.allowHostCgroupNS && isHostNamespaceMode(createReq.HostConfig.CgroupnsMode) {
+		return "container create denied: host cgroup namespace mode is not allowed", nil
+	}
+	if denyReason := p.denyNamespaceSharingReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if p.denyNamespacePathMode && isNamespacePathMode(createReq.HostConfig.NetworkMode) {
+		return "container create denied: ns: namespace path mode is not allowed", nil
+	}
 	if !p.allowSysctls && len(createReq.HostConfig.Sysctls) > 0 {
 		return "container create denied: setting sysctls is not allowed", nil
 	}
@@ -641,6 +702,12 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return denyReason, nil
 	}
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyNetworkingConfigReason(createReq.NetworkingConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyRootMacAddressReason(createReq.MacAddress); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denySecurityOptReason(createReq.HostConfig); denyReason != "" {
@@ -702,6 +769,73 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 
 func isHostNamespaceMode(value string) bool {
 	return strings.EqualFold(strings.TrimSpace(value), "host")
+}
+
+// ContainerNamespaceRef reports whether mode has the form "container:<ref>"
+// — Docker's syntax for joining another container's network/PID/IPC/user
+// namespace — and, if so, returns the trimmed ref. The "container:" prefix
+// is matched case-insensitively (as Docker itself does); the ref's case is
+// preserved, since container IDs and names are case-sensitive. An empty ref
+// ("container:" alone, or all-whitespace after the prefix) is rejected.
+// Exported so the ownership package can reuse this exact parser instead of
+// duplicating it.
+func ContainerNamespaceRef(mode string) (ref string, ok bool) {
+	trimmed := strings.TrimSpace(mode)
+	const prefix = "container:"
+	if len(trimmed) <= len(prefix) || !strings.EqualFold(trimmed[:len(prefix)], prefix) {
+		return "", false
+	}
+	ref = strings.TrimSpace(trimmed[len(prefix):])
+	if ref == "" {
+		return "", false
+	}
+	return ref, true
+}
+
+// isNamespacePathMode reports whether mode has a case-insensitive "ns:"
+// prefix — Docker's syntax for attaching to an arbitrary host network
+// namespace file path, a form that bypasses the "host" literal check
+// entirely.
+func isNamespacePathMode(mode string) bool {
+	trimmed := strings.TrimSpace(mode)
+	const prefix = "ns:"
+	return len(trimmed) >= len(prefix) && strings.EqualFold(trimmed[:len(prefix)], prefix)
+}
+
+// denyNamespaceSharingReason enforces restrictNamespaceSharing against every
+// HostConfig field that can join another container's namespace via
+// "container:<ref>": NetworkMode, PidMode, IpcMode, UTSMode, and (defensively —
+// stock Docker's support for a container: form here is unconfirmed) UsernsMode.
+// UTSMode is included because Docker does honor a "container:<ref>" join for it
+// (moby's UTSMode has an IsContainer/Container form); the separate host-UTS mode
+// is denied unconditionally above and is a different attack surface.
+func (p containerCreatePolicy) denyNamespaceSharingReason(hostConfig containerCreateHostConfig) string {
+	if !p.restrictNamespaceSharing {
+		return ""
+	}
+	fields := [...]struct {
+		label string
+		mode  string
+	}{
+		{"network", hostConfig.NetworkMode},
+		{"PID", hostConfig.PidMode},
+		{"IPC", hostConfig.IpcMode},
+		{"UTS", hostConfig.UTSMode},
+		{"user", hostConfig.UsernsMode},
+	}
+	for _, f := range fields {
+		ref, ok := ContainerNamespaceRef(f.mode)
+		if !ok {
+			continue
+		}
+		if len(p.allowedNamespaceSharingContainers) == 0 {
+			return fmt.Sprintf("container create denied: %s namespace sharing with another container is not allowed", f.label)
+		}
+		if !slices.Contains(p.allowedNamespaceSharingContainers, ref) {
+			return fmt.Sprintf("container create denied: namespace-sharing target %q is not in the allowed list", ref)
+		}
+	}
+	return ""
 }
 
 func (p containerCreatePolicy) denyDeviceReason(hostConfig containerCreateHostConfig) string {
@@ -1062,6 +1196,55 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 	return ""
 }
 
+// denyNetworkingConfigReason applies the same endpoint-config policy
+// network.inspectConnect enforces on POST /networks/*/connect to every entry
+// of NetworkingConfig.EndpointsConfig carried on POST /containers/create.
+// Docker attaches each entry here identically to a connect call, so without
+// this check the connect-time gate was a bypassable illusion: the same
+// static-IP/MAC/Links/DriverOpts configuration reached the daemon unchecked
+// by putting it on the primary (or any) network at create time instead of a
+// follow-up connect. Map keys (network names) are iterated in sorted order
+// so a request with multiple networks produces a deterministic denial
+// message regardless of Go's randomized map iteration order.
+func (p containerCreatePolicy) denyNetworkingConfigReason(networkingConfig containerCreateNetworkingConfig) string {
+	if len(networkingConfig.EndpointsConfig) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(networkingConfig.EndpointsConfig))
+	for name := range networkingConfig.EndpointsConfig {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		endpoint := networkingConfig.EndpointsConfig[name]
+		if endpoint == nil {
+			continue
+		}
+		if reason := denyEndpointConfigReason(*endpoint, p.allowEndpointConfig, "container create"); reason != "" {
+			return reason
+		}
+	}
+	return ""
+}
+
+// denyRootMacAddressReason gates the deprecated, top-level (pre-API-1.44)
+// MacAddress field POST /containers/create still accepts alongside
+// NetworkingConfig. The daemon applies it to the container's primary network
+// endpoint exactly the way a NetworkingConfig.EndpointsConfig[*].MacAddress
+// entry does, so it carries the identical MAC-pinning attack surface and
+// must be governed by the same allow_endpoint_config flag — otherwise a
+// client denied on EndpointsConfig could simply move the MAC address to
+// this legacy field and sail through unchecked.
+func (p containerCreatePolicy) denyRootMacAddressReason(macAddress string) string {
+	if p.allowEndpointConfig {
+		return ""
+	}
+	if strings.TrimSpace(macAddress) == "" {
+		return ""
+	}
+	return "container create denied: container MAC address is not allowed"
+}
+
 // denyHardeningReason enforces the simple boolean "rails": no-new-privileges,
 // non-root execution, and read-only root filesystem.
 func (p containerCreatePolicy) denyHardeningReason(req containerCreateRequest) string {
@@ -1112,6 +1295,9 @@ func (p containerCreatePolicy) denyResourceLimitReason(hostConfig containerCreat
 	}
 	if p.requireCPULimit && !hasCPULimit(hostConfig) {
 		return "container create denied: a CPU limit is required (set HostConfig.NanoCpus, CpuQuota, CpuPeriod, or CpuShares)"
+	}
+	if p.requireCPULimitHard && !hasHardCPULimit(hostConfig) {
+		return "container create denied: a hard CPU cap is required (set HostConfig.NanoCpus or CpuQuota; CpuShares is a relative priority weight, not a cap, and does not satisfy this check)"
 	}
 	if p.requirePidsLimit {
 		if hostConfig.PidsLimit == nil || *hostConfig.PidsLimit <= 0 {
@@ -1323,6 +1509,24 @@ func capDropContainsAll(capDrop []string) bool {
 // it for the same purpose, so we accept it as evidence of intent.
 func hasCPULimit(h containerCreateHostConfig) bool {
 	return h.NanoCpus > 0 || h.CpuQuota > 0 || h.CpuPeriod > 0 || h.CpuShares > 0
+}
+
+// hasHardCPULimit returns true only when a genuine CPU-time cap is set:
+// NanoCpus or CpuQuota. Unlike hasCPULimit, a lone CpuPeriod does not count
+// (it is only the denominator for CpuQuota and enforces nothing without it),
+// and CpuShares does not count (it sets relative scheduling priority under
+// contention, not an absolute ceiling — a CpuShares-only container can still
+// consume 100% of every CPU it can reach on an idle host).
+//
+// CpuQuota is accepted without a paired CpuPeriod: per Docker's own docs
+// (docs.docker.com/engine/containers/resource_constraints — "--cpu-period
+// ... Defaults to 100000 microseconds (100 milliseconds)"), the CFS period
+// defaults to 100000us (the same value the kernel's CFS bandwidth
+// controller already applies to a cgroup) whenever CpuPeriod is left at its
+// zero value, so CpuQuota alone still yields a real, computable CPU-time
+// ceiling (CpuQuota / 100000).
+func hasHardCPULimit(h containerCreateHostConfig) bool {
+	return h.NanoCpus > 0 || h.CpuQuota > 0
 }
 
 // parseSecurityOpt extracts the (key, value) tuple from a Docker SecurityOpt

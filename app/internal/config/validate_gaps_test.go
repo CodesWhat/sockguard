@@ -72,6 +72,11 @@ func TestValidateUpstreamRequestTimeout(t *testing.T) {
 			wantError: false,
 		},
 		{
+			name:      "off_is_skipped",
+			timeout:   "off",
+			wantError: false,
+		},
+		{
 			name:      "valid_positive_duration",
 			timeout:   "30s",
 			wantError: false,

@@ -1029,4 +1029,5 @@ func TestRewriteServiceImage(t *testing.T) {
 			}
 		})
 	}
+
 }

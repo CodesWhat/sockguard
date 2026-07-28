@@ -111,7 +111,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "We use declarative YAML rules with glob patterns, first-match-wins evaluation, and 15 bundled workload presets (drydock, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, Drydock with self-update) plus the default config.",
+      "We use declarative YAML rules with glob patterns, first-match-wins evaluation, and 17 bundled workload presets (drydock, drydock with self-update, drydock with compose, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, read-only, CIS Docker Benchmark, GitHub Actions self-hosted runner, GitLab Runner, Portwing, Portwing with exec, Portwing with compose) plus the default config.",
     category: "control",
   },
   {

@@ -10,20 +10,28 @@ import (
 func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 	cfg := RequestBodyConfig{
 		ContainerCreate: ContainerCreateRequestBodyConfig{
-			AllowPrivileged:        true,
-			AllowHostNetwork:       true,
-			AllowHostPID:           true,
-			AllowHostIPC:           true,
-			AllowedBindMounts:      []string{"/srv/data", "/var/lib/sockguard"},
-			AllowAllDevices:        true,
-			AllowedDevices:         []string{"/dev/kvm", "/dev/dri"},
-			AllowDeviceRequests:    true,
-			AllowDeviceCgroupRules: true,
+			AllowPrivileged:                   true,
+			AllowHostNetwork:                  true,
+			AllowHostPID:                      true,
+			AllowHostIPC:                      true,
+			AllowHostUserNS:                   true,
+			AllowHostCgroupNS:                 true,
+			AllowedBindMounts:                 []string{"/srv/data", "/var/lib/sockguard"},
+			AllowAllDevices:                   true,
+			AllowedDevices:                    []string{"/dev/kvm", "/dev/dri"},
+			AllowDeviceRequests:               true,
+			AllowDeviceCgroupRules:            true,
+			RestrictNamespaceSharing:          true,
+			AllowedNamespaceSharingContainers: []string{"sidecar", "abc123"},
+			DenyNamespacePathMode:             true,
 		},
 		Exec: ExecRequestBodyConfig{
-			AllowPrivileged: true,
-			AllowRootUser:   true,
-			AllowedCommands: [][]string{{"/usr/local/bin/deploy", "--check"}},
+			AllowPrivileged:  true,
+			AllowRootUser:    true,
+			AllowedCommands:  [][]string{{"/usr/local/bin/deploy", "--check"}},
+			AllowedEnvVars:   []string{"PATH", "HOME"},
+			DeniedEnvVars:    []string{"LD_PRELOAD", "LD_LIBRARY_PATH"},
+			AllowedEnvValues: []string{"CALLBACK_URL=http://127.0.0.1:3000/callback"},
 		},
 		ImagePull: ImagePullRequestBodyConfig{
 			AllowImports:       true,
@@ -131,20 +139,34 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 	got := cfg.ToFilterOptions()
 	want := filter.PolicyConfig{
 		ContainerCreate: filter.ContainerCreateOptions{
-			AllowPrivileged:        true,
-			AllowHostNetwork:       true,
-			AllowHostPID:           true,
-			AllowHostIPC:           true,
-			AllowedBindMounts:      []string{"/srv/data", "/var/lib/sockguard"},
-			AllowAllDevices:        true,
-			AllowedDevices:         []string{"/dev/kvm", "/dev/dri"},
-			AllowDeviceRequests:    true,
-			AllowDeviceCgroupRules: true,
+			AllowPrivileged:                   true,
+			AllowHostNetwork:                  true,
+			AllowHostPID:                      true,
+			AllowHostIPC:                      true,
+			AllowHostUserNS:                   true,
+			AllowHostCgroupNS:                 true,
+			AllowedBindMounts:                 []string{"/srv/data", "/var/lib/sockguard"},
+			AllowAllDevices:                   true,
+			AllowedDevices:                    []string{"/dev/kvm", "/dev/dri"},
+			AllowDeviceRequests:               true,
+			AllowDeviceCgroupRules:            true,
+			RestrictNamespaceSharing:          true,
+			AllowedNamespaceSharingContainers: []string{"sidecar", "abc123"},
+			DenyNamespacePathMode:             true,
+			// AllowEndpointConfig has no ContainerCreateRequestBodyConfig field of
+			// its own — it is cross-wired from cfg.Network.AllowEndpointConfig
+			// (set true above) by RequestBodyConfig.ToFilterOptions. See
+			// TestRequestBodyConfigToFilterOptionsWiresNetworkAllowEndpointConfigIntoContainerCreate
+			// for a focused regression on that cross-wire alone.
+			AllowEndpointConfig: true,
 		},
 		Exec: filter.ExecOptions{
-			AllowPrivileged: true,
-			AllowRootUser:   true,
-			AllowedCommands: [][]string{{"/usr/local/bin/deploy", "--check"}},
+			AllowPrivileged:  true,
+			AllowRootUser:    true,
+			AllowedCommands:  [][]string{{"/usr/local/bin/deploy", "--check"}},
+			AllowedEnvVars:   []string{"PATH", "HOME"},
+			DeniedEnvVars:    []string{"LD_PRELOAD", "LD_LIBRARY_PATH"},
+			AllowedEnvValues: []string{"CALLBACK_URL=http://127.0.0.1:3000/callback"},
 		},
 		ImagePull: filter.ImagePullOptions{
 			AllowImports:       true,
@@ -254,6 +276,39 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 	}
 }
 
+// TestRequestBodyConfigToFilterOptionsWiresNetworkAllowEndpointConfigIntoContainerCreate
+// proves request_body.network.allow_endpoint_config is the single flag
+// governing both endpoint-config inspectors: RequestBodyConfig.ToFilterOptions
+// must copy it into both filter.NetworkOptions.AllowEndpointConfig (the
+// existing /networks/*/connect gate) and filter.ContainerCreateOptions.AllowEndpointConfig
+// (the new /containers/create NetworkingConfig gate), with no separate
+// container_create YAML key of its own.
+func TestRequestBodyConfigToFilterOptionsWiresNetworkAllowEndpointConfigIntoContainerCreate(t *testing.T) {
+	t.Run("true flows into both policies", func(t *testing.T) {
+		got := (RequestBodyConfig{
+			Network: NetworkRequestBodyConfig{AllowEndpointConfig: true},
+		}).ToFilterOptions()
+
+		if !got.Network.AllowEndpointConfig {
+			t.Error("Network.AllowEndpointConfig = false, want true")
+		}
+		if !got.ContainerCreate.AllowEndpointConfig {
+			t.Error("ContainerCreate.AllowEndpointConfig = false, want true (cross-wired from Network)")
+		}
+	})
+
+	t.Run("false (default) leaves both policies denying", func(t *testing.T) {
+		got := (RequestBodyConfig{}).ToFilterOptions()
+
+		if got.Network.AllowEndpointConfig {
+			t.Error("Network.AllowEndpointConfig = true, want false")
+		}
+		if got.ContainerCreate.AllowEndpointConfig {
+			t.Error("ContainerCreate.AllowEndpointConfig = true, want false")
+		}
+	})
+}
+
 func TestContainerCreateRequestBodyConfigToFilterOptionsMapsSelinuxAndSystemPaths(t *testing.T) {
 	cfg := ContainerCreateRequestBodyConfig{
 		DenySelinuxDisable:        true,
@@ -272,6 +327,15 @@ func TestContainerCreateRequestBodyConfigToFilterOptionsMapsSelinuxAndSystemPath
 	}
 }
 
+func TestContainerCreateRequestBodyConfigToFilterOptionsMapsRequireCPULimitHard(t *testing.T) {
+	got := (ContainerCreateRequestBodyConfig{
+		RequireCPULimitHard: true,
+	}).ToFilterOptions()
+	if !got.RequireCPULimitHard {
+		t.Error("RequireCPULimitHard not propagated")
+	}
+}
+
 func TestExecRequestBodyConfigToFilterOptionsLeavesRuntimeInspectorUnset(t *testing.T) {
 	got := (ExecRequestBodyConfig{
 		AllowPrivileged: true,
@@ -281,5 +345,23 @@ func TestExecRequestBodyConfigToFilterOptionsLeavesRuntimeInspectorUnset(t *test
 
 	if got.InspectStart != nil {
 		t.Fatal("ExecRequestBodyConfig.ToFilterOptions().InspectStart is set, want nil")
+	}
+}
+
+func TestExecRequestBodyConfigToFilterOptionsMapsEnvAllowlists(t *testing.T) {
+	got := (ExecRequestBodyConfig{
+		AllowedEnvVars:   []string{"PATH", "HOME"},
+		DeniedEnvVars:    []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PATH", "PYTHONPATH"},
+		AllowedEnvValues: []string{"CALLBACK_URL=http://127.0.0.1:3000/callback"},
+	}).ToFilterOptions()
+
+	if want := []string{"PATH", "HOME"}; !reflect.DeepEqual(got.AllowedEnvVars, want) {
+		t.Fatalf("AllowedEnvVars = %#v, want %#v", got.AllowedEnvVars, want)
+	}
+	if want := []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PATH", "PYTHONPATH"}; !reflect.DeepEqual(got.DeniedEnvVars, want) {
+		t.Fatalf("DeniedEnvVars = %#v, want %#v", got.DeniedEnvVars, want)
+	}
+	if want := []string{"CALLBACK_URL=http://127.0.0.1:3000/callback"}; !reflect.DeepEqual(got.AllowedEnvValues, want) {
+		t.Fatalf("AllowedEnvValues = %#v, want %#v", got.AllowedEnvValues, want)
 	}
 }

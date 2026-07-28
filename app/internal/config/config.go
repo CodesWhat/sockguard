@@ -71,12 +71,28 @@ type UpstreamConfig struct {
 	// RequestTimeout bounds the total lifetime of a single proxied upstream
 	// request as a Go duration string (e.g. "30s"). ResponseHeaderTimeout only
 	// caps the wait for response headers; a daemon that sends headers and then
-	// hangs the body can still pin a request indefinitely. A non-empty value
+	// hangs the body can still pin a request indefinitely. A non-disabled value
 	// converts that hang into a fast 504 for ordinary finite requests.
 	// Long-lived endpoints (/events, log/stats streams, image pull/build/push,
-	// container export/get, and the blocking /containers/{id}/wait) are exempt
-	// so the deadline never severs a legitimately long response. Empty (the
-	// default) disables the per-request deadline.
+	// container export/get, container archive i.e. docker cp, and the blocking
+	// /containers/{id}/wait) are exempt so the deadline never severs a
+	// legitimately long response.
+	//
+	// Default is "60s" (changed from unlimited default prior to v1.5). Set
+	// "off" to explicitly disable the deadline; the legacy empty string ("")
+	// remains valid for backward compatibility with configs written before
+	// "off" existed. Use RequestTimeoutDisabled to check either spelling — it
+	// is the single source of truth validate.go and cmd/serve.go both consult.
+	// Any other value must parse as a positive Go duration; 0 and negative
+	// durations are validation errors.
+	//
+	// Caveat: SOCKGUARD_UPSTREAM_REQUEST_TIMEOUT="" (an explicitly empty env
+	// var) is treated as UNSET by Viper and falls through to the "60s"
+	// default rather than disabling it — only the literal "off" reliably
+	// disables the deadline via environment variable. An explicit
+	// request_timeout: "" in YAML does correctly disable it, since YAML
+	// values bypass Viper's env-emptiness gate. Prefer "off" in both
+	// channels.
 	RequestTimeout string `mapstructure:"request_timeout"`
 	// Endpoints is an ordered failover set. The first entry is the preferred
 	// primary; later entries are tried when earlier ones fail their health
@@ -88,6 +104,18 @@ type UpstreamConfig struct {
 	// Failover tunes the active health-probe loop that drives endpoint
 	// selection. Ignored unless endpoints is set.
 	Failover UpstreamFailover `mapstructure:"failover"`
+}
+
+// RequestTimeoutDisabled reports whether the per-request upstream deadline is
+// explicitly disabled: the canonical "off" sentinel or the legacy empty
+// string, both of which mean "no deadline". Centralizing the check here
+// means validate.go and cmd/serve.go read the same definition of "disabled"
+// and cannot drift on it. Comparison is exact-case, matching the existing
+// enum style elsewhere in config (log.level, response.deny_verbosity) — "OFF"
+// or "Off" is not recognized and falls through to duration parsing, where it
+// fails validation.
+func (u UpstreamConfig) RequestTimeoutDisabled() bool {
+	return u.RequestTimeout == "" || u.RequestTimeout == "off"
 }
 
 // UpstreamEndpoint is one daemon in an ordered failover set.
@@ -205,27 +233,54 @@ type ContainerCreateRequestBodyConfig struct {
 	AllowDeviceCgroupRules   bool                   `mapstructure:"allow_device_cgroup_rules"`
 	AllowedDeviceCgroupRules []string               `mapstructure:"allowed_device_cgroup_rules"`
 
-	RequireNoNewPrivileges     bool             `mapstructure:"require_no_new_privileges"`
-	RequireNonRootUser         bool             `mapstructure:"require_non_root_user"`
-	RequireReadonlyRootfs      bool             `mapstructure:"require_readonly_rootfs"`
-	RequireDropAllCapabilities bool             `mapstructure:"require_drop_all_capabilities"`
-	AllowAllCapabilities       bool             `mapstructure:"allow_all_capabilities"`
-	AllowedCapabilities        []string         `mapstructure:"allowed_capabilities"`
-	RequireMemoryLimit         bool             `mapstructure:"require_memory_limit"`
-	RequireCPULimit            bool             `mapstructure:"require_cpu_limit"`
-	RequirePidsLimit           bool             `mapstructure:"require_pids_limit"`
-	AllowedSeccompProfiles     []string         `mapstructure:"allowed_seccomp_profiles"`
-	DenyUnconfinedSeccomp      bool             `mapstructure:"deny_unconfined_seccomp"`
-	AllowedAppArmorProfiles    []string         `mapstructure:"allowed_apparmor_profiles"`
-	DenyUnconfinedAppArmor     bool             `mapstructure:"deny_unconfined_apparmor"`
-	AllowHostUserNS            bool             `mapstructure:"allow_host_userns"`
-	AllowSysctls               bool             `mapstructure:"allow_sysctls"`
-	RequiredLabels             []string         `mapstructure:"required_labels"`
-	AllowedRuntimes            []string         `mapstructure:"allowed_runtimes"`
-	ImageTrust                 ImageTrustConfig `mapstructure:"image_trust"`
-	DenySelinuxDisable         bool             `mapstructure:"deny_selinux_disable"`
-	DenySelinuxLabelOverride   bool             `mapstructure:"deny_selinux_label_override"`
-	DenyUnconfinedSystemPaths  bool             `mapstructure:"deny_unconfined_system_paths"`
+	RequireNoNewPrivileges     bool     `mapstructure:"require_no_new_privileges"`
+	RequireNonRootUser         bool     `mapstructure:"require_non_root_user"`
+	RequireReadonlyRootfs      bool     `mapstructure:"require_readonly_rootfs"`
+	RequireDropAllCapabilities bool     `mapstructure:"require_drop_all_capabilities"`
+	AllowAllCapabilities       bool     `mapstructure:"allow_all_capabilities"`
+	AllowedCapabilities        []string `mapstructure:"allowed_capabilities"`
+	RequireMemoryLimit         bool     `mapstructure:"require_memory_limit"`
+	RequireCPULimit            bool     `mapstructure:"require_cpu_limit"`
+	// RequireCPULimitHard, unlike RequireCPULimit, only accepts a genuine
+	// CPU-time cap: HostConfig.NanoCpus or CpuQuota. CpuShares (and CpuPeriod
+	// set without CpuQuota) only set relative priority under contention — an
+	// uncontended host still lets the container consume every CPU it can
+	// schedule onto — so neither satisfies this stricter check. Independent
+	// of RequireCPULimit: enabling this alone is sufficient; you do not also
+	// need RequireCPULimit: true. Default false (opt-in).
+	RequireCPULimitHard     bool     `mapstructure:"require_cpu_limit_hard"`
+	RequirePidsLimit        bool     `mapstructure:"require_pids_limit"`
+	AllowedSeccompProfiles  []string `mapstructure:"allowed_seccomp_profiles"`
+	DenyUnconfinedSeccomp   bool     `mapstructure:"deny_unconfined_seccomp"`
+	AllowedAppArmorProfiles []string `mapstructure:"allowed_apparmor_profiles"`
+	DenyUnconfinedAppArmor  bool     `mapstructure:"deny_unconfined_apparmor"`
+	AllowHostUserNS         bool     `mapstructure:"allow_host_userns"`
+	AllowHostCgroupNS       bool     `mapstructure:"allow_host_cgroupns"`
+	// RestrictNamespaceSharing gates HostConfig.NetworkMode/PidMode/IpcMode/
+	// UsernsMode values of the form "container:<ref>" (join another
+	// container's namespace) against AllowedNamespaceSharingContainers.
+	// Default false: container:<ref> values continue to pass through
+	// unchecked exactly as before this knob existed — AllowHostNetwork/PID/
+	// IPC/UserNS above only ever match the literal "host" value and still
+	// only do; this is an independent, orthogonal gate.
+	RestrictNamespaceSharing bool `mapstructure:"restrict_namespace_sharing"`
+	// AllowedNamespaceSharingContainers allowlists the container:<ref>
+	// targets permitted when RestrictNamespaceSharing is true. Only
+	// consulted when RestrictNamespaceSharing is true; empty denies every
+	// container: ref.
+	AllowedNamespaceSharingContainers []string `mapstructure:"allowed_namespace_sharing_containers"`
+	// DenyNamespacePathMode denies HostConfig.NetworkMode values with an
+	// "ns:" prefix (case-insensitive): Docker's raw host-namespace-file
+	// attachment form, which bypasses the "host" literal check entirely.
+	// Default false.
+	DenyNamespacePathMode     bool             `mapstructure:"deny_namespace_path_mode"`
+	AllowSysctls              bool             `mapstructure:"allow_sysctls"`
+	RequiredLabels            []string         `mapstructure:"required_labels"`
+	AllowedRuntimes           []string         `mapstructure:"allowed_runtimes"`
+	ImageTrust                ImageTrustConfig `mapstructure:"image_trust"`
+	DenySelinuxDisable        bool             `mapstructure:"deny_selinux_disable"`
+	DenySelinuxLabelOverride  bool             `mapstructure:"deny_selinux_label_override"`
+	DenyUnconfinedSystemPaths bool             `mapstructure:"deny_unconfined_system_paths"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images
@@ -277,6 +332,26 @@ type ExecRequestBodyConfig struct {
 	AllowPrivileged bool       `mapstructure:"allow_privileged"`
 	AllowRootUser   bool       `mapstructure:"allow_root_user"`
 	AllowedCommands [][]string `mapstructure:"allowed_commands"`
+	// AllowedEnvVars, when non-empty, restricts the exec-create Env array to
+	// these variable names — matched by name only (the substring before the
+	// first "="), exact string comparison, case-sensitive; the value is
+	// never inspected. Default empty means no restriction at all: unlike
+	// AllowedCommands (whose empty default denies every exec), an empty
+	// AllowedEnvVars is a deliberate zero-behavior-change default so
+	// enabling exec command allowlisting does not also silently start
+	// denying every exec session's environment.
+	AllowedEnvVars []string `mapstructure:"allowed_env_vars"`
+	// DeniedEnvVars variable names are always blocked and are checked
+	// before AllowedEnvVars, so a name present in both lists is denied
+	// (fail closed on operator misconfiguration). Default empty means
+	// nothing is blocked.
+	DeniedEnvVars []string `mapstructure:"denied_env_vars"`
+	// AllowedEnvValues optionally pins selected exec environment entries to
+	// exact NAME=VALUE strings. A variable name represented here is denied
+	// unless the complete entry exactly matches one of its configured values;
+	// values are compared but never included in denial reasons or logs. Names
+	// not represented here continue to follow AllowedEnvVars/DeniedEnvVars.
+	AllowedEnvValues []string `mapstructure:"allowed_env_values"`
 }
 
 // ImagePullRequestBodyConfig configures inspection for POST /images/create.
@@ -576,6 +651,20 @@ type OwnershipConfig struct {
 	Owner              string `mapstructure:"owner"`
 	LabelKey           string `mapstructure:"label_key"`
 	AllowUnownedImages bool   `mapstructure:"allow_unowned_images"`
+	// AllowCrossOwnerNamespaceSharing restores the pre-v1.5 pass-through
+	// behavior for POST /containers/create when Owner is configured. By
+	// default (false — a security-relevant default, see CHANGELOG),
+	// sockguard resolves every HostConfig.NetworkMode/PidMode/IpcMode/
+	// UsernsMode "container:<ref>" namespace-sharing target and denies the
+	// request if the referenced container belongs to a different owner —
+	// joining a foreign container's namespace is a full cross-tenant
+	// compromise (shared sockets, process visibility, shared /dev/shm),
+	// strictly worse than the access ownership already gates on every other
+	// endpoint. Set true to restore the old unchecked behavior. Same-owner
+	// refs always pass; an unlabeled target is treated as untrusted and
+	// denied too (consistent with every other container-targeting ownership
+	// check), so only a same-owner ref is allowed when this is false.
+	AllowCrossOwnerNamespaceSharing bool `mapstructure:"allow_cross_owner_namespace_sharing"`
 }
 
 // HealthConfig configures the health check endpoint.
@@ -776,6 +865,10 @@ func Defaults() Config {
 		},
 		Upstream: UpstreamConfig{
 			Socket: "/var/run/docker.sock",
+			// 60s bounds a hung upstream body or heavy read by default; set
+			// "off" (or the legacy "") to disable. See RequestTimeout's doc
+			// comment for the full migration story.
+			RequestTimeout: "60s",
 		},
 		Log: LogConfig{
 			Level:     "info",

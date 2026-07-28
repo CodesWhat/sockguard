@@ -98,10 +98,10 @@ func validateUpstream(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("upstream.endpoints[%d]: %v", i, err))
 		}
 	}
-	if cfg.Upstream.RequestTimeout != "" {
+	if !cfg.Upstream.RequestTimeoutDisabled() {
 		timeout, err := time.ParseDuration(cfg.Upstream.RequestTimeout)
 		if err != nil || timeout <= 0 {
-			errs = append(errs, fmt.Sprintf("upstream.request_timeout must be a positive duration, got %q", cfg.Upstream.RequestTimeout))
+			errs = append(errs, fmt.Sprintf(`upstream.request_timeout must be a positive duration or "off" to disable, got %q`, cfg.Upstream.RequestTimeout))
 		}
 	}
 	if d := cfg.Upstream.Failover.HealthInterval; d != "" {
@@ -883,6 +883,12 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 			errs = append(errs, fmt.Sprintf("%s.container_create.allowed_device_requests[%d].max_count must be -1 or a non-negative integer, got %d", prefix, i, *entry.MaxCount))
 		}
 	}
+	for _, entry := range cfg.AllowedNamespaceSharingContainers {
+		if entry != "" && entry == strings.TrimSpace(entry) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.container_create.allowed_namespace_sharing_containers entries must be non-empty container ID or name values, got %q", prefix, entry))
+	}
 	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ImageTrust)...)
 	return errs
 }
@@ -894,6 +900,24 @@ func validateExecConfig(prefix string, cfg ExecRequestBodyConfig) []string {
 			continue
 		}
 		errs = append(errs, fmt.Sprintf("%s.exec.allowed_commands entries must contain at least one non-empty argv token, got entry %d", prefix, i+1))
+	}
+	for _, name := range cfg.AllowedEnvVars {
+		if validExecEnvVarName(name) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.exec.allowed_env_vars entries must be a bare variable name (no '=', no whitespace), got %q", prefix, name))
+	}
+	for _, name := range cfg.DeniedEnvVars {
+		if validExecEnvVarName(name) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.exec.denied_env_vars entries must be a bare variable name (no '=', no whitespace), got %q", prefix, name))
+	}
+	for i, entry := range cfg.AllowedEnvValues {
+		if validExecEnvValue(entry) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.exec.allowed_env_values entry %d must be an exact NAME=VALUE string with an unpadded variable name", prefix, i+1))
 	}
 	return errs
 }
@@ -1020,6 +1044,22 @@ func validExecCommand(command []string) bool {
 		}
 	}
 	return true
+}
+
+// validExecEnvVarName reports whether value is a bare environment variable
+// name suitable for allowed_env_vars/denied_env_vars: non-empty, no "=" (a
+// "=" strongly suggests the operator pasted a KEY=VALUE
+// pair rather than a bare name — these fields are name-only), and no
+// embedded whitespace. No POSIX identifier-shape enforcement is applied —
+// Docker itself doesn't require one, and the schema's other string-list
+// fields stay similarly lenient.
+func validExecEnvVarName(value string) bool {
+	return value != "" && !strings.Contains(value, "=") && !strings.ContainsAny(value, " \t\r\n")
+}
+
+func validExecEnvValue(value string) bool {
+	name, _, ok := strings.Cut(value, "=")
+	return ok && validExecEnvVarName(name)
 }
 
 func normalizeAllowedRegistryHost(value string) (string, bool) {

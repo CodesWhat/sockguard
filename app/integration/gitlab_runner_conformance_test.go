@@ -38,8 +38,7 @@ func newGitLabPresetHandler(t *testing.T, socketPath string) http.Handler {
 		t.Fatalf("load GitLab Runner preset: %v", err)
 	}
 
-	policyConfig := cfg.RequestBody.ToFilterOptions()
-	policyConfig.DenyResponseVerbosity = filter.DenyResponseVerbosityVerbose
+	policyConfig := presetPolicyConfig(cfg)
 
 	return newIntegrationProxyHandlerWithOptions(
 		t,
