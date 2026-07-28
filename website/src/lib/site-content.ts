@@ -80,7 +80,7 @@ export const roadmap: Milestone[] = [
       "Swarm service seccomp/AppArmor confinement rails (deny_unconfined_seccomp, deny_unconfined_apparmor)",
       "Rate-limit token bucket: allocation-free hot path, 0 allocs/0 B per op at ~36 ns",
       "Enforced CI coverage floor (96%) with Qlty Cloud reporting",
-      "v1.4.1–v1.4.3 security patches: reachable TLS advisory cleared, case-varied JSON bypasses closed, embedded owner dependencies freshly authorized, registry-push exfiltration gated, and Vercel/Helm defaults hardened",
+      "v1.4.1–v1.4.4 security patches: reachable TLS and dependency advisories cleared, case-varied JSON and log-injection paths closed, embedded owner dependencies freshly authorized, plugin inspection made fail-closed, registry-push exfiltration gated, and Vercel/Helm defaults hardened",
     ],
   },
   {

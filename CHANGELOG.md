@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.4] - 2026-07-28
+
+Security patch over v1.4.3. Sanitizes attacker-controlled structured-log fields, denies plugin archives whose configuration cannot be inspected, and refreshes the Go and Node dependency graphs to clear the current CodeQL, Grype, and OpenSSF Scorecard findings. The YAML schema, CLI flags, environment variables, admin endpoints, and metrics remain unchanged.
+
 ### Security
 
 - **Untrusted log fields now cross an explicit CR/LF sanitization boundary before reaching `slog`.** Request methods and paths, caller-provided correlation IDs, policy reasons, upstream errors, image references, and hijack diagnostics retain forensic detail with record delimiters rendered as visible `\r`/`\n` sequences. This protects custom logging handlers as well as the built-in JSON/text handlers and clears the CodeQL `go/log-injection` findings without dropping structured context.
