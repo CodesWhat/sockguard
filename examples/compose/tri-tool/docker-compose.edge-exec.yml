@@ -1,0 +1,123 @@
+# examples/compose/tri-tool/docker-compose.edge-exec.yml
+#
+# Sockguard + Portwing + drydock — the tri-tool topology in Edge Mode with
+# exec enabled, for hosts that can't accept inbound controller connections
+# (NAT, firewalled) and still want drydock-driven interactive exec sessions.
+#
+# Differs from docker-compose.yml (Standard Mode, no exec) in three ways:
+#   1. sockguard runs sockguard-with-exec.yaml (embedded copy of
+#      app/configs/portwing-with-exec.yaml) instead of sockguard.yaml, so
+#      POST /containers/*/exec and friends aren't denied at the proxy.
+#   2. Portwing dials OUT to drydock over a WebSocket (DRYDOCK_URL +
+#      PRIVATE_KEY_FILE) instead of drydock polling IN over HTTP — no
+#      TOKEN_FILE, no published Portwing port. Authentication is Ed25519
+#      public-key challenge-response, not the shared-secret model Standard
+#      Mode uses.
+#   3. drydock needs no DD_AGENT_PORTWING_* variables at all — it's the
+#      WebSocket server, not the poller. It just needs Portwing's public key
+#      registered before the agent connects; DD_PORTWING_AUTHORIZED_KEYS
+#      preloads it from a mounted file at startup.
+#
+# Exec-denial reasons (privileged exec, non-allowlisted commands, etc.) show
+# up in drydock's controller-side errors, not silently as empty output — see
+# the README for what to expect there.
+#
+# drydock's Portwing edge endpoint is enabled by default and stable as of
+# drydock 1.6; the pinned 1.5.2 default below still works but treats it as
+# experimental, hence DD_EXPERIMENTAL_PORTWING=true is set explicitly. Drop
+# that line once DRYDOCK_VERSION is bumped to 1.6+.
+#
+# Generate Portwing's Ed25519 keypair and drydock's exec-preset socket GID
+# before starting:
+#   export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
+#   portwing keygen -comment "tri-tool-host" > portwing_ed25519.pem
+#   sudo chown 65532:65532 portwing_ed25519.pem && sudo chmod 0400 portwing_ed25519.pem
+#
+# `portwing keygen` prints the PKCS#8 private key (saved above as
+# PRIVATE_KEY_FILE) followed by an `authorized_keys`-format public-key line.
+# Append that printed line to ./portwing_authorized_keys so
+# DD_PORTWING_AUTHORIZED_KEYS can preload it into drydock — see the README
+# for the full step-by-step.
+#
+# Hardening mirrors docker-compose.yml and portwing's own
+# examples/docker-compose.edge-with-exec.yml: non-root UID 65532,
+# read_only + cap_drop: ALL + no-new-privileges on sockguard and Portwing;
+# drydock is unhardened the same way for the same su-exec-drops-privileges
+# reason documented in docker-compose.yml.
+
+services:
+  sockguard:
+    image: "codeswhat/sockguard:${SOCKGUARD_VERSION:-1.5.1}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./sockguard-with-exec.yaml:/etc/sockguard/sockguard.yaml:ro
+      - sockguard-socket:/var/run/sockguard
+    environment:
+      - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
+
+  portwing:
+    image: "ghcr.io/codeswhat/portwing:${PORTWING_VERSION:-0.8.1}"
+    restart: unless-stopped
+    depends_on:
+      - sockguard
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp
+    user: "65532:65532"  # image default; explicit so it survives image overrides
+    # No published port: Edge Mode dials out to drydock, it doesn't accept
+    # inbound connections.
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+      - portwing-stacks:/data/stacks
+    environment:
+      - DOCKER_SOCKET=/var/run/sockguard/sockguard.sock
+      - AGENT_NAME=tri-tool-edge-host
+      - DRYDOCK_URL=http://drydock:3000
+      - PRIVATE_KEY_FILE=/run/secrets/portwing_key
+    secrets:
+      - portwing_key
+
+  drydock:
+    image: "codeswhat/drydock:${DRYDOCK_VERSION:-1.5.2}"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - drydock-store:/store
+      - ./portwing_authorized_keys:/etc/drydock/portwing_authorized_keys:ro
+    environment:
+      # Pure aggregator — drydock has no Docker socket of its own in this
+      # stack; every container fact comes from Portwing over the edge tunnel.
+      - DD_LOCAL_WATCHER=false
+      # Local demo only: the UI is bound to loopback above. Configure Basic
+      # Auth or OIDC instead before exposing drydock beyond this host.
+      - DD_ANONYMOUS_AUTH_CONFIRM=true
+      # Preloads Portwing's registered Ed25519 public key at startup so the
+      # agent's first dial-out authenticates immediately instead of needing
+      # a POST /api/v1/portwing/keys call first.
+      - DD_PORTWING_AUTHORIZED_KEYS=/etc/drydock/portwing_authorized_keys
+      # Explicit opt-in for the pinned 1.5.2 default above, where the
+      # Portwing edge endpoint is still experimental; a no-op once
+      # DRYDOCK_VERSION is 1.6+ (enabled by default there).
+      - DD_EXPERIMENTAL_PORTWING=true
+
+volumes:
+  sockguard-socket:
+  portwing-stacks:
+  drydock-store:
+
+secrets:
+  portwing_key:
+    file: ./portwing_ed25519.pem

@@ -1,0 +1,139 @@
+# Sockguard config for the tri-tool stack's Edge Mode + exec variant
+# (sockguard -> Portwing [edge] -> drydock). Mirrors the shipped Portwing
+# exec preset — this is the same rule set as app/configs/portwing-with-exec.yaml,
+# embedded here so the compose stack is self-contained. Update all three files
+# together if you change rules.
+#
+# Exec: POST /containers/{id}/exec, POST /exec/{id}/start, POST /exec/{id}/resize,
+# and GET /exec/{id}/json are allowed on top of the plain sockguard.yaml rule
+# set, so that exec sessions drydock drives through Portwing's edge tunnel
+# reach the container instead of being denied at the proxy. See
+# app/configs/portwing-with-exec.yaml for the full security-tradeoff
+# rationale (insecure_allow_body_blind_writes, allow_root_user).
+#
+# Log streaming: GET /containers/{id}/logs is required by Portwing's
+# GetContainerLogs() API. insecure_allow_read_exfiltration: true acknowledges
+# that container logs can contain secrets; see app/configs/portwing.yaml for
+# the full security-tradeoff rationale.
+#
+# Redaction is disabled below (not the default-safe posture) because drydock,
+# in this stack, reads container inspect data forwarded through Portwing to
+# recreate containers during updates. See the README's "Redaction note" for
+# the standalone-Portwing alternative.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+response:
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
+
+insecure_allow_body_blind_writes: true
+insecure_allow_read_exfiltration: true
+
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+    allowed_runtimes:
+      - runc
+  exec:
+    allow_privileged: false
+    allow_root_user: true
+  image_pull:
+    allow_all_registries: true
+
+rules:
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/update" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  - match: { method: POST, path: "/containers/*/exec" }
+    action: allow
+  - match: { method: POST, path: "/exec/*/start" }
+    action: allow
+  - match: { method: POST, path: "/exec/*/resize" }
+    action: allow
+  - match: { method: GET, path: "/exec/*/json" }
+    action: allow
+
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/**" }
+    action: allow
+
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+
+  - match: { method: GET, path: "/distribution/**/json" }
+    action: allow
+
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by portwing-with-exec preset"
