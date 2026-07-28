@@ -65,6 +65,15 @@ func TestComposeExamplesInSyncWithCanonicalPresets(t *testing.T) {
 			canonical: filepath.Join("..", "..", "configs", "portwing.yaml"),
 			example:   filepath.Join("..", "..", "..", "examples", "compose", "tri-tool", "sockguard.yaml"),
 		},
+		{
+			// examples/compose/tri-tool/sockguard-with-exec.yaml is the
+			// Edge-Mode + exec variant's hand-copy of
+			// app/configs/portwing-with-exec.yaml, paired with
+			// docker-compose.edge-exec.yml instead of docker-compose.yml.
+			name:      "tri-tool (portwing-with-exec leg)",
+			canonical: filepath.Join("..", "..", "configs", "portwing-with-exec.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "tri-tool", "sockguard-with-exec.yaml"),
+		},
 	}
 
 	for _, tc := range cases {
