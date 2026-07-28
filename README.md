@@ -435,7 +435,25 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.4.4 shipped on 2026-07-28** — a security patch over v1.4.3 clearing the outstanding log-injection and dependency findings and making plugin inspection fail closed — and is the latest stable release. **v1.5.0 remains in release-candidate soak**; these fixes merge forward there and reset the stable-promotion clock rather than skipping it. **v1.4.0 shipped on 2026-07-10** with remote upstreams, confinement-mode parity, and supply-chain consolidation. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+**v1.4.4 shipped on 2026-07-28** — a security patch over v1.4.3 clearing the outstanding log-injection and dependency findings and making plugin inspection fail closed — and is the latest stable release. **v1.5.0 remains in release-candidate soak**: v1.4.4 merges forward into `dev/v1.5`, the next candidate is **v1.5.0-rc.3**, and the security delta restarts the stable-promotion clock rather than skipping it. **v1.4.0 shipped on 2026-07-10** with remote upstreams, confinement-mode parity, and supply-chain consolidation. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+
+### Shipped in v1.4.4
+
+| Track | Surface |
+|---|---|
+| **Scanner remediation** | Sanitizes attacker-controlled structured-log fields to close the CodeQL log-injection findings; upgrades the affected Go and Node dependency graphs to patched releases for the Grype and OpenSSF Scorecard findings; retains only the documented `x/crypto/openpgp` exception where no fixed version exists and the vulnerable package is absent from the shipped binary |
+| **Fail-closed inspection** | Malformed or schema-incompatible plugin `config.json` is denied before forwarding, so an archive Sockguard cannot inspect cannot bypass plugin bind, device, capability, environment, or namespace policy |
+| **Repository protection** | `main` requires two approvals, a code-owner review, stale-review dismissal, last-push approval, resolved conversations, strict required checks, and no bypass actors |
+| **Compatibility** | No YAML schema, CLI flag, environment variable, admin endpoint, metric, or other public API change |
+
+### Next: v1.5.0
+
+| Gate | Plan |
+|---|---|
+| **Forward merge** | Merge the v1.4.4 tag commit into `dev/v1.5`, preserving the stable changelog, website version, roadmap, and Helm metadata while carrying every security fix into the minor-release line |
+| **Next candidate** | Cut **v1.5.0-rc.3** from the reconciled v1.5 branch and publish the complete multi-architecture image, binary, checksum, SBOM/provenance, and signature set |
+| **Release validation** | Require the full Go/TypeScript gates, CodeQL, Grype, govulncheck, gosec, real-dockerd integration, fuzz matrix, artifact verification, and clean published-image scans before promotion |
+| **Stable promotion** | Restart the RC soak from rc.3 because the security delta changes the candidate; promote v1.5.0 only after the documented soak completes cleanly, without relabeling an earlier RC as stable |
 
 ### Shipped in v1.3.0
 
