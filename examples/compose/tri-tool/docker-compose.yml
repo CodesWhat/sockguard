@@ -28,7 +28,7 @@
 # /store as root — matching this repo's existing examples/compose/drydock/.
 #
 # Generate the shared Portwing<->drydock secret before starting:
-#   openssl rand -hex 32 > portwing_token.txt
+#   openssl rand -hex -out portwing_token.txt 32
 #   sudo chown 65532:65532 portwing_token.txt && sudo chmod 0400 portwing_token.txt
 
 services:
@@ -50,7 +50,7 @@ services:
       - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
 
   portwing:
-    image: codeswhat/portwing:latest
+    image: ghcr.io/codeswhat/portwing:latest
     restart: unless-stopped
     depends_on:
       - sockguard
@@ -63,7 +63,7 @@ services:
       - /tmp
     user: "65532:65532"  # image default; explicit so it survives image overrides
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     volumes:
       - sockguard-socket:/var/run/sockguard:ro
       - portwing-stacks:/data/stacks
@@ -81,13 +81,16 @@ services:
     depends_on:
       - portwing
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - drydock-store:/store
     environment:
       # Pure aggregator — drydock has no Docker socket of its own in this
       # stack; every container fact comes from Portwing (Standard Mode).
       - DD_LOCAL_WATCHER=false
+      # Local demo only: the UI is bound to loopback above. Configure Basic
+      # Auth or OIDC instead before exposing drydock beyond this host.
+      - DD_ANONYMOUS_AUTH_CONFIRM=true
       - DD_AGENT_PORTWING_HOST=portwing
       - DD_AGENT_PORTWING_PORT=4000
       - DD_AGENT_PORTWING_SECRET__FILE=/run/secrets/portwing_token

@@ -524,3 +524,35 @@ jobs:
           build-args: VERSION=ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify fresh socket-volume startup
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          runtime_volume="sockguard-ci-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          runtime_container="sockguard-ci-runtime-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          socket_gid="$(stat -c '%g' /var/run/docker.sock)"
+
+          cleanup() {
+            docker rm -f "${runtime_container}" >/dev/null 2>&1 || true
+            docker volume rm "${runtime_volume}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker volume create "${runtime_volume}" >/dev/null
+          docker run --detach \
+            --name "${runtime_container}" \
+            --group-add "${socket_gid}" \
+            --volume /var/run/docker.sock:/var/run/docker.sock:ro \
+            --volume "${runtime_volume}:/var/run/sockguard" \
+            --env SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock \
+            sockguard:ci >/dev/null
+
+          if timeout 2 docker wait "${runtime_container}" >/dev/null; then
+            docker logs "${runtime_container}"
+            echo "::error::Sockguard exited while initializing a fresh named socket volume"
+            exit 1
+          fi
+
+          test "$(docker inspect --format '{{.State.Running}}' "${runtime_container}")" = "true"

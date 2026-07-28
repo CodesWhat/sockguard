@@ -8,6 +8,8 @@ Method + path filtering|Yes (regex)|Yes|tie
 Remote TCP mTLS listener|Yes|Yes (TLS 1.3)|tie
 Regex path rules|Yes|Yes|tie
 Remote daemon upstream (TLS)|Yes (in production)|Yes (active/passive failover)|self
+Multiple frontend listeners|Yes|Planned v1.6|competitor
+Podman native libpod API|Yes|Planned v1.6|competitor
 Config simplicity|Compact rule files|Full YAML config|competitor
 Request body inspection|No|Yes (12+ resource types)|self
 Per-client policies|No|CIDR + labels + cert selectors + SPKI + unix peer|self
@@ -23,7 +25,7 @@ Audit log schema|No|Yes (JSON schema + reason codes)|self
 shield|Request Body Inspection|CetusGuard filters by method and path only. Sockguard inspects request bodies — blocking containers by image, exec commands by pattern, bind mounts by path, and more across 12+ resource types.
 users|Per-Client Policies|CetusGuard applies the same regex rules to every caller. Sockguard assigns different policies per CIDR range, Docker label, TLS certificate selector (including SPKI pinning), or Unix peer credential.
 key|Signed Policy Bundles|Sockguard verifies policy files with cosign keyed or keyless signatures and Rekor transparency log inclusion. An unsigned or tampered bundle is rejected before any request is evaluated.
-fingerprint|Container Image Trust|Sockguard enforces image signatures at run time — blocking create or exec calls for images that aren't signed or don't match a trusted digest. CetusGuard has no image-trust layer.
+fingerprint|Container Image Trust|Sockguard enforces image signatures at deployment time — blocking container or swarm-service creates whose images aren't signed or don't match a trusted digest. CetusGuard has no image-trust layer.
 activity|Prometheus Metrics|Sockguard exports socket-proxy request metrics, deny counts, and latency histograms. CetusGuard has no built-in metrics endpoint.
 layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / audit) let you shadow-test strict rules before they block anything. CetusGuard is enforce-only.
 `,

@@ -36,6 +36,8 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - sockguard-socket:/var/run/sockguard
@@ -58,7 +60,9 @@ volumes:
   sockguard-socket:
 ```
 
-> The published image runs as UID 65532 (Chainguard `nonroot`) inside the container. On stock Docker hosts where `/var/run/docker.sock` is owned by the `docker` group you may need a `group_add` override with the socket's numeric group ID or a matching `user:` override. The meaningful hardening levers are the proxy policy, `read_only`, dropped capabilities, `no-new-privileges`, and your runtime's seccomp/AppArmor/SELinux defaults.
+Before starting Compose, set `DOCKER_SOCK_GID` to the socket's numeric group owner (`export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)` on Linux; use `stat -f '%g'` on macOS).
+
+> The published image runs as UID 65532 (Chainguard `nonroot`) inside the container. The `group_add` above lets that user open the stock `root:docker 0660` host socket without weakening the container's user identity. The meaningful hardening levers are the proxy policy, `read_only`, dropped capabilities, `no-new-privileges`, and your runtime's seccomp/AppArmor/SELinux defaults.
 
 > `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` is only there to preserve broad `CONTAINERS=1` / `IMAGES=1` compatibility, including raw archive/export and log/attach streaming endpoints. Remove it once you switch to tighter YAML list/inspect rules.
 

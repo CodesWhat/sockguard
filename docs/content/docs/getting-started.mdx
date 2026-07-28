@@ -17,6 +17,8 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro
@@ -36,6 +38,7 @@ docker run -d \
   --read-only \
   --cap-drop=ALL \
   --security-opt no-new-privileges:true \
+  --group-add <docker-socket-gid> \
   -v /var/run/docker.sock:/var/run/docker.sock:ro \
   -v ./sockguard.yaml:/etc/sockguard/sockguard.yaml:ro \
   -v sockguard-socket:/var/run/sockguard \
@@ -44,10 +47,7 @@ docker run -d \
 ```
 
 Sockguard runs as UID 65532 (Chainguard `nonroot`) inside the container.
-On stock Docker hosts where `/var/run/docker.sock` is owned by the `docker`
-group you may need `--group-add <docker-socket-gid>` or a matching `--user`
-override. For Compose, add `group_add: ["<docker-socket-gid>"]` to the
-Sockguard service. The hardening knobs that matter in practice are
+Set `DOCKER_SOCK_GID` before starting Compose (`export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)` on Linux; use `stat -f '%g'` on macOS), or replace `<docker-socket-gid>` in the `docker run` command with that numeric value. The hardening knobs that matter in practice are
 `--read-only`, `--cap-drop=ALL`, `--security-opt no-new-privileges:true`, and
 your runtime's seccomp/AppArmor/SELinux defaults.
 
