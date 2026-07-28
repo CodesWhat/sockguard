@@ -72,7 +72,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.4.3 is the latest stable release; v1.5.0-rc.2 is the current release candidate.** The stable security patch closes two owner-isolation gaps, extends the exfiltration acknowledgement to registry pushes, hardens the public static sites and Helm defaults, and fixes the v1.4 blind-write runtime wiring. RC.2 carries those fixes forward alongside the v1.5 safer-defaults and namespace-hardening work, resetting the promotion soak. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v1.4.4 is the latest stable release; v1.5.0-rc.3 is the current release candidate.** RC.3 carries the stable patch's structured-log sanitization, fail-closed plugin inspection, and patched Go/Node dependencies forward alongside the v1.5 safer-defaults and namespace-hardening work. The security delta restarts the promotion soak. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -217,6 +217,8 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 <details>
 <summary><strong>Latest release highlights</strong></summary>
 
+- **v1.5.0-rc.3 shipped on 2026-07-28** — forwards the complete v1.4.4 security patch into the v1.5 line: untrusted structured-log fields escape record delimiters, malformed plugin configuration is denied before forwarding, and the affected Go and Node dependencies move to patched releases. It retains rc.2's endpoint-config symmetry and rc.1's safer defaults and namespace hardening, and restarts the soak before stable promotion.
+- **v1.4.4 shipped on 2026-07-28** — security patch. Every attacker-controlled value crossing into structured logs now escapes CR/LF record delimiters; malformed plugin `config.json` is denied before forwarding instead of bypassing inspection; Next.js, PostCSS, sharp, js-yaml, gRPC, `x/net`, `x/text`, `x/crypto`, and `klauspost/compress` move to patched releases. Main-branch protection now requires two approvals and a code-owner review with no bypass actors. No public configuration or API change.
 - **v1.5.0-rc.2 shipped on 2026-07-20** — the second v1.5 candidate, carrying the full five-finding security pass forward from v1.4.3 alongside the endpoint-config symmetry fix landed after rc.1. It freshly authorizes every embedded workload dependency, removes mutable-name ownership caching, gates registry pushes as exfiltration, hardens Vercel and Helm defaults, and keeps the v1.5 namespace-sharing protections in the same authorization path. This candidate restarts the soak clock before stable promotion.
 - **v1.4.3 shipped on 2026-07-20** — security and correctness patch. Owner isolation now authorizes the images, named volumes, networks, secrets, and configs embedded inside container/service create/update payloads, denies foreign or unresolved dependencies, and freshly inspects mutable Docker names/tags on every authorization decision instead of reusing a ten-second positive cache entry. The exfiltration acknowledgement now covers image/plugin registry pushes; the Vercel-hosted site and copied docs export gain an enforced CSP plus browser hardening headers; Helm defaults pin UID/GID `65532`, `runAsNonRoot`, and `RuntimeDefault` seccomp. Also fixes the v1.4 runtime wiring for explicitly acknowledged unpinned exec without weakening the privilege, root-user, or configured command rails.
 - **v1.4.2 shipped on 2026-07-11** — security patch. Backports the case-varied-JSON-key filter-bypass fix from the v1.5 line: the daemon decodes body keys case-insensitively and honors the last duplicate after re-encoding, so a shadow lowercase `"image"`/`"labels"`/`"hostconfig"` could survive struct-decode inspection and then win at the daemon on every path that mutates and re-marshals a body (owner-label spoofing, image-trust digest pinning, and whole-body reorder of any container-create/service rule). Create/update bodies carrying duplicate case-variant keys are now rejected fail-closed (`400`/`403`) before re-marshaling, a lone lowercase variant is collapsed to canonical so it stays inspected, and image-trust no longer forwards the original tag when digest pinning fails after a successful verify. No config or API change.
@@ -435,7 +437,25 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.4.3 shipped on 2026-07-20** — a security and correctness patch over v1.4.2 closing embedded-resource and stale-cache owner-isolation gaps, extending the exfiltration acknowledgement to registry pushes, hardening Vercel/Helm defaults, and fixing blind-write runtime wiring — and is the latest stable release. **v1.5.0-rc.2 shipped on 2026-07-20** with those fixes merged forward plus the post-rc.1 endpoint-config symmetry work; it restarts the release-candidate soak before stable promotion. **v1.4.0 shipped on 2026-07-10** with remote upstreams, confinement-mode parity, and supply-chain consolidation. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+**v1.4.4 shipped on 2026-07-28** — a security patch over v1.4.3 clearing the outstanding log-injection and dependency findings and making plugin inspection fail closed — and is the latest stable release. **v1.5.0-rc.3 shipped on 2026-07-28** with that patch merged forward alongside the v1.5 safer-defaults, namespace-hardening, and endpoint-config work; the security delta restarts the stable-promotion clock. **v1.4.0 shipped on 2026-07-10** with remote upstreams, confinement-mode parity, and supply-chain consolidation. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+
+### Shipped in v1.4.4
+
+| Track | Surface |
+|---|---|
+| **Scanner remediation** | Sanitizes attacker-controlled structured-log fields to close the CodeQL log-injection findings; upgrades the affected Go and Node dependency graphs to patched releases for the Grype and OpenSSF Scorecard findings; retains only the documented `x/crypto/openpgp` exception where no fixed version exists and the vulnerable package is absent from the shipped binary |
+| **Fail-closed inspection** | Malformed or schema-incompatible plugin `config.json` is denied before forwarding, so an archive Sockguard cannot inspect cannot bypass plugin bind, device, capability, environment, or namespace policy |
+| **Repository protection** | `main` requires two approvals, a code-owner review, stale-review dismissal, last-push approval, resolved conversations, strict required checks, and no bypass actors |
+| **Compatibility** | No YAML schema, CLI flag, environment variable, admin endpoint, metric, or other public API change |
+
+### Current candidate: v1.5.0-rc.3
+
+| Gate | Plan |
+|---|---|
+| **Forward merge** | v1.4.4's stable changelog, website version, roadmap, Helm metadata, and every security fix are reconciled into the minor-release line |
+| **Candidate** | **v1.5.0-rc.3** publishes the reconciled multi-architecture image, binaries, checksums, provenance, and signature set |
+| **Release validation** | Require the full Go/TypeScript gates, CodeQL, Grype, govulncheck, gosec, real-dockerd integration, fuzz matrix, artifact verification, and clean published-image scans before promotion |
+| **Stable promotion** | Restart the RC soak from rc.3 because the security delta changes the candidate; promote v1.5.0 only after the documented soak completes cleanly, without relabeling an earlier RC as stable |
 
 ### Shipped in v1.3.0
 

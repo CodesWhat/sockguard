@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.0-rc.3] - 2026-07-28
+
+Security release candidate carrying the complete v1.4.4 scanner-remediation patch forward into the v1.5 line. This candidate sanitizes untrusted structured-log fields, makes plugin archive inspection fail closed, refreshes the Go and Node dependency graphs, and restarts the release-candidate soak. The v1.5 feature surface and public configuration described by rc.1 and rc.2 are otherwise unchanged.
+
 ### Security
 
 - **Untrusted log fields now cross an explicit CR/LF sanitization boundary before reaching `slog`.** Request methods and paths, caller-provided correlation IDs, policy reasons, upstream errors, image references, and hijack diagnostics retain forensic detail with record delimiters rendered as visible `\r`/`\n` sequences. This protects custom logging handlers as well as the built-in JSON/text handlers and clears the CodeQL `go/log-injection` findings without dropping structured context.
@@ -86,6 +90,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`container_create_hardening_test.go`** — table-driven cases for `require_cpu_limit_hard`: satisfied by `NanoCpus`, satisfied by `CpuQuota` alone (no `CpuPeriod` needed), NOT satisfied by `CpuShares` alone or a lone `CpuPeriod`, and a both-knobs-enabled case proving the stricter hard-cap denial message wins over the passing soft check. `require_cpu_limit_hard`'s new field is covered by the reflection-based `load_defaults_completeness_test.go` sweep automatically, so no hand-written env-var regression test was needed for it.
 - **`container_create_test.go` / `ownership/middleware_test.go` / `filter_options_test.go` / `validate_test.go`** — table-driven coverage for the namespace-sharing gate: `ContainerNamespaceRef`/`isNamespacePathMode` parsers, the `restrict_namespace_sharing` allow/deny matrix across `NetworkMode`/`PidMode`/`IpcMode`/`UTSMode`/`UsernsMode`, `deny_namespace_path_mode`, filter-options mapping, and blank-entry validation; ownership coverage for cross-owner deny, same-owner/unlabeled/not-found handling, `AllowCrossOwnerNamespaceSharing` opt-out, ref dedup, and fail-closed behavior on an inspect error.
 - **`container_create_test.go` / `filter_options_test.go`** — `TestContainerCreatePolicyInspectCgroupNamespaceModeGate` covers the `allow_host_cgroupns` host-mode gate: `CgroupnsMode=host` denied by default, allowed when opted in, case-insensitive + whitespace-trimmed matching, `private`/empty passing through, and gate independence (other `allow_host_*` opt-ins don't unlock cgroupns). Filter-options mapping asserts `AllowHostCgroupNS` propagates config → `ContainerCreateOptions`; the reflection-based defaults sweep covers the env-var override automatically.
+## [1.4.4] - 2026-07-28
+
+Security patch over v1.4.3. Sanitizes attacker-controlled structured-log fields, denies plugin archives whose configuration cannot be inspected, and refreshes the Go and Node dependency graphs to clear the current CodeQL, Grype, and OpenSSF Scorecard findings. The YAML schema, CLI flags, environment variables, admin endpoints, and metrics remain unchanged.
+
+### Security
+
+- **Untrusted log fields now cross an explicit CR/LF sanitization boundary before reaching `slog`.** Request methods and paths, caller-provided correlation IDs, policy reasons, upstream errors, image references, and hijack diagnostics retain forensic detail with record delimiters rendered as visible `\r`/`\n` sequences. This protects custom logging handlers as well as the built-in JSON/text handlers and clears the CodeQL `go/log-injection` findings without dropping structured context.
+- **Plugin archive inspection now fails closed when `config.json` cannot be decoded.** An uninspectable plugin create request is denied before forwarding, preventing malformed or schema-incompatible configuration from bypassing bind, device, capability, environment, and namespace policy checks.
+- **Dependency security refresh.** Next.js is updated to 16.2.12, with repository-wide resolutions for PostCSS 8.5.24+, sharp 0.35+, and js-yaml 4.3+; Go dependencies move to patched releases including gRPC 1.82.1, `x/net` 0.57.0, `x/text` 0.40.0, `x/crypto` 0.54.0, and `klauspost/compress` 1.18.7. The Grype and OSV Scanner exceptions for GO-2026-5932 are narrowly scoped and documented: the advisory has no fixed version and affects only `openpgp`, which is absent from the shipped binary; govulncheck reports zero reachable vulnerabilities.
+- **Main-branch review enforcement is strengthened.** The existing all-path `CODEOWNERS` assignment is documented in place, and the matching GitHub ruleset now requires two approving reviews plus at least one code-owner approval while retaining stale-review dismissal, last-push approval, conversation resolution, and all existing required checks.
+
+### Docs
+
+- **The public roadmap now records the complete security release train.** It identifies the v1.4.4 scanner-remediation scope, the forward merge into `dev/v1.5`, v1.5.0-rc.3 as the next candidate, the artifact and security gates for that candidate, and the restarted soak required before stable v1.5.0 promotion.
+
 ## [1.4.3] - 2026-07-20
 
 Security and correctness patch over v1.4.2. Closes two high-severity owner-isolation gaps, extends the exfiltration acknowledgement to registry pushes, hardens the public static sites and Helm defaults, and includes the previously-unreleased blind-write runtime fix. Deployments using `ownership.owner` should read the first item carefully: foreign and unresolved workload dependencies that were previously forwarded are now denied before Docker sees the request.
