@@ -92,6 +92,14 @@ The controls that materially harden this class of tool are:
 - **Rootless Docker on the host** — reduce the daemon's authority at the
   actual trust boundary.
 
+Interactive `exec`/`attach` sessions hijack the underlying connection for
+bidirectional streaming. Sockguard force-closes a hijacked stream after 10
+minutes with zero bytes of traffic in either direction
+(`hijackInactivityTimeout` in `internal/proxy/hijack.go`), so an idle
+terminal left open with no keystrokes or output is dropped after 10 minutes
+of inactivity. Send periodic traffic or reconnect if you need longer-lived
+idle sessions.
+
 See the Compose examples in `README.md` and the docs site's getting
 started guide for concrete `read_only`, `cap_drop`, and `security_opt`
 examples.

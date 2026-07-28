@@ -30,14 +30,15 @@
 # Generate Portwing's Ed25519 keypair and drydock's exec-preset socket GID
 # before starting:
 #   export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
-#   portwing keygen -comment "tri-tool-host" > portwing_ed25519.pem
+#   portwing keygen -comment "tri-tool-edge-host" > portwing_ed25519.pem
+#   portwing keygen -pub-from portwing_ed25519.pem -comment "tri-tool-edge-host" >> portwing_authorized_keys
 #   sudo chown 65532:65532 portwing_ed25519.pem && sudo chmod 0400 portwing_ed25519.pem
 #
-# `portwing keygen` prints the PKCS#8 private key (saved above as
-# PRIVATE_KEY_FILE) followed by an `authorized_keys`-format public-key line.
-# Append that printed line to ./portwing_authorized_keys so
-# DD_PORTWING_AUTHORIZED_KEYS can preload it into drydock — see the README
-# for the full step-by-step.
+# The first command prints the PKCS#8 private key, saved above as
+# PRIVATE_KEY_FILE. The second re-derives the complete `authorized_keys`-format
+# public-key line from that private key and appends it to
+# ./portwing_authorized_keys so DD_PORTWING_AUTHORIZED_KEYS can preload it
+# into drydock — see the README for the full step-by-step.
 #
 # Hardening mirrors docker-compose.yml and portwing's own
 # examples/docker-compose.edge-with-exec.yml: non-root UID 65532,
