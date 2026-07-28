@@ -1465,10 +1465,10 @@ func TestProxyHijackStreamsHalfClosesOnCopyPanic(t *testing.T) {
 	if upstreamConn.closeWriteCalls == 0 {
 		t.Fatal("upstream CloseWrite was not called after client→upstream copy panic — peer would deadlock")
 	}
-	if !strings.Contains(logs.String(), "panic in upstream→client copy") {
+	if !strings.Contains(logs.String(), `msg="hijack: copy panic" direction=upstream→client`) {
 		t.Fatalf("expected upstream→client panic log, got %q", logs.String())
 	}
-	if !strings.Contains(logs.String(), "panic in client→upstream copy") {
+	if !strings.Contains(logs.String(), `msg="hijack: copy panic" direction=client→upstream`) {
 		t.Fatalf("expected client→upstream panic log, got %q", logs.String())
 	}
 }
@@ -1753,10 +1753,10 @@ func TestHandleHijack_CopyErrorsAreLoggedAndIgnored(t *testing.T) {
 	handleHijack(writer, req, "/unused.sock", logger)
 
 	logText := logs.String()
-	if !strings.Contains(logText, "upstream→client copy ended") {
+	if !strings.Contains(logText, `msg="hijack: copy ended" direction=upstream→client`) {
 		t.Fatalf("expected upstream copy log, got %q", logText)
 	}
-	if !strings.Contains(logText, "client→upstream copy ended") {
+	if !strings.Contains(logText, `msg="hijack: copy ended" direction=client→upstream`) {
 		t.Fatalf("expected client copy log, got %q", logText)
 	}
 }
@@ -2067,10 +2067,10 @@ func TestHandleHijack_PanicRecoveryInCopyGoroutines(t *testing.T) {
 	serverWg.Wait()
 
 	logText := logs.String()
-	if !strings.Contains(logText, "panic in upstream") {
+	if !strings.Contains(logText, `msg="hijack: copy panic" direction=upstream→client`) {
 		t.Fatalf("expected upstream panic log, got %q", logText)
 	}
-	if !strings.Contains(logText, "panic in client") {
+	if !strings.Contains(logText, `msg="hijack: copy panic" direction=client→upstream`) {
 		t.Fatalf("expected client panic log, got %q", logText)
 	}
 }
