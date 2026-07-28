@@ -87,18 +87,19 @@ Use this variant on hosts drydock can't reach directly (NAT, firewall), or whene
 ```bash
 export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
 portwing keygen -comment "tri-tool-edge-host" > portwing_ed25519.pem
-sudo chown 65532:65532 portwing_ed25519.pem && sudo chmod 0400 portwing_ed25519.pem
 
-# portwing keygen prints the private key (saved above) followed by an
-# authorized_keys-format public-key line — append that printed line to
-# portwing_authorized_keys so drydock preloads it via DD_PORTWING_AUTHORIZED_KEYS:
-echo "ed25519 <paste-the-printed-pubkey-line-here>" >> portwing_authorized_keys
+# Derive the complete authorized_keys line (`ed25519 <base64> <comment>` — the
+# algorithm prefix is already included) and register it so drydock preloads it
+# via DD_PORTWING_AUTHORIZED_KEYS. Run this before locking the key file down:
+portwing keygen -pub-from portwing_ed25519.pem -comment "tri-tool-edge-host" >> portwing_authorized_keys
+
+sudo chown 65532:65532 portwing_ed25519.pem && sudo chmod 0400 portwing_ed25519.pem
 
 docker compose -f docker-compose.edge-exec.yml up -d
 # drydock UI: http://localhost:3000
 ```
 
-drydock should log the same `Handshake successful. Received N containers.` line for the `tri-tool-edge-host` agent once Portwing dials in. If it doesn't: a `bad-signature` or `unknown-key` error frame means `portwing_authorized_keys` doesn't contain the key Portwing is presenting (re-run `portwing keygen` and re-append its output, or register the key live with `POST /api/v1/portwing/keys` instead); `ECONNREFUSED` from Portwing means drydock isn't up yet.
+drydock should log the same `Handshake successful. Received N containers.` line for the `tri-tool-edge-host` agent once Portwing dials in. If it doesn't: a `bad-signature` or `unknown-key` error frame means `portwing_authorized_keys` doesn't contain the key Portwing is presenting (re-run `portwing keygen -pub-from portwing_ed25519.pem` and re-append its output, or register the key live with `POST /api/v1/portwing/keys` instead); `ECONNREFUSED` from Portwing means drydock isn't up yet.
 
 Exec sessions driven from drydock's UI are allowed by `sockguard-with-exec.yaml`'s `allow_privileged: false` / `allow_root_user: true` policy — a privileged exec attempt is denied at sockguard regardless of what Portwing or drydock request. As of Portwing's next release after 0.8.1, that denial reason (and other exec-policy denials) surfaces in drydock's controller-side error output instead of a bare failure, so you can tell "sockguard denied this" apart from "the container doesn't exist" or "Portwing is unreachable."
 
