@@ -152,6 +152,16 @@ func TestBuildServeClientProfiles_PropagatesInsecureAllowBodyBlindWrites(t *test
 	if !profile.Exec.AllowBlindWrites {
 		t.Fatal("profile PolicyConfig.Exec.AllowBlindWrites = false, want true (global flag must propagate to profiles)")
 	}
+
+	cfg.InsecureAllowBodyBlindWrites = false
+	cfg.Clients.Profiles[0].Rules[0].Match = config.MatchConfig{Method: http.MethodGet, Path: "/containers/json"}
+	profiles, err = buildServeClientProfiles(&cfg, nil)
+	if err != nil {
+		t.Fatalf("buildServeClientProfiles() with flag disabled error = %v", err)
+	}
+	if profiles["blind-exec"].Exec.AllowBlindWrites {
+		t.Fatal("profile PolicyConfig.Exec.AllowBlindWrites = true, want false when the global flag is disabled")
+	}
 }
 
 // ---- clientCertificateProfiles: non-empty input ----

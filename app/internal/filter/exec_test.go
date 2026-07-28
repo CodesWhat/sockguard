@@ -75,6 +75,12 @@ func TestExecBlindWritesOnlyLiftsCommandAllowlistGate(t *testing.T) {
 			wantReason: "exec denied: root exec user is not allowed",
 		},
 		{
+			name:       "denylisted env var remains denied",
+			opts:       ExecOptions{AllowBlindWrites: true, AllowRootUser: true, DeniedEnvVars: []string{"LD_PRELOAD"}},
+			result:     ExecInspectResult{Command: []string{"/bin/sh"}, Env: []string{"LD_PRELOAD=/evil.so"}},
+			wantReason: `exec denied: environment variable "LD_PRELOAD" is denylisted`,
+		},
+		{
 			name: "configured command allowlist still wins",
 			opts: ExecOptions{
 				AllowBlindWrites: true,
@@ -819,76 +825,6 @@ func TestExecDenyReasonAllowBlindWritesOff(t *testing.T) {
 	reason := policy.denyReason(ExecInspectResult{Command: []string{"/bin/sh", "-c", "id"}})
 	if reason != "exec denied: no commands are allowlisted" {
 		t.Fatalf("denyReason() = %q, want the no-allowlist denial", reason)
-	}
-}
-
-// TestExecDenyReasonAllowBlindWritesOnBypassesOnlyTheAllowlistGate verifies
-// the documented scope of insecure_allow_body_blind_writes: with AllowBlindWrites
-// set and AllowedCommands empty, an otherwise-clean exec is allowed, but the
-// privileged/root/env gates still fire exactly as if AllowedCommands had been
-// pinned — the flag only lifts the "no commands are allowlisted" check.
-func TestExecDenyReasonAllowBlindWritesOnBypassesOnlyTheAllowlistGate(t *testing.T) {
-	tests := []struct {
-		name       string
-		opts       ExecOptions
-		result     ExecInspectResult
-		wantReason string // "" means allowed
-	}{
-		{
-			name:       "clean exec is allowed with no allowlist",
-			opts:       ExecOptions{AllowBlindWrites: true, AllowRootUser: true},
-			result:     ExecInspectResult{Command: []string{"/bin/sh", "-c", "id"}},
-			wantReason: "",
-		},
-		{
-			name:       "privileged still denied",
-			opts:       ExecOptions{AllowBlindWrites: true, AllowRootUser: true},
-			result:     ExecInspectResult{Command: []string{"/bin/sh"}, Privileged: true},
-			wantReason: "exec denied: privileged exec is not allowed",
-		},
-		{
-			name:       "root user still denied",
-			opts:       ExecOptions{AllowBlindWrites: true},
-			result:     ExecInspectResult{Command: []string{"/bin/sh"}, User: "root"},
-			wantReason: "exec denied: root exec user is not allowed",
-		},
-		{
-			name:       "denylisted env var still denied",
-			opts:       ExecOptions{AllowBlindWrites: true, AllowRootUser: true, DeniedEnvVars: []string{"LD_PRELOAD"}},
-			result:     ExecInspectResult{Command: []string{"/bin/sh"}, Env: []string{"LD_PRELOAD=/evil.so"}},
-			wantReason: `exec denied: environment variable "LD_PRELOAD" is denylisted`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			policy := newExecPolicy(tt.opts)
-			reason := policy.denyReason(tt.result)
-			if reason != tt.wantReason {
-				t.Fatalf("denyReason() = %q, want %q", reason, tt.wantReason)
-			}
-		})
-	}
-}
-
-// TestExecDenyReasonAllowBlindWritesIgnoredWhenCommandsPinned confirms
-// AllowBlindWrites has no effect once an operator has pinned a real
-// AllowedCommands list: the allowlist still gates the command exactly as
-// without the flag, since the blind-write concern the flag addresses (no
-// body inspection configured at all) does not apply when one is.
-func TestExecDenyReasonAllowBlindWritesIgnoredWhenCommandsPinned(t *testing.T) {
-	policy := newExecPolicy(ExecOptions{
-		AllowBlindWrites: true,
-		AllowRootUser:    true,
-		AllowedCommands:  [][]string{{"/usr/bin/id"}},
-	})
-
-	if reason := policy.denyReason(ExecInspectResult{Command: []string{"/usr/bin/id"}}); reason != "" {
-		t.Fatalf("denyReason(allowlisted command) = %q, want allowed", reason)
-	}
-	reason := policy.denyReason(ExecInspectResult{Command: []string{"/bin/sh"}})
-	if !strings.Contains(reason, "not allowlisted") {
-		t.Fatalf("denyReason(non-allowlisted command) = %q, want a 'not allowlisted' denial", reason)
 	}
 }
 

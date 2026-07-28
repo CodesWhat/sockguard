@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/spf13/viper"
 )
 
 // This file makes the "a new config field silently loses its Viper default
@@ -80,6 +82,26 @@ func TestConfigFieldsHaveMapstructureTags(t *testing.T) {
 
 	if len(untagged) > 0 {
 		t.Fatalf("fields missing a mapstructure tag: %s", strings.Join(untagged, ", "))
+	}
+}
+
+func TestRegisterDefaultsSkipsUnexportedFields(t *testing.T) {
+	type configWithPrivateField struct {
+		Public  string `mapstructure:"public"`
+		private string `mapstructure:"private"`
+	}
+
+	v := viper.New()
+	registerDefaults(v, "", reflect.ValueOf(configWithPrivateField{
+		Public:  "visible",
+		private: "must-not-panic-or-register",
+	}))
+
+	if got := v.GetString("public"); got != "visible" {
+		t.Fatalf("public default = %q, want %q", got, "visible")
+	}
+	if v.IsSet("private") {
+		t.Fatal("unexported private field was registered as a Viper default")
 	}
 }
 

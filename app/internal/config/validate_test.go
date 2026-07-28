@@ -556,6 +556,8 @@ func TestValidateRejectsBlankContainerCreateNamespaceSharingAllowlistEntries(t *
 	}{
 		{name: "empty", entry: ""},
 		{name: "whitespace only", entry: "   "},
+		{name: "leading whitespace", entry: " sidecar"},
+		{name: "trailing whitespace", entry: "sidecar "},
 	}
 
 	for _, tt := range tests {
@@ -579,6 +581,7 @@ func TestValidateAllowsExecCommandAndImageRegistryAllowlists(t *testing.T) {
 	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/local/bin/pre-update", "--check"}}
 	cfg.RequestBody.Exec.AllowedEnvVars = []string{"PATH", "HOME"}
 	cfg.RequestBody.Exec.DeniedEnvVars = []string{"LD_PRELOAD", "LD_LIBRARY_PATH"}
+	cfg.RequestBody.Exec.AllowedEnvValues = []string{"CALLBACK_URL=http://127.0.0.1:3000/callback"}
 	cfg.RequestBody.ImagePull.AllowedRegistries = []string{"ghcr.io", "registry.example.com:5000"}
 	cfg.RequestBody.Service.AllowedBindMounts = []string{"/srv/services"}
 	cfg.RequestBody.Service.AllowedRegistries = []string{"ghcr.io", "registry.example.com:5000"}
@@ -591,6 +594,26 @@ func TestValidateAllowsExecCommandAndImageRegistryAllowlists(t *testing.T) {
 
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+func TestValidateRejectsInvalidExecAllowedEnvValue(t *testing.T) {
+	for _, entry := range []string{"CALLBACK_URL", " CALLBACK_URL=http://127.0.0.1", "CALLBACK URL=value", "=value"} {
+		t.Run(entry, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.RequestBody.Exec.AllowedEnvValues = []string{entry}
+
+			err := Validate(&cfg)
+			if err == nil {
+				t.Fatalf("expected error for invalid allowed_env_values entry %q", entry)
+			}
+			if !strings.Contains(err.Error(), "request_body.exec.allowed_env_values") {
+				t.Fatalf("expected allowed_env_values in error, got: %v", err)
+			}
+			if strings.Contains(err.Error(), entry) {
+				t.Fatalf("validation error reflected the rejected environment value: %v", err)
+			}
+		})
 	}
 }
 
@@ -655,6 +678,16 @@ func TestValidateRejectsExecEnvVarEntryWithWhitespace(t *testing.T) {
 		{
 			name:  "denied_env_vars",
 			apply: func(cfg *Config) { cfg.RequestBody.Exec.DeniedEnvVars = []string{"FOO BAR"} },
+			field: "request_body.exec.denied_env_vars",
+		},
+		{
+			name:  "allowed_env_vars leading whitespace",
+			apply: func(cfg *Config) { cfg.RequestBody.Exec.AllowedEnvVars = []string{" PATH"} },
+			field: "request_body.exec.allowed_env_vars",
+		},
+		{
+			name:  "denied_env_vars trailing whitespace",
+			apply: func(cfg *Config) { cfg.RequestBody.Exec.DeniedEnvVars = []string{"LD_PRELOAD "} },
 			field: "request_body.exec.denied_env_vars",
 		},
 	}

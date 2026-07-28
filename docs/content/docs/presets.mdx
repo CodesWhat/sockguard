@@ -45,6 +45,8 @@ path and you need the finalize callback to complete cleanly.
 # denied before allowed_commands is ever checked)
 # allowed_commands pins exec to the single finalize entrypoint argv, so the
 # root-user allowance is safe: only that exact command can run
+# allowed_env_values pins the finalize callback to Drydock's loopback URL at
+# port 3000; update the exact value if you configure a different server port
 ```
 
 Without this preset (using drydock.yaml), the self-update still completes — the

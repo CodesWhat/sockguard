@@ -29,7 +29,7 @@ const drydockFinalizeArgvBody = `{"Cmd":["node","dist/triggers/providers/docker/
 const drydockFinalizeExecCreateBody = `{` +
 	`"AttachStdout":true,"AttachStderr":true,` +
 	`"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"],` +
-	`"Env":["DD_SELF_UPDATE_FINALIZE_URL=http://127.0.0.1:3000/internal/self-update/finalize",` +
+	`"Env":["DD_SELF_UPDATE_FINALIZE_URL=http://127.0.0.1:3000/api/v1/internal/self-update/finalize",` +
 	`"DD_SELF_UPDATE_FINALIZE_SECRET=s3cr3t","DD_SELF_UPDATE_OPERATION_ID=op-1",` +
 	`"DD_SELF_UPDATE_STATUS=succeeded","DD_SELF_UPDATE_PHASE=succeeded"]` +
 	`}`
@@ -43,10 +43,21 @@ const drydockFinalizeExecCreateBody = `{` +
 const drydockFinalizeExecCreateBodyWithNodeOptions = `{` +
 	`"AttachStdout":true,"AttachStderr":true,` +
 	`"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"],` +
-	`"Env":["DD_SELF_UPDATE_FINALIZE_URL=http://127.0.0.1:3000/internal/self-update/finalize",` +
+	`"Env":["DD_SELF_UPDATE_FINALIZE_URL=http://127.0.0.1:3000/api/v1/internal/self-update/finalize",` +
 	`"DD_SELF_UPDATE_FINALIZE_SECRET=s3cr3t","DD_SELF_UPDATE_OPERATION_ID=op-1",` +
 	`"DD_SELF_UPDATE_STATUS=succeeded","DD_SELF_UPDATE_PHASE=succeeded",` +
 	`"NODE_OPTIONS=--require /tmp/evil.js"]` +
+	`}`
+
+// drydockFinalizeExecCreateBodyWithAttackerURL keeps the exact allowed argv
+// and variable names but replaces the trusted loopback callback with an
+// attacker-selected internal destination. The preset must reject this.
+const drydockFinalizeExecCreateBodyWithAttackerURL = `{` +
+	`"AttachStdout":true,"AttachStderr":true,` +
+	`"Cmd":["node","dist/triggers/providers/docker/self-update-finalize-entrypoint.js"],` +
+	`"Env":["DD_SELF_UPDATE_FINALIZE_URL=http://169.254.169.254/latest/meta-data",` +
+	`"DD_SELF_UPDATE_FINALIZE_SECRET=s3cr3t","DD_SELF_UPDATE_OPERATION_ID=op-1",` +
+	`"DD_SELF_UPDATE_STATUS=succeeded","DD_SELF_UPDATE_PHASE=succeeded"]` +
 	`}`
 
 // presetCase is one (method, path, body) request and whether the drydock preset's
@@ -57,6 +68,22 @@ type presetCase struct {
 	path    string
 	body    string // JSON body for inspected POSTs; empty for none
 	allowed bool
+}
+
+func TestDrydockPresetEnvValueDenialDoesNotReflectValue(t *testing.T) {
+	handler := buildDrydockPresetHandler(t, "drydock-with-selfupdate.yaml")
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/exec", strings.NewReader(drydockFinalizeExecCreateBodyWithAttackerURL))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if strings.Contains(rec.Body.String(), "169.254.169.254") {
+		t.Fatalf("denial reflected the rejected environment value: %s", rec.Body.String())
+	}
 }
 
 // TestDrydockPresetConformance fires drydock v1.5.0's real Docker Engine API
@@ -216,6 +243,9 @@ func TestDrydockPresetConformance(t *testing.T) {
 			// entry (NODE_OPTIONS): allowed_env_vars must deny this even
 			// though allowed_commands alone would have let it through.
 			presetCase{"finalize-exec-denied-node-options-env", http.MethodPost, "/containers/abc/exec", drydockFinalizeExecCreateBodyWithNodeOptions, false},
+			// Exact value pinning prevents the finalize callback from becoming
+			// an SSRF primitive even when argv and variable names are valid.
+			presetCase{"finalize-exec-denied-attacker-url", http.MethodPost, "/containers/abc/exec", drydockFinalizeExecCreateBodyWithAttackerURL, false},
 			// The exec inspect rule is present (start needs a daemon, so not asserted).
 			presetCase{"exec-inspect", http.MethodGet, "/exec/abc/json", "", true},
 		)

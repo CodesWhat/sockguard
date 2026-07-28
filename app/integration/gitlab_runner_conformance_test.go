@@ -38,13 +38,7 @@ func newGitLabPresetHandler(t *testing.T, socketPath string) http.Handler {
 		t.Fatalf("load GitLab Runner preset: %v", err)
 	}
 
-	policyConfig := cfg.RequestBody.ToFilterOptions()
-	policyConfig.DenyResponseVerbosity = filter.DenyResponseVerbosityVerbose
-	// insecure_allow_body_blind_writes is a top-level Config field, wired at
-	// serve time by internal/cmd/serve.go's attachRuntimeInspectors. Mirror
-	// that assignment here so this preset's own opt-in (see
-	// configs/gitlab-runner.yaml) takes effect in this handler too.
-	policyConfig.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	policyConfig := presetPolicyConfig(cfg)
 
 	return newIntegrationProxyHandlerWithOptions(
 		t,

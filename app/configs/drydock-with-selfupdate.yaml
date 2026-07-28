@@ -122,6 +122,12 @@ request_body:
       - DD_SELF_UPDATE_STATUS
       - DD_SELF_UPDATE_PHASE
       - DD_SELF_UPDATE_LAST_ERROR
+    # Value-pin the callback destination so the otherwise-trusted helper
+    # cannot turn the finalize entrypoint into an SSRF primitive. Drydock's
+    # default server port is 3000; if you configure a different port, update
+    # this exact value to match. Values are compared but never logged.
+    allowed_env_values:
+      - DD_SELF_UPDATE_FINALIZE_URL=http://127.0.0.1:3000/api/v1/internal/self-update/finalize
   image_pull:
     allow_all_registries: true
 

@@ -105,11 +105,12 @@ func (c ImageTrustConfig) toFilterOptions() filter.ImageTrustOptions {
 
 func (c ExecRequestBodyConfig) ToFilterOptions() filter.ExecOptions {
 	return filter.ExecOptions{
-		AllowPrivileged: c.AllowPrivileged,
-		AllowRootUser:   c.AllowRootUser,
-		AllowedCommands: c.AllowedCommands,
-		AllowedEnvVars:  c.AllowedEnvVars,
-		DeniedEnvVars:   c.DeniedEnvVars,
+		AllowPrivileged:  c.AllowPrivileged,
+		AllowRootUser:    c.AllowRootUser,
+		AllowedCommands:  c.AllowedCommands,
+		AllowedEnvVars:   c.AllowedEnvVars,
+		DeniedEnvVars:    c.DeniedEnvVars,
+		AllowedEnvValues: c.AllowedEnvValues,
 	}
 }
 

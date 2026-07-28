@@ -21,7 +21,12 @@
 1. Register the runner (first time only). Set the Docker socket's group GID so sockguard can open `/var/run/docker.sock` (Linux: `stat -c '%g'`; macOS: `stat -f '%g'`):
 
    ```bash
-   export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
+   case "$(uname -s)" in
+     Linux) docker_sock_gid="$(stat -c '%g' /var/run/docker.sock)" ;;
+     Darwin) docker_sock_gid="$(stat -f '%g' /var/run/docker.sock)" ;;
+     *) echo "Unsupported host OS" >&2; exit 1 ;;
+   esac
+   printf 'DOCKER_SOCK_GID=%s\n' "$docker_sock_gid" > .env
    docker compose up -d sockguard
    docker compose run --rm gitlab-runner gitlab-runner register
    ```

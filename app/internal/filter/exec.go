@@ -68,6 +68,11 @@ type ExecOptions struct {
 	// closed on operator misconfiguration. Default empty means nothing is
 	// blocked.
 	DeniedEnvVars []string
+	// AllowedEnvValues pins selected variables to exact NAME=VALUE entries.
+	// When at least one entry is configured for a name, every occurrence of
+	// that name must exactly match one of those entries. Values are never
+	// included in denial reasons or logs. Default empty means no value checks.
+	AllowedEnvValues []string
 	// AllowBlindWrites wires the top-level insecure_allow_body_blind_writes
 	// config flag: when true AND AllowedCommands is empty, exec create/start
 	// is no longer hard-denied purely for lacking a command allowlist. This
@@ -88,6 +93,7 @@ type execPolicy struct {
 	allowedCommands  []execCommandMatcher
 	allowedEnvVars   []string
 	deniedEnvVars    []string
+	allowedEnvValues map[string][]string
 	allowBlindWrites bool
 	inspectStart     ExecInspectFunc
 }
@@ -158,9 +164,22 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 		allowedCommands:  allowed,
 		allowedEnvVars:   normalizeExecEnvNames(opts.AllowedEnvVars),
 		deniedEnvVars:    normalizeExecEnvNames(opts.DeniedEnvVars),
+		allowedEnvValues: normalizeExecEnvValues(opts.AllowedEnvValues),
 		allowBlindWrites: opts.AllowBlindWrites,
 		inspectStart:     opts.InspectStart,
 	}
+}
+
+func normalizeExecEnvValues(values []string) map[string][]string {
+	normalized := make(map[string][]string)
+	for _, entry := range values {
+		name, _, ok := strings.Cut(entry, "=")
+		if !ok || name == "" || slices.Contains(normalized[name], entry) {
+			continue
+		}
+		normalized[name] = append(normalized[name], entry)
+	}
+	return normalized
 }
 
 // normalizeExecEnvNames trims whitespace and dedupes env-var name entries,
@@ -299,7 +318,7 @@ func (p execPolicy) denyReason(result ExecInspectResult) string {
 // AllowedCommands must not also start filtering Env unless the operator
 // opted into one of these two lists.
 func (p execPolicy) envDenyReason(env []string) string {
-	if len(p.allowedEnvVars) == 0 && len(p.deniedEnvVars) == 0 {
+	if len(p.allowedEnvVars) == 0 && len(p.deniedEnvVars) == 0 && len(p.allowedEnvValues) == 0 {
 		return ""
 	}
 	for _, entry := range env {
@@ -309,6 +328,9 @@ func (p execPolicy) envDenyReason(env []string) string {
 		}
 		if len(p.allowedEnvVars) > 0 && !slices.Contains(p.allowedEnvVars, name) {
 			return fmt.Sprintf("exec denied: environment variable %q is not allowlisted", name)
+		}
+		if allowedValues := p.allowedEnvValues[name]; len(allowedValues) > 0 && !slices.Contains(allowedValues, entry) {
+			return fmt.Sprintf("exec denied: environment variable %q has a disallowed value", name)
 		}
 	}
 	return ""

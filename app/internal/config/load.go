@@ -93,6 +93,9 @@ func registerDefaults(v *viper.Viper, prefix string, val reflect.Value) {
 	typ := val.Type()
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
 		name, squash := mapstructureTag(field)
 
 		// Rules is populated post-unmarshal (see the doc comment above), not

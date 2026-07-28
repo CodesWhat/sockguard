@@ -20,7 +20,7 @@ import (
 //
 // A non-positive timeout disables the wrapper entirely — next is returned
 // unchanged. Long-lived endpoints (event streams, follow/stream reads, image
-// pull/build/push, plugin pull/push/upgrade, container export/get, container
+// pull/build/push, plugin create/pull/push/upgrade, container export/get, container
 // archive i.e. docker cp, websocket attach, and the blocking container wait)
 // are exempt, because a deadline would sever a legitimately long response.
 // Hijacked endpoints
@@ -79,7 +79,7 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 		return matchContainerAction(path, "archive")
 	case http.MethodPost:
 		switch {
-		case path == "/build" || path == "/images/create" || path == "/images/load":
+		case path == "/build" || path == "/images/create" || path == "/images/load" || path == "/plugins/create":
 			return true
 		case strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/push"):
 			return true

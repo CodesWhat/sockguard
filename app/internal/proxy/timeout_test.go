@@ -55,7 +55,7 @@ func TestIsLongLivedUpstreamRequest(t *testing.T) {
 		{"container create", http.MethodPost, "/containers/create", false},
 		{"container start", http.MethodPost, "/containers/abc/start", false},
 		{"image inspect", http.MethodGet, "/images/myimg/json", false},
-		{"plugin create", http.MethodPost, "/plugins/create", false},
+		{"plugin create", http.MethodPost, "/plugins/create", true},
 		{"version", http.MethodGet, "/version", false},
 		{"info", http.MethodGet, "/info", false},
 	}

@@ -26,11 +26,12 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			DenyNamespacePathMode:             true,
 		},
 		Exec: ExecRequestBodyConfig{
-			AllowPrivileged: true,
-			AllowRootUser:   true,
-			AllowedCommands: [][]string{{"/usr/local/bin/deploy", "--check"}},
-			AllowedEnvVars:  []string{"PATH", "HOME"},
-			DeniedEnvVars:   []string{"LD_PRELOAD", "LD_LIBRARY_PATH"},
+			AllowPrivileged:  true,
+			AllowRootUser:    true,
+			AllowedCommands:  [][]string{{"/usr/local/bin/deploy", "--check"}},
+			AllowedEnvVars:   []string{"PATH", "HOME"},
+			DeniedEnvVars:    []string{"LD_PRELOAD", "LD_LIBRARY_PATH"},
+			AllowedEnvValues: []string{"CALLBACK_URL=http://127.0.0.1:3000/callback"},
 		},
 		ImagePull: ImagePullRequestBodyConfig{
 			AllowImports:       true,
@@ -160,11 +161,12 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowEndpointConfig: true,
 		},
 		Exec: filter.ExecOptions{
-			AllowPrivileged: true,
-			AllowRootUser:   true,
-			AllowedCommands: [][]string{{"/usr/local/bin/deploy", "--check"}},
-			AllowedEnvVars:  []string{"PATH", "HOME"},
-			DeniedEnvVars:   []string{"LD_PRELOAD", "LD_LIBRARY_PATH"},
+			AllowPrivileged:  true,
+			AllowRootUser:    true,
+			AllowedCommands:  [][]string{{"/usr/local/bin/deploy", "--check"}},
+			AllowedEnvVars:   []string{"PATH", "HOME"},
+			DeniedEnvVars:    []string{"LD_PRELOAD", "LD_LIBRARY_PATH"},
+			AllowedEnvValues: []string{"CALLBACK_URL=http://127.0.0.1:3000/callback"},
 		},
 		ImagePull: filter.ImagePullOptions{
 			AllowImports:       true,
@@ -348,8 +350,9 @@ func TestExecRequestBodyConfigToFilterOptionsLeavesRuntimeInspectorUnset(t *test
 
 func TestExecRequestBodyConfigToFilterOptionsMapsEnvAllowlists(t *testing.T) {
 	got := (ExecRequestBodyConfig{
-		AllowedEnvVars: []string{"PATH", "HOME"},
-		DeniedEnvVars:  []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PATH", "PYTHONPATH"},
+		AllowedEnvVars:   []string{"PATH", "HOME"},
+		DeniedEnvVars:    []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PATH", "PYTHONPATH"},
+		AllowedEnvValues: []string{"CALLBACK_URL=http://127.0.0.1:3000/callback"},
 	}).ToFilterOptions()
 
 	if want := []string{"PATH", "HOME"}; !reflect.DeepEqual(got.AllowedEnvVars, want) {
@@ -357,5 +360,8 @@ func TestExecRequestBodyConfigToFilterOptionsMapsEnvAllowlists(t *testing.T) {
 	}
 	if want := []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PATH", "PYTHONPATH"}; !reflect.DeepEqual(got.DeniedEnvVars, want) {
 		t.Fatalf("DeniedEnvVars = %#v, want %#v", got.DeniedEnvVars, want)
+	}
+	if want := []string{"CALLBACK_URL=http://127.0.0.1:3000/callback"}; !reflect.DeepEqual(got.AllowedEnvValues, want) {
+		t.Fatalf("AllowedEnvValues = %#v, want %#v", got.AllowedEnvValues, want)
 	}
 }

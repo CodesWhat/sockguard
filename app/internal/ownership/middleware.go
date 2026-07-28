@@ -72,7 +72,7 @@ type Options struct {
 	AllowUnownedImages bool
 	// AllowCrossOwnerNamespaceSharing restores the pre-v1.5 pass-through
 	// behavior for POST /containers/create: by default (false), every
-	// HostConfig.NetworkMode/PidMode/IpcMode/UsernsMode "container:<ref>"
+	// HostConfig.NetworkMode/PidMode/IpcMode/UTSMode/UsernsMode "container:<ref>"
 	// namespace-sharing target is resolved and the request is denied if the
 	// referenced container belongs to a different owner. Set true to
 	// restore the old unchecked behavior.

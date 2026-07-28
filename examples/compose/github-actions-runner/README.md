@@ -23,7 +23,11 @@ Copy the example env file and fill in your runner registration details:
 ```bash
 cp .env.example .env
 # Edit .env — set REPO_URL, RUNNER_NAME, RUNNER_TOKEN, LABELS, RUNNER_WORKDIR
-export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
+case "$(uname -s)" in
+  Linux) export DOCKER_SOCK_GID="$(stat -c '%g' /var/run/docker.sock)" ;;
+  Darwin) export DOCKER_SOCK_GID="$(stat -f '%g' /var/run/docker.sock)" ;;
+  *) echo "Unsupported host OS" >&2; exit 1 ;;
+esac
 docker compose up -d
 ```
 

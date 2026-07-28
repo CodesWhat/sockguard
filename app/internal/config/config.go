@@ -346,6 +346,12 @@ type ExecRequestBodyConfig struct {
 	// (fail closed on operator misconfiguration). Default empty means
 	// nothing is blocked.
 	DeniedEnvVars []string `mapstructure:"denied_env_vars"`
+	// AllowedEnvValues optionally pins selected exec environment entries to
+	// exact NAME=VALUE strings. A variable name represented here is denied
+	// unless the complete entry exactly matches one of its configured values;
+	// values are compared but never included in denial reasons or logs. Names
+	// not represented here continue to follow AllowedEnvVars/DeniedEnvVars.
+	AllowedEnvValues []string `mapstructure:"allowed_env_values"`
 }
 
 // ImagePullRequestBodyConfig configures inspection for POST /images/create.

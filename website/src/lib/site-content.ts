@@ -94,7 +94,7 @@ export const roadmap: Milestone[] = [
       "Namespace-sharing gate: restrict_namespace_sharing + allowed_namespace_sharing_containers gate container:<id> joins across NetworkMode/PidMode/IpcMode/UsernsMode; deny_namespace_path_mode blocks raw ns:<path> on NetworkMode only",
       "allow_host_cgroupns (default false) extends the host-mode denials to HostConfig.CgroupnsMode — the one host namespace the allow_host_* family didn't previously gate",
       "require_cpu_limit_hard — opt-in hard CPU-time cap (NanoCpus/CpuQuota), independent of require_cpu_limit",
-      "Exec Env allow/denylisting — request_body.exec.allowed_env_vars/denied_env_vars, denylist wins",
+      "Exec Env policy — name allow/denylisting plus exact allowed_env_values pinning for security-sensitive entries",
       "New presets: portwing-with-compose.yaml, drydock-with-compose.yaml, plus a tri-tool compose example",
       "Helm chart: pod-level podSecurityContext",
       "Security-pass fixes merged forward: fresh embedded-resource ownership checks, registry-push exfiltration gate, browser headers, non-root/seccomp Helm defaults, structured-log sanitization, fail-closed plugin inspection, and patched dependency graphs",
