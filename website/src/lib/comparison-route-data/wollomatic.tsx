@@ -7,7 +7,7 @@ export const wollomaticComparisonRouteData = {
 Method + path filtering|Yes (regex)|Yes|tie
 Upstream watchdog|Yes|Yes (+ /health endpoint + metrics)|tie
 Structured logging|Yes (JSON option)|Yes (request + W3C trace correlation)|tie
-Bind-mount restriction|Yes (body inspection)|No separate feature — covered by body inspection|competitor
+Bind-mount restriction|Yes (body inspection)|Yes (bind + structured mount policy)|tie
 Config simplicity|ENV vars, no file needed|YAML config required|competitor
 Request body inspection (full)|Partial (bind mounts only)|Yes (12+ resource types)|self
 Per-client policies|Partial (IP/hostname + labels)|Full (CIDR + labels + cert selectors + SPKI + unix peer)|self
@@ -22,7 +22,7 @@ Audit log schema|No|Yes (JSON schema + reason codes)|self
 shield|Full Request Body Inspection|wollomatic can restrict bind mounts in request bodies. Sockguard goes further — inspecting container create, exec, image pull, volume, network, secret, config, service, swarm, node, and plugin requests for fine-grained control.
 users|Full Per-Client Policies|wollomatic supports IP/hostname and label-based client matching. Sockguard adds TLS certificate selectors (including SPKI pinning), unix peer credentials, and CIDR ranges — each profile carrying its own independent ruleset.
 key|Signed Policy Bundles|Sockguard verifies policy files with cosign keyed or keyless signatures and Rekor inclusion. wollomatic has no policy signing — anyone who can write the config file can change the rules.
-fingerprint|Container Image Trust|Sockguard enforces image signatures at run time — blocking exec or create calls for images that aren't signed or don't match a trusted digest. wollomatic has no image-trust layer.
+fingerprint|Container Image Trust|Sockguard enforces image signatures at deployment time — blocking container or swarm-service creates whose images aren't signed or don't match a trusted digest. wollomatic has no image-trust layer.
 activity|Prometheus Metrics|Sockguard exports socket-proxy request metrics, deny counts, and latency histograms. wollomatic has JSON logs but no metrics endpoint.
 layers|Rollout Modes|Sockguard's per-profile rollout modes (enforce / warn / audit) let you shadow-test strict rules before they block anything. wollomatic is enforce-only.
 `,

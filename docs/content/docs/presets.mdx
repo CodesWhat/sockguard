@@ -69,8 +69,9 @@ through this proxy, not just a single standalone container.
 # (POST /networks/*/connect is already allowed by drydock.yaml — untouched)
 # Body inspection for the new endpoints reuses drydock.yaml's existing
 # network/volume create guardrails (deny custom drivers/driver opts by default)
-# Still denies /build — compose's BuildKit fallback needs /session + /grpc too,
-# which this preset does not model
+# Still denies /build. Docker API v1.53 deprecated /session and /grpc, so a
+# future build preset must be validated against the current Compose/BuildKit
+# transport and preserve fail-closed body/stream mediation.
 # Self-update finalize exec is still denied, same caveat as drydock.yaml;
 # combine with drydock-with-selfupdate.yaml by hand if you need both
 ```
@@ -135,8 +136,9 @@ plain container orchestration.
 #         POST /volumes/create, DELETE /volumes/*
 # Body inspection for the new endpoints reuses portwing.yaml's existing
 # network/volume create guardrails (deny custom drivers/driver opts by default)
-# Still denies /build — compose's BuildKit fallback needs /session + /grpc too,
-# which this preset does not model
+# Still denies /build. Docker API v1.53 deprecated /session and /grpc, so a
+# future build preset must be validated against the current Compose/BuildKit
+# transport and preserve fail-closed body/stream mediation.
 # insecure_allow_read_exfiltration=true is inherited from portwing.yaml for the
 # GET /containers/*/logs rule (see the Portwing section above)
 # Exec is denied, same as portwing.yaml — combine with portwing-with-exec.yaml's

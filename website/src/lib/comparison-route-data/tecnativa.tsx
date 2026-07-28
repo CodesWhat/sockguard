@@ -6,8 +6,8 @@ export const tecnativaComparisonRouteData = {
   comparisonTable: `
 Method + path filtering|Yes|Yes|tie
 Config format|ENV vars (zero learning curve)|YAML config|competitor
-Community size|Huge (50k+ GitHub stars)|Growing|competitor
-Production maturity|10+ years in production|Newer|competitor
+Community size|2.6k+ GitHub stars|Growing|competitor
+Production maturity|Maintained since 2017|Newer|competitor
 Request body inspection|No|Yes (12+ resource types)|self
 Per-client policies|No|CIDR + labels + cert selectors + unix peer|self
 Prometheus metrics|No|Yes (socket-proxy request metrics)|self
@@ -54,8 +54,8 @@ zap|Rate Limits|Sockguard's per-profile token-bucket rate limiter and global pri
   heroDescription: (
     <p>
       Tecnativa&apos;s docker-socket-proxy is the community reference for ENV-var-based Docker
-      socket filtering — simple, battle-tested, trusted by tens of thousands of deployments.
-      Sockguard builds on that foundation with{" "}
+      socket filtering — simple, battle-tested, and backed by the largest established community in
+      this category. Sockguard builds on that foundation with{" "}
       <strong className="text-neutral-900 dark:text-neutral-200">
         request body inspection, per-client policies, signed policy bundles, and Prometheus metrics
       </strong>{" "}

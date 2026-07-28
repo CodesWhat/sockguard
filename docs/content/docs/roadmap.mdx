@@ -1,0 +1,46 @@
+---
+title: Roadmap
+description: Shipped Sockguard milestones, the next v1.6 compatibility work, and the evidence behind current priorities.
+---
+
+Sockguard v1.5 is the current stable feature line. The next committed milestone is **v1.6: Runtime Compatibility & Policy Mediation**. Items marked planned below are not available until their release notes say otherwise.
+
+This roadmap was refreshed on **2026-07-28** from a source-level review of Sockguard, [Portwing](https://github.com/CodesWhat/portwing), and [drydock](https://github.com/CodesWhat/drydock); focused tests in all three repositories; a published-image Compose run against a real Docker Engine; and a primary-source review of maintained socket proxies.
+
+## Three-tool compatibility today
+
+| Workflow | Current status |
+|---|---|
+| Portwing inventory, inspect, stats, logs, events, and lifecycle calls through Sockguard | Supported by `portwing.yaml`; exec requires `portwing-with-exec.yaml` |
+| Compose-managed networks and named volumes | Supported by `portwing-with-compose.yaml` or `drydock-with-compose.yaml` |
+| drydock discovery and container-state sync through Portwing Standard Mode | Supported; the agent handshake and state feed work through Sockguard |
+| Portwing Edge dial-out | Stable with drydock 1.6; drydock 1.5 requires `DD_EXPERIMENTAL_PORTWING=true` |
+| drydock-triggered remote updates through Portwing | **Not implemented** in either mode: Standard trigger routes return `501`; the current Edge protocol has no effective watcher/trigger response contract |
+| Compose `--build` through a bundled preset | **Not supported**; `/build` stays denied until the current BuildKit transport can be mediated fail-closed |
+
+The compatibility statement is deliberately narrower than “all three tools work together.” Monitoring and authorized container control work. Remote update orchestration does not yet, and Sockguard will not advertise a preset as enabling it until Portwing and drydock implement and test both sides of that contract.
+
+## Committed for v1.6
+
+Implementation is tracked in the [v1.6.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/1). The cross-repository remote-update contract is tracked separately in [Portwing #76](https://github.com/CodesWhat/portwing/issues/76) and [drydock #632](https://github.com/CodesWhat/drydock/issues/632).
+
+| Track | Outcome required before release |
+|---|---|
+| Podman and libpod | Preserve the Docker-compatible Podman surface and add explicit default-deny rules plus body-aware policy for native `/libpod` routes, including pod lifecycle operations |
+| Multiple main listeners | Run Unix and TCP listeners together, or multiple instances of either, with listener-scoped TLS and client-profile boundaries |
+| Safe admission mutation | Declarative mandatory-label injection and image-reference remapping; canonicalize and re-inspect the result before forwarding so mutation cannot bypass policy |
+| Cross-tool conformance | Test published Sockguard, Portwing, and drydock images across supported Standard/Edge version combinations; keep remote-update claims gated on implemented watcher/trigger contracts |
+| Engine and build compatibility | Conformance against Docker Engine API 1.55 and current Compose/BuildKit behavior, without building new policy around deprecated `/session` and `/grpc` endpoints |
+| Resource-policy parity | Revalidate required CPU/memory/PIDs limits on container update and add hard CPU-limit requirements for Swarm services |
+
+## Why these moved up
+
+- [LinuxServer socket-proxy](https://github.com/linuxserver/docker-socket-proxy) and [CetusGuard](https://github.com/hectorm/cetusguard) both expose explicit Podman-native libpod route families. Podman's service intentionally has separate Docker-compatible and native libpod APIs, so generic Docker compatibility is not enough.
+- CetusGuard supports multiple frontend addresses, and [11notes socket-proxy](https://github.com/11notes/docker-socket-proxy) serves a filtered Unix socket and TCP endpoint together. Sockguard currently makes operators choose one main listener.
+- [mikesir87/docker-socket-proxy](https://github.com/mikesir87/docker-socket-proxy) demonstrates useful admission-style request mutators alongside gates and response filters. Sockguard already performs internal owner-label and digest-pin rewrites, but does not expose a safe operator-configurable mutation layer.
+- [wollomatic/socket-proxy](https://github.com/wollomatic/socket-proxy) validates the value of per-caller rules and bind-source constraints. [cerede2000/docker-socket-proxy](https://github.com/cerede2000/docker-socket-proxy) and [Swarmgate](https://github.com/neuroforgede/swarmgate) validate per-client and multi-tenant policy demand. Sockguard already covers those areas more broadly, so they remain hardening work rather than new roadmap pillars.
+- Docker Engine API v1.53 deprecated `POST /session` and `POST /grpc`, while the current reference has advanced to API v1.55. Build compatibility therefore needs a current transport trace and security model, not a preset that simply opens legacy streaming endpoints.
+
+## Still unscheduled
+
+OPA/Rego or WASM extension points, named rule-path aliases, additional compliance templates, and internal config-to-policy consolidation remain candidate v1.x work. They stay unscheduled until their scope and security boundary are concrete.

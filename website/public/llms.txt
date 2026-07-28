@@ -12,7 +12,7 @@ Sockguard sits between your Docker daemon socket and any process that needs Dock
 - Per-client policies: different rule sets per CIDR range, Docker label, TLS certificate selector (including SPKI pinning), or Unix peer credential
 - Read-side redaction: strip sensitive fields from GET responses so callers only see what their policy allows
 - Signed policy bundles: cosign keyed and keyless signatures, Rekor transparency log inclusion — unsigned or tampered bundles are rejected at load time
-- Container image trust: block exec or create calls for images that aren't signed or don't match a trusted digest (enforce or warn mode)
+- Container image trust: block container or swarm-service deployment when an image isn't signed or doesn't match a trusted digest (enforce or warn mode)
 - Rollout modes: enforce (deny), warn (allow + log), audit (shadow policy check without blocking) — per-profile
 - Rate limits: per-profile token-bucket rate limits and global priority gates
 - Hot-reload: SIGHUP or fsnotify watches reload config without restarting the proxy

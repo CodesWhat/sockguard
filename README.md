@@ -72,7 +72,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.5.0 is the latest stable release.** It promotes rc.3's fully validated safer-defaults, namespace-hardening, endpoint-config, ownership, and security-remediation work to general availability. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes and the [migration guide](https://getsockguard.com/docs/migration) for the v1.4 → v1.5 upgrade checklist.
+> **v1.5.1 is the latest stable release.** It fixes fresh named-volume Unix-socket startup, repairs the published Portwing examples, hardens the tri-tool local demo, and publishes the compatibility/competitor audit that defines v1.6. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -89,6 +89,8 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    group_add:
+      - "${DOCKER_SOCK_GID:?set to the GID of /var/run/docker.sock}"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
@@ -109,6 +111,8 @@ services:
     environment:
       - DD_WATCHER_LOCAL_SOCKET=tcp://sockguard:2375
 ```
+
+Before `docker compose up`, set `DOCKER_SOCK_GID` to the socket's numeric group owner (`export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)` on Linux; use `stat -f '%g'` on macOS).
 
 By default sockguard listens on loopback TCP `127.0.0.1:2375`, not on all interfaces. Non-loopback TCP now requires mutual TLS via `listen.tls` by default.
 
@@ -217,6 +221,7 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 <details>
 <summary><strong>Latest release highlights</strong></summary>
 
+- **v1.5.1 shipped on 2026-07-28** — fixes fresh named-volume Unix-socket startup for the non-root image, corrects Portwing's published registry reference and token command, loopback-binds the authenticated tri-tool demo, and publishes the tested three-tool compatibility boundary plus the competitor-driven v1.6 roadmap.
 - **v1.5.0 shipped on 2026-07-28** — promotes rc.3 to stable after the v1.5 feature surface had been exercised since rc.1 on July 11 and rc.2 on July 20, followed by clean CI, security, artifact, signature, and published-image validation on rc.3 plus a final full-delta review. Safer finite-request timeouts, namespace-sharing and host-cgroupns controls, a hard CPU-cap option, exact exec-environment value pinning, endpoint-config parity, Compose presets, Helm security defaults, fresh embedded-resource ownership checks, registry-push exfiltration gating, structured-log sanitization, fail-closed plugin inspection, and patched dependency graphs are now GA.
 - **v1.5.0-rc.3 shipped on 2026-07-28** — forwarded the complete v1.4.4 security patch into the v1.5 line: untrusted structured-log fields escape record delimiters, malformed plugin configuration is denied before forwarding, and the affected Go and Node dependencies move to patched releases. It retained rc.2's endpoint-config symmetry and rc.1's safer defaults and namespace hardening, passed the full release gates, and became the final candidate promoted to v1.5.0.
 - **v1.4.4 shipped on 2026-07-28** — security patch. Every attacker-controlled value crossing into structured logs now escapes CR/LF record delimiters; malformed plugin `config.json` is denied before forwarding instead of bypassing inspection; Next.js, PostCSS, sharp, js-yaml, gRPC, `x/net`, `x/text`, `x/crypto`, and `klauspost/compress` move to patched releases. Main-branch protection now requires two approvals and a code-owner review with no bypass actors. No public configuration or API change.
@@ -243,7 +248,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full itemized history.
 
 The Docker socket is **root access to your host**. Every container with socket access can escape containment, mount the host filesystem, and pivot to other containers. Yet tools like Traefik, Portainer, and drydock need socket access to function.
 
-Most existing socket proxies stop at method/path or regex filtering. Tecnativa and LinuxServer gate broad Docker API sections, wollomatic adds regex allowlists, hostname/IP admission, per-container label allowlists, optional bind-mount restrictions, JSON logging, an active upstream watchdog, and a filtered unix-socket endpoint, 11notes ships a fixed read-only proxy that blocks all writes plus seven exfiltration-prone GET endpoints, and CetusGuard pairs zero-dependency default-deny regex rules with mTLS. We go further on body-aware policy enforcement, per-client profile selection, ownership isolation, and read-side visibility/redaction.
+Most existing socket proxies stop at method/path or regex filtering. Tecnativa gates broad Docker API sections; LinuxServer adds explicit Podman/libpod families; wollomatic adds regex allowlists, caller admission, bind-source restrictions, JSON logs, and a watchdog; 11notes ships a fixed allow-most-reads proxy over Unix and TCP; and CetusGuard pairs default-deny regex rules with mTLS, native libpod routes, and multiple listeners. Sockguard goes further on body-aware policy enforcement, per-client profiles, ownership isolation, and read-side visibility/redaction—but the competitor review also exposed real gaps now committed to v1.6.
 
 <hr>
 
@@ -312,6 +317,8 @@ How we stack up against other Docker socket proxies:
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (blocks 7 risky GETs) | ❌ | ✅ (visibility + protected JSON redaction) |
 | Remote TCP mTLS (listener) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (TLS 1.3) |
 | Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (failover) |
+| Podman native `/libpod` API | ❌ | ✅ | Via manual regex | ❌ | ✅ | Planned v1.6 |
+| Multiple main listeners | ❌ | ❌ | ❌ | ✅ (Unix + TCP) | ✅ | Planned v1.6 |
 | Structured access logs | ❌ | ❌ | ✅ (JSON option) | ❌ | ❌ | ✅ (request + trace correlation) |
 | Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
 | Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
@@ -321,7 +328,7 @@ How we stack up against other Docker socket proxies:
 | YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ✅ |
 
-`11notes/docker-socket-proxy` takes a deliberately narrow stance: a fixed read-only proxy that allows every Docker API `GET` except seven exfiltration-prone endpoints (container `attach/ws`, `export`, `archive`, `secrets`/`configs` listing, `swarm/unlockkey`, `images/{name}/get`) and blocks all writes, shipped as a non-root distroless image — we match its read-side blocking with finer-grained per-field redaction and visibility rules, but additionally allow scoped writes instead of refusing them outright. `hectorm/cetusguard` is the closest in spirit to us: a zero-dependency, default-deny proxy with method + regex path rules and mTLS on both the frontend and backend — but it has no request-body inspection, no per-client policies, no owner isolation, no read-side filtering, no metrics, and no hot-reload. Where we go further is body inspection breadth (every body-bearing Docker write path we can safely constrain), named profiles, ownership isolation, and read-side visibility/redaction. CetusGuard can dial a remote Docker daemon over backend TLS, and sockguard now does too — remote `tcp://host:port` endpoints with per-endpoint mTLS, configured under `upstream.endpoints[]`. We go further with health-checked active/passive failover across redundant endpoints (a swarm VIP, an HA pair), which CetusGuard does not have.
+`11notes/docker-socket-proxy` takes a deliberately narrow stance: it allows most Docker API reads, blocks seven sensitive GET surfaces, and refuses all writes. Sockguard instead starts from a configurable default deny, offers finer-grained redaction/visibility, and can authorize inspected writes. `hectorm/cetusguard` is the closest in spirit: default-deny regex rules plus frontend/backend mTLS, native libpod families, and multiple frontend addresses. Sockguard is stronger on request-body inspection, per-client profiles, ownership, read filtering, metrics, hot reload, and health-checked upstream failover; CetusGuard's libpod and listener flexibility are honest current advantages. The full evidence and resulting priorities are in the [roadmap](https://getsockguard.com/docs/roadmap).
 
 </details>
 
@@ -438,7 +445,20 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.5.0 shipped on 2026-07-28** and is the latest stable release, promoting the rc.3 safer-defaults, namespace-hardening, endpoint-config, ownership, and security-remediation work to GA. **v1.4.4 shipped on 2026-07-28** as the corresponding stable-line security patch. **v1.4.0 shipped on 2026-07-10** with remote upstreams, confinement-mode parity, and supply-chain consolidation. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+**v1.6.0 is the next committed milestone**, focused on runtime compatibility and safe policy mediation. **v1.5.1 shipped on 2026-07-28** as the integration/packaging patch over the v1.5 feature line. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
+
+### Next in v1.6.0
+
+Tracked in the [v1.6.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/1).
+
+| Track | Required outcome |
+|---|---|
+| **Podman/libpod** | Preserve Docker-compatible Podman behavior and add explicit default-deny, body-aware coverage for native `/libpod` routes and pod lifecycle operations. |
+| **Multiple listeners** | Run Unix and TCP listeners together, or multiple instances of either, with listener-scoped TLS and profile boundaries. |
+| **Safe admission mutation** | Operator-configurable mandatory-label injection and image-reference remapping; canonicalize and re-inspect every mutation before forwarding. |
+| **Three-tool conformance** | Test published Sockguard + Portwing + drydock images across Standard/Edge version combinations; remote-update claims remain blocked until watcher/trigger contracts work in both peer repositories. |
+| **Engine/build compatibility** | Validate Docker Engine API 1.55 and current Compose/BuildKit transport without opening the API v1.53-deprecated `/session` and `/grpc` endpoints by assumption. |
+| **Resource parity** | Revalidate required hard limits during container update and add Swarm-service CPU-limit requirements. |
 
 ### Shipped in v1.5.0
 
@@ -511,15 +531,15 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 | **Observability** | Prometheus `/metrics`, dedicated audit schema, trusted request IDs, deny-reason enums, W3C trace/log correlation, active upstream socket watchdog, lock-free hot path |
 | **Dynamic policy** | `POST /admin/validate` CI gate, `fsnotify` + SIGHUP hot reload with immutable-field gate, monotonic policy versioning, optional dedicated admin listener, cosign-signed policy bundles |
 
-### Future directions
+### Later directions
 
-These themes are not assigned to a scheduled release. The committed roadmap through v1.5 is complete; future milestones will be added only when their scope is concrete.
+These themes remain unscheduled until their scope and security boundary are concrete.
 
 | Tier | Theme |
 |---|---|
-| Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators; audit-backlog follow-ups include re-validating resource-limit requirements on container update (`allow_resource_updates` can silently strip a hard CPU/memory/PIDs cap set at create time) and adding swarm-service CPU-limit parity (`request_body.service` has no `require_cpu_limit`/`require_cpu_limit_hard` equivalent today) |
+| Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators |
 | Supply chain (v1.x) | `egress-policy: block` with curated allow-lists on high-privilege release jobs; SBOM generation for binary release artifacts |
-| Policy refinement (v1.x) | Multiple frontend listeners on the main proxy, named rule path aliases |
+| Policy refinement (v1.x) | Named rule path aliases and further response-policy refinement |
 | Internals (v1.x) | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |
 | Compliance (v1.x) | CIS Docker Benchmark control mapping, audit-ready policy templates |
 | Extensibility (v1.x+) | Optional plugin extension points (WASM or Go plugins), OPA/Rego policy integration |
@@ -538,6 +558,7 @@ These themes are not assigned to a scheduled release. The committed roadmap thro
 | Configuration | [Configuration](https://getsockguard.com/docs/configuration) |
 | Presets | [Presets](https://getsockguard.com/docs/presets) |
 | Migration | [Migration](https://getsockguard.com/docs/migration) |
+| Roadmap | [Roadmap](https://getsockguard.com/docs/roadmap) |
 | CIS Docker Benchmark | [CIS Docker Benchmark](https://getsockguard.com/docs/cis-docker-benchmark) |
 | Admin API | [Admin API](https://getsockguard.com/docs/admin) |
 | Observability | [Observability](https://getsockguard.com/docs/observability) |

@@ -4,7 +4,7 @@
 
 **What's exposed:** A unix socket shared via a named volume. Portwing connects to `/var/run/sockguard/sockguard.sock` instead of `/var/run/docker.sock`. drydock never sees a Docker socket at all — it connects to Portwing over HTTP in **Standard Mode** (drydock is the controller, Portwing is the agent) and gets every container/image fact secondhand, already filtered by sockguard. Port 4000 is the Portwing API; port 3000 is the drydock web UI.
 
-This bundle defaults to **no exec** (the plain `portwing` preset, not `portwing-with-exec`) and to Standard Mode (not Portwing's experimental Edge Mode WebSocket dial-out — see drydock's `DD_EXPERIMENTAL_PORTWING` docs if you need that instead).
+This bundle defaults to **no exec** (the plain `portwing` preset, not `portwing-with-exec`) and to Standard Mode. Portwing Edge's WebSocket dial-out is stable with drydock 1.6; drydock 1.5 treats it as experimental and requires `DD_EXPERIMENTAL_PORTWING=true`.
 
 ## Security tradeoffs
 
@@ -23,6 +23,7 @@ This bundle defaults to **no exec** (the plain `portwing` preset, not `portwing-
 | Bind mounts on container create | Denied unless you add paths to `allowed_bind_mounts` |
 | Response redaction (env, mounts, network topology) | Disabled — required for drydock passthrough topology |
 | Portwing<->drydock transport | Plain HTTP over the compose network (`DD_AGENT_ALLOW_INSECURE_SECRET=true`); use TLS for any cross-host deployment |
+| drydock dashboard authentication | Anonymous only for this loopback-bound local example (`DD_ANONYMOUS_AUTH_CONFIRM=true`); configure Basic Auth or OIDC before exposing it beyond the host |
 
 ## Redaction note
 
@@ -37,9 +38,9 @@ response:
   redact_network_topology: true
 ```
 
-## Known limitation: no remote updates yet
+## Compatibility boundary: remote updates are not implemented yet
 
-Portwing's Standard Mode agent doesn't implement the update-trigger endpoints yet — `POST /api/triggers/{type}/{name}` (and `.../batch`) both return `501`. drydock will discover Portwing, list its containers, and stream live container add/update/remove events, but it cannot push an update *to* Portwing through this connection. Use Portwing's own REST API for updates until that lands.
+Portwing's Standard Mode agent doesn't implement the update-trigger endpoints yet — `POST /api/triggers/{type}/{name}` (and `.../batch`) return `501`. Edge mode securely tunnels Docker reads, lifecycle calls, logs, events, metrics, and configured exec, but the current `portwing/1.0` protocol still returns empty watcher/trigger responses and drydock does not route its remote watcher or trigger methods through the Edge adapter. In either mode, drydock can discover the agent and consume its container state, but it cannot currently push an update through Portwing. Keep the updater local to the daemon, or use another explicitly authorized controller, until the watcher/trigger contract lands in both repositories.
 
 ## Usage
 
@@ -47,7 +48,7 @@ Set the Docker socket's group GID so sockguard can open `/var/run/docker.sock` (
 
 ```bash
 export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
-openssl rand -hex 32 > portwing_token.txt
+openssl rand -hex -out portwing_token.txt 32
 sudo chown 65532:65532 portwing_token.txt && sudo chmod 0400 portwing_token.txt
 docker compose up -d
 # Portwing API: http://localhost:4000

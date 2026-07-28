@@ -20,6 +20,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -X github.com/codeswhat/sockguard/internal/version.BuildDate=${BUILD_DATE}" \
     -trimpath \
     -o /sockguard ./cmd/sockguard/
+RUN install -d -m 0700 /runtime/sockguard && touch /runtime/sockguard/.volume-init
 
 FROM cgr.dev/chainguard/static:latest@sha256:77d8b8925dc27970ec2f48243f44c7a260d52c49cd778288e4ee97566e0cb75b
 
@@ -31,6 +32,7 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 COPY --from=builder /sockguard /sockguard
 COPY app/configs/ /etc/sockguard/
+COPY --from=builder --chown=65532:65532 --chmod=0700 /runtime/sockguard/ /var/run/sockguard/
 
 USER 65532:65532
 

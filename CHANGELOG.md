@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-07-28
+
+### Fixed
+
+- **Fresh named-volume Unix-socket deployments now start under the image's non-root UID.** The image pre-creates `/var/run/sockguard` as `65532:65532` with mode `0700`, so Docker's first-mount copy-up gives an empty named volume the ownership Sockguard needs to bind `sockguard.sock`. Previously every published named-volume example exited with `bind: permission denied` on a genuinely fresh volume unless an operator manually changed its ownership.
+- **Portwing examples now pull the image from its real registry.** `codeswhat/portwing:latest` did not exist on Docker Hub; the Portwing and tri-tool Compose stacks now use `ghcr.io/codeswhat/portwing:latest`. The shared-token command uses the portable OpenSSL argument order (`openssl rand -hex -out portwing_token.txt 32`).
+- **The tri-tool example is usable without exposing an unauthenticated dashboard.** Portwing and drydock host ports bind only to loopback, and the local-demo drydock service explicitly acknowledges anonymous authentication; the README directs any remotely exposed deployment to Basic Auth or OIDC.
+
+### Changed
+
+- **The roadmap now commits v1.6 to runtime compatibility and policy mediation.** Scope covers native Podman/libpod policy, multiple main listeners, fail-closed admission mutation, published Sockguard/Portwing/drydock conformance, Docker API 1.55 plus current Compose/BuildKit behavior, and remaining resource-policy parity.
+- **Competitor comparisons were re-audited against primary sources.** The README and website now record LinuxServer/CetusGuard's native libpod advantage, CetusGuard/11notes listener flexibility, correct Tecnativa community and project-age facts, 11notes' actual allow-most-reads posture, and Sockguard's real image-trust enforcement boundary without unsupported adoption claims.
+
+### Docs
+
+- Added a dedicated roadmap page with a tested three-tool capability matrix. It states the current boundary explicitly: Portwing inventory/events/logs/lifecycle and drydock state sync work through Sockguard, but drydock-triggered remote updates are not implemented in Portwing Standard or Edge mode yet.
+- Updated build-preset guidance for Docker API v1.53's deprecation of `/session` and `/grpc`, and added the required Docker-socket `group_add` setup directly to the README and docs quick starts.
+
+### Tests
+
+- Docker CI now boots the built image against a genuinely fresh named socket volume and fails if the non-root process exits during socket initialization.
+- Website data tests require the v1.6 next milestone and the Podman/native-listener gap rows, preventing the public roadmap and comparison data from silently dropping them.
+
 ## [1.5.0] - 2026-07-28
 
 v1.5.0 promotes `1.5.0-rc.3` to stable after a final full-delta review. The v1.5 feature surface has been exercised publicly since rc.1 on 2026-07-11 and rc.2 on 2026-07-20; rc.3 then carried the v1.4.4 scanner-remediation patch forward and passed the complete CI, security, published-artifact, signature, and image-scan gates. The GA review added narrow fail-closed hardening: selected exec environment entries can now be pinned to exact `NAME=VALUE` strings (used by the Drydock self-update preset to prevent an attacker-controlled callback URL), whitespace-padded policy names are rejected, unexported future config fields cannot panic default registration, and streamed `POST /plugins/create` uploads are exempt from the finite-request timeout. Headlines: a safer default 60-second finite-request timeout; owner-aware and policy-constrained container namespace sharing; host cgroup-namespace denial by default; an opt-in hard CPU-time-cap requirement; exec environment name/value controls; create-time endpoint-config parity; new Compose presets; pod-level Helm security defaults; reflection-generated Viper defaults; fresh embedded-resource ownership authorization; registry-push exfiltration gating; structured-log sanitization; fail-closed plugin inspection; and patched Go and Node dependency graphs.
