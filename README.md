@@ -72,7 +72,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.4.3 is released.** This security patch closes two owner-isolation gaps, extends the exfiltration acknowledgement to registry pushes, hardens the public static sites and Helm defaults, and fixes the v1.4 blind-write runtime wiring. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v1.4.4 is the latest stable release; v1.5.0-rc.2 is the current release candidate.** The stable security patch sanitizes untrusted structured-log fields, makes plugin archive inspection fail closed, and refreshes Go and Node dependencies to clear the current scanner findings. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -217,6 +217,7 @@ To run fully unprivileged with a unix socket, pre-create a host directory with t
 <details>
 <summary><strong>Latest release highlights</strong></summary>
 
+- **v1.4.4 shipped on 2026-07-28** — security patch. Every attacker-controlled value crossing into structured logs now escapes CR/LF record delimiters; malformed plugin `config.json` is denied before forwarding instead of bypassing inspection; Next.js, PostCSS, sharp, js-yaml, gRPC, `x/net`, `x/text`, `x/crypto`, and `klauspost/compress` move to patched releases. Main-branch protection now requires two approvals and a code-owner review with no bypass actors. No public configuration or API change.
 - **v1.4.3 shipped on 2026-07-20** — security and correctness patch. Owner isolation now authorizes the images, named volumes, networks, secrets, and configs embedded inside container/service create/update payloads, denies foreign or unresolved dependencies, and freshly inspects mutable Docker names/tags on every authorization decision instead of reusing a ten-second positive cache entry. The exfiltration acknowledgement now covers image/plugin registry pushes; the Vercel-hosted site and copied docs export gain an enforced CSP plus browser hardening headers; Helm defaults pin UID/GID `65532`, `runAsNonRoot`, and `RuntimeDefault` seccomp. Also fixes the v1.4 runtime wiring for explicitly acknowledged unpinned exec without weakening the privilege, root-user, or configured command rails.
 - **v1.4.2 shipped on 2026-07-11** — security patch. Backports the case-varied-JSON-key filter-bypass fix from the v1.5 line: the daemon decodes body keys case-insensitively and honors the last duplicate after re-encoding, so a shadow lowercase `"image"`/`"labels"`/`"hostconfig"` could survive struct-decode inspection and then win at the daemon on every path that mutates and re-marshals a body (owner-label spoofing, image-trust digest pinning, and whole-body reorder of any container-create/service rule). Create/update bodies carrying duplicate case-variant keys are now rejected fail-closed (`400`/`403`) before re-marshaling, a lone lowercase variant is collapsed to canonical so it stays inspected, and image-trust no longer forwards the original tag when digest pinning fails after a successful verify. No config or API change.
 - **v1.4.1 shipped on 2026-07-10** — security patch. Go toolchain `1.26.4` → `1.26.5` to clear a *reachable* `crypto/tls` ECH advisory ([GO-2026-5856](https://pkg.go.dev/vuln/GO-2026-5856)) in the remote-upstream TLS and connection-hijack paths; the v1.4.0 images carried it, v1.4.1 rebuilds them clean (`govulncheck` reports zero reachable vulnerabilities). No proxy behavior, config, or API change.
@@ -250,7 +251,7 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa a
 | 🛡️ | **Default-Deny Posture** | Everything blocked unless explicitly allowed. No match means deny. |
 | 🎛️ | **Granular Control** | Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching. |
 | 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 15 bundled workload presets (including CIS Docker Benchmark, self-hosted GitHub Actions runners, GitLab Runner, and Portwing) plus the default config. |
-| 📊 | **Structured Access Logging** | JSON access logs with method, raw path, normalized path, decision, matched rule, latency, canonical request ID, W3C `traceparent` correlation fields, and client info. Use `normalized_path` for SIEM correlation and policy analysis; raw `path` is preserved for forensic replay. Canonical request IDs are generated from a buffered pool so request logging does not block on a fresh entropy read per request. |
+| 📊 | **Structured Access Logging** | JSON access logs with method, raw path, normalized path, decision, matched rule, latency, canonical request ID, W3C `traceparent` correlation fields, and client info. Untrusted string fields escape CR/LF record delimiters as visible `\r`/`\n` sequences before reaching `slog`, preserving forensic content without allowing forged records even through custom handlers. Use `normalized_path` for SIEM correlation and policy analysis; raw `path` is preserved for forensic replay. Canonical request IDs are generated from a buffered pool so request logging does not block on a fresh entropy read per request. |
 | 🔐 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
 | 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks, client-container label ACLs, listener certificate selectors (CN/DNS/IP/URI SAN/SPKI), profile certificate selectors (CN/DNS/IP/URI/SPIFFE/SPKI), and unix peer credentials let one proxy differentiate callers before the global rule set runs. When mTLS is enabled, certificate selectors follow the verified client leaf certificate rather than an unverified peer slice entry. |
 | 🗃️ | **Safe Inspect Strategy** | Visibility checks reuse a bounded, short-lived singleflight cache, while authorization-critical ownership checks always inspect current Docker state so a deleted/recreated name or retagged image cannot inherit a stale allow decision. |
@@ -434,7 +435,25 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.4.3 shipped on 2026-07-20** — a security and correctness patch over v1.4.2 closing embedded-resource and stale-cache owner-isolation gaps, extending the exfiltration acknowledgement to registry pushes, hardening Vercel/Helm defaults, and fixing blind-write runtime wiring — and is the latest stable release. **v1.5.0 remains in release-candidate soak**; these fixes merge forward there, but the security pass resets the stable-promotion clock rather than skipping it. **v1.4.0 shipped on 2026-07-10** with remote upstreams, confinement-mode parity, and supply-chain consolidation. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+**v1.4.4 shipped on 2026-07-28** — a security patch over v1.4.3 clearing the outstanding log-injection and dependency findings and making plugin inspection fail closed — and is the latest stable release. **v1.5.0 remains in release-candidate soak**: v1.4.4 merges forward into `dev/v1.5`, the next candidate is **v1.5.0-rc.3**, and the security delta restarts the stable-promotion clock rather than skipping it. **v1.4.0 shipped on 2026-07-10** with remote upstreams, confinement-mode parity, and supply-chain consolidation. **v1.0.0 shipped on 2026-05-20** with the YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names under the v1.x compatibility contract. See [CHANGELOG.md](CHANGELOG.md) for the full per-release detail.
+
+### Shipped in v1.4.4
+
+| Track | Surface |
+|---|---|
+| **Scanner remediation** | Sanitizes attacker-controlled structured-log fields to close the CodeQL log-injection findings; upgrades the affected Go and Node dependency graphs to patched releases for the Grype and OpenSSF Scorecard findings; retains only the documented `x/crypto/openpgp` exception where no fixed version exists and the vulnerable package is absent from the shipped binary |
+| **Fail-closed inspection** | Malformed or schema-incompatible plugin `config.json` is denied before forwarding, so an archive Sockguard cannot inspect cannot bypass plugin bind, device, capability, environment, or namespace policy |
+| **Repository protection** | `main` requires two approvals, a code-owner review, stale-review dismissal, last-push approval, resolved conversations, strict required checks, and no bypass actors |
+| **Compatibility** | No YAML schema, CLI flag, environment variable, admin endpoint, metric, or other public API change |
+
+### Next: v1.5.0
+
+| Gate | Plan |
+|---|---|
+| **Forward merge** | Merge the v1.4.4 tag commit into `dev/v1.5`, preserving the stable changelog, website version, roadmap, and Helm metadata while carrying every security fix into the minor-release line |
+| **Next candidate** | Cut **v1.5.0-rc.3** from the reconciled v1.5 branch and publish the complete multi-architecture image, binary, checksum, SBOM/provenance, and signature set |
+| **Release validation** | Require the full Go/TypeScript gates, CodeQL, Grype, govulncheck, gosec, real-dockerd integration, fuzz matrix, artifact verification, and clean published-image scans before promotion |
+| **Stable promotion** | Restart the RC soak from rc.3 because the security delta changes the candidate; promote v1.5.0 only after the documented soak completes cleanly, without relabeling an earlier RC as stable |
 
 ### Shipped in v1.3.0
 

@@ -17,3 +17,14 @@ ignore:
     package:
       name: github.com/docker/cli
       type: go-module
+
+  # GO-2026-5932 applies only to the unmaintained x/crypto/openpgp subpackages
+  # and has no fixed x/crypto version. Sockguard uses x/crypto for cryptobyte;
+  # the shipped binary does not contain any openpgp package (`go list -deps
+  # ./cmd/sockguard`), and govulncheck reports zero reachable vulnerabilities.
+  # Grype matches the module build-info/manifest without package reachability,
+  # so both its image and dependency scans otherwise emit this false positive.
+  - vulnerability: GO-2026-5932
+    package:
+      name: golang.org/x/crypto
+      type: go-module

@@ -302,8 +302,9 @@ func TestAccessLogEscapesCRLFInClientRequestID(t *testing.T) {
 	if strings.Contains(logOutput, "\r") {
 		t.Fatalf("log output contains raw CR: %q", logOutput)
 	}
-	// slog's JSON encoder escapes CR/LF as \r and \n within the string value.
-	if !strings.Contains(logOutput, `"client_request_id":"legit\r\nmsg=\"spoofed\""`) {
+	// SafeString replaces CR/LF with visible escape sequences, which slog's
+	// JSON encoder then escapes as literal backslashes in the encoded record.
+	if !strings.Contains(logOutput, `"client_request_id":"legit\\r\\nmsg=\"spoofed\""`) {
 		t.Fatalf("expected CRLF-escaped client_request_id in log, got: %s", logOutput)
 	}
 }
@@ -663,6 +664,37 @@ func TestAppendCorrelationAttrsForResponseWriter(t *testing.T) {
 	}
 	if got["profile"] != "watchtower" {
 		t.Fatalf("profile = %#v, want watchtower", got["profile"])
+	}
+}
+
+func TestAppendCorrelationAttrsEscapesLogControlCharacters(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/containers/json%0Aforged=true", nil)
+	req.Method = "GET\r\nlevel=ERROR"
+	req.Header.Set(requestIDHeader, "client\r\nforged-id")
+	req = req.WithContext(WithMeta(req.Context(), &RequestMeta{
+		Reason: "denied\r\nlevel=ERROR",
+	}))
+
+	attrs := AppendCorrelationAttrs(nil, req)
+	got := make(map[string]any, len(attrs))
+	for _, attr := range attrs {
+		got[attr.Key] = attr.Value.Any()
+	}
+
+	for key, value := range got {
+		text, ok := value.(string)
+		if !ok {
+			continue
+		}
+		if strings.ContainsAny(text, "\r\n") {
+			t.Fatalf("%s contains a raw log delimiter: %q", key, text)
+		}
+	}
+	if got["method"] != `GET\r\nlevel=ERROR` {
+		t.Fatalf("method = %q, want escaped control characters", got["method"])
+	}
+	if got["reason"] != `denied\r\nlevel=ERROR` {
+		t.Fatalf("reason = %q, want escaped control characters", got["reason"])
 	}
 }
 

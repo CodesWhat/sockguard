@@ -597,9 +597,7 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		// Deny malformed JSON bodies rather than passing them through. A valid
 		// create request must be parseable; letting an unparseable body reach
 		// Docker would silently skip all policy checks (fail-open).
-		if logger != nil {
-			logger.DebugContext(r.Context(), "container create request body is not valid JSON; denying", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "container create request body is not valid JSON; denying", err)
 		return "container create denied: malformed JSON request body", nil
 	}
 

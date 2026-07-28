@@ -180,9 +180,7 @@ func nodeLabelsField(raw json.RawMessage) (map[string]string, bool, error) {
 }
 
 func logNodeDecodeDefer(logger *slog.Logger, r *http.Request, err error) {
-	if logger != nil {
-		logger.DebugContext(r.Context(), nodeDecodeDebugMessage, "error", err, "method", r.Method, "path", r.URL.Path)
-	}
+	logRequestError(logger, r, slog.LevelDebug, nodeDecodeDebugMessage, err)
 }
 
 func isNodeUpdatePath(normalizedPath string) bool {

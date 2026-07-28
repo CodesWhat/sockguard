@@ -1,0 +1,7 @@
+# GO-2026-5932 has no fixed x/crypto release and applies only to the
+# unmaintained openpgp subpackages. Sockguard uses x/crypto for cryptobyte;
+# `go list -deps ./cmd/sockguard` contains no openpgp package, and govulncheck
+# reports zero reachable vulnerabilities.
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+reason = "The shipped binary does not include golang.org/x/crypto/openpgp; govulncheck reports the advisory as unreachable."

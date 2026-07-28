@@ -46,6 +46,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/bundle"
 
 	"github.com/codeswhat/sockguard/internal/imagetrust"
+	"github.com/codeswhat/sockguard/internal/logging"
 )
 
 const (
@@ -157,7 +158,7 @@ func (f *Fetcher) FetchCandidates(ctx context.Context, logger *slog.Logger, imag
 			// can tell a verification miss apart from a silently-dropped manifest.
 			if logger != nil {
 				logger.DebugContext(ctx, "skipping malformed cosign signature manifest",
-					"image_ref", imageRef, "resolved_digest", imageDigest.String(), "error", err)
+					"image_ref", logging.SafeString(imageRef), "resolved_digest", logging.SafeString(imageDigest.String()), "error", logging.SafeString(err.Error()))
 			}
 			continue
 		}

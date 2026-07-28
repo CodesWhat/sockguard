@@ -310,7 +310,7 @@ func TestPluginPolicyInspectCreateAllowsAndPreservesBody(t *testing.T) {
 	}
 }
 
-func TestPluginPolicyInspectCreateDefersMalformedConfigJSON(t *testing.T) {
+func TestPluginPolicyInspectCreateDeniesMalformedConfigJSON(t *testing.T) {
 	policy := newPluginPolicy(PluginOptions{})
 	payload := mustPluginCreateContextTarBytes(t, []pluginTarEntry{
 		{name: "config.json", body: []byte("{")},
@@ -323,8 +323,8 @@ func TestPluginPolicyInspectCreateDefersMalformedConfigJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want allow", reason)
+	if reason != "plugin create denied: plugin config could not be inspected" {
+		t.Fatalf("reason = %q, want fail-closed denial", reason)
 	}
 }
 
@@ -1198,9 +1198,9 @@ func TestInspectPluginCreateRewindBodyError(t *testing.T) {
 	}
 }
 
-func TestInspectPluginCreateLoggerOnDecodeError(t *testing.T) {
-	// Exercises lines 261-263: logger debug when plugin config JSON decode fails.
-	// Build a gzip tar with an invalid config.json.
+func TestInspectPluginCreateDecodeErrorDenied(t *testing.T) {
+	// A config Docker may accept but Sockguard cannot decode must fail closed;
+	// forwarding it would skip every policy check in denyReasonForCreateConfig.
 	payload := mustPluginCreateContextPayloadWithConfig(t, "{not valid json}", true)
 	policy := newPluginPolicy(PluginOptions{})
 	logs := &collectingHandler{}
@@ -1209,8 +1209,8 @@ func TestInspectPluginCreateLoggerOnDecodeError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspectPluginCreate() error = %v", err)
 	}
-	if reason != "" {
-		t.Fatalf("reason = %q, want empty (deferred)", reason)
+	if reason != "plugin create denied: plugin config could not be inspected" {
+		t.Fatalf("reason = %q, want fail-closed denial", reason)
 	}
 	if len(logs.snapshot()) != 1 {
 		t.Fatalf("log records = %d, want 1", len(logs.snapshot()))
