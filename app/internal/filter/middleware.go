@@ -160,6 +160,21 @@ var _ [1]struct{} = [inspectSeverityHigh - inspectSeverityMedium]struct{}{}
 // inspectAllowedRequest monomorphic instead of paying for a per-policy bridge.
 type inspectorFunc func(*slog.Logger, *http.Request, string) (string, error)
 
+func logRequestError(logger *slog.Logger, r *http.Request, level slog.Level, message string, err error) {
+	if logger == nil || r == nil {
+		return
+	}
+	errorText := ""
+	if err != nil {
+		errorText = err.Error()
+	}
+	logger.Log(r.Context(), level, logging.SafeString(message),
+		"error", logging.SafeString(errorText),
+		"method", logging.SafeString(r.Method),
+		"path", logging.SafeString(r.URL.Path),
+	)
+}
+
 type requestInspectPolicy struct {
 	method            string
 	matches           func(string) bool
@@ -222,7 +237,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 					return
 				}
 				if err := httpjson.Write(w, denyStatus, denyResponse(r, reason, activePolicy.denyResponseVerbosity)); err != nil {
-					logger.ErrorContext(r.Context(), "failed to encode denial response", "error", err, "method", r.Method, "path", r.URL.Path)
+					logRequestError(logger, r, slog.LevelError, "failed to encode denial response", err)
 				}
 				return
 			}
@@ -458,7 +473,7 @@ func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Reques
 				if rejection, ok := requestRejectionFromError(err); ok {
 					return rejection.reason, requestRejectionReasonCode(rejection.status), rejection.status
 				}
-				logger.ErrorContext(r.Context(), policy.errorLogMessage, "error", err, "method", r.Method, "path", r.URL.Path)
+				logRequestError(logger, r, slog.LevelError, policy.errorLogMessage, err)
 				return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden
 			}
 			if denyReason != "" {
@@ -480,7 +495,7 @@ func denyWithReasonCode(w http.ResponseWriter, r *http.Request, logger *slog.Log
 		}
 	}
 	if err := httpjson.Write(w, http.StatusForbidden, denyResponse(r, reason, verbosity)); err != nil {
-		logger.ErrorContext(r.Context(), "failed to encode denial response", "error", err, "method", r.Method, "path", r.URL.Path)
+		logRequestError(logger, r, slog.LevelError, "failed to encode denial response", err)
 	}
 }
 

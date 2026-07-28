@@ -302,8 +302,5 @@ func isBuiltinIPAMDriver(driver string) bool {
 }
 
 func logDeferredNetworkValidation(logger *slog.Logger, r *http.Request, err error) {
-	if logger == nil {
-		return
-	}
-	logger.DebugContext(r.Context(), "network request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
+	logRequestError(logger, r, slog.LevelDebug, "network request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", err)
 }

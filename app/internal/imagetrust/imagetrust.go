@@ -37,6 +37,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/verify"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
 
+	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/sigverify"
 )
 
@@ -262,9 +263,9 @@ func VerifyWithMode(ctx context.Context, v Verifier, cfg Config, logger *slog.Lo
 	case ModeWarn:
 		if logger != nil {
 			logger.WarnContext(ctx, "image trust verification failed (warn mode — request allowed)",
-				"image_ref", imageRef,
-				"digest", digestHex,
-				"error", failMsg,
+				"image_ref", logging.SafeString(imageRef),
+				"digest", logging.SafeString(digestHex),
+				"error", logging.SafeString(failMsg),
 				"elapsed_ms", elapsed,
 			)
 		}
@@ -315,8 +316,8 @@ func VerifyCandidatesWithMode(ctx context.Context, v Verifier, cfg Config, logge
 	case ModeWarn:
 		if logger != nil {
 			logger.WarnContext(ctx, "image trust verification failed (warn mode — request allowed)",
-				"image_ref", imageRef,
-				"error", failMsg,
+				"image_ref", logging.SafeString(imageRef),
+				"error", logging.SafeString(failMsg),
 				"elapsed_ms", elapsed,
 			)
 		}

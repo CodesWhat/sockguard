@@ -196,7 +196,8 @@ func TestContainerUpdateEmptyBodyReturnsEmpty(t *testing.T) {
 func TestContainerUpdateInvalidJSONWithLogger(t *testing.T) {
 	logs := &collectingHandler{}
 	logger := slog.New(logs)
-	req := httptest.NewRequest(http.MethodPost, "/containers/abc/update", strings.NewReader("{bad json"))
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/update%0Aforged=true", strings.NewReader("{bad json"))
+	req.Method = "POST\r\nlevel=ERROR"
 
 	reason, err := newContainerUpdatePolicy(ContainerUpdateOptions{}).inspect(logger, req, "/containers/abc/update")
 	if err != nil {
@@ -209,6 +210,13 @@ func TestContainerUpdateInvalidJSONWithLogger(t *testing.T) {
 	}
 	if records := logs.snapshot(); len(records) != 1 {
 		t.Fatalf("log records = %d, want 1", len(records))
+	} else {
+		if records[0].attrs["method"] != `POST\r\nlevel=ERROR` {
+			t.Fatalf("method attr = %q, want escaped control characters", records[0].attrs["method"])
+		}
+		if path, _ := records[0].attrs["path"].(string); strings.ContainsAny(path, "\r\n") {
+			t.Fatalf("path attr contains a raw log delimiter: %q", path)
+		}
 	}
 }
 

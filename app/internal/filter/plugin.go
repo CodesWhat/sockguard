@@ -176,9 +176,7 @@ func (p pluginPolicy) inspectPrivileges(logger *slog.Logger, r *http.Request, su
 
 	var privileges []pluginPrivilege
 	if err := decodePolicySubsetJSON(body, &privileges); err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), "plugin privilege body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "plugin privilege body could not be decoded for Sockguard policy inspection; deferring to Docker validation", err)
 		return "plugin denied: request body could not be inspected", nil
 	}
 
@@ -204,9 +202,7 @@ func (p pluginPolicy) inspectPluginSet(logger *slog.Logger, r *http.Request) (st
 
 	var settings []string
 	if err := decodePolicySubsetJSON(body, &settings); err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), "plugin set body could not be decoded for Sockguard policy inspection; denying (fail-closed)", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "plugin set body could not be decoded for Sockguard policy inspection; denying (fail-closed)", err)
 		// Fail closed: a body that is valid JSON but not a []string (e.g. {} or an
 		// array of non-strings) would otherwise skip every AllowedSetEnvPrefixes /
 		// bind-mount / device allowlist check. Deny, matching inspectPrivileges.
@@ -276,9 +272,7 @@ func (p pluginPolicy) inspectPluginCreate(logger *slog.Logger, r *http.Request) 
 
 	var cfg pluginCreateConfig
 	if err := decodePolicySubsetJSON(configBytes, &cfg); err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), "plugin config.json could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "plugin config.json could not be decoded for Sockguard policy inspection; deferring to Docker validation", err)
 	} else if denyReason := p.denyReasonForCreateConfig(cfg); denyReason != "" {
 		spool.closeAndRemove()
 		return denyReason, nil

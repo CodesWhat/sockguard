@@ -273,13 +273,13 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 		next.ServeHTTP(interceptingW, r)
 		if interceptingW.overflow {
 			logger.ErrorContext(r.Context(), "visibility pattern filter: upstream response exceeds size limit",
-				"limit_bytes", filter.MaxResponseBodyBytes, "method", r.Method, "path", r.URL.Path)
+				"limit_bytes", filter.MaxResponseBodyBytes, "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
 			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityResponseTooLarge, "upstream response too large to filter", nil)
 			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "upstream response too large to filter"})
 			return
 		}
 		if err := interceptingW.flushFiltered(normPath, policy); err != nil {
-			logger.ErrorContext(r.Context(), "visibility pattern list filter failed", "error", err)
+			logger.ErrorContext(r.Context(), "visibility pattern list filter failed", "error", logging.SafeString(err.Error()))
 			if !interceptingW.headerWritten {
 				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility pattern filter failed", nil)
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility pattern filter failed"})
@@ -296,7 +296,7 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 func handleVisibilityInspectRequest(logger *slog.Logger, next http.Handler, deps visibilityDeps, w http.ResponseWriter, r *http.Request, normPath string, policy *compiledPolicy) {
 	visible, err := requestVisibleWithPolicy(r.Context(), normPath, policy, deps)
 	if err != nil {
-		logger.ErrorContext(r.Context(), "visibility policy lookup failed", "error", err, "method", r.Method, "path", r.URL.Path)
+		logger.ErrorContext(r.Context(), "visibility policy lookup failed", "error", logging.SafeString(err.Error()), "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
 		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility policy lookup failed", nil)
 		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility policy lookup failed"})
 		return
