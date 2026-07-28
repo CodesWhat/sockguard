@@ -51,6 +51,8 @@ services:
   your-app:
     depends_on:
       - sockguard
+    # Sockguard's filtered socket is 0600 and owned by its non-root UID.
+    user: "65532:65532"
     volumes:
       - sockguard-socket:/var/run/sockguard:ro
     environment:
@@ -63,6 +65,8 @@ volumes:
 Before starting Compose, set `DOCKER_SOCK_GID` to the socket's numeric group owner (`export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)` on Linux; use `stat -f '%g'` on macOS).
 
 > The published image runs as UID 65532 (Chainguard `nonroot`) inside the container. The `group_add` above lets that user open the stock `root:docker 0660` host socket without weakening the container's user identity. The meaningful hardening levers are the proxy policy, `read_only`, dropped capabilities, `no-new-privileges`, and your runtime's seccomp/AppArmor/SELinux defaults.
+
+> The filtered socket and its named-volume directory are owner-only and owned by UID/GID 65532. A non-root consumer must use UID 65532, as `your-app` does above; root can also connect. If the consumer must keep another UID, run Sockguard as that matching UID with a pre-owned bind mount, or use an authenticated TCP listener. Sockguard intentionally rejects broader socket modes.
 
 > `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true` is only there to preserve broad `CONTAINERS=1` / `IMAGES=1` compatibility, including raw archive/export and log/attach streaming endpoints. Remove it once you switch to tighter YAML list/inspect rules.
 

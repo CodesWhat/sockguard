@@ -556,3 +556,10 @@ jobs:
           fi
 
           test "$(docker inspect --format '{{.State.Running}}' "${runtime_container}")" = "true"
+
+          runtime_mountpoint="$(docker volume inspect --format '{{.Mountpoint}}' "${runtime_volume}")"
+          runtime_socket="${runtime_mountpoint}/sockguard.sock"
+          sudo test -S "${runtime_socket}"
+          test "$(sudo stat -c '%u:%g %a' "${runtime_socket}")" = "65532:65532 600"
+          test "$(sudo curl --fail --silent --show-error \
+            --unix-socket "${runtime_socket}" http://localhost/_ping)" = "OK"

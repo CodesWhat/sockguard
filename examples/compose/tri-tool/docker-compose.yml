@@ -30,10 +30,14 @@
 # Generate the shared Portwing<->drydock secret before starting:
 #   openssl rand -hex -out portwing_token.txt 32
 #   sudo chown 65532:65532 portwing_token.txt && sudo chmod 0400 portwing_token.txt
+#
+# The default image versions below are the exact releases exercised together
+# by this repository's compatibility audit. Override SOCKGUARD_VERSION,
+# PORTWING_VERSION, or DRYDOCK_VERSION deliberately when validating an upgrade.
 
 services:
   sockguard:
-    image: codeswhat/sockguard:latest
+    image: "codeswhat/sockguard:${SOCKGUARD_VERSION:-1.5.1}"
     restart: unless-stopped
     read_only: true
     cap_drop:
@@ -50,7 +54,7 @@ services:
       - SOCKGUARD_LISTEN_SOCKET=/var/run/sockguard/sockguard.sock
 
   portwing:
-    image: ghcr.io/codeswhat/portwing:latest
+    image: "ghcr.io/codeswhat/portwing:${PORTWING_VERSION:-0.8.1}"
     restart: unless-stopped
     depends_on:
       - sockguard
@@ -76,7 +80,7 @@ services:
       - portwing_token
 
   drydock:
-    image: codeswhat/drydock:latest
+    image: "codeswhat/drydock:${DRYDOCK_VERSION:-1.5.2}"
     restart: unless-stopped
     depends_on:
       - portwing
