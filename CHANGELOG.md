@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Untrusted log fields now cross an explicit CR/LF sanitization boundary before reaching `slog`.** Request methods and paths, caller-provided correlation IDs, policy reasons, upstream errors, image references, and hijack diagnostics retain forensic detail with record delimiters rendered as visible `\r`/`\n` sequences. This protects custom logging handlers as well as the built-in JSON/text handlers and clears the CodeQL `go/log-injection` findings without dropping structured context.
+- **Dependency security refresh.** Next.js is updated to 16.2.12, with repository-wide resolutions for PostCSS 8.5.24+, sharp 0.35+, and js-yaml 4.3+; Go dependencies move to patched releases including gRPC 1.82.1, `x/net` 0.57.0, `x/text` 0.40.0, `x/crypto` 0.54.0, and `klauspost/compress` 1.18.7. The Grype and OSV Scanner exceptions for GO-2026-5932 are narrowly scoped and documented: the advisory has no fixed version and affects only `openpgp`, which is absent from the shipped binary; govulncheck reports zero reachable vulnerabilities.
+- **Main-branch review enforcement is strengthened.** The existing all-path `CODEOWNERS` assignment is documented in place, and the matching GitHub ruleset now requires two approving reviews plus at least one code-owner approval while retaining stale-review dismissal, last-push approval, conversation resolution, and all existing required checks.
+
 ## [1.5.0-rc.2] - 2026-07-20
 
 ### Security

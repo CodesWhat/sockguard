@@ -81,9 +81,7 @@ func (p driverCreatePolicy) inspect(logger *slog.Logger, r *http.Request, normal
 
 	var req driverCreateRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), fmt.Sprintf("%s create request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", p.kind), "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, fmt.Sprintf("%s create request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", p.kind), err)
 		return fmt.Sprintf("%s create denied: request body could not be inspected", p.kind), nil
 	}
 

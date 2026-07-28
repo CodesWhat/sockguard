@@ -116,9 +116,7 @@ func (p swarmPolicy) inspectInit(logger *slog.Logger, r *http.Request) (string, 
 
 	var req swarmInitRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), "swarm init request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "swarm init request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", err)
 		return "swarm init denied: request body could not be inspected", nil
 	}
 
@@ -150,9 +148,7 @@ func (p swarmPolicy) inspectJoin(logger *slog.Logger, r *http.Request) (string, 
 
 	var req swarmJoinRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), "swarm join request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "swarm join request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", err)
 		return "swarm join denied: request body could not be inspected", nil
 	}
 
@@ -182,9 +178,7 @@ func (p swarmPolicy) inspectUpdate(logger *slog.Logger, r *http.Request) (string
 
 	var req swarmUpdateRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), "swarm update request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "swarm update request body could not be decoded for Sockguard policy inspection; deferring to Docker validation", err)
 		return "swarm update denied: request body could not be inspected", nil
 	}
 
@@ -225,9 +219,7 @@ func (p swarmPolicy) inspectUnlock(logger *slog.Logger, r *http.Request) (string
 
 	var req swarmUnlockRequest
 	if err := decodePolicySubsetJSON(body, &req); err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), "swarm unlock request body could not be decoded for Sockguard policy inspection; denying", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "swarm unlock request body could not be decoded for Sockguard policy inspection; denying", err)
 		return "swarm unlock denied: request body could not be inspected", nil
 	}
 

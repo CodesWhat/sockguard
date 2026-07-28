@@ -24,6 +24,15 @@ const logBufferSize = 64 * 1024
 // net for hosts where records trickle in.
 const logFlushInterval = time.Second
 
+// SafeString escapes record-delimiting characters before untrusted text reaches
+// a logging API. Both slog handlers already quote these values, but doing this at
+// the trust boundary also protects custom handlers and makes the invariant
+// explicit to static analysis.
+func SafeString(value string) string {
+	value = strings.ReplaceAll(value, "\r", `\r`)
+	return strings.ReplaceAll(value, "\n", `\n`)
+}
+
 // New creates a structured logger with the given level and format.
 // Output may be "stderr", "stdout", or a file path.
 func New(level, format, output string) (*slog.Logger, io.Closer, error) {

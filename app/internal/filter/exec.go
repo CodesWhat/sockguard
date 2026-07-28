@@ -214,17 +214,13 @@ func (p execPolicy) inspectCreate(logger *slog.Logger, r *http.Request) (string,
 
 	var req execCreateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), "exec request body is not valid JSON; deferring to Docker validation", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "exec request body is not valid JSON; deferring to Docker validation", err)
 		return "exec denied: request body could not be inspected", nil
 	}
 
 	command, err := decodeExecCommand(req.Cmd)
 	if err != nil {
-		if logger != nil {
-			logger.DebugContext(r.Context(), "exec request body has unparseable Cmd; denying", "error", err, "method", r.Method, "path", r.URL.Path)
-		}
+		logRequestError(logger, r, slog.LevelDebug, "exec request body has unparseable Cmd; denying", err)
 		return "exec denied: request body could not be inspected", nil
 	}
 
