@@ -95,7 +95,7 @@ The controls that materially harden this class of tool are:
 Interactive `exec`/`attach` sessions hijack the underlying connection for
 bidirectional streaming. Sockguard force-closes a hijacked stream after 10
 minutes with zero bytes of traffic in either direction
-(`hijackInactivityTimeout` in `internal/proxy/hijack.go`), so an idle
+(`hijackInactivityTimeout` in `app/internal/proxy/hijack.go`), so an idle
 terminal left open with no keystrokes or output is dropped after 10 minutes
 of inactivity. Send periodic traffic or reconnect if you need longer-lived
 idle sessions.
