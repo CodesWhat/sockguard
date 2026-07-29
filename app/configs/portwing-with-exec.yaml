@@ -50,10 +50,17 @@ health:
 
 # Response redaction — all three disabled for the drydock passthrough topology.
 # See portwing.yaml header for standalone-mode guidance.
+#
+# deny_verbosity: verbose — detailed denial reasons flow to portwing/drydock
+# for operator-visible errors (portwing reads the reason field as of the
+# release after 0.8.1). The denial consumer in this topology is the trusted
+# Portwing agent / drydock controller, not an untrusted caller, so surfacing
+# the detailed reason is the right default here.
 response:
   redact_mount_paths: false
   redact_container_env: false
   redact_network_topology: false
+  deny_verbosity: verbose
 
 # Exec without pinned AllowedCommands requires insecure_allow_body_blind_writes;
 # log streaming requires insecure_allow_read_exfiltration. See the header

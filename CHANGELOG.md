@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Portwing presets now set `deny_verbosity: verbose`.** `portwing.yaml`, `portwing-with-exec.yaml`, and `portwing-with-compose.yaml` (and their `examples/compose/portwing` and `examples/compose/tri-tool` copies) now request verbose denial responses so sockguard's detailed denial reason reaches Portwing and, through it, drydock's `exec_end` frame instead of degrading to the generic denial message.
 - **The three-tool example now defaults to the exact audited releases.** Sockguard 1.5.1, Portwing 0.8.1, and drydock 1.5.2 are pinned by default while retaining explicit `SOCKGUARD_VERSION`, `PORTWING_VERSION`, and `DRYDOCK_VERSION` overrides for upgrade validation.
 - **The website overview matrix now exposes the multiple-listener comparison.** It matches the detailed competitor pages and the roadmap's native-listener gap instead of showing only the Podman gap in the compact view.
 
