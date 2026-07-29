@@ -33,6 +33,7 @@
 #   portwing keygen -comment "tri-tool-edge-host" > portwing_ed25519.pem
 #   portwing keygen -pub-from portwing_ed25519.pem -comment "tri-tool-edge-host" >> portwing_authorized_keys
 #   sudo chown 65532:65532 portwing_ed25519.pem && sudo chmod 0400 portwing_ed25519.pem
+#   sudo chown 1000:1000 portwing_authorized_keys && sudo chmod 0600 portwing_authorized_keys
 #
 # The first command prints the PKCS#8 private key, saved above as
 # PRIVATE_KEY_FILE. The second re-derives the complete `authorized_keys`-format

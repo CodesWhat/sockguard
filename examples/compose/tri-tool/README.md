@@ -96,6 +96,10 @@ portwing keygen -pub-from portwing_ed25519.pem -comment "tri-tool-edge-host" >> 
 
 sudo chown 65532:65532 portwing_ed25519.pem && sudo chmod 0400 portwing_ed25519.pem
 
+# drydock refuses a world-readable authorized_keys file and reads it as its
+# runtime user (node, UID 1000), so lock this one down too:
+sudo chown 1000:1000 portwing_authorized_keys && sudo chmod 0600 portwing_authorized_keys
+
 docker compose -f docker-compose.edge-exec.yml up -d
 # drydock UI: http://localhost:3000
 ```
