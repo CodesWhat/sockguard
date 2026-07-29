@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`examples/compose/tri-tool/docker-compose.edge-exec.yml` — an Edge Mode + exec variant of the tri-tool stack.** Portwing dials out to drydock over a WebSocket instead of drydock polling Portwing over HTTP, authenticating with an Ed25519 public-key challenge-response (`portwing keygen -comment ... > portwing_ed25519.pem` then `portwing keygen -pub-from portwing_ed25519.pem -comment ... >> portwing_authorized_keys`, preloaded into drydock via `DD_PORTWING_AUTHORIZED_KEYS`) instead of the shared-secret model Standard Mode uses. Pairs with the existing `sockguard-with-exec.yaml` preset to unlock drydock-driven interactive exec sessions through Portwing, which Standard Mode has no transport for. The README's new variant-comparison table lays out both `docker-compose.yml` and `docker-compose.edge-exec.yml` side by side — mode, preset, exec availability, authentication, and inbound-port requirements — so operators can pick the right one up front.
+
 ### Changed
 
 - **The three-tool example now defaults to the exact audited releases.** Sockguard 1.5.1, Portwing 0.8.1, and drydock 1.5.2 are pinned by default while retaining explicit `SOCKGUARD_VERSION`, `PORTWING_VERSION`, and `DRYDOCK_VERSION` overrides for upgrade validation.

@@ -12,20 +12,20 @@ This bundle ships two variants — both default to the audited Sockguard 1.5.1, 
 |---|---|---|
 | Portwing mode | Standard Mode — drydock (controller) polls Portwing (agent) over HTTP | Edge Mode — Portwing dials **out** to drydock over a WebSocket |
 | sockguard preset | `sockguard.yaml` (copy of `portwing.yaml`) | `sockguard-with-exec.yaml` (copy of `portwing-with-exec.yaml`) |
-| Exec (interactive terminal through Portwing) | **Not available** — Standard Mode has no exec transport | Available — exec is multiplexed over the same WebSocket as container sync |
+| Exec (interactive terminal through Portwing) | **Not available** — drydock's controller↔agent HTTP polling protocol has no exec calls, so there's nothing to drive Portwing's exec support with | Available — exec is multiplexed over the same WebSocket as container sync |
 | Authentication | Shared secret (`TOKEN_FILE` / `DD_AGENT_PORTWING_SECRET__FILE`) | Ed25519 public-key challenge-response (`PRIVATE_KEY_FILE` + registered pubkey) |
 | Needs inbound Portwing port | Yes (`4000`) | No — Portwing only dials out |
 | Use when | Hosts drydock can reach directly and exec isn't needed | Hosts behind NAT/firewall, or you need drydock-driven exec sessions |
 
-**Exec is an Edge Mode feature.** Portwing's WebSocket connection multiplexes container-sync and exec frames together; Standard Mode's HTTP polling has no exec transport at all. Swapping `sockguard.yaml` for `sockguard-with-exec.yaml` under the default `docker-compose.yml` only unlocks exec *at the sockguard layer* — drydock still can't reach it without the Edge Mode wiring, so use `docker-compose.edge-exec.yml` for exec, not a partial swap of the default stack.
+**Exec is an Edge Mode feature.** Portwing's WebSocket connection multiplexes container-sync and exec frames together; Standard Mode's HTTP polling protocol has no exec calls at all, so drydock cannot drive exec through a Standard-Mode agent — Portwing's own proxy still hijacks exec at the socket level (its Standard-Mode HTTP-hijack exec path), but nothing on the drydock side drives it. Swapping `sockguard.yaml` for `sockguard-with-exec.yaml` under the default `docker-compose.yml` only unlocks exec *at the sockguard layer* — drydock still can't reach it without the Edge Mode wiring, so use `docker-compose.edge-exec.yml` for exec, not a partial swap of the default stack.
 
 Portwing Edge's WebSocket dial-out is stable and enabled by default as of drydock 1.6; the pinned drydock 1.5.2 default in `docker-compose.edge-exec.yml` still works but treats it as experimental, so that file sets `DD_EXPERIMENTAL_PORTWING=true` explicitly — drop it once `DRYDOCK_VERSION` is bumped to 1.6+.
 
-As of Portwing's next release after 0.8.1, exec-denial reasons (privileged exec, a command outside `allowed_commands`, a non-root-user policy violation, etc.) surface all the way through to drydock's controller-side errors instead of a bare failure — see `docker-compose.edge-exec.yml`'s header for the wiring that carries them.
+As of Portwing's next release after 0.8.1, exec-denial reasons (privileged exec, a command outside `allowed_commands`, a non-root-user policy violation, etc.) are sent to drydock's controller in the `exec_end` frame — see `docker-compose.edge-exec.yml`'s header for the wiring that carries them. drydock's EdgeAgentAdapter currently discards that reason and ships no user-facing exec UI/API, so the denial reaches the controller on the wire but isn't displayed anywhere yet; surfacing it is planned.
 
 ## Security tradeoffs
 
-This table describes the default `docker-compose.yml` (Standard Mode, no exec). `docker-compose.edge-exec.yml` swaps the "Portwing<->drydock shared secret" row for Ed25519 key registration and the "Exec denied" row to "Exec allowed" (with the `allow_privileged: false` / `allow_root_user: true` policy from `sockguard-with-exec.yaml` still enforced) — everything else in the table applies to both variants.
+This table describes the default `docker-compose.yml` (Standard Mode, no exec). `docker-compose.edge-exec.yml` swaps the "Portwing<->drydock shared secret" row for Ed25519 key registration, the "Exec denied" row to "Exec allowed" (with the `allow_privileged: false` / `allow_root_user: true` policy from `sockguard-with-exec.yaml` still enforced), and additionally sets `insecure_allow_body_blind_writes: true` — interactive exec sessions can't be pinned to a fixed `allowed_commands` argv, so `sockguard-with-exec.yaml` acknowledges that risk explicitly instead of satisfying sockguard's body-blind exec validator — everything else in the table applies to both variants.
 
 | Control | Status |
 |---|---|
@@ -36,6 +36,7 @@ This table describes the default `docker-compose.yml` (Standard Mode, no exec). 
 | No Docker socket in drydock container at all | Yes — drydock only ever talks to Portwing's HTTP API |
 | Portwing<->drydock shared secret | Required — a generated token, mounted as a Docker secret into both containers (`TOKEN_FILE` / `DD_AGENT_PORTWING_SECRET__FILE`), never in plaintext env |
 | Exec denied | Yes |
+| Idle exec/attach sessions | Force-closed after 10 minutes of inactivity — sockguard's `hijackInactivityTimeout` applies to any hijacked stream, so an exec session left open with no keystrokes or output is dropped even when exec is enabled (the `docker-compose.edge-exec.yml` variant) |
 | Build denied | Yes |
 | Log streaming allowed; raw archive/export/attach denied | `insecure_allow_read_exfiltration: true` (required for Portwing's `GetContainerLogs()`; `/containers/*/archive`, `/export`, `/attach` stay denied) |
 | Image pulls | All registries allowed (Portwing tracks arbitrary images) |
@@ -95,12 +96,16 @@ portwing keygen -pub-from portwing_ed25519.pem -comment "tri-tool-edge-host" >> 
 
 sudo chown 65532:65532 portwing_ed25519.pem && sudo chmod 0400 portwing_ed25519.pem
 
+# drydock refuses a world-readable authorized_keys file and reads it as its
+# runtime user (node, UID 1000), so lock this one down too:
+sudo chown 1000:1000 portwing_authorized_keys && sudo chmod 0600 portwing_authorized_keys
+
 docker compose -f docker-compose.edge-exec.yml up -d
 # drydock UI: http://localhost:3000
 ```
 
 drydock should log the same `Handshake successful. Received N containers.` line for the `tri-tool-edge-host` agent once Portwing dials in. If it doesn't: a `bad-signature` or `unknown-key` error frame means `portwing_authorized_keys` doesn't contain the key Portwing is presenting (re-run `portwing keygen -pub-from portwing_ed25519.pem` and re-append its output, or register the key live with `POST /api/v1/portwing/keys` instead); `ECONNREFUSED` from Portwing means drydock isn't up yet.
 
-Exec sessions driven from drydock's UI are allowed by `sockguard-with-exec.yaml`'s `allow_privileged: false` / `allow_root_user: true` policy — a privileged exec attempt is denied at sockguard regardless of what Portwing or drydock request. As of Portwing's next release after 0.8.1, that denial reason (and other exec-policy denials) surfaces in drydock's controller-side error output instead of a bare failure, so you can tell "sockguard denied this" apart from "the container doesn't exist" or "Portwing is unreachable."
+Exec requests arriving through Portwing's edge tunnel are governed by `sockguard-with-exec.yaml`'s `allow_privileged: false` / `allow_root_user: true` policy — a privileged exec attempt is denied at sockguard regardless of what Portwing or drydock request. As of Portwing's next release after 0.8.1, that denial reason (and other exec-policy denials) is sent to drydock's controller in the `exec_end` frame, but drydock doesn't display it yet — its EdgeAgentAdapter discards the reason and ships no user-facing exec UI/API, so today a denial and an unrelated failure ("the container doesn't exist", "Portwing is unreachable") both look like a bare failure until drydock surfaces the reason.
 
 To allowlist bind mounts for containers Portwing recreates, add host paths to `sockguard-with-exec.yaml` under `request_body.container_create.allowed_bind_mounts`. For the full bundled-preset list see the main README's [bundled presets](../../../README.md#bundled-presets-17) section.
