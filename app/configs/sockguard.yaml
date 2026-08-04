@@ -47,6 +47,22 @@ reload:
   # requests. NOTE: enabling this changes SIGHUP semantics — historically SIGHUP
   # terminated sockguard; with reload on it triggers a reload and never exits.
 
+# Opt-in resource-limit guard (all default false), evaluated after ownership against the
+# EFFECTIVE state a write would produce, not just the fields the request touches. See
+# docs/content/docs/configuration.mdx for the merge semantics and the "ratchet" migration
+# note before enabling any of these against containers/services that already exist.
+#
+# request_body:
+#   container_update:
+#     allow_resource_updates: true        # required for the require_* flags below to be enforced
+#     require_memory_limit: false         # require effective HostConfig.Memory > 0
+#     require_cpu_limit: false            # require effective NanoCpus, CpuQuota, CpuPeriod, or CpuShares > 0
+#     require_cpu_limit_hard: false       # require effective NanoCpus or CpuQuota specifically; CpuShares alone does not satisfy this
+#     require_pids_limit: false           # require effective HostConfig.PidsLimit > 0 (a submitted 0 or -1 is an explicit clear)
+#   service:
+#     require_cpu_limit: false            # require Resources.Limits.NanoCPUs > 0 on create/update and both rollback paths
+#     require_cpu_limit_hard: false       # same check as require_cpu_limit; kept separate for parity — Swarm has no soft/hard CPU split
+
 rules:
   # Always safe — health probes
   - match: { method: GET, path: "/_ping" }

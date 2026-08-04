@@ -467,7 +467,7 @@ Tracked in the [v1.6.0 GitHub milestone](https://github.com/CodesWhat/sockguard/
 |---|---|---|
 | **Multiple listeners** | [#149](https://github.com/CodesWhat/sockguard/issues/149) | Run Unix and TCP listeners together, or multiple instances of either, with listener-scoped TLS and profile boundaries. |
 | **Safe admission mutation** | [#151](https://github.com/CodesWhat/sockguard/issues/151) | Operator-configurable mandatory-label injection and image-reference remapping; canonicalize and re-inspect every mutation before forwarding, fail closed. |
-| **Resource parity** | [#152](https://github.com/CodesWhat/sockguard/issues/152) | Revalidate required hard limits during container update and add Swarm-service CPU-limit requirements. |
+| **Resource parity** | [#152](https://github.com/CodesWhat/sockguard/issues/152) | Revalidate required memory/CPU/CPU-hard/PIDs limits against effective state during container update (`request_body.container_update.require_*`, opt-in, gated by `allow_resource_updates`), and add Swarm-service CPU-limit requirements covering create/update and both rollback paths (`request_body.service.require_cpu_limit`/`require_cpu_limit_hard`). |
 
 **Wave 2 — sequential**
 
