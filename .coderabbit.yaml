@@ -10,6 +10,11 @@ tone_instructions: >-
   Only actionable feedback.
 
 reviews:
+  # Review PRs into release dev branches (dev/v1.6, ...) too, not just main.
+  # Branch discipline routes every change through the active dev branch, so
+  # without this the entire release train would go unreviewed.
+  base_branches:
+    - "dev/.*"
   profile: chill
   request_changes_workflow: false
   high_level_summary: true
