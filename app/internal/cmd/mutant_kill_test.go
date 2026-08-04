@@ -736,13 +736,16 @@ func TestRunServe_ShutdownErrorLogs(t *testing.T) {
 	}
 }
 
-// TestRunServe_AdminShutdownErrorLogs pins the CONDITIONALS_NEGATION mutant at
-// serve.go:266 (`err != nil` → `==` on the admin shutdownServer call). The
-// mutant would silently swallow a failed admin server graceful-shutdown.
-// We enable the admin listener, force shutdownServer to return an error only
-// when invoked with the admin *http.Server (i.e. the first call — serve.go
-// shuts admin down before the regular server), and assert the structured
-// "admin shutdown error" record is in the collected log.
+// TestRunServe_AdminShutdownErrorLogs pins the CONDITIONALS_NEGATION mutant
+// on the admin shutdownServer call's `err != nil` check in shutdownServers.
+// The mutant would silently swallow a failed admin server graceful-shutdown.
+// We enable the admin listener and force every shutdownServer call to
+// return an error. Main-listener and admin shutdown now run concurrently
+// (#149 — shutdownServers no longer shuts admin down before the regular
+// server), so the mock can no longer discriminate by call order; instead we
+// assert both the "admin shutdown error" and "shutdown error" records are
+// present, which still fails if either conditional's mutant swallows its
+// error.
 func TestRunServe_AdminShutdownErrorLogs(t *testing.T) {
 	deps := newServeTestDeps()
 	deps.loadConfig = func(string) (*config.Config, error) {
@@ -772,17 +775,10 @@ func TestRunServe_AdminShutdownErrorLogs(t *testing.T) {
 	deps.startServing = func(server *http.Server, ln net.Listener, errCh chan<- error) {}
 	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) { c <- syscall.SIGINT }
 
-	// serve.go shuts the admin server down first (line 266), then the regular
-	// server (line 270). Discriminate by call order so we only return an
-	// error for the admin call — that isolates the kill to serve.go:266 and
-	// avoids triggering the regular-shutdown "shutdown error" log too.
-	var shutdownCalls int
+	// Main and admin shutdown run concurrently, so every call gets the same
+	// error rather than discriminating by call order.
 	deps.shutdownServer = func(server *http.Server, ctx context.Context) error {
-		shutdownCalls++
-		if shutdownCalls == 1 {
-			return errors.New("admin shutdown boom")
-		}
-		return nil
+		return errors.New("shutdown boom")
 	}
 	deps.removePath = func(string) error { return nil }
 
@@ -791,6 +787,9 @@ func TestRunServe_AdminShutdownErrorLogs(t *testing.T) {
 	}
 	if !collector.HasMessage("admin shutdown error") {
 		t.Fatalf("expected 'admin shutdown error' log; records: %#v", collector.Records())
+	}
+	if !collector.HasMessage("shutdown error") {
+		t.Fatalf("expected 'shutdown error' log; records: %#v", collector.Records())
 	}
 }
 

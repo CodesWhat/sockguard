@@ -190,27 +190,57 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	})
 	defer coordinator.stop()
 
-	listener, err := deps.createServeListener(cfg)
+	// Two-phase bind (#149): every effective main listener is bound here,
+	// before anything starts serving. A bind failure on any one of them
+	// closes every member already bound (reverse order) and returns —
+	// there is never an instant where a strict non-empty subset of the
+	// configured main listeners is live.
+	members, err := bindMainListeners(cfg, deps, swappable)
 	if err != nil {
-		return fmt.Errorf("listener: %w", err)
+		return err
 	}
 	defer func() {
-		// http.Server.Shutdown closes the listener as part of its
-		// normal teardown, so by the time this defer runs the FD is
-		// usually already gone and Close returns net.ErrClosed. That
-		// is the healthy shutdown path — don't surface it as a WARN.
-		closeErr := listener.Close()
-		if closeErr == nil || errors.Is(closeErr, net.ErrClosed) {
-			return
+		// http.Server.Shutdown closes each listener as part of its normal
+		// teardown, so by the time this defer runs the FD is usually
+		// already gone and Close returns net.ErrClosed. That is the
+		// healthy shutdown path — don't surface it as a WARN.
+		for _, member := range members {
+			closeErr := member.listener.Close()
+			if closeErr == nil || errors.Is(closeErr, net.ErrClosed) {
+				continue
+			}
+			logger.Warn("failed to close listener", "listener", member.identity.Name, "error", closeErr)
 		}
-		logger.Warn("failed to close listener", "error", closeErr)
 	}()
 
-	server := newHTTPServer(swappable)
-	listen := listenerAddr(cfg)
 	upstreamName := upstreamLabel(runtime.resolver)
+
+	stopResolver := runtime.startResolver(cmd.Context())
+	defer stopResolver()
+	stopWatchdog := runtime.startWatchdog(cmd.Context(), cfg)
+	defer stopWatchdog()
+	stopReadiness := runtime.startReadiness(cmd.Context(), cfg)
+	defer stopReadiness()
+
+	// The admin listener binds (and starts serving) between the main-listener
+	// bind barrier above and the main-listener publish step below: a failed
+	// admin bind aborts before any main listener starts serving, closing
+	// every already-bound main listener via the defer above.
+	adminServer, adminErrCh, stopAdmin, err := startAdminServer(cfg, logger, auditLogger, versioner, deps)
+	if err != nil {
+		return err
+	}
+	defer stopAdmin()
+
+	fanIn := make(chan listenerResult, len(members))
+	publishMainListeners(deps, members, fanIn)
+
+	bannerLines := bannerListenerLines(members, cfg.EffectiveListeners())
+	if adminServer != nil {
+		bannerLines = append(bannerLines, "admin "+adminListenerAddr(cfg))
+	}
 	banner.Render(cmd.ErrOrStderr(), banner.Info{
-		Listen:    listen,
+		Listeners: bannerLines,
 		Upstream:  upstreamName,
 		Rules:     len(cfg.Rules),
 		LogFormat: cfg.Log.Format,
@@ -219,27 +249,12 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	})
 	logger.Info("sockguard started",
 		"version", version.Version,
-		"listen", listen,
+		"listeners", bannerLines,
 		"upstream", upstreamName,
 		"rules", len(cfg.Rules),
 		"log_level", cfg.Log.Level,
 		"upstream_request_timeout", upstreamRequestTimeoutLogValue(cfg),
 	)
-
-	errCh := make(chan error, 1)
-	stopResolver := runtime.startResolver(cmd.Context())
-	defer stopResolver()
-	stopWatchdog := runtime.startWatchdog(cmd.Context(), cfg)
-	defer stopWatchdog()
-	stopReadiness := runtime.startReadiness(cmd.Context(), cfg)
-	defer stopReadiness()
-	go deps.startServing(server, listener, errCh)
-
-	adminServer, adminErrCh, stopAdmin, err := startAdminServer(cfg, logger, auditLogger, versioner, deps)
-	if err != nil {
-		return err
-	}
-	defer stopAdmin()
 
 	stopReload := startConfigReload(cmd.Context(), cfg, cfgFile, coordinator, logger)
 	defer stopReload()
@@ -250,9 +265,12 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	select {
 	case sig := <-sigCh:
 		logger.Info("shutdown signal received", "signal", sig.String())
-	case err := <-errCh:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("server error: %w", err)
+	case result := <-fanIn:
+		// Any main listener's Serve() return before drain is fatal to the
+		// whole group — see the error fan-in invariant in bindMainListeners
+		// / publishMainListeners.
+		if result.err != nil && !errors.Is(result.err, http.ErrServerClosed) {
+			return fmt.Errorf("listener %q server error: %w", result.name, result.err)
 		}
 	case err := <-adminErrCh:
 		// An admin Serve() return is always fatal: the operator enabled
@@ -265,33 +283,38 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	stopWatchdog()
 
-	shutdownServers(cmd.Context(), deps, cfg, server, adminServer, logger)
+	shutdownServers(cmd.Context(), deps, cfg, members, adminServer, logger)
 	logger.Info("sockguard stopped")
 	return nil
 }
 
-// shutdownServers gracefully stops the main and admin http.Servers within
-// the configured grace period and removes any unix sockets sockguard owns.
-// Errors from each step are logged but do not block subsequent steps —
-// shutdown must always make progress so a partial failure can't leave a
-// stale listener behind.
-func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, server, adminServer *http.Server, logger *slog.Logger) {
+// shutdownServers gracefully stops every main listener and the admin
+// http.Server, concurrently, within the configured grace period, and
+// removes any unix sockets sockguard owns. Errors from each step are
+// logged but do not block subsequent steps — shutdown must always make
+// progress so a partial failure can't leave a stale listener behind.
+func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, members []*listenerMember, adminServer *http.Server, logger *slog.Logger) {
 	shutdownCtx, cancel := context.WithTimeout(ctx, deps.shutdownGracePeriod)
 	defer cancel()
 
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		shutdownMainListeners(shutdownCtx, deps, members, logger)
+	}()
+
 	if adminServer != nil {
-		if err := deps.shutdownServer(adminServer, shutdownCtx); err != nil {
-			logger.Error("admin shutdown error", "error", err)
-		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := deps.shutdownServer(adminServer, shutdownCtx); err != nil {
+				logger.Error("admin shutdown error", "error", err)
+			}
+		}()
 	}
-	if err := deps.shutdownServer(server, shutdownCtx); err != nil {
-		logger.Error("shutdown error", "error", err)
-	}
-	if cfg.Listen.Socket != "" {
-		if err := deps.removePath(cfg.Listen.Socket); err != nil && !os.IsNotExist(err) {
-			logger.Error("remove socket error", "socket", cfg.Listen.Socket, "error", err)
-		}
-	}
+	wg.Wait()
+
 	if cfg.Admin.Enabled && cfg.Admin.Listen.Configured() && cfg.Admin.Listen.Socket != "" {
 		if err := deps.removePath(cfg.Admin.Listen.Socket); err != nil && !os.IsNotExist(err) {
 			logger.Error("remove admin socket error", "socket", cfg.Admin.Listen.Socket, "error", err)
@@ -695,6 +718,11 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetricsEndpoint", withMetricsEndpoint(cfg, runtime.metrics)))
 	}
+	// withListenerAdmission is appended BEFORE withClientACL so it executes
+	// AFTER it: append order is reversed at composition time (see
+	// buildServeHandlerChainWithRuntime), and admission needs
+	// clientacl.RequestProfile to already be resolved.
+	layers = append(layers, namedServeHandlerLayer("withListenerAdmission", withListenerAdmission(cfg)))
 	layers = append(layers,
 		namedServeHandlerLayer("withClientACL", withClientACL(cfg, resolver, logger)),
 	)
