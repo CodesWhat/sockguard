@@ -966,10 +966,10 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 
 	prefix := fmt.Sprintf("clients.profiles[%d]", index)
 	name := strings.TrimSpace(profile.Name)
-	switch {
-	case name == "":
+	switch name {
+	case "":
 		errs = append(errs, requiredFieldError(prefix+".name"))
-	case name == WildcardProfile:
+	case WildcardProfile:
 		// "*" is reserved by listeners[*].allowed_profiles as the
 		// "admit every profile" wildcard (#149) and cannot double as a
 		// concrete profile name.
