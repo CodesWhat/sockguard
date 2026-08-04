@@ -5,7 +5,7 @@ image:
   repository: codeswhat/sockguard
   # Empty defaults to the chart's appVersion (a pinned release tag) rather than
   # the mutable "latest". Override with --set image.tag=… to track another tag.
-  tag: ""
+  tag: "@sha256:114cfaa345154c239a1e55e21e3b83bcea78396645c785a9321edb9585920fcc"
   pullPolicy: IfNotPresent
 
 # Path the liveness/readiness probes hit. Must match config.health.path below.
