@@ -13,35 +13,35 @@ import (
 //   - PUT has inspectors registered (container archive).
 func TestInspectPoliciesByMethodDispatch(t *testing.T) {
 	t.Run("GET has no inspectors", func(t *testing.T) {
-		p := compileRuntimePolicy(nil, PolicyConfig{})
+		p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
 		if got := len(p.inspectPoliciesByMethod[http.MethodGet]); got != 0 {
 			t.Fatalf("GET slice len = %d, want 0", got)
 		}
 	})
 
 	t.Run("HEAD has no inspectors", func(t *testing.T) {
-		p := compileRuntimePolicy(nil, PolicyConfig{})
+		p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
 		if got := len(p.inspectPoliciesByMethod[http.MethodHead]); got != 0 {
 			t.Fatalf("HEAD slice len = %d, want 0", got)
 		}
 	})
 
 	t.Run("OPTIONS has no inspectors", func(t *testing.T) {
-		p := compileRuntimePolicy(nil, PolicyConfig{})
+		p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
 		if got := len(p.inspectPoliciesByMethod[http.MethodOptions]); got != 0 {
 			t.Fatalf("OPTIONS slice len = %d, want 0", got)
 		}
 	})
 
 	t.Run("POST has inspectors", func(t *testing.T) {
-		p := compileRuntimePolicy(nil, PolicyConfig{})
+		p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
 		if got := len(p.inspectPoliciesByMethod[http.MethodPost]); got == 0 {
 			t.Fatal("POST slice is empty, want at least one inspector")
 		}
 	})
 
 	t.Run("PUT has inspectors", func(t *testing.T) {
-		p := compileRuntimePolicy(nil, PolicyConfig{})
+		p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
 		if got := len(p.inspectPoliciesByMethod[http.MethodPut]); got == 0 {
 			t.Fatal("PUT slice is empty, want at least one inspector (container archive)")
 		}

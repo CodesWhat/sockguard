@@ -1893,7 +1893,7 @@ func TestRunAllowedInspectionReturnsEmptyForPassThrough(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/containers/json", nil)
 	w := httptest.NewRecorder()
 
-	p := compileRuntimePolicy(nil, PolicyConfig{})
+	p := compileRuntimePolicy(nil, PolicyConfig{}, nil)
 	reason, reasonCode, status := runAllowedInspection(p, testLogger(), w, req, "/containers/json")
 	if reason != "" {
 		t.Errorf("runAllowedInspection() reason = %q, want empty", reason)
