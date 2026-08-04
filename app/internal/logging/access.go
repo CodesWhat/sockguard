@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -63,6 +64,11 @@ type RequestMeta struct {
 	// "admin" for the dedicated admin listener. Populated from the connection's
 	// inbound.Identity, not request-controllable.
 	ListenerName string
+	// Mutation carries the admission-mutation engine's per-rule outcome
+	// trace for this request (#151), set by filter's mutation.go via
+	// recordMutationOutcome. nil when no configured mutation rule matched
+	// the request's surface.
+	Mutation *MutationRecord
 }
 
 // Decision values written into RequestMeta.Decision. Allow is not stamped
@@ -297,6 +303,7 @@ func putRequestMeta(meta *RequestMeta) {
 		return
 	}
 	putResourcePolicyMeta(meta.ResourcePolicy)
+	PutMutationRecord(meta.Mutation)
 	*meta = RequestMeta{}
 	requestMetaPool.Put(meta)
 }
@@ -546,6 +553,12 @@ func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Int("bytes", rc.bytes),
 				slog.String("client", SafeString(client)),
 			)
+			if meta.Mutation != nil && len(meta.Mutation.Rules) > 0 {
+				attrs = append(attrs,
+					slog.String("mutation_rule_ids", joinMutationRuleIDs(meta.Mutation.Rules)),
+					slog.Bool("mutation_changed", meta.Mutation.ActualChanged),
+				)
+			}
 			defer putAccessLogAttrs(attrBuf)
 
 			switch meta.Decision {
@@ -562,10 +575,32 @@ func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 					logger.LogAttrs(r.Context(), slog.LevelInfo, "request_would_deny", attrs...)
 				}
 			default:
-				logger.LogAttrs(r.Context(), slog.LevelInfo, "request", attrs...)
+				// An allowed request that had at least one warn-mode
+				// mutation rule evaluated (regardless of whether it would
+				// have applied) is elevated to WARN, matching how a
+				// warn-rollout policy deny is elevated above — a warn-mode
+				// mutation rule is only useful if an operator actually
+				// notices it firing before switching it to enforce.
+				if meta.Mutation != nil && meta.Mutation.HasWarnEvaluation {
+					logger.LogAttrs(r.Context(), slog.LevelWarn, "request", attrs...)
+				} else {
+					logger.LogAttrs(r.Context(), slog.LevelInfo, "request", attrs...)
+				}
 			}
 		})
 	}
+}
+
+// joinMutationRuleIDs renders a request's mutation rule trace as a single
+// comma-separated field for the access log, avoiding a nested/array log
+// value the rest of this structured logger's flat attr schema doesn't use
+// elsewhere.
+func joinMutationRuleIDs(rules []MutationRuleOutcome) string {
+	ids := make([]string, len(rules))
+	for i, rule := range rules {
+		ids[i] = rule.ID
+	}
+	return strings.Join(ids, ",")
 }
 
 func clientRequestIDForRequest(r *http.Request, meta *RequestMeta) string {

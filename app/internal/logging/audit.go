@@ -122,6 +122,16 @@ type auditEvent struct {
 	// Additive; TransportListener keeps its pre-existing "unix"/"tcp"
 	// transport-kind meaning unchanged.
 	ListenerName string `json:"listener_name,omitempty"`
+	// Mutation is nil unless the admission-mutation engine evaluated at
+	// least one rule against this request (#151). It is built by
+	// newAuditMutationRecord as an independent deep copy of the pooled
+	// logging.MutationRecord that RequestMeta.Mutation points to — never
+	// the pooled pointer/slice itself — because this event is enqueued
+	// onto AuditLogger's channel and encoded asynchronously, potentially
+	// after the request handler's deferred putRequestMeta has already
+	// recycled that pooled record back into mutationRecordPool for reuse
+	// by an unrelated request.
+	Mutation *auditMutationRecord `json:"mutation,omitempty"`
 }
 
 type auditOwnershipContext struct {
@@ -162,6 +172,42 @@ func auditResourcePolicyContextFrom(rp *ResourcePolicyMeta) *auditResourcePolicy
 	}
 }
 
+// auditMutationRuleOutcome is the audit-log JSON shape of one
+// MutationRuleOutcome.
+type auditMutationRuleOutcome struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Mode    string `json:"mode"`
+	Outcome string `json:"outcome"`
+}
+
+// auditMutationRecord is the audit-log JSON shape of a request's
+// MutationRecord.
+type auditMutationRecord struct {
+	Rules         []auditMutationRuleOutcome `json:"rules,omitempty"`
+	ActualChanged bool                       `json:"actual_changed"`
+}
+
+// newAuditMutationRecord deep-copies rec's rule trace into an independent
+// value safe to hold past the pooled RequestMeta/MutationRecord's lifetime.
+// Returns nil when rec is nil or empty, so the "mutation" field is omitted
+// entirely for the overwhelming majority of requests that never matched a
+// mutation rule.
+func newAuditMutationRecord(rec *MutationRecord) *auditMutationRecord {
+	if rec == nil || len(rec.Rules) == 0 {
+		return nil
+	}
+	rules := make([]auditMutationRuleOutcome, len(rec.Rules))
+	for i, outcome := range rec.Rules {
+		// Field names/order are identical by construction (see
+		// auditMutationRuleOutcome's doc comment), so a direct type
+		// conversion is safe and staticcheck (S1016) prefers it over a
+		// field-by-field literal.
+		rules[i] = auditMutationRuleOutcome(outcome)
+	}
+	return &auditMutationRecord{Rules: rules, ActualChanged: rec.ActualChanged}
+}
+
 // AuditLogMiddleware emits a dedicated audit event after each request.
 func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handler) http.Handler {
 	if logger == nil {
@@ -194,6 +240,10 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 			if identity, ok := inbound.FromContext(r.Context()); ok {
 				listenerName = identity.Name
 			}
+			// Deep-copy before the event is ever handed to logger.log — see
+			// auditEvent.Mutation's doc comment for why the pooled
+			// MutationRecord itself must never be referenced here.
+			mutationRecord := newAuditMutationRecord(meta.Mutation)
 			event := auditEvent{
 				EventType:         "http_request",
 				Timestamp:         logger.now(),
@@ -221,6 +271,7 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 				ListenerName:      listenerName,
 				OwnershipContext:  ownershipContext,
 				ResourcePolicy:    auditResourcePolicyContextFrom(meta.ResourcePolicy),
+				Mutation:          mutationRecord,
 			}
 
 			logger.log(event)
