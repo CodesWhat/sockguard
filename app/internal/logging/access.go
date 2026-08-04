@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/codeswhat/sockguard/internal/inbound"
 )
 
 type contextKey int
@@ -56,6 +58,11 @@ type RequestMeta struct {
 	// request. Set only by filter.ResourceLimitGuard; see
 	// internal/filter/resource_limit_guard.go.
 	ResourcePolicy *ResourcePolicyMeta
+	// ListenerName is the operator-configured listener name (#149) — "default"
+	// for the legacy singular listen: block, an explicit listeners[*].name, or
+	// "admin" for the dedicated admin listener. Populated from the connection's
+	// inbound.Identity, not request-controllable.
+	ListenerName string
 }
 
 // Decision values written into RequestMeta.Decision. Allow is not stamped
@@ -345,6 +352,9 @@ func appendCorrelationAttrs(attrs []slog.Attr, r *http.Request, meta *RequestMet
 	if clientRequestID := clientRequestIDForRequest(r, meta); clientRequestID != "" {
 		attrs = append(attrs, slog.String("client_request_id", SafeString(clientRequestID)))
 	}
+	if identity, ok := inbound.FromContext(r.Context()); ok && identity.Name != "" {
+		attrs = append(attrs, slog.String("listener_name", SafeString(identity.Name)))
+	}
 
 	if meta != nil {
 		attrs = append(attrs,
@@ -511,6 +521,9 @@ func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			}
 			if ownRC {
 				defer putResponseCapture(rc)
+			}
+			if identity, ok := inbound.FromContext(r.Context()); ok {
+				meta.ListenerName = identity.Name
 			}
 			next.ServeHTTP(rc, r)
 
