@@ -445,20 +445,42 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.6.0 is the next committed milestone**, focused on runtime compatibility and safe policy mediation. **v1.5.1 shipped on 2026-07-28** as the integration/packaging patch over the v1.5 feature line. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
+**v1.5.2 is in flight** as the next integration/packaging patch, and **v1.6.0 is the next committed feature milestone**, focused on runtime compatibility and safe policy mediation. **v1.5.1 shipped on 2026-07-28** as the prior integration/packaging patch over the v1.5 feature line, and **v1.5.0 shipped on 2026-07-28** as the GA of the v1.5 feature line. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
 
-### Next in v1.6.0
+### Next in v1.5.2
 
-Tracked in the [v1.6.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/1).
+In flight — integration/packaging patch over the v1.5 line.
 
 | Track | Required outcome |
 |---|---|
-| **Podman/libpod** | Preserve Docker-compatible Podman behavior and add explicit default-deny, body-aware coverage for native `/libpod` routes and pod lifecycle operations. |
-| **Multiple listeners** | Run Unix and TCP listeners together, or multiple instances of either, with listener-scoped TLS and profile boundaries. |
-| **Safe admission mutation** | Operator-configurable mandatory-label injection and image-reference remapping; canonicalize and re-inspect every mutation before forwarding. |
-| **Three-tool conformance** | Test published Sockguard + Portwing + drydock images across Standard/Edge version combinations; remote-update claims remain blocked until watcher/trigger contracts work in both peer repositories. |
-| **Engine/build compatibility** | Validate Docker Engine API 1.55 and current Compose/BuildKit transport without opening the API v1.53-deprecated `/session` and `/grpc` endpoints by assumption. |
-| **Resource parity** | Revalidate required hard limits during container update and add Swarm-service CPU-limit requirements. |
+| **Nightly integration stability** | Fix nightly integration-test digest drift. |
+| **Distribution** | Add Homebrew tap distribution. |
+| **Dependencies** | Refresh the dependency graph, including majors. |
+
+### Next in v1.6.0
+
+Tracked in the [v1.6.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/1). Delivered in three waves — Wave 1 lands in parallel, Wave 2 is sequential because both items touch the route classifier, and Wave 3 gates GA.
+
+**Wave 1 — parallel**
+
+| Track | Issue | Required outcome |
+|---|---|---|
+| **Multiple listeners** | [#149](https://github.com/CodesWhat/sockguard/issues/149) | Run Unix and TCP listeners together, or multiple instances of either, with listener-scoped TLS and profile boundaries. |
+| **Safe admission mutation** | [#151](https://github.com/CodesWhat/sockguard/issues/151) | Operator-configurable mandatory-label injection and image-reference remapping; canonicalize and re-inspect every mutation before forwarding, fail closed. |
+| **Resource parity** | [#152](https://github.com/CodesWhat/sockguard/issues/152) | Revalidate required hard limits during container update and add Swarm-service CPU-limit requirements. |
+
+**Wave 2 — sequential**
+
+| Track | Issue | Required outcome |
+|---|---|---|
+| **Engine/build compatibility** | [#153](https://github.com/CodesWhat/sockguard/issues/153) | Validate Docker Engine API 1.55 and current Compose/BuildKit transport without opening the API v1.53-deprecated `/session` and `/grpc` endpoints by assumption. Lands first; Podman routing builds on the updated classifier. |
+| **Podman/libpod** | [#148](https://github.com/CodesWhat/sockguard/issues/148) | Preserve Docker-compatible Podman behavior and add explicit default-deny, body-aware coverage for native `/libpod` routes and pod lifecycle operations. |
+
+**Wave 3 — gates GA**
+
+| Track | Issue | Required outcome |
+|---|---|---|
+| **Three-tool conformance** | [#150](https://github.com/CodesWhat/sockguard/issues/150) | Publish the tested Sockguard + Portwing + drydock conformance matrix across Standard/Edge version combinations; remote-update claims remain blocked until watcher/trigger contracts work in both peer repositories. |
 
 ### Shipped in v1.5.0
 
