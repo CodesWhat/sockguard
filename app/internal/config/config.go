@@ -1,6 +1,9 @@
 package config
 
-import "os"
+import (
+	"os"
+	"regexp"
+)
 
 // HardenedListenSocketMode is the only supported unix-socket permission mode
 // (string form, as it appears in YAML).
@@ -11,9 +14,78 @@ const HardenedListenSocketMode = "0600"
 // umask from a single source of truth.
 const HardenedListenSocketFileMode = os.FileMode(0o600)
 
+// GroupReadableListenSocketMode is the second (and only other) unix-socket
+// permission mode a listener may opt into, in addition to
+// HardenedListenSocketMode. It requires an explicit SocketGID — see
+// validateSocketOwnership — so a group-shared socket is always an
+// affirmative, per-listener operator choice rather than a default.
+const GroupReadableListenSocketMode = "0660"
+
+// GroupReadableListenSocketFileMode is the os.FileMode equivalent of
+// GroupReadableListenSocketMode.
+const GroupReadableListenSocketFileMode = os.FileMode(0o660)
+
+// Multi-listener (#149) naming/scoping constants.
+const (
+	// DefaultListenerName is the synthetic name given to the legacy
+	// Config.Listen block when EffectiveListeners synthesizes it into a
+	// single-entry list.
+	DefaultListenerName = "default"
+	// AdminListenerName is reserved: no entry in Config.Listeners may use
+	// this name, so Admin.MountOn's namespace (main listener names) can
+	// never collide with the dedicated admin listener.
+	AdminListenerName = "admin"
+	// WildcardProfile, as the sole element of a ListenerConfig's
+	// AllowedProfiles, preserves the legacy "every profile admitted"
+	// behavior. It cannot be combined with concrete profile names and is a
+	// reserved profile name (clients.profiles entries may not use it).
+	WildcardProfile = "*"
+	// MaxListeners bounds Config.Listeners: a small, operator-authored cap
+	// that keeps validation's all-pairs uniqueness check, metrics
+	// cardinality, and log/health fan-out proportionate.
+	MaxListeners = 32
+)
+
+// ListenerNamePattern is the validation regex for ListenerConfig.Name:
+// lowercase alphanumeric plus hyphen, starting with a letter, up to 63
+// characters — safe to use unescaped as a Prometheus label value, a log
+// field, and a reload-diff key.
+var listenerNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+
+// ValidListenerName reports whether name matches ListenerNamePattern.
+func ValidListenerName(name string) bool {
+	return listenerNamePattern.MatchString(name)
+}
+
+// EffectiveListeners is the single read path every downstream consumer
+// (validation, serve wiring, reload diff, banner, metrics, audit) must use
+// instead of reading Config.Listen or Config.Listeners directly. When
+// Listeners is empty it synthesizes the legacy Listen block into a
+// single-entry list named DefaultListenerName with AllowedProfiles
+// [WildcardProfile] — byte-for-byte equivalent to today's global behavior —
+// so every config that sets only listen: continues to behave identically.
+func (c *Config) EffectiveListeners() []ListenerConfig {
+	if len(c.Listeners) > 0 {
+		return c.Listeners
+	}
+	return []ListenerConfig{{
+		Name:            DefaultListenerName,
+		ListenConfig:    c.Listen,
+		AllowedProfiles: []string{WildcardProfile},
+	}}
+}
+
+// Wildcard reports whether l's AllowedProfiles is exactly [WildcardProfile],
+// i.e. this listener admits every resolved profile (and the unprofiled
+// default-policy path), matching legacy single-listener behavior.
+func (l ListenerConfig) Wildcard() bool {
+	return len(l.AllowedProfiles) == 1 && l.AllowedProfiles[0] == WildcardProfile
+}
+
 // Config represents the sockguard configuration.
 type Config struct {
 	Listen                        ListenConfig       `mapstructure:"listen"`
+	Listeners                     []ListenerConfig   `mapstructure:"listeners"`
 	Upstream                      UpstreamConfig     `mapstructure:"upstream"`
 	Log                           LogConfig          `mapstructure:"log"`
 	Response                      ResponseConfig     `mapstructure:"response"`
@@ -28,9 +100,35 @@ type Config struct {
 	Rules                         []RuleConfig       `mapstructure:"rules"`
 	InsecureAllowBodyBlindWrites  bool               `mapstructure:"insecure_allow_body_blind_writes"`
 	InsecureAllowReadExfiltration bool               `mapstructure:"insecure_allow_read_exfiltration"`
+
+	// explicitLegacyListen records whether the legacy listen.* fields were
+	// set explicitly — a YAML key, a SOCKGUARD_LISTEN_* environment
+	// variable, or the --listen-socket CLI flag — as opposed to left at
+	// their zero/default value. It is populated by Load/LoadBytes (via a
+	// provenance-only Viper pass) and by applyFlagOverrides in
+	// internal/cmd, and consulted by validateListeners to detect the
+	// "both listen and listeners configured" ambiguity (#149). Unexported
+	// so it never round-trips through mapstructure/YAML/JSON; a Config
+	// built directly (most tests) simply reads as "not explicit", which
+	// only matters once Listeners is also non-empty.
+	explicitLegacyListen bool
 }
 
-// ListenConfig configures the proxy listener.
+// MarkLegacyListenExplicit records that the legacy listen.* block was set
+// through a channel Load's provenance pass cannot see — currently the
+// --listen-socket CLI flag, which is applied to an already-loaded Config in
+// internal/cmd. Safe to call unconditionally; it only ever turns the flag on.
+func (c *Config) MarkLegacyListenExplicit() {
+	c.explicitLegacyListen = true
+}
+
+// ExplicitLegacyListen reports whether the legacy listen.* block was set
+// explicitly, for tests and validation.
+func (c *Config) ExplicitLegacyListen() bool {
+	return c.explicitLegacyListen
+}
+
+// ListenConfig configures a single proxy listener (unix socket or TCP).
 type ListenConfig struct {
 	Socket     string `mapstructure:"socket"`
 	SocketMode string `mapstructure:"socket_mode"`
@@ -45,6 +143,33 @@ type ListenConfig struct {
 	// that can reach the port can impersonate a client.
 	InsecureAllowUnauthenticatedClients bool            `mapstructure:"insecure_allow_unauthenticated_clients"`
 	TLS                                 ListenTLSConfig `mapstructure:"tls"`
+	// SocketUID and SocketGID optionally chown a freshly created unix socket
+	// after bind. Pointers distinguish "omitted" from UID/GID 0. Only
+	// meaningful when Socket is set. Combined with SocketMode they gate the
+	// 0600 (default, no explicit ownership required) vs 0660 (requires
+	// SocketGID) posture — see validateSocketOwnership.
+	SocketUID *int `mapstructure:"socket_uid"`
+	SocketGID *int `mapstructure:"socket_gid"`
+}
+
+// ListenerConfig is one entry in Config.Listeners: a named, independently
+// scoped main (Docker-API) listener. See Config.EffectiveListeners.
+type ListenerConfig struct {
+	// Name identifies the listener for logs, metrics, health, audit, and
+	// reload diagnostics. Must match ListenerNamePattern, be unique within
+	// Listeners, and must not be AdminListenerName ("admin").
+	Name         string `mapstructure:"name"`
+	ListenConfig `mapstructure:",squash"`
+	// AllowedProfiles scopes this listener to a subset of clients.profiles.
+	// Required and non-empty on every explicit entry. The single-element
+	// list [WildcardProfile] ("*") preserves the legacy global behavior:
+	// every resolved profile, plus the unprofiled/default-policy path, is
+	// admitted. A concrete list is an admission gate evaluated AFTER normal
+	// profile resolution (certificate > unix peer > source IP > default):
+	// an otherwise-valid client resolved to a profile outside this list is
+	// denied with reason listener_profile_not_allowed, never retried
+	// against a weaker selector.
+	AllowedProfiles []string `mapstructure:"allowed_profiles"`
 }
 
 // ListenTLSConfig configures mutual TLS for TCP listeners.
@@ -773,6 +898,16 @@ type AdminConfig struct {
 	// (unix) or Address (TCP, optionally wrapped in TLS). When unset, the
 	// admin endpoints continue to ride the main listener.
 	Listen AdminListenConfig `mapstructure:"listen"`
+	// MountOn names the effective main listener (see Config.EffectiveListeners)
+	// that carries in-band admin traffic when Listen is NOT configured. It
+	// disambiguates "admin rides the main listener" once there is more than
+	// one effective main listener — mounting admin on every listener by
+	// default would silently widen the admin attack surface in proportion
+	// to listener count. Required when Enabled && !Listen.Configured() &&
+	// there are 2+ effective main listeners; ignored (may be left empty)
+	// when there is exactly one, preserving today's zero-config behavior
+	// byte-for-byte.
+	MountOn string `mapstructure:"mount_on"`
 }
 
 // AdminListenConfig configures the dedicated admin listener. It embeds

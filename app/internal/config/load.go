@@ -49,7 +49,75 @@ func Load(configPath string) (*Config, error) {
 		cfg.Rules = defaults.Rules
 	}
 
+	cfg.explicitLegacyListen = explicitLegacyListenFile(configPath)
+
 	return &cfg, nil
+}
+
+// legacyListenKeys are the dotted config paths under listen: whose presence
+// (via YAML, a SOCKGUARD_LISTEN_* env var, or — separately, via
+// Config.MarkLegacyListenExplicit — the --listen-socket CLI flag) marks the
+// legacy singular listener as explicitly configured rather than left at its
+// zero-value default. Used only for the listen/listeners mutual-exclusivity
+// check (#149); listed exhaustively rather than derived by reflection
+// because the check must distinguish "present with any value, including a
+// zero value" from "absent", which registerDefaults' walk does not track.
+var legacyListenKeys = []string{
+	"listen.socket",
+	"listen.address",
+	"listen.socket_mode",
+	"listen.socket_uid",
+	"listen.socket_gid",
+	"listen.insecure_allow_plain_tcp",
+	"listen.insecure_allow_unauthenticated_clients",
+	"listen.tls.cert_file",
+	"listen.tls.key_file",
+	"listen.tls.client_ca_file",
+	"listen.tls.common_names",
+	"listen.tls.dns_names",
+	"listen.tls.ip_addresses",
+	"listen.tls.uri_sans",
+	"listen.tls.public_key_sha256_pins",
+}
+
+// explicitLegacyListenFile reports whether any legacyListenKeys entry was
+// set via the YAML file at configPath or a SOCKGUARD_LISTEN_* environment
+// variable. It uses a second, defaults-free Viper instance so
+// registerDefaults' leaf registrations (which would make every key
+// unconditionally "set") cannot mask the answer.
+func explicitLegacyListenFile(configPath string) bool {
+	pv := viper.New()
+	if configPath != "" {
+		pv.SetConfigFile(configPath)
+		_ = pv.ReadInConfig() // missing file is fine, same tolerance as Load
+	}
+	pv.SetEnvPrefix("SOCKGUARD")
+	pv.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	pv.AutomaticEnv()
+	return explicitLegacyListenSet(pv)
+}
+
+// explicitLegacyListenBytes is explicitLegacyListenFile's LoadBytes
+// counterpart: no environment overlay, matching LoadBytes' own contract
+// (env vars never affect a candidate/signed YAML body).
+func explicitLegacyListenBytes(data []byte) bool {
+	pv := viper.New()
+	pv.SetConfigType("yaml")
+	if len(data) > 0 {
+		if err := pv.ReadConfig(bytes.NewReader(data)); err != nil {
+			return false
+		}
+	}
+	return explicitLegacyListenSet(pv)
+}
+
+func explicitLegacyListenSet(pv *viper.Viper) bool {
+	for _, key := range legacyListenKeys {
+		if pv.IsSet(key) {
+			return true
+		}
+	}
+	return false
 }
 
 // setLoadDefaults registers every default value with the Viper instance.
@@ -174,6 +242,8 @@ func LoadBytes(data []byte) (*Config, error) {
 	if len(cfg.Rules) == 0 {
 		cfg.Rules = defaults.Rules
 	}
+
+	cfg.explicitLegacyListen = explicitLegacyListenBytes(data)
 
 	return &cfg, nil
 }

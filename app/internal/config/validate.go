@@ -50,18 +50,277 @@ func validateBasic(cfg *Config) []string {
 	return errs
 }
 
+// validateListeners validates either the legacy singular listen: block or,
+// when non-empty, the explicit listeners: list — never both. The two modes
+// are mutually exclusive: cfg.explicitLegacyListen (populated by Load's
+// provenance pass, or by Config.MarkLegacyListenExplicit for the
+// --listen-socket CLI flag) records whether listen.* was set through any
+// channel other than its zero-value default, so a config that sets both is
+// rejected rather than silently picking a winner.
 func validateListeners(cfg *Config) []string {
+	var errs []string
+	if len(cfg.Listeners) > 0 {
+		if cfg.explicitLegacyListen {
+			errs = append(errs, "listen and listeners are mutually exclusive; migrate the listen: block into a single-entry listeners: list")
+		}
+		errs = append(errs, validateExplicitListeners(cfg)...)
+		errs = append(errs, validateExplicitListenersBindUniqueness(cfg)...)
+		return errs
+	}
+	return validateLegacyListen(cfg)
+}
+
+func validateLegacyListen(cfg *Config) []string {
 	var errs []string
 	if cfg.Listen.Socket == "" && cfg.Listen.Address == "" {
 		errs = append(errs, "at least one listener is required (listen.socket or listen.address)")
 	}
 	if cfg.Listen.Socket != "" {
-		errs = append(errs, validateUnixSocketListenerSecurity(cfg)...)
+		errs = append(errs, validateSocketOwnership("listen", cfg.Listen)...)
 	}
 	if cfg.Listen.Socket == "" && cfg.Listen.Address != "" {
 		errs = append(errs, validateTCPListenerSecurity(cfg)...)
 	}
 	return errs
+}
+
+// validateExplicitListeners validates each entry of the explicit
+// listeners: list: name shape/uniqueness/reservation, the listeners cap,
+// exactly-one-of-socket-or-address (stricter than the legacy implicit
+// socket-wins fallback — new entries reject ambiguity outright), per-entry
+// TLS/plaintext-ack/ownership security, and the allowed_profiles scope.
+func validateExplicitListeners(cfg *Config) []string {
+	var errs []string
+
+	if len(cfg.Listeners) > MaxListeners {
+		errs = append(errs, fmt.Sprintf("listeners must contain at most %d entries, got %d", MaxListeners, len(cfg.Listeners)))
+	}
+
+	profileNames := clientProfileNameSet(cfg)
+	seenNames := make(map[string]struct{}, len(cfg.Listeners))
+
+	for i, l := range cfg.Listeners {
+		indexPrefix := fmt.Sprintf("listeners[%d]", i)
+		name := strings.TrimSpace(l.Name)
+
+		switch {
+		case name == "":
+			errs = append(errs, requiredFieldError(indexPrefix+".name"))
+		case !ValidListenerName(name):
+			errs = append(errs, fmt.Sprintf("%s.name %q must match ^[a-z][a-z0-9-]{0,62}$", indexPrefix, name))
+		case name == AdminListenerName:
+			errs = append(errs, fmt.Sprintf("%s.name must not be %q (reserved for the dedicated admin listener)", indexPrefix, AdminListenerName))
+		default:
+			if _, dup := seenNames[name]; dup {
+				errs = append(errs, uniqueValueError("listeners[*].name", name))
+			}
+			seenNames[name] = struct{}{}
+		}
+
+		label := indexPrefix
+		if name != "" {
+			label = fmt.Sprintf("listeners[%s]", name)
+		}
+
+		hasSocket := l.Socket != ""
+		hasAddress := l.Address != ""
+		switch {
+		case hasSocket && hasAddress:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of socket or address is required, got both", label))
+		case !hasSocket && !hasAddress:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of socket or address is required", label))
+		case hasSocket:
+			errs = append(errs, validateSocketOwnership(label, l.ListenConfig)...)
+		default:
+			errs = append(errs, validateListenerTCPSecurity(label, l.ListenConfig)...)
+		}
+
+		errs = append(errs, validateAllowedProfiles(label, l.AllowedProfiles, profileNames)...)
+	}
+
+	return errs
+}
+
+// validateExplicitListenersBindUniqueness enforces all-pairs distinctness of
+// every configured bind target — every listeners[*] socket path pairwise
+// distinct, every listeners[*] TCP address pairwise distinct, and each
+// checked again against the dedicated admin listener when configured. O(n^2)
+// over an operator-authored, small (single-digit to low-dozens) list.
+func validateExplicitListenersBindUniqueness(cfg *Config) []string {
+	type bindTarget struct {
+		label string
+		kind  string // "socket" or "address"
+		value string
+	}
+
+	var targets []bindTarget
+	for _, l := range cfg.Listeners {
+		label := fmt.Sprintf("listeners[%s]", l.Name)
+		if l.Socket != "" {
+			targets = append(targets, bindTarget{label, "socket", l.Socket})
+		}
+		if l.Address != "" {
+			targets = append(targets, bindTarget{label, "address", l.Address})
+		}
+	}
+	if cfg.Admin.Listen.Configured() {
+		if cfg.Admin.Listen.Socket != "" {
+			targets = append(targets, bindTarget{"admin.listen", "socket", cfg.Admin.Listen.Socket})
+		}
+		if cfg.Admin.Listen.Address != "" {
+			targets = append(targets, bindTarget{"admin.listen", "address", cfg.Admin.Listen.Address})
+		}
+	}
+
+	var errs []string
+	for i := 0; i < len(targets); i++ {
+		for j := i + 1; j < len(targets); j++ {
+			if targets[i].kind != targets[j].kind || targets[i].value != targets[j].value {
+				continue
+			}
+			errs = append(errs, fmt.Sprintf("%s.%s and %s.%s must be distinct, both are %q",
+				targets[i].label, targets[i].kind, targets[j].label, targets[j].kind, targets[i].value))
+		}
+	}
+	return errs
+}
+
+// validateAllowedProfiles validates one listener's allowed_profiles scope:
+// required and non-empty, the wildcard "*" cannot combine with concrete
+// names, entries must be unique, and concrete names must reference a
+// configured clients.profiles entry.
+func validateAllowedProfiles(label string, allowed []string, profileNames map[string]struct{}) []string {
+	field := label + ".allowed_profiles"
+	if len(allowed) == 0 {
+		return []string{containsAtLeastOneError(field, `profile name (or the wildcard "*")`)}
+	}
+
+	var errs []string
+	hasWildcard := false
+	for _, p := range allowed {
+		if p == WildcardProfile {
+			hasWildcard = true
+			break
+		}
+	}
+	if hasWildcard {
+		if len(allowed) > 1 {
+			errs = append(errs, fmt.Sprintf("%s: %q cannot be combined with concrete profile names", field, WildcardProfile))
+		}
+		return errs
+	}
+
+	seen := make(map[string]struct{}, len(allowed))
+	for _, p := range allowed {
+		if _, dup := seen[p]; dup {
+			errs = append(errs, uniqueValueError(field, p))
+			continue
+		}
+		seen[p] = struct{}{}
+		if _, ok := profileNames[p]; !ok {
+			errs = append(errs, configuredMatchError(field, "client profile", p))
+		}
+	}
+	return errs
+}
+
+// clientProfileNameSet returns the set of configured clients.profiles names,
+// trimmed. It is a lightweight companion to validateClientProfile's own
+// duplicate-detecting walk (validateClientsConfig) — listener validation
+// only needs membership, not the full per-profile diagnostics.
+func clientProfileNameSet(cfg *Config) map[string]struct{} {
+	names := make(map[string]struct{}, len(cfg.Clients.Profiles))
+	for _, p := range cfg.Clients.Profiles {
+		if name := strings.TrimSpace(p.Name); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
+// validateSocketOwnership validates a unix-socket listener's socket_mode and
+// optional socket_uid/socket_gid. Exactly two modes are supported:
+// HardenedListenSocketMode ("0600", the default — no ownership fields
+// required) and GroupReadableListenSocketMode ("0660" — requires an
+// explicit socket_gid so a group-shared socket is always an affirmative,
+// per-listener operator choice). Applies to legacy listen:, each
+// listeners[*] entry, and (additively, via validateAdminListener)
+// admin.listen.
+func validateSocketOwnership(prefix string, listen ListenConfig) []string {
+	var errs []string
+
+	switch strings.TrimSpace(listen.SocketMode) {
+	case HardenedListenSocketMode:
+		// default owner-only mode; no ownership fields required.
+	case GroupReadableListenSocketMode:
+		if listen.SocketGID == nil {
+			errs = append(errs, fmt.Sprintf(
+				"%s.socket_mode %q requires %s.socket_gid to be set explicitly; omit socket_gid and use %q for the default owner-only mode",
+				prefix, GroupReadableListenSocketMode, prefix, HardenedListenSocketMode,
+			))
+		}
+	default:
+		errs = append(errs, fmt.Sprintf(
+			"%s.socket_mode must be %q or %q (the latter requires %s.socket_gid), got %q",
+			prefix, HardenedListenSocketMode, GroupReadableListenSocketMode, prefix, listen.SocketMode,
+		))
+	}
+
+	if listen.SocketUID != nil && *listen.SocketUID < 0 {
+		errs = append(errs, fmt.Sprintf("%s.socket_uid must be >= 0, got %d", prefix, *listen.SocketUID))
+	}
+	if listen.SocketGID != nil && *listen.SocketGID < 0 {
+		errs = append(errs, fmt.Sprintf("%s.socket_gid must be >= 0, got %d", prefix, *listen.SocketGID))
+	}
+
+	return errs
+}
+
+// validateListenerTCPSecurity is validateTCPListenerSecurity generalized to
+// an arbitrary field prefix and ListenConfig value, so it can validate any
+// listeners[*] entry's TCP/TLS/plaintext-ack posture with the same
+// constructive checks the legacy listen: block gets.
+func validateListenerTCPSecurity(prefix string, listen ListenConfig) []string {
+	var errs []string
+
+	if listen.TLS.Enabled() && !listen.TLS.Complete() {
+		errs = append(errs, requiresError(prefix+".tls", "cert_file, key_file, and client_ca_file together"))
+		return errs
+	}
+
+	if listen.TLS.Complete() {
+		if _, err := BuildMutualTLSServerConfigForField(prefix+".tls", listen.TLS); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+
+	errs = append(errs, plainTCPListenerErrors("TCP listener", prefix, listen)...)
+
+	return errs
+}
+
+// validateAdminMountOn validates Admin.MountOn: required when admin rides a
+// main listener (no dedicated admin.listen) and there are 2+ effective main
+// listeners; when set, must name one of them. Ignored (may be empty) with a
+// dedicated admin listener or exactly one effective main listener, matching
+// today's zero-config "admin rides the sole main listener" behavior.
+func validateAdminMountOn(cfg *Config) []string {
+	if cfg.Admin.Listen.Configured() {
+		return nil
+	}
+	effective := cfg.EffectiveListeners()
+	if len(effective) <= 1 {
+		return nil
+	}
+	if cfg.Admin.MountOn == "" {
+		return []string{"admin.mount_on is required when admin.enabled=true, admin.listen is not configured, and there is more than one effective main listener"}
+	}
+	for _, l := range effective {
+		if l.Name == cfg.Admin.MountOn {
+			return nil
+		}
+	}
+	return []string{configuredMatchError("admin.mount_on", "listener name", cfg.Admin.MountOn)}
 }
 
 // plainTCPListenerErrors validates a non-loopback TCP listener that is not
@@ -240,6 +499,7 @@ func validateAdmin(cfg *Config) []string {
 		errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
 	}
 	errs = append(errs, validateAdminListener(cfg)...)
+	errs = append(errs, validateAdminMountOn(cfg)...)
 	return errs
 }
 
@@ -301,16 +561,6 @@ func literalPercentRuleError(label, pattern string) string {
 	)
 }
 
-func validateUnixSocketListenerSecurity(cfg *Config) []string {
-	if strings.TrimSpace(cfg.Listen.SocketMode) == HardenedListenSocketMode {
-		return nil
-	}
-
-	return []string{
-		fmt.Sprintf("listen.socket_mode must be %q because unix listeners are created with owner-only permissions", HardenedListenSocketMode),
-	}
-}
-
 // validateAdminListener validates the optional dedicated admin listener. It
 // only runs when cfg.Admin.Enabled is true; an unconfigured Listen sub-block
 // (Socket == "" && Address == "") is the documented "ride the main listener"
@@ -339,9 +589,7 @@ func validateAdminListener(cfg *Config) []string {
 	}
 
 	if listen.Socket != "" {
-		if strings.TrimSpace(listen.SocketMode) != HardenedListenSocketMode {
-			errs = append(errs, fmt.Sprintf("admin.listen.socket_mode must be %q because unix listeners are created with owner-only permissions", HardenedListenSocketMode))
-		}
+		errs = append(errs, validateSocketOwnership("admin.listen", listen.ListenConfig)...)
 		if cfg.Listen.Socket != "" && cfg.Listen.Socket == listen.Socket {
 			errs = append(errs, fmt.Sprintf("admin.listen.socket must differ from listen.socket, got %q", listen.Socket))
 		}
@@ -718,9 +966,15 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 
 	prefix := fmt.Sprintf("clients.profiles[%d]", index)
 	name := strings.TrimSpace(profile.Name)
-	if name == "" {
+	switch {
+	case name == "":
 		errs = append(errs, requiredFieldError(prefix+".name"))
-	} else {
+	case name == WildcardProfile:
+		// "*" is reserved by listeners[*].allowed_profiles as the
+		// "admit every profile" wildcard (#149) and cannot double as a
+		// concrete profile name.
+		errs = append(errs, fmt.Sprintf("%s.name must not be %q (reserved as the listener allowed_profiles wildcard)", prefix, WildcardProfile))
+	default:
 		if _, exists := profilesByName[name]; exists {
 			errs = append(errs, uniqueValueError(prefix+".name", name))
 		}
