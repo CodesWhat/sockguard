@@ -266,6 +266,37 @@ func (c PluginRequestBodyConfig) ToFilterOptions() filter.PluginOptions {
 	}
 }
 
+// ToFilterOptions converts the mutations config block into filter.MutationOptions.
+// Unlike RequestBodyConfig.ToFilterOptions, this carries global state (see
+// MutationsConfig's doc comment: mutations are not part of clients.profiles),
+// so cmd/serve.go attaches the result to filter.Options.Mutation directly
+// rather than through PolicyConfig.
+func (c MutationsConfig) ToFilterOptions() filter.MutationOptions {
+	if len(c.Rules) == 0 {
+		return filter.MutationOptions{}
+	}
+	rules := make([]filter.MutationRuleOptions, 0, len(c.Rules))
+	for _, r := range c.Rules {
+		opt := filter.MutationRuleOptions{
+			ID:       r.ID,
+			Mode:     r.Mode,
+			Surfaces: r.Surfaces,
+		}
+		if r.InjectLabels != nil {
+			opt.InjectLabels = &filter.InjectLabelsMutationOptions{Labels: r.InjectLabels.Labels}
+		}
+		if r.RemapImage != nil {
+			opt.RemapImage = &filter.ImageRemapMutationOptions{
+				Match: r.RemapImage.Match,
+				From:  r.RemapImage.From,
+				To:    r.RemapImage.To,
+			}
+		}
+		rules = append(rules, opt)
+	}
+	return filter.MutationOptions{Rules: rules}
+}
+
 // toFilterAllowedDeviceRequests converts config AllowedDeviceRequest slices to
 // the filter package's AllowedDeviceRequestEntry type. Returns nil when the
 // input is empty so reflect.DeepEqual comparisons against zero-value structs

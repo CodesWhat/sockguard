@@ -2,10 +2,12 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
 
+	mapstructure "github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 )
 
@@ -44,6 +46,10 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	applyCompatEnvAliases(&cfg)
+
+	if err := decodeMutationsStrict(v, &cfg); err != nil {
+		return nil, err
+	}
 
 	if len(cfg.Rules) == 0 {
 		cfg.Rules = defaults.Rules
@@ -118,6 +124,30 @@ func explicitLegacyListenSet(pv *viper.Viper) bool {
 		}
 	}
 	return false
+}
+
+// decodeMutationsStrict re-decodes the mutations subtree with a strict
+// mapstructure.DecoderConfig — ErrorUnused true, WeaklyTypedInput false, no
+// decode hook — overwriting the lenient Config-wide decode's cfg.Mutations.
+// Every other block in this schema tolerates unknown keys and weak/YAML
+// type coercion for backward compatibility; mutations does not, because a
+// declarative admission-mutation rule that silently ignores a typo'd key or
+// coerces "id: 0" (a YAML integer) into the string "0" is a fail-open
+// footgun this feature specifically exists to avoid. See MutationsConfig's
+// doc comment.
+func decodeMutationsStrict(v *viper.Viper, cfg *Config) error {
+	strict := func(c *mapstructure.DecoderConfig) {
+		c.ErrorUnused = true
+		c.WeaklyTypedInput = false
+		c.DecodeHook = nil
+	}
+
+	var mutations MutationsConfig
+	if err := v.UnmarshalKey("mutations", &mutations, strict); err != nil {
+		return fmt.Errorf("decode mutations config: %w", err)
+	}
+	cfg.Mutations = mutations
+	return nil
 }
 
 // setLoadDefaults registers every default value with the Viper instance.
@@ -236,6 +266,10 @@ func LoadBytes(data []byte) (*Config, error) {
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
+		return nil, err
+	}
+
+	if err := decodeMutationsStrict(v, &cfg); err != nil {
 		return nil, err
 	}
 

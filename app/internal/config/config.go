@@ -97,6 +97,7 @@ type Config struct {
 	Admin                         AdminConfig        `mapstructure:"admin"`
 	Reload                        ReloadConfig       `mapstructure:"reload"`
 	PolicyBundle                  PolicyBundleConfig `mapstructure:"policy_bundle"`
+	Mutations                     MutationsConfig    `mapstructure:"mutations"`
 	Rules                         []RuleConfig       `mapstructure:"rules"`
 	InsecureAllowBodyBlindWrites  bool               `mapstructure:"insecure_allow_body_blind_writes"`
 	InsecureAllowReadExfiltration bool               `mapstructure:"insecure_allow_read_exfiltration"`
@@ -1010,6 +1011,61 @@ type PolicyBundleKeyless struct {
 	Issuer string `mapstructure:"issuer"`
 	// SubjectPattern is a Go regexp matched against the cert's SAN.
 	SubjectPattern string `mapstructure:"subject_pattern"`
+}
+
+// MutationsConfig configures declarative fail-closed admission mutations
+// (#151): a bounded set of config-driven rules that inject owner-independent
+// labels or remap image references on a matched request body before the
+// existing container_create/service body inspectors, image-trust
+// verification, and ownership stamping run. See docs/content/docs for the
+// full schema and security model.
+//
+// Mutations are deliberately not part of clients.profiles: v1 has one
+// mutation authority and no global/profile merge rules — every configured
+// rule applies identically regardless of which client profile matched the
+// request. This block is decoded with a strict subtree decode (see
+// decodeMutationsStrict in load.go) that rejects unknown keys and disables
+// weak/YAML-typing coercion, unlike the rest of this legacy schema.
+type MutationsConfig struct {
+	Rules []MutationRuleConfig `mapstructure:"rules"`
+}
+
+// MutationRuleConfig is one declarative admission-mutation rule. Exactly one
+// of InjectLabels/RemapImage must be set; validate.go enforces this and the
+// remaining bounds (rule/label counts, key/value sizes, surface/action
+// compatibility, overlap rejection, owner-label-key reservation).
+type MutationRuleConfig struct {
+	// ID uniquely identifies the rule for logging/audit correlation.
+	// Required; must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$.
+	ID string `mapstructure:"id"`
+	// Mode is the rule's rollout posture: "enforce" (default when empty),
+	// "warn", or "audit". See config.ParseRolloutMode for semantics.
+	Mode string `mapstructure:"mode"`
+	// Surfaces lists the request surfaces this rule applies to, from
+	// "container_create", "service_create", "service_update". No duplicates.
+	Surfaces []string `mapstructure:"surfaces"`
+	// InjectLabels configures a label-map merge mutation. Mutually exclusive
+	// with RemapImage.
+	InjectLabels *InjectLabelsMutationConfig `mapstructure:"inject_labels"`
+	// RemapImage configures a single string-field image replace mutation.
+	// Mutually exclusive with InjectLabels.
+	RemapImage *ImageRemapMutationConfig `mapstructure:"remap_image"`
+}
+
+// InjectLabelsMutationConfig unconditionally sets/replaces the configured
+// labels on every request matching the rule's surfaces. Valid only on
+// surfaces that carry a label map (container_create, service_create).
+type InjectLabelsMutationConfig struct {
+	Labels map[string]string `mapstructure:"labels"`
+}
+
+// ImageRemapMutationConfig rewrites a matched image reference. Match is
+// "exact" (the whole reference must equal From) or "prefix" (From must
+// prefix the reference; the remainder is preserved after To).
+type ImageRemapMutationConfig struct {
+	Match string `mapstructure:"match"`
+	From  string `mapstructure:"from"`
+	To    string `mapstructure:"to"`
 }
 
 // RuleConfig represents a single access control rule in config.
