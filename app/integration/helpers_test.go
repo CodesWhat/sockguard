@@ -34,7 +34,7 @@ const defaultDockerSocket = "/var/run/docker.sock"
 // retag of the floating tag can't silently change what the suite runs. Deny-path
 // fixtures that never reach the registry keep the bare tag — pinning them adds
 // nothing. Bump both the tag and the digest together when refreshing.
-const busyboxPinnedRef = "busybox:1.37@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
+const busyboxPinnedRef = "busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0"
 
 type dockerVersionResponse struct {
 	APIVersion string `json:"ApiVersion"`
