@@ -10,11 +10,6 @@ tone_instructions: >-
   Only actionable feedback.
 
 reviews:
-  # Review PRs into release dev branches (dev/v1.6, ...) too, not just main.
-  # Branch discipline routes every change through the active dev branch, so
-  # without this the entire release train would go unreviewed.
-  base_branches:
-    - "dev/.*"
   profile: chill
   request_changes_workflow: false
   high_level_summary: true
@@ -50,6 +45,12 @@ reviews:
     enabled: true
     auto_incremental_review: true
     drafts: false
+    # Review PRs into release dev branches (dev/v1.6, ...) too, not just main.
+    # Branch discipline routes every change through the active dev branch, so
+    # without this the entire release train would go unreviewed. This key only
+    # works nested under auto_review — at the reviews: level it is ignored.
+    base_branches:
+      - "dev/.*"
     ignore_title_keywords:
       - "WIP"
       - "DO NOT MERGE"
