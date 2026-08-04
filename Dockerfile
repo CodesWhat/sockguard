@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -o /sockguard ./cmd/sockguard/
 RUN install -d -m 0700 /runtime/sockguard && touch /runtime/sockguard/.volume-init
 
-FROM cgr.dev/chainguard/static:latest@sha256:77d8b8925dc27970ec2f48243f44c7a260d52c49cd778288e4ee97566e0cb75b
+FROM cgr.dev/chainguard/static:latest@sha256:399c8cb4858f05aaa33f43f02a2e75f28d40f016c0f86e5ba6075769e3303791
 
 LABEL maintainer="CodesWhat"
 LABEL org.opencontainers.image.title="sockguard"
