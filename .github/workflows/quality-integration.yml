@@ -70,7 +70,11 @@ jobs:
       # from the test constant means this step can never drift from it again.
       - name: Pre-pull busybox sentinel image
         run: |
-          ref=$(grep -o 'busybox:[0-9][^"]*' app/integration/helpers_test.go | head -n1)
+          ref=$(sed -nE 's/^[[:space:]]*const[[:space:]]+busyboxPinnedRef[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' app/integration/helpers_test.go)
+          if [[ ! "$ref" =~ ^busybox:[[:alnum:]_.-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid or unpinned busyboxPinnedRef: ${ref}" >&2
+            exit 1
+          fi
           echo "Pre-pulling pinned sentinel image: ${ref}"
           docker pull "${ref}"
 
