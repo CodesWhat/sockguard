@@ -638,6 +638,13 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	resolver := runtimeResolver(runtime, cfg)
 	layers := []serveHandlerLayer{
 		namedServeHandlerLayer("withHijack", withHijack(resolver, logger)),
+		// #152: inserted between hijack and ownership in APPEND order. Later
+		// appends wrap (execute before) earlier ones, so this yields runtime
+		// order ...filter -> visibility -> ownership -> resource-limit guard
+		// -> hijack -> proxy — ownership decides before any resource-state
+		// lookup, and the guard still runs before hijack/proxy for every
+		// request ownership allowed.
+		namedServeHandlerLayer("withResourceLimitGuard", withResourceLimitGuard(cfg, resolver, logger, clientProfiles)),
 		namedServeHandlerLayer("withOwnership", withOwnership(cfg, resolver, logger)),
 		namedServeHandlerLayer("withVisibility", withVisibility(cfg, resolver, logger)),
 		namedServeHandlerLayer("withFilter", withFilter(cfg, resolver, logger, rules, clientProfiles)),
@@ -1162,6 +1169,67 @@ func servePolicyConfig(cfg *config.Config, res *upstream.Resolver) filter.Policy
 	policy := cfg.RequestBody.ToFilterOptions()
 	policy.DenyResponseVerbosity = filter.ParseDenyResponseVerbosity(cfg.Response.DenyVerbosity)
 	return attachRuntimeInspectors(cfg, res, policy)
+}
+
+// withResourceLimitGuard returns the #152 post-ownership resource-limit guard
+// layer (internal/filter/resource_limit_guard.go). It reuses the same
+// PolicyConfig/profile map/ResolveProfile wiring servePolicyConfig and
+// clientProfiles already provide to withFilter, plus two runtime inspectors
+// (container/service state GETs) issued through the shared upstream resolver.
+func withResourceLimitGuard(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger, clientProfiles map[string]filter.Policy) func(http.Handler) http.Handler {
+	warnIfResourceLimitRequireWithoutAllowResourceUpdates(cfg, logger)
+	rt := upstreamResolverFor(res, cfg)
+	return filter.ResourceLimitGuardWithOptions(logger, filter.ResourceLimitGuardOptions{
+		PolicyConfig:     servePolicyConfig(cfg, res),
+		Profiles:         clientProfiles,
+		ResolveProfile:   clientacl.RequestProfile,
+		InspectContainer: filter.NewDockerContainerUpdateInspectorWithRoundTripper(rt),
+		InspectService:   filter.NewDockerServiceInspectorWithRoundTripper(rt),
+	})
+}
+
+// resourceLimitRequireWarnOnce gates warnIfResourceLimitRequireWithoutAllowResourceUpdates
+// to a single emission per process, like labelACLWarnOnce — the handler chain
+// is rebuilt on every config hot-reload, so an unguarded warning at the
+// chain-build site would repeat on each reload.
+var resourceLimitRequireWarnOnce sync.Once
+
+// warnIfResourceLimitRequireWithoutAllowResourceUpdates surfaces the likely-
+// confusion case from ContainerUpdateRequestBodyConfig's doc comment: a
+// require_* resource-limit flag enabled while allow_resource_updates is
+// false is not a config error (the existing blanket deny already provides
+// the guarantee those flags would otherwise add), but an operator who set
+// require_memory_limit: true expecting it to do something almost certainly
+// also meant to set allow_resource_updates: true.
+func warnIfResourceLimitRequireWithoutAllowResourceUpdates(cfg *config.Config, logger *slog.Logger) {
+	warnResourceLimitRequireOnce(cfg, logger, &resourceLimitRequireWarnOnce)
+}
+
+// warnResourceLimitRequireOnce is the testable core of
+// warnIfResourceLimitRequireWithoutAllowResourceUpdates: the Once is injected
+// so tests can verify both the enable-check and the once-per-process gating
+// without racing other tests for the package-level guard.
+func warnResourceLimitRequireOnce(cfg *config.Config, logger *slog.Logger, once *sync.Once) {
+	misconfigured := resourceLimitRequireWithoutGate(cfg.RequestBody.ContainerUpdate)
+	for _, profile := range cfg.Clients.Profiles {
+		if resourceLimitRequireWithoutGate(profile.RequestBody.ContainerUpdate) {
+			misconfigured = true
+			break
+		}
+	}
+	if !misconfigured {
+		return
+	}
+	once.Do(func() {
+		logger.Warn("request_body.container_update (default policy and/or one or more client profiles) has a require_* resource-limit flag enabled while allow_resource_updates is false: the flag is currently a no-op there — the existing blanket deny of resource-control fields already blocks every resource update, so set allow_resource_updates: true to activate the require_* check, or drop the require_* flag to avoid confusion")
+	})
+}
+
+func resourceLimitRequireWithoutGate(cu config.ContainerUpdateRequestBodyConfig) bool {
+	if cu.AllowResourceUpdates {
+		return false
+	}
+	return cu.RequireMemoryLimit || cu.RequireCPULimit || cu.RequireCPULimitHard || cu.RequirePidsLimit
 }
 
 func serveClientACLOptions(cfg *config.Config) clientacl.Options {
