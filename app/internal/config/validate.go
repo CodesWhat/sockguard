@@ -794,25 +794,47 @@ func validateClientsContainerLabels(cfg *Config) []string {
 	return nil
 }
 
+// hasEffectiveListener reports whether at least one of cfg.EffectiveListeners
+// (#149) — the legacy listen: block synthesized into one entry, or every
+// listeners[*] entry — satisfies predicate. Transport-capability checks use
+// this instead of reading cfg.Listen directly, so they hold the same "at
+// least one compatible listener" shape whether an operator configures the
+// legacy listen: block or an explicit listeners: list.
+func hasEffectiveListener(cfg *Config, predicate func(ListenerConfig) bool) bool {
+	for _, l := range cfg.EffectiveListeners() {
+		if predicate(l) {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnixListener(l ListenerConfig) bool { return l.Socket != "" }
+func isTCPListener(l ListenerConfig) bool  { return l.Address != "" }
+
 // validateClientsListenerExclusions checks the listener-kind constraints that
 // would otherwise be reported as cryptic per-feature errors. Each rule is the
-// same shape: feature X requires (or forbids) a TCP/unix listener.
+// same shape: feature X requires (or forbids) a TCP/unix listener among the
+// effective set — see hasEffectiveListener.
 func validateClientsListenerExclusions(cfg *Config) []string {
 	var errs []string
-	if cfg.Listen.Socket != "" && len(cfg.Clients.AllowedCIDRs) > 0 {
-		errs = append(errs, "clients.allowed_cidrs requires a TCP listener; remove listen.socket or clear clients.allowed_cidrs")
+	hasTCP := hasEffectiveListener(cfg, isTCPListener)
+	hasUnix := hasEffectiveListener(cfg, isUnixListener)
+
+	if !hasTCP && len(cfg.Clients.AllowedCIDRs) > 0 {
+		errs = append(errs, "clients.allowed_cidrs requires a TCP listener; configure a TCP listen/listeners[*] entry or clear clients.allowed_cidrs")
 	}
-	if cfg.Listen.Socket != "" && cfg.Clients.ContainerLabels.Enabled {
-		errs = append(errs, "clients.container_labels requires a TCP listener; remove listen.socket or disable clients.container_labels")
+	if !hasTCP && cfg.Clients.ContainerLabels.Enabled {
+		errs = append(errs, "clients.container_labels requires a TCP listener; configure a TCP listen/listeners[*] entry or disable clients.container_labels")
 	}
-	if cfg.Listen.Socket != "" && len(cfg.Clients.SourceIPProfiles) > 0 {
-		errs = append(errs, "clients.source_ip_profiles requires a TCP listener; remove listen.socket or clear clients.source_ip_profiles")
+	if !hasTCP && len(cfg.Clients.SourceIPProfiles) > 0 {
+		errs = append(errs, "clients.source_ip_profiles requires a TCP listener; configure a TCP listen/listeners[*] entry or clear clients.source_ip_profiles")
 	}
-	if cfg.Listen.Socket != "" && len(cfg.Clients.ClientCertificateProfiles) > 0 {
-		errs = append(errs, "clients.client_certificate_profiles requires a TCP listener; remove listen.socket or clear clients.client_certificate_profiles")
+	if !hasTCP && len(cfg.Clients.ClientCertificateProfiles) > 0 {
+		errs = append(errs, "clients.client_certificate_profiles requires a TCP listener; configure a TCP listen/listeners[*] entry or clear clients.client_certificate_profiles")
 	}
-	if cfg.Listen.Socket == "" && len(cfg.Clients.UnixPeerProfiles) > 0 {
-		errs = append(errs, "clients.unix_peer_profiles requires a unix listener; set listen.socket or clear clients.unix_peer_profiles")
+	if !hasUnix && len(cfg.Clients.UnixPeerProfiles) > 0 {
+		errs = append(errs, "clients.unix_peer_profiles requires a unix listener; configure a unix listen/listeners[*] entry or clear clients.unix_peer_profiles")
 	}
 	return errs
 }
@@ -861,8 +883,9 @@ func validateClientsSourceIPProfiles(cfg *Config, profilesByName map[string]stru
 
 func validateClientsCertificateProfiles(cfg *Config, profilesByName map[string]struct{}) []string {
 	var errs []string
-	if len(cfg.Clients.ClientCertificateProfiles) > 0 && !cfg.Listen.TLS.Complete() {
-		errs = append(errs, requiresError("clients.client_certificate_profiles", "listen.tls mutual TLS configuration"))
+	hasMutualTLS := hasEffectiveListener(cfg, func(l ListenerConfig) bool { return l.TLS.Complete() })
+	if len(cfg.Clients.ClientCertificateProfiles) > 0 && !hasMutualTLS {
+		errs = append(errs, requiresError("clients.client_certificate_profiles", "a listen/listeners[*] entry with mutual TLS configured"))
 	}
 	for i, assignment := range cfg.Clients.ClientCertificateProfiles {
 		prefix := fmt.Sprintf("clients.client_certificate_profiles[%d]", i)
