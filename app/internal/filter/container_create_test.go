@@ -719,6 +719,117 @@ func TestContainerCreatePolicyDenyBindMountReasonRejectsBindMountSource(t *testi
 	}
 }
 
+// TestContainerCreatePolicyDenyImageMountReason proves image_trust enforce
+// mode denies a HostConfig.Mounts entry of Type "image" — Docker API 1.48+'s
+// image-mount source is an image reference mounted into the container's
+// filesystem, invisible to the bind-mount checks above (which only look at
+// Type == "bind"), and would otherwise smuggle an entirely unverified image
+// filesystem past the create-body Image field's cosign verification.
+func TestContainerCreatePolicyDenyImageMountReason(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        imagetrust.Config
+		hostConfig containerCreateHostConfig
+		wantReason string
+	}{
+		{
+			name: "enforce mode denies image-type mount",
+			cfg:  imagetrust.Config{Mode: imagetrust.ModeEnforce},
+			hostConfig: containerCreateHostConfig{
+				Mounts: []containerCreateMount{{Type: "image", Source: "registry.example.com/base:latest"}},
+			},
+			wantReason: `container create denied: image mount source "registry.example.com/base:latest" is not covered by image trust verification`,
+		},
+		{
+			name: "enforce mode denies image-type mount case-insensitively",
+			cfg:  imagetrust.Config{Mode: imagetrust.ModeEnforce},
+			hostConfig: containerCreateHostConfig{
+				Mounts: []containerCreateMount{{Type: "Image", Source: "registry.example.com/base:latest"}},
+			},
+			wantReason: `container create denied: image mount source "registry.example.com/base:latest" is not covered by image trust verification`,
+		},
+		{
+			name: "enforce mode allows bind-type mount",
+			cfg:  imagetrust.Config{Mode: imagetrust.ModeEnforce},
+			hostConfig: containerCreateHostConfig{
+				Mounts: []containerCreateMount{{Type: "bind", Source: "/data"}},
+			},
+			wantReason: "",
+		},
+		{
+			name: "warn mode does not deny image-type mount",
+			cfg:  imagetrust.Config{Mode: imagetrust.ModeWarn},
+			hostConfig: containerCreateHostConfig{
+				Mounts: []containerCreateMount{{Type: "image", Source: "registry.example.com/base:latest"}},
+			},
+			wantReason: "",
+		},
+		{
+			name: "off mode does not deny image-type mount",
+			cfg:  imagetrust.Config{Mode: imagetrust.ModeOff},
+			hostConfig: containerCreateHostConfig{
+				Mounts: []containerCreateMount{{Type: "image", Source: "registry.example.com/base:latest"}},
+			},
+			wantReason: "",
+		},
+		{
+			name: "zero-value policy (no image trust configured) does not deny image-type mount",
+			hostConfig: containerCreateHostConfig{
+				Mounts: []containerCreateMount{{Type: "image", Source: "registry.example.com/base:latest"}},
+			},
+			wantReason: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := containerCreatePolicy{imageTrustCfg: tt.cfg}
+			reason := policy.denyImageMountReason(tt.hostConfig)
+			if reason != tt.wantReason {
+				t.Fatalf("denyImageMountReason() = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestContainerCreatePolicyInspectDeniesImageMountUnderEnforce proves the
+// image-mount gate is wired into inspect(): an enforce-mode policy denies a
+// container-create body carrying an image-type mount even though the
+// top-level Image field itself would pass verification.
+func TestContainerCreatePolicyInspectDeniesImageMountUnderEnforce(t *testing.T) {
+	mv := &mockImageVerifier{}
+	policy := containerCreatePolicy{
+		allowPrivileged:        true,
+		allowHostNetwork:       true,
+		allowHostPID:           true,
+		allowHostIPC:           true,
+		allowHostUserNS:        true,
+		allowAllDevices:        true,
+		allowAllCapabilities:   true,
+		allowDeviceRequests:    true,
+		allowDeviceCgroupRules: true,
+		imageTrustVerifier:     mv,
+		imageFetcher:           oneCandidateFetcher(),
+		imageTrustCfg:          imagetrust.Config{Mode: imagetrust.ModeEnforce},
+	}
+
+	body := `{"Image":"registry.example.com/myapp:v1.2.3","HostConfig":{"Mounts":[{"Type":"image","Source":"registry.example.com/base:latest"}]}}`
+	reason, err := policy.inspect(nil, makeInspectRequest(t, body), "/containers/create")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	const want = `container create denied: image mount source "registry.example.com/base:latest" is not covered by image trust verification`
+	if reason != want {
+		t.Fatalf("inspect() reason = %q, want %q", reason, want)
+	}
+	// The image-mount gate must deny before the top-level Image field is even
+	// verified, since the mount smuggles content the verified Image field
+	// never covers.
+	if mv.lastCalled != "" {
+		t.Fatalf("expected image verifier not to be called, got lastCalled=%q", mv.lastCalled)
+	}
+}
+
 // TestContainerCreatePolicyInspectDeniesEndpointConfigByDefault proves
 // POST /containers/create's NetworkingConfig.EndpointsConfig carries the same
 // endpoint-config gate as POST /networks/*/connect — the create-side policy
