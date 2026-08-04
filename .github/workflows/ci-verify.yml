@@ -183,13 +183,22 @@ jobs:
           go-version-file: app/go.mod
           cache-dependency-path: app/go.sum
 
-      - name: Run GoReleaser check
+      - name: Run GoReleaser snapshot
         uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89  # v7.2.2
         with:
           distribution: goreleaser
           version: ${{ env.GORELEASER_VERSION }}
-          args: check
+          args: release --snapshot --clean --skip=publish
           workdir: app
+
+      - name: Verify generated Homebrew cask
+        run: |
+          set -euo pipefail
+          cask="app/dist/homebrew/Casks/sockguard.rb"
+          test -f "${cask}"
+          grep -Fq 'cask "sockguard" do' "${cask}"
+          grep -Fq 'binary "sockguard"' "${cask}"
+          grep -Fq 'com.apple.quarantine' "${cask}"
 
   go-lint:
     name: "🧹 Go Lint"

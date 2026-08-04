@@ -46,7 +46,9 @@
 
    `scripts/release-metadata.test.mjs` enforces that the website version, latest released roadmap milestone, Helm chart/application versions, README latest-stable banner, and CHANGELOG release heading all agree.
 
-6. **Lefthook pre-push** — runs automatically on `git push`. Sequence: clean-tree → goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails.
+6. **Lefthook pre-push** — runs automatically on `git push`. Sequence: clean-tree → goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails. Branch CI independently runs the same GoReleaser snapshot and asserts that it rendered `dist/homebrew/Casks/sockguard.rb`.
+
+7. **Release credentials** — confirm the repository Actions secret `HOMEBREW_TAP_TOKEN` is available and has contents-write access to `CodesWhat/homebrew-tap`. GoReleaser uses it only for stable tags; prereleases skip the cask upload.
 
 ---
 
@@ -82,13 +84,14 @@ Swap `-a` for `-s` if you want to GPG-sign locally, but signing is optional and 
 
 1. **verify-ci** — confirms `ci-verify.yml` passed on the tag SHA; fails the release otherwise
 2. **changelog** — extracts the CHANGELOG entry for the tag into release notes
-3. **goreleaser** — builds `linux/amd64` + `linux/arm64` binaries, archives, and checksums; attaches them to the GitHub release
+3. **goreleaser** — builds Linux and Darwin `amd64` + `arm64` binaries, archives, and checksums; attaches them to the GitHub release; and updates `Casks/sockguard.rb` in `CodesWhat/homebrew-tap` for stable tags
 4. **release** — builds and pushes the multi-arch Docker image, then:
    - Signs the image with cosign (keyless, via GitHub OIDC)
    - Verifies the cosign signature in the same job
    - Signs the release tarball with cosign (blob signing)
    - Attests SLSA build provenance (public repo only; activates automatically when the repo is public)
-5. **verify-published** — QA-6 end-to-end gate: pulls each published image tag (ghcr, docker.io, quay.io) and the release tarball + signature assets, then runs the *exact* `cosign verify` / `cosign verify-blob` commands published in `docs/content/docs/verification.mdx`. Catches drift between the operator-facing docs and the actual pipeline.
+5. **verify-homebrew** — on stable tags, clears the hosted runner's implicit `--no-quarantine` setting, installs the cask from `CodesWhat/homebrew-tap` on macOS, proves the installed version matches the tag and has no quarantine attribute, then uninstalls it
+6. **verify-published** — QA-6 end-to-end gate: pulls each published image tag (ghcr, docker.io, quay.io) and the release tarball + signature assets, then runs the *exact* `cosign verify` / `cosign verify-blob` commands published in `docs/content/docs/verification.mdx`. Catches drift between the operator-facing docs and the actual pipeline.
 
 **Verify the release:**
 
@@ -96,6 +99,7 @@ Swap `-a` for `-s` if you want to GPG-sign locally, but signing is optional and 
 - GHCR image exists: `ghcr.io/codeswhat/sockguard:<version>`
 - Docker Hub mirror updated: `docker.io/codeswhat/sockguard:<version>`
 - Quay.io mirror updated: `quay.io/codeswhat/sockguard:<version>`
+- Homebrew cask updated for stable releases: `brew install --cask codeswhat/tap/sockguard`
 - Cosign verify — see `docs/content/docs/verification.mdx` for the canonical invocation
 
 ### Stable patch plus active release-candidate line

@@ -44,3 +44,32 @@ changelog:
 release:
   draft: false
   prerelease: auto  # RC tags marked as prerelease
+
+homebrew_casks:
+  - name: sockguard
+    ids:
+      - default
+    binaries:
+      - sockguard
+    homepage: https://getsockguard.com/
+    description: Default-deny Docker socket proxy with request-aware policy enforcement
+    caveats: |
+      Sockguard needs access to a Docker socket and an explicit policy configuration.
+      See https://getsockguard.com/docs/getting-started before starting it.
+      The macOS binary is not yet Apple notarized. This cask removes its quarantine
+      attribute after Homebrew verifies the release archive checksum.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sockguard"]
+          end
+    skip_upload: auto
+    repository:
+      owner: CodesWhat
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    commit_author:
+      name: goreleaserbot
+      email: security@codeswhat.com
