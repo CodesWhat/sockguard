@@ -377,6 +377,32 @@ type ContainerUpdateRequestBodyConfig struct {
 	AllowCapabilities    bool `mapstructure:"allow_capabilities"`
 	AllowResourceUpdates bool `mapstructure:"allow_resource_updates"`
 	AllowRestartPolicy   bool `mapstructure:"allow_restart_policy"`
+
+	// RequireMemoryLimit/RequireCPULimit/RequireCPULimitHard/RequirePidsLimit
+	// revalidate the container's EFFECTIVE resource state (current values
+	// merged with the request's explicit fields, using Docker's own update
+	// merge semantics) against the same requirements container_create.require_*
+	// enforces at create time. Names are copied verbatim from
+	// ContainerCreateRequestBodyConfig so operator knowledge transfers. All
+	// default false (opt-in, v1.x-safe).
+	//
+	// Evaluated ONLY when AllowResourceUpdates is true: when it is false, the
+	// existing blanket deny of every resource-control field already preserves
+	// the create-time guarantee, so there is nothing for these flags to add.
+	// Enabling any of these while AllowResourceUpdates is false is accepted
+	// (not a config error) but inert; sockguard logs a startup/reload warning
+	// since it is very likely operator confusion.
+	//
+	// Ratchet behavior: because the check runs against the merged EFFECTIVE
+	// state rather than only the fields the request touches, a container that
+	// predates a newly-enabled requirement (e.g. one created with no memory
+	// limit) will have its NEXT guarded update denied until a compliant value
+	// is supplied — even an update that does not itself touch resources. See
+	// the migration note in docs/content/docs/configuration.mdx.
+	RequireMemoryLimit  bool `mapstructure:"require_memory_limit"`
+	RequireCPULimit     bool `mapstructure:"require_cpu_limit"`
+	RequireCPULimitHard bool `mapstructure:"require_cpu_limit_hard"`
+	RequirePidsLimit    bool `mapstructure:"require_pids_limit"`
 }
 
 // ContainerArchiveRequestBodyConfig configures inspection for
@@ -467,6 +493,21 @@ type ServiceRequestBodyConfig struct {
 	// Default false (opt-in).
 	DenySelinuxLabelOverride bool             `mapstructure:"deny_selinux_label_override"`
 	ImageTrust               ImageTrustConfig `mapstructure:"image_trust"`
+
+	// RequireCPULimit / RequireCPULimitHard require
+	// TaskTemplate.Resources.Limits.NanoCPUs to be positive on service create,
+	// ordinary update, and any spec that could become active via rollback
+	// (manual ?rollback=previous or an automatic UpdateConfig.FailureAction:
+	// rollback). Scope is deliberately CPU-only, matching the container-create
+	// CPU-limit parity this closes; service memory/PIDs parity is deferred.
+	// Swarm's TaskTemplate.Resources.Limits has no CpuShares/CpuQuota-style
+	// soft/hard split the way containers do, so both flags collapse to the
+	// same NanoCPUs>0 predicate — kept as two knobs for schema parity with
+	// container_create/container_update so a policy can be mirrored field-name
+	// for field-name. RequireCPULimitHard alone is sufficient; it does not
+	// require RequireCPULimit. Both default false (opt-in).
+	RequireCPULimit     bool `mapstructure:"require_cpu_limit"`
+	RequireCPULimitHard bool `mapstructure:"require_cpu_limit_hard"`
 }
 
 // SwarmRequestBodyConfig configures inspection for swarm writes.

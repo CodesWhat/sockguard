@@ -19,6 +19,19 @@ type ContainerUpdateOptions struct {
 	AllowCapabilities    bool
 	AllowRestartPolicy   bool
 	AllowResourceUpdates bool
+
+	// RequireMemoryLimit/RequireCPULimit/RequireCPULimitHard/RequirePidsLimit
+	// are enforced by ResourceLimitGuard (resource_limit_guard.go), not by
+	// containerUpdatePolicy.inspect below — they revalidate the container's
+	// EFFECTIVE post-update resource state, which requires a daemon lookup
+	// that only runs post-ownership. They are carried on this struct purely
+	// so config.ContainerUpdateRequestBodyConfig.ToFilterOptions has a single
+	// destination field per config leaf; containerUpdatePolicy itself never
+	// reads them.
+	RequireMemoryLimit  bool
+	RequireCPULimit     bool
+	RequireCPULimitHard bool
+	RequirePidsLimit    bool
 }
 
 type containerUpdatePolicy struct {

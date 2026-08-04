@@ -138,6 +138,10 @@ func (c ContainerUpdateRequestBodyConfig) ToFilterOptions() filter.ContainerUpda
 		AllowCapabilities:    c.AllowCapabilities,
 		AllowResourceUpdates: c.AllowResourceUpdates,
 		AllowRestartPolicy:   c.AllowRestartPolicy,
+		RequireMemoryLimit:   c.RequireMemoryLimit,
+		RequireCPULimit:      c.RequireCPULimit,
+		RequireCPULimitHard:  c.RequireCPULimitHard,
+		RequirePidsLimit:     c.RequirePidsLimit,
 	}
 }
 
@@ -217,6 +221,8 @@ func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 		DenySelinuxDisable:         c.DenySelinuxDisable,
 		DenySelinuxLabelOverride:   c.DenySelinuxLabelOverride,
 		ImageTrust:                 c.ImageTrust.toFilterOptions(),
+		RequireCPULimit:            c.RequireCPULimit,
+		RequireCPULimitHard:        c.RequireCPULimitHard,
 	}
 }
 
