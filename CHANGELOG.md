@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The website overview matrix now exposes the multiple-listener comparison.** It matches the detailed competitor pages and the roadmap's native-listener gap instead of showing only the Podman gap in the compact view.
 - **README roadmap now lays out v1.5.2 (in flight) and the v1.6.0 delivery sequence.** Wave 1 (#149, #151, #152) runs in parallel, Wave 2 (#153 then #148) is sequential because both touch the route classifier, and Wave 3 (#150) gates GA.
 
+### Fixed
+
+- **The nightly integration suite no longer breaks when Docker Hub re-tags `busybox:1.37`.** The workflow used to pre-pull only the bare tag, so a registry re-push that moved the tag to a new digest left the pinned-digest ref the tests actually request missing from the runner's local image store. `quality-integration.yml` now pulls the digest-pinned ref straight out of `app/integration/helpers_test.go` so the pre-pull step can never drift from the constant the tests use.
+
 ### Docs
 
 - Clarified the `0600` filtered-socket consumer contract: non-root consumers of the named-volume socket use UID 65532, root can connect, and applications that require another UID should use a matching Sockguard UID with a pre-owned bind mount or authenticated TCP instead of weakening the socket mode.

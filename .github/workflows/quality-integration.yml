@@ -63,8 +63,20 @@ jobs:
           docker version
           docker info --format 'server={{.ServerVersion}} api={{.OperatingSystem}}'
 
+      # Pulls the digest-pinned ref straight from helpers_test.go instead of a
+      # hardcoded tag: dockerd will not pull-on-create for a digest ref that
+      # isn't already in the local store, and a bare-tag pull can satisfy a
+      # different digest after the upstream registry re-tags. Sourcing the ref
+      # from the test constant means this step can never drift from it again.
       - name: Pre-pull busybox sentinel image
-        run: docker pull busybox:1.37
+        run: |
+          ref=$(sed -nE 's/^[[:space:]]*const[[:space:]]+busyboxPinnedRef[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' app/integration/helpers_test.go)
+          if [[ ! "$ref" =~ ^busybox:[[:alnum:]_.-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid or unpinned busyboxPinnedRef: ${ref}" >&2
+            exit 1
+          fi
+          echo "Pre-pulling pinned sentinel image: ${ref}"
+          docker pull "${ref}"
 
       - name: Run integration suite
         working-directory: app
