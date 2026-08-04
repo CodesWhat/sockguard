@@ -67,7 +67,7 @@ Stable releases update the cask automatically. Release candidates and other prer
 The cask installs only the `sockguard` command. It does not create a service, grant Docker socket access, or generate a policy file. Run it under your own service manager after configuring the upstream Docker socket and an explicit policy; Docker Compose remains the recommended production deployment.
 
 <Callout type="warn">
-The macOS binary is not yet signed and notarized with an Apple Developer ID. After Homebrew verifies the release archive's SHA-256 checksum, the cask removes the quarantine attribute from its staged `sockguard` binary so Gatekeeper does not block it. This bypass applies only to that installed file. If your policy requires Apple notarization, use the container image instead.
+The macOS binary is not yet signed and notarized with an Apple Developer ID. After Homebrew verifies the release archive's SHA-256 checksum, the cask removes the quarantine attribute from its staged `sockguard` binary so Gatekeeper does not block it. This bypass applies only to that installed file. That checksum proves the archive wasn't corrupted or tampered with in transit, it does not prove who published it, so it is not a substitute for Apple Developer ID signing/notarization. If your policy requires Apple notarization, or you don't want the quarantine bypass at all, use the container image or verify the GitHub Releases binary with cosign instead.
 </Callout>
 
 Upgrade or remove the cask with:

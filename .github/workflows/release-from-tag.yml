@@ -133,6 +133,7 @@ jobs:
           cache-dependency-path: app/go.sum
 
       - name: Require Homebrew tap token
+        if: ${{ !contains(github.ref_name, '-') }}
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
