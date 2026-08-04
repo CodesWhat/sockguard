@@ -15,9 +15,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.0",
-    "knip": "6.18.0",
+    "knip": "6.31.0",
     "lefthook": "^2.1.9",
-    "turbo": "^2.9.18"
+    "turbo": "^2.10.8"
   },
   "overrides": {
     "next": {
@@ -28,7 +28,7 @@
     "postcss": "^8.5.24",
     "sharp": "^0.35.0"
   },
-  "packageManager": "npm@11.13.0",
+  "packageManager": "npm@11.19.0",
   "engines": {
     "node": ">=22.0.0"
   }
