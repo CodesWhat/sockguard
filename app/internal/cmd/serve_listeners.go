@@ -1,20 +1,93 @@
 package cmd
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"syscall"
 
 	"github.com/codeswhat/sockguard/internal/clientacl"
 	"github.com/codeswhat/sockguard/internal/config"
+	"github.com/codeswhat/sockguard/internal/health"
 	"github.com/codeswhat/sockguard/internal/inbound"
 	"github.com/codeswhat/sockguard/internal/metrics"
 )
+
+// listenerStatusBoard tracks each configured listener's lifecycle state
+// (#149) for the /health response (health.ListenerStatus). Safe for
+// concurrent use: writes come from the bind/publish/shutdown call sites
+// below, reads come from whichever goroutine is currently serving a
+// /health request — both can run concurrently with each other and with
+// writes from other listeners' goroutines.
+type listenerStatusBoard struct {
+	mu      sync.Mutex
+	entries map[string]health.ListenerStatus
+}
+
+func newListenerStatusBoard() *listenerStatusBoard {
+	return &listenerStatusBoard{entries: make(map[string]health.ListenerStatus)}
+}
+
+// register creates (or overwrites) a board entry with identity's Name/Role/
+// Network and the given state. Called once per listener when its full
+// identity first becomes known — at bind time for main listeners, at
+// startup for the admin listener.
+func (b *listenerStatusBoard) register(identity inbound.Identity, state string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.entries[identity.Name] = health.ListenerStatus{
+		Name:    identity.Name,
+		Role:    string(identity.Role),
+		Network: string(identity.Network),
+		State:   state,
+	}
+}
+
+// setState updates only the State field of an already-registered entry,
+// leaving Name/Role/Network untouched. A no-op if name was never
+// registered — callers that only have a name (e.g. the error fan-in, which
+// carries listenerResult, not a full inbound.Identity) can't accidentally
+// fabricate an entry with an empty Network/Role.
+func (b *listenerStatusBoard) setState(name, state string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	entry, ok := b.entries[name]
+	if !ok {
+		return
+	}
+	entry.State = state
+	b.entries[name] = entry
+}
+
+// snapshot returns every tracked listener's current state, sorted by name
+// for deterministic /health output. Implements health.Monitor.ListenersFunc.
+func (b *listenerStatusBoard) snapshot() []health.ListenerStatus {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := make([]health.ListenerStatus, 0, len(b.entries))
+	for _, entry := range b.entries {
+		out = append(out, entry)
+	}
+	slices.SortFunc(out, func(a, c health.ListenerStatus) int {
+		return cmp.Compare(a.Name, c.Name)
+	})
+	return out
+}
 
 // listenerMember is one bound-and-served main listener: the result of
 // EffectiveListeners() (#149) turned into a live net.Listener plus the
@@ -103,7 +176,7 @@ func listenerAddrFor(listen config.ListenConfig) string {
 // live. Any bind failure closes every member already bound, in reverse
 // order, and returns a wrapped error — there is never an instant where a
 // strict non-empty subset of the configured main listeners is live.
-func bindMainListeners(cfg *config.Config, deps *serveDeps, handler http.Handler) ([]*listenerMember, error) {
+func bindMainListeners(cfg *config.Config, deps *serveDeps, handler http.Handler, board *listenerStatusBoard) ([]*listenerMember, error) {
 	effective := cfg.EffectiveListeners()
 	explicit := len(cfg.Listeners) > 0
 
@@ -143,6 +216,7 @@ func bindMainListeners(cfg *config.Config, deps *serveDeps, handler http.Handler
 		if explicit && entry.Socket != "" {
 			member.socketIdentity = statSocketIdentity(deps.lstatPath, entry.Socket)
 		}
+		board.register(identity, health.ListenerStateBound)
 		members = append(members, member)
 	}
 	return members, nil
@@ -164,10 +238,11 @@ func closeMembersReverse(members []*listenerMember) {
 // forwarder never blocks on a fanIn send that the caller isn't ready to
 // receive yet (e.g. during shutdown, once the caller has already stopped
 // selecting on it).
-func publishMainListeners(deps *serveDeps, members []*listenerMember, fanIn chan<- listenerResult) {
+func publishMainListeners(deps *serveDeps, members []*listenerMember, fanIn chan<- listenerResult, board *listenerStatusBoard) {
 	for _, member := range members {
 		memberErrCh := make(chan error, 1)
 		go deps.startServing(member.server, member.listener, memberErrCh)
+		board.setState(member.identity.Name, health.ListenerStateServing)
 		go func() {
 			err := <-memberErrCh
 			fanIn <- listenerResult{name: member.identity.Name, role: member.identity.Role, err: err}
@@ -201,7 +276,11 @@ type listenerResult struct {
 // "remove socket error") is kept identical to the pre-#149 single-listener
 // wording — only the added "listener" attr is new — so existing log-based
 // test assertions keep matching regardless of listener count.
-func shutdownMainListeners(ctx context.Context, deps *serveDeps, members []*listenerMember, logger *slog.Logger) {
+func shutdownMainListeners(ctx context.Context, deps *serveDeps, members []*listenerMember, board *listenerStatusBoard, logger *slog.Logger) {
+	for _, member := range members {
+		board.setState(member.identity.Name, health.ListenerStateDraining)
+	}
+
 	var wg sync.WaitGroup
 	for _, member := range members {
 		wg.Add(1)
@@ -213,6 +292,10 @@ func shutdownMainListeners(ctx context.Context, deps *serveDeps, members []*list
 		}()
 	}
 	wg.Wait()
+
+	for _, member := range members {
+		board.setState(member.identity.Name, health.ListenerStateStopped)
+	}
 
 	for _, member := range members {
 		if member.socketPath == "" {

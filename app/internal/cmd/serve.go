@@ -159,6 +159,18 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return err
 	}
 
+	// listenerStatusBoard (#149) tracks every configured listener's
+	// lifecycle state for the /health response; wired into both monitors
+	// before any listener binds so ListenersFunc is never nil once traffic
+	// could possibly reach it.
+	board := newListenerStatusBoard()
+	if runtime.health != nil {
+		runtime.health.ListenersFunc = board.snapshot
+	}
+	if runtime.readiness != nil {
+		runtime.readiness.ListenersFunc = board.snapshot
+	}
+
 	// Versioner publishes the initial generation BEFORE the chain is built so
 	// the admin policy-version endpoint and the sockguard_policy_version
 	// gauge are populated as soon as the server starts taking traffic.
@@ -196,7 +208,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	// closes every member already bound (reverse order) and returns —
 	// there is never an instant where a strict non-empty subset of the
 	// configured main listeners is live.
-	members, err := bindMainListeners(cfg, deps, swappable)
+	members, err := bindMainListeners(cfg, deps, swappable, board)
 	if err != nil {
 		return err
 	}
@@ -233,11 +245,16 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	defer stopAdmin()
 	if adminServer != nil {
-		runtime.metrics.SetListenerUp("admin", string(inbound.RoleAdmin), string(networkFor(cfg.Admin.Listen.ListenConfig)), true)
+		adminIdentity := inbound.Identity{Name: "admin", Role: inbound.RoleAdmin, Network: networkFor(cfg.Admin.Listen.ListenConfig)}
+		runtime.metrics.SetListenerUp(adminIdentity.Name, string(adminIdentity.Role), string(adminIdentity.Network), true)
+		// startAdminServer binds and starts Serve together, so there is no
+		// separate "bound, not yet serving" window to record for admin —
+		// register it directly as serving.
+		board.register(adminIdentity, health.ListenerStateServing)
 	}
 
 	fanIn := make(chan listenerResult, len(members))
-	publishMainListeners(deps, members, fanIn)
+	publishMainListeners(deps, members, fanIn, board)
 	setListenersUp(runtime.metrics, members, true)
 
 	bannerLines := bannerListenerLines(members, cfg.EffectiveListeners())
@@ -275,6 +292,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		// whole group — see the error fan-in invariant in bindMainListeners
 		// / publishMainListeners.
 		if result.err != nil && !errors.Is(result.err, http.ErrServerClosed) {
+			board.setState(result.name, health.ListenerStateFailed)
 			return fmt.Errorf("listener %q server error: %w", result.name, result.err)
 		}
 	case err := <-adminErrCh:
@@ -283,12 +301,13 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		// endpoints, so a silent admin-only outage would be worse than
 		// taking the whole proxy down and surfacing the cause.
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			board.setState("admin", health.ListenerStateFailed)
 			return fmt.Errorf("admin server error: %w", err)
 		}
 	}
 	stopWatchdog()
 
-	shutdownServers(cmd.Context(), deps, cfg, members, adminServer, runtime.metrics, logger)
+	shutdownServers(cmd.Context(), deps, cfg, members, adminServer, runtime.metrics, board, logger)
 	logger.Info("sockguard stopped")
 	return nil
 }
@@ -298,7 +317,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 // removes any unix sockets sockguard owns. Errors from each step are
 // logged but do not block subsequent steps — shutdown must always make
 // progress so a partial failure can't leave a stale listener behind.
-func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, members []*listenerMember, adminServer *http.Server, registry *metrics.Registry, logger *slog.Logger) {
+func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, members []*listenerMember, adminServer *http.Server, registry *metrics.Registry, board *listenerStatusBoard, logger *slog.Logger) {
 	shutdownCtx, cancel := context.WithTimeout(ctx, deps.shutdownGracePeriod)
 	defer cancel()
 
@@ -308,13 +327,14 @@ func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, m
 	setListenersUp(registry, members, false)
 	if adminServer != nil {
 		registry.SetListenerUp("admin", string(inbound.RoleAdmin), string(networkFor(cfg.Admin.Listen.ListenConfig)), false)
+		board.setState("admin", health.ListenerStateDraining)
 	}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		shutdownMainListeners(shutdownCtx, deps, members, logger)
+		shutdownMainListeners(shutdownCtx, deps, members, board, logger)
 	}()
 
 	if adminServer != nil {
@@ -327,6 +347,10 @@ func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, m
 		}()
 	}
 	wg.Wait()
+
+	if adminServer != nil {
+		board.setState("admin", health.ListenerStateStopped)
+	}
 
 	if cfg.Admin.Enabled && cfg.Admin.Listen.Configured() && cfg.Admin.Listen.Socket != "" {
 		if err := deps.removePath(cfg.Admin.Listen.Socket); err != nil && !os.IsNotExist(err) {

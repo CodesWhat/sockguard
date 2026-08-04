@@ -30,6 +30,53 @@ type HealthResponse struct {
 	Error         string `json:"error,omitempty"`
 	Version       string `json:"version"`
 	UptimeSeconds int    `json:"uptime_seconds"`
+	// Listeners reports every configured listener's identity and lifecycle
+	// state (#149), populated by Monitor.ListenersFunc when set. Omitted
+	// entirely for Monitor instances with no listener concept (e.g. a
+	// legacy caller, or the readiness monitor when it isn't wired to one).
+	Listeners []ListenerStatus `json:"listeners,omitempty"`
+}
+
+// ListenerStatus reports one configured listener's (main or admin) identity
+// and lifecycle state (#149).
+type ListenerStatus struct {
+	Name    string `json:"name"`
+	Role    string `json:"role"`
+	Network string `json:"network"`
+	State   string `json:"state"`
+}
+
+// Listener lifecycle states surfaced via ListenerStatus.State. A listener
+// transitions bound -> serving -> draining -> stopped on a clean shutdown,
+// or bound/serving -> failed if its Serve() call returns unexpectedly
+// before an intentional drain begins.
+const (
+	ListenerStateBound    = "bound"
+	ListenerStateServing  = "serving"
+	ListenerStateDraining = "draining"
+	ListenerStateFailed   = "failed"
+	ListenerStateStopped  = "stopped"
+)
+
+// listenerRequiresAttention reports whether state is anything other than
+// "serving" or "draining" — the two states in which a configured listener is
+// still doing its job (actively accepting new connections, or intentionally
+// finishing in-flight ones during a clean shutdown). "bound" (never started
+// serving), "failed", and "stopped" all indicate the listener is not
+// currently doing what an operator configured it to do.
+func listenerRequiresAttention(state string) bool {
+	return state != ListenerStateServing && state != ListenerStateDraining
+}
+
+// anyListenerRequiresAttention reports whether any entry in listeners is not
+// currently serving or intentionally draining — see listenerRequiresAttention.
+func anyListenerRequiresAttention(listeners []ListenerStatus) bool {
+	for _, l := range listeners {
+		if listenerRequiresAttention(l.State) {
+			return true
+		}
+	}
+	return false
 }
 
 type upstreamHealthChecker struct {
@@ -81,6 +128,16 @@ type Monitor struct {
 	mu       sync.RWMutex
 	last     WatchdogState
 	hasState bool
+
+	// ListenersFunc, when set, is called once per /health request to
+	// populate HealthResponse.Listeners and to fold listener state into the
+	// 503 decision (#149) — any listener not "serving" or "draining" marks
+	// the response unhealthy alongside (or independently of) an upstream
+	// failure. Nil for Monitor instances with no listener concept to
+	// surface — set by the caller after construction (the listener status
+	// board it closes over is only available once the serverGroup has
+	// started binding, which happens after NewMonitor/NewReadinessMonitor).
+	ListenersFunc func() []ListenerStatus
 }
 
 func newUpstreamHealthChecker(ttl, timeout time.Duration, now func() time.Time, dial dialContextFunc) *upstreamHealthChecker {
@@ -220,6 +277,12 @@ func (m *Monitor) Handler() http.HandlerFunc {
 		if !ok {
 			state = m.check(r.Context())
 		}
+
+		var listeners []ListenerStatus
+		if m.ListenersFunc != nil {
+			listeners = m.ListenersFunc()
+		}
+
 		if state.Err != nil {
 			m.logger.WarnContext(r.Context(), "health check failed: upstream unreachable",
 				"error", state.Err,
@@ -231,6 +294,26 @@ func (m *Monitor) Handler() http.HandlerFunc {
 				Error:         "upstream unreachable",
 				Version:       version.Version,
 				UptimeSeconds: int(uptime),
+				Listeners:     listeners,
+			}); encErr != nil {
+				m.logger.WarnContext(r.Context(), "failed to encode unhealthy response",
+					"error", encErr,
+				)
+			}
+			return
+		}
+
+		if anyListenerRequiresAttention(listeners) {
+			m.logger.WarnContext(r.Context(), "health check failed: a configured listener is not serving",
+				"listeners", listeners,
+			)
+			if encErr := httpjson.Write(w, http.StatusServiceUnavailable, HealthResponse{
+				Status:        "unhealthy",
+				Upstream:      state.Status,
+				Error:         "listener not serving",
+				Version:       version.Version,
+				UptimeSeconds: int(uptime),
+				Listeners:     listeners,
 			}); encErr != nil {
 				m.logger.WarnContext(r.Context(), "failed to encode unhealthy response",
 					"error", encErr,
@@ -244,6 +327,7 @@ func (m *Monitor) Handler() http.HandlerFunc {
 			Upstream:      state.Status,
 			Version:       version.Version,
 			UptimeSeconds: int(uptime),
+			Listeners:     listeners,
 		}); encErr != nil {
 			m.logger.WarnContext(r.Context(), "failed to encode healthy response",
 				"error", encErr,
