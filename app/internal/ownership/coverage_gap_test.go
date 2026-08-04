@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/internal/dockerresource"
+	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -155,7 +156,9 @@ func TestAddOwnerLabelToServiceBodyBadContainerLabels(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// middleware.go: nestedObjectPath — error from a non-object intermediate key
+// json_mutate.go: filter.NestedObjectPath — error from a non-object
+// intermediate key (nestedObjectPath was consolidated into filter.NestedObjectPath;
+// see internal/filter/json_mutate.go).
 // ---------------------------------------------------------------------------
 
 func TestNestedObjectPathBadIntermediate(t *testing.T) {
@@ -163,7 +166,7 @@ func TestNestedObjectPathBadIntermediate(t *testing.T) {
 	decoded := map[string]any{
 		"TaskTemplate": "not-an-object",
 	}
-	_, err := nestedObjectPath(decoded, "TaskTemplate", "ContainerSpec", "Labels")
+	_, err := filter.NestedObjectPath(decoded, "TaskTemplate", "ContainerSpec", "Labels")
 	if err == nil {
 		t.Fatal("expected error for non-object intermediate key")
 	}
