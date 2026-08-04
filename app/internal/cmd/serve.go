@@ -26,6 +26,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/health"
 	"github.com/codeswhat/sockguard/internal/httpjson"
+	"github.com/codeswhat/sockguard/internal/inbound"
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/metrics"
 	"github.com/codeswhat/sockguard/internal/ownership"
@@ -231,9 +232,13 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return err
 	}
 	defer stopAdmin()
+	if adminServer != nil {
+		runtime.metrics.SetListenerUp("admin", string(inbound.RoleAdmin), string(networkFor(cfg.Admin.Listen.ListenConfig)), true)
+	}
 
 	fanIn := make(chan listenerResult, len(members))
 	publishMainListeners(deps, members, fanIn)
+	setListenersUp(runtime.metrics, members, true)
 
 	bannerLines := bannerListenerLines(members, cfg.EffectiveListeners())
 	if adminServer != nil {
@@ -283,7 +288,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	stopWatchdog()
 
-	shutdownServers(cmd.Context(), deps, cfg, members, adminServer, logger)
+	shutdownServers(cmd.Context(), deps, cfg, members, adminServer, runtime.metrics, logger)
 	logger.Info("sockguard stopped")
 	return nil
 }
@@ -293,9 +298,17 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 // removes any unix sockets sockguard owns. Errors from each step are
 // logged but do not block subsequent steps — shutdown must always make
 // progress so a partial failure can't leave a stale listener behind.
-func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, members []*listenerMember, adminServer *http.Server, logger *slog.Logger) {
+func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, members []*listenerMember, adminServer *http.Server, registry *metrics.Registry, logger *slog.Logger) {
 	shutdownCtx, cancel := context.WithTimeout(ctx, deps.shutdownGracePeriod)
 	defer cancel()
+
+	// Mark every listener down as soon as draining begins, before the actual
+	// Shutdown calls below: the gauge means "safe to route new traffic here",
+	// not "still finishing in-flight requests" — see Registry.SetListenerUp.
+	setListenersUp(registry, members, false)
+	if adminServer != nil {
+		registry.SetListenerUp("admin", string(inbound.RoleAdmin), string(networkFor(cfg.Admin.Listen.ListenConfig)), false)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -692,9 +705,9 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	// lose the isolation they explicitly opted in to.
 	if cfg.Admin.Enabled && !cfg.Admin.Listen.Configured() {
 		if versioner != nil {
-			layers = append(layers, namedServeHandlerLayer("withPolicyVersionEndpoint", withPolicyVersionEndpoint(cfg, logger, versioner)))
+			layers = append(layers, namedServeHandlerLayer("withPolicyVersionEndpoint", mountOnGate(cfg, withPolicyVersionEndpoint(cfg, logger, versioner))))
 		}
-		layers = append(layers, namedServeHandlerLayer("withAdminEndpoint", withAdminEndpoint(cfg, logger)))
+		layers = append(layers, namedServeHandlerLayer("withAdminEndpoint", mountOnGate(cfg, withAdminEndpoint(cfg, logger))))
 	}
 
 	// Rate limiting and concurrency caps sit after client identity is resolved
@@ -969,6 +982,39 @@ func withAdminClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handl
 	return clientacl.Middleware(cfg.Upstream.Socket, logger, clientacl.Options{
 		AllowedCIDRs: cfg.Clients.AllowedCIDRs,
 	})
+}
+
+// mountOnGate restricts an in-band admin middleware (#149) to fire only on
+// the listener named by cfg.Admin.MountOn. Every main listener shares ONE
+// handler chain (reload.SwappableHandler), so without this gate an in-band
+// admin endpoint mounted anywhere would be reachable from every main
+// listener regardless of MountOn — silently widening the admin attack
+// surface in proportion to listener count.
+//
+// The restriction is active exactly when config.validateAdminMountOn
+// requires (and therefore guarantees, once Validate has passed) a non-empty,
+// listener-matching MountOn: admin rides a main listener (no dedicated
+// admin.listen) and there are 2+ effective main listeners. With <=1
+// effective listener — every configuration that predates #149 — mw is
+// returned unwrapped, preserving today's zero-config "admin rides the sole
+// main listener" behavior byte-for-byte, including not requiring inbound
+// identity to be present in request context.
+func mountOnGate(cfg *config.Config, mw func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	if cfg.Admin.Listen.Configured() || len(cfg.EffectiveListeners()) <= 1 {
+		return mw
+	}
+	mountOn := cfg.Admin.MountOn
+	return func(next http.Handler) http.Handler {
+		gated := mw(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			identity, ok := inbound.FromContext(r.Context())
+			if ok && identity.Name == mountOn {
+				gated.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func withAdminEndpoint(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {

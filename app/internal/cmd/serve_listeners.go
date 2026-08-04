@@ -13,6 +13,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/clientacl"
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/inbound"
+	"github.com/codeswhat/sockguard/internal/metrics"
 )
 
 // listenerMember is one bound-and-served main listener: the result of
@@ -171,6 +172,17 @@ func publishMainListeners(deps *serveDeps, members []*listenerMember, fanIn chan
 			err := <-memberErrCh
 			fanIn <- listenerResult{name: member.identity.Name, role: member.identity.Role, err: err}
 		}()
+	}
+}
+
+// setListenersUp publishes the sockguard_listener_up{listener,role,network}
+// gauge (#149) for every member at once. Called with up=true immediately
+// after publishMainListeners has started every member's Serve() goroutine,
+// and with up=false at the start of shutdown — see Registry.SetListenerUp
+// for why the series is created once and never removed.
+func setListenersUp(registry *metrics.Registry, members []*listenerMember, up bool) {
+	for _, member := range members {
+		registry.SetListenerUp(member.identity.Name, string(member.identity.Role), string(member.identity.Network), up)
 	}
 }
 

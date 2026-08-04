@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/codeswhat/sockguard/internal/inbound"
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/version"
 )
@@ -83,6 +84,15 @@ type Registry struct {
 	throttles     sync.Map // map[throttleLabels]*atomic.Uint64
 	configReloads sync.Map // map[configReloadLabels]*atomic.Uint64
 
+	// listenerUp holds the current sockguard_listener_up gauge value (1 or 0)
+	// per listener identity (#149). Entries are created by SetListenerUp on
+	// first use and never removed — the listener set is operator-configured
+	// and bounded (single digits in any realistic deployment), so a series
+	// staying present at 0 after a listener stops is the desired behavior:
+	// "used to exist, now down" must stay distinguishable from "never
+	// configured".
+	listenerUp sync.Map // map[listenerLabels]*atomic.Int64
+
 	// Duration histograms are also lock-free: each entry is a *atomicHistogram
 	// whose buckets/count/sum are atomic. observeDuration runs one atomic
 	// Add per crossed bucket plus a Float64 sum CAS; scrape reads each
@@ -92,6 +102,10 @@ type Registry struct {
 
 type requestLabels struct {
 	decision string
+	// listener is the operator-configured listener name (#149) the request
+	// arrived on — "default" for the legacy singular listen: block/no inbound
+	// identity in context, an explicit listeners[*].name, or "admin".
+	listener string
 	method   string
 	profile  string
 	route    string
@@ -99,6 +113,7 @@ type requestLabels struct {
 }
 
 type denyLabels struct {
+	listener   string
 	profile    string
 	reasonCode string
 	route      string
@@ -111,9 +126,18 @@ type denyLabels struct {
 
 type durationLabels struct {
 	decision string
+	listener string
 	method   string
 	profile  string
 	route    string
+}
+
+// listenerLabels identifies one configured listener (main or admin) for the
+// sockguard_listener_up gauge (#149).
+type listenerLabels struct {
+	listener string
+	role     string
+	network  string
 }
 
 type upstreamWatchdogLabels struct {
@@ -390,6 +414,7 @@ func (r *Registry) SetUpstreamAPIState(up bool) {
 
 func (r *Registry) observe(req *http.Request, meta *logging.RequestMeta, status int, seconds float64) {
 	decision := decisionLabel(meta, status)
+	listener := listenerLabel(req)
 	method := methodLabel(req)
 	profile := profileLabel(meta)
 	route := routeLabel(req, meta)
@@ -397,6 +422,7 @@ func (r *Registry) observe(req *http.Request, meta *logging.RequestMeta, status 
 
 	requestKey := requestLabels{
 		decision: decision,
+		listener: listener,
 		method:   method,
 		profile:  profile,
 		route:    route,
@@ -404,6 +430,7 @@ func (r *Registry) observe(req *http.Request, meta *logging.RequestMeta, status 
 	}
 	durationKey := durationLabels{
 		decision: decision,
+		listener: listener,
 		method:   method,
 		profile:  profile,
 		route:    route,
@@ -416,12 +443,37 @@ func (r *Registry) observe(req *http.Request, meta *logging.RequestMeta, status 
 	// compare "blocked" vs "would-have-been-blocked" volume.
 	if decision == "deny" || decision == logging.DecisionWouldDeny {
 		addCounter(&r.denies, denyLabels{
+			listener:   listener,
 			profile:    profile,
 			reasonCode: reasonCodeLabel(meta),
 			route:      route,
 			mode:       rolloutModeLabel(meta),
 		})
 	}
+}
+
+// SetListenerUp publishes the sockguard_listener_up{listener,role,network}
+// gauge for one listener identity (#149). Call with up=true once the
+// two-phase bind barrier has published the listener (Serve has started) and
+// with up=false when it stops serving (shutdown, or a fatal Serve error) —
+// the series is created on first use and never removed, so a listener that
+// stopped stays visibly "down" (0) rather than disappearing from scrape
+// output, which would be indistinguishable from "never configured".
+func (r *Registry) SetListenerUp(name, role, network string, up bool) {
+	if r == nil {
+		return
+	}
+	key := listenerLabels{listener: name, role: role, network: network}
+	val, ok := r.listenerUp.Load(key)
+	if !ok {
+		actual, _ := r.listenerUp.LoadOrStore(key, &atomic.Int64{})
+		val = actual
+	}
+	v := int64(0)
+	if up {
+		v = 1
+	}
+	val.(*atomic.Int64).Store(v)
 }
 
 func (r *Registry) observeDuration(key durationLabels, seconds float64) {
@@ -445,6 +497,7 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	readiness := collectCounters[upstreamWatchdogLabels](&r.readiness)
 	throttles := collectCounters[throttleLabels](&r.throttles)
 	reloads := collectCounters[configReloadLabels](&r.configReloads)
+	listenersUp := snapshotListenerUp(&r.listenerUp)
 
 	active := r.activeRequests.Load()
 	upstreamKnown := r.upstreamKnown.Load()
@@ -470,15 +523,15 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	fmt.Fprintln(w, "# HELP sockguard_http_requests_total Total HTTP requests handled by Sockguard.")
 	fmt.Fprintln(w, "# TYPE sockguard_http_requests_total counter")
 	for _, key := range sortedRequestLabels(requests) {
-		fmt.Fprintf(w, "sockguard_http_requests_total{decision=%s,method=%s,profile=%s,route=%s,status=%s} %d\n",
-			labelValue(key.decision), labelValue(key.method), labelValue(key.profile), labelValue(key.route), labelValue(key.status), requests[key])
+		fmt.Fprintf(w, "sockguard_http_requests_total{decision=%s,listener=%s,method=%s,profile=%s,route=%s,status=%s} %d\n",
+			labelValue(key.decision), labelValue(key.listener), labelValue(key.method), labelValue(key.profile), labelValue(key.route), labelValue(key.status), requests[key])
 	}
 
 	fmt.Fprintln(w, "# HELP sockguard_http_denied_requests_total Total requests denied by Sockguard policy or admission checks. mode is enforce (request was blocked) or warn / audit (request would have been blocked, passed through under rollout mode).")
 	fmt.Fprintln(w, "# TYPE sockguard_http_denied_requests_total counter")
 	for _, key := range sortedDenyLabels(denies) {
-		fmt.Fprintf(w, "sockguard_http_denied_requests_total{mode=%s,profile=%s,reason_code=%s,route=%s} %d\n",
-			labelValue(key.mode), labelValue(key.profile), labelValue(key.reasonCode), labelValue(key.route), denies[key])
+		fmt.Fprintf(w, "sockguard_http_denied_requests_total{listener=%s,mode=%s,profile=%s,reason_code=%s,route=%s} %d\n",
+			labelValue(key.listener), labelValue(key.mode), labelValue(key.profile), labelValue(key.reasonCode), labelValue(key.route), denies[key])
 	}
 
 	fmt.Fprintln(w, "# HELP sockguard_http_request_duration_seconds HTTP request latency in seconds.")
@@ -486,15 +539,22 @@ func (r *Registry) writePrometheus(w http.ResponseWriter) {
 	for _, key := range sortedDurationLabels(durations) {
 		h := durations[key]
 		for i, bucket := range defaultDurationBuckets {
-			fmt.Fprintf(w, "sockguard_http_request_duration_seconds_bucket{decision=%s,method=%s,profile=%s,route=%s,le=%s} %d\n",
-				labelValue(key.decision), labelValue(key.method), labelValue(key.profile), labelValue(key.route), labelValue(formatBucket(bucket)), h.buckets[i])
+			fmt.Fprintf(w, "sockguard_http_request_duration_seconds_bucket{decision=%s,listener=%s,method=%s,profile=%s,route=%s,le=%s} %d\n",
+				labelValue(key.decision), labelValue(key.listener), labelValue(key.method), labelValue(key.profile), labelValue(key.route), labelValue(formatBucket(bucket)), h.buckets[i])
 		}
-		fmt.Fprintf(w, "sockguard_http_request_duration_seconds_bucket{decision=%s,method=%s,profile=%s,route=%s,le=%s} %d\n",
-			labelValue(key.decision), labelValue(key.method), labelValue(key.profile), labelValue(key.route), labelValue("+Inf"), h.count)
-		fmt.Fprintf(w, "sockguard_http_request_duration_seconds_sum{decision=%s,method=%s,profile=%s,route=%s} %s\n",
-			labelValue(key.decision), labelValue(key.method), labelValue(key.profile), labelValue(key.route), strconv.FormatFloat(h.sum, 'g', -1, 64))
-		fmt.Fprintf(w, "sockguard_http_request_duration_seconds_count{decision=%s,method=%s,profile=%s,route=%s} %d\n",
-			labelValue(key.decision), labelValue(key.method), labelValue(key.profile), labelValue(key.route), h.count)
+		fmt.Fprintf(w, "sockguard_http_request_duration_seconds_bucket{decision=%s,listener=%s,method=%s,profile=%s,route=%s,le=%s} %d\n",
+			labelValue(key.decision), labelValue(key.listener), labelValue(key.method), labelValue(key.profile), labelValue(key.route), labelValue("+Inf"), h.count)
+		fmt.Fprintf(w, "sockguard_http_request_duration_seconds_sum{decision=%s,listener=%s,method=%s,profile=%s,route=%s} %s\n",
+			labelValue(key.decision), labelValue(key.listener), labelValue(key.method), labelValue(key.profile), labelValue(key.route), strconv.FormatFloat(h.sum, 'g', -1, 64))
+		fmt.Fprintf(w, "sockguard_http_request_duration_seconds_count{decision=%s,listener=%s,method=%s,profile=%s,route=%s} %d\n",
+			labelValue(key.decision), labelValue(key.listener), labelValue(key.method), labelValue(key.profile), labelValue(key.route), h.count)
+	}
+
+	fmt.Fprintln(w, "# HELP sockguard_listener_up Whether a configured listener (main or admin) is currently bound and serving.")
+	fmt.Fprintln(w, "# TYPE sockguard_listener_up gauge")
+	for _, key := range sortedListenerUpLabels(listenersUp) {
+		fmt.Fprintf(w, "sockguard_listener_up{listener=%s,network=%s,role=%s} %d\n",
+			labelValue(key.listener), labelValue(key.network), labelValue(key.role), listenersUp[key])
 	}
 
 	fmt.Fprintln(w, "# HELP sockguard_http_requests_active Currently active HTTP requests.")
@@ -663,6 +723,7 @@ func sortedUpstreamWatchdogLabels(values map[upstreamWatchdogLabels]uint64) []up
 func requestLabelCompare(a, b requestLabels) int {
 	return cmp.Or(
 		cmp.Compare(a.decision, b.decision),
+		cmp.Compare(a.listener, b.listener),
 		cmp.Compare(a.method, b.method),
 		cmp.Compare(a.profile, b.profile),
 		cmp.Compare(a.route, b.route),
@@ -672,6 +733,7 @@ func requestLabelCompare(a, b requestLabels) int {
 
 func denyLabelCompare(a, b denyLabels) int {
 	return cmp.Or(
+		cmp.Compare(a.listener, b.listener),
 		cmp.Compare(a.mode, b.mode),
 		cmp.Compare(a.profile, b.profile),
 		cmp.Compare(a.reasonCode, b.reasonCode),
@@ -682,10 +744,37 @@ func denyLabelCompare(a, b denyLabels) int {
 func durationLabelCompare(a, b durationLabels) int {
 	return cmp.Or(
 		cmp.Compare(a.decision, b.decision),
+		cmp.Compare(a.listener, b.listener),
 		cmp.Compare(a.method, b.method),
 		cmp.Compare(a.profile, b.profile),
 		cmp.Compare(a.route, b.route),
 	)
+}
+
+func sortedListenerUpLabels(values map[listenerLabels]int64) []listenerLabels {
+	keys := make([]listenerLabels, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	slices.SortFunc(keys, func(a, b listenerLabels) int {
+		return cmp.Or(
+			cmp.Compare(a.listener, b.listener),
+			cmp.Compare(a.role, b.role),
+			cmp.Compare(a.network, b.network),
+		)
+	})
+	return keys
+}
+
+// snapshotListenerUp reads the lock-free listenerUp sync.Map into a plain
+// map for stable sorted iteration during Prometheus exposition.
+func snapshotListenerUp(m *sync.Map) map[listenerLabels]int64 {
+	dst := make(map[listenerLabels]int64)
+	m.Range(func(key, value any) bool {
+		dst[key.(listenerLabels)] = value.(*atomic.Int64).Load()
+		return true
+	})
+	return dst
 }
 
 func formatBucket(bucket float64) string {
@@ -714,6 +803,23 @@ func methodLabel(req *http.Request) string {
 		return "UNKNOWN"
 	}
 	return req.Method
+}
+
+// listenerLabel returns the operator-configured listener name (#149) a
+// request arrived on, read from the connection's inbound.Identity (never
+// request-controllable). Falls back to "default" — the same name
+// EffectiveListeners() synthesizes for the legacy singular listen: block —
+// when no identity is present in context, which keeps the label consistent
+// with the pre-#149 single-listener case and with tests that exercise the
+// metrics middleware directly via httptest without a real listener bind.
+func listenerLabel(req *http.Request) string {
+	if req == nil {
+		return "default"
+	}
+	if identity, ok := inbound.FromContext(req.Context()); ok && identity.Name != "" {
+		return identity.Name
+	}
+	return "default"
 }
 
 func profileLabel(meta *logging.RequestMeta) string {
