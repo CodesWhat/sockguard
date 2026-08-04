@@ -393,6 +393,15 @@ Bundled presets and ready-to-run compose stacks are summarized in [Supported Pro
 
 <h2 align="center" id="cli">🔧 CLI</h2>
 
+Install the latest stable native binary on macOS or Linux through the CodesWhat Homebrew tap:
+
+```bash
+brew install --cask codeswhat/tap/sockguard
+sockguard version
+```
+
+The cask installs only the `sockguard` command; it does not create a service, grant Docker socket access, or generate a policy. The macOS binary is not yet Apple notarized, so the cask removes quarantine from only its staged binary after Homebrew verifies the archive checksum; see the [getting-started guide](https://getsockguard.com/docs/getting-started) for the trust boundary. That checksum only proves the downloaded archive is intact, not who published it, so it's not a substitute for Apple Developer ID signing/notarization; if your policy requires notarization or you don't want the quarantine bypass, use the container image or verify the GitHub Releases binary with cosign instead. Container deployment remains the recommended production path.
+
 ```bash
 sockguard serve                                     # Start proxy (default)
 sockguard validate -c sockguard.yaml                # Validate + print compiled rule table
