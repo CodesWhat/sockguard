@@ -55,3 +55,31 @@ func readBoundedBody(r *http.Request, max int64) ([]byte, error) {
 
 	return body, nil
 }
+
+// replaceRequestBody installs final as the request body a mutation
+// committed, keeping every transport-relevant field in lockstep so a stale
+// Content-Length or Transfer-Encoding cannot survive a rewrite: it closes
+// the previous body, installs final via io.NopCloser(bytes.NewReader(...)),
+// sets r.ContentLength (the proxy layer never reads the literal
+// Content-Length header — see readBoundedBody's doc comment and
+// internal/proxy/proxy.go, which relies on req.ContentLength exclusively),
+// clears r.TransferEncoding plus any stale Transfer-Encoding/Content-Length
+// request headers, and installs GetBody so a retried/redirected request
+// re-reads the same committed bytes rather than a drained reader.
+//
+// Callers must only invoke this after every rule that will be applied has
+// been applied without error — there is no partial-body state this function
+// can be called into.
+func replaceRequestBody(r *http.Request, final []byte) {
+	if r.Body != nil {
+		_ = r.Body.Close()
+	}
+	r.Body = io.NopCloser(bytes.NewReader(final))
+	r.ContentLength = int64(len(final))
+	r.TransferEncoding = nil
+	r.Header.Del("Transfer-Encoding")
+	r.Header.Del("Content-Length")
+	r.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(final)), nil
+	}
+}
