@@ -72,7 +72,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.5.1 is the latest stable release.** It fixes fresh named-volume Unix-socket startup, repairs the published Portwing examples, hardens the tri-tool local demo, and publishes the compatibility/competitor audit that defines v1.6. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v1.5.2 is the latest stable release.** It closes an image-trust bypass on image-type container/service mounts, extends network-topology redaction to the new Status field, adds Homebrew tap distribution, and ships the tri-tool Edge Mode + exec example. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -221,6 +221,7 @@ The named-volume quick start creates that socket and its parent directory as UID
 <details>
 <summary><strong>Latest release highlights</strong></summary>
 
+- **v1.5.2 shipped on 2026-08-04** — closes an `image_trust` bypass where image-type `Mounts` entries on container/service create skipped signature verification, extends `redact_network_topology` to the Engine API 1.53 network-inspect `Status` field, adds Homebrew tap distribution, ships the tri-tool Edge Mode + exec Compose variant, and fixes nightly integration digest drift.
 - **v1.5.1 shipped on 2026-07-28** — fixes fresh named-volume Unix-socket startup for the non-root image, corrects Portwing's published registry reference and token command, loopback-binds the authenticated tri-tool demo, and publishes the tested three-tool compatibility boundary plus the competitor-driven v1.6 roadmap.
 - **v1.5.0 shipped on 2026-07-28** — promotes rc.3 to stable after the v1.5 feature surface had been exercised since rc.1 on July 11 and rc.2 on July 20, followed by clean CI, security, artifact, signature, and published-image validation on rc.3 plus a final full-delta review. Safer finite-request timeouts, namespace-sharing and host-cgroupns controls, a hard CPU-cap option, exact exec-environment value pinning, endpoint-config parity, Compose presets, Helm security defaults, fresh embedded-resource ownership checks, registry-push exfiltration gating, structured-log sanitization, fail-closed plugin inspection, and patched dependency graphs are now GA.
 - **v1.5.0-rc.3 shipped on 2026-07-28** — forwarded the complete v1.4.4 security patch into the v1.5 line: untrusted structured-log fields escape record delimiters, malformed plugin configuration is denied before forwarding, and the affected Go and Node dependencies move to patched releases. It retained rc.2's endpoint-config symmetry and rc.1's safer defaults and namespace hardening, passed the full release gates, and became the final candidate promoted to v1.5.0.
@@ -454,17 +455,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.5.2 is in flight** as the next integration/packaging patch, and **v1.6.0 is the next committed feature milestone**, focused on runtime compatibility and safe policy mediation. **v1.5.1 shipped on 2026-07-28** as the prior integration/packaging patch over the v1.5 feature line, and **v1.5.0 shipped on 2026-07-28** as the GA of the v1.5 feature line. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
-
-### Next in v1.5.2
-
-In flight — integration/packaging patch over the v1.5 line.
-
-| Track | Required outcome |
-|---|---|
-| **Nightly integration stability** | Fix nightly integration-test digest drift. |
-| **Distribution** | Add Homebrew tap distribution. |
-| **Dependencies** | Refresh the dependency graph, including majors. |
+**v1.6.0 is the next committed feature milestone**, focused on runtime compatibility and safe policy mediation. **v1.5.2 shipped on 2026-08-04** as the integration/packaging patch over the v1.5 feature line. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
 
 ### Next in v1.6.0
 

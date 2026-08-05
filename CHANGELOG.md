@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-08-04
+
 ### Security
 
 - **Image-type `Mounts` entries no longer bypass `image_trust` enforcement on `POST /containers/create` and `POST /services/create`/`update`.** Docker API 1.48+'s `Type: "image"` mount source is an image reference mounted into the container's filesystem, not a bind path — `extractAndValidateBindSource` (container-create) and the equivalent service-mount loop only ever inspected `Type == "bind"` entries, so an image-type mount was invisible to the bind-mount allowlist and, more importantly, entirely outside the create-body `Image` field's cosign verification. A client whose top-level image passed signature verification could still smuggle an arbitrary, unverified image filesystem into the container via an image-type mount. `image_trust` in `enforce` mode now denies any request carrying a `Mounts` entry of `Type` `"image"` (case-insensitive) before the top-level image is even verified. `warn` mode and `off` are unaffected — behavior there is unchanged. Full verify-and-pin of mount image sources (matching what already happens for the top-level `Image` field) remains v1.6 scope; this patch closes the bypass by denying rather than silently admitting the unverified mount.
