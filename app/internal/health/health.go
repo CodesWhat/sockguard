@@ -31,10 +31,10 @@ type HealthResponse struct {
 	Version       string `json:"version"`
 	UptimeSeconds int    `json:"uptime_seconds"`
 	// Listeners reports every configured listener's identity and lifecycle
-	// state (#149), populated by Monitor.ListenersFunc when set. Omitted
-	// entirely for Monitor instances with no listener concept (e.g. a
-	// legacy caller, or the readiness monitor when it isn't wired to one).
-	Listeners []ListenerStatus `json:"listeners,omitempty"`
+	// state (#149), populated by Monitor.ListenersFunc when set. It is always
+	// encoded (as [] when no listener snapshot is available) so clients can
+	// rely on one response schema on healthy and unhealthy paths.
+	Listeners []ListenerStatus `json:"listeners"`
 }
 
 // ListenerStatus reports one configured listener's (main or admin) identity
@@ -278,9 +278,9 @@ func (m *Monitor) Handler() http.HandlerFunc {
 			state = m.check(r.Context())
 		}
 
-		var listeners []ListenerStatus
+		listeners := make([]ListenerStatus, 0)
 		if m.ListenersFunc != nil {
-			listeners = m.ListenersFunc()
+			listeners = append(listeners, m.ListenersFunc()...)
 		}
 
 		if state.Err != nil {

@@ -2,10 +2,12 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,7 +103,7 @@ func validateExplicitListeners(cfg *Config) []string {
 
 	for i, l := range cfg.Listeners {
 		indexPrefix := fmt.Sprintf("listeners[%d]", i)
-		name := strings.TrimSpace(l.Name)
+		name := l.Name
 
 		switch {
 		case name == "":
@@ -131,8 +133,17 @@ func validateExplicitListeners(cfg *Config) []string {
 			errs = append(errs, fmt.Sprintf("%s: exactly one of socket or address is required", label))
 		case hasSocket:
 			errs = append(errs, validateSocketOwnership(label, l.ListenConfig)...)
+			if l.TLS.Enabled() {
+				errs = append(errs, label+".tls is only valid for TCP listeners")
+			}
 		default:
 			errs = append(errs, validateListenerTCPSecurity(label, l.ListenConfig)...)
+			if l.SocketUID != nil {
+				errs = append(errs, label+".socket_uid is only valid for unix listeners")
+			}
+			if l.SocketGID != nil {
+				errs = append(errs, label+".socket_gid is only valid for unix listeners")
+			}
 		}
 
 		errs = append(errs, validateAllowedProfiles(label, l.AllowedProfiles, profileNames)...)
@@ -148,34 +159,42 @@ func validateExplicitListeners(cfg *Config) []string {
 // over an operator-authored, small (single-digit to low-dozens) list.
 func validateExplicitListenersBindUniqueness(cfg *Config) []string {
 	type bindTarget struct {
-		label string
-		kind  string // "socket" or "address"
-		value string
+		label      string
+		kind       string // "socket" or "address"
+		value      string
+		comparison string
+	}
+	newBindTarget := func(label, kind, value string) bindTarget {
+		comparison := value
+		if kind == "address" {
+			comparison = normalizeTCPBindTarget(value)
+		}
+		return bindTarget{label: label, kind: kind, value: value, comparison: comparison}
 	}
 
 	var targets []bindTarget
 	for _, l := range cfg.Listeners {
 		label := fmt.Sprintf("listeners[%s]", l.Name)
 		if l.Socket != "" {
-			targets = append(targets, bindTarget{label, "socket", l.Socket})
+			targets = append(targets, newBindTarget(label, "socket", l.Socket))
 		}
 		if l.Address != "" {
-			targets = append(targets, bindTarget{label, "address", l.Address})
+			targets = append(targets, newBindTarget(label, "address", l.Address))
 		}
 	}
 	if cfg.Admin.Listen.Configured() {
 		if cfg.Admin.Listen.Socket != "" {
-			targets = append(targets, bindTarget{"admin.listen", "socket", cfg.Admin.Listen.Socket})
+			targets = append(targets, newBindTarget("admin.listen", "socket", cfg.Admin.Listen.Socket))
 		}
 		if cfg.Admin.Listen.Address != "" {
-			targets = append(targets, bindTarget{"admin.listen", "address", cfg.Admin.Listen.Address})
+			targets = append(targets, newBindTarget("admin.listen", "address", cfg.Admin.Listen.Address))
 		}
 	}
 
 	var errs []string
 	for i := 0; i < len(targets); i++ {
 		for j := i + 1; j < len(targets); j++ {
-			if targets[i].kind != targets[j].kind || targets[i].value != targets[j].value {
+			if targets[i].kind != targets[j].kind || targets[i].comparison != targets[j].comparison {
 				continue
 			}
 			errs = append(errs, fmt.Sprintf("%s.%s and %s.%s must be distinct, both are %q",
@@ -183,6 +202,27 @@ func validateExplicitListenersBindUniqueness(cfg *Config) []string {
 		}
 	}
 	return errs
+}
+
+// normalizeTCPBindTarget canonicalizes only representations known to name the
+// same literal endpoint without DNS or interface lookups: IP spelling,
+// case-insensitive hostnames, and leading zeroes on numeric ports. Wildcard
+// versus specific addresses and all other kernel-dependent conflicts remain
+// the bind barrier's responsibility.
+func normalizeTCPBindTarget(address string) string {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return address
+	}
+	if parsed, parseErr := netip.ParseAddr(host); parseErr == nil {
+		host = parsed.String()
+	} else {
+		host = strings.ToLower(host)
+	}
+	if parsed, parseErr := strconv.ParseUint(port, 10, 16); parseErr == nil {
+		port = strconv.FormatUint(parsed, 10)
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // validateAllowedProfiles validates one listener's allowed_profiles scope:

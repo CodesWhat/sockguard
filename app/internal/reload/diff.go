@@ -197,11 +197,9 @@ func indexListenersByName(entries []config.ListenerConfig) map[string]config.Lis
 
 // diffListenerFields reports every field that changed between two entries
 // with the same name, excluding AllowedProfiles (the sole mutable field).
-// Granularity is per top-level field (socket/address/socket_mode/ownership/
-// TLS-as-a-whole/plaintext acks) rather than recursing into TLS subfields —
-// coarser than a full per-subfield projection, but every entry still names
-// exactly which listener and which top-level field changed, which is the
-// diagnostic improvement this rewrite is for.
+// Granularity is per immutable leaf, including individual TLS fields, so
+// reload diagnostics identify the exact listeners.<name>.<field> that needs a
+// restart.
 func diffListenerFields(name string, o, n config.ListenerConfig) []string {
 	var changed []string
 	prefix := "listeners." + name + "."
@@ -226,9 +224,36 @@ func diffListenerFields(name string, o, n config.ListenerConfig) []string {
 	if o.InsecureAllowUnauthenticatedClients != n.InsecureAllowUnauthenticatedClients {
 		changed = append(changed, prefix+"insecure_allow_unauthenticated_clients")
 	}
-	if !reflect.DeepEqual(o.TLS, n.TLS) {
-		changed = append(changed, prefix+"tls")
-	}
+	changed = append(changed, diffListenerTLSFields(prefix+"tls.", o.TLS, n.TLS)...)
 	// AllowedProfiles intentionally excluded: the sole reload-mutable field.
+	return changed
+}
+
+func diffListenerTLSFields(prefix string, oldTLS, newTLS config.ListenTLSConfig) []string {
+	var changed []string
+	if oldTLS.CertFile != newTLS.CertFile {
+		changed = append(changed, prefix+"cert_file")
+	}
+	if oldTLS.KeyFile != newTLS.KeyFile {
+		changed = append(changed, prefix+"key_file")
+	}
+	if oldTLS.ClientCAFile != newTLS.ClientCAFile {
+		changed = append(changed, prefix+"client_ca_file")
+	}
+	if !reflect.DeepEqual(oldTLS.CommonNames, newTLS.CommonNames) {
+		changed = append(changed, prefix+"common_names")
+	}
+	if !reflect.DeepEqual(oldTLS.DNSNames, newTLS.DNSNames) {
+		changed = append(changed, prefix+"dns_names")
+	}
+	if !reflect.DeepEqual(oldTLS.IPAddresses, newTLS.IPAddresses) {
+		changed = append(changed, prefix+"ip_addresses")
+	}
+	if !reflect.DeepEqual(oldTLS.URISANs, newTLS.URISANs) {
+		changed = append(changed, prefix+"uri_sans")
+	}
+	if !reflect.DeepEqual(oldTLS.PublicKeySHA256Pins, newTLS.PublicKeySHA256Pins) {
+		changed = append(changed, prefix+"public_key_sha256_pins")
+	}
 	return changed
 }
