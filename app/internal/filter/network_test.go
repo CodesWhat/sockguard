@@ -456,3 +456,83 @@ func (r *networkReadErrorReadCloser) Read([]byte) (int, error) {
 func (r *networkReadErrorReadCloser) Close() error {
 	return nil
 }
+
+func TestNetworkInspectCreateEnableIPv4(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		opts       NetworkOptions
+		wantReason string
+	}{
+		{
+			name: "unset defaults to allowed",
+			body: `{"Name":"app"}`,
+		},
+		{
+			name: "explicit true allowed",
+			body: `{"Name":"app","EnableIPv4":true}`,
+		},
+		{
+			name:       "explicit false denied by default",
+			body:       `{"Name":"app","EnableIPv4":false}`,
+			wantReason: "network create denied: disabling IPv4 (EnableIPv4: false) is not allowed",
+		},
+		{
+			name: "explicit false allowed when configured",
+			body: `{"Name":"app","EnableIPv4":false}`,
+			opts: NetworkOptions{AllowDisableIPv4: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newNetworkPolicy(tt.opts)
+			req := httptest.NewRequest(http.MethodPost, "/networks/create", strings.NewReader(tt.body))
+
+			reason, err := policy.inspect(nil, req, "/networks/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestNetworkInspectConnectGwPriority(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		allow      bool
+		wantReason string
+	}{
+		{
+			name: "zero GwPriority allowed by default",
+			body: `{"EndpointConfig":{"GwPriority":0}}`,
+		},
+		{
+			name:       "non-zero GwPriority denied by default",
+			body:       `{"EndpointConfig":{"GwPriority":10}}`,
+			wantReason: "network connect denied: endpoint gateway priority is not allowed",
+		},
+		{
+			name:  "non-zero GwPriority allowed under allow_endpoint_config",
+			body:  `{"EndpointConfig":{"GwPriority":10}}`,
+			allow: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newNetworkPolicy(NetworkOptions{AllowEndpointConfig: tt.allow})
+			req := httptest.NewRequest(http.MethodPost, "/networks/app/connect", strings.NewReader(tt.body))
+
+			reason, err := policy.inspect(nil, req, "/networks/app/connect")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}

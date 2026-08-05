@@ -154,6 +154,12 @@ type ContainerCreateOptions struct {
 	// ImageTrust configures cosign-backed signature verification.
 	ImageTrust ImageTrustOptions
 
+	// AllowTmpfsPrivilegedOptions permits tmpfs mount options that re-enable
+	// exec/dev/suid semantics: "exec", "dev", "suid" in
+	// HostConfig.Mounts[].TmpfsOptions.Options (Engine API 1.46+). Default
+	// false: any such option is denied.
+	AllowTmpfsPrivilegedOptions bool
+
 	// AllowEndpointConfig permits static IP, MAC address, Links, and
 	// DriverOpts in NetworkingConfig.EndpointsConfig entries carried on
 	// POST /containers/create. Docker connects every entry here the same way
@@ -207,6 +213,8 @@ type containerCreatePolicy struct {
 	denySelinuxDisable        bool
 	denySelinuxLabelOverride  bool
 	denyUnconfinedSystemPaths bool
+
+	allowTmpfsPrivilegedOptions bool
 
 	allowEndpointConfig bool
 
@@ -301,6 +309,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denySelinuxDisable:                opts.DenySelinuxDisable,
 		denySelinuxLabelOverride:          opts.DenySelinuxLabelOverride,
 		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
+		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		allowEndpointConfig:               opts.AllowEndpointConfig,
 	}
 
@@ -705,6 +714,15 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return denyReason, nil
 	}
 	if denyReason := p.denyImageMountReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := denyUnknownMountTypeReason(createReq.HostConfig.Mounts, "container create"); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := denyMountSubpathReason(createReq.HostConfig.Mounts, "container create"); denyReason != "" {
+		return denyReason, nil
+	}
+	if denyReason := p.denyTmpfsOptionsReason(createReq.HostConfig.Mounts); denyReason != "" {
 		return denyReason, nil
 	}
 	if denyReason := p.denyNetworkingConfigReason(createReq.NetworkingConfig); denyReason != "" {
@@ -1220,6 +1238,88 @@ func (p containerCreatePolicy) denyImageMountReason(hostConfig containerCreateHo
 	for _, mount := range hostConfig.Mounts {
 		if strings.EqualFold(mount.Type, "image") {
 			return fmt.Sprintf("container create denied: image mount source %q is not covered by image trust verification", mount.Source)
+		}
+	}
+	return ""
+}
+
+// denyUnknownMountTypeReason denies any HostConfig.Mounts entry whose Type is
+// not one of the known set Sockguard's policy has an explicit posture for
+// (see knownContainerCreateMountTypes). Shared by the container-create
+// inspector (subject "container create") and reused nowhere else today, but
+// kept subject-parameterized to match the pattern of the other shared deny
+// helpers in this file (capabilityAddDenyReason, denyEndpointConfigReason).
+func denyUnknownMountTypeReason(mounts []containerCreateMount, subject string) string {
+	for _, mount := range mounts {
+		mountType := strings.ToLower(strings.TrimSpace(mount.Type))
+		if mountType == "" || !knownContainerCreateMountTypes[mountType] {
+			return fmt.Sprintf("%s denied: mount type %q is not allowed", subject, mount.Type)
+		}
+	}
+	return ""
+}
+
+// denyMountSubpathReason validates Mount.VolumeOptions.Subpath (Engine API
+// 1.45+) and Mount.ImageOptions.Subpath (Engine API 1.55+): each must be
+// empty or a clean relative path that does not escape the mount root via
+// "..". Docker resolves the subpath inside the volume/image filesystem, so an
+// unvalidated ".." component is a path-traversal escape from the intended
+// mount root into arbitrary sibling content.
+func denyMountSubpathReason(mounts []containerCreateMount, subject string) string {
+	for _, mount := range mounts {
+		if mount.VolumeOptions != nil && !validMountSubpath(mount.VolumeOptions.Subpath) {
+			return fmt.Sprintf("%s denied: mount volume subpath %q is invalid", subject, mount.VolumeOptions.Subpath)
+		}
+		if mount.ImageOptions != nil && !validMountSubpath(mount.ImageOptions.Subpath) {
+			return fmt.Sprintf("%s denied: mount image subpath %q is invalid", subject, mount.ImageOptions.Subpath)
+		}
+	}
+	return ""
+}
+
+// validMountSubpath reports whether subpath is safe to pass through to
+// Docker as a Mount VolumeOptions/ImageOptions Subpath: empty (no subpath),
+// or a relative path that, once cleaned, does not start with a ".." escape
+// component and is not itself absolute.
+func validMountSubpath(subpath string) bool {
+	if subpath == "" {
+		return true
+	}
+	if path.IsAbs(subpath) {
+		return false
+	}
+	cleaned := path.Clean(subpath)
+	return cleaned != ".." && !strings.HasPrefix(cleaned, "../")
+}
+
+// tmpfsPrivilegeEscalatingOptions are the tmpfs mount option keywords that
+// override Docker's default noexec/nodev/nosuid tmpfs posture. Matched
+// case-insensitively against the first token of each
+// TmpfsOptions.Options entry.
+var tmpfsPrivilegeEscalatingOptions = map[string]bool{
+	"exec": true,
+	"dev":  true,
+	"suid": true,
+}
+
+// denyTmpfsOptionsReason validates HostConfig.Mounts[].TmpfsOptions.Options
+// (Engine API 1.46+): each entry must be a well-formed 1-or-2-element token
+// list (malformed entries are rejected fail-closed rather than silently
+// ignored), and exec/dev/suid-enabling options are denied unless
+// allowTmpfsPrivilegedOptions is set.
+func (p containerCreatePolicy) denyTmpfsOptionsReason(mounts []containerCreateMount) string {
+	for _, mount := range mounts {
+		if mount.TmpfsOptions == nil {
+			continue
+		}
+		for _, option := range mount.TmpfsOptions.Options {
+			if len(option) == 0 || len(option) > 2 || strings.TrimSpace(option[0]) == "" {
+				return "container create denied: malformed tmpfs mount option"
+			}
+			key := strings.ToLower(strings.TrimSpace(option[0]))
+			if tmpfsPrivilegeEscalatingOptions[key] && !p.allowTmpfsPrivilegedOptions {
+				return fmt.Sprintf("container create denied: tmpfs mount option %q is not allowed", option[0])
+			}
 		}
 	}
 	return ""

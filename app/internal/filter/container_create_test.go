@@ -2867,3 +2867,174 @@ func TestBuildImageTrustFieldsInvalidKeyFails(t *testing.T) {
 		t.Fatal("expected initErr for invalid PEM key, got nil")
 	}
 }
+
+func TestContainerCreateUnknownMountType(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantReason string
+	}{
+		{
+			name: "bind mount type allowed with allowlisted source",
+			body: `{"HostConfig":{"Mounts":[{"Type":"bind","Source":"/safe"}]}}`,
+		},
+		{
+			name: "volume mount type passes through",
+			body: `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"myvol"}]}}`,
+		},
+		{
+			name: "tmpfs mount type passes through",
+			body: `{"HostConfig":{"Mounts":[{"Type":"tmpfs"}]}}`,
+		},
+		{
+			name: "image mount type passes through when trust is off",
+			body: `{"HostConfig":{"Mounts":[{"Type":"image","Source":"alpine:latest"}]}}`,
+		},
+		{
+			name:       "npipe mount type denied fail-closed",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"npipe","Source":"\\\\.\\pipe\\foo"}]}}`,
+			wantReason: `container create denied: mount type "npipe" is not allowed`,
+		},
+		{
+			name:       "cluster mount type denied fail-closed",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"cluster","Source":"csi-vol"}]}}`,
+			wantReason: `container create denied: mount type "cluster" is not allowed`,
+		},
+		{
+			name:       "unrecognized future mount type denied fail-closed",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"quantum","Source":"x"}]}}`,
+			wantReason: `container create denied: mount type "quantum" is not allowed`,
+		},
+		{
+			name:       "empty mount type denied fail-closed",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"","Source":"x"}]}}`,
+			wantReason: `container create denied: mount type "" is not allowed`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newContainerCreatePolicy(ContainerCreateOptions{AllowedBindMounts: []string{"/safe"}})
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+
+			reason, err := policy.inspect(testLogger(), req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestContainerCreateMountSubpath(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantReason string
+	}{
+		{
+			name: "empty volume subpath allowed",
+			body: `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"v","VolumeOptions":{"Subpath":""}}]}}`,
+		},
+		{
+			name: "clean relative volume subpath allowed",
+			body: `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"v","VolumeOptions":{"Subpath":"data/logs"}}]}}`,
+		},
+		{
+			name:       "traversal volume subpath denied",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"v","VolumeOptions":{"Subpath":"../../etc"}}]}}`,
+			wantReason: `container create denied: mount volume subpath "../../etc" is invalid`,
+		},
+		{
+			name:       "absolute volume subpath denied",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"volume","Source":"v","VolumeOptions":{"Subpath":"/etc"}}]}}`,
+			wantReason: `container create denied: mount volume subpath "/etc" is invalid`,
+		},
+		{
+			name: "clean relative image subpath allowed",
+			body: `{"HostConfig":{"Mounts":[{"Type":"image","Source":"alpine","ImageOptions":{"Subpath":"usr/share"}}]}}`,
+		},
+		{
+			name:       "traversal image subpath denied",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"image","Source":"alpine","ImageOptions":{"Subpath":".."}}]}}`,
+			wantReason: `container create denied: mount image subpath ".." is invalid`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newContainerCreatePolicy(ContainerCreateOptions{})
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+
+			reason, err := policy.inspect(testLogger(), req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestContainerCreateTmpfsOptions(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		allow      bool
+		wantReason string
+	}{
+		{
+			name: "mode option allowed",
+			body: `{"HostConfig":{"Mounts":[{"Type":"tmpfs","TmpfsOptions":{"Options":[["mode","1770"]]}}]}}`,
+		},
+		{
+			name: "size option allowed",
+			body: `{"HostConfig":{"Mounts":[{"Type":"tmpfs","TmpfsOptions":{"Options":[["size","65536k"]]}}]}}`,
+		},
+		{
+			name:       "exec option denied by default",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"tmpfs","TmpfsOptions":{"Options":[["exec"]]}}]}}`,
+			wantReason: `container create denied: tmpfs mount option "exec" is not allowed`,
+		},
+		{
+			name:       "dev option denied by default",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"tmpfs","TmpfsOptions":{"Options":[["dev"]]}}]}}`,
+			wantReason: `container create denied: tmpfs mount option "dev" is not allowed`,
+		},
+		{
+			name:       "suid option denied by default",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"tmpfs","TmpfsOptions":{"Options":[["suid"]]}}]}}`,
+			wantReason: `container create denied: tmpfs mount option "suid" is not allowed`,
+		},
+		{
+			name:  "exec option allowed when configured",
+			body:  `{"HostConfig":{"Mounts":[{"Type":"tmpfs","TmpfsOptions":{"Options":[["exec"]]}}]}}`,
+			allow: true,
+		},
+		{
+			name:       "malformed empty option token denied fail-closed",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"tmpfs","TmpfsOptions":{"Options":[[]]}}]}}`,
+			wantReason: "container create denied: malformed tmpfs mount option",
+		},
+		{
+			name:       "malformed over-long option token denied fail-closed",
+			body:       `{"HostConfig":{"Mounts":[{"Type":"tmpfs","TmpfsOptions":{"Options":[["a","b","c"]]}}]}}`,
+			wantReason: "container create denied: malformed tmpfs mount option",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newContainerCreatePolicy(ContainerCreateOptions{AllowTmpfsPrivilegedOptions: tt.allow})
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(tt.body))
+
+			reason, err := policy.inspect(testLogger(), req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}

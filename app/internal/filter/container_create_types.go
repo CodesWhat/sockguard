@@ -99,6 +99,50 @@ type containerCreateHostConfig struct {
 type containerCreateMount struct {
 	Type   string `json:"Type"`
 	Source string `json:"Source"`
+	// VolumeOptions.Subpath (Engine API 1.45+) mounts a subdirectory of the
+	// named volume instead of its root. ImageOptions.Subpath (Engine API
+	// 1.55+) does the same for image-type mounts. Both are validated by
+	// denyMountSubpathReason against a path-traversal escape.
+	VolumeOptions *containerCreateMountVolumeOptions `json:"VolumeOptions"`
+	ImageOptions  *containerCreateMountImageOptions  `json:"ImageOptions"`
+	// TmpfsOptions.Options (Engine API 1.46+) is a nested [][]string of raw
+	// tmpfs mount option tokens (e.g. ["mode","1770"], ["exec"]), validated
+	// by denyTmpfsOptionsReason.
+	TmpfsOptions *containerCreateMountTmpfsOptions `json:"TmpfsOptions"`
+}
+
+// containerCreateMountVolumeOptions mirrors the Docker API Mount.VolumeOptions
+// object, narrowed to the field the policy inspects.
+type containerCreateMountVolumeOptions struct {
+	Subpath string `json:"Subpath"`
+}
+
+// containerCreateMountImageOptions mirrors the Docker API Mount.ImageOptions
+// object, narrowed to the field the policy inspects.
+type containerCreateMountImageOptions struct {
+	Subpath string `json:"Subpath"`
+}
+
+// containerCreateMountTmpfsOptions mirrors the Docker API Mount.TmpfsOptions
+// object, narrowed to the field the policy inspects.
+type containerCreateMountTmpfsOptions struct {
+	Options [][]string `json:"Options"`
+}
+
+// knownContainerCreateMountTypes is the set of Mount.Type values Sockguard's
+// policy has an explicit posture for: "bind" (allowlist-checked),
+// "volume"/"tmpfs" (pass through, checked for subpath/options above), and
+// "image" (image-trust-checked in enforce mode, see denyImageMountReason).
+// Any other value — including future Docker Mount types this proxy has never
+// seen — is denied fail-closed by denyUnknownMountTypeReason rather than
+// silently passing through unchecked the way an unrecognized Type used to
+// (extractAndValidateBindSource returns ok=false for it, which the bind-mount
+// loop above treated as "nothing to check" rather than "deny").
+var knownContainerCreateMountTypes = map[string]bool{
+	"bind":   true,
+	"volume": true,
+	"tmpfs":  true,
+	"image":  true,
 }
 
 type containerCreateDevice struct {

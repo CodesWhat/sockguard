@@ -1,68 +1,35 @@
-# Sockguard — Portwing with Compose Preset
+# Sockguard — Portwing with Build Preset
 #
-# Extends the portwing preset with network and volume lifecycle so Portwing
-# can deploy docker-compose stacks through this proxy, not just standalone
-# containers. Plain container orchestration (list/inspect/lifecycle/create)
-# already works against portwing.yaml; a compose stack additionally needs to
-# create/remove its own networks and named volumes, which portwing.yaml denies.
+# Extends portwing-with-compose.yaml with CLASSIC BUILDER support only —
+# `docker compose build` / `up --build` run with DOCKER_BUILDKIT=0 set in the
+# client environment. This is NOT Compose-BuildKit support: by default,
+# `docker compose build` never calls POST /build at all — it drives dockerd's
+# embedded BuildKit over two hijacked, unversioned streams, POST /session and
+# POST /grpc (Engine API 1.53 deprecated both; current Buildx 0.36.0 still
+# uses them). Those streams carry secrets, SSH agent forwarding, and file
+# sync with no request body Sockguard can inspect or bound once opened, so
+# they stay DENIED here and require the dedicated
+# insecure_accept_opaque_buildkit_tunnels acknowledgment to open at all — no
+# preset sets it. THIS FAILURE IS INTENTIONAL: a default (BuildKit) `docker
+# compose build` against this preset will fail with a proxy denial on
+# /session or /grpc, not a bug to work around by widening this file.
 #
-# Allows: everything in portwing.yaml plus:
-#         POST   /networks/create       — compose creates the stack's network(s)
-#         DELETE /networks/*            — compose tears them down on `down`
-#         POST   /networks/*/connect    — a compose service attached to more
-#                                          than one network is only carried on
-#                                          its primary network by the
-#                                          container-create body; extra
-#                                          networks are attached via connect
-#                                          after create, same as drydock.yaml's
-#                                          multi-network recreate flow. Note:
-#                                          portwing.yaml itself has no connect
-#                                          rule (unlike drydock.yaml) — this is
-#                                          new here, not carried over.
-#         POST   /networks/*/disconnect — compose detaches services before
-#                                         removing a network
-#         POST   /volumes/create       — compose creates named volumes
-#         DELETE /volumes/*            — compose removes them on `down -v`
+# To use this preset, set DOCKER_BUILDKIT=0 in the environment that runs
+# `docker compose build` / `up --build` (Compose honors it and falls back to
+# the classic, single-request-body /build endpoint sockguard can fully
+# inspect — Dockerfile RUN-instruction scanning, remote-context denial,
+# host-network denial all apply exactly as they do for portainer.yaml's
+# unrestricted /build access). See docs/content/docs/security.mdx's supported
+# transport matrix for the full breakdown of what each preset covers.
 #
-# Body inspection for the new endpoints reuses the same guardrails already in
-# effect for portwing.yaml's container_create/image_pull blocks — the
-# network/volume create policies default to denying custom drivers and driver
-# opts (see request_body.network / request_body.volume in internal/config)
-# unless explicitly widened here, and this preset does not widen them.
-# allowed_bind_mounts and allowed_runtimes below are carried over unchanged
-# from portwing.yaml; a compose stack's own container-create calls still go
-# through that same bind-mount/runtime allowlist.
+# Allows: everything in portwing-with-compose.yaml plus:
+#         POST /build — classic builder only, all three request-body build
+#                        flags left at their secure default (false below)
 #
-# Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
-# with DEFAULT settings never calls POST /build at all — it drives dockerd's
-# embedded BuildKit over the hijacked, unversioned POST /session and
-# POST /grpc streams instead, both denied here. Those streams carry secrets,
-# SSH agent forwarding, and file sync sockguard cannot inspect once opened.
-# Use portwing-with-build.yaml if you need `--build` support: it layers
-# CLASSIC builder support (POST /build only, requires DOCKER_BUILDKIT=0 in
-# the client environment) on top of everything in this preset. It does not
-# open /session or /grpc — BuildKit gRPC mediation is a future v1.7+ epic.
-#
-# Log streaming: Portwing's GetContainerLogs() calls GET /containers/{id}/logs
-# (including follow=1 for live streaming). This path is classified as a
-# read-exfiltration endpoint by sockguard's startup validator because logs can
-# contain secrets. insecure_allow_read_exfiltration: true below acknowledges
-# that tradeoff. The /containers/*/archive, /containers/*/export, and
-# /containers/*/attach paths are intentionally not allowed — those are the
-# bulk-data exfil vectors. Operators who want to suppress log access should
-# remove the /containers/*/logs rule and the insecure_allow_read_exfiltration
-# flag and accept that GetContainerLogs() will return 403.
-#
-# Redaction posture — redact_mount_paths and redact_container_env are DISABLED
-# here for the same drydock-passthrough reason documented in portwing.yaml's
-# header comment: Portwing forwards container inspect data to drydock, whose
-# update detection reads HostConfig.Binds and Config.Env to recreate
-# containers. Operators running Portwing standalone (no drydock) can safely
-# flip both to true; see portwing.yaml for the exact snippet.
-#
-# Exec: this preset denies all exec paths, same as portwing.yaml. Combine with
-# portwing-with-exec.yaml's request_body.exec block manually if you need both
-# compose deploys and interactive exec through the same proxy instance.
+# Still denied: /session, /grpc, and any moby.buildkit.v1.Control method path
+# (BuildKit gRPC mediation is a v1.7+ epic, not implemented here). Exec is
+# still denied — combine with portwing-with-exec.yaml's request_body.exec
+# block manually if you need both build and interactive exec.
 insecure_allow_read_exfiltration: true
 
 upstream:
@@ -106,6 +73,14 @@ request_body:
       - runc
   image_pull:
     allow_all_registries: true
+  # Classic builder: no remote build contexts (they can't be inspected for
+  # RUN instructions), no host-network builds, and RUN instructions stay
+  # denied. All three explicit false here is the secure default; left in
+  # place rather than omitted so the deny posture is visible at the call site.
+  build:
+    allow_remote_context: false
+    allow_host_network: false
+    allow_run_instructions: false
 
 rules:
   # Health and metadata
@@ -177,11 +152,16 @@ rules:
   - match: { method: DELETE, path: "/images/**" }
     action: allow
 
+  # Classic builder only — see header comment. BuildKit's /session and
+  # /grpc stay denied by the catch-all rule below.
+  - match: { method: POST, path: "/build" }
+    action: allow
+
   # Network read + lifecycle. list/inspect carried over from portwing.yaml;
   # create/connect/delete/disconnect are new here so compose can own its
-  # stack network's full lifecycle, including multi-network service attach
-  # (see header comment). Body inspection defaults (deny custom drivers, deny
-  # driver opts) still apply to POST /networks/create.
+  # stack network's full lifecycle, including multi-network service attach.
+  # Body inspection defaults (deny custom drivers, deny driver opts) still
+  # apply to POST /networks/create.
   - match: { method: GET, path: "/networks" }
     action: allow
   - match: { method: GET, path: "/networks/*" }
@@ -220,8 +200,9 @@ rules:
   - match: { method: GET, path: "/services/*" }
     action: allow
 
-  # Deny everything else — /build (see header comment above), exec, secrets,
-  # plugins, and raw archive/export/attach streams.
+  # Deny everything else — including /session and /grpc (BuildKit's opaque
+  # tunnel, see header comment), exec, secrets, plugins, and raw
+  # archive/export/attach streams.
   - match: { method: "*", path: "/**" }
     action: deny
-    reason: "not allowed by portwing-with-compose preset"
+    reason: "not allowed by portwing-with-build preset"

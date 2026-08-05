@@ -46,6 +46,10 @@ func (p imagePullPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath
 		return "", nil
 	}
 
+	if denyReason := denyRegistryAuthHeaderReason(r.Header.Get("X-Registry-Auth"), p.allowAllRegistries, p.allowedRegistries, "image pull"); denyReason != "" {
+		return denyReason, nil
+	}
+
 	query := r.URL.Query()
 	if fromSrc := strings.TrimSpace(query.Get("fromSrc")); fromSrc != "" {
 		if p.allowImports {

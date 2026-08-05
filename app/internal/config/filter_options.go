@@ -77,6 +77,7 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenySelinuxDisable:                c.DenySelinuxDisable,
 		DenySelinuxLabelOverride:          c.DenySelinuxLabelOverride,
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
+		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
 	}
 }
 
@@ -188,6 +189,7 @@ func (c NetworkRequestBodyConfig) ToFilterOptions() filter.NetworkOptions {
 		AllowDriverOptions:     c.AllowDriverOptions,
 		AllowEndpointConfig:    c.AllowEndpointConfig,
 		AllowDisconnectForce:   c.AllowDisconnectForce,
+		AllowDisableIPv4:       c.AllowDisableIPv4,
 	}
 }
 
