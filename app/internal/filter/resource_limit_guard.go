@@ -476,6 +476,21 @@ func serviceVersionQuery(r *http.Request) (uint64, bool) {
 	return v, true
 }
 
+// serviceManualRollbackQuery distinguishes an ordinary service update from a
+// manual rollback request while rejecting ambiguous duplicate query values.
+// Docker's request parser may choose one of multiple values, but the guard
+// must never guess which daemon behavior it is validating.
+func serviceManualRollbackQuery(r *http.Request) (manualRollback, valid bool) {
+	values, present := r.URL.Query()["rollback"]
+	if !present {
+		return false, true
+	}
+	if len(values) != 1 {
+		return false, false
+	}
+	return strings.EqualFold(values[0], "previous"), true
+}
+
 func serviceRequirementsList(svc ServiceOptions) string {
 	var parts []string
 	if svc.RequireCPULimit {
@@ -521,6 +536,17 @@ func (g *resourceLimitGuard) guardServiceWrite(w http.ResponseWriter, r *http.Re
 		rp.Operation = "update"
 	}
 	rp.StateSource = "request"
+	manualRollback := false
+	if isUpdate {
+		var rollbackQueryValid bool
+		manualRollback, rollbackQueryValid = serviceManualRollbackQuery(r)
+		if !rollbackQueryValid {
+			rp.Operation = "manual_rollback"
+			g.respondHardDeny(w, r, http.StatusBadRequest, reasonCodeResourceLimitRequestInvalid,
+				"service update denied: rollback query parameter must have exactly one value", policy.DenyResponseVerbosity, rp)
+			return
+		}
+	}
 
 	body, err := readBoundedBody(r, maxServiceBodyBytes)
 	if err != nil {
@@ -551,7 +577,7 @@ func (g *resourceLimitGuard) guardServiceWrite(w http.ResponseWriter, r *http.Re
 	// request body entirely and apply the target's stored PreviousSpec — so
 	// validating the submitted body (which is what the switch below would
 	// otherwise do) proves nothing about what actually becomes active.
-	if isUpdate && strings.EqualFold(r.URL.Query().Get("rollback"), "previous") {
+	if manualRollback {
 		g.guardServiceManualRollback(w, r, updateID, svc, policy.DenyResponseVerbosity, rp, next)
 		return
 	}
@@ -578,7 +604,6 @@ func (g *resourceLimitGuard) guardServiceWrite(w http.ResponseWriter, r *http.Re
 		}) {
 			return
 		}
-		rp.Operation = "update"
 	}
 
 	g.respondAllow(w, r, next, rp)
@@ -586,9 +611,11 @@ func (g *resourceLimitGuard) guardServiceWrite(w http.ResponseWriter, r *http.Re
 
 func (g *resourceLimitGuard) guardServiceManualRollback(w http.ResponseWriter, r *http.Request, id string, svc ServiceOptions, verbosity DenyResponseVerbosity, rp *logging.ResourcePolicyMeta, next http.Handler) {
 	rp.Operation = "manual_rollback"
-	g.guardServiceRollbackTarget(w, r, id, svc, verbosity, rp, next, "previous_spec", func(res ServiceInspectResult) int64 {
+	if g.guardServiceRollbackTarget(w, r, id, svc, verbosity, rp, next, "previous_spec", func(res ServiceInspectResult) int64 {
 		return res.PreviousSpecNanoCPUs
-	})
+	}) {
+		g.respondAllow(w, r, next, rp)
+	}
 }
 
 // guardServiceRollbackTarget validates the version+extract(current) against
