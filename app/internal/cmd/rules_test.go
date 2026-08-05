@@ -944,187 +944,173 @@ func TestPresetConfigsDenyAttestationStatementsByDefault(t *testing.T) {
 
 // --- #148: libpod pod-create/exec/volume/network/secret gate tables ---
 
-func TestValidateAndCompileRulesAllowsLibpodPodCreateWithRequestBodyInspection(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/pods/create"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+func TestValidateAndCompileRulesLibpodGates(t *testing.T) {
+	tests := []struct {
+		name string
+		// configure mutates a fresh config.Defaults() to set up the case's
+		// rules and any request-body/insecure-flag opt-ins.
+		configure func(cfg *config.Config)
+		wantErr   bool
+		// wantErrContains lists substrings that must all appear in the
+		// returned error: guarded endpoints plus, where relevant, the
+		// opt-in hint.
+		wantErrContains []string
+	}{
+		{
+			name: "allows libpod pod create with request body inspection",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/pods/create"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+		{
+			name: "allows libpod exec with configured body inspection",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/exec"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/exec/*/start"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				// #148 design decision C3: request_body.exec is shared
+				// between the Docker-compat and libpod exec paths — no
+				// separate libpod_exec config.
+				cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/local/bin/pre-update"}}
+			},
+		},
+		{
+			name: "allows libpod volume, network, and secret writes with request body inspection",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/volumes/create"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/networks/create"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/secrets/create"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+		{
+			name: "rejects libpod exec without configured allowlist",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/exec"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr:         true,
+			wantErrContains: []string{"POST /libpod/containers/sockguard-test/exec"},
+		},
+		{
+			// Pins #148 design decision C2: play/kube (and its kube/play
+			// alias), kube/apply, and manifest writes have NO request-body
+			// inspector at all — full YAML/PodSpec modeling is deferred
+			// past v1.6 — so admitting any of them requires
+			// insecure_allow_body_blind_writes exactly like any other
+			// uninspected body-sensitive write, never a free pass.
+			name: "rejects libpod play/kube and manifest writes without explicit opt-in",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/play/kube"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/kube/play"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/kube/apply"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/manifests/create"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/manifests/*"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPut, Path: "/libpod/manifests/*"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr: true,
+			wantErrContains: []string{
+				"POST /libpod/play/kube",
+				"POST /libpod/kube/play",
+				"POST /libpod/kube/apply",
+				"POST /libpod/manifests/create",
+				"POST /libpod/manifests/sockguard-test",
+				"PUT /libpod/manifests/sockguard-test",
+				"insecure_allow_body_blind_writes=true",
+			},
+		},
+		{
+			name: "allows libpod play/kube with explicit blind-write opt-in",
+			configure: func(cfg *config.Config) {
+				cfg.InsecureAllowBodyBlindWrites = true
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/play/kube"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+		{
+			// Pins the libpod read/export surface added to
+			// sensitiveExfilEndpoints: container archive/export/logs/attach,
+			// image export/get/push, and GET /libpod/generate/kube (a read
+			// despite the "generate" name — see the inline comment on
+			// sensitiveExfilEndpoints for the source-verified deviation
+			// from the design doc's literal placement).
+			name: "rejects libpod read exfil rules without explicit opt-in",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/containers/**"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/attach"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/images/**"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/*/push"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/generate/**"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr: true,
+			wantErrContains: []string{
+				"GET /libpod/containers/sockguard-test/archive",
+				"GET /libpod/containers/sockguard-test/export",
+				"GET /libpod/containers/sockguard-test/logs",
+				"POST /libpod/containers/sockguard-test/attach",
+				"GET /libpod/images/export",
+				"GET /libpod/images/sockguard-test/get",
+				"POST /libpod/images/sockguard-test/push",
+				"GET /libpod/generate/kube",
+			},
+		},
+		{
+			name: "allows libpod read exfil with explicit opt-in",
+			configure: func(cfg *config.Config) {
+				cfg.InsecureAllowReadExfiltration = true
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/containers/**"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/attach"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/images/**"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/*/push"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/generate/**"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
 	}
 
-	compiled, err := validateAndCompileRules(&cfg)
-	if err != nil {
-		t.Fatalf("validateAndCompileRules() error = %v", err)
-	}
-	if len(compiled) != len(cfg.Rules) {
-		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			tt.configure(&cfg)
 
-func TestValidateAndCompileRulesAllowsLibpodExecWithConfiguredBodyInspection(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/exec"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/exec/*/start"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
-	}
-	// #148 design decision C3: request_body.exec is shared between the
-	// Docker-compat and libpod exec paths — no separate libpod_exec config.
-	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/local/bin/pre-update"}}
-
-	compiled, err := validateAndCompileRules(&cfg)
-	if err != nil {
-		t.Fatalf("validateAndCompileRules() error = %v", err)
-	}
-	if len(compiled) != len(cfg.Rules) {
-		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
-	}
-}
-
-func TestValidateAndCompileRulesAllowsLibpodVolumeNetworkAndSecretWritesWithRequestBodyInspection(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/volumes/create"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/networks/create"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/secrets/create"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
-	}
-
-	compiled, err := validateAndCompileRules(&cfg)
-	if err != nil {
-		t.Fatalf("validateAndCompileRules() error = %v", err)
-	}
-	if len(compiled) != len(cfg.Rules) {
-		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
-	}
-}
-
-func TestValidateAndCompileRulesRejectsLibpodExecWithoutConfiguredAllowlist(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/exec"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
-	}
-
-	_, err := validateAndCompileRules(&cfg)
-	if err == nil {
-		t.Fatal("expected libpod exec blind-write validation to fail")
-	}
-	if !strings.Contains(err.Error(), "POST /libpod/containers/sockguard-test/exec") {
-		t.Fatalf("expected libpod exec endpoint in error, got: %v", err)
-	}
-}
-
-// TestValidateAndCompileRulesRejectsLibpodPlayKubeAndManifestWritesWithoutExplicitOptIn
-// pins #148 design decision C2: play/kube (and its kube/play alias),
-// kube/apply, and manifest writes have NO request-body inspector at all —
-// full YAML/PodSpec modeling is deferred past v1.6 — so admitting any of
-// them requires insecure_allow_body_blind_writes exactly like any other
-// uninspected body-sensitive write, never a free pass.
-func TestValidateAndCompileRulesRejectsLibpodPlayKubeAndManifestWritesWithoutExplicitOptIn(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/play/kube"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/kube/play"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/kube/apply"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/manifests/create"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/manifests/*"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPut, Path: "/libpod/manifests/*"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
-	}
-
-	_, err := validateAndCompileRules(&cfg)
-	if err == nil {
-		t.Fatal("expected play/kube and manifest blind-write validation to fail")
-	}
-	for _, endpoint := range []string{
-		"POST /libpod/play/kube",
-		"POST /libpod/kube/play",
-		"POST /libpod/kube/apply",
-		"POST /libpod/manifests/create",
-		"POST /libpod/manifests/sockguard-test",
-		"PUT /libpod/manifests/sockguard-test",
-	} {
-		if !strings.Contains(err.Error(), endpoint) {
-			t.Fatalf("expected %s in error, got: %v", endpoint, err)
-		}
-	}
-	if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
-		t.Fatalf("expected explicit blind-write opt-in hint, got: %v", err)
-	}
-}
-
-func TestValidateAndCompileRulesAllowsLibpodPlayKubeWithExplicitBlindWriteOptIn(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.InsecureAllowBodyBlindWrites = true
-	cfg.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/play/kube"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
-	}
-
-	compiled, err := validateAndCompileRules(&cfg)
-	if err != nil {
-		t.Fatalf("validateAndCompileRules() error = %v", err)
-	}
-	if len(compiled) != len(cfg.Rules) {
-		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
-	}
-}
-
-// TestValidateAndCompileRulesRejectsLibpodReadExfilRulesWithoutExplicitOptIn
-// pins the libpod read/export surface added to sensitiveExfilEndpoints:
-// container archive/export/logs/attach, image export/get/push, and
-// GET /libpod/generate/kube (a read despite the "generate" name — see the
-// inline comment on sensitiveExfilEndpoints for the source-verified
-// deviation from the design doc's literal placement).
-func TestValidateAndCompileRulesRejectsLibpodReadExfilRulesWithoutExplicitOptIn(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/containers/**"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/attach"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/images/**"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/*/push"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/generate/**"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
-	}
-
-	_, err := validateAndCompileRules(&cfg)
-	if err == nil {
-		t.Fatal("expected libpod read exfiltration validation to fail")
-	}
-	for _, endpoint := range []string{
-		"GET /libpod/containers/sockguard-test/archive",
-		"GET /libpod/containers/sockguard-test/export",
-		"GET /libpod/containers/sockguard-test/logs",
-		"POST /libpod/containers/sockguard-test/attach",
-		"GET /libpod/images/export",
-		"GET /libpod/images/sockguard-test/get",
-		"POST /libpod/images/sockguard-test/push",
-		"GET /libpod/generate/kube",
-	} {
-		if !strings.Contains(err.Error(), endpoint) {
-			t.Fatalf("expected %s in error, got: %v", endpoint, err)
-		}
-	}
-}
-
-func TestValidateAndCompileRulesAllowsLibpodReadExfilWithExplicitOptIn(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.InsecureAllowReadExfiltration = true
-	cfg.Rules = []config.RuleConfig{
-		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/containers/**"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/attach"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/images/**"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/*/push"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/generate/**"}, Action: "allow"},
-		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
-	}
-
-	compiled, err := validateAndCompileRules(&cfg)
-	if err != nil {
-		t.Fatalf("validateAndCompileRules() error = %v", err)
-	}
-	if len(compiled) != len(cfg.Rules) {
-		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+			compiled, err := validateAndCompileRules(&cfg)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected validateAndCompileRules() to fail")
+				}
+				for _, want := range tt.wantErrContains {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("expected %q in error, got: %v", want, err)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("validateAndCompileRules() error = %v", err)
+			}
+			if len(compiled) != len(cfg.Rules) {
+				t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+			}
+		})
 	}
 }
 
