@@ -270,6 +270,74 @@ func TestAccessLogIncludesSelectedProfile(t *testing.T) {
 	}
 }
 
+func TestAccessLogIncludesMutationRuleIDsAndElevatesWarnEvaluationToWarnLevel(t *testing.T) {
+	// filter's own mutation tests (internal/filter/mutation_test.go) drive
+	// this same code path end to end through AccessLogMiddleware, but Go
+	// coverage is per test-binary: a filter-package test calling into this
+	// package does not count toward internal/logging's own coverage. Drive
+	// joinMutationRuleIDs and the WARN-elevation branch directly here too.
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		m := MetaFromResponseWriter(w)
+		if m == nil {
+			t.Fatal("expected meta on wrapped response writer")
+			return
+		}
+		m.Decision = "allow"
+		m.NormPath = "/containers/create"
+		m.Mutation = &MutationRecord{
+			Rules: []MutationRuleOutcome{
+				{ID: "mandatory-label", Type: "inject_labels", Mode: "enforce", Outcome: "applied"},
+				{ID: "pin-registry", Type: "remap_image", Mode: "warn", Outcome: "would_apply"},
+			},
+			ActualChanged:     true,
+			HasWarnEvaluation: true,
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	handler := AccessLogMiddleware(logger)(inner)
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, `"mutation_rule_ids":"mandatory-label,pin-registry"`) {
+		t.Fatalf("expected joined mutation_rule_ids in access log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"mutation_changed":true`) {
+		t.Fatalf("expected mutation_changed=true in access log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `"level":"WARN"`) {
+		t.Fatalf("expected an allowed request with a warn-mode mutation evaluation to log at WARN, got: %s", logOutput)
+	}
+}
+
+func TestAccessLogOmitsMutationFieldsWhenNoRuleMatched(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if m := MetaFromResponseWriter(w); m != nil {
+			m.Decision = "allow"
+			m.NormPath = "/_ping"
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	handler := AccessLogMiddleware(logger)(inner)
+	req := httptest.NewRequest(http.MethodGet, "/_ping", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	logOutput := buf.String()
+	if strings.Contains(logOutput, "mutation_rule_ids") {
+		t.Fatalf("expected no mutation_rule_ids when no mutation rule matched, got: %s", logOutput)
+	}
+}
+
 func TestAccessLogEscapesCRLFInClientRequestID(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
