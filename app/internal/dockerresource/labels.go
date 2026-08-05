@@ -1,6 +1,7 @@
 package dockerresource
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -71,7 +72,72 @@ func DecodeLabels(body io.Reader, kind Kind) (map[string]string, error) {
 			return payload.Labels, nil
 		}
 		return payload.Spec.ContainerSpec.Labels, nil
+	case KindLibpodPod, KindLibpodNetwork:
+		return DecodeLibpodLabels(body, kind)
 	default:
 		return nil, fmt.Errorf("unsupported resource kind %q", kind)
 	}
+}
+
+// DecodeLibpodLabels reads a libpod-native inspect response body — as
+// opposed to DecodeLabels' Docker-compat shapes — and extracts the
+// resource's labels. Kept as an entirely separate function, with its own
+// switch and no shared case arms with DecodeLabels, per #148 design doc C6:
+// the two API families' wire shapes are pinned independently against real
+// captures/upstream source and must never be allowed to silently reconverge
+// into one "smart" decoder if one family drifts.
+func DecodeLibpodLabels(body io.Reader, kind Kind) (map[string]string, error) {
+	switch kind {
+	case KindLibpodPod:
+		// libpod/define.InspectPodData.Labels — top-level, capitalized
+		// "Labels" (confirmed against podman v5.8.1 source), unlike the
+		// lowercase "labels" libpod uses for the POST .../pods/create
+		// request body's PodBasicConfig.Labels field.
+		var payload struct {
+			Labels map[string]string `json:"Labels"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		return payload.Labels, nil
+	case KindLibpodNetwork:
+		return decodeLibpodNetworkLabels(body)
+	default:
+		return nil, fmt.Errorf("unsupported libpod resource kind %q", kind)
+	}
+}
+
+// decodeLibpodNetworkLabels reads GET /libpod/networks/{id}/json's response.
+// Per #148 design doc C6, some Podman versions/endpoints wrap the single
+// network object in a single-element JSON array rather than returning the
+// bare object Docker's compat API always does for network inspect; this
+// unwraps that shape before decoding so a legitimate response is never
+// mistaken for a decode failure (which would otherwise surface to the
+// client as a 502 from the ownership/visibility policy-lookup-failed path).
+// The "labels" key itself is lowercase on this shape
+// (go.podman.io/common's libnetwork/types.Network), unlike the Docker-compat
+// "Labels" DecodeLabels reads for KindNetwork.
+func decodeLibpodNetworkLabels(body io.Reader) (map[string]string, error) {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return nil, err
+	}
+	data = bytes.TrimSpace(data)
+	if len(data) > 0 && data[0] == '[' {
+		var arr []json.RawMessage
+		if err := json.Unmarshal(data, &arr); err != nil {
+			return nil, fmt.Errorf("decode libpod network inspect array: %w", err)
+		}
+		if len(arr) == 0 {
+			return nil, nil
+		}
+		data = arr[0]
+	}
+	var payload struct {
+		Labels map[string]string `json:"labels"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, fmt.Errorf("decode libpod network inspect object: %w", err)
+	}
+	return payload.Labels, nil
 }

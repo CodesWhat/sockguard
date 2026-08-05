@@ -24,6 +24,8 @@ func TestInspectPath(t *testing.T) {
 		{name: "unknown kind", kind: Kind("unknown"), identifier: "abc", wantPath: "", wantOK: false},
 		{name: "empty kind", kind: Kind(""), identifier: "abc", wantPath: "", wantOK: false},
 		{name: "identifier is path-escaped", kind: KindContainer, identifier: "name with spaces/and slashes", wantPath: "/containers/name%20with%20spaces%2Fand%20slashes/json", wantOK: true},
+		{name: "libpod pod", kind: KindLibpodPod, identifier: "pod-1", wantPath: "/libpod/pods/pod-1/json", wantOK: true},
+		{name: "libpod network", kind: KindLibpodNetwork, identifier: "bridge", wantPath: "/libpod/networks/bridge/json", wantOK: true},
 	}
 
 	for _, tt := range tests {
@@ -31,6 +33,32 @@ func TestInspectPath(t *testing.T) {
 			got, ok := InspectPath(tt.kind, tt.identifier)
 			if got != tt.wantPath || ok != tt.wantOK {
 				t.Fatalf("InspectPath(%q, %q) = (%q, %v), want (%q, %v)", tt.kind, tt.identifier, got, ok, tt.wantPath, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestLibpodInspectPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		kind       Kind
+		identifier string
+		wantPath   string
+		wantOK     bool
+	}{
+		{name: "pod", kind: KindLibpodPod, identifier: "pod-1", wantPath: "/libpod/pods/pod-1/json", wantOK: true},
+		{name: "network", kind: KindLibpodNetwork, identifier: "bridge", wantPath: "/libpod/networks/bridge/json", wantOK: true},
+		{name: "identifier is path-escaped", kind: KindLibpodPod, identifier: "name with spaces/and slashes", wantPath: "/libpod/pods/name%20with%20spaces%2Fand%20slashes/json", wantOK: true},
+		{name: "docker-compat kind has no libpod path", kind: KindContainer, identifier: "abc", wantPath: "", wantOK: false},
+		{name: "unknown kind", kind: Kind("unknown"), identifier: "abc", wantPath: "", wantOK: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := LibpodInspectPath(tt.kind, tt.identifier)
+			if got != tt.wantPath || ok != tt.wantOK {
+				t.Fatalf("LibpodInspectPath(%q, %q) = (%q, %v), want (%q, %v)", tt.kind, tt.identifier, got, ok, tt.wantPath, tt.wantOK)
 			}
 		})
 	}
