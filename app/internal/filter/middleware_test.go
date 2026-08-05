@@ -948,6 +948,15 @@ func TestMiddlewareDeniedRedactsSensitiveVerbosePaths(t *testing.T) {
 			path: "/v1.45/swarm/unlockkey",
 			want: "/v1.45/swarm/<redacted>",
 		},
+		{
+			// Regression (#148): a three-part semver version prefix (Podman's
+			// libpod bindings send the full daemon version) must still have its
+			// version prefix preserved and only the resource redacted, exactly
+			// like the two-part Docker prefix above.
+			name: "secret resource three-part version prefix",
+			path: "/v5.0.0/secrets/prod-db-password",
+			want: "/v5.0.0/secrets/<redacted>",
+		},
 	}
 
 	for _, tt := range tests {

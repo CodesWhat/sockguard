@@ -56,6 +56,18 @@ func TestStripVersionPrefix(t *testing.T) {
 		{name: "invalid prefix without slash after digits", path: "/v1x/containers/json", want: "/v1x/containers/json"},
 		{name: "uppercase V is not a version prefix", path: "/V1.45/containers/json", want: "/V1.45/containers/json"},
 		{name: "uppercase V major only is not a version prefix", path: "/V1/containers/json", want: "/V1/containers/json"},
+		// Three-part semver -- Podman's libpod bindings send the full daemon
+		// version (major.minor.patch), unlike Docker's vN / vN.N (#148).
+		{name: "three-part semver version prefix", path: "/v5.0.0/libpod/containers/json", want: "/libpod/containers/json"},
+		{name: "three-part semver with larger components", path: "/v4.9.3/libpod/containers/json", want: "/libpod/containers/json"},
+		{name: "three-part semver root path", path: "/v5.0.0/", want: "/"},
+		{name: "three-part semver missing patch digits", path: "/v5.0./x", want: "/v5.0./x"},
+		{name: "three-part semver no trailing slash", path: "/v5.0.0", want: "/v5.0.0"},
+		{name: "four-part version is not stripped", path: "/v1.2.3.4/x", want: "/v1.2.3.4/x"},
+		// Adversarial digit runs.
+		{name: "long digit run in major", path: "/v99999999999999999999/x", want: "/x"},
+		{name: "long digit run in minor", path: "/v1.99999999999999999999/x", want: "/x"},
+		{name: "long digit run in patch", path: "/v1.2.99999999999999999999/x", want: "/x"},
 	}
 
 	for _, tt := range tests {
@@ -69,7 +81,7 @@ func TestStripVersionPrefix(t *testing.T) {
 }
 
 func TestStripVersionPrefixMatchesLegacyRegex(t *testing.T) {
-	legacyVersionPrefix := regexp.MustCompile(`^/v\d+(\.\d+)?/`)
+	legacyVersionPrefix := regexp.MustCompile(`^/v\d+(\.\d+){0,2}/`)
 	paths := []string{
 		"",
 		"/",
@@ -92,6 +104,14 @@ func TestStripVersionPrefixMatchesLegacyRegex(t *testing.T) {
 		"/v999.0/../containers/json",
 		"/version",
 		"v1.45/containers/json",
+		// Three-part semver (#148): must now strip like vN / vN.N.
+		"/v5.0.0/libpod/containers/json",
+		"/v4.9.3/libpod/containers/json",
+		"/v1.2.3/x",
+		"/v1.2.3",
+		"/v1.2.3/",
+		"/v1.2./x",
+		"/v1.2.3.4/x",
 	}
 
 	for _, path := range paths {
@@ -137,6 +157,9 @@ func TestNormalizePath(t *testing.T) {
 		{"encoded version separator is not a version prefix", "/v1.45%2Fcontainers/json", "/v1.45%2Fcontainers/json"},
 		{"double-encoded escape is not decoded", "%252Fcontainers%252Fcreate", "%252Fcontainers%252Fcreate"},
 		{"double-encoded traversal does not collapse", "/containers%252F..%252Fimages/json", "/containers%252F..%252Fimages/json"},
+		// Three-part semver version prefix (#148): Podman libpod clients send
+		// the full daemon semver, unlike Docker's vN / vN.N.
+		{"three-part semver libpod prefix", "/v5.0.0/libpod/containers/json", "/libpod/containers/json"},
 	}
 
 	for _, tt := range tests {
@@ -144,6 +167,32 @@ func TestNormalizePath(t *testing.T) {
 			got := NormalizePath(tt.path)
 			if got != tt.want {
 				t.Errorf("NormalizePath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNormalizePathLibpodVersionPrefixEquivalence pins the #148 fix's core
+// requirement: a two-part Docker-style version prefix, a three-part Podman
+// semver prefix, and no prefix at all must all normalize a /libpod/ path to
+// the identical string. Before the fix, the three-part form fell through
+// stripVersionPrefix unchanged, so it never converged with the other two —
+// every libpod rule pattern would silently never match a versioned Podman
+// client.
+func TestNormalizePathLibpodVersionPrefixEquivalence(t *testing.T) {
+	const want = "/libpod/containers/json"
+	variants := []string{
+		"/libpod/containers/json",
+		"/v1.45/libpod/containers/json",
+		"/v5.0.0/libpod/containers/json",
+		"/v4.9.3/libpod/containers/json",
+		"/v1/libpod/containers/json",
+	}
+
+	for _, variant := range variants {
+		t.Run(variant, func(t *testing.T) {
+			if got := NormalizePath(variant); got != want {
+				t.Errorf("NormalizePath(%q) = %q, want %q", variant, got, want)
 			}
 		})
 	}

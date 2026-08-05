@@ -6,7 +6,11 @@ import (
 	"testing"
 )
 
-var legacyVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+)?/`)
+// legacyVersionPrefix allows up to two optional ".N" groups — vN, vN.N, or
+// vN.N.N — matching stripVersionPrefix's production behavior (#148: a
+// second optional group is required so Podman's three-part libpod semver
+// prefixes, e.g. /v5.0.0/, strip identically to Docker's vN.N).
+var legacyVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+){0,2}/`)
 
 // referenceNormalizePath is an independent re-implementation of NormalizePath
 // used by FuzzNormalizePath as a differential oracle. Like NormalizePath it
@@ -190,6 +194,15 @@ func FuzzNormalizePath(f *testing.F) {
 		"/v1.55/session",
 		"/v1.55/grpc",
 		"/v1.55/containers/json",
+		// Three-part semver (#148): Podman's libpod bindings send the full
+		// daemon version, unlike Docker's vN / vN.N.
+		"/v4.9.3/libpod/containers/json",
+		"/v5.0.0/libpod/containers/json",
+		"/v5.0.0/",    // three-part prefix with just trailing slash
+		"/v5.0.0",     // three-part prefix with no trailing path
+		"/v5.0./x",    // malformed three-part (missing patch digits)
+		"/v1.2.3.4/x", // four-part is not a version prefix
+		"/v99999999999999999999.99999999999999999999.99999999999999999999/x", // adversarial digit runs
 	}
 	for _, s := range seeds {
 		f.Add(s)
