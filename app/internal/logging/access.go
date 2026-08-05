@@ -49,6 +49,13 @@ type RequestMeta struct {
 	TraceParentID   string
 	TraceSpanID     string
 	TraceFlags      string
+	// ResourcePolicy carries #152's resource-limit-guard outcome for this
+	// request. nil for every request the guard passed through untouched (no
+	// applicable require_* flag) — that is the common case, so this stays a
+	// pointer rather than an embedded struct to avoid paying for it on every
+	// request. Set only by filter.ResourceLimitGuard; see
+	// internal/filter/resource_limit_guard.go.
+	ResourcePolicy *ResourcePolicyMeta
 }
 
 // Decision values written into RequestMeta.Decision. Allow is not stamped
@@ -282,6 +289,7 @@ func putRequestMeta(meta *RequestMeta) {
 	if meta == nil {
 		return
 	}
+	putResourcePolicyMeta(meta.ResourcePolicy)
 	*meta = RequestMeta{}
 	requestMetaPool.Put(meta)
 }
@@ -368,6 +376,7 @@ func appendCorrelationAttrs(attrs []slog.Attr, r *http.Request, meta *RequestMet
 		if meta.TraceFlags != "" {
 			attrs = append(attrs, slog.Bool("trace_sampled", traceSampled(meta.TraceFlags)))
 		}
+		attrs = appendResourcePolicyAttrs(attrs, meta.ResourcePolicy)
 	}
 
 	return attrs

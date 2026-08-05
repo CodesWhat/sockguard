@@ -105,12 +105,53 @@ type auditEvent struct {
 	TransportScheme   string                `json:"transport_scheme"`
 	TransportProtocol string                `json:"transport_protocol"`
 	OwnershipContext  auditOwnershipContext `json:"ownership"`
+	// ResourcePolicy is nil (omitted) for every request the #152 resource-limit
+	// guard passed through untouched. It is a fresh value built by
+	// auditResourcePolicyContextFrom below, never the pooled
+	// *logging.ResourcePolicyMeta pointer RequestMeta carries — that pointer
+	// is returned to its pool (and zeroed) by the deferred putRequestMeta
+	// before this event reaches AuditLogger.run's goroutine, so the audit
+	// event must hold its own deep copy taken synchronously here, not an
+	// alias into pooled state.
+	ResourcePolicy *auditResourcePolicyContext `json:"resource_policy,omitempty"`
 }
 
 type auditOwnershipContext struct {
 	Enabled  bool   `json:"enabled"`
 	Owner    string `json:"owner"`
 	LabelKey string `json:"label_key"`
+}
+
+// auditResourcePolicyContext is the audit-log shape of ResourcePolicyMeta.
+// Never carries raw current/effective resource values, inspect JSON,
+// PreviousSpec content, labels, or identifiers — classification fields only.
+type auditResourcePolicyContext struct {
+	Kind         string `json:"kind,omitempty"`
+	Operation    string `json:"operation,omitempty"`
+	StateSource  string `json:"state_source,omitempty"`
+	Requirements string `json:"requirements,omitempty"`
+	Result       string `json:"result,omitempty"`
+	Violation    string `json:"violation,omitempty"`
+	StateLookup  bool   `json:"state_lookup,omitempty"`
+}
+
+// auditResourcePolicyContextFrom builds a standalone value copy of rp for the
+// audit event. Returns nil when the guard did not evaluate policy for this
+// request (the common case), so resource_policy is omitted entirely rather
+// than emitted as an empty object.
+func auditResourcePolicyContextFrom(rp *ResourcePolicyMeta) *auditResourcePolicyContext {
+	if rp == nil || !rp.Evaluated {
+		return nil
+	}
+	return &auditResourcePolicyContext{
+		Kind:         rp.Kind,
+		Operation:    rp.Operation,
+		StateSource:  rp.StateSource,
+		Requirements: rp.Requirements,
+		Result:       rp.Result,
+		Violation:    rp.Violation,
+		StateLookup:  rp.StateLookup,
+	}
 }
 
 // AuditLogMiddleware emits a dedicated audit event after each request.
@@ -166,6 +207,7 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 				TransportScheme:   transportScheme,
 				TransportProtocol: transportProtocol,
 				OwnershipContext:  ownershipContext,
+				ResourcePolicy:    auditResourcePolicyContextFrom(meta.ResourcePolicy),
 			}
 
 			logger.log(event)

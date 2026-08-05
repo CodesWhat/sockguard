@@ -1319,21 +1319,36 @@ func capabilityAddDenyReason(requested []string, allowAll bool, allowed []string
 
 // denyResourceLimitReason enforces the resource limit requirements.
 func (p containerCreatePolicy) denyResourceLimitReason(hostConfig containerCreateHostConfig) string {
-	if p.requireMemoryLimit && hostConfig.Memory <= 0 {
-		return "container create denied: a memory limit is required (set HostConfig.Memory)"
+	reason, _ := resourceLimitDenyReason(hostConfig, p.requireMemoryLimit, p.requireCPULimit, p.requireCPULimitHard, p.requirePidsLimit, "container create")
+	return reason
+}
+
+// resourceLimitDenyReason is the shared resource-limit predicate for both
+// /containers/create (via the thin wrapper above) and the post-ownership
+// ResourceLimitGuard's container-update and effective-state checks
+// (resource_limit_guard.go). Extracted so the update path can never drift
+// from create's semantics — the CpuQuota-alone-counts-as-hard-cap reasoning,
+// the "PidsLimit must be a positive pointer" rule, etc. all live in exactly
+// one place. subject prefixes the deny reason ("container create", "container
+// update", ...); violation is a stable machine-readable class
+// ("memory"|"cpu"|"hard_cpu"|"pids"|"") for audit logging — never the actual
+// values, which are not safe to log.
+func resourceLimitDenyReason(hostConfig containerCreateHostConfig, requireMemory, requireCPU, requireCPUHard, requirePids bool, subject string) (reason, violation string) {
+	if requireMemory && hostConfig.Memory <= 0 {
+		return fmt.Sprintf("%s denied: a memory limit is required (set HostConfig.Memory)", subject), "memory"
 	}
-	if p.requireCPULimit && !hasCPULimit(hostConfig) {
-		return "container create denied: a CPU limit is required (set HostConfig.NanoCpus, CpuQuota, CpuPeriod, or CpuShares)"
+	if requireCPU && !hasCPULimit(hostConfig) {
+		return fmt.Sprintf("%s denied: a CPU limit is required (set HostConfig.NanoCpus, CpuQuota, CpuPeriod, or CpuShares)", subject), "cpu"
 	}
-	if p.requireCPULimitHard && !hasHardCPULimit(hostConfig) {
-		return "container create denied: a hard CPU cap is required (set HostConfig.NanoCpus or CpuQuota; CpuShares is a relative priority weight, not a cap, and does not satisfy this check)"
+	if requireCPUHard && !hasHardCPULimit(hostConfig) {
+		return fmt.Sprintf("%s denied: a hard CPU cap is required (set HostConfig.NanoCpus or CpuQuota; CpuShares is a relative priority weight, not a cap, and does not satisfy this check)", subject), "hard_cpu"
 	}
-	if p.requirePidsLimit {
+	if requirePids {
 		if hostConfig.PidsLimit == nil || *hostConfig.PidsLimit <= 0 {
-			return "container create denied: a PIDs limit is required (set HostConfig.PidsLimit to a positive value)"
+			return fmt.Sprintf("%s denied: a PIDs limit is required (set HostConfig.PidsLimit to a positive value)", subject), "pids"
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // denySecurityOptReason inspects each HostConfig.SecurityOpt entry for

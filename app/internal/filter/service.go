@@ -66,6 +66,16 @@ type ServiceOptions struct {
 	// ImageTrust applies cosign verification to ContainerSpec.Image, matching
 	// the container-create path so swarm services cannot escape image trust.
 	ImageTrust ImageTrustOptions
+
+	// RequireCPULimit/RequireCPULimitHard are enforced by ResourceLimitGuard
+	// (resource_limit_guard.go), not by servicePolicy.inspect below — service
+	// create, ordinary update, and rollback all need the guard's post-ownership
+	// placement (rollback validation requires a daemon lookup). Carried on this
+	// struct only so config.ServiceRequestBodyConfig.ToFilterOptions has a
+	// single destination field per config leaf; servicePolicy itself never
+	// reads them.
+	RequireCPULimit     bool
+	RequireCPULimitHard bool
 }
 
 type servicePolicy struct {
