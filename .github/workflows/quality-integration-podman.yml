@@ -1,0 +1,228 @@
+name: "🦭 Quality: Integration (Podman)"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && '🦭 Quality: Integration (Podman) — Nightly' ||
+    github.event_name == 'pull_request' && format('🦭 Quality: Integration (Podman) — PR #{0}', github.event.pull_request.number) ||
+    format('🦭 Quality: Integration (Podman) — Manual by {0}', github.actor)
+  }}
+
+# Runs the podmanintegration-tagged suite (app/integration/*_test.go plus
+# app/internal/cmd/rules_podman_integration_test.go) against a REAL podman
+# system service on the GitHub-hosted runner — the libpod-native counterpart
+# of quality-integration.yml's real-dockerd suite (#148 design doc PR6:
+# libpod container-create/pod-create/exec/volume/network/secret inspectors,
+# plus the play/kube blind-write acknowledgement gate).
+#
+# Two legs, both against the SAME distro-packaged podman binary:
+#   - rootful:  `sudo podman system service` on the well-known root socket.
+#     Required — this is the common deployment shape (a root-owned
+#     /run/podman/podman.sock bind-mounted into sockguard's container,
+#     mirroring how the Docker suite points at /var/run/docker.sock) and has
+#     proven stable in local verification.
+#   - rootless: a per-user `podman system service` on the runner account's
+#     XDG_RUNTIME_DIR socket, needing usable newuidmap/newgidmap and
+#     /etc/subuid /etc/subgid ranges for the runner user. GitHub's
+#     ubuntu-latest image ships all of that, but the runner has no logind
+#     session (no interactive login, so no auto-created /run/user/<uid>)
+#     and podman's rootless network/storage setup is more failure-prone in a
+#     freshly-provisioned container-less VM than the well-trodden rootful
+#     path. Marked continue-on-error so a transient rootless-only failure
+#     (subuid allocation, missing runtime dir, slirp4netns quirks) never
+#     blocks a PR on infrastructure that isn't what most sockguard
+#     deployments run behind. The tests themselves are identical between the
+#     two legs — only which socket SOCKGUARD_TEST_PODMAN_SOCKET points at
+#     changes.
+#
+# Tests skip cleanly (t.Skip) when SOCKGUARD_TEST_PODMAN_SOCKET is unset, so
+# `go test ./...` (no tags) and `go test -tags=integration ./integration/`
+# (the Docker suite) are both unaffected by this file.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '45 6 * * *'  # 06:45 UTC daily, 30 minutes after quality-integration.yml's dockerd run
+  pull_request:
+    paths:
+      - 'app/**'
+      - '.github/workflows/quality-integration-podman.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-integration-podman-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration-podman-rootful:
+    name: "🦭 Integration (rootful podman)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: Install podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+          podman version
+
+      - name: Start rootful podman system service
+        run: |
+          sudo mkdir -p /run/podman
+          sudo nohup podman system service --time=0 unix:///run/podman/podman.sock >/tmp/podman-rootful.log 2>&1 &
+          for i in $(seq 1 30); do
+            if sudo test -S /run/podman/podman.sock; then
+              break
+            fi
+            sleep 1
+          done
+          sudo test -S /run/podman/podman.sock || { echo "rootful podman.sock never appeared" >&2; cat /tmp/podman-rootful.log >&2; exit 1; }
+          # The test process runs as the unprivileged runner user; the
+          # service above binds both the socket AND its parent directory
+          # root-owned (mode 0700 on /run/podman, mode 0600 on the socket
+          # itself). Widen both on this short-lived, single-purpose CI VM
+          # rather than running the whole Go test binary under sudo — a
+          # socket chmod alone still 403s at os.Stat/dial time if the
+          # containing directory isn't traversable by the runner user.
+          sudo chmod 755 /run/podman
+          sudo chmod 666 /run/podman/podman.sock
+          sudo podman -r --url unix:///run/podman/podman.sock version
+          # Verify as the unprivileged runner user (no sudo) so a
+          # permissions regression here fails loudly at setup with a clear
+          # message, instead of surfacing as a confusing "permission
+          # denied" deep inside the Go test suite.
+          curl --fail --silent --show-error --unix-socket /run/podman/podman.sock http://d/libpod/_ping
+          echo
+
+      # Pulls the digest-pinned ref straight from helpers_test.go instead of
+      # a hardcoded tag — see quality-integration.yml's identical step for
+      # the pull-on-create rationale. Podman resolves docker.io references
+      # the same way dockerd does, so the same pinned digest keeps both
+      # suites reproducible from the same registry content.
+      - name: Pre-pull busybox sentinel image
+        run: |
+          ref=$(sed -nE 's/^[[:space:]]*const[[:space:]]+busyboxPinnedRef[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' app/integration/helpers_test.go)
+          if [[ ! "$ref" =~ ^busybox:[[:alnum:]_.-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid or unpinned busyboxPinnedRef: ${ref}" >&2
+            exit 1
+          fi
+          echo "Pre-pulling pinned sentinel image (rootful): ${ref}"
+          sudo podman -r --url unix:///run/podman/podman.sock pull "${ref}"
+
+      - name: Run podman integration suite (rootful)
+        working-directory: app
+        env:
+          SOCKGUARD_TEST_PODMAN_SOCKET: /run/podman/podman.sock
+        run: go test -tags=podmanintegration -count=1 -timeout=10m ./integration/... ./internal/cmd/...
+
+  integration-podman-rootless:
+    name: "🦭 Integration (rootless podman)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # See the workflow-level comment above: rootless is exercised for
+    # coverage but never blocks a PR on runner infrastructure quirks that
+    # don't reflect most sockguard deployments.
+    continue-on-error: true
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: Install podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman uidmap
+          podman version
+
+      - name: Verify rootless prerequisites
+        run: |
+          # ubuntu-latest ships newuidmap/newgidmap (from the uidmap
+          # package, installed above defensively in case the base image
+          # ever drops it) as setuid-root binaries, plus a default
+          # /etc/subuid and /etc/subgid range for the runner user — both
+          # required for podman's rootless user-namespace remapping. Fail
+          # fast with a clear message instead of a confusing podman error
+          # if either is ever missing on a future runner image.
+          #
+          # Checked by grepping the files directly rather than `getent
+          # subuid`/`getent subgid`: glibc on ubuntu-latest has no subuid/
+          # subgid NSS database registered at all, so getent fails with
+          # "Unknown database" regardless of what /etc/subuid actually
+          # contains — it's not a signal of a missing range.
+          command -v newuidmap
+          command -v newgidmap
+          grep -q "^$(whoami):" /etc/subuid || { echo "no /etc/subuid range for $(whoami)" >&2; exit 1; }
+          grep -q "^$(whoami):" /etc/subgid || { echo "no /etc/subgid range for $(whoami)" >&2; exit 1; }
+
+      - name: Start rootless podman system service
+        run: |
+          # The runner user has no logind session on ubuntu-latest (no
+          # interactive login), so XDG_RUNTIME_DIR / /run/user/<uid> is
+          # never auto-created the way it would be on a desktop or a
+          # `machinectl shell` session. Create and own it explicitly rather
+          # than relying on pam_systemd, which is what most of the flakiness
+          # in ad-hoc "rootless podman in CI" recipes traces back to.
+          runtime_dir="/run/user/$(id -u)"
+          sudo mkdir -p "${runtime_dir}"
+          sudo chown "$(id -u)":"$(id -g)" "${runtime_dir}"
+          echo "XDG_RUNTIME_DIR=${runtime_dir}" >>"$GITHUB_ENV"
+          # GITHUB_ENV only reaches *subsequent* steps — podman in this step
+          # needs it too, and it won't create the socket's parent dir itself
+          # (`bind: no such file or directory` otherwise).
+          export XDG_RUNTIME_DIR="${runtime_dir}"
+          mkdir -p "${runtime_dir}/podman"
+
+          nohup podman system service --time=0 "unix://${runtime_dir}/podman/podman.sock" >/tmp/podman-rootless.log 2>&1 &
+          for i in $(seq 1 30); do
+            if test -S "${runtime_dir}/podman/podman.sock"; then
+              break
+            fi
+            sleep 1
+          done
+          test -S "${runtime_dir}/podman/podman.sock" || { echo "rootless podman.sock never appeared" >&2; cat /tmp/podman-rootless.log >&2; exit 1; }
+          podman --url "unix://${runtime_dir}/podman/podman.sock" version
+
+      - name: Pre-pull busybox sentinel image
+        run: |
+          ref=$(sed -nE 's/^[[:space:]]*const[[:space:]]+busyboxPinnedRef[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' app/integration/helpers_test.go)
+          if [[ ! "$ref" =~ ^busybox:[[:alnum:]_.-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid or unpinned busyboxPinnedRef: ${ref}" >&2
+            exit 1
+          fi
+          echo "Pre-pulling pinned sentinel image (rootless): ${ref}"
+          podman --url "unix://${XDG_RUNTIME_DIR}/podman/podman.sock" pull "${ref}"
+
+      - name: Run podman integration suite (rootless)
+        working-directory: app
+        env:
+          SOCKGUARD_TEST_PODMAN_SOCKET: ${{ env.XDG_RUNTIME_DIR }}/podman/podman.sock
+        run: go test -tags=podmanintegration -count=1 -timeout=10m ./integration/... ./internal/cmd/...
