@@ -25,13 +25,6 @@ import (
 // explicitly for both the rootful and rootless legs.
 const podmanSocketEnvVar = "SOCKGUARD_TEST_PODMAN_SOCKET"
 
-type libpodVersionResponse struct {
-	Version struct {
-		APIVersion string `json:"APIVersion"`
-		Version    string `json:"Version"`
-	} `json:"Version"`
-}
-
 // libpodContainerCreateResponse mirrors dockerContainerCreateResponse
 // (helpers_test.go): Podman's native POST /libpod/containers/create returns
 // the identical {"Id":...,"Warnings":[...]} shape as the Docker-compat
@@ -97,52 +90,62 @@ func pingPodmanSocket(socketPath string) error {
 	return nil
 }
 
-func fetchLibpodVersion(t *testing.T, socketPath string) libpodVersionResponse {
+// podmanLibpodAPIVersion returns the running daemon's native libpod API
+// version, read off the Libpod-API-Version response header of a bare GET
+// /libpod/_ping — the same negotiation mechanism a real Podman client
+// bindings library performs before issuing any other request. This suite
+// hits it directly rather than assuming a version: the installed podman on
+// GitHub's ubuntu-latest runner (4.9.3, from the distro repos) 404s several
+// libpod routes — including POST /libpod/containers/create — when called
+// bare with no version prefix, even though GET /libpod/_ping itself is
+// (deliberately, matching the Docker Engine API convention) version-
+// independent. Every request this suite sends that needs to actually reach
+// Podman is prefixed with "/v" + this value, exactly as a real client would.
+func podmanLibpodAPIVersion(t *testing.T, socketPath string) string {
 	t.Helper()
 
 	client, closeIdle := dockerHTTPClient(socketPath)
 	defer closeIdle()
 
-	req, err := http.NewRequest(http.MethodGet, "http://podman/libpod/version", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://podman/libpod/_ping", nil)
 	if err != nil {
-		t.Fatalf("new version request: %v", err)
+		t.Fatalf("new ping request: %v", err)
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("direct podman /libpod/version request failed: %v", err)
+		t.Fatalf("direct podman /libpod/_ping request failed: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		t.Fatalf("direct podman /libpod/version status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, strings.TrimSpace(string(body)))
+		t.Fatalf("direct podman /libpod/_ping status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, strings.TrimSpace(string(body)))
 	}
 
-	var body libpodVersionResponse
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		t.Fatalf("decode podman version response: %v", err)
-	}
-	if body.Version.APIVersion == "" {
-		t.Fatal("podman /libpod/version response missing Version.APIVersion")
+	version := resp.Header.Get("Libpod-Api-Version")
+	if version == "" {
+		t.Fatal("podman /libpod/_ping response missing Libpod-Api-Version header")
 	}
 
-	return body
+	return version
 }
 
 // waitForLibpodContainerRunning polls GET /libpod/containers/{id}/json
 // directly against the real daemon (bypassing sockguard) until the
 // container reports Running, mirroring waitForDockerContainerRunning. Used
 // before issuing an exec against a just-started container so a slow start
-// can't race the exec-create/start calls that follow.
-func waitForLibpodContainerRunning(t *testing.T, socketPath, containerID string) {
+// can't race the exec-create/start calls that follow. apiVersion (from
+// podmanLibpodAPIVersion) prefixes the request the same way every other
+// non-_ping libpod call in this suite does.
+func waitForLibpodContainerRunning(t *testing.T, socketPath, apiVersion, containerID string) {
 	t.Helper()
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		client, closeIdle := dockerHTTPClient(socketPath)
 
-		req, err := http.NewRequest(http.MethodGet, "http://podman/libpod/containers/"+url.PathEscape(containerID)+"/json", nil)
+		req, err := http.NewRequest(http.MethodGet, "http://podman/v"+apiVersion+"/libpod/containers/"+url.PathEscape(containerID)+"/json", nil)
 		if err != nil {
 			closeIdle()
 			t.Fatalf("new libpod inspect request: %v", err)
@@ -175,13 +178,22 @@ func waitForLibpodContainerRunning(t *testing.T, socketPath, containerID string)
 	}
 }
 
-func removeLibpodContainer(t *testing.T, socketPath, containerID string) {
+// removeLibpodContainerTimeout is longer than dockerHTTPClient's shared 5s
+// default: force-removing a RUNNING container makes Podman stop it first
+// (SIGTERM, then a grace period before SIGKILL), which alone can take
+// several seconds — well-behaved on a real daemon, but past the 5s budget
+// dockerHTTPClient uses for quick, non-lifecycle calls like the _ping check
+// in podmanSocketForIntegration.
+const removeLibpodContainerTimeout = 30 * time.Second
+
+func removeLibpodContainer(t *testing.T, socketPath, apiVersion, containerID string) {
 	t.Helper()
 
-	client, closeIdle := dockerHTTPClient(socketPath)
-	defer closeIdle()
+	transport := dockerSocketRoundTripper(socketPath)
+	client := &http.Client{Transport: transport, Timeout: removeLibpodContainerTimeout}
+	defer transport.CloseIdleConnections()
 
-	req, err := http.NewRequest(http.MethodDelete, "http://podman/libpod/containers/"+url.PathEscape(containerID)+"?force=true", nil)
+	req, err := http.NewRequest(http.MethodDelete, "http://podman/v"+apiVersion+"/libpod/containers/"+url.PathEscape(containerID)+"?force=true", nil)
 	if err != nil {
 		t.Fatalf("new libpod remove request: %v", err)
 	}
