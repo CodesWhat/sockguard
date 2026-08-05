@@ -26,6 +26,13 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    # curlimages/curl's own image default (UID 100) can't reach a socket
+    # owned 65532:65532 mode 0600 -- without this the probe's curl calls
+    # fail on a filesystem permission mismatch, not on anything sockguard
+    # itself is asserting. Match the UID/GID sockguard's own container
+    # writes the socket as (assertion 1: "pristine boot") so the probe
+    # actually exercises the socket's mode, not its own ownership gap.
+    user: "65532:65532"
     volumes:
       - sockguard-socket:/var/run/sockguard:ro
 
