@@ -24,13 +24,19 @@
    cd app && govulncheck ./...
    ```
 
-4. **Update CHANGELOG.md**
+4. **Pre-GA tri-tool conformance gate** (minor/major GA promotions only — e.g. cutting v1.6.0 stable off an already-soaked `-rc.N`; skip for patch releases that don't touch the tri-tool surface) — #150's published Sockguard + Portwing + drydock conformance matrix does not run on every PR (see `.github/workflows/quality-tri-tool-conformance.yml`'s header for why), so it has to be run deliberately before promoting a candidate to GA:
+
+   - Go to **Actions → 🤝 Quality: Tri-Tool Conformance → Run workflow**
+   - Set `sockguard_image` to the release-candidate image (e.g. `ghcr.io/codeswhat/sockguard:1.6.0-rc.11`) — never the `:latest` default when gating a specific candidate
+   - Require all three matrix rows (`current-standard`, `current-edge`, `legacy-floor`) green before proceeding; the `summary` job's aggregated `$GITHUB_STEP_SUMMARY` and each row's `conformance-<row>.json` artifact have the per-assertion detail if anything fails
+
+5. **Update CHANGELOG.md**
 
    - Rename `## [Unreleased]` → `## [v<version>] - <YYYY-MM-DD>`
    - Add a fresh empty `## [Unreleased]` block above it
    - The release workflow (`release-cut.yml`) validates that a non-empty CHANGELOG entry exists for the tag before pushing it; the build will fail if this step is skipped
 
-5. **Sync release metadata** — sockguard does not hardcode its binary version in source. The binary's `sockguard version` output is injected at build time via goreleaser ldflags:
+6. **Sync release metadata** — sockguard does not hardcode its binary version in source. The binary's `sockguard version` output is injected at build time via goreleaser ldflags:
 
    ```
    -X github.com/codeswhat/sockguard/internal/version.Version={{.Version}}
@@ -46,9 +52,9 @@
 
    `scripts/release-metadata.test.mjs` enforces that the website version, latest released roadmap milestone, Helm chart/application versions, README latest-stable banner, and CHANGELOG release heading all agree.
 
-6. **Lefthook pre-push** — runs automatically on `git push`. Sequence: clean-tree → goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails. Branch CI independently runs the same GoReleaser snapshot and asserts that it rendered `dist/homebrew/Casks/sockguard.rb`.
+7. **Lefthook pre-push** — runs automatically on `git push`. Sequence: clean-tree → goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails. Branch CI independently runs the same GoReleaser snapshot and asserts that it rendered `dist/homebrew/Casks/sockguard.rb`.
 
-7. **Release credentials** — confirm the repository Actions secret `HOMEBREW_TAP_TOKEN` is available and has contents-write access to `CodesWhat/homebrew-tap`. GoReleaser uses it only for stable tags; prereleases skip the cask upload.
+8. **Release credentials** — confirm the repository Actions secret `HOMEBREW_TAP_TOKEN` is available and has contents-write access to `CodesWhat/homebrew-tap`. GoReleaser uses it only for stable tags; prereleases skip the cask upload.
 
 ---
 
