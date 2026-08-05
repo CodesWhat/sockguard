@@ -42,11 +42,11 @@ type serveDeps struct {
 	// keeps going through createServeListener above so its existing test
 	// doubles keep working unchanged.
 	createNamedListener func(*config.Config, config.ListenerConfig) (net.Listener, error)
-	// probeUnixSocketLive reports whether something is actively accepting
-	// connections on a unix socket path found at bind time (EADDRINUSE).
-	// A successful dial is the only signal that blocks stale-socket
-	// removal (#149) — see listenUnixSocketWithMode.
-	probeUnixSocketLive func(string) bool
+	// probeUnixSocket returns the result of connecting to a unix socket path
+	// found at bind time (EADDRINUSE). Only an error matching ECONNREFUSED is
+	// proof that the socket is stale; nil means live and every other error is
+	// ambiguous and must preserve the path (#149).
+	probeUnixSocket     func(string) error
 	chown               func(string, int, int) error
 	buildBundleVerifier func(config.PolicyBundleConfig) (policybundle.Verifier, error)
 	loadBundleEntity    func(string) (verify.SignedEntity, error)
@@ -74,7 +74,7 @@ func newServeDeps() *serveDeps {
 		listenNetwork:       net.Listen,
 		lstatPath:           os.Lstat,
 		isAddrInUse:         isAddrInUse,
-		probeUnixSocketLive: defaultProbeUnixSocketLive,
+		probeUnixSocket:     defaultProbeUnixSocket,
 		chown:               os.Chown,
 		buildBundleVerifier: defaultBuildBundleVerifier,
 		loadBundleEntity:    policybundle.LoadBundle,
@@ -288,17 +288,13 @@ func (d *serveDeps) listenUnixSocket(path string) (net.Listener, error) {
 // listenUnixSocketWithMode binds a unix socket at the given file mode,
 // replacing a stale socket left behind by a crashed previous instance.
 //
-// "Stale" is no longer inferred from EADDRINUSE alone (#149): before
-// unlinking anything, probeUnixSocketLive dials the path. A successful dial
-// proves another process is actively serving on it, so removal is refused —
-// stealing a live peer's socket is exactly the failure mode this guards
-// against. Any dial failure (refused, no such file, timeout) is treated as
-// "not live" and removal proceeds; this is a deliberate, documented
-// simplification of "probe must observe connection-refused, else ambiguous
-// fails startup" — ENOENT/timeout are ordinary benign races (e.g. the file
-// vanished between Lstat and dial) that would otherwise fail startup for no
-// safety benefit, since the property that actually matters — never steal a
-// live listener — is fully covered by the connect-succeeded case.
+// "Stale" is no longer inferred from EADDRINUSE alone (#149). Before
+// unlinking anything, probeUnixSocket dials the path. A successful dial proves
+// another process is actively serving. Only ECONNREFUSED proves the existing
+// socket is dead; timeouts, ENOENT races, permission failures, and every other
+// result are ambiguous and fail startup without removal. After the refused
+// probe, a second Lstat must still identify the same socket inode/device that
+// was inspected before the probe.
 func (d *serveDeps) listenUnixSocketWithMode(path string, fileMode os.FileMode) (net.Listener, error) {
 	return d.withUmask(socketCreateUmask(fileMode), func() (net.Listener, error) {
 		ln, err := d.listenNetwork("unix", path)
@@ -316,8 +312,24 @@ func (d *serveDeps) listenUnixSocketWithMode(path string, fileMode os.FileMode) 
 		if info.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("socket path %q exists and is not a socket", path)
 		}
-		if d.probeUnixSocketLive(path) {
+		before := socketIdentityFromFileInfo(info)
+		probeErr := d.probeUnixSocket(path)
+		if probeErr == nil {
 			return nil, fmt.Errorf("socket path %q is actively serving another process; refusing to steal a live listener", path)
+		}
+		if !errors.Is(probeErr, syscall.ECONNREFUSED) {
+			return nil, fmt.Errorf("socket path %q probe result is ambiguous; refusing to remove it: %w", path, probeErr)
+		}
+		afterInfo, afterErr := d.lstatPath(path)
+		if afterErr != nil {
+			return nil, fmt.Errorf("socket path %q changed during stale-socket probe: %w", path, afterErr)
+		}
+		if afterInfo.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("socket path %q changed during stale-socket probe and is no longer a socket", path)
+		}
+		after := socketIdentityFromFileInfo(afterInfo)
+		if !before.valid || !after.valid || before != after {
+			return nil, fmt.Errorf("socket path %q changed during stale-socket probe; refusing to remove it", path)
 		}
 		if removeErr := d.removePath(path); removeErr != nil {
 			if !os.IsNotExist(removeErr) {
@@ -333,17 +345,16 @@ func (d *serveDeps) listenUnixSocketWithMode(path string, fileMode os.FileMode) 
 	})
 }
 
-// defaultProbeUnixSocketLive dials path with a short timeout to determine
-// whether an existing socket file is actively being served. It is a plain
-// local unix-domain connect — no network I/O — so it resolves immediately
-// whether the answer is "accepted" or "refused/missing".
-func defaultProbeUnixSocketLive(path string) bool {
+// defaultProbeUnixSocket dials path with a short timeout and returns the exact
+// connect result so the caller can distinguish a proven ECONNREFUSED stale
+// socket from every ambiguous failure.
+func defaultProbeUnixSocket(path string) error {
 	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
 	if err != nil {
-		return false
+		return err
 	}
 	_ = conn.Close()
-	return true
+	return nil
 }
 
 func (d *serveDeps) withUmask(mask int, fn func() (net.Listener, error)) (net.Listener, error) {

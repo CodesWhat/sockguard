@@ -112,7 +112,9 @@ func (i serveTestFileInfo) Size() int64        { return 0 }
 func (i serveTestFileInfo) Mode() os.FileMode  { return i.mode }
 func (i serveTestFileInfo) ModTime() time.Time { return time.Time{} }
 func (i serveTestFileInfo) IsDir() bool        { return false }
-func (i serveTestFileInfo) Sys() any           { return nil }
+func (i serveTestFileInfo) Sys() any {
+	return &syscall.Stat_t{Dev: 1, Ino: 1}
+}
 
 func newServeTestDeps() *serveDeps {
 	deps := newServeDeps()
@@ -419,6 +421,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 		deps.lstatPath = func(string) (os.FileInfo, error) {
 			return serveTestFileInfo{mode: os.ModeSocket | 0o600}, nil
 		}
+		deps.probeUnixSocket = func(string) error { return syscall.ECONNREFUSED }
 		deps.removePath = func(string) error {
 			return errors.New("remove failed")
 		}
@@ -446,6 +449,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 		deps.lstatPath = func(string) (os.FileInfo, error) {
 			return serveTestFileInfo{mode: os.ModeSocket | 0o600}, nil
 		}
+		deps.probeUnixSocket = func(string) error { return syscall.ECONNREFUSED }
 		deps.removePath = func(string) error {
 			return os.ErrNotExist
 		}
@@ -474,6 +478,7 @@ func TestCreateListenerAndListenUnixSocketErrorPaths(t *testing.T) {
 		deps.lstatPath = func(string) (os.FileInfo, error) {
 			return serveTestFileInfo{mode: os.ModeSocket | 0o600}, nil
 		}
+		deps.probeUnixSocket = func(string) error { return syscall.ECONNREFUSED }
 		deps.removePath = func(string) error {
 			return nil
 		}
