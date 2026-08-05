@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, Portwing, Portwing with exec, Portwing with compose, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
+description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -69,11 +69,41 @@ through this proxy, not just a single standalone container.
 # (POST /networks/*/connect is already allowed by drydock.yaml — untouched)
 # Body inspection for the new endpoints reuses drydock.yaml's existing
 # network/volume create guardrails (deny custom drivers/driver opts by default)
-# Still denies /build. Docker API v1.53 deprecated /session and /grpc, so a
-# future build preset must be validated against the current Compose/BuildKit
-# transport and preserve fail-closed body/stream mediation.
+# Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
+# with default settings never calls POST /build at all — it drives dockerd's
+# embedded BuildKit over the hijacked, unversioned /session and /grpc streams
+# instead, both denied here. Use drydock-with-build.yaml if you need `--build`
+# support: it layers CLASSIC builder support (POST /build only, requires
+# DOCKER_BUILDKIT=0 in the client) on top of this preset without opening
+# /session or /grpc. See the Compose/BuildKit Transport section of the
+# security model docs for the full breakdown.
 # Self-update finalize exec is still denied, same caveat as drydock.yaml;
 # combine with drydock-with-selfupdate.yaml by hand if you need both
+```
+
+## Drydock with Build (`drydock-with-build.yaml`)
+
+Extends `drydock-with-compose.yaml` with **classic builder only** support for
+`docker compose build` / `up --build`, for deployments that need Sockguard to
+inspect build requests rather than blanket-deny them.
+
+**Use for:** drydock-managed compose stacks that build images locally instead
+of only pulling pre-built ones — with the caveat that the client must run with
+`DOCKER_BUILDKIT=0` set (see below).
+
+```yaml
+# Extends drydock-with-compose.yaml with:
+# Allows: POST /build — classic builder only, request_body.build left at its
+#         secure defaults (allow_remote_context/allow_host_network/
+#         allow_run_instructions all false)
+# Still denies: /session, /grpc, and any moby.buildkit.v1.Control method path
+# — BuildKit's opaque session/gRPC tunnel carries secrets, SSH agent
+# forwarding, and file sync sockguard cannot inspect or bound once opened.
+# THIS FAILURE IS INTENTIONAL: modern Buildx defaults to BuildKit, so a
+# default `docker compose build` against this preset still fails with a
+# /session or /grpc denial. Set DOCKER_BUILDKIT=0 in the client environment
+# to fall back to the classic builder this preset actually supports.
+# BuildKit gRPC mediation is a v1.7+ epic, not implemented here.
 ```
 
 ## Portwing (`portwing.yaml`)
@@ -136,13 +166,44 @@ plain container orchestration.
 #         POST /volumes/create, DELETE /volumes/*
 # Body inspection for the new endpoints reuses portwing.yaml's existing
 # network/volume create guardrails (deny custom drivers/driver opts by default)
-# Still denies /build. Docker API v1.53 deprecated /session and /grpc, so a
-# future build preset must be validated against the current Compose/BuildKit
-# transport and preserve fail-closed body/stream mediation.
+# Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
+# with default settings never calls POST /build at all — it drives dockerd's
+# embedded BuildKit over the hijacked, unversioned /session and /grpc streams
+# instead, both denied here. Use portwing-with-build.yaml if you need
+# `--build` support: it layers CLASSIC builder support (POST /build only,
+# requires DOCKER_BUILDKIT=0 in the client) on top of this preset without
+# opening /session or /grpc. See the Compose/BuildKit Transport section of
+# the security model docs for the full breakdown.
 # insecure_allow_read_exfiltration=true is inherited from portwing.yaml for the
 # GET /containers/*/logs rule (see the Portwing section above)
 # Exec is denied, same as portwing.yaml — combine with portwing-with-exec.yaml's
 # request_body.exec block by hand if you need both compose deploys and exec
+```
+
+## Portwing with Build (`portwing-with-build.yaml`)
+
+Extends `portwing-with-compose.yaml` with **classic builder only** support
+for `docker compose build` / `up --build`.
+
+**Use for:** Portwing-managed compose stacks that build images locally
+instead of only pulling pre-built ones — with the caveat that the client must
+run with `DOCKER_BUILDKIT=0` set (see below).
+
+```yaml
+# Extends portwing-with-compose.yaml with:
+# Allows: POST /build — classic builder only, request_body.build left at its
+#         secure defaults (allow_remote_context/allow_host_network/
+#         allow_run_instructions all false)
+# Still denies: /session, /grpc, and any moby.buildkit.v1.Control method path
+# — BuildKit's opaque session/gRPC tunnel carries secrets, SSH agent
+# forwarding, and file sync sockguard cannot inspect or bound once opened.
+# THIS FAILURE IS INTENTIONAL: modern Buildx defaults to BuildKit, so a
+# default `docker compose build` against this preset still fails with a
+# /session or /grpc denial. Set DOCKER_BUILDKIT=0 in the client environment
+# to fall back to the classic builder this preset actually supports.
+# insecure_allow_read_exfiltration=true is inherited from portwing.yaml for the
+# GET /containers/*/logs rule (see the Portwing section above)
+# BuildKit gRPC mediation is a v1.7+ epic, not implemented here.
 ```
 
 ## Traefik (`traefik.yaml`)
