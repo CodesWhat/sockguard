@@ -116,36 +116,12 @@ type auditEvent struct {
 	// event must hold its own deep copy taken synchronously here, not an
 	// alias into pooled state.
 	ResourcePolicy *auditResourcePolicyContext `json:"resource_policy,omitempty"`
-	EventType         string `json:"event_type"`
-	Timestamp         string `json:"timestamp"`
-	RequestID         string `json:"request_id"`
-	ClientRequestID   string `json:"client_request_id"`
-	TraceID           string `json:"trace_id"`
-	TraceParentID     string `json:"trace_parent_id"`
-	TraceSpanID       string `json:"trace_span_id"`
-	TraceSampled      bool   `json:"trace_sampled"`
-	Method            string `json:"method"`
-	RawPath           string `json:"raw_path"`        // Raw client URL path, for forensic replay.
-	NormalizedPath    string `json:"normalized_path"` // Canonical policy path, for SIEM correlation.
-	Decision          string `json:"decision"`
-	ReasonCode        string `json:"reason_code"`
-	Reason            string `json:"reason"`
-	MatchedRule       int    `json:"matched_rule"`
-	SelectedProfile   string `json:"selected_profile"`
-	RolloutMode       string `json:"rollout_mode,omitempty"`
-	Status            int    `json:"status"`
-	ActorRemoteAddr   string `json:"actor_remote_addr"`
-	ActorSourceIP     string `json:"actor_source_ip"`
-	TransportListener string `json:"transport_listener"`
-	TransportScheme   string `json:"transport_scheme"`
-	TransportProtocol string `json:"transport_protocol"`
 	// ListenerName is the operator-configured listener name (#149) —
 	// "default" for the legacy singular listen: block, an explicit
 	// listeners[*].name, or "admin" for the dedicated admin listener.
 	// Additive; TransportListener keeps its pre-existing "unix"/"tcp"
 	// transport-kind meaning unchanged.
-	ListenerName     string                `json:"listener_name,omitempty"`
-	OwnershipContext auditOwnershipContext `json:"ownership"`
+	ListenerName string `json:"listener_name,omitempty"`
 }
 
 type auditOwnershipContext struct {
