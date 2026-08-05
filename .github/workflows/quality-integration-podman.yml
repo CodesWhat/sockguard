@@ -94,11 +94,21 @@ jobs:
           done
           sudo test -S /run/podman/podman.sock || { echo "rootful podman.sock never appeared" >&2; cat /tmp/podman-rootful.log >&2; exit 1; }
           # The test process runs as the unprivileged runner user; the
-          # service above binds the socket as root. Widen permissions on
-          # this short-lived, single-purpose CI VM rather than running the
-          # whole Go test binary under sudo.
+          # service above binds both the socket AND its parent directory
+          # root-owned (mode 0700 on /run/podman, mode 0600 on the socket
+          # itself). Widen both on this short-lived, single-purpose CI VM
+          # rather than running the whole Go test binary under sudo — a
+          # socket chmod alone still 403s at os.Stat/dial time if the
+          # containing directory isn't traversable by the runner user.
+          sudo chmod 755 /run/podman
           sudo chmod 666 /run/podman/podman.sock
           sudo podman -r --url unix:///run/podman/podman.sock version
+          # Verify as the unprivileged runner user (no sudo) so a
+          # permissions regression here fails loudly at setup with a clear
+          # message, instead of surfacing as a confusing "permission
+          # denied" deep inside the Go test suite.
+          curl --fail --silent --show-error --unix-socket /run/podman/podman.sock http://d/libpod/_ping
+          echo
 
       # Pulls the digest-pinned ref straight from helpers_test.go instead of
       # a hardcoded tag — see quality-integration.yml's identical step for
@@ -162,10 +172,16 @@ jobs:
           # required for podman's rootless user-namespace remapping. Fail
           # fast with a clear message instead of a confusing podman error
           # if either is ever missing on a future runner image.
+          #
+          # Checked by grepping the files directly rather than `getent
+          # subuid`/`getent subgid`: glibc on ubuntu-latest has no subuid/
+          # subgid NSS database registered at all, so getent fails with
+          # "Unknown database" regardless of what /etc/subuid actually
+          # contains — it's not a signal of a missing range.
           command -v newuidmap
           command -v newgidmap
-          getent subuid "$(whoami)" || { echo "no /etc/subuid range for $(whoami)" >&2; exit 1; }
-          getent subgid "$(whoami)" || { echo "no /etc/subgid range for $(whoami)" >&2; exit 1; }
+          grep -q "^$(whoami):" /etc/subuid || { echo "no /etc/subuid range for $(whoami)" >&2; exit 1; }
+          grep -q "^$(whoami):" /etc/subgid || { echo "no /etc/subgid range for $(whoami)" >&2; exit 1; }
 
       - name: Start rootless podman system service
         run: |
