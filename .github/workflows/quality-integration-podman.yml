@@ -195,6 +195,11 @@ jobs:
           sudo mkdir -p "${runtime_dir}"
           sudo chown "$(id -u)":"$(id -g)" "${runtime_dir}"
           echo "XDG_RUNTIME_DIR=${runtime_dir}" >>"$GITHUB_ENV"
+          # GITHUB_ENV only reaches *subsequent* steps — podman in this step
+          # needs it too, and it won't create the socket's parent dir itself
+          # (`bind: no such file or directory` otherwise).
+          export XDG_RUNTIME_DIR="${runtime_dir}"
+          mkdir -p "${runtime_dir}/podman"
 
           nohup podman system service --time=0 "unix://${runtime_dir}/podman/podman.sock" >/tmp/podman-rootless.log 2>&1 &
           for i in $(seq 1 30); do
