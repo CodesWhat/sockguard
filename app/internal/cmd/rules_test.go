@@ -931,3 +931,283 @@ func TestPresetConfigsDenyAttestationStatementsByDefault(t *testing.T) {
 		})
 	}
 }
+
+// --- #148: libpod pod-create/exec/volume/network/secret gate tables ---
+
+func TestValidateAndCompileRulesAllowsLibpodPodCreateWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/pods/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsLibpodExecWithConfiguredBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/exec"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/exec/*/start"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+	// #148 design decision C3: request_body.exec is shared between the
+	// Docker-compat and libpod exec paths — no separate libpod_exec config.
+	cfg.RequestBody.Exec.AllowedCommands = [][]string{{"/usr/local/bin/pre-update"}}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesAllowsLibpodVolumeNetworkAndSecretWritesWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/volumes/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/networks/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/secrets/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestValidateAndCompileRulesRejectsLibpodExecWithoutConfiguredAllowlist(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/exec"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected libpod exec blind-write validation to fail")
+	}
+	if !strings.Contains(err.Error(), "POST /libpod/containers/sockguard-test/exec") {
+		t.Fatalf("expected libpod exec endpoint in error, got: %v", err)
+	}
+}
+
+// TestValidateAndCompileRulesRejectsLibpodPlayKubeAndManifestWritesWithoutExplicitOptIn
+// pins #148 design decision C2: play/kube (and its kube/play alias),
+// kube/apply, and manifest writes have NO request-body inspector at all —
+// full YAML/PodSpec modeling is deferred past v1.6 — so admitting any of
+// them requires insecure_allow_body_blind_writes exactly like any other
+// uninspected body-sensitive write, never a free pass.
+func TestValidateAndCompileRulesRejectsLibpodPlayKubeAndManifestWritesWithoutExplicitOptIn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/play/kube"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/kube/play"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/kube/apply"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/manifests/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/manifests/*"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPut, Path: "/libpod/manifests/*"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected play/kube and manifest blind-write validation to fail")
+	}
+	for _, endpoint := range []string{
+		"POST /libpod/play/kube",
+		"POST /libpod/kube/play",
+		"POST /libpod/kube/apply",
+		"POST /libpod/manifests/create",
+		"POST /libpod/manifests/sockguard-test",
+		"PUT /libpod/manifests/sockguard-test",
+	} {
+		if !strings.Contains(err.Error(), endpoint) {
+			t.Fatalf("expected %s in error, got: %v", endpoint, err)
+		}
+	}
+	if !strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+		t.Fatalf("expected explicit blind-write opt-in hint, got: %v", err)
+	}
+}
+
+func TestValidateAndCompileRulesAllowsLibpodPlayKubeWithExplicitBlindWriteOptIn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.InsecureAllowBodyBlindWrites = true
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/play/kube"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+// TestValidateAndCompileRulesRejectsLibpodReadExfilRulesWithoutExplicitOptIn
+// pins the libpod read/export surface added to sensitiveExfilEndpoints:
+// container archive/export/logs/attach, image export/get/push, and
+// GET /libpod/generate/kube (a read despite the "generate" name — see the
+// inline comment on sensitiveExfilEndpoints for the source-verified
+// deviation from the design doc's literal placement).
+func TestValidateAndCompileRulesRejectsLibpodReadExfilRulesWithoutExplicitOptIn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/containers/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/attach"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/images/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/*/push"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/generate/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected libpod read exfiltration validation to fail")
+	}
+	for _, endpoint := range []string{
+		"GET /libpod/containers/sockguard-test/archive",
+		"GET /libpod/containers/sockguard-test/export",
+		"GET /libpod/containers/sockguard-test/logs",
+		"POST /libpod/containers/sockguard-test/attach",
+		"GET /libpod/images/export",
+		"GET /libpod/images/sockguard-test/get",
+		"POST /libpod/images/sockguard-test/push",
+		"GET /libpod/generate/kube",
+	} {
+		if !strings.Contains(err.Error(), endpoint) {
+			t.Fatalf("expected %s in error, got: %v", endpoint, err)
+		}
+	}
+}
+
+func TestValidateAndCompileRulesAllowsLibpodReadExfilWithExplicitOptIn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.InsecureAllowReadExfiltration = true
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/containers/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/attach"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/images/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/*/push"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/generate/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+func TestBodyInspectionConfiguredForEndpointLibpodCases(t *testing.T) {
+	tests := []struct {
+		name        string
+		requestBody config.RequestBodyConfig
+		endpoint    bodySensitiveWriteEndpoint
+		want        bool
+	}{
+		{
+			name:        "libpod exec create without allowlist is not configured",
+			requestBody: config.RequestBodyConfig{},
+			endpoint:    bodySensitiveWriteEndpoint{method: http.MethodPost, path: "/libpod/containers/sockguard-test/exec"},
+			want:        false,
+		},
+		{
+			name: "libpod exec create with allowlist is configured",
+			requestBody: config.RequestBodyConfig{
+				Exec: config.ExecRequestBodyConfig{AllowedCommands: [][]string{{"/bin/true"}}},
+			},
+			endpoint: bodySensitiveWriteEndpoint{method: http.MethodPost, path: "/libpod/containers/sockguard-test/exec"},
+			want:     true,
+		},
+		{
+			name: "libpod exec start shares the same exec config as libpod exec create",
+			requestBody: config.RequestBodyConfig{
+				Exec: config.ExecRequestBodyConfig{AllowedCommands: [][]string{{"/bin/true"}}},
+			},
+			endpoint: bodySensitiveWriteEndpoint{method: http.MethodPost, path: "/libpod/exec/sockguard-test/start"},
+			want:     true,
+		},
+		{
+			name:        "libpod pod create always has a real inspector",
+			requestBody: config.RequestBodyConfig{},
+			endpoint:    bodySensitiveWriteEndpoint{method: http.MethodPost, path: "/libpod/pods/create"},
+			want:        true,
+		},
+		{
+			name:        "libpod volume create always has a real inspector",
+			requestBody: config.RequestBodyConfig{},
+			endpoint:    bodySensitiveWriteEndpoint{method: http.MethodPost, path: "/libpod/volumes/create"},
+			want:        true,
+		},
+		{
+			name:        "libpod network create always has a real inspector",
+			requestBody: config.RequestBodyConfig{},
+			endpoint:    bodySensitiveWriteEndpoint{method: http.MethodPost, path: "/libpod/networks/create"},
+			want:        true,
+		},
+		{
+			name:        "libpod secret create always has a real inspector",
+			requestBody: config.RequestBodyConfig{},
+			endpoint:    bodySensitiveWriteEndpoint{method: http.MethodPost, path: "/libpod/secrets/create"},
+			want:        true,
+		},
+		{
+			name:        "play/kube has no inspector regardless of config",
+			requestBody: config.RequestBodyConfig{},
+			endpoint:    bodySensitiveWriteEndpoint{method: http.MethodPost, path: "/libpod/play/kube"},
+			want:        false,
+		},
+		{
+			name:        "kube/play alias has no inspector regardless of config",
+			requestBody: config.RequestBodyConfig{},
+			endpoint:    bodySensitiveWriteEndpoint{method: http.MethodPost, path: "/libpod/kube/play"},
+			want:        false,
+		},
+		{
+			name:        "kube/apply has no inspector regardless of config",
+			requestBody: config.RequestBodyConfig{},
+			endpoint:    bodySensitiveWriteEndpoint{method: http.MethodPost, path: "/libpod/kube/apply"},
+			want:        false,
+		},
+		{
+			name:        "manifest create has no inspector regardless of config",
+			requestBody: config.RequestBodyConfig{},
+			endpoint:    bodySensitiveWriteEndpoint{method: http.MethodPost, path: "/libpod/manifests/create"},
+			want:        false,
+		},
+		{
+			name:        "manifest update has no inspector regardless of config",
+			requestBody: config.RequestBodyConfig{},
+			endpoint:    bodySensitiveWriteEndpoint{method: http.MethodPut, path: "/libpod/manifests/sockguard-test"},
+			want:        false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := bodyInspectionConfiguredForEndpoint(tt.requestBody, tt.endpoint)
+			if got != tt.want {
+				t.Fatalf("bodyInspectionConfiguredForEndpoint() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
