@@ -106,9 +106,23 @@ jobs:
           # Verify as the unprivileged runner user (no sudo) so a
           # permissions regression here fails loudly at setup with a clear
           # message, instead of surfacing as a confusing "permission
-          # denied" deep inside the Go test suite.
-          curl --fail --silent --show-error --unix-socket /run/podman/podman.sock http://d/libpod/_ping
-          echo
+          # denied" deep inside the Go test suite. Retried: the socket file
+          # existing (checked above) does not mean the service is accepting
+          # connections yet — a bare curl here has been observed to hit
+          # connection-refused in the narrow window between the socket
+          # appearing and the listener actually accepting.
+          for i in $(seq 1 10); do
+            if curl --fail --silent --show-error --unix-socket /run/podman/podman.sock http://d/libpod/_ping; then
+              echo
+              break
+            fi
+            if [ "$i" -eq 10 ]; then
+              echo "libpod _ping never succeeded after 10 attempts" >&2
+              cat /tmp/podman-rootful.log >&2
+              exit 1
+            fi
+            sleep 1
+          done
 
       # Pulls the digest-pinned ref straight from helpers_test.go instead of
       # a hardcoded tag — see quality-integration.yml's identical step for
@@ -209,7 +223,20 @@ jobs:
             sleep 1
           done
           test -S "${runtime_dir}/podman/podman.sock" || { echo "rootless podman.sock never appeared" >&2; cat /tmp/podman-rootless.log >&2; exit 1; }
-          podman --url "unix://${runtime_dir}/podman/podman.sock" version
+          # Retried for the same reason as the rootful leg's _ping check:
+          # the socket file existing (just confirmed above) does not mean
+          # the service is accepting connections yet.
+          for i in $(seq 1 10); do
+            if podman --url "unix://${runtime_dir}/podman/podman.sock" version; then
+              break
+            fi
+            if [ "$i" -eq 10 ]; then
+              echo "rootless podman service never accepted a connection after 10 attempts" >&2
+              cat /tmp/podman-rootless.log >&2
+              exit 1
+            fi
+            sleep 1
+          done
 
       - name: Pre-pull busybox sentinel image
         run: |
