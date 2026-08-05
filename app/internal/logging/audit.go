@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/codeswhat/sockguard/internal/inbound"
 )
 
 // AuditOptions configures dedicated audit-event fields that come from proxy
@@ -114,6 +116,12 @@ type auditEvent struct {
 	// event must hold its own deep copy taken synchronously here, not an
 	// alias into pooled state.
 	ResourcePolicy *auditResourcePolicyContext `json:"resource_policy,omitempty"`
+	// ListenerName is the operator-configured listener name (#149) —
+	// "default" for the legacy singular listen: block, an explicit
+	// listeners[*].name, or "admin" for the dedicated admin listener.
+	// Additive; TransportListener keeps its pre-existing "unix"/"tcp"
+	// transport-kind meaning unchanged.
+	ListenerName string `json:"listener_name,omitempty"`
 }
 
 type auditOwnershipContext struct {
@@ -182,6 +190,10 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 
 			actorRemoteAddr, actorSourceIP := auditActorIdentity(r)
 			transportListener, transportScheme, transportProtocol := auditTransportIdentity(r, listener)
+			listenerName := ""
+			if identity, ok := inbound.FromContext(r.Context()); ok {
+				listenerName = identity.Name
+			}
 			event := auditEvent{
 				EventType:         "http_request",
 				Timestamp:         logger.now(),
@@ -206,6 +218,7 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 				TransportListener: transportListener,
 				TransportScheme:   transportScheme,
 				TransportProtocol: transportProtocol,
+				ListenerName:      listenerName,
 				OwnershipContext:  ownershipContext,
 				ResourcePolicy:    auditResourcePolicyContextFrom(meta.ResourcePolicy),
 			}

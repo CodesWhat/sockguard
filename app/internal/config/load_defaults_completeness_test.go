@@ -119,6 +119,13 @@ func compareLeaves(t *testing.T, prefix string, got, want reflect.Value) {
 	typ := got.Type()
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
+		if !field.IsExported() {
+			// Mirrors registerDefaults' own guard: an unexported field (e.g.
+			// Config.explicitLegacyListen, #149's listen/listeners
+			// provenance flag) carries no mapstructure tag and is never
+			// registered as a Viper default, so it has nothing to compare.
+			continue
+		}
 		name, squash := mapstructureTag(field)
 		if prefix == "" && name == "rules" {
 			continue
@@ -157,6 +164,9 @@ func walkLeaves(prefix string, val reflect.Value, fn func(path string, fv reflec
 	typ := val.Type()
 	for i := 0; i < typ.NumField(); i++ {
 		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
 		name, squash := mapstructureTag(field)
 		if prefix == "" && name == "rules" {
 			continue
@@ -236,6 +246,14 @@ func collectUntaggedFields(t reflect.Type, path string, visited map[reflect.Type
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
+		if !field.IsExported() {
+			// An unexported field (e.g. Config.explicitLegacyListen, #149's
+			// listen/listeners provenance flag) is invisible to
+			// mapstructure/Viper by construction — Go's reflect package
+			// won't even let unrelated code read it — so it has no tag to
+			// check and no env/file exposure to worry about.
+			continue
+		}
 		fieldPath := path + "." + field.Name
 
 		if field.Tag.Get("mapstructure") == "" {

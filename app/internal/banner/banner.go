@@ -73,7 +73,13 @@ const colorArtWidth = 72
 
 // Info is the runtime summary rendered beneath the ASCII art.
 type Info struct {
-	Listen    string
+	// Listeners is one "name unix:<path>" / "name tcp://<addr>" entry per
+	// effective listener (#149), in declared/bind order, followed by the
+	// dedicated admin listener's entry when configured. Render must only
+	// ever be called after every listener in this list has bound and
+	// passed the publish barrier — the banner is not a promise, it's a
+	// confirmation.
+	Listeners []string
 	Upstream  string
 	Rules     int
 	LogFormat string
@@ -104,7 +110,16 @@ func Render(w io.Writer, info Info) {
 		p.Dim(fmt.Sprintf("(commit %s, built %s, %s)",
 			shortCommit(version.Commit), version.BuildDate, runtime.Version())))
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "  %s %s\n", p.Dim("listen   "), info.Listen)
+	if len(info.Listeners) == 0 {
+		fmt.Fprintf(w, "  %s %s\n", p.Dim("listen   "), "")
+	}
+	for i, listener := range info.Listeners {
+		label := "listen   "
+		if i > 0 {
+			label = "         "
+		}
+		fmt.Fprintf(w, "  %s %s\n", p.Dim(label), listener)
+	}
 	fmt.Fprintf(w, "  %s %s\n", p.Dim("upstream "), info.Upstream)
 	fmt.Fprintf(w, "  %s %d  %s\n",
 		p.Dim("rules    "), info.Rules,

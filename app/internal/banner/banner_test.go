@@ -12,7 +12,7 @@ import (
 func TestRenderContainsRuntimeInfo(t *testing.T) {
 	var buf bytes.Buffer
 	Render(&buf, Info{
-		Listen:    "unix:/var/run/sockguard.sock",
+		Listeners: []string{"unix:/var/run/sockguard.sock"},
 		Upstream:  "/var/run/docker.sock",
 		Rules:     12,
 		LogFormat: "json",

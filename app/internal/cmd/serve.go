@@ -26,6 +26,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/health"
 	"github.com/codeswhat/sockguard/internal/httpjson"
+	"github.com/codeswhat/sockguard/internal/inbound"
 	"github.com/codeswhat/sockguard/internal/logging"
 	"github.com/codeswhat/sockguard/internal/metrics"
 	"github.com/codeswhat/sockguard/internal/ownership"
@@ -150,12 +151,25 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	if err != nil {
 		return fmt.Errorf("config validation: %w", err)
 	}
+	warnIfDefaultProfileExcluded(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
 	if err != nil {
 		return fmt.Errorf("upstream: %w", err)
 	}
 	if err := verifyUpstreamReachableForRuntime(cmd.Context(), deps, runtime, cfg, logger); err != nil {
 		return err
+	}
+
+	// listenerStatusBoard (#149) tracks every configured listener's
+	// lifecycle state for the /health response; wired into both monitors
+	// before any listener binds so ListenersFunc is never nil once traffic
+	// could possibly reach it.
+	board := newListenerStatusBoard()
+	if runtime.health != nil {
+		runtime.health.ListenersFunc = board.snapshot
+	}
+	if runtime.readiness != nil {
+		runtime.readiness.ListenersFunc = board.snapshot
 	}
 
 	// Versioner publishes the initial generation BEFORE the chain is built so
@@ -190,27 +204,76 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	})
 	defer coordinator.stop()
 
-	listener, err := deps.createServeListener(cfg)
+	// Two-phase bind (#149): every effective main listener is bound here,
+	// before anything starts serving. A bind failure on any one of them
+	// closes every member already bound (reverse order) and returns —
+	// there is never an instant where a strict non-empty subset of the
+	// configured main listeners is live.
+	members, err := bindMainListeners(cfg, deps, swappable, board)
 	if err != nil {
-		return fmt.Errorf("listener: %w", err)
+		return err
+	}
+	adminMember, err := bindAdminServer(cfg, logger, auditLogger, versioner, deps, board)
+	if err != nil {
+		closeMembersReverse(members)
+		return err
+	}
+	allMembers := append([]*listenerMember(nil), members...)
+	if adminMember != nil {
+		allMembers = append(allMembers, adminMember)
 	}
 	defer func() {
-		// http.Server.Shutdown closes the listener as part of its
-		// normal teardown, so by the time this defer runs the FD is
-		// usually already gone and Close returns net.ErrClosed. That
-		// is the healthy shutdown path — don't surface it as a WARN.
-		closeErr := listener.Close()
-		if closeErr == nil || errors.Is(closeErr, net.ErrClosed) {
-			return
+		// http.Server.Shutdown closes each listener as part of its normal
+		// teardown, so by the time this defer runs the FD is usually
+		// already gone and Close returns net.ErrClosed. That is the
+		// healthy shutdown path — don't surface it as a WARN.
+		for i := len(allMembers) - 1; i >= 0; i-- {
+			member := allMembers[i]
+			closeErr := member.listener.Close()
+			if closeErr == nil || errors.Is(closeErr, net.ErrClosed) {
+				continue
+			}
+			logger.Warn("failed to close listener", "listener", member.identity.Name, "error", closeErr)
 		}
-		logger.Warn("failed to close listener", "error", closeErr)
 	}()
 
-	server := newHTTPServer(swappable)
-	listen := listenerAddr(cfg)
+	// Pre-register every configured listener gauge at zero while the complete
+	// group is bound but not yet published. The series is therefore present
+	// even if an operator scrapes during the startup transition.
+	setListenersUp(runtime.metrics, members, false)
+	if adminMember != nil {
+		runtime.metrics.SetListenerUp(adminMember.identity.Name, string(adminMember.identity.Role), string(adminMember.identity.Network), false)
+	}
+
+	fanIn := make(chan listenerResult, len(allMembers))
+	publishMainListeners(deps, members, fanIn, board)
+	if adminMember != nil {
+		publishListenerMember(deps, adminMember, fanIn, board)
+	}
+	setListenersUp(runtime.metrics, members, true)
+	if adminMember != nil {
+		runtime.metrics.SetListenerUp(adminMember.identity.Name, string(adminMember.identity.Role), string(adminMember.identity.Network), true)
+		logger.Info("admin listener started",
+			"listen", adminListenerAddr(cfg),
+			"validate_path", cfg.Admin.Path,
+			"policy_version_path", cfg.Admin.PolicyVersionPath,
+		)
+	}
+
 	upstreamName := upstreamLabel(runtime.resolver)
+	stopResolver := runtime.startResolver(cmd.Context())
+	defer stopResolver()
+	stopWatchdog := runtime.startWatchdog(cmd.Context(), cfg)
+	defer stopWatchdog()
+	stopReadiness := runtime.startReadiness(cmd.Context(), cfg)
+	defer stopReadiness()
+
+	bannerLines := bannerListenerLines(members, cfg.EffectiveListeners())
+	if adminMember != nil {
+		bannerLines = append(bannerLines, "admin "+adminListenerAddr(cfg))
+	}
 	banner.Render(cmd.ErrOrStderr(), banner.Info{
-		Listen:    listen,
+		Listeners: bannerLines,
 		Upstream:  upstreamName,
 		Rules:     len(cfg.Rules),
 		LogFormat: cfg.Log.Format,
@@ -219,27 +282,12 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	})
 	logger.Info("sockguard started",
 		"version", version.Version,
-		"listen", listen,
+		"listeners", bannerLines,
 		"upstream", upstreamName,
 		"rules", len(cfg.Rules),
 		"log_level", cfg.Log.Level,
 		"upstream_request_timeout", upstreamRequestTimeoutLogValue(cfg),
 	)
-
-	errCh := make(chan error, 1)
-	stopResolver := runtime.startResolver(cmd.Context())
-	defer stopResolver()
-	stopWatchdog := runtime.startWatchdog(cmd.Context(), cfg)
-	defer stopWatchdog()
-	stopReadiness := runtime.startReadiness(cmd.Context(), cfg)
-	defer stopReadiness()
-	go deps.startServing(server, listener, errCh)
-
-	adminServer, adminErrCh, stopAdmin, err := startAdminServer(cfg, logger, auditLogger, versioner, deps)
-	if err != nil {
-		return err
-	}
-	defer stopAdmin()
 
 	stopReload := startConfigReload(cmd.Context(), cfg, cfgFile, coordinator, logger)
 	defer stopReload()
@@ -247,51 +295,121 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	sigCh := make(chan os.Signal, 1)
 	deps.notifySignals(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
+	var serveFailure error
 	select {
 	case sig := <-sigCh:
 		logger.Info("shutdown signal received", "signal", sig.String())
-	case err := <-errCh:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("server error: %w", err)
+	case result := <-fanIn:
+		// Any Serve return before an intentional drain is fatal, including nil
+		// and http.ErrServerClosed: neither can occur while the listener group
+		// is healthy. Record the failure, then drain the complete group before
+		// returning a non-nil process error.
+		board.setState(result.name, health.ListenerStateFailed)
+		cause := result.err
+		if cause == nil {
+			cause = errors.New("serve returned nil before group shutdown")
+		} else if errors.Is(cause, http.ErrServerClosed) {
+			cause = fmt.Errorf("serve exited before group shutdown: %w", cause)
 		}
-	case err := <-adminErrCh:
-		// An admin Serve() return is always fatal: the operator enabled
-		// admin.listen specifically so they could rely on the admin
-		// endpoints, so a silent admin-only outage would be worse than
-		// taking the whole proxy down and surfacing the cause.
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fmt.Errorf("admin server error: %w", err)
+		if result.role == inbound.RoleAdmin {
+			serveFailure = fmt.Errorf("admin server error: %w", cause)
+		} else {
+			serveFailure = fmt.Errorf("listener %q server error: %w", result.name, cause)
 		}
 	}
 	stopWatchdog()
 
-	shutdownServers(cmd.Context(), deps, cfg, server, adminServer, logger)
+	var adminServer *http.Server
+	if adminMember != nil {
+		adminServer = adminMember.server
+	}
+	shutdownServers(cmd.Context(), deps, cfg, members, adminServer, runtime.metrics, board, logger)
 	logger.Info("sockguard stopped")
-	return nil
+	return serveFailure
 }
 
-// shutdownServers gracefully stops the main and admin http.Servers within
-// the configured grace period and removes any unix sockets sockguard owns.
-// Errors from each step are logged but do not block subsequent steps —
-// shutdown must always make progress so a partial failure can't leave a
-// stale listener behind.
-func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, server, adminServer *http.Server, logger *slog.Logger) {
-	shutdownCtx, cancel := context.WithTimeout(ctx, deps.shutdownGracePeriod)
+// bindAdminServer prepares the dedicated admin listener as the final member
+// of the all-or-none bind transaction. It deliberately does not call Serve;
+// the caller publishes it only after every main and admin bind succeeded.
+func bindAdminServer(
+	cfg *config.Config,
+	logger *slog.Logger,
+	auditLogger *logging.AuditLogger,
+	versioner *admin.PolicyVersioner,
+	deps *serveDeps,
+	board *listenerStatusBoard,
+) (*listenerMember, error) {
+	if !cfg.Admin.Enabled || !cfg.Admin.Listen.Configured() {
+		return nil, nil
+	}
+	ln, err := deps.createAdminListener(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("admin listener: %w", err)
+	}
+	warnIfAdminListenerWideOpen(cfg, logger)
+	identity := inbound.Identity{Name: config.AdminListenerName, Role: inbound.RoleAdmin, Network: networkFor(cfg.Admin.Listen.ListenConfig)}
+	server := newAdminHTTPServer(buildAdminHandlerChain(cfg, logger, auditLogger, versioner))
+	server.ConnContext = inbound.ConnContext(identity, server.ConnContext)
+	member := &listenerMember{
+		identity:   identity,
+		listener:   ln,
+		server:     server,
+		socketPath: cfg.Admin.Listen.Socket,
+	}
+	if member.socketPath != "" {
+		member.socketIdentity = statSocketIdentity(deps.lstatPath, member.socketPath)
+	}
+	board.register(identity, health.ListenerStateBound)
+	return member, nil
+}
+
+// shutdownServers gracefully stops every main listener and the admin
+// http.Server, concurrently, within the configured grace period, and
+// removes any unix sockets sockguard owns. Errors from each step are
+// logged but do not block subsequent steps — shutdown must always make
+// progress so a partial failure can't leave a stale listener behind.
+func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, members []*listenerMember, adminServer *http.Server, registry *metrics.Registry, board *listenerStatusBoard, logger *slog.Logger) {
+	// The command context has normally already been canceled by SIGTERM. A
+	// fresh background-derived deadline gives every server the promised grace
+	// period instead of entering Shutdown with an already-canceled context.
+	_ = ctx
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), deps.shutdownGracePeriod)
 	defer cancel()
 
+	// Mark every listener down as soon as draining begins, before the actual
+	// Shutdown calls below: the gauge means "safe to route new traffic here",
+	// not "still finishing in-flight requests" — see Registry.SetListenerUp.
+	setListenersUp(registry, members, false)
 	if adminServer != nil {
-		if err := deps.shutdownServer(adminServer, shutdownCtx); err != nil {
-			logger.Error("admin shutdown error", "error", err)
-		}
+		registry.SetListenerUp("admin", string(inbound.RoleAdmin), string(networkFor(cfg.Admin.Listen.ListenConfig)), false)
+		board.setState("admin", health.ListenerStateDraining)
 	}
-	if err := deps.shutdownServer(server, shutdownCtx); err != nil {
-		logger.Error("shutdown error", "error", err)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		shutdownMainListeners(shutdownCtx, deps, members, board, logger)
+	}()
+
+	if adminServer != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := deps.shutdownServer(adminServer, shutdownCtx); err != nil {
+				logger.Error("admin shutdown error", "error", err)
+				if shutdownCtx.Err() != nil {
+					_ = adminServer.Close()
+				}
+			}
+		}()
 	}
-	if cfg.Listen.Socket != "" {
-		if err := deps.removePath(cfg.Listen.Socket); err != nil && !os.IsNotExist(err) {
-			logger.Error("remove socket error", "socket", cfg.Listen.Socket, "error", err)
-		}
+	wg.Wait()
+
+	if adminServer != nil {
+		board.setState("admin", health.ListenerStateStopped)
 	}
+
 	if cfg.Admin.Enabled && cfg.Admin.Listen.Configured() && cfg.Admin.Listen.Socket != "" {
 		if err := deps.removePath(cfg.Admin.Listen.Socket); err != nil && !os.IsNotExist(err) {
 			logger.Error("remove admin socket error", "socket", cfg.Admin.Listen.Socket, "error", err)
@@ -348,61 +466,6 @@ func startConfigReload(ctx context.Context, cfg *config.Config, cfgFile string, 
 		return func() {}
 	}
 	return stop
-}
-
-// startAdminServer brings up the dedicated admin http.Server when
-// admin.listen is configured. Returns the server (so the caller can
-// Shutdown it), an error channel that yields the Serve return value, and
-// a stop function the caller must defer to close the admin listener.
-//
-// When admin.listen is unconfigured the function is a no-op: it returns
-// (nil, a permanently-blocked channel, no-op stop, nil) so the caller's
-// select still has an entry to read from without having to special-case
-// the unconfigured path.
-//
-// An adminErrCh receive of a non-nil error other than http.ErrServerClosed
-// is a fatal condition the caller surfaces as a process-exit error — see
-// the comment in runServeWithDeps.
-func startAdminServer(
-	cfg *config.Config,
-	logger *slog.Logger,
-	auditLogger *logging.AuditLogger,
-	versioner *admin.PolicyVersioner,
-	deps *serveDeps,
-) (*http.Server, <-chan error, func(), error) {
-	if !cfg.Admin.Enabled || !cfg.Admin.Listen.Configured() {
-		// A nil-returning channel would block forever in select; that is
-		// exactly what we want when there's no admin server to watch.
-		return nil, make(chan error), func() {}, nil
-	}
-
-	adminListener, err := deps.createAdminListener(cfg)
-	if err != nil {
-		return nil, nil, func() {}, fmt.Errorf("admin listener: %w", err)
-	}
-
-	warnIfAdminListenerWideOpen(cfg, logger)
-
-	adminHandler := buildAdminHandlerChain(cfg, logger, auditLogger, versioner)
-	adminServer := newAdminHTTPServer(adminHandler)
-	adminErrCh := make(chan error, 1)
-
-	go deps.startServing(adminServer, adminListener, adminErrCh)
-
-	logger.Info("admin listener started",
-		"listen", adminListenerAddr(cfg),
-		"validate_path", cfg.Admin.Path,
-		"policy_version_path", cfg.Admin.PolicyVersionPath,
-	)
-
-	stop := func() {
-		closeErr := adminListener.Close()
-		if closeErr == nil || errors.Is(closeErr, net.ErrClosed) {
-			return
-		}
-		logger.Warn("failed to close admin listener", "error", closeErr)
-	}
-	return adminServer, adminErrCh, stop, nil
 }
 
 // serveHandlerBuild bundles the inputs the buildServeHandler* family needs.
@@ -664,14 +727,14 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	// continues normally.
 	//
 	// When admin.listen is configured the admin endpoints move to a dedicated
-	// http.Server (see startAdminServer); the main chain must NOT also mount
+	// http.Server (see bindAdminServer); the main chain must NOT also mount
 	// them, otherwise the same path resolves on both listeners and operators
 	// lose the isolation they explicitly opted in to.
 	if cfg.Admin.Enabled && !cfg.Admin.Listen.Configured() {
 		if versioner != nil {
-			layers = append(layers, namedServeHandlerLayer("withPolicyVersionEndpoint", withPolicyVersionEndpoint(cfg, logger, versioner)))
+			layers = append(layers, namedServeHandlerLayer("withPolicyVersionEndpoint", mountOnGate(cfg, withPolicyVersionEndpoint(cfg, logger, versioner))))
 		}
-		layers = append(layers, namedServeHandlerLayer("withAdminEndpoint", withAdminEndpoint(cfg, logger)))
+		layers = append(layers, namedServeHandlerLayer("withAdminEndpoint", mountOnGate(cfg, withAdminEndpoint(cfg, logger))))
 	}
 
 	// Rate limiting and concurrency caps sit after client identity is resolved
@@ -695,6 +758,11 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	if runtime.metrics != nil {
 		layers = append(layers, namedServeHandlerLayer("withMetricsEndpoint", withMetricsEndpoint(cfg, runtime.metrics)))
 	}
+	// withListenerAdmission is appended BEFORE withClientACL so it executes
+	// AFTER it: append order is reversed at composition time (see
+	// buildServeHandlerChainWithRuntime), and admission needs
+	// clientacl.RequestProfile to already be resolved.
+	layers = append(layers, namedServeHandlerLayer("withListenerAdmission", withListenerAdmission(cfg)))
 	layers = append(layers,
 		namedServeHandlerLayer("withClientACL", withClientACL(cfg, resolver, logger)),
 	)
@@ -806,6 +874,21 @@ var bodyBlindWritesWarnOnce sync.Once
 // validate time.
 func warnIfBodyBlindWritesEnabled(cfg *config.Config, logger *slog.Logger) {
 	warnBodyBlindWritesOnce(cfg, logger, &bodyBlindWritesWarnOnce)
+}
+
+func warnIfDefaultProfileExcluded(cfg *config.Config, logger *slog.Logger) {
+	if cfg == nil || logger == nil || cfg.Clients.DefaultProfile == "" || len(cfg.Listeners) == 0 {
+		return
+	}
+	for _, listener := range cfg.Listeners {
+		if listener.Wildcard() || allowedProfileContains(listener.AllowedProfiles, cfg.Clients.DefaultProfile) {
+			continue
+		}
+		logger.Warn("default profile is not allowed on listener; unmatched clients will be denied",
+			"listener", listener.Name,
+			"default_profile", cfg.Clients.DefaultProfile,
+		)
+	}
 }
 
 // warnBodyBlindWritesOnce is the testable core of warnIfBodyBlindWritesEnabled:
@@ -941,6 +1024,42 @@ func withAdminClientACL(cfg *config.Config, logger *slog.Logger) func(http.Handl
 	return clientacl.Middleware(cfg.Upstream.Socket, logger, clientacl.Options{
 		AllowedCIDRs: cfg.Clients.AllowedCIDRs,
 	})
+}
+
+// mountOnGate restricts an in-band admin middleware (#149) to fire only on
+// the listener named by cfg.Admin.MountOn. Every main listener shares ONE
+// handler chain (reload.SwappableHandler), so without this gate an in-band
+// admin endpoint mounted anywhere would be reachable from every main
+// listener regardless of MountOn — silently widening the admin attack
+// surface in proportion to listener count.
+//
+// The restriction is active exactly when config.validateAdminMountOn
+// requires (and therefore guarantees, once Validate has passed) a non-empty,
+// listener-matching MountOn: admin rides a main listener (no dedicated
+// admin.listen) and there are 2+ effective main listeners. With <=1
+// effective listener — every configuration that predates #149 — mw is
+// returned unwrapped, preserving today's zero-config "admin rides the sole
+// main listener" behavior byte-for-byte, including not requiring inbound
+// identity to be present in request context.
+func mountOnGate(cfg *config.Config, mw func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	if cfg.Admin.Listen.Configured() {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	if len(cfg.EffectiveListeners()) <= 1 {
+		return mw
+	}
+	mountOn := cfg.Admin.MountOn
+	return func(next http.Handler) http.Handler {
+		gated := mw(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			identity, ok := inbound.FromContext(r.Context())
+			if ok && identity.Name == mountOn {
+				gated.ServeHTTP(w, r)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func withAdminEndpoint(cfg *config.Config, logger *slog.Logger) func(http.Handler) http.Handler {

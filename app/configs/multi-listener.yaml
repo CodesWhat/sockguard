@@ -1,0 +1,189 @@
+# Sockguard — Multiple Independently Scoped Listeners (#149)
+#
+# Demonstrates `listeners:` — running more than one main (Docker-API)
+# listener from a single sockguard process, each with its own bind target
+# and its own admission scope (`allowed_profiles`), instead of one process
+# per audience. Two unix-socket listeners here:
+#
+#   ci   for CI runner containers. Scoped to the "ci" client profile via a
+#        unix peer UID assignment (replace 1000 below with your runner's
+#        real UID).
+#   ops  for a local operator/dashboard process. Scoped to the "ops"
+#        profile via a different UID.
+#
+# A TCP listener (optionally with mutual TLS) is configured exactly the same
+# way — add `address` (and `tls`) instead of `socket` to a listeners[*]
+# entry; see the configuration docs for the full TLS listener schema:
+# https://getsockguard.com/docs/configuration
+#
+# A request that resolves to a profile not in a listener's allowed_profiles
+# is denied (403, reason_code listener_profile_not_allowed) even if that
+# profile would otherwise be permitted by the base policy — the same
+# credentials presented on the wrong listener never get a second, weaker
+# admission path to fall back to. The ci and ops profiles below are
+# deliberately disjoint: a process with the ops UID that connects to the ci
+# socket still resolves to the "ops" profile (unix_peer_profiles isn't
+# listener-scoped — it maps credentials to a profile regardless of which
+# socket they arrive on) but is then denied by the ci listener's
+# allowed_profiles, which only admits "ci". The listener boundary, not the
+# profile-resolution mechanism, is what makes the isolation hold.
+#
+# Note: unlike the legacy top-level listen: block, an explicit listeners[*]
+# unix-socket entry does not default socket_mode — set it explicitly
+# ("0600", or "0660" with socket_gid) on every entry.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# listeners: replaces the top-level listen: block once non-empty — the two
+# are mutually exclusive. Listener names are used verbatim in logs, metrics
+# (the `listener` label), health, and audit output.
+listeners:
+  - name: ci
+    socket: /var/run/sockguard-ci.sock
+    socket_mode: "0600"
+    allowed_profiles: [ci]
+
+  - name: ops
+    socket: /var/run/sockguard-ops.sock
+    socket_mode: "0600"
+    allowed_profiles: [ops]
+
+# admin.enabled: false here. If you enable the in-band admin endpoints
+# (admin.enabled: true with no dedicated admin.listen) on a config with 2+
+# listeners like this one, admin.mount_on becomes REQUIRED — it names the
+# single listener that carries /admin/* traffic; the endpoints are not
+# reachable from any other listener. See the admin docs for the dedicated
+# admin.listen alternative, which sidesteps mount_on entirely.
+admin:
+  enabled: false
+
+clients:
+  # No default_profile: a client that doesn't resolve to "ci" or "ops"
+  # through the assignments below gets an empty profile, which is not in
+  # either listener's allowed_profiles — denied before the base policy
+  # even runs.
+  unix_peer_profiles:
+    - profile: ci
+      uids: [1000] # replace with your CI runner's real UID
+    - profile: ops
+      uids: [1001] # replace with your operator process's real UID
+
+  profiles:
+    # ci: CI-runner-shaped policy — container lifecycle, image pull, and a
+    # single pinned exec entrypoint. No privileged containers, no host
+    # namespace sharing, no bind mounts (mirrors gitlab-runner.yaml /
+    # github-actions-runner.yaml — see those presets for a fuller CI policy
+    # if you need one).
+    - name: ci
+      request_body:
+        container_create:
+          allow_privileged: false
+          allow_host_network: false
+          allow_host_pid: false
+          allow_host_ipc: false
+          allow_host_userns: false
+          allowed_bind_mounts: []
+        exec:
+          allow_privileged: false
+          allowed_commands:
+            - ["/usr/local/bin/ci-entrypoint"]
+      rules:
+        - match: { method: GET, path: "/_ping" }
+          action: allow
+        - match: { method: GET, path: "/containers/json" }
+          action: allow
+        - match: { method: GET, path: "/containers/*/json" }
+          action: allow
+        - match: { method: POST, path: "/containers/create" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/start" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/stop" }
+          action: allow
+        - match: { method: DELETE, path: "/containers/*" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/exec" }
+          action: allow
+        - match: { method: POST, path: "/exec/*/start" }
+          action: allow
+        - match: { method: POST, path: "/images/create" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+          reason: "not allowed on the ci listener"
+
+    # ops: broader operator policy for the local dashboard/admin socket —
+    # inventory and lifecycle control, no exec, no image pull. Read
+    # responses stay redacted (response.* below) even on this more
+    # privileged profile. Deliberately omits raw archive/export
+    # (docker cp), log/attach streaming, and image get/save — those paths
+    # can exfiltrate container files, env vars, and secrets, and would
+    # otherwise trip Sockguard's read-exfiltration guardrail; add them
+    # (plus the top-level insecure_allow_read_exfiltration: true
+    # acknowledgment) only if this profile's audience genuinely needs them.
+    - name: ops
+      response:
+        redact_container_env: true
+        redact_mount_paths: true
+        redact_network_topology: true
+      rules:
+        - match: { method: GET, path: "/_ping" }
+          action: allow
+        - match: { method: GET, path: "/version" }
+          action: allow
+        - match: { method: GET, path: "/info" }
+          action: allow
+        - match: { method: GET, path: "/events" }
+          action: allow
+        - match: { method: GET, path: "/containers/json" }
+          action: allow
+        - match: { method: GET, path: "/containers/*/json" }
+          action: allow
+        - match: { method: GET, path: "/containers/*/stats" }
+          action: allow
+        - match: { method: GET, path: "/containers/*/top" }
+          action: allow
+        - match: { method: GET, path: "/containers/*/changes" }
+          action: allow
+        - match: { method: GET, path: "/images/json" }
+          action: allow
+        - match: { method: GET, path: "/images/**/json" }
+          action: allow
+        - match: { method: GET, path: "/networks" }
+          action: allow
+        - match: { method: GET, path: "/networks/*" }
+          action: allow
+        - match: { method: GET, path: "/volumes" }
+          action: allow
+        - match: { method: GET, path: "/volumes/*" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/start" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/stop" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/restart" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/kill" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+          reason: "not allowed on the ops listener"
+
+# Base rules only apply to a request that resolves to no profile at all —
+# which, given the assignments above, means it is always denied before
+# reaching either listener's allowed_profiles check. Kept as an explicit
+# backstop rather than relying on that upstream denial alone.
+rules:
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "no matching client profile for this listener"
