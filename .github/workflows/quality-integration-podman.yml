@@ -102,22 +102,30 @@ jobs:
           # containing directory isn't traversable by the runner user.
           sudo chmod 755 /run/podman
           sudo chmod 666 /run/podman/podman.sock
-          sudo podman -r --url unix:///run/podman/podman.sock version
+          timeout 10s sudo podman -r --url unix:///run/podman/podman.sock version
           # Verify as the unprivileged runner user (no sudo) so a
           # permissions regression here fails loudly at setup with a clear
           # message, instead of surfacing as a confusing "permission
-          # denied" deep inside the Go test suite. Retried: the socket file
-          # existing (checked above) does not mean the service is accepting
-          # connections yet — a bare curl here has been observed to hit
-          # connection-refused in the narrow window between the socket
-          # appearing and the listener actually accepting.
+          # denied" deep inside the Go test suite. Retried, WITH the chmod
+          # re-applied each attempt: podman system service replaces the
+          # socket file after its initial bind on some startups, which
+          # silently undoes the one-shot chmod above and leaves a fresh
+          # root-owned 0600 socket — root connects fine, the runner user
+          # gets connect failures for the rest of the job (observed ~50%
+          # of runs; curl exit 7 does not distinguish EACCES from
+          # ECONNREFUSED, which made this look like a listener race).
           for i in $(seq 1 10); do
-            if curl --fail --silent --show-error --unix-socket /run/podman/podman.sock http://d/libpod/_ping; then
+            sudo chmod 755 /run/podman
+            sudo chmod 666 /run/podman/podman.sock
+            if curl --fail --silent --show-error --max-time 5 --unix-socket /run/podman/podman.sock http://d/libpod/_ping; then
               echo
               break
             fi
             if [ "$i" -eq 10 ]; then
               echo "libpod _ping never succeeded after 10 attempts" >&2
+              echo "--- socket state ---" >&2
+              sudo ls -la /run/podman >&2 || true
+              echo "--- service log ---" >&2
               cat /tmp/podman-rootful.log >&2
               exit 1
             fi
@@ -227,7 +235,7 @@ jobs:
           # the socket file existing (just confirmed above) does not mean
           # the service is accepting connections yet.
           for i in $(seq 1 10); do
-            if podman --url "unix://${runtime_dir}/podman/podman.sock" version; then
+            if timeout 10s podman --url "unix://${runtime_dir}/podman/podman.sock" version; then
               break
             fi
             if [ "$i" -eq 10 ]; then
