@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, and read-only dashboards.
+description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -375,6 +375,30 @@ Allows GET access to all Docker API endpoints. Denies all write operations.
 ```
 
 This preset intentionally includes raw archive/export and log/attach stream reads, so it sets `insecure_allow_read_exfiltration: true`. Tighten it if your client only needs list/inspect endpoints.
+
+## Podman Read-Only (`podman-readonly.yaml`)
+
+Read-only monitoring posture covering both of Podman's API surfaces — the
+Docker-compat `/vN.NN/...` paths and the native `/libpod/...` paths — in one
+file. See the [Podman guide](/podman) for the full routing model.
+
+**Use for:** dashboards and monitoring tools watching a Podman host.
+
+```yaml
+# Allows: GET list/inspect/stats/top/changes on containers, images, networks,
+#         volumes, secrets — plus pod list/inspect (libpod only) and
+#         health/version/info/events, on both surfaces
+# Denies: all writes on both surfaces, including libpod-only writes
+#         (pod create, play/kube); archive/export/logs/attach/get/push reads
+#         on both surfaces
+```
+
+Unlike `readonly.yaml`, this preset does **not** set
+`insecure_allow_read_exfiltration: true` — every allowed read is a narrow
+list/inspect/metadata endpoint, and it validates clean without the
+acknowledgment. Point `upstream.socket` at either a rootful
+(`/run/podman/podman.sock`) or rootless (`$XDG_RUNTIME_DIR/podman/podman.sock`)
+Podman socket; the rule set itself doesn't change.
 
 ## Using a Preset
 
