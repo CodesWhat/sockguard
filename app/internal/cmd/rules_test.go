@@ -450,6 +450,16 @@ func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *t
 			path:     "/plugins/*/push",
 			endpoint: "POST /plugins/sockguard-test/push",
 		},
+		{
+			name:     "libpod manifest registry push",
+			path:     "/libpod/manifests/*/registry/*",
+			endpoint: "POST /libpod/manifests/sockguard-test/registry/sockguard-test",
+		},
+		{
+			name:     "libpod manifest push (backward-compat)",
+			path:     "/libpod/manifests/*/push",
+			endpoint: "POST /libpod/manifests/sockguard-test/push",
+		},
 	}
 
 	for _, tt := range tests {

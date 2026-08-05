@@ -150,6 +150,15 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get"},
 	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push"},
 	{method: http.MethodGet, path: "/libpod/generate/kube"},
+	// Manifest-list push routes read local manifest content and transmit it
+	// to a caller-selected registry — a write at the Docker API layer but an
+	// exfiltration surface just like the image/plugin push entries above.
+	// POST .../registry/{destination} is the current (Podman v4.0.0+) route;
+	// POST .../push is kept for backward compat (deprecated since v4.0.0 but
+	// still routable). Both are registered in Podman v5.8.1's
+	// pkg/api/server/register_manifest.go.
+	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/registry/sockguard-test"},
+	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/push"},
 }
 
 func validateAndCompileRules(cfg *config.Config) ([]*filter.CompiledRule, error) {
