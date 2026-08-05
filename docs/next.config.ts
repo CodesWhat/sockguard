@@ -14,4 +14,7 @@ export default withMDX({
   images: {
     unoptimized: true,
   },
+  experimental: {
+    useTypeScriptCli: true,
+  },
 });
