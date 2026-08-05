@@ -30,6 +30,7 @@
 # Generate Portwing's Ed25519 keypair and drydock's exec-preset socket GID
 # before starting:
 #   export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
+#   umask 077   # keygen -pub-from refuses a group/world-readable private key
 #   portwing keygen -comment "tri-tool-edge-host" > portwing_ed25519.pem
 #   portwing keygen -pub-from portwing_ed25519.pem -comment "tri-tool-edge-host" >> portwing_authorized_keys
 #   sudo chown 65532:65532 portwing_ed25519.pem && sudo chmod 0400 portwing_ed25519.pem

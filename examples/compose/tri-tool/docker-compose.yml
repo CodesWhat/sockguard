@@ -27,9 +27,12 @@
 # its entrypoint drops privileges itself via su-exec after provisioning
 # /store as root — matching this repo's existing examples/compose/drydock/.
 #
-# Generate the shared Portwing<->drydock secret before starting:
+# Generate the shared Portwing<->drydock secret before starting. Both
+# containers read this one file: portwing as UID 65532 (owner bit) and
+# drydock as its runtime user node, UID/GID 1000 (group bit) — 65532:65532
+# with 0400 locks drydock out and the handshake never completes:
 #   openssl rand -hex -out portwing_token.txt 32
-#   sudo chown 65532:65532 portwing_token.txt && sudo chmod 0400 portwing_token.txt
+#   sudo chown 65532:1000 portwing_token.txt && sudo chmod 0440 portwing_token.txt
 #
 # The default image versions below are the exact releases exercised together
 # by this repository's compatibility audit. Override SOCKGUARD_IMAGE,
