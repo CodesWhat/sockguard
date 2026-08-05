@@ -385,9 +385,10 @@ file. See the [Podman guide](/podman) for the full routing model.
 **Use for:** dashboards and monitoring tools watching a Podman host.
 
 ```yaml
-# Allows: GET list/inspect/stats/top/changes on containers, images, networks,
-#         volumes, secrets — plus pod list/inspect (libpod only) and
-#         health/version/info/events, on both surfaces
+# Allows: GET list/inspect/stats/top/changes on containers; list/inspect
+#         (+ history on the Docker-compat side) on images; list/inspect
+#         only on networks, volumes, secrets — plus pod list/inspect/stats
+#         (libpod only) and health/version/info/events, on both surfaces
 # Denies: all writes on both surfaces, including libpod-only writes
 #         (pod create, play/kube); archive/export/logs/attach/get/push reads
 #         on both surfaces

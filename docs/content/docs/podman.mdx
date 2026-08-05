@@ -215,9 +215,11 @@ blocker for the libpod inspector work landing in this release.
 **Deferred past this release** (see the [roadmap](/roadmap) for where these
 land):
 
-- Full body modeling for `play/kube`, `generate/kube`, and `kube/apply` —
-  these stay behind the blind-write acknowledgment described above rather
-  than getting a real inspector.
+- Full body modeling for `play/kube` and `kube/apply` — these stay behind
+  the blind-write acknowledgment described above rather than getting a real
+  inspector. (`generate/kube` is not part of this list: it is a `GET`
+  read-exfiltration endpoint and remains gated by
+  `insecure_allow_read_exfiltration`, as described earlier.)
 - Manifest-list write inspection — expected to land alongside future
   image-trust work, since manifest lists are a registry-content concern.
 - Full read-side coverage of the broader `/libpod/generate/*` family beyond
