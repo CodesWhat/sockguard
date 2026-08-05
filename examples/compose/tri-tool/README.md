@@ -4,7 +4,7 @@
 
 **What's exposed:** A unix socket shared via a named volume. Portwing connects to `/var/run/sockguard/sockguard.sock` instead of `/var/run/docker.sock`. drydock never sees a Docker socket at all — every container/image fact comes secondhand, already filtered by sockguard. The default `docker-compose.yml` connects the two over HTTP in **Standard Mode** (drydock is the controller, Portwing is the agent; port 4000 is the Portwing API, port 3000 is the drydock web UI). `docker-compose.edge-exec.yml` instead runs Portwing in **Edge Mode**, dialing out to drydock over a WebSocket — see "Choosing a variant" below.
 
-This bundle ships two variants — both default to the audited Sockguard 1.5.1, Portwing 0.8.1, and drydock 1.5.2 releases. Override `SOCKGUARD_VERSION`, `PORTWING_VERSION`, or `DRYDOCK_VERSION` deliberately when validating an upgrade.
+This bundle ships two variants — both default to the audited Sockguard 1.5.1, Portwing 0.8.1, and drydock 1.5.2 releases. Override `SOCKGUARD_IMAGE` (a full image reference — registry, repo, and tag — not just a version tag), `PORTWING_VERSION`, or `DRYDOCK_VERSION` deliberately when validating an upgrade. `SOCKGUARD_IMAGE` takes a full reference rather than a bare tag so the [#150 published conformance workflow](../../../scripts/tri-tool-conformance/README.md) can point it at a release-candidate image on any of sockguard's three registries ahead of a GA promotion.
 
 ## Choosing a variant
 

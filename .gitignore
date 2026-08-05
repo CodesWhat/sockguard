@@ -82,3 +82,8 @@ app/internal/**/forensics/
 # local triage output and should never be committed.
 testssl-output.json
 testssl-output.txt
+
+# scripts/tri-tool-conformance/run-matrix.sh's per-row artifact, written to
+# the repo root. CI uploads it as a build artifact; it is local triage
+# output and should never be committed.
+conformance-*.json

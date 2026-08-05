@@ -1,0 +1,40 @@
+# examples/compose/tri-tool/docker-compose.conformance-overlay.yml
+#
+# Test-only overlay for scripts/tri-tool-conformance/run-matrix.sh (#150).
+# Applied ON TOP of docker-compose.yml or docker-compose.edge-exec.yml with
+# `docker compose -f <base> -f docker-compose.conformance-overlay.yml`,
+# never as a standalone file. It adds exactly one thing: a throwaway `probe`
+# utility container that mounts the same sockguard-socket named volume the
+# real Portwing container uses (read-only) so the CI harness can curl
+# sockguard's Unix socket directly for assertions the audited bundle itself
+# has no reason to need (pristine-boot ownership/mode checks, the expected-
+# denial probes, and the direct-socket lifecycle/logs/exec scenarios the
+# harness drives itself rather than waiting on Portwing/drydock's own,
+# undocumented-outside-their-repos internal APIs).
+#
+# This file intentionally does NOT touch anything in the base bundle — the
+# two audited compose files stay exactly as documentation-grade and
+# human-runnable as before. `docker compose up` without this overlay never
+# starts the probe service.
+
+services:
+  probe:
+    image: curlimages/curl:8.12.1
+    entrypoint: ["sleep", "infinity"]
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # curlimages/curl's own image default (UID 100) can't reach a socket
+    # owned 65532:65532 mode 0600 -- without this the probe's curl calls
+    # fail on a filesystem permission mismatch, not on anything sockguard
+    # itself is asserting. Match the UID/GID sockguard's own container
+    # writes the socket as (assertion 1: "pristine boot") so the probe
+    # actually exercises the socket's mode, not its own ownership gap.
+    user: "65532:65532"
+    volumes:
+      - sockguard-socket:/var/run/sockguard:ro
+
+volumes:
+  sockguard-socket: {}
