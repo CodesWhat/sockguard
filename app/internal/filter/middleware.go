@@ -99,6 +99,11 @@ type Options struct {
 	Profiles map[string]Policy
 	// ResolveProfile returns the named policy to apply for the request.
 	ResolveProfile func(*http.Request) (string, bool)
+	// Mutation configures declarative admission-mutation rules. Global —
+	// applied identically regardless of which client profile is active —
+	// because mutation config is not part of PolicyConfig/per-profile
+	// overrides (v1 has a single mutation authority).
+	Mutation MutationOptions
 }
 
 // Policy defines a named request policy profile that can override the global
@@ -188,10 +193,14 @@ type requestInspectPolicy struct {
 // against compiled rules and allows deny response detail to be configured.
 func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {
 	opts = opts.normalized()
-	defaultPolicy := compileRuntimePolicy(rules, opts.PolicyConfig)
+	// Compiled once and shared by the default policy and every client
+	// profile: mutation config is global, not per-profile (see
+	// Options.Mutation's doc comment).
+	mutationEng := newMutationEngine(opts.Mutation)
+	defaultPolicy := compileRuntimePolicy(rules, opts.PolicyConfig, mutationEng)
 	profilePolicies := make(map[string]runtimePolicy, len(opts.Profiles))
 	for name, profile := range opts.Profiles {
-		profilePolicies[name] = compileRuntimePolicy(profile.Rules, profile.PolicyConfig)
+		profilePolicies[name] = compileRuntimePolicy(profile.Rules, profile.PolicyConfig, mutationEng)
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -201,6 +210,16 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			// write the same pointer, so paying for the type assertion plus
 			// context fallback once per request is the minimal correct cost.
 			meta := logging.MetaForRequest(w, r)
+			// Stash meta onto the request's own context so inspectors deep
+			// in the bucket walk (which only ever receive *http.Request —
+			// see inspectorFunc) can record structured per-request state,
+			// such as the admission-mutation engine's rule-outcome trace,
+			// without widening that signature for all existing inspectors.
+			// logging.Meta reads this back; see mutation.go's
+			// recordMutationOutcome.
+			if meta != nil {
+				r = r.WithContext(logging.WithMeta(r.Context(), meta))
+			}
 
 			activePolicy, ok := resolveActivePolicy(opts, profilePolicies, defaultPolicy, w, r, meta, logger)
 			if !ok {
@@ -310,9 +329,19 @@ func runAllowedInspection(activePolicy runtimePolicy, logger *slog.Logger, w htt
 	return denyReason, denyReasonCode, status
 }
 
-func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy {
+func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *mutationEngine) runtimePolicy {
 	cfg = cfg.normalized()
 	all := []requestInspectPolicy{
+		// The two admission-mutation entries are registered BEFORE
+		// container_create/service in this same slice, at the same
+		// (method, matches, severity) tuple. inspectAllowedRequest buckets
+		// matches by severity and runs every policy in the single matched
+		// bucket in slice order (see its doc comment and middleware.go's
+		// package doc comment) — so mutation always applies/canonicalizes
+		// first, and container_create/service's own inspect() always runs
+		// second, in the same request, against whatever bytes mutation left
+		// in r.Body. Neither entry needs to know the other exists.
+		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreateMutationPolicy(mutationEng).inspect, "failed to apply container create admission mutations", "unable to apply container create admission mutations"},
 		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreatePolicy(cfg.ContainerCreate).inspect, "failed to inspect container create request body", "unable to inspect container create request body"},
 		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
 		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
@@ -324,6 +353,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy
 		{http.MethodPost, matchesNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.Network).inspect, "failed to inspect network request body", "unable to inspect network request body"},
 		{http.MethodPost, matchesSecretInspection, inspectSeverityMedium, newSecretPolicy(cfg.Secret).inspect, "failed to inspect secret create request body", "unable to inspect secret create request body"},
 		{http.MethodPost, matchesConfigInspection, inspectSeverityMedium, newConfigPolicy(cfg.Config).inspect, "failed to inspect config create request body", "unable to inspect config create request body"},
+		{http.MethodPost, matchesServiceInspection, inspectSeverityCritical, newServiceMutationPolicy(mutationEng).inspect, "failed to apply service admission mutations", "unable to apply service admission mutations"},
 		{http.MethodPost, matchesServiceInspection, inspectSeverityCritical, newServicePolicy(cfg.Service).inspect, "failed to inspect service request body", "unable to inspect service request body"},
 		{http.MethodPost, matchesSwarmInspection, inspectSeverityCritical, newSwarmPolicy(cfg.Swarm).inspect, "failed to inspect swarm request body", "unable to inspect swarm request body"},
 		{http.MethodPost, matchesNodeInspection, inspectSeverityHigh, newNodePolicy(cfg.Node).inspect, "failed to inspect node update request body", "unable to inspect node update request body"},
@@ -471,7 +501,11 @@ func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Reques
 			denyReason, err := policy.inspect(logger, r, normalizedPath)
 			if err != nil {
 				if rejection, ok := requestRejectionFromError(err); ok {
-					return rejection.reason, requestRejectionReasonCode(rejection.status), rejection.status
+					code := rejection.reasonCode
+					if code == "" {
+						code = requestRejectionReasonCode(rejection.status)
+					}
+					return rejection.reason, code, rejection.status
 				}
 				logRequestError(logger, r, slog.LevelError, policy.errorLogMessage, err)
 				return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden

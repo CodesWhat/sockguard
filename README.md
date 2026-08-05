@@ -297,7 +297,7 @@ Each example pairs a downstream Docker API consumer with a `sockguard.yaml` over
 
 ### Policy surfaces
 
-Rules can cover method/path filters, body-aware write inspection, read-side redaction and visibility, per-client profile selection, rate limits, concurrency caps, owner-label isolation, rollout modes, hot reload, signed policy bundles, and admin validation.
+Rules can cover method/path filters, body-aware write inspection, declarative admission mutation (fail-closed label injection and image remapping), read-side redaction and visibility, per-client profile selection, rate limits, concurrency caps, owner-label isolation, rollout modes, hot reload, signed policy bundles, and admin validation.
 
 <hr>
 

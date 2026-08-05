@@ -405,7 +405,7 @@ func singularResource(kind dockerresource.Kind) string {
 
 func addOwnerLabelToBody(r *http.Request, labelKey, owner string) error {
 	return mutateJSONBody(r, func(decoded map[string]any) error {
-		labels, err := nestedObject(decoded, "Labels")
+		labels, err := filter.NestedObject(decoded, "Labels")
 		if err != nil {
 			return err
 		}
@@ -428,7 +428,7 @@ func addOwnerLabelToContainerCreateBody(r *http.Request, labelKey, owner string)
 func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
 	err := mutateJSONBody(r, func(decoded map[string]any) error {
-		labels, err := nestedObject(decoded, "Labels")
+		labels, err := filter.NestedObject(decoded, "Labels")
 		if err != nil {
 			return err
 		}
@@ -442,12 +442,12 @@ func mutateContainerCreateOwnershipBody(r *http.Request, labelKey, owner string)
 
 func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
 	var refs []embeddedOwnershipReference
-	for _, image := range foldedStrings(decoded, "Image") {
+	for _, image := range filter.FoldedStrings(decoded, "Image") {
 		appendEmbeddedOwnershipReference(&refs, dockerresource.KindImage, image, "container Image")
 	}
 
-	for _, hostConfig := range foldedObjects(decoded, "HostConfig") {
-		for _, binds := range foldedArrays(hostConfig, "Binds") {
+	for _, hostConfig := range filter.FoldedObjects(decoded, "HostConfig") {
+		for _, binds := range filter.FoldedArrays(hostConfig, "Binds") {
 			for _, value := range binds {
 				bind, ok := value.(string)
 				if !ok {
@@ -462,19 +462,19 @@ func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embedd
 			}
 		}
 
-		for _, mounts := range foldedArrays(hostConfig, "Mounts") {
+		for _, mounts := range filter.FoldedArrays(hostConfig, "Mounts") {
 			for _, value := range mounts {
 				mount, ok := value.(map[string]any)
-				if !ok || !foldedStringEquals(mount, "Type", "volume") {
+				if !ok || !filter.FoldedStringEquals(mount, "Type", "volume") {
 					continue
 				}
-				for _, source := range foldedStrings(mount, "Source") {
+				for _, source := range filter.FoldedStrings(mount, "Source") {
 					appendEmbeddedOwnershipReference(&refs, dockerresource.KindVolume, source, "container HostConfig.Mounts")
 				}
 			}
 		}
 
-		for _, mode := range foldedStrings(hostConfig, "NetworkMode") {
+		for _, mode := range filter.FoldedStrings(hostConfig, "NetworkMode") {
 			if !isCustomNetworkMode(mode) {
 				continue
 			}
@@ -482,8 +482,8 @@ func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embedd
 		}
 	}
 
-	for _, networkingConfig := range foldedObjects(decoded, "NetworkingConfig") {
-		for _, endpoints := range foldedObjects(networkingConfig, "EndpointsConfig") {
+	for _, networkingConfig := range filter.FoldedObjects(decoded, "NetworkingConfig") {
+		for _, endpoints := range filter.FoldedObjects(networkingConfig, "EndpointsConfig") {
 			names := make([]string, 0, len(endpoints))
 			for name := range endpoints {
 				names = append(names, name)
@@ -497,7 +497,7 @@ func containerCreateEmbeddedOwnershipReferences(decoded map[string]any) []embedd
 				if !ok {
 					continue
 				}
-				for _, networkID := range foldedStrings(endpoint, "NetworkID") {
+				for _, networkID := range filter.FoldedStrings(endpoint, "NetworkID") {
 					appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, networkID, "container NetworkingConfig.EndpointsConfig.NetworkID")
 				}
 			}
@@ -527,7 +527,7 @@ var namespaceModeFields = [...]string{"NetworkMode", "PidMode", "IpcMode", "UTSM
 // namespace join past the cross-owner check with a lowercase "hostconfig"/
 // "networkmode" key that Docker still honors.
 func containerCreateNamespaceRefs(decoded map[string]any) []string {
-	hostConfigs := foldedObjects(decoded, "HostConfig")
+	hostConfigs := filter.FoldedObjects(decoded, "HostConfig")
 	var refs []string
 	// Iterate the mode fields in fixed order for deterministic ref ordering,
 	// scanning every case-variant key inside each HostConfig so a duplicate
@@ -551,58 +551,6 @@ func containerCreateNamespaceRefs(decoded map[string]any) []string {
 		}
 	}
 	return refs
-}
-
-// foldedObjects returns every object value in m whose key case-folds to key,
-// in map-iteration order. Docker decodes duplicate case-variant keys and lets
-// the last win, so a security check must inspect all variants rather than an
-// exact-case single lookup.
-func foldedObjects(m map[string]any, key string) []map[string]any {
-	var out []map[string]any
-	for k, v := range m {
-		if !strings.EqualFold(k, key) {
-			continue
-		}
-		if obj, ok := v.(map[string]any); ok {
-			out = append(out, obj)
-		}
-	}
-	return out
-}
-
-func foldedStrings(m map[string]any, key string) []string {
-	var out []string
-	for k, v := range m {
-		if !strings.EqualFold(k, key) {
-			continue
-		}
-		if value, ok := v.(string); ok {
-			out = append(out, value)
-		}
-	}
-	return out
-}
-
-func foldedArrays(m map[string]any, key string) [][]any {
-	var out [][]any
-	for k, v := range m {
-		if !strings.EqualFold(k, key) {
-			continue
-		}
-		if values, ok := v.([]any); ok {
-			out = append(out, values)
-		}
-	}
-	return out
-}
-
-func foldedStringEquals(m map[string]any, key, want string) bool {
-	for _, value := range foldedStrings(m, key) {
-		if strings.EqualFold(strings.TrimSpace(value), want) {
-			return true
-		}
-	}
-	return false
 }
 
 func appendEmbeddedOwnershipReference(refs *[]embeddedOwnershipReference, kind dockerresource.Kind, identifier, source string) {
@@ -642,13 +590,13 @@ func addOwnerLabelToServiceBody(r *http.Request, labelKey, owner string) error {
 func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*ownershipRequestReferences, error) {
 	refs := &ownershipRequestReferences{}
 	err := mutateJSONBody(r, func(decoded map[string]any) error {
-		serviceLabels, err := nestedObject(decoded, "Labels")
+		serviceLabels, err := filter.NestedObject(decoded, "Labels")
 		if err != nil {
 			return err
 		}
 		serviceLabels[labelKey] = owner
 
-		containerLabels, err := nestedObjectPath(decoded, "TaskTemplate", "ContainerSpec", "Labels")
+		containerLabels, err := filter.NestedObjectPath(decoded, "TaskTemplate", "ContainerSpec", "Labels")
 		if err != nil {
 			return err
 		}
@@ -661,19 +609,19 @@ func mutateServiceOwnershipBody(r *http.Request, labelKey, owner string) (*owner
 
 func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwnershipReference {
 	var refs []embeddedOwnershipReference
-	for _, taskTemplate := range foldedObjects(decoded, "TaskTemplate") {
-		for _, containerSpec := range foldedObjects(taskTemplate, "ContainerSpec") {
-			for _, image := range foldedStrings(containerSpec, "Image") {
+	for _, taskTemplate := range filter.FoldedObjects(decoded, "TaskTemplate") {
+		for _, containerSpec := range filter.FoldedObjects(taskTemplate, "ContainerSpec") {
+			for _, image := range filter.FoldedStrings(containerSpec, "Image") {
 				appendEmbeddedOwnershipReference(&refs, dockerresource.KindImage, image, "service TaskTemplate.ContainerSpec.Image")
 			}
 
-			for _, mounts := range foldedArrays(containerSpec, "Mounts") {
+			for _, mounts := range filter.FoldedArrays(containerSpec, "Mounts") {
 				for _, value := range mounts {
 					mount, ok := value.(map[string]any)
-					if !ok || !foldedStringEquals(mount, "Type", "volume") {
+					if !ok || !filter.FoldedStringEquals(mount, "Type", "volume") {
 						continue
 					}
-					for _, source := range foldedStrings(mount, "Source") {
+					for _, source := range filter.FoldedStrings(mount, "Source") {
 						appendEmbeddedOwnershipReference(&refs, dockerresource.KindVolume, source, "service TaskTemplate.ContainerSpec.Mounts")
 					}
 				}
@@ -684,13 +632,13 @@ func serviceEmbeddedOwnershipReferences(decoded map[string]any) []embeddedOwners
 		}
 	}
 
-	for _, networks := range foldedArrays(decoded, "Networks") {
+	for _, networks := range filter.FoldedArrays(decoded, "Networks") {
 		for _, value := range networks {
 			network, ok := value.(map[string]any)
 			if !ok {
 				continue
 			}
-			for _, target := range foldedStrings(network, "Target") {
+			for _, target := range filter.FoldedStrings(network, "Target") {
 				if isCustomNetworkMode(target) {
 					appendEmbeddedOwnershipReference(&refs, dockerresource.KindNetwork, target, "service Networks.Target")
 				}
@@ -706,17 +654,17 @@ func appendServiceObjectReferences(
 	arrayKey, idKey, nameKey string,
 	kind dockerresource.Kind,
 ) {
-	for _, values := range foldedArrays(containerSpec, arrayKey) {
+	for _, values := range filter.FoldedArrays(containerSpec, arrayKey) {
 		for _, value := range values {
 			object, ok := value.(map[string]any)
 			if !ok {
 				continue
 			}
-			identifiers := foldedStrings(object, idKey)
+			identifiers := filter.FoldedStrings(object, idKey)
 			if !slices.ContainsFunc(identifiers, func(identifier string) bool {
 				return strings.TrimSpace(identifier) != ""
 			}) {
-				identifiers = foldedStrings(object, nameKey)
+				identifiers = filter.FoldedStrings(object, nameKey)
 			}
 			for _, identifier := range identifiers {
 				appendEmbeddedOwnershipReference(refs, kind, identifier, "service TaskTemplate.ContainerSpec."+arrayKey)
@@ -822,54 +770,6 @@ func mutateJSONBody(r *http.Request, mutate func(map[string]any) error) error {
 	r.ContentLength = int64(len(encoded))
 	r.Body = io.NopCloser(bytes.NewReader(encoded))
 	return nil
-}
-
-// nestedObject returns the object stored under key, creating it when absent.
-// Key matching is case-INSENSITIVE and collision-collapsing. Docker decodes
-// JSON object keys case-insensitively and, on duplicate case-variant keys,
-// lets the last one win. A client could otherwise smuggle a lowercase
-// "labels" alongside the proxy-injected "Labels" and — because json.Marshal
-// emits map keys in sorted order, placing "labels" after "Labels" — have
-// Docker prefer the client's forged owner label. To close that spoof, every
-// key that case-folds to key is merged into a single object stored under the
-// exact canonical key, and all variant keys are removed, so the re-encoded
-// body carries exactly one unambiguous key that Docker reads verbatim.
-func nestedObject(decoded map[string]any, key string) (map[string]any, error) {
-	merged := map[string]any{}
-	var variants []string
-	for k, v := range decoded {
-		if !strings.EqualFold(k, key) {
-			continue
-		}
-		variants = append(variants, k)
-		if v == nil {
-			continue
-		}
-		obj, ok := v.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("%s must be an object", key)
-		}
-		for kk, vv := range obj {
-			merged[kk] = vv
-		}
-	}
-	for _, k := range variants {
-		delete(decoded, k)
-	}
-	decoded[key] = merged
-	return merged, nil
-}
-
-func nestedObjectPath(decoded map[string]any, keys ...string) (map[string]any, error) {
-	current := decoded
-	for _, key := range keys {
-		next, err := nestedObject(current, key)
-		if err != nil {
-			return nil, err
-		}
-		current = next
-	}
-	return current, nil
 }
 
 func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {

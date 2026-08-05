@@ -646,6 +646,54 @@ Unlabeled nodes and swarm state are denied on reads once ownership is enabled. T
 
 **`allow_cross_owner_namespace_sharing` defaults to `false`.** Joining another container's network/PID/IPC namespace via `container:<id>` shares that container's sockets, process visibility, and `/dev/shm` — a full cross-tenant compromise, strictly worse than the access ownership already gates on every other endpoint. As of v1.5, sockguard denies a `container:<ref>` target that belongs to a different owner by default whenever `ownership.owner` is set; same-owner refs still pass, but an unlabeled target is treated as untrusted and denied too — consistent with every other container-targeting ownership check — so only a same-owner join is allowed by default. This is a genuine behavior change for the narrow case of an `ownership.owner` deployment that was already relying on cross-owner `container:` sharing — set `allow_cross_owner_namespace_sharing: true` to restore the old unchecked behavior. This check is independent of the filter-tier `restrict_namespace_sharing` knob described above: it runs whenever `ownership.owner` is configured, regardless of whether `restrict_namespace_sharing` is enabled.
 
+## Admission Mutations
+
+`mutations.rules[]` declaratively injects fixed labels or remaps an image reference on a matched request body **before** the corresponding `container_create`/`service` body inspection above runs, image-trust verification, and owner-label stamping — so the mutated bytes get the exact same downstream policy scrutiny a client-authored body would. It is a fail-closed, deliberately narrow DSL: exactly two operations (`inject_labels`, `remap_image`), no JSON-patch, no arbitrary field paths, no templating.
+
+Unlike `request_body.*` and `rules`, `mutations` is **not** part of `clients.profiles` — there is a single, global mutation authority applied identically regardless of which client profile matched the request. This is a deliberate v1 scope decision, not an oversight: per-profile mutation overrides introduce a merge-order question (which profile's rule wins when both match?) that the feature does not need to answer yet.
+
+```yaml filename="sockguard.yaml"
+mutations:
+  rules:
+    - id: tag-managed-by
+      mode: enforce                      # enforce | warn | audit
+      surfaces: [container_create, service_create]
+      inject_labels:
+        labels:
+          com.sockguard.managed-by: "sockguard"
+
+    - id: pin-internal-registry
+      mode: warn                         # observe would_apply before enforcing
+      surfaces: [container_create, service_create, service_update]
+      remap_image:
+        match: prefix                    # exact | prefix
+        from: "docker.io/"
+        to: "registry.internal.example.com/"
+
+    - id: pin-internal-registry-unqualified-alpine
+      mode: warn
+      surfaces: [container_create, service_create, service_update]
+      remap_image:
+        match: exact                     # unqualified refs need one exact rule each
+        from: "alpine:3.21"
+        to: "registry.internal.example.com/alpine:3.21"
+```
+
+`remap_image` matches the literal image string a client sent, byte for byte — it never expands Docker's own unqualified-reference conventions (no implicit `docker.io/library/` prefix, no case folding). The `pin-internal-registry` rule above only catches requests that already spell out `docker.io/...`; a request for `alpine:3.21` or `nginx:1.27` does not start with that prefix and passes through unmodified. To also pin unqualified references, add one `match: exact` rule per expected bare image, as shown in the second rule above.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `id` | `string` | Required, unique, `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`. Identifies the rule in logs and audit records. |
+| `mode` | `string` | `enforce` (default), `warn`, or `audit` — see [Rollout Modes](#rollout-modes) below; the same semantics apply per rule. `warn`/`audit` rules are evaluated against an independent cloned copy of the request body and never affect what is actually forwarded. |
+| `surfaces` | `[]string` | One or more of `container_create`, `service_create`, `service_update`. No duplicates. |
+| `inject_labels.labels` | `map[string]string` | Unconditionally sets/replaces these keys in the target label map(s). Valid only on `container_create` (`Config.Labels`) and `service_create` (both `Labels` and `TaskTemplate.ContainerSpec.Labels`) — `service_update` has no label field to mutate. Up to 32 labels per rule, 256 across all rules; keys ≤128 bytes, values ≤4096 bytes, no control characters. Keys and values must both be non-empty (whitespace-only values are rejected too). |
+| `remap_image.match` | `string` | `exact` (the whole image reference must equal `from`) or `prefix` (`from` must prefix the reference; the remainder is preserved after `to`). Matches the literal request-body string — no `docker.io/library` alias expansion or case folding. Valid on all three surfaces. |
+| `remap_image.from` / `.to` | `string` | ≤4096 bytes, no control characters. For `match: exact`, both must parse as valid image references. |
+
+Exactly one of `inject_labels`/`remap_image` is required per rule — never both, never neither. A rule that unconditionally injects the ownership label key (when `ownership.owner` is configured) is rejected at config load, since that key must stay under sockguard's exclusive control. Two rules that could both match the same label key or overlapping image `from` pattern on the same surface are also rejected at config load — which rule would win is otherwise silently order-dependent.
+
+The `mutations` block uses a stricter config decode than the rest of this schema: unknown keys and YAML type-coercion (e.g. an unquoted `id: 0` silently becoming the string `"0"`) are both load-time errors here, not silently accepted.
+
 ## Rollout Modes
 
 Each named profile can set a `mode` field that controls how Sockguard applies

@@ -1281,6 +1281,7 @@ func serveFilterOptions(cfg *config.Config, res *upstream.Resolver, clientProfil
 		PolicyConfig:   servePolicyConfig(cfg, res),
 		Profiles:       clientProfiles,
 		ResolveProfile: clientacl.RequestProfile,
+		Mutation:       cfg.Mutations.ToFilterOptions(),
 	}
 }
 

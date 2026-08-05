@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/glob"
 	"github.com/codeswhat/sockguard/internal/pkipin"
 	"github.com/codeswhat/sockguard/internal/upstream"
+	"github.com/google/go-containerregistry/pkg/name"
 )
 
 // ValidationError holds multiple validation errors.
@@ -48,6 +50,7 @@ func validateBasic(cfg *Config) []string {
 	errs = append(errs, validateReload(cfg)...)
 	errs = append(errs, validatePolicyBundle(cfg)...)
 	errs = append(errs, validateRequestBody(cfg)...)
+	errs = append(errs, validateMutationsConfig(cfg)...)
 	errs = append(errs, validateRules(cfg)...)
 	return errs
 }
@@ -789,6 +792,366 @@ func validateRequestBody(cfg *Config) []string {
 		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))
 	}
 	return errs
+}
+
+// Admission-mutation config bounds (#151). These are deliberately generous
+// (a legitimate config needs far fewer than 64 rules or 256 total injected
+// labels) but bound the strict-decoded mutations subtree against pathological
+// configs before it ever reaches the compiled filter.mutationEngine.
+const (
+	maxMutationRules           = 64
+	maxMutationLabelsPerRule   = 32
+	maxMutationLabelsTotal     = 256
+	maxMutationLabelKeyBytes   = 128
+	maxMutationLabelValueBytes = 4096
+	maxMutationImageFieldBytes = 4096
+)
+
+var mutationRuleIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+var validMutationSurfaces = map[string]struct{}{
+	"container_create": {},
+	"service_create":   {},
+	"service_update":   {},
+}
+
+// mutationImageOverlapEntry is one valid remap_image rule's overlap-check
+// shape, collected while validating each rule and checked pairwise by
+// validateMutationImageOverlaps once every rule has been walked.
+type mutationImageOverlapEntry struct {
+	prefix   string
+	surfaces []string
+	match    string
+	from     string
+}
+
+// mutationLabelClaim is one valid inject_labels rule's (surface, key) claim,
+// collected the same way and checked by validateMutationLabelOverlaps.
+type mutationLabelClaim struct {
+	prefix  string
+	surface string
+	key     string
+}
+
+// validateMutationsConfig validates the mutations.rules[] block (#151):
+// bounds, per-rule id/mode/surfaces, exactly-one-of inject_labels/
+// remap_image, label and image-reference shape, cross-rule overlap
+// rejection, and the owner-label-key reservation.
+func validateMutationsConfig(cfg *Config) []string {
+	var errs []string
+	rules := cfg.Mutations.Rules
+
+	if len(rules) > maxMutationRules {
+		errs = append(errs, fmt.Sprintf("mutations.rules must contain at most %d entries, got %d", maxMutationRules, len(rules)))
+	}
+
+	ids := make(map[string]struct{}, len(rules))
+	totalLabels := 0
+	var imageEntries []mutationImageOverlapEntry
+	var labelClaims []mutationLabelClaim
+
+	for i, rule := range rules {
+		prefix := fmt.Sprintf("mutations.rules[%d]", i)
+
+		if !mutationRuleIDPattern.MatchString(rule.ID) {
+			errs = append(errs, fmt.Sprintf("%s.id must match %s, got %q", prefix, mutationRuleIDPattern.String(), rule.ID))
+		} else if _, dup := ids[rule.ID]; dup {
+			errs = append(errs, uniqueValueError(prefix+".id", rule.ID))
+		} else {
+			ids[rule.ID] = struct{}{}
+		}
+
+		if _, ok := ParseRolloutMode(rule.Mode); !ok {
+			errs = append(errs, fmt.Sprintf("%s.mode must be one of enforce|warn|audit, got %q", prefix, rule.Mode))
+		}
+
+		errs = append(errs, validateMutationSurfaces(prefix, rule.Surfaces)...)
+
+		switch {
+		case rule.InjectLabels != nil && rule.RemapImage != nil:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels or remap_image is required, got both", prefix))
+		case rule.InjectLabels == nil && rule.RemapImage == nil:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels or remap_image is required, got neither", prefix))
+		case rule.InjectLabels != nil:
+			labelErrs, claims := validateMutationInjectLabels(prefix, rule, cfg)
+			errs = append(errs, labelErrs...)
+			totalLabels += len(rule.InjectLabels.Labels)
+			labelClaims = append(labelClaims, claims...)
+		case rule.RemapImage != nil:
+			imageErrs, entry := validateMutationRemapImage(prefix, rule)
+			errs = append(errs, imageErrs...)
+			if entry != nil {
+				imageEntries = append(imageEntries, *entry)
+			}
+		}
+	}
+
+	if totalLabels > maxMutationLabelsTotal {
+		errs = append(errs, fmt.Sprintf("mutations.rules: total inject_labels.labels entries across all rules must not exceed %d, got %d", maxMutationLabelsTotal, totalLabels))
+	}
+
+	errs = append(errs, validateMutationLabelOverlaps(labelClaims)...)
+	errs = append(errs, validateMutationImageOverlaps(imageEntries)...)
+
+	return errs
+}
+
+func validateMutationSurfaces(prefix string, surfaces []string) []string {
+	var errs []string
+	if len(surfaces) == 0 {
+		errs = append(errs, containsAtLeastOneError(prefix+".surfaces", "surface"))
+	}
+	seen := make(map[string]struct{}, len(surfaces))
+	for _, surface := range surfaces {
+		if _, ok := validMutationSurfaces[surface]; !ok {
+			errs = append(errs, enumValueError(prefix+".surfaces", surface, "container_create", "service_create", "service_update"))
+			continue
+		}
+		if _, dup := seen[surface]; dup {
+			errs = append(errs, fmt.Sprintf("%s.surfaces must not contain duplicate %q", prefix, surface))
+			continue
+		}
+		seen[surface] = struct{}{}
+	}
+	return errs
+}
+
+// validateMutationInjectLabels validates one rule's inject_labels block and
+// returns the (surface, key) claims validateMutationLabelOverlaps checks
+// across every rule once the full list is known — only valid, non-empty keys
+// are returned as claims, so a malformed key never produces a spurious
+// overlap error on top of its own shape error.
+func validateMutationInjectLabels(prefix string, rule MutationRuleConfig, cfg *Config) ([]string, []mutationLabelClaim) {
+	var errs []string
+	var claims []mutationLabelClaim
+
+	for _, surface := range rule.Surfaces {
+		if surface == "service_update" {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels is not valid on surface %q: service_update has no label field to mutate", prefix, surface))
+		}
+	}
+
+	labels := rule.InjectLabels.Labels
+	if len(labels) == 0 {
+		errs = append(errs, containsAtLeastOneError(prefix+".inject_labels.labels", "label"))
+	}
+	if len(labels) > maxMutationLabelsPerRule {
+		errs = append(errs, fmt.Sprintf("%s.inject_labels.labels must contain at most %d entries, got %d", prefix, maxMutationLabelsPerRule, len(labels)))
+	}
+
+	// cfg.Ownership.LabelKey is required-when validated separately
+	// (validateRequestBody); read it as-is here rather than re-deriving the
+	// Defaults() fallback, so this check is exact even if that other
+	// validation error is also present in the same run.
+	reservedLabelKey := ""
+	if cfg.Ownership.Owner != "" {
+		reservedLabelKey = cfg.Ownership.LabelKey
+	}
+
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	for _, key := range keys {
+		value := labels[key]
+		valid := true
+		if strings.TrimSpace(key) == "" {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels keys must be non-empty", prefix))
+			valid = false
+		}
+		if len(key) > maxMutationLabelKeyBytes {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels key %q exceeds %d bytes", prefix, key, maxMutationLabelKeyBytes))
+			valid = false
+		}
+		if len(value) > maxMutationLabelValueBytes {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels[%q] value exceeds %d bytes", prefix, key, maxMutationLabelValueBytes))
+			valid = false
+		}
+		if strings.TrimSpace(value) == "" {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels[%q] value must be non-empty", prefix, key))
+			valid = false
+		}
+		if containsControlOrNUL(key) || containsControlOrNUL(value) {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels[%q] must not contain control characters or NUL", prefix, key))
+			valid = false
+		}
+		if reservedLabelKey != "" && key == reservedLabelKey {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels must not set reserved owner label key %q (ownership.owner is configured)", prefix, key))
+			valid = false
+		}
+		if !valid {
+			continue
+		}
+		for _, surface := range rule.Surfaces {
+			claims = append(claims, mutationLabelClaim{prefix: prefix, surface: surface, key: key})
+		}
+	}
+
+	return errs, claims
+}
+
+// validateMutationLabelOverlaps rejects two mutation rules that would inject
+// the same label key on the same surface: last-rule-wins is the actual
+// runtime behavior (see mutation.go's applyInjectLabels), but a bounded
+// declarative DSL should not depend on rule declaration order to resolve an
+// operator's own conflicting intent — reject it at config time instead.
+func validateMutationLabelOverlaps(claims []mutationLabelClaim) []string {
+	var errs []string
+	seen := make(map[string]string, len(claims))
+	for _, claim := range claims {
+		id := claim.surface + "\x00" + claim.key
+		if firstPrefix, ok := seen[id]; ok {
+			errs = append(errs, fmt.Sprintf(
+				"%s.inject_labels.labels[%q] overlaps %s on surface %q: two mutation rules must not inject the same label key on the same surface",
+				claim.prefix, claim.key, firstPrefix, claim.surface,
+			))
+			continue
+		}
+		seen[id] = claim.prefix
+	}
+	return errs
+}
+
+// validateMutationRemapImage validates one rule's remap_image block. When the
+// rule is well-formed enough to reason about for overlap purposes, it also
+// returns the mutationImageOverlapEntry validateMutationImageOverlaps needs;
+// otherwise nil, so a malformed rule's shape error is not compounded by a
+// spurious overlap error against it.
+func validateMutationRemapImage(prefix string, rule MutationRuleConfig) ([]string, *mutationImageOverlapEntry) {
+	var errs []string
+	remap := rule.RemapImage
+	match := strings.ToLower(strings.TrimSpace(remap.Match))
+	switch match {
+	case "exact", "prefix":
+	default:
+		errs = append(errs, enumValueError(prefix+".remap_image.match", remap.Match, "exact", "prefix"))
+	}
+
+	fromOK := validateMutationImageField(prefix+".remap_image.from", remap.From, &errs)
+	toOK := validateMutationImageField(prefix+".remap_image.to", remap.To, &errs)
+
+	// Exact-match from/to must additionally parse as plausible image
+	// references — an exact match replaces the whole reference, so an
+	// unparseable literal can never legitimately match or produce a valid
+	// result. A prefix match's from/to are deliberately allowed to be a bare
+	// registry-host or path prefix (e.g. "internal.example.com/"), which does
+	// not itself parse as a complete reference, so this check does not apply
+	// there.
+	if match == "exact" {
+		if fromOK {
+			errs = append(errs, validateMutationImageLiteral(prefix+".remap_image.from", remap.From)...)
+		}
+		if toOK {
+			errs = append(errs, validateMutationImageLiteral(prefix+".remap_image.to", remap.To)...)
+		}
+	}
+
+	if match != "exact" && match != "prefix" || !fromOK {
+		return errs, nil
+	}
+	return errs, &mutationImageOverlapEntry{prefix: prefix, surfaces: rule.Surfaces, match: match, from: remap.From}
+}
+
+// validateMutationImageField checks the shared from/to shape rules (required,
+// size-bounded, no control/NUL bytes) and reports via *errs, returning
+// whether the field was well-formed enough for further checks to consult its
+// value.
+func validateMutationImageField(field, value string, errs *[]string) bool {
+	if strings.TrimSpace(value) == "" {
+		*errs = append(*errs, requiredFieldError(field))
+		return false
+	}
+	ok := true
+	if len(value) > maxMutationImageFieldBytes {
+		*errs = append(*errs, fmt.Sprintf("%s exceeds %d bytes", field, maxMutationImageFieldBytes))
+		ok = false
+	}
+	if containsControlOrNUL(value) {
+		*errs = append(*errs, fmt.Sprintf("%s must not contain control characters or NUL", field))
+		ok = false
+	}
+	return ok
+}
+
+// validateMutationImageLiteral confirms value parses as a plausible Docker
+// image reference, using the same weak-validation grammar
+// filter.validateMutationImageReference applies to a computed remap result at
+// request time — so a rule that will always fail its own postcondition check
+// is rejected at config load instead of denying every matching request.
+func validateMutationImageLiteral(field, value string) []string {
+	if _, err := name.ParseReference(value, name.WeakValidation); err != nil {
+		return []string{fmt.Sprintf("%s must be a valid image reference, got %q: %v", field, value, err)}
+	}
+	return nil
+}
+
+// validateMutationImageOverlaps rejects two remap_image rules sharing a
+// surface whose from patterns could both match the same image reference —
+// an exact from that starts with a prefix from, or two prefix froms where
+// one prefixes the other (including equal) — because which rule's result
+// wins would depend on mutations.rules declaration order, an implicit
+// dependency this declarative DSL does not want operators to rely on.
+func validateMutationImageOverlaps(entries []mutationImageOverlapEntry) []string {
+	var errs []string
+	for i := range entries {
+		for j := i + 1; j < len(entries); j++ {
+			a, b := entries[i], entries[j]
+			shared := sharedMutationSurfaces(a.surfaces, b.surfaces)
+			if len(shared) == 0 || !mutationImageMatchesOverlap(a, b) {
+				continue
+			}
+			slices.Sort(shared)
+			errs = append(errs, fmt.Sprintf(
+				"%s.remap_image and %s.remap_image overlap on surface(s) %s: a request image could match both rules' from pattern, making the applied result order-dependent",
+				a.prefix, b.prefix, strings.Join(shared, ", "),
+			))
+		}
+	}
+	return errs
+}
+
+func sharedMutationSurfaces(a, b []string) []string {
+	bSet := make(map[string]struct{}, len(b))
+	for _, surface := range b {
+		bSet[surface] = struct{}{}
+	}
+	var shared []string
+	for _, surface := range a {
+		if _, ok := bSet[surface]; ok {
+			shared = append(shared, surface)
+		}
+	}
+	return shared
+}
+
+func mutationImageMatchesOverlap(a, b mutationImageOverlapEntry) bool {
+	switch {
+	case a.match == "exact" && b.match == "exact":
+		return a.from == b.from
+	case a.match == "exact" && b.match == "prefix":
+		return strings.HasPrefix(a.from, b.from)
+	case a.match == "prefix" && b.match == "exact":
+		return strings.HasPrefix(b.from, a.from)
+	case a.match == "prefix" && b.match == "prefix":
+		return strings.HasPrefix(a.from, b.from) || strings.HasPrefix(b.from, a.from)
+	default:
+		return false
+	}
+}
+
+// containsControlOrNUL reports whether s contains a C0 control character
+// (including NUL) or DEL — used to reject label keys/values and image
+// literals that could smuggle control sequences into a log line or a
+// downstream shell/terminal that interprets them.
+func containsControlOrNUL(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 // validateClientsConfig validates the entire `clients:` block: the global
