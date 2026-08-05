@@ -52,13 +52,48 @@ wait_until() {
 }
 
 # ---------------------------------------------------------------------------
+# Route-drift tripwire decision logic (assertion 10) -- pure jq, no Docker
+# dependency, so it can be exercised by --self-test as well as a live row.
+# ---------------------------------------------------------------------------
+
+# route_drift_status computes the route-drift tripwire's PASS/FAIL verdict
+# for a given observed-routes JSON array against known-routes.json. Relies
+# on SCRIPT_DIR (set by run-matrix.sh before this file is sourced) to find
+# known-routes.json. Echoes "STATUS|detail" on stdout; used by
+# assert_route_drift in run-matrix.sh and directly by --self-test, so the
+# fail-closed-on-empty behavior is proven against the exact same code path
+# a live run uses, not a reimplementation of it.
+route_drift_status() {
+  local observed="$1"
+  local observed_count unknown
+
+  observed_count="$(jq 'length' <<<"$observed")"
+  if [ "$observed_count" -eq 0 ]; then
+    # An empty observed set is NOT the same thing as "nothing unexpected was
+    # observed" -- it usually means log capture or the normalizer broke, and
+    # an empty-diff PASS would silently rubber-stamp that. Fail closed
+    # instead: zero parseable access records is itself worth investigating.
+    echo "FAIL|no access-log records captured -- log capture or shape broke"
+    return
+  fi
+
+  unknown="$(jq -n -c --argjson observed "$observed" --slurpfile known "${SCRIPT_DIR}/known-routes.json" \
+    '$observed - $known[0].routes')"
+  if [ "$unknown" = "[]" ]; then
+    echo "PASS|all ${observed_count} observed route shapes are in known-routes.json"
+  else
+    echo "FAIL|peer repository sent a route sockguard policy has not reviewed -- review policy, then update known-routes.json: ${unknown}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Compose / docker plumbing
 # ---------------------------------------------------------------------------
 
-# compose_cmd echoes the base `docker compose` invocation for the current
-# row (project name + -f flags already applied) so callers can append
-# subcommands: `$(compose_cmd) up -d sockguard portwing drydock probe`.
-# COMPOSE_FILES is an array set by run-matrix.sh per row.
+# compose runs `docker compose` for the current row (project name + -f
+# flags already applied) with whatever subcommand/args callers pass through:
+# `compose up -d sockguard portwing drydock probe`. COMPOSE_FILES is an
+# array set by run-matrix.sh per row.
 compose() {
   local -a args=(compose -p "$PROJECT")
   local f
@@ -96,15 +131,31 @@ sockguard_access_log() {
 # seconds. decision may be "allow", "deny", or "would_deny"; an empty
 # decision field on an allow line is treated as "allow" per
 # app/internal/logging/access.go.
+#
+# The filter below is deliberately tolerant of malformed/partial lines: a
+# non-object JSON value or a line missing (or null) normalized_path must be
+# skipped, not error. Under `set -o pipefail` (in effect for the whole of
+# run-matrix.sh) a jq error on ANY line -- even one that arrives after a
+# genuine match was already found and printed -- flips jq's own exit status
+# non-zero, which flips the exit status of this entire pipeline non-zero too
+# and reports the wait as failed regardless of what grep found. That poisons
+# assertions 3 (inventory-inspect), 4 (events), and 10 (route-drift, via a
+# similar pattern in normalize-routes.jq) on otherwise-passing traffic.
+# shellcheck disable=SC2016 # single-quoted on purpose: $m/$d/$p are jq --arg variables, not shell
+ACCESS_LOG_ROUTE_MATCH_JQ='
+  (try fromjson catch empty)
+  | select(type=="object")
+  | select(.msg=="request" or .msg=="request_denied" or .msg=="request_would_deny")
+  | select(.method==$m and ((.decision // "allow")==$d))
+  | select((.normalized_path? // empty | strings | test($p)))
+'
 wait_for_access_log_route() {
   local method="$1" decision="$2" path_regex="$3" timeout="${4:-30}"
   local waited=0
   while (( waited < timeout )); do
     if sockguard_access_log | jq -R \
         --arg m "$method" --arg d "$decision" --arg p "$path_regex" \
-        '(try fromjson catch empty)
-         | select(.msg=="request" or .msg=="request_denied" or .msg=="request_would_deny")
-         | select(.method==$m and ((.decision // "allow")==$d) and (.normalized_path|test($p)))' \
+        "$ACCESS_LOG_ROUTE_MATCH_JQ" \
         2>/dev/null | grep -q .; then
       return 0
     fi

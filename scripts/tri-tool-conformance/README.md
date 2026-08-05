@@ -137,6 +137,13 @@ intentionally one-directional: a manifest entry that's never observed in a
 given run is not a failure (not every scenario exercises every allowed
 route every time), only an *unexpected* observed route is.
 
+**Zero observed routes fails closed, too.** An empty observed set is not
+treated as an empty (trivially-passing) diff — it almost always means log
+capture or the normalizer broke, not that nothing happened, and PASSing
+that silently would defeat the whole tripwire. `assert_route_drift` records
+a `FAIL` ("no access-log records captured — log capture or shape broke")
+instead.
+
 ### Updating `known-routes.json`
 
 The manifest was seeded from static analysis of the presets, not from a

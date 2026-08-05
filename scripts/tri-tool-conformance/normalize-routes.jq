@@ -62,6 +62,14 @@ def shape_path:
 [
   inputs
   | (try fromjson catch empty)
+  # A bare-string (or other non-object) JSON value is valid JSON -- fromjson
+  # won't catch it -- but indexing it with .msg below errors, and that error
+  # would abort this whole `[inputs | ...]` collection rather than just
+  # skipping the one bad line (array construction over `inputs` propagates
+  # an error on any element instead of continuing past it). Guard it the
+  # same defensive way a missing/null normalized_path is already guarded
+  # below.
+  | select(type == "object")
   | select(.msg == "request" or .msg == "request_denied" or .msg == "request_would_deny")
   | select(.method != null and .normalized_path != null)
   | { method: .method, path: (.normalized_path | shape_path) }

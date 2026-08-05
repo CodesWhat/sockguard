@@ -96,13 +96,16 @@ run_self_test() {
     return 1
   }
 
-  # The fixture (testdata/access-log-fixture.jsonl) has 8 lines: 6 real
+  # The fixture (testdata/access-log-fixture.jsonl) has 10 lines: 6 real
   # access-log lines (5 allowed + 1 denied that IS in known-routes.json),
   # 1 deliberately-unknown denied route (GET /containers/*/attach, which is
   # NOT in known-routes.json -- attach is never allowed by any preset and
-  # was never added as an expected-denial-probe shape either), 1 non-
-  # access-log line (msg=startup), and 1 line that isn't JSON at all. A
-  # correct normalizer yields exactly 6 unique {method,path} shapes.
+  # was never added as an expected-denial-probe shape either), 1
+  # access-log-shaped line with normalized_path missing entirely, 1
+  # non-access-log line (msg=startup), 1 bare-string JSON value (valid JSON,
+  # not an object), and 1 line that isn't JSON at all. The three malformed/
+  # partial lines prove tolerance (see below); a correct normalizer still
+  # yields exactly 6 unique {method,path} shapes from the 6 real lines.
   local got_count
   got_count="$(jq 'length' <<<"$observed")"
   if [ "$got_count" != "6" ]; then
@@ -134,6 +137,44 @@ run_self_test() {
     failed=1
   else
     echo "PASS: every other fixture route is already recognized in known-routes.json"
+  fi
+
+  # lib.sh's ACCESS_LOG_ROUTE_MATCH_JQ (used by wait_for_access_log_route)
+  # must tolerate the same malformed/partial lines normalize-routes.jq does
+  # -- the fixture's missing-normalized_path and bare-string-JSON lines both
+  # sit AFTER a genuine match (line 2, GET /containers/json) on purpose:
+  # under `set -o pipefail`, a jq error on any later line flips jq's own
+  # exit status non-zero even after it already printed the match, which
+  # would flip this whole pipeline's exit status non-zero too and report
+  # the wait as failed despite the match existing. Run it exactly the way
+  # wait_for_access_log_route does (same filter, same jq invocation shape)
+  # against the fixture and check both the exit status and the match.
+  local match_output match_status
+  match_output="$(jq -R \
+    --arg m "GET" --arg d "allow" --arg p '^/containers/json$' \
+    "$ACCESS_LOG_ROUTE_MATCH_JQ" "$fixture" 2>/tmp/access-log-match.err)"
+  match_status=$?
+  if [ "$match_status" -ne 0 ]; then
+    echo "FAIL: ACCESS_LOG_ROUTE_MATCH_JQ exited ${match_status} against the fixture's malformed lines: $(cat /tmp/access-log-match.err)" >&2
+    failed=1
+  elif ! grep -q '"normalized_path": *"/containers/json"' <<<"$match_output"; then
+    echo "FAIL: ACCESS_LOG_ROUTE_MATCH_JQ did not find the expected match past the fixture's malformed lines" >&2
+    failed=1
+  else
+    echo "PASS: ACCESS_LOG_ROUTE_MATCH_JQ tolerates missing-normalized_path and bare-string-JSON lines without poisoning the exit status"
+  fi
+
+  # route_drift_status (lib.sh) must fail closed on an empty observed set --
+  # PASSing an empty diff would silently rubber-stamp a broken log capture
+  # or normalizer as "nothing unexpected happened."
+  local empty_status_line empty_status
+  empty_status_line="$(route_drift_status '[]')"
+  empty_status="${empty_status_line%%|*}"
+  if [ "$empty_status" != "FAIL" ]; then
+    echo "FAIL: route_drift_status('[]') returned '${empty_status_line}', want a FAIL (fail-closed on zero observed routes)" >&2
+    failed=1
+  else
+    echo "PASS: route_drift_status fails closed on an empty observed-routes set"
   fi
 
   if [ "$failed" -eq 0 ]; then
@@ -704,20 +745,17 @@ assert_expected_denials() {
 
 assert_route_drift() {
   local name="route-drift-tripwire"
-  local access_log observed unknown
+  local access_log observed status_line status detail
   access_log="$(mktemp)"
   sockguard_access_log > "$access_log"
 
   observed="$(jq -n -R -f "${SCRIPT_DIR}/normalize-routes.jq" "$access_log")"
   OBSERVED_ROUTES_JSON="$observed"
-  unknown="$(jq -n -c --argjson observed "$observed" --slurpfile known "${SCRIPT_DIR}/known-routes.json" \
-    '$observed - $known[0].routes')"
 
-  if [ "$unknown" = "[]" ]; then
-    record_result "$name" PASS "all $(jq 'length' <<<"$observed") observed route shapes are in known-routes.json"
-  else
-    record_result "$name" FAIL "peer repository sent a route sockguard policy has not reviewed -- review policy, then update known-routes.json: ${unknown}"
-  fi
+  status_line="$(route_drift_status "$observed")"
+  status="${status_line%%|*}"
+  detail="${status_line#*|}"
+  record_result "$name" "$status" "$detail"
   rm -f "$access_log"
 }
 
