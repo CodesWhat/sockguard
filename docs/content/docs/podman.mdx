@@ -1,0 +1,241 @@
+---
+title: Podman
+description: Running sockguard in front of a Podman socket — the Docker-compat and native libpod API surfaces, which request_body.* keys govern which endpoint, the uninspected play/kube blind-write surface, ownership/visibility coverage, and current limitations.
+---
+
+Podman's `podman system service` exposes a single socket that speaks **two**
+API families at once: a Docker-compatible surface at `/vN.NN/...` and its own
+native surface at `/libpod/...`. Sockguard proxies both from one instance —
+point `upstream.socket` at the Podman socket instead of Docker's, and every
+existing rule, preset, and inspector that targets the Docker-compat paths
+keeps working unchanged. The `/libpod/...` surface gets its own,
+structurally separate set of inspectors described below.
+
+```yaml
+upstream:
+  socket: /run/podman/podman.sock
+```
+
+## Two API Surfaces, One Proxy
+
+| Surface | Path shape | Inspectors | Notes |
+|---|---|---|---|
+| **Docker-compat** | `/vN.NN/containers/create`, `/vN.NN/images/json`, ... | The existing Docker inspectors (`request_body.container_create`, `request_body.exec`, `request_body.volume`, etc.) apply unchanged | Podman implements enough of the Engine API that most Docker clients — Compose, Portainer, drydock, Portwing — work against it without modification |
+| **libpod-native** | `/vN.NN/libpod/containers/create`, `/vN.NN/libpod/pods/json`, ... | A parallel set of `libpod_*`-prefixed inspectors, plus `request_body.exec` shared with the Docker-compat exec paths | Podman's own CLI (`podman create`, `podman pod create`, `podman-py`) and any client written against libpod's own OpenAPI spec use this surface |
+
+Routing between the two is **structural**, not a body-shape guess: every
+libpod matcher requires an exact `/libpod/` path prefix, and Docker-compat
+matchers are untouched by the libpod additions — zero diffs to the existing
+Docker conformance tests was an explicit acceptance gate for this work. That
+matters because the two surfaces use **incompatible top-level body shapes**
+for the same conceptual operation. `POST /containers/create`'s
+`HostConfig.Privileged`/`NetworkMode`/`PidMode` nested object has no relation
+to `POST /libpod/containers/create`'s top-level `privileged`/`netns`/`pidns`
+fields (Podman's SpecGenerator shape). A Docker-shaped decoder reading a
+libpod body sees all-zero values everywhere and would read as "safe" —
+exactly the fail-open failure mode sockguard avoids by keeping routing
+path-exclusive and never falling back from one inspector to the other.
+
+A client can use either surface interchangeably against the same Podman
+daemon — for example, `podman create` over libpod and a Compose client over
+Docker-compat, at the same time, through the same sockguard instance — and
+each request is gated by the inspector for the surface it actually arrived
+on.
+
+## Which `request_body.*` Key Governs Which Endpoint
+
+| libpod endpoint | Config key | Notes |
+|---|---|---|
+| `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus two libpod-only gates: `allow_systemd_mode` and `allow_custom_id_mappings`. |
+| `POST /libpod/pods/create` | `request_body.libpod_pod_create` | Pods have no Docker-compat equivalent. Covers pod-level host network (`allow_host_network`), shared PID namespace (`allow_shared_pid_namespace`), and the infra image's registry (`allowed_infra_image_registries`). |
+| `POST /libpod/containers/{name}/exec`, `POST /libpod/exec/{id}/start` | `request_body.exec` — **shared with Docker-compat** | libpod exec bodies use Docker's own field names on the wire, so there is deliberately no separate `libpod_exec` block. One `allowed_commands`/`allow_privileged`/`allow_root_user`/env-var policy governs exec on both surfaces, so nothing can be configured for one path family and forgotten for the other. |
+| `POST /libpod/volumes/create` | `request_body.libpod_volume` | Reuses the `volume` config shape, decoded against libpod's wire format (driver options live under `Options`, not `DriverOpts`). |
+| `POST /libpod/networks/create` | `request_body.libpod_network` | Reuses the `network` config shape, decoded against libpod's wire format (snake_case fields, no swarm/ingress/attachable/config-only concepts — libpod predates and is independent of Docker's swarm mode). |
+| `POST /libpod/secrets/create` | `request_body.libpod_secret` | Reuses the `secret` config shape. libpod reads `driver` from the query string, not a JSON body, so this inspector never reads `r.Body` — only the query-param path is exercised. |
+
+See the [Configuration Reference](/configuration#request-body-policy-reference)
+for the complete field-by-field mapping and environment-variable names for
+every key above.
+
+## The Uninspected Blind-Write Surface: `play/kube` and Manifests
+
+`POST /libpod/play/kube` (and its identically-handled `/libpod/kube/play`
+alias), `POST /libpod/kube/apply`, and `POST`/`PUT /libpod/manifests/*` have
+**no** request-body inspector in this release — full Kubernetes-YAML/PodSpec
+modeling is out of scope for v1.6. Admitting any of them requires the same
+`insecure_allow_body_blind_writes: true` acknowledgment that covers
+uninspected exec, exactly like every other body-bearing write sockguard
+cannot yet constrain.
+
+Treat `play/kube` with more caution than a typical blind write. A single
+request can carry a **multi-container, multi-pod** Kubernetes manifest —
+one allowed call can provision an arbitrary number of privileged containers
+from a document sockguard never parses. That is a materially larger blast
+radius than the single-container blind writes the acknowledgment flag
+otherwise covers, and no shipped preset (including `podman-readonly.yaml`
+below) ever allows these paths.
+
+## Read-Exfiltration Additions
+
+`insecure_allow_read_exfiltration` is extended with libpod's equivalent of
+every Docker-compat exfiltration surface, plus one libpod-only entry:
+
+- `GET /libpod/containers/*/archive`, `GET /libpod/containers/*/export`,
+  `GET /libpod/containers/*/logs`, `POST /libpod/containers/*/attach`
+- `GET /libpod/images/export`, `GET /libpod/images/*/get`,
+  `POST /libpod/images/*/push`
+- `POST /libpod/manifests/*/registry/*` and the deprecated backward-compat
+  `POST /libpod/manifests/*/push` — writes at the API layer, but they push
+  local manifest content to a caller-selected registry, the same
+  exfiltration shape as an image push
+- `GET /libpod/generate/kube` — despite the "generate" name, Podman
+  registers this as a `GET` that dumps an existing pod's or container's
+  definition to YAML, which can include environment variables and other
+  resource data. It is a read/export surface, not a write, so it lives in
+  this catalog rather than the blind-write one above.
+
+A broad `GET /libpod/**`-shaped allow rule catches every path above and
+fails startup validation unless you explicitly opt in. Narrow, explicit
+allowlists (see `podman-readonly.yaml` below) avoid needing the
+acknowledgment at all.
+
+## Ownership and Visibility Coverage
+
+Owner-label isolation and read-side visibility cover the libpod surface the
+same way they cover Docker-compat:
+
+- `POST /libpod/containers/create`, `POST /libpod/pods/create`,
+  `POST /libpod/networks/create`, and `POST /libpod/volumes/create` get the
+  configured owner label injected into their (lowercase-keyed) `labels`
+  field. `POST /libpod/volumes/create` is the one exception — Podman's
+  `VolumeCreateOptions` carries no JSON tag on its labels field, so it
+  serializes as capitalized `Labels` and is stamped accordingly.
+- `POST /libpod/secrets/create` has no JSON body at all (`driver`/`label`
+  are query parameters), so it reuses the existing query-param stamping
+  path unchanged.
+- Pods have no Docker-compat equivalent, so they get a dedicated
+  `KindLibpodPod` resource kind with its own list/inspect owner-filtering
+  and visibility coverage.
+- Every libpod list and inspect/action path — containers, pods, networks,
+  volumes, secrets — is owner-filtered and visibility-filtered, so switching
+  a client from Docker-compat to libpod-native paths is not a way around
+  isolation configured on the Docker-compat side.
+- libpod network inspect responses are unwrapped from Podman's occasional
+  single-element-array envelope (`GET /libpod/networks/{id}/json` sometimes
+  returns `[{...}]` instead of a bare object) before label extraction.
+- Cross-owner pod-membership checks apply on both sides of the
+  relationship: `POST /libpod/pods/create` requests that join another
+  owner's namespaces are denied, and `POST /libpod/containers/create`
+  requests that target another owner's pod (`SpecGenerator.pod`) are
+  denied — the same `container:<ref>` namespace-sharing checks
+  Docker-compat create already applies, extended to libpod's uniform
+  `{"nsmode":"container","value":"<ref>"}` namespace object and
+  `pod`/`infra_image` fields.
+
+Denial reasons for libpod-family requests carry a `libpod ` prefix, matching
+the convention the libpod body inspectors use, so a `reason` grep separates
+libpod-originated denials from their Docker-compat counterparts without a
+dedicated log field.
+
+## Version-Prefix Handling
+
+Sockguard strips the Docker API version prefix (`/v1.45/`) before matching
+rules, same as it always has. Podman's own clients send their **full daemon
+semver** as that prefix — three parts (`/v5.0.0/`, `/v4.9.3/`), not Docker's
+one-or-two-part form (`/v1.45/`) — so the path normalizer accepts an
+optional second `.N` group as well as the first. `/v5.0.0/libpod/containers/json`
+and `/libpod/containers/json` normalize to the identical rule-matching path.
+This is transparent — you never configure or reference the version prefix
+yourself — but it is worth knowing if you are reading raw access logs: the
+`path` field carries the client's original version-prefixed request, while
+`normalized_path` carries the post-strip form rules actually matched
+against.
+
+## Rootful vs. Rootless
+
+Podman runs two distinct deployment shapes, and sockguard works the same
+way against either — only `upstream.socket` changes:
+
+- **Rootful** — `sudo podman system service` on a well-known root-owned
+  socket, conventionally `/run/podman/podman.sock`. This is the shape most
+  sockguard deployments run behind: a root-owned socket bind-mounted into
+  sockguard's container, mirroring how the Docker suite points at
+  `/var/run/docker.sock`.
+- **Rootless** — a per-user `podman system service` on the invoking user's
+  `$XDG_RUNTIME_DIR`, conventionally `$XDG_RUNTIME_DIR/podman/podman.sock`
+  (commonly `/run/user/<uid>/podman/podman.sock`). Requires a usable
+  `newuidmap`/`newgidmap` and `/etc/subuid`/`/etc/subgid` range for the
+  invoking user.
+
+Sockguard does **not** auto-detect which mode a given socket is running in,
+and does not need to — the wire protocol is identical either way. One
+caveat worth documenting rather than silently living with: the practical
+blast radius of a gate like `allow_privileged` or `allow_host_userns`
+differs between the two modes even though sockguard enforces the identical
+default (deny) against both. A "privileged" rootless container is still
+confined by the outer rootless user namespace; the same flag on a rootful
+daemon grants genuine host-level privilege. Sockguard's policy surface
+treats both requests identically by design — it has no way to know which
+mode the socket it's proxying is running in, and the safer assumption is
+the rootful one — so don't read an `allow_privileged: true` rootless
+deployment as equivalently risky to the same setting against a rootful one,
+or vice versa; the setting name is the same, the ceiling it grants is not.
+
+## Starting Point: `podman-readonly.yaml`
+
+The [`podman-readonly.yaml`](https://github.com/CodesWhat/sockguard/blob/main/app/configs/podman-readonly.yaml)
+preset ships a read-only monitoring posture covering both surfaces in one
+file — list/inspect/stats/top/changes for containers, list/inspect for pods
+(libpod only), images, networks, volumes, and secrets, plus health/version/
+info/events. It deliberately excludes every exfiltration-gated endpoint
+(archive, export, logs, attach, image/manifest push, `generate/kube`) on
+both surfaces, so it validates clean without setting
+`insecure_allow_read_exfiltration`, and it allows no writes at all, so it
+never needs `insecure_allow_body_blind_writes` either. See
+[Presets](/presets) for how to mount a preset as your config file.
+
+## Known Limitations
+
+**Hijacked libpod exec-start does not work against real Podman yet
+([#194](https://github.com/CodesWhat/sockguard/issues/194)).**
+`POST /libpod/exec/{id}/start` is one of sockguard's hijack-capable
+endpoints — like `POST /exec/{id}/start` on the Docker-compat side, it
+upgrades the connection to a raw stream once the daemon accepts it.
+`internal/proxy/hijack.go` always forwards the **version-stripped** path
+upstream by design (pinned by existing hijack tests), which is harmless
+against dockerd — Docker accepts unversioned paths on that endpoint — but
+real Podman enforces stricter versioning specifically on this path and
+rejects the stripped form. The rest of the libpod exec surface is
+unaffected: `request_body.exec` enforcement happens fully at exec-create
+time, before this endpoint is ever reached, and is proven against a real
+Podman socket in CI. Only the final hijacked round-trip on an
+**already-admitted** exec is affected. Tracked as a follow-up, not a
+blocker for the libpod inspector work landing in this release.
+
+**Deferred past this release** (see the [roadmap](/roadmap) for where these
+land):
+
+- Full body modeling for `play/kube` and `kube/apply` — these stay behind
+  the blind-write acknowledgment described above rather than getting a real
+  inspector. (`generate/kube` is not part of this list: it is a `GET`
+  read-exfiltration endpoint and remains gated by
+  `insecure_allow_read_exfiltration`, as described earlier.)
+- Manifest-list write inspection — expected to land alongside future
+  image-trust work, since manifest lists are a registry-content concern.
+- Full read-side coverage of the broader `/libpod/generate/*` family beyond
+  the `generate/kube` exfiltration-gate entry above (e.g. `generate/systemd`).
+- Rootful/rootless auto-detection — documented above as a semantic caveat
+  instead of an enforced distinction.
+- Range-overlap analysis for `idmappings` — `allow_custom_id_mappings` is a
+  blunt allow/deny gate for this release, not a range-aware check.
+- Tecnativa-style env-var compatibility for the libpod surface — the
+  existing `CONTAINERS=1`/`POST=0`-style compat env vars only ever generate
+  rules against literal Docker-compat paths (`/containers/**`, and similar),
+  never `/libpod/...`, so a Tecnativa-compatible env-var configuration gives
+  you no libpod coverage at all today. A libpod-specific compat layer is
+  tracked as its own follow-up rather than folded in here.
+- Podman remote/SSH transport (`podman --remote` over SSH rather than a
+  local/proxied socket) is out of scope.
+- `AllowedRuntimes` has no libpod equivalent — `request_body.container_create.allowed_runtimes`
+  gates the Docker-compat `HostConfig.Runtime` field, but
+  `libpod_container_create` has no matching hook today.

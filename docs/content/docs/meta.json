@@ -6,6 +6,7 @@
     "configuration",
     "multi-host",
     "presets",
+    "podman",
     "cis-docker-benchmark",
     "observability",
     "admin",

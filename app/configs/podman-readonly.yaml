@@ -1,0 +1,147 @@
+# Sockguard — Podman Read-Only Preset
+#
+# Read-only monitoring posture covering BOTH of Podman's API surfaces behind
+# a single sockguard instance: the Docker-compat `/vN.NN/...` paths (the
+# existing Docker inspectors apply to these unchanged) and Podman's native
+# `/libpod/...` paths (their own, structurally separate inspectors — see
+# the Podman guide at https://getsockguard.com/docs/podman for the full
+# routing model). Point this at either a rootful `/run/podman/podman.sock`
+# or a rootless `$XDG_RUNTIME_DIR/podman/podman.sock` — the rule set itself
+# does not change; only `upstream.socket` does.
+#
+# Unlike `readonly.yaml`, this preset does NOT set
+# insecure_allow_read_exfiltration: true. Every rule below is a narrow
+# list/inspect/metadata read; raw archive/export/logs/attach streams and
+# image/manifest pushes are deliberately left off the allowlist on both
+# surfaces, so this preset validates clean without acknowledging that
+# guardrail. Widen the allowlist yourself (and add the acknowledgment) if
+# your monitoring tool genuinely needs log streaming.
+#
+# No write operations are allowed on either surface — this preset never
+# needs insecure_allow_body_blind_writes either.
+#
+# Use for: dashboards and monitoring tools watching a Podman host that want
+# least-privilege reads instead of readonly.yaml's blanket GET /**.
+
+upstream:
+  socket: /run/podman/podman.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+rules:
+  # --- Docker-compat surface: health + metadata ---
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # --- Docker-compat surface: container reads ---
+  # Logs / archive / attach / export deliberately omitted — they are gated
+  # by insecure_allow_read_exfiltration, which this preset does not set.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  # --- Docker-compat surface: image reads ---
+  # /images/get and /images/*/get (raw tarball exfil) intentionally excluded.
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+
+  # --- Docker-compat surface: network + volume reads ---
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+
+  # --- libpod (native) surface: health + metadata ---
+  - match: { method: GET, path: "/libpod/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/libpod/_ping" }
+    action: allow
+  - match: { method: GET, path: "/libpod/version" }
+    action: allow
+  - match: { method: GET, path: "/libpod/info" }
+    action: allow
+  - match: { method: GET, path: "/libpod/events" }
+    action: allow
+
+  # --- libpod surface: container reads ---
+  # Archive / export / logs / attach deliberately omitted, same rationale
+  # as the Docker-compat container reads above.
+  - match: { method: GET, path: "/libpod/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/libpod/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/libpod/containers/*/changes" }
+    action: allow
+
+  # --- libpod surface: pod reads (no Docker-compat equivalent) ---
+  - match: { method: GET, path: "/libpod/pods/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/pods/*/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/pods/stats" }
+    action: allow
+
+  # --- libpod surface: image reads ---
+  # /libpod/images/export, /libpod/images/*/get, and image/manifest pushes
+  # are exfiltration surfaces (see insecure_allow_read_exfiltration docs)
+  # and intentionally excluded, same as the Docker-compat side.
+  - match: { method: GET, path: "/libpod/images/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/images/*/json" }
+    action: allow
+
+  # --- libpod surface: network, volume, secret reads ---
+  # Inspect responses use libpod's own /{id}/json shape, not Docker-compat's
+  # bare /{id} — see the Podman guide for the single-element-array quirk on
+  # network inspect.
+  - match: { method: GET, path: "/libpod/networks/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/networks/*/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/volumes/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/volumes/*/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/secrets/json" }
+    action: allow
+  - match: { method: GET, path: "/libpod/secrets/*/json" }
+    action: allow
+
+  # Deny everything else — both surfaces, all writes.
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "podman read-only mode — write operations and exfiltration-gated reads are not allowed"
