@@ -98,12 +98,70 @@ type listenerMember struct {
 	identity   inbound.Identity
 	listener   net.Listener
 	server     *http.Server
+	hijacked   *hijackedConnTracker
 	socketPath string
 	// socketIdentity is the (dev, ino) pair captured immediately after bind,
 	// for explicit listeners[*] entries only (see bindMainListeners). It
 	// guards shutdown-time removal: a socket path is only unlinked if it
 	// still resolves to the exact inode this process created.
 	socketIdentity socketIdentity
+}
+
+// hijackedConnTracker owns connections removed from net/http's lifecycle by
+// a successful Hijack (Docker attach/exec streaming). http.Server.Shutdown
+// intentionally does not close them, so listener-group shutdown must do so
+// explicitly to keep the single 30-second drain deadline meaningful.
+type hijackedConnTracker struct {
+	mu     sync.Mutex
+	conns  map[net.Conn]struct{}
+	closed bool
+}
+
+func trackHijackedConnections(server *http.Server) *hijackedConnTracker {
+	tracker := &hijackedConnTracker{conns: make(map[net.Conn]struct{})}
+	previous := server.ConnState
+	server.ConnState = func(conn net.Conn, state http.ConnState) {
+		if previous != nil {
+			previous(conn, state)
+		}
+		tracker.transition(conn, state)
+	}
+	return tracker
+}
+
+func (t *hijackedConnTracker) transition(conn net.Conn, state http.ConnState) {
+	if t == nil || conn == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	switch state {
+	case http.StateHijacked:
+		if t.closed {
+			_ = conn.Close()
+			return
+		}
+		t.conns[conn] = struct{}{}
+	case http.StateClosed:
+		delete(t.conns, conn)
+	}
+}
+
+func (t *hijackedConnTracker) closeAll() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.closed = true
+	connections := make([]net.Conn, 0, len(t.conns))
+	for conn := range t.conns {
+		connections = append(connections, conn)
+	}
+	clear(t.conns)
+	t.mu.Unlock()
+	for _, conn := range connections {
+		_ = conn.Close()
+	}
 }
 
 // socketIdentity is a unix filesystem identity (device + inode). The zero
@@ -120,6 +178,13 @@ func statSocketIdentity(lstat func(string) (os.FileInfo, error), path string) so
 	}
 	info, err := lstat(path)
 	if err != nil {
+		return socketIdentity{}
+	}
+	return socketIdentityFromFileInfo(info)
+}
+
+func socketIdentityFromFileInfo(info os.FileInfo) socketIdentity {
+	if info == nil {
 		return socketIdentity{}
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
@@ -207,10 +272,12 @@ func bindMainListeners(cfg *config.Config, deps *serveDeps, handler http.Handler
 			Role:    inbound.RoleMain,
 			Network: networkFor(entry.ListenConfig),
 		}
+		server := newHTTPServerForIdentity(handler, identity)
 		member := &listenerMember{
 			identity:   identity,
 			listener:   ln,
-			server:     newHTTPServerForIdentity(handler, identity),
+			server:     server,
+			hijacked:   trackHijackedConnections(server),
 			socketPath: entry.Socket,
 		}
 		if explicit && entry.Socket != "" {
@@ -240,14 +307,18 @@ func closeMembersReverse(members []*listenerMember) {
 // selecting on it).
 func publishMainListeners(deps *serveDeps, members []*listenerMember, fanIn chan<- listenerResult, board *listenerStatusBoard) {
 	for _, member := range members {
-		memberErrCh := make(chan error, 1)
-		go deps.startServing(member.server, member.listener, memberErrCh)
-		board.setState(member.identity.Name, health.ListenerStateServing)
-		go func() {
-			err := <-memberErrCh
-			fanIn <- listenerResult{name: member.identity.Name, role: member.identity.Role, err: err}
-		}()
+		publishListenerMember(deps, member, fanIn, board)
 	}
+}
+
+func publishListenerMember(deps *serveDeps, member *listenerMember, fanIn chan<- listenerResult, board *listenerStatusBoard) {
+	memberErrCh := make(chan error, 1)
+	go deps.startServing(member.server, member.listener, memberErrCh)
+	board.setState(member.identity.Name, health.ListenerStateServing)
+	go func() {
+		err := <-memberErrCh
+		fanIn <- listenerResult{name: member.identity.Name, role: member.identity.Role, err: err}
+	}()
 }
 
 // setListenersUp publishes the sockguard_listener_up{listener,role,network}
@@ -288,7 +359,12 @@ func shutdownMainListeners(ctx context.Context, deps *serveDeps, members []*list
 			defer wg.Done()
 			if err := deps.shutdownServer(member.server, ctx); err != nil {
 				logger.Error("shutdown error", "listener", member.identity.Name, "error", err)
+				if ctx.Err() != nil {
+					_ = member.server.Close()
+					_ = member.listener.Close()
+				}
 			}
+			member.hijacked.closeAll()
 		}()
 	}
 	wg.Wait()

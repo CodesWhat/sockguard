@@ -612,8 +612,8 @@ func TestRunServeErrorPaths(t *testing.T) {
 			return nil
 		}
 
-		if err := runServeWithDeps(cmd, nil, deps); err != nil {
-			t.Fatalf("runServeWithDeps() error = %v, want nil", err)
+		if err := runServeWithDeps(cmd, nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
+			t.Fatalf("runServeWithDeps() error = %v, want premature Serve error", err)
 		}
 		if !strings.Contains(errOut.String(), "failed to close audit log output: audit close boom") {
 			t.Fatalf("expected audit log output close warning, got: %q", errOut.String())
@@ -673,8 +673,8 @@ func TestRunServeErrorPaths(t *testing.T) {
 			errCh <- http.ErrServerClosed
 		}
 
-		if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
-			t.Fatalf("runServeWithDeps() error = %v, want nil", err)
+		if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
+			t.Fatalf("runServeWithDeps() error = %v, want premature Serve error", err)
 		}
 
 		var event map[string]any
@@ -876,11 +876,11 @@ func TestRunServeLifecyclePaths(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "server error: serve boom") {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if shutdownCalled {
-			t.Fatal("expected shutdownServer to be skipped on serve error")
+		if !shutdownCalled {
+			t.Fatal("expected shutdownServer for whole-group drain on serve error")
 		}
-		if removeCalled {
-			t.Fatal("expected socket cleanup to be skipped on serve error")
+		if !removeCalled {
+			t.Fatal("expected socket cleanup after whole-group drain on serve error")
 		}
 	})
 
@@ -895,8 +895,8 @@ func TestRunServeLifecyclePaths(t *testing.T) {
 		}
 		deps.removePath = func(string) error { return nil }
 
-		if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
-			t.Fatalf("runServe() error = %v", err)
+		if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
+			t.Fatalf("runServe() error = %v, want premature Serve error", err)
 		}
 	})
 

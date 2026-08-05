@@ -19,6 +19,7 @@ import (
 	"github.com/codeswhat/sockguard/internal/admin"
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/internal/health"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -337,10 +338,11 @@ func TestWarnIfAdminListenerWideOpen(t *testing.T) {
 	}
 }
 
-// TestStartAdminServerNoopWhenAdminDisabled proves the early-return guard:
-// admin off OR admin.listen unconfigured must NOT bind a listener and must
-// return a stop func that is safe to defer.
-func TestStartAdminServerNoopWhenAdminDisabled(t *testing.T) {
+// TestBindAdminServerNoopWhenAdminDisabled proves the early-return guard on
+// the barrier-integrated bind path (#149): admin off OR admin.listen
+// unconfigured must NOT bind a listener and must return a nil member so the
+// caller's bind barrier treats it as "no admin to publish."
+func TestBindAdminServerNoopWhenAdminDisabled(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Admin.Enabled = false
 
@@ -351,25 +353,21 @@ func TestStartAdminServerNoopWhenAdminDisabled(t *testing.T) {
 		return nil, errors.New("should not be called")
 	}
 
-	server, errCh, stop, err := startAdminServer(&cfg, newDiscardLogger(), nil, nil, deps)
+	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard())
 	if err != nil {
-		t.Fatalf("startAdminServer() error = %v, want nil", err)
+		t.Fatalf("bindAdminServer() error = %v, want nil", err)
 	}
-	if server != nil {
-		t.Fatalf("server = %v, want nil", server)
+	if member != nil {
+		t.Fatalf("member = %v, want nil", member)
 	}
 	if listenerCalls != 0 {
 		t.Fatalf("createAdminListener called %d times, want 0", listenerCalls)
 	}
-	if errCh == nil {
-		t.Fatal("errCh = nil, want non-nil blocking channel")
-	}
-	stop() // must not panic
 }
 
-// TestStartAdminServerNoopWhenListenerNotConfigured covers the second half
-// of the gate: Enabled=true but Listen empty must still no-op.
-func TestStartAdminServerNoopWhenListenerNotConfigured(t *testing.T) {
+// TestBindAdminServerNoopWhenListenerNotConfigured covers the second half of
+// the gate: Enabled=true but Listen empty must still no-op.
+func TestBindAdminServerNoopWhenListenerNotConfigured(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Admin.Enabled = true
 	// Listen sub-block is zero-valued → not configured.
@@ -381,23 +379,25 @@ func TestStartAdminServerNoopWhenListenerNotConfigured(t *testing.T) {
 		return nil, errors.New("should not be called")
 	}
 
-	server, _, stop, err := startAdminServer(&cfg, newDiscardLogger(), nil, nil, deps)
+	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard())
 	if err != nil {
-		t.Fatalf("startAdminServer() error = %v, want nil", err)
+		t.Fatalf("bindAdminServer() error = %v, want nil", err)
 	}
-	if server != nil {
-		t.Fatalf("server = %v, want nil", server)
+	if member != nil {
+		t.Fatalf("member = %v, want nil", member)
 	}
 	if listenerCalls != 0 {
 		t.Fatalf("createAdminListener called %d times, want 0", listenerCalls)
 	}
-	stop()
 }
 
-// TestStartAdminServerPropagatesListenerError surfaces createAdminListener
+// TestBindAdminServerPropagatesListenerError surfaces createAdminListener
 // failure as a wrapped error so the operator sees the cause at startup
-// rather than a generic "server error".
-func TestStartAdminServerPropagatesListenerError(t *testing.T) {
+// rather than a generic "server error" — and so runServeWithDeps' barrier
+// (bindMainListeners then bindAdminServer, see
+// TestBindBarrierAdminFailureRollsBackMainsInReverseWithoutServing) rolls
+// back cleanly on it.
+func TestBindAdminServerPropagatesListenerError(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Admin.Enabled = true
 	cfg.Admin.Listen.Address = "127.0.0.1:0"
@@ -407,67 +407,41 @@ func TestStartAdminServerPropagatesListenerError(t *testing.T) {
 		return nil, errors.New("bind boom")
 	}
 
-	_, _, stop, err := startAdminServer(&cfg, newDiscardLogger(), nil, nil, deps)
+	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard())
 	if err == nil || !strings.Contains(err.Error(), "admin listener: bind boom") {
 		t.Fatalf("error = %v, want admin listener: bind boom", err)
 	}
-	if stop == nil {
-		t.Fatal("stop = nil, want non-nil even on error")
+	if member != nil {
+		t.Fatal("member = non-nil, want nil on bind failure")
 	}
-	stop() // must not panic with a no-op stop on the error path
 }
 
-// TestStartAdminServerStartsServing brings up the dedicated admin server on
-// an injected listener and confirms the startServing dep is invoked exactly
-// once with the right binding. This is the wiring proof — actual HTTP I/O
-// is exercised by the chain-level tests above.
-func TestStartAdminServerStartsServing(t *testing.T) {
+// TestBindAdminServerRegistersBoundStateBeforePublish proves the admin
+// member joins the listenerStatusBoard as "bound" at bind time — the same
+// pre-publish state main listeners get — rather than jumping straight to
+// "serving" the way the old admin-outside-the-barrier code path did.
+// publishListenerMember (invoked by the caller only after every bind in the
+// group has succeeded) is what advances it to serving.
+func TestBindAdminServerRegistersBoundStateBeforePublish(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Admin.Enabled = true
 	cfg.Admin.Listen.Address = "127.0.0.1:0"
 
 	deps := newServeTestDeps()
 	injected := &serveTestListener{addr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 9000}}
-	deps.createAdminListener = func(*config.Config) (net.Listener, error) {
-		return injected, nil
-	}
+	deps.createAdminListener = func(*config.Config) (net.Listener, error) { return injected, nil }
+	board := newListenerStatusBoard()
 
-	var mu sync.Mutex
-	var serveCalls int
-	var sawListener net.Listener
-	deps.startServing = func(_ *http.Server, ln net.Listener, errCh chan<- error) {
-		mu.Lock()
-		serveCalls++
-		sawListener = ln
-		mu.Unlock()
-		errCh <- http.ErrServerClosed
-	}
-
-	server, errCh, stop, err := startAdminServer(&cfg, newDiscardLogger(), nil, admin.NewPolicyVersioner(), deps)
+	member, err := bindAdminServer(&cfg, newDiscardLogger(), nil, admin.NewPolicyVersioner(), deps, board)
 	if err != nil {
-		t.Fatalf("startAdminServer() error = %v", err)
+		t.Fatalf("bindAdminServer() error = %v", err)
 	}
-	if server == nil {
-		t.Fatal("server = nil, want non-nil")
+	if member == nil {
+		t.Fatal("member = nil, want non-nil")
 	}
-	defer stop()
-
-	select {
-	case got := <-errCh:
-		if !errors.Is(got, http.ErrServerClosed) {
-			t.Fatalf("errCh = %v, want http.ErrServerClosed", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("startServing did not signal in time")
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	if serveCalls != 1 {
-		t.Fatalf("serveCalls = %d, want 1", serveCalls)
-	}
-	if sawListener != injected {
-		t.Fatalf("startServing got listener %v, want injected %v", sawListener, injected)
+	snapshot := board.snapshot()
+	if len(snapshot) != 1 || snapshot[0].Name != config.AdminListenerName || snapshot[0].State != health.ListenerStateBound {
+		t.Fatalf("snapshot = %#v, want single bound admin entry", snapshot)
 	}
 }
 

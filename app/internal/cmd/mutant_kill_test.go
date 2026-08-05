@@ -432,8 +432,8 @@ func TestRunServe_DeferredListenerCloseNilErrorNoWarn(t *testing.T) {
 	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
 	deps.shutdownServer = func(server *http.Server, ctx context.Context) error { return nil }
 
-	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
-		t.Fatalf("runServeWithDeps() error = %v", err)
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
+		t.Fatalf("runServeWithDeps() error = %v, want premature Serve error", err)
 	}
 
 	if collector.HasMessage("failed to close listener") {
@@ -480,8 +480,8 @@ func TestRunServe_DeferredListenerCloseUnexpectedErrorWarns(t *testing.T) {
 		return nil
 	}
 
-	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
-		t.Fatalf("runServeWithDeps() error = %v", err)
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
+		t.Fatalf("runServeWithDeps() error = %v, want premature Serve error", err)
 	}
 	if !collector.HasMessage("failed to close listener") {
 		t.Fatalf("expected listener-close warning for unexpected error; records: %#v", collector.Records())
@@ -529,8 +529,8 @@ func TestRunServe_SocketCleanupOnlyForUnixSocket(t *testing.T) {
 			return nil
 		}
 
-		if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
-			t.Fatalf("runServeWithDeps() error = %v", err)
+		if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
+			t.Fatalf("runServeWithDeps() error = %v, want premature Serve error", err)
 		}
 		if removeCalled {
 			t.Fatal("removePath was called for TCP listener — must not be")
@@ -569,8 +569,8 @@ func TestRunServe_SocketCleanupOnlyForUnixSocket(t *testing.T) {
 			return nil
 		}
 
-		if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
-			t.Fatalf("runServeWithDeps() error = %v", err)
+		if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
+			t.Fatalf("runServeWithDeps() error = %v, want premature Serve error", err)
 		}
 		if !removeCalled {
 			t.Fatal("removePath was not called for Unix socket — must be")
@@ -616,8 +616,8 @@ func TestRunServe_SocketRemoveNotExistIgnored(t *testing.T) {
 	deps.shutdownServer = func(server *http.Server, ctx context.Context) error { return nil }
 	deps.removePath = func(string) error { return os.ErrNotExist }
 
-	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
-		t.Fatalf("runServeWithDeps() error = %v", err)
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
+		t.Fatalf("runServeWithDeps() error = %v, want premature Serve error", err)
 	}
 	if collector.HasMessage("remove socket error") {
 		t.Fatalf("unexpected remove-socket error log for ErrNotExist; records: %#v", collector.Records())
@@ -653,46 +653,20 @@ func TestRunServe_SocketRemoveOtherErrorLogs(t *testing.T) {
 	deps.shutdownServer = func(server *http.Server, ctx context.Context) error { return nil }
 	deps.removePath = func(string) error { return errors.New("permission denied") }
 
-	if err := runServeWithDeps(newServeCommand(), nil, deps); err != nil {
-		t.Fatalf("runServeWithDeps() error = %v", err)
+	if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
+		t.Fatalf("runServeWithDeps() error = %v, want premature Serve error", err)
 	}
 	if !collector.HasMessage("remove socket error") {
 		t.Fatalf("expected remove socket error log; records: %#v", collector.Records())
 	}
 }
 
-// TestStartAdminServer_NilListenerCloseDoesNotWarn pins the
-// CONDITIONALS_NEGATION mutant at serve.go:332 (`closeErr == nil` → `!=` in
-// the admin listener's stop closure). The original early-returns when the
-// listener closes cleanly (closeErr == nil) OR with net.ErrClosed. The
-// mutant inverts the first conjunct so a clean close (closeErr == nil)
-// falls through and emits a spurious "failed to close admin listener"
-// Warn line. We inject a listener whose Close returns nil and assert the
-// warning is absent from the collected records.
-func TestStartAdminServer_NilListenerCloseDoesNotWarn(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Admin.Enabled = true
-	cfg.Admin.Listen.Address = "127.0.0.1:0"
-
-	collector := &testhelp.CollectingHandler{}
-
-	deps := newServeTestDeps()
-	deps.createAdminListener = func(*config.Config) (net.Listener, error) {
-		return &serveTestListener{closeErr: nil}, nil
-	}
-	deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) {
-		errCh <- http.ErrServerClosed
-	}
-
-	_, _, stop, err := startAdminServer(&cfg, collector.Logger(), nil, nil, deps)
-	if err != nil {
-		t.Fatalf("startAdminServer() error = %v", err)
-	}
-	stop()
-	if collector.HasMessage("failed to close admin listener") {
-		t.Fatalf("clean close (closeErr=nil) emitted spurious warning — mutant `closeErr != nil` would yield this; records: %#v", collector.Records())
-	}
-}
+// The old dedicated admin listener's stop-closure mutant coverage
+// (`closeErr == nil` → `!=`) was folded into the unified bind-barrier close
+// loop when the admin listener moved inside the two-phase bind barrier
+// (#149) — see TestRunServe_DeferredListenerCloseNilErrorNoWarn above,
+// which exercises the same shared loop that now closes every member,
+// admin included, in reverse bind order.
 
 // TestRunServe_ShutdownErrorLogs pins the CONDITIONALS_NEGATION mutant at
 // serve.go:270 (`err != nil` → `==` on the regular shutdownServer call).
