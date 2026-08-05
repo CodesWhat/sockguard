@@ -1325,6 +1325,25 @@ func mustBuildContextTar(t *testing.T, dockerfilePath string, dockerfile string)
 	return buf.Bytes()
 }
 
+func TestMiddlewareDeniesBuildWithMalformedRegistryConfigHeader(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected malformed X-Registry-Config to be denied before reaching upstream")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/build", strings.NewReader(""))
+	req.Header.Set("X-Registry-Config", "not-valid-base64!!!")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
 type repeatingByteReader struct {
 	remaining int64
 	value     byte

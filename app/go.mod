@@ -6,6 +6,7 @@ toolchain go1.26.5
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1
+	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/google/go-containerregistry v0.21.7
 	github.com/sigstore/protobuf-specs v0.5.1
 	github.com/sigstore/sigstore v1.10.8
@@ -49,7 +50,6 @@ require (
 	github.com/go-openapi/swag/typeutils v0.27.0 // indirect
 	github.com/go-openapi/swag/yamlutils v0.26.1 // indirect
 	github.com/go-openapi/validate v0.26.0 // indirect
-	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/certificate-transparency-go v1.3.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect

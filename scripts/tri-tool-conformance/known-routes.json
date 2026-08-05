@@ -1,0 +1,52 @@
+{
+  "$comment": "Route-drift tripwire manifest for scripts/tri-tool-conformance/run-matrix.sh (#150). Each entry is a (method, rule-normalized path shape) pair sockguard's own access log (msg=request|request_denied|request_would_deny, field `normalized_path`) is expected to ever emit while the conformance matrix's three rows run. `*` = exactly one dynamic path segment (container/network/volume/service/exec ID or name); `**` = a run of one-or-more dynamic segments (multi-part image/distribution references). Shapes are derived directly from app/configs/portwing.yaml and app/configs/portwing-with-exec.yaml's allow rules (the union of both, since legacy-floor/current-standard run the plain preset and current-edge runs the exec preset) plus the two deliberate-denial probes assertion 9 sends (POST /build, GET /containers/*/export) so those expected denials don't themselves trip the tripwire. This file is checked in and updated deliberately in PRs -- see the harness README's 'Updating this manifest' section. ANY route observed in a live run that is not listed here fails the job: 'peer repository sent a route sockguard policy has not reviewed -- review policy, then update known-routes.json'.",
+  "routes": [
+    { "method": "GET", "path": "/_ping" },
+    { "method": "HEAD", "path": "/_ping" },
+    { "method": "GET", "path": "/version" },
+    { "method": "GET", "path": "/info" },
+    { "method": "GET", "path": "/events" },
+
+    { "method": "GET", "path": "/containers/json" },
+    { "method": "GET", "path": "/containers/*/json" },
+    { "method": "GET", "path": "/containers/*/logs" },
+    { "method": "GET", "path": "/containers/*/stats" },
+    { "method": "GET", "path": "/containers/*/top" },
+    { "method": "GET", "path": "/containers/*/changes" },
+
+    { "method": "POST", "path": "/containers/*/start" },
+    { "method": "POST", "path": "/containers/*/stop" },
+    { "method": "POST", "path": "/containers/*/restart" },
+    { "method": "POST", "path": "/containers/*/kill" },
+    { "method": "POST", "path": "/containers/*/rename" },
+    { "method": "POST", "path": "/containers/*/update" },
+    { "method": "POST", "path": "/containers/*/wait" },
+    { "method": "DELETE", "path": "/containers/*" },
+    { "method": "POST", "path": "/containers/create" },
+
+    { "method": "POST", "path": "/containers/*/exec" },
+    { "method": "POST", "path": "/exec/*/start" },
+    { "method": "POST", "path": "/exec/*/resize" },
+    { "method": "GET", "path": "/exec/*/json" },
+
+    { "method": "GET", "path": "/images/json" },
+    { "method": "GET", "path": "/images/**/json" },
+    { "method": "GET", "path": "/images/**/history" },
+    { "method": "POST", "path": "/images/create" },
+    { "method": "DELETE", "path": "/images/**" },
+
+    { "method": "GET", "path": "/networks" },
+    { "method": "GET", "path": "/networks/*" },
+
+    { "method": "GET", "path": "/volumes" },
+    { "method": "GET", "path": "/volumes/*" },
+
+    { "method": "GET", "path": "/distribution/**/json" },
+
+    { "method": "GET", "path": "/services" },
+    { "method": "GET", "path": "/services/*" },
+
+    { "method": "POST", "path": "/build" },
+    { "method": "GET", "path": "/containers/*/export" }
+  ]
+}

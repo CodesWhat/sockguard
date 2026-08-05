@@ -76,6 +76,23 @@ func TestImmutableDiffUpstreamRequestTimeoutIsMutable(t *testing.T) {
 	}
 }
 
+func TestImmutableDiffResourceLimitRequirementsAreReloadMutable(t *testing.T) {
+	t.Parallel()
+	a := config.Defaults()
+	b := a
+	b.RequestBody.ContainerUpdate.AllowResourceUpdates = true
+	b.RequestBody.ContainerUpdate.RequireMemoryLimit = true
+	b.RequestBody.ContainerUpdate.RequireCPULimit = true
+	b.RequestBody.ContainerUpdate.RequireCPULimitHard = true
+	b.RequestBody.ContainerUpdate.RequirePidsLimit = true
+	b.RequestBody.Service.RequireCPULimit = true
+	b.RequestBody.Service.RequireCPULimitHard = true
+
+	if diff := ImmutableDiff(&a, &b); len(diff) != 0 {
+		t.Fatalf("ImmutableDiff(resource-limit requirement changes) = %v, want empty (reload-mutable)", diff)
+	}
+}
+
 func TestImmutableDiffDetectsLogChange(t *testing.T) {
 	t.Parallel()
 	a := config.Defaults()

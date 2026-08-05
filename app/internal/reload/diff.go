@@ -1,7 +1,9 @@
 package reload
 
 import (
+	"fmt"
 	"reflect"
+	"sort"
 
 	"github.com/codeswhat/sockguard/internal/config"
 )
@@ -18,6 +20,7 @@ import (
 // request-body policies, ownership) is rebuilt on every reload.
 var ImmutableFields = []string{
 	"listen",
+	"listeners",
 	"upstream.socket",
 	"upstream.endpoints",
 	"upstream.failover",
@@ -49,8 +52,19 @@ func ImmutableDiff(oldCfg, newCfg *config.Config) []string {
 	}
 
 	var changed []string
-	if !reflect.DeepEqual(oldCfg.Listen, newCfg.Listen) {
-		changed = append(changed, "listen")
+	// Legacy mode (both configs have an empty Listeners list) keeps
+	// reporting the single "listen" key exactly as before #149 — this is a
+	// deliberate back-compat pin, not an oversight: operators who never set
+	// listeners: must see identical reload diagnostics. The moment either
+	// side uses the explicit listeners: list, diffListeners takes over with
+	// per-name, per-field reporting (and immutably rejects a legacy<->list
+	// mode switch even when the switch happens to be a structural no-op).
+	if len(oldCfg.Listeners) == 0 && len(newCfg.Listeners) == 0 {
+		if !reflect.DeepEqual(oldCfg.Listen, newCfg.Listen) {
+			changed = append(changed, "listen")
+		}
+	} else {
+		changed = append(changed, diffListeners(oldCfg, newCfg)...)
 	}
 	if oldCfg.Upstream.Socket != newCfg.Upstream.Socket {
 		changed = append(changed, "upstream.socket")
@@ -109,6 +123,137 @@ func ImmutableDiff(oldCfg, newCfg *config.Config) []string {
 	}
 	if oldCfg.Reload.PollInterval != newCfg.Reload.PollInterval {
 		changed = append(changed, "reload.poll_interval")
+	}
+	return changed
+}
+
+// diffListeners is the explicit listeners: list's ImmutableDiff projection:
+// the listener SET is immutable by name (add/remove/rename all reject), and
+// every per-listener field is immutable EXCEPT AllowedProfiles, which is the
+// sole reload-mutable field (consistent with clients.profiles already being
+// reload-mutable — an allowed_profiles change compiles into the same
+// swapped handler generation as a rules/profiles change, no rebind
+// required). Pure reordering is a no-op: comparison is by name, not slice
+// position.
+func diffListeners(oldCfg, newCfg *config.Config) []string {
+	oldExplicit := len(oldCfg.Listeners) > 0
+	newExplicit := len(newCfg.Listeners) > 0
+
+	// Switching between legacy listen: and explicit listeners: mode is
+	// immutable even when the switch happens to be structurally a no-op
+	// (e.g. a single explicit entry named "default" with identical fields
+	// to the synthesized legacy listener) — the two modes bind through
+	// different code paths and must not be silently reinterpreted mid-run.
+	if oldExplicit != newExplicit {
+		return []string{"listeners: switching between legacy listen: and explicit listeners: requires a restart"}
+	}
+	if !oldExplicit {
+		// Both legacy; caller already handled "listen" via the DeepEqual
+		// branch above and never reaches here in that case, but stay
+		// defensive.
+		return nil
+	}
+
+	oldByName := indexListenersByName(oldCfg.Listeners)
+	newByName := indexListenersByName(newCfg.Listeners)
+
+	names := make(map[string]struct{}, len(oldByName)+len(newByName))
+	for name := range oldByName {
+		names[name] = struct{}{}
+	}
+	for name := range newByName {
+		names[name] = struct{}{}
+	}
+
+	sorted := make([]string, 0, len(names))
+	for name := range names {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+
+	var changed []string
+	for _, name := range sorted {
+		o, oOK := oldByName[name]
+		n, nOK := newByName[name]
+		switch {
+		case !oOK:
+			changed = append(changed, fmt.Sprintf("listeners.%s: added", name))
+		case !nOK:
+			changed = append(changed, fmt.Sprintf("listeners.%s: removed", name))
+		default:
+			changed = append(changed, diffListenerFields(name, o, n)...)
+		}
+	}
+	return changed
+}
+
+func indexListenersByName(entries []config.ListenerConfig) map[string]config.ListenerConfig {
+	byName := make(map[string]config.ListenerConfig, len(entries))
+	for _, e := range entries {
+		byName[e.Name] = e
+	}
+	return byName
+}
+
+// diffListenerFields reports every field that changed between two entries
+// with the same name, excluding AllowedProfiles (the sole mutable field).
+// Granularity is per immutable leaf, including individual TLS fields, so
+// reload diagnostics identify the exact listeners.<name>.<field> that needs a
+// restart.
+func diffListenerFields(name string, o, n config.ListenerConfig) []string {
+	var changed []string
+	prefix := "listeners." + name + "."
+	if o.Socket != n.Socket {
+		changed = append(changed, prefix+"socket")
+	}
+	if o.Address != n.Address {
+		changed = append(changed, prefix+"address")
+	}
+	if o.SocketMode != n.SocketMode {
+		changed = append(changed, prefix+"socket_mode")
+	}
+	if !reflect.DeepEqual(o.SocketUID, n.SocketUID) {
+		changed = append(changed, prefix+"socket_uid")
+	}
+	if !reflect.DeepEqual(o.SocketGID, n.SocketGID) {
+		changed = append(changed, prefix+"socket_gid")
+	}
+	if o.InsecureAllowPlainTCP != n.InsecureAllowPlainTCP {
+		changed = append(changed, prefix+"insecure_allow_plain_tcp")
+	}
+	if o.InsecureAllowUnauthenticatedClients != n.InsecureAllowUnauthenticatedClients {
+		changed = append(changed, prefix+"insecure_allow_unauthenticated_clients")
+	}
+	changed = append(changed, diffListenerTLSFields(prefix+"tls.", o.TLS, n.TLS)...)
+	// AllowedProfiles intentionally excluded: the sole reload-mutable field.
+	return changed
+}
+
+func diffListenerTLSFields(prefix string, oldTLS, newTLS config.ListenTLSConfig) []string {
+	var changed []string
+	if oldTLS.CertFile != newTLS.CertFile {
+		changed = append(changed, prefix+"cert_file")
+	}
+	if oldTLS.KeyFile != newTLS.KeyFile {
+		changed = append(changed, prefix+"key_file")
+	}
+	if oldTLS.ClientCAFile != newTLS.ClientCAFile {
+		changed = append(changed, prefix+"client_ca_file")
+	}
+	if !reflect.DeepEqual(oldTLS.CommonNames, newTLS.CommonNames) {
+		changed = append(changed, prefix+"common_names")
+	}
+	if !reflect.DeepEqual(oldTLS.DNSNames, newTLS.DNSNames) {
+		changed = append(changed, prefix+"dns_names")
+	}
+	if !reflect.DeepEqual(oldTLS.IPAddresses, newTLS.IPAddresses) {
+		changed = append(changed, prefix+"ip_addresses")
+	}
+	if !reflect.DeepEqual(oldTLS.URISANs, newTLS.URISANs) {
+		changed = append(changed, prefix+"uri_sans")
+	}
+	if !reflect.DeepEqual(oldTLS.PublicKeySHA256Pins, newTLS.PublicKeySHA256Pins) {
+		changed = append(changed, prefix+"public_key_sha256_pins")
 	}
 	return changed
 }

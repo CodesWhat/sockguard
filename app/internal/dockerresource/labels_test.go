@@ -86,6 +86,24 @@ func TestDecodeLabelsAllKinds(t *testing.T) {
 			body:  `{"Labels":{},"Spec":{"ContainerSpec":{"Labels":{"t":"2"}}}}`,
 			wantK: "t", wantV: "2",
 		},
+		{
+			name:  "libpod pod",
+			kind:  KindLibpodPod,
+			body:  `{"Labels":{"team":"a"}}`,
+			wantK: "team", wantV: "a",
+		},
+		{
+			name:  "libpod network lowercase labels",
+			kind:  KindLibpodNetwork,
+			body:  `{"labels":{"net":"custom"}}`,
+			wantK: "net", wantV: "custom",
+		},
+		{
+			name:  "libpod network array-wrapped response",
+			kind:  KindLibpodNetwork,
+			body:  `[{"labels":{"net":"custom"}}]`,
+			wantK: "net", wantV: "custom",
+		},
 	}
 
 	for _, tt := range tests {
@@ -122,12 +140,86 @@ func TestDecodeLabelsDecodeErrors(t *testing.T) {
 		KindNode,
 		KindSwarm,
 		KindTask,
+		KindLibpodPod,
+		KindLibpodNetwork,
 	}
 	for _, kind := range kinds {
 		t.Run(string(kind), func(t *testing.T) {
 			_, err := DecodeLabels(strings.NewReader(`not-json`), kind)
 			if err == nil {
 				t.Fatalf("DecodeLabels(bad JSON, %s) expected decode error", kind)
+			}
+		})
+	}
+}
+
+func TestDecodeLibpodLabelsUnsupportedKind(t *testing.T) {
+	t.Parallel()
+	_, err := DecodeLibpodLabels(strings.NewReader(`{}`), KindContainer)
+	if err == nil || !strings.Contains(err.Error(), "unsupported libpod resource kind") {
+		t.Fatalf("error = %v, want unsupported libpod resource kind", err)
+	}
+}
+
+func TestDecodeLibpodLabelsNetworkEdgeCases(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		body       string
+		wantLabels map[string]string
+		wantErr    bool
+	}{
+		{
+			name:       "bare object",
+			body:       `{"labels":{"net":"custom"}}`,
+			wantLabels: map[string]string{"net": "custom"},
+		},
+		{
+			name:       "single-element array",
+			body:       `[{"labels":{"net":"custom"}}]`,
+			wantLabels: map[string]string{"net": "custom"},
+		},
+		{
+			name:       "empty array",
+			body:       `[]`,
+			wantLabels: nil,
+		},
+		{
+			name:       "array with leading whitespace",
+			body:       "  \n[{\"labels\":{\"net\":\"custom\"}}]",
+			wantLabels: map[string]string{"net": "custom"},
+		},
+		{
+			name:    "malformed array element",
+			body:    `[{"labels": not-json}]`,
+			wantErr: true,
+		},
+		{
+			name:    "malformed object",
+			body:    `{"labels": not-json}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			labels, err := DecodeLibpodLabels(strings.NewReader(tt.body), KindLibpodNetwork)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("DecodeLibpodLabels(%q) expected error", tt.body)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("DecodeLibpodLabels(%q) error = %v", tt.body, err)
+			}
+			if len(labels) != len(tt.wantLabels) {
+				t.Fatalf("labels = %#v, want %#v", labels, tt.wantLabels)
+			}
+			for k, v := range tt.wantLabels {
+				if labels[k] != v {
+					t.Fatalf("labels[%q] = %q, want %q", k, labels[k], v)
+				}
 			}
 		})
 	}

@@ -6,7 +6,11 @@ import (
 	"testing"
 )
 
-var legacyVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+)?/`)
+// legacyVersionPrefix allows up to two optional ".N" groups — vN, vN.N, or
+// vN.N.N — matching stripVersionPrefix's production behavior (#148: a
+// second optional group is required so Podman's three-part libpod semver
+// prefixes, e.g. /v5.0.0/, strip identically to Docker's vN.N).
+var legacyVersionPrefix = regexp.MustCompile(`^/v\d+(\.\d+){0,2}/`)
 
 // referenceNormalizePath is an independent re-implementation of NormalizePath
 // used by FuzzNormalizePath as a differential oracle. Like NormalizePath it
@@ -48,6 +52,15 @@ func FuzzPathMatch(f *testing.F) {
 		{"GET", "/containers/%252e%252e/images/json"},
 		{"GET", "/v1.45%2Fcontainers/json"},
 		{"POST", "/containers%252Fcreate"},
+		{"POST", "/v1.55/session"},
+		{"POST", "/v1.55/grpc"},
+		{"POST", "/session"},
+		{"POST", "/grpc"},
+		{"GET", "/v5.0.0/libpod/containers/json"},
+		{"POST", "/v5.0.0/libpod/pods/create"},
+		{"POST", "/v5.0.0/libpod/play/kube"},
+		{"GET", "/v5.0.0/libpod/generate/kube"},
+		{"POST", "/v1.45/libpod/containers/create"},
 	}
 	for _, s := range seeds {
 		f.Add(s.method, s.path)
@@ -121,6 +134,9 @@ func FuzzGlobToRegex(f *testing.F) {
 		"/path^caret",
 		"/path|pipe",
 		"/path?question",
+		"/v1.55/session",
+		"/session/**",
+		"/grpc/**",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -180,6 +196,18 @@ func FuzzNormalizePath(f *testing.F) {
 		"/containers/%252e%252e/images/json",
 		"/v1.45%2Fcontainers/json",
 		"/v1.45/%252e%252e/containers/json",
+		"/v1.55/session",
+		"/v1.55/grpc",
+		"/v1.55/containers/json",
+		// Three-part semver (#148): Podman's libpod bindings send the full
+		// daemon version, unlike Docker's vN / vN.N.
+		"/v4.9.3/libpod/containers/json",
+		"/v5.0.0/libpod/containers/json",
+		"/v5.0.0/",    // three-part prefix with just trailing slash
+		"/v5.0.0",     // three-part prefix with no trailing path
+		"/v5.0./x",    // malformed three-part (missing patch digits)
+		"/v1.2.3.4/x", // four-part is not a version prefix
+		"/v99999999999999999999.99999999999999999999.99999999999999999999/x", // adversarial digit runs
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -209,6 +237,8 @@ func FuzzCompileRule(f *testing.F) {
 		{"GET", ""},
 		{"", "/containers/json"},
 		{"GET,POST", "/images/**"},
+		{"POST", "/session"},
+		{"POST", "/grpc"},
 	}
 	for _, s := range seeds {
 		f.Add(s.method, s.pattern)

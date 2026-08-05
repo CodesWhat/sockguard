@@ -233,3 +233,29 @@ func TestMiddlewareAllowsConfiguredImageRegistry(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
 	}
 }
+
+func TestMiddlewareDeniesImagePullWithNonAllowlistedRegistryAuthHeader(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/images/create", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := MiddlewareWithOptions(rules, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			ImagePull: ImagePullOptions{
+				AllowedRegistries: []string{"ghcr.io"},
+			},
+		},
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected request to be denied before reaching upstream")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/images/create?fromImage=ghcr.io%2Facme%2Fapp&tag=latest", nil)
+	req.Header.Set("X-Registry-Auth", b64(`{"serveraddress":"evil.example.com"}`))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}

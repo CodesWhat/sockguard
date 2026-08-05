@@ -1,6 +1,9 @@
 package config
 
-import "os"
+import (
+	"os"
+	"regexp"
+)
 
 // HardenedListenSocketMode is the only supported unix-socket permission mode
 // (string form, as it appears in YAML).
@@ -11,9 +14,78 @@ const HardenedListenSocketMode = "0600"
 // umask from a single source of truth.
 const HardenedListenSocketFileMode = os.FileMode(0o600)
 
+// GroupReadableListenSocketMode is the second (and only other) unix-socket
+// permission mode a listener may opt into, in addition to
+// HardenedListenSocketMode. It requires an explicit SocketGID — see
+// validateSocketOwnership — so a group-shared socket is always an
+// affirmative, per-listener operator choice rather than a default.
+const GroupReadableListenSocketMode = "0660"
+
+// GroupReadableListenSocketFileMode is the os.FileMode equivalent of
+// GroupReadableListenSocketMode.
+const GroupReadableListenSocketFileMode = os.FileMode(0o660)
+
+// Multi-listener (#149) naming/scoping constants.
+const (
+	// DefaultListenerName is the synthetic name given to the legacy
+	// Config.Listen block when EffectiveListeners synthesizes it into a
+	// single-entry list.
+	DefaultListenerName = "default"
+	// AdminListenerName is reserved: no entry in Config.Listeners may use
+	// this name, so Admin.MountOn's namespace (main listener names) can
+	// never collide with the dedicated admin listener.
+	AdminListenerName = "admin"
+	// WildcardProfile, as the sole element of a ListenerConfig's
+	// AllowedProfiles, preserves the legacy "every profile admitted"
+	// behavior. It cannot be combined with concrete profile names and is a
+	// reserved profile name (clients.profiles entries may not use it).
+	WildcardProfile = "*"
+	// MaxListeners bounds Config.Listeners: a small, operator-authored cap
+	// that keeps validation's all-pairs uniqueness check, metrics
+	// cardinality, and log/health fan-out proportionate.
+	MaxListeners = 32
+)
+
+// ListenerNamePattern is the validation regex for ListenerConfig.Name:
+// lowercase alphanumeric plus hyphen, starting with a letter, up to 63
+// characters — safe to use unescaped as a Prometheus label value, a log
+// field, and a reload-diff key.
+var listenerNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,62}$`)
+
+// ValidListenerName reports whether name matches ListenerNamePattern.
+func ValidListenerName(name string) bool {
+	return listenerNamePattern.MatchString(name)
+}
+
+// EffectiveListeners is the single read path every downstream consumer
+// (validation, serve wiring, reload diff, banner, metrics, audit) must use
+// instead of reading Config.Listen or Config.Listeners directly. When
+// Listeners is empty it synthesizes the legacy Listen block into a
+// single-entry list named DefaultListenerName with AllowedProfiles
+// [WildcardProfile] — byte-for-byte equivalent to today's global behavior —
+// so every config that sets only listen: continues to behave identically.
+func (c *Config) EffectiveListeners() []ListenerConfig {
+	if len(c.Listeners) > 0 {
+		return c.Listeners
+	}
+	return []ListenerConfig{{
+		Name:            DefaultListenerName,
+		ListenConfig:    c.Listen,
+		AllowedProfiles: []string{WildcardProfile},
+	}}
+}
+
+// Wildcard reports whether l's AllowedProfiles is exactly [WildcardProfile],
+// i.e. this listener admits every resolved profile (and the unprofiled
+// default-policy path), matching legacy single-listener behavior.
+func (l ListenerConfig) Wildcard() bool {
+	return len(l.AllowedProfiles) == 1 && l.AllowedProfiles[0] == WildcardProfile
+}
+
 // Config represents the sockguard configuration.
 type Config struct {
 	Listen                        ListenConfig       `mapstructure:"listen"`
+	Listeners                     []ListenerConfig   `mapstructure:"listeners"`
 	Upstream                      UpstreamConfig     `mapstructure:"upstream"`
 	Log                           LogConfig          `mapstructure:"log"`
 	Response                      ResponseConfig     `mapstructure:"response"`
@@ -25,12 +97,54 @@ type Config struct {
 	Admin                         AdminConfig        `mapstructure:"admin"`
 	Reload                        ReloadConfig       `mapstructure:"reload"`
 	PolicyBundle                  PolicyBundleConfig `mapstructure:"policy_bundle"`
+	Mutations                     MutationsConfig    `mapstructure:"mutations"`
 	Rules                         []RuleConfig       `mapstructure:"rules"`
 	InsecureAllowBodyBlindWrites  bool               `mapstructure:"insecure_allow_body_blind_writes"`
 	InsecureAllowReadExfiltration bool               `mapstructure:"insecure_allow_read_exfiltration"`
+
+	// explicitLegacyListen records whether the legacy listen.* fields were
+	// set explicitly — a YAML key, a SOCKGUARD_LISTEN_* environment
+	// variable, or the --listen-socket CLI flag — as opposed to left at
+	// their zero/default value. It is populated by Load/LoadBytes (via a
+	// provenance-only Viper pass) and by applyFlagOverrides in
+	// internal/cmd, and consulted by validateListeners to detect the
+	// "both listen and listeners configured" ambiguity (#149). Unexported
+	// so it never round-trips through mapstructure/YAML/JSON; a Config
+	// built directly (most tests) simply reads as "not explicit", which
+	// only matters once Listeners is also non-empty.
+	explicitLegacyListen bool
+
+	// InsecureAcceptOpaqueBuildkitTunnels acknowledges opening POST /session,
+	// POST /grpc, or a direct BuildKit Control-service method path. Both
+	// endpoints are unversioned opaque hijacked streams: dockerd's embedded
+	// BuildKit frontend/session bridge, still used by current Buildx (0.36.0)
+	// even though Engine API 1.53 deprecated them. Unlike the bounded exec
+	// escape hatch InsecureAllowBodyBlindWrites covers, these streams carry
+	// secrets, SSH agent forwarding, and arbitrary file sync with no request
+	// body sockguard can inspect or bound — so they get their own dedicated
+	// acknowledgment rather than folding into insecure_allow_body_blind_writes.
+	// Default false: a rule admitting either endpoint fails startup unless this
+	// is set. Tecnativa GRPC=1/SESSION=1 compat vars still work (see
+	// ApplyCompat) but log a deprecation warning naming this key. A single
+	// global setting, not per-profile — see cmd/rules.go.
+	InsecureAcceptOpaqueBuildkitTunnels bool `mapstructure:"insecure_accept_opaque_buildkit_tunnels"`
 }
 
-// ListenConfig configures the proxy listener.
+// MarkLegacyListenExplicit records that the legacy listen.* block was set
+// through a channel Load's provenance pass cannot see — currently the
+// --listen-socket CLI flag, which is applied to an already-loaded Config in
+// internal/cmd. Safe to call unconditionally; it only ever turns the flag on.
+func (c *Config) MarkLegacyListenExplicit() {
+	c.explicitLegacyListen = true
+}
+
+// ExplicitLegacyListen reports whether the legacy listen.* block was set
+// explicitly, for tests and validation.
+func (c *Config) ExplicitLegacyListen() bool {
+	return c.explicitLegacyListen
+}
+
+// ListenConfig configures a single proxy listener (unix socket or TCP).
 type ListenConfig struct {
 	Socket     string `mapstructure:"socket"`
 	SocketMode string `mapstructure:"socket_mode"`
@@ -45,6 +159,33 @@ type ListenConfig struct {
 	// that can reach the port can impersonate a client.
 	InsecureAllowUnauthenticatedClients bool            `mapstructure:"insecure_allow_unauthenticated_clients"`
 	TLS                                 ListenTLSConfig `mapstructure:"tls"`
+	// SocketUID and SocketGID optionally chown a freshly created unix socket
+	// after bind. Pointers distinguish "omitted" from UID/GID 0. Only
+	// meaningful when Socket is set. Combined with SocketMode they gate the
+	// 0600 (default, no explicit ownership required) vs 0660 (requires
+	// SocketGID) posture — see validateSocketOwnership.
+	SocketUID *int `mapstructure:"socket_uid"`
+	SocketGID *int `mapstructure:"socket_gid"`
+}
+
+// ListenerConfig is one entry in Config.Listeners: a named, independently
+// scoped main (Docker-API) listener. See Config.EffectiveListeners.
+type ListenerConfig struct {
+	// Name identifies the listener for logs, metrics, health, audit, and
+	// reload diagnostics. Must match ListenerNamePattern, be unique within
+	// Listeners, and must not be AdminListenerName ("admin").
+	Name         string `mapstructure:"name"`
+	ListenConfig `mapstructure:",squash"`
+	// AllowedProfiles scopes this listener to a subset of clients.profiles.
+	// Required and non-empty on every explicit entry. The single-element
+	// list [WildcardProfile] ("*") preserves the legacy global behavior:
+	// every resolved profile, plus the unprofiled/default-policy path, is
+	// admitted. A concrete list is an admission gate evaluated AFTER normal
+	// profile resolution (certificate > unix peer > source IP > default):
+	// an otherwise-valid client resolved to a profile outside this list is
+	// denied with reason listener_profile_not_allowed, never retried
+	// against a weaker selector.
+	AllowedProfiles []string `mapstructure:"allowed_profiles"`
 }
 
 // ListenTLSConfig configures mutual TLS for TCP listeners.
@@ -197,11 +338,33 @@ type ResponseConfig struct {
 	// does not match at least one pattern are hidden. Empty means no image-based
 	// filtering.
 	ImagePatterns []string `mapstructure:"image_patterns"`
+	// RedactHostTopology redacts GET /info fields that fingerprint the host's
+	// container runtime plumbing: Containerd, FirewallBackend,
+	// DiscoveredDevices, and NRI. Separate from RedactNetworkTopology (which
+	// covers swarm/network addressing) — this is host-process/device topology.
+	// Default false; hardened presets enable it.
+	RedactHostTopology bool `mapstructure:"redact_host_topology"`
+	// AllowAttestationStatements permits GET /images/{name}/attestations
+	// responses that include the full in-toto statement content
+	// (?statement=true). Engine API 1.53 added this endpoint; broad allow
+	// rules such as "/images/**" (portainer.yaml) admit it at the rule-engine
+	// layer without knowing it exists, so this response-layer gate closes
+	// that gap independent of the rule set. Default false.
+	AllowAttestationStatements bool `mapstructure:"allow_attestation_statements"`
 }
 
 // RequestBodyConfig configures request-body inspection policies.
 type RequestBodyConfig struct {
-	ContainerCreate  ContainerCreateRequestBodyConfig  `mapstructure:"container_create"`
+	ContainerCreate       ContainerCreateRequestBodyConfig       `mapstructure:"container_create"`
+	LibpodContainerCreate LibpodContainerCreateRequestBodyConfig `mapstructure:"libpod_container_create"`
+	// Exec configures body inspection for BOTH the Docker-compat exec
+	// create/start endpoints AND their libpod equivalents
+	// (POST /libpod/containers/*/exec, POST /libpod/exec/*/start). There is
+	// deliberately no separate libpod_exec block: libpod exec bodies are
+	// decoded by the identical Go handler Docker-compat exec bodies are
+	// (confirmed against Podman's own route table, see exec.go), so a split
+	// config would just be a configure-one-forget-other trap (#148 design
+	// doc, decision C3).
 	Exec             ExecRequestBodyConfig             `mapstructure:"exec"`
 	ImagePull        ImagePullRequestBodyConfig        `mapstructure:"image_pull"`
 	Build            BuildRequestBodyConfig            `mapstructure:"build"`
@@ -216,6 +379,47 @@ type RequestBodyConfig struct {
 	Swarm            SwarmRequestBodyConfig            `mapstructure:"swarm"`
 	Node             NodeRequestBodyConfig             `mapstructure:"node"`
 	Plugin           PluginRequestBodyConfig           `mapstructure:"plugin"`
+	// LibpodPodCreate configures body inspection for POST /libpod/pods/create
+	// (Podman's native pod-create endpoint; pods have no Docker-compat
+	// equivalent, so this is its own top-level key rather than reusing
+	// container_create). #148.
+	LibpodPodCreate LibpodPodCreateRequestBodyConfig `mapstructure:"libpod_pod_create"`
+	// LibpodVolume, LibpodNetwork, and LibpodSecret configure body/query
+	// inspection for the libpod-native volume/network/secret create
+	// endpoints (POST /libpod/volumes/create, /libpod/networks/create,
+	// /libpod/secrets/create). They reuse the EXISTING
+	// Volume/Network/SecretRequestBodyConfig types — libpod's wire shapes
+	// for these resources differ from Docker's (see libpod_volume.go,
+	// libpod_network.go, libpod_secret.go for the decode structs and which
+	// fields have no libpod analog), but the policy knobs an operator
+	// reasons about are the same, so a second parallel type would only add
+	// schema noise. #148.
+	LibpodVolume  VolumeRequestBodyConfig  `mapstructure:"libpod_volume"`
+	LibpodNetwork NetworkRequestBodyConfig `mapstructure:"libpod_network"`
+	LibpodSecret  SecretRequestBodyConfig  `mapstructure:"libpod_secret"`
+}
+
+// LibpodPodCreateRequestBodyConfig configures body inspection for
+// POST /libpod/pods/create. Cross-owner namespace-sharing checks and label
+// injection for ownership are deferred to a follow-up PR (#148 design doc
+// C6) — this config only covers the raw request-body gates below.
+type LibpodPodCreateRequestBodyConfig struct {
+	// AllowHostNetwork permits a pod-level NetNS of {"nsmode":"host"} — the
+	// pod (and every container that joins it) shares the host network
+	// namespace. Mirrors container_create.allow_host_network's posture for
+	// the pod-wide equivalent. Default false.
+	AllowHostNetwork bool `mapstructure:"allow_host_network"`
+	// AllowSharedPIDNamespace permits "pid" in the pod's shared_namespaces
+	// list, letting every container in the pod see (and signal) every other
+	// container's processes — the pod-wide analog of container_create's
+	// PidMode: host, scoped to the pod rather than the host. Default false.
+	AllowSharedPIDNamespace bool `mapstructure:"allow_shared_pid_namespace"`
+	// AllowedInfraImageRegistries allowlists the registry the pod's
+	// infra_image reference resolves to, reusing the same host-allowlist
+	// shape as image_pull.allowed_registries. An empty infra_image (Podman's
+	// built-in default pause image) is always allowed regardless of this
+	// list. Default empty: any explicit infra_image is denied.
+	AllowedInfraImageRegistries []string `mapstructure:"allowed_infra_image_registries"`
 }
 
 // ContainerCreateRequestBodyConfig configures body inspection for
@@ -281,6 +485,68 @@ type ContainerCreateRequestBodyConfig struct {
 	DenySelinuxDisable        bool             `mapstructure:"deny_selinux_disable"`
 	DenySelinuxLabelOverride  bool             `mapstructure:"deny_selinux_label_override"`
 	DenyUnconfinedSystemPaths bool             `mapstructure:"deny_unconfined_system_paths"`
+	// AllowTmpfsPrivilegedOptions permits tmpfs mount options that re-enable
+	// exec/dev/suid semantics inside the tmpfs (HostConfig.Mounts[].
+	// TmpfsOptions.Options, Engine API 1.46+): "exec", "dev", "suid". Docker's
+	// own tmpfs default already sets noexec/nodev/nosuid; a client-supplied
+	// Options entry can override that default per-mount, so it is denied
+	// unless explicitly allowed. Default false.
+	AllowTmpfsPrivilegedOptions bool `mapstructure:"allow_tmpfs_privileged_options"`
+}
+
+// LibpodContainerCreateRequestBodyConfig configures body inspection for
+// POST /libpod/containers/create requests — Podman's native SpecGenerator
+// create endpoint, distinct from the Docker-compat container_create block
+// above. Field names mirror ContainerCreateRequestBodyConfig where the
+// underlying semantics map onto a libpod equivalent (see design doc #148),
+// so operator knowledge transfers between the two surfaces; two fields
+// (AllowSystemdMode, AllowCustomIDMappings) have no Docker analog.
+type LibpodContainerCreateRequestBodyConfig struct {
+	AllowPrivileged   bool     `mapstructure:"allow_privileged"`
+	AllowHostNetwork  bool     `mapstructure:"allow_host_network"`
+	AllowHostPID      bool     `mapstructure:"allow_host_pid"`
+	AllowHostIPC      bool     `mapstructure:"allow_host_ipc"`
+	AllowHostUserNS   bool     `mapstructure:"allow_host_userns"`
+	AllowedBindMounts []string `mapstructure:"allowed_bind_mounts"`
+	AllowAllDevices   bool     `mapstructure:"allow_all_devices"`
+	AllowedDevices    []string `mapstructure:"allowed_devices"`
+
+	// RestrictNamespaceSharing/AllowedNamespaceSharingContainers gate
+	// netns/pidns/ipcns/userns/utsns objects of the form
+	// {"nsmode":"container","value":"<ref>"}, mirroring
+	// ContainerCreateRequestBodyConfig.RestrictNamespaceSharing.
+	RestrictNamespaceSharing          bool     `mapstructure:"restrict_namespace_sharing"`
+	AllowedNamespaceSharingContainers []string `mapstructure:"allowed_namespace_sharing_containers"`
+
+	AllowAllCapabilities   bool     `mapstructure:"allow_all_capabilities"`
+	AllowedCapabilities    []string `mapstructure:"allowed_capabilities"`
+	AllowedSeccompProfiles []string `mapstructure:"allowed_seccomp_profiles"`
+	DenyUnconfinedSeccomp  bool     `mapstructure:"deny_unconfined_seccomp"`
+
+	AllowedAppArmorProfiles []string `mapstructure:"allowed_apparmor_profiles"`
+	DenyUnconfinedAppArmor  bool     `mapstructure:"deny_unconfined_apparmor"`
+
+	DenySelinuxDisable bool `mapstructure:"deny_selinux_disable"`
+
+	RequireNonRootUser    bool `mapstructure:"require_non_root_user"`
+	RequireReadonlyRootfs bool `mapstructure:"require_readonly_rootfs"`
+	RequireMemoryLimit    bool `mapstructure:"require_memory_limit"`
+	RequireCPULimit       bool `mapstructure:"require_cpu_limit"`
+	RequireCPULimitHard   bool `mapstructure:"require_cpu_limit_hard"`
+	RequirePidsLimit      bool `mapstructure:"require_pids_limit"`
+
+	AllowSysctls bool `mapstructure:"allow_sysctls"`
+
+	ImageTrust ImageTrustConfig `mapstructure:"image_trust"`
+
+	// AllowSystemdMode permits a "systemd" value other than "false"
+	// (SpecGenerator's own default, sent even when --systemd was never
+	// passed). No Docker Engine API analog. Default false: fail-closed.
+	AllowSystemdMode bool `mapstructure:"allow_systemd_mode"`
+
+	// AllowCustomIDMappings permits a non-default idmappings.UIDMap/GIDMap
+	// or --userns=auto. A blunt gate for v1.6; default false.
+	AllowCustomIDMappings bool `mapstructure:"allow_custom_id_mappings"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images
@@ -377,6 +643,32 @@ type ContainerUpdateRequestBodyConfig struct {
 	AllowCapabilities    bool `mapstructure:"allow_capabilities"`
 	AllowResourceUpdates bool `mapstructure:"allow_resource_updates"`
 	AllowRestartPolicy   bool `mapstructure:"allow_restart_policy"`
+
+	// RequireMemoryLimit/RequireCPULimit/RequireCPULimitHard/RequirePidsLimit
+	// revalidate the container's EFFECTIVE resource state (current values
+	// merged with the request's explicit fields, using Docker's own update
+	// merge semantics) against the same requirements container_create.require_*
+	// enforces at create time. Names are copied verbatim from
+	// ContainerCreateRequestBodyConfig so operator knowledge transfers. All
+	// default false (opt-in, v1.x-safe).
+	//
+	// Evaluated ONLY when AllowResourceUpdates is true: when it is false, the
+	// existing blanket deny of every resource-control field already preserves
+	// the create-time guarantee, so there is nothing for these flags to add.
+	// Enabling any of these while AllowResourceUpdates is false is accepted
+	// (not a config error) but inert; sockguard logs a startup/reload warning
+	// since it is very likely operator confusion.
+	//
+	// Ratchet behavior: because the check runs against the merged EFFECTIVE
+	// state rather than only the fields the request touches, a container that
+	// predates a newly-enabled requirement (e.g. one created with no memory
+	// limit) will have its NEXT guarded update denied until a compliant value
+	// is supplied — even an update that does not itself touch resources. See
+	// the migration note in docs/content/docs/configuration.mdx.
+	RequireMemoryLimit  bool `mapstructure:"require_memory_limit"`
+	RequireCPULimit     bool `mapstructure:"require_cpu_limit"`
+	RequireCPULimitHard bool `mapstructure:"require_cpu_limit_hard"`
+	RequirePidsLimit    bool `mapstructure:"require_pids_limit"`
 }
 
 // ContainerArchiveRequestBodyConfig configures inspection for
@@ -416,6 +708,12 @@ type NetworkRequestBodyConfig struct {
 	AllowDriverOptions     bool `mapstructure:"allow_driver_options"`
 	AllowEndpointConfig    bool `mapstructure:"allow_endpoint_config"`
 	AllowDisconnectForce   bool `mapstructure:"allow_disconnect_force"`
+	// AllowDisableIPv4 permits POST /networks/create with EnableIPv4 explicitly
+	// false (Engine API 1.48+). Docker defaults EnableIPv4 to true (unset and
+	// true both pass); a client-set false disables IPv4 addressing entirely,
+	// an unusual and rarely-intended posture, so it requires this opt-in.
+	// Default false.
+	AllowDisableIPv4 bool `mapstructure:"allow_disable_ipv4"`
 }
 
 // SecretRequestBodyConfig configures inspection for POST /secrets/create.
@@ -467,6 +765,21 @@ type ServiceRequestBodyConfig struct {
 	// Default false (opt-in).
 	DenySelinuxLabelOverride bool             `mapstructure:"deny_selinux_label_override"`
 	ImageTrust               ImageTrustConfig `mapstructure:"image_trust"`
+
+	// RequireCPULimit / RequireCPULimitHard require
+	// TaskTemplate.Resources.Limits.NanoCPUs to be positive on service create,
+	// ordinary update, and any spec that could become active via rollback
+	// (manual ?rollback=previous or an automatic UpdateConfig.FailureAction:
+	// rollback). Scope is deliberately CPU-only, matching the container-create
+	// CPU-limit parity this closes; service memory/PIDs parity is deferred.
+	// Swarm's TaskTemplate.Resources.Limits has no CpuShares/CpuQuota-style
+	// soft/hard split the way containers do, so both flags collapse to the
+	// same NanoCPUs>0 predicate — kept as two knobs for schema parity with
+	// container_create/container_update so a policy can be mirrored field-name
+	// for field-name. RequireCPULimitHard alone is sufficient; it does not
+	// require RequireCPULimit. Both default false (opt-in).
+	RequireCPULimit     bool `mapstructure:"require_cpu_limit"`
+	RequireCPULimitHard bool `mapstructure:"require_cpu_limit_hard"`
 }
 
 // SwarmRequestBodyConfig configures inspection for swarm writes.
@@ -732,6 +1045,16 @@ type AdminConfig struct {
 	// (unix) or Address (TCP, optionally wrapped in TLS). When unset, the
 	// admin endpoints continue to ride the main listener.
 	Listen AdminListenConfig `mapstructure:"listen"`
+	// MountOn names the effective main listener (see Config.EffectiveListeners)
+	// that carries in-band admin traffic when Listen is NOT configured. It
+	// disambiguates "admin rides the main listener" once there is more than
+	// one effective main listener — mounting admin on every listener by
+	// default would silently widen the admin attack surface in proportion
+	// to listener count. Required when Enabled && !Listen.Configured() &&
+	// there are 2+ effective main listeners; ignored (may be left empty)
+	// when there is exactly one, preserving today's zero-config behavior
+	// byte-for-byte.
+	MountOn string `mapstructure:"mount_on"`
 }
 
 // AdminListenConfig configures the dedicated admin listener. It embeds
@@ -836,6 +1159,61 @@ type PolicyBundleKeyless struct {
 	SubjectPattern string `mapstructure:"subject_pattern"`
 }
 
+// MutationsConfig configures declarative fail-closed admission mutations
+// (#151): a bounded set of config-driven rules that inject owner-independent
+// labels or remap image references on a matched request body before the
+// existing container_create/service body inspectors, image-trust
+// verification, and ownership stamping run. See docs/content/docs for the
+// full schema and security model.
+//
+// Mutations are deliberately not part of clients.profiles: v1 has one
+// mutation authority and no global/profile merge rules — every configured
+// rule applies identically regardless of which client profile matched the
+// request. This block is decoded with a strict subtree decode (see
+// decodeMutationsStrict in load.go) that rejects unknown keys and disables
+// weak/YAML-typing coercion, unlike the rest of this legacy schema.
+type MutationsConfig struct {
+	Rules []MutationRuleConfig `mapstructure:"rules"`
+}
+
+// MutationRuleConfig is one declarative admission-mutation rule. Exactly one
+// of InjectLabels/RemapImage must be set; validate.go enforces this and the
+// remaining bounds (rule/label counts, key/value sizes, surface/action
+// compatibility, overlap rejection, owner-label-key reservation).
+type MutationRuleConfig struct {
+	// ID uniquely identifies the rule for logging/audit correlation.
+	// Required; must match ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$.
+	ID string `mapstructure:"id"`
+	// Mode is the rule's rollout posture: "enforce" (default when empty),
+	// "warn", or "audit". See config.ParseRolloutMode for semantics.
+	Mode string `mapstructure:"mode"`
+	// Surfaces lists the request surfaces this rule applies to, from
+	// "container_create", "service_create", "service_update". No duplicates.
+	Surfaces []string `mapstructure:"surfaces"`
+	// InjectLabels configures a label-map merge mutation. Mutually exclusive
+	// with RemapImage.
+	InjectLabels *InjectLabelsMutationConfig `mapstructure:"inject_labels"`
+	// RemapImage configures a single string-field image replace mutation.
+	// Mutually exclusive with InjectLabels.
+	RemapImage *ImageRemapMutationConfig `mapstructure:"remap_image"`
+}
+
+// InjectLabelsMutationConfig unconditionally sets/replaces the configured
+// labels on every request matching the rule's surfaces. Valid only on
+// surfaces that carry a label map (container_create, service_create).
+type InjectLabelsMutationConfig struct {
+	Labels map[string]string `mapstructure:"labels"`
+}
+
+// ImageRemapMutationConfig rewrites a matched image reference. Match is
+// "exact" (the whole reference must equal From) or "prefix" (From must
+// prefix the reference; the remainder is preserved after To).
+type ImageRemapMutationConfig struct {
+	Match string `mapstructure:"match"`
+	From  string `mapstructure:"from"`
+	To    string `mapstructure:"to"`
+}
+
 // RuleConfig represents a single access control rule in config.
 type RuleConfig struct {
 	Match  MatchConfig `mapstructure:"match"`
@@ -900,6 +1278,9 @@ func Defaults() Config {
 			// signatures cannot be replayed without a transparency-log entry.
 			// Operators must opt out explicitly.
 			ContainerCreate: ContainerCreateRequestBodyConfig{
+				ImageTrust: ImageTrustConfig{RequireRekorInclusion: true},
+			},
+			LibpodContainerCreate: LibpodContainerCreateRequestBodyConfig{
 				ImageTrust: ImageTrustConfig{RequireRekorInclusion: true},
 			},
 			ImagePull: ImagePullRequestBodyConfig{

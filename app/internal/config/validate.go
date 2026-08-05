@@ -2,16 +2,20 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/glob"
 	"github.com/codeswhat/sockguard/internal/pkipin"
 	"github.com/codeswhat/sockguard/internal/upstream"
+	"github.com/google/go-containerregistry/pkg/name"
 )
 
 // ValidationError holds multiple validation errors.
@@ -46,22 +50,320 @@ func validateBasic(cfg *Config) []string {
 	errs = append(errs, validateReload(cfg)...)
 	errs = append(errs, validatePolicyBundle(cfg)...)
 	errs = append(errs, validateRequestBody(cfg)...)
+	errs = append(errs, validateMutationsConfig(cfg)...)
 	errs = append(errs, validateRules(cfg)...)
 	return errs
 }
 
+// validateListeners validates either the legacy singular listen: block or,
+// when non-empty, the explicit listeners: list — never both. The two modes
+// are mutually exclusive: cfg.explicitLegacyListen (populated by Load's
+// provenance pass, or by Config.MarkLegacyListenExplicit for the
+// --listen-socket CLI flag) records whether listen.* was set through any
+// channel other than its zero-value default, so a config that sets both is
+// rejected rather than silently picking a winner.
 func validateListeners(cfg *Config) []string {
+	var errs []string
+	if len(cfg.Listeners) > 0 {
+		if cfg.explicitLegacyListen {
+			errs = append(errs, "listen and listeners are mutually exclusive; migrate the listen: block into a single-entry listeners: list")
+		}
+		errs = append(errs, validateExplicitListeners(cfg)...)
+		errs = append(errs, validateExplicitListenersBindUniqueness(cfg)...)
+		return errs
+	}
+	return validateLegacyListen(cfg)
+}
+
+func validateLegacyListen(cfg *Config) []string {
 	var errs []string
 	if cfg.Listen.Socket == "" && cfg.Listen.Address == "" {
 		errs = append(errs, "at least one listener is required (listen.socket or listen.address)")
 	}
 	if cfg.Listen.Socket != "" {
-		errs = append(errs, validateUnixSocketListenerSecurity(cfg)...)
+		errs = append(errs, validateSocketOwnership("listen", cfg.Listen)...)
 	}
 	if cfg.Listen.Socket == "" && cfg.Listen.Address != "" {
 		errs = append(errs, validateTCPListenerSecurity(cfg)...)
 	}
 	return errs
+}
+
+// validateExplicitListeners validates each entry of the explicit
+// listeners: list: name shape/uniqueness/reservation, the listeners cap,
+// exactly-one-of-socket-or-address (stricter than the legacy implicit
+// socket-wins fallback — new entries reject ambiguity outright), per-entry
+// TLS/plaintext-ack/ownership security, and the allowed_profiles scope.
+func validateExplicitListeners(cfg *Config) []string {
+	var errs []string
+
+	if len(cfg.Listeners) > MaxListeners {
+		errs = append(errs, fmt.Sprintf("listeners must contain at most %d entries, got %d", MaxListeners, len(cfg.Listeners)))
+	}
+
+	profileNames := clientProfileNameSet(cfg)
+	seenNames := make(map[string]struct{}, len(cfg.Listeners))
+
+	for i, l := range cfg.Listeners {
+		indexPrefix := fmt.Sprintf("listeners[%d]", i)
+		name := l.Name
+
+		switch {
+		case name == "":
+			errs = append(errs, requiredFieldError(indexPrefix+".name"))
+		case !ValidListenerName(name):
+			errs = append(errs, fmt.Sprintf("%s.name %q must match ^[a-z][a-z0-9-]{0,62}$", indexPrefix, name))
+		case name == AdminListenerName:
+			errs = append(errs, fmt.Sprintf("%s.name must not be %q (reserved for the dedicated admin listener)", indexPrefix, AdminListenerName))
+		default:
+			if _, dup := seenNames[name]; dup {
+				errs = append(errs, uniqueValueError("listeners[*].name", name))
+			}
+			seenNames[name] = struct{}{}
+		}
+
+		label := indexPrefix
+		if name != "" {
+			label = fmt.Sprintf("listeners[%s]", name)
+		}
+
+		hasSocket := l.Socket != ""
+		hasAddress := l.Address != ""
+		switch {
+		case hasSocket && hasAddress:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of socket or address is required, got both", label))
+		case !hasSocket && !hasAddress:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of socket or address is required", label))
+		case hasSocket:
+			errs = append(errs, validateSocketOwnership(label, l.ListenConfig)...)
+			if l.TLS.Enabled() {
+				errs = append(errs, label+".tls is only valid for TCP listeners")
+			}
+		default:
+			errs = append(errs, validateListenerTCPSecurity(label, l.ListenConfig)...)
+			if l.SocketUID != nil {
+				errs = append(errs, label+".socket_uid is only valid for unix listeners")
+			}
+			if l.SocketGID != nil {
+				errs = append(errs, label+".socket_gid is only valid for unix listeners")
+			}
+		}
+
+		errs = append(errs, validateAllowedProfiles(label, l.AllowedProfiles, profileNames)...)
+	}
+
+	return errs
+}
+
+// validateExplicitListenersBindUniqueness enforces all-pairs distinctness of
+// every configured bind target — every listeners[*] socket path pairwise
+// distinct, every listeners[*] TCP address pairwise distinct, and each
+// checked again against the dedicated admin listener when configured. O(n^2)
+// over an operator-authored, small (single-digit to low-dozens) list.
+func validateExplicitListenersBindUniqueness(cfg *Config) []string {
+	type bindTarget struct {
+		label      string
+		kind       string // "socket" or "address"
+		value      string
+		comparison string
+	}
+	newBindTarget := func(label, kind, value string) bindTarget {
+		comparison := value
+		if kind == "address" {
+			comparison = normalizeTCPBindTarget(value)
+		}
+		return bindTarget{label: label, kind: kind, value: value, comparison: comparison}
+	}
+
+	var targets []bindTarget
+	for _, l := range cfg.Listeners {
+		label := fmt.Sprintf("listeners[%s]", l.Name)
+		if l.Socket != "" {
+			targets = append(targets, newBindTarget(label, "socket", l.Socket))
+		}
+		if l.Address != "" {
+			targets = append(targets, newBindTarget(label, "address", l.Address))
+		}
+	}
+	if cfg.Admin.Listen.Configured() {
+		if cfg.Admin.Listen.Socket != "" {
+			targets = append(targets, newBindTarget("admin.listen", "socket", cfg.Admin.Listen.Socket))
+		}
+		if cfg.Admin.Listen.Address != "" {
+			targets = append(targets, newBindTarget("admin.listen", "address", cfg.Admin.Listen.Address))
+		}
+	}
+
+	var errs []string
+	for i := 0; i < len(targets); i++ {
+		for j := i + 1; j < len(targets); j++ {
+			if targets[i].kind != targets[j].kind || targets[i].comparison != targets[j].comparison {
+				continue
+			}
+			errs = append(errs, fmt.Sprintf("%s.%s and %s.%s must be distinct, both are %q",
+				targets[i].label, targets[i].kind, targets[j].label, targets[j].kind, targets[i].value))
+		}
+	}
+	return errs
+}
+
+// normalizeTCPBindTarget canonicalizes only representations known to name the
+// same literal endpoint without DNS or interface lookups: IP spelling,
+// case-insensitive hostnames, and leading zeroes on numeric ports. Wildcard
+// versus specific addresses and all other kernel-dependent conflicts remain
+// the bind barrier's responsibility.
+func normalizeTCPBindTarget(address string) string {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return address
+	}
+	if parsed, parseErr := netip.ParseAddr(host); parseErr == nil {
+		host = parsed.String()
+	} else {
+		host = strings.ToLower(host)
+	}
+	if parsed, parseErr := strconv.ParseUint(port, 10, 16); parseErr == nil {
+		port = strconv.FormatUint(parsed, 10)
+	}
+	return net.JoinHostPort(host, port)
+}
+
+// validateAllowedProfiles validates one listener's allowed_profiles scope:
+// required and non-empty, the wildcard "*" cannot combine with concrete
+// names, entries must be unique, and concrete names must reference a
+// configured clients.profiles entry.
+func validateAllowedProfiles(label string, allowed []string, profileNames map[string]struct{}) []string {
+	field := label + ".allowed_profiles"
+	if len(allowed) == 0 {
+		return []string{containsAtLeastOneError(field, `profile name (or the wildcard "*")`)}
+	}
+
+	var errs []string
+	hasWildcard := false
+	for _, p := range allowed {
+		if p == WildcardProfile {
+			hasWildcard = true
+			break
+		}
+	}
+	if hasWildcard {
+		if len(allowed) > 1 {
+			errs = append(errs, fmt.Sprintf("%s: %q cannot be combined with concrete profile names", field, WildcardProfile))
+		}
+		return errs
+	}
+
+	seen := make(map[string]struct{}, len(allowed))
+	for _, p := range allowed {
+		if _, dup := seen[p]; dup {
+			errs = append(errs, uniqueValueError(field, p))
+			continue
+		}
+		seen[p] = struct{}{}
+		if _, ok := profileNames[p]; !ok {
+			errs = append(errs, configuredMatchError(field, "client profile", p))
+		}
+	}
+	return errs
+}
+
+// clientProfileNameSet returns the set of configured clients.profiles names,
+// trimmed. It is a lightweight companion to validateClientProfile's own
+// duplicate-detecting walk (validateClientsConfig) — listener validation
+// only needs membership, not the full per-profile diagnostics.
+func clientProfileNameSet(cfg *Config) map[string]struct{} {
+	names := make(map[string]struct{}, len(cfg.Clients.Profiles))
+	for _, p := range cfg.Clients.Profiles {
+		if name := strings.TrimSpace(p.Name); name != "" {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
+// validateSocketOwnership validates a unix-socket listener's socket_mode and
+// optional socket_uid/socket_gid. Exactly two modes are supported:
+// HardenedListenSocketMode ("0600", the default — no ownership fields
+// required) and GroupReadableListenSocketMode ("0660" — requires an
+// explicit socket_gid so a group-shared socket is always an affirmative,
+// per-listener operator choice). Applies to legacy listen:, each
+// listeners[*] entry, and (additively, via validateAdminListener)
+// admin.listen.
+func validateSocketOwnership(prefix string, listen ListenConfig) []string {
+	var errs []string
+
+	switch strings.TrimSpace(listen.SocketMode) {
+	case HardenedListenSocketMode:
+		// default owner-only mode; no ownership fields required.
+	case GroupReadableListenSocketMode:
+		if listen.SocketGID == nil {
+			errs = append(errs, fmt.Sprintf(
+				"%s.socket_mode %q requires %s.socket_gid to be set explicitly; omit socket_gid and use %q for the default owner-only mode",
+				prefix, GroupReadableListenSocketMode, prefix, HardenedListenSocketMode,
+			))
+		}
+	default:
+		errs = append(errs, fmt.Sprintf(
+			"%s.socket_mode must be %q or %q (the latter requires %s.socket_gid), got %q",
+			prefix, HardenedListenSocketMode, GroupReadableListenSocketMode, prefix, listen.SocketMode,
+		))
+	}
+
+	if listen.SocketUID != nil && *listen.SocketUID < 0 {
+		errs = append(errs, fmt.Sprintf("%s.socket_uid must be >= 0, got %d", prefix, *listen.SocketUID))
+	}
+	if listen.SocketGID != nil && *listen.SocketGID < 0 {
+		errs = append(errs, fmt.Sprintf("%s.socket_gid must be >= 0, got %d", prefix, *listen.SocketGID))
+	}
+
+	return errs
+}
+
+// validateListenerTCPSecurity is validateTCPListenerSecurity generalized to
+// an arbitrary field prefix and ListenConfig value, so it can validate any
+// listeners[*] entry's TCP/TLS/plaintext-ack posture with the same
+// constructive checks the legacy listen: block gets.
+func validateListenerTCPSecurity(prefix string, listen ListenConfig) []string {
+	var errs []string
+
+	if listen.TLS.Enabled() && !listen.TLS.Complete() {
+		errs = append(errs, requiresError(prefix+".tls", "cert_file, key_file, and client_ca_file together"))
+		return errs
+	}
+
+	if listen.TLS.Complete() {
+		if _, err := BuildMutualTLSServerConfigForField(prefix+".tls", listen.TLS); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+
+	errs = append(errs, plainTCPListenerErrors("TCP listener", prefix, listen)...)
+
+	return errs
+}
+
+// validateAdminMountOn validates Admin.MountOn: required when admin rides a
+// main listener (no dedicated admin.listen) and there are 2+ effective main
+// listeners; when set, must name one of them. Ignored (may be empty) with a
+// dedicated admin listener or exactly one effective main listener, matching
+// today's zero-config "admin rides the sole main listener" behavior.
+func validateAdminMountOn(cfg *Config) []string {
+	if cfg.Admin.Listen.Configured() {
+		return nil
+	}
+	effective := cfg.EffectiveListeners()
+	if len(effective) <= 1 {
+		return nil
+	}
+	if cfg.Admin.MountOn == "" {
+		return []string{"admin.mount_on is required when admin.enabled=true, admin.listen is not configured, and there is more than one effective main listener"}
+	}
+	for _, l := range effective {
+		if l.Name == cfg.Admin.MountOn {
+			return nil
+		}
+	}
+	return []string{configuredMatchError("admin.mount_on", "listener name", cfg.Admin.MountOn)}
 }
 
 // plainTCPListenerErrors validates a non-loopback TCP listener that is not
@@ -240,6 +542,7 @@ func validateAdmin(cfg *Config) []string {
 		errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
 	}
 	errs = append(errs, validateAdminListener(cfg)...)
+	errs = append(errs, validateAdminMountOn(cfg)...)
 	return errs
 }
 
@@ -301,16 +604,6 @@ func literalPercentRuleError(label, pattern string) string {
 	)
 }
 
-func validateUnixSocketListenerSecurity(cfg *Config) []string {
-	if strings.TrimSpace(cfg.Listen.SocketMode) == HardenedListenSocketMode {
-		return nil
-	}
-
-	return []string{
-		fmt.Sprintf("listen.socket_mode must be %q because unix listeners are created with owner-only permissions", HardenedListenSocketMode),
-	}
-}
-
 // validateAdminListener validates the optional dedicated admin listener. It
 // only runs when cfg.Admin.Enabled is true; an unconfigured Listen sub-block
 // (Socket == "" && Address == "") is the documented "ride the main listener"
@@ -339,9 +632,7 @@ func validateAdminListener(cfg *Config) []string {
 	}
 
 	if listen.Socket != "" {
-		if strings.TrimSpace(listen.SocketMode) != HardenedListenSocketMode {
-			errs = append(errs, fmt.Sprintf("admin.listen.socket_mode must be %q because unix listeners are created with owner-only permissions", HardenedListenSocketMode))
-		}
+		errs = append(errs, validateSocketOwnership("admin.listen", listen.ListenConfig)...)
 		if cfg.Listen.Socket != "" && cfg.Listen.Socket == listen.Socket {
 			errs = append(errs, fmt.Sprintf("admin.listen.socket must differ from listen.socket, got %q", listen.Socket))
 		}
@@ -503,6 +794,366 @@ func validateRequestBody(cfg *Config) []string {
 	return errs
 }
 
+// Admission-mutation config bounds (#151). These are deliberately generous
+// (a legitimate config needs far fewer than 64 rules or 256 total injected
+// labels) but bound the strict-decoded mutations subtree against pathological
+// configs before it ever reaches the compiled filter.mutationEngine.
+const (
+	maxMutationRules           = 64
+	maxMutationLabelsPerRule   = 32
+	maxMutationLabelsTotal     = 256
+	maxMutationLabelKeyBytes   = 128
+	maxMutationLabelValueBytes = 4096
+	maxMutationImageFieldBytes = 4096
+)
+
+var mutationRuleIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+var validMutationSurfaces = map[string]struct{}{
+	"container_create": {},
+	"service_create":   {},
+	"service_update":   {},
+}
+
+// mutationImageOverlapEntry is one valid remap_image rule's overlap-check
+// shape, collected while validating each rule and checked pairwise by
+// validateMutationImageOverlaps once every rule has been walked.
+type mutationImageOverlapEntry struct {
+	prefix   string
+	surfaces []string
+	match    string
+	from     string
+}
+
+// mutationLabelClaim is one valid inject_labels rule's (surface, key) claim,
+// collected the same way and checked by validateMutationLabelOverlaps.
+type mutationLabelClaim struct {
+	prefix  string
+	surface string
+	key     string
+}
+
+// validateMutationsConfig validates the mutations.rules[] block (#151):
+// bounds, per-rule id/mode/surfaces, exactly-one-of inject_labels/
+// remap_image, label and image-reference shape, cross-rule overlap
+// rejection, and the owner-label-key reservation.
+func validateMutationsConfig(cfg *Config) []string {
+	var errs []string
+	rules := cfg.Mutations.Rules
+
+	if len(rules) > maxMutationRules {
+		errs = append(errs, fmt.Sprintf("mutations.rules must contain at most %d entries, got %d", maxMutationRules, len(rules)))
+	}
+
+	ids := make(map[string]struct{}, len(rules))
+	totalLabels := 0
+	var imageEntries []mutationImageOverlapEntry
+	var labelClaims []mutationLabelClaim
+
+	for i, rule := range rules {
+		prefix := fmt.Sprintf("mutations.rules[%d]", i)
+
+		if !mutationRuleIDPattern.MatchString(rule.ID) {
+			errs = append(errs, fmt.Sprintf("%s.id must match %s, got %q", prefix, mutationRuleIDPattern.String(), rule.ID))
+		} else if _, dup := ids[rule.ID]; dup {
+			errs = append(errs, uniqueValueError(prefix+".id", rule.ID))
+		} else {
+			ids[rule.ID] = struct{}{}
+		}
+
+		if _, ok := ParseRolloutMode(rule.Mode); !ok {
+			errs = append(errs, fmt.Sprintf("%s.mode must be one of enforce|warn|audit, got %q", prefix, rule.Mode))
+		}
+
+		errs = append(errs, validateMutationSurfaces(prefix, rule.Surfaces)...)
+
+		switch {
+		case rule.InjectLabels != nil && rule.RemapImage != nil:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels or remap_image is required, got both", prefix))
+		case rule.InjectLabels == nil && rule.RemapImage == nil:
+			errs = append(errs, fmt.Sprintf("%s: exactly one of inject_labels or remap_image is required, got neither", prefix))
+		case rule.InjectLabels != nil:
+			labelErrs, claims := validateMutationInjectLabels(prefix, rule, cfg)
+			errs = append(errs, labelErrs...)
+			totalLabels += len(rule.InjectLabels.Labels)
+			labelClaims = append(labelClaims, claims...)
+		case rule.RemapImage != nil:
+			imageErrs, entry := validateMutationRemapImage(prefix, rule)
+			errs = append(errs, imageErrs...)
+			if entry != nil {
+				imageEntries = append(imageEntries, *entry)
+			}
+		}
+	}
+
+	if totalLabels > maxMutationLabelsTotal {
+		errs = append(errs, fmt.Sprintf("mutations.rules: total inject_labels.labels entries across all rules must not exceed %d, got %d", maxMutationLabelsTotal, totalLabels))
+	}
+
+	errs = append(errs, validateMutationLabelOverlaps(labelClaims)...)
+	errs = append(errs, validateMutationImageOverlaps(imageEntries)...)
+
+	return errs
+}
+
+func validateMutationSurfaces(prefix string, surfaces []string) []string {
+	var errs []string
+	if len(surfaces) == 0 {
+		errs = append(errs, containsAtLeastOneError(prefix+".surfaces", "surface"))
+	}
+	seen := make(map[string]struct{}, len(surfaces))
+	for _, surface := range surfaces {
+		if _, ok := validMutationSurfaces[surface]; !ok {
+			errs = append(errs, enumValueError(prefix+".surfaces", surface, "container_create", "service_create", "service_update"))
+			continue
+		}
+		if _, dup := seen[surface]; dup {
+			errs = append(errs, fmt.Sprintf("%s.surfaces must not contain duplicate %q", prefix, surface))
+			continue
+		}
+		seen[surface] = struct{}{}
+	}
+	return errs
+}
+
+// validateMutationInjectLabels validates one rule's inject_labels block and
+// returns the (surface, key) claims validateMutationLabelOverlaps checks
+// across every rule once the full list is known — only valid, non-empty keys
+// are returned as claims, so a malformed key never produces a spurious
+// overlap error on top of its own shape error.
+func validateMutationInjectLabels(prefix string, rule MutationRuleConfig, cfg *Config) ([]string, []mutationLabelClaim) {
+	var errs []string
+	var claims []mutationLabelClaim
+
+	for _, surface := range rule.Surfaces {
+		if surface == "service_update" {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels is not valid on surface %q: service_update has no label field to mutate", prefix, surface))
+		}
+	}
+
+	labels := rule.InjectLabels.Labels
+	if len(labels) == 0 {
+		errs = append(errs, containsAtLeastOneError(prefix+".inject_labels.labels", "label"))
+	}
+	if len(labels) > maxMutationLabelsPerRule {
+		errs = append(errs, fmt.Sprintf("%s.inject_labels.labels must contain at most %d entries, got %d", prefix, maxMutationLabelsPerRule, len(labels)))
+	}
+
+	// cfg.Ownership.LabelKey is required-when validated separately
+	// (validateRequestBody); read it as-is here rather than re-deriving the
+	// Defaults() fallback, so this check is exact even if that other
+	// validation error is also present in the same run.
+	reservedLabelKey := ""
+	if cfg.Ownership.Owner != "" {
+		reservedLabelKey = cfg.Ownership.LabelKey
+	}
+
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+
+	for _, key := range keys {
+		value := labels[key]
+		valid := true
+		if strings.TrimSpace(key) == "" {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels keys must be non-empty", prefix))
+			valid = false
+		}
+		if len(key) > maxMutationLabelKeyBytes {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels key %q exceeds %d bytes", prefix, key, maxMutationLabelKeyBytes))
+			valid = false
+		}
+		if len(value) > maxMutationLabelValueBytes {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels[%q] value exceeds %d bytes", prefix, key, maxMutationLabelValueBytes))
+			valid = false
+		}
+		if strings.TrimSpace(value) == "" {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels[%q] value must be non-empty", prefix, key))
+			valid = false
+		}
+		if containsControlOrNUL(key) || containsControlOrNUL(value) {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels[%q] must not contain control characters or NUL", prefix, key))
+			valid = false
+		}
+		if reservedLabelKey != "" && key == reservedLabelKey {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels must not set reserved owner label key %q (ownership.owner is configured)", prefix, key))
+			valid = false
+		}
+		if !valid {
+			continue
+		}
+		for _, surface := range rule.Surfaces {
+			claims = append(claims, mutationLabelClaim{prefix: prefix, surface: surface, key: key})
+		}
+	}
+
+	return errs, claims
+}
+
+// validateMutationLabelOverlaps rejects two mutation rules that would inject
+// the same label key on the same surface: last-rule-wins is the actual
+// runtime behavior (see mutation.go's applyInjectLabels), but a bounded
+// declarative DSL should not depend on rule declaration order to resolve an
+// operator's own conflicting intent — reject it at config time instead.
+func validateMutationLabelOverlaps(claims []mutationLabelClaim) []string {
+	var errs []string
+	seen := make(map[string]string, len(claims))
+	for _, claim := range claims {
+		id := claim.surface + "\x00" + claim.key
+		if firstPrefix, ok := seen[id]; ok {
+			errs = append(errs, fmt.Sprintf(
+				"%s.inject_labels.labels[%q] overlaps %s on surface %q: two mutation rules must not inject the same label key on the same surface",
+				claim.prefix, claim.key, firstPrefix, claim.surface,
+			))
+			continue
+		}
+		seen[id] = claim.prefix
+	}
+	return errs
+}
+
+// validateMutationRemapImage validates one rule's remap_image block. When the
+// rule is well-formed enough to reason about for overlap purposes, it also
+// returns the mutationImageOverlapEntry validateMutationImageOverlaps needs;
+// otherwise nil, so a malformed rule's shape error is not compounded by a
+// spurious overlap error against it.
+func validateMutationRemapImage(prefix string, rule MutationRuleConfig) ([]string, *mutationImageOverlapEntry) {
+	var errs []string
+	remap := rule.RemapImage
+	match := strings.ToLower(strings.TrimSpace(remap.Match))
+	switch match {
+	case "exact", "prefix":
+	default:
+		errs = append(errs, enumValueError(prefix+".remap_image.match", remap.Match, "exact", "prefix"))
+	}
+
+	fromOK := validateMutationImageField(prefix+".remap_image.from", remap.From, &errs)
+	toOK := validateMutationImageField(prefix+".remap_image.to", remap.To, &errs)
+
+	// Exact-match from/to must additionally parse as plausible image
+	// references — an exact match replaces the whole reference, so an
+	// unparseable literal can never legitimately match or produce a valid
+	// result. A prefix match's from/to are deliberately allowed to be a bare
+	// registry-host or path prefix (e.g. "internal.example.com/"), which does
+	// not itself parse as a complete reference, so this check does not apply
+	// there.
+	if match == "exact" {
+		if fromOK {
+			errs = append(errs, validateMutationImageLiteral(prefix+".remap_image.from", remap.From)...)
+		}
+		if toOK {
+			errs = append(errs, validateMutationImageLiteral(prefix+".remap_image.to", remap.To)...)
+		}
+	}
+
+	if match != "exact" && match != "prefix" || !fromOK {
+		return errs, nil
+	}
+	return errs, &mutationImageOverlapEntry{prefix: prefix, surfaces: rule.Surfaces, match: match, from: remap.From}
+}
+
+// validateMutationImageField checks the shared from/to shape rules (required,
+// size-bounded, no control/NUL bytes) and reports via *errs, returning
+// whether the field was well-formed enough for further checks to consult its
+// value.
+func validateMutationImageField(field, value string, errs *[]string) bool {
+	if strings.TrimSpace(value) == "" {
+		*errs = append(*errs, requiredFieldError(field))
+		return false
+	}
+	ok := true
+	if len(value) > maxMutationImageFieldBytes {
+		*errs = append(*errs, fmt.Sprintf("%s exceeds %d bytes", field, maxMutationImageFieldBytes))
+		ok = false
+	}
+	if containsControlOrNUL(value) {
+		*errs = append(*errs, fmt.Sprintf("%s must not contain control characters or NUL", field))
+		ok = false
+	}
+	return ok
+}
+
+// validateMutationImageLiteral confirms value parses as a plausible Docker
+// image reference, using the same weak-validation grammar
+// filter.validateMutationImageReference applies to a computed remap result at
+// request time — so a rule that will always fail its own postcondition check
+// is rejected at config load instead of denying every matching request.
+func validateMutationImageLiteral(field, value string) []string {
+	if _, err := name.ParseReference(value, name.WeakValidation); err != nil {
+		return []string{fmt.Sprintf("%s must be a valid image reference, got %q: %v", field, value, err)}
+	}
+	return nil
+}
+
+// validateMutationImageOverlaps rejects two remap_image rules sharing a
+// surface whose from patterns could both match the same image reference —
+// an exact from that starts with a prefix from, or two prefix froms where
+// one prefixes the other (including equal) — because which rule's result
+// wins would depend on mutations.rules declaration order, an implicit
+// dependency this declarative DSL does not want operators to rely on.
+func validateMutationImageOverlaps(entries []mutationImageOverlapEntry) []string {
+	var errs []string
+	for i := range entries {
+		for j := i + 1; j < len(entries); j++ {
+			a, b := entries[i], entries[j]
+			shared := sharedMutationSurfaces(a.surfaces, b.surfaces)
+			if len(shared) == 0 || !mutationImageMatchesOverlap(a, b) {
+				continue
+			}
+			slices.Sort(shared)
+			errs = append(errs, fmt.Sprintf(
+				"%s.remap_image and %s.remap_image overlap on surface(s) %s: a request image could match both rules' from pattern, making the applied result order-dependent",
+				a.prefix, b.prefix, strings.Join(shared, ", "),
+			))
+		}
+	}
+	return errs
+}
+
+func sharedMutationSurfaces(a, b []string) []string {
+	bSet := make(map[string]struct{}, len(b))
+	for _, surface := range b {
+		bSet[surface] = struct{}{}
+	}
+	var shared []string
+	for _, surface := range a {
+		if _, ok := bSet[surface]; ok {
+			shared = append(shared, surface)
+		}
+	}
+	return shared
+}
+
+func mutationImageMatchesOverlap(a, b mutationImageOverlapEntry) bool {
+	switch {
+	case a.match == "exact" && b.match == "exact":
+		return a.from == b.from
+	case a.match == "exact" && b.match == "prefix":
+		return strings.HasPrefix(a.from, b.from)
+	case a.match == "prefix" && b.match == "exact":
+		return strings.HasPrefix(b.from, a.from)
+	case a.match == "prefix" && b.match == "prefix":
+		return strings.HasPrefix(a.from, b.from) || strings.HasPrefix(b.from, a.from)
+	default:
+		return false
+	}
+}
+
+// containsControlOrNUL reports whether s contains a C0 control character
+// (including NUL) or DEL — used to reject label keys/values and image
+// literals that could smuggle control sequences into a log line or a
+// downstream shell/terminal that interprets them.
+func containsControlOrNUL(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
 // validateClientsConfig validates the entire `clients:` block: the global
 // CIDR allowlist, container-label peer attribution, the profile list itself,
 // global concurrency cap, default profile, and each profile-assignment kind
@@ -546,25 +1197,47 @@ func validateClientsContainerLabels(cfg *Config) []string {
 	return nil
 }
 
+// hasEffectiveListener reports whether at least one of cfg.EffectiveListeners
+// (#149) — the legacy listen: block synthesized into one entry, or every
+// listeners[*] entry — satisfies predicate. Transport-capability checks use
+// this instead of reading cfg.Listen directly, so they hold the same "at
+// least one compatible listener" shape whether an operator configures the
+// legacy listen: block or an explicit listeners: list.
+func hasEffectiveListener(cfg *Config, predicate func(ListenerConfig) bool) bool {
+	for _, l := range cfg.EffectiveListeners() {
+		if predicate(l) {
+			return true
+		}
+	}
+	return false
+}
+
+func isUnixListener(l ListenerConfig) bool { return l.Socket != "" }
+func isTCPListener(l ListenerConfig) bool  { return l.Address != "" }
+
 // validateClientsListenerExclusions checks the listener-kind constraints that
 // would otherwise be reported as cryptic per-feature errors. Each rule is the
-// same shape: feature X requires (or forbids) a TCP/unix listener.
+// same shape: feature X requires (or forbids) a TCP/unix listener among the
+// effective set — see hasEffectiveListener.
 func validateClientsListenerExclusions(cfg *Config) []string {
 	var errs []string
-	if cfg.Listen.Socket != "" && len(cfg.Clients.AllowedCIDRs) > 0 {
-		errs = append(errs, "clients.allowed_cidrs requires a TCP listener; remove listen.socket or clear clients.allowed_cidrs")
+	hasTCP := hasEffectiveListener(cfg, isTCPListener)
+	hasUnix := hasEffectiveListener(cfg, isUnixListener)
+
+	if !hasTCP && len(cfg.Clients.AllowedCIDRs) > 0 {
+		errs = append(errs, "clients.allowed_cidrs requires a TCP listener; configure a TCP listen/listeners[*] entry or clear clients.allowed_cidrs")
 	}
-	if cfg.Listen.Socket != "" && cfg.Clients.ContainerLabels.Enabled {
-		errs = append(errs, "clients.container_labels requires a TCP listener; remove listen.socket or disable clients.container_labels")
+	if !hasTCP && cfg.Clients.ContainerLabels.Enabled {
+		errs = append(errs, "clients.container_labels requires a TCP listener; configure a TCP listen/listeners[*] entry or disable clients.container_labels")
 	}
-	if cfg.Listen.Socket != "" && len(cfg.Clients.SourceIPProfiles) > 0 {
-		errs = append(errs, "clients.source_ip_profiles requires a TCP listener; remove listen.socket or clear clients.source_ip_profiles")
+	if !hasTCP && len(cfg.Clients.SourceIPProfiles) > 0 {
+		errs = append(errs, "clients.source_ip_profiles requires a TCP listener; configure a TCP listen/listeners[*] entry or clear clients.source_ip_profiles")
 	}
-	if cfg.Listen.Socket != "" && len(cfg.Clients.ClientCertificateProfiles) > 0 {
-		errs = append(errs, "clients.client_certificate_profiles requires a TCP listener; remove listen.socket or clear clients.client_certificate_profiles")
+	if !hasTCP && len(cfg.Clients.ClientCertificateProfiles) > 0 {
+		errs = append(errs, "clients.client_certificate_profiles requires a TCP listener; configure a TCP listen/listeners[*] entry or clear clients.client_certificate_profiles")
 	}
-	if cfg.Listen.Socket == "" && len(cfg.Clients.UnixPeerProfiles) > 0 {
-		errs = append(errs, "clients.unix_peer_profiles requires a unix listener; set listen.socket or clear clients.unix_peer_profiles")
+	if !hasUnix && len(cfg.Clients.UnixPeerProfiles) > 0 {
+		errs = append(errs, "clients.unix_peer_profiles requires a unix listener; configure a unix listen/listeners[*] entry or clear clients.unix_peer_profiles")
 	}
 	return errs
 }
@@ -613,8 +1286,9 @@ func validateClientsSourceIPProfiles(cfg *Config, profilesByName map[string]stru
 
 func validateClientsCertificateProfiles(cfg *Config, profilesByName map[string]struct{}) []string {
 	var errs []string
-	if len(cfg.Clients.ClientCertificateProfiles) > 0 && !cfg.Listen.TLS.Complete() {
-		errs = append(errs, requiresError("clients.client_certificate_profiles", "listen.tls mutual TLS configuration"))
+	hasMutualTLS := hasEffectiveListener(cfg, func(l ListenerConfig) bool { return l.TLS.Complete() })
+	if len(cfg.Clients.ClientCertificateProfiles) > 0 && !hasMutualTLS {
+		errs = append(errs, requiresError("clients.client_certificate_profiles", "a listen/listeners[*] entry with mutual TLS configured"))
 	}
 	for i, assignment := range cfg.Clients.ClientCertificateProfiles {
 		prefix := fmt.Sprintf("clients.client_certificate_profiles[%d]", i)
@@ -718,9 +1392,15 @@ func validateClientProfile(index int, profile ClientProfileConfig, profilesByNam
 
 	prefix := fmt.Sprintf("clients.profiles[%d]", index)
 	name := strings.TrimSpace(profile.Name)
-	if name == "" {
+	switch name {
+	case "":
 		errs = append(errs, requiredFieldError(prefix+".name"))
-	} else {
+	case WildcardProfile:
+		// "*" is reserved by listeners[*].allowed_profiles as the
+		// "admit every profile" wildcard (#149) and cannot double as a
+		// concrete profile name.
+		errs = append(errs, fmt.Sprintf("%s.name must not be %q (reserved as the listener allowed_profiles wildcard)", prefix, WildcardProfile))
+	default:
 		if _, exists := profilesByName[name]; exists {
 			errs = append(errs, uniqueValueError(prefix+".name", name))
 		}
@@ -831,12 +1511,24 @@ func validateEndpointCosts(prefix string, costs []EndpointCostConfig, effectiveB
 func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	var errs []string
 	errs = append(errs, validateContainerCreateConfig(prefix, cfg.ContainerCreate)...)
+	errs = append(errs, validateLibpodContainerCreateConfig(prefix, cfg.LibpodContainerCreate)...)
 	errs = append(errs, validateExecConfig(prefix, cfg.Exec)...)
 	errs = append(errs, validateImagePullConfig(prefix, cfg.ImagePull)...)
 	errs = append(errs, validateServiceConfig(prefix, cfg.Service)...)
 	errs = append(errs, validateSwarmConfig(prefix, cfg.Swarm)...)
 	errs = append(errs, validatePluginConfig(prefix, cfg.Plugin)...)
+	errs = append(errs, validateLibpodPodCreateConfig(prefix, cfg.LibpodPodCreate)...)
 	return errs
+}
+
+// validateLibpodPodCreateConfig validates request_body.libpod_pod_create.
+// libpod_volume/libpod_network/libpod_secret reuse
+// Volume/Network/SecretRequestBodyConfig verbatim, which today have no
+// free-text fields requiring their own validator (see
+// validateRequestBodyConfig's Docker-compat counterparts), so there is
+// nothing analogous to add for them here.
+func validateLibpodPodCreateConfig(prefix string, cfg LibpodPodCreateRequestBodyConfig) []string {
+	return validateRegistryHostEntries(prefix, "libpod_pod_create.allowed_infra_image_registries", cfg.AllowedInfraImageRegistries)
 }
 
 // validateHostPathEntries flags any entries that don't normalize to absolute
@@ -890,6 +1582,25 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 		errs = append(errs, fmt.Sprintf("%s.container_create.allowed_namespace_sharing_containers entries must be non-empty container ID or name values, got %q", prefix, entry))
 	}
 	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ImageTrust)...)
+	return errs
+}
+
+// validateLibpodContainerCreateConfig mirrors validateContainerCreateConfig's
+// pattern for the libpod_container_create block: absolute-path checks on the
+// bind-mount/device allowlists and image-trust config. Namespace-sharing
+// target entries follow the same non-empty/trimmed check as the Docker
+// equivalent's allowed_namespace_sharing_containers.
+func validateLibpodContainerCreateConfig(prefix string, cfg LibpodContainerCreateRequestBodyConfig) []string {
+	var errs []string
+	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
+	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_devices", cfg.AllowedDevices)...)
+	for _, entry := range cfg.AllowedNamespaceSharingContainers {
+		if entry != "" && entry == strings.TrimSpace(entry) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.libpod_container_create.allowed_namespace_sharing_containers entries must be non-empty container ID or name values, got %q", prefix, entry))
+	}
+	errs = append(errs, validateImageTrustConfig(prefix+".libpod_container_create.image_trust", cfg.ImageTrust)...)
 	return errs
 }
 

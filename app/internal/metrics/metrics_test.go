@@ -40,9 +40,9 @@ func TestMiddlewareRecordsRequestDecisionMetrics(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	out := renderMetrics(t, registry)
-	assertContains(t, out, `sockguard_http_requests_total{decision="deny",method="POST",profile="watchtower",route="/containers/{id}/update",status="403"} 1`)
-	assertContains(t, out, `sockguard_http_denied_requests_total{mode="enforce",profile="watchtower",reason_code="matched_deny_rule",route="/containers/{id}/update"} 1`)
-	assertContains(t, out, `sockguard_http_request_duration_seconds_count{decision="deny",method="POST",profile="watchtower",route="/containers/{id}/update"} 1`)
+	assertContains(t, out, `sockguard_http_requests_total{decision="deny",listener="default",method="POST",profile="watchtower",route="/containers/{id}/update",status="403"} 1`)
+	assertContains(t, out, `sockguard_http_denied_requests_total{listener="default",mode="enforce",profile="watchtower",reason_code="matched_deny_rule",route="/containers/{id}/update"} 1`)
+	assertContains(t, out, `sockguard_http_request_duration_seconds_count{decision="deny",listener="default",method="POST",profile="watchtower",route="/containers/{id}/update"} 1`)
 	assertContains(t, out, "sockguard_http_requests_active 0")
 }
 
@@ -67,7 +67,7 @@ func TestMiddlewareRecordsWouldDenyWithModeLabel(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 
 	out := renderMetrics(t, registry)
-	assertContains(t, out, `sockguard_http_denied_requests_total{mode="warn",profile="watchtower",reason_code="matched_deny_rule",route="/containers/{id}/update"} 1`)
+	assertContains(t, out, `sockguard_http_denied_requests_total{listener="default",mode="warn",profile="watchtower",reason_code="matched_deny_rule",route="/containers/{id}/update"} 1`)
 }
 
 func TestObserveThrottleEmitsModeLabel(t *testing.T) {
@@ -290,9 +290,9 @@ func TestDefaultLabelsForMissingMetaRequestAndDenyDetails(t *testing.T) {
 	)
 
 	out := renderMetrics(t, registry)
-	assertContains(t, out, `sockguard_http_requests_total{decision="error",method="UNKNOWN",profile="default",route="unknown",status="500"} 1`)
-	assertContains(t, out, `sockguard_http_requests_total{decision="deny",method="UNKNOWN",profile="default",route="/containers/create",status="403"} 1`)
-	assertContains(t, out, `sockguard_http_denied_requests_total{mode="enforce",profile="default",reason_code="unknown",route="/containers/create"} 1`)
+	assertContains(t, out, `sockguard_http_requests_total{decision="error",listener="default",method="UNKNOWN",profile="default",route="unknown",status="500"} 1`)
+	assertContains(t, out, `sockguard_http_requests_total{decision="deny",listener="default",method="UNKNOWN",profile="default",route="/containers/create",status="403"} 1`)
+	assertContains(t, out, `sockguard_http_denied_requests_total{listener="default",mode="enforce",profile="default",reason_code="unknown",route="/containers/create"} 1`)
 
 	if got := routeLabel(&http.Request{}, nil); got != "unknown" {
 		t.Fatalf("routeLabel(request without URL) = %q, want unknown", got)
@@ -310,6 +310,13 @@ func TestRouteCategoryCoversDockerRouteFamiliesAndPathEdges(t *testing.T) {
 		{name: "root", path: "/", want: "/"},
 		{name: "relative gets slash", path: "containers/json", want: "/containers/json"},
 		{name: "version prefix root", path: "/v1.45", want: "/"},
+		// Regression (#148): metrics' own stripVersionPrefix splits on any
+		// digit/dot run (isDockerVersionSegment), so it already strips a
+		// three-part Podman semver prefix correctly — unlike the filter
+		// package's stripVersionPrefix, which needed a dedicated fix. Pinned
+		// here so a future refactor can't silently reintroduce the filter
+		// package's bug on this side.
+		{name: "three-part version prefix stripped", path: "/v5.0.0/containers/json", want: "/containers/json"},
 		{name: "invalid version prefix kept", path: "/v1x/containers/json", want: "/v1x/..."},
 		{name: "container collection", path: "/containers", want: "/containers"},
 		{name: "system known tail", path: "/system/df", want: "/system/df"},
@@ -715,9 +722,9 @@ func TestRegistryConcurrentObserveAndScrape(t *testing.T) {
 
 	expected := uint64(writers * opsPerWriter)
 	out := renderMetrics(t, registry)
-	assertContains(t, out, `sockguard_http_requests_total{decision="allow",method="GET",profile="ci",route="/_ping",status="200"} `+strconv.FormatUint(expected, 10))
+	assertContains(t, out, `sockguard_http_requests_total{decision="allow",listener="default",method="GET",profile="ci",route="/_ping",status="200"} `+strconv.FormatUint(expected, 10))
 	assertContains(t, out, `sockguard_throttle_requests_total{mode="enforce",profile="ci",reason_code="rate_limit"} `+strconv.FormatUint(expected, 10))
 	assertContains(t, out, `sockguard_config_reload_total{result="ok"} `+strconv.FormatUint(expected, 10))
 	assertContains(t, out, `sockguard_upstream_watchdog_checks_total{result="connected"} `+strconv.FormatUint(expected, 10))
-	assertContains(t, out, `sockguard_http_request_duration_seconds_count{decision="allow",method="GET",profile="ci",route="/_ping"} `+strconv.FormatUint(expected, 10))
+	assertContains(t, out, `sockguard_http_request_duration_seconds_count{decision="allow",listener="default",method="GET",profile="ci",route="/_ping"} `+strconv.FormatUint(expected, 10))
 }

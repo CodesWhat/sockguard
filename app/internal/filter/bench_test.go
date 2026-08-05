@@ -42,6 +42,7 @@ func BenchmarkNormalizePath(b *testing.B) {
 	}{
 		{"bare", "/containers/json"},
 		{"versioned", "/v1.45/containers/json"},
+		{"versioned_three_part", "/v5.0.0/libpod/containers/json"},
 		{"deep", "/v1.45/containers/abc123def/json"},
 		{"traversal", "/v1.45/../containers/json"},
 		{"clean", "/_ping"},

@@ -52,7 +52,8 @@ const (
 // tier:
 //   - The daemon strips an API-version prefix /v{version}/ where version is
 //     [0-9.]+ (see stripDaemonVersionPrefix) — broader than sockguard's own
-//     stripVersionPrefix, by design: the oracle must mirror the daemon.
+//     stripVersionPrefix (which accepts vN, vN.N, or vN.N.N; see #148), by
+//     design: the oracle must mirror the daemon.
 //   - The daemon's router resolves dot-segments and collapses duplicate
 //     slashes (path.Clean) before matching. This is the pessimistic choice:
 //     it assumes the daemon *will* route a path like //containers//create to
@@ -114,7 +115,8 @@ func ClassifyDockerRoute(method, rawPath string) RouteCategory {
 // stripDaemonVersionPrefix models the daemon's API-version prefix handling:
 // dockerd routes /v{version}/... where version matches [0-9.]+. This is
 // intentionally broader than sockguard's stripVersionPrefix (which accepts
-// only vN / vN.N) — the oracle mirrors the daemon, not sockguard. The prefix
+// vN, vN.N, or vN.N.N — see #148 — but not four or more dot-separated
+// components) — the oracle mirrors the daemon, not sockguard. The prefix
 // must be terminated by a slash, so /v1.45 (no trailing slash) is not a
 // version prefix.
 func stripDaemonVersionPrefix(p string) string {

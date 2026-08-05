@@ -1560,12 +1560,14 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 	got := serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), auditLogger, nil, newServeTestDeps(), nil))
 	want := []string{
 		"withHijack",
+		"withResourceLimitGuard",
 		"withOwnership",
 		"withVisibility",
 		"withFilter",
 		"withAdminEndpoint",
 		"withHealth",
 		"withMetricsEndpoint",
+		"withListenerAdmission",
 		"withClientACL",
 		"withMetrics",
 		"withTraceContext",
@@ -1586,9 +1588,11 @@ func TestBuildServeHandlerLayers(t *testing.T) {
 	got = serveHandlerLayerNames(buildServeHandlerLayers(&cfg, newDiscardLogger(), nil, nil, newServeTestDeps(), nil))
 	want = []string{
 		"withHijack",
+		"withResourceLimitGuard",
 		"withOwnership",
 		"withVisibility",
 		"withFilter",
+		"withListenerAdmission",
 		"withClientACL",
 		"withTraceContext",
 		"withRequestID",

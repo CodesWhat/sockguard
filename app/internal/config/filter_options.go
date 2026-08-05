@@ -1,6 +1,10 @@
 package config
 
-import "github.com/codeswhat/sockguard/internal/filter"
+import (
+	"strings"
+
+	"github.com/codeswhat/sockguard/internal/filter"
+)
 
 // ToFilterOptions converts request-body config into filter middleware policy
 // options. Runtime-only fields, such as exec-start upstream inspection, are
@@ -16,21 +20,36 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 	containerCreate.AllowEndpointConfig = c.Network.AllowEndpointConfig
 
 	return filter.PolicyConfig{
-		ContainerCreate:  containerCreate,
-		Exec:             c.Exec.ToFilterOptions(),
-		ImagePull:        c.ImagePull.ToFilterOptions(),
-		Build:            c.Build.ToFilterOptions(),
-		ContainerUpdate:  c.ContainerUpdate.ToFilterOptions(),
-		ContainerArchive: c.ContainerArchive.ToFilterOptions(),
-		ImageLoad:        c.ImageLoad.ToFilterOptions(),
-		Volume:           c.Volume.ToFilterOptions(),
-		Network:          c.Network.ToFilterOptions(),
-		Secret:           c.Secret.ToFilterOptions(),
-		Config:           c.Config.ToFilterOptions(),
-		Service:          c.Service.ToFilterOptions(),
-		Swarm:            c.Swarm.ToFilterOptions(),
-		Node:             c.Node.ToFilterOptions(),
-		Plugin:           c.Plugin.ToFilterOptions(),
+		ContainerCreate:       containerCreate,
+		LibpodContainerCreate: c.LibpodContainerCreate.ToFilterOptions(),
+		Exec:                  c.Exec.ToFilterOptions(),
+		ImagePull:             c.ImagePull.ToFilterOptions(),
+		Build:                 c.Build.ToFilterOptions(),
+		ContainerUpdate:       c.ContainerUpdate.ToFilterOptions(),
+		ContainerArchive:      c.ContainerArchive.ToFilterOptions(),
+		ImageLoad:             c.ImageLoad.ToFilterOptions(),
+		Volume:                c.Volume.ToFilterOptions(),
+		Network:               c.Network.ToFilterOptions(),
+		Secret:                c.Secret.ToFilterOptions(),
+		Config:                c.Config.ToFilterOptions(),
+		Service:               c.Service.ToFilterOptions(),
+		Swarm:                 c.Swarm.ToFilterOptions(),
+		Node:                  c.Node.ToFilterOptions(),
+		Plugin:                c.Plugin.ToFilterOptions(),
+		LibpodPodCreate:       c.LibpodPodCreate.ToFilterOptions(),
+		LibpodVolume:          c.LibpodVolume.ToFilterOptions(),
+		LibpodNetwork:         c.LibpodNetwork.ToFilterOptions(),
+		LibpodSecret:          c.LibpodSecret.ToFilterOptions(),
+	}
+}
+
+// ToFilterOptions converts libpod_pod_create config into filter middleware
+// options. #148.
+func (c LibpodPodCreateRequestBodyConfig) ToFilterOptions() filter.LibpodPodCreateOptions {
+	return filter.LibpodPodCreateOptions{
+		AllowHostNetwork:            c.AllowHostNetwork,
+		AllowSharedPIDNamespace:     c.AllowSharedPIDNamespace,
+		AllowedInfraImageRegistries: c.AllowedInfraImageRegistries,
 	}
 }
 
@@ -73,6 +92,39 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenySelinuxDisable:                c.DenySelinuxDisable,
 		DenySelinuxLabelOverride:          c.DenySelinuxLabelOverride,
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
+		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
+	}
+}
+
+func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodContainerCreateOptions {
+	return filter.LibpodContainerCreateOptions{
+		AllowPrivileged:                   c.AllowPrivileged,
+		AllowHostNetwork:                  c.AllowHostNetwork,
+		AllowHostPID:                      c.AllowHostPID,
+		AllowHostIPC:                      c.AllowHostIPC,
+		AllowHostUserNS:                   c.AllowHostUserNS,
+		AllowedBindMounts:                 c.AllowedBindMounts,
+		AllowAllDevices:                   c.AllowAllDevices,
+		AllowedDevices:                    c.AllowedDevices,
+		RestrictNamespaceSharing:          c.RestrictNamespaceSharing,
+		AllowedNamespaceSharingContainers: c.AllowedNamespaceSharingContainers,
+		AllowAllCapabilities:              c.AllowAllCapabilities,
+		AllowedCapabilities:               c.AllowedCapabilities,
+		AllowedSeccompProfiles:            c.AllowedSeccompProfiles,
+		DenyUnconfinedSeccomp:             c.DenyUnconfinedSeccomp,
+		AllowedAppArmorProfiles:           c.AllowedAppArmorProfiles,
+		DenyUnconfinedAppArmor:            c.DenyUnconfinedAppArmor,
+		DenySelinuxDisable:                c.DenySelinuxDisable,
+		RequireNonRootUser:                c.RequireNonRootUser,
+		RequireReadonlyRootfs:             c.RequireReadonlyRootfs,
+		RequireMemoryLimit:                c.RequireMemoryLimit,
+		RequireCPULimit:                   c.RequireCPULimit,
+		RequireCPULimitHard:               c.RequireCPULimitHard,
+		RequirePidsLimit:                  c.RequirePidsLimit,
+		AllowSysctls:                      c.AllowSysctls,
+		ImageTrust:                        c.ImageTrust.toFilterOptions(),
+		AllowSystemdMode:                  c.AllowSystemdMode,
+		AllowCustomIDMappings:             c.AllowCustomIDMappings,
 	}
 }
 
@@ -138,6 +190,10 @@ func (c ContainerUpdateRequestBodyConfig) ToFilterOptions() filter.ContainerUpda
 		AllowCapabilities:    c.AllowCapabilities,
 		AllowResourceUpdates: c.AllowResourceUpdates,
 		AllowRestartPolicy:   c.AllowRestartPolicy,
+		RequireMemoryLimit:   c.RequireMemoryLimit,
+		RequireCPULimit:      c.RequireCPULimit,
+		RequireCPULimitHard:  c.RequireCPULimitHard,
+		RequirePidsLimit:     c.RequirePidsLimit,
 	}
 }
 
@@ -180,6 +236,7 @@ func (c NetworkRequestBodyConfig) ToFilterOptions() filter.NetworkOptions {
 		AllowDriverOptions:     c.AllowDriverOptions,
 		AllowEndpointConfig:    c.AllowEndpointConfig,
 		AllowDisconnectForce:   c.AllowDisconnectForce,
+		AllowDisableIPv4:       c.AllowDisableIPv4,
 	}
 }
 
@@ -217,6 +274,8 @@ func (c ServiceRequestBodyConfig) ToFilterOptions() filter.ServiceOptions {
 		DenySelinuxDisable:         c.DenySelinuxDisable,
 		DenySelinuxLabelOverride:   c.DenySelinuxLabelOverride,
 		ImageTrust:                 c.ImageTrust.toFilterOptions(),
+		RequireCPULimit:            c.RequireCPULimit,
+		RequireCPULimitHard:        c.RequireCPULimitHard,
 	}
 }
 
@@ -258,6 +317,45 @@ func (c PluginRequestBodyConfig) ToFilterOptions() filter.PluginOptions {
 		AllowedRegistries:     c.AllowedRegistries,
 		AllowedSetEnvPrefixes: c.AllowedSetEnvPrefixes,
 	}
+}
+
+// ToFilterOptions converts the mutations config block into filter.MutationOptions.
+// Unlike RequestBodyConfig.ToFilterOptions, this carries global state (see
+// MutationsConfig's doc comment: mutations are not part of clients.profiles),
+// so cmd/serve.go attaches the result to filter.Options.Mutation directly
+// rather than through PolicyConfig.
+func (c MutationsConfig) ToFilterOptions() filter.MutationOptions {
+	if len(c.Rules) == 0 {
+		return filter.MutationOptions{}
+	}
+	rules := make([]filter.MutationRuleOptions, 0, len(c.Rules))
+	for _, r := range c.Rules {
+		opt := filter.MutationRuleOptions{
+			ID:       r.ID,
+			Mode:     r.Mode,
+			Surfaces: r.Surfaces,
+		}
+		if r.InjectLabels != nil {
+			opt.InjectLabels = &filter.InjectLabelsMutationOptions{Labels: r.InjectLabels.Labels}
+		}
+		if r.RemapImage != nil {
+			// Validation (validateMutationRemapImage) accepts match case-
+			// insensitively (lowercasing before comparing against
+			// "exact"/"prefix"), but does not write the canonical form back
+			// onto rule.RemapImage.Match. Normalize here too, rather than
+			// relying solely on filter.newMutationEngine's own
+			// ToLower(TrimSpace(...)) of this same field, so this package's
+			// output is already canonical independent of that internal
+			// detail of a different package.
+			opt.RemapImage = &filter.ImageRemapMutationOptions{
+				Match: strings.ToLower(strings.TrimSpace(r.RemapImage.Match)),
+				From:  r.RemapImage.From,
+				To:    r.RemapImage.To,
+			}
+		}
+		rules = append(rules, opt)
+	}
+	return filter.MutationOptions{Rules: rules}
 }
 
 // toFilterAllowedDeviceRequests converts config AllowedDeviceRequest slices to

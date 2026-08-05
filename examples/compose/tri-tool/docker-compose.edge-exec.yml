@@ -46,10 +46,14 @@
 # read_only + cap_drop: ALL + no-new-privileges on sockguard and Portwing;
 # drydock is unhardened the same way for the same su-exec-drops-privileges
 # reason documented in docker-compose.yml.
+#
+# SOCKGUARD_IMAGE (full image reference, not just a tag) overrides the
+# sockguard image the same way it does in docker-compose.yml — see that
+# file's header comment.
 
 services:
   sockguard:
-    image: "codeswhat/sockguard:${SOCKGUARD_VERSION:-1.5.1}"
+    image: "${SOCKGUARD_IMAGE:-codeswhat/sockguard:1.5.1}"
     restart: unless-stopped
     read_only: true
     cap_drop:

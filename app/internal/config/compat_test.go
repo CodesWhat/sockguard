@@ -615,3 +615,81 @@ func TestGenerateGranularPostRules(t *testing.T) {
 		}
 	})
 }
+
+func TestCompatGrpcEnvAutoAcksBuildkitTunnel(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("GRPC", "1")
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if !ApplyCompat(&cfg, logger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	if !cfg.InsecureAcceptOpaqueBuildkitTunnels {
+		t.Fatal("expected GRPC=1 to auto-set InsecureAcceptOpaqueBuildkitTunnels")
+	}
+	if !strings.Contains(logBuf.String(), "GRPC/SESSION compat env vars open the opaque BuildKit tunnel") {
+		t.Fatalf("expected buildkit tunnel deprecation warning, got logs: %s", logBuf.String())
+	}
+}
+
+func TestCompatSessionEnvAutoAcksBuildkitTunnel(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("SESSION", "1")
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if !ApplyCompat(&cfg, logger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	if !cfg.InsecureAcceptOpaqueBuildkitTunnels {
+		t.Fatal("expected SESSION=1 to auto-set InsecureAcceptOpaqueBuildkitTunnels")
+	}
+	if !strings.Contains(logBuf.String(), "GRPC/SESSION compat env vars open the opaque BuildKit tunnel") {
+		t.Fatalf("expected buildkit tunnel deprecation warning, got logs: %s", logBuf.String())
+	}
+}
+
+func TestCompatWithoutGrpcOrSessionDoesNotAckBuildkitTunnel(t *testing.T) {
+	cfg := Defaults()
+	t.Setenv("CONTAINERS", "1")
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if !ApplyCompat(&cfg, logger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	if cfg.InsecureAcceptOpaqueBuildkitTunnels {
+		t.Fatal("expected InsecureAcceptOpaqueBuildkitTunnels to stay false without GRPC/SESSION env vars")
+	}
+	if strings.Contains(logBuf.String(), "GRPC/SESSION compat env vars open the opaque BuildKit tunnel") {
+		t.Fatalf("expected no buildkit tunnel warning without GRPC/SESSION, got logs: %s", logBuf.String())
+	}
+}
+
+func TestCompatGrpcEnvDoesNotOverrideExplicitAck(t *testing.T) {
+	cfg := Defaults()
+	cfg.InsecureAcceptOpaqueBuildkitTunnels = true
+	t.Setenv("GRPC", "1")
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	if !ApplyCompat(&cfg, logger) {
+		t.Fatal("expected compat to activate")
+	}
+
+	if !cfg.InsecureAcceptOpaqueBuildkitTunnels {
+		t.Fatal("expected InsecureAcceptOpaqueBuildkitTunnels to remain true")
+	}
+	// Already explicitly acknowledged, so no deprecation nudge is needed.
+	if strings.Contains(logBuf.String(), "GRPC/SESSION compat env vars open the opaque BuildKit tunnel") {
+		t.Fatalf("expected no buildkit tunnel warning when already explicitly acknowledged, got logs: %s", logBuf.String())
+	}
+}

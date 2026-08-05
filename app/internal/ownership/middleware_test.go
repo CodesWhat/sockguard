@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/dockerresource"
+	"github.com/codeswhat/sockguard/internal/filter"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -2435,7 +2436,7 @@ func TestMutateJSONBodyPreservesLargeIntegers(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(bodyIn))
 
 	if err := mutateJSONBody(req, func(decoded map[string]any) error {
-		labels, err := nestedObject(decoded, "Labels")
+		labels, err := filter.NestedObject(decoded, "Labels")
 		if err != nil {
 			return err
 		}
@@ -2467,21 +2468,21 @@ func TestMutateJSONBodyPreservesLargeIntegers(t *testing.T) {
 func TestNestedObject(t *testing.T) {
 	t.Parallel()
 	decoded := map[string]any{}
-	obj, err := nestedObject(decoded, "Labels")
+	obj, err := filter.NestedObject(decoded, "Labels")
 	if err != nil {
-		t.Fatalf("nestedObject() error = %v", err)
+		t.Fatalf("filter.NestedObject() error = %v", err)
 	}
 	obj["k"] = "v"
 	if got := decoded["Labels"].(map[string]any)["k"]; got != "v" {
 		t.Fatalf("nested object = %#v, want value", decoded["Labels"])
 	}
 
-	if _, err := nestedObject(map[string]any{"Labels": "bad"}, "Labels"); err == nil {
+	if _, err := filter.NestedObject(map[string]any{"Labels": "bad"}, "Labels"); err == nil {
 		t.Fatal("expected nested object type error")
 	}
-	obj, err = nestedObject(map[string]any{"Labels": nil}, "Labels")
+	obj, err = filter.NestedObject(map[string]any{"Labels": nil}, "Labels")
 	if err != nil || obj == nil {
-		t.Fatalf("nestedObject(nil) = (%#v, %v), want object nil", obj, err)
+		t.Fatalf("filter.NestedObject(nil) = (%#v, %v), want object nil", obj, err)
 	}
 }
 

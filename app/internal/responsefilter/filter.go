@@ -37,6 +37,15 @@ type Options struct {
 	RedactMountPaths      bool
 	RedactNetworkTopology bool
 	RedactSensitiveData   bool
+	// RedactHostTopology redacts GET /info fields that fingerprint the host's
+	// container-runtime plumbing (Containerd, FirewallBackend,
+	// DiscoveredDevices, NRI). Separate from RedactNetworkTopology.
+	RedactHostTopology bool
+	// AllowAttestationStatements permits GET /images/{name}/attestations
+	// responses that include the full statement content (?statement=true).
+	// Default false: the response is rejected regardless of every other
+	// option above — see denyAttestationStatement.
+	AllowAttestationStatements bool
 }
 
 // Filter applies response redactions to selected Docker JSON response shapes.
@@ -54,7 +63,7 @@ func (f *Filter) Enabled() bool {
 	if f == nil {
 		return false
 	}
-	return f.opts.RedactContainerEnv || f.opts.RedactMountPaths || f.opts.RedactNetworkTopology || f.opts.RedactSensitiveData
+	return f.opts.RedactContainerEnv || f.opts.RedactMountPaths || f.opts.RedactNetworkTopology || f.opts.RedactSensitiveData || f.opts.RedactHostTopology
 }
 
 // ModifyResponse rewrites supported successful Docker JSON responses in place.
@@ -63,7 +72,7 @@ func (f *Filter) Enabled() bool {
 // the proxy performs a raw bidirectional copy for those endpoints, so secrets
 // appearing in exec output are passed through regardless of RedactSensitiveData.
 func (f *Filter) ModifyResponse(resp *http.Response) error {
-	if !f.Enabled() || resp == nil || resp.Request == nil {
+	if f == nil || resp == nil || resp.Request == nil {
 		return nil
 	}
 	if resp.Request.Method == http.MethodHead || !isSuccessfulBodyResponse(resp.StatusCode) {
@@ -71,6 +80,20 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 	}
 
 	normPath := requestfilter.NormalizePath(resp.Request.URL.Path)
+
+	// Attestation-statement gating runs independent of Enabled()/every other
+	// option below: GET /images/{name}/attestations?statement=true (Engine
+	// API 1.53+) is a read endpoint that broad allow rules ("/images/**" in
+	// portainer.yaml) admit at the rule-engine layer without knowing it
+	// exists. Default false closes that gap regardless of whether any
+	// redaction option is otherwise enabled.
+	if f.denyAttestationStatement(resp, normPath) {
+		return rejectResponse(fmt.Errorf("attestation statement retrieval is not allowed (set response.allow_attestation_statements: true to permit)"))
+	}
+
+	if !f.Enabled() {
+		return nil
+	}
 
 	// Bespoke handlers (non-uniform guard or body shape).
 	switch {
@@ -374,10 +397,59 @@ func (f *Filter) modifySwarmUnlockKey(resp *http.Response) error {
 }
 
 func (f *Filter) modifyInfo(resp *http.Response) error {
-	if !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData {
+	if !f.opts.RedactNetworkTopology && !f.opts.RedactSensitiveData && !f.opts.RedactHostTopology {
 		return nil
 	}
 	return modifyMapResponse(resp, f.redactInfoPayload)
+}
+
+// isImageAttestationsPath reports whether normPath is
+// /images/{name}/attestations. The image name segment itself may contain
+// slashes (registry/owner/repo), so the match is anchored on the last path
+// segment being "attestations" with a non-empty identifier before it, mirroring
+// isContainerInspectPath's approach for a similarly-shaped path.
+func isImageAttestationsPath(normPath string) bool {
+	if !strings.HasPrefix(normPath, "/images/") {
+		return false
+	}
+	rest := strings.TrimPrefix(normPath, "/images/")
+	idx := strings.LastIndex(rest, "/")
+	if idx <= 0 {
+		return false
+	}
+	return rest[idx+1:] == "attestations"
+}
+
+// denyAttestationStatement reports whether resp is a
+// GET /images/{name}/attestations?statement=true response that must be
+// rejected under the current AllowAttestationStatements policy.
+func (f *Filter) denyAttestationStatement(resp *http.Response, normPath string) bool {
+	if f.opts.AllowAttestationStatements {
+		return false
+	}
+	if !isImageAttestationsPath(normPath) {
+		return false
+	}
+	return strings.EqualFold(resp.Request.URL.Query().Get("statement"), "true")
+}
+
+// redactFieldAnyShape zeroes payload[key] to the empty form of its own JSON
+// type (string/array/object) when present. Used for GET /info host-topology
+// fields whose exact shape varies by Engine version/build — redacting by
+// type rather than a fixed shape stays correct across schema variance.
+func redactFieldAnyShape(payload map[string]any, key string) {
+	value, ok := payload[key]
+	if !ok || value == nil {
+		return
+	}
+	switch value.(type) {
+	case string:
+		payload[key] = redactedValue
+	case []any:
+		payload[key] = []any{}
+	case map[string]any:
+		payload[key] = map[string]any{}
+	}
 }
 
 func (f *Filter) modifySystemDataUsage(resp *http.Response) error {
@@ -688,6 +760,12 @@ func (f *Filter) redactSwarmPayload(payload map[string]any) error {
 }
 
 func (f *Filter) redactInfoPayload(payload map[string]any) error {
+	if f.opts.RedactHostTopology {
+		for _, key := range []string{"Containerd", "FirewallBackend", "DiscoveredDevices", "NRI"} {
+			redactFieldAnyShape(payload, key)
+		}
+	}
+
 	swarmInfo, found, err := nestedMapValue(payload, "Swarm")
 	if err != nil || !found {
 		return err

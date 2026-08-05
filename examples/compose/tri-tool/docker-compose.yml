@@ -32,12 +32,16 @@
 #   sudo chown 65532:65532 portwing_token.txt && sudo chmod 0400 portwing_token.txt
 #
 # The default image versions below are the exact releases exercised together
-# by this repository's compatibility audit. Override SOCKGUARD_VERSION,
-# PORTWING_VERSION, or DRYDOCK_VERSION deliberately when validating an upgrade.
+# by this repository's compatibility audit. Override SOCKGUARD_IMAGE,
+# PORTWING_VERSION, or DRYDOCK_VERSION deliberately when validating an
+# upgrade. SOCKGUARD_IMAGE takes a full image reference (registry + repo +
+# tag), not just a tag, so the #150 conformance workflow can point it at a
+# release-candidate image on ghcr.io/docker.io/quay.io ahead of GA promotion
+# (see RELEASING.md's pre-GA conformance gate step) without forking this file.
 
 services:
   sockguard:
-    image: "codeswhat/sockguard:${SOCKGUARD_VERSION:-1.5.1}"
+    image: "${SOCKGUARD_IMAGE:-codeswhat/sockguard:1.5.1}"
     restart: unless-stopped
     read_only: true
     cap_drop:

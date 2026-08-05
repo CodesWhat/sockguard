@@ -220,6 +220,56 @@ func TestReloadCoordinatorRejectsValidationError(t *testing.T) {
 	}
 }
 
+func TestReloadCoordinatorFailedListenerReloadLeavesOldGenerationServing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		configure func(*reloadCoordinatorFixture, config.Config)
+	}{
+		{
+			name: "invalid allowlist",
+			configure: func(f *reloadCoordinatorFixture, initial config.Config) {
+				candidate := initial
+				candidate.Listeners = append([]config.ListenerConfig(nil), initial.Listeners...)
+				candidate.Listeners[0].AllowedProfiles = []string{"unknown"}
+				f.loadCfg = &candidate
+				f.validateErr = errors.New("listeners.ci.allowed_profiles references unknown profile")
+			},
+		},
+		{
+			name: "immutable address",
+			configure: func(f *reloadCoordinatorFixture, initial config.Config) {
+				candidate := initial
+				candidate.Listeners = append([]config.ListenerConfig(nil), initial.Listeners...)
+				candidate.Listeners[1].Address = "127.0.0.1:9999"
+				f.loadCfg = &candidate
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			initial := admissionTestConfig()
+			f := newReloadCoordinatorFixture(t, &initial)
+			tc.configure(f, initial)
+			before := f.swappable.Current()
+			f.coordinator.reload()
+			if got := f.swappable.Current(); fmt.Sprintf("%p", got) != fmt.Sprintf("%p", before) {
+				t.Fatal("failed reload swapped the active handler generation")
+			}
+			rec := httptest.NewRecorder()
+			f.swappable.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+			if rec.Code != http.StatusOK || rec.Body.String() != "v1" {
+				t.Fatalf("old generation response = (%d,%q), want (200,v1)", rec.Code, rec.Body.String())
+			}
+			if got := f.coordinator.activeCfg.Listeners[0].AllowedProfiles[0]; got != "ci" {
+				t.Fatalf("active config allowlist = %q, want old value ci", got)
+			}
+		})
+	}
+}
+
 func TestReloadCoordinatorSwapsOnSuccess(t *testing.T) {
 	initial := config.Defaults()
 	initial.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"}}

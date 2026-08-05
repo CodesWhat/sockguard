@@ -23,6 +23,9 @@ type NetworkOptions struct {
 	AllowDriverOptions     bool
 	AllowEndpointConfig    bool
 	AllowDisconnectForce   bool
+	// AllowDisableIPv4 permits POST /networks/create with EnableIPv4
+	// explicitly false (Engine API 1.48+). Default false.
+	AllowDisableIPv4 bool
 }
 
 type networkPolicy struct {
@@ -38,6 +41,7 @@ type networkPolicy struct {
 	allowDriverOptions     bool
 	allowEndpointConfig    bool
 	allowDisconnectForce   bool
+	allowDisableIPv4       bool
 }
 
 type networkCreateRequest struct {
@@ -49,6 +53,10 @@ type networkCreateRequest struct {
 	ConfigFrom *networkConfigFrom `json:"ConfigFrom"`
 	IPAM       *networkIPAM       `json:"IPAM"`
 	Options    map[string]any     `json:"Options"`
+	// EnableIPv4 (Engine API 1.48+) defaults to true when absent; an explicit
+	// false disables IPv4 addressing on the network. A pointer distinguishes
+	// "not set" from "explicitly false".
+	EnableIPv4 *bool `json:"EnableIPv4"`
 }
 
 type networkConfigFrom struct {
@@ -77,6 +85,11 @@ type networkEndpointConfig struct {
 	GlobalIPv6PrefixLen int                        `json:"GlobalIPv6PrefixLen"`
 	MacAddress          string                     `json:"MacAddress"`
 	DriverOpts          map[string]any             `json:"DriverOpts"`
+	// GwPriority (Engine API 1.45+) selects which network provides the
+	// container's default gateway when it is attached to more than one.
+	// Gated by the same allow_endpoint_config posture as the other
+	// endpoint-config fields — see denyEndpointConfigReason.
+	GwPriority int `json:"GwPriority"`
 }
 
 type networkEndpointIPAMConfig struct {
@@ -103,6 +116,7 @@ func newNetworkPolicy(opts NetworkOptions) networkPolicy {
 		allowDriverOptions:     opts.AllowDriverOptions,
 		allowEndpointConfig:    opts.AllowEndpointConfig,
 		allowDisconnectForce:   opts.AllowDisconnectForce,
+		allowDisableIPv4:       opts.AllowDisableIPv4,
 	}
 }
 
@@ -165,6 +179,9 @@ func (p networkPolicy) inspectCreate(logger *slog.Logger, r *http.Request, body 
 	}
 	if !p.allowDriverOptions && len(req.Options) > 0 {
 		return "network create denied: driver options are not allowed", nil
+	}
+	if req.EnableIPv4 != nil && !*req.EnableIPv4 && !p.allowDisableIPv4 {
+		return "network create denied: disabling IPv4 (EnableIPv4: false) is not allowed", nil
 	}
 
 	return "", nil
@@ -235,6 +252,9 @@ func denyEndpointConfigReason(ep networkEndpointConfig, allow bool, subject stri
 	}
 	if len(ep.DriverOpts) > 0 {
 		return fmt.Sprintf("%s denied: endpoint driver options are not allowed", subject)
+	}
+	if ep.GwPriority != 0 {
+		return fmt.Sprintf("%s denied: endpoint gateway priority is not allowed", subject)
 	}
 	return ""
 }

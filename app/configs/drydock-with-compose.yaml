@@ -20,12 +20,15 @@
 # network/volume create policies default to denying custom drivers and driver
 # opts unless explicitly widened here, and this preset does not widen them.
 #
-# Still denied: /build. `docker compose up --build` additionally needs
-# BuildKit's classic builder fallback, which requires POST /build; a buildx
-# (BuildKit) build additionally needs the /session and /grpc endpoints for the
-# frontend/grpc bridge. Neither is modeled by this preset — see
-# portwing-with-compose.yaml's identical header note. Operators who need
-# `--build` support require a further variant that is not built today.
+# Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
+# with DEFAULT settings never calls POST /build at all — it drives dockerd's
+# embedded BuildKit over the hijacked, unversioned POST /session and
+# POST /grpc streams instead, both denied here. Those streams carry secrets,
+# SSH agent forwarding, and file sync sockguard cannot inspect once opened.
+# Use drydock-with-build.yaml if you need `--build` support: it layers
+# CLASSIC builder support (POST /build only, requires DOCKER_BUILDKIT=0 in
+# the client environment) on top of everything in this preset. It does not
+# open /session or /grpc — BuildKit gRPC mediation is a future v1.7+ epic.
 #
 # Self-update: same caveat as drydock.yaml — the finalize exec
 # (runFinalizeCallbackInContainer) is still denied here. Use

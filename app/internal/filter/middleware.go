@@ -60,6 +60,10 @@ type PolicyConfig struct {
 	// ContainerCreate configures request-body policy checks for
 	// POST /containers/create.
 	ContainerCreate ContainerCreateOptions
+	// LibpodContainerCreate configures request-body policy checks for
+	// POST /libpod/containers/create (Podman's native SpecGenerator create
+	// endpoint, distinct from the Docker-compat ContainerCreate above).
+	LibpodContainerCreate LibpodContainerCreateOptions
 	// Exec configures request-body policy checks for exec create/start.
 	Exec ExecOptions
 	// ImagePull configures request/query inspection for POST /images/create.
@@ -90,6 +94,18 @@ type PolicyConfig struct {
 	Node NodeOptions
 	// Plugin configures request-body inspection for plugin write endpoints.
 	Plugin PluginOptions
+	// LibpodPodCreate configures request-body inspection for
+	// POST /libpod/pods/create. #148.
+	LibpodPodCreate LibpodPodCreateOptions
+	// LibpodVolume configures request-body inspection for
+	// POST /libpod/volumes/create. #148.
+	LibpodVolume VolumeOptions
+	// LibpodNetwork configures request-body inspection for
+	// POST /libpod/networks/create. #148.
+	LibpodNetwork NetworkOptions
+	// LibpodSecret configures request-body inspection for
+	// POST /libpod/secrets/create. #148.
+	LibpodSecret SecretOptions
 }
 
 // Options configures filter middleware behavior.
@@ -99,6 +115,11 @@ type Options struct {
 	Profiles map[string]Policy
 	// ResolveProfile returns the named policy to apply for the request.
 	ResolveProfile func(*http.Request) (string, bool)
+	// Mutation configures declarative admission-mutation rules. Global —
+	// applied identically regardless of which client profile is active —
+	// because mutation config is not part of PolicyConfig/per-profile
+	// overrides (v1 has a single mutation authority).
+	Mutation MutationOptions
 }
 
 // Policy defines a named request policy profile that can override the global
@@ -188,10 +209,14 @@ type requestInspectPolicy struct {
 // against compiled rules and allows deny response detail to be configured.
 func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Options) func(http.Handler) http.Handler {
 	opts = opts.normalized()
-	defaultPolicy := compileRuntimePolicy(rules, opts.PolicyConfig)
+	// Compiled once and shared by the default policy and every client
+	// profile: mutation config is global, not per-profile (see
+	// Options.Mutation's doc comment).
+	mutationEng := newMutationEngine(opts.Mutation)
+	defaultPolicy := compileRuntimePolicy(rules, opts.PolicyConfig, mutationEng)
 	profilePolicies := make(map[string]runtimePolicy, len(opts.Profiles))
 	for name, profile := range opts.Profiles {
-		profilePolicies[name] = compileRuntimePolicy(profile.Rules, profile.PolicyConfig)
+		profilePolicies[name] = compileRuntimePolicy(profile.Rules, profile.PolicyConfig, mutationEng)
 	}
 
 	return func(next http.Handler) http.Handler {
@@ -201,6 +226,16 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			// write the same pointer, so paying for the type assertion plus
 			// context fallback once per request is the minimal correct cost.
 			meta := logging.MetaForRequest(w, r)
+			// Stash meta onto the request's own context so inspectors deep
+			// in the bucket walk (which only ever receive *http.Request —
+			// see inspectorFunc) can record structured per-request state,
+			// such as the admission-mutation engine's rule-outcome trace,
+			// without widening that signature for all existing inspectors.
+			// logging.Meta reads this back; see mutation.go's
+			// recordMutationOutcome.
+			if meta != nil {
+				r = r.WithContext(logging.WithMeta(r.Context(), meta))
+			}
 
 			activePolicy, ok := resolveActivePolicy(opts, profilePolicies, defaultPolicy, w, r, meta, logger)
 			if !ok {
@@ -310,10 +345,27 @@ func runAllowedInspection(activePolicy runtimePolicy, logger *slog.Logger, w htt
 	return denyReason, denyReasonCode, status
 }
 
-func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy {
+func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *mutationEngine) runtimePolicy {
 	cfg = cfg.normalized()
 	all := []requestInspectPolicy{
+		// The two admission-mutation entries are registered BEFORE
+		// container_create/service in this same slice, at the same
+		// (method, matches, severity) tuple. inspectAllowedRequest buckets
+		// matches by severity and runs every policy in the single matched
+		// bucket in slice order (see its doc comment and middleware.go's
+		// package doc comment) — so mutation always applies/canonicalizes
+		// first, and container_create/service's own inspect() always runs
+		// second, in the same request, against whatever bytes mutation left
+		// in r.Body. Neither entry needs to know the other exists.
+		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreateMutationPolicy(mutationEng).inspect, "failed to apply container create admission mutations", "unable to apply container create admission mutations"},
 		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreatePolicy(cfg.ContainerCreate).inspect, "failed to inspect container create request body", "unable to inspect container create request body"},
+		// libpod container-create is path-exclusive with the Docker-compat
+		// entry above (isLibpodContainerCreatePath vs
+		// matchesContainerCreateInspection never both match the same
+		// normalized path — see TestInspectorRoutingIsPathExclusive), so a
+		// crafted body can never reach the wrong family's gates regardless
+		// of which shape it carries.
+		{http.MethodPost, matchesLibpodContainerCreateInspection, inspectSeverityCritical, newLibpodContainerCreatePolicy(cfg.LibpodContainerCreate).inspect, "failed to inspect libpod container create request body", "unable to inspect libpod container create request body"},
 		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
 		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
 		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
@@ -324,10 +376,19 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig) runtimePolicy
 		{http.MethodPost, matchesNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.Network).inspect, "failed to inspect network request body", "unable to inspect network request body"},
 		{http.MethodPost, matchesSecretInspection, inspectSeverityMedium, newSecretPolicy(cfg.Secret).inspect, "failed to inspect secret create request body", "unable to inspect secret create request body"},
 		{http.MethodPost, matchesConfigInspection, inspectSeverityMedium, newConfigPolicy(cfg.Config).inspect, "failed to inspect config create request body", "unable to inspect config create request body"},
+		{http.MethodPost, matchesServiceInspection, inspectSeverityCritical, newServiceMutationPolicy(mutationEng).inspect, "failed to apply service admission mutations", "unable to apply service admission mutations"},
 		{http.MethodPost, matchesServiceInspection, inspectSeverityCritical, newServicePolicy(cfg.Service).inspect, "failed to inspect service request body", "unable to inspect service request body"},
 		{http.MethodPost, matchesSwarmInspection, inspectSeverityCritical, newSwarmPolicy(cfg.Swarm).inspect, "failed to inspect swarm request body", "unable to inspect swarm request body"},
 		{http.MethodPost, matchesNodeInspection, inspectSeverityHigh, newNodePolicy(cfg.Node).inspect, "failed to inspect node update request body", "unable to inspect node update request body"},
 		{http.MethodPost, matchesPluginInspection, inspectSeverityCritical, newPluginPolicy(cfg.Plugin).inspect, "failed to inspect plugin request body", "unable to inspect plugin request body"},
+		// libpod-native inspectors (#148). Exec is deliberately NOT listed
+		// again here: matchesExecInspection above already covers both the
+		// Docker-compat and libpod exec paths against the single shared
+		// execPolicy entry (design doc decision C3).
+		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(cfg.LibpodPodCreate).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
+		{http.MethodPost, matchesLibpodVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.LibpodVolume).inspectLibpod, "failed to inspect libpod volume create request body", "unable to inspect libpod volume create request body"},
+		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpodCreate, "failed to inspect libpod network create request body", "unable to inspect libpod network create request body"},
+		{http.MethodPost, matchesLibpodSecretInspection, inspectSeverityMedium, newLibpodSecretPolicy(cfg.LibpodSecret).inspect, "failed to inspect libpod secret create request", "unable to inspect libpod secret create request"},
 	}
 	byMethod := groupInspectPoliciesByMethod(all)
 	return runtimePolicy{
@@ -341,8 +402,15 @@ func matchesContainerCreateInspection(normalizedPath string) bool {
 	return normalizedPath == "/containers/create"
 }
 
+func matchesLibpodContainerCreateInspection(normalizedPath string) bool {
+	return isLibpodContainerCreatePath(normalizedPath)
+}
+
 func matchesExecInspection(normalizedPath string) bool {
-	return isExecCreatePath(normalizedPath) || isExecStartPath(normalizedPath)
+	// Covers both the Docker-compat and libpod exec families — see the
+	// shared execPolicy/ExecOptions doc comments (#148 design doc C3).
+	return isExecCreatePath(normalizedPath) || isExecStartPath(normalizedPath) ||
+		isLibpodExecCreatePath(normalizedPath) || isLibpodExecStartPath(normalizedPath)
 }
 
 func matchesImagePullInspection(normalizedPath string) bool {
@@ -400,6 +468,22 @@ func matchesNodeInspection(normalizedPath string) bool {
 
 func matchesPluginInspection(normalizedPath string) bool {
 	return normalizedPath == "/plugins/pull" || normalizedPath == "/plugins/create" || isPluginUpgradePath(normalizedPath) || isPluginSetPath(normalizedPath)
+}
+
+func matchesLibpodPodCreateInspection(normalizedPath string) bool {
+	return isLibpodPodCreatePath(normalizedPath)
+}
+
+func matchesLibpodVolumeInspection(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"volumes/create"
+}
+
+func matchesLibpodNetworkInspection(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"networks/create"
+}
+
+func matchesLibpodSecretInspection(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"secrets/create"
 }
 
 // inspectBucketCapacity bounds how many policies of a single severity may
@@ -471,7 +555,11 @@ func (p runtimePolicy) inspectAllowedRequest(logger *slog.Logger, r *http.Reques
 			denyReason, err := policy.inspect(logger, r, normalizedPath)
 			if err != nil {
 				if rejection, ok := requestRejectionFromError(err); ok {
-					return rejection.reason, requestRejectionReasonCode(rejection.status), rejection.status
+					code := rejection.reasonCode
+					if code == "" {
+						code = requestRejectionReasonCode(rejection.status)
+					}
+					return rejection.reason, code, rejection.status
 				}
 				logRequestError(logger, r, slog.LevelError, policy.errorLogMessage, err)
 				return policy.denyReasonOnError, reasonCodeRequestBodyInspectionFailed, http.StatusForbidden

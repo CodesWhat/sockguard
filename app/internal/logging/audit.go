@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/codeswhat/sockguard/internal/inbound"
 )
 
 // AuditOptions configures dedicated audit-event fields that come from proxy
@@ -105,12 +107,105 @@ type auditEvent struct {
 	TransportScheme   string                `json:"transport_scheme"`
 	TransportProtocol string                `json:"transport_protocol"`
 	OwnershipContext  auditOwnershipContext `json:"ownership"`
+	// ResourcePolicy is nil (omitted) for every request the #152 resource-limit
+	// guard passed through untouched. It is a fresh value built by
+	// auditResourcePolicyContextFrom below, never the pooled
+	// *logging.ResourcePolicyMeta pointer RequestMeta carries — that pointer
+	// is returned to its pool (and zeroed) by the deferred putRequestMeta
+	// before this event reaches AuditLogger.run's goroutine, so the audit
+	// event must hold its own deep copy taken synchronously here, not an
+	// alias into pooled state.
+	ResourcePolicy *auditResourcePolicyContext `json:"resource_policy,omitempty"`
+	// ListenerName is the operator-configured listener name (#149) —
+	// "default" for the legacy singular listen: block, an explicit
+	// listeners[*].name, or "admin" for the dedicated admin listener.
+	// Additive; TransportListener keeps its pre-existing "unix"/"tcp"
+	// transport-kind meaning unchanged.
+	ListenerName string `json:"listener_name,omitempty"`
+	// Mutation is nil unless the admission-mutation engine evaluated at
+	// least one rule against this request (#151). It is built by
+	// newAuditMutationRecord as an independent deep copy of the pooled
+	// logging.MutationRecord that RequestMeta.Mutation points to — never
+	// the pooled pointer/slice itself — because this event is enqueued
+	// onto AuditLogger's channel and encoded asynchronously, potentially
+	// after the request handler's deferred putRequestMeta has already
+	// recycled that pooled record back into mutationRecordPool for reuse
+	// by an unrelated request.
+	Mutation *auditMutationRecord `json:"mutation,omitempty"`
 }
 
 type auditOwnershipContext struct {
 	Enabled  bool   `json:"enabled"`
 	Owner    string `json:"owner"`
 	LabelKey string `json:"label_key"`
+}
+
+// auditResourcePolicyContext is the audit-log shape of ResourcePolicyMeta.
+// Never carries raw current/effective resource values, inspect JSON,
+// PreviousSpec content, labels, or identifiers — classification fields only.
+type auditResourcePolicyContext struct {
+	Kind         string `json:"kind,omitempty"`
+	Operation    string `json:"operation,omitempty"`
+	StateSource  string `json:"state_source,omitempty"`
+	Requirements string `json:"requirements,omitempty"`
+	Result       string `json:"result,omitempty"`
+	Violation    string `json:"violation,omitempty"`
+	StateLookup  bool   `json:"state_lookup,omitempty"`
+}
+
+// auditResourcePolicyContextFrom builds a standalone value copy of rp for the
+// audit event. Returns nil when the guard did not evaluate policy for this
+// request (the common case), so resource_policy is omitted entirely rather
+// than emitted as an empty object.
+func auditResourcePolicyContextFrom(rp *ResourcePolicyMeta) *auditResourcePolicyContext {
+	if rp == nil || !rp.Evaluated {
+		return nil
+	}
+	return &auditResourcePolicyContext{
+		Kind:         rp.Kind,
+		Operation:    rp.Operation,
+		StateSource:  rp.StateSource,
+		Requirements: rp.Requirements,
+		Result:       rp.Result,
+		Violation:    rp.Violation,
+		StateLookup:  rp.StateLookup,
+	}
+}
+
+// auditMutationRuleOutcome is the audit-log JSON shape of one
+// MutationRuleOutcome.
+type auditMutationRuleOutcome struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Mode    string `json:"mode"`
+	Outcome string `json:"outcome"`
+}
+
+// auditMutationRecord is the audit-log JSON shape of a request's
+// MutationRecord.
+type auditMutationRecord struct {
+	Rules         []auditMutationRuleOutcome `json:"rules,omitempty"`
+	ActualChanged bool                       `json:"actual_changed"`
+}
+
+// newAuditMutationRecord deep-copies rec's rule trace into an independent
+// value safe to hold past the pooled RequestMeta/MutationRecord's lifetime.
+// Returns nil when rec is nil or empty, so the "mutation" field is omitted
+// entirely for the overwhelming majority of requests that never matched a
+// mutation rule.
+func newAuditMutationRecord(rec *MutationRecord) *auditMutationRecord {
+	if rec == nil || len(rec.Rules) == 0 {
+		return nil
+	}
+	rules := make([]auditMutationRuleOutcome, len(rec.Rules))
+	for i, outcome := range rec.Rules {
+		// Field names/order are identical by construction (see
+		// auditMutationRuleOutcome's doc comment), so a direct type
+		// conversion is safe and staticcheck (S1016) prefers it over a
+		// field-by-field literal.
+		rules[i] = auditMutationRuleOutcome(outcome)
+	}
+	return &auditMutationRecord{Rules: rules, ActualChanged: rec.ActualChanged}
 }
 
 // AuditLogMiddleware emits a dedicated audit event after each request.
@@ -141,6 +236,14 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 
 			actorRemoteAddr, actorSourceIP := auditActorIdentity(r)
 			transportListener, transportScheme, transportProtocol := auditTransportIdentity(r, listener)
+			listenerName := ""
+			if identity, ok := inbound.FromContext(r.Context()); ok {
+				listenerName = identity.Name
+			}
+			// Deep-copy before the event is ever handed to logger.log — see
+			// auditEvent.Mutation's doc comment for why the pooled
+			// MutationRecord itself must never be referenced here.
+			mutationRecord := newAuditMutationRecord(meta.Mutation)
 			event := auditEvent{
 				EventType:         "http_request",
 				Timestamp:         logger.now(),
@@ -165,7 +268,10 @@ func AuditLogMiddleware(logger *AuditLogger, opts AuditOptions) func(http.Handle
 				TransportListener: transportListener,
 				TransportScheme:   transportScheme,
 				TransportProtocol: transportProtocol,
+				ListenerName:      listenerName,
 				OwnershipContext:  ownershipContext,
+				ResourcePolicy:    auditResourcePolicyContextFrom(meta.ResourcePolicy),
+				Mutation:          mutationRecord,
 			}
 
 			logger.log(event)

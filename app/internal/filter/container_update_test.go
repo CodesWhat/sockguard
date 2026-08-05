@@ -254,3 +254,69 @@ func TestContainerUpdatePolicyObjectHelpersCoverEmptyAndInvalidNestedFields(t *t
 		t.Fatalf("decodeContainerUpdateObjectField(empty) = %#v, %v; want nil, false", nested, ok)
 	}
 }
+
+// TestContainerUpdateResourceControlFieldsCompleteness is a regression test
+// for the guarded resource-control field set (Engine API 1.55). It pins the
+// full expected set — including all five per-device blkio throttling arrays
+// (BlkioDeviceReadBps/ReadIOps/WriteBps/WriteIOps, BlkioWeightDevice) and the
+// MemorySwap/MemorySwappiness pair — so a future edit that silently drops a
+// field is caught here rather than by a missing standalone deny test.
+func TestContainerUpdateResourceControlFieldsCompleteness(t *testing.T) {
+	want := []string{
+		"BlkioDeviceReadBps",
+		"BlkioDeviceReadIOps",
+		"BlkioDeviceWriteBps",
+		"BlkioDeviceWriteIOps",
+		"BlkioWeight",
+		"BlkioWeightDevice",
+		"CgroupParent",
+		"CgroupnsMode",
+		"CpuCount",
+		"CpuPercent",
+		"CpuPeriod",
+		"CpuQuota",
+		"CpuRealtimePeriod",
+		"CpuRealtimeRuntime",
+		"CpuShares",
+		"CpusetCpus",
+		"CpusetMems",
+		"IOMaximumBandwidth",
+		"IOMaximumIOps",
+		"KernelMemory",
+		"KernelMemoryTCP",
+		"Memory",
+		"MemoryReservation",
+		"MemorySwap",
+		"MemorySwappiness",
+		"NanoCpus",
+		"OomKillDisable",
+		"PidsLimit",
+		"Resources",
+		"Ulimits",
+	}
+
+	if len(containerUpdateResourceControlFields) != len(want) {
+		t.Fatalf("containerUpdateResourceControlFields has %d fields, want %d: %v", len(containerUpdateResourceControlFields), len(want), containerUpdateResourceControlFields)
+	}
+	for i, field := range want {
+		if containerUpdateResourceControlFields[i] != field {
+			t.Fatalf("containerUpdateResourceControlFields[%d] = %q, want %q", i, containerUpdateResourceControlFields[i], field)
+		}
+	}
+
+	// Each field independently trips the resource-control deny by default.
+	for _, field := range want {
+		t.Run(field, func(t *testing.T) {
+			body := `{"` + field + `":1}`
+			req := httptest.NewRequest(http.MethodPost, "/containers/abc/update", strings.NewReader(body))
+
+			reason, err := newContainerUpdatePolicy(ContainerUpdateOptions{}).inspect(nil, req, NormalizePath(req.URL.Path))
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != "container update denied: resource control changes are not allowed" {
+				t.Fatalf("field %q: reason = %q, want resource control denial", field, reason)
+			}
+		})
+	}
+}

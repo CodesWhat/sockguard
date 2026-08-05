@@ -1,0 +1,10 @@
+{"time":"2026-08-05T00:00:00Z","level":"INFO","msg":"request","method":"GET","path":"/v1.45/_ping","normalized_path":"/_ping","decision":"allow","status":200}
+{"time":"2026-08-05T00:00:01Z","level":"INFO","msg":"request","method":"GET","path":"/v1.45/containers/json","normalized_path":"/containers/json","decision":"allow","status":200}
+{"time":"2026-08-05T00:00:02Z","level":"INFO","msg":"request","method":"GET","path":"/v1.45/containers/abc123def/json","normalized_path":"/containers/abc123def/json","decision":"allow","status":200}
+{"time":"2026-08-05T00:00:03Z","level":"INFO","msg":"request","method":"GET","path":"/v1.45/images/ghcr.io/owner/repo/json","normalized_path":"/images/ghcr.io/owner/repo/json","decision":"allow","status":200}
+{"time":"2026-08-05T00:00:04Z","level":"WARN","msg":"request_denied","method":"POST","path":"/v1.45/build","normalized_path":"/build","decision":"deny","status":403,"reason":"not allowed"}
+{"time":"2026-08-05T00:00:05Z","level":"WARN","msg":"request_denied","method":"GET","path":"/v1.45/containers/abc123def/attach","normalized_path":"/containers/abc123def/attach","decision":"deny","status":403,"reason":"not allowed"}
+{"time":"2026-08-05T00:00:06Z","level":"INFO","msg":"request","method":"GET","path":"/v1.45/_ping","decision":"allow","status":200}
+{"time":"2026-08-05T00:00:07Z","level":"INFO","msg":"startup","message":"config loaded"}
+"just a bare JSON string, not an object"
+not even json

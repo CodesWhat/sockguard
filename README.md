@@ -285,9 +285,9 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa g
 
 <h2 align="center" id="supported-profiles">🔌 Supported Profiles</h2>
 
-### Bundled presets (17)
+### Bundled presets (18)
 
-[drydock](app/configs/drydock.yaml) · [drydock with self-update](app/configs/drydock-with-selfupdate.yaml) · [drydock with compose](app/configs/drydock-with-compose.yaml) · [Portwing](app/configs/portwing.yaml) · [Portwing with exec](app/configs/portwing-with-exec.yaml) · [Portwing with compose](app/configs/portwing-with-compose.yaml) · [Traefik](app/configs/traefik.yaml) · [Portainer](app/configs/portainer.yaml) · [Watchtower](app/configs/watchtower.yaml) · [Homepage](app/configs/homepage.yaml) · [Homarr](app/configs/homarr.yaml) · [Diun](app/configs/diun.yaml) · [Autoheal](app/configs/autoheal.yaml) · [read-only](app/configs/readonly.yaml) · [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) · [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml) · [GitLab Runner](app/configs/gitlab-runner.yaml)
+[drydock](app/configs/drydock.yaml) · [drydock with self-update](app/configs/drydock-with-selfupdate.yaml) · [drydock with compose](app/configs/drydock-with-compose.yaml) · [Portwing](app/configs/portwing.yaml) · [Portwing with exec](app/configs/portwing-with-exec.yaml) · [Portwing with compose](app/configs/portwing-with-compose.yaml) · [Traefik](app/configs/traefik.yaml) · [Portainer](app/configs/portainer.yaml) · [Watchtower](app/configs/watchtower.yaml) · [Homepage](app/configs/homepage.yaml) · [Homarr](app/configs/homarr.yaml) · [Diun](app/configs/diun.yaml) · [Autoheal](app/configs/autoheal.yaml) · [read-only](app/configs/readonly.yaml) · [CIS Docker Benchmark](app/configs/cis-docker-benchmark.yaml) · [GitHub Actions self-hosted runner](app/configs/github-actions-runner.yaml) · [GitLab Runner](app/configs/gitlab-runner.yaml) · [multiple listeners](app/configs/multi-listener.yaml)
 
 ### Ready-to-run compose examples
 
@@ -297,7 +297,7 @@ Each example pairs a downstream Docker API consumer with a `sockguard.yaml` over
 
 ### Policy surfaces
 
-Rules can cover method/path filters, body-aware write inspection, read-side redaction and visibility, per-client profile selection, rate limits, concurrency caps, owner-label isolation, rollout modes, hot reload, signed policy bundles, and admin validation.
+Rules can cover method/path filters, body-aware write inspection, declarative admission mutation (fail-closed label injection and image remapping), read-side redaction and visibility, per-client profile selection, rate limits, concurrency caps, owner-label isolation, rollout modes, hot reload, signed policy bundles, and admin validation.
 
 <hr>
 
@@ -378,6 +378,22 @@ rules:
 ```
 
 Trailing `/**` matches both the base path and any deeper path. For example, `/containers/**` matches `/containers` and `/containers/abc/json`.
+
+Multiple independently scoped listeners are also supported — replace `listen:` with a `listeners:` list (unix socket and/or mTLS TCP, any combination), each entry naming which `clients.profiles` it admits via `allowed_profiles`:
+
+```yaml
+listeners:
+  - name: ci
+    socket: /var/run/sockguard-ci.sock
+    socket_mode: "0600"
+    allowed_profiles: [ci]
+  - name: ops
+    address: 0.0.0.0:8443
+    tls: { cert_file: ..., key_file: ..., client_ca_file: ... }
+    allowed_profiles: [ops]
+```
+
+A client resolved to a profile outside the listener it connected on's `allowed_profiles` is denied, even if the base policy would otherwise allow it — see [`configs/multi-listener.yaml`](app/configs/multi-listener.yaml) for a complete working example and the [configuration reference](https://getsockguard.com/docs/configuration) for the full schema and reload semantics.
 
 Sockguard inspects the body of allowed write requests — `containers/create`, `containers/*/update`, `exec`, `build`, `images/create`, `services/create`, `swarm/init`, and the rest of the body-bearing write paths — and blocks privileged or host-bound workloads, non-allowlisted mounts, devices, and registries, and unsafe swarm/network controls. Response bodies are redacted (env, mount paths, topology, secrets) by default. None of that needs configuration to switch on.
 
@@ -467,7 +483,7 @@ Tracked in the [v1.6.0 GitHub milestone](https://github.com/CodesWhat/sockguard/
 |---|---|---|
 | **Multiple listeners** | [#149](https://github.com/CodesWhat/sockguard/issues/149) | Run Unix and TCP listeners together, or multiple instances of either, with listener-scoped TLS and profile boundaries. |
 | **Safe admission mutation** | [#151](https://github.com/CodesWhat/sockguard/issues/151) | Operator-configurable mandatory-label injection and image-reference remapping; canonicalize and re-inspect every mutation before forwarding, fail closed. |
-| **Resource parity** | [#152](https://github.com/CodesWhat/sockguard/issues/152) | Revalidate required hard limits during container update and add Swarm-service CPU-limit requirements. |
+| **Resource parity** | [#152](https://github.com/CodesWhat/sockguard/issues/152) | Revalidate required memory/CPU/CPU-hard/PIDs limits against effective state during container update (`request_body.container_update.require_*`, opt-in, gated by `allow_resource_updates`), and add Swarm-service CPU-limit requirements covering create/update and both rollback paths (`request_body.service.require_cpu_limit`/`require_cpu_limit_hard`). |
 
 **Wave 2 — sequential**
 

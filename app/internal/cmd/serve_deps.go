@@ -37,6 +37,17 @@ type serveDeps struct {
 	isAddrInUse         func(error) bool
 	createServeListener func(*config.Config) (net.Listener, error)
 	createAdminListener func(*config.Config) (net.Listener, error)
+	// createNamedListener binds one explicit listeners[*] entry (#149). Only
+	// used when len(cfg.Listeners) > 0 — the legacy single-listener path
+	// keeps going through createServeListener above so its existing test
+	// doubles keep working unchanged.
+	createNamedListener func(*config.Config, config.ListenerConfig) (net.Listener, error)
+	// probeUnixSocket returns the result of connecting to a unix socket path
+	// found at bind time (EADDRINUSE). Only an error matching ECONNREFUSED is
+	// proof that the socket is stale; nil means live and every other error is
+	// ambiguous and must preserve the path (#149).
+	probeUnixSocket     func(string) error
+	chown               func(string, int, int) error
 	buildBundleVerifier func(config.PolicyBundleConfig) (policybundle.Verifier, error)
 	loadBundleEntity    func(string) (verify.SignedEntity, error)
 	notifySignals       func(chan<- os.Signal, ...os.Signal)
@@ -63,6 +74,8 @@ func newServeDeps() *serveDeps {
 		listenNetwork:       net.Listen,
 		lstatPath:           os.Lstat,
 		isAddrInUse:         isAddrInUse,
+		probeUnixSocket:     defaultProbeUnixSocket,
+		chown:               os.Chown,
 		buildBundleVerifier: defaultBuildBundleVerifier,
 		loadBundleEntity:    policybundle.LoadBundle,
 		notifySignals:       signal.Notify,
@@ -76,6 +89,7 @@ func newServeDeps() *serveDeps {
 	}
 	deps.createServeListener = deps.createListener
 	deps.createAdminListener = deps.createAdminListenerImpl
+	deps.createNamedListener = deps.createNamedListenerImpl
 	return deps
 }
 
@@ -143,7 +157,7 @@ func (d *serveDeps) verifyUpstreamReachable(upstreamSocket string, logger *slog.
 
 func (d *serveDeps) createListener(cfg *config.Config) (net.Listener, error) {
 	if cfg.Listen.Socket != "" {
-		return d.createSocketListener(cfg.Listen.Socket, cfg.Listen.SocketMode)
+		return d.createSocketListener("listen", cfg.Listen.Socket, cfg.Listen.SocketMode, cfg.Listen.SocketUID, cfg.Listen.SocketGID)
 	}
 
 	return d.createTCPListener(cfg.Listen.Address, cfg.Listen.TLS)
@@ -161,17 +175,88 @@ func (d *serveDeps) createAdminListenerImpl(cfg *config.Config) (net.Listener, e
 		return nil, fmt.Errorf("admin listener not configured")
 	}
 	if listen.Socket != "" {
-		return d.createSocketListener(listen.Socket, listen.SocketMode)
+		return d.createSocketListener("admin.listen", listen.Socket, listen.SocketMode, listen.SocketUID, listen.SocketGID)
 	}
 	return d.createTCPListener(listen.Address, listen.TLS)
 }
 
-func (d *serveDeps) createSocketListener(path, modeValue string) (net.Listener, error) {
-	if strings.TrimSpace(modeValue) != config.HardenedListenSocketMode {
-		return nil, fmt.Errorf("listen.socket_mode must be %q because unix listeners are created with owner-only permissions", config.HardenedListenSocketMode)
+// createNamedListenerImpl binds one explicit listeners[*] entry (#149). It is
+// only reached when cfg.Listeners is non-empty — see EffectiveListeners and
+// the createNamedListener field doc.
+func (d *serveDeps) createNamedListenerImpl(cfg *config.Config, entry config.ListenerConfig) (net.Listener, error) {
+	if entry.Socket != "" {
+		return d.createSocketListener(fmt.Sprintf("listeners[%s]", entry.Name), entry.Socket, entry.SocketMode, entry.SocketUID, entry.SocketGID)
+	}
+	return d.createTCPListener(entry.Address, entry.TLS)
+}
+
+// createSocketListener binds a unix-socket listener under the hardened
+// (0600, the default) or group-readable (0660, requires socket_gid) mode —
+// see config.validateSocketOwnership, which is the authoritative validator;
+// this is a defense-in-depth check that should never fire against a config
+// that already passed config.Validate(). uid/gid, when non-nil, chown the
+// freshly bound socket after listen succeeds.
+func (d *serveDeps) createSocketListener(prefix, path, modeValue string, uid, gid *int) (net.Listener, error) {
+	fileMode, err := socketListenFileMode(prefix, modeValue, gid)
+	if err != nil {
+		return nil, err
 	}
 
-	return d.listenUnixSocket(path)
+	var ln net.Listener
+	if fileMode == config.HardenedListenSocketFileMode {
+		// Delegates to the unmodified default-mode path so its existing test
+		// doubles (which call listenUnixSocket directly) keep working.
+		ln, err = d.listenUnixSocket(path)
+	} else {
+		ln, err = d.listenUnixSocketWithMode(path, fileMode)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if uid == nil && gid == nil {
+		return ln, nil
+	}
+	if err := d.chownSocket(path, uid, gid); err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
+	return ln, nil
+}
+
+// socketListenFileMode maps a validated socket_mode string to its
+// os.FileMode, requiring an explicit gid for the group-readable mode —
+// mirrors config.validateSocketOwnership so the runtime check and the
+// config-time validator can never disagree about which combinations are
+// legal.
+func socketListenFileMode(prefix, modeValue string, gid *int) (os.FileMode, error) {
+	switch strings.TrimSpace(modeValue) {
+	case config.HardenedListenSocketMode:
+		return config.HardenedListenSocketFileMode, nil
+	case config.GroupReadableListenSocketMode:
+		if gid == nil {
+			return 0, fmt.Errorf("%s.socket_mode %q requires %s.socket_gid to be set explicitly; omit socket_gid and use %q for the default owner-only mode",
+				prefix, config.GroupReadableListenSocketMode, prefix, config.HardenedListenSocketMode)
+		}
+		return config.GroupReadableListenSocketFileMode, nil
+	default:
+		return 0, fmt.Errorf("%s.socket_mode must be %q or %q (the latter requires %s.socket_gid), got %q",
+			prefix, config.HardenedListenSocketMode, config.GroupReadableListenSocketMode, prefix, modeValue)
+	}
+}
+
+func (d *serveDeps) chownSocket(path string, uid, gid *int) error {
+	resolvedUID, resolvedGID := -1, -1
+	if uid != nil {
+		resolvedUID = *uid
+	}
+	if gid != nil {
+		resolvedGID = *gid
+	}
+	if err := d.chown(path, resolvedUID, resolvedGID); err != nil {
+		return fmt.Errorf("chown socket %q: %w", path, err)
+	}
+	return nil
 }
 
 func (d *serveDeps) createTCPListener(address string, tlsCfg config.ListenTLSConfig) (net.Listener, error) {
@@ -197,7 +282,21 @@ func (d *serveDeps) wrapListenerWithTLS(ln net.Listener, tlsCfg config.ListenTLS
 }
 
 func (d *serveDeps) listenUnixSocket(path string) (net.Listener, error) {
-	return d.withUmask(socketCreateUmask(config.HardenedListenSocketFileMode), func() (net.Listener, error) {
+	return d.listenUnixSocketWithMode(path, config.HardenedListenSocketFileMode)
+}
+
+// listenUnixSocketWithMode binds a unix socket at the given file mode,
+// replacing a stale socket left behind by a crashed previous instance.
+//
+// "Stale" is no longer inferred from EADDRINUSE alone (#149). Before
+// unlinking anything, probeUnixSocket dials the path. A successful dial proves
+// another process is actively serving. Only ECONNREFUSED proves the existing
+// socket is dead; timeouts, ENOENT races, permission failures, and every other
+// result are ambiguous and fail startup without removal. After the refused
+// probe, a second Lstat must still identify the same socket inode/device that
+// was inspected before the probe.
+func (d *serveDeps) listenUnixSocketWithMode(path string, fileMode os.FileMode) (net.Listener, error) {
+	return d.withUmask(socketCreateUmask(fileMode), func() (net.Listener, error) {
 		ln, err := d.listenNetwork("unix", path)
 		if err == nil {
 			return ln, nil
@@ -213,6 +312,25 @@ func (d *serveDeps) listenUnixSocket(path string) (net.Listener, error) {
 		if info.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("socket path %q exists and is not a socket", path)
 		}
+		before := socketIdentityFromFileInfo(info)
+		probeErr := d.probeUnixSocket(path)
+		if probeErr == nil {
+			return nil, fmt.Errorf("socket path %q is actively serving another process; refusing to steal a live listener", path)
+		}
+		if !errors.Is(probeErr, syscall.ECONNREFUSED) {
+			return nil, fmt.Errorf("socket path %q probe result is ambiguous; refusing to remove it: %w", path, probeErr)
+		}
+		afterInfo, afterErr := d.lstatPath(path)
+		if afterErr != nil {
+			return nil, fmt.Errorf("socket path %q changed during stale-socket probe: %w", path, afterErr)
+		}
+		if afterInfo.Mode()&os.ModeSocket == 0 {
+			return nil, fmt.Errorf("socket path %q changed during stale-socket probe and is no longer a socket", path)
+		}
+		after := socketIdentityFromFileInfo(afterInfo)
+		if !before.valid || !after.valid || before != after {
+			return nil, fmt.Errorf("socket path %q changed during stale-socket probe; refusing to remove it", path)
+		}
 		if removeErr := d.removePath(path); removeErr != nil {
 			if !os.IsNotExist(removeErr) {
 				return nil, fmt.Errorf("remove stale socket: %w", removeErr)
@@ -225,6 +343,18 @@ func (d *serveDeps) listenUnixSocket(path string) (net.Listener, error) {
 		}
 		return ln, nil
 	})
+}
+
+// defaultProbeUnixSocket dials path with a short timeout and returns the exact
+// connect result so the caller can distinguish a proven ECONNREFUSED stale
+// socket from every ambiguous failure.
+func defaultProbeUnixSocket(path string) error {
+	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	_ = conn.Close()
+	return nil
 }
 
 func (d *serveDeps) withUmask(mask int, fn func() (net.Listener, error)) (net.Listener, error) {
