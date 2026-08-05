@@ -125,6 +125,18 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		{"libpod-secret-create-denied", http.MethodPost, "/libpod/secrets/create", "", false},
 		{"libpod-play-kube-denied", http.MethodPost, "/libpod/play/kube", "", false},
 		{"libpod-kube-apply-denied", http.MethodPost, "/libpod/kube/apply", "", false},
+
+		// --- version-prefixed variants: the same verdicts must hold after
+		// stripVersionPrefix normalization, for Docker's two-part prefixes
+		// and Podman's three-part semver prefixes alike ---
+		{"v-prefixed-containers-list", http.MethodGet, "/v1.45/containers/json", "", true},
+		{"v-prefixed-container-create-denied", http.MethodPost, "/v1.45/containers/create", "", false},
+		{"v-prefixed-logs-denied", http.MethodGet, "/v1.45/containers/abc/logs", "", false},
+		{"v-prefixed-libpod-containers-list", http.MethodGet, "/v5.0.0/libpod/containers/json", "", true},
+		{"v-prefixed-libpod-pods-list", http.MethodGet, "/v1.45/libpod/pods/json", "", true},
+		{"v-prefixed-libpod-pod-create-denied", http.MethodPost, "/v5.0.0/libpod/pods/create", "", false},
+		{"v-prefixed-libpod-play-kube-denied", http.MethodPost, "/v5.0.0/libpod/play/kube", "", false},
+		{"v-prefixed-libpod-generate-kube-denied", http.MethodGet, "/v5.0.0/libpod/generate/kube", "", false},
 	}
 
 	for _, c := range cases {

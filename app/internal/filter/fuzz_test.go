@@ -56,6 +56,11 @@ func FuzzPathMatch(f *testing.F) {
 		{"POST", "/v1.55/grpc"},
 		{"POST", "/session"},
 		{"POST", "/grpc"},
+		{"GET", "/v5.0.0/libpod/containers/json"},
+		{"POST", "/v5.0.0/libpod/pods/create"},
+		{"POST", "/v5.0.0/libpod/play/kube"},
+		{"GET", "/v5.0.0/libpod/generate/kube"},
+		{"POST", "/v1.45/libpod/containers/create"},
 	}
 	for _, s := range seeds {
 		f.Add(s.method, s.path)
