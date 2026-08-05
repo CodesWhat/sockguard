@@ -635,17 +635,23 @@ func buildServeClientProfiles(cfg *config.Config, res *upstream.Resolver) (map[s
 	return clientProfiles, nil
 }
 
-// attachRuntimeInspectors wires the runtime-bound inspectors (currently just
-// the exec-start inspector that needs the upstream) onto a PolicyConfig shaped
-// by config translation. The inspector issues its GET through the shared
-// upstream resolver so exec-identity lookups follow the same active endpoint as
-// the exec-create/start they guard under failover. Centralized so every call
-// path that produces a filter.PolicyConfig destined for live request evaluation
-// gets the same wiring — a future runtime dependency added here propagates to
-// both the default policy and every client profile without revisiting two call
+// attachRuntimeInspectors wires the runtime-bound inspectors (currently the
+// Docker-compat and libpod exec-start inspectors, both of which need the
+// upstream) onto a PolicyConfig shaped by config translation. Each inspector
+// issues its GET through the shared upstream resolver so exec-identity
+// lookups follow the same active endpoint as the exec-create/start they
+// guard under failover. Centralized so every call path that produces a
+// filter.PolicyConfig destined for live request evaluation gets the same
+// wiring — a future runtime dependency added here propagates to both the
+// default policy and every client profile without revisiting two call
 // sites.
 func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy filter.PolicyConfig) filter.PolicyConfig {
 	policy.Exec.InspectStart = filter.NewDockerExecInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
+	// libpod's POST /libpod/exec/{id}/start re-check queries a different
+	// upstream URL family (GET /libpod/exec/{id}/json) than the Docker-compat
+	// path above, even though both are checked against the SAME execPolicy
+	// (#148 design doc decision C3) — see ExecOptions.InspectStartLibpod.
+	policy.Exec.InspectStartLibpod = filter.NewLibpodExecInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
 	// insecure_allow_body_blind_writes is a global, not-per-profile setting
 	// (validateBodyBlindWriteRulesForPolicy in rules.go says as much), so it
 	// is wired here rather than through RequestBodyConfig.ToFilterOptions —

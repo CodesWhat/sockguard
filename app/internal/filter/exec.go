@@ -85,17 +85,32 @@ type ExecOptions struct {
 	// so the blind-write concern the flag addresses does not apply.
 	AllowBlindWrites bool
 	InspectStart     ExecInspectFunc
+	// InspectStartLibpod is InspectStart's counterpart for the libpod
+	// exec-start path (POST /libpod/exec/{id}/start). It exists as a
+	// separate field — rather than reusing InspectStart for both routes —
+	// because the two constructors issue their upstream GET against
+	// different URL families (GET /exec/{id}/json vs.
+	// GET /libpod/exec/{id}/json); which one a given exec-start request
+	// needs is decided by which path triggered it, not by anything
+	// ExecInspectFunc's (context, id) signature carries. The exec-create
+	// side needs no such split: it never calls upstream, it decodes the
+	// POST body directly (see inspectCreate), and libpod exec-create bodies
+	// decode with the identical Go handler Docker-compat exec-create bodies
+	// do (#148 design doc decision C3) — see isLibpodExecCreatePath's
+	// call site in inspect below.
+	InspectStartLibpod ExecInspectFunc
 }
 
 type execPolicy struct {
-	allowPrivileged  bool
-	allowRootUser    bool
-	allowedCommands  []execCommandMatcher
-	allowedEnvVars   []string
-	deniedEnvVars    []string
-	allowedEnvValues map[string][]string
-	allowBlindWrites bool
-	inspectStart     ExecInspectFunc
+	allowPrivileged    bool
+	allowRootUser      bool
+	allowedCommands    []execCommandMatcher
+	allowedEnvVars     []string
+	deniedEnvVars      []string
+	allowedEnvValues   map[string][]string
+	allowBlindWrites   bool
+	inspectStart       ExecInspectFunc
+	inspectStartLibpod ExecInspectFunc
 }
 
 // execCommandMatcher is a compiled allowlist entry: one anchored regex per
@@ -159,14 +174,15 @@ func newExecPolicy(opts ExecOptions) execPolicy {
 	}
 
 	return execPolicy{
-		allowPrivileged:  opts.AllowPrivileged,
-		allowRootUser:    opts.AllowRootUser,
-		allowedCommands:  allowed,
-		allowedEnvVars:   normalizeExecEnvNames(opts.AllowedEnvVars),
-		deniedEnvVars:    normalizeExecEnvNames(opts.DeniedEnvVars),
-		allowedEnvValues: normalizeExecEnvValues(opts.AllowedEnvValues),
-		allowBlindWrites: opts.AllowBlindWrites,
-		inspectStart:     opts.InspectStart,
+		allowPrivileged:    opts.AllowPrivileged,
+		allowRootUser:      opts.AllowRootUser,
+		allowedCommands:    allowed,
+		allowedEnvVars:     normalizeExecEnvNames(opts.AllowedEnvVars),
+		deniedEnvVars:      normalizeExecEnvNames(opts.DeniedEnvVars),
+		allowedEnvValues:   normalizeExecEnvValues(opts.AllowedEnvValues),
+		allowBlindWrites:   opts.AllowBlindWrites,
+		inspectStart:       opts.InspectStart,
+		inspectStartLibpod: opts.InspectStartLibpod,
 	}
 }
 
@@ -205,9 +221,19 @@ func (p execPolicy) inspect(logger *slog.Logger, r *http.Request, normalizedPath
 	}
 
 	switch {
-	case isExecCreatePath(normalizedPath):
+	// libpod's POST /libpod/containers/{name}/exec and POST
+	// /libpod/exec/{id}/start route to the SAME Go handlers Docker-compat
+	// exec create/start do (confirmed against Podman's own route table,
+	// pkg/api/server/register_exec.go: both /containers/{name}/exec and
+	// /libpod/containers/{name}/exec register compat.ExecCreateHandler; both
+	// /exec/{id}/start and /libpod/exec/{id}/start register
+	// compat.ExecStartHandler). Request bodies are therefore byte-identical
+	// in shape between the two families — no libpod-specific decode struct
+	// exists or is needed here, unlike every other libpod inspector in this
+	// package (#148 design doc decision C3).
+	case isExecCreatePath(normalizedPath) || isLibpodExecCreatePath(normalizedPath):
 		return p.inspectCreate(logger, r)
-	case isExecStartPath(normalizedPath):
+	case isExecStartPath(normalizedPath) || isLibpodExecStartPath(normalizedPath):
 		return p.inspectExisting(r.Context(), normalizedPath)
 	default:
 		return "", nil
@@ -252,11 +278,16 @@ func (p execPolicy) inspectCreate(logger *slog.Logger, r *http.Request) (string,
 }
 
 func (p execPolicy) inspectExisting(ctx context.Context, normalizedPath string) (string, error) {
-	execID, ok := execStartIdentifier(normalizedPath)
+	execID, isLibpod, ok := execStartIdentifier(normalizedPath)
 	if !ok {
 		return "", nil
 	}
-	if p.inspectStart == nil {
+
+	inspectStart := p.inspectStart
+	if isLibpod {
+		inspectStart = p.inspectStartLibpod
+	}
+	if inspectStart == nil {
 		return "exec start denied: no exec inspection configured", nil
 	}
 
@@ -268,7 +299,7 @@ func (p execPolicy) inspectExisting(ctx context.Context, normalizedPath string) 
 	// inspect and start (image swapped, process killed); operators that need
 	// to constrain that surface should prefer container-level allowlists
 	// (allowed_commands per profile) over per-exec inspection.
-	result, found, err := p.inspectStart(ctx, execID)
+	result, found, err := inspectStart(ctx, execID)
 	if err != nil {
 		return "", fmt.Errorf("inspect exec %q: %w", execID, err)
 	}
@@ -404,16 +435,26 @@ func isExecStartPath(normalizedPath string) bool {
 	return ok && tail == "start"
 }
 
-func execStartIdentifier(normalizedPath string) (string, bool) {
-	if !strings.HasPrefix(normalizedPath, "/exec/") {
-		return "", false
+// execStartIdentifier extracts the exec ID from a normalized exec-start path,
+// reporting whether it came from the libpod family
+// (/libpod/exec/{id}/start) or the Docker-compat one (/exec/{id}/start) —
+// the two upstream inspection constructors query different URL families
+// (see ExecOptions.InspectStartLibpod's doc comment), so the caller needs to
+// know which one to use.
+func execStartIdentifier(normalizedPath string) (id string, isLibpod bool, ok bool) {
+	prefix := "/exec/"
+	if strings.HasPrefix(normalizedPath, libpodPathPrefix+"exec/") {
+		prefix = libpodPathPrefix + "exec/"
+		isLibpod = true
+	} else if !strings.HasPrefix(normalizedPath, prefix) {
+		return "", false, false
 	}
-	rest := strings.TrimPrefix(normalizedPath, "/exec/")
-	id, tail, ok := strings.Cut(rest, "/")
-	if !ok || id == "" || tail != "start" {
-		return "", false
+	rest := strings.TrimPrefix(normalizedPath, prefix)
+	id, tail, cut := strings.Cut(rest, "/")
+	if !cut || id == "" || tail != "start" {
+		return "", false, false
 	}
-	return id, true
+	return id, isLibpod, true
 }
 
 // NewDockerExecInspector returns an exec inspector backed by the Docker unix
@@ -428,10 +469,42 @@ func NewDockerExecInspector(upstreamSocket string) ExecInspectFunc {
 // *upstream.Resolver), so exec-identity inspection follows the same active
 // endpoint as the exec-create/start it guards under failover.
 func NewDockerExecInspectorWithRoundTripper(rt http.RoundTripper) ExecInspectFunc {
+	return newHTTPExecInspector(rt, "http://docker/exec/")
+}
+
+// NewLibpodExecInspector returns an exec inspector backed by the Podman unix
+// socket, querying GET /libpod/exec/{id}/json rather than the Docker-compat
+// GET /exec/{id}/json NewDockerExecInspector uses. It is the
+// single-local-socket shorthand; the multi-endpoint/remote path uses
+// NewLibpodExecInspectorWithRoundTripper. Both libpod and Docker-compat
+// exec-start requests are checked against the SAME execPolicy/ExecOptions
+// (#148 design doc decision C3) — this constructor only changes which
+// upstream URL family the exec-start re-check queries, wired based on
+// which path triggered the request (see execStartIdentifier).
+func NewLibpodExecInspector(upstreamSocket string) ExecInspectFunc {
+	return NewLibpodExecInspectorWithRoundTripper(upstream.NewSingleSocket(upstreamSocket))
+}
+
+// NewLibpodExecInspectorWithRoundTripper is NewDockerExecInspectorWithRoundTripper's
+// libpod-path counterpart: same failover-aware transport, GET
+// /libpod/exec/{id}/json instead of GET /exec/{id}/json. Podman routes both
+// URLs to the identical compat.ExecInspectHandler internally (confirmed
+// against Podman's own route table, pkg/api/server/register_exec.go), so the
+// response shape decoded here is byte-identical to the Docker-compat path —
+// see execInspectResponse, shared by both constructors.
+func NewLibpodExecInspectorWithRoundTripper(rt http.RoundTripper) ExecInspectFunc {
+	return newHTTPExecInspector(rt, "http://docker/libpod/exec/")
+}
+
+// newHTTPExecInspector is the shared GET-and-decode implementation behind
+// both NewDockerExecInspectorWithRoundTripper and
+// NewLibpodExecInspectorWithRoundTripper; only the URL prefix (and therefore
+// which upstream route family is queried) differs between the two.
+func newHTTPExecInspector(rt http.RoundTripper, urlPrefix string) ExecInspectFunc {
 	client := &http.Client{Transport: rt}
 
 	return func(ctx context.Context, id string) (ExecInspectResult, bool, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/exec/"+url.PathEscape(id)+"/json", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlPrefix+url.PathEscape(id)+"/json", nil)
 		if err != nil {
 			return ExecInspectResult{}, false, err
 		}
