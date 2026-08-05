@@ -1,0 +1,197 @@
+name: "🤝 Quality: Tri-Tool Conformance"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && '🤝 Quality: Tri-Tool Conformance — Weekly' ||
+    format('🤝 Quality: Tri-Tool Conformance — Manual by {0}', github.actor)
+  }}
+
+# #150 — the published Sockguard + Portwing + drydock conformance matrix.
+# Boots the audited examples/compose/tri-tool bundle from PUBLISHED images
+# only (never source-built) across three version rows and asserts the
+# behavior contract the tri-tool README and app/configs/portwing*.yaml /
+# drydock*.yaml presets document. It exists because source-level compat
+# testing did NOT catch the 2026-07-28 audit's failures (a broken published
+# image reference, fresh-volume socket ownership) — those are exactly the
+# class of bug that only shows up against the actual images operators pull.
+#
+# Not run on every PR: pulling from three registries across three rows is
+# heavier than the nightly real-dockerd integration suite
+# (quality-integration.yml) and would burn the CodeRabbit/CI budget on
+# every push for a surface that changes rarely. Runs weekly, plus
+# workflow_dispatch — including as the pre-GA gate documented in
+# RELEASING.md: point sockguard_image at a release-candidate tag and
+# require a green run before promoting to GA.
+#
+# See scripts/tri-tool-conformance/README.md for the full assertion list,
+# the route-drift tripwire mechanism, and known gaps in what a sandboxed
+# dev environment (no live published images, no portwing/drydock source)
+# could confirm ahead of the first real dispatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sockguard_image:
+        description: "Full sockguard image reference to test (e.g. a release-candidate tag for the pre-GA gate)"
+        required: false
+        default: "ghcr.io/codeswhat/sockguard:latest"
+      portwing_version:
+        description: "Override the portwing version tag for the current-standard/current-edge rows (empty = latest). Never overrides legacy-floor's audited 0.8.1 pin."
+        required: false
+        default: ""
+      drydock_version:
+        description: "Override the drydock version tag for the current-standard/current-edge rows (empty = latest). Never overrides legacy-floor's audited 1.5.2 pin."
+        required: false
+        default: ""
+  schedule:
+    - cron: '30 6 * * 1'  # Weekly on Monday at 06:30 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-tri-tool-conformance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  self-test:
+    name: "🧪 Harness self-test"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # No Docker needed for this leg -- it only proves the route
+      # normalizer and known-routes.json diff logic are correct before
+      # trusting them in the live matrix rows below. Also covered by
+      # `npm test` (scripts/tri-tool-conformance-run-matrix.test.mjs) on
+      # every push; re-run here too so a red matrix row and a broken
+      # tripwire are never conflated in this workflow's own results.
+      - name: Run harness self-test
+        run: scripts/tri-tool-conformance/run-matrix.sh --self-test
+
+  matrix:
+    name: "🤝 ${{ matrix.row }}"
+    needs: self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        row: [current-standard, current-edge, legacy-floor]
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify Docker daemon is reachable
+        run: docker version
+
+      # portwing_version/drydock_version dispatch inputs only ever apply to
+      # current-standard/current-edge -- run-matrix.sh's own row-config
+      # switch hardcodes legacy-floor to 0.8.1/1.5.2 regardless of what's
+      # passed here, so there's nothing to gate on the row name in this step.
+      - name: Run matrix row
+        env:
+          ROW: ${{ matrix.row }}
+          SOCKGUARD_IMAGE_INPUT: ${{ github.event.inputs.sockguard_image }}
+          PORTWING_VERSION_INPUT: ${{ github.event.inputs.portwing_version }}
+          DRYDOCK_VERSION_INPUT: ${{ github.event.inputs.drydock_version }}
+        run: |
+          set -uo pipefail
+          args=(--row "${ROW}")
+          if [ -n "${SOCKGUARD_IMAGE_INPUT}" ]; then
+            args+=(--sockguard-image "${SOCKGUARD_IMAGE_INPUT}")
+          fi
+          if [ -n "${PORTWING_VERSION_INPUT}" ]; then
+            args+=(--portwing-version "${PORTWING_VERSION_INPUT}")
+          fi
+          if [ -n "${DRYDOCK_VERSION_INPUT}" ]; then
+            args+=(--drydock-version "${DRYDOCK_VERSION_INPUT}")
+          fi
+          scripts/tri-tool-conformance/run-matrix.sh "${args[@]}"
+
+      # Always uploaded, pass or fail — run-matrix.sh writes the artifact
+      # unconditionally (design doc "Artifacts" acceptance criterion) so a
+      # failed row's per-assertion detail survives past the job's own log
+      # retention for later review.
+      - name: Upload conformance artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: conformance-${{ matrix.row }}
+          path: conformance-${{ matrix.row }}.json
+          retention-days: 90
+          if-no-files-found: warn
+
+  summary:
+    name: "📋 Summary"
+    needs: matrix
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Download all row artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: artifacts
+          pattern: conformance-*
+          merge-multiple: true
+
+      - name: Aggregate into the run summary
+        run: |
+          {
+            echo "### 🤝 Tri-tool conformance matrix"
+            echo ""
+            echo "| Row | Overall | Sockguard | Portwing | drydock | Assertions |"
+            echo "|---|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          shopt -s nullglob
+          for f in artifacts/*.json; do
+            jq -r '
+              [
+                .row,
+                .overall,
+                (.images.sockguard.digest // .images.sockguard.ref),
+                (.images.portwing.digest // .images.portwing.ref),
+                (.images.drydock.digest // .images.drydock.ref),
+                ([.assertions[] | select(.status=="PASS")] | length | tostring) + " pass / " +
+                  ([.assertions[] | select(.status=="FAIL")] | length | tostring) + " fail / " +
+                  ([.assertions[] | select(.status=="SKIP")] | length | tostring) + " skip"
+              ] | "| " + join(" | ") + " |"
+            ' "$f" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Per-row detail (all ten #150 design-doc assertions plus the route-drift tripwire) is in each row's uploaded \`conformance-<row>.json\` artifact." >> "$GITHUB_STEP_SUMMARY"
+
+          if [ -z "$(ls -A artifacts 2>/dev/null)" ]; then
+            echo "::error::no conformance-*.json artifacts were found -- every matrix row failed before writing its artifact"
+            exit 1
+          fi
+
+          fail_count="$(jq -s '[.[] | select(.overall=="FAIL")] | length' artifacts/*.json)"
+          if [ "$fail_count" -gt 0 ]; then
+            echo "::error::${fail_count} matrix row(s) failed conformance"
+            exit 1
+          fi

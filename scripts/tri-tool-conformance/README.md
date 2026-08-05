@@ -1,0 +1,215 @@
+# Tri-tool conformance harness (#150)
+
+Driver for `.github/workflows/quality-tri-tool-conformance.yml`, which boots
+the audited [`examples/compose/tri-tool/`](../../examples/compose/tri-tool/)
+bundle from **published images only** (never source-built) and asserts the
+behavior contract that bundle's `README.md` and the `app/configs/portwing*.yaml`
+/ `drydock*.yaml` presets document. It exists because source-level compat
+testing did not catch the 2026-07-28 audit's failures — a broken published
+image reference and fresh-volume socket ownership — the class of bug that
+only shows up against what `ghcr.io`/`docker.io`/`quay.io` actually publish.
+
+## Matrix rows
+
+| Row | sockguard | portwing | drydock | Mode |
+|---|---|---|---|---|
+| `current-standard` | input/default image | `latest` | `latest` | Standard (shared secret) |
+| `current-edge` | input/default image | `latest` | `latest` | Edge (Ed25519) + configured exec |
+| `legacy-floor` | input/default image | `0.8.1` | `1.5.2` (+`DD_EXPERIMENTAL_PORTWING=true`) | Standard only |
+
+`legacy-floor`'s pins are the audited-floor versions from sockguard PR #155
+and are **not** overridable by the workflow's `portwing_version`/
+`drydock_version` dispatch inputs — that row exists specifically to keep the
+compatibility promise honest, so letting a manual override drift it would
+defeat the point. Edge mode is unsupported on portwing 0.8.1 and isn't
+tested there.
+
+## Running it
+
+```
+scripts/tri-tool-conformance/run-matrix.sh --row current-standard
+scripts/tri-tool-conformance/run-matrix.sh --row current-edge \
+  --portwing-version 0.9.2 --drydock-version 1.6.0
+scripts/tri-tool-conformance/run-matrix.sh --self-test   # jq only, no Docker
+```
+
+Needs `bash`, `curl`, `jq`, `docker`, `docker compose`, and `openssl` on
+`PATH`, plus a real Docker daemon at `/var/run/docker.sock` (the GitHub-hosted
+`ubuntu-latest` runner ships all of this; there is no dind container, no
+special privileges — the harness measures what a real deployment would
+actually see, same rationale as `quality-integration.yml`).
+
+Each row is fully independent: fresh named volumes and fresh secrets every
+run (`docker compose down -v` guard plus a unique project name), a fresh
+`conformance-<row>.json` artifact written unconditionally at the end — pass
+or fail — and full teardown (including any throwaway sentinel containers and
+negative-auth-probe containers) via an `EXIT` trap.
+
+## Assertions (in order)
+
+1. **Pristine boot** — fresh volume, sockguard reaches healthy with **no**
+   manual ownership repair: socket owner `65532:65532` mode `600`, plus a
+   real `_ping` through it. Mirrors `ci-verify.yml`'s "Verify fresh
+   socket-volume startup" step.
+2. **Auth handshake** — drydock logs `Handshake successful` for the portwing
+   agent, plus one negative probe per mode: Standard fires a throwaway
+   second drydock agent-config with the wrong shared secret and expects a
+   `401` in its logs; Edge fires a throwaway second portwing agent-config
+   with an unregistered Ed25519 key and expects a rejection
+   (`bad-signature`/`unknown-key`/similar) in drydock's logs. Neither probe
+   ever touches the row's real containers.
+3. **Inventory & inspect** — passive: polls sockguard's own access log for
+   Portwing's organic `GET /containers/json` + `GET /containers/*/json`
+   polling traffic.
+4. **Events** — creates and removes a sentinel container directly through
+   the proxied socket; asserts the `/events` channel and the `DELETE` both
+   show up allowed in sockguard's access log.
+5. **Logs** — creates a running sentinel with a distinctive stdout marker
+   and fetches `GET /containers/{id}/logs` through the proxied socket,
+   asserting the marker comes back.
+6. **Lifecycle** — stop/start/restart the same sentinel through the proxied
+   socket; asserts `docker inspect` converges to the expected state after
+   each.
+7. **Configured exec** — `current-edge` only. A non-privileged exec
+   create+start succeeds; a `Privileged: true` exec create is denied `403`
+   with a documented reason (`sockguard-with-exec.yaml`'s
+   `allow_privileged: false` gate, `deny_verbosity: verbose` since #158).
+8. **Remote update trigger** — `current-standard`/`current-edge` only.
+   Creates a sentinel pinned at an old `busybox` digest, fires the
+   controller-owned `update` trigger (portwing 0.9.0 + drydock 1.6.0-rc.11),
+   and asserts the sentinel gets recreated on the new pin. `legacy-floor`
+   instead asserts the documented `501` not-implemented response — see
+   "Known gaps" below, this one needs first-live-run confirmation.
+9. **Expected denials** — `POST /build` denied with a reason;
+   `POST /containers/*/exec` denied on the non-exec preset (skipped on
+   `current-edge`, which runs the exec-enabled preset by design — see
+   assertion 7 for its denial case instead); `GET /containers/{id}/export`
+   (exfiltration-gated read) denied.
+10. **Route-drift tripwire** — see below.
+
+## Verification strategy: why assertions 3–9 key on sockguard's access log
+
+Portwing's and drydock's own HTTP/WS APIs aren't documented anywhere in
+*this* repo — their JSON shapes live in the portwing/drydock repos, which
+this harness has no access to pin against. Rather than guess at those
+shapes and risk a harness that silently asserts the wrong thing, assertions
+3–9 drive Docker Engine API calls **directly through sockguard's proxied
+socket** (exactly the shape Portwing itself sends, per the presets) and
+verify outcomes against **sockguard's own structured access log** — the one
+interface this repo fully owns, documents, and tests
+(`app/internal/logging/access.go`). This proves the sockguard-side half of
+every contract precisely; it does not re-verify Portwing's or drydock's own
+internal wiring, which is out of scope for a sockguard-repo CI job and
+belongs to those projects' own test suites.
+
+## Route-drift tripwire
+
+After a row's scenario traffic runs, `assert_route_drift` captures
+sockguard's full access log (`docker compose logs sockguard`, which is JSON,
+one line per request — `log.format: json` / `access_log: true` in every
+tri-tool preset) and normalizes each `(method, normalized_path)` pair into a
+route **shape**: a path segment that's one of the fixed Docker API keywords
+the presets match on literally (`containers`, `json`, `start`, `_ping`, …) is
+kept as-is; the harness reads sockguard's `normalized_path` field, which
+already has the `/vX.YZ/` Docker API version prefix stripped, so the
+normalizer only has to handle segment-level dynamism. Every other segment
+(container/network/volume/service/exec IDs and names, image references)
+becomes `*`, and a run of consecutive dynamic segments collapses to `**` —
+see `normalize-routes.jq`'s header comment for the exact rules.
+
+The resulting shapes are diffed against
+[`known-routes.json`](known-routes.json), which was seeded by hand-enumerating
+every allow rule in `app/configs/portwing.yaml` and
+`app/configs/portwing-with-exec.yaml` (the union of both, since
+`legacy-floor`/`current-standard` run the plain preset and `current-edge`
+runs the exec preset) plus the two deliberate-denial probe shapes assertion
+9 sends (`POST /build`, `GET /containers/*/export`) so those expected
+denials don't themselves trip the tripwire.
+
+**Any route observed that isn't in the manifest fails the job** with:
+
+> peer repository sent a route sockguard policy has not reviewed — review
+> policy, then update known-routes.json
+
+This is the literal implementation of "a route added by either peer
+repository fails conformance until Sockguard policy is reviewed." It is
+intentionally one-directional: a manifest entry that's never observed in a
+given run is not a failure (not every scenario exercises every allowed
+route every time), only an *unexpected* observed route is.
+
+### Updating `known-routes.json`
+
+The manifest was seeded from static analysis of the presets, not from a
+live run — **the first real `workflow_dispatch` (or the first weekly
+schedule run) may legitimately surface additions**, e.g. a route Portwing
+or drydock started calling as part of a feature this repo hasn't reviewed
+yet, or simply a scenario shape this harness didn't anticipate. Do not
+rubber-stamp a failure here: when it fires, (1) confirm the new route shape
+against the relevant sockguard preset's intent, (2) decide whether it should
+be allowed at all, and only then (3) add it to `known-routes.json` in the
+same PR that reviews the policy question — never as a silent, unreviewed
+addition.
+
+### Self-testing the normalizer without Docker
+
+`run-matrix.sh --self-test` exercises `normalize-routes.jq` and the
+`known-routes.json` diff against
+[`testdata/access-log-fixture.jsonl`](testdata/access-log-fixture.jsonl) — a
+fixture with 6 real access-log-shaped lines (5 already in the manifest, 1
+deliberately absent: `GET /containers/*/attach`, which no preset ever
+allows and which isn't one of assertion 9's probe shapes either), one
+non-access-log line (`msg: startup`), and one line that isn't JSON at all.
+A correct run produces exactly 6 route shapes and isolates exactly the one
+unknown route. This needs only `jq` — no Docker, no network — and is wired
+into `npm test` via `../tri-tool-conformance-run-matrix.test.mjs` (one
+directory up, since `package.json`'s test script globs `scripts/*.test.mjs`
+non-recursively) plus a dedicated `self-test` job in
+`quality-tri-tool-conformance.yml` itself.
+
+## Artifacts
+
+Each row writes `conformance-<row>.json` to the repo root (uploaded by the
+workflow with 90-day retention, always, pass or fail) containing: timestamp,
+matrix row, resolved image refs *and* digests
+(`docker image inspect --format '{{index .RepoDigests 0}}'`, after
+`docker compose pull`) for all three tools, Docker Engine version + API
+version (via `GET /version` through the proxy), the sockguard preset in use,
+the portwing mode, every observed route shape, and per-assertion
+pass/fail/skip with a detail string. The workflow's `summary` job aggregates
+all three rows into `$GITHUB_STEP_SUMMARY`.
+
+## Known gaps — what a sandboxed dev environment couldn't confirm
+
+This harness was built without access to a live `ghcr.io`/published tri-tool
+stack or the portwing/drydock source repos. Everything above was verified
+the ways available offline: `docker compose config` validates for every
+row's exact env-var combination against the bundle + overlay,
+`shellcheck`/`zizmor` are clean, and `--self-test` proves the tripwire logic
+against a fixture. The following need confirmation on the **first live
+`workflow_dispatch` run** (see RELEASING.md's pre-GA gate step) and may
+require a follow-up patch to this harness:
+
+- **Assertion 8's trigger-invocation HTTP contract.** The exact path and
+  body schema for firing the controller-owned `update` trigger isn't pinned
+  anywhere in this repo — `assert_remote_update_trigger` calls
+  `POST /api/triggers/docker/update` on drydock's own published API (port
+  3000, reachable in both Standard and Edge mode) as a best-effort match to
+  the compatibility text in `examples/compose/tri-tool/README.md`, which
+  describes that exact path/method returning `501` from Portwing's
+  Standard-mode agent today. If the real contract differs (a different
+  path, a different body shape, or a Portwing-side-only endpoint with no
+  Edge-mode equivalent), this function needs a follow-up fix.
+- **Portwing's exact protected-endpoint surface for the wrong-secret probe.**
+  `assert_standard_wrong_secret_probe` observes the failure from drydock's
+  own logs (`401`) rather than calling a specific portwing endpoint
+  directly, precisely to avoid needing to know that surface — but the exact
+  log text portwing/drydock emit for this case is inferred from the tri-tool
+  README's troubleshooting prose, not pinned by a test in either repo.
+- **Exact drydock rejection log text for an unknown Edge key.**
+  `assert_edge_unknown_key_probe` matches
+  `bad-signature|unknown-key|unauthorized|reject` (case-insensitive) against
+  drydock's logs, again inferred from the README's troubleshooting section
+  rather than a pinned string.
+
+None of these gaps affect assertions 1, 3–7, 9, or 10, which are grounded
+entirely in sockguard's own documented, tested surface.
