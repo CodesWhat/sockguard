@@ -41,17 +41,10 @@ type libpodPodCreatePolicy struct {
 	allowedInfraImageRegistries []string
 }
 
-// libpodNamespace mirrors Podman's specgen.Namespace
-// (pkg/specgen/namespaces.go, pinned to Podman v5.8.1 — confirmed directly
-// against upstream source rather than docs, per the design doc's C4
-// requirement): {"nsmode":"...","value":"..."}. Kept as its own type,
-// separate from any Docker-shaped namespace decoding, per the design doc's
-// C6/agreed-core guidance that libpod decode helpers never get "smart" for
-// both shapes.
-type libpodNamespace struct {
-	NSMode string `json:"nsmode"`
-	Value  string `json:"value"`
-}
+// The pod-create decode reuses libpodNamespace from
+// libpod_container_create_types.go — both mirror the same specgen.Namespace
+// wire shape ({"nsmode":"...","value":"..."}, pkg/specgen/namespaces.go,
+// pinned to Podman v5.8.1).
 
 // libpodPodCreateRequest decodes the subset of Podman's PodSpecGenerator
 // (pkg/specgen/podspecgen.go, v5.8.1) this inspector gates. PodSpecGenerator
