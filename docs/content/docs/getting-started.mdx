@@ -1,6 +1,6 @@
 ---
 title: Getting Started
-description: Install sockguard with Docker Compose, Docker Run, or a release binary, and point your apps at the proxy socket.
+description: Install sockguard with Docker Compose, Docker Run, Homebrew, or a release binary, and point your apps at the proxy socket.
 ---
 
 ## Installation
@@ -52,6 +52,30 @@ Set `DOCKER_SOCK_GID` before starting Compose (`export DOCKER_SOCK_GID=$(stat -c
 your runtime's seccomp/AppArmor/SELinux defaults.
 
 The filtered socket and its named-volume directory are owner-only and owned by UID/GID 65532. A non-root consumer of that socket must also use UID 65532; root consumers can connect as well. If an application must keep another UID, run Sockguard with that matching UID against a pre-owned bind-mounted directory, or use an authenticated TCP listener. The socket mode is deliberately fixed at `0600` and should not be broadened.
+
+### Homebrew
+
+Install the latest stable native binary on macOS or Linux from the CodesWhat tap:
+
+```bash
+brew install --cask codeswhat/tap/sockguard
+sockguard version
+```
+
+Stable releases update the cask automatically. Release candidates and other prereleases remain available from [GitHub Releases](https://github.com/CodesWhat/sockguard/releases) without moving the stable Homebrew channel.
+
+The cask installs only the `sockguard` command. It does not create a service, grant Docker socket access, or generate a policy file. Run it under your own service manager after configuring the upstream Docker socket and an explicit policy; Docker Compose remains the recommended production deployment.
+
+<Callout type="warn">
+The macOS binary is not yet signed and notarized with an Apple Developer ID. After Homebrew verifies the release archive's SHA-256 checksum, the cask removes the quarantine attribute from its staged `sockguard` binary so Gatekeeper does not block it. This bypass applies only to that installed file. That checksum proves the archive wasn't corrupted or tampered with in transit, it does not prove who published it, so it is not a substitute for Apple Developer ID signing/notarization. If your policy requires Apple notarization, or you don't want the quarantine bypass at all, use the container image or verify the GitHub Releases binary with cosign instead.
+</Callout>
+
+Upgrade or remove the cask with:
+
+```bash
+brew upgrade --cask sockguard
+brew uninstall --cask sockguard
+```
 
 ### Binary
 

@@ -72,7 +72,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.5.1 is the latest stable release.** It fixes fresh named-volume Unix-socket startup, repairs the published Portwing examples, hardens the tri-tool local demo, and publishes the compatibility/competitor audit that defines v1.6. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v1.5.2 is the latest stable release.** It closes an image-trust bypass on image-type container/service mounts, extends network-topology redaction to the new Status field, adds Homebrew tap distribution, and ships the tri-tool Edge Mode + exec example. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -221,6 +221,7 @@ The named-volume quick start creates that socket and its parent directory as UID
 <details>
 <summary><strong>Latest release highlights</strong></summary>
 
+- **v1.5.2 shipped on 2026-08-04** — closes an `image_trust` bypass where image-type `Mounts` entries on container/service create skipped signature verification, extends `redact_network_topology` to the Engine API 1.53 network-inspect `Status` field, adds Homebrew tap distribution, ships the tri-tool Edge Mode + exec Compose variant, and fixes nightly integration digest drift.
 - **v1.5.1 shipped on 2026-07-28** — fixes fresh named-volume Unix-socket startup for the non-root image, corrects Portwing's published registry reference and token command, loopback-binds the authenticated tri-tool demo, and publishes the tested three-tool compatibility boundary plus the competitor-driven v1.6 roadmap.
 - **v1.5.0 shipped on 2026-07-28** — promotes rc.3 to stable after the v1.5 feature surface had been exercised since rc.1 on July 11 and rc.2 on July 20, followed by clean CI, security, artifact, signature, and published-image validation on rc.3 plus a final full-delta review. Safer finite-request timeouts, namespace-sharing and host-cgroupns controls, a hard CPU-cap option, exact exec-environment value pinning, endpoint-config parity, Compose presets, Helm security defaults, fresh embedded-resource ownership checks, registry-push exfiltration gating, structured-log sanitization, fail-closed plugin inspection, and patched dependency graphs are now GA.
 - **v1.5.0-rc.3 shipped on 2026-07-28** — forwarded the complete v1.4.4 security patch into the v1.5 line: untrusted structured-log fields escape record delimiters, malformed plugin configuration is denied before forwarding, and the affected Go and Node dependencies move to patched releases. It retained rc.2's endpoint-config symmetry and rc.1's safer defaults and namespace hardening, passed the full release gates, and became the final candidate promoted to v1.5.0.
@@ -393,6 +394,15 @@ Bundled presets and ready-to-run compose stacks are summarized in [Supported Pro
 
 <h2 align="center" id="cli">🔧 CLI</h2>
 
+Install the latest stable native binary on macOS or Linux through the CodesWhat Homebrew tap:
+
+```bash
+brew install --cask codeswhat/tap/sockguard
+sockguard version
+```
+
+The cask installs only the `sockguard` command; it does not create a service, grant Docker socket access, or generate a policy. The macOS binary is not yet Apple notarized, so the cask removes quarantine from only its staged binary after Homebrew verifies the archive checksum; see the [getting-started guide](https://getsockguard.com/docs/getting-started) for the trust boundary. That checksum only proves the downloaded archive is intact, not who published it, so it's not a substitute for Apple Developer ID signing/notarization; if your policy requires notarization or you don't want the quarantine bypass, use the container image or verify the GitHub Releases binary with cosign instead. Container deployment remains the recommended production path.
+
 ```bash
 sockguard serve                                     # Start proxy (default)
 sockguard validate -c sockguard.yaml                # Validate + print compiled rule table
@@ -445,20 +455,32 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.6.0 is the next committed milestone**, focused on runtime compatibility and safe policy mediation. **v1.5.1 shipped on 2026-07-28** as the integration/packaging patch over the v1.5 feature line. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
+**v1.6.0 is the next committed feature milestone**, focused on runtime compatibility and safe policy mediation. **v1.5.2 shipped on 2026-08-04** as the integration/packaging patch over the v1.5 feature line. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
 
 ### Next in v1.6.0
 
-Tracked in the [v1.6.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/1).
+Tracked in the [v1.6.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/1). Delivered in three waves — Wave 1 lands in parallel, Wave 2 is sequential because both items touch the route classifier, and Wave 3 gates GA.
 
-| Track | Required outcome |
-|---|---|
-| **Podman/libpod** | Preserve Docker-compatible Podman behavior and add explicit default-deny, body-aware coverage for native `/libpod` routes and pod lifecycle operations. |
-| **Multiple listeners** | Run Unix and TCP listeners together, or multiple instances of either, with listener-scoped TLS and profile boundaries. |
-| **Safe admission mutation** | Operator-configurable mandatory-label injection and image-reference remapping; canonicalize and re-inspect every mutation before forwarding. |
-| **Three-tool conformance** | Test published Sockguard + Portwing + drydock images across Standard/Edge version combinations; remote-update claims remain blocked until watcher/trigger contracts work in both peer repositories. |
-| **Engine/build compatibility** | Validate Docker Engine API 1.55 and current Compose/BuildKit transport without opening the API v1.53-deprecated `/session` and `/grpc` endpoints by assumption. |
-| **Resource parity** | Revalidate required hard limits during container update and add Swarm-service CPU-limit requirements. |
+**Wave 1 — parallel**
+
+| Track | Issue | Required outcome |
+|---|---|---|
+| **Multiple listeners** | [#149](https://github.com/CodesWhat/sockguard/issues/149) | Run Unix and TCP listeners together, or multiple instances of either, with listener-scoped TLS and profile boundaries. |
+| **Safe admission mutation** | [#151](https://github.com/CodesWhat/sockguard/issues/151) | Operator-configurable mandatory-label injection and image-reference remapping; canonicalize and re-inspect every mutation before forwarding, fail closed. |
+| **Resource parity** | [#152](https://github.com/CodesWhat/sockguard/issues/152) | Revalidate required hard limits during container update and add Swarm-service CPU-limit requirements. |
+
+**Wave 2 — sequential**
+
+| Track | Issue | Required outcome |
+|---|---|---|
+| **Engine/build compatibility** | [#153](https://github.com/CodesWhat/sockguard/issues/153) | Validate Docker Engine API 1.55 and current Compose/BuildKit transport without opening the API v1.53-deprecated `/session` and `/grpc` endpoints by assumption. Lands first; Podman routing builds on the updated classifier. |
+| **Podman/libpod** | [#148](https://github.com/CodesWhat/sockguard/issues/148) | Preserve Docker-compatible Podman behavior and add explicit default-deny, body-aware coverage for native `/libpod` routes and pod lifecycle operations. |
+
+**Wave 3 — gates GA**
+
+| Track | Issue | Required outcome |
+|---|---|---|
+| **Three-tool conformance** | [#150](https://github.com/CodesWhat/sockguard/issues/150) | Publish the tested Sockguard + Portwing + drydock conformance matrix across Standard/Edge version combinations; remote-update claims remain blocked until watcher/trigger contracts work in both peer repositories. |
 
 ### Shipped in v1.5.0
 

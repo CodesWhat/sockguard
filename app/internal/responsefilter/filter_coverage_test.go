@@ -202,6 +202,7 @@ func TestModifyNetworkList_RedactsTopology(t *testing.T) {
 		{
 			"Name":"bridge",
 			"IPAM":{"Config":[{"Subnet":"172.17.0.0/16","Gateway":"172.17.0.1"}]},
+			"Status":{"IPAM":{"Subnets":{"172.17.0.0/16":{"IPsInUse":12,"DynamicIPsAvailable":244}}}},
 			"Containers":{"abc123":{"Name":"app","IPv4Address":"172.17.0.2/16"}},
 			"Peers":[{"Name":"peer1","IP":"10.0.0.1"}]
 		}
@@ -220,6 +221,10 @@ func TestModifyNetworkList_RedactsTopology(t *testing.T) {
 	ipam := networks[0]["IPAM"].(map[string]any)
 	if cfg, _ := ipam["Config"].([]any); len(cfg) != 0 {
 		t.Fatalf("IPAM.Config = %v, want empty", cfg)
+	}
+	status := networks[0]["Status"].(map[string]any)
+	if len(status) != 0 {
+		t.Fatalf("Status = %v, want empty", status)
 	}
 	containers := networks[0]["Containers"].(map[string]any)
 	if len(containers) != 0 {
@@ -1138,6 +1143,54 @@ func TestRedactNetworkTopology_WrongPeersType(t *testing.T) {
 	}
 }
 
+// TestRedactNetworkTopology_RedactsStatus proves the Engine API 1.53
+// network-inspect Status field (per-subnet IPAM allocation stats — in-use
+// and available IP counts) is stripped by redact_network_topology, not just
+// IPAM.Config. Left unredacted, Status leaked the same subnet utilization
+// detail the flag exists to hide.
+func TestRedactNetworkTopology_RedactsStatus(t *testing.T) {
+	t.Parallel()
+	payload := map[string]any{
+		"Status": map[string]any{
+			"IPAM": map[string]any{
+				"Subnets": map[string]any{
+					"172.17.0.0/16": map[string]any{"IPsInUse": float64(12), "DynamicIPsAvailable": float64(244)},
+				},
+			},
+		},
+	}
+	if err := redactNetworkTopology(payload); err != nil {
+		t.Fatalf("redactNetworkTopology: %v", err)
+	}
+	status, ok := payload["Status"].(map[string]any)
+	if !ok {
+		t.Fatalf("Status = %v (%T), want map[string]any", payload["Status"], payload["Status"])
+	}
+	if len(status) != 0 {
+		t.Fatalf("Status = %v, want empty", status)
+	}
+}
+
+func TestRedactNetworkTopology_WrongStatusType(t *testing.T) {
+	t.Parallel()
+	payload := map[string]any{"Status": "bad"}
+	err := redactNetworkTopology(payload)
+	if err == nil {
+		t.Fatal("want error for wrong Status type, got nil")
+	}
+}
+
+func TestRedactNetworkTopology_NilStatusSkipped(t *testing.T) {
+	t.Parallel()
+	payload := map[string]any{"Status": nil}
+	if err := redactNetworkTopology(payload); err != nil {
+		t.Fatalf("redactNetworkTopology: %v", err)
+	}
+	if payload["Status"] != nil {
+		t.Fatalf("Status = %v, want nil preserved", payload["Status"])
+	}
+}
+
 // ─── redactNestedStringValue – wrong type ────────────────────────────────────
 
 func TestRedactNestedStringValue_WrongType(t *testing.T) {
@@ -1432,6 +1485,37 @@ func TestModifyNetworkInspect_RejectsBadIPAMType(t *testing.T) {
 	t.Parallel()
 	f := New(Options{RedactNetworkTopology: true})
 	resp := newResponseForTest(t, http.MethodGet, "/networks/net-1", `{"IPAM":"bad"}`)
+	err := f.ModifyResponse(resp)
+	if !errors.Is(err, ErrResponseRejected) {
+		t.Fatalf("want ErrResponseRejected, got %v", err)
+	}
+}
+
+func TestModifyNetworkInspect_RedactsStatus(t *testing.T) {
+	t.Parallel()
+	f := New(Options{RedactNetworkTopology: true})
+	resp := newResponseForTest(t, http.MethodGet, "/networks/net-1", `{
+		"Name":"bridge",
+		"Status":{"IPAM":{"Subnets":{"172.17.0.0/16":{"IPsInUse":12,"DynamicIPsAvailable":244}}}}
+	}`)
+	if err := f.ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	var network map[string]any
+	if err := json.Unmarshal(body, &network); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	status := network["Status"].(map[string]any)
+	if len(status) != 0 {
+		t.Fatalf("Status = %v, want empty", status)
+	}
+}
+
+func TestModifyNetworkInspect_RejectsBadStatusType(t *testing.T) {
+	t.Parallel()
+	f := New(Options{RedactNetworkTopology: true})
+	resp := newResponseForTest(t, http.MethodGet, "/networks/net-1", `{"Status":"bad"}`)
 	err := f.ModifyResponse(resp)
 	if !errors.Is(err, ErrResponseRejected) {
 		t.Fatalf("want ErrResponseRejected, got %v", err)

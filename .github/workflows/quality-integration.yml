@@ -43,17 +43,17 @@ jobs:
 
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411  # v2.19.4
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
           egress-policy: audit
 
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       - name: Setup Go
-        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: app/go.mod
           cache-dependency-path: app/go.sum
@@ -63,8 +63,20 @@ jobs:
           docker version
           docker info --format 'server={{.ServerVersion}} api={{.OperatingSystem}}'
 
+      # Pulls the digest-pinned ref straight from helpers_test.go instead of a
+      # hardcoded tag: dockerd will not pull-on-create for a digest ref that
+      # isn't already in the local store, and a bare-tag pull can satisfy a
+      # different digest after the upstream registry re-tags. Sourcing the ref
+      # from the test constant means this step can never drift from it again.
       - name: Pre-pull busybox sentinel image
-        run: docker pull busybox:1.37
+        run: |
+          ref=$(sed -nE 's/^[[:space:]]*const[[:space:]]+busyboxPinnedRef[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' app/integration/helpers_test.go)
+          if [[ ! "$ref" =~ ^busybox:[[:alnum:]_.-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid or unpinned busyboxPinnedRef: ${ref}" >&2
+            exit 1
+          fi
+          echo "Pre-pulling pinned sentinel image: ${ref}"
+          docker pull "${ref}"
 
       - name: Run integration suite
         working-directory: app

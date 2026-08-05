@@ -7,15 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-08-04
+
+### Security
+
+- **Image-type `Mounts` entries no longer bypass `image_trust` enforcement on `POST /containers/create` and `POST /services/create`/`update`.** Docker API 1.48+'s `Type: "image"` mount source is an image reference mounted into the container's filesystem, not a bind path — `extractAndValidateBindSource` (container-create) and the equivalent service-mount loop only ever inspected `Type == "bind"` entries, so an image-type mount was invisible to the bind-mount allowlist and, more importantly, entirely outside the create-body `Image` field's cosign verification. A client whose top-level image passed signature verification could still smuggle an arbitrary, unverified image filesystem into the container via an image-type mount. `image_trust` in `enforce` mode now denies any request carrying a `Mounts` entry of `Type` `"image"` (case-insensitive) before the top-level image is even verified. `warn` mode and `off` are unaffected — behavior there is unchanged. Full verify-and-pin of mount image sources (matching what already happens for the top-level `Image` field) remains v1.6 scope; this patch closes the bypass by denying rather than silently admitting the unverified mount.
+- **`redact_network_topology` now strips the Engine API 1.53 network-inspect `Status` field.** `GET /networks/{id}` (and the `/networks` list) gained a `Status.IPAM.Subnets` block reporting per-subnet IP allocation stats (in-use and available address counts) — the same category of topology/utilization detail `IPAM.Config`, `Containers`, and `Peers` were already redacted for, but `Status` itself was left untouched. Enabling `redact_network_topology` now empties `Status` alongside the existing fields.
+
 ### Added
 
+- **Homebrew distribution through `CodesWhat/homebrew-tap`.** Stable releases now publish a `sockguard` cask for native macOS and Linux installs. Until Apple Developer ID signing/notarization is configured, the cask removes quarantine from only its staged binary after Homebrew verifies the archive checksum; the macOS release smoke test clears the hosted runner's implicit `--no-quarantine`, proves the installed version matches the tag, checks that quarantine was removed, and uninstalls it. Prereleases remain available from GitHub Releases without moving the stable Homebrew channel.
 - **`examples/compose/tri-tool/docker-compose.edge-exec.yml` — an Edge Mode + exec variant of the tri-tool stack.** Portwing dials out to drydock over a WebSocket instead of drydock polling Portwing over HTTP, authenticating with an Ed25519 public-key challenge-response (`portwing keygen -comment ... > portwing_ed25519.pem` then `portwing keygen -pub-from portwing_ed25519.pem -comment ... >> portwing_authorized_keys`, preloaded into drydock via `DD_PORTWING_AUTHORIZED_KEYS`) instead of the shared-secret model Standard Mode uses. Pairs with the existing `sockguard-with-exec.yaml` preset to unlock drydock-driven interactive exec sessions through Portwing, which Standard Mode has no transport for. The README's new variant-comparison table lays out both `docker-compose.yml` and `docker-compose.edge-exec.yml` side by side — mode, preset, exec availability, authentication, and inbound-port requirements — so operators can pick the right one up front.
 
 ### Changed
 
+- **Next.js builds now type-check via the TypeScript CLI (`experimental.useTypeScriptCli`) to support TypeScript 7.**
 - **Portwing presets now set `deny_verbosity: verbose`.** `portwing.yaml`, `portwing-with-exec.yaml`, and `portwing-with-compose.yaml` (and their `examples/compose/portwing` and `examples/compose/tri-tool` copies) now request verbose denial responses so sockguard's detailed denial reason reaches Portwing and, through it, drydock's `exec_end` frame instead of degrading to the generic denial message.
 - **The three-tool example now defaults to the exact audited releases.** Sockguard 1.5.1, Portwing 0.8.1, and drydock 1.5.2 are pinned by default while retaining explicit `SOCKGUARD_VERSION`, `PORTWING_VERSION`, and `DRYDOCK_VERSION` overrides for upgrade validation.
 - **The website overview matrix now exposes the multiple-listener comparison.** It matches the detailed competitor pages and the roadmap's native-listener gap instead of showing only the Podman gap in the compact view.
+- **README roadmap now lays out v1.5.2 (in flight) and the v1.6.0 delivery sequence.** Wave 1 (#149, #151, #152) runs in parallel, Wave 2 (#153 then #148) is sequential because both touch the route classifier, and Wave 3 (#150) gates GA.
+
+### Fixed
+
+- **The nightly integration suite no longer breaks when Docker Hub re-tags `busybox:1.37`.** The workflow used to pre-pull only the bare tag, so a registry re-push that moved the tag to a new digest left the pinned-digest ref the tests actually request missing from the runner's local image store. `quality-integration.yml` now pulls the digest-pinned ref straight out of `app/integration/helpers_test.go` so the pre-pull step can never drift from the constant the tests use.
 
 ### Docs
 

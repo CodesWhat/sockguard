@@ -704,6 +704,9 @@ func (p containerCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 	if denyReason := p.denyBindMountReason(createReq.HostConfig); denyReason != "" {
 		return denyReason, nil
 	}
+	if denyReason := p.denyImageMountReason(createReq.HostConfig); denyReason != "" {
+		return denyReason, nil
+	}
 	if denyReason := p.denyNetworkingConfigReason(createReq.NetworkingConfig); denyReason != "" {
 		return denyReason, nil
 	}
@@ -1193,6 +1196,32 @@ func (p containerCreatePolicy) denyBindMountReason(hostConfig containerCreateHos
 		return fmt.Sprintf("container create denied: bind mount source %q is not allowlisted", source)
 	}
 
+	return ""
+}
+
+// denyImageMountReason denies any HostConfig.Mounts entry of Type "image"
+// when image trust enforcement is active for this request. Docker API 1.48+
+// added Type: "image" mounts, whose Source is an image reference mounted into
+// the container's filesystem rather than a bind/volume path;
+// extractAndValidateBindSource returns ok=false for any non-"bind" mount
+// type, so an image-type mount is invisible to the bind-mount allowlist
+// above. Under image_trust enforce mode that invisibility is a trust bypass:
+// the create-body Image field is verified and pinned, but an image-type
+// mount can smuggle in an arbitrary, entirely unverified image filesystem
+// instead. Full verify+pin of mount image sources is out of scope for this
+// patch; until then, enforce mode denies the request outright rather than
+// silently admitting an unverified filesystem. warn mode and mode "off" are
+// unaffected — this only gates the request when enforcement would otherwise
+// apply.
+func (p containerCreatePolicy) denyImageMountReason(hostConfig containerCreateHostConfig) string {
+	if p.imageTrustCfg.Mode != imagetrust.ModeEnforce {
+		return ""
+	}
+	for _, mount := range hostConfig.Mounts {
+		if strings.EqualFold(mount.Type, "image") {
+			return fmt.Sprintf("container create denied: image mount source %q is not covered by image trust verification", mount.Source)
+		}
+	}
 	return ""
 }
 

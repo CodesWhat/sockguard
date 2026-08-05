@@ -1281,6 +1281,18 @@ func redactNetworkTopology(payload map[string]any) error {
 		ipam["Config"] = []any{}
 	}
 
+	// Status carries per-subnet IPAM allocation statistics (in-use/available IP
+	// counts) that Engine API 1.53 added to network inspect responses,
+	// independent of the IPAM.Config redaction above. Left unredacted it leaks
+	// the same subnet utilization/topology detail redact_network_topology
+	// exists to hide.
+	if statusValue, ok := payload["Status"]; ok && statusValue != nil {
+		if _, ok := statusValue.(map[string]any); !ok {
+			return fmt.Errorf("status field has unexpected type %T", statusValue)
+		}
+		payload["Status"] = map[string]any{}
+	}
+
 	if containersValue, ok := payload["Containers"]; ok && containersValue != nil {
 		if _, ok := containersValue.(map[string]any); !ok {
 			return fmt.Errorf("containers field has unexpected type %T", containersValue)

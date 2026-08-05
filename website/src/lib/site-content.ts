@@ -116,6 +116,21 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v1.5.2",
+    title: "Security, Integration & Distribution Fixes",
+    emoji: "🔧",
+    status: "released",
+    items: [
+      "Image-type Mounts entries on containers/create and services/create/update now enforce image_trust before forwarding, closing an unverified-image-filesystem bypass",
+      "redact_network_topology now also strips the Engine API 1.53 network-inspect Status field",
+      "Homebrew distribution through CodesWhat/homebrew-tap for native macOS and Linux installs of stable releases",
+      "New docker-compose.edge-exec.yml tri-tool variant wires Portwing Edge Mode to drydock over Ed25519 key-based auth for interactive exec",
+      "Portwing presets set deny_verbosity: verbose so sockguard's detailed denial reasons reach Portwing and drydock",
+      "Nightly integration CI no longer breaks on Docker Hub busybox re-tags — the pre-pull step reads the pinned digest straight from the test helper constant",
+      "Website overview matrix now exposes the multiple-listener comparison alongside the Podman gap",
+    ],
+  },
+  {
     version: "v1.6.0",
     title: "Runtime Compatibility & Policy Mediation",
     emoji: "🧭",

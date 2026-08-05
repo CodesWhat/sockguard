@@ -23,7 +23,7 @@ services:
 
   # Example: drydock using sockguard as its socket proxy
   drydock:
-    image: codeswhat/drydock:latest
+    image: codeswhat/drydock:latest@sha256:2e3f0c77af8d2ea1e970b8eb794759df4a3e9ab1d86024ad5446ed3e7d222ea9
     container_name: drydock
     depends_on:
       - sockguard
