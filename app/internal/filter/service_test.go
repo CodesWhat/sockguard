@@ -234,6 +234,108 @@ func TestServiceInspectNonBindMountIsSkipped(t *testing.T) {
 	}
 }
 
+func TestServiceInspectDeniesImageMountUnderEnforce(t *testing.T) {
+	// The swarm equivalent of the container-create image-mount gate: a
+	// ContainerSpec.Mounts entry of Type "image" is invisible to the
+	// Type=="bind" loop above, so under image_trust enforce mode it must be
+	// denied outright rather than silently admitting an unverified image
+	// filesystem alongside the verified ContainerSpec.Image.
+	policy := newServicePolicy(ServiceOptions{AllowAllRegistries: true})
+	policy.imageTrust = imageTrustFields{
+		verifier: &mockImageVerifier{},
+		fetcher:  oneCandidateFetcher(),
+		cfg:      imagetrust.Config{Mode: imagetrust.ModeEnforce},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{
+		"TaskTemplate": {
+			"ContainerSpec": {
+				"Image": "registry.example.com/app:v1",
+				"Mounts": [
+					{"Type": "image", "Source": "registry.example.com/base:latest"}
+				]
+			}
+		}
+	}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	const want = `service denied: image mount source "registry.example.com/base:latest" is not covered by image trust verification`
+	if reason != want {
+		t.Fatalf("reason = %q, want %q", reason, want)
+	}
+}
+
+func TestServiceInspectAllowsImageMountWhenImageTrustNotEnforcing(t *testing.T) {
+	// Without image trust configured (mode off, the zero value), an
+	// image-type mount continues to pass through exactly as it did before
+	// this patch — this is not a new restriction outside the enforce path.
+	policy := newServicePolicy(ServiceOptions{AllowAllRegistries: true})
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{
+		"TaskTemplate": {
+			"ContainerSpec": {
+				"Image": "nginx:latest",
+				"Mounts": [
+					{"Type": "image", "Source": "registry.example.com/base:latest"}
+				]
+			}
+		}
+	}`))
+
+	reason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("reason = %q, want empty (image trust not configured)", reason)
+	}
+}
+
+func TestServicePolicyDenyImageMountReason(t *testing.T) {
+	tests := []struct {
+		name       string
+		cfg        imagetrust.Config
+		mounts     []serviceMount
+		wantReason string
+	}{
+		{
+			name:       "enforce mode denies image-type mount",
+			cfg:        imagetrust.Config{Mode: imagetrust.ModeEnforce},
+			mounts:     []serviceMount{{Type: "image", Source: "registry.example.com/base:latest"}},
+			wantReason: `service denied: image mount source "registry.example.com/base:latest" is not covered by image trust verification`,
+		},
+		{
+			name:       "enforce mode denies image-type mount case-insensitively",
+			cfg:        imagetrust.Config{Mode: imagetrust.ModeEnforce},
+			mounts:     []serviceMount{{Type: "IMAGE", Source: "registry.example.com/base:latest"}},
+			wantReason: `service denied: image mount source "registry.example.com/base:latest" is not covered by image trust verification`,
+		},
+		{
+			name:       "enforce mode allows bind-type mount",
+			cfg:        imagetrust.Config{Mode: imagetrust.ModeEnforce},
+			mounts:     []serviceMount{{Type: "bind", Source: "/data"}},
+			wantReason: "",
+		},
+		{
+			name:       "warn mode does not deny image-type mount",
+			cfg:        imagetrust.Config{Mode: imagetrust.ModeWarn},
+			mounts:     []serviceMount{{Type: "image", Source: "registry.example.com/base:latest"}},
+			wantReason: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := servicePolicy{imageTrust: imageTrustFields{cfg: tt.cfg}}
+			reason := policy.denyImageMountReason(tt.mounts)
+			if reason != tt.wantReason {
+				t.Fatalf("denyImageMountReason() = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 func TestServiceInspectDeniesCapabilityAdd(t *testing.T) {
 	// Swarm task ContainerSpec.CapabilityAdd must obey the same allowlist as
 	// /containers/create: with no allowlist, any added capability is denied.

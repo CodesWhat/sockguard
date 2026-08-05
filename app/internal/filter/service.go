@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/codeswhat/sockguard/internal/imagefetch"
+	"github.com/codeswhat/sockguard/internal/imagetrust"
 )
 
 const maxServiceBodyBytes = 1 << 20 // 1 MiB
@@ -190,6 +191,28 @@ func newServicePolicy(opts ServiceOptions) servicePolicy {
 	}
 }
 
+// denyImageMountReason denies any ContainerSpec.Mounts entry of Type "image"
+// when image trust enforcement is active for this request — the swarm
+// equivalent of containerCreatePolicy.denyImageMountReason. Docker API 1.48+
+// added Type: "image" mounts, whose Source is an image reference mounted into
+// the task container's filesystem rather than a bind/volume path; the
+// bind-mount loop above only inspects Type == "bind" entries, so an
+// image-type mount is invisible to it. Under image_trust enforce mode that
+// invisibility is a trust bypass: ContainerSpec.Image is verified and
+// pinned, but an image-type mount can smuggle in an arbitrary, entirely
+// unverified image filesystem instead.
+func (p servicePolicy) denyImageMountReason(mounts []serviceMount) string {
+	if p.imageTrust.cfg.Mode != imagetrust.ModeEnforce {
+		return ""
+	}
+	for _, mount := range mounts {
+		if strings.EqualFold(mount.Type, "image") {
+			return fmt.Sprintf("service denied: image mount source %q is not covered by image trust verification", mount.Source)
+		}
+	}
+	return ""
+}
+
 // denyHardeningReason enforces the swarm equivalents of the container-create
 // boolean rails against ContainerSpec. It reuses the same isNonRootUser and
 // capDropContainsAll helpers so service and container policy stay in lockstep.
@@ -335,6 +358,10 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 			continue
 		}
 		return fmt.Sprintf("service denied: bind mount source %q is not allowlisted", source), nil
+	}
+
+	if denyReason := p.denyImageMountReason(req.TaskTemplate.ContainerSpec.Mounts); denyReason != "" {
+		return denyReason, nil
 	}
 
 	// Identity/privilege rails: ContainerSpec carries swarm equivalents of the
