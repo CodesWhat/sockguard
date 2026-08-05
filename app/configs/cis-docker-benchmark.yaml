@@ -127,9 +127,11 @@ request_body:
 # reference on a matched container_create/service body BEFORE the
 # request_body.container_create inspection above runs, so the mutated
 # result is itself checked against every CIS control above, not exempted
-# from it. Uncomment to have sockguard mark every admission-approved
-# container with a compliance label, auditable without touching the
-# workload manifest itself.
+# from it. Uncomment to record what a compliance label would do. As
+# written the rule is mode: audit, so it only emits audit records and
+# forwards the body unchanged. Promote it to enforce to actually mark
+# every admission-approved container, without touching the workload
+# manifest itself.
 # mutations:
 #   rules:
 #     - id: tag-cis-benchmark-compliant
