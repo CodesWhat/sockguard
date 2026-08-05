@@ -60,6 +60,10 @@ type PolicyConfig struct {
 	// ContainerCreate configures request-body policy checks for
 	// POST /containers/create.
 	ContainerCreate ContainerCreateOptions
+	// LibpodContainerCreate configures request-body policy checks for
+	// POST /libpod/containers/create (Podman's native SpecGenerator create
+	// endpoint, distinct from the Docker-compat ContainerCreate above).
+	LibpodContainerCreate LibpodContainerCreateOptions
 	// Exec configures request-body policy checks for exec create/start.
 	Exec ExecOptions
 	// ImagePull configures request/query inspection for POST /images/create.
@@ -343,6 +347,13 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// in r.Body. Neither entry needs to know the other exists.
 		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreateMutationPolicy(mutationEng).inspect, "failed to apply container create admission mutations", "unable to apply container create admission mutations"},
 		{http.MethodPost, matchesContainerCreateInspection, inspectSeverityCritical, newContainerCreatePolicy(cfg.ContainerCreate).inspect, "failed to inspect container create request body", "unable to inspect container create request body"},
+		// libpod container-create is path-exclusive with the Docker-compat
+		// entry above (isLibpodContainerCreatePath vs
+		// matchesContainerCreateInspection never both match the same
+		// normalized path — see TestInspectorRoutingIsPathExclusive), so a
+		// crafted body can never reach the wrong family's gates regardless
+		// of which shape it carries.
+		{http.MethodPost, matchesLibpodContainerCreateInspection, inspectSeverityCritical, newLibpodContainerCreatePolicy(cfg.LibpodContainerCreate).inspect, "failed to inspect libpod container create request body", "unable to inspect libpod container create request body"},
 		{http.MethodPost, matchesExecInspection, inspectSeverityHigh, newExecPolicy(cfg.Exec).inspect, "failed to inspect exec request body", "unable to inspect exec request body"},
 		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
 		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
@@ -369,6 +380,10 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 
 func matchesContainerCreateInspection(normalizedPath string) bool {
 	return normalizedPath == "/containers/create"
+}
+
+func matchesLibpodContainerCreateInspection(normalizedPath string) bool {
+	return isLibpodContainerCreatePath(normalizedPath)
 }
 
 func matchesExecInspection(normalizedPath string) bool {
