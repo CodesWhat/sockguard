@@ -31,9 +31,9 @@ on:
   workflow_dispatch:
     inputs:
       sockguard_image:
-        description: "Full sockguard image reference to test (e.g. a release-candidate tag for the pre-GA gate)"
+        description: "Full sockguard image reference to test. Empty = the compose bundle's own default (codeswhat/sockguard:1.5.1), same as a scheduled run. For the pre-GA gate documented in RELEASING.md, pass the release-candidate ref explicitly (e.g. ghcr.io/codeswhat/sockguard:1.6.0-rc.11) -- never leave this empty when gating a specific candidate."
         required: false
-        default: "ghcr.io/codeswhat/sockguard:latest"
+        default: ""
       portwing_version:
         description: "Override the portwing version tag for the current-standard/current-edge rows (empty = latest). Never overrides legacy-floor's audited 0.8.1 pin."
         required: false
@@ -158,7 +158,30 @@ jobs:
           merge-multiple: true
 
       - name: Aggregate into the run summary
+        env:
+          # Mirrors the `matrix.row` list in the `matrix` job above -- there's
+          # no `strategy` context available in this job to read it back from,
+          # so the expected count is kept in lockstep by hand. If a row is
+          # ever added/removed there, update this too.
+          EXPECTED_ROW_COUNT: 3
         run: |
+          shopt -s nullglob
+          artifact_count=$(ls -1 artifacts/*.json 2>/dev/null | wc -l)
+
+          # Checked BEFORE the aggregation loop, not just the plain-emptiness
+          # case after it: a row that dies (e.g. a runner crash) after some
+          # OTHER row already wrote its artifact leaves `artifacts/` non-empty
+          # but still short a row, and that must fail the gate just as hard
+          # as zero artifacts does -- a partial matrix is not a passing one.
+          if [ -z "$(ls -A artifacts 2>/dev/null)" ]; then
+            echo "::error::no conformance-*.json artifacts were found -- every matrix row failed before writing its artifact"
+            exit 1
+          fi
+          if [ "$artifact_count" -ne "$EXPECTED_ROW_COUNT" ]; then
+            echo "::error::found ${artifact_count} conformance-*.json artifact(s), expected ${EXPECTED_ROW_COUNT} (one per matrix row) -- at least one row died before write_artifact ran and its failure is otherwise invisible to this gate"
+            exit 1
+          fi
+
           {
             echo "### 🤝 Tri-tool conformance matrix"
             echo ""
@@ -166,7 +189,6 @@ jobs:
             echo "|---|---|---|---|---|---|"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          shopt -s nullglob
           for f in artifacts/*.json; do
             jq -r '
               [
@@ -184,11 +206,6 @@ jobs:
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Per-row detail (all ten #150 design-doc assertions plus the route-drift tripwire) is in each row's uploaded \`conformance-<row>.json\` artifact." >> "$GITHUB_STEP_SUMMARY"
-
-          if [ -z "$(ls -A artifacts 2>/dev/null)" ]; then
-            echo "::error::no conformance-*.json artifacts were found -- every matrix row failed before writing its artifact"
-            exit 1
-          fi
 
           fail_count="$(jq -s '[.[] | select(.overall=="FAIL")] | length' artifacts/*.json)"
           if [ "$fail_count" -gt 0 ]; then
