@@ -357,20 +357,69 @@ type ResponseConfig struct {
 type RequestBodyConfig struct {
 	ContainerCreate       ContainerCreateRequestBodyConfig       `mapstructure:"container_create"`
 	LibpodContainerCreate LibpodContainerCreateRequestBodyConfig `mapstructure:"libpod_container_create"`
-	Exec                  ExecRequestBodyConfig                  `mapstructure:"exec"`
-	ImagePull             ImagePullRequestBodyConfig             `mapstructure:"image_pull"`
-	Build                 BuildRequestBodyConfig                 `mapstructure:"build"`
-	ContainerUpdate       ContainerUpdateRequestBodyConfig       `mapstructure:"container_update"`
-	ContainerArchive      ContainerArchiveRequestBodyConfig      `mapstructure:"container_archive"`
-	ImageLoad             ImageLoadRequestBodyConfig             `mapstructure:"image_load"`
-	Volume                VolumeRequestBodyConfig                `mapstructure:"volume"`
-	Network               NetworkRequestBodyConfig               `mapstructure:"network"`
-	Secret                SecretRequestBodyConfig                `mapstructure:"secret"`
-	Config                ConfigRequestBodyConfig                `mapstructure:"config"`
-	Service               ServiceRequestBodyConfig               `mapstructure:"service"`
-	Swarm                 SwarmRequestBodyConfig                 `mapstructure:"swarm"`
-	Node                  NodeRequestBodyConfig                  `mapstructure:"node"`
-	Plugin                PluginRequestBodyConfig                `mapstructure:"plugin"`
+	// Exec configures body inspection for BOTH the Docker-compat exec
+	// create/start endpoints AND their libpod equivalents
+	// (POST /libpod/containers/*/exec, POST /libpod/exec/*/start). There is
+	// deliberately no separate libpod_exec block: libpod exec bodies are
+	// decoded by the identical Go handler Docker-compat exec bodies are
+	// (confirmed against Podman's own route table, see exec.go), so a split
+	// config would just be a configure-one-forget-other trap (#148 design
+	// doc, decision C3).
+	Exec             ExecRequestBodyConfig             `mapstructure:"exec"`
+	ImagePull        ImagePullRequestBodyConfig        `mapstructure:"image_pull"`
+	Build            BuildRequestBodyConfig            `mapstructure:"build"`
+	ContainerUpdate  ContainerUpdateRequestBodyConfig  `mapstructure:"container_update"`
+	ContainerArchive ContainerArchiveRequestBodyConfig `mapstructure:"container_archive"`
+	ImageLoad        ImageLoadRequestBodyConfig        `mapstructure:"image_load"`
+	Volume           VolumeRequestBodyConfig           `mapstructure:"volume"`
+	Network          NetworkRequestBodyConfig          `mapstructure:"network"`
+	Secret           SecretRequestBodyConfig           `mapstructure:"secret"`
+	Config           ConfigRequestBodyConfig           `mapstructure:"config"`
+	Service          ServiceRequestBodyConfig          `mapstructure:"service"`
+	Swarm            SwarmRequestBodyConfig            `mapstructure:"swarm"`
+	Node             NodeRequestBodyConfig             `mapstructure:"node"`
+	Plugin           PluginRequestBodyConfig           `mapstructure:"plugin"`
+	// LibpodPodCreate configures body inspection for POST /libpod/pods/create
+	// (Podman's native pod-create endpoint; pods have no Docker-compat
+	// equivalent, so this is its own top-level key rather than reusing
+	// container_create). #148.
+	LibpodPodCreate LibpodPodCreateRequestBodyConfig `mapstructure:"libpod_pod_create"`
+	// LibpodVolume, LibpodNetwork, and LibpodSecret configure body/query
+	// inspection for the libpod-native volume/network/secret create
+	// endpoints (POST /libpod/volumes/create, /libpod/networks/create,
+	// /libpod/secrets/create). They reuse the EXISTING
+	// Volume/Network/SecretRequestBodyConfig types — libpod's wire shapes
+	// for these resources differ from Docker's (see libpod_volume.go,
+	// libpod_network.go, libpod_secret.go for the decode structs and which
+	// fields have no libpod analog), but the policy knobs an operator
+	// reasons about are the same, so a second parallel type would only add
+	// schema noise. #148.
+	LibpodVolume  VolumeRequestBodyConfig  `mapstructure:"libpod_volume"`
+	LibpodNetwork NetworkRequestBodyConfig `mapstructure:"libpod_network"`
+	LibpodSecret  SecretRequestBodyConfig  `mapstructure:"libpod_secret"`
+}
+
+// LibpodPodCreateRequestBodyConfig configures body inspection for
+// POST /libpod/pods/create. Cross-owner namespace-sharing checks and label
+// injection for ownership are deferred to a follow-up PR (#148 design doc
+// C6) — this config only covers the raw request-body gates below.
+type LibpodPodCreateRequestBodyConfig struct {
+	// AllowHostNetwork permits a pod-level NetNS of {"nsmode":"host"} — the
+	// pod (and every container that joins it) shares the host network
+	// namespace. Mirrors container_create.allow_host_network's posture for
+	// the pod-wide equivalent. Default false.
+	AllowHostNetwork bool `mapstructure:"allow_host_network"`
+	// AllowSharedPIDNamespace permits "pid" in the pod's shared_namespaces
+	// list, letting every container in the pod see (and signal) every other
+	// container's processes — the pod-wide analog of container_create's
+	// PidMode: host, scoped to the pod rather than the host. Default false.
+	AllowSharedPIDNamespace bool `mapstructure:"allow_shared_pid_namespace"`
+	// AllowedInfraImageRegistries allowlists the registry the pod's
+	// infra_image reference resolves to, reusing the same host-allowlist
+	// shape as image_pull.allowed_registries. An empty infra_image (Podman's
+	// built-in default pause image) is always allowed regardless of this
+	// list. Default empty: any explicit infra_image is denied.
+	AllowedInfraImageRegistries []string `mapstructure:"allowed_infra_image_registries"`
 }
 
 // ContainerCreateRequestBodyConfig configures body inspection for

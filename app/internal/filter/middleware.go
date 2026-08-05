@@ -94,6 +94,18 @@ type PolicyConfig struct {
 	Node NodeOptions
 	// Plugin configures request-body inspection for plugin write endpoints.
 	Plugin PluginOptions
+	// LibpodPodCreate configures request-body inspection for
+	// POST /libpod/pods/create. #148.
+	LibpodPodCreate LibpodPodCreateOptions
+	// LibpodVolume configures request-body inspection for
+	// POST /libpod/volumes/create. #148.
+	LibpodVolume VolumeOptions
+	// LibpodNetwork configures request-body inspection for
+	// POST /libpod/networks/create. #148.
+	LibpodNetwork NetworkOptions
+	// LibpodSecret configures request-body inspection for
+	// POST /libpod/secrets/create. #148.
+	LibpodSecret SecretOptions
 }
 
 // Options configures filter middleware behavior.
@@ -369,6 +381,14 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesSwarmInspection, inspectSeverityCritical, newSwarmPolicy(cfg.Swarm).inspect, "failed to inspect swarm request body", "unable to inspect swarm request body"},
 		{http.MethodPost, matchesNodeInspection, inspectSeverityHigh, newNodePolicy(cfg.Node).inspect, "failed to inspect node update request body", "unable to inspect node update request body"},
 		{http.MethodPost, matchesPluginInspection, inspectSeverityCritical, newPluginPolicy(cfg.Plugin).inspect, "failed to inspect plugin request body", "unable to inspect plugin request body"},
+		// libpod-native inspectors (#148). Exec is deliberately NOT listed
+		// again here: matchesExecInspection above already covers both the
+		// Docker-compat and libpod exec paths against the single shared
+		// execPolicy entry (design doc decision C3).
+		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(cfg.LibpodPodCreate).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
+		{http.MethodPost, matchesLibpodVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.LibpodVolume).inspectLibpod, "failed to inspect libpod volume create request body", "unable to inspect libpod volume create request body"},
+		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpodCreate, "failed to inspect libpod network create request body", "unable to inspect libpod network create request body"},
+		{http.MethodPost, matchesLibpodSecretInspection, inspectSeverityMedium, newLibpodSecretPolicy(cfg.LibpodSecret).inspect, "failed to inspect libpod secret create request", "unable to inspect libpod secret create request"},
 	}
 	byMethod := groupInspectPoliciesByMethod(all)
 	return runtimePolicy{
@@ -387,7 +407,10 @@ func matchesLibpodContainerCreateInspection(normalizedPath string) bool {
 }
 
 func matchesExecInspection(normalizedPath string) bool {
-	return isExecCreatePath(normalizedPath) || isExecStartPath(normalizedPath)
+	// Covers both the Docker-compat and libpod exec families — see the
+	// shared execPolicy/ExecOptions doc comments (#148 design doc C3).
+	return isExecCreatePath(normalizedPath) || isExecStartPath(normalizedPath) ||
+		isLibpodExecCreatePath(normalizedPath) || isLibpodExecStartPath(normalizedPath)
 }
 
 func matchesImagePullInspection(normalizedPath string) bool {
@@ -445,6 +468,22 @@ func matchesNodeInspection(normalizedPath string) bool {
 
 func matchesPluginInspection(normalizedPath string) bool {
 	return normalizedPath == "/plugins/pull" || normalizedPath == "/plugins/create" || isPluginUpgradePath(normalizedPath) || isPluginSetPath(normalizedPath)
+}
+
+func matchesLibpodPodCreateInspection(normalizedPath string) bool {
+	return isLibpodPodCreatePath(normalizedPath)
+}
+
+func matchesLibpodVolumeInspection(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"volumes/create"
+}
+
+func matchesLibpodNetworkInspection(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"networks/create"
+}
+
+func matchesLibpodSecretInspection(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"secrets/create"
 }
 
 // inspectBucketCapacity bounds how many policies of a single severity may

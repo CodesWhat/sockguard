@@ -36,6 +36,20 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		Swarm:                 c.Swarm.ToFilterOptions(),
 		Node:                  c.Node.ToFilterOptions(),
 		Plugin:                c.Plugin.ToFilterOptions(),
+		LibpodPodCreate:       c.LibpodPodCreate.ToFilterOptions(),
+		LibpodVolume:          c.LibpodVolume.ToFilterOptions(),
+		LibpodNetwork:         c.LibpodNetwork.ToFilterOptions(),
+		LibpodSecret:          c.LibpodSecret.ToFilterOptions(),
+	}
+}
+
+// ToFilterOptions converts libpod_pod_create config into filter middleware
+// options. #148.
+func (c LibpodPodCreateRequestBodyConfig) ToFilterOptions() filter.LibpodPodCreateOptions {
+	return filter.LibpodPodCreateOptions{
+		AllowHostNetwork:            c.AllowHostNetwork,
+		AllowSharedPIDNamespace:     c.AllowSharedPIDNamespace,
+		AllowedInfraImageRegistries: c.AllowedInfraImageRegistries,
 	}
 }
 
