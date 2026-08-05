@@ -969,6 +969,10 @@ func validateMutationInjectLabels(prefix string, rule MutationRuleConfig, cfg *C
 			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels[%q] value exceeds %d bytes", prefix, key, maxMutationLabelValueBytes))
 			valid = false
 		}
+		if strings.TrimSpace(value) == "" {
+			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels[%q] value must be non-empty", prefix, key))
+			valid = false
+		}
 		if containsControlOrNUL(key) || containsControlOrNUL(value) {
 			errs = append(errs, fmt.Sprintf("%s.inject_labels.labels[%q] must not contain control characters or NUL", prefix, key))
 			valid = false

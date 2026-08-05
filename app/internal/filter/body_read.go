@@ -71,6 +71,7 @@ func readBoundedBody(r *http.Request, max int64) ([]byte, error) {
 // been applied without error — there is no partial-body state this function
 // can be called into.
 func replaceRequestBody(r *http.Request, final []byte) {
+	final = bytes.Clone(final)
 	if r.Body != nil {
 		_ = r.Body.Close()
 	}

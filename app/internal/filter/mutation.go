@@ -244,7 +244,7 @@ func (p mutationPolicy) inspect(logger *slog.Logger, r *http.Request, normalized
 
 	actual, err := parseMutationDocument(body, mutationMaxNodes(len(body)))
 	if err != nil {
-		logRequestError(logger, r, slog.LevelDebug, "mutation request body is not a well-formed, unambiguous JSON object; denying", err)
+		logRequestError(logger, r, slog.LevelDebug, "mutation request body is not a well-formed, unambiguous JSON object; denying", nil)
 		return "", newRequestRejectionErrorWithCode(
 			http.StatusBadRequest,
 			reasonCodeMutationRequestInvalid,
@@ -268,7 +268,7 @@ func (p mutationPolicy) inspect(logger *slog.Logger, r *http.Request, normalized
 		if rule.mode == "enforce" {
 			outcome, applyErr := applyMutationRule(actual, surface, rule)
 			if applyErr != nil {
-				logRequestError(logger, r, slog.LevelDebug, "admission mutation rule failed to apply; denying", applyErr)
+				logRequestError(logger, r, slog.LevelDebug, "admission mutation rule failed to apply; denying", nil)
 				return "", newRequestRejectionErrorWithCode(
 					http.StatusBadRequest,
 					reasonCodeMutationApplyFailed,
