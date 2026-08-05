@@ -108,11 +108,11 @@ func (p libpodPodCreatePolicy) inspect(logger *slog.Logger, r *http.Request, nor
 		return denyReason, nil
 	}
 
-	// TODO(#148): cross-owner namespace-sharing checks and owner-label
-	// injection (design doc C6 — pod-level share/netns targets resolved
-	// against AllowedNamespaceSharingContainers, lowercase "labels" mutation
-	// on create) are deferred to the ownership/visibility follow-up PR. This
-	// inspector only gates the raw request-body fields above.
+	// Cross-owner namespace-sharing checks and owner-label injection (design
+	// doc C6) are implemented in internal/ownership (see
+	// mutateLibpodPodCreateOwnershipBody and libpodNamespaceRefs), not here —
+	// this inspector only gates the raw request-body fields above against the
+	// static policy knobs, independent of any configured ownership.owner.
 
 	return "", nil
 }
