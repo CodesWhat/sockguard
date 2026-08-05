@@ -50,6 +50,14 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/plugins/sockguard-test/upgrade"},
 	{method: http.MethodPost, path: "/plugins/sockguard-test/set"},
 	{method: http.MethodPost, path: "/plugins/create"},
+	// libpod native surface (#148 PR2). POST /libpod/containers/create always
+	// runs through an inspector with fail-closed defaults exactly like its
+	// Docker-compat counterpart /containers/create (deliberately NOT listed
+	// here — see bodyInspectionConfiguredForEndpoint's cases below), but is
+	// included in this catalog per the design doc's "Agreed core" item 4 so
+	// an operator auditing acknowledged sensitive endpoints sees it listed
+	// alongside the rest of the libpod write surface as it grows.
+	{method: http.MethodPost, path: "/libpod/containers/create"},
 }
 
 type buildkitTunnelEndpoint struct {
@@ -308,6 +316,8 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 	case "/plugins/sockguard-test/set":
 		return len(requestBody.Plugin.AllowedSetEnvPrefixes) > 0
 	case "/plugins/create":
+		return true
+	case "/libpod/containers/create":
 		return true
 	default:
 		return false

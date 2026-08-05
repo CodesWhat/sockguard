@@ -20,21 +20,22 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 	containerCreate.AllowEndpointConfig = c.Network.AllowEndpointConfig
 
 	return filter.PolicyConfig{
-		ContainerCreate:  containerCreate,
-		Exec:             c.Exec.ToFilterOptions(),
-		ImagePull:        c.ImagePull.ToFilterOptions(),
-		Build:            c.Build.ToFilterOptions(),
-		ContainerUpdate:  c.ContainerUpdate.ToFilterOptions(),
-		ContainerArchive: c.ContainerArchive.ToFilterOptions(),
-		ImageLoad:        c.ImageLoad.ToFilterOptions(),
-		Volume:           c.Volume.ToFilterOptions(),
-		Network:          c.Network.ToFilterOptions(),
-		Secret:           c.Secret.ToFilterOptions(),
-		Config:           c.Config.ToFilterOptions(),
-		Service:          c.Service.ToFilterOptions(),
-		Swarm:            c.Swarm.ToFilterOptions(),
-		Node:             c.Node.ToFilterOptions(),
-		Plugin:           c.Plugin.ToFilterOptions(),
+		ContainerCreate:       containerCreate,
+		LibpodContainerCreate: c.LibpodContainerCreate.ToFilterOptions(),
+		Exec:                  c.Exec.ToFilterOptions(),
+		ImagePull:             c.ImagePull.ToFilterOptions(),
+		Build:                 c.Build.ToFilterOptions(),
+		ContainerUpdate:       c.ContainerUpdate.ToFilterOptions(),
+		ContainerArchive:      c.ContainerArchive.ToFilterOptions(),
+		ImageLoad:             c.ImageLoad.ToFilterOptions(),
+		Volume:                c.Volume.ToFilterOptions(),
+		Network:               c.Network.ToFilterOptions(),
+		Secret:                c.Secret.ToFilterOptions(),
+		Config:                c.Config.ToFilterOptions(),
+		Service:               c.Service.ToFilterOptions(),
+		Swarm:                 c.Swarm.ToFilterOptions(),
+		Node:                  c.Node.ToFilterOptions(),
+		Plugin:                c.Plugin.ToFilterOptions(),
 	}
 }
 
@@ -78,6 +79,38 @@ func (c ContainerCreateRequestBodyConfig) ToFilterOptions() filter.ContainerCrea
 		DenySelinuxLabelOverride:          c.DenySelinuxLabelOverride,
 		DenyUnconfinedSystemPaths:         c.DenyUnconfinedSystemPaths,
 		AllowTmpfsPrivilegedOptions:       c.AllowTmpfsPrivilegedOptions,
+	}
+}
+
+func (c LibpodContainerCreateRequestBodyConfig) ToFilterOptions() filter.LibpodContainerCreateOptions {
+	return filter.LibpodContainerCreateOptions{
+		AllowPrivileged:                   c.AllowPrivileged,
+		AllowHostNetwork:                  c.AllowHostNetwork,
+		AllowHostPID:                      c.AllowHostPID,
+		AllowHostIPC:                      c.AllowHostIPC,
+		AllowHostUserNS:                   c.AllowHostUserNS,
+		AllowedBindMounts:                 c.AllowedBindMounts,
+		AllowAllDevices:                   c.AllowAllDevices,
+		AllowedDevices:                    c.AllowedDevices,
+		RestrictNamespaceSharing:          c.RestrictNamespaceSharing,
+		AllowedNamespaceSharingContainers: c.AllowedNamespaceSharingContainers,
+		AllowAllCapabilities:              c.AllowAllCapabilities,
+		AllowedCapabilities:               c.AllowedCapabilities,
+		AllowedSeccompProfiles:            c.AllowedSeccompProfiles,
+		DenyUnconfinedSeccomp:             c.DenyUnconfinedSeccomp,
+		AllowedAppArmorProfiles:           c.AllowedAppArmorProfiles,
+		DenyUnconfinedAppArmor:            c.DenyUnconfinedAppArmor,
+		DenySelinuxDisable:                c.DenySelinuxDisable,
+		RequireNonRootUser:                c.RequireNonRootUser,
+		RequireReadonlyRootfs:             c.RequireReadonlyRootfs,
+		RequireMemoryLimit:                c.RequireMemoryLimit,
+		RequireCPULimit:                   c.RequireCPULimit,
+		RequireCPULimitHard:               c.RequireCPULimitHard,
+		RequirePidsLimit:                  c.RequirePidsLimit,
+		AllowSysctls:                      c.AllowSysctls,
+		ImageTrust:                        c.ImageTrust.toFilterOptions(),
+		AllowSystemdMode:                  c.AllowSystemdMode,
+		AllowCustomIDMappings:             c.AllowCustomIDMappings,
 	}
 }
 

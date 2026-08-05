@@ -355,21 +355,22 @@ type ResponseConfig struct {
 
 // RequestBodyConfig configures request-body inspection policies.
 type RequestBodyConfig struct {
-	ContainerCreate  ContainerCreateRequestBodyConfig  `mapstructure:"container_create"`
-	Exec             ExecRequestBodyConfig             `mapstructure:"exec"`
-	ImagePull        ImagePullRequestBodyConfig        `mapstructure:"image_pull"`
-	Build            BuildRequestBodyConfig            `mapstructure:"build"`
-	ContainerUpdate  ContainerUpdateRequestBodyConfig  `mapstructure:"container_update"`
-	ContainerArchive ContainerArchiveRequestBodyConfig `mapstructure:"container_archive"`
-	ImageLoad        ImageLoadRequestBodyConfig        `mapstructure:"image_load"`
-	Volume           VolumeRequestBodyConfig           `mapstructure:"volume"`
-	Network          NetworkRequestBodyConfig          `mapstructure:"network"`
-	Secret           SecretRequestBodyConfig           `mapstructure:"secret"`
-	Config           ConfigRequestBodyConfig           `mapstructure:"config"`
-	Service          ServiceRequestBodyConfig          `mapstructure:"service"`
-	Swarm            SwarmRequestBodyConfig            `mapstructure:"swarm"`
-	Node             NodeRequestBodyConfig             `mapstructure:"node"`
-	Plugin           PluginRequestBodyConfig           `mapstructure:"plugin"`
+	ContainerCreate       ContainerCreateRequestBodyConfig       `mapstructure:"container_create"`
+	LibpodContainerCreate LibpodContainerCreateRequestBodyConfig `mapstructure:"libpod_container_create"`
+	Exec                  ExecRequestBodyConfig                  `mapstructure:"exec"`
+	ImagePull             ImagePullRequestBodyConfig             `mapstructure:"image_pull"`
+	Build                 BuildRequestBodyConfig                 `mapstructure:"build"`
+	ContainerUpdate       ContainerUpdateRequestBodyConfig       `mapstructure:"container_update"`
+	ContainerArchive      ContainerArchiveRequestBodyConfig      `mapstructure:"container_archive"`
+	ImageLoad             ImageLoadRequestBodyConfig             `mapstructure:"image_load"`
+	Volume                VolumeRequestBodyConfig                `mapstructure:"volume"`
+	Network               NetworkRequestBodyConfig               `mapstructure:"network"`
+	Secret                SecretRequestBodyConfig                `mapstructure:"secret"`
+	Config                ConfigRequestBodyConfig                `mapstructure:"config"`
+	Service               ServiceRequestBodyConfig               `mapstructure:"service"`
+	Swarm                 SwarmRequestBodyConfig                 `mapstructure:"swarm"`
+	Node                  NodeRequestBodyConfig                  `mapstructure:"node"`
+	Plugin                PluginRequestBodyConfig                `mapstructure:"plugin"`
 }
 
 // ContainerCreateRequestBodyConfig configures body inspection for
@@ -442,6 +443,61 @@ type ContainerCreateRequestBodyConfig struct {
 	// Options entry can override that default per-mount, so it is denied
 	// unless explicitly allowed. Default false.
 	AllowTmpfsPrivilegedOptions bool `mapstructure:"allow_tmpfs_privileged_options"`
+}
+
+// LibpodContainerCreateRequestBodyConfig configures body inspection for
+// POST /libpod/containers/create requests — Podman's native SpecGenerator
+// create endpoint, distinct from the Docker-compat container_create block
+// above. Field names mirror ContainerCreateRequestBodyConfig where the
+// underlying semantics map onto a libpod equivalent (see design doc #148),
+// so operator knowledge transfers between the two surfaces; two fields
+// (AllowSystemdMode, AllowCustomIDMappings) have no Docker analog.
+type LibpodContainerCreateRequestBodyConfig struct {
+	AllowPrivileged   bool     `mapstructure:"allow_privileged"`
+	AllowHostNetwork  bool     `mapstructure:"allow_host_network"`
+	AllowHostPID      bool     `mapstructure:"allow_host_pid"`
+	AllowHostIPC      bool     `mapstructure:"allow_host_ipc"`
+	AllowHostUserNS   bool     `mapstructure:"allow_host_userns"`
+	AllowedBindMounts []string `mapstructure:"allowed_bind_mounts"`
+	AllowAllDevices   bool     `mapstructure:"allow_all_devices"`
+	AllowedDevices    []string `mapstructure:"allowed_devices"`
+
+	// RestrictNamespaceSharing/AllowedNamespaceSharingContainers gate
+	// netns/pidns/ipcns/userns/utsns objects of the form
+	// {"nsmode":"container","value":"<ref>"}, mirroring
+	// ContainerCreateRequestBodyConfig.RestrictNamespaceSharing.
+	RestrictNamespaceSharing          bool     `mapstructure:"restrict_namespace_sharing"`
+	AllowedNamespaceSharingContainers []string `mapstructure:"allowed_namespace_sharing_containers"`
+
+	AllowAllCapabilities   bool     `mapstructure:"allow_all_capabilities"`
+	AllowedCapabilities    []string `mapstructure:"allowed_capabilities"`
+	AllowedSeccompProfiles []string `mapstructure:"allowed_seccomp_profiles"`
+	DenyUnconfinedSeccomp  bool     `mapstructure:"deny_unconfined_seccomp"`
+
+	AllowedAppArmorProfiles []string `mapstructure:"allowed_apparmor_profiles"`
+	DenyUnconfinedAppArmor  bool     `mapstructure:"deny_unconfined_apparmor"`
+
+	DenySelinuxDisable bool `mapstructure:"deny_selinux_disable"`
+
+	RequireNonRootUser    bool `mapstructure:"require_non_root_user"`
+	RequireReadonlyRootfs bool `mapstructure:"require_readonly_rootfs"`
+	RequireMemoryLimit    bool `mapstructure:"require_memory_limit"`
+	RequireCPULimit       bool `mapstructure:"require_cpu_limit"`
+	RequireCPULimitHard   bool `mapstructure:"require_cpu_limit_hard"`
+	RequirePidsLimit      bool `mapstructure:"require_pids_limit"`
+
+	AllowSysctls bool `mapstructure:"allow_sysctls"`
+
+	ImageTrust ImageTrustConfig `mapstructure:"image_trust"`
+
+	// AllowSystemdMode permits a "systemd" value other than "false"
+	// (SpecGenerator's own default, sent even when --systemd was never
+	// passed). No Docker Engine API analog. Default false: fail-closed.
+	AllowSystemdMode bool `mapstructure:"allow_systemd_mode"`
+
+	// AllowCustomIDMappings permits a non-default idmappings.UIDMap/GIDMap
+	// or --userns=auto. A blunt gate for v1.6; default false.
+	AllowCustomIDMappings bool `mapstructure:"allow_custom_id_mappings"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images
@@ -1173,6 +1229,9 @@ func Defaults() Config {
 			// signatures cannot be replayed without a transparency-log entry.
 			// Operators must opt out explicitly.
 			ContainerCreate: ContainerCreateRequestBodyConfig{
+				ImageTrust: ImageTrustConfig{RequireRekorInclusion: true},
+			},
+			LibpodContainerCreate: LibpodContainerCreateRequestBodyConfig{
 				ImageTrust: ImageTrustConfig{RequireRekorInclusion: true},
 			},
 			ImagePull: ImagePullRequestBodyConfig{

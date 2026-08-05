@@ -1511,6 +1511,7 @@ func validateEndpointCosts(prefix string, costs []EndpointCostConfig, effectiveB
 func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	var errs []string
 	errs = append(errs, validateContainerCreateConfig(prefix, cfg.ContainerCreate)...)
+	errs = append(errs, validateLibpodContainerCreateConfig(prefix, cfg.LibpodContainerCreate)...)
 	errs = append(errs, validateExecConfig(prefix, cfg.Exec)...)
 	errs = append(errs, validateImagePullConfig(prefix, cfg.ImagePull)...)
 	errs = append(errs, validateServiceConfig(prefix, cfg.Service)...)
@@ -1570,6 +1571,25 @@ func validateContainerCreateConfig(prefix string, cfg ContainerCreateRequestBody
 		errs = append(errs, fmt.Sprintf("%s.container_create.allowed_namespace_sharing_containers entries must be non-empty container ID or name values, got %q", prefix, entry))
 	}
 	errs = append(errs, validateImageTrustConfig(prefix+".container_create.image_trust", cfg.ImageTrust)...)
+	return errs
+}
+
+// validateLibpodContainerCreateConfig mirrors validateContainerCreateConfig's
+// pattern for the libpod_container_create block: absolute-path checks on the
+// bind-mount/device allowlists and image-trust config. Namespace-sharing
+// target entries follow the same non-empty/trimmed check as the Docker
+// equivalent's allowed_namespace_sharing_containers.
+func validateLibpodContainerCreateConfig(prefix string, cfg LibpodContainerCreateRequestBodyConfig) []string {
+	var errs []string
+	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_bind_mounts", cfg.AllowedBindMounts)...)
+	errs = append(errs, validateHostPathEntries(prefix, "libpod_container_create.allowed_devices", cfg.AllowedDevices)...)
+	for _, entry := range cfg.AllowedNamespaceSharingContainers {
+		if entry != "" && entry == strings.TrimSpace(entry) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.libpod_container_create.allowed_namespace_sharing_containers entries must be non-empty container ID or name values, got %q", prefix, entry))
+	}
+	errs = append(errs, validateImageTrustConfig(prefix+".libpod_container_create.image_trust", cfg.ImageTrust)...)
 	return errs
 }
 
