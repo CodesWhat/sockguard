@@ -145,7 +145,7 @@ Sockguard now applies the same honesty rule to every recognized data-exfiltratio
 
 #### Compose / BuildKit Transport
 
-Modern `docker build` and `docker compose build` no longer speak the classic `POST /build` API by default — Buildx routes through BuildKit's opaque, unversioned session/gRPC tunnel (`POST /session` for the frontend/session bridge, `POST /grpc` for the `moby.buildkit.v1.Control` gRPC service, both tunneled over a hijacked HTTP/1.1 connection). Sockguard cannot bound or inspect either stream once it opens: unlike `POST /build`'s single JSON-decodable body, the session/gRPC transport carries secrets, SSH agent forwarding, and live file sync as an ongoing binary conversation. Supported transports, by preset:
+Modern `docker build` and `docker compose build` no longer speak the classic `POST /build` API by default — Buildx routes through BuildKit's opaque, unversioned session/gRPC tunnel (`POST /session` for the frontend/session bridge, `POST /grpc` for the `moby.buildkit.v1.Control` gRPC service, both tunneled over a hijacked HTTP/1.1 connection). Sockguard cannot bound or inspect either stream once it opens: unlike `POST /build`'s bounded, inspectable tar build-context body, the session/gRPC transport carries secrets, SSH agent forwarding, and live file sync as an ongoing binary conversation. Supported transports, by preset:
 
 | Transport | Endpoint(s) | Inspectable | Default posture |
 |-----------|-------------|--------------|------------------|
