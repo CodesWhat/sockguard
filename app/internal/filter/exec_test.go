@@ -984,7 +984,7 @@ func TestExecInspectNilBodyReturnsEmpty(t *testing.T) {
 
 func TestExecStartIdentifierMissingIDReturnsNotOK(t *testing.T) {
 	// Path /exec//start has empty ID segment.
-	id, ok := execStartIdentifier("/exec//start")
+	id, _, ok := execStartIdentifier("/exec//start")
 	if ok {
 		t.Fatalf("expected ok=false for empty id, got id=%q", id)
 	}
@@ -992,16 +992,28 @@ func TestExecStartIdentifierMissingIDReturnsNotOK(t *testing.T) {
 
 func TestExecStartIdentifierWrongTailReturnsNotOK(t *testing.T) {
 	// Path /exec/abc123/json is not a start path.
-	id, ok := execStartIdentifier("/exec/abc123/json")
+	id, _, ok := execStartIdentifier("/exec/abc123/json")
 	if ok {
 		t.Fatalf("expected ok=false for wrong tail, got id=%q", id)
 	}
 }
 
 func TestExecStartIdentifierNoPrefixReturnsNotOK(t *testing.T) {
-	_, ok := execStartIdentifier("/containers/abc/start")
+	_, _, ok := execStartIdentifier("/containers/abc/start")
 	if ok {
 		t.Fatal("expected ok=false for non-exec path")
+	}
+}
+
+func TestExecStartIdentifierLibpodPrefixReportsLibpodFamily(t *testing.T) {
+	id, isLibpod, ok := execStartIdentifier("/libpod/exec/abc123/start")
+	if !ok || id != "abc123" || !isLibpod {
+		t.Fatalf("execStartIdentifier(libpod) = (%q, %v, %v), want (\"abc123\", true, true)", id, isLibpod, ok)
+	}
+
+	id, isLibpod, ok = execStartIdentifier("/exec/abc123/start")
+	if !ok || id != "abc123" || isLibpod {
+		t.Fatalf("execStartIdentifier(compat) = (%q, %v, %v), want (\"abc123\", false, true)", id, isLibpod, ok)
 	}
 }
 
@@ -1407,3 +1419,175 @@ func TestExecInspectCreateDeniesUnparseableEnvField(t *testing.T) {
 		})
 	}
 }
+
+// --- #148: libpod exec parity ---
+//
+// libpod's POST /libpod/containers/{name}/exec and POST /libpod/exec/{id}/start
+// route to the identical Go handlers the Docker-compat paths do (confirmed
+// against Podman's own route table — see exec.go's inspect doc comment), so
+// the design doc (decision C3) mandates ONE shared execPolicy/ExecOptions for
+// both route families rather than a parallel libpod_exec config. These tests
+// pin that: identical bodies must produce identical verdicts regardless of
+// which path family carried them.
+
+func TestExecCreateParityBetweenDockerAndLibpodPaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		opts    ExecOptions
+		payload string
+	}{
+		{
+			name:    "denied: no commands allowlisted",
+			opts:    ExecOptions{},
+			payload: `{"Cmd":["/bin/sh"]}`,
+		},
+		{
+			name:    "allowed: command matches allowlist",
+			opts:    ExecOptions{AllowedCommands: [][]string{{"/bin/sh"}}},
+			payload: `{"Cmd":["/bin/sh"]}`,
+		},
+		{
+			name:    "denied: privileged not allowed",
+			opts:    ExecOptions{AllowedCommands: [][]string{{"/bin/sh"}}},
+			payload: `{"Cmd":["/bin/sh"],"Privileged":true}`,
+		},
+		{
+			name:    "denied: root user not allowed",
+			opts:    ExecOptions{AllowedCommands: [][]string{{"/bin/sh"}}},
+			payload: `{"Cmd":["/bin/sh"],"User":"root"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newExecPolicy(tt.opts)
+
+			dockerReq := httptest.NewRequest(http.MethodPost, "/containers/abc123/exec", strings.NewReader(tt.payload))
+			dockerReason, err := policy.inspect(nil, dockerReq, NormalizePath(dockerReq.URL.Path))
+			if err != nil {
+				t.Fatalf("docker inspect() error = %v", err)
+			}
+
+			libpodReq := httptest.NewRequest(http.MethodPost, "/libpod/containers/abc123/exec", strings.NewReader(tt.payload))
+			libpodReason, err := policy.inspect(nil, libpodReq, NormalizePath(libpodReq.URL.Path))
+			if err != nil {
+				t.Fatalf("libpod inspect() error = %v", err)
+			}
+
+			if (dockerReason == "") != (libpodReason == "") {
+				t.Fatalf("verdicts diverged: docker reason = %q, libpod reason = %q", dockerReason, libpodReason)
+			}
+		})
+	}
+}
+
+func TestExecStartDispatchesToMatchingFamilysInspector(t *testing.T) {
+	dockerCalled, libpodCalled := false, false
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{{"/bin/sh"}},
+		InspectStart: func(context.Context, string) (ExecInspectResult, bool, error) {
+			dockerCalled = true
+			return ExecInspectResult{Command: []string{"/bin/sh"}}, true, nil
+		},
+		InspectStartLibpod: func(context.Context, string) (ExecInspectResult, bool, error) {
+			libpodCalled = true
+			return ExecInspectResult{Command: []string{"/bin/sh"}}, true, nil
+		},
+	})
+
+	if _, err := policy.inspectExisting(context.Background(), "/exec/abc123/start"); err != nil {
+		t.Fatalf("docker inspectExisting() error = %v", err)
+	}
+	if !dockerCalled || libpodCalled {
+		t.Fatalf("docker path called = %v, libpod path called = %v; want only docker", dockerCalled, libpodCalled)
+	}
+
+	dockerCalled, libpodCalled = false, false
+	if _, err := policy.inspectExisting(context.Background(), "/libpod/exec/abc123/start"); err != nil {
+		t.Fatalf("libpod inspectExisting() error = %v", err)
+	}
+	if dockerCalled || !libpodCalled {
+		t.Fatalf("docker path called = %v, libpod path called = %v; want only libpod", dockerCalled, libpodCalled)
+	}
+}
+
+func TestExecStartLibpodDeniesWhenOnlyDockerInspectStartConfigured(t *testing.T) {
+	// InspectStart and InspectStartLibpod are independent fields — configuring
+	// one must not silently satisfy the other's fail-closed "no exec
+	// inspection configured" guard.
+	policy := newExecPolicy(ExecOptions{
+		AllowedCommands: [][]string{{"/bin/sh"}},
+		InspectStart: func(context.Context, string) (ExecInspectResult, bool, error) {
+			return ExecInspectResult{Command: []string{"/bin/sh"}}, true, nil
+		},
+	})
+
+	reason, err := policy.inspectExisting(context.Background(), "/libpod/exec/abc123/start")
+	if err != nil {
+		t.Fatalf("inspectExisting() error = %v", err)
+	}
+	if reason == "" {
+		t.Fatal("expected denial: InspectStartLibpod is not configured")
+	}
+}
+
+func TestNewLibpodExecInspectorConstructor(t *testing.T) {
+	fn := NewLibpodExecInspector("/var/run/podman.sock")
+	if fn == nil {
+		t.Fatal("NewLibpodExecInspector() returned nil")
+	}
+}
+
+func TestNewLibpodExecInspectorDialError(t *testing.T) {
+	fn := NewLibpodExecInspector("/nonexistent/path/podman.sock")
+	_, _, err := fn(context.Background(), "abc123")
+	if err == nil {
+		t.Fatal("expected dial error for nonexistent socket")
+	}
+}
+
+func TestNewLibpodExecInspectorWithRoundTripperUsesLibpodPath(t *testing.T) {
+	// The libpod constructor must query /libpod/exec/{id}/json — NOT
+	// /exec/{id}/json — so a mock upstream that only understands the libpod
+	// path proves the request actually landed there.
+	var gotPath string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.URL.Path != "/libpod/exec/abc123/json" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ProcessConfig":{"entrypoint":"/bin/sh","arguments":["-c","id"],"privileged":false,"user":""}}`))
+	})
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	rt := execRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		target, err := http.NewRequestWithContext(req.Context(), req.Method, srv.URL+req.URL.Path, req.Body)
+		if err != nil {
+			return nil, err
+		}
+		return http.DefaultTransport.RoundTrip(target)
+	})
+
+	fn := NewLibpodExecInspectorWithRoundTripper(rt)
+	result, found, err := fn(context.Background(), "abc123")
+	if err != nil {
+		t.Fatalf("fn() error = %v", err)
+	}
+	if !found {
+		t.Fatal("fn() found = false, want true")
+	}
+	if len(result.Command) == 0 || result.Command[0] != "/bin/sh" {
+		t.Fatalf("command = %v, want [/bin/sh -c id]", result.Command)
+	}
+	if gotPath != "/libpod/exec/abc123/json" {
+		t.Fatalf("gotPath = %q, want /libpod/exec/abc123/json", gotPath)
+	}
+}
+
+type execRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f execRoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

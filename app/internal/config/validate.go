@@ -1517,7 +1517,18 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	errs = append(errs, validateServiceConfig(prefix, cfg.Service)...)
 	errs = append(errs, validateSwarmConfig(prefix, cfg.Swarm)...)
 	errs = append(errs, validatePluginConfig(prefix, cfg.Plugin)...)
+	errs = append(errs, validateLibpodPodCreateConfig(prefix, cfg.LibpodPodCreate)...)
 	return errs
+}
+
+// validateLibpodPodCreateConfig validates request_body.libpod_pod_create.
+// libpod_volume/libpod_network/libpod_secret reuse
+// Volume/Network/SecretRequestBodyConfig verbatim, which today have no
+// free-text fields requiring their own validator (see
+// validateRequestBodyConfig's Docker-compat counterparts), so there is
+// nothing analogous to add for them here.
+func validateLibpodPodCreateConfig(prefix string, cfg LibpodPodCreateRequestBodyConfig) []string {
+	return validateRegistryHostEntries(prefix, "libpod_pod_create.allowed_infra_image_registries", cfg.AllowedInfraImageRegistries)
 }
 
 // validateHostPathEntries flags any entries that don't normalize to absolute

@@ -58,6 +58,33 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// an operator auditing acknowledged sensitive endpoints sees it listed
 	// alongside the rest of the libpod write surface as it grows.
 	{method: http.MethodPost, path: "/libpod/containers/create"},
+	// libpod-native writes (#148). Pod-create, exec, and volume/network/
+	// secret create have real inspectors (see bodyInspectionConfiguredForEndpoint)
+	// wired through request_body.libpod_pod_create / the shared
+	// request_body.exec / request_body.libpod_volume|network|secret.
+	{method: http.MethodPost, path: "/libpod/pods/create"},
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/exec"},
+	{method: http.MethodPost, path: "/libpod/exec/sockguard-test/start"},
+	{method: http.MethodPost, path: "/libpod/volumes/create"},
+	{method: http.MethodPost, path: "/libpod/networks/create"},
+	{method: http.MethodPost, path: "/libpod/secrets/create"},
+	// play/kube, its "kube/play" alias (Podman registers both spellings on
+	// the identical libpod.PlayKube/KubePlay handlers), kube/apply, and
+	// manifest-list writes have NO request-body inspector at all (#148
+	// design doc decision C2: full YAML/PodSpec modeling is deferred past
+	// v1.6) — a single POST /libpod/play/kube can provision an arbitrary
+	// number of privileged containers from a Kubernetes-shaped manifest sockguard
+	// never parses. These deliberately have no case in
+	// bodyInspectionConfiguredForEndpoint below (falling through to its
+	// `default: return false`), so any allow rule admitting them requires
+	// insecure_allow_body_blind_writes — see that flag's docs for the
+	// N-privileged-containers blast-radius warning specific to play/kube.
+	{method: http.MethodPost, path: "/libpod/play/kube"},
+	{method: http.MethodPost, path: "/libpod/kube/play"},
+	{method: http.MethodPost, path: "/libpod/kube/apply"},
+	{method: http.MethodPost, path: "/libpod/manifests/create"},
+	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test"},
+	{method: http.MethodPut, path: "/libpod/manifests/sockguard-test"},
 }
 
 type buildkitTunnelEndpoint struct {
@@ -102,6 +129,36 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	// them as exfiltration surfaces alongside archive/export downloads.
 	{method: http.MethodPost, path: "/images/sockguard-test/push"},
 	{method: http.MethodPost, path: "/plugins/sockguard-test/push"},
+	// libpod read/export surface (#148). Confirmed against Podman v5.8.1's
+	// own route table (pkg/api/server/register_archive.go,
+	// register_containers.go, register_images.go) rather than assumed from
+	// naming symmetry with the compat entries above — libpod has no
+	// /attach/ws variant (Docker-only dual attach mechanism) and no
+	// plugin API at all (plugins are a Moby-only concept), so neither has a
+	// libpod counterpart here. GET /libpod/generate/kube is also included:
+	// despite the "generate" name suggesting a write, Podman registers it as
+	// a GET (libpod.GenerateKube) that dumps existing pod/container
+	// definitions to YAML — a read/export surface that can leak env vars and
+	// other resource data — so it belongs here, not in
+	// bodySensitiveWriteEndpoints above where the #148 design doc's initial
+	// pass listed it.
+	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/archive"},
+	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/export"},
+	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/logs"},
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/attach"},
+	{method: http.MethodGet, path: "/libpod/images/export"},
+	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get"},
+	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push"},
+	{method: http.MethodGet, path: "/libpod/generate/kube"},
+	// Manifest-list push routes read local manifest content and transmit it
+	// to a caller-selected registry — a write at the Docker API layer but an
+	// exfiltration surface just like the image/plugin push entries above.
+	// POST .../registry/{destination} is the current (Podman v4.0.0+) route;
+	// POST .../push is kept for backward compat (deprecated since v4.0.0 but
+	// still routable). Both are registered in Podman v5.8.1's
+	// pkg/api/server/register_manifest.go.
+	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/registry/sockguard-test"},
+	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/push"},
 }
 
 func validateAndCompileRules(cfg *config.Config) ([]*filter.CompiledRule, error) {
@@ -303,7 +360,11 @@ func allowedSensitiveExfilEndpoints(compiled []*filter.CompiledRule) []string {
 
 func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, endpoint bodySensitiveWriteEndpoint) bool {
 	switch endpoint.path {
-	case "/containers/sockguard-test/exec", "/exec/sockguard-test/start":
+	case "/containers/sockguard-test/exec", "/exec/sockguard-test/start",
+		"/libpod/containers/sockguard-test/exec", "/libpod/exec/sockguard-test/start":
+		// Shared request_body.exec config covers both the Docker-compat and
+		// libpod exec paths (#148 design doc decision C3) — same field,
+		// same condition.
 		return len(requestBody.Exec.AllowedCommands) > 0
 	case "/containers/sockguard-test/update", "/containers/sockguard-test/archive", "/images/create", "/images/load", "/build":
 		return true
@@ -319,6 +380,19 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		return true
 	case "/libpod/containers/create":
 		return true
+	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/secrets/create":
+		// libpod_pod_create/libpod_volume/libpod_network/libpod_secret gates
+		// are all plain booleans/allowlists with real fail-closed defaults —
+		// none of them read insecure_allow_body_blind_writes the way exec
+		// does — so, like the Docker-compat entries above, the built-in
+		// inspector always provides real protection independent of whether
+		// the operator has customized it. #148.
+		return true
+	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply, and
+	// /libpod/manifests/* deliberately have NO case here: they have no
+	// request-body inspector at all (#148 design doc decision C2), so they
+	// fall through to `default: false` below and always require
+	// insecure_allow_body_blind_writes to admit.
 	default:
 		return false
 	}
