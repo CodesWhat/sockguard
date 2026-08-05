@@ -56,6 +56,7 @@ type dockerContainerCreateRequest struct {
 type dockerContainerHostConfig struct {
 	Privileged  bool   `json:"Privileged,omitempty"`
 	NetworkMode string `json:"NetworkMode,omitempty"`
+	Memory      int64  `json:"Memory,omitempty"`
 }
 
 type dockerContainerCreateResponse struct {
@@ -128,8 +129,17 @@ func newIntegrationProxyHandlerWithOptions(t *testing.T, socketPath string, rule
 
 	var handler http.Handler = proxy.NewWithOptions(socketPath, logger, proxy.Options{})
 	handler = proxy.HijackHandler(socketPath, logger, handler)
+	dockerTransport := dockerSocketRoundTripper(socketPath)
+	handler = filter.ResourceLimitGuardWithOptions(logger, filter.ResourceLimitGuardOptions{
+		PolicyConfig:     filterOpts.PolicyConfig,
+		Profiles:         filterOpts.Profiles,
+		ResolveProfile:   filterOpts.ResolveProfile,
+		InspectContainer: filter.NewDockerContainerUpdateInspectorWithRoundTripper(dockerTransport),
+		InspectService:   filter.NewDockerServiceInspectorWithRoundTripper(dockerTransport),
+	})(handler)
 	handler = ownership.Middleware(socketPath, logger, ownerOpts)(handler)
 	handler = filter.MiddlewareWithOptions(compiled, logger, filterOpts)(handler)
+	t.Cleanup(dockerTransport.CloseIdleConnections)
 	return handler
 }
 
@@ -424,14 +434,18 @@ func pingDockerSocket(socketPath string) error {
 }
 
 func dockerHTTPClient(socketPath string) (*http.Client, func()) {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "unix", socketPath)
-		},
-	}
+	transport := dockerSocketRoundTripper(socketPath)
 
 	return &http.Client{
 		Transport: transport,
 		Timeout:   5 * time.Second,
 	}, transport.CloseIdleConnections
+}
+
+func dockerSocketRoundTripper(socketPath string) *http.Transport {
+	return &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: 2 * time.Second}).DialContext(ctx, "unix", socketPath)
+		},
+	}
 }
