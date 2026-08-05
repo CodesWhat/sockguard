@@ -842,6 +842,123 @@ func TestFilterModifyResponse_RedactsSensitivePlatformMetadata(t *testing.T) {
 	}
 }
 
+func TestFilterModifyResponse_RedactsHostTopology(t *testing.T) {
+	t.Parallel()
+	filter := New(Options{RedactHostTopology: true})
+
+	infoResp := newResponseForTest(t, http.MethodGet, "/v1.55/info", `{
+		"ID":"host-id",
+		"Containerd":{"Address":"/run/containerd/containerd.sock"},
+		"FirewallBackend":{"Driver":"nftables","Info":[["a","b"]]},
+		"DiscoveredDevices":[{"Source":"cdi","ID":"nvidia.com/gpu=0"}],
+		"NRI":{"Enabled":true}
+	}`)
+	if err := filter.ModifyResponse(infoResp); err != nil {
+		t.Fatalf("ModifyResponse(info) error = %v, want nil", err)
+	}
+	info := decodeBodyForTest(t, infoResp)
+
+	containerd, _ := info["Containerd"].(map[string]any)
+	if len(containerd) != 0 {
+		t.Fatalf("Containerd = %#v, want empty object", info["Containerd"])
+	}
+	firewall, _ := info["FirewallBackend"].(map[string]any)
+	if len(firewall) != 0 {
+		t.Fatalf("FirewallBackend = %#v, want empty object", info["FirewallBackend"])
+	}
+	if devices, _ := info["DiscoveredDevices"].([]any); len(devices) != 0 {
+		t.Fatalf("DiscoveredDevices = %#v, want empty array", info["DiscoveredDevices"])
+	}
+	nri, _ := info["NRI"].(map[string]any)
+	if len(nri) != 0 {
+		t.Fatalf("NRI = %#v, want empty object", info["NRI"])
+	}
+	// ID is unaffected — RedactHostTopology only covers the four named fields.
+	if got, _ := info["ID"].(string); got != "host-id" {
+		t.Fatalf("ID = %q, want unmodified %q", got, "host-id")
+	}
+}
+
+func TestFilterModifyResponse_RedactHostTopologyDisabledByDefault(t *testing.T) {
+	t.Parallel()
+	filter := New(Options{RedactSensitiveData: true})
+
+	infoResp := newResponseForTest(t, http.MethodGet, "/v1.55/info", `{"Containerd":{"Address":"/run/containerd/containerd.sock"}}`)
+	if err := filter.ModifyResponse(infoResp); err != nil {
+		t.Fatalf("ModifyResponse(info) error = %v, want nil", err)
+	}
+	info := decodeBodyForTest(t, infoResp)
+	containerd, ok := info["Containerd"].(map[string]any)
+	if !ok || containerd["Address"] != "/run/containerd/containerd.sock" {
+		t.Fatalf("Containerd = %#v, want unmodified (RedactHostTopology not enabled)", info["Containerd"])
+	}
+}
+
+func TestFilterModifyResponse_RedactsHostTopologyWithNoOtherOptionsEnabled(t *testing.T) {
+	// RedactHostTopology alone (no other Options set) must still activate the
+	// filter — it participates in Enabled() like every other redact_* flag.
+	t.Parallel()
+	filter := New(Options{RedactHostTopology: true})
+	if !filter.Enabled() {
+		t.Fatal("Enabled() = false, want true when RedactHostTopology is set")
+	}
+}
+
+func TestFilterModifyResponse_DeniesAttestationStatementByDefault(t *testing.T) {
+	t.Parallel()
+	// AllowAttestationStatements defaults to false even with the whole filter
+	// otherwise disabled (no other Options set) — attestation gating is
+	// unconditional, not folded into Enabled().
+	filter := New(Options{})
+
+	resp := newResponseForTest(t, http.MethodGet, "/v1.55/images/alpine/attestations?statement=true", `{"manifests":[]}`)
+	err := filter.ModifyResponse(resp)
+	if !errors.Is(err, ErrResponseRejected) {
+		t.Fatalf("ModifyResponse() error = %v, want ErrResponseRejected", err)
+	}
+}
+
+func TestFilterModifyResponse_AllowsAttestationStatementWhenConfigured(t *testing.T) {
+	t.Parallel()
+	filter := New(Options{AllowAttestationStatements: true})
+
+	resp := newResponseForTest(t, http.MethodGet, "/v1.55/images/alpine/attestations?statement=true", `{"manifests":[]}`)
+	if err := filter.ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+}
+
+func TestFilterModifyResponse_AllowsAttestationListingWithoutStatementParam(t *testing.T) {
+	// A request without ?statement=true (just listing available attestation
+	// manifests, not fetching full statement content) is not gated.
+	t.Parallel()
+	filter := New(Options{})
+
+	resp := newResponseForTest(t, http.MethodGet, "/v1.55/images/alpine/attestations", `{"manifests":[]}`)
+	if err := filter.ModifyResponse(resp); err != nil {
+		t.Fatalf("ModifyResponse() error = %v, want nil", err)
+	}
+}
+
+func TestIsImageAttestationsPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/images/alpine/attestations", true},
+		{"/images/ghcr.io/acme/app/attestations", true},
+		{"/images/alpine/json", false},
+		{"/images/attestations", false}, // no identifier before the segment
+		{"/images/alpine/attestations/extra", false},
+		{"/containers/alpine/attestations", false},
+	}
+	for _, tt := range tests {
+		if got := isImageAttestationsPath(tt.path); got != tt.want {
+			t.Errorf("isImageAttestationsPath(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
 func nestedMapForTest(t *testing.T, payload map[string]any, keys ...string) map[string]any {
 	t.Helper()
 
