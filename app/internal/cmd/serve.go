@@ -1269,10 +1269,12 @@ func auditListener(cfg *config.Config) string {
 
 func serveResponseFilterOptions(cfg *config.Config) responsefilter.Options {
 	return responsefilter.Options{
-		RedactContainerEnv:    cfg.Response.RedactContainerEnv,
-		RedactMountPaths:      cfg.Response.RedactMountPaths,
-		RedactNetworkTopology: cfg.Response.RedactNetworkTopology,
-		RedactSensitiveData:   cfg.Response.RedactSensitiveData,
+		RedactContainerEnv:         cfg.Response.RedactContainerEnv,
+		RedactMountPaths:           cfg.Response.RedactMountPaths,
+		RedactNetworkTopology:      cfg.Response.RedactNetworkTopology,
+		RedactSensitiveData:        cfg.Response.RedactSensitiveData,
+		RedactHostTopology:         cfg.Response.RedactHostTopology,
+		AllowAttestationStatements: cfg.Response.AllowAttestationStatements,
 	}
 }
 

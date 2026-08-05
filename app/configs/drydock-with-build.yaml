@@ -1,39 +1,34 @@
-# Sockguard — Drydock with Compose Preset
+# Sockguard — Drydock with Build Preset
 #
-# Extends the drydock preset with network and volume lifecycle so drydock's
-# own compose-stack deploys hit the same gap portwing-with-compose.yaml fixes:
-# plain container recreate/update already works against drydock.yaml, but a
-# compose stack additionally needs to create/remove its own networks and named
-# volumes, which drydock.yaml denies.
+# Extends drydock-with-compose.yaml with CLASSIC BUILDER support only —
+# `docker compose build` / `up --build` run with DOCKER_BUILDKIT=0 set in the
+# client environment. This is NOT Compose-BuildKit support: by default,
+# `docker compose build` never calls POST /build at all — it drives dockerd's
+# embedded BuildKit over two hijacked, unversioned streams, POST /session and
+# POST /grpc (Engine API 1.53 deprecated both; current Buildx 0.36.0 still
+# uses them). Those streams carry secrets, SSH agent forwarding, and file
+# sync with no request body Sockguard can inspect or bound once opened, so
+# they stay DENIED here and require the dedicated
+# insecure_accept_opaque_buildkit_tunnels acknowledgment to open at all — no
+# preset sets it. THIS FAILURE IS INTENTIONAL: a default (BuildKit) `docker
+# compose build` against this preset will fail with a proxy denial on
+# /session or /grpc, not a bug to work around by widening this file.
 #
-# Allows: everything in drydock.yaml plus:
-#         POST   /networks/create      — compose creates the stack's network(s)
-#         DELETE /networks/*           — compose tears them down on `down`
-#         POST   /networks/*/disconnect — compose detaches services before
-#                                         removing a network (connect already
-#                                         allowed by drydock.yaml — untouched)
-#         POST   /volumes/create       — compose creates named volumes
-#         DELETE /volumes/*            — compose removes them on `down -v`
+# To use this preset, set DOCKER_BUILDKIT=0 in the environment that runs
+# `docker compose build` / `up --build` (Compose honors it and falls back to
+# the classic, single-request-body /build endpoint sockguard can fully
+# inspect — Dockerfile RUN-instruction scanning, remote-context denial,
+# host-network denial all apply exactly as they do for portainer.yaml's
+# unrestricted /build access). See docs/content/docs/security.mdx's supported
+# transport matrix for the full breakdown of what each preset covers.
 #
-# Body inspection for the new endpoints reuses the same guardrails already in
-# effect for drydock.yaml's container_create/image_pull blocks — the
-# network/volume create policies default to denying custom drivers and driver
-# opts unless explicitly widened here, and this preset does not widen them.
+# Allows: everything in drydock-with-compose.yaml plus:
+#         POST /build — classic builder only, all three request-body build
+#                        flags left at their secure default (false below)
 #
-# Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
-# with DEFAULT settings never calls POST /build at all — it drives dockerd's
-# embedded BuildKit over the hijacked, unversioned POST /session and
-# POST /grpc streams instead, both denied here. Those streams carry secrets,
-# SSH agent forwarding, and file sync sockguard cannot inspect once opened.
-# Use drydock-with-build.yaml if you need `--build` support: it layers
-# CLASSIC builder support (POST /build only, requires DOCKER_BUILDKIT=0 in
-# the client environment) on top of everything in this preset. It does not
-# open /session or /grpc — BuildKit gRPC mediation is a future v1.7+ epic.
-#
-# Self-update: same caveat as drydock.yaml — the finalize exec
-# (runFinalizeCallbackInContainer) is still denied here. Use
-# drydock-with-selfupdate.yaml if you need that, layered with these
-# network/volume rules by hand if you need both.
+# Still denied: /session, /grpc, and any moby.buildkit.v1.Control method path
+# (BuildKit gRPC mediation is a v1.7+ epic, not implemented here). Self-update
+# finalize exec is still denied — see drydock-with-compose.yaml.
 
 upstream:
   socket: /var/run/docker.sock
@@ -81,6 +76,16 @@ request_body:
       - runc
   image_pull:
     allow_all_registries: true
+  # Classic builder: no remote build contexts (they can't be inspected for
+  # RUN instructions), no host-network builds, and RUN instructions stay
+  # denied — this preset does not widen build policy beyond what
+  # portainer.yaml's fully-open /build would additionally need. All three
+  # explicit false here is the secure default; left in place rather than
+  # omitted so the deny posture is visible at the call site.
+  build:
+    allow_remote_context: false
+    allow_host_network: false
+    allow_run_instructions: false
 
 rules:
   # Health and metadata
@@ -147,6 +152,11 @@ rules:
   - match: { method: DELETE, path: "/images/**" }
     action: allow
 
+  # Classic builder only — see header comment. BuildKit's /session and
+  # /grpc stay denied by the catch-all rule below.
+  - match: { method: POST, path: "/build" }
+    action: allow
+
   # Network read + lifecycle. list/inspect/connect carried over from
   # drydock.yaml (connect: when the recreated container belongs to more than
   # one network, drydock attaches the extra networks via
@@ -205,7 +215,8 @@ rules:
   - match: { method: GET, path: "/services/*" }
     action: allow
 
-  # Deny everything else
+  # Deny everything else — including /session and /grpc (BuildKit's opaque
+  # tunnel, see header comment).
   - match: { method: "*", path: "/**" }
     action: deny
-    reason: "not allowed by drydock-with-compose preset"
+    reason: "not allowed by drydock-with-build preset"

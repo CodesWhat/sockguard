@@ -53,6 +53,10 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 		p.io = defaultIODeps()
 	}
 
+	if denyReason := denyRegistryConfigHeaderReason(r.Header.Get("X-Registry-Config"), "build"); denyReason != "" {
+		return denyReason, nil
+	}
+
 	query := r.URL.Query()
 	// WHY: Host-network builds are denied even when the request also uses a
 	// remote context, so this must run before the remote-context branch returns

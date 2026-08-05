@@ -52,6 +52,30 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/plugins/create"},
 }
 
+type buildkitTunnelEndpoint struct {
+	method string
+	path   string
+}
+
+// buildkitTunnelEndpoints probes the opaque, unversioned BuildKit
+// session/gRPC transport: POST /session (frontend/session bridge) and
+// POST /grpc (the moby.buildkit.v1.Control gRPC service tunneled over an
+// HTTP/1.1 hijack), still used by current Buildx (0.36.0) despite Engine API
+// 1.53 deprecating both. Neither carries a request body sockguard can bound
+// or inspect once opened, so admitting either requires the dedicated
+// insecure_accept_opaque_buildkit_tunnels acknowledgment rather than the
+// bounded-exec insecure_allow_body_blind_writes escape hatch. A literal
+// "/moby.buildkit.v1.Control/*"-shaped rule is probed too: sockguard's
+// net/http server has no h2c support today (see the h2c-preface guard
+// integration test), so a native-gRPC path can't reach an operator-authored
+// rule yet, but a rule that would admit one is still a live gap for the day
+// it does.
+var buildkitTunnelEndpoints = []buildkitTunnelEndpoint{
+	{method: http.MethodPost, path: "/session"},
+	{method: http.MethodPost, path: "/grpc"},
+	{method: http.MethodPost, path: "/moby.buildkit.v1.Control/Solve"},
+}
+
 var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/containers/sockguard-test/archive"},
 	{method: http.MethodGet, path: "/containers/sockguard-test/export"},
@@ -86,6 +110,9 @@ func validateAndCompileRules(cfg *config.Config) ([]*filter.CompiledRule, error)
 		return nil, err
 	}
 	if err := validateReadExfiltrationRules(cfg, compiled); err != nil {
+		return nil, err
+	}
+	if err := validateBuildkitTunnelRules(cfg, compiled); err != nil {
 		return nil, err
 	}
 	if _, err := compileClientProfiles(cfg); err != nil {
@@ -134,6 +161,10 @@ func validateBodyBlindWriteRules(cfg *config.Config, compiled []*filter.Compiled
 
 func validateReadExfiltrationRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
 	return validateReadExfiltrationRulesForPolicy("", cfg.InsecureAllowReadExfiltration, compiled)
+}
+
+func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
+	return validateBuildkitTunnelRulesForPolicy("", cfg.InsecureAcceptOpaqueBuildkitTunnels, compiled)
 }
 
 func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule) error {
@@ -191,6 +222,46 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 		scope,
 		strings.Join(exposed, ", "),
 	)
+}
+
+func validateBuildkitTunnelRulesForPolicy(scope string, insecure bool, compiled []*filter.CompiledRule) error {
+	if insecure {
+		return nil
+	}
+
+	exposed := allowedBuildkitTunnelEndpoints(compiled)
+	if len(exposed) == 0 {
+		return nil
+	}
+
+	if scope == "" {
+		return fmt.Errorf(
+			"rules allow the opaque BuildKit session/gRPC tunnel (POST /session, POST /grpc, or a moby.buildkit.v1.Control method path) — "+
+				"these streams carry secrets, SSH agent forwarding, and file sync that sockguard cannot inspect or bound once opened; "+
+				"set insecure_accept_opaque_buildkit_tunnels=true to acknowledge this risk: %s",
+			strings.Join(exposed, ", "),
+		)
+	}
+
+	return fmt.Errorf(
+		"client profile %q allows the opaque BuildKit session/gRPC tunnel (POST /session, POST /grpc, or a moby.buildkit.v1.Control method path); "+
+			"set the top-level insecure_accept_opaque_buildkit_tunnels=true to acknowledge this risk (it is a global setting, not per-profile): %s",
+		scope,
+		strings.Join(exposed, ", "),
+	)
+}
+
+func allowedBuildkitTunnelEndpoints(compiled []*filter.CompiledRule) []string {
+	allowed := make([]string, 0, len(buildkitTunnelEndpoints))
+	for _, endpoint := range buildkitTunnelEndpoints {
+		req := &http.Request{Method: endpoint.method, URL: &url.URL{Path: endpoint.path}}
+		action, _, _ := filter.Evaluate(compiled, req)
+		if action != filter.ActionAllow {
+			continue
+		}
+		allowed = append(allowed, endpoint.method+" "+endpoint.path)
+	}
+	return allowed
 }
 
 func allowedBodySensitiveWriteEndpoints(requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule) []string {
@@ -254,6 +325,9 @@ func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error)
 			return nil, err
 		}
 		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, compiledRules); err != nil {
+			return nil, err
+		}
+		if err := validateBuildkitTunnelRulesForPolicy(profile.Name, cfg.InsecureAcceptOpaqueBuildkitTunnels, compiledRules); err != nil {
 			return nil, err
 		}
 		profiles[profile.Name] = filter.Policy{

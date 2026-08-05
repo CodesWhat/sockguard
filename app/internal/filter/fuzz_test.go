@@ -48,6 +48,10 @@ func FuzzPathMatch(f *testing.F) {
 		{"GET", "/containers/%252e%252e/images/json"},
 		{"GET", "/v1.45%2Fcontainers/json"},
 		{"POST", "/containers%252Fcreate"},
+		{"POST", "/v1.55/session"},
+		{"POST", "/v1.55/grpc"},
+		{"POST", "/session"},
+		{"POST", "/grpc"},
 	}
 	for _, s := range seeds {
 		f.Add(s.method, s.path)
@@ -121,6 +125,9 @@ func FuzzGlobToRegex(f *testing.F) {
 		"/path^caret",
 		"/path|pipe",
 		"/path?question",
+		"/v1.55/session",
+		"/session/**",
+		"/grpc/**",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -180,6 +187,9 @@ func FuzzNormalizePath(f *testing.F) {
 		"/containers/%252e%252e/images/json",
 		"/v1.45%2Fcontainers/json",
 		"/v1.45/%252e%252e/containers/json",
+		"/v1.55/session",
+		"/v1.55/grpc",
+		"/v1.55/containers/json",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -209,6 +219,8 @@ func FuzzCompileRule(f *testing.F) {
 		{"GET", ""},
 		{"", "/containers/json"},
 		{"GET,POST", "/images/**"},
+		{"POST", "/session"},
+		{"POST", "/grpc"},
 	}
 	for _, s := range seeds {
 		f.Add(s.method, s.pattern)

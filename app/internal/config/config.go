@@ -113,6 +113,21 @@ type Config struct {
 	// built directly (most tests) simply reads as "not explicit", which
 	// only matters once Listeners is also non-empty.
 	explicitLegacyListen bool
+
+	// InsecureAcceptOpaqueBuildkitTunnels acknowledges opening POST /session,
+	// POST /grpc, or a direct BuildKit Control-service method path. Both
+	// endpoints are unversioned opaque hijacked streams: dockerd's embedded
+	// BuildKit frontend/session bridge, still used by current Buildx (0.36.0)
+	// even though Engine API 1.53 deprecated them. Unlike the bounded exec
+	// escape hatch InsecureAllowBodyBlindWrites covers, these streams carry
+	// secrets, SSH agent forwarding, and arbitrary file sync with no request
+	// body sockguard can inspect or bound — so they get their own dedicated
+	// acknowledgment rather than folding into insecure_allow_body_blind_writes.
+	// Default false: a rule admitting either endpoint fails startup unless this
+	// is set. Tecnativa GRPC=1/SESSION=1 compat vars still work (see
+	// ApplyCompat) but log a deprecation warning naming this key. A single
+	// global setting, not per-profile — see cmd/rules.go.
+	InsecureAcceptOpaqueBuildkitTunnels bool `mapstructure:"insecure_accept_opaque_buildkit_tunnels"`
 }
 
 // MarkLegacyListenExplicit records that the legacy listen.* block was set
@@ -323,6 +338,19 @@ type ResponseConfig struct {
 	// does not match at least one pattern are hidden. Empty means no image-based
 	// filtering.
 	ImagePatterns []string `mapstructure:"image_patterns"`
+	// RedactHostTopology redacts GET /info fields that fingerprint the host's
+	// container runtime plumbing: Containerd, FirewallBackend,
+	// DiscoveredDevices, and NRI. Separate from RedactNetworkTopology (which
+	// covers swarm/network addressing) — this is host-process/device topology.
+	// Default false; hardened presets enable it.
+	RedactHostTopology bool `mapstructure:"redact_host_topology"`
+	// AllowAttestationStatements permits GET /images/{name}/attestations
+	// responses that include the full in-toto statement content
+	// (?statement=true). Engine API 1.53 added this endpoint; broad allow
+	// rules such as "/images/**" (portainer.yaml) admit it at the rule-engine
+	// layer without knowing it exists, so this response-layer gate closes
+	// that gap independent of the rule set. Default false.
+	AllowAttestationStatements bool `mapstructure:"allow_attestation_statements"`
 }
 
 // RequestBodyConfig configures request-body inspection policies.
@@ -407,6 +435,13 @@ type ContainerCreateRequestBodyConfig struct {
 	DenySelinuxDisable        bool             `mapstructure:"deny_selinux_disable"`
 	DenySelinuxLabelOverride  bool             `mapstructure:"deny_selinux_label_override"`
 	DenyUnconfinedSystemPaths bool             `mapstructure:"deny_unconfined_system_paths"`
+	// AllowTmpfsPrivilegedOptions permits tmpfs mount options that re-enable
+	// exec/dev/suid semantics inside the tmpfs (HostConfig.Mounts[].
+	// TmpfsOptions.Options, Engine API 1.46+): "exec", "dev", "suid". Docker's
+	// own tmpfs default already sets noexec/nodev/nosuid; a client-supplied
+	// Options entry can override that default per-mount, so it is denied
+	// unless explicitly allowed. Default false.
+	AllowTmpfsPrivilegedOptions bool `mapstructure:"allow_tmpfs_privileged_options"`
 }
 
 // ImageTrustConfig configures cosign signature verification for images
@@ -568,6 +603,12 @@ type NetworkRequestBodyConfig struct {
 	AllowDriverOptions     bool `mapstructure:"allow_driver_options"`
 	AllowEndpointConfig    bool `mapstructure:"allow_endpoint_config"`
 	AllowDisconnectForce   bool `mapstructure:"allow_disconnect_force"`
+	// AllowDisableIPv4 permits POST /networks/create with EnableIPv4 explicitly
+	// false (Engine API 1.48+). Docker defaults EnableIPv4 to true (unset and
+	// true both pass); a client-set false disables IPv4 addressing entirely,
+	// an unusual and rarely-intended posture, so it requires this opt-in.
+	// Default false.
+	AllowDisableIPv4 bool `mapstructure:"allow_disable_ipv4"`
 }
 
 // SecretRequestBodyConfig configures inspection for POST /secrets/create.

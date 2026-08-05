@@ -92,6 +92,23 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 
 	cfg.Rules = rules
 
+	// GRPC=1 / SESSION=1 open the opaque BuildKit /grpc and /session tunnels
+	// (see buildkitTunnelEndpoints in cmd/rules.go), which now require the
+	// dedicated insecure_accept_opaque_buildkit_tunnels acknowledgment rather
+	// than sailing through as ordinary compat rules. Preserve the Tecnativa
+	// drop-in migration promise — these vars keep working exactly as before —
+	// by auto-setting the new key when either is enabled, while nudging the
+	// operator toward setting it explicitly going forward.
+	if compatEnvEnabled("GRPC", false) || compatEnvEnabled("SESSION", false) {
+		if !cfg.InsecureAcceptOpaqueBuildkitTunnels {
+			cfg.InsecureAcceptOpaqueBuildkitTunnels = true
+			logger.Warn("GRPC/SESSION compat env vars open the opaque BuildKit tunnel; set insecure_accept_opaque_buildkit_tunnels: true explicitly going forward",
+				"deprecated_vars", "GRPC, SESSION",
+				"replacement_key", "insecure_accept_opaque_buildkit_tunnels",
+			)
+		}
+	}
+
 	for i, r := range rules {
 		logger.Debug("compat rule generated",
 			"index", i+1,

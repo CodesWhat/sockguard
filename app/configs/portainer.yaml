@@ -36,6 +36,15 @@ request_body:
     allow_host_network: true
     allow_run_instructions: true
 
+# The broad "/images/**" allow rule below inherits GET
+# /images/{name}/attestations (Engine API 1.53+) without Portainer or this
+# preset ever having reasoned about it. allow_attestation_statements defaults
+# to false; set explicitly here so the deny posture for full attestation
+# statement content (?statement=true) is visible at the call site rather than
+# relying on the implicit default.
+response:
+  allow_attestation_statements: false
+
 insecure_allow_body_blind_writes: true
 insecure_allow_read_exfiltration: true
 
@@ -74,7 +83,12 @@ rules:
   - match: { method: GET, path: "/system/**" }
     action: allow
 
-  # Build, commit, auth
+  # Build (classic builder only — POST /build), commit, auth. This does NOT
+  # cover a default `docker compose build` / Buildx build: those drive
+  # dockerd's embedded BuildKit over the hijacked POST /session and
+  # POST /grpc streams instead of POST /build, and both stay denied by the
+  # catch-all below unless insecure_accept_opaque_buildkit_tunnels: true is
+  # also set (this preset does not set it).
   - match: { method: POST, path: "/build" }
     action: allow
   - match: { method: POST, path: "/commit" }

@@ -1,0 +1,119 @@
+name: "🔭 Quality: Engine API Version Watch (monthly)"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && '🔭 Quality: Engine API Version Watch — Monthly schedule' ||
+    format('🔭 Quality: Engine API Version Watch — Manual by {0}', github.actor)
+  }}
+
+# Sockguard's request/response inspectors are validated against a specific
+# ceiling of the Docker Engine API (see app/testdata/docker-api/
+# max-supported-version.txt, currently 1.55, and the Engine API 1.55
+# validation work tracked in #153). NormalizePath itself strips any
+# well-formed /vN[.N]/ prefix regardless of value, so sockguard never
+# hard-rejects traffic from a newer daemon — but a new Engine API minor can
+# ship new inspectable fields (containers/create, exec, service
+# create/update, swarm init, image pull, build) that the policy structs in
+# internal/filter haven't been reviewed against yet.
+#
+# This workflow has no code to run: it fetches Docker's public Engine API
+# version-history page monthly, extracts the highest documented v1.NN, and
+# fails the job (a red, human-visible CI check — deliberately not a
+# quietly-filed bot issue, since a scheduled workflow failure is the
+# durable signal that survives even if issue-filing itself breaks) when
+# that number moves past the pinned ceiling. A maintainer then reviews the
+# new API's changelog entry, updates the pin, and files any follow-up
+# filter work the release needs.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '30 8 1 * *'  # Monthly on day 1 at 08:30 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-api-version-watch-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  check-engine-api-version:
+    name: "🔭 Check Engine API version ceiling"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch pinned ceiling
+        id: pinned
+        run: |
+          PINNED="$(tr -d '[:space:]' < app/testdata/docker-api/max-supported-version.txt)"
+          if [ -z "${PINNED}" ]; then
+            echo "::error::app/testdata/docker-api/max-supported-version.txt is empty"
+            exit 1
+          fi
+          echo "version=${PINNED}" >> "$GITHUB_OUTPUT"
+          echo "Pinned Engine API ceiling: ${PINNED}"
+
+      - name: Fetch latest documented Engine API version
+        id: latest
+        run: |
+          set -euo pipefail
+
+          URL="https://docs.docker.com/reference/api/engine/version-history/"
+          HTML="$(curl -fsSL --retry 3 --retry-delay 5 "${URL}")"
+
+          # The version-history page lists a "v1.NN API changes" heading (and
+          # matching anchor) for every documented minor. Extract every v1.NN
+          # token, strip the leading "v", and take the numerically highest
+          # minor — grep for the pattern rather than parsing the page as
+          # structured HTML, since Docker's docs markup is not a stable
+          # contract but the "v1.NN" version token itself is.
+          LATEST="$(printf '%s\n' "${HTML}" \
+            | grep -oE 'v1\.[0-9]+' \
+            | sed 's/^v//' \
+            | sort -t. -k2 -n -u \
+            | tail -n1)"
+
+          if [ -z "${LATEST}" ]; then
+            echo "::error::could not extract any v1.NN version token from ${URL} — page layout may have changed"
+            exit 1
+          fi
+
+          echo "version=${LATEST}" >> "$GITHUB_OUTPUT"
+          echo "Latest documented Engine API version: ${LATEST}"
+
+      - name: Compare against pinned ceiling
+        env:
+          PINNED: ${{ steps.pinned.outputs.version }}
+          LATEST: ${{ steps.latest.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          PINNED_MINOR="${PINNED#1.}"
+          LATEST_MINOR="${LATEST#1.}"
+
+          {
+            echo "### Engine API version watch"
+            echo ""
+            echo "- Pinned ceiling: \`${PINNED}\` (\`app/testdata/docker-api/max-supported-version.txt\`)"
+            echo "- Latest documented: \`${LATEST}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${LATEST_MINOR}" -gt "${PINNED_MINOR}" ]; then
+            echo "::error::Docker Engine API ${LATEST} is documented but sockguard is only validated through ${PINNED}. Review https://docs.docker.com/reference/api/engine/version-history/#v${LATEST_MINOR}-api-changes, update app/testdata/docker-api/max-supported-version.txt, and file follow-up filter work for any new inspectable fields."
+            echo "**Result: Engine API ${LATEST} exceeds the pinned ${PINNED} ceiling — review required.**" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          echo "Engine API ceiling ${PINNED} still covers the latest documented version ${LATEST}."
+          echo "**Result: within pinned ceiling.**" >> "$GITHUB_STEP_SUMMARY"
