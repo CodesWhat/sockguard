@@ -310,6 +310,13 @@ func TestRouteCategoryCoversDockerRouteFamiliesAndPathEdges(t *testing.T) {
 		{name: "root", path: "/", want: "/"},
 		{name: "relative gets slash", path: "containers/json", want: "/containers/json"},
 		{name: "version prefix root", path: "/v1.45", want: "/"},
+		// Regression (#148): metrics' own stripVersionPrefix splits on any
+		// digit/dot run (isDockerVersionSegment), so it already strips a
+		// three-part Podman semver prefix correctly — unlike the filter
+		// package's stripVersionPrefix, which needed a dedicated fix. Pinned
+		// here so a future refactor can't silently reintroduce the filter
+		// package's bug on this side.
+		{name: "three-part version prefix stripped", path: "/v5.0.0/containers/json", want: "/containers/json"},
 		{name: "invalid version prefix kept", path: "/v1x/containers/json", want: "/v1x/..."},
 		{name: "container collection", path: "/containers", want: "/containers"},
 		{name: "system known tail", path: "/system/df", want: "/system/df"},

@@ -133,8 +133,11 @@ func HijackHandlerWithDialer(dialer upstream.Dialer, logger *slog.Logger, next h
 // Matched endpoints:
 //   - POST /containers/{id}/attach
 //   - POST /exec/{id}/start
+//   - POST /libpod/containers/{id}/attach (Podman's native libpod API, #148)
+//   - POST /libpod/exec/{id}/start
 //
-// Docker API version prefixes (/v1.XX/) are stripped before matching.
+// Docker API version prefixes (/v1.XX/, or Podman's three-part /v5.0.0/) are
+// stripped before matching.
 func isHijackEndpoint(method, path string) bool {
 	return isHijackEndpointNormalized(method, filter.NormalizePath(path))
 }
@@ -166,6 +169,14 @@ func isHijackEndpointNormalized(method, path string) bool {
 	if !ok {
 		return false
 	}
+
+	// Podman's native libpod API namespaces the same two hijack endpoints
+	// under /libpod/ (#148: /libpod/containers/{id}/attach,
+	// /libpod/exec/{id}/start). Peel that segment before the resource/action
+	// check below so both namespaces upgrade identically. internal/filter's
+	// isLibpodContainerAttachPath / isLibpodExecStartPath must stay in
+	// parity with this — see TestHijackFilterParity.
+	p, _ = strings.CutPrefix(p, "libpod/")
 
 	resource, remainder, ok := strings.Cut(p, "/")
 	if !ok || resource == "" {

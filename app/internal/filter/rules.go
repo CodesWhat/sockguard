@@ -172,9 +172,16 @@ func pathSegmentNeedsClean(p string, start, end int, absolutePath, hasNormalSegm
 	return false, true
 }
 
-// stripVersionPrefix removes a leading /vN.N/ or /vN/ prefix, returning the
-// path from the first slash after the version. Uses a hand-rolled check so the
-// common case (no prefix) avoids regexp overhead entirely.
+// stripVersionPrefix removes a leading /vN.N.N/, /vN.N/, or /vN/ prefix,
+// returning the path from the first slash after the version. Uses a
+// hand-rolled check so the common case (no prefix) avoids regexp overhead
+// entirely.
+//
+// Docker's own API version prefix is always /vN or /vN.N (a single optional
+// minor component). Podman's libpod bindings send the full three-part semver
+// of the daemon, e.g. /v5.0.0/libpod/containers/json — a second optional .N
+// component is required or every libpod rule pattern silently never matches
+// a versioned Podman client (#148).
 func stripVersionPrefix(p string) string {
 	// Minimum version prefix is /vN/ (4 chars). Docker uses lowercase 'v' only.
 	if len(p) < 4 || p[0] != '/' || p[1] != 'v' {
@@ -188,21 +195,32 @@ func stripVersionPrefix(p string) string {
 	if i == 2 {
 		return p // no digits after /v
 	}
-	// Optional .N
-	if i < len(p) && p[i] == '.' {
-		j := i + 1
-		for j < len(p) && p[j] >= '0' && p[j] <= '9' {
-			j++
-		}
-		if j > i+1 {
-			i = j
-		}
-	}
+	// Optional .N (minor).
+	i = consumeOptionalDotDigits(p, i)
+	// Optional .N (patch) — three-part semver, e.g. the "0" in v5.0.0.
+	i = consumeOptionalDotDigits(p, i)
 	// Must end with /
 	if i >= len(p) || p[i] != '/' {
 		return p
 	}
 	return p[i:]
+}
+
+// consumeOptionalDotDigits advances i past a single ".N" component starting
+// at p[i], where N is one or more ASCII digits. It returns i unchanged when
+// p[i] is not '.' or the '.' is not followed by at least one digit.
+func consumeOptionalDotDigits(p string, i int) int {
+	if i >= len(p) || p[i] != '.' {
+		return i
+	}
+	j := i + 1
+	for j < len(p) && p[j] >= '0' && p[j] <= '9' {
+		j++
+	}
+	if j > i+1 {
+		return j
+	}
+	return i
 }
 
 // HasVersionPrefix reports whether p begins with a Docker API version prefix
