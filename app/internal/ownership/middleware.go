@@ -189,14 +189,50 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
 	case normPath == "/build":
 		return nil, addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
-	case needsOwnerFilter(normPath):
+	case normPath == libpodContainerCreatePath:
+		return mutateLibpodContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
+	case normPath == libpodPodCreatePath:
+		return mutateLibpodPodCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
+	case normPath == libpodNetworkCreatePath:
+		return nil, addOwnerLabelToLibpodBody(r, opts.LabelKey, opts.Owner, "labels")
+	case normPath == libpodVolumeCreatePath:
+		return nil, addOwnerLabelToLibpodBody(r, opts.LabelKey, opts.Owner, "Labels")
+	case normPath == libpodSecretCreatePath:
+		// libpod secret create has no JSON body envelope at all — the body is
+		// the raw secret payload, and driver/labels are URL query parameters
+		// (see internal/filter/libpod_secret.go's doc comment). The existing
+		// build-query mutator already does exactly this "decode 'labels' query
+		// param as a JSON-encoded map, inject, re-encode" shape.
+		return nil, addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
+	case needsOwnerFilter(normPath), libpodNeedsOwnerFilter(normPath):
 		return nil, addOwnerLabelFilter(r, opts.LabelKey, opts.Owner)
 	default:
 		return nil, nil
 	}
 }
 
+// allowOwnershipRequest is allowOwnershipRequestUnprefixed with the "libpod "
+// deny-reason prefix convention (#148 design doc item 5, matching the
+// human-readable-reason style internal/filter's libpod_*.go inspectors
+// already use) applied once, for every libpod-family request path, rather
+// than threading the prefix decision through each individual check
+// function.
 func allowOwnershipRequest(
+	ctx context.Context,
+	normPath string,
+	opts Options,
+	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
+	inspectExec func(context.Context, string) (string, bool, error),
+	refs *ownershipRequestReferences,
+) (ownershipVerdict, string, error) {
+	verdict, reason, err := allowOwnershipRequestUnprefixed(ctx, normPath, opts, inspectResource, inspectExec, refs)
+	if verdict == verdictDeny && isLibpodOwnershipPath(normPath) {
+		reason = "libpod " + reason
+	}
+	return verdict, reason, err
+}
+
+func allowOwnershipRequestUnprefixed(
 	ctx context.Context,
 	normPath string,
 	opts Options,
@@ -281,6 +317,40 @@ func allowPathOwnershipRequest(
 	}
 	if isSwarmPath(normPath) || isSwarmUpdatePath(normPath) {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSwarm, "", opts, isSwarmUpdatePath(normPath))
+	}
+	// libpod route family (#148 PR5): mirrors the Docker-compat dispatch
+	// above resource-for-resource so a client cannot evade ownership
+	// enforcement by switching from the Docker-compat API to Podman's
+	// native one for actions on an already-existing resource. Containers,
+	// networks, volumes, and secrets are checked against their Docker-compat
+	// inspect path (dockerresource.KindContainer/KindNetwork/KindVolume/
+	// KindSecret) since Podman's compat API is a translation layer over the
+	// same underlying resource store for those kinds; pods have no
+	// Docker-compat equivalent and use dockerresource.KindLibpodPod.
+	if identifier, ok := libpodContainerIdentifier(normPath); ok {
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, identifier, opts, false)
+	}
+	if execID, ok := libpodExecIdentifier(normPath); ok {
+		containerID, found, err := inspectExec(ctx, execID)
+		if err != nil {
+			return verdictPassThrough, "", err
+		}
+		if !found {
+			return verdictPassThrough, "", nil
+		}
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
+	}
+	if identifier, ok := libpodPodIdentifier(normPath); ok {
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindLibpodPod, identifier, opts, false)
+	}
+	if identifier, ok := libpodNetworkIdentifier(normPath); ok {
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindNetwork, identifier, opts, false)
+	}
+	if identifier, ok := libpodVolumeIdentifier(normPath); ok {
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindVolume, identifier, opts, false)
+	}
+	if identifier, ok := libpodSecretIdentifier(normPath); ok {
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)
 	}
 	return verdictPassThrough, "", nil
 }
@@ -398,6 +468,8 @@ func singularResource(kind dockerresource.Kind) string {
 		return "node"
 	case dockerresource.KindSwarm:
 		return "swarm"
+	case dockerresource.KindLibpodPod:
+		return "pod"
 	default:
 		return string(kind)
 	}

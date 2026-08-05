@@ -302,15 +302,22 @@ func handleVisibilityInspectRequest(logger *slog.Logger, next http.Handler, deps
 		return
 	}
 	if !visible {
+		// #148 design doc item 5: prefix the human-readable reason for
+		// libpod-family requests, matching internal/filter's libpod_*.go
+		// inspectors' "libpod ... denied" convention.
+		reason := "visibility policy hid resource"
+		if isLibpodVisibilityPath(normPath) {
+			reason = "libpod " + reason
+		}
 		// In warn / audit rollout mode, surface a would_deny verdict and let
 		// the request reach the upstream so operators can measure visibility
 		// impact before enforcing — consistent with every other deny gate.
 		if meta := logging.MetaForRequest(w, r); meta.AllowsPassThrough() {
-			logging.SetWouldDenyWithCode(w, r, reasonCodeVisibilityPolicyHidResource, "visibility policy hid resource", nil)
+			logging.SetWouldDenyWithCode(w, r, reasonCodeVisibilityPolicyHidResource, reason, nil)
 			next.ServeHTTP(w, r)
 			return
 		}
-		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyHidResource, "visibility policy hid resource", nil)
+		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyHidResource, reason, nil)
 		_ = httpjson.Write(w, http.StatusNotFound, httpjson.ErrorResponse{Message: "resource not found"})
 		return
 	}
@@ -616,7 +623,7 @@ func needsVisibilityLabelFilter(normPath string) bool {
 	case "/events", "/containers/json", "/images/json", "/networks", "/volumes", "/services", "/tasks", "/secrets", "/configs", "/nodes":
 		return true
 	default:
-		return false
+		return needsLibpodVisibilityLabelFilter(normPath)
 	}
 }
 
@@ -718,6 +725,29 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 			return true, nil
 		}
 		return resourceVisible(ctx, deps, dockerresource.KindContainer, containerID, policy.selectors)
+	}
+	// libpod route family (#148 PR5): containers/volumes/secrets are checked
+	// against their Docker-compat inspect path (Podman's compat API is a
+	// translation layer over the same underlying resource store for those
+	// kinds); networks and pods use their libpod-native inspect path via
+	// dockerresource.KindLibpodNetwork/KindLibpodPod — networks because
+	// GET /libpod/networks/{id}/json differs in label-key casing and (per
+	// design doc C6) may return a single-element array-wrapped response,
+	// pods because they have no Docker-compat equivalent at all.
+	if identifier, ok := libpodContainerReadIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, dockerresource.KindContainer, identifier, policy.selectors)
+	}
+	if identifier, ok := libpodPodReadIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, dockerresource.KindLibpodPod, identifier, policy.selectors)
+	}
+	if identifier, ok := libpodNetworkInspectIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, dockerresource.KindLibpodNetwork, identifier, policy.selectors)
+	}
+	if identifier, ok := libpodVolumeInspectIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, dockerresource.KindVolume, identifier, policy.selectors)
+	}
+	if identifier, ok := libpodSecretInspectIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, dockerresource.KindSecret, identifier, policy.selectors)
 	}
 	return true, nil
 }
