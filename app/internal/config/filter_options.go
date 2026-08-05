@@ -1,6 +1,10 @@
 package config
 
-import "github.com/codeswhat/sockguard/internal/filter"
+import (
+	"strings"
+
+	"github.com/codeswhat/sockguard/internal/filter"
+)
 
 // ToFilterOptions converts request-body config into filter middleware policy
 // options. Runtime-only fields, such as exec-start upstream inspection, are
@@ -286,8 +290,16 @@ func (c MutationsConfig) ToFilterOptions() filter.MutationOptions {
 			opt.InjectLabels = &filter.InjectLabelsMutationOptions{Labels: r.InjectLabels.Labels}
 		}
 		if r.RemapImage != nil {
+			// Validation (validateMutationRemapImage) accepts match case-
+			// insensitively (lowercasing before comparing against
+			// "exact"/"prefix"), but does not write the canonical form back
+			// onto rule.RemapImage.Match. Normalize here too, rather than
+			// relying solely on filter.newMutationEngine's own
+			// ToLower(TrimSpace(...)) of this same field, so this package's
+			// output is already canonical independent of that internal
+			// detail of a different package.
 			opt.RemapImage = &filter.ImageRemapMutationOptions{
-				Match: r.RemapImage.Match,
+				Match: strings.ToLower(strings.TrimSpace(r.RemapImage.Match)),
 				From:  r.RemapImage.From,
 				To:    r.RemapImage.To,
 			}

@@ -313,6 +313,30 @@ func TestMutationsToFilterOptionsPreservesTypedRules(t *testing.T) {
 	}
 }
 
+func TestMutationsToFilterOptionsNormalizesRemapImageMatchCase(t *testing.T) {
+	// Validation accepts remap_image.match case-insensitively (it lowercases
+	// before comparing against "exact"/"prefix") without writing the
+	// canonical form back onto the config value, so a rule with e.g.
+	// "Exact" or padded whitespace passes Validate() unchanged. Confirm
+	// ToFilterOptions itself normalizes match to the canonical lowercase
+	// form the filter engine's compiled rules key off of, rather than
+	// depending solely on filter.newMutationEngine's own normalization of
+	// this same field.
+	cfg := MutationsConfig{Rules: []MutationRuleConfig{
+		validImageRule("exact-mixed-case", "container_create", "Exact", "alpine:3.21", "mirror.example/alpine:3.21"),
+		validImageRule("prefix-padded", "container_create", "  Prefix  ", "source.example/", "mirror.example/"),
+	}}
+
+	got := cfg.ToFilterOptions()
+
+	if got.Rules[0].RemapImage.Match != "exact" {
+		t.Fatalf("Rules[0].RemapImage.Match = %q, want canonical \"exact\"", got.Rules[0].RemapImage.Match)
+	}
+	if got.Rules[1].RemapImage.Match != "prefix" {
+		t.Fatalf("Rules[1].RemapImage.Match = %q, want canonical \"prefix\"", got.Rules[1].RemapImage.Match)
+	}
+}
+
 func TestMutationDefaultsRemainZeroValue(t *testing.T) {
 	if got := Defaults().Mutations; !reflect.DeepEqual(got, MutationsConfig{}) {
 		t.Fatalf("Defaults().Mutations = %#v, want zero value (mutations need no Defaults entry)", got)
