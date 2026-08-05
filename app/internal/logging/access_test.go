@@ -426,8 +426,13 @@ func TestRequestIDGeneratorBatchesEntropyReads(t *testing.T) {
 		}
 		return len(dst), nil
 	})
-	defer gen.close()
 
+	// Stop the background refill goroutine before counting fills: the
+	// constructor queues an async refill signal, and letting it race the
+	// manual refillSync below means both can pass the low-watermark guard
+	// before either enqueues, producing a second fill. With the goroutine
+	// stopped, exactly one fill fully stocks the pool in every interleaving.
+	gen.close()
 	gen.refillSync()
 
 	for range 4 {
