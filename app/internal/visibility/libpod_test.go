@@ -59,97 +59,104 @@ func TestMiddlewareLibpodListInjectsVisibilityLabelFilter(t *testing.T) {
 func TestMiddlewareLibpodPodListAndInspectVisibility(t *testing.T) {
 	t.Parallel()
 
-	t.Run("inspect hidden pod returns 404", func(t *testing.T) {
-		t.Parallel()
-		nextCalled := false
-		handler := middlewareWithDeps(testVisibilityLogger(), Options{
-			VisibleResourceLabels: []string{"com.sockguard.visible=true"},
-		}, visibilityDeps{
-			inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
-				if kind != dockerresource.KindLibpodPod || id != "pod-1" {
-					t.Fatalf("inspectResource called with kind=%s id=%s, want KindLibpodPod pod-1", kind, id)
+	tests := []struct {
+		name string
+		// rolloutMode is applied to the request's logging.RequestMeta when
+		// non-empty; left unset (nil meta) otherwise, matching the two
+		// non-rollout cases below which never inspect meta.
+		rolloutMode string
+		labels      map[string]string
+		// checkInspectArgs additionally asserts inspectResource is called
+		// with kind=KindLibpodPod id=pod-1, as the original single-case
+		// "hidden pod" test did.
+		checkInspectArgs bool
+		// innerStatus is what the wrapped next-handler writes when reached.
+		innerStatus      int
+		wantForwarded    bool
+		wantStatus       int
+		wantBodyContains string
+		wantDecision     string
+		wantReasonCode   string
+		wantReasonPrefix string
+	}{
+		{
+			name:             "inspect hidden pod returns 404",
+			labels:           map[string]string{"com.sockguard.visible": "false"},
+			checkInspectArgs: true,
+			innerStatus:      http.StatusOK,
+			wantForwarded:    false,
+			wantStatus:       http.StatusNotFound,
+			wantBodyContains: "resource not found",
+		},
+		{
+			name:          "inspect visible pod is forwarded",
+			labels:        map[string]string{"com.sockguard.visible": "true"},
+			innerStatus:   http.StatusOK,
+			wantForwarded: true,
+			wantStatus:    http.StatusOK,
+		},
+		{
+			name:             "rollout mode passes hidden pod through with would-deny",
+			labels:           map[string]string{"com.sockguard.visible": "false"},
+			rolloutMode:      "warn",
+			innerStatus:      http.StatusNoContent,
+			wantForwarded:    true,
+			wantStatus:       http.StatusNoContent,
+			wantDecision:     logging.DecisionWouldDeny,
+			wantReasonCode:   reasonCodeVisibilityPolicyHidResource,
+			wantReasonPrefix: "libpod ",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			nextCalled := false
+			handler := middlewareWithDeps(testVisibilityLogger(), Options{
+				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+			}, visibilityDeps{
+				inspectResource: func(_ context.Context, kind dockerresource.Kind, id string) (map[string]string, bool, error) {
+					if tt.checkInspectArgs && (kind != dockerresource.KindLibpodPod || id != "pod-1") {
+						t.Fatalf("inspectResource called with kind=%s id=%s, want KindLibpodPod pod-1", kind, id)
+					}
+					return tt.labels, true, nil
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				w.WriteHeader(tt.innerStatus)
+			}))
+
+			req := httptest.NewRequest(http.MethodGet, "/libpod/pods/pod-1/json", nil)
+			var meta *logging.RequestMeta
+			if tt.rolloutMode != "" {
+				meta = &logging.RequestMeta{RolloutMode: tt.rolloutMode}
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+			}
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if nextCalled != tt.wantForwarded {
+				t.Fatalf("nextCalled = %v, want %v", nextCalled, tt.wantForwarded)
+			}
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantBodyContains != "" && !strings.Contains(rec.Body.String(), tt.wantBodyContains) {
+				t.Fatalf("body = %s, want contains %q", rec.Body.String(), tt.wantBodyContains)
+			}
+			if tt.wantDecision != "" {
+				if meta.Decision != tt.wantDecision {
+					t.Fatalf("meta.Decision = %q, want %q", meta.Decision, tt.wantDecision)
 				}
-				return map[string]string{"com.sockguard.visible": "false"}, true, nil
-			},
-		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			nextCalled = true
-			w.WriteHeader(http.StatusOK)
-		}))
-
-		req := httptest.NewRequest(http.MethodGet, "/libpod/pods/pod-1/json", nil)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if nextCalled {
-			t.Fatal("expected invisible pod inspect to be short-circuited")
-		}
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
-		}
-		if !strings.Contains(rec.Body.String(), "resource not found") {
-			t.Fatalf("body = %s, want resource not found", rec.Body.String())
-		}
-	})
-
-	t.Run("inspect visible pod is forwarded", func(t *testing.T) {
-		t.Parallel()
-		nextCalled := false
-		handler := middlewareWithDeps(testVisibilityLogger(), Options{
-			VisibleResourceLabels: []string{"com.sockguard.visible=true"},
-		}, visibilityDeps{
-			inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
-				return map[string]string{"com.sockguard.visible": "true"}, true, nil
-			},
-		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			nextCalled = true
-			w.WriteHeader(http.StatusOK)
-		}))
-
-		req := httptest.NewRequest(http.MethodGet, "/libpod/pods/pod-1/json", nil)
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if !nextCalled || rec.Code != http.StatusOK {
-			t.Fatalf("status = %d nextCalled=%v, want 200/forwarded; body: %s", rec.Code, nextCalled, rec.Body.String())
-		}
-	})
-
-	t.Run("rollout mode passes hidden pod through with would-deny", func(t *testing.T) {
-		t.Parallel()
-		nextCalled := false
-		handler := middlewareWithDeps(testVisibilityLogger(), Options{
-			VisibleResourceLabels: []string{"com.sockguard.visible=true"},
-		}, visibilityDeps{
-			inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
-				return map[string]string{"com.sockguard.visible": "false"}, true, nil
-			},
-		})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			nextCalled = true
-			w.WriteHeader(http.StatusNoContent)
-		}))
-
-		meta := &logging.RequestMeta{RolloutMode: "warn"}
-		req := httptest.NewRequest(http.MethodGet, "/libpod/pods/pod-1/json", nil)
-		req = req.WithContext(logging.WithMeta(req.Context(), meta))
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, req)
-
-		if !nextCalled {
-			t.Fatal("expected invisible libpod pod inspect to pass through under rollout mode")
-		}
-		if rec.Code != http.StatusNoContent {
-			t.Fatalf("status = %d, want 204 (inner write)", rec.Code)
-		}
-		if meta.Decision != logging.DecisionWouldDeny {
-			t.Fatalf("meta.Decision = %q, want would_deny", meta.Decision)
-		}
-		if meta.ReasonCode != reasonCodeVisibilityPolicyHidResource {
-			t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeVisibilityPolicyHidResource)
-		}
-		if !strings.HasPrefix(meta.Reason, "libpod ") {
-			t.Fatalf("meta.Reason = %q, want libpod-prefixed reason", meta.Reason)
-		}
-	})
+				if meta.ReasonCode != tt.wantReasonCode {
+					t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, tt.wantReasonCode)
+				}
+				if !strings.HasPrefix(meta.Reason, tt.wantReasonPrefix) {
+					t.Fatalf("meta.Reason = %q, want prefix %q", meta.Reason, tt.wantReasonPrefix)
+				}
+			}
+		})
+	}
 }
 
 // TestMiddlewareLibpodHiddenResourceReasonHasLibpodPrefix covers item 5: the
@@ -247,26 +254,42 @@ func TestUpstreamInspectorLibpodNetworkArrayUnwrapRoundTrip(t *testing.T) {
 // Docker-compat paths.
 func TestMiddlewareLibpodDoesNotAffectDockerCompatVisibilityPaths(t *testing.T) {
 	t.Parallel()
-	nextCalled := false
-	handler := middlewareWithDeps(testVisibilityLogger(), Options{
-		VisibleResourceLabels: []string{"com.sockguard.visible=true"},
-	}, visibilityDeps{
-		inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
-			return map[string]string{"com.sockguard.visible": "false"}, true, nil
+	tests := []struct {
+		name string
+		path string
+	}{
+		{
+			// Docker has no pods concept, so "/pods/abc/json" is not a real
+			// Docker Engine API path — it must not accidentally match a
+			// libpod predicate, since every libpod matcher here is
+			// exact-prefix guarded on "/libpod/".
+			name: "docker-compat path resembling a libpod pod route",
+			path: "/pods/abc/json",
 		},
-	})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		nextCalled = true
-		w.WriteHeader(http.StatusOK)
-	}))
+	}
 
-	// Docker has no pods concept, so "/pods/abc/json" is not a real Docker
-	// Engine API path — it must not accidentally match a libpod predicate,
-	// since every libpod matcher here is exact-prefix guarded on "/libpod/".
-	req := httptest.NewRequest(http.MethodGet, "/pods/abc/json", nil)
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			nextCalled := false
+			handler := middlewareWithDeps(testVisibilityLogger(), Options{
+				VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+			}, visibilityDeps{
+				inspectResource: func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error) {
+					return map[string]string{"com.sockguard.visible": "false"}, true, nil
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				nextCalled = true
+				w.WriteHeader(http.StatusOK)
+			}))
 
-	if !nextCalled || rec.Code != http.StatusOK {
-		t.Fatalf("status = %d nextCalled=%v, want 200/forwarded (libpod predicates must not match non-/libpod/ paths)", rec.Code, nextCalled)
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if !nextCalled || rec.Code != http.StatusOK {
+				t.Fatalf("status = %d nextCalled=%v, want 200/forwarded (libpod predicates must not match non-/libpod/ paths)", rec.Code, nextCalled)
+			}
+		})
 	}
 }
