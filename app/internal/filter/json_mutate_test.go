@@ -28,6 +28,12 @@ func TestParseMutationDocumentRejectsJSONAmbiguityCorpus(t *testing.T) {
 		{name: "null root", body: `null`, want: "single non-null JSON object"},
 		{name: "array root", body: `[{"Image":"alpine"}]`, want: "single non-null JSON object"},
 		{name: "scalar root", body: `"object"`, want: "single non-null JSON object"},
+		{name: "empty body", body: ``, want: "decode json"},
+		{name: "truncated after key", body: `{"Image":`, want: "decode json"},
+		{name: "truncated mid-object", body: `{"Image":"alpine",`, want: "decode json"},
+		{name: "unterminated object", body: `{"Image":"alpine"`, want: "decode json"},
+		{name: "unterminated array", body: `{"Items":["a"`, want: "decode json"},
+		{name: "garbage after value", body: `{"Image":"alpine"} #not-json`, want: "decode json"},
 	}
 
 	for _, tt := range tests {
@@ -79,10 +85,37 @@ func TestParseMutationDocumentDepthAndNodeCaps(t *testing.T) {
 			t.Fatalf("parseMutationDocument() error = %v, want node-cap rejection", err)
 		}
 	})
+
+	t.Run("object depth overflow rejected", func(t *testing.T) {
+		// Same cap as the array-depth case above, but nesting through
+		// object members (scanJSONObjectMembers's own depth check) rather
+		// than array elements (scanJSONArrayElements's), since the two are
+		// separate recursive functions each with their own guard.
+		body := nestedMutationObjectBody(mutationMaxDepth + 1)
+		_, err := parseMutationDocument(body, mutationMaxNodes(len(body)))
+		if err == nil || !strings.Contains(err.Error(), "max depth") {
+			t.Fatalf("parseMutationDocument() error = %v, want max-depth rejection", err)
+		}
+	})
+
+	t.Run("array element node overflow rejected", func(t *testing.T) {
+		// Distinct from "node overflow rejected" above: this trips the node
+		// cap while scanning array elements (scanJSONArrayElements), not
+		// object members (scanJSONObjectMembers).
+		body := []byte(`{"a":[1,2,3]}`)
+		_, err := parseMutationDocument(body, 3)
+		if err == nil || !strings.Contains(err.Error(), "node count cap") {
+			t.Fatalf("parseMutationDocument() error = %v, want node-cap rejection", err)
+		}
+	})
 }
 
 func nestedMutationArrayBody(arrayDepth int) []byte {
 	return []byte(`{"value":` + strings.Repeat("[", arrayDepth) + `0` + strings.Repeat("]", arrayDepth) + `}`)
+}
+
+func nestedMutationObjectBody(objectDepth int) []byte {
+	return []byte(strings.Repeat(`{"a":`, objectDepth) + `0` + strings.Repeat(`}`, objectDepth))
 }
 
 func TestMutationSerializationPreservesNumericLexemesAndStringValues(t *testing.T) {
@@ -185,6 +218,112 @@ func TestReplaceRequestBodyResetsTransportState(t *testing.T) {
 	_ = replay.Close()
 	if replayed[0] != '{' {
 		t.Fatalf("GetBody aliased caller buffer: got %q", replayed)
+	}
+}
+
+func TestDeepCloneJSONValueProducesIndependentCopy(t *testing.T) {
+	original := map[string]any{
+		"scalarString": "value",
+		"scalarBool":   true,
+		"scalarNil":    nil,
+		"nested": map[string]any{
+			"list": []any{"a", "b", map[string]any{"deep": "leaf"}},
+		},
+	}
+
+	clone := deepCloneJSONValue(original).(map[string]any)
+
+	nestedOriginal := original["nested"].(map[string]any)
+	nestedClone := clone["nested"].(map[string]any)
+	listOriginal := nestedOriginal["list"].([]any)
+	listClone := nestedClone["list"].([]any)
+
+	// Mutate the clone's nested map and array in place; the original must be
+	// unaffected, proving both the map and []any recursive-copy branches ran
+	// rather than aliasing the source.
+	nestedClone["list"].([]any)[0] = "mutated"
+	listClone[2].(map[string]any)["deep"] = "mutated"
+
+	if listOriginal[0] != "a" {
+		t.Fatalf("original array element = %#v, want untouched by clone mutation", listOriginal[0])
+	}
+	if listOriginal[2].(map[string]any)["deep"] != "leaf" {
+		t.Fatalf("original nested map = %#v, want untouched by clone mutation", listOriginal[2])
+	}
+	if clone["scalarString"] != "value" || clone["scalarBool"] != true || clone["scalarNil"] != nil {
+		t.Fatalf("clone scalars = %#v, want scalar leaves preserved as-is", clone)
+	}
+}
+
+func TestFoldedHelpersMatchCaseInsensitivelyAndSkipWrongType(t *testing.T) {
+	m := map[string]any{
+		"Image":      "alpine:3.21",
+		"image":      42, // wrong type: must be skipped, not panic
+		"HostConfig": map[string]any{"Privileged": true},
+		"hostconfig": "not-an-object",
+		"Binds":      []any{"/host:/container"},
+		"binds":      "not-an-array",
+	}
+
+	strs := FoldedStrings(m, "image")
+	if len(strs) != 1 || strs[0] != "alpine:3.21" {
+		t.Fatalf("FoldedStrings() = %#v, want exactly the one string-typed variant", strs)
+	}
+
+	objs := FoldedObjects(m, "hostconfig")
+	if len(objs) != 1 || objs[0]["Privileged"] != true {
+		t.Fatalf("FoldedObjects() = %#v, want exactly the one object-typed variant", objs)
+	}
+
+	arrs := FoldedArrays(m, "binds")
+	if len(arrs) != 1 || len(arrs[0]) != 1 || arrs[0][0] != "/host:/container" {
+		t.Fatalf("FoldedArrays() = %#v, want exactly the one array-typed variant", arrs)
+	}
+
+	if !FoldedStringEquals(m, "IMAGE", "alpine:3.21") {
+		t.Fatal("FoldedStringEquals() = false, want true for a case-folded exact match")
+	}
+	if FoldedStringEquals(m, "IMAGE", "  alpine:3.21  ") {
+		// want must already be trimmed by the caller: only the found value is trimmed.
+		t.Fatal("FoldedStringEquals() = true, want false: want itself is not trimmed")
+	}
+	if FoldedStringEquals(m, "missing", "anything") {
+		t.Fatal("FoldedStringEquals() = true, want false for an absent key")
+	}
+}
+
+func TestSoleFoldedObjectMissingKeyReturnsNotOK(t *testing.T) {
+	obj, ok := soleFoldedObject(map[string]any{"Other": map[string]any{}}, "TaskTemplate")
+	if ok || obj != nil {
+		t.Fatalf("soleFoldedObject(missing key) = (%#v, %v), want (nil, false)", obj, ok)
+	}
+}
+
+func TestNavigateFoldedObjectPathStopsAtFirstAbsentLevel(t *testing.T) {
+	doc := map[string]any{"TaskTemplate": map[string]any{}}
+	got, ok := navigateFoldedObjectPath(doc, "TaskTemplate", "ContainerSpec")
+	if ok || got != nil {
+		t.Fatalf("navigateFoldedObjectPath() = (%#v, %v), want (nil, false) for an absent inner level", got, ok)
+	}
+}
+
+func TestNestedObjectSkipsNilVariantAndMergesRemainingVariants(t *testing.T) {
+	decoded := map[string]any{
+		"Labels": nil,
+		"labels": map[string]any{"team": "platform"},
+	}
+	merged, err := NestedObject(decoded, "Labels")
+	if err != nil {
+		t.Fatalf("NestedObject() error = %v", err)
+	}
+	if merged["team"] != "platform" {
+		t.Fatalf("merged = %#v, want the non-nil variant's contents", merged)
+	}
+	if _, exists := decoded["labels"]; exists {
+		t.Fatalf("decoded = %#v, want case-variant key removed", decoded)
+	}
+	if len(decoded) != 1 {
+		t.Fatalf("decoded = %#v, want exactly one canonical key remaining", decoded)
 	}
 }
 

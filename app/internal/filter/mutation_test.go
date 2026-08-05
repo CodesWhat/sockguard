@@ -511,6 +511,40 @@ func TestMutationFailuresDenyWithoutCallingUpstream(t *testing.T) {
 				"not valid image-secret/app:v1",
 			},
 		},
+		{
+			name: "remap result is empty",
+			body: []byte(`{"Image":"source-secret.example/app:v1"}`),
+			mutation: MutationOptions{Rules: []MutationRuleOptions{{
+				ID:       "empty-result",
+				Mode:     "enforce",
+				Surfaces: []string{mutationSurfaceContainerCreate},
+				RemapImage: &ImageRemapMutationOptions{
+					Match: "exact",
+					From:  "source-secret.example/app:v1",
+					To:    "",
+				},
+			}}},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   reasonCodeMutationApplyFailed,
+			forbiddenLeaks: []string{
+				"source-secret.example/app:v1",
+			},
+		},
+		{
+			name: "inject_labels target field is not an object",
+			body: []byte(`{"Image":"secret-target.example/app:v1","Labels":"secret-not-an-object"}`),
+			mutation: MutationOptions{Rules: []MutationRuleOptions{{
+				ID:           "labels-wrong-type",
+				Mode:         "enforce",
+				Surfaces:     []string{mutationSurfaceContainerCreate},
+				InjectLabels: &InjectLabelsMutationOptions{Labels: map[string]string{"team": "platform"}},
+			}}},
+			wantStatus: http.StatusBadRequest,
+			wantCode:   reasonCodeMutationApplyFailed,
+			forbiddenLeaks: []string{
+				"secret-not-an-object",
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -567,6 +601,234 @@ func TestMutationReadFailureDoesNotReachUpstream(t *testing.T) {
 	}
 	if !body.closed {
 		t.Fatal("request body was not closed after read failure")
+	}
+}
+
+func TestMutationSkipsEmptyBodyWithoutDenying(t *testing.T) {
+	upstreamCalls := 0
+	handler := mutationMiddleware(t, Options{Mutation: injectMutationOptions("empty-body")}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(""))
+	req.ContentLength = 0
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls = %d, want 1 (empty body is not this layer's problem to reject)", upstreamCalls)
+	}
+}
+
+func TestMutationPolicyInspectSkipsNonPostNilRequestAndNilBody(t *testing.T) {
+	engine := newMutationEngine(injectMutationOptions("skip"))
+	policy := newContainerCreateMutationPolicy(engine)
+
+	t.Run("non-POST method", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/containers/create", nil)
+		if reason, err := policy.inspect(testLogger(), req, "/containers/create"); reason != "" || err != nil {
+			t.Fatalf("inspect() = (%q, %v), want no-op for non-POST", reason, err)
+		}
+	})
+
+	t.Run("nil request", func(t *testing.T) {
+		if reason, err := policy.inspect(testLogger(), nil, "/containers/create"); reason != "" || err != nil {
+			t.Fatalf("inspect() = (%q, %v), want no-op for nil request", reason, err)
+		}
+	})
+
+	t.Run("nil body", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+		req.Body = nil
+		if reason, err := policy.inspect(testLogger(), req, "/containers/create"); reason != "" || err != nil {
+			t.Fatalf("inspect() = (%q, %v), want no-op for nil body", reason, err)
+		}
+	})
+}
+
+func TestMutationRemapImageNoopWhenTargetFieldAbsent(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		surfaces []string
+		endpoint string
+	}{
+		{
+			name:     "container_create missing Image field",
+			body:     `{"Labels":{"keep":"yes"}}`,
+			surfaces: []string{mutationSurfaceContainerCreate},
+			endpoint: "/containers/create",
+		},
+		{
+			name:     "service_create missing TaskTemplate",
+			body:     `{"Labels":{"keep":"yes"}}`,
+			surfaces: []string{mutationSurfaceServiceCreate},
+			endpoint: "/services/create",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var forwarded []byte
+			handler := mutationMiddleware(t, Options{Mutation: MutationOptions{Rules: []MutationRuleOptions{{
+				ID:       "remap-noop",
+				Mode:     "enforce",
+				Surfaces: tt.surfaces,
+				RemapImage: &ImageRemapMutationOptions{
+					Match: "exact",
+					From:  "alpine:3.21",
+					To:    "mirror.example/alpine:3.21",
+				},
+			}}}}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				forwarded, _ = io.ReadAll(r.Body)
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			req := httptest.NewRequest(http.MethodPost, tt.endpoint, strings.NewReader(tt.body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204; body=%s", rec.Code, rec.Body.String())
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(forwarded, &doc); err != nil {
+				t.Fatalf("decode forwarded body: %v", err)
+			}
+			if _, hasImage := doc["Image"]; hasImage {
+				t.Fatalf("forwarded body unexpectedly gained an Image field: %s", forwarded)
+			}
+		})
+	}
+}
+
+func TestNewMutationEngineDefaultsModeAndSkipsMalformedRule(t *testing.T) {
+	engine := newMutationEngine(MutationOptions{Rules: []MutationRuleOptions{
+		{ID: "no-mode", Surfaces: []string{mutationSurfaceContainerCreate}, InjectLabels: &InjectLabelsMutationOptions{Labels: map[string]string{"a": "b"}}},
+		{ID: "neither-op", Surfaces: []string{mutationSurfaceContainerCreate}},
+	}})
+	rules := engine.rulesFor(mutationSurfaceContainerCreate)
+	if len(rules) != 1 {
+		t.Fatalf("rulesFor() = %d rules, want 1 (rule with neither inject_labels nor remap_image skipped)", len(rules))
+	}
+	if rules[0].mode != "enforce" {
+		t.Fatalf("rules[0].mode = %q, want default \"enforce\" for an unset Mode", rules[0].mode)
+	}
+}
+
+func TestMutationEngineNilRulesForReturnsNil(t *testing.T) {
+	var engine *mutationEngine
+	if got := engine.rulesFor(mutationSurfaceContainerCreate); got != nil {
+		t.Fatalf("nil engine rulesFor() = %#v, want nil", got)
+	}
+}
+
+func TestRecordMutationOutcomeIgnoresEmptyTrace(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+	meta := &logging.RequestMeta{}
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+
+	recordMutationOutcome(req, nil, true, true)
+
+	if meta.Mutation != nil {
+		t.Fatalf("meta.Mutation = %#v, want nil for an empty trace", meta.Mutation)
+	}
+}
+
+func TestRecordMutationOutcomeNilMetaIsNoop(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", nil)
+	// No meta attached to the request context — must not panic.
+	recordMutationOutcome(req, []logging.MutationRuleOutcome{{ID: "x"}}, true, false)
+}
+
+func TestApplyMutationRuleNilDocIsNoop(t *testing.T) {
+	outcome, err := applyMutationRule(nil, mutationSurfaceContainerCreate, compiledMutationRule{kind: mutationRuleInjectLabels})
+	if err != nil || outcome != mutationOutcomeNoop {
+		t.Fatalf("applyMutationRule(nil, ...) = (%q, %v), want (noop, nil)", outcome, err)
+	}
+}
+
+func TestApplyMutationRuleUnknownKindIsNoop(t *testing.T) {
+	outcome, err := applyMutationRule(map[string]any{}, mutationSurfaceContainerCreate, compiledMutationRule{kind: mutationRuleKind(99)})
+	if err != nil || outcome != mutationOutcomeNoop {
+		t.Fatalf("applyMutationRule(unknown kind) = (%q, %v), want (noop, nil)", outcome, err)
+	}
+}
+
+func TestApplyInjectLabelsUnsupportedSurfaceIsNoop(t *testing.T) {
+	doc := map[string]any{}
+	outcome, err := applyInjectLabels(doc, mutationSurfaceServiceUpdate, map[string]string{"a": "b"})
+	if err != nil || outcome != mutationOutcomeNoop {
+		t.Fatalf("applyInjectLabels(service_update) = (%q, %v), want (noop, nil): service_update has no label field", outcome, err)
+	}
+	if len(doc) != 0 {
+		t.Fatalf("doc = %#v, want untouched", doc)
+	}
+}
+
+func TestApplyRemapImageUnsupportedSurfaceIsNoop(t *testing.T) {
+	doc := map[string]any{"Image": "alpine:3.21"}
+	outcome, err := applyRemapImage(doc, "unknown_surface", compiledMutationRule{
+		kind: mutationRuleRemapImage, remapMatch: "exact", remapFrom: "alpine:3.21", remapTo: "mirror/alpine:3.21",
+	})
+	if err != nil || outcome != mutationOutcomeNoop {
+		t.Fatalf("applyRemapImage(unknown surface) = (%q, %v), want (noop, nil)", outcome, err)
+	}
+	if doc["Image"] != "alpine:3.21" {
+		t.Fatalf("doc = %#v, want untouched", doc)
+	}
+}
+
+func TestApplyRemapImageNoopWhenFromDoesNotMatch(t *testing.T) {
+	doc := map[string]any{"Image": "alpine:3.21"}
+	outcome, err := applyRemapImage(doc, mutationSurfaceContainerCreate, compiledMutationRule{
+		kind: mutationRuleRemapImage, remapMatch: "exact", remapFrom: "busybox:latest", remapTo: "mirror/busybox:latest",
+	})
+	if err != nil || outcome != mutationOutcomeNoop {
+		t.Fatalf("applyRemapImage() = (%q, %v), want (noop, nil) when from does not match", outcome, err)
+	}
+	if doc["Image"] != "alpine:3.21" {
+		t.Fatalf("doc = %#v, want unchanged", doc)
+	}
+}
+
+func TestApplyRemapImageNoopWhenResultEqualsCurrent(t *testing.T) {
+	doc := map[string]any{"Image": "alpine:3.21"}
+	outcome, err := applyRemapImage(doc, mutationSurfaceContainerCreate, compiledMutationRule{
+		kind: mutationRuleRemapImage, remapMatch: "exact", remapFrom: "alpine:3.21", remapTo: "alpine:3.21",
+	})
+	if err != nil || outcome != mutationOutcomeNoop {
+		t.Fatalf("applyRemapImage() = (%q, %v), want (noop, nil) when remap result equals current", outcome, err)
+	}
+}
+
+func TestMutationRemapMatchTable(t *testing.T) {
+	tests := []struct {
+		name        string
+		current     string
+		match       string
+		from        string
+		to          string
+		wantNext    string
+		wantMatched bool
+	}{
+		{name: "exact match", current: "alpine:3.21", match: "exact", from: "alpine:3.21", to: "mirror/alpine:3.21", wantNext: "mirror/alpine:3.21", wantMatched: true},
+		{name: "exact no match", current: "alpine:3.20", match: "exact", from: "alpine:3.21", to: "mirror/alpine:3.21", wantMatched: false},
+		{name: "prefix match", current: "source.example/app:v1", match: "prefix", from: "source.example/", to: "mirror.example/", wantNext: "mirror.example/app:v1", wantMatched: true},
+		{name: "prefix no match", current: "other.example/app:v1", match: "prefix", from: "source.example/", to: "mirror.example/", wantMatched: false},
+		{name: "unknown match kind", current: "alpine:3.21", match: "regex", from: "alpine:3.21", to: "mirror/alpine:3.21", wantMatched: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			next, matched := mutationRemapMatch(tt.current, tt.match, tt.from, tt.to)
+			if matched != tt.wantMatched {
+				t.Fatalf("mutationRemapMatch() matched = %v, want %v", matched, tt.wantMatched)
+			}
+			if matched && next != tt.wantNext {
+				t.Fatalf("mutationRemapMatch() next = %q, want %q", next, tt.wantNext)
+			}
+		})
 	}
 }
 
