@@ -200,6 +200,19 @@ SOCKGUARD_IMAGE_RESOLVED="${SOCKGUARD_IMAGE_INPUT:-codeswhat/sockguard:1.5.1}"
 PORTWING_IMAGE_RESOLVED="ghcr.io/codeswhat/portwing:${PORTWING_VERSION}"
 DRYDOCK_IMAGE_RESOLVED="codeswhat/drydock:${DRYDOCK_VERSION}"
 
+# Defense in depth: the workflow that drives this script has no
+# pull_request trigger (it's workflow_dispatch/schedule only, so
+# --sockguard-image is maintainer-controlled, never attacker-controlled via
+# a PR), but SOCKGUARD_IMAGE still ends up interpolated into a compose file
+# and pulled/run -- validate it against the allowlisted sockguard
+# registries/repo before it's ever exported, rather than trusting the input
+# unchecked.
+SOCKGUARD_IMAGE_ALLOWLIST_RE='^(ghcr\.io/codeswhat/sockguard|docker\.io/codeswhat/sockguard|quay\.io/codeswhat/sockguard|codeswhat/sockguard)(:[A-Za-z0-9._-]+)?(@sha256:[0-9a-f]{64})?$'
+if [[ ! "$SOCKGUARD_IMAGE_RESOLVED" =~ $SOCKGUARD_IMAGE_ALLOWLIST_RE ]]; then
+  echo "run-matrix.sh: --sockguard-image '${SOCKGUARD_IMAGE_RESOLVED}' does not match an allowlisted sockguard image reference (ghcr.io|docker.io|quay.io/codeswhat/sockguard or codeswhat/sockguard, optionally :tag and/or @sha256:<digest>)" >&2
+  exit 2
+fi
+
 export SOCKGUARD_IMAGE="$SOCKGUARD_IMAGE_RESOLVED"
 export PORTWING_VERSION
 export DRYDOCK_VERSION
