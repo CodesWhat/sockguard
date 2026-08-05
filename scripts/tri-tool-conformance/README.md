@@ -165,21 +165,29 @@ addition.
 fixture with 6 real access-log-shaped lines (5 already in the manifest, 1
 deliberately absent: `GET /containers/*/attach`, which no preset ever
 allows and which isn't one of assertion 9's probe shapes either), one
-non-access-log line (`msg: startup`), and one line that isn't JSON at all.
-A correct run produces exactly 6 route shapes and isolates exactly the one
-unknown route. This needs only `jq` — no Docker, no network — and is wired
-into `npm test` via `../tri-tool-conformance-run-matrix.test.mjs` (one
-directory up, since `package.json`'s test script globs `scripts/*.test.mjs`
-non-recursively) plus a dedicated `self-test` job in
-`quality-tri-tool-conformance.yml` itself.
+access-log-shaped line with `normalized_path` missing entirely, one
+non-access-log line (`msg: startup`), one bare-string JSON value (valid
+JSON, not an object), and one line that isn't JSON at all. A correct run
+produces exactly 6 route shapes and isolates exactly the one unknown route,
+and both `normalize-routes.jq` and `lib.sh`'s `ACCESS_LOG_ROUTE_MATCH_JQ`
+must tolerate the three malformed/partial lines without erroring. The
+self-test also proves `route_drift_status` fails closed (not an
+empty-diff PASS) when given zero observed routes. This needs only `jq` — no
+Docker, no network — and is wired into `npm test` via
+`../tri-tool-conformance-run-matrix.test.mjs` (one directory up, since
+`package.json`'s test script globs `scripts/*.test.mjs` non-recursively)
+plus a dedicated `self-test` job in `quality-tri-tool-conformance.yml`
+itself.
 
 ## Artifacts
 
 Each row writes `conformance-<row>.json` to the repo root (uploaded by the
 workflow with 90-day retention, always, pass or fail) containing: timestamp,
 matrix row, resolved image refs *and* digests
-(`docker image inspect --format '{{index .RepoDigests 0}}'`, after
-`docker compose pull`) for all three tools, Docker Engine version + API
+(`docker image inspect --format '{{index .RepoDigests 0}}'`, captured right
+after `compose up` in `assert_pristine_boot` — from the images the row
+actually ran, not a re-pull at the end that could catch a tag having moved
+mid-run) for all three tools, Docker Engine version + API
 version (via `GET /version` through the proxy), the sockguard preset in use,
 the portwing mode, every observed route shape, and per-assertion
 pass/fail/skip with a detail string. The workflow's `summary` job aggregates

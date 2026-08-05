@@ -40,13 +40,16 @@ BUNDLE_DIR="${REPO_ROOT}/examples/compose/tri-tool"
 # shellcheck source=scripts/tri-tool-conformance/lib.sh
 source "${SCRIPT_DIR}/lib.sh"
 
-# busybox pins for the assertion-8 (remote update trigger) recreation
-# check. NEW_BUSYBOX_REF matches app/integration/helpers_test.go's
-# busyboxPinnedRef -- reusing the same pin this repo already trusts and
-# pre-pulls in CI (see quality-integration.yml) rather than inventing a
-# second, unrelated digest to track. OLD_BUSYBOX_REF is a distinct, older
-# busybox release pinned the same way, standing in for "the previously
-# deployed version" an update trigger recreates a container away from.
+# busybox pins for the events/logs/lifecycle sentinels and the assertion-8
+# (remote update trigger) recreation check. Only NEW_BUSYBOX_REF matches
+# app/integration/helpers_test.go's busyboxPinnedRef -- reusing the same pin
+# that repo's OWN integration suite already trusts and pre-pulls in its own
+# CI job (quality-integration.yml) rather than inventing a second, unrelated
+# digest to track; that pre-pull is for that other workflow's runner, not
+# this one, so this script pulls both refs itself below. OLD_BUSYBOX_REF is
+# a distinct, older busybox release pinned the same way, standing in for
+# "the previously deployed version" an update trigger recreates a container
+# away from.
 OLD_BUSYBOX_REF="busybox:1.36@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
 NEW_BUSYBOX_REF="busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0"
 
@@ -290,7 +293,20 @@ trap cleanup EXIT
 
 if [ "$MODE" = "standard" ]; then
   openssl rand -hex 32 > "${BUNDLE_DIR}/portwing_token.txt"
-  chmod 0400 "${BUNDLE_DIR}/portwing_token.txt"
+  # Owned by whoever's running this script by default, but portwing reads
+  # this secret as UID 65532 (docker-compose.yml's `user: "65532:65532"`) --
+  # chown to that UID before the chmod 0400 that follows, or portwing can't
+  # read its own secret. Every step here is checked explicitly rather than
+  # just `&&`-chaining: a setup failure needs to read as exactly that, not
+  # surface later as a misleading auth-handshake failure.
+  if ! sudo chown 65532:65532 "${BUNDLE_DIR}/portwing_token.txt"; then
+    echo "FATAL: could not chown portwing_token.txt to 65532:65532 (the UID portwing runs as) -- setup error, not a conformance failure" >&2
+    exit 1
+  fi
+  if ! sudo chmod 0400 "${BUNDLE_DIR}/portwing_token.txt"; then
+    echo "FATAL: could not chmod portwing_token.txt to 0400 -- setup error, not a conformance failure" >&2
+    exit 1
+  fi
 else
   if ! docker run --rm "$PORTWING_IMAGE_RESOLVED" keygen -comment "tri-tool-conformance-${ROW}" \
       > "${BUNDLE_DIR}/portwing_ed25519.pem" 2>/tmp/keygen.err; then
@@ -303,9 +319,44 @@ else
     echo "FATAL: could not derive the authorized_keys line: $(cat /tmp/keygen-pub.err)" >&2
     exit 1
   fi
-  sudo chown 65532:65532 "${BUNDLE_DIR}/portwing_ed25519.pem" && sudo chmod 0400 "${BUNDLE_DIR}/portwing_ed25519.pem"
-  sudo chown 1000:1000 "${BUNDLE_DIR}/portwing_authorized_keys" && sudo chmod 0600 "${BUNDLE_DIR}/portwing_authorized_keys"
+  # Every chown/chmod checked explicitly (not `&&`-chained without a check)
+  # so a setup failure here fails the row with a clear setup-error message
+  # instead of surfacing later as a confusing auth-handshake failure.
+  if ! sudo chown 65532:65532 "${BUNDLE_DIR}/portwing_ed25519.pem"; then
+    echo "FATAL: could not chown portwing_ed25519.pem to 65532:65532 (the UID portwing runs as) -- setup error, not a conformance failure" >&2
+    exit 1
+  fi
+  if ! sudo chmod 0400 "${BUNDLE_DIR}/portwing_ed25519.pem"; then
+    echo "FATAL: could not chmod portwing_ed25519.pem to 0400 -- setup error, not a conformance failure" >&2
+    exit 1
+  fi
+  if ! sudo chown 1000:1000 "${BUNDLE_DIR}/portwing_authorized_keys"; then
+    echo "FATAL: could not chown portwing_authorized_keys to 1000:1000 (the UID drydock runs as) -- setup error, not a conformance failure" >&2
+    exit 1
+  fi
+  if ! sudo chmod 0600 "${BUNDLE_DIR}/portwing_authorized_keys"; then
+    echo "FATAL: could not chmod portwing_authorized_keys to 0600 -- setup error, not a conformance failure" >&2
+    exit 1
+  fi
 fi
+
+# ---------------------------------------------------------------------------
+# Pre-pull the busybox pins used by the events/logs/lifecycle sentinels and
+# the remote-update-trigger recreation check. Neither ref is pulled anywhere
+# else ahead of time for this row -- letting `containers/create` implicitly
+# trigger the pull on first use inside an assertion works most of the time
+# locally, but a slow/flaky pull on a shared CI runner then reads as an
+# unrelated timeout in whatever assertion happened to need the image first,
+# not what it actually is. Pull both up front and fail the row immediately,
+# with a clear message, if either doesn't come down.
+# ---------------------------------------------------------------------------
+
+for busybox_ref in "$OLD_BUSYBOX_REF" "$NEW_BUSYBOX_REF"; do
+  if ! docker pull "$busybox_ref" >/tmp/busybox-pull.log 2>&1; then
+    echo "FATAL: could not pre-pull ${busybox_ref}: $(tail -c 2000 /tmp/busybox-pull.log)" >&2
+    exit 1
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Helpers used by more than one assertion
@@ -342,6 +393,15 @@ assert_pristine_boot() {
     record_result "$name" FAIL "docker compose up failed: $(tail -c 2000 /tmp/compose-up.log)"
     return 1
   fi
+
+  # Capture image digests from what `compose up` just started from -- these
+  # are the exact bits every assertion in this row exercises. Doing this
+  # here instead of via a `docker compose pull` at the end of the row (see
+  # resolve_metadata) means an upstream tag moving mid-run can never cause
+  # the artifact to record a digest that wasn't actually the one running.
+  SOCKGUARD_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$SOCKGUARD_IMAGE_RESOLVED" 2>/dev/null || echo unknown)"
+  PORTWING_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$PORTWING_IMAGE_RESOLVED" 2>/dev/null || echo unknown)"
+  DRYDOCK_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$DRYDOCK_IMAGE_RESOLVED" 2>/dev/null || echo unknown)"
 
   if ! wait_until 90 3 sockguard_ping_ok; then
     record_result "$name" FAIL "sockguard never answered a real _ping within 90s of a fresh named-volume boot"
@@ -523,7 +583,10 @@ assert_logs() {
   PRIMARY_SENTINEL_ID="$(jq -r '.Id // empty' <<<"$create_resp" 2>/dev/null)"
   if [ -z "$PRIMARY_SENTINEL_ID" ]; then
     record_result "$name" FAIL "primary sentinel container create failed: ${create_resp}"
-    record_result "lifecycle" FAIL "skipped -- primary sentinel was never created"
+    # Not also recording "lifecycle" here -- assert_lifecycle already
+    # records its own FAIL when PRIMARY_SENTINEL_ID is empty (it runs right
+    # after this in the main sequence), so doing it here too would double
+    # up the artifact's assertions array with the same name.
     return 1
   fi
   SENTINEL_IDS+=("$PRIMARY_SENTINEL_ID")
@@ -764,11 +827,11 @@ assert_route_drift() {
 # ---------------------------------------------------------------------------
 
 resolve_metadata() {
-  compose pull sockguard portwing drydock >/tmp/compose-pull.log 2>&1 || true
-  SOCKGUARD_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$SOCKGUARD_IMAGE_RESOLVED" 2>/dev/null || echo unknown)"
-  PORTWING_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$PORTWING_IMAGE_RESOLVED" 2>/dev/null || echo unknown)"
-  DRYDOCK_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "$DRYDOCK_IMAGE_RESOLVED" 2>/dev/null || echo unknown)"
-
+  # Image digests are already captured in assert_pristine_boot, from the
+  # images `compose up` actually started this row's containers from -- NOT
+  # re-pulled here. A `docker compose pull` this late would race an upstream
+  # tag moving mid-run and could record a digest that never ran any of this
+  # row's assertions.
   local version_resp
   version_resp="$(probe_curl http://localhost/version 2>/dev/null)"
   ENGINE_VERSION="$(jq -r '.Version // "unknown"' <<<"$version_resp" 2>/dev/null || echo unknown)"
@@ -814,8 +877,9 @@ write_artifact() {
 # Main
 # ---------------------------------------------------------------------------
 
-assert_pristine_boot
-if [ "$ROW_FAILED" -eq 0 ]; then
+PRISTINE_BOOT_OK=1
+if assert_pristine_boot; then
+  PRISTINE_BOOT_OK=0
   assert_auth_handshake
 fi
 
@@ -829,7 +893,34 @@ if [ "$ROW_FAILED" -eq 0 ]; then
   assert_expected_denials
 else
   echo "Pristine boot or auth handshake failed -- skipping the remaining scenario assertions for this row." >&2
-  for skipped in inventory-inspect events logs lifecycle exec-policy remote-update-trigger expected-denials; do
+
+  # assert_auth_handshake was never even called when pristine boot itself is
+  # what failed, so there's no "auth-handshake" result in the artifact yet
+  # to account for it -- record it as skipped too. When pristine boot
+  # succeeded and auth-handshake (or its per-mode negative probe) is what
+  # failed instead, that assertion already recorded its own FAIL above; skip
+  # it here would just duplicate the entry.
+  if [ "$PRISTINE_BOOT_OK" -ne 0 ]; then
+    record_result "auth-handshake" SKIP "row aborted -- pristine boot failed before auth handshake could be attempted"
+  fi
+
+  # Names below must match exactly what the success path records (see each
+  # assert_* function) so a skipped row's artifact has the same assertion
+  # names a passing row would, just with SKIP instead of PASS/FAIL/SKIP.
+  for skipped in inventory-inspect events logs lifecycle; do
+    record_result "$skipped" SKIP "row aborted after pristine-boot/auth-handshake failure"
+  done
+
+  if [ "$EXEC_ROW" -eq 1 ]; then
+    record_result "exec-policy-allowed" SKIP "row aborted after pristine-boot/auth-handshake failure"
+    record_result "exec-policy-denied" SKIP "row aborted after pristine-boot/auth-handshake failure"
+  else
+    record_result "exec-policy" SKIP "row aborted after pristine-boot/auth-handshake failure"
+  fi
+
+  record_result "remote-update-trigger" SKIP "row aborted after pristine-boot/auth-handshake failure"
+
+  for skipped in expected-denials-build expected-denials-exec expected-denials-export; do
     record_result "$skipped" SKIP "row aborted after pristine-boot/auth-handshake failure"
   done
 fi
