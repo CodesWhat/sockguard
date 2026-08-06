@@ -70,13 +70,15 @@ Set the Docker socket's group GID so sockguard can open `/var/run/docker.sock` (
 ```bash
 export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
 openssl rand -hex -out portwing_token.txt 32
-sudo chown 65532:65532 portwing_token.txt && sudo chmod 0400 portwing_token.txt
+# Portwing reads the token as UID 65532 (the owner bit); drydock reads the
+# same file as its runtime user node, UID/GID 1000 (the group bit):
+sudo chown 65532:1000 portwing_token.txt && sudo chmod 0440 portwing_token.txt
 docker compose up -d
 # Portwing API: http://localhost:4000
 # drydock UI:   http://localhost:3000
 ```
 
-drydock should log `Handshake successful. Received N containers.` for the `portwing` agent once it connects. If it doesn't, check `docker compose logs drydock` — a `401` means the secret file didn't match on both sides; `ECONNREFUSED` means Portwing isn't up yet.
+drydock should log `Handshake successful. Received N containers.` for the `portwing` agent once it connects. If it doesn't, check `docker compose logs drydock` — a `401` means the secret file didn't match on both sides; `ECONNREFUSED` means Portwing isn't up yet; an `EACCES` reading `/run/secrets/portwing_token` means the ownership/mode above wasn't applied (both portwing *and* drydock must be able to read the file).
 
 To allowlist bind mounts for containers Portwing recreates, add host paths to `sockguard.yaml` under `request_body.container_create.allowed_bind_mounts`.
 
@@ -88,6 +90,10 @@ Use this variant on hosts drydock can't reach directly (NAT, firewall), or whene
 
 ```bash
 export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
+# umask first: the redirect below writes the key with your default umask
+# (usually 0644), and `portwing keygen -pub-from` refuses to load a
+# group/world-readable private key.
+umask 077
 portwing keygen -comment "tri-tool-edge-host" > portwing_ed25519.pem
 
 # Derive the complete authorized_keys line (`ed25519 <base64> <comment>` — the
