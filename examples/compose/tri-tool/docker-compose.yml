@@ -29,8 +29,9 @@
 #
 # Generate the shared Portwing<->drydock secret before starting. Both
 # containers read this one file: portwing as UID 65532 (owner bit) and
-# drydock as its runtime user node, UID/GID 1000 (group bit) — 65532:65532
-# with 0400 locks drydock out and the handshake never completes:
+# drydock as its runtime user node, UID/GID 1000 (group bit). Do NOT tighten
+# ownership to portwing alone (owner+group 65532, mode 0400): that locks
+# drydock out and the handshake never completes.
 #   openssl rand -hex -out portwing_token.txt 32
 #   sudo chown 65532:1000 portwing_token.txt && sudo chmod 0440 portwing_token.txt
 #
