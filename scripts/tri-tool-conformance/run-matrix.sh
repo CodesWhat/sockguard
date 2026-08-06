@@ -445,6 +445,12 @@ assert_standard_wrong_secret_probe() {
   net="$(docker network ls --filter "label=com.docker.compose.project=${PROJECT}" --format '{{.Name}}' | head -1)"
   wrong_secret_file="$(mktemp)"
   openssl rand -hex 32 > "$wrong_secret_file"
+  # mktemp creates the file 0600 owned by the runner, but the throwaway
+  # drydock reads it as its node user (UID 1000) -- without this it EACCESes
+  # before ever sending a request and the probe times out instead of seeing
+  # a 401 (the second live matrix run failed exactly here). The value is
+  # deliberately-wrong garbage, so world-readable is fine.
+  chmod 0644 "$wrong_secret_file"
   bad_container="tt-conf-badsecret-$$"
 
   if ! docker run -d --name "$bad_container" --network "$net" \
@@ -486,6 +492,15 @@ assert_edge_unknown_key_probe() {
     rm -f "$key_file"
     return 1
   fi
+  # mktemp's 0600-owned-by-runner default locks out the throwaway portwing,
+  # which reads the key as UID 65532 -- chown so the probe fails on the
+  # unregistered KEY, not on an unreadable file. Mode stays 0600 (portwing's
+  # loader refuses group/world-readable private keys).
+  if ! sudo chown 65532:65532 "$key_file"; then
+    record_result "$name" FAIL "could not chown the throwaway key to 65532:65532 -- setup error, not a conformance failure"
+    rm -f "$key_file"
+    return 1
+  fi
 
   if ! docker run -d --name "$bad_container" --network "$net" \
       -v "${vol}:/var/run/sockguard:ro" \
@@ -500,22 +515,36 @@ assert_edge_unknown_key_probe() {
     return 1
   fi
 
+  # drydock rejects an unknown key by sending an error frame to the CLIENT
+  # and closing the socket -- it logs nothing server-side (verified against
+  # drydock's portwing-ws sendErrorAndClose). The rejection evidence lives
+  # in the throwaway portwing's own logs: "controller rejected hello ...
+  # (unknown-key)" (pinned against live portwing 0.9.2 / drydock latest).
   local ok=1
-  wait_for_log_line drydock "bad-signature|unknown-key|unauthorized|reject" 30 && ok=0
+  wait_for_container_log_line "$bad_container" "rejected hello|unknown-key" 30 && ok=0
   docker rm -f "$bad_container" >/dev/null 2>&1 || true
   rm -f "$key_file"
 
   if [ "$ok" -eq 0 ]; then
-    record_result "$name" PASS "throwaway agent config with an unregistered Ed25519 key had its hello rejected, matching the documented failure mode"
+    record_result "$name" PASS "throwaway agent config with an unregistered Ed25519 key had its hello rejected (unknown-key), matching the documented failure mode"
   else
-    record_result "$name" FAIL "throwaway unknown-key probe never produced a rejection in drydock's logs within 30s"
+    record_result "$name" FAIL "throwaway unknown-key probe never logged a rejected hello within 30s"
   fi
 }
 
 assert_auth_handshake() {
   local name="auth-handshake"
-  if ! wait_for_log_line drydock 'Handshake successful' 90; then
-    record_result "$name" FAIL "drydock never logged 'Handshake successful' for the portwing agent within 90s"
+  # The success log line is mode-specific: standard mode's HTTP poller logs
+  # "Handshake successful. Received N containers." (AgentClient), while the
+  # edge WS server logs "Edge agent connected: portwing-edge-<id> (...)"
+  # (portwing-ws) and never emits the standard line. Both pinned against
+  # live drydock during the second live matrix run's diagnosis.
+  local expect='Handshake successful'
+  if [ "$MODE" != "standard" ]; then
+    expect='Edge agent connected'
+  fi
+  if ! wait_for_log_line drydock "$expect" 90; then
+    record_result "$name" FAIL "drydock never logged '${expect}' for the portwing agent within 90s"
     # The row is about to abort -- without these dumps the job log has no
     # way to tell an auth failure from a crash-loop from a network problem
     # (the first live run of this matrix was undiagnosable from CI alone).
@@ -527,7 +556,7 @@ assert_auth_handshake() {
     compose logs --tail 20 sockguard 2>&1 || true
     return 1
   fi
-  record_result "$name" PASS "drydock logged 'Handshake successful' for the portwing agent"
+  record_result "$name" PASS "drydock logged '${expect}' for the portwing agent"
 
   if [ "$MODE" = "standard" ]; then
     assert_standard_wrong_secret_probe
