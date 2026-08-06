@@ -511,7 +511,7 @@ assert_edge_unknown_key_probe() {
       -e PRIVATE_KEY_FILE=/run/secrets/portwing_key \
       "$PORTWING_IMAGE_RESOLVED" >/tmp/badkey.cid 2>/tmp/badkey-run.err; then
     record_result "$name" FAIL "could not start the throwaway unknown-key agent-config probe: $(cat /tmp/badkey-run.err)"
-    rm -f "$key_file"
+    sudo rm -f -- "$key_file"
     return 1
   fi
 
@@ -520,10 +520,16 @@ assert_edge_unknown_key_probe() {
   # drydock's portwing-ws sendErrorAndClose). The rejection evidence lives
   # in the throwaway portwing's own logs: "controller rejected hello ...
   # (unknown-key)" (pinned against live portwing 0.9.2 / drydock latest).
+  # Require BOTH terms on one line: a bare alternation would also match a
+  # bad-signature rejection, which is a different failure (registered key
+  # not matching the private key) than the unregistered-key case this probe
+  # exists to pin.
   local ok=1
-  wait_for_container_log_line "$bad_container" "rejected hello|unknown-key" 30 && ok=0
+  wait_for_container_log_line "$bad_container" "rejected hello.*unknown-key" 30 && ok=0
   docker rm -f "$bad_container" >/dev/null 2>&1 || true
-  rm -f "$key_file"
+  # sudo: the key file was chowned to 65532 above, and /tmp's sticky bit
+  # blocks the runner from unlinking a file it no longer owns.
+  sudo rm -f -- "$key_file"
 
   if [ "$ok" -eq 0 ]; then
     record_result "$name" PASS "throwaway agent config with an unregistered Ed25519 key had its hello rejected (unknown-key), matching the documented failure mode"
