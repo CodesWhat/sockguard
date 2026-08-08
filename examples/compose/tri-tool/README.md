@@ -70,13 +70,15 @@ Set the Docker socket's group GID so sockguard can open `/var/run/docker.sock` (
 ```bash
 export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
 openssl rand -hex -out portwing_token.txt 32
-sudo chown 65532:65532 portwing_token.txt && sudo chmod 0400 portwing_token.txt
+# Portwing reads the token as UID 65532 (the owner bit); drydock reads the
+# same file as its runtime user node, UID/GID 1000 (the group bit):
+sudo chown 65532:1000 portwing_token.txt && sudo chmod 0440 portwing_token.txt
 docker compose up -d
 # Portwing API: http://localhost:4000
 # drydock UI:   http://localhost:3000
 ```
 
-drydock should log `Handshake successful. Received N containers.` for the `portwing` agent once it connects. If it doesn't, check `docker compose logs drydock` — a `401` means the secret file didn't match on both sides; `ECONNREFUSED` means Portwing isn't up yet.
+drydock should log `Handshake successful. Received N containers.` for the `portwing` agent once it connects. If it doesn't, check `docker compose logs drydock` — a `401` means the secret file didn't match on both sides; `ECONNREFUSED` means Portwing isn't up yet; an `EACCES` reading `/run/secrets/portwing_token` means the ownership/mode above wasn't applied (both portwing *and* drydock must be able to read the file).
 
 To allowlist bind mounts for containers Portwing recreates, add host paths to `sockguard.yaml` under `request_body.container_create.allowed_bind_mounts`.
 
@@ -88,6 +90,10 @@ Use this variant on hosts drydock can't reach directly (NAT, firewall), or whene
 
 ```bash
 export DOCKER_SOCK_GID=$(stat -c '%g' /var/run/docker.sock)  # macOS: stat -f '%g'
+# umask first: the redirect below writes the key with your default umask
+# (usually 0644), and `portwing keygen -pub-from` refuses to load a
+# group/world-readable private key.
+umask 077
 portwing keygen -comment "tri-tool-edge-host" > portwing_ed25519.pem
 
 # Derive the complete authorized_keys line (`ed25519 <base64> <comment>` — the
@@ -105,7 +111,7 @@ docker compose -f docker-compose.edge-exec.yml up -d
 # drydock UI: http://localhost:3000
 ```
 
-drydock should log the same `Handshake successful. Received N containers.` line for the `tri-tool-edge-host` agent once Portwing dials in. If it doesn't: a `bad-signature` or `unknown-key` error frame means `portwing_authorized_keys` doesn't contain the key Portwing is presenting (re-run `portwing keygen -pub-from portwing_ed25519.pem` and re-append its output, or register the key live with `POST /api/v1/portwing/keys` instead); `ECONNREFUSED` from Portwing means drydock isn't up yet.
+drydock should log `Edge agent connected: portwing-edge-<id> (version=…, drydockCompat=…)` once Portwing dials in — Edge mode does not emit Standard mode's `Handshake successful` line, and the connected name is a generated `portwing-edge-<id>`, not your `AGENT_NAME`. If it doesn't connect, check **Portwing's** logs, not drydock's — drydock rejects a bad hello silently (an error frame to the client, nothing server-side): `controller rejected hello: Unknown or revoked key (unknown-key)` means `portwing_authorized_keys` doesn't contain the key Portwing is presenting (re-run `portwing keygen -pub-from portwing_ed25519.pem` and re-append its output, or register the key live with `POST /api/v1/portwing/keys` instead); `bad-signature` means the key *is* registered but doesn't match the private key Portwing loaded — usually a stale `portwing_authorized_keys` line from an older keypair, so re-derive it from the current `portwing_ed25519.pem`; `ECONNREFUSED` from Portwing means drydock isn't up yet. On drydock's side, a startup `Failed to load DD_PORTWING_AUTHORIZED_KEYS` warning means the keys file is world-readable or unreadable by its node user (UID 1000) — fix it with `sudo chown 1000:1000 portwing_authorized_keys && sudo chmod 0600 portwing_authorized_keys`.
 
 Exec requests arriving through Portwing's edge tunnel are governed by `sockguard-with-exec.yaml`'s `allow_privileged: false` / `allow_root_user: true` policy — a privileged exec attempt is denied at sockguard regardless of what Portwing or drydock request. As of Portwing's next release after 0.8.1, that denial reason (and other exec-policy denials) is sent to drydock's controller in the `exec_end` frame, but drydock doesn't display it yet — its EdgeAgentAdapter discards the reason and ships no user-facing exec UI/API, so today a denial and an unrelated failure ("the container doesn't exist", "Portwing is unreachable") both look like a bare failure until drydock surfaces the reason.
 

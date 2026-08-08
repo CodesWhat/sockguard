@@ -293,18 +293,22 @@ trap cleanup EXIT
 
 if [ "$MODE" = "standard" ]; then
   openssl rand -hex 32 > "${BUNDLE_DIR}/portwing_token.txt"
-  # Owned by whoever's running this script by default, but portwing reads
-  # this secret as UID 65532 (docker-compose.yml's `user: "65532:65532"`) --
-  # chown to that UID before the chmod 0400 that follows, or portwing can't
-  # read its own secret. Every step here is checked explicitly rather than
-  # just `&&`-chaining: a setup failure needs to read as exactly that, not
-  # surface later as a misleading auth-handshake failure.
-  if ! sudo chown 65532:65532 "${BUNDLE_DIR}/portwing_token.txt"; then
-    echo "FATAL: could not chown portwing_token.txt to 65532:65532 (the UID portwing runs as) -- setup error, not a conformance failure" >&2
+  # BOTH sides of the handshake read this one file via the compose `secrets:`
+  # bind: portwing as UID 65532 (docker-compose.yml's `user: "65532:65532"`)
+  # and drydock as its runtime user `node` (UID/GID 1000 -- the entrypoint
+  # su-execs before the app ever reads DD_AGENT_PORTWING_SECRET__FILE). So
+  # owner 65532 gets the read bit and group 1000 gets the group-read bit:
+  # 65532:1000 mode 0440. Anything tighter (65532:65532 0400) locks drydock
+  # out with EACCES and surfaces as a bogus auth-handshake timeout -- exactly
+  # what the first live run of this matrix hit. Every step here is checked
+  # explicitly rather than just `&&`-chaining: a setup failure needs to read
+  # as exactly that, not surface later as a misleading handshake failure.
+  if ! sudo chown 65532:1000 "${BUNDLE_DIR}/portwing_token.txt"; then
+    echo "FATAL: could not chown portwing_token.txt to 65532:1000 (portwing's UID, drydock's node GID) -- setup error, not a conformance failure" >&2
     exit 1
   fi
-  if ! sudo chmod 0400 "${BUNDLE_DIR}/portwing_token.txt"; then
-    echo "FATAL: could not chmod portwing_token.txt to 0400 -- setup error, not a conformance failure" >&2
+  if ! sudo chmod 0440 "${BUNDLE_DIR}/portwing_token.txt"; then
+    echo "FATAL: could not chmod portwing_token.txt to 0440 -- setup error, not a conformance failure" >&2
     exit 1
   fi
 else
@@ -313,21 +317,28 @@ else
     echo "FATAL: could not generate Portwing Ed25519 keypair from ${PORTWING_IMAGE_RESOLVED}: $(cat /tmp/keygen.err)" >&2
     exit 1
   fi
-  if ! docker run --rm -v "${BUNDLE_DIR}/portwing_ed25519.pem:/key.pem:ro" "$PORTWING_IMAGE_RESOLVED" \
-      keygen -pub-from /key.pem -comment "tri-tool-conformance-${ROW}" \
-      > "${BUNDLE_DIR}/portwing_authorized_keys" 2>/tmp/keygen-pub.err; then
-    echo "FATAL: could not derive the authorized_keys line: $(cat /tmp/keygen-pub.err)" >&2
-    exit 1
-  fi
-  # Every chown/chmod checked explicitly (not `&&`-chained without a check)
-  # so a setup failure here fails the row with a clear setup-error message
-  # instead of surfacing later as a confusing auth-handshake failure.
+  # Lock the private key down BEFORE deriving the public key: the shell
+  # redirect above writes the pem with the runner's default umask (0644),
+  # and portwing's own key loader refuses to load a group/world-readable
+  # private key -- the first live run of this matrix died right here with
+  # "unsafe permissions". 65532 is both the keygen container's user and the
+  # compose-run portwing user, so one chown serves the derivation and the
+  # actual row. Every chown/chmod checked explicitly (not `&&`-chained
+  # without a check) so a setup failure here fails the row with a clear
+  # setup-error message instead of surfacing later as a confusing
+  # auth-handshake failure.
   if ! sudo chown 65532:65532 "${BUNDLE_DIR}/portwing_ed25519.pem"; then
     echo "FATAL: could not chown portwing_ed25519.pem to 65532:65532 (the UID portwing runs as) -- setup error, not a conformance failure" >&2
     exit 1
   fi
   if ! sudo chmod 0400 "${BUNDLE_DIR}/portwing_ed25519.pem"; then
     echo "FATAL: could not chmod portwing_ed25519.pem to 0400 -- setup error, not a conformance failure" >&2
+    exit 1
+  fi
+  if ! docker run --rm -v "${BUNDLE_DIR}/portwing_ed25519.pem:/key.pem:ro" "$PORTWING_IMAGE_RESOLVED" \
+      keygen -pub-from /key.pem -comment "tri-tool-conformance-${ROW}" \
+      > "${BUNDLE_DIR}/portwing_authorized_keys" 2>/tmp/keygen-pub.err; then
+    echo "FATAL: could not derive the authorized_keys line: $(cat /tmp/keygen-pub.err)" >&2
     exit 1
   fi
   if ! sudo chown 1000:1000 "${BUNDLE_DIR}/portwing_authorized_keys"; then
@@ -434,6 +445,12 @@ assert_standard_wrong_secret_probe() {
   net="$(docker network ls --filter "label=com.docker.compose.project=${PROJECT}" --format '{{.Name}}' | head -1)"
   wrong_secret_file="$(mktemp)"
   openssl rand -hex 32 > "$wrong_secret_file"
+  # mktemp creates the file 0600 owned by the runner, but the throwaway
+  # drydock reads it as its node user (UID 1000) -- without this it EACCESes
+  # before ever sending a request and the probe times out instead of seeing
+  # a 401 (the second live matrix run failed exactly here). The value is
+  # deliberately-wrong garbage, so world-readable is fine.
+  chmod 0644 "$wrong_secret_file"
   bad_container="tt-conf-badsecret-$$"
 
   if ! docker run -d --name "$bad_container" --network "$net" \
@@ -475,6 +492,15 @@ assert_edge_unknown_key_probe() {
     rm -f "$key_file"
     return 1
   fi
+  # mktemp's 0600-owned-by-runner default locks out the throwaway portwing,
+  # which reads the key as UID 65532 -- chown so the probe fails on the
+  # unregistered KEY, not on an unreadable file. Mode stays 0600 (portwing's
+  # loader refuses group/world-readable private keys).
+  if ! sudo chown 65532:65532 "$key_file"; then
+    record_result "$name" FAIL "could not chown the throwaway key to 65532:65532 -- setup error, not a conformance failure"
+    rm -f "$key_file"
+    return 1
+  fi
 
   if ! docker run -d --name "$bad_container" --network "$net" \
       -v "${vol}:/var/run/sockguard:ro" \
@@ -485,29 +511,58 @@ assert_edge_unknown_key_probe() {
       -e PRIVATE_KEY_FILE=/run/secrets/portwing_key \
       "$PORTWING_IMAGE_RESOLVED" >/tmp/badkey.cid 2>/tmp/badkey-run.err; then
     record_result "$name" FAIL "could not start the throwaway unknown-key agent-config probe: $(cat /tmp/badkey-run.err)"
-    rm -f "$key_file"
+    sudo rm -f -- "$key_file"
     return 1
   fi
 
+  # drydock rejects an unknown key by sending an error frame to the CLIENT
+  # and closing the socket -- it logs nothing server-side (verified against
+  # drydock's portwing-ws sendErrorAndClose). The rejection evidence lives
+  # in the throwaway portwing's own logs: "controller rejected hello ...
+  # (unknown-key)" (pinned against live portwing 0.9.2 / drydock latest).
+  # Require BOTH terms on one line: a bare alternation would also match a
+  # bad-signature rejection, which is a different failure (registered key
+  # not matching the private key) than the unregistered-key case this probe
+  # exists to pin.
   local ok=1
-  wait_for_log_line drydock "bad-signature|unknown-key|unauthorized|reject" 30 && ok=0
+  wait_for_container_log_line "$bad_container" "rejected hello.*unknown-key" 30 && ok=0
   docker rm -f "$bad_container" >/dev/null 2>&1 || true
-  rm -f "$key_file"
+  # sudo: the key file was chowned to 65532 above, and /tmp's sticky bit
+  # blocks the runner from unlinking a file it no longer owns.
+  sudo rm -f -- "$key_file"
 
   if [ "$ok" -eq 0 ]; then
-    record_result "$name" PASS "throwaway agent config with an unregistered Ed25519 key had its hello rejected, matching the documented failure mode"
+    record_result "$name" PASS "throwaway agent config with an unregistered Ed25519 key had its hello rejected (unknown-key), matching the documented failure mode"
   else
-    record_result "$name" FAIL "throwaway unknown-key probe never produced a rejection in drydock's logs within 30s"
+    record_result "$name" FAIL "throwaway unknown-key probe never logged a rejected hello within 30s"
   fi
 }
 
 assert_auth_handshake() {
   local name="auth-handshake"
-  if ! wait_for_log_line drydock 'Handshake successful' 90; then
-    record_result "$name" FAIL "drydock never logged 'Handshake successful' for the portwing agent within 90s"
+  # The success log line is mode-specific: standard mode's HTTP poller logs
+  # "Handshake successful. Received N containers." (AgentClient), while the
+  # edge WS server logs "Edge agent connected: portwing-edge-<id> (...)"
+  # (portwing-ws) and never emits the standard line. Both pinned against
+  # live drydock during the second live matrix run's diagnosis.
+  local expect='Handshake successful'
+  if [ "$MODE" != "standard" ]; then
+    expect='Edge agent connected'
+  fi
+  if ! wait_for_log_line drydock "$expect" 90; then
+    record_result "$name" FAIL "drydock never logged '${expect}' for the portwing agent within 90s"
+    # The row is about to abort -- without these dumps the job log has no
+    # way to tell an auth failure from a crash-loop from a network problem
+    # (the first live run of this matrix was undiagnosable from CI alone).
+    echo "---- drydock logs (last 40 lines) ----"
+    compose logs --tail 40 drydock 2>&1 || true
+    echo "---- portwing logs (last 40 lines) ----"
+    compose logs --tail 40 portwing 2>&1 || true
+    echo "---- sockguard logs (last 20 lines) ----"
+    compose logs --tail 20 sockguard 2>&1 || true
     return 1
   fi
-  record_result "$name" PASS "drydock logged 'Handshake successful' for the portwing agent"
+  record_result "$name" PASS "drydock logged '${expect}' for the portwing agent"
 
   if [ "$MODE" = "standard" ]; then
     assert_standard_wrong_secret_probe
