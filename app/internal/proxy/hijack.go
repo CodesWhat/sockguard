@@ -478,6 +478,7 @@ func startHijackCopy(
 
 func newUpstreamHijackRequest(r *http.Request, path string) *http.Request {
 	rawQuery := ""
+	rawPath := ""
 	if path == "" && r.URL != nil {
 		// Defensive fallback for callers that don't have a path handy (e.g.
 		// direct unit tests): use the client's original path, not a
@@ -490,12 +491,20 @@ func newUpstreamHijackRequest(r *http.Request, path string) *http.Request {
 		// main reverse-proxy path and preserves the exact exec/attach query the
 		// client sent.
 		rawQuery = r.URL.RawQuery
+		// Preserve the original percent-encoding too: when path is the
+		// request's own (unmodified) path, carry over its RawPath so an
+		// encoded segment like %2F round-trips onto the wire unchanged
+		// instead of url.URL re-deriving EscapedPath() from the decoded
+		// Path alone, which would collapse it to a literal /.
+		if path == r.URL.Path {
+			rawPath = r.URL.RawPath
+		}
 	}
 
 	upstreamReq := &http.Request{
 		Method:        r.Method,
 		Host:          "docker",
-		URL:           &url.URL{Scheme: "http", Host: "docker", Path: path, RawQuery: rawQuery},
+		URL:           &url.URL{Scheme: "http", Host: "docker", Path: path, RawPath: rawPath, RawQuery: rawQuery},
 		Proto:         r.Proto,
 		ProtoMajor:    r.ProtoMajor,
 		ProtoMinor:    r.ProtoMinor,

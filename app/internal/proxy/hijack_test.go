@@ -994,6 +994,56 @@ func TestHandleHijack_PreservesOriginalRequestPathUpstream(t *testing.T) {
 	}
 }
 
+// TestHandleHijack_PreservesEncodedPathBytesUpstream is a CodeRabbit-flagged
+// regression check on top of #194's fix: newUpstreamHijackRequest sets the
+// wire path from r.URL.Path, which is the DECODED form (%2F becomes /). A
+// url.URL with no RawPath re-derives EscapedPath() from that decoded Path
+// alone, so an encoded target would collapse into a different, decoded one
+// on the wire. Asserts the raw forwarded HTTP request line still has the
+// percent-encoding, not a literal slash, at the actual byte level (not just
+// the parsed URL struct).
+func TestHandleHijack_PreservesEncodedPathBytesUpstream(t *testing.T) {
+	restoreHijackHooks(t)
+
+	var rawRequest bytes.Buffer
+	dialUpstreamHook = func(network, address string) (net.Conn, error) {
+		return &funcConn{
+			writeFn: func(p []byte) (int, error) {
+				return rawRequest.Write(p)
+			},
+		}, nil
+	}
+	readResponseHook = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"message":"bad request"}`)),
+		}, nil
+	}
+
+	// abc%2Fdef decodes to abc/def in URL.Path; the encoded form must survive
+	// onto the wire unchanged rather than being flattened to a literal slash.
+	req := httptest.NewRequest(http.MethodPost, "http://client.example/v1.45/containers/abc%2Fdef/attach?stream=1", nil)
+	req.Host = "client.example"
+
+	rec := httptest.NewRecorder()
+	handleHijack(rec, req, "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+
+	rawForwarded := rawRequest.String()
+	if !strings.Contains(rawForwarded, "POST /v1.45/containers/abc%2Fdef/attach?stream=1 HTTP/1.1") {
+		t.Fatalf("forwarded request target did not preserve the encoded path:\n%s", rawForwarded)
+	}
+	if strings.Contains(rawForwarded, "POST /v1.45/containers/abc/def/attach") {
+		t.Fatalf("forwarded request target decoded %%2F into a literal slash:\n%s", rawForwarded)
+	}
+}
+
 func TestNewUpstreamHijackRequest_BuildsMinimalOutboundRequest(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/containers/abc/attach?stream=1", strings.NewReader("stdin"))
 	req.RequestURI = "/containers/abc/attach?stream=1"
@@ -1043,6 +1093,44 @@ func TestNewUpstreamHijackRequest_BuildsMinimalOutboundRequest(t *testing.T) {
 	}
 	if got := upstreamReq.Header.Get("Upgrade"); got != "tcp" {
 		t.Fatalf("Upgrade = %q, want %q", got, "tcp")
+	}
+}
+
+// TestNewUpstreamHijackRequest_PreservesRawPathForEncodedSegments is the
+// unit-level half of the CodeRabbit-flagged RawPath regression: when path
+// equals r.URL.Path (the production caller's normal case — see
+// writeHijackUpstreamRequest), the constructed upstream URL must carry
+// r.URL.RawPath too, so EscapedPath() reproduces the client's original
+// percent-encoding instead of re-deriving it from the decoded Path (which
+// would turn %2F into a literal /).
+func TestNewUpstreamHijackRequest_PreservesRawPathForEncodedSegments(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/containers/abc%2Fdef/attach?stream=1", nil)
+
+	upstreamReq := newUpstreamHijackRequest(req, req.URL.Path)
+
+	if upstreamReq.URL.RawPath != "/containers/abc%2Fdef/attach" {
+		t.Fatalf("URL.RawPath = %q, want %q", upstreamReq.URL.RawPath, "/containers/abc%2Fdef/attach")
+	}
+	if got := upstreamReq.URL.EscapedPath(); got != "/containers/abc%2Fdef/attach" {
+		t.Fatalf("URL.EscapedPath() = %q, want %q", got, "/containers/abc%2Fdef/attach")
+	}
+}
+
+// TestNewUpstreamHijackRequest_OmitsRawPathForCallerSuppliedPath covers the
+// other half: when the caller passes a path that does NOT equal r.URL.Path
+// (e.g. a literal string a test hands in directly), RawPath must stay empty
+// rather than carrying over a stale encoding that doesn't describe the
+// substituted path.
+func TestNewUpstreamHijackRequest_OmitsRawPathForCallerSuppliedPath(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/containers/abc%2Fdef/attach?stream=1", nil)
+
+	upstreamReq := newUpstreamHijackRequest(req, "/containers/other/attach")
+
+	if upstreamReq.URL.RawPath != "" {
+		t.Fatalf("URL.RawPath = %q, want empty", upstreamReq.URL.RawPath)
+	}
+	if got := upstreamReq.URL.EscapedPath(); got != "/containers/other/attach" {
+		t.Fatalf("URL.EscapedPath() = %q, want %q", got, "/containers/other/attach")
 	}
 }
 
