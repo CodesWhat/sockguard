@@ -926,7 +926,15 @@ func TestHandleHijack_StripsHopByHopHeadersBeforeForwarding(t *testing.T) {
 	}
 }
 
-func TestHandleHijack_RebuildsUpstreamRequestTargetFromNormalizedPath(t *testing.T) {
+// TestHandleHijack_PreservesOriginalRequestPathUpstream is the #194
+// regression test for the Docker-compat side: the hijack layer must forward
+// the client's original (versioned) request path upstream, not the
+// normalized/stripped path used internally for endpoint matching. dockerd
+// accepts a versioned path fine, so this doesn't regress docker-compat
+// behavior; it's Podman's libpod API that actually requires the prefix (see
+// TestHandleHijack_LibpodExecStartPreservesVersionPrefix in
+// hijack_libpod_test.go).
+func TestHandleHijack_PreservesOriginalRequestPathUpstream(t *testing.T) {
 	restoreHijackHooks(t)
 
 	var rawRequest bytes.Buffer
@@ -966,8 +974,8 @@ func TestHandleHijack_RebuildsUpstreamRequestTargetFromNormalizedPath(t *testing
 	if gotReq.Host != "docker" {
 		t.Fatalf("Host = %q, want %q", gotReq.Host, "docker")
 	}
-	if gotReq.URL.Path != "/containers/abc/attach" {
-		t.Fatalf("URL.Path = %q, want %q", gotReq.URL.Path, "/containers/abc/attach")
+	if gotReq.URL.Path != "/v1.45/containers/abc/attach" {
+		t.Fatalf("URL.Path = %q, want %q", gotReq.URL.Path, "/v1.45/containers/abc/attach")
 	}
 	// The query is forwarded verbatim (RawQuery passthrough), preserving the
 	// client's original parameter order rather than re-encoding/reordering it.
@@ -976,13 +984,63 @@ func TestHandleHijack_RebuildsUpstreamRequestTargetFromNormalizedPath(t *testing
 	}
 
 	rawForwarded := rawRequest.String()
-	if !strings.Contains(rawForwarded, "POST /containers/abc/attach?stream=1&stderr=1 HTTP/1.1") {
-		t.Fatalf("forwarded request target was not rebuilt from normalized path with the verbatim query:\n%s", rawForwarded)
+	if !strings.Contains(rawForwarded, "POST /v1.45/containers/abc/attach?stream=1&stderr=1 HTTP/1.1") {
+		t.Fatalf("forwarded request target did not preserve the original versioned path with the verbatim query:\n%s", rawForwarded)
 	}
-	for _, disallowed := range []string{"client.example", "/v1.45/"} {
-		if strings.Contains(rawForwarded, disallowed) {
-			t.Fatalf("forwarded request leaked %q:\n%s", disallowed, rawForwarded)
-		}
+	// The client's Host header must still not leak into the upstream request
+	// target/headers — only the path itself is preserved.
+	if strings.Contains(rawForwarded, "client.example") {
+		t.Fatalf("forwarded request leaked client Host %q:\n%s", "client.example", rawForwarded)
+	}
+}
+
+// TestHandleHijack_PreservesEncodedPathBytesUpstream is a CodeRabbit-flagged
+// regression check on top of #194's fix: newUpstreamHijackRequest sets the
+// wire path from r.URL.Path, which is the DECODED form (%2F becomes /). A
+// url.URL with no RawPath re-derives EscapedPath() from that decoded Path
+// alone, so an encoded target would collapse into a different, decoded one
+// on the wire. Asserts the raw forwarded HTTP request line still has the
+// percent-encoding, not a literal slash, at the actual byte level (not just
+// the parsed URL struct).
+func TestHandleHijack_PreservesEncodedPathBytesUpstream(t *testing.T) {
+	restoreHijackHooks(t)
+
+	var rawRequest bytes.Buffer
+	dialUpstreamHook = func(network, address string) (net.Conn, error) {
+		return &funcConn{
+			writeFn: func(p []byte) (int, error) {
+				return rawRequest.Write(p)
+			},
+		}, nil
+	}
+	readResponseHook = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"message":"bad request"}`)),
+		}, nil
+	}
+
+	// abc%2Fdef decodes to abc/def in URL.Path; the encoded form must survive
+	// onto the wire unchanged rather than being flattened to a literal slash.
+	req := httptest.NewRequest(http.MethodPost, "http://client.example/v1.45/containers/abc%2Fdef/attach?stream=1", nil)
+	req.Host = "client.example"
+
+	rec := httptest.NewRecorder()
+	handleHijack(rec, req, "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+
+	rawForwarded := rawRequest.String()
+	if !strings.Contains(rawForwarded, "POST /v1.45/containers/abc%2Fdef/attach?stream=1 HTTP/1.1") {
+		t.Fatalf("forwarded request target did not preserve the encoded path:\n%s", rawForwarded)
+	}
+	if strings.Contains(rawForwarded, "POST /v1.45/containers/abc/def/attach") {
+		t.Fatalf("forwarded request target decoded %%2F into a literal slash:\n%s", rawForwarded)
 	}
 }
 
@@ -1038,13 +1096,56 @@ func TestNewUpstreamHijackRequest_BuildsMinimalOutboundRequest(t *testing.T) {
 	}
 }
 
-func TestNewUpstreamHijackRequestNormalizesWhenPathMissing(t *testing.T) {
+// TestNewUpstreamHijackRequest_PreservesRawPathForEncodedSegments is the
+// unit-level half of the CodeRabbit-flagged RawPath regression: when path
+// equals r.URL.Path (the production caller's normal case — see
+// writeHijackUpstreamRequest), the constructed upstream URL must carry
+// r.URL.RawPath too, so EscapedPath() reproduces the client's original
+// percent-encoding instead of re-deriving it from the decoded Path (which
+// would turn %2F into a literal /).
+func TestNewUpstreamHijackRequest_PreservesRawPathForEncodedSegments(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/containers/abc%2Fdef/attach?stream=1", nil)
+
+	upstreamReq := newUpstreamHijackRequest(req, req.URL.Path)
+
+	if upstreamReq.URL.RawPath != "/containers/abc%2Fdef/attach" {
+		t.Fatalf("URL.RawPath = %q, want %q", upstreamReq.URL.RawPath, "/containers/abc%2Fdef/attach")
+	}
+	if got := upstreamReq.URL.EscapedPath(); got != "/containers/abc%2Fdef/attach" {
+		t.Fatalf("URL.EscapedPath() = %q, want %q", got, "/containers/abc%2Fdef/attach")
+	}
+}
+
+// TestNewUpstreamHijackRequest_OmitsRawPathForCallerSuppliedPath covers the
+// other half: when the caller passes a path that does NOT equal r.URL.Path
+// (e.g. a literal string a test hands in directly), RawPath must stay empty
+// rather than carrying over a stale encoding that doesn't describe the
+// substituted path.
+func TestNewUpstreamHijackRequest_OmitsRawPathForCallerSuppliedPath(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/containers/abc%2Fdef/attach?stream=1", nil)
+
+	upstreamReq := newUpstreamHijackRequest(req, "/containers/other/attach")
+
+	if upstreamReq.URL.RawPath != "" {
+		t.Fatalf("URL.RawPath = %q, want empty", upstreamReq.URL.RawPath)
+	}
+	if got := upstreamReq.URL.EscapedPath(); got != "/containers/other/attach" {
+		t.Fatalf("URL.EscapedPath() = %q, want %q", got, "/containers/other/attach")
+	}
+}
+
+// TestNewUpstreamHijackRequestFallsBackToRequestURLPathWhenMissing covers the
+// defensive empty-path branch (never hit by the production caller, which
+// always passes r.URL.Path explicitly — see writeHijackUpstreamRequest).
+// #194: the fallback must use the request's own original path, not a
+// normalized/stripped one, to stay consistent with the fixed contract.
+func TestNewUpstreamHijackRequestFallsBackToRequestURLPathWhenMissing(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/v1.45/exec/abc/../abc/start?detach=0", nil)
 
 	upstreamReq := newUpstreamHijackRequest(req, "")
 
-	if upstreamReq.URL.Path != "/exec/abc/start" {
-		t.Fatalf("URL.Path = %q, want normalized exec path", upstreamReq.URL.Path)
+	if upstreamReq.URL.Path != req.URL.Path {
+		t.Fatalf("URL.Path = %q, want the request's own original path %q", upstreamReq.URL.Path, req.URL.Path)
 	}
 	if upstreamReq.URL.RawQuery != "detach=0" {
 		t.Fatalf("URL.RawQuery = %q, want detach=0", upstreamReq.URL.RawQuery)

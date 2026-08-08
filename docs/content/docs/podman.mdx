@@ -196,22 +196,6 @@ never needs `insecure_allow_body_blind_writes` either. See
 
 ## Known Limitations
 
-**Hijacked libpod exec-start does not work against real Podman yet
-([#194](https://github.com/CodesWhat/sockguard/issues/194)).**
-`POST /libpod/exec/{id}/start` is one of sockguard's hijack-capable
-endpoints — like `POST /exec/{id}/start` on the Docker-compat side, it
-upgrades the connection to a raw stream once the daemon accepts it.
-`internal/proxy/hijack.go` always forwards the **version-stripped** path
-upstream by design (pinned by existing hijack tests), which is harmless
-against dockerd — Docker accepts unversioned paths on that endpoint — but
-real Podman enforces stricter versioning specifically on this path and
-rejects the stripped form. The rest of the libpod exec surface is
-unaffected: `request_body.exec` enforcement happens fully at exec-create
-time, before this endpoint is ever reached, and is proven against a real
-Podman socket in CI. Only the final hijacked round-trip on an
-**already-admitted** exec is affected. Tracked as a follow-up, not a
-blocker for the libpod inspector work landing in this release.
-
 **Deferred past this release** (see the [roadmap](/roadmap) for where these
 land):
 
