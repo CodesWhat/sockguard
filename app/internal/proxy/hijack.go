@@ -329,12 +329,21 @@ func proxyHijackStreams(session *hijackSession, logger *slog.Logger) {
 func writeHijackUpstreamRequest(upstreamConn net.Conn, w http.ResponseWriter, r *http.Request, logger *slog.Logger) bool {
 	// We remove client-controlled hop-by-hop metadata and emit a fixed Docker
 	// upgrade hint so upstream sees only proxy-controlled connection semantics.
-	reqPath := requestHijackPath(w, r)
-	upstreamReq := newUpstreamHijackRequest(r, reqPath)
+	//
+	// #194: the wire path is the client's ORIGINAL request path — version
+	// prefix and all — not the normalized/stripped form. That mirrors the
+	// non-hijack reverse-proxy path (proxy.go's Rewrite touches only
+	// Scheme/Host and leaves Path untouched): real Podman requires the
+	// version prefix (/v5.x.y/libpod/...) on every route but the bare
+	// _ping, while dockerd accepts a versioned path too, so preserving it
+	// doesn't regress docker-compat. logPath stays the normalized form used
+	// everywhere else in the proxy for endpoint matching and logging.
+	logPath := requestHijackPath(w, r)
+	upstreamReq := newUpstreamHijackRequest(r, r.URL.Path)
 	if err := upstreamReq.Write(upstreamConn); err != nil {
-		closeConn(logger, upstreamConn, "upstream connection", reqPath)
-		logger.Error("hijack: write request to upstream failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(reqPath))
-		writeHijackBadGateway(w, logger, reqPath, "failed to forward request to upstream")
+		closeConn(logger, upstreamConn, "upstream connection", logPath)
+		logger.Error("hijack: write request to upstream failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(logPath))
+		writeHijackBadGateway(w, logger, logPath, "failed to forward request to upstream")
 		return false
 	}
 
@@ -467,10 +476,14 @@ func startHijackCopy(
 	}()
 }
 
-func newUpstreamHijackRequest(r *http.Request, normalizedPath string) *http.Request {
+func newUpstreamHijackRequest(r *http.Request, path string) *http.Request {
 	rawQuery := ""
-	if normalizedPath == "" && r.URL != nil {
-		normalizedPath = filter.NormalizePath(r.URL.Path)
+	rawPath := ""
+	if path == "" && r.URL != nil {
+		// Defensive fallback for callers that don't have a path handy (e.g.
+		// direct unit tests): use the client's original path, not a
+		// normalized one — #194, see writeHijackUpstreamRequest.
+		path = r.URL.Path
 	}
 	if r.URL != nil {
 		// Forward the query verbatim rather than Query().Encode(), which would
@@ -478,12 +491,20 @@ func newUpstreamHijackRequest(r *http.Request, normalizedPath string) *http.Requ
 		// main reverse-proxy path and preserves the exact exec/attach query the
 		// client sent.
 		rawQuery = r.URL.RawQuery
+		// Preserve the original percent-encoding too: when path is the
+		// request's own (unmodified) path, carry over its RawPath so an
+		// encoded segment like %2F round-trips onto the wire unchanged
+		// instead of url.URL re-deriving EscapedPath() from the decoded
+		// Path alone, which would collapse it to a literal /.
+		if path == r.URL.Path {
+			rawPath = r.URL.RawPath
+		}
 	}
 
 	upstreamReq := &http.Request{
 		Method:        r.Method,
 		Host:          "docker",
-		URL:           &url.URL{Scheme: "http", Host: "docker", Path: normalizedPath, RawQuery: rawQuery},
+		URL:           &url.URL{Scheme: "http", Host: "docker", Path: path, RawPath: rawPath, RawQuery: rawQuery},
 		Proto:         r.Proto,
 		ProtoMajor:    r.ProtoMajor,
 		ProtoMinor:    r.ProtoMinor,

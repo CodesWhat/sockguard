@@ -273,8 +273,13 @@ func TestFullProxyChainHijackIntegration(t *testing.T) {
 		if got.host != "docker" {
 			t.Fatalf("upstream host = %q, want %q", got.host, "docker")
 		}
-		if got.path != "/containers/abc/attach" {
-			t.Fatalf("upstream path = %q, want %q", got.path, "/containers/abc/attach")
+		// #194: the hijack path forwards the client's original (versioned)
+		// path upstream, not the normalized/stripped form — real Podman
+		// requires the version prefix on libpod routes. See
+		// internal/proxy's TestHandleHijack_PreservesOriginalRequestPathUpstream
+		// and TestHandleHijack_LibpodExecStartPreservesVersionPrefix.
+		if got.path != "/v1.45/containers/abc/attach" {
+			t.Fatalf("upstream path = %q, want %q", got.path, "/v1.45/containers/abc/attach")
 		}
 		if got.rawQuery != "stream=1" {
 			t.Fatalf("upstream raw query = %q, want %q", got.rawQuery, "stream=1")
