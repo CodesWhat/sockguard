@@ -14,12 +14,16 @@
 package integration_test
 
 import (
+	"bufio"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
@@ -240,24 +244,144 @@ func TestLibpodExecHonorsSharedRequestBodyExecConfigAgainstRealPodman(t *testing
 	}
 
 	// A real exec-start (POST /libpod/exec/{id}/start) round trip is
-	// deliberately NOT attempted here. exec-start is one of the two
-	// hijack-capable endpoints (internal/proxy/hijack.go's
-	// isHijackEndpointNormalized), and the hijack path always forwards the
-	// NORMALIZED (version-prefix-stripped) path upstream — by design,
-	// pinned by TestNewUpstreamHijackRequestNormalizesWhenPathMissing and
-	// the "must not leak /v1.45/" check in the attach hijack test, not a
-	// bug. That's harmless against dockerd (which accepts bare unversioned
-	// paths) but Podman 404s every non-_ping bare libpod route (see
-	// podmanLibpodAPIVersion's doc comment), so a real exec-start sent
-	// through sockguard's hijack path currently cannot reach a real Podman
-	// daemon regardless of what version prefix this test's own request
-	// uses — sockguard strips it before forwarding either way. Fixing that
-	// is a hijack-path change (teaching it to preserve or re-derive the
-	// client's version prefix for libpod routes), out of scope for this
-	// CI-integration PR; tracked as a follow-up. The shared-config
-	// enforcement this test exists to prove (#148 C3) is fully exercised
-	// above by the exec-create deny/allow pair, which does not go through
-	// the hijack path.
+	// deliberately NOT attempted here — see
+	// TestLibpodExecStartEndToEndHijackAgainstRealPodman below, which covers
+	// it directly. The shared-config enforcement this test exists to prove
+	// (#148 C3) is fully exercised above by the exec-create deny/allow
+	// pair, which does not go through the hijack path.
+}
+
+// TestLibpodExecStartEndToEndHijackAgainstRealPodman is #194's acceptance
+// test. exec-start is a hijack-capable endpoint (internal/proxy/hijack.go's
+// isHijackEndpointNormalized): the connection upgrades via 101 Switching
+// Protocols and the proxy tunnels raw bytes afterward. Before #194's fix,
+// the hijack path always forwarded the filter-normalized (version-stripped)
+// path upstream, which dockerd tolerates but real Podman does not — every
+// libpod route but the bare _ping 404s without its version prefix (see
+// podmanLibpodAPIVersion's doc comment). That made a real exec-start
+// through sockguard's hijack path fail against Podman regardless of what
+// version prefix the client sent, which is why PR #192's sibling test
+// (TestLibpodExecHonorsSharedRequestBodyExecConfigAgainstRealPodman, above)
+// had to stop at exec-create. This test drives the full round trip — create
+// a container, exec-create an allowlisted command, exec-start it through
+// sockguard's hijack path with a real TCP connection to the proxy (an
+// httptest.ResponseRecorder can't hijack) — and asserts the echoed output
+// actually comes back, proving the version prefix survived onto the wire.
+func TestLibpodExecStartEndToEndHijackAgainstRealPodman(t *testing.T) {
+	socketPath := podmanSocketForIntegration(t)
+	apiVersion := podmanLibpodAPIVersion(t, socketPath)
+	versionPrefix := "/v" + apiVersion
+
+	setupHandler := newIntegrationProxyHandlerWithOptions(t, socketPath, []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/create"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/start"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "no matching allow rule"},
+	}, filter.Options{}, ownership.Options{})
+
+	// sleep longer than the attach/exec-create/exec-start round trip needs,
+	// with headroom for a slow CI runner.
+	createPayload := `{"image":"` + busyboxPinnedRef + `","command":["sleep","300"],"systemd":"false"}`
+	createRec := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, versionPrefix+"/libpod/containers/create", strings.NewReader(createPayload))
+	createReq.Header.Set("Content-Type", "application/json")
+	setupHandler.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, want %d; body: %s", createRec.Code, http.StatusCreated, createRec.Body.String())
+	}
+
+	var createBody libpodContainerCreateResponse
+	if err := json.NewDecoder(createRec.Body).Decode(&createBody); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if createBody.Id == "" {
+		t.Fatal("expected libpod create response Id")
+	}
+	t.Cleanup(func() { removeLibpodContainer(t, socketPath, apiVersion, createBody.Id) })
+
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost, versionPrefix+"/libpod/containers/"+url.PathEscape(createBody.Id)+"/start", nil)
+	setupHandler.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusNoContent && startRec.Code != http.StatusOK {
+		t.Fatalf("start status = %d, want %d or %d; body: %s", startRec.Code, http.StatusNoContent, http.StatusOK, startRec.Body.String())
+	}
+	waitForLibpodContainerRunning(t, socketPath, apiVersion, createBody.Id)
+
+	execOpts := filter.ExecOptions{
+		AllowedCommands:    [][]string{{"echo", "hello"}},
+		InspectStartLibpod: filter.NewLibpodExecInspector(socketPath),
+	}
+	execHandler := newIntegrationProxyHandlerWithOptions(t, socketPath, []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/exec"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/exec/*/start"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "no matching allow rule"},
+	}, filter.Options{PolicyConfig: filter.PolicyConfig{Exec: execOpts}}, ownership.Options{})
+
+	// AttachStdout/AttachStderr must be true here: Podman's libpod
+	// exec-start 500s with "must provide at least one stream to attach to"
+	// otherwise, even though the Docker-compat exec-create defaults happen
+	// to work without stating them explicitly.
+	execCreateRec := httptest.NewRecorder()
+	execCreateReq := httptest.NewRequest(http.MethodPost, versionPrefix+"/libpod/containers/"+url.PathEscape(createBody.Id)+"/exec", strings.NewReader(`{"Cmd":["echo","hello"],"User":"nobody","AttachStdout":true,"AttachStderr":true}`))
+	execCreateReq.Header.Set("Content-Type", "application/json")
+	execHandler.ServeHTTP(execCreateRec, execCreateReq)
+	if execCreateRec.Code != http.StatusCreated {
+		t.Fatalf("exec create status = %d, want %d; body: %s", execCreateRec.Code, http.StatusCreated, execCreateRec.Body.String())
+	}
+
+	var execCreateBody struct {
+		Id string `json:"Id"`
+	}
+	if err := json.NewDecoder(execCreateRec.Body).Decode(&execCreateBody); err != nil {
+		t.Fatalf("decode exec create response: %v", err)
+	}
+	if execCreateBody.Id == "" {
+		t.Fatal("expected exec create response Id")
+	}
+
+	// exec-start upgrades the connection (101 Switching Protocols), so it
+	// has to go over a real TCP connection to the proxy —
+	// httptest.ResponseRecorder doesn't implement http.Hijacker.
+	addr, waitForRequest := startIntegrationProxyServer(t, execHandler)
+
+	clientConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial proxy server: %v", err)
+	}
+	defer clientConn.Close()
+
+	execStartPath := versionPrefix + "/libpod/exec/" + url.PathEscape(execCreateBody.Id) + "/start"
+	execStartBody := `{"Detach":false,"Tty":false}`
+	reqStr := "POST " + execStartPath + " HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: " +
+		strconv.Itoa(len(execStartBody)) + "\r\n\r\n" + execStartBody
+	if _, err := clientConn.Write([]byte(reqStr)); err != nil {
+		t.Fatalf("write exec-start request: %v", err)
+	}
+
+	if err := clientConn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	clientBuf := bufio.NewReader(clientConn)
+	resp, err := http.ReadResponse(clientBuf, nil)
+	if err != nil {
+		t.Fatalf("read exec-start response: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusSwitchingProtocols)
+	}
+
+	stream, echoed := readDockerHijackFrame(t, clientBuf)
+	if stream != 1 {
+		t.Fatalf("frame stream = %d, want %d (stdout)", stream, 1)
+	}
+	if string(echoed) != "hello\n" {
+		t.Fatalf("frame payload = %q, want %q", string(echoed), "hello\n")
+	}
+
+	if err := clientConn.Close(); err != nil {
+		t.Fatalf("close proxy client connection: %v", err)
+	}
+
+	waitForRequest()
 }
 
 func TestProxyDeniesCustomLibpodVolumeDriverAgainstRealPodman(t *testing.T) {

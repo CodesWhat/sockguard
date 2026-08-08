@@ -1,7 +1,14 @@
 package proxy
 
 import (
+	"bufio"
+	"bytes"
+	"io"
+	"log/slog"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/codeswhat/sockguard/internal/filter"
@@ -130,5 +137,72 @@ func TestHijackFilterParity(t *testing.T) {
 					tt.method, tt.path, normalized, hijackWant, filterWant)
 			}
 		})
+	}
+}
+
+// TestHandleHijack_LibpodExecStartPreservesVersionPrefix is the #194
+// regression test. Real Podman requires a version prefix
+// (/v5.x.y/libpod/...) on every route except the bare _ping — unlike
+// dockerd, which accepts unversioned paths. The hijack layer strips that
+// prefix internally for endpoint matching (isHijackEndpointNormalized) and
+// rule evaluation, but it must NOT forward the stripped path upstream: doing
+// so reaches Podman without its version prefix and 404s, breaking libpod
+// exec-start (interactive/attached exec) even when policy allows it. The
+// non-hijack reverse-proxy path (proxy.go's Rewrite) never had this bug — it
+// only touches Scheme/Host and forwards the client's original URL verbatim.
+// This test pins the hijack path to the same behavior.
+func TestHandleHijack_LibpodExecStartPreservesVersionPrefix(t *testing.T) {
+	restoreHijackHooks(t)
+
+	var rawRequest bytes.Buffer
+	dialUpstreamHook = func(network, address string) (net.Conn, error) {
+		return &funcConn{
+			writeFn: func(p []byte) (int, error) {
+				return rawRequest.Write(p)
+			},
+		}, nil
+	}
+	readResponseHook = func(*bufio.Reader, *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"message":"bad request"}`)),
+		}, nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "http://client.example/v5.0.0/libpod/exec/abc123/start?detach=0", nil)
+	req.Host = "client.example"
+
+	rec := httptest.NewRecorder()
+	handleHijack(rec, req, "/unused.sock", slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+
+	gotReq, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(rawRequest.Bytes())))
+	if err != nil {
+		t.Fatalf("read forwarded request: %v", err)
+	}
+	defer gotReq.Body.Close()
+
+	if gotReq.Host != "docker" {
+		t.Fatalf("Host = %q, want %q", gotReq.Host, "docker")
+	}
+	// The bug: the hijack layer forwarded filter.NormalizePath's
+	// version-stripped path (/libpod/exec/abc123/start) instead of the
+	// client's original, versioned path. Podman needs the version prefix.
+	if gotReq.URL.Path != "/v5.0.0/libpod/exec/abc123/start" {
+		t.Fatalf("URL.Path = %q, want %q (version prefix must survive the hijack upstream leg)", gotReq.URL.Path, "/v5.0.0/libpod/exec/abc123/start")
+	}
+	if gotReq.URL.RawQuery != "detach=0" {
+		t.Fatalf("URL.RawQuery = %q, want %q", gotReq.URL.RawQuery, "detach=0")
+	}
+
+	rawForwarded := rawRequest.String()
+	if !strings.Contains(rawForwarded, "POST /v5.0.0/libpod/exec/abc123/start?detach=0 HTTP/1.1") {
+		t.Fatalf("forwarded request target dropped the Podman version prefix:\n%s", rawForwarded)
 	}
 }

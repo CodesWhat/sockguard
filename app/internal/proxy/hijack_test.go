@@ -926,7 +926,15 @@ func TestHandleHijack_StripsHopByHopHeadersBeforeForwarding(t *testing.T) {
 	}
 }
 
-func TestHandleHijack_RebuildsUpstreamRequestTargetFromNormalizedPath(t *testing.T) {
+// TestHandleHijack_PreservesOriginalRequestPathUpstream is the #194
+// regression test for the Docker-compat side: the hijack layer must forward
+// the client's original (versioned) request path upstream, not the
+// normalized/stripped path used internally for endpoint matching. dockerd
+// accepts a versioned path fine, so this doesn't regress docker-compat
+// behavior; it's Podman's libpod API that actually requires the prefix (see
+// TestHandleHijack_LibpodExecStartPreservesVersionPrefix in
+// hijack_libpod_test.go).
+func TestHandleHijack_PreservesOriginalRequestPathUpstream(t *testing.T) {
 	restoreHijackHooks(t)
 
 	var rawRequest bytes.Buffer
@@ -966,8 +974,8 @@ func TestHandleHijack_RebuildsUpstreamRequestTargetFromNormalizedPath(t *testing
 	if gotReq.Host != "docker" {
 		t.Fatalf("Host = %q, want %q", gotReq.Host, "docker")
 	}
-	if gotReq.URL.Path != "/containers/abc/attach" {
-		t.Fatalf("URL.Path = %q, want %q", gotReq.URL.Path, "/containers/abc/attach")
+	if gotReq.URL.Path != "/v1.45/containers/abc/attach" {
+		t.Fatalf("URL.Path = %q, want %q", gotReq.URL.Path, "/v1.45/containers/abc/attach")
 	}
 	// The query is forwarded verbatim (RawQuery passthrough), preserving the
 	// client's original parameter order rather than re-encoding/reordering it.
@@ -976,13 +984,13 @@ func TestHandleHijack_RebuildsUpstreamRequestTargetFromNormalizedPath(t *testing
 	}
 
 	rawForwarded := rawRequest.String()
-	if !strings.Contains(rawForwarded, "POST /containers/abc/attach?stream=1&stderr=1 HTTP/1.1") {
-		t.Fatalf("forwarded request target was not rebuilt from normalized path with the verbatim query:\n%s", rawForwarded)
+	if !strings.Contains(rawForwarded, "POST /v1.45/containers/abc/attach?stream=1&stderr=1 HTTP/1.1") {
+		t.Fatalf("forwarded request target did not preserve the original versioned path with the verbatim query:\n%s", rawForwarded)
 	}
-	for _, disallowed := range []string{"client.example", "/v1.45/"} {
-		if strings.Contains(rawForwarded, disallowed) {
-			t.Fatalf("forwarded request leaked %q:\n%s", disallowed, rawForwarded)
-		}
+	// The client's Host header must still not leak into the upstream request
+	// target/headers — only the path itself is preserved.
+	if strings.Contains(rawForwarded, "client.example") {
+		t.Fatalf("forwarded request leaked client Host %q:\n%s", "client.example", rawForwarded)
 	}
 }
 
@@ -1038,13 +1046,18 @@ func TestNewUpstreamHijackRequest_BuildsMinimalOutboundRequest(t *testing.T) {
 	}
 }
 
-func TestNewUpstreamHijackRequestNormalizesWhenPathMissing(t *testing.T) {
+// TestNewUpstreamHijackRequestFallsBackToRequestURLPathWhenMissing covers the
+// defensive empty-path branch (never hit by the production caller, which
+// always passes r.URL.Path explicitly — see writeHijackUpstreamRequest).
+// #194: the fallback must use the request's own original path, not a
+// normalized/stripped one, to stay consistent with the fixed contract.
+func TestNewUpstreamHijackRequestFallsBackToRequestURLPathWhenMissing(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://example.com/v1.45/exec/abc/../abc/start?detach=0", nil)
 
 	upstreamReq := newUpstreamHijackRequest(req, "")
 
-	if upstreamReq.URL.Path != "/exec/abc/start" {
-		t.Fatalf("URL.Path = %q, want normalized exec path", upstreamReq.URL.Path)
+	if upstreamReq.URL.Path != req.URL.Path {
+		t.Fatalf("URL.Path = %q, want the request's own original path %q", upstreamReq.URL.Path, req.URL.Path)
 	}
 	if upstreamReq.URL.RawQuery != "detach=0" {
 		t.Fatalf("URL.RawQuery = %q, want detach=0", upstreamReq.URL.RawQuery)
