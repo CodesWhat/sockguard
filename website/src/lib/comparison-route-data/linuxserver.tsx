@@ -8,7 +8,7 @@ Method + path filtering|Yes|Yes|tie
 Config format|ENV vars (Tecnativa-compatible)|YAML config|competitor
 Packaging|Multi-architecture LSIO image + registries|Multi-architecture signed image|competitor
 Community backing|LinuxServer.io project|CodesWhat|competitor
-Podman native libpod API|Yes|Planned v1.6|competitor
+Podman native libpod API|Yes|Yes (default-deny /libpod coverage)|tie
 Request body inspection|No|Yes (12+ resource types)|self
 Per-client policies|No|CIDR + labels + cert selectors + unix peer|self
 Prometheus metrics|No|Yes (socket-proxy request metrics)|self
@@ -54,13 +54,13 @@ eye|Read-Side Redaction|Sockguard can redact sensitive fields from GET responses
   heroDescription: (
     <p>
       LinuxServer&apos;s docker-socket-proxy brings LSIO packaging, multi-architecture distribution,
-      and active maintenance to Tecnativa&apos;s proven ENV-var approach. It also has a real current
-      advantage: native Podman <code>/libpod</code> route families. Sockguard matches the drop-in
-      simplicity and adds{" "}
+      and active maintenance to Tecnativa&apos;s proven ENV-var approach. Sockguard matches the
+      drop-in simplicity, covers native Podman <code>/libpod</code> route families with default-deny
+      policy, and adds{" "}
       <strong className="text-neutral-900 dark:text-neutral-200">
         request body inspection, per-client policies, signed policy bundles, and Prometheus metrics
       </strong>{" "}
-      — all in a lean Go binary. Native libpod policy coverage is committed for v1.6.
+      — all in a lean Go binary.
     </p>
   ),
   migrationTitle: "Coming from LinuxServer?",

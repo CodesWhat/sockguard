@@ -72,7 +72,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.5.2 is the latest stable release.** It closes an image-trust bypass on image-type container/service mounts, extends network-topology redaction to the new Status field, adds Homebrew tap distribution, and ships the tri-tool Edge Mode + exec example. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v1.6.0 is the latest stable release.** It delivers multiple independently scoped main listeners, fail-closed declarative admission mutations, effective-state resource-limit guarantees for container updates and Swarm services, Engine API 1.55 validation with a fail-closed Compose/BuildKit transport model, first-class Podman support across the Docker-compatible and native `/libpod` API surfaces, and the published tri-tool conformance matrix that now gates GA promotion. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -221,6 +221,7 @@ The named-volume quick start creates that socket and its parent directory as UID
 <details>
 <summary><strong>Latest release highlights</strong></summary>
 
+- **v1.6.0 shipped on 2026-08-08** — promotes `1.6.0-rc.1` to stable after the pre-GA tri-tool conformance gate ran green on all three published-image matrix rows; the rc.1→GA delta adds the libpod exec-start hijack-path fix (#194), a bounded exec-inspect decode (#188), real-daemon conformance tests for every portwing/drydock preset (#196), and a pinned multi-Engine CI matrix (#187). The v1.6 line delivers the full roadmap sequence: multiple independently scoped main listeners (#149), fail-closed declarative admission mutations (#151), effective-state resource-limit guarantees for container updates and Swarm services (#152), Engine API 1.55 validation plus the fail-closed Compose/BuildKit transport acknowledgment (#153), first-class Podman support across the Docker-compatible and native `/libpod` API surfaces with a dedicated guide and `podman-readonly.yaml` preset (#148), and the weekly Sockguard + Portwing + drydock conformance matrix (#150).
 - **v1.5.2 shipped on 2026-08-04** — closes an `image_trust` bypass where image-type `Mounts` entries on container/service create skipped signature verification, extends `redact_network_topology` to the Engine API 1.53 network-inspect `Status` field, adds Homebrew tap distribution, ships the tri-tool Edge Mode + exec Compose variant, and fixes nightly integration digest drift.
 - **v1.5.1 shipped on 2026-07-28** — fixes fresh named-volume Unix-socket startup for the non-root image, corrects Portwing's published registry reference and token command, loopback-binds the authenticated tri-tool demo, and publishes the tested three-tool compatibility boundary plus the competitor-driven v1.6 roadmap.
 - **v1.5.0 shipped on 2026-07-28** — promotes rc.3 to stable after the v1.5 feature surface had been exercised since rc.1 on July 11 and rc.2 on July 20, followed by clean CI, security, artifact, signature, and published-image validation on rc.3 plus a final full-delta review. Safer finite-request timeouts, namespace-sharing and host-cgroupns controls, a hard CPU-cap option, exact exec-environment value pinning, endpoint-config parity, Compose presets, Helm security defaults, fresh embedded-resource ownership checks, registry-push exfiltration gating, structured-log sanitization, fail-closed plugin inspection, and patched dependency graphs are now GA.
@@ -471,11 +472,11 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.6.0 is the next committed feature milestone**, focused on runtime compatibility and safe policy mediation. **v1.5.2 shipped on 2026-08-04** as the integration/packaging patch over the v1.5 feature line. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
+**v1.6.0 shipped on 2026-08-08** as the runtime-compatibility and policy-mediation feature line over v1.5. Full BuildKit gRPC mediation — bounding the session/gRPC tunnel that v1.6 gates behind an explicit acknowledgment — is the first committed epic in the [v1.7.0 milestone](https://github.com/CodesWhat/sockguard/milestone/2), alongside narrowing `allow_endpoint_config` to per-field gates. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
 
-### Next in v1.6.0
+### Shipped in v1.6.0
 
-Tracked in the [v1.6.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/1). Delivered in three waves — Wave 1 lands in parallel, Wave 2 is sequential because both items touch the route classifier, and Wave 3 gates GA.
+Tracked in the [v1.6.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/1). Delivered in three waves — Wave 1 landed in parallel, Wave 2 was sequential because both items touch the route classifier, and Wave 3 gated GA.
 
 **Wave 1 — parallel**
 
