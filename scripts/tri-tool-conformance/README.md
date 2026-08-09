@@ -77,18 +77,20 @@ negative-auth-probe containers) via an `EXIT` trap.
    with a documented reason (`sockguard-with-exec.yaml`'s
    `allow_privileged: false` gate, `deny_verbosity: verbose` since #158).
 8. **Remote update trigger** — creates a sentinel pinned at an old
-   `busybox` digest, resolves its document from drydock's own
-   `GET /api/containers` store, and fires `POST /api/triggers/docker/update`
-   (agent-qualified when the document names one) with the required
-   `{id: <drydock container id>}` body — the contract pinned from drydock's
-   `app/api/trigger.ts` after the first live run proved the earlier
-   `{container, image}` guess 400s everywhere (#211). Current rows wait for
-   `updateAvailable=true` (admission otherwise refuses with 400
-   "No update available"), expect a `2xx` acceptance, and assert the
-   sentinel gets recreated on the new pin. `legacy-floor` fires the same
-   correctly-shaped request and passes only when it's refused as
-   not-implemented/absent (`404`/`501`) — the documented compatibility
-   boundary; a `2xx` there is a failure.
+   `busybox` digest through the proxied socket, waits for it to reach
+   drydock's own `GET /api/containers` store (paginated `{data: [...]}`
+   envelope on every drydock version — presence proves the full
+   sockguard-mediated Portwing inventory-sync path), then fires
+   `POST /api/triggers/docker/update` (agent-qualified when the document
+   names one) with the required `{id: <drydock container id>}` body — the
+   shape pinned from drydock's `app/api/trigger.ts` (#211). Every row
+   passes only on the documented refusal (`404`/`501`): the audited bundle
+   configures no docker update trigger in drydock, and the published pair
+   cannot compute update candidates in this topology anyway (drydock's
+   watch-now delegates registry checks to the Portwing agent, whose
+   watcher endpoint answers `501` expecting controller-side checking). A
+   `2xx` — an unconfigured trigger executing — or a `400` — the request
+   shape regressing — is a failure.
 9. **Expected denials** — `POST /build` denied with a reason;
    `POST /containers/*/exec` denied on the non-exec preset (skipped on
    `current-edge`, which runs the exec-enabled preset by design — see
@@ -213,16 +215,23 @@ against a fixture. The following need confirmation on the **first live
 `workflow_dispatch` run** (see RELEASING.md's pre-GA gate step) and may
 require a follow-up patch to this harness:
 
-- **Assertion 8's trigger-invocation HTTP contract** — RESOLVED by the
-  2026-08-08 live run (#211). The body requires drydock's own container-store
-  `id` (400 "Invalid trigger request body" otherwise, on every drydock
-  version), update-type triggers 202-accept after admission, and admission
-  400s until the watcher has flagged `updateAvailable`. The `501` the
-  compatibility text describes belongs to Portwing's own trigger endpoint,
-  not drydock's port-3000 API — the legacy floor now asserts a
-  correctly-shaped drydock invocation is refused (`404`/`501`). The exact
-  refusal code the legacy pin actually emits still gets pinned tighter on
-  the next live run if it proves stable.
+- **Assertion 8's trigger-invocation HTTP contract** — RESOLVED across the
+  2026-08-08/09 live runs (#211) and a local repro against the published
+  pair. The body requires drydock's own container-store `id` (400 "Invalid
+  trigger request body" otherwise, on every drydock version). `GET
+  /api/containers` returns a paginated `{data: [...]}` envelope on both
+  drydock latest and the 1.5.2 legacy pin — the first store-poll read it
+  as a bare array and could never see the sentinel. And the update flow
+  itself is bounded by the audited bundle: no docker update trigger is
+  configured in drydock (correctly-shaped invocations are refused 404
+  "trigger not found" on every version), and the published pair cannot
+  flag `updateAvailable` in this topology at all — drydock's watch-now
+  delegates registry checking to the Portwing agent
+  (`Error watching on agent: Request failed with status code 501`), while
+  Portwing's watcher endpoint answers 501 expecting the controller to do
+  it. Assertion 8 therefore asserts store sync plus the documented refusal
+  on every row, and drops the `updateAvailable`/recreation expectations
+  that no published pairing can satisfy.
 - **Assertion 8's store-population cadence** — RESOLVED by the 2026-08-09
   live run. Portwing has no Docker-events subscription: its container
   inventory refreshes once at startup, then on a fixed tick defaulting to

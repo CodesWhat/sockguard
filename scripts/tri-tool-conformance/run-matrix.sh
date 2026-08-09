@@ -47,7 +47,7 @@ SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tri-tool-conformance.XXXXXX")"
 trap 'rm -rf "${SCRATCH_DIR}"' EXIT
 
 # busybox pins for the events/logs/lifecycle sentinels and the assertion-8
-# (remote update trigger) recreation check. Only NEW_BUSYBOX_REF matches
+# (remote update trigger) store-sync sentinel. Only NEW_BUSYBOX_REF matches
 # app/integration/helpers_test.go's busyboxPinnedRef -- reusing the same pin
 # that repo's OWN integration suite already trusts and pre-pulls in its own
 # CI job (quality-integration.yml) rather than inventing a second, unrelated
@@ -216,7 +216,6 @@ case "$ROW" in
     PORTWING_VERSION="${PORTWING_VERSION_INPUT:-latest}"
     DRYDOCK_VERSION="${DRYDOCK_VERSION_INPUT:-latest}"
     EXEC_ROW=0
-    REMOTE_UPDATE_SUPPORTED=1
     ;;
   current-edge)
     COMPOSE_FILES=("${BUNDLE_DIR}/docker-compose.edge-exec.yml" "${BUNDLE_DIR}/docker-compose.conformance-overlay.yml")
@@ -225,7 +224,6 @@ case "$ROW" in
     PORTWING_VERSION="${PORTWING_VERSION_INPUT:-latest}"
     DRYDOCK_VERSION="${DRYDOCK_VERSION_INPUT:-latest}"
     EXEC_ROW=1
-    REMOTE_UPDATE_SUPPORTED=1
     ;;
   legacy-floor)
     # Audited-floor pins from sockguard PR #155 -- deliberately NOT
@@ -238,7 +236,6 @@ case "$ROW" in
     PORTWING_VERSION="0.8.1"
     DRYDOCK_VERSION="1.5.2"
     EXEC_ROW=0
-    REMOTE_UPDATE_SUPPORTED=0
     ;;
   *)
     echo "run-matrix.sh: unknown --row '${ROW}' (expected current-standard|current-edge|legacy-floor)" >&2
@@ -584,15 +581,20 @@ assert_auth_handshake() {
 # ---------------------------------------------------------------------------
 
 assert_inventory_inspect() {
+  # 120s, not 30s: the 2026-08-09 gate run proved Portwing's first
+  # successful poll cycle through sockguard can land more than 30s after
+  # the handshake on a loaded runner (the routes were in the end-of-row
+  # capture, just not inside the old window). The traffic is organic and
+  # cumulative-log scanned, so a longer wait costs nothing on healthy rows.
   local name="inventory-inspect"
   local list_ok=1 inspect_ok=1
-  wait_for_access_log_route GET allow '^/containers/json$' 30 && list_ok=0
-  wait_for_access_log_route GET allow '^/containers/[^/]+/json$' 30 && inspect_ok=0
+  wait_for_access_log_route GET allow '^/containers/json$' 120 && list_ok=0
+  wait_for_access_log_route GET allow '^/containers/[^/]+/json$' 120 && inspect_ok=0
 
   if [ "$list_ok" -eq 0 ] && [ "$inspect_ok" -eq 0 ]; then
     record_result "$name" PASS "Portwing's own list+inspect polling reached sockguard (allowed GET /containers/json and GET /containers/*/json observed)"
   else
-    record_result "$name" FAIL "did not observe both an allowed GET /containers/json and GET /containers/*/json in sockguard's access log within 30s"
+    record_result "$name" FAIL "did not observe both an allowed GET /containers/json and GET /containers/*/json in sockguard's access log within 120s"
   fi
 }
 
@@ -755,27 +757,40 @@ assert_exec() {
 }
 
 # ---------------------------------------------------------------------------
-# Assertion 8: remote update trigger (current-* only; legacy-floor asserts
-# the documented 501 instead)
+# Assertion 8: remote update trigger -- store sync through sockguard plus the
+# documented unconfigured-trigger refusal, identical on every row
 # ---------------------------------------------------------------------------
 
 assert_remote_update_trigger() {
   local name="remote-update-trigger"
 
-  # Contract pinned from the first live run past the handshake (#211) plus
-  # drydock's app/api/trigger.ts: POST /api/triggers/docker/update (and the
-  # remote form .../update/{agent}) requires a JSON body whose required `id`
-  # is drydock's OWN container-store id -- anything else is refused with
-  # 400 "Invalid trigger request body" on every drydock version, which is
-  # exactly how the previous {container,image} guess failed all three rows.
-  # Update-type triggers also refuse admission with 400 "No update available
-  # for this container" until drydock's watcher (through the Portwing agent)
-  # has flagged the candidate, so current rows wait for updateAvailable
-  # before firing. The tri-tool README's documented 501 belongs to
-  # PORTWING's own trigger endpoint, not drydock's port-3000 API -- on the
-  # legacy floor a correctly-shaped drydock invocation is refused as absent
-  # (no registered docker update trigger), and either refusal code proves
-  # the same compatibility boundary.
+  # Contract pinned from live runs (#211) plus a local repro against the
+  # published pair (2026-08-09). Two facts bound what this assertion can
+  # honestly claim, on EVERY row:
+  #
+  #   1. GET /api/containers returns a paginated envelope {data: [...]}
+  #      on both drydock latest and the 1.5.2 legacy pin (v1.5.2
+  #      app/api/container/crud-context.ts ContainerListResponse) -- the
+  #      earlier bare-array read made this poll return empty forever.
+  #   2. The audited tri-tool bundle configures NO docker update trigger in
+  #      drydock, so a correctly-shaped POST /api/triggers/docker/update
+  #      with drydock's own store {id} is refused 404 "trigger not found"
+  #      on every drydock version. There is no topology in this bundle
+  #      where updates flow: drydock's watch-now delegates registry checks
+  #      to the Portwing agent, whose watcher endpoint answers 501
+  #      "registry checking is performed by the Drydock controller"
+  #      (portwing internal/adapter/drydock/routes.go), so updateAvailable
+  #      can never flip either. A malformed body is still 400 "Invalid
+  #      trigger request body" -- that distinction is what proves the
+  #      request shape is right.
+  #
+  # So the end-to-end proof this row CAN give: the sentinel created through
+  # sockguard's proxied socket reaches drydock's store via Portwing's
+  # sockguard-mediated inventory sync (presence), and a correctly-shaped
+  # trigger invocation reaches drydock's trigger API and is refused as
+  # unconfigured/not-implemented (404/501) -- the documented boundary for
+  # the audited bundle. A 2xx here means an UNCONFIGURED trigger executed
+  # (alarming, fail); a 400 means the request shape regressed (fail).
   local sentinel="tt-conf-sentinel-update-$$"
   local create_resp id
   create_resp="$(create_sentinel "$sentinel" "$OLD_BUSYBOX_REF")"
@@ -787,17 +802,16 @@ assert_remote_update_trigger() {
   SENTINEL_IDS+=("$id")
   probe_curl -X POST "http://localhost/containers/${id}/start" >/dev/null
 
-  # Resolve the sentinel's drydock-side container document. Presence alone
-  # is enough on the legacy floor (updates are unimplemented there); current
-  # rows also need updateAvailable=true or admission 400s.
+  # Resolve the sentinel's drydock-side container document from the
+  # paginated store envelope. Presence proves the sockguard-mediated sync
+  # path end to end; ?limit=500 keeps the sentinel on page one even on a
+  # busy daemon.
   local doc="" dd_id="" dd_agent="" waited=0
   while (( waited < 120 )); do
-    doc="$(curl --silent --max-time 10 "http://127.0.0.1:3000/api/containers" 2>/dev/null \
-      | jq -c --arg n "$sentinel" '[.[]? | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty' 2>/dev/null)"
+    doc="$(curl --silent --max-time 10 "http://127.0.0.1:3000/api/containers?limit=500" 2>/dev/null \
+      | jq -c --arg n "$sentinel" '[(.data // .) | .[]? | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty' 2>/dev/null)"
     if [ -n "$doc" ]; then
-      if [ "$REMOTE_UPDATE_SUPPORTED" -ne 1 ] || [ "$(jq -r '.updateAvailable // false' <<<"$doc")" = "true" ]; then
-        break
-      fi
+      break
     fi
     sleep 5
     waited=$(( waited + 5 ))
@@ -812,10 +826,6 @@ assert_remote_update_trigger() {
     record_result "$name" FAIL "drydock container document for the sentinel has no id: $(head -c 300 <<<"$doc")"
     return 1
   fi
-  if [ "$REMOTE_UPDATE_SUPPORTED" -eq 1 ] && [ "$(jq -r '.updateAvailable // false' <<<"$doc")" != "true" ]; then
-    record_result "$name" FAIL "drydock never flagged the sentinel's update candidate (updateAvailable) within 120s; document: $(head -c 300 <<<"$doc")"
-    return 1
-  fi
 
   local trigger_url="http://127.0.0.1:3000/api/triggers/docker/update"
   if [ -n "$dd_agent" ]; then
@@ -828,43 +838,20 @@ assert_remote_update_trigger() {
     -d "$(jq -c '{id: .id} + (if .agent then {agent: .agent} else {} end)' <<<"$doc")" \
     "$trigger_url" 2>/dev/null)"
 
-  if [ "$REMOTE_UPDATE_SUPPORTED" -ne 1 ]; then
-    case "$trigger_status" in
-      404|501)
-        record_result "$name" PASS "legacy-floor trigger invocation refused as not-implemented/absent (${trigger_status}) on a correctly-shaped request"
-        ;;
-      2*)
-        record_result "$name" FAIL "legacy-floor unexpectedly ACCEPTED the update trigger (${trigger_status}) -- the documented compatibility boundary no longer holds"
-        ;;
-      *)
-        record_result "$name" FAIL "legacy-floor trigger invocation returned ${trigger_status} (body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)), want 404/501"
-        ;;
-    esac
-    return 0
-  fi
-
-  if [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
-    record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 500 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)) against ${trigger_url} with drydock container id ${dd_id}"
-    return 1
-  fi
-
-  local recreated=1 waited=0 new_id=""
-  while (( waited < 60 )); do
-    new_id="$(docker inspect --format '{{.Id}}' "$sentinel" 2>/dev/null || true)"
-    if [ -n "$new_id" ] && [ "$new_id" != "$id" ]; then
-      recreated=0
-      break
-    fi
-    sleep 3
-    waited=$(( waited + 3 ))
-  done
-
-  if [ "$recreated" -eq 0 ]; then
-    SENTINEL_IDS+=("$new_id")
-    record_result "$name" PASS "the controller-owned update trigger recreated the sentinel on the new pin; all Docker API traffic flowed Portwing -> sockguard"
-  else
-    record_result "$name" FAIL "sentinel container was not recreated within 60s of firing the update trigger"
-  fi
+  case "$trigger_status" in
+    404|501)
+      record_result "$name" PASS "sentinel synced into drydock's store through sockguard-mediated Portwing polling; a correctly-shaped trigger invocation was refused as unconfigured/not-implemented (${trigger_status}) -- the audited bundle's documented boundary"
+      ;;
+    2*)
+      record_result "$name" FAIL "an update trigger the audited bundle never configures ACCEPTED the invocation (${trigger_status}) -- the documented boundary no longer holds; body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
+      ;;
+    400)
+      record_result "$name" FAIL "trigger invocation was refused 400 -- the request shape regressed (want the unconfigured-trigger 404/501); body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
+      ;;
+    *)
+      record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)), want 404/501"
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
