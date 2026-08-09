@@ -151,7 +151,7 @@ export const roadmap: Milestone[] = [
     status: "next",
     items: [
       "BuildKit gRPC mediation: terminate the hijacked session/gRPC tunnel, parse moby.buildkit.v1.Control frames, and apply policy to solve requests, secret/SSH forwarding, and file-sync sessions instead of the current all-or-nothing acknowledgment",
-      "Narrow allow_endpoint_config on network connect into per-field gates, so benign endpoint settings no longer require also allowing static-IP/MAC address pinning",
+      "request_body.network.endpoint_config.* per-field gates (allow_static_addressing, allow_link_local_ips, allow_mac_pinning, allow_gw_priority, allow_aliases) for endpoint settings on both network connect and container-create, so benign endpoint settings no longer require also allowing static-IP/MAC address pinning; allow_endpoint_config: true remains the broad whole-object override",
     ],
   },
 ];
