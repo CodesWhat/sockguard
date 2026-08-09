@@ -472,7 +472,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.6.0 shipped on 2026-08-08** as the runtime-compatibility and policy-mediation feature line over v1.5. Full BuildKit gRPC mediation — bounding the session/gRPC tunnel that v1.6 gates behind an explicit acknowledgment — is the first committed epic in the [v1.7.0 milestone](https://github.com/CodesWhat/sockguard/milestone/2), alongside narrowing `allow_endpoint_config` to per-field gates. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
+**v1.6.0 shipped on 2026-08-08** as the runtime-compatibility and policy-mediation feature line over v1.5. Full BuildKit gRPC mediation — bounding the session/gRPC tunnel that v1.6 gates behind an explicit acknowledgment — is the first committed epic in the [v1.7.0 milestone](https://github.com/CodesWhat/sockguard/milestone/2). `allow_endpoint_config` has already been narrowed to per-field gates ahead of that release (#186) — see [Unreleased in CHANGELOG.md](CHANGELOG.md). See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
 
 ### Shipped in v1.6.0
 
