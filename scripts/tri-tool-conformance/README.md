@@ -30,7 +30,7 @@ tested there.
 scripts/tri-tool-conformance/run-matrix.sh --row current-standard
 scripts/tri-tool-conformance/run-matrix.sh --row current-edge \
   --portwing-version 0.9.2 --drydock-version 1.6.0
-scripts/tri-tool-conformance/run-matrix.sh --self-test   # jq only, no Docker
+scripts/tri-tool-conformance/run-matrix.sh --self-test   # jq + awk only, no Docker
 ```
 
 Needs `bash`, `curl`, `jq`, `docker`, `docker compose`, and `openssl` on
@@ -183,7 +183,8 @@ produces exactly 6 route shapes and isolates exactly the one unknown route,
 and both `normalize-routes.jq` and `lib.sh`'s `ACCESS_LOG_ROUTE_MATCH_JQ`
 must tolerate the three malformed/partial lines without erroring. The
 self-test also proves `route_drift_status` fails closed (not an
-empty-diff PASS) when given zero observed routes. This needs only `jq` — no
+empty-diff PASS) when given zero observed routes. This needs only `jq` and
+`awk` (the SIGPIPE regression pin generates its synthetic stream with awk) — no
 Docker, no network — and is wired into `npm test` via
 `../tri-tool-conformance-run-matrix.test.mjs` (one directory up, since
 `package.json`'s test script globs `scripts/*.test.mjs` non-recursively)
@@ -240,7 +241,21 @@ require a follow-up patch to this harness:
   ingests a `container-added` agent event immediately — the bottleneck is
   purely Portwing's tick). The conformance overlay now sets
   `DD_POLL_INTERVAL=5` on the portwing service, test-only, keeping the
-  audited bundles at their documentation-grade defaults.
+  audited bundles at their documentation-grade defaults. **Edge caveat**
+  (round 6): the overlay cannot speed up `current-edge` — Portwing's edge
+  client takes its refresh cadence from the `pollInterval` in drydock's
+  WebSocket welcome, which drydock hardcodes to 300s with no override
+  (`app/api/portwing-ws.ts`), so that row's store wait is 360s (one full
+  poll cycle plus slack) instead of 120s.
+- **The access-log wait's pipeline exit status** — RESOLVED in round 6.
+  `wait_for_access_log_route` ended its pipeline with `grep -q`, which
+  exits on the first match; when the route matched more than once (portwing
+  polling every 5s guarantees it), jq took SIGPIPE writing the next match
+  and `pipefail` reported the wait as failed with the routes plainly in the
+  log. That failed `inventory-inspect` on every standard row of the v1.6.0
+  gate — deterministically, and only when traffic was healthy. The matcher
+  tail now reads to EOF (`grep -c`), and `--self-test` pins the regression
+  with a 5000-match synthetic stream.
 - **Portwing's exact protected-endpoint surface for the wrong-secret probe.**
   `assert_standard_wrong_secret_probe` observes the failure from drydock's
   own logs (`401`) rather than calling a specific portwing endpoint
