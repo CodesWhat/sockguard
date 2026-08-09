@@ -521,8 +521,13 @@ func newHTTPExecInspector(rt http.RoundTripper, urlPrefix string) ExecInspectFun
 			return ExecInspectResult{}, false, fmt.Errorf("upstream returned %s", resp.Status)
 		}
 
+		body, err := readBoundedResponseBody(resp)
+		if err != nil {
+			return ExecInspectResult{}, false, err
+		}
+
 		var decoded execInspectResponse
-		if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		if err := json.Unmarshal(body, &decoded); err != nil {
 			return ExecInspectResult{}, false, err
 		}
 
