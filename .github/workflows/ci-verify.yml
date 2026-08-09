@@ -292,14 +292,21 @@ jobs:
         # differential (proxy-vs-daemon test harness), internal/testcert (test
         # certs), internal/testhelp (test helpers). Their *tests* still run as
         # regression checks; only their own statements are excluded so the gate
-        # and dashboard reflect shipping code. coverage.prod.txt keeps the real
-        # import paths for the gate (go tool cover needs them); coverage.qlty.txt
-        # additionally rewrites the module path to app/ because Qlty resolves
-        # paths against the repo root (sources under app/) and would otherwise
-        # report 100% of files "missing on disk" and fail validation.
+        # and dashboard reflect shipping code. internal/buildkitproto is also
+        # excluded: it is entirely protoc-generated marshal/decode code ("Code
+        # generated ... DO NOT EDIT", #185 phase 1) whose integrity is pinned
+        # by its provenance golden test, not statement coverage — counting its
+        # thousands of generated statements would let the gate be drowned out
+        # by codegen instead of measuring hand-written shipping logic (the
+        # hand-written internal/buildkitproxy package stays counted).
+        # coverage.prod.txt keeps the real import paths for the gate (go tool
+        # cover needs them); coverage.qlty.txt additionally rewrites the module
+        # path to app/ because Qlty resolves paths against the repo root
+        # (sources under app/) and would otherwise report 100% of files
+        # "missing on disk" and fail validation.
         working-directory: app
         run: |
-          grep -vE 'github.com/codeswhat/sockguard/(differential|internal/testcert|internal/testhelp)/' coverage.txt > coverage.prod.txt
+          grep -vE 'github.com/codeswhat/sockguard/(differential|internal/testcert|internal/testhelp|internal/buildkitproto)/' coverage.txt > coverage.prod.txt
           sed 's#github.com/codeswhat/sockguard/#app/#g' coverage.prod.txt > coverage.qlty.txt
 
       - name: Publish coverage to Qlty
