@@ -154,25 +154,27 @@ rules:
   # network). create/delete/disconnect are new here so compose can own its
   # stack network's full lifecycle.
   #
-  # Endpoint-config policy (request_body.network.allow_endpoint_config, default
-  # false) is enforced identically on this connect call AND on
-  # POST /containers/create's own NetworkingConfig.EndpointsConfig — the same
-  # flag covers both. Endpoint Aliases are always allowed regardless of this
-  # flag, so a plain multi-network compose recreate (Compose sets Aliases on
-  # every endpoint it creates) works by default with no config change.
-  # Operators whose recreated containers carry a static IP, custom MAC
-  # address, or endpoint DriverOpts (e.g. macvlan with a pinned address) must
-  # set allow_endpoint_config: true here, or the connect/create call for that
-  # network is denied. On drydock >=1.5.3 a denial fails the update and
-  # drydock rolls back to the old container (best-effort: if the rollback
-  # itself fails, drydock records it in its update-operation history/audit
-  # log without a push notification, so check drydock's operation history
-  # after a denied request). Older drydock versions could leave an orphaned
-  # Created container on the network instead. Operators who only need one
-  # or two of those fields (e.g. a static IP but not MAC pinning) can use
-  # request_body.network.endpoint_config's per-field gates instead of the
-  # all-or-nothing allow_endpoint_config flag (#186) — see Configuration
-  # docs for the full field mapping.
+  # Endpoint-config policy (request_body.network.endpoint_config, #186) is
+  # enforced identically on this connect call AND on POST /containers/create's
+  # own NetworkingConfig.EndpointsConfig. Endpoint Aliases default to allowed
+  # (Compose sets Aliases on every endpoint it creates, so a plain
+  # multi-network compose recreate works by default with no config change),
+  # but can be denied explicitly with endpoint_config.allow_aliases: false.
+  # Static IP addressing and MAC pinning each have their own granular gate
+  # (endpoint_config.allow_static_addressing / allow_mac_pinning) an operator
+  # can enable individually for recreated containers that need one but not
+  # the other. Endpoint DriverOpts (e.g. macvlan with a pinned address) and
+  # Links have no granular gate at all — recreated containers that need
+  # either must set request_body.network.allow_endpoint_config: true here
+  # instead, which admits every endpoint field at once (and is mutually
+  # exclusive with endpoint_config — see Configuration docs), or the
+  # connect/create call for that network is denied. On drydock >=1.5.3 a
+  # denial fails the update and drydock rolls back to the old container
+  # (best-effort: if the rollback itself fails, drydock records it in its
+  # update-operation history/audit log without a push notification, so check
+  # drydock's operation history after a denied request). Older drydock
+  # versions could leave an orphaned Created container on the network
+  # instead.
   - match: { method: GET, path: "/networks" }
     action: allow
   - match: { method: GET, path: "/networks/*" }
