@@ -188,3 +188,64 @@ func TestValidateDefaultsHasNoExplicitEndpointConfigBlock(t *testing.T) {
 		t.Fatalf("Validate() = %v, want nil", err)
 	}
 }
+
+// FuzzLoadBytesEndpointConfig fuzzes LoadBytes/Validate against YAML bodies
+// centered on the #186 request_body.network.endpoint_config block: an empty
+// block (defaults only), a single granular field set, and the
+// allow_endpoint_config/endpoint_config mutual-exclusion combination this
+// file's table tests above cover explicitly. Mirrors FuzzLoadYAML's
+// LoadBytes counterpart — LoadBytes/Validate must never panic on arbitrary
+// YAML, and Validate is only exercised when LoadBytes itself succeeds,
+// matching how every real caller (admin /admin/validate, signed policy
+// bundles) chains the two.
+func FuzzLoadBytesEndpointConfig(f *testing.F) {
+	f.Add([]byte(`
+request_body:
+  network:
+    endpoint_config: {}
+rules:
+  - match: { method: GET, path: /_ping }
+    action: allow
+`))
+	f.Add([]byte(`
+request_body:
+  network:
+    endpoint_config:
+      allow_mac_pinning: true
+rules:
+  - match: { method: GET, path: /_ping }
+    action: allow
+`))
+	f.Add([]byte(`
+request_body:
+  network:
+    allow_endpoint_config: true
+    endpoint_config:
+      allow_static_addressing: true
+rules:
+  - match: { method: GET, path: /_ping }
+    action: allow
+`))
+	f.Add([]byte(`
+request_body:
+  network:
+    endpoint_config:
+      allow_static_addressing: true
+      allow_link_local_ips: true
+      allow_mac_pinning: true
+      allow_gw_priority: true
+      allow_aliases: false
+rules:
+  - match: { method: GET, path: /_ping }
+    action: allow
+`))
+	f.Add([]byte(""))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		cfg, err := LoadBytes(data)
+		if err != nil {
+			return
+		}
+		_ = Validate(cfg)
+	})
+}
