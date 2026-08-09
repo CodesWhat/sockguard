@@ -1,0 +1,9 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - MINIMAL
+breaking:
+  use:
+    - FILE
