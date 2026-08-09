@@ -180,8 +180,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "Via manual regex",
     elevenNotes: "No",
     cetusguard: "Yes",
-    sockguard: "Planned v1.6",
-    planned: true,
+    sockguard: "Yes (default-deny /libpod coverage incl. pod lifecycle)",
   },
   {
     feature: "Multiple main listeners",
@@ -190,8 +189,7 @@ export const comparisonRows: ComparisonRow[] = [
     wollomatic: "No",
     elevenNotes: "Yes (Unix + TCP)",
     cetusguard: "Yes",
-    sockguard: "Planned v1.6",
-    planned: true,
+    sockguard: "Yes (Unix and/or TCP, listener-scoped TLS + profiles)",
   },
   {
     feature: "Hot-reload + admin API",

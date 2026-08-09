@@ -73,14 +73,14 @@ test("website comparison rows live in extracted data modules", () => {
   assert.ok(podmanRow);
   assert.equal(podmanRow.linuxserver, "Yes");
   assert.equal(podmanRow.cetusguard, "Yes");
-  assert.equal(podmanRow.sockguard, "Planned v1.6");
-  assert.equal(podmanRow.planned, true);
+  assert.equal(podmanRow.sockguard, "Yes (default-deny /libpod coverage incl. pod lifecycle)");
+  assert.notEqual(podmanRow.planned, true);
 
   const listenerRow = comparisonRows.find((row) => row.feature === "Multiple main listeners");
   assert.ok(listenerRow);
   assert.equal(listenerRow.cetusguard, "Yes");
-  assert.equal(listenerRow.sockguard, "Planned v1.6");
-  assert.equal(listenerRow.planned, true);
+  assert.equal(listenerRow.sockguard, "Yes (Unix and/or TCP, listener-scoped TLS + profiles)");
+  assert.notEqual(listenerRow.planned, true);
 
   assert.ok(comparisonRows.find((row) => row.feature === "Hot-reload + admin API"));
 
@@ -90,11 +90,11 @@ test("website comparison rows live in extracted data modules", () => {
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // Runtime and published-example fix release.
+  // Runtime compatibility & policy mediation release.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v1.5.2", "latest released milestone must be v1.5.2");
+  assert.equal(latestReleased.version, "v1.6.0", "latest released milestone must be v1.6.0");
   assert.equal(latestReleased.status, "released");
 
   // Must retain the previous stable milestones.
@@ -112,7 +112,7 @@ test("roadmap data is valid and matches expected milestones", () => {
 
   const nextMilestones = roadmap.filter((m) => m.status === "next");
   assert.equal(nextMilestones.length, 1, "roadmap must have exactly one next milestone");
-  assert.equal(nextMilestones[0].version, "v1.6.0", "v1.6.0 must be the next milestone");
+  assert.equal(nextMilestones[0].version, "v1.7.0", "v1.7.0 must be the next milestone");
 
   // Every milestone must have a non-empty items array
   for (const milestone of roadmap) {
