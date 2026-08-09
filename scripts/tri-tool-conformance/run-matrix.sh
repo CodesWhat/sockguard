@@ -613,8 +613,15 @@ assert_events() {
   SENTINEL_IDS+=("$id")
   probe_curl -X POST "http://localhost/containers/${id}/start" >/dev/null
 
-  local events_ok=1
-  wait_for_access_log_route GET allow '^/events$' 15 && events_ok=0
+  # Probe GET /events directly rather than waiting for it in the access log:
+  # sockguard only writes an access-log line when a request completes, and
+  # the events stream outlives the row, so the old wait could never succeed
+  # (#211, verified against both the 1.5.1 and 1.6.0-rc.1 images). curl's
+  # --write-out still prints the received status when --max-time cuts the
+  # stream, so a 200 here proves the preset admits the channel.
+  local events_ok=1 events_status
+  events_status="$(probe_curl_status "http://localhost/events" || true)"
+  [ "$events_status" = "200" ] && events_ok=0
 
   probe_curl -X POST "http://localhost/containers/${id}/stop?t=5" >/dev/null
   probe_curl -X DELETE "http://localhost/containers/${id}?force=true" >/dev/null
@@ -623,9 +630,9 @@ assert_events() {
   wait_for_access_log_route DELETE allow '^/containers/[^/]+$' 15 && removed_ok=0
 
   if [ "$events_ok" -eq 0 ] && [ "$removed_ok" -eq 0 ]; then
-    record_result "$name" PASS "sentinel created/started/stopped/removed via the proxied socket; /events channel open and DELETE allowed"
+    record_result "$name" PASS "sentinel created/started/stopped/removed via the proxied socket; /events stream opened with a 200 and DELETE allowed"
   else
-    record_result "$name" FAIL "events channel or the sentinel's DELETE was not observed allowed (events_ok=${events_ok} removed_ok=${removed_ok})"
+    record_result "$name" FAIL "events stream open or the sentinel's DELETE was not observed allowed (events_status=${events_status:-none} removed_ok=${removed_ok})"
   fi
 }
 
@@ -755,35 +762,20 @@ assert_exec() {
 assert_remote_update_trigger() {
   local name="remote-update-trigger"
 
-  if [ "$REMOTE_UPDATE_SUPPORTED" -ne 1 ]; then
-    # Portwing 0.8.1 doesn't implement the update-trigger endpoint yet --
-    # examples/compose/tri-tool/README.md's "Compatibility boundary"
-    # section documents POST /api/triggers/{type}/{name} (and .../batch)
-    # returning 501 on this exact pin.
-    local status
-    status="$(curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{http_code}' \
-      -X POST -H 'Content-Type: application/json' -d '{}' \
-      "http://127.0.0.1:3000/api/triggers/docker/update" 2>/dev/null)"
-    if [ "$status" = "501" ]; then
-      record_result "$name" PASS "legacy-floor trigger invocation returned the documented 501 not-implemented"
-    else
-      record_result "$name" FAIL "legacy-floor trigger invocation returned ${status}, want the documented 501"
-    fi
-    return 0
-  fi
-
-  # current-standard / current-edge: portwing 0.9.0 + drydock 1.6.0-rc.11
-  # ship a controller-owned synthetic docker trigger named "update"
-  # (transport:docker-api, execution:controller) that bridges through
-  # Portwing to sockguard using only endpoints already in the presets.
-  #
-  # KNOWN GAP: the exact trigger-invocation HTTP contract (path, body
-  # schema) is not pinned anywhere in this repo -- it lives in the
-  # portwing/drydock repos, which this sandbox has no access to. This
-  # request shape is a best-effort match to the compatibility text in
-  # examples/compose/tri-tool/README.md and MUST be confirmed (and this
-  # function adjusted if wrong) on the first live workflow_dispatch run --
-  # see the harness README's "Known gaps" section.
+  # Contract pinned from the first live run past the handshake (#211) plus
+  # drydock's app/api/trigger.ts: POST /api/triggers/docker/update (and the
+  # remote form .../update/{agent}) requires a JSON body whose required `id`
+  # is drydock's OWN container-store id -- anything else is refused with
+  # 400 "Invalid trigger request body" on every drydock version, which is
+  # exactly how the previous {container,image} guess failed all three rows.
+  # Update-type triggers also refuse admission with 400 "No update available
+  # for this container" until drydock's watcher (through the Portwing agent)
+  # has flagged the candidate, so current rows wait for updateAvailable
+  # before firing. The tri-tool README's documented 501 belongs to
+  # PORTWING's own trigger endpoint, not drydock's port-3000 API -- on the
+  # legacy floor a correctly-shaped drydock invocation is refused as absent
+  # (no registered docker update trigger), and either refusal code proves
+  # the same compatibility boundary.
   local sentinel="tt-conf-sentinel-update-$$"
   local create_resp id
   create_resp="$(create_sentinel "$sentinel" "$OLD_BUSYBOX_REF")"
@@ -795,14 +787,64 @@ assert_remote_update_trigger() {
   SENTINEL_IDS+=("$id")
   probe_curl -X POST "http://localhost/containers/${id}/start" >/dev/null
 
+  # Resolve the sentinel's drydock-side container document. Presence alone
+  # is enough on the legacy floor (updates are unimplemented there); current
+  # rows also need updateAvailable=true or admission 400s.
+  local doc="" dd_id="" dd_agent="" waited=0
+  while (( waited < 120 )); do
+    doc="$(curl --silent --max-time 10 "http://127.0.0.1:3000/api/containers" 2>/dev/null \
+      | jq -c --arg n "$sentinel" '[.[]? | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty' 2>/dev/null)"
+    if [ -n "$doc" ]; then
+      if [ "$REMOTE_UPDATE_SUPPORTED" -ne 1 ] || [ "$(jq -r '.updateAvailable // false' <<<"$doc")" = "true" ]; then
+        break
+      fi
+    fi
+    sleep 5
+    waited=$(( waited + 5 ))
+  done
+  if [ -z "$doc" ]; then
+    record_result "$name" FAIL "sentinel never appeared in drydock's /api/containers store within 120s"
+    return 1
+  fi
+  dd_id="$(jq -r '.id // empty' <<<"$doc")"
+  dd_agent="$(jq -r '.agent // empty' <<<"$doc")"
+  if [ -z "$dd_id" ]; then
+    record_result "$name" FAIL "drydock container document for the sentinel has no id: $(head -c 300 <<<"$doc")"
+    return 1
+  fi
+  if [ "$REMOTE_UPDATE_SUPPORTED" -eq 1 ] && [ "$(jq -r '.updateAvailable // false' <<<"$doc")" != "true" ]; then
+    record_result "$name" FAIL "drydock never flagged the sentinel's update candidate (updateAvailable) within 120s; document: $(head -c 300 <<<"$doc")"
+    return 1
+  fi
+
+  local trigger_url="http://127.0.0.1:3000/api/triggers/docker/update"
+  if [ -n "$dd_agent" ]; then
+    trigger_url="${trigger_url}/${dd_agent}"
+  fi
+
   local trigger_status
   trigger_status="$(curl --silent --show-error --max-time 30 --output "${SCRATCH_DIR}/trigger-response.json" --write-out '%{http_code}' \
     -X POST -H 'Content-Type: application/json' \
-    -d "$(jq -n --arg c "$sentinel" --arg img "${NEW_BUSYBOX_REF%%@*}" '{container:$c, image:$img}')" \
-    "http://127.0.0.1:3000/api/triggers/docker/update" 2>/dev/null)"
+    -d "$(jq -c '{id: .id} + (if .agent then {agent: .agent} else {} end)' <<<"$doc")" \
+    "$trigger_url" 2>/dev/null)"
+
+  if [ "$REMOTE_UPDATE_SUPPORTED" -ne 1 ]; then
+    case "$trigger_status" in
+      404|501)
+        record_result "$name" PASS "legacy-floor trigger invocation refused as not-implemented/absent (${trigger_status}) on a correctly-shaped request"
+        ;;
+      2*)
+        record_result "$name" FAIL "legacy-floor unexpectedly ACCEPTED the update trigger (${trigger_status}) -- the documented compatibility boundary no longer holds"
+        ;;
+      *)
+        record_result "$name" FAIL "legacy-floor trigger invocation returned ${trigger_status} (body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)), want 404/501"
+        ;;
+    esac
+    return 0
+  fi
 
   if [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
-    record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 500 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)) -- confirm the real trigger contract on the first live dispatch, see harness README 'Known gaps'"
+    record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 500 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)) against ${trigger_url} with drydock container id ${dd_id}"
     return 1
   fi
 
