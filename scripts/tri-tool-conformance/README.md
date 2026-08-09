@@ -223,6 +223,15 @@ require a follow-up patch to this harness:
   correctly-shaped drydock invocation is refused (`404`/`501`). The exact
   refusal code the legacy pin actually emits still gets pinned tighter on
   the next live run if it proves stable.
+- **Assertion 8's store-population cadence** — RESOLVED by the 2026-08-09
+  live run. Portwing has no Docker-events subscription: its container
+  inventory refreshes once at startup, then on a fixed tick defaulting to
+  `DD_POLL_INTERVAL=300` seconds, so a sentinel created mid-run could never
+  reach drydock's store inside the assertion's 120s wait (drydock itself
+  ingests a `container-added` agent event immediately — the bottleneck is
+  purely Portwing's tick). The conformance overlay now sets
+  `DD_POLL_INTERVAL=5` on the portwing service, test-only, keeping the
+  audited bundles at their documentation-grade defaults.
 - **Portwing's exact protected-endpoint surface for the wrong-secret probe.**
   `assert_standard_wrong_secret_probe` observes the failure from drydock's
   own logs (`401`) rather than calling a specific portwing endpoint
