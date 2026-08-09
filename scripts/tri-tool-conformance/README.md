@@ -62,8 +62,10 @@ negative-auth-probe containers) via an `EXIT` trap.
    Portwing's organic `GET /containers/json` + `GET /containers/*/json`
    polling traffic.
 4. **Events** — creates and removes a sentinel container directly through
-   the proxied socket; asserts the `/events` channel and the `DELETE` both
-   show up allowed in sockguard's access log.
+   the proxied socket; probes `GET /events` through the proxy expecting a
+   `200` on the stream open (sockguard only writes an access-log line when
+   a request completes, and the events stream outlives the row — #211), and
+   asserts the `DELETE` shows up allowed in sockguard's access log.
 5. **Logs** — creates a running sentinel with a distinctive stdout marker
    and fetches `GET /containers/{id}/logs` through the proxied socket,
    asserting the marker comes back.
@@ -74,12 +76,19 @@ negative-auth-probe containers) via an `EXIT` trap.
    create+start succeeds; a `Privileged: true` exec create is denied `403`
    with a documented reason (`sockguard-with-exec.yaml`'s
    `allow_privileged: false` gate, `deny_verbosity: verbose` since #158).
-8. **Remote update trigger** — `current-standard`/`current-edge` only.
-   Creates a sentinel pinned at an old `busybox` digest, fires the
-   controller-owned `update` trigger (portwing 0.9.0 + drydock 1.6.0-rc.11),
-   and asserts the sentinel gets recreated on the new pin. `legacy-floor`
-   instead asserts the documented `501` not-implemented response — see
-   "Known gaps" below, this one needs first-live-run confirmation.
+8. **Remote update trigger** — creates a sentinel pinned at an old
+   `busybox` digest, resolves its document from drydock's own
+   `GET /api/containers` store, and fires `POST /api/triggers/docker/update`
+   (agent-qualified when the document names one) with the required
+   `{id: <drydock container id>}` body — the contract pinned from drydock's
+   `app/api/trigger.ts` after the first live run proved the earlier
+   `{container, image}` guess 400s everywhere (#211). Current rows wait for
+   `updateAvailable=true` (admission otherwise refuses with 400
+   "No update available"), expect a `2xx` acceptance, and assert the
+   sentinel gets recreated on the new pin. `legacy-floor` fires the same
+   correctly-shaped request and passes only when it's refused as
+   not-implemented/absent (`404`/`501`) — the documented compatibility
+   boundary; a `2xx` there is a failure.
 9. **Expected denials** — `POST /build` denied with a reason;
    `POST /containers/*/exec` denied on the non-exec preset (skipped on
    `current-edge`, which runs the exec-enabled preset by design — see
@@ -204,16 +213,16 @@ against a fixture. The following need confirmation on the **first live
 `workflow_dispatch` run** (see RELEASING.md's pre-GA gate step) and may
 require a follow-up patch to this harness:
 
-- **Assertion 8's trigger-invocation HTTP contract.** The exact path and
-  body schema for firing the controller-owned `update` trigger isn't pinned
-  anywhere in this repo — `assert_remote_update_trigger` calls
-  `POST /api/triggers/docker/update` on drydock's own published API (port
-  3000, reachable in both Standard and Edge mode) as a best-effort match to
-  the compatibility text in `examples/compose/tri-tool/README.md`, which
-  describes that exact path/method returning `501` from Portwing's
-  Standard-mode agent today. If the real contract differs (a different
-  path, a different body shape, or a Portwing-side-only endpoint with no
-  Edge-mode equivalent), this function needs a follow-up fix.
+- **Assertion 8's trigger-invocation HTTP contract** — RESOLVED by the
+  2026-08-08 live run (#211). The body requires drydock's own container-store
+  `id` (400 "Invalid trigger request body" otherwise, on every drydock
+  version), update-type triggers 202-accept after admission, and admission
+  400s until the watcher has flagged `updateAvailable`. The `501` the
+  compatibility text describes belongs to Portwing's own trigger endpoint,
+  not drydock's port-3000 API — the legacy floor now asserts a
+  correctly-shaped drydock invocation is refused (`404`/`501`). The exact
+  refusal code the legacy pin actually emits still gets pinned tighter on
+  the next live run if it proves stable.
 - **Portwing's exact protected-endpoint surface for the wrong-secret probe.**
   `assert_standard_wrong_secret_probe` observes the failure from drydock's
   own logs (`401`) rather than calling a specific portwing endpoint

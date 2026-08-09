@@ -40,6 +40,12 @@ BUNDLE_DIR="${REPO_ROOT}/examples/compose/tri-tool"
 # shellcheck source=scripts/tri-tool-conformance/lib.sh
 source "${SCRIPT_DIR}/lib.sh"
 
+# Every transient err/log/cid file lives under one private mktemp dir: a
+# fixed /tmp path could be pre-created by a local user as a symlink before
+# the shell redirection opens it.
+SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tri-tool-conformance.XXXXXX")"
+trap 'rm -rf "${SCRATCH_DIR}"' EXIT
+
 # busybox pins for the events/logs/lifecycle sentinels and the assertion-8
 # (remote update trigger) recreation check. Only NEW_BUSYBOX_REF matches
 # app/integration/helpers_test.go's busyboxPinnedRef -- reusing the same pin
@@ -87,8 +93,8 @@ run_self_test() {
   local known="${SCRIPT_DIR}/known-routes.json"
   local failed=0
 
-  if ! jq empty "$known" 2>/tmp/known-routes-lint.err; then
-    echo "FAIL: known-routes.json is not valid JSON: $(cat /tmp/known-routes-lint.err)" >&2
+  if ! jq empty "$known" 2>"${SCRATCH_DIR}/known-routes-lint.err"; then
+    echo "FAIL: known-routes.json is not valid JSON: $(cat "${SCRATCH_DIR}/known-routes-lint.err")" >&2
     return 1
   fi
   echo "PASS: known-routes.json parses as valid JSON"
@@ -155,10 +161,10 @@ run_self_test() {
   local match_output match_status
   match_output="$(jq -R \
     --arg m "GET" --arg d "allow" --arg p '^/containers/json$' \
-    "$ACCESS_LOG_ROUTE_MATCH_JQ" "$fixture" 2>/tmp/access-log-match.err)"
+    "$ACCESS_LOG_ROUTE_MATCH_JQ" "$fixture" 2>"${SCRATCH_DIR}/access-log-match.err")"
   match_status=$?
   if [ "$match_status" -ne 0 ]; then
-    echo "FAIL: ACCESS_LOG_ROUTE_MATCH_JQ exited ${match_status} against the fixture's malformed lines: $(cat /tmp/access-log-match.err)" >&2
+    echo "FAIL: ACCESS_LOG_ROUTE_MATCH_JQ exited ${match_status} against the fixture's malformed lines: $(cat "${SCRATCH_DIR}/access-log-match.err")" >&2
     failed=1
   elif ! grep -q '"normalized_path": *"/containers/json"' <<<"$match_output"; then
     echo "FAIL: ACCESS_LOG_ROUTE_MATCH_JQ did not find the expected match past the fixture's malformed lines" >&2
@@ -313,8 +319,8 @@ if [ "$MODE" = "standard" ]; then
   fi
 else
   if ! docker run --rm "$PORTWING_IMAGE_RESOLVED" keygen -comment "tri-tool-conformance-${ROW}" \
-      > "${BUNDLE_DIR}/portwing_ed25519.pem" 2>/tmp/keygen.err; then
-    echo "FATAL: could not generate Portwing Ed25519 keypair from ${PORTWING_IMAGE_RESOLVED}: $(cat /tmp/keygen.err)" >&2
+      > "${BUNDLE_DIR}/portwing_ed25519.pem" 2>"${SCRATCH_DIR}/keygen.err"; then
+    echo "FATAL: could not generate Portwing Ed25519 keypair from ${PORTWING_IMAGE_RESOLVED}: $(cat "${SCRATCH_DIR}/keygen.err")" >&2
     exit 1
   fi
   # Lock the private key down BEFORE deriving the public key: the shell
@@ -337,8 +343,8 @@ else
   fi
   if ! docker run --rm -v "${BUNDLE_DIR}/portwing_ed25519.pem:/key.pem:ro" "$PORTWING_IMAGE_RESOLVED" \
       keygen -pub-from /key.pem -comment "tri-tool-conformance-${ROW}" \
-      > "${BUNDLE_DIR}/portwing_authorized_keys" 2>/tmp/keygen-pub.err; then
-    echo "FATAL: could not derive the authorized_keys line: $(cat /tmp/keygen-pub.err)" >&2
+      > "${BUNDLE_DIR}/portwing_authorized_keys" 2>"${SCRATCH_DIR}/keygen-pub.err"; then
+    echo "FATAL: could not derive the authorized_keys line: $(cat "${SCRATCH_DIR}/keygen-pub.err")" >&2
     exit 1
   fi
   if ! sudo chown 1000:1000 "${BUNDLE_DIR}/portwing_authorized_keys"; then
@@ -363,8 +369,8 @@ fi
 # ---------------------------------------------------------------------------
 
 for busybox_ref in "$OLD_BUSYBOX_REF" "$NEW_BUSYBOX_REF"; do
-  if ! docker pull "$busybox_ref" >/tmp/busybox-pull.log 2>&1; then
-    echo "FATAL: could not pre-pull ${busybox_ref}: $(tail -c 2000 /tmp/busybox-pull.log)" >&2
+  if ! docker pull "$busybox_ref" >"${SCRATCH_DIR}/busybox-pull.log" 2>&1; then
+    echo "FATAL: could not pre-pull ${busybox_ref}: $(tail -c 2000 "${SCRATCH_DIR}/busybox-pull.log")" >&2
     exit 1
   fi
 done
@@ -400,8 +406,8 @@ assert_pristine_boot() {
   local name="pristine-boot"
   compose down -v --remove-orphans >/dev/null 2>&1 || true
 
-  if ! compose up -d sockguard portwing drydock probe >/tmp/compose-up.log 2>&1; then
-    record_result "$name" FAIL "docker compose up failed: $(tail -c 2000 /tmp/compose-up.log)"
+  if ! compose up -d sockguard portwing drydock probe >"${SCRATCH_DIR}/compose-up.log" 2>&1; then
+    record_result "$name" FAIL "docker compose up failed: $(tail -c 2000 "${SCRATCH_DIR}/compose-up.log")"
     return 1
   fi
 
@@ -461,8 +467,8 @@ assert_standard_wrong_secret_probe() {
       -e DD_AGENT_PORTWING_PORT=4000 \
       -e DD_AGENT_PORTWING_SECRET__FILE=/run/secrets/portwing_token \
       -e DD_AGENT_ALLOW_INSECURE_SECRET=true \
-      "$DRYDOCK_IMAGE_RESOLVED" >/tmp/badsecret.cid 2>/tmp/badsecret.err; then
-    record_result "$name" FAIL "could not start the throwaway wrong-secret agent-config probe: $(cat /tmp/badsecret.err)"
+      "$DRYDOCK_IMAGE_RESOLVED" >"${SCRATCH_DIR}/badsecret.cid" 2>"${SCRATCH_DIR}/badsecret.err"; then
+    record_result "$name" FAIL "could not start the throwaway wrong-secret agent-config probe: $(cat "${SCRATCH_DIR}/badsecret.err")"
     rm -f "$wrong_secret_file"
     return 1
   fi
@@ -487,8 +493,8 @@ assert_edge_unknown_key_probe() {
   key_file="$(mktemp)"
   bad_container="tt-conf-badkey-$$"
 
-  if ! docker run --rm "$PORTWING_IMAGE_RESOLVED" keygen -comment "$agent_name" > "$key_file" 2>/tmp/badkey-gen.err; then
-    record_result "$name" FAIL "could not generate the throwaway unregistered keypair: $(cat /tmp/badkey-gen.err)"
+  if ! docker run --rm "$PORTWING_IMAGE_RESOLVED" keygen -comment "$agent_name" > "$key_file" 2>"${SCRATCH_DIR}/badkey-gen.err"; then
+    record_result "$name" FAIL "could not generate the throwaway unregistered keypair: $(cat "${SCRATCH_DIR}/badkey-gen.err")"
     rm -f "$key_file"
     return 1
   fi
@@ -509,8 +515,8 @@ assert_edge_unknown_key_probe() {
       -e AGENT_NAME="$agent_name" \
       -e DRYDOCK_URL=http://drydock:3000 \
       -e PRIVATE_KEY_FILE=/run/secrets/portwing_key \
-      "$PORTWING_IMAGE_RESOLVED" >/tmp/badkey.cid 2>/tmp/badkey-run.err; then
-    record_result "$name" FAIL "could not start the throwaway unknown-key agent-config probe: $(cat /tmp/badkey-run.err)"
+      "$PORTWING_IMAGE_RESOLVED" >"${SCRATCH_DIR}/badkey.cid" 2>"${SCRATCH_DIR}/badkey-run.err"; then
+    record_result "$name" FAIL "could not start the throwaway unknown-key agent-config probe: $(cat "${SCRATCH_DIR}/badkey-run.err")"
     sudo rm -f -- "$key_file"
     return 1
   fi
@@ -607,8 +613,15 @@ assert_events() {
   SENTINEL_IDS+=("$id")
   probe_curl -X POST "http://localhost/containers/${id}/start" >/dev/null
 
-  local events_ok=1
-  wait_for_access_log_route GET allow '^/events$' 15 && events_ok=0
+  # Probe GET /events directly rather than waiting for it in the access log:
+  # sockguard only writes an access-log line when a request completes, and
+  # the events stream outlives the row, so the old wait could never succeed
+  # (#211, verified against both the 1.5.1 and 1.6.0-rc.1 images). curl's
+  # --write-out still prints the received status when --max-time cuts the
+  # stream, so a 200 here proves the preset admits the channel.
+  local events_ok=1 events_status
+  events_status="$(probe_curl_status "http://localhost/events" || true)"
+  [ "$events_status" = "200" ] && events_ok=0
 
   probe_curl -X POST "http://localhost/containers/${id}/stop?t=5" >/dev/null
   probe_curl -X DELETE "http://localhost/containers/${id}?force=true" >/dev/null
@@ -617,9 +630,9 @@ assert_events() {
   wait_for_access_log_route DELETE allow '^/containers/[^/]+$' 15 && removed_ok=0
 
   if [ "$events_ok" -eq 0 ] && [ "$removed_ok" -eq 0 ]; then
-    record_result "$name" PASS "sentinel created/started/stopped/removed via the proxied socket; /events channel open and DELETE allowed"
+    record_result "$name" PASS "sentinel created/started/stopped/removed via the proxied socket; /events stream opened with a 200 and DELETE allowed"
   else
-    record_result "$name" FAIL "events channel or the sentinel's DELETE was not observed allowed (events_ok=${events_ok} removed_ok=${removed_ok})"
+    record_result "$name" FAIL "events stream open or the sentinel's DELETE was not observed allowed (events_status=${events_status:-none} removed_ok=${removed_ok})"
   fi
 }
 
@@ -749,35 +762,20 @@ assert_exec() {
 assert_remote_update_trigger() {
   local name="remote-update-trigger"
 
-  if [ "$REMOTE_UPDATE_SUPPORTED" -ne 1 ]; then
-    # Portwing 0.8.1 doesn't implement the update-trigger endpoint yet --
-    # examples/compose/tri-tool/README.md's "Compatibility boundary"
-    # section documents POST /api/triggers/{type}/{name} (and .../batch)
-    # returning 501 on this exact pin.
-    local status
-    status="$(curl --silent --show-error --max-time 10 --output /dev/null --write-out '%{http_code}' \
-      -X POST -H 'Content-Type: application/json' -d '{}' \
-      "http://127.0.0.1:3000/api/triggers/docker/update" 2>/dev/null)"
-    if [ "$status" = "501" ]; then
-      record_result "$name" PASS "legacy-floor trigger invocation returned the documented 501 not-implemented"
-    else
-      record_result "$name" FAIL "legacy-floor trigger invocation returned ${status}, want the documented 501"
-    fi
-    return 0
-  fi
-
-  # current-standard / current-edge: portwing 0.9.0 + drydock 1.6.0-rc.11
-  # ship a controller-owned synthetic docker trigger named "update"
-  # (transport:docker-api, execution:controller) that bridges through
-  # Portwing to sockguard using only endpoints already in the presets.
-  #
-  # KNOWN GAP: the exact trigger-invocation HTTP contract (path, body
-  # schema) is not pinned anywhere in this repo -- it lives in the
-  # portwing/drydock repos, which this sandbox has no access to. This
-  # request shape is a best-effort match to the compatibility text in
-  # examples/compose/tri-tool/README.md and MUST be confirmed (and this
-  # function adjusted if wrong) on the first live workflow_dispatch run --
-  # see the harness README's "Known gaps" section.
+  # Contract pinned from the first live run past the handshake (#211) plus
+  # drydock's app/api/trigger.ts: POST /api/triggers/docker/update (and the
+  # remote form .../update/{agent}) requires a JSON body whose required `id`
+  # is drydock's OWN container-store id -- anything else is refused with
+  # 400 "Invalid trigger request body" on every drydock version, which is
+  # exactly how the previous {container,image} guess failed all three rows.
+  # Update-type triggers also refuse admission with 400 "No update available
+  # for this container" until drydock's watcher (through the Portwing agent)
+  # has flagged the candidate, so current rows wait for updateAvailable
+  # before firing. The tri-tool README's documented 501 belongs to
+  # PORTWING's own trigger endpoint, not drydock's port-3000 API -- on the
+  # legacy floor a correctly-shaped drydock invocation is refused as absent
+  # (no registered docker update trigger), and either refusal code proves
+  # the same compatibility boundary.
   local sentinel="tt-conf-sentinel-update-$$"
   local create_resp id
   create_resp="$(create_sentinel "$sentinel" "$OLD_BUSYBOX_REF")"
@@ -789,14 +787,64 @@ assert_remote_update_trigger() {
   SENTINEL_IDS+=("$id")
   probe_curl -X POST "http://localhost/containers/${id}/start" >/dev/null
 
+  # Resolve the sentinel's drydock-side container document. Presence alone
+  # is enough on the legacy floor (updates are unimplemented there); current
+  # rows also need updateAvailable=true or admission 400s.
+  local doc="" dd_id="" dd_agent="" waited=0
+  while (( waited < 120 )); do
+    doc="$(curl --silent --max-time 10 "http://127.0.0.1:3000/api/containers" 2>/dev/null \
+      | jq -c --arg n "$sentinel" '[.[]? | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty' 2>/dev/null)"
+    if [ -n "$doc" ]; then
+      if [ "$REMOTE_UPDATE_SUPPORTED" -ne 1 ] || [ "$(jq -r '.updateAvailable // false' <<<"$doc")" = "true" ]; then
+        break
+      fi
+    fi
+    sleep 5
+    waited=$(( waited + 5 ))
+  done
+  if [ -z "$doc" ]; then
+    record_result "$name" FAIL "sentinel never appeared in drydock's /api/containers store within 120s"
+    return 1
+  fi
+  dd_id="$(jq -r '.id // empty' <<<"$doc")"
+  dd_agent="$(jq -r '.agent // empty' <<<"$doc")"
+  if [ -z "$dd_id" ]; then
+    record_result "$name" FAIL "drydock container document for the sentinel has no id: $(head -c 300 <<<"$doc")"
+    return 1
+  fi
+  if [ "$REMOTE_UPDATE_SUPPORTED" -eq 1 ] && [ "$(jq -r '.updateAvailable // false' <<<"$doc")" != "true" ]; then
+    record_result "$name" FAIL "drydock never flagged the sentinel's update candidate (updateAvailable) within 120s; document: $(head -c 300 <<<"$doc")"
+    return 1
+  fi
+
+  local trigger_url="http://127.0.0.1:3000/api/triggers/docker/update"
+  if [ -n "$dd_agent" ]; then
+    trigger_url="${trigger_url}/${dd_agent}"
+  fi
+
   local trigger_status
-  trigger_status="$(curl --silent --show-error --max-time 30 --output /tmp/trigger-response.json --write-out '%{http_code}' \
+  trigger_status="$(curl --silent --show-error --max-time 30 --output "${SCRATCH_DIR}/trigger-response.json" --write-out '%{http_code}' \
     -X POST -H 'Content-Type: application/json' \
-    -d "$(jq -n --arg c "$sentinel" --arg img "${NEW_BUSYBOX_REF%%@*}" '{container:$c, image:$img}')" \
-    "http://127.0.0.1:3000/api/triggers/docker/update" 2>/dev/null)"
+    -d "$(jq -c '{id: .id} + (if .agent then {agent: .agent} else {} end)' <<<"$doc")" \
+    "$trigger_url" 2>/dev/null)"
+
+  if [ "$REMOTE_UPDATE_SUPPORTED" -ne 1 ]; then
+    case "$trigger_status" in
+      404|501)
+        record_result "$name" PASS "legacy-floor trigger invocation refused as not-implemented/absent (${trigger_status}) on a correctly-shaped request"
+        ;;
+      2*)
+        record_result "$name" FAIL "legacy-floor unexpectedly ACCEPTED the update trigger (${trigger_status}) -- the documented compatibility boundary no longer holds"
+        ;;
+      *)
+        record_result "$name" FAIL "legacy-floor trigger invocation returned ${trigger_status} (body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)), want 404/501"
+        ;;
+    esac
+    return 0
+  fi
 
   if [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
-    record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 500 /tmp/trigger-response.json 2>/dev/null)) -- confirm the real trigger contract on the first live dispatch, see harness README 'Known gaps'"
+    record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 500 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)) against ${trigger_url} with drydock container id ${dd_id}"
     return 1
   fi
 
