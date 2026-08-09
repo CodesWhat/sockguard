@@ -1036,6 +1036,111 @@ func TestContainerCreatePolicyInspectAllowsEmptyRootMacAddressByDefault(t *testi
 	}
 }
 
+// TestContainerCreatePolicyInspectGranularEndpointConfig mirrors
+// TestNetworkInspectConnectGranularEndpointConfig for
+// NetworkingConfig.EndpointsConfig — proving the #186 per-field gates apply
+// identically at container-create as they do at network-connect, since both
+// share the same denyEndpointConfigReason check.
+func TestContainerCreatePolicyInspectGranularEndpointConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		granular   EndpointConfigOptions
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "static IP denied with no granular allow",
+			granular:   EndpointConfigOptions{},
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}}}`,
+			wantReason: "container create denied: endpoint static IP configuration is not allowed",
+		},
+		{
+			name:     "static IP allowed by AllowStaticAddressing alone",
+			granular: EndpointConfigOptions{AllowStaticAddressing: true},
+			body:     `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}}}`,
+		},
+		{
+			name:       "link-local IPs denied with no granular allow",
+			granular:   EndpointConfigOptions{},
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAMConfig":{"LinkLocalIPs":["169.254.1.1"]}}}}}`,
+			wantReason: "container create denied: endpoint link-local IP addresses are not allowed",
+		},
+		{
+			name:     "link-local IPs allowed by AllowLinkLocalIPs alone",
+			granular: EndpointConfigOptions{AllowLinkLocalIPs: true},
+			body:     `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAMConfig":{"LinkLocalIPs":["169.254.1.1"]}}}}}`,
+		},
+		{
+			name:     "MAC address allowed by AllowMACPinning alone",
+			granular: EndpointConfigOptions{AllowMACPinning: true},
+			body:     `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"MacAddress":"02:42:ac:1e:00:0a"}}}}`,
+		},
+		{
+			name:     "GwPriority allowed by AllowGwPriority alone",
+			granular: EndpointConfigOptions{AllowGwPriority: true},
+			body:     `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"GwPriority":10}}}}`,
+		},
+		{
+			name:     "aliases allowed when granular is entirely zero-valued (default)",
+			granular: EndpointConfigOptions{},
+			body:     `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"app-net":{"Aliases":["web"]}}}}`,
+		},
+		{
+			name:       "aliases denied when DenyAliases is explicitly set",
+			granular:   EndpointConfigOptions{DenyAliases: true},
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"app-net":{"Aliases":["web"]}}}}`,
+			wantReason: "container create denied: endpoint aliases are not allowed",
+		},
+		{
+			name:       "links have no granular escape hatch — always denied under granular mode",
+			granular:   EndpointConfigOptions{AllowStaticAddressing: true, AllowLinkLocalIPs: true, AllowMACPinning: true, AllowGwPriority: true},
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"bridge":{"Links":["db:database"]}}}}`,
+			wantReason: "container create denied: endpoint links are not allowed",
+		},
+		{
+			name:       "driver options have no granular escape hatch — always denied under granular mode",
+			granular:   EndpointConfigOptions{AllowStaticAddressing: true, AllowLinkLocalIPs: true, AllowMACPinning: true, AllowGwPriority: true},
+			body:       `{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"bridge":{"DriverOpts":{"foo":"bar"}}}}}`,
+			wantReason: "container create denied: endpoint driver options are not allowed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newContainerCreatePolicy(ContainerCreateOptions{EndpointConfig: tt.granular})
+			req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(tt.body))
+
+			reason, err := policy.inspect(nil, req, "/containers/create")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("inspect() reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestContainerCreatePolicyInspectRootMacAddressGranularMACPinning proves the
+// legacy top-level MacAddress field respects the granular AllowMACPinning
+// gate too, not just the whole-object AllowEndpointConfig escape hatch —
+// mirroring denyRootMacAddressReason's dual precedence check.
+func TestContainerCreatePolicyInspectRootMacAddressGranularMACPinning(t *testing.T) {
+	policy := newContainerCreatePolicy(ContainerCreateOptions{
+		EndpointConfig: EndpointConfigOptions{AllowMACPinning: true},
+	})
+	body := `{"Image":"x","MacAddress":"02:42:ac:1e:00:0a"}`
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewBufferString(body))
+
+	reason, err := policy.inspect(nil, req, "/containers/create")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty", reason)
+	}
+}
+
 // FuzzContainerCreatePolicyInspectEndpointConfig fuzzes the endpoint-config
 // denial path exercised above (denyNetworkingConfigReason and
 // denyRootMacAddressReason) through the full inspect() entrypoint, seeded
