@@ -229,7 +229,7 @@ func validateReadExfiltrationRules(cfg *config.Config, compiled []*filter.Compil
 }
 
 func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
-	return validateBuildkitTunnelRulesForPolicy("", cfg.InsecureAcceptOpaqueBuildkitTunnels, compiled)
+	return validateBuildkitTunnelRulesForPolicy("", cfg.InsecureAcceptOpaqueBuildkitTunnels, cfg.RequestBody.Buildkit.ToPolicy().Configured(), compiled)
 }
 
 func validateBodyBlindWriteRulesForPolicy(scope string, insecure bool, requestBody config.RequestBodyConfig, compiled []*filter.CompiledRule) error {
@@ -289,8 +289,32 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 	)
 }
 
-func validateBuildkitTunnelRulesForPolicy(scope string, insecure bool, compiled []*filter.CompiledRule) error {
-	if insecure {
+// validateBuildkitTunnelRulesForPolicy admits a rule allowing the opaque
+// BuildKit tunnel endpoints when EITHER the wholesale
+// insecure_accept_opaque_buildkit_tunnels acknowledgment is set OR
+// buildkitConfigured is true — i.e. request_body.buildkit
+// (config.BuildkitRequestBodyConfig, translated via
+// buildkitproxy.Policy.Configured) is configured for this scope. The two
+// are mutually exclusive by construction (see
+// validateBuildkitAckMutualExclusion in the config package), so in practice
+// exactly one of these two conditions can ever be true for a given scope —
+// this function does not need to (and does not) re-check that invariant.
+//
+// IMPORTANT — this function governs STARTUP admission only, i.e. whether
+// sockguard refuses to boot at all. It does NOT mean a request to /session
+// or /grpc is actually mediated once buildkitConfigured admits the rule:
+// issue #185 phase 1 ships the config schema and this classification
+// registry, but no h2c-terminating mediator exists yet. The request-time
+// guarantee that a buildkitConfigured-admitted rule never falls through to
+// an opaque ReverseProxy pass-through lives in
+// filter.buildkitPolicy.inspect (see buildkit.go), which unconditionally
+// denies /session and /grpc whenever PolicyConfig.Buildkit.TunnelConfigured
+// is true — regardless of what any individual buildkitproxy.Policy sub-field
+// says. Only the insecure_accept_opaque_buildkit_tunnels path retains the
+// pre-#185 opaque pass-through behavior; that flag's meaning and denial
+// message below are unchanged.
+func validateBuildkitTunnelRulesForPolicy(scope string, insecure, buildkitConfigured bool, compiled []*filter.CompiledRule) error {
+	if insecure || buildkitConfigured {
 		return nil
 	}
 
@@ -303,14 +327,16 @@ func validateBuildkitTunnelRulesForPolicy(scope string, insecure bool, compiled 
 		return fmt.Errorf(
 			"rules allow the opaque BuildKit session/gRPC tunnel (POST /session, POST /grpc, or a moby.buildkit.v1.Control method path) — "+
 				"these streams carry secrets, SSH agent forwarding, and file sync that sockguard cannot inspect or bound once opened; "+
-				"set insecure_accept_opaque_buildkit_tunnels=true to acknowledge this risk: %s",
+				"set insecure_accept_opaque_buildkit_tunnels=true to acknowledge this risk, or configure request_body.buildkit (issue #185) "+
+				"to admit them under sockguard's BuildKit gRPC mediation policy instead: %s",
 			strings.Join(exposed, ", "),
 		)
 	}
 
 	return fmt.Errorf(
 		"client profile %q allows the opaque BuildKit session/gRPC tunnel (POST /session, POST /grpc, or a moby.buildkit.v1.Control method path); "+
-			"set the top-level insecure_accept_opaque_buildkit_tunnels=true to acknowledge this risk (it is a global setting, not per-profile): %s",
+			"set the top-level insecure_accept_opaque_buildkit_tunnels=true to acknowledge this risk (it is a global setting, not per-profile), "+
+			"or configure this profile's request_body.buildkit (issue #185) to admit them under sockguard's BuildKit gRPC mediation policy instead: %s",
 		scope,
 		strings.Join(exposed, ", "),
 	)
@@ -411,7 +437,7 @@ func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error)
 		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, compiledRules); err != nil {
 			return nil, err
 		}
-		if err := validateBuildkitTunnelRulesForPolicy(profile.Name, cfg.InsecureAcceptOpaqueBuildkitTunnels, compiledRules); err != nil {
+		if err := validateBuildkitTunnelRulesForPolicy(profile.Name, cfg.InsecureAcceptOpaqueBuildkitTunnels, profile.RequestBody.Buildkit.ToPolicy().Configured(), compiledRules); err != nil {
 			return nil, err
 		}
 		profiles[profile.Name] = filter.Policy{
