@@ -405,11 +405,14 @@ jobs:
           FUZZ_PKG: ${{ matrix.fuzzer.pkg }}
         run: |
           run_fuzz() {
+            # No pipefail in the implicit step shell — return go test's status,
+            # not tee's, so a crasher can't false-pass the step.
             go test -run=^$ \
               -fuzz="^${FUZZER}$" \
               -fuzztime="${FUZZTIME}" \
               -timeout="${TEST_TIMEOUT}" \
               "${FUZZ_PKG}" 2>&1 | tee "${RUNNER_TEMP}/fuzz-${FUZZER}.log"
+            return "${PIPESTATUS[0]}"
           }
           # A real crasher always writes an input file under testdata/fuzz/;
           # this is the distinction #198 exists to preserve.
