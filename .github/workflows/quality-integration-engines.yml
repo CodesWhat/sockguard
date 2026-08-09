@@ -1,0 +1,122 @@
+name: "🐋 Quality: Integration — Engine Matrix"
+run-name: >-
+  ${{
+    github.event_name == 'schedule' && '🐋 Quality: Integration — Engine Matrix (Weekly)' ||
+    github.event_name == 'pull_request' && format('🐋 Quality: Integration — Engine Matrix — PR #{0}', github.event.pull_request.number) ||
+    format('🐋 Quality: Integration — Engine Matrix — Manual by {0}', github.actor)
+  }}
+
+# Runs the build-tagged integration suite (app/integration/) against a pinned
+# matrix of Docker Engine releases instead of whatever dockerd the runner
+# image happens to ship (that fast path stays in quality-integration.yml).
+# Catches API-version drift — new fields, changed response shapes — by CI
+# rather than by the monthly quality-api-version-watch.yml page scrape alone
+# (#187, deferred from #153's audit).
+#
+# The pinned minors deliberately span the supported range: 26.1 is the oldest
+# Engine the docs claim compatibility with, 29.x is current. Bump a pin by
+# taking the latest patch of the same minor from
+# https://download.docker.com/linux/static/stable/x86_64/ — the minor is the
+# thing under test, the patch just needs to exist.
+#
+# The pull_request trigger is scoped to this file only, so the matrix
+# exercises itself on any PR that touches it and otherwise costs nothing
+# per-PR.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '45 6 * * 1'  # 06:45 UTC Mondays
+  pull_request:
+    paths:
+      - '.github/workflows/quality-integration-engines.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-integration-engines-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration:
+    name: "🐋 Integration (Engine ${{ matrix.engine }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      # One Engine failing must not hide how the others fared — drift usually
+      # lands in exactly one minor first.
+      fail-fast: false
+      matrix:
+        engine:
+          - v26.1.4
+          - v28.0.4
+          - v29.2.1
+          - v29.7.2
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: Setup Docker Engine ${{ matrix.engine }}
+        uses: docker/setup-docker-action@77e84dbf09b47d1e29270283c22f16145aa85ca1  # v5.4.0
+        with:
+          version: ${{ matrix.engine }}
+
+      # setup-docker-action serves the pinned daemon on its own context
+      # socket, not necessarily /var/run/docker.sock — resolve the actual
+      # unix path from the active context and hand that to the suite, and
+      # fail loudly if the pinned daemon didn't come up as the requested
+      # version (a silent fallback to the runner's stock dockerd would make
+      # every leg of the matrix a lie).
+      - name: Resolve daemon socket and verify pinned version
+        id: daemon
+        env:
+          WANT: ${{ matrix.engine }}
+        run: |
+          docker version
+          host="$(docker context inspect --format '{{ .Endpoints.docker.Host }}')"
+          case "$host" in
+            unix://*) sock="${host#unix://}" ;;
+            *) echo "unexpected non-unix docker endpoint: ${host}" >&2; exit 1 ;;
+          esac
+          echo "socket=${sock}" >> "$GITHUB_OUTPUT"
+          got="$(docker version --format '{{ .Server.Version }}')"
+          if [ "v${got}" != "${WANT}" ]; then
+            echo "daemon reports ${got}, wanted ${WANT#v} — pinned Engine did not take" >&2
+            exit 1
+          fi
+          echo "server=${got} socket=${sock}"
+
+      # Same digest-pin sourcing as quality-integration.yml: dockerd will not
+      # pull-on-create for a digest ref that isn't already local, and the
+      # constant in helpers_test.go is the single source of truth.
+      - name: Pre-pull busybox sentinel image
+        run: |
+          ref=$(sed -nE 's/^[[:space:]]*const[[:space:]]+busyboxPinnedRef[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1/p' app/integration/helpers_test.go)
+          if [[ ! "$ref" =~ ^busybox:[[:alnum:]_.-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "invalid or unpinned busyboxPinnedRef: ${ref}" >&2
+            exit 1
+          fi
+          echo "Pre-pulling pinned sentinel image: ${ref}"
+          docker pull "${ref}"
+
+      - name: Run integration suite
+        working-directory: app
+        env:
+          SOCKGUARD_TEST_DOCKER_SOCKET: ${{ steps.daemon.outputs.socket }}
+        run: go test -tags=integration -count=1 -timeout=15m ./integration/

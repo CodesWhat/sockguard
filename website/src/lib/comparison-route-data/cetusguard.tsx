@@ -8,8 +8,8 @@ Method + path filtering|Yes (regex)|Yes|tie
 Remote TCP mTLS listener|Yes|Yes (TLS 1.3)|tie
 Regex path rules|Yes|Yes|tie
 Remote daemon upstream (TLS)|Yes (in production)|Yes (active/passive failover)|self
-Multiple frontend listeners|Yes|Planned v1.6|competitor
-Podman native libpod API|Yes|Planned v1.6|competitor
+Multiple frontend listeners|Yes|Yes (Unix and/or TCP, listener-scoped TLS + profiles)|tie
+Podman native libpod API|Yes|Yes (default-deny /libpod coverage)|tie
 Config simplicity|Compact rule files|Full YAML config|competitor
 Request body inspection|No|Yes (12+ resource types)|self
 Per-client policies|No|CIDR + labels + cert selectors + SPKI + unix peer|self

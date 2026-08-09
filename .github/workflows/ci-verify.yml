@@ -401,12 +401,37 @@ jobs:
         env:
           FUZZTIME: 60s
           TEST_TIMEOUT: 5m
+          FUZZER: ${{ matrix.fuzzer.name }}
+          FUZZ_PKG: ${{ matrix.fuzzer.pkg }}
         run: |
-          go test -run=^$ \
-            -fuzz=^${{ matrix.fuzzer.name }}$ \
-            -fuzztime="${FUZZTIME}" \
-            -timeout="${TEST_TIMEOUT}" \
-            ${{ matrix.fuzzer.pkg }}
+          run_fuzz() {
+            # No pipefail in the implicit step shell — return go test's status,
+            # not tee's, so a crasher can't false-pass the step.
+            go test -run=^$ \
+              -fuzz="^${FUZZER}$" \
+              -fuzztime="${FUZZTIME}" \
+              -timeout="${TEST_TIMEOUT}" \
+              "${FUZZ_PKG}" 2>&1 | tee "${RUNNER_TEMP}/fuzz-${FUZZER}.log"
+            return "${PIPESTATUS[0]}"
+          }
+          # A real crasher always writes an input file under testdata/fuzz/;
+          # this is the distinction #198 exists to preserve.
+          new_crashers() {
+            git ls-files --others --exclude-standard -- '**/testdata/fuzz/**'
+          }
+          if run_fuzz; then
+            exit 0
+          fi
+          # Known coordinator-shutdown flake (#198): the run fails exactly at
+          # the fuzztime boundary with a bare 'context deadline exceeded' and
+          # no crasher written. Retry once on that exact signature only.
+          if grep -q "context deadline exceeded" "${RUNNER_TEMP}/fuzz-${FUZZER}.log" \
+              && [ -z "$(new_crashers)" ]; then
+            echo "::warning::${FUZZER}: deadline-exceeded at fuzztime expiry with no crasher written — retrying once (#198)"
+            run_fuzz
+          else
+            exit 1
+          fi
 
       - name: Upload fuzz corpus on failure
         if: failure()

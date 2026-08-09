@@ -1588,6 +1588,57 @@ func TestNewLibpodExecInspectorWithRoundTripperUsesLibpodPath(t *testing.T) {
 	}
 }
 
+func TestNewHTTPExecInspectorBoundsResponseBody(t *testing.T) {
+	// newHTTPExecInspector must reject an exec-inspect response body over
+	// MaxResponseBodyBytes rather than decoding it unbounded (#188).
+	tests := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{
+			name:    "over limit response is rejected",
+			body:    strings.Repeat("x", MaxResponseBodyBytes+1),
+			wantErr: true,
+		},
+		{
+			name:    "normal size response decodes",
+			body:    `{"ProcessConfig":{"entrypoint":"/bin/sh","arguments":["-c","id"],"privileged":false,"user":""}}`,
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rt := execRoundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(tt.body)),
+				}, nil
+			})
+
+			fn := NewDockerExecInspectorWithRoundTripper(rt)
+			result, found, err := fn(context.Background(), "abc123")
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("fn() error = nil, want error for oversized response")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("fn() error = %v", err)
+			}
+			if !found {
+				t.Fatal("fn() found = false, want true")
+			}
+			if len(result.Command) == 0 || result.Command[0] != "/bin/sh" {
+				t.Fatalf("command = %v, want [/bin/sh -c id]", result.Command)
+			}
+		})
+	}
+}
+
 type execRoundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f execRoundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

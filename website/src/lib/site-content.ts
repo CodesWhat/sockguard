@@ -134,7 +134,7 @@ export const roadmap: Milestone[] = [
     version: "v1.6.0",
     title: "Runtime Compatibility & Policy Mediation",
     emoji: "🧭",
-    status: "next",
+    status: "released",
     items: [
       "Podman support: preserve Docker-compatible API behavior and add explicit, default-deny policy coverage for the native /libpod namespace, including pod lifecycle operations",
       "Multiple independently configured main listeners (Unix and/or TCP), with listener-scoped TLS and client-profile boundaries",
@@ -142,6 +142,16 @@ export const roadmap: Milestone[] = [
       "Published-image conformance matrix for Sockguard + Portwing + Drydock across standard and edge transports; remote update claims stay gated on implemented watcher/trigger contracts",
       "Docker Engine API 1.55 and current Compose/BuildKit conformance, replacing assumptions around the now-deprecated /session and /grpc endpoints with a verified fail-closed transport model",
       "Close the remaining resource-policy parity gaps: revalidate hard resource caps on container update and add swarm-service CPU-limit requirements",
+    ],
+  },
+  {
+    version: "v1.7.0",
+    title: "BuildKit Mediation & Policy Narrowing",
+    emoji: "🔬",
+    status: "next",
+    items: [
+      "BuildKit gRPC mediation: terminate the hijacked session/gRPC tunnel, parse moby.buildkit.v1.Control frames, and apply policy to solve requests, secret/SSH forwarding, and file-sync sessions instead of the current all-or-nothing acknowledgment",
+      "Narrow allow_endpoint_config on network connect into per-field gates, so benign endpoint settings no longer require also allowing static-IP/MAC address pinning",
     ],
   },
 ];
