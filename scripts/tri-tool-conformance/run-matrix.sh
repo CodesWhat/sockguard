@@ -19,7 +19,7 @@
 #
 # --self-test exercises the route normalizer (normalize-routes.jq) and the
 # known-routes.json diff logic against testdata/access-log-fixture.jsonl.
-# It needs jq only -- no Docker, no network -- and is wired into `npm test`
+# It needs jq and awk only -- no Docker, no network -- and is wired into `npm test`
 # via scripts/tri-tool-conformance-run-matrix.test.mjs (see that file's
 # header for why it lives one directory up).
 #
@@ -845,15 +845,20 @@ assert_remote_update_trigger() {
   # STORE_SYNC_TIMEOUT is per-row: 120s where the overlay's DD_POLL_INTERVAL=5
   # applies (standard mode), 360s on current-edge where drydock's welcome
   # pins the poll cycle at 300s (see the row-configuration comment).
-  local doc="" dd_id="" dd_agent="" waited=0
-  while (( waited < STORE_SYNC_TIMEOUT )); do
+  # Wall-clock deadline, not iteration counting: each iteration can spend up
+  # to 10s inside curl --max-time on top of the 5s sleep, so counting
+  # iterations would let a stalled store consume ~3x the advertised window.
+  local doc="" dd_id="" dd_agent="" remaining
+  local deadline=$(( SECONDS + STORE_SYNC_TIMEOUT ))
+  while (( SECONDS < deadline )); do
     doc="$(curl --silent --max-time 10 "http://127.0.0.1:3000/api/containers?limit=500" 2>/dev/null \
       | jq -c --arg n "$sentinel" '[(.data // .) | .[]? | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty' 2>/dev/null)"
     if [ -n "$doc" ]; then
       break
     fi
-    sleep 5
-    waited=$(( waited + 5 ))
+    remaining=$(( deadline - SECONDS ))
+    (( remaining <= 0 )) && break
+    sleep $(( remaining < 5 ? remaining : 5 ))
   done
   if [ -z "$doc" ]; then
     record_result "$name" FAIL "sentinel never appeared in drydock's /api/containers store within ${STORE_SYNC_TIMEOUT}s"
