@@ -1168,6 +1168,94 @@ func FuzzContainerCreatePolicyInspectEndpointConfig(f *testing.F) {
 	})
 }
 
+// FuzzContainerCreateEndpointConfigGates is FuzzNetworkConnectEndpointConfigGates'
+// container-create counterpart: it fuzzes the #186 granular endpoint-config
+// gates against NetworkingConfig.EndpointsConfig entries and the deprecated
+// root MacAddress field (TestContainerCreatePolicyInspectGranularEndpointConfig
+// and TestContainerCreatePolicyInspectRootMacAddressGranularMACPinning,
+// generalized), asserting the same fail-closed invariant as the network
+// fuzz target: with AllowEndpointConfig off, a field whose own granular gate
+// is also off must produce a non-empty denial reason, and Links/DriverOpts
+// (no granular gate at all) must always be denied.
+func FuzzContainerCreateEndpointConfigGates(f *testing.F) {
+	f.Add(false, false, false, false, false, true, []byte(`{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}}}`))
+	f.Add(false, false, false, false, false, true, []byte(`{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"IPAMConfig":{"LinkLocalIPs":["169.254.1.1"]}}}}}`))
+	f.Add(false, false, false, false, false, true, []byte(`{"Image":"x","MacAddress":"02:42:ac:1e:00:0a"}`))
+	f.Add(false, false, false, false, false, true, []byte(`{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"macvlan0":{"GwPriority":10}}}}`))
+	f.Add(false, false, false, false, false, false, []byte(`{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"app-net":{"Aliases":["web"]}}}}`))
+	f.Add(false, true, true, true, true, true, []byte(`{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"bridge":{"Links":["db:database"]}}}}`))
+	f.Add(false, true, true, true, true, true, []byte(`{"Image":"x","NetworkingConfig":{"EndpointsConfig":{"bridge":{"DriverOpts":{"foo":"bar"}}}}}`))
+	f.Add(true, false, false, false, false, true, []byte(`{"Image":"x","MacAddress":"02:42:ac:1e:00:0a"}`))
+
+	f.Fuzz(func(t *testing.T, allowEndpointConfig, allowStatic, allowLinkLocal, allowMAC, allowGw, allowAliases bool, body []byte) {
+		body = truncateParserFuzzBytes(body, maxContainerCreateBodyBytes+1024)
+
+		granular := EndpointConfigOptions{
+			AllowStaticAddressing: allowStatic,
+			AllowLinkLocalIPs:     allowLinkLocal,
+			AllowMACPinning:       allowMAC,
+			AllowGwPriority:       allowGw,
+			DenyAliases:           !allowAliases,
+		}
+		policy := newContainerCreatePolicy(ContainerCreateOptions{
+			AllowEndpointConfig: allowEndpointConfig,
+			EndpointConfig:      granular,
+		})
+
+		req := httptest.NewRequest(http.MethodPost, "/containers/create", bytes.NewReader(body))
+		reason, err := policy.inspect(nil, req, "/containers/create")
+		if req.Body != nil {
+			_, _ = io.Copy(io.Discard, req.Body)
+			_ = req.Body.Close()
+		}
+		if err != nil {
+			return
+		}
+		// The legacy whole-object flag wins outright — nothing to assert
+		// per-field once it is set.
+		if allowEndpointConfig {
+			return
+		}
+
+		var decoded containerCreateRequest
+		if decodePolicySubsetJSON(body, &decoded) != nil {
+			// Undecodable body: inspect() denies with a fixed message instead.
+			return
+		}
+
+		if !allowMAC && strings.TrimSpace(decoded.MacAddress) != "" && reason == "" {
+			t.Fatalf("root MacAddress present, AllowMACPinning=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+		}
+
+		for _, ep := range decoded.NetworkingConfig.EndpointsConfig {
+			if ep == nil {
+				continue
+			}
+			if !allowStatic && endpointHasStaticAddressFields(*ep) && reason == "" {
+				t.Fatalf("static address field present, AllowStaticAddressing=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+			}
+			if !allowLinkLocal && endpointHasLinkLocalIPs(*ep) && reason == "" {
+				t.Fatalf("link-local IPs present, AllowLinkLocalIPs=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+			}
+			if !allowMAC && strings.TrimSpace(ep.MacAddress) != "" && reason == "" {
+				t.Fatalf("endpoint MAC address present, AllowMACPinning=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+			}
+			if !allowGw && ep.GwPriority != 0 && reason == "" {
+				t.Fatalf("GwPriority present, AllowGwPriority=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+			}
+			if len(ep.Links) > 0 && reason == "" {
+				t.Fatalf("Links present but reason is empty despite Links having no granular gate (body=%s)", body)
+			}
+			if len(ep.DriverOpts) > 0 && reason == "" {
+				t.Fatalf("DriverOpts present but reason is empty despite DriverOpts having no granular gate (body=%s)", body)
+			}
+			if !allowAliases && len(ep.Aliases) > 0 && reason == "" {
+				t.Fatalf("Aliases present, AllowAliases=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+			}
+		}
+	})
+}
+
 func TestExtractAndValidateBindSource(t *testing.T) {
 	tests := []struct {
 		name   string

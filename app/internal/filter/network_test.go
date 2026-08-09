@@ -677,3 +677,82 @@ func TestNetworkInspectConnectAllowEndpointConfigTakesPrecedenceOverGranular(t *
 		t.Fatalf("inspect() reason = %q, want empty (AllowEndpointConfig should win)", reason)
 	}
 }
+
+// FuzzNetworkConnectEndpointConfigGates fuzzes the #186 granular
+// endpoint-config gates (TestNetworkInspectConnectGranularEndpointConfig's
+// table, generalized) through the full inspect() entrypoint: for every
+// mutation-generated combination of granular EndpointConfigOptions and
+// network-connect body, it asserts the core fail-closed invariant a disabled
+// gate must uphold — if the decoded endpoint sets a field whose gate is off
+// (and the legacy AllowEndpointConfig escape hatch is also off), inspect()
+// must produce a non-empty denial reason for that field. Links and
+// DriverOpts have no granular gate at all, so they must always be denied
+// once AllowEndpointConfig is off, regardless of the other granular flags.
+func FuzzNetworkConnectEndpointConfigGates(f *testing.F) {
+	f.Add(false, false, false, false, false, true, []byte(`{"EndpointConfig":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}`))
+	f.Add(false, false, false, false, false, true, []byte(`{"EndpointConfig":{"IPAMConfig":{"LinkLocalIPs":["169.254.1.1"]}}}`))
+	f.Add(false, false, false, false, false, true, []byte(`{"EndpointConfig":{"MacAddress":"02:42:ac:1e:00:0a"}}`))
+	f.Add(false, false, false, false, false, true, []byte(`{"EndpointConfig":{"GwPriority":10}}`))
+	f.Add(false, false, false, false, false, false, []byte(`{"EndpointConfig":{"Aliases":["web"]}}`))
+	f.Add(false, true, true, true, true, true, []byte(`{"EndpointConfig":{"Links":["db:database"]}}`))
+	f.Add(false, true, true, true, true, true, []byte(`{"EndpointConfig":{"DriverOpts":{"foo":"bar"}}}`))
+	f.Add(true, false, false, false, false, true, []byte(`{"EndpointConfig":{"MacAddress":"02:42:ac:1e:00:0a"}}`))
+
+	f.Fuzz(func(t *testing.T, allowEndpointConfig, allowStatic, allowLinkLocal, allowMAC, allowGw, allowAliases bool, body []byte) {
+		body = truncateParserFuzzBytes(body, maxNetworkInspectorFuzzBytes)
+
+		granular := EndpointConfigOptions{
+			AllowStaticAddressing: allowStatic,
+			AllowLinkLocalIPs:     allowLinkLocal,
+			AllowMACPinning:       allowMAC,
+			AllowGwPriority:       allowGw,
+			DenyAliases:           !allowAliases,
+		}
+		policy := newNetworkPolicy(NetworkOptions{
+			AllowEndpointConfig: allowEndpointConfig,
+			EndpointConfig:      granular,
+		})
+
+		req := newJSONInspectorFuzzRequest(http.MethodPost, "/networks/app/connect", "", body)
+		reason, err := policy.inspect(nil, req, "/networks/app/connect")
+		drainFuzzRequestBody(req)
+		if err != nil {
+			return
+		}
+		// The legacy whole-object flag wins outright (denyEndpointConfigReason's
+		// documented precedence) — nothing to assert per-field once it is set.
+		if allowEndpointConfig {
+			return
+		}
+
+		var decoded networkConnectRequest
+		if decodePolicySubsetJSON(body, &decoded) != nil || decoded.EndpointConfig == nil {
+			// Undecodable or absent EndpointConfig: inspect() either denies with
+			// its fixed "could not be inspected" message or has nothing to gate.
+			return
+		}
+		ep := *decoded.EndpointConfig
+
+		if !allowStatic && endpointHasStaticAddressFields(ep) && reason == "" {
+			t.Fatalf("static address field present, AllowStaticAddressing=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+		}
+		if !allowLinkLocal && endpointHasLinkLocalIPs(ep) && reason == "" {
+			t.Fatalf("link-local IPs present, AllowLinkLocalIPs=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+		}
+		if !allowMAC && strings.TrimSpace(ep.MacAddress) != "" && reason == "" {
+			t.Fatalf("MAC address present, AllowMACPinning=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+		}
+		if !allowGw && ep.GwPriority != 0 && reason == "" {
+			t.Fatalf("GwPriority present, AllowGwPriority=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+		}
+		if len(ep.Links) > 0 && reason == "" {
+			t.Fatalf("Links present but reason is empty despite Links having no granular gate (body=%s)", body)
+		}
+		if len(ep.DriverOpts) > 0 && reason == "" {
+			t.Fatalf("DriverOpts present but reason is empty despite DriverOpts having no granular gate (body=%s)", body)
+		}
+		if !allowAliases && len(ep.Aliases) > 0 && reason == "" {
+			t.Fatalf("Aliases present, AllowAliases=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+		}
+	})
+}
