@@ -40,6 +40,12 @@ BUNDLE_DIR="${REPO_ROOT}/examples/compose/tri-tool"
 # shellcheck source=scripts/tri-tool-conformance/lib.sh
 source "${SCRIPT_DIR}/lib.sh"
 
+# Every transient err/log/cid file lives under one private mktemp dir: a
+# fixed /tmp path could be pre-created by a local user as a symlink before
+# the shell redirection opens it.
+SCRATCH_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tri-tool-conformance.XXXXXX")"
+trap 'rm -rf "${SCRATCH_DIR}"' EXIT
+
 # busybox pins for the events/logs/lifecycle sentinels and the assertion-8
 # (remote update trigger) recreation check. Only NEW_BUSYBOX_REF matches
 # app/integration/helpers_test.go's busyboxPinnedRef -- reusing the same pin
@@ -87,8 +93,8 @@ run_self_test() {
   local known="${SCRIPT_DIR}/known-routes.json"
   local failed=0
 
-  if ! jq empty "$known" 2>/tmp/known-routes-lint.err; then
-    echo "FAIL: known-routes.json is not valid JSON: $(cat /tmp/known-routes-lint.err)" >&2
+  if ! jq empty "$known" 2>"${SCRATCH_DIR}/known-routes-lint.err"; then
+    echo "FAIL: known-routes.json is not valid JSON: $(cat "${SCRATCH_DIR}/known-routes-lint.err")" >&2
     return 1
   fi
   echo "PASS: known-routes.json parses as valid JSON"
@@ -155,10 +161,10 @@ run_self_test() {
   local match_output match_status
   match_output="$(jq -R \
     --arg m "GET" --arg d "allow" --arg p '^/containers/json$' \
-    "$ACCESS_LOG_ROUTE_MATCH_JQ" "$fixture" 2>/tmp/access-log-match.err)"
+    "$ACCESS_LOG_ROUTE_MATCH_JQ" "$fixture" 2>"${SCRATCH_DIR}/access-log-match.err")"
   match_status=$?
   if [ "$match_status" -ne 0 ]; then
-    echo "FAIL: ACCESS_LOG_ROUTE_MATCH_JQ exited ${match_status} against the fixture's malformed lines: $(cat /tmp/access-log-match.err)" >&2
+    echo "FAIL: ACCESS_LOG_ROUTE_MATCH_JQ exited ${match_status} against the fixture's malformed lines: $(cat "${SCRATCH_DIR}/access-log-match.err")" >&2
     failed=1
   elif ! grep -q '"normalized_path": *"/containers/json"' <<<"$match_output"; then
     echo "FAIL: ACCESS_LOG_ROUTE_MATCH_JQ did not find the expected match past the fixture's malformed lines" >&2
@@ -313,8 +319,8 @@ if [ "$MODE" = "standard" ]; then
   fi
 else
   if ! docker run --rm "$PORTWING_IMAGE_RESOLVED" keygen -comment "tri-tool-conformance-${ROW}" \
-      > "${BUNDLE_DIR}/portwing_ed25519.pem" 2>/tmp/keygen.err; then
-    echo "FATAL: could not generate Portwing Ed25519 keypair from ${PORTWING_IMAGE_RESOLVED}: $(cat /tmp/keygen.err)" >&2
+      > "${BUNDLE_DIR}/portwing_ed25519.pem" 2>"${SCRATCH_DIR}/keygen.err"; then
+    echo "FATAL: could not generate Portwing Ed25519 keypair from ${PORTWING_IMAGE_RESOLVED}: $(cat "${SCRATCH_DIR}/keygen.err")" >&2
     exit 1
   fi
   # Lock the private key down BEFORE deriving the public key: the shell
@@ -337,8 +343,8 @@ else
   fi
   if ! docker run --rm -v "${BUNDLE_DIR}/portwing_ed25519.pem:/key.pem:ro" "$PORTWING_IMAGE_RESOLVED" \
       keygen -pub-from /key.pem -comment "tri-tool-conformance-${ROW}" \
-      > "${BUNDLE_DIR}/portwing_authorized_keys" 2>/tmp/keygen-pub.err; then
-    echo "FATAL: could not derive the authorized_keys line: $(cat /tmp/keygen-pub.err)" >&2
+      > "${BUNDLE_DIR}/portwing_authorized_keys" 2>"${SCRATCH_DIR}/keygen-pub.err"; then
+    echo "FATAL: could not derive the authorized_keys line: $(cat "${SCRATCH_DIR}/keygen-pub.err")" >&2
     exit 1
   fi
   if ! sudo chown 1000:1000 "${BUNDLE_DIR}/portwing_authorized_keys"; then
@@ -363,8 +369,8 @@ fi
 # ---------------------------------------------------------------------------
 
 for busybox_ref in "$OLD_BUSYBOX_REF" "$NEW_BUSYBOX_REF"; do
-  if ! docker pull "$busybox_ref" >/tmp/busybox-pull.log 2>&1; then
-    echo "FATAL: could not pre-pull ${busybox_ref}: $(tail -c 2000 /tmp/busybox-pull.log)" >&2
+  if ! docker pull "$busybox_ref" >"${SCRATCH_DIR}/busybox-pull.log" 2>&1; then
+    echo "FATAL: could not pre-pull ${busybox_ref}: $(tail -c 2000 "${SCRATCH_DIR}/busybox-pull.log")" >&2
     exit 1
   fi
 done
@@ -400,8 +406,8 @@ assert_pristine_boot() {
   local name="pristine-boot"
   compose down -v --remove-orphans >/dev/null 2>&1 || true
 
-  if ! compose up -d sockguard portwing drydock probe >/tmp/compose-up.log 2>&1; then
-    record_result "$name" FAIL "docker compose up failed: $(tail -c 2000 /tmp/compose-up.log)"
+  if ! compose up -d sockguard portwing drydock probe >"${SCRATCH_DIR}/compose-up.log" 2>&1; then
+    record_result "$name" FAIL "docker compose up failed: $(tail -c 2000 "${SCRATCH_DIR}/compose-up.log")"
     return 1
   fi
 
@@ -461,8 +467,8 @@ assert_standard_wrong_secret_probe() {
       -e DD_AGENT_PORTWING_PORT=4000 \
       -e DD_AGENT_PORTWING_SECRET__FILE=/run/secrets/portwing_token \
       -e DD_AGENT_ALLOW_INSECURE_SECRET=true \
-      "$DRYDOCK_IMAGE_RESOLVED" >/tmp/badsecret.cid 2>/tmp/badsecret.err; then
-    record_result "$name" FAIL "could not start the throwaway wrong-secret agent-config probe: $(cat /tmp/badsecret.err)"
+      "$DRYDOCK_IMAGE_RESOLVED" >"${SCRATCH_DIR}/badsecret.cid" 2>"${SCRATCH_DIR}/badsecret.err"; then
+    record_result "$name" FAIL "could not start the throwaway wrong-secret agent-config probe: $(cat "${SCRATCH_DIR}/badsecret.err")"
     rm -f "$wrong_secret_file"
     return 1
   fi
@@ -487,8 +493,8 @@ assert_edge_unknown_key_probe() {
   key_file="$(mktemp)"
   bad_container="tt-conf-badkey-$$"
 
-  if ! docker run --rm "$PORTWING_IMAGE_RESOLVED" keygen -comment "$agent_name" > "$key_file" 2>/tmp/badkey-gen.err; then
-    record_result "$name" FAIL "could not generate the throwaway unregistered keypair: $(cat /tmp/badkey-gen.err)"
+  if ! docker run --rm "$PORTWING_IMAGE_RESOLVED" keygen -comment "$agent_name" > "$key_file" 2>"${SCRATCH_DIR}/badkey-gen.err"; then
+    record_result "$name" FAIL "could not generate the throwaway unregistered keypair: $(cat "${SCRATCH_DIR}/badkey-gen.err")"
     rm -f "$key_file"
     return 1
   fi
@@ -509,8 +515,8 @@ assert_edge_unknown_key_probe() {
       -e AGENT_NAME="$agent_name" \
       -e DRYDOCK_URL=http://drydock:3000 \
       -e PRIVATE_KEY_FILE=/run/secrets/portwing_key \
-      "$PORTWING_IMAGE_RESOLVED" >/tmp/badkey.cid 2>/tmp/badkey-run.err; then
-    record_result "$name" FAIL "could not start the throwaway unknown-key agent-config probe: $(cat /tmp/badkey-run.err)"
+      "$PORTWING_IMAGE_RESOLVED" >"${SCRATCH_DIR}/badkey.cid" 2>"${SCRATCH_DIR}/badkey-run.err"; then
+    record_result "$name" FAIL "could not start the throwaway unknown-key agent-config probe: $(cat "${SCRATCH_DIR}/badkey-run.err")"
     sudo rm -f -- "$key_file"
     return 1
   fi
@@ -790,13 +796,13 @@ assert_remote_update_trigger() {
   probe_curl -X POST "http://localhost/containers/${id}/start" >/dev/null
 
   local trigger_status
-  trigger_status="$(curl --silent --show-error --max-time 30 --output /tmp/trigger-response.json --write-out '%{http_code}' \
+  trigger_status="$(curl --silent --show-error --max-time 30 --output "${SCRATCH_DIR}/trigger-response.json" --write-out '%{http_code}' \
     -X POST -H 'Content-Type: application/json' \
     -d "$(jq -n --arg c "$sentinel" --arg img "${NEW_BUSYBOX_REF%%@*}" '{container:$c, image:$img}')" \
     "http://127.0.0.1:3000/api/triggers/docker/update" 2>/dev/null)"
 
   if [[ ! "$trigger_status" =~ ^2[0-9][0-9]$ ]]; then
-    record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 500 /tmp/trigger-response.json 2>/dev/null)) -- confirm the real trigger contract on the first live dispatch, see harness README 'Known gaps'"
+    record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 500 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)) -- confirm the real trigger contract on the first live dispatch, see harness README 'Known gaps'"
     return 1
   fi
 
