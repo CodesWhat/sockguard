@@ -787,11 +787,33 @@ func validatePolicyBundle(cfg *Config) []string {
 func validateRequestBody(cfg *Config) []string {
 	var errs []string
 	errs = append(errs, validateRequestBodyConfig("request_body", cfg.RequestBody)...)
+	errs = append(errs, validateNetworkEndpointConfig(cfg)...)
 	errs = append(errs, validateClientsConfig(cfg)...)
 	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
 		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))
 	}
 	return errs
+}
+
+// validateNetworkEndpointConfig rejects
+// request_body.network.allow_endpoint_config: true combined with an
+// explicitly configured request_body.network.endpoint_config block (#186):
+// allow_endpoint_config already admits every EndpointSettings field
+// unchanged, so a simultaneous granular block is ambiguous — which one an
+// operator actually intends to govern the request is not something sockguard
+// should guess at silently. Detected via cfg.explicitNetworkEndpointConfig
+// (a provenance-only Viper pass; see explicitNetworkEndpointConfigFile/Bytes
+// in load.go) rather than comparing cfg.RequestBody.Network.EndpointConfig
+// against its Go zero value, because EndpointConfigRequestBodyConfig.AllowAliases
+// defaults to true (config.Defaults()), so the merged struct is never the
+// zero value even when the operator never wrote the block at all.
+func validateNetworkEndpointConfig(cfg *Config) []string {
+	if cfg.RequestBody.Network.AllowEndpointConfig && cfg.explicitNetworkEndpointConfig {
+		return []string{
+			"request_body.network.allow_endpoint_config and request_body.network.endpoint_config are mutually exclusive: allow_endpoint_config: true already admits every EndpointSettings field, so remove the endpoint_config block or set allow_endpoint_config: false and use the granular fields instead",
+		}
+	}
+	return nil
 }
 
 // Admission-mutation config bounds (#151). These are deliberately generous

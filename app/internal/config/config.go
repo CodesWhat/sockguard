@@ -114,6 +114,20 @@ type Config struct {
 	// only matters once Listeners is also non-empty.
 	explicitLegacyListen bool
 
+	// explicitNetworkEndpointConfig records whether
+	// request_body.network.endpoint_config was set explicitly — a YAML key
+	// or a matching SOCKGUARD_REQUEST_BODY_NETWORK_ENDPOINT_CONFIG_*
+	// environment variable — as opposed to left at its defaulted value
+	// (EndpointConfigRequestBodyConfig.AllowAliases defaults to true, so the
+	// merged struct is never the Go zero value even when the operator never
+	// wrote the block — see EndpointConfigRequestBodyConfig's doc comment).
+	// Populated by Load/LoadBytes via a provenance-only Viper pass mirroring
+	// explicitLegacyListen, and consulted by validateNetworkEndpointConfig
+	// to reject request_body.network.allow_endpoint_config: true combined
+	// with an explicit endpoint_config block (#186). Unexported so it never
+	// round-trips through mapstructure/YAML/JSON.
+	explicitNetworkEndpointConfig bool
+
 	// InsecureAcceptOpaqueBuildkitTunnels acknowledges opening POST /session,
 	// POST /grpc, or a direct BuildKit Control-service method path. Both
 	// endpoints are unversioned opaque hijacked streams: dockerd's embedded
@@ -142,6 +156,14 @@ func (c *Config) MarkLegacyListenExplicit() {
 // explicitly, for tests and validation.
 func (c *Config) ExplicitLegacyListen() bool {
 	return c.explicitLegacyListen
+}
+
+// ExplicitNetworkEndpointConfig reports whether
+// request_body.network.endpoint_config was set explicitly, for tests and
+// validation (#186's allow_endpoint_config/endpoint_config mutual-exclusion
+// check — see validateNetworkEndpointConfig).
+func (c *Config) ExplicitNetworkEndpointConfig() bool {
+	return c.explicitNetworkEndpointConfig
 }
 
 // ListenConfig configures a single proxy listener (unix socket or TCP).
@@ -707,13 +729,62 @@ type NetworkRequestBodyConfig struct {
 	AllowIPAMOptions       bool `mapstructure:"allow_ipam_options"`
 	AllowDriverOptions     bool `mapstructure:"allow_driver_options"`
 	AllowEndpointConfig    bool `mapstructure:"allow_endpoint_config"`
-	AllowDisconnectForce   bool `mapstructure:"allow_disconnect_force"`
+	// EndpointConfig narrows allow_endpoint_config into independent per-field
+	// gates (#186) — see EndpointConfigRequestBodyConfig's doc comment for
+	// the field mapping and precedence rules. Only consulted when
+	// allow_endpoint_config is false/unset; setting both is a config
+	// validation error (validateNetworkEndpointConfig). Has no libpod analog
+	// — never consulted by the libpod_network inspector, see libpod_network.go.
+	EndpointConfig       EndpointConfigRequestBodyConfig `mapstructure:"endpoint_config"`
+	AllowDisconnectForce bool                            `mapstructure:"allow_disconnect_force"`
 	// AllowDisableIPv4 permits POST /networks/create with EnableIPv4 explicitly
 	// false (Engine API 1.48+). Docker defaults EnableIPv4 to true (unset and
 	// true both pass); a client-set false disables IPv4 addressing entirely,
 	// an unusual and rarely-intended posture, so it requires this opt-in.
 	// Default false.
 	AllowDisableIPv4 bool `mapstructure:"allow_disable_ipv4"`
+}
+
+// EndpointConfigRequestBodyConfig configures granular per-field admission for
+// Docker's EndpointSettings object — the payload carried by both
+// POST /networks/*/connect's EndpointConfig and POST /containers/create's
+// NetworkingConfig.EndpointsConfig entries (request_body.network's
+// allow_endpoint_config governs both, see filter_options.go's cross-wire).
+//
+// Precedence (#186): request_body.network.allow_endpoint_config: true is the
+// legacy whole-object escape hatch and, when set, admits every field
+// unchanged — this block is not consulted at all in that case, and setting
+// both is rejected at config-load time (validateNetworkEndpointConfig) to
+// avoid silent ambiguity. When allow_endpoint_config is false/unset, each
+// field below gates independently. EndpointSettings fields with no gate here
+// — Links (joining another container's linked alias namespace) and
+// DriverOpts — have no individual escape hatch under the granular form:
+// they are always denied, fail-closed, unless allow_endpoint_config: true is
+// used instead.
+type EndpointConfigRequestBodyConfig struct {
+	// AllowStaticAddressing permits IPAMConfig.IPv4Address/IPv6Address and the
+	// deprecated top-level Gateway/IPAddress/IPPrefixLen/IPv6Gateway/
+	// GlobalIPv6Address/GlobalIPv6PrefixLen fields. Default false.
+	AllowStaticAddressing bool `mapstructure:"allow_static_addressing"`
+	// AllowLinkLocalIPs permits IPAMConfig.LinkLocalIPs, independent of
+	// AllowStaticAddressing. Default false.
+	AllowLinkLocalIPs bool `mapstructure:"allow_link_local_ips"`
+	// AllowMACPinning permits MacAddress — shared by network connect's
+	// EndpointConfig and container-create's deprecated top-level MacAddress
+	// field. Default false.
+	AllowMACPinning bool `mapstructure:"allow_mac_pinning"`
+	// AllowGwPriority permits GwPriority (Engine API 1.55+, which network
+	// provides the container's default gateway when attached to more than
+	// one). Default false.
+	AllowGwPriority bool `mapstructure:"allow_gw_priority"`
+	// AllowAliases permits Aliases. Default true: this reproduces
+	// allow_endpoint_config's long-standing behavior of never gating Aliases
+	// at all — Docker Compose sets Aliases: [serviceName] on every endpoint
+	// it creates, so denying them by default would break every multi-network
+	// Compose recreate. Set explicitly to false to deny Aliases under the
+	// granular form; there is no equivalent opt-out under
+	// allow_endpoint_config: true, which always admits Aliases.
+	AllowAliases bool `mapstructure:"allow_aliases"`
 }
 
 // SecretRequestBodyConfig configures inspection for POST /secrets/create.
@@ -1295,6 +1366,24 @@ func Defaults() Config {
 			},
 			Plugin: PluginRequestBodyConfig{
 				AllowOfficial: true,
+			},
+			// Network.EndpointConfig.AllowAliases defaults true so the granular
+			// form's default reproduces allow_endpoint_config's long-standing
+			// unconditional-allow behavior for Aliases exactly (#186) — see
+			// EndpointConfigRequestBodyConfig's doc comment. LibpodNetwork
+			// reuses the same struct type and gets the identical default for
+			// posture consistency, even though it has no libpod-native network
+			// connect endpoint to gate and never consults EndpointConfig at all
+			// — see libpod_network.go.
+			Network: NetworkRequestBodyConfig{
+				EndpointConfig: EndpointConfigRequestBodyConfig{
+					AllowAliases: true,
+				},
+			},
+			LibpodNetwork: NetworkRequestBodyConfig{
+				EndpointConfig: EndpointConfigRequestBodyConfig{
+					AllowAliases: true,
+				},
 			},
 		},
 		Clients: ClientsConfig{
