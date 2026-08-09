@@ -147,10 +147,11 @@ rules:
   # (Compose sets Aliases on every endpoint it creates, so a plain
   # multi-network recreate works by default with no config change), but can
   # be denied explicitly with endpoint_config.allow_aliases: false. Static IP
-  # addressing and MAC pinning each have their own granular gate
-  # (endpoint_config.allow_static_addressing / allow_mac_pinning) an operator
+  # addressing, link-local IPs, MAC pinning, and gateway priority each have
+  # their own granular gate (endpoint_config.allow_static_addressing /
+  # allow_link_local_ips / allow_mac_pinning / allow_gw_priority) an operator
   # can enable individually for recreated containers that need one but not
-  # the other. Endpoint DriverOpts (e.g. macvlan with a pinned address) and
+  # the others. Endpoint DriverOpts (e.g. macvlan with a pinned address) and
   # Links have no granular gate at all — recreated containers that need
   # either must set request_body.network.allow_endpoint_config: true here
   # instead, which admits every endpoint field at once (and is mutually
