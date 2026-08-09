@@ -250,7 +250,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full itemized history.
 
 The Docker socket is **root access to your host**. Every container with socket access can escape containment, mount the host filesystem, and pivot to other containers. Yet tools like Traefik, Portainer, and drydock need socket access to function.
 
-Most existing socket proxies stop at method/path or regex filtering. Tecnativa gates broad Docker API sections; LinuxServer adds explicit Podman/libpod families; wollomatic adds regex allowlists, caller admission, bind-source restrictions, JSON logs, and a watchdog; 11notes ships a fixed allow-most-reads proxy over Unix and TCP; and CetusGuard pairs default-deny regex rules with mTLS, native libpod routes, and multiple listeners. Sockguard goes further on body-aware policy enforcement, per-client profiles, ownership isolation, and read-side visibility/redaction—but the competitor review also exposed real gaps now committed to v1.6.
+Most existing socket proxies stop at method/path or regex filtering. Tecnativa gates broad Docker API sections; LinuxServer adds explicit Podman/libpod families; wollomatic adds regex allowlists, caller admission, bind-source restrictions, JSON logs, and a watchdog; 11notes ships a fixed allow-most-reads proxy over Unix and TCP; and CetusGuard pairs default-deny regex rules with mTLS, native libpod routes, and multiple listeners. Sockguard goes further on body-aware policy enforcement, per-client profiles, ownership isolation, and read-side visibility/redaction, and as of v1.6.0 also covers native `/libpod` routes and multiple independently scoped listeners.
 
 <hr>
 
@@ -319,8 +319,8 @@ How we stack up against other Docker socket proxies:
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (blocks 7 risky GETs) | ❌ | ✅ (visibility + protected JSON redaction) |
 | Remote TCP mTLS (listener) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (TLS 1.3) |
 | Remote daemon upstream (TLS) | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ (failover) |
-| Podman native `/libpod` API | ❌ | ✅ | Via manual regex | ❌ | ✅ | Planned v1.6 |
-| Multiple main listeners | ❌ | ❌ | ❌ | ✅ (Unix + TCP) | ✅ | Planned v1.6 |
+| Podman native `/libpod` API | ❌ | ✅ | Via manual regex | ❌ | ✅ | ✅ (default-deny, incl. pod lifecycle) |
+| Multiple main listeners | ❌ | ❌ | ❌ | ✅ (Unix + TCP) | ✅ | ✅ (Unix and/or TCP, listener-scoped TLS + profiles) |
 | Structured access logs | ❌ | ❌ | ✅ (JSON option) | ❌ | ❌ | ✅ (request + trace correlation) |
 | Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
 | Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
@@ -330,7 +330,7 @@ How we stack up against other Docker socket proxies:
 | YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ✅ |
 
-`11notes/docker-socket-proxy` takes a deliberately narrow stance: it allows most Docker API reads, blocks seven sensitive GET surfaces, and refuses all writes. Sockguard instead starts from a configurable default deny, offers finer-grained redaction/visibility, and can authorize inspected writes. `hectorm/cetusguard` is the closest in spirit: default-deny regex rules plus frontend/backend mTLS, native libpod families, and multiple frontend addresses. Sockguard is stronger on request-body inspection, per-client profiles, ownership, read filtering, metrics, hot reload, and health-checked upstream failover; CetusGuard's libpod and listener flexibility are honest current advantages. The full evidence and resulting priorities are in the [roadmap](https://getsockguard.com/docs/roadmap).
+`11notes/docker-socket-proxy` takes a deliberately narrow stance: it allows most Docker API reads, blocks seven sensitive GET surfaces, and refuses all writes. Sockguard instead starts from a configurable default deny, offers finer-grained redaction/visibility, and can authorize inspected writes. `hectorm/cetusguard` is the closest in spirit: default-deny regex rules plus frontend/backend mTLS, native libpod families, and multiple frontend addresses. Sockguard is stronger on request-body inspection, per-client profiles, ownership, read filtering, metrics, hot reload, and health-checked upstream failover; v1.6.0 closed the libpod and multi-listener gaps that were CetusGuard's remaining advantages. The full evidence and resulting priorities are in the [roadmap](https://getsockguard.com/docs/roadmap).
 
 </details>
 
