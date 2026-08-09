@@ -16,9 +16,15 @@ The other v1.5 policy additions are opt-in: `restrict_namespace_sharing`, `allow
 
 Before switching the image tag, validate the current configuration with `sockguard validate --config /etc/sockguard/config.yaml` or the admin listener's `POST /admin/validate`. Deployments using macvlan/static-IP recreation should pay particular attention to `allow_endpoint_config`; the bundled drydock presets document that compatibility case inline.
 
+## From Sockguard v1.6 to v1.7
+
 ### `allow_endpoint_config` can now be narrowed to per-field gates (#186)
 
-`request_body.network.allow_endpoint_config: true` still admits every `EndpointSettings` field exactly as before — no existing configuration needs to change. New deployments that only need one or two of those fields (Compose `Aliases` plus a static IP, say, but not MAC pinning) can opt into the narrower `request_body.network.endpoint_config` block instead: `allow_static_addressing`, `allow_link_local_ips`, `allow_mac_pinning`, and `allow_gw_priority` each gate one field independently and default to `false`; `allow_aliases` defaults to `true` to preserve the existing unconditional-allow behavior for Compose aliases. `endpoint_config` is only consulted when `allow_endpoint_config` is `false` — setting both is a load-time validation error, since the legacy flag already admits everything the granular block could. See [Configuration](/configuration#request-body-inspection) for the full field mapping.
+`request_body.network.allow_endpoint_config: true` still admits every `EndpointSettings` field exactly as before — no existing configuration needs to change. New deployments that only need one or two of those fields (Compose `Aliases` plus a static IP, say, but not MAC pinning) can opt into the narrower `request_body.network.endpoint_config` block instead: `allow_static_addressing`, `allow_link_local_ips`, `allow_mac_pinning`, and `allow_gw_priority` each gate one field independently and default to `false`; `allow_aliases` defaults to `true` to preserve the existing unconditional-allow behavior for Compose aliases. `endpoint_config` is only consulted when `allow_endpoint_config` is `false` — setting both is a load-time validation error, since the legacy flag already admits everything the granular block could.
+
+**`Links` and `DriverOpts` have no granular gate.** Neither field is covered by any `endpoint_config.allow_*` option, on either `POST /networks/*/connect` or `POST /containers/create`'s `NetworkingConfig.EndpointsConfig` — they remain denied under the granular block regardless of which other fields you enable. A workflow that needs either must keep `allow_endpoint_config: true` and accept whole-object access instead of narrowing to `endpoint_config`.
+
+See [Configuration](/configuration#request-body-inspection) for the full field mapping.
 
 ## From Tecnativa/docker-socket-proxy
 
