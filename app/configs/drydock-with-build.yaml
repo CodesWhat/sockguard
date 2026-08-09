@@ -178,7 +178,11 @@ rules:
   # itself fails, drydock records it in its update-operation history/audit
   # log without a push notification, so check drydock's operation history
   # after a denied request). Older drydock versions could leave an orphaned
-  # Created container on the network instead.
+  # Created container on the network instead. Operators who only need one
+  # or two of those fields (e.g. a static IP but not MAC pinning) can use
+  # request_body.network.endpoint_config's per-field gates instead of the
+  # all-or-nothing allow_endpoint_config flag (#186) — see Configuration
+  # docs for the full field mapping.
   - match: { method: GET, path: "/networks" }
     action: allow
   - match: { method: GET, path: "/networks/*" }
