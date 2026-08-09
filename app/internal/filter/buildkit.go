@@ -3,6 +3,7 @@ package filter
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 )
 
 // BuildkitOptions carries the ONE signal Phase 1 of issue #185 (BuildKit
@@ -20,14 +21,21 @@ type BuildkitOptions struct {
 	TunnelConfigured bool
 }
 
-// buildkitTunnelPaths are the two opaque, unversioned BuildKit endpoints
+// buildkitTunnelPaths are the three opaque, unversioned BuildKit endpoints
 // (see cmd/rules.go's buildkitTunnelEndpoints doc comment for the full
-// rationale): POST /session, the frontend/session bridge, and POST /grpc,
-// the moby.buildkit.v1.Control service tunneled over an HTTP/1.1 hijack.
-// Matched against the ALREADY version-stripped normalized path, exactly
-// like every other matches*Inspection function in this package.
+// rationale): POST /session, the frontend/session bridge; POST /grpc, the
+// moby.buildkit.v1.Control service tunneled over an HTTP/1.1 hijack; and any
+// direct moby.buildkit.v1.Control/<Method> path (e.g.
+// /moby.buildkit.v1.Control/Solve, /moby.buildkit.v1.Control/Status) —
+// cmd/rules.go's buildkitTunnelEndpoints probes these too, and once
+// request_body.buildkit is configured, startup validation admits rules that
+// match them, so this inspector must deny them here or they would reach the
+// Docker socket completely unmediated. Matched against the ALREADY
+// version-stripped normalized path, exactly like every other
+// matches*Inspection function in this package.
 func matchesBuildkitTunnelInspection(normalizedPath string) bool {
-	return normalizedPath == "/session" || normalizedPath == "/grpc"
+	return normalizedPath == "/session" || normalizedPath == "/grpc" ||
+		strings.HasPrefix(normalizedPath, "/moby.buildkit.v1.Control/")
 }
 
 // buildkitPolicy is Phase 1's deny-only "inspector" for the BuildKit tunnel

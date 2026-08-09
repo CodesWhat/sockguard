@@ -1,7 +1,5 @@
 package buildkitproxy
 
-import "reflect"
-
 // Policy is the runtime-facing translation of request_body.buildkit config
 // (see internal/config's BuildkitRequestBodyConfig.ToPolicy). This package
 // never imports internal/config — translation flows one direction only,
@@ -19,18 +17,40 @@ type Policy struct {
 	Session SessionPolicy
 }
 
-// Configured reports whether p differs from the zero-value Policy — i.e.
-// whether request_body.buildkit was set to anything other than every field
+// Configured reports whether p was set to anything other than every field
 // left at its secure (false/empty) default. Because every Buildkit sub-field
 // defaults to false or an empty slice (there is no default-true field the
-// way e.g. network.endpoint_config.allow_aliases has), a zero-value Policy
-// is behaviorally indistinguishable from "the block was never written" —
-// both deny everything — so a plain reflect.DeepEqual against the zero
-// value is sufficient here without needing #186's Viper-provenance-tracking
-// pattern (which exists specifically to handle a default-true field zero
-// value could not represent).
+// way e.g. network.endpoint_config.allow_aliases has), a Policy with every
+// field at its zero value is behaviorally indistinguishable from "the block
+// was never written" — both deny everything — so this is a plain field
+// predicate without needing #186's Viper-provenance-tracking pattern (which
+// exists specifically to handle a default-true field zero value could not
+// represent).
+//
+// This is deliberately NOT reflect.DeepEqual(p, Policy{}): an explicitly
+// written but empty allowlist — e.g. allowed_registries: [] — parses to a
+// non-nil empty slice, which DeepEqual would treat as different from the
+// zero value's nil slice even though both are empty and both deny
+// everything. Each field is checked explicitly instead, by length rather
+// than nilness, so a non-nil empty slice reads the same as "not configured"
+// as a nil one does.
 func (p Policy) Configured() bool {
-	return !reflect.DeepEqual(p, Policy{})
+	return p.Control.AllowInfo ||
+		p.Control.AllowListWorkers ||
+		p.Control.AllowStatus ||
+		p.Control.Solve.Allow ||
+		p.Session.Health ||
+		p.Session.Auth.Allow ||
+		len(p.Session.Auth.AllowedRegistries) > 0 ||
+		len(p.Session.Auth.AllowedRealms) > 0 ||
+		len(p.Session.Auth.AllowedScopes) > 0 ||
+		p.Session.Secrets.Allow ||
+		len(p.Session.Secrets.AllowedIDs) > 0 ||
+		p.Session.SSH.Allow ||
+		len(p.Session.SSH.AllowedIDs) > 0 ||
+		p.Session.FileSync.Allow ||
+		p.Session.FileSend.Allow ||
+		p.Session.Upload.Allow
 }
 
 // ControlPolicy gates moby.buildkit.v1.Control, reached over POST /grpc.
