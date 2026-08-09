@@ -173,6 +173,30 @@ run_self_test() {
     echo "PASS: ACCESS_LOG_ROUTE_MATCH_JQ tolerates missing-normalized_path and bare-string-JSON lines without poisoning the exit status"
   fi
 
+  # Round-6 regression pin: the full matcher pipeline (jq + grep tail) must
+  # return success on a stream where the route matches many times. With an
+  # early-exiting `grep -q` tail, grep quits on the first match and jq dies
+  # on SIGPIPE (141) writing later ones, so under pipefail the wait reported
+  # failure precisely when the traffic was healthiest (Portwing polling
+  # every 5s -> guaranteed multi-match). The matched output must exceed the
+  # 64KB pipe buffer for the SIGPIPE to be deterministic rather than a
+  # scheduling race, hence 5000 matches (~450KB) -- verified to exit 141
+  # with the old tail on every run, 0 with the read-to-EOF tail.
+  local multi_stream multi_status
+  multi_stream="$(awk 'BEGIN{
+    m="{\"msg\":\"request\",\"method\":\"GET\",\"decision\":\"allow\",\"normalized_path\":\"/containers/json\"}";
+    f="{\"msg\":\"request\",\"method\":\"GET\",\"decision\":\"allow\",\"normalized_path\":\"/events\"}";
+    for(i=0;i<5000;i++){print m; print f; print f; print f}
+  }')"
+  access_log_stream_has_route "GET" "allow" '^/containers/json$' <<<"$multi_stream"
+  multi_status=$?
+  if [ "$multi_status" -ne 0 ]; then
+    echo "FAIL: access_log_stream_has_route exited ${multi_status} on a multi-match stream (grep tail must read to EOF -- SIGPIPE regression)" >&2
+    failed=1
+  else
+    echo "PASS: access_log_stream_has_route survives a multi-match stream under pipefail (read-to-EOF tail)"
+  fi
+
   # route_drift_status (lib.sh) must fail closed on an empty observed set --
   # PASSing an empty diff would silently rubber-stamp a broken log capture
   # or normalizer as "nothing unexpected happened."
@@ -216,6 +240,7 @@ case "$ROW" in
     PORTWING_VERSION="${PORTWING_VERSION_INPUT:-latest}"
     DRYDOCK_VERSION="${DRYDOCK_VERSION_INPUT:-latest}"
     EXEC_ROW=0
+    STORE_SYNC_TIMEOUT=120
     ;;
   current-edge)
     COMPOSE_FILES=("${BUNDLE_DIR}/docker-compose.edge-exec.yml" "${BUNDLE_DIR}/docker-compose.conformance-overlay.yml")
@@ -224,6 +249,14 @@ case "$ROW" in
     PORTWING_VERSION="${PORTWING_VERSION_INPUT:-latest}"
     DRYDOCK_VERSION="${DRYDOCK_VERSION_INPUT:-latest}"
     EXEC_ROW=1
+    # Edge mode ignores the overlay's DD_POLL_INTERVAL=5: Portwing's edge
+    # client takes its refresh cadence from the pollInterval in drydock's
+    # WebSocket welcome (portwing edge/client.go), and drydock hardcodes
+    # that to 300s with no env override (drydock app/api/portwing-ws.ts,
+    # `const pollInterval = 300`). A mid-run sentinel can therefore take a
+    # full poll cycle to reach drydock's store on this row; 360s covers one
+    # 300s cycle plus report/ingest slack.
+    STORE_SYNC_TIMEOUT=360
     ;;
   legacy-floor)
     # Audited-floor pins from sockguard PR #155 -- deliberately NOT
@@ -236,6 +269,7 @@ case "$ROW" in
     PORTWING_VERSION="0.8.1"
     DRYDOCK_VERSION="1.5.2"
     EXEC_ROW=0
+    STORE_SYNC_TIMEOUT=120
     ;;
   *)
     echo "run-matrix.sh: unknown --row '${ROW}' (expected current-standard|current-edge|legacy-floor)" >&2
@@ -581,11 +615,13 @@ assert_auth_handshake() {
 # ---------------------------------------------------------------------------
 
 assert_inventory_inspect() {
-  # 120s, not 30s: the 2026-08-09 gate run proved Portwing's first
-  # successful poll cycle through sockguard can land more than 30s after
-  # the handshake on a loaded runner (the routes were in the end-of-row
-  # capture, just not inside the old window). The traffic is organic and
-  # cumulative-log scanned, so a longer wait costs nothing on healthy rows.
+  # 120s window. Historical note: the 2026-08-09 gate runs appeared to show
+  # this traffic landing outside a 30s window; round 6 proved the routes
+  # were in the log all along and the WAIT was broken (grep -q SIGPIPE
+  # under pipefail whenever the route matched more than once -- see the
+  # ACCESS_LOG_ROUTE_MATCH_JQ comment in lib.sh). 120s stays as headroom
+  # for genuinely slow first polls; the scan is cumulative so a healthy
+  # row still passes on its first iteration.
   local name="inventory-inspect"
   local list_ok=1 inspect_ok=1
   wait_for_access_log_route GET allow '^/containers/json$' 120 && list_ok=0
@@ -806,8 +842,11 @@ assert_remote_update_trigger() {
   # paginated store envelope. Presence proves the sockguard-mediated sync
   # path end to end; ?limit=500 keeps the sentinel on page one even on a
   # busy daemon.
+  # STORE_SYNC_TIMEOUT is per-row: 120s where the overlay's DD_POLL_INTERVAL=5
+  # applies (standard mode), 360s on current-edge where drydock's welcome
+  # pins the poll cycle at 300s (see the row-configuration comment).
   local doc="" dd_id="" dd_agent="" waited=0
-  while (( waited < 120 )); do
+  while (( waited < STORE_SYNC_TIMEOUT )); do
     doc="$(curl --silent --max-time 10 "http://127.0.0.1:3000/api/containers?limit=500" 2>/dev/null \
       | jq -c --arg n "$sentinel" '[(.data // .) | .[]? | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty' 2>/dev/null)"
     if [ -n "$doc" ]; then
@@ -817,7 +856,7 @@ assert_remote_update_trigger() {
     waited=$(( waited + 5 ))
   done
   if [ -z "$doc" ]; then
-    record_result "$name" FAIL "sentinel never appeared in drydock's /api/containers store within 120s"
+    record_result "$name" FAIL "sentinel never appeared in drydock's /api/containers store within ${STORE_SYNC_TIMEOUT}s"
     return 1
   fi
   dd_id="$(jq -r '.id // empty' <<<"$doc")"

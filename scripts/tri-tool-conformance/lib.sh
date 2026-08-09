@@ -141,6 +141,17 @@ sockguard_access_log() {
 # and reports the wait as failed regardless of what grep found. That poisons
 # assertions 3 (inventory-inspect), 4 (events), and 10 (route-drift, via a
 # similar pattern in normalize-routes.jq) on otherwise-passing traffic.
+#
+# For the same pipefail reason the last pipe stage must READ TO EOF, never
+# exit early: `grep -q` quits on the first match, and if jq then emits a
+# SECOND matching line it dies on SIGPIPE (141), failing the pipeline even
+# though the route was observed. That failure mode is deterministic exactly
+# when the traffic is healthy -- e.g. Portwing polling /containers/json
+# every DD_POLL_INTERVAL seconds guarantees multiple matches -- which is
+# how the v1.6.0 gate's inventory-inspect assertion failed on every
+# standard row while the routes sat plainly in the log (round 6).
+# `grep -c ... >/dev/null` keeps grep's found/not-found exit semantics but
+# always consumes the full stream.
 # shellcheck disable=SC2016 # single-quoted on purpose: $m/$d/$p are jq --arg variables, not shell
 ACCESS_LOG_ROUTE_MATCH_JQ='
   (try fromjson catch empty)
@@ -149,14 +160,23 @@ ACCESS_LOG_ROUTE_MATCH_JQ='
   | select(.method==$m and ((.decision // "allow")==$d))
   | select((.normalized_path? // empty | strings | test($p)))
 '
+# access_log_stream_has_route is the wait's matcher: reads an access-log
+# stream on stdin, exits 0 iff at least one line matches (method, decision,
+# path regex). Kept as its own function so --self-test can drive it with a
+# synthetic multi-match stream and pin the read-to-EOF requirement above.
+access_log_stream_has_route() {
+  local method="$1" decision="$2" path_regex="$3"
+  jq -R \
+    --arg m "$method" --arg d "$decision" --arg p "$path_regex" \
+    "$ACCESS_LOG_ROUTE_MATCH_JQ" \
+    2>/dev/null | grep -c . >/dev/null
+}
+
 wait_for_access_log_route() {
   local method="$1" decision="$2" path_regex="$3" timeout="${4:-30}"
   local waited=0
   while (( waited < timeout )); do
-    if sockguard_access_log | jq -R \
-        --arg m "$method" --arg d "$decision" --arg p "$path_regex" \
-        "$ACCESS_LOG_ROUTE_MATCH_JQ" \
-        2>/dev/null | grep -q .; then
+    if sockguard_access_log | access_log_stream_has_route "$method" "$decision" "$path_regex"; then
       return 0
     fi
     sleep 2
@@ -166,12 +186,15 @@ wait_for_access_log_route() {
 }
 
 # wait_for_log_line polls `docker compose logs <service>` for a line
-# matching an extended-regex pattern within timeout seconds.
+# matching an extended-regex pattern within timeout seconds. Same
+# read-to-EOF rule as above: an early-exiting grep -Eq would SIGPIPE
+# `docker compose logs` under pipefail whenever >64KB of log follows the
+# first match.
 wait_for_log_line() {
   local service="$1" pattern="$2" timeout="${3:-30}"
   local waited=0
   while (( waited < timeout )); do
-    if compose logs --no-color --no-log-prefix "$service" 2>/dev/null | grep -Eq "$pattern"; then
+    if compose logs --no-color --no-log-prefix "$service" 2>/dev/null | grep -Ec "$pattern" >/dev/null; then
       return 0
     fi
     sleep 2
