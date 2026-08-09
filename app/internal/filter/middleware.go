@@ -106,6 +106,12 @@ type PolicyConfig struct {
 	// LibpodSecret configures request-body inspection for
 	// POST /libpod/secrets/create. #148.
 	LibpodSecret SecretOptions
+	// Buildkit carries #185 phase 1's single deny-only signal for the
+	// opaque BuildKit tunnel endpoints (POST /session, POST /grpc) — see
+	// buildkitPolicy.inspect's doc comment in buildkit.go for why this
+	// exists and why it is deliberately not the richer buildkitproxy.Policy
+	// translation.
+	Buildkit BuildkitOptions
 }
 
 // Options configures filter middleware behavior.
@@ -389,6 +395,12 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesLibpodVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.LibpodVolume).inspectLibpod, "failed to inspect libpod volume create request body", "unable to inspect libpod volume create request body"},
 		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpodCreate, "failed to inspect libpod network create request body", "unable to inspect libpod network create request body"},
 		{http.MethodPost, matchesLibpodSecretInspection, inspectSeverityMedium, newLibpodSecretPolicy(cfg.LibpodSecret).inspect, "failed to inspect libpod secret create request", "unable to inspect libpod secret create request"},
+		// #185 phase 1: deny-only guard for the opaque BuildKit tunnel
+		// endpoints when request_body.buildkit is configured — see
+		// buildkit.go's buildkitPolicy.inspect doc comment. Never reads the
+		// request body, so it costs nothing when TunnelConfigured is false
+		// (the default).
+		{http.MethodPost, matchesBuildkitTunnelInspection, inspectSeverityCritical, newBuildkitPolicy(cfg.Buildkit).inspect, "failed to inspect buildkit tunnel request", "unable to inspect buildkit tunnel request"},
 	}
 	byMethod := groupInspectPoliciesByMethod(all)
 	return runtimePolicy{

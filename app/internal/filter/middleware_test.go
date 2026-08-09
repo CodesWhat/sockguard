@@ -1745,6 +1745,19 @@ func TestMatchesInspectionFunctionsRejectAdjacentPaths(t *testing.T) {
 			matchPaths: []string{"/swarm/init", "/swarm/join", "/swarm/update", "/swarm/unlock"},
 			denyPaths:  []string{"/swarm", "/swarm/unlockkey", "/swarm/inspect"},
 		},
+		{
+			name:    "buildkit tunnel",
+			matcher: matchesBuildkitTunnelInspection,
+			matchPaths: []string{
+				"/session", "/grpc",
+				"/moby.buildkit.v1.Control/Solve",
+				"/moby.buildkit.v1.Control/Status",
+			},
+			denyPaths: []string{
+				"/sessions", "/grpcs", "/session/foo", "/grpc/foo",
+				"/moby.buildkit.v1.Control", "/moby.buildkit.v1.Control2/Solve",
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

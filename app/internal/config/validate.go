@@ -788,6 +788,7 @@ func validateRequestBody(cfg *Config) []string {
 	var errs []string
 	errs = append(errs, validateRequestBodyConfig("request_body", cfg.RequestBody)...)
 	errs = append(errs, validateNetworkEndpointConfig(cfg)...)
+	errs = append(errs, validateBuildkitAckMutualExclusion(cfg)...)
 	errs = append(errs, validateClientsConfig(cfg)...)
 	if cfg.Ownership.Owner != "" && cfg.Ownership.LabelKey == "" {
 		errs = append(errs, requiredWhenError("ownership.label_key", "ownership.owner is set"))
@@ -814,6 +815,35 @@ func validateNetworkEndpointConfig(cfg *Config) []string {
 		}
 	}
 	return nil
+}
+
+// validateBuildkitAckMutualExclusion rejects
+// insecure_accept_opaque_buildkit_tunnels: true combined with a configured
+// request_body.buildkit block (issue #185 phase 1) — either top-level or on
+// any client profile. Mediation supersedes the opaque-tunnel acknowledgment
+// per the #185 sign-off ("the wholesale ack and the mediator never stack");
+// requiring the operator to pick one avoids the ambiguous state of a
+// profile declaring real BuildKit policy while the global ack quietly
+// admits the same endpoints with zero inspection. This mirrors #186's
+// mutual-exclusion pattern for network.allow_endpoint_config vs
+// network.endpoint_config, adapted to Policy.Configured's plain zero-value
+// check (see buildkitproxy.Policy.Configured's doc comment for why no
+// Viper-provenance tracking is needed here).
+func validateBuildkitAckMutualExclusion(cfg *Config) []string {
+	if !cfg.InsecureAcceptOpaqueBuildkitTunnels {
+		return nil
+	}
+	var errs []string
+	if cfg.RequestBody.Buildkit.ToPolicy().Configured() {
+		errs = append(errs, "insecure_accept_opaque_buildkit_tunnels and request_body.buildkit are mutually exclusive: mediation supersedes the opaque-tunnel acknowledgment, so set insecure_accept_opaque_buildkit_tunnels: false and configure request_body.buildkit instead, or remove the request_body.buildkit block and keep the acknowledgment")
+	}
+	for _, profile := range cfg.Clients.Profiles {
+		if !profile.RequestBody.Buildkit.ToPolicy().Configured() {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("client profile %q configures request_body.buildkit, but the top-level insecure_accept_opaque_buildkit_tunnels=true acknowledgment (a global setting, not per-profile) would otherwise admit the same opaque tunnel with zero inspection for this profile too: set insecure_accept_opaque_buildkit_tunnels: false", profile.Name))
+	}
+	return errs
 }
 
 // Admission-mutation config bounds (#151). These are deliberately generous
@@ -1540,6 +1570,39 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	errs = append(errs, validateSwarmConfig(prefix, cfg.Swarm)...)
 	errs = append(errs, validatePluginConfig(prefix, cfg.Plugin)...)
 	errs = append(errs, validateLibpodPodCreateConfig(prefix, cfg.LibpodPodCreate)...)
+	errs = append(errs, validateBuildkitConfig(prefix, cfg.Buildkit)...)
+	return errs
+}
+
+// validateBuildkitConfig validates request_body.buildkit (issue #185 phase
+// 1). AllowedRegistries reuses the same bare-registry-host normalization as
+// image_pull/service/plugin's allowlists; AllowedRealms/AllowedScopes/
+// AllowedIDs have no host-shaped structure to normalize, so — like
+// container_create.allowed_namespace_sharing_containers — they are only
+// checked for being non-empty and free of leading/trailing whitespace
+// (whitespace padding is always operator error: it can never match the
+// exact string comparison phase 3+'s mediator will use).
+func validateBuildkitConfig(prefix string, cfg BuildkitRequestBodyConfig) []string {
+	var errs []string
+	errs = append(errs, validateRegistryHostEntries(prefix, "buildkit.session.auth.allowed_registries", cfg.Session.Auth.AllowedRegistries)...)
+	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.session.auth.allowed_realms", cfg.Session.Auth.AllowedRealms)...)
+	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.session.auth.allowed_scopes", cfg.Session.Auth.AllowedScopes)...)
+	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.session.secrets.allowed_ids", cfg.Session.Secrets.AllowedIDs)...)
+	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.session.ssh.allowed_ids", cfg.Session.SSH.AllowedIDs)...)
+	return errs
+}
+
+// validateBuildkitOpaqueEntries flags any entry that is empty or carries
+// leading/trailing whitespace. entries is the dotted field name suffix used
+// in the error message (e.g. "buildkit.session.secrets.allowed_ids").
+func validateBuildkitOpaqueEntries(prefix, entries string, values []string) []string {
+	var errs []string
+	for _, v := range values {
+		if v != "" && v == strings.TrimSpace(v) {
+			continue
+		}
+		errs = append(errs, fmt.Sprintf("%s.%s entries must be non-empty values with no leading/trailing whitespace, got %q", prefix, entries, v))
+	}
 	return errs
 }
 

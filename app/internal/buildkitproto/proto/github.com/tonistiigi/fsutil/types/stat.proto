@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+// CURATED copy of tonistiigi/fsutil's types/stat.proto, vendored transitively
+// for sockguard issue #185 (BuildKit gRPC mediation) — moby/buildkit's
+// session/filesync/filesync.proto's FileSync.DiffCopy stream carries
+// fsutil.types.Packet (wire.proto), which embeds this Stat message. See
+// ../../../../../PROVENANCE.md for the upstream source URL, git tag, and
+// sha256 of the full original file.
+//
+// Removed relative to upstream: the
+// `import "github.com/planetscale/vtprotobuf/vtproto/ext.proto";` line and
+// message Stat's `option (vtproto.mempool) = true;` annotation are dropped
+// (see wire.proto's file comment for why sockguard's generation never runs
+// vtprotobuf's protoc-gen-go-vtproto — this repo generates plain
+// google.golang.org/protobuf structs only). Deleting an option or import
+// neither vendored file's generator understands changes nothing about the
+// wire format any consumer — vtprotobuf or plain protobuf — decodes.
+package fsutil.types;
+
+// go_package's alias is retargeted to sockguard's flat vendored-package
+// layout (package fsutiltypes, matching the directory name, not upstream's
+// bare "types") — this file is already a curated subset (see the vtprotobuf
+// removal note above), so this is one more deliberate deviation from
+// upstream. See PROVENANCE.md.
+option go_package = "github.com/codeswhat/sockguard/internal/buildkitproto/fsutiltypes;fsutiltypes";
+
+message Stat {
+  string path = 1;
+  uint32 mode = 2;
+  uint32 uid = 3;
+  uint32 gid = 4;
+  int64 size = 5;
+  int64 modTime = 6;
+  // int32 typeflag = 7;
+  string linkname = 7;
+  int64 devmajor = 8;
+  int64 devminor = 9;
+  map<string, bytes> xattrs = 10;
+}

@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package moby.sshforward.v1;
+
+// go_package is retargeted to sockguard's vendored-package layout so the
+// generated Go code's import statements resolve inside this module; this is
+// the ONLY deviation from the upstream file — see PROVENANCE.md.
+option go_package = "github.com/codeswhat/sockguard/internal/buildkitproto/sshforward;sshforward";
+
+service SSH {
+	rpc CheckAgent(CheckAgentRequest) returns (CheckAgentResponse);
+	rpc ForwardAgent(stream BytesMessage) returns (stream BytesMessage);
+}
+
+// BytesMessage contains a chunk of byte data
+message BytesMessage{
+	bytes data = 1;
+}
+
+message CheckAgentRequest {
+	string ID = 1;
+}
+
+message CheckAgentResponse {
+}

@@ -401,6 +401,14 @@ type RequestBodyConfig struct {
 	Swarm            SwarmRequestBodyConfig            `mapstructure:"swarm"`
 	Node             NodeRequestBodyConfig             `mapstructure:"node"`
 	Plugin           PluginRequestBodyConfig           `mapstructure:"plugin"`
+	// Buildkit configures the (currently deny-only — see issue #185 phase 1)
+	// BuildKit gRPC mediation policy for POST /session and POST /grpc. An
+	// absent block denies both endpoints internally even when an outer HTTP
+	// rule allows them — there is no separate enabled toggle to drift out of
+	// sync with the sub-blocks below. See BuildkitRequestBodyConfig's doc
+	// comment for the full posture and validateBuildkitAckMutualExclusion in
+	// validate.go for its interaction with InsecureAcceptOpaqueBuildkitTunnels.
+	Buildkit BuildkitRequestBodyConfig `mapstructure:"buildkit"`
 	// LibpodPodCreate configures body inspection for POST /libpod/pods/create
 	// (Podman's native pod-create endpoint; pods have no Docker-compat
 	// equivalent, so this is its own top-level key rather than reusing
@@ -888,6 +896,151 @@ type PluginRequestBodyConfig struct {
 	AllowOfficial         bool     `mapstructure:"allow_official"`
 	AllowedRegistries     []string `mapstructure:"allowed_registries"`
 	AllowedSetEnvPrefixes []string `mapstructure:"allowed_set_env_prefixes"`
+}
+
+// BuildkitRequestBodyConfig configures sockguard's BuildKit gRPC mediation
+// policy (issue #185) for the two opaque tunnel endpoints POST /session and
+// POST /grpc. As of phase 1 this is schema and policy ONLY — there is no
+// runtime mediator yet, so a configured block still results in both
+// endpoints being denied at request time (see
+// filter.buildkitPolicy.inspect); the policy this struct describes is what
+// later phases will actually enforce once the h2c-terminating mediator
+// exists.
+//
+// Presence, not an "enabled" flag, is what matters: an absent block (the
+// Go zero value, identical to what a config that never mentions "buildkit:"
+// at all decodes to) denies /session and /grpc internally even when an
+// outer HTTP rule allows them. Every leaf below follows the same
+// "empty/false allowed_* = deny" convention as the rest of RequestBodyConfig
+// — see e.g. ImagePullRequestBodyConfig.AllowedRegistries.
+//
+// Works at the top level (RequestBodyConfig here) and per client profile
+// (ClientProfileConfig.RequestBody carries the identical type) exactly like
+// every other request_body.* block; there is no merge between the two —
+// see ClientProfileConfig's doc comment.
+type BuildkitRequestBodyConfig struct {
+	// Control gates moby.buildkit.v1.Control, reached over POST /grpc.
+	Control BuildkitControlRequestBodyConfig `mapstructure:"control"`
+	// Session gates the services buildkitd calls back into the client for,
+	// reached over POST /session.
+	Session BuildkitSessionRequestBodyConfig `mapstructure:"session"`
+}
+
+// BuildkitControlRequestBodyConfig gates moby.buildkit.v1.Control's Solve/
+// Status/Info/ListWorkers RPCs. Every other Control method (Prune,
+// DiskUsage, ListenBuildHistory, UpdateBuildHistory, the nested
+// Control/Session bidirectional stream) has no enabling knob at all in
+// v1.7 — see buildkitproxy.DeniedExamples — matching the #185 sign-off's
+// "hard-deny the rest, no enabling knobs" compatibility boundary.
+type BuildkitControlRequestBodyConfig struct {
+	// AllowInfo permits the passthrough Control/Info RPC (worker/buildkit
+	// version metadata; no policy-relevant fields). Default false.
+	AllowInfo bool `mapstructure:"allow_info"`
+	// AllowListWorkers permits the passthrough Control/ListWorkers RPC
+	// (worker capability metadata; no policy-relevant fields). Default
+	// false.
+	AllowListWorkers bool `mapstructure:"allow_list_workers"`
+	// AllowStatus permits the mediated Control/Status RPC. Once the
+	// mediator exists, a Status call is only ever admitted for a Ref that
+	// belongs to a Solve already admitted on the same client/profile (#185
+	// synthesis) — there is no independent allowlist here because Status
+	// has nothing to allowlist beyond that ownership check. Default false.
+	AllowStatus bool `mapstructure:"allow_status"`
+	// Solve gates the mediated Control/Solve RPC.
+	Solve BuildkitSolveRequestBodyConfig `mapstructure:"solve"`
+}
+
+// BuildkitSolveRequestBodyConfig gates moby.buildkit.v1.Control/Solve.
+//
+// Deliberately has no allow_run_instructions/allow_host_network/
+// allow_remote_context fields of its own: per the #185 synthesis, "the
+// existing request_body.build knobs ... apply to both classic /build and
+// BuildKit Solve" — BuildRequestBodyConfig's three flags are reused
+// verbatim once the mediator can decode a Solve's LLB definition, the same
+// way network.allow_endpoint_config (not a duplicate
+// container_create.allow_endpoint_config) governs both network connect and
+// container-create's embedded EndpointsConfig. Duplicating those flags here
+// would let an operator widen one path and forget the other.
+type BuildkitSolveRequestBodyConfig struct {
+	// Allow permits the Control/Solve RPC at all. Default false.
+	Allow bool `mapstructure:"allow"`
+}
+
+// BuildkitSessionRequestBodyConfig gates the services buildkitd calls back
+// into the client for over POST /session. moby.buildkit.v1.frontend.LLBBridge,
+// moby.exporter.v1.Exporter, and
+// moby.buildkit.v1.sourcepolicy.policysession.PolicyVerifier have no
+// enabling knob at all — see buildkitproxy.DeniedExamples.
+type BuildkitSessionRequestBodyConfig struct {
+	// Health permits the passthrough grpc.health.v1.Health/{Check,Watch}
+	// RPCs. Default false.
+	Health bool `mapstructure:"health"`
+	// Auth gates moby.filesync.v1.Auth's four RPCs (Credentials,
+	// FetchToken, GetTokenAuthority, VerifyTokenAuthority) — "Auth/*" in
+	// the #185 synthesis; one Allow flag governs all four, since a client
+	// implementation cannot meaningfully use one without the others.
+	Auth BuildkitAuthRequestBodyConfig `mapstructure:"auth"`
+	// Secrets gates moby.buildkit.secrets.v1.Secrets/GetSecret.
+	Secrets BuildkitSecretsRequestBodyConfig `mapstructure:"secrets"`
+	// SSH gates moby.sshforward.v1.SSH's CheckAgent and ForwardAgent RPCs —
+	// "SSH/{CheckAgent,ForwardAgent}" in the #185 synthesis.
+	SSH BuildkitSSHRequestBodyConfig `mapstructure:"ssh"`
+	// FileSync gates moby.filesync.v1.FileSync/DiffCopy.
+	// FileSync/TarStream has no enabling knob — see
+	// buildkitproxy.DeniedExamples.
+	FileSync BuildkitFileSyncRequestBodyConfig `mapstructure:"file_sync"`
+	// FileSend gates moby.filesync.v1.FileSend/DiffCopy.
+	FileSend BuildkitFileSendRequestBodyConfig `mapstructure:"file_send"`
+	// Upload gates moby.upload.v1.Upload/Pull.
+	Upload BuildkitUploadRequestBodyConfig `mapstructure:"upload"`
+}
+
+// BuildkitAuthRequestBodyConfig gates moby.filesync.v1.Auth. Per the #185
+// synthesis ("registry/realm/scope allowlists"), once the mediator exists a
+// call is admitted only when its registry host, realm, and scope each match
+// one of the corresponding allowlists below (empty = deny, the standard
+// RequestBodyConfig convention) — Allow alone does not admit every host.
+type BuildkitAuthRequestBodyConfig struct {
+	Allow             bool     `mapstructure:"allow"`
+	AllowedRegistries []string `mapstructure:"allowed_registries"`
+	AllowedRealms     []string `mapstructure:"allowed_realms"`
+	AllowedScopes     []string `mapstructure:"allowed_scopes"`
+}
+
+// BuildkitSecretsRequestBodyConfig gates
+// moby.buildkit.secrets.v1.Secrets/GetSecret. Per the #185 synthesis
+// ("exact ID allowlists"), once the mediator exists a call is admitted only
+// when its secret ID exactly matches an entry in AllowedIDs (empty = deny).
+type BuildkitSecretsRequestBodyConfig struct {
+	Allow      bool     `mapstructure:"allow"`
+	AllowedIDs []string `mapstructure:"allowed_ids"`
+}
+
+// BuildkitSSHRequestBodyConfig gates moby.sshforward.v1.SSH. Per the #185
+// synthesis ("exact ID allowlists"), once the mediator exists a call is
+// admitted only when its SSH agent ID exactly matches an entry in
+// AllowedIDs (empty = deny).
+type BuildkitSSHRequestBodyConfig struct {
+	Allow      bool     `mapstructure:"allow"`
+	AllowedIDs []string `mapstructure:"allowed_ids"`
+}
+
+// BuildkitFileSyncRequestBodyConfig gates moby.filesync.v1.FileSync/DiffCopy.
+// Path/file/byte caps and the Dockerfile hold-and-inspect behavior the #185
+// synthesis describes are phase 5 runtime concerns; phase 1 only ships the
+// Allow gate itself.
+type BuildkitFileSyncRequestBodyConfig struct {
+	Allow bool `mapstructure:"allow"`
+}
+
+// BuildkitFileSendRequestBodyConfig gates moby.filesync.v1.FileSend/DiffCopy.
+type BuildkitFileSendRequestBodyConfig struct {
+	Allow bool `mapstructure:"allow"`
+}
+
+// BuildkitUploadRequestBodyConfig gates moby.upload.v1.Upload/Pull.
+type BuildkitUploadRequestBodyConfig struct {
+	Allow bool `mapstructure:"allow"`
 }
 
 // ClientsConfig configures coarse per-client access controls.
