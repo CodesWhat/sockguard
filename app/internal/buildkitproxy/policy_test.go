@@ -68,3 +68,74 @@ func TestPolicyConfiguredEachField(t *testing.T) {
 		})
 	}
 }
+
+// TestPolicyAllowedZeroValueDeniesEverything asserts a zero-value Policy —
+// exactly like Configured() — admits nothing: Allowed must never say true
+// for a policy that denies everything.
+func TestPolicyAllowedZeroValueDeniesEverything(t *testing.T) {
+	p := Policy{}
+	for m, d := range registry {
+		if d == Deny {
+			continue
+		}
+		if p.Allowed(m.Endpoint, m.Service, m.Method) {
+			t.Errorf("zero-value Policy.Allowed(%s, %q, %q) = true, want false", m.Endpoint, m.Service, m.Method)
+		}
+	}
+}
+
+// TestPolicyAllowedEachMediateOrPassthroughMethod enumerates every
+// Mediate/Passthrough registry entry and asserts: (a) a Policy with ONLY
+// that method's switch enabled admits it and NOTHING else in the registry,
+// and (b) Classify's Deny-by-default surface (DeniedExamples) is never
+// admitted by any Policy, however permissive — Allowed narrows Classify, it
+// never widens it.
+func TestPolicyAllowedEachMediateOrPassthroughMethod(t *testing.T) {
+	allowAll := Policy{
+		Control: ControlPolicy{
+			AllowInfo:        true,
+			AllowListWorkers: true,
+			AllowStatus:      true,
+			Solve:            SolvePolicy{Allow: true},
+		},
+		Session: SessionPolicy{
+			Health:   true,
+			Auth:     AuthPolicy{Allow: true},
+			Secrets:  SecretsPolicy{Allow: true},
+			SSH:      SSHPolicy{Allow: true},
+			FileSync: FileSyncPolicy{Allow: true},
+			FileSend: FileSendPolicy{Allow: true},
+			Upload:   UploadPolicy{Allow: true},
+		},
+	}
+
+	for m, d := range registry {
+		t.Run(m.Endpoint.String()+"/"+m.Service+"/"+m.Method, func(t *testing.T) {
+			if !allowAll.Allowed(m.Endpoint, m.Service, m.Method) {
+				t.Errorf("fully-permissive Policy.Allowed(%s, %q, %q) = false, want true (disposition %s)", m.Endpoint, m.Service, m.Method, d)
+			}
+		})
+	}
+
+	for _, ex := range DeniedExamples {
+		t.Run("denied/"+ex.Endpoint.String()+"/"+ex.Service+"/"+ex.Method, func(t *testing.T) {
+			if allowAll.Allowed(ex.Endpoint, ex.Service, ex.Method) {
+				t.Errorf("fully-permissive Policy.Allowed(%s, %q, %q) = true, want false — Allowed must never admit a Classify Deny", ex.Endpoint, ex.Service, ex.Method)
+			}
+		})
+	}
+}
+
+// TestPolicyAllowedHealthSharedAcrossEndpointNaming pins the deliberate
+// naming wart documented on Policy.Allowed: grpc.health.v1.Health is reached
+// over EndpointGRPC but gated by SessionPolicy.Health (a Phase 1 struct
+// shape, not revisited here).
+func TestPolicyAllowedHealthSharedAcrossEndpointNaming(t *testing.T) {
+	p := Policy{Session: SessionPolicy{Health: true}}
+	if !p.Allowed(EndpointGRPC, "grpc.health.v1.Health", "Check") {
+		t.Fatal("Policy{Session.Health: true}.Allowed(EndpointGRPC, health Check) = false, want true")
+	}
+	if !p.Allowed(EndpointGRPC, "grpc.health.v1.Health", "Watch") {
+		t.Fatal("Policy{Session.Health: true}.Allowed(EndpointGRPC, health Watch) = false, want true")
+	}
+}

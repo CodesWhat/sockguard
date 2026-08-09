@@ -158,6 +158,23 @@ func Classify(endpoint Endpoint, service, rpcMethod string) Disposition {
 	return d
 }
 
+// ServiceAdmitted reports whether service has at least one Mediate or
+// Passthrough method registered under endpoint. Phase 2's h2c mediator uses
+// this to rewrite the client-advertised X-Docker-Expose-Session-Grpc-Method
+// header (see upgrade.go's rewriteSessionAdvertisement) down to the
+// intersection of "advertised" and "permitted" before forwarding a /session
+// upgrade to the daemon, per the #185 synthesis — a service with every
+// method classified Deny is stripped from the advertisement entirely rather
+// than left for buildkitd to discover is denied one failed call at a time.
+func ServiceAdmitted(endpoint Endpoint, service string) bool {
+	for m, d := range registry {
+		if m.Endpoint == endpoint && m.Service == service && d != Deny {
+			return true
+		}
+	}
+	return false
+}
+
 // DeniedExamples enumerates fully-qualified methods the #185 synthesis
 // calls out BY NAME as belonging to the deny-by-default surface: "LLBBridge/*,
 // nested Control/Session, containerd content, OTLP trace, Exporter

@@ -84,6 +84,36 @@ func TestEndpointString(t *testing.T) {
 	}
 }
 
+func TestServiceAdmitted(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint Endpoint
+		service  string
+		want     bool
+	}{
+		{"grpc Control has admitted methods", EndpointGRPC, "moby.buildkit.v1.Control", true},
+		{"grpc Health has admitted methods", EndpointGRPC, "grpc.health.v1.Health", true},
+		{"session Auth has admitted methods", EndpointSession, "moby.filesync.v1.Auth", true},
+		{"session Secrets has admitted methods", EndpointSession, "moby.buildkit.secrets.v1.Secrets", true},
+		{"session SSH has admitted methods", EndpointSession, "moby.sshforward.v1.SSH", true},
+		{"session FileSync has admitted methods", EndpointSession, "moby.filesync.v1.FileSync", true},
+		{"session FileSend has admitted methods", EndpointSession, "moby.filesync.v1.FileSend", true},
+		{"session Upload has admitted methods", EndpointSession, "moby.upload.v1.Upload", true},
+		{"session LLBBridge is fully denied", EndpointSession, "moby.buildkit.v1.frontend.LLBBridge", false},
+		{"session Exporter is fully denied", EndpointSession, "moby.exporter.v1.Exporter", false},
+		{"unknown service", EndpointSession, "moby.notreal.v1.Bogus", false},
+		{"known service on wrong endpoint", EndpointSession, "moby.buildkit.v1.Control", false},
+		{"empty service", EndpointGRPC, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ServiceAdmitted(tc.endpoint, tc.service); got != tc.want {
+				t.Errorf("ServiceAdmitted(%s, %q) = %v, want %v", tc.endpoint, tc.service, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestNoOverlapBetweenRegistryAndDeniedExamples guards against the registry
 // and DeniedExamples silently disagreeing about the same method — which
 // would mean either an accidental duplicate deny row (harmless) or, worse,

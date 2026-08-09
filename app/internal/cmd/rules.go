@@ -302,16 +302,19 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 //
 // IMPORTANT — this function governs STARTUP admission only, i.e. whether
 // sockguard refuses to boot at all. It does NOT mean a request to /session
-// or /grpc is actually mediated once buildkitConfigured admits the rule:
-// issue #185 phase 1 ships the config schema and this classification
-// registry, but no h2c-terminating mediator exists yet. The request-time
-// guarantee that a buildkitConfigured-admitted rule never falls through to
-// an opaque ReverseProxy pass-through lives in
-// filter.buildkitPolicy.inspect (see buildkit.go), which unconditionally
-// denies /session and /grpc whenever PolicyConfig.Buildkit.TunnelConfigured
-// is true — regardless of what any individual buildkitproxy.Policy sub-field
-// says. Only the insecure_accept_opaque_buildkit_tunnels path retains the
-// pre-#185 opaque pass-through behavior; that flag's meaning and denial
+// or /grpc reaches the Docker socket unmediated once buildkitConfigured
+// admits the rule: the request-time guarantee that a
+// buildkitConfigured-admitted rule never falls through to an opaque
+// ReverseProxy pass-through lives in filter.buildkitPolicy.inspect (see
+// buildkit.go) and cmd/serve.go's withBuildkitMediator. As of issue #185
+// phase 2, POST /session and POST /grpc are admitted through to
+// internal/buildkitproxy.Mediator, which terminates the h2c tunnel and
+// enforces buildkitproxy.Classify + Policy.Allowed per gRPC method — the
+// literal /moby.buildkit.v1.Control/<Method> probe path stays hard-denied
+// regardless of PolicyConfig.Buildkit.TunnelConfigured (see buildkit.go's
+// inspect doc comment for why: it carries no upgrade for any mediator to
+// terminate). Only the insecure_accept_opaque_buildkit_tunnels path retains
+// the pre-#185 opaque pass-through behavior; that flag's meaning and denial
 // message below are unchanged.
 func validateBuildkitTunnelRulesForPolicy(scope string, insecure, buildkitConfigured bool, compiled []*filter.CompiledRule) error {
 	if insecure || buildkitConfigured {
