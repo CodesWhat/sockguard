@@ -30,7 +30,7 @@ tested there.
 scripts/tri-tool-conformance/run-matrix.sh --row current-standard
 scripts/tri-tool-conformance/run-matrix.sh --row current-edge \
   --portwing-version 0.9.2 --drydock-version 1.6.0
-scripts/tri-tool-conformance/run-matrix.sh --self-test   # jq only, no Docker
+scripts/tri-tool-conformance/run-matrix.sh --self-test   # jq + awk only, no Docker
 ```
 
 Needs `bash`, `curl`, `jq`, `docker`, `docker compose`, and `openssl` on
@@ -183,7 +183,8 @@ produces exactly 6 route shapes and isolates exactly the one unknown route,
 and both `normalize-routes.jq` and `lib.sh`'s `ACCESS_LOG_ROUTE_MATCH_JQ`
 must tolerate the three malformed/partial lines without erroring. The
 self-test also proves `route_drift_status` fails closed (not an
-empty-diff PASS) when given zero observed routes. This needs only `jq` — no
+empty-diff PASS) when given zero observed routes. This needs only `jq` and
+`awk` (the SIGPIPE regression pin generates its synthetic stream with awk) — no
 Docker, no network — and is wired into `npm test` via
 `../tri-tool-conformance-run-matrix.test.mjs` (one directory up, since
 `package.json`'s test script globs `scripts/*.test.mjs` non-recursively)
