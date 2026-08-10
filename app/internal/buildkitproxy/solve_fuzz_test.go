@@ -113,6 +113,7 @@ func FuzzEvaluateSolveRequest(f *testing.F) {
 		&control.SolveRequest{Ref: "r", Frontend: "gateway.v0"},
 		&control.SolveRequest{Ref: "r", Frontend: "dockerfile.v0"},
 		&control.SolveRequest{Ref: "r", Frontend: "dockerfile.v0", FrontendAttrs: map[string]string{"some-future-attr": "x"}},
+		&control.SolveRequest{Ref: "r", Frontend: "dockerfile.v0", FrontendAttrs: map[string]string{"dockerfilekey": "forbidden"}}, // known default-deny attr, not in knownFrontendAttrKeys
 		&control.SolveRequest{Ref: "r", Frontend: "dockerfile.v0", FrontendAttrs: map[string]string{"build-arg:FOO": "bar"}},
 		&control.SolveRequest{Ref: "r", Frontend: "dockerfile.v0", FrontendAttrs: map[string]string{"context": "https://example.com/repo.git"}},
 		&control.SolveRequest{Ref: "r", Frontend: "dockerfile.v0", FrontendAttrs: map[string]string{"context": "."}},

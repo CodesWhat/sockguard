@@ -79,7 +79,14 @@ func TestBridgeIdleTimeoutTeardownDoesNotLeakGoroutines(t *testing.T) {
 
 	const iterations = 10
 	for i := 0; i < iterations; i++ {
-		runBridgeAndWaitClosed(t, EndpointGRPC, allowAllPolicy, limits, echoDaemonHandler(), nil)
+		runBridgeAndWaitClosed(t, EndpointGRPC, allowAllPolicy, limits, echoDaemonHandler(), func(_ *http2.ClientConn) {
+			// Hold the connection idle past Limits.IdleTimeout so
+			// http2.Server's own idle machinery closes the tunnel,
+			// rather than the helper's client-initiated close winning
+			// the race — otherwise this measures the same teardown path
+			// TestBridgeSetupTeardownDoesNotLeakGoroutines already covers.
+			time.Sleep(4 * limits.IdleTimeout)
+		})
 	}
 }
 
