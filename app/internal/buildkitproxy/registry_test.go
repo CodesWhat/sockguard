@@ -84,6 +84,65 @@ func TestEndpointString(t *testing.T) {
 	}
 }
 
+func TestServiceAdmitted(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint Endpoint
+		service  string
+		want     bool
+	}{
+		{"grpc Control has admitted methods", EndpointGRPC, "moby.buildkit.v1.Control", true},
+		{"grpc Health has admitted methods", EndpointGRPC, "grpc.health.v1.Health", true},
+		{"session Auth has admitted methods", EndpointSession, "moby.filesync.v1.Auth", true},
+		{"session Secrets has admitted methods", EndpointSession, "moby.buildkit.secrets.v1.Secrets", true},
+		{"session SSH has admitted methods", EndpointSession, "moby.sshforward.v1.SSH", true},
+		{"session FileSync has admitted methods", EndpointSession, "moby.filesync.v1.FileSync", true},
+		{"session FileSend has admitted methods", EndpointSession, "moby.filesync.v1.FileSend", true},
+		{"session Upload has admitted methods", EndpointSession, "moby.upload.v1.Upload", true},
+		{"session LLBBridge is fully denied", EndpointSession, "moby.buildkit.v1.frontend.LLBBridge", false},
+		{"session Exporter is fully denied", EndpointSession, "moby.exporter.v1.Exporter", false},
+		{"unknown service", EndpointSession, "moby.notreal.v1.Bogus", false},
+		{"known service on wrong endpoint", EndpointSession, "moby.buildkit.v1.Control", false},
+		{"empty service", EndpointGRPC, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ServiceAdmitted(tc.endpoint, tc.service); got != tc.want {
+				t.Errorf("ServiceAdmitted(%s, %q) = %v, want %v", tc.endpoint, tc.service, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestServiceAdmittedByPolicy pins CodeRabbit's finding: the plain,
+// policy-blind ServiceAdmitted isn't enough to decide what a session
+// advertisement rewrite should keep, because a service can be
+// registry-admitted (ServiceAdmitted true) while the resolved Policy still
+// denies every one of its methods. ServiceAdmittedByPolicy must require both.
+func TestServiceAdmittedByPolicy(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint Endpoint
+		service  string
+		policy   Policy
+		want     bool
+	}{
+		{"admitted service allowed by policy", EndpointSession, "moby.filesync.v1.Auth", allowAllPolicy, true},
+		{"admitted service NOT allowed by policy", EndpointSession, "moby.filesync.v1.Auth", Policy{}, false},
+		{"registered service whose only registered method the policy denies", EndpointSession, "moby.filesync.v1.FileSync", Policy{Session: SessionPolicy{Auth: AuthPolicy{Allow: true}}}, false},
+		{"fully-denied service, even under a fully-permissive policy", EndpointSession, "moby.buildkit.v1.frontend.LLBBridge", allowAllPolicy, false},
+		{"unknown service", EndpointSession, "moby.notreal.v1.Bogus", allowAllPolicy, false},
+		{"known service on the wrong endpoint", EndpointSession, "moby.buildkit.v1.Control", allowAllPolicy, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ServiceAdmittedByPolicy(tc.endpoint, tc.service, tc.policy); got != tc.want {
+				t.Errorf("ServiceAdmittedByPolicy(%s, %q, policy) = %v, want %v", tc.endpoint, tc.service, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestNoOverlapBetweenRegistryAndDeniedExamples guards against the registry
 // and DeniedExamples silently disagreeing about the same method — which
 // would mean either an accidental duplicate deny row (harmless) or, worse,

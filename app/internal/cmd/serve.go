@@ -21,6 +21,7 @@ import (
 
 	"github.com/codeswhat/sockguard/internal/admin"
 	"github.com/codeswhat/sockguard/internal/banner"
+	"github.com/codeswhat/sockguard/internal/buildkitproxy"
 	"github.com/codeswhat/sockguard/internal/clientacl"
 	"github.com/codeswhat/sockguard/internal/config"
 	"github.com/codeswhat/sockguard/internal/filter"
@@ -706,6 +707,15 @@ func buildServeHandlerLayersWithRuntime(b serveHandlerBuild) ([]serveHandlerLaye
 	rules, clientProfiles := b.Rules, b.ClientProfiles
 	resolver := runtimeResolver(runtime, cfg)
 	layers := []serveHandlerLayer{
+		// withBuildkitMediator sits even closer to the final proxy handler
+		// than withHijack: append order builds the chain inside-out (later
+		// appends wrap/execute before earlier ones — see the #152 comment
+		// below), so this is the innermost layer, running only for requests
+		// hijack's own attach/exec matcher ignores. The two middlewares'
+		// path sets are disjoint (attach/exec vs. session/grpc), so their
+		// relative order doesn't affect correctness, only which one a
+		// reader sees "closer to the wire" in this slice.
+		namedServeHandlerLayer("withBuildkitMediator", withBuildkitMediator(cfg, resolver, logger)),
 		namedServeHandlerLayer("withHijack", withHijack(resolver, logger)),
 		// #152: inserted between hijack and ownership in APPEND order. Later
 		// appends wrap (execute before) earlier ones, so this yields runtime
@@ -838,6 +848,61 @@ func withHijack(res *upstream.Resolver, logger *slog.Logger) func(http.Handler) 
 		// streaming with optimized buffers and TCP half-close signaling. Dials the
 		// same active upstream endpoint as the rest of the proxy.
 		return proxy.HijackHandlerWithDialer(res, logger, next)
+	}
+}
+
+// withBuildkitMediator intercepts POST /session and POST /grpc once
+// request_body.buildkit is configured for the request's effective policy
+// (global, or the client profile clientacl resolved), handing them to
+// internal/buildkitproxy.Mediator instead of letting them reach the plain
+// ReverseProxy. filter.buildkitPolicy.inspect (see internal/filter/buildkit.go)
+// already admitted these two paths at rule-evaluation time whenever
+// TunnelConfigured was true; this layer is the actual h2c termination point,
+// downstream of that admission — mirroring how withHijack is the real
+// bidirectional-copy point for attach/exec, downstream of filter's own
+// admission of those paths.
+//
+// When the resolved policy is NOT configured (the legacy
+// insecure_accept_opaque_buildkit_tunnels path, or a request that reached
+// here without either flag somehow — filter's admission gate makes that
+// combination unreachable in practice), this layer is a no-op and the
+// request falls through to next unchanged, exactly like Phase 1.
+func withBuildkitMediator(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+	defaultPolicy := cfg.RequestBody.Buildkit.ToPolicy()
+	profilePolicies := make(map[string]buildkitproxy.Policy, len(cfg.Clients.Profiles))
+	for _, profile := range cfg.Clients.Profiles {
+		profilePolicies[profile.Name] = profile.RequestBody.Buildkit.ToPolicy()
+	}
+	mediator := buildkitproxy.NewMediator(res, logger)
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			normPath := filter.NormalizePath(r.URL.Path)
+			if r.Method != http.MethodPost || !filter.IsBuildkitTunnelPath(normPath) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			profileName, hasProfile := clientacl.RequestProfile(r)
+			policy := defaultPolicy
+			if hasProfile {
+				if p, ok := profilePolicies[profileName]; ok {
+					policy = p
+				}
+			}
+			if !policy.Configured() {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			key := buildkitproxy.SessionKey{ClientIdentity: r.RemoteAddr, Profile: profileName}
+			switch normPath {
+			case "/grpc":
+				mediator.ServeGRPC(w, r, policy, key)
+			case "/session":
+				mediator.ServeSession(w, r, policy, key)
+			}
+		})
 	}
 }
 

@@ -1,9 +1,12 @@
 package filter
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/codeswhat/sockguard/internal/buildkitproxy"
 )
 
 // BuildkitOptions carries the ONE signal Phase 1 of issue #185 (BuildKit
@@ -38,24 +41,41 @@ func matchesBuildkitTunnelInspection(normalizedPath string) bool {
 		strings.HasPrefix(normalizedPath, "/moby.buildkit.v1.Control/")
 }
 
-// buildkitPolicy is Phase 1's deny-only "inspector" for the BuildKit tunnel
+// IsBuildkitTunnelPath reports whether normalizedPath is one of the two
+// REAL h2c-upgrade-bearing BuildKit tunnel endpoints — POST /session or
+// POST /grpc, the only two paths sockguard ever hijacks (see
+// internal/buildkitproxy.Mediator and cmd/serve.go's withBuildkitMediator).
+// Deliberately narrower than matchesBuildkitTunnelInspection above, which
+// also matches the literal /moby.buildkit.v1.Control/* probe path: that path
+// carries no upgrade at all (see buildkit.go's inspect doc comment below)
+// and is never handed to the mediator, so it must not be reported here.
+func IsBuildkitTunnelPath(normalizedPath string) bool {
+	return normalizedPath == "/session" || normalizedPath == "/grpc"
+}
+
+// buildkitPolicy is the request-time inspector for the BuildKit tunnel
 // endpoints. Unlike every other inspector in this package it never reads
-// the request body — there is nothing to mediate yet.
+// the request body — there is nothing to decode at this layer even now that
+// a real mediator exists; that mediator (internal/buildkitproxy) runs
+// downstream, in the hijack tier of cmd/serve.go's handler chain, on
+// whatever this inspector admits.
 //
 // Why this exists at all: cmd/rules.go's validateBuildkitTunnelRulesForPolicy
 // treats a configured request_body.buildkit block as satisfying the same
 // startup admission check insecure_accept_opaque_buildkit_tunnels does, so a
 // rule allowing POST /session or POST /grpc no longer fails config
-// validation once request_body.buildkit is set. But #185's mediator (h2c
-// termination, per-RPC decode, the method-classification registry) doesn't
-// exist until later phases — so without this inspector, an admitted rule
-// would fall through to the ordinary ReverseProxy path and tunnel the
-// connection completely opaquely, silently defeating the entire point of
-// requiring request_body.buildkit in the first place. This inspector runs
-// on every allowed request to either endpoint and denies unconditionally
-// whenever TunnelConfigured is true, regardless of what any individual
-// control/session sub-policy allows — Phase 1 is deny-only by design (see
-// PolicyConfig.Buildkit's doc comment).
+// validation once request_body.buildkit is set. Phase 1 (deny-only) ran
+// before any mediator existed, so it denied both endpoints unconditionally
+// once TunnelConfigured; Phase 2 replaces that with real admission — POST
+// /session and POST /grpc pass through here (buildkitproxy.Mediator
+// enforces Classify + Policy.Allowed per gRPC method downstream, once the
+// h2c tunnel is actually terminated) — but the literal
+// /moby.buildkit.v1.Control/<Method> probe path stays hard-denied
+// regardless of TunnelConfigured: it carries no h2c upgrade for any mediator
+// to terminate (sockguard's listener has no bare-h2c support outside the
+// two hijack-capable endpoints — see cmd/rules.go's buildkitTunnelEndpoints
+// doc comment), so there is nothing to bridge, only a bare HTTP/1.1 request
+// shaped like a gRPC path.
 //
 // When TunnelConfigured is false (the overwhelmingly common case — no
 // request_body.buildkit block at all), inspect is a no-op and the request
@@ -69,9 +89,26 @@ func newBuildkitPolicy(cfg BuildkitOptions) buildkitPolicy {
 	return buildkitPolicy{tunnelConfigured: cfg.TunnelConfigured}
 }
 
-func (p buildkitPolicy) inspect(_ *slog.Logger, _ *http.Request, _ string) (string, error) {
+func (p buildkitPolicy) inspect(_ *slog.Logger, r *http.Request, _ string) (string, error) {
 	if !p.tunnelConfigured {
 		return "", nil
 	}
-	return "request_body.buildkit is configured, but sockguard's BuildKit gRPC mediator is not implemented yet (issue #185 phase 1 ships the schema/policy foundation only) — the opaque tunnel is denied rather than proxied uninspected", nil
+
+	normPath := NormalizePath(r.URL.Path)
+	if IsBuildkitTunnelPath(normPath) {
+		// Admitted: internal/buildkitproxy.Mediator (wired in via cmd/serve.go's
+		// withBuildkitMediator, downstream in the hijack tier) terminates the
+		// h2c tunnel and enforces per-gRPC-method policy from here.
+		return "", nil
+	}
+
+	service, method, ok := buildkitproxy.ParseGRPCPath(normPath)
+	if !ok {
+		return fmt.Sprintf("request_body.buildkit is configured, but %q could not be parsed as a gRPC method path", normPath), nil
+	}
+	disposition := buildkitproxy.Classify(buildkitproxy.EndpointGRPC, service, method)
+	return fmt.Sprintf(
+		"request_body.buildkit is configured; a literal moby.buildkit.v1.Control method path carries no h2c upgrade for sockguard's mediator to terminate, so %s/%s is denied regardless of its own %s classification — use the mediated POST /grpc tunnel instead",
+		service, method, disposition,
+	), nil
 }

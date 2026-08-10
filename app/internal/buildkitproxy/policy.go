@@ -53,6 +53,98 @@ func (p Policy) Configured() bool {
 		p.Session.Upload.Allow
 }
 
+// Allowed reports whether p's per-field configuration admits a call to
+// service/rpcMethod on endpoint. Callers (Phase 2's bridge.go) consult this
+// ONLY after Classify has already returned Mediate or Passthrough for the
+// same triple — Allowed never overrides a Classify Deny, it narrows further.
+//
+// This is a pure boolean gate over each field's own Allow-shaped switch, not
+// per-message content inspection: the allowlist fields (AllowedRegistries,
+// AllowedIDs, etc.) aren't consulted here and stay unenforced until later
+// phases decode messages. But the plain Allow/AllowInfo/AllowStatus/
+// AllowListWorkers/Health booleans ARE a real, immediate security boundary,
+// and Phase 2's mediator must consult them: Classify's registry says a
+// method's CATEGORY is eligible for mediation in principle (a Phase 1
+// classification fixed at compile time, identical for every operator);
+// Allowed says whether THIS operator's policy actually turned that category
+// on. Forwarding every Mediate/Passthrough method regardless of Allowed
+// would silently defeat every per-field switch Phase 1 built — e.g. an
+// operator who only sets control.solve.allow: true would otherwise also get
+// Secrets/SSH/FileSync forwarded for free, with zero opt-in. The #185
+// synthesis's own audit vocabulary distinguishes exactly this case
+// (buildkit_method_denied for a Classify Deny vs buildkit_policy_denied for
+// an Allowed() false) — a reason code nothing before Phase 2 could ever
+// produce, since Phase 1 had no live mediator, which is why this gate lands
+// now rather than waiting for Phase 3's per-message work.
+//
+// Each service's inner switch enumerates only that service's own registered
+// RPC method names, mirroring registry.go's classification map exactly — an
+// unrecognized rpcMethod on an otherwise-enabled service (e.g. a typo, or a
+// probe for a method the daemon never actually exposes) falls through to
+// this function's own `return false` rather than the service's Allow switch,
+// so Allowed is default-deny standalone and doesn't depend on a caller
+// having already run the triple through Classify.
+func (p Policy) Allowed(endpoint Endpoint, service, rpcMethod string) bool {
+	switch endpoint {
+	case EndpointGRPC:
+		switch service {
+		case "moby.buildkit.v1.Control":
+			switch rpcMethod {
+			case "Solve":
+				return p.Control.Solve.Allow
+			case "Status":
+				return p.Control.AllowStatus
+			case "Info":
+				return p.Control.AllowInfo
+			case "ListWorkers":
+				return p.Control.AllowListWorkers
+			}
+		case "grpc.health.v1.Health":
+			// Health is served over POST /grpc (registry.go's comment on the
+			// grpc.health.v1.Health entries) but its switch lives on
+			// SessionPolicy as Health — a Phase 1 struct-shape choice this
+			// phase inherits rather than revisits.
+			switch rpcMethod {
+			case "Check", "Watch":
+				return p.Session.Health
+			}
+		}
+	case EndpointSession:
+		switch service {
+		case "moby.filesync.v1.Auth":
+			switch rpcMethod {
+			case "Credentials", "FetchToken", "GetTokenAuthority", "VerifyTokenAuthority":
+				return p.Session.Auth.Allow
+			}
+		case "moby.buildkit.secrets.v1.Secrets":
+			if rpcMethod == "GetSecret" {
+				return p.Session.Secrets.Allow
+			}
+		case "moby.sshforward.v1.SSH":
+			switch rpcMethod {
+			case "CheckAgent", "ForwardAgent":
+				return p.Session.SSH.Allow
+			}
+		case "moby.filesync.v1.FileSync":
+			// Only DiffCopy is registered Mediate for this service —
+			// FileSync/TarStream is a named Deny example (registry.go's
+			// DeniedExamples) that must never be admitted even if this
+			// function is ever consulted independently of Classify's own
+			// Deny short-circuit in bridge.go.
+			return rpcMethod == "DiffCopy" && p.Session.FileSync.Allow
+		case "moby.filesync.v1.FileSend":
+			if rpcMethod == "DiffCopy" {
+				return p.Session.FileSend.Allow
+			}
+		case "moby.upload.v1.Upload":
+			if rpcMethod == "Pull" {
+				return p.Session.Upload.Allow
+			}
+		}
+	}
+	return false
+}
+
 // ControlPolicy gates moby.buildkit.v1.Control, reached over POST /grpc.
 type ControlPolicy struct {
 	AllowInfo        bool
