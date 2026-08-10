@@ -141,6 +141,16 @@ type Config struct {
 	// is set. Tecnativa GRPC=1/SESSION=1 compat vars still work (see
 	// ApplyCompat) but log a deprecation warning naming this key. A single
 	// global setting, not per-profile — see cmd/rules.go.
+	//
+	// Deprecated: request_body.buildkit (issue #185) now mediates both
+	// endpoints with full per-message inspection instead of admitting them
+	// wholesale. This flag stays functional — existing configs keep working —
+	// but setting it to true logs a startup deprecation warning
+	// (cmd/serve.go's warnIfOpaqueBuildkitTunnelDeprecated) steering operators
+	// toward request_body.buildkit, and it will be removed in a future major
+	// release. The two are mutually exclusive (see
+	// validateBuildkitAckMutualExclusion in validate.go), so the warning only
+	// ever fires for a config using this flag on its own.
 	InsecureAcceptOpaqueBuildkitTunnels bool `mapstructure:"insecure_accept_opaque_buildkit_tunnels"`
 }
 
