@@ -541,9 +541,9 @@ func TestIsRemoteContextRef(t *testing.T) {
 
 func TestRegistryHostFromImageRef(t *testing.T) {
 	cases := []struct {
-		ref     string
-		want    string
-		wantOK  bool
+		ref    string
+		want   string
+		wantOK bool
 	}{
 		{"", "", false},
 		{"alpine", "docker.io", true},
