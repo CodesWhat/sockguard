@@ -44,9 +44,9 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		LibpodSecret:          c.LibpodSecret.ToFilterOptions(),
 		// Buildkit carries ONLY the Configured signal — see
 		// filter.BuildkitOptions's doc comment for why the richer
-		// buildkitproxy.Policy translation (c.Buildkit.ToPolicy()) isn't
-		// threaded through here yet.
-		Buildkit: filter.BuildkitOptions{TunnelConfigured: c.Buildkit.ToPolicy().Configured()},
+		// buildkitproxy.Policy translation (c.Buildkit.ToPolicy(c.Build))
+		// isn't threaded through here yet.
+		Buildkit: filter.BuildkitOptions{TunnelConfigured: c.Buildkit.ToPolicy(c.Build).Configured()},
 	}
 }
 

@@ -955,15 +955,47 @@ type BuildkitControlRequestBodyConfig struct {
 // Deliberately has no allow_run_instructions/allow_host_network/
 // allow_remote_context fields of its own: per the #185 synthesis, "the
 // existing request_body.build knobs ... apply to both classic /build and
-// BuildKit Solve" — BuildRequestBodyConfig's three flags are reused
-// verbatim once the mediator can decode a Solve's LLB definition, the same
+// BuildKit Solve" — BuildRequestBodyConfig's AllowHostNetwork/
+// AllowRemoteContext are reused verbatim (threaded through by
+// BuildkitRequestBodyConfig.ToPolicy, which takes the sibling
+// request_body.build block as a parameter for exactly this reuse), the same
 // way network.allow_endpoint_config (not a duplicate
 // container_create.allow_endpoint_config) governs both network connect and
 // container-create's embedded EndpointsConfig. Duplicating those flags here
 // would let an operator widen one path and forget the other.
+//
+// AllowRunInstructions has NO Phase 3 (issue #185) equivalent at all: unlike
+// classic POST /build, a dockerfile.v0-frontend Solve never puts the
+// Dockerfile's RUN instructions in the SolveRequest message itself — see
+// buildkitproxy.SolvePolicy's doc comment for why that is out of scope until
+// the file-sync mediation phase.
+//
+// The allowlists below (AllowedCacheImportTypes onward) are new in Phase 3:
+// once policy.go's mediator decodes a Solve, it validates
+// SolveRequest.Cache's imports/exports and SolveRequest.Exporters against
+// them — empty = deny, the standard RequestBodyConfig convention.
 type BuildkitSolveRequestBodyConfig struct {
 	// Allow permits the Control/Solve RPC at all. Default false.
 	Allow bool `mapstructure:"allow"`
+
+	// AllowedCacheImportTypes/AllowedCacheExportTypes gate the "Type" of each
+	// entry in a Solve's Cache.Imports/.Exports (e.g. "registry", "local",
+	// "gha", "s3", "inline"). Default empty (deny all).
+	AllowedCacheImportTypes []string `mapstructure:"allowed_cache_import_types"`
+	AllowedCacheExportTypes []string `mapstructure:"allowed_cache_export_types"`
+	// AllowedCacheRegistries gates the registry host of a "registry"-typed
+	// cache import/export's ref attribute — shared between imports and
+	// exports since both name the same kind of remote cache manifest
+	// location. Default empty (deny all).
+	AllowedCacheRegistries []string `mapstructure:"allowed_cache_registries"`
+
+	// AllowedExporters gates the "Type" of each entry in a Solve's Exporters
+	// (e.g. "image", "oci", "docker", "local", "tar"). Default empty (deny
+	// all).
+	AllowedExporters []string `mapstructure:"allowed_exporters"`
+	// AllowedExporterRegistries gates the registry host an "image"-typed
+	// exporter pushes to. Default empty (deny all).
+	AllowedExporterRegistries []string `mapstructure:"allowed_exporter_registries"`
 }
 
 // BuildkitSessionRequestBodyConfig gates the services buildkitd calls back

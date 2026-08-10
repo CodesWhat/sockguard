@@ -118,7 +118,7 @@ func (m *Mediator) serve(endpoint Endpoint, w http.ResponseWriter, r *http.Reque
 	m.Logger.Info("buildkit: tunnel opened",
 		"endpoint", endpoint.String(), "session_id", session.ID, "profile", logging.SafeString(key.Profile), "path", logging.SafeString(logPath))
 
-	if err := runBridge(r.Context(), legs, session, policy, m.Limits, m.Logger); err != nil {
+	if err := runBridge(r.Context(), legs, session, policy, m.Limits, m.Logger, m.Registry); err != nil {
 		m.Logger.Warn("buildkit: tunnel terminated",
 			"error", logging.SafeString(err.Error()), "endpoint", endpoint.String(), "session_id", session.ID)
 		return

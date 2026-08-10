@@ -14,13 +14,25 @@ import (
 // in the rest of the grpc-go module graph as a transitive consequence of
 // living in the same module.
 //
-// Only the codes Phase 2 actually raises are declared; later phases that add
-// per-message decode (FailedPrecondition for an unsupported schema,
-// Internal/Canceled for decode-path failures) can extend this list then.
+// Phase 2 declared only the codes it raised; Phase 3's per-message Solve/
+// Status decode adds the codes it needs: InvalidArgument for a message that
+// fails to unmarshal or whose gRPC framing is malformed
+// (buildkit_protocol_error), FailedPrecondition for a message that
+// decodes cleanly but carries protobuf unknown-field bytes or an
+// unrecognized FrontendAttrs key (buildkit_schema_unsupported) — the #185
+// synthesis's strict-unknown-field divergence — and Internal for
+// forwardControlMediated's defensive switch default (buildkit_internal_error):
+// isControlMediatedMethod and the switch on method must stay in lock-step
+// (both list exactly Solve and Status), but the switch's default arm exists
+// so a future method added to one and not the other fails CLOSED — no
+// policy decision made at all — rather than forwarding with zero mediation.
 const (
-	grpcCodePermissionDenied  = 7
-	grpcCodeResourceExhausted = 8
-	grpcCodeUnimplemented     = 12
+	grpcCodeInvalidArgument    = 3
+	grpcCodePermissionDenied   = 7
+	grpcCodeResourceExhausted  = 8
+	grpcCodeFailedPrecondition = 9
+	grpcCodeUnimplemented      = 12
+	grpcCodeInternal           = 13
 )
 
 // writeGRPCStatus writes a gRPC "Trailers-Only" error response: HTTP status

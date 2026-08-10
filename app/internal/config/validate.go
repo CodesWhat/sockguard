@@ -834,11 +834,11 @@ func validateBuildkitAckMutualExclusion(cfg *Config) []string {
 		return nil
 	}
 	var errs []string
-	if cfg.RequestBody.Buildkit.ToPolicy().Configured() {
+	if cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build).Configured() {
 		errs = append(errs, "insecure_accept_opaque_buildkit_tunnels and request_body.buildkit are mutually exclusive: mediation supersedes the opaque-tunnel acknowledgment, so set insecure_accept_opaque_buildkit_tunnels: false and configure request_body.buildkit instead, or remove the request_body.buildkit block and keep the acknowledgment")
 	}
 	for _, profile := range cfg.Clients.Profiles {
-		if !profile.RequestBody.Buildkit.ToPolicy().Configured() {
+		if !profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build).Configured() {
 			continue
 		}
 		errs = append(errs, fmt.Sprintf("client profile %q configures request_body.buildkit, but the top-level insecure_accept_opaque_buildkit_tunnels=true acknowledgment (a global setting, not per-profile) would otherwise admit the same opaque tunnel with zero inspection for this profile too: set insecure_accept_opaque_buildkit_tunnels: false", profile.Name))
@@ -1574,14 +1574,17 @@ func validateRequestBodyConfig(prefix string, cfg RequestBodyConfig) []string {
 	return errs
 }
 
-// validateBuildkitConfig validates request_body.buildkit (issue #185 phase
-// 1). AllowedRegistries reuses the same bare-registry-host normalization as
-// image_pull/service/plugin's allowlists; AllowedRealms/AllowedScopes/
-// AllowedIDs have no host-shaped structure to normalize, so — like
+// validateBuildkitConfig validates request_body.buildkit. AllowedRegistries
+// (and, since issue #185 phase 3, AllowedCacheRegistries/
+// AllowedExporterRegistries) reuse the same bare-registry-host normalization
+// as image_pull/service/plugin's allowlists; AllowedRealms/AllowedScopes/
+// AllowedIDs (and, since phase 3, AllowedCacheImportTypes/
+// AllowedCacheExportTypes/AllowedExporters — opaque type names, not host
+// shapes) have no host-shaped structure to normalize, so — like
 // container_create.allowed_namespace_sharing_containers — they are only
 // checked for being non-empty and free of leading/trailing whitespace
 // (whitespace padding is always operator error: it can never match the
-// exact string comparison phase 3+'s mediator will use).
+// exact string comparison the mediator uses).
 func validateBuildkitConfig(prefix string, cfg BuildkitRequestBodyConfig) []string {
 	var errs []string
 	errs = append(errs, validateRegistryHostEntries(prefix, "buildkit.session.auth.allowed_registries", cfg.Session.Auth.AllowedRegistries)...)
@@ -1589,6 +1592,11 @@ func validateBuildkitConfig(prefix string, cfg BuildkitRequestBodyConfig) []stri
 	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.session.auth.allowed_scopes", cfg.Session.Auth.AllowedScopes)...)
 	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.session.secrets.allowed_ids", cfg.Session.Secrets.AllowedIDs)...)
 	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.session.ssh.allowed_ids", cfg.Session.SSH.AllowedIDs)...)
+	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.control.solve.allowed_cache_import_types", cfg.Control.Solve.AllowedCacheImportTypes)...)
+	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.control.solve.allowed_cache_export_types", cfg.Control.Solve.AllowedCacheExportTypes)...)
+	errs = append(errs, validateRegistryHostEntries(prefix, "buildkit.control.solve.allowed_cache_registries", cfg.Control.Solve.AllowedCacheRegistries)...)
+	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.control.solve.allowed_exporters", cfg.Control.Solve.AllowedExporters)...)
+	errs = append(errs, validateRegistryHostEntries(prefix, "buildkit.control.solve.allowed_exporter_registries", cfg.Control.Solve.AllowedExporterRegistries)...)
 	return errs
 }
 

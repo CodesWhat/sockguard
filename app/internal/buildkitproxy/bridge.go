@@ -1,6 +1,7 @@
 package buildkitproxy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"golang.org/x/net/http2"
 
+	"github.com/codeswhat/sockguard/internal/buildkitproto/control"
 	"github.com/codeswhat/sockguard/internal/logging"
 )
 
@@ -63,12 +65,13 @@ type clientLegConn interface {
 // closes over: which session this is, what policy/limits govern it, and the
 // single client-leg connection every admitted stream is relayed through.
 type bridge struct {
-	legs    bridgeLegs
-	session *Session
-	policy  Policy
-	limits  Limits
-	logger  *slog.Logger
-	guard   *streamAbuseGuard
+	legs     bridgeLegs
+	session  *Session
+	policy   Policy
+	limits   Limits
+	logger   *slog.Logger
+	guard    *streamAbuseGuard
+	registry *SessionRegistry
 
 	clientLeg clientLegConn
 
@@ -85,14 +88,19 @@ type bridge struct {
 // otherwise-healthy connection is NOT such a failure and does not produce a
 // non-nil return (see bridge.forward and bridge.recordDeniedAndMaybeClose,
 // which close early only once the DeniedStreamBudget itself is exceeded).
-func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Policy, limits Limits, logger *slog.Logger) error {
+// registry is the same SessionRegistry session was opened from — Phase 3's
+// forwardControlMediated consults it (via SessionKey, not session.ID; see
+// SessionRegistry.OwnsRef's doc comment) to admit Control/Solve refs and
+// check Control/Status ref ownership.
+func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Policy, limits Limits, logger *slog.Logger, registry *SessionRegistry) error {
 	b := &bridge{
-		legs:    legs,
-		session: session,
-		policy:  policy,
-		limits:  limits,
-		logger:  logger,
-		guard:   newStreamAbuseGuard(limits),
+		legs:     legs,
+		session:  session,
+		policy:   policy,
+		limits:   limits,
+		logger:   logger,
+		guard:    newStreamAbuseGuard(limits),
+		registry: registry,
 	}
 	defer b.closeAll(nil)
 
@@ -169,10 +177,13 @@ func (b *bridge) finalErr() error {
 // method through the Phase 1 registry, then — for a Mediate or Passthrough
 // category — checks whether this request's Policy actually turned that
 // category on (Policy.Allowed; see its doc comment for why this is a
-// separate, necessary gate). Only a call that clears BOTH checks is relayed,
-// byte-for-byte, to the client leg; Phase 2 does not decode either
-// disposition's message content differently (per-message mediation is
-// Phases 3-5).
+// separate, necessary gate). A call that clears both checks is, for every
+// method EXCEPT moby.buildkit.v1.Control's Solve/Status, relayed
+// byte-for-byte to the client leg with no message-content decision (Phase
+// 2's scope; the remaining Session-endpoint Mediate methods — Auth, Secrets,
+// SSH, FileSync, FileSend, Upload — get their own per-message mediation in
+// Phases 4-5). Solve/Status route through forwardControlMediated instead —
+// see isControlMediatedMethod.
 func (b *bridge) handleStream(w http.ResponseWriter, r *http.Request) {
 	service, method, ok := ParseGRPCPath(r.URL.Path)
 	if !ok {
@@ -193,6 +204,15 @@ func (b *bridge) handleStream(w http.ResponseWriter, r *http.Request) {
 			writeGRPCStatus(w, grpcCodePermissionDenied, fmt.Sprintf("%s/%s is not enabled by this profile's request_body.buildkit policy", service, method))
 			b.audit(service, method, Deny, "buildkit_policy_denied")
 			b.recordDeniedAndMaybeClose()
+			return
+		}
+		if isControlMediatedMethod(b.legs.endpoint, service, method) {
+			// Phase 3: Control/Solve and Control/Status get per-message
+			// decode/policy mediation instead of Phase 2's byte-verbatim
+			// relay — forwardControlMediated audits its own outcome (Mediate
+			// on admit, Deny with a specific reason on any check failure),
+			// so it is NOT also audited generically below.
+			b.forwardControlMediated(w, r, service, method)
 			return
 		}
 		b.audit(service, method, disposition, "")
@@ -222,12 +242,23 @@ func (b *bridge) recordDeniedAndMaybeClose() {
 
 // forward relays one admitted (Mediate or Passthrough) stream to the client
 // leg, preserving original request/response bytes verbatim — no protobuf
-// decode/re-encode on this path (Phase 2 scope). A genuine RoundTrip/
-// transport failure tears the whole tunnel down (fail-closed); a size-cap
-// trip on either direction ends only this stream with a RESOURCE_EXHAUSTED
-// gRPC status, since an oversized single message is a per-RPC condition, not
-// evidence the connection itself is compromised.
+// decode/re-encode on this path (Phase 2 scope, and still true for every
+// Phase 3+ method that isn't Control/Solve or Control/Status). It is a thin
+// wrapper over forwardWithBody using the stream's own r.Body unmodified;
+// forwardControlMediated instead supplies an already-buffered, already
+// policy-checked body (the exact bytes readUnaryGRPCMessage read) once its
+// own decode/policy checks pass.
 func (b *bridge) forward(w http.ResponseWriter, r *http.Request, service, method string) {
+	b.forwardWithBody(w, r, service, method, r.Body)
+}
+
+// forwardWithBody does forward's actual relay work against an explicit body
+// rather than always r.Body — see forward's doc comment for why.  A genuine
+// RoundTrip/transport failure tears the whole tunnel down (fail-closed); a
+// size-cap trip on either direction ends only this stream with a
+// RESOURCE_EXHAUSTED gRPC status, since an oversized single message is a
+// per-RPC condition, not evidence the connection itself is compromised.
+func (b *bridge) forwardWithBody(w http.ResponseWriter, r *http.Request, service, method string, body io.ReadCloser) {
 	host := r.Host
 	if host == "" {
 		host = "buildkitd"
@@ -241,7 +272,7 @@ func (b *bridge) forward(w http.ResponseWriter, r *http.Request, service, method
 		ProtoMinor:    0,
 		Header:        r.Header.Clone(),
 		Host:          host,
-		Body:          newLimitedReadCloser(r.Body, b.limits.MaxMessageBytes),
+		Body:          newLimitedReadCloser(body, b.limits.MaxMessageBytes),
 		ContentLength: -1,
 	}
 
@@ -288,6 +319,95 @@ func (b *bridge) forward(w http.ResponseWriter, r *http.Request, service, method
 			}
 		}
 	}
+}
+
+// isControlMediatedMethod reports whether service/method on endpoint is one
+// of Phase 3's two per-message-mediated Control RPCs — the only methods
+// handleStream routes through forwardControlMediated instead of the plain
+// byte-verbatim forward. Both are already Classify()'d Mediate and (by the
+// time this is consulted) already passed Policy.Allowed — this function
+// only decides which forwarding STRATEGY an already-admitted call uses.
+func isControlMediatedMethod(endpoint Endpoint, service, method string) bool {
+	if endpoint != EndpointGRPC || service != "moby.buildkit.v1.Control" {
+		return false
+	}
+	return method == "Solve" || method == "Status"
+}
+
+// forwardControlMediated is Phase 3 (issue #185)'s per-message mediation
+// path for Control/Solve and Control/Status: buffer the client's single gRPC
+// request message (readUnaryGRPCMessage), decode it with the vendored
+// buildkitproto stubs, run policy checks (evaluateSolveRequest /
+// evaluateStatusRequest, plus Status's ref-ownership check below), and only
+// on admission forward the exact original frame bytes via forwardWithBody —
+// never a re-encoded message, per the #185 Phase 3 constraint. Every denial
+// path here ends the STREAM only (a per-stream gRPC status plus
+// recordDeniedAndMaybeClose's soft connection-abuse budget), matching the
+// task's fail-closed granularity: "per-stream policy/decode failure -> gRPC
+// status on that stream only, session survives."
+func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, service, method string) {
+	frame, payload, err := readUnaryGRPCMessage(r.Body, b.limits.MaxMessageBytes)
+	if err != nil {
+		if errors.Is(err, errMessageTooLarge) {
+			// Mirrors forward()'s own size-cap handling: a size-cap trip is a
+			// per-RPC condition, not evidence of connection-level abuse, so
+			// it is audited but not counted against recordDeniedAndMaybeClose
+			// (see Limits' doc comment).
+			writeGRPCStatus(w, grpcCodeResourceExhausted, "request message exceeds sockguard's size cap")
+			b.audit(service, method, Deny, "buildkit_message_too_large")
+			return
+		}
+		writeGRPCStatus(w, grpcCodeInvalidArgument, "malformed BuildKit gRPC request framing")
+		b.audit(service, method, Deny, "buildkit_protocol_error")
+		b.recordDeniedAndMaybeClose()
+		return
+	}
+
+	var (
+		d   *mediationDenial
+		ref string
+	)
+	switch method {
+	case "Solve":
+		var req *control.SolveRequest
+		req, d = evaluateSolveRequest(payload, b.policy)
+		if req != nil {
+			ref = req.GetRef()
+		}
+	case "Status":
+		var req *control.StatusRequest
+		req, d = evaluateStatusRequest(payload)
+		if d == nil && !b.registry.OwnsRef(b.session.Key, req.GetRef()) {
+			d = deny(grpcCodePermissionDenied, "buildkit_ref_not_owned", "this ref does not belong to an admitted Solve for this client/profile")
+		}
+	default:
+		// Unreachable today — isControlMediatedMethod only routes Solve and
+		// Status here — but if it and this switch ever drift (a method added
+		// to one and not the other), fail CLOSED rather than fall through
+		// with d and ref left at their zero values, which would forward the
+		// message with ZERO policy evaluation in a package whose entire
+		// identity is default-deny. See grpcCodeInternal's doc comment.
+		d = deny(grpcCodeInternal, "buildkit_internal_error", "internal routing error")
+	}
+
+	if d != nil {
+		writeGRPCStatus(w, d.code, d.message)
+		b.audit(service, method, Deny, d.reasonCode)
+		b.recordDeniedAndMaybeClose()
+		return
+	}
+
+	if method == "Solve" {
+		if !b.registry.PutRef(b.session, ref, b.limits.MaxRefsPerSession) {
+			writeGRPCStatus(w, grpcCodeResourceExhausted, "too many concurrent BuildKit solve refs admitted for this client")
+			b.audit(service, method, Deny, "buildkit_ref_limit_exceeded")
+			b.recordDeniedAndMaybeClose()
+			return
+		}
+	}
+
+	b.audit(service, method, Mediate, "")
+	b.forwardWithBody(w, r, service, method, io.NopCloser(bytes.NewReader(frame)))
 }
 
 // audit emits the #185 synthesis's buildkit_rpc audit event: one line per

@@ -34,11 +34,25 @@ type Policy struct {
 // everything. Each field is checked explicitly instead, by length rather
 // than nilness, so a non-nil empty slice reads the same as "not configured"
 // as a nil one does.
+//
+// SolvePolicy.AllowHostNetwork and AllowRemoteContext are deliberately NOT
+// checked here even though Phase 3 populates them: those two fields are
+// reused verbatim from the unrelated request_body.build block (see
+// SolvePolicy's doc comment), so an operator who enables allow_host_network
+// for classic POST /build alone — with no request_body.buildkit block
+// written at all — must not have that alone flip Configured() to true. Doing
+// so would incorrectly trip validateBuildkitAckMutualExclusion for an
+// operator who never touched BuildKit mediation.
 func (p Policy) Configured() bool {
 	return p.Control.AllowInfo ||
 		p.Control.AllowListWorkers ||
 		p.Control.AllowStatus ||
 		p.Control.Solve.Allow ||
+		len(p.Control.Solve.AllowedCacheImportTypes) > 0 ||
+		len(p.Control.Solve.AllowedCacheExportTypes) > 0 ||
+		len(p.Control.Solve.AllowedCacheRegistries) > 0 ||
+		len(p.Control.Solve.AllowedExporters) > 0 ||
+		len(p.Control.Solve.AllowedExporterRegistries) > 0 ||
 		p.Session.Health ||
 		p.Session.Auth.Allow ||
 		len(p.Session.Auth.AllowedRegistries) > 0 ||
@@ -156,9 +170,49 @@ type ControlPolicy struct {
 // SolvePolicy gates moby.buildkit.v1.Control/Solve. See
 // config.BuildkitSolveRequestBodyConfig's doc comment for why this has no
 // allow_run_instructions/allow_host_network/allow_remote_context fields of
-// its own.
+// its own — AllowHostNetwork/AllowRemoteContext below are threaded through
+// from the sibling request_body.build block by
+// config.BuildkitRequestBodyConfig.ToPolicy, not duplicated config knobs.
+//
+// Phase 3 (issue #185) is the first phase that actually reads these fields:
+// bridge.go's forwardControlMediated decodes a Solve request and checks its
+// Entitlements/Frontend/FrontendAttrs/Cache/Exporters against them before
+// forwarding. AllowRunInstructions has no Phase 3 equivalent: unlike classic
+// POST /build (build.go), a BuildKit Solve using the dockerfile.v0 frontend
+// never puts the Dockerfile's RUN instructions in the SolveRequest message
+// itself — the daemon's embedded frontend resolves those from the build
+// context, which sockguard cannot see until the file-sync mediation Phase 5
+// ships (the #185 synthesis's "temporal enforcement on file-sync": Solve is
+// forwarded before the daemon requests the Dockerfile). A raw, frontend-less
+// Solve (Frontend == "") embeds its instructions as opaque serialized LLB Op
+// bytes (solver/pb/ops.proto's Definition.Def is `repeated bytes`, not
+// nested protobuf messages) that Phase 3's protobuf-reflection-based
+// unknown-field walk (see protowalk.go) cannot decode either — a full LLB
+// op-graph content policy is out of Phase 3's scope.
 type SolvePolicy struct {
-	Allow bool
+	Allow              bool
+	AllowHostNetwork   bool
+	AllowRemoteContext bool
+
+	// AllowedCacheImportTypes/AllowedCacheExportTypes gate SolveRequest.
+	// Cache.Imports/.Exports' CacheOptionsEntry.Type (e.g. "registry",
+	// "local", "gha", "s3", "inline") — empty = deny, the standard
+	// RequestBodyConfig convention.
+	AllowedCacheImportTypes []string
+	AllowedCacheExportTypes []string
+	// AllowedCacheRegistries gates the registry host of a "registry"-typed
+	// cache import/export's Attrs["ref"] image reference — shared between
+	// imports and exports since both name the same kind of remote cache
+	// manifest location.
+	AllowedCacheRegistries []string
+
+	// AllowedExporters gates SolveRequest.Exporters[].Type (e.g. "image",
+	// "oci", "docker", "local", "tar") — empty = deny.
+	AllowedExporters []string
+	// AllowedExporterRegistries gates the registry host an "image"-typed
+	// exporter pushes to (Attrs["push"] == "true", Attrs["name"] the target
+	// image reference).
+	AllowedExporterRegistries []string
 }
 
 // SessionPolicy gates the services buildkitd calls back into the client

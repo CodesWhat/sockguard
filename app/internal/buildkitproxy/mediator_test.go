@@ -159,7 +159,11 @@ func TestMediatorServeGRPCEndToEnd(t *testing.T) {
 	}
 	defer func() { _ = cc.Close() }()
 
-	grpcResp, err := cc.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Solve", "payload"))
+	// Info (Passthrough), not Solve: this test exercises end-to-end h2c
+	// tunnel wiring, not Phase 3's Solve-specific per-message mediation
+	// (covered separately in bridge_test.go), and an arbitrary non-gRPC-framed
+	// payload like this one would now be rejected by Solve's frame decode.
+	grpcResp, err := cc.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", "payload"))
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}

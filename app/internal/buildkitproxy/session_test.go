@@ -1,6 +1,7 @@
 package buildkitproxy
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -151,5 +152,235 @@ func TestSessionRegistryOtherSessionCannotOwnAnothersRef(t *testing.T) {
 
 	if s2.OwnsRef("sha256:only-s1") {
 		t.Fatal("session s2 reports owning a ref only s1 ever recorded")
+	}
+}
+
+func TestSessionTryPutRef(t *testing.T) {
+	reg := NewSessionRegistry()
+	s := reg.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+
+	ok, isNew := s.tryPutRef("ref-1", 2)
+	if !ok || !isNew {
+		t.Fatalf("first tryPutRef(ref-1) = (%v, %v), want (true, true)", ok, isNew)
+	}
+
+	ok, isNew = s.tryPutRef("ref-1", 2)
+	if !ok || isNew {
+		t.Fatalf("repeat tryPutRef(ref-1) = (%v, %v), want (true, false)", ok, isNew)
+	}
+
+	ok, isNew = s.tryPutRef("ref-2", 2)
+	if !ok || !isNew {
+		t.Fatalf("tryPutRef(ref-2) at cap = (%v, %v), want (true, true)", ok, isNew)
+	}
+
+	ok, isNew = s.tryPutRef("ref-3", 2)
+	if ok || isNew {
+		t.Fatalf("tryPutRef(ref-3) over cap = (%v, %v), want (false, false)", ok, isNew)
+	}
+
+	// A repeat of an already-held ref is still admitted even once the
+	// session is at capacity: the cap bounds distinct refs, not calls.
+	ok, isNew = s.tryPutRef("ref-1", 2)
+	if !ok || isNew {
+		t.Fatalf("repeat tryPutRef(ref-1) at cap = (%v, %v), want (true, false)", ok, isNew)
+	}
+
+	// maxRefs <= 0 disables the cap entirely.
+	ok, isNew = s.tryPutRef("ref-4", 0)
+	if !ok || !isNew {
+		t.Fatalf("tryPutRef with maxRefs<=0 = (%v, %v), want (true, true)", ok, isNew)
+	}
+}
+
+func TestSessionRefsSnapshot(t *testing.T) {
+	reg := NewSessionRegistry()
+	s := reg.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+
+	if got := s.refsSnapshot(); len(got) != 0 {
+		t.Fatalf("refsSnapshot() on a fresh session = %v, want empty", got)
+	}
+
+	s.PutRef("ref-1")
+	s.PutRef("ref-2")
+
+	got := s.refsSnapshot()
+	want := map[string]bool{"ref-1": true, "ref-2": true}
+	if len(got) != len(want) {
+		t.Fatalf("refsSnapshot() = %v, want 2 entries matching %v", got, want)
+	}
+	for _, ref := range got {
+		if !want[ref] {
+			t.Errorf("refsSnapshot() contained unexpected ref %q", ref)
+		}
+	}
+}
+
+func TestSessionRegistryPutRefAndOwnsRef(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	s := reg.Open(key, EndpointGRPC, "")
+
+	if reg.OwnsRef(key, "ref-1") {
+		t.Fatal("OwnsRef before any PutRef = true, want false")
+	}
+
+	if !reg.PutRef(s, "ref-1", 2) {
+		t.Fatal("PutRef(ref-1) = false, want true")
+	}
+	if !reg.OwnsRef(key, "ref-1") {
+		t.Fatal("OwnsRef(ref-1) after PutRef = false, want true")
+	}
+	if reg.OwnsRef(key, "ref-unrelated") {
+		t.Fatal("OwnsRef for an unrelated ref = true, want false")
+	}
+
+	// A repeated PutRef of the same ref must not double-count the
+	// registry-wide refcount (see tryPutRef's doc comment) — verified
+	// indirectly below via Close only needing one decrement to release it.
+	if !reg.PutRef(s, "ref-1", 2) {
+		t.Fatal("repeat PutRef(ref-1) = false, want true (idempotent)")
+	}
+
+	if !reg.PutRef(s, "ref-2", 2) {
+		t.Fatal("PutRef(ref-2) at cap = false, want true")
+	}
+	if reg.PutRef(s, "ref-3", 2) {
+		t.Fatal("PutRef(ref-3) over cap = true, want false")
+	}
+	if reg.OwnsRef(key, "ref-3") {
+		t.Fatal("OwnsRef(ref-3) after a rejected PutRef = true, want false")
+	}
+
+	// A different SessionKey must never observe ownership of this key's ref.
+	otherKey := SessionKey{ClientIdentity: "other", Profile: "p"}
+	if reg.OwnsRef(otherKey, "ref-1") {
+		t.Fatal("OwnsRef under a different SessionKey = true, want false")
+	}
+}
+
+func TestSessionRegistryCloseReleasesRefs(t *testing.T) {
+	t.Run("single session", func(t *testing.T) {
+		reg := NewSessionRegistry()
+		key := SessionKey{ClientIdentity: "c", Profile: "p"}
+		s := reg.Open(key, EndpointGRPC, "")
+
+		if !reg.PutRef(s, "ref-1", 0) {
+			t.Fatal("PutRef(ref-1) = false, want true")
+		}
+		reg.Close(s.ID)
+
+		if reg.OwnsRef(key, "ref-1") {
+			t.Fatal("OwnsRef(ref-1) after Close = true, want false")
+		}
+		if _, ok := reg.refOwners[key]; ok {
+			t.Fatal("refOwners still holds an entry for a key with no remaining refs")
+		}
+	})
+
+	t.Run("closing a session with no refs is a no-op", func(t *testing.T) {
+		reg := NewSessionRegistry()
+		s := reg.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+		reg.Close(s.ID)
+		if reg.Len() != 0 {
+			t.Fatalf("Len() after Close = %d, want 0", reg.Len())
+		}
+	})
+
+	t.Run("PutRef after Close is rejected without recording anything", func(t *testing.T) {
+		// Deterministic (non-racy) coverage of PutRef's still-registered
+		// gate — see TestSessionRegistryPutRefRaceWithClose below for the
+		// actual concurrent regression test. Calling PutRef with a *Session
+		// obtained before Close ran is exactly what a stream handler
+		// goroutine racing tunnel teardown would observe.
+		reg := NewSessionRegistry()
+		key := SessionKey{ClientIdentity: "c", Profile: "p"}
+		s := reg.Open(key, EndpointGRPC, "")
+		reg.Close(s.ID)
+
+		if reg.PutRef(s, "late-ref", 0) {
+			t.Fatal("PutRef after Close = true, want false (session no longer registered)")
+		}
+		if reg.OwnsRef(key, "late-ref") {
+			t.Fatal("registry-wide OwnsRef(late-ref) = true after a post-Close PutRef, want false")
+		}
+		if s.OwnsRef("late-ref") {
+			t.Fatal("session-local OwnsRef(late-ref) = true after a post-Close PutRef, want false (the gate runs before tryPutRef)")
+		}
+	})
+
+	t.Run("two sessions sharing a key: closing one leaves the other's ref owned", func(t *testing.T) {
+		reg := NewSessionRegistry()
+		key := SessionKey{ClientIdentity: "c", Profile: "p"}
+		s1 := reg.Open(key, EndpointGRPC, "")
+		s2 := reg.Open(key, EndpointGRPC, "")
+
+		if !reg.PutRef(s1, "shared-ref", 0) {
+			t.Fatal("PutRef(shared-ref) on s1 = false, want true")
+		}
+		if !reg.PutRef(s2, "shared-ref", 0) {
+			t.Fatal("PutRef(shared-ref) on s2 = false, want true")
+		}
+
+		reg.Close(s1.ID)
+		if !reg.OwnsRef(key, "shared-ref") {
+			t.Fatal("OwnsRef(shared-ref) after closing only s1 = false, want true (s2 still holds it)")
+		}
+
+		reg.Close(s2.ID)
+		if reg.OwnsRef(key, "shared-ref") {
+			t.Fatal("OwnsRef(shared-ref) after closing both sessions = true, want false")
+		}
+	})
+}
+
+// TestSessionRegistryPutRefRaceWithClose is the CodeRabbit-flagged
+// concurrent regression test for the two PutRef-vs-Close races PutRef's own
+// doc comment describes: (1) a PutRef landing after Close's refsSnapshot
+// publishing an orphaned refOwners entry nothing will ever release, and
+// (2) a tryPutRef insert landing between Close's r.sessions delete and its
+// refsSnapshot, putting the ref into Close's release loop without it ever
+// reaching refOwners — decrementing a count a still-open sibling session
+// sharing the SessionKey legitimately holds. A sibling session holding the
+// same ref throughout the race asserts both directions: its ownership must
+// survive the racing pair, and closing it afterwards must fully release the
+// index. Run under `go test -race` (per this package's validation gate) so
+// a synchronization bug here is caught as a data race too, not just a
+// logical assertion failure.
+func TestSessionRegistryPutRefRaceWithClose(t *testing.T) {
+	const iterations = 500
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+
+	for i := 0; i < iterations; i++ {
+		reg := NewSessionRegistry()
+		sibling := reg.Open(key, EndpointGRPC, "")
+		if !reg.PutRef(sibling, "race-ref", 0) {
+			t.Fatalf("iteration %d: sibling PutRef(race-ref) = false, want true", i)
+		}
+		s := reg.Open(key, EndpointGRPC, "")
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			reg.PutRef(s, "race-ref", 0)
+		}()
+		go func() {
+			defer wg.Done()
+			reg.Close(s.ID)
+		}()
+		wg.Wait()
+
+		if !reg.OwnsRef(key, "race-ref") {
+			t.Fatalf("iteration %d: OwnsRef(race-ref) = false while the sibling session still holds it — Close raced PutRef into releasing a count the closing session never contributed", i)
+		}
+
+		reg.Close(sibling.ID)
+		if reg.OwnsRef(key, "race-ref") {
+			t.Fatalf("iteration %d: OwnsRef(race-ref) = true after every session closed — orphaned refOwners entry", i)
+		}
+		if owners, ok := reg.refOwners[key]; ok && len(owners) != 0 {
+			t.Fatalf("iteration %d: refOwners[key] = %v after every session closed, want empty/absent", i, owners)
+		}
 	}
 }
