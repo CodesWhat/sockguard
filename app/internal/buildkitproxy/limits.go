@@ -81,6 +81,24 @@ type Limits struct {
 	// while still bounding the worst case. Zero or negative disables the
 	// bound — DefaultLimits never does this.
 	MaxRefsPerSession int
+
+	// MaxCredentialCallsPerSession bounds how many EndpointSession
+	// credential-mediated calls — moby.filesync.v1.Auth's four RPCs,
+	// Secrets/GetSecret, and SSH's CheckAgent/ForwardAgent — a single
+	// mediated session may make before sockguard starts refusing further
+	// ones with RESOURCE_EXHAUSTED — the #185 Phase 4 sign-off's per-session
+	// credential-request quota. Unlike MaxRefsPerSession, an admitted call
+	// here doesn't grow any registry-wide state; the risk it bounds is
+	// different: every one of these RPCs unlocks live credential material (a
+	// registry token, a secret payload, SSH agent access), and a client that
+	// keeps calling an ADMITTED method never trips the denied-stream abuse
+	// budget (recordDeniedAndMaybeClose only counts denials/errors), so
+	// without this cap that traffic would otherwise be unbounded. A real
+	// `docker buildx build` session makes at most a handful of these per
+	// unique registry/secret/SSH mount; this is deliberately generous
+	// relative to that while still bounding the worst case. Zero or negative
+	// disables the bound — DefaultLimits never does this.
+	MaxCredentialCallsPerSession int
 }
 
 // DefaultLimits returns sockguard's Phase 2 DoS budget. See Limits' doc
@@ -94,6 +112,8 @@ func DefaultLimits() Limits {
 		IdleTimeout:          10 * time.Minute,
 		ReadIdleTimeout:      30 * time.Second,
 		MaxRefsPerSession:    256,
+
+		MaxCredentialCallsPerSession: 512,
 	}
 }
 

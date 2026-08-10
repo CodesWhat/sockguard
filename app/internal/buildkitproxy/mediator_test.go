@@ -289,15 +289,20 @@ func TestMediatorServeSessionReversedRoles(t *testing.T) {
 	}
 	defer func() { _ = daemonCC.Close() }()
 
-	_, err = daemonCC.RoundTrip(newGRPCRequest(t, "/moby.filesync.v1.Auth/Credentials", ""))
+	// Uses FileSync/DiffCopy (still on the plain byte-verbatim forward path,
+	// deferred to Phase 5) rather than Auth/Credentials: since Phase 4,
+	// Credentials is per-message mediated and requires valid gRPC framing,
+	// which this test's empty body deliberately is not — this test's only
+	// concern is role-wiring, not message mediation.
+	_, err = daemonCC.RoundTrip(newGRPCRequest(t, "/moby.filesync.v1.FileSync/DiffCopy", ""))
 	if err != nil {
 		t.Fatalf("RoundTrip from the daemon leg: %v", err)
 	}
 
 	select {
 	case path := <-clientCalled:
-		if path != "/moby.filesync.v1.Auth/Credentials" {
-			t.Fatalf("client-leg handler saw path %q, want /moby.filesync.v1.Auth/Credentials", path)
+		if path != "/moby.filesync.v1.FileSync/DiffCopy" {
+			t.Fatalf("client-leg handler saw path %q, want /moby.filesync.v1.FileSync/DiffCopy", path)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the client-leg handler was never called — EndpointSession's reversed roles are not wired correctly")

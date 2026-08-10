@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 
 	"golang.org/x/net/http2"
 
@@ -74,6 +75,13 @@ type bridge struct {
 	registry *SessionRegistry
 
 	clientLeg clientLegConn
+
+	// credentialCalls is Phase 4's per-session credential-call counter — see
+	// Limits.MaxCredentialCallsPerSession and forwardSessionMediated
+	// (bridge_session.go) for what it bounds. atomic.Int64 rather than a
+	// mutex-guarded int since concurrent http2.Server handler goroutines (one
+	// per stream) may all be admitting Auth/Secrets/SSH calls at once.
+	credentialCalls atomic.Int64
 
 	closeOnce sync.Once
 	closeMu   sync.Mutex
@@ -213,6 +221,16 @@ func (b *bridge) handleStream(w http.ResponseWriter, r *http.Request) {
 			// on admit, Deny with a specific reason on any check failure),
 			// so it is NOT also audited generically below.
 			b.forwardControlMediated(w, r, service, method)
+			return
+		}
+		if isSessionMediatedMethod(b.legs.endpoint, service, method) {
+			// Phase 4: Auth/Secrets/SSH get their own per-message decode/
+			// policy mediation instead of the plain byte-verbatim relay below
+			// — forwardSessionMediated audits its own outcome, so it is NOT
+			// also audited generically here. FileSync/FileSend/Upload are NOT
+			// in isSessionMediatedMethod's true set (Phase 5's scope) and
+			// fall through to the plain forward exactly as before.
+			b.forwardSessionMediated(w, r, service, method)
 			return
 		}
 		b.audit(service, method, disposition, "")
@@ -414,9 +432,14 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 // gRPC call carried inside the mediated tunnel. reasonCode is empty for an
 // admitted (Mediate/Passthrough) call — only denials and errors carry one of
 // the synthesis's low-cardinality reason codes. Never logs message content,
-// credentials, or secret/SSH identifiers — this event carries only method
-// identity and the routing decision.
-func (b *bridge) audit(service, method string, disposition Disposition, reasonCode string) {
+// credentials, or secret/SSH identifiers raw — this event carries only
+// method identity and the routing decision, plus whatever extra attrs a
+// caller supplies. extra is Phase 4's addition (bridge_session.go's
+// forwardAuthMediated/forwardSecretsMediated/forwardCheckAgent/
+// forwardSSHAgentStream): a registry host (low-cardinality, safe to log raw)
+// or a secret/SSH agent ID hashed via shortHash (never raw) — every other
+// caller in this package passes none, which is a no-op append.
+func (b *bridge) audit(service, method string, disposition Disposition, reasonCode string, extra ...slog.Attr) {
 	attrs := []slog.Attr{
 		slog.String("event", "buildkit_rpc"),
 		slog.String("endpoint", b.legs.endpoint.String()),
@@ -429,6 +452,7 @@ func (b *bridge) audit(service, method string, disposition Disposition, reasonCo
 	if reasonCode != "" {
 		attrs = append(attrs, slog.String("reason_code", reasonCode))
 	}
+	attrs = append(attrs, extra...)
 	level := slog.LevelDebug
 	if disposition == Deny {
 		level = slog.LevelInfo
