@@ -18,6 +18,7 @@ import (
 	"net/http"
 
 	"github.com/codeswhat/sockguard/internal/buildkitproto/auth"
+	"github.com/codeswhat/sockguard/internal/logging"
 )
 
 // isSessionMediatedMethod reports whether service/method on endpoint is one
@@ -170,9 +171,15 @@ func (b *bridge) forwardAuthMediated(w http.ResponseWriter, r *http.Request, ser
 	}
 
 	// Registry hosts are low-cardinality operator-facing config values, not
-	// secrets — safe to log raw (unlike the secret/SSH IDs forwardSecretsMediated/
-	// forwardCheckAgent/forwardSSHAgentStream hash before logging).
-	b.audit(service, method, Mediate, "", slog.String("registry_host", host))
+	// secrets — safe to log in the clear (unlike the secret/SSH IDs
+	// forwardSecretsMediated/forwardCheckAgent/forwardSSHAgentStream hash
+	// before logging). But log the NORMALIZED host — the value policy
+	// actually compared — never req.GetHost() raw: normalizeAuthHost trims
+	// surrounding whitespace before the allowlist comparison, so an admitted
+	// raw Host may still carry leading/trailing CR/LF that would forge audit
+	// log lines. SafeString on top matches every other attr audit emits.
+	normalizedHost, _ := normalizeAuthHost(host)
+	b.audit(service, method, Mediate, "", slog.String("registry_host", logging.SafeString(normalizedHost)))
 	b.forwardWithBody(w, r, service, method, io.NopCloser(bytes.NewReader(frame)))
 }
 

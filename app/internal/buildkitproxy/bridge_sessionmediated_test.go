@@ -1,10 +1,13 @@
 package buildkitproxy
 
 import (
+	"bytes"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -26,6 +29,26 @@ var sessionAuthPolicy = Policy{
 		Secrets: SecretsPolicy{Allow: true, AllowedIDs: []string{"my-secret"}},
 		SSH:     SSHPolicy{Allow: true, AllowedIDs: []string{"default"}},
 	},
+}
+
+// syncLogBuffer is a mutex-guarded bytes.Buffer for capturing slog output
+// written from the bridge's handler goroutines while the test goroutine
+// reads it — a bare bytes.Buffer would be a data race under -race.
+type syncLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // TestBridgeSessionMediatedAuth covers forwardAuthMediated end to end
@@ -135,6 +158,35 @@ func TestBridgeSessionMediatedAuth(t *testing.T) {
 		}
 		if string(body) != string(frame) {
 			t.Fatal("response body does not match the original frame verbatim (no re-encoding expected)")
+		}
+	})
+
+	t.Run("admitted host with trailing whitespace audits the normalized host", func(t *testing.T) {
+		// Regression: normalizeAuthHost trims surrounding whitespace before
+		// the allowlist comparison, so "registry-1.docker.io\n" is admitted —
+		// the audit event must carry the NORMALIZED host, not the raw field,
+		// or the trailing CR/LF would forge audit log lines.
+		logs := &syncLogBuffer{}
+		logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+		tb := newTestBridgeWithLogger(t, EndpointSession, sessionAuthPolicy, DefaultLimits(), echoDaemonHandler(), logger)
+
+		payload := mustMarshal(t, &auth.CredentialsRequest{Host: "registry-1.docker.io\n"})
+		resp, err := tb.driver.RoundTrip(newGRPCRequest(t, credentialsPath, string(grpcFrame(payload))))
+		if err != nil {
+			t.Fatalf("RoundTrip: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200 (whitespace-padded allowed host should be admitted)", resp.StatusCode)
+		}
+		out := logs.String()
+		if !strings.Contains(out, "registry_host=registry-1.docker.io") {
+			t.Fatalf("audit log missing normalized registry_host attr:\n%s", out)
+		}
+		// slog's text handler quotes a value containing a newline as
+		// "registry-1.docker.io\n" — its presence would mean the raw
+		// client-supplied field leaked into the audit log.
+		if strings.Contains(out, `"registry-1.docker.io\n"`) {
+			t.Fatalf("audit log carries the raw un-normalized host:\n%s", out)
 		}
 	})
 

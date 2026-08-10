@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -59,6 +60,16 @@ type testBridge struct {
 
 func newTestBridge(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler) *testBridge {
 	t.Helper()
+	return newTestBridgeWithLogger(t, endpoint, policy, limits, daemonHandler, noopLogger())
+}
+
+// newTestBridgeWithLogger is newTestBridge with the bridge's logger swapped
+// for a caller-supplied one — for the few tests that assert on audit log
+// CONTENT (not just gRPC status codes), e.g. that an admitted Auth call
+// logs the normalized registry host rather than the raw client-supplied
+// field. Everything else should keep using newTestBridge/noopLogger.
+func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler, logger *slog.Logger) *testBridge {
+	t.Helper()
 
 	serverLeg, driverConn := net.Pipe()
 	daemonSide, clientLegForBridge := net.Pipe()
@@ -72,7 +83,7 @@ func newTestBridge(t *testing.T, endpoint Endpoint, policy Policy, limits Limits
 	legs := bridgeLegs{endpoint: endpoint, serverConn: serverLeg, clientConn: clientLegForBridge}
 	tb := &testBridge{registry: registry, session: session, done: make(chan struct{})}
 	go func() {
-		tb.err = runBridge(context.Background(), legs, session, policy, limits, noopLogger(), registry)
+		tb.err = runBridge(context.Background(), legs, session, policy, limits, logger, registry)
 		close(tb.done)
 	}()
 
