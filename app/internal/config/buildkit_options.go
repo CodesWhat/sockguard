@@ -54,15 +54,18 @@ func (c BuildkitSolveRequestBodyConfig) toPolicy(build BuildRequestBodyConfig) b
 
 // normalizeRegistryHostList normalizes every entry through
 // normalizeAllowedRegistryHost so buildkitproxy's runtime registry-host
-// comparison (solve.go's registryHostFromImageRef, which always lowercases
-// and canonicalizes the host it extracts from a client-supplied ref) is
-// compared against the SAME canonical form an operator's config-side
-// allowlist entries are stored in — otherwise "Registry:5000" in config
-// would never match "registry:5000" extracted at runtime. This mirrors
-// internal/filter's newImagePullPolicy/normalizeRegistryHost precedent for
-// the exact same registry-host allowlist shape (buildkitproxy must not
-// import internal/filter or vice versa — see registry.go's package doc —
-// so each side keeps its own copy of the same normalization rule).
+// comparisons — solve.go's registryHostFromImageRef (which always lowercases
+// and canonicalizes the host it extracts from a client-supplied image ref)
+// AND, since issue #185 phase 4, session_mediation.go's normalizeAuthHost
+// (which applies the identical lowercase/index.docker.io normalization to
+// moby.filesync.v1.Auth's bare Host field) — are compared against the SAME
+// canonical form an operator's config-side allowlist entries are stored in —
+// otherwise "Registry:5000" in config would never match "registry:5000"
+// extracted at runtime. This mirrors internal/filter's
+// newImagePullPolicy/normalizeRegistryHost precedent for the exact same
+// registry-host allowlist shape (buildkitproxy must not import
+// internal/filter or vice versa — see registry.go's package doc — so each
+// side keeps its own copy of the same normalization rule).
 // validateRegistryHostEntries already rejects any entry that fails to
 // normalize, so the skip-on-!ok below is only a defensive no-op against
 // what should be unreachable in a Validate()-passed Config.
@@ -84,7 +87,7 @@ func (c BuildkitSessionRequestBodyConfig) toPolicy() buildkitproxy.SessionPolicy
 		Health: c.Health,
 		Auth: buildkitproxy.AuthPolicy{
 			Allow:             c.Auth.Allow,
-			AllowedRegistries: c.Auth.AllowedRegistries,
+			AllowedRegistries: normalizeRegistryHostList(c.Auth.AllowedRegistries),
 			AllowedRealms:     c.Auth.AllowedRealms,
 			AllowedScopes:     c.Auth.AllowedScopes,
 		},

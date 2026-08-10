@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -59,6 +60,16 @@ type testBridge struct {
 
 func newTestBridge(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler) *testBridge {
 	t.Helper()
+	return newTestBridgeWithLogger(t, endpoint, policy, limits, daemonHandler, noopLogger())
+}
+
+// newTestBridgeWithLogger is newTestBridge with the bridge's logger swapped
+// for a caller-supplied one — for the few tests that assert on audit log
+// CONTENT (not just gRPC status codes), e.g. that an admitted Auth call
+// logs the normalized registry host rather than the raw client-supplied
+// field. Everything else should keep using newTestBridge/noopLogger.
+func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler, logger *slog.Logger) *testBridge {
+	t.Helper()
 
 	serverLeg, driverConn := net.Pipe()
 	daemonSide, clientLegForBridge := net.Pipe()
@@ -72,7 +83,7 @@ func newTestBridge(t *testing.T, endpoint Endpoint, policy Policy, limits Limits
 	legs := bridgeLegs{endpoint: endpoint, serverConn: serverLeg, clientConn: clientLegForBridge}
 	tb := &testBridge{registry: registry, session: session, done: make(chan struct{})}
 	go func() {
-		tb.err = runBridge(context.Background(), legs, session, policy, limits, noopLogger(), registry)
+		tb.err = runBridge(context.Background(), legs, session, policy, limits, logger, registry)
 		close(tb.done)
 	}()
 
@@ -194,23 +205,25 @@ func TestBridgeDeniesWhenPolicyDoesNotAllowMediateMethod(t *testing.T) {
 // forward() path Phase 2 shipped, which Phase 3 leaves unchanged for every
 // Mediate method EXCEPT moby.buildkit.v1.Control's Solve/Status (those two
 // now route through forwardControlMediated — see
-// TestBridgeControlMediatedSolve* below for their own coverage). Uses
-// EndpointSession's Auth/Credentials, a Mediate method Phase 3 does not
-// touch, specifically so this test can send an arbitrary, non-gRPC-framed
-// payload and still assert byte-for-byte forwarding.
+// TestBridgeControlMediatedSolve* below for their own coverage) and, since
+// Phase 4, EXCEPT Auth/Secrets/SSH (isSessionMediatedMethod — see
+// bridge_sessionmediated_test.go for their coverage). Uses EndpointSession's
+// FileSync/DiffCopy, a Mediate method still deferred to Phase 5, specifically
+// so this test can send an arbitrary, non-gRPC-framed payload and still
+// assert byte-for-byte forwarding.
 func TestBridgeForwardsAdmittedMethodVerbatim(t *testing.T) {
 	tb := newTestBridge(t, EndpointSession, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
 
 	const payload = "this-is-the-exact-request-body-bytes"
-	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.filesync.v1.Auth/Credentials", payload))
+	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.filesync.v1.FileSync/DiffCopy", payload))
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	if got := resp.Header.Get("X-Daemon-Saw-Path"); got != "/moby.filesync.v1.Auth/Credentials" {
-		t.Fatalf("daemon saw path %q, want /moby.filesync.v1.Auth/Credentials", got)
+	if got := resp.Header.Get("X-Daemon-Saw-Path"); got != "/moby.filesync.v1.FileSync/DiffCopy" {
+		t.Fatalf("daemon saw path %q, want /moby.filesync.v1.FileSync/DiffCopy", got)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

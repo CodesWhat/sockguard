@@ -137,6 +137,33 @@ func TestBuildkitToPolicyNormalizesRegistryHostCase(t *testing.T) {
 	}
 }
 
+// TestBuildkitToPolicyNormalizesAuthRegistryHostCase confirms Session.Auth's
+// registry allowlist is normalized (lowercased, and index.docker.io
+// canonicalized to docker.io) at ToPolicy time, same as Solve's cache/
+// exporter registry allowlists (TestBuildkitToPolicyNormalizesRegistryHostCase)
+// — see normalizeRegistryHostList's doc comment: buildkitproxy's
+// session_mediation.go normalizeAuthHost (issue #185 phase 4) always
+// lowercases the Host it reads off an Auth request, so a config entry that
+// kept whatever case the operator typed would otherwise never match at
+// runtime.
+func TestBuildkitToPolicyNormalizesAuthRegistryHostCase(t *testing.T) {
+	cfg := BuildkitRequestBodyConfig{
+		Session: BuildkitSessionRequestBodyConfig{
+			Auth: BuildkitAuthRequestBodyConfig{
+				Allow:             true,
+				AllowedRegistries: []string{"Registry-1.Docker.IO", "INDEX.DOCKER.IO"},
+			},
+		},
+	}
+
+	got := cfg.ToPolicy(BuildRequestBodyConfig{})
+	want := []string{"registry-1.docker.io", "docker.io"}
+
+	if !reflect.DeepEqual(got.Session.Auth.AllowedRegistries, want) {
+		t.Fatalf("Session.Auth.AllowedRegistries = %v, want %v", got.Session.Auth.AllowedRegistries, want)
+	}
+}
+
 // TestBuildkitToPolicyDoesNotCountBuildFlagsAsConfigured pins the
 // deliberate asymmetry documented on buildkitproxy.Policy.Configured: a
 // Solve policy whose ONLY non-zero fields are the ones reused from
