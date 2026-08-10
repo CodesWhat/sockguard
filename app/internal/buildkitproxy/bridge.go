@@ -356,7 +356,11 @@ func newLimitedReadCloser(r io.ReadCloser, limit int64) io.ReadCloser {
 }
 
 func (l *limitedReadCloser) Read(p []byte) (int, error) {
-	if int64(len(p)) > l.remaining+1 {
+	// Compare by subtraction: l.remaining+1 overflows to math.MinInt64 when
+	// the cap is math.MaxInt64, and p[:l.remaining+1] would panic. The slice
+	// below is only reached when len(p)-1 > remaining, which bounds
+	// remaining+1 <= len(p), so the addition there cannot overflow.
+	if int64(len(p))-1 > l.remaining {
 		p = p[:l.remaining+1]
 	}
 	n, err := l.r.Read(p)

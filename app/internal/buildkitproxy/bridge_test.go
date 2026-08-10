@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -268,6 +269,7 @@ func TestLimitedReadCloserCap(t *testing.T) {
 		{"source shorter than the cap reaches a clean EOF", 3, 5, nil, 3},
 		{"source exactly at the cap reaches a clean EOF, not errMessageTooLarge", 5, 5, nil, 5},
 		{"source longer than the cap trips errMessageTooLarge", 6, 5, errMessageTooLarge, 5},
+		{"cap of math.MaxInt64 must not overflow the one-byte sentinel", 3, math.MaxInt64, nil, 3},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -441,7 +443,7 @@ func TestBridgeForwardRequestSizeCapTripsResourceExhaustedWithoutClosingTunnel(t
 	// in-flight body write against the server's response, which is exactly
 	// the flakiness this package's integration tests avoid elsewhere in
 	// favor of isolated unit coverage of the two things that matter —
-	// limitedReadCloser's own cap behavior (TestLimitedReadCloserCapsBytes)
+	// limitedReadCloser's own cap behavior (TestLimitedReadCloserCap)
 	// and forward()'s handling of the error RoundTrip returns because of it.
 	fake := &fakeClientLeg{err: errMessageTooLarge}
 	b := newUnitTestBridge(t, fake)
