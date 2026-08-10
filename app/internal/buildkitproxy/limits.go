@@ -68,6 +68,19 @@ type Limits struct {
 	// ReadIdleTimeout catches a peer that ACKs TCP but stopped speaking
 	// HTTP/2).
 	ReadIdleTimeout time.Duration
+
+	// MaxRefsPerSession bounds how many distinct Control/Solve refs a single
+	// mediated session (see session.go's SessionRegistry.PutRef) may admit
+	// before sockguard starts refusing new Solve calls with
+	// RESOURCE_EXHAUSTED — the #185 Phase 3 sign-off's "bound the per-session
+	// ref count (DoS)" requirement: without a cap, a client could keep
+	// calling Solve with a fresh Ref forever, growing the ref-ownership index
+	// without limit for the lifetime of the connection. A real `docker
+	// buildx build` session admits one Solve (occasionally a handful, for
+	// multi-target bake); this is deliberately generous relative to that
+	// while still bounding the worst case. Zero or negative disables the
+	// bound — DefaultLimits never does this.
+	MaxRefsPerSession int
 }
 
 // DefaultLimits returns sockguard's Phase 2 DoS budget. See Limits' doc
@@ -80,6 +93,7 @@ func DefaultLimits() Limits {
 		DeniedStreamWindow:   10 * time.Second,
 		IdleTimeout:          10 * time.Minute,
 		ReadIdleTimeout:      30 * time.Second,
+		MaxRefsPerSession:    256,
 	}
 }
 

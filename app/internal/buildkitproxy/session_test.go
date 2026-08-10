@@ -153,3 +153,160 @@ func TestSessionRegistryOtherSessionCannotOwnAnothersRef(t *testing.T) {
 		t.Fatal("session s2 reports owning a ref only s1 ever recorded")
 	}
 }
+
+func TestSessionTryPutRef(t *testing.T) {
+	reg := NewSessionRegistry()
+	s := reg.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+
+	ok, isNew := s.tryPutRef("ref-1", 2)
+	if !ok || !isNew {
+		t.Fatalf("first tryPutRef(ref-1) = (%v, %v), want (true, true)", ok, isNew)
+	}
+
+	ok, isNew = s.tryPutRef("ref-1", 2)
+	if !ok || isNew {
+		t.Fatalf("repeat tryPutRef(ref-1) = (%v, %v), want (true, false)", ok, isNew)
+	}
+
+	ok, isNew = s.tryPutRef("ref-2", 2)
+	if !ok || !isNew {
+		t.Fatalf("tryPutRef(ref-2) at cap = (%v, %v), want (true, true)", ok, isNew)
+	}
+
+	ok, isNew = s.tryPutRef("ref-3", 2)
+	if ok || isNew {
+		t.Fatalf("tryPutRef(ref-3) over cap = (%v, %v), want (false, false)", ok, isNew)
+	}
+
+	// A repeat of an already-held ref is still admitted even once the
+	// session is at capacity: the cap bounds distinct refs, not calls.
+	ok, isNew = s.tryPutRef("ref-1", 2)
+	if !ok || isNew {
+		t.Fatalf("repeat tryPutRef(ref-1) at cap = (%v, %v), want (true, false)", ok, isNew)
+	}
+
+	// maxRefs <= 0 disables the cap entirely.
+	ok, isNew = s.tryPutRef("ref-4", 0)
+	if !ok || !isNew {
+		t.Fatalf("tryPutRef with maxRefs<=0 = (%v, %v), want (true, true)", ok, isNew)
+	}
+}
+
+func TestSessionRefsSnapshot(t *testing.T) {
+	reg := NewSessionRegistry()
+	s := reg.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+
+	if got := s.refsSnapshot(); len(got) != 0 {
+		t.Fatalf("refsSnapshot() on a fresh session = %v, want empty", got)
+	}
+
+	s.PutRef("ref-1")
+	s.PutRef("ref-2")
+
+	got := s.refsSnapshot()
+	want := map[string]bool{"ref-1": true, "ref-2": true}
+	if len(got) != len(want) {
+		t.Fatalf("refsSnapshot() = %v, want 2 entries matching %v", got, want)
+	}
+	for _, ref := range got {
+		if !want[ref] {
+			t.Errorf("refsSnapshot() contained unexpected ref %q", ref)
+		}
+	}
+}
+
+func TestSessionRegistryPutRefAndOwnsRef(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	s := reg.Open(key, EndpointGRPC, "")
+
+	if reg.OwnsRef(key, "ref-1") {
+		t.Fatal("OwnsRef before any PutRef = true, want false")
+	}
+
+	if !reg.PutRef(s, "ref-1", 2) {
+		t.Fatal("PutRef(ref-1) = false, want true")
+	}
+	if !reg.OwnsRef(key, "ref-1") {
+		t.Fatal("OwnsRef(ref-1) after PutRef = false, want true")
+	}
+	if reg.OwnsRef(key, "ref-unrelated") {
+		t.Fatal("OwnsRef for an unrelated ref = true, want false")
+	}
+
+	// A repeated PutRef of the same ref must not double-count the
+	// registry-wide refcount (see tryPutRef's doc comment) — verified
+	// indirectly below via Close only needing one decrement to release it.
+	if !reg.PutRef(s, "ref-1", 2) {
+		t.Fatal("repeat PutRef(ref-1) = false, want true (idempotent)")
+	}
+
+	if !reg.PutRef(s, "ref-2", 2) {
+		t.Fatal("PutRef(ref-2) at cap = false, want true")
+	}
+	if reg.PutRef(s, "ref-3", 2) {
+		t.Fatal("PutRef(ref-3) over cap = true, want false")
+	}
+	if reg.OwnsRef(key, "ref-3") {
+		t.Fatal("OwnsRef(ref-3) after a rejected PutRef = true, want false")
+	}
+
+	// A different SessionKey must never observe ownership of this key's ref.
+	otherKey := SessionKey{ClientIdentity: "other", Profile: "p"}
+	if reg.OwnsRef(otherKey, "ref-1") {
+		t.Fatal("OwnsRef under a different SessionKey = true, want false")
+	}
+}
+
+func TestSessionRegistryCloseReleasesRefs(t *testing.T) {
+	t.Run("single session", func(t *testing.T) {
+		reg := NewSessionRegistry()
+		key := SessionKey{ClientIdentity: "c", Profile: "p"}
+		s := reg.Open(key, EndpointGRPC, "")
+
+		if !reg.PutRef(s, "ref-1", 0) {
+			t.Fatal("PutRef(ref-1) = false, want true")
+		}
+		reg.Close(s.ID)
+
+		if reg.OwnsRef(key, "ref-1") {
+			t.Fatal("OwnsRef(ref-1) after Close = true, want false")
+		}
+		if _, ok := reg.refOwners[key]; ok {
+			t.Fatal("refOwners still holds an entry for a key with no remaining refs")
+		}
+	})
+
+	t.Run("closing a session with no refs is a no-op", func(t *testing.T) {
+		reg := NewSessionRegistry()
+		s := reg.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+		reg.Close(s.ID)
+		if reg.Len() != 0 {
+			t.Fatalf("Len() after Close = %d, want 0", reg.Len())
+		}
+	})
+
+	t.Run("two sessions sharing a key: closing one leaves the other's ref owned", func(t *testing.T) {
+		reg := NewSessionRegistry()
+		key := SessionKey{ClientIdentity: "c", Profile: "p"}
+		s1 := reg.Open(key, EndpointGRPC, "")
+		s2 := reg.Open(key, EndpointGRPC, "")
+
+		if !reg.PutRef(s1, "shared-ref", 0) {
+			t.Fatal("PutRef(shared-ref) on s1 = false, want true")
+		}
+		if !reg.PutRef(s2, "shared-ref", 0) {
+			t.Fatal("PutRef(shared-ref) on s2 = false, want true")
+		}
+
+		reg.Close(s1.ID)
+		if !reg.OwnsRef(key, "shared-ref") {
+			t.Fatal("OwnsRef(shared-ref) after closing only s1 = false, want true (s2 still holds it)")
+		}
+
+		reg.Close(s2.ID)
+		if reg.OwnsRef(key, "shared-ref") {
+			t.Fatal("OwnsRef(shared-ref) after closing both sessions = true, want false")
+		}
+	})
+}

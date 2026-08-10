@@ -72,7 +72,7 @@ func newTestBridge(t *testing.T, endpoint Endpoint, policy Policy, limits Limits
 	legs := bridgeLegs{endpoint: endpoint, serverConn: serverLeg, clientConn: clientLegForBridge}
 	tb := &testBridge{registry: registry, session: session, done: make(chan struct{})}
 	go func() {
-		tb.err = runBridge(context.Background(), legs, session, policy, limits, noopLogger())
+		tb.err = runBridge(context.Background(), legs, session, policy, limits, noopLogger(), registry)
 		close(tb.done)
 	}()
 
@@ -190,19 +190,27 @@ func TestBridgeDeniesWhenPolicyDoesNotAllowMediateMethod(t *testing.T) {
 	}
 }
 
+// TestBridgeForwardsAdmittedMethodVerbatim exercises the plain byte-verbatim
+// forward() path Phase 2 shipped, which Phase 3 leaves unchanged for every
+// Mediate method EXCEPT moby.buildkit.v1.Control's Solve/Status (those two
+// now route through forwardControlMediated — see
+// TestBridgeControlMediatedSolve* below for their own coverage). Uses
+// EndpointSession's Auth/Credentials, a Mediate method Phase 3 does not
+// touch, specifically so this test can send an arbitrary, non-gRPC-framed
+// payload and still assert byte-for-byte forwarding.
 func TestBridgeForwardsAdmittedMethodVerbatim(t *testing.T) {
-	tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
+	tb := newTestBridge(t, EndpointSession, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
 
 	const payload = "this-is-the-exact-request-body-bytes"
-	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Solve", payload))
+	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.filesync.v1.Auth/Credentials", payload))
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	if got := resp.Header.Get("X-Daemon-Saw-Path"); got != "/moby.buildkit.v1.Control/Solve" {
-		t.Fatalf("daemon saw path %q, want /moby.buildkit.v1.Control/Solve", got)
+	if got := resp.Header.Get("X-Daemon-Saw-Path"); got != "/moby.filesync.v1.Auth/Credentials" {
+		t.Fatalf("daemon saw path %q, want /moby.filesync.v1.Auth/Credentials", got)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -239,7 +247,13 @@ func TestBridgeResponseSizeCapTripsResourceExhausted(t *testing.T) {
 
 	tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, limits, bigDaemon)
 
-	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Solve", ""))
+	// Info (Passthrough) rather than Solve: this test is exercising
+	// forward()'s generic response size cap, which applies identically
+	// regardless of method — Solve now routes through
+	// forwardControlMediated's own per-message decode path (see
+	// TestBridgeControlMediatedSolve* for that coverage) and would reject
+	// this request's non-gRPC-framed empty body before ever reaching forward.
+	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -356,7 +370,7 @@ func TestRunBridgeClientLegHandshakeFailure(t *testing.T) {
 	registry := NewSessionRegistry()
 	session := registry.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
 
-	err := runBridge(context.Background(), bridgeLegs{endpoint: EndpointGRPC, serverConn: serverLeg, clientConn: clientLeg}, session, allowAllPolicy, DefaultLimits(), noopLogger())
+	err := runBridge(context.Background(), bridgeLegs{endpoint: EndpointGRPC, serverConn: serverLeg, clientConn: clientLeg}, session, allowAllPolicy, DefaultLimits(), noopLogger(), registry)
 	if err == nil {
 		t.Fatal("runBridge() with a dead client leg = nil error, want an error establishing the client leg")
 	}
@@ -405,6 +419,7 @@ func newUnitTestBridge(t *testing.T, clientLeg clientLegConn) *bridge {
 		limits:    DefaultLimits(),
 		logger:    noopLogger(),
 		guard:     newStreamAbuseGuard(DefaultLimits()),
+		registry:  registry,
 		clientLeg: clientLeg,
 	}
 }

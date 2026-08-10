@@ -16,8 +16,8 @@ import (
 func TestBuildkitDefaultsAreAllDenied(t *testing.T) {
 	cfg := Defaults()
 
-	if cfg.RequestBody.Buildkit.ToPolicy().Configured() {
-		t.Fatal("Defaults().RequestBody.Buildkit.ToPolicy().Configured() = true, want false")
+	if cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build).Configured() {
+		t.Fatal("Defaults().RequestBody.Buildkit.ToPolicy(Build).Configured() = true, want false")
 	}
 	if err := Validate(&cfg); err != nil {
 		t.Fatalf("Validate(Defaults()) = %v, want nil", err)
@@ -27,13 +27,25 @@ func TestBuildkitDefaultsAreAllDenied(t *testing.T) {
 // TestBuildkitToPolicyTranslation asserts a fully populated
 // BuildkitRequestBodyConfig maps field-for-field into buildkitproxy.Policy,
 // so a future phase can trust ToPolicy without re-deriving the mapping.
+// Since issue #185 phase 3, this also covers ToPolicy's build parameter: the
+// sibling request_body.build block's AllowHostNetwork/AllowRemoteContext
+// must land on SolvePolicy verbatim (see BuildkitSolveRequestBodyConfig's
+// doc comment for why those two aren't fields of their own here), and the
+// new Solve cache/exporter allowlists must map straight across.
 func TestBuildkitToPolicyTranslation(t *testing.T) {
 	cfg := BuildkitRequestBodyConfig{
 		Control: BuildkitControlRequestBodyConfig{
 			AllowInfo:        true,
 			AllowListWorkers: true,
 			AllowStatus:      true,
-			Solve:            BuildkitSolveRequestBodyConfig{Allow: true},
+			Solve: BuildkitSolveRequestBodyConfig{
+				Allow:                     true,
+				AllowedCacheImportTypes:   []string{"registry"},
+				AllowedCacheExportTypes:   []string{"inline"},
+				AllowedCacheRegistries:    []string{"ghcr.io"},
+				AllowedExporters:          []string{"image"},
+				AllowedExporterRegistries: []string{"registry.example.com"},
+			},
 		},
 		Session: BuildkitSessionRequestBodyConfig{
 			Health: true,
@@ -50,13 +62,23 @@ func TestBuildkitToPolicyTranslation(t *testing.T) {
 			Upload:   BuildkitUploadRequestBodyConfig{Allow: true},
 		},
 	}
+	build := BuildRequestBodyConfig{AllowHostNetwork: true, AllowRemoteContext: true, AllowRunInstructions: true}
 
 	want := buildkitproxy.Policy{
 		Control: buildkitproxy.ControlPolicy{
 			AllowInfo:        true,
 			AllowListWorkers: true,
 			AllowStatus:      true,
-			Solve:            buildkitproxy.SolvePolicy{Allow: true},
+			Solve: buildkitproxy.SolvePolicy{
+				Allow:                     true,
+				AllowHostNetwork:          true,
+				AllowRemoteContext:        true,
+				AllowedCacheImportTypes:   []string{"registry"},
+				AllowedCacheExportTypes:   []string{"inline"},
+				AllowedCacheRegistries:    []string{"ghcr.io"},
+				AllowedExporters:          []string{"image"},
+				AllowedExporterRegistries: []string{"registry.example.com"},
+			},
 		},
 		Session: buildkitproxy.SessionPolicy{
 			Health: true,
@@ -74,12 +96,36 @@ func TestBuildkitToPolicyTranslation(t *testing.T) {
 		},
 	}
 
-	got := cfg.ToPolicy()
+	got := cfg.ToPolicy(build)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ToPolicy() = %#v, want %#v", got, want)
 	}
 	if !got.Configured() {
 		t.Fatal("populated Policy.Configured() = false, want true")
+	}
+}
+
+// TestBuildkitToPolicyDoesNotCountBuildFlagsAsConfigured pins the
+// deliberate asymmetry documented on buildkitproxy.Policy.Configured: a
+// Solve policy whose ONLY non-zero fields are the ones reused from
+// request_body.build (AllowHostNetwork/AllowRemoteContext) must not itself
+// make Configured() true — those two fields describe intent from an
+// unrelated block, not "this operator wrote a request_body.buildkit
+// section". If this regressed, an operator who sets
+// request_body.build.allow_host_network for classic POST /build alone would
+// be unable to also set insecure_accept_opaque_buildkit_tunnels: true,
+// tripping validateBuildkitAckMutualExclusion for a combination that has
+// nothing to do with BuildKit mediation.
+func TestBuildkitToPolicyDoesNotCountBuildFlagsAsConfigured(t *testing.T) {
+	var cfg BuildkitRequestBodyConfig
+	build := BuildRequestBodyConfig{AllowHostNetwork: true, AllowRemoteContext: true}
+
+	got := cfg.ToPolicy(build)
+	if !got.Control.Solve.AllowHostNetwork || !got.Control.Solve.AllowRemoteContext {
+		t.Fatalf("ToPolicy(build) = %#v, want AllowHostNetwork/AllowRemoteContext threaded through from build", got)
+	}
+	if got.Configured() {
+		t.Fatal("Policy.Configured() = true from build-only flags alone, want false")
 	}
 }
 
@@ -278,6 +324,7 @@ func TestLoadHonorsBuildkitEnvVars(t *testing.T) {
 	t.Setenv("SOCKGUARD_REQUEST_BODY_BUILDKIT_CONTROL_ALLOW_LIST_WORKERS", "true")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_BUILDKIT_CONTROL_ALLOW_STATUS", "true")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_BUILDKIT_CONTROL_SOLVE_ALLOW", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_BUILDKIT_CONTROL_SOLVE_ALLOWED_EXPORTERS", "image,oci")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_BUILDKIT_SESSION_HEALTH", "true")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_BUILDKIT_SESSION_SECRETS_ALLOWED_IDS", "a,b,c")
 
@@ -305,7 +352,10 @@ func TestLoadHonorsBuildkitEnvVars(t *testing.T) {
 	if got := bk.Session.Secrets.AllowedIDs; len(got) != 3 || got[0] != "a" || got[1] != "b" || got[2] != "c" {
 		t.Fatalf("Session.Secrets.AllowedIDs = %#v, want [a b c] from env", got)
 	}
-	if !bk.ToPolicy().Configured() {
-		t.Fatal("env-configured Buildkit.ToPolicy().Configured() = false, want true")
+	if got := bk.Control.Solve.AllowedExporters; len(got) != 2 || got[0] != "image" || got[1] != "oci" {
+		t.Fatalf("Control.Solve.AllowedExporters = %#v, want [image oci] from env", got)
+	}
+	if !bk.ToPolicy(cfg.RequestBody.Build).Configured() {
+		t.Fatal("env-configured Buildkit.ToPolicy(Build).Configured() = false, want true")
 	}
 }

@@ -868,10 +868,10 @@ func withHijack(res *upstream.Resolver, logger *slog.Logger) func(http.Handler) 
 // combination unreachable in practice), this layer is a no-op and the
 // request falls through to next unchanged, exactly like Phase 1.
 func withBuildkitMediator(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
-	defaultPolicy := cfg.RequestBody.Buildkit.ToPolicy()
+	defaultPolicy := cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build)
 	profilePolicies := make(map[string]buildkitproxy.Policy, len(cfg.Clients.Profiles))
 	for _, profile := range cfg.Clients.Profiles {
-		profilePolicies[profile.Name] = profile.RequestBody.Buildkit.ToPolicy()
+		profilePolicies[profile.Name] = profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build)
 	}
 	mediator := buildkitproxy.NewMediator(res, logger)
 
