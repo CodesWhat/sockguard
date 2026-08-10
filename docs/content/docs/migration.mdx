@@ -59,7 +59,8 @@ The rules admitting `POST /session` and `POST /grpc` don't change — only which
 - `docker push` / `--push`: add the destination registry hosts to `control.solve.allowed_exporter_registries`.
 - `RUN --mount=type=secret` / `type=ssh`: enable `session.secrets` / `session.ssh` with an exact ID allowlist.
 - Base-image pulls that need registry auth (most public registries included — Docker Hub issues anonymous pull tokens too — unless the daemon's own credentials already cover it): enable `session.auth` with the exact `allowed_registries` / `allowed_realms` / `allowed_scopes` your Dockerfiles need; these match exactly, not by pattern, so there's no single generic value that covers arbitrary images.
-- A remote (git/HTTP) build context, or `-o type=local` / `type=tar` output: `request_body.build.allow_remote_context: true`, or `session.upload` / `session.file_send` respectively.
+- A remote (git/HTTP) build context: set `request_body.build.allow_remote_context: true`. A stdin or remote context that BuildKit streams back over the session also needs `session.upload.allow: true`.
+- `-o type=local` / `-o type=tar` output: add `local` / `tar` to `control.solve.allowed_exporters` **and** set `session.file_send.allow: true`. The exporter allowlist is empty by default and denies both.
 
 See the `drydock-with-mediated-build.yaml` / `portwing-with-mediated-build.yaml` presets for a complete, validated starting point, and [Security](/security#compose--buildkit-transport) / [Configuration](/configuration) for the full field reference.
 

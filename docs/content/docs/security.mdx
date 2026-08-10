@@ -151,7 +151,7 @@ Modern `docker build` and `docker compose build` no longer speak the classic `PO
 
 | Transport | Endpoint(s) | Inspectable | Default posture |
 |-----------|-------------|--------------|------------------|
-| Classic builder | `POST /build` | Yes — remote context, host network, `RUN` instructions | Allowed when `request_body.build` is configured (see the `*-with-build.yaml` presets) |
+| Classic builder | `POST /build` | Yes — remote context, host network, `RUN` instructions | Allowed by an explicit `POST /build` rule; `request_body.build` denies remote context, host network, and `RUN` by default (see the `*-with-build.yaml` presets) |
 | Mediated BuildKit session/gRPC | `POST /session`, `POST /grpc` | Yes — per-message policy on `Control/Solve`/`Status` and session `Auth`/`Secrets`/`SSH`/`FileSync`/`FileSend`/`Upload` | Allowed when `request_body.buildkit` is configured (see the `*-with-mediated-build.yaml` presets) |
 | Opaque BuildKit tunnel (deprecated) | `POST /session`, `POST /grpc` | No — whole tunnel admitted with zero inspection | Denied; requires the deprecated `insecure_accept_opaque_buildkit_tunnels: true` |
 | Native gRPC-over-h2c | `moby.buildkit.v1.Control/*` | No — same control plane, bare HTTP/1.1 transport | Denied unconditionally — sockguard's listener has no h2c support outside the two hijack-capable tunnel endpoints, so nothing can dial this path end-to-end |
