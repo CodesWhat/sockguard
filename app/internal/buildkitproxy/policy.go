@@ -193,6 +193,17 @@ type SolvePolicy struct {
 	Allow              bool
 	AllowHostNetwork   bool
 	AllowRemoteContext bool
+	// AllowRunInstructions is reused verbatim from the sibling
+	// request_body.build block, exactly like AllowHostNetwork/
+	// AllowRemoteContext above — see this struct's doc comment for why
+	// Solve itself has no phase 3 use for it. Phase 5 (issue #185) is the
+	// first phase that reads it: filesync.go's Dockerfile hold-and-inspect
+	// path applies the identical allow_run_instructions gate the classic
+	// POST /build path does (internal/filter/build.go's buildPolicy.inspect)
+	// to the Dockerfile bytes it holds from a "dockerfile"-named
+	// FileSync/DiffCopy stream, via the shared internal/dockerfileinspect
+	// parser — before ever releasing them to the daemon.
+	AllowRunInstructions bool
 
 	// AllowedCacheImportTypes/AllowedCacheExportTypes gate SolveRequest.
 	// Cache.Imports/.Exports' CacheOptionsEntry.Type (e.g. "registry",
@@ -247,17 +258,33 @@ type SSHPolicy struct {
 	AllowedIDs []string
 }
 
-// FileSyncPolicy gates moby.filesync.v1.FileSync/DiffCopy.
+// FileSyncPolicy gates moby.filesync.v1.FileSync/DiffCopy. MaxFiles/
+// MaxTotalBytes/MaxPathLength/MaxFileBytes are Phase 5 (issue #185)'s
+// per-profile cap overrides — zero (the default when
+// request_body.buildkit.session.file_sync sets none of them) means "use
+// Limits' hardcoded secure default" rather than "unlimited"; see
+// mediator.go's effectiveLimits and limits.go's Phase 5 field doc comments
+// for the two-layer Policy/Limits split this implies.
 type FileSyncPolicy struct {
-	Allow bool
+	Allow         bool
+	MaxFiles      int
+	MaxTotalBytes int64
+	MaxPathLength int
+	MaxFileBytes  int64
 }
 
-// FileSendPolicy gates moby.filesync.v1.FileSend/DiffCopy.
+// FileSendPolicy gates moby.filesync.v1.FileSend/DiffCopy. MaxBytes is
+// Phase 5's per-profile override of Limits.MaxFileSendBytes — see
+// FileSyncPolicy's doc comment for the zero-means-default convention.
 type FileSendPolicy struct {
-	Allow bool
+	Allow    bool
+	MaxBytes int64
 }
 
-// UploadPolicy gates moby.upload.v1.Upload/Pull.
+// UploadPolicy gates moby.upload.v1.Upload/Pull. MaxBytes is Phase 5's
+// per-profile override of Limits.MaxUploadBytes — see FileSyncPolicy's doc
+// comment for the zero-means-default convention.
 type UploadPolicy struct {
-	Allow bool
+	Allow    bool
+	MaxBytes int64
 }

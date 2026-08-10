@@ -118,12 +118,46 @@ func (m *Mediator) serve(endpoint Endpoint, w http.ResponseWriter, r *http.Reque
 	m.Logger.Info("buildkit: tunnel opened",
 		"endpoint", endpoint.String(), "session_id", session.ID, "profile", logging.SafeString(key.Profile), "path", logging.SafeString(logPath))
 
-	if err := runBridge(r.Context(), legs, session, policy, m.Limits, m.Logger, m.Registry); err != nil {
+	if err := runBridge(r.Context(), legs, session, policy, effectiveLimits(m.Limits, policy), m.Logger, m.Registry); err != nil {
 		m.Logger.Warn("buildkit: tunnel terminated",
 			"error", logging.SafeString(err.Error()), "endpoint", endpoint.String(), "session_id", session.ID)
 		return
 	}
 	m.Logger.Info("buildkit: tunnel closed", "endpoint", endpoint.String(), "session_id", session.ID)
+}
+
+// effectiveLimits merges Phase 5 (issue #185)'s per-profile FileSync/
+// FileSend/Upload cap overrides (policy.Session.{FileSync,FileSend,Upload})
+// on top of base (m.Limits, one value shared by every profile — see
+// Mediator's doc comment) for the single tunnel about to be bridged. A
+// configured, positive per-profile value replaces the corresponding base
+// field; zero (the default when a profile's request_body.buildkit.session
+// cap block sets nothing) leaves base's hardcoded secure default in place —
+// see limits.go's Phase 5 field doc comments and FileSyncPolicy's doc
+// comment for this zero-means-default convention. Every other Limits field
+// (the Phase 2 DoS budget) is untouched: those have no per-profile knob by
+// design (Limits' own doc comment) and stay exactly base's value.
+func effectiveLimits(base Limits, policy Policy) Limits {
+	out := base
+	if v := policy.Session.FileSync.MaxFiles; v > 0 {
+		out.MaxFileSyncFiles = v
+	}
+	if v := policy.Session.FileSync.MaxTotalBytes; v > 0 {
+		out.MaxFileSyncTotalBytes = v
+	}
+	if v := policy.Session.FileSync.MaxPathLength; v > 0 {
+		out.MaxFileSyncPathLength = v
+	}
+	if v := policy.Session.FileSync.MaxFileBytes; v > 0 {
+		out.MaxFileSyncFileBytes = v
+	}
+	if v := policy.Session.FileSend.MaxBytes; v > 0 {
+		out.MaxFileSendBytes = v
+	}
+	if v := policy.Session.Upload.MaxBytes; v > 0 {
+		out.MaxUploadBytes = v
+	}
+	return out
 }
 
 func closeConnLogged(logger *slog.Logger, conn net.Conn, label, path string) {

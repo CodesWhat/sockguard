@@ -141,6 +141,27 @@ type SessionRegistry struct {
 	// each PutRef the same ref string (harmless — same trust boundary); Close
 	// only removes the contribution the session it's closing actually made.
 	refOwners map[SessionKey]map[string]int
+
+	// uploadKeys is Phase 5 (issue #185)'s one-use Upload/Pull token index:
+	// which SessionKey admitted a given upload-URL id (see upload.go's
+	// admitSolveUploadKeys, called from bridge.go's forwardControlMediated
+	// once a Solve naming an "http://buildkit-session/<id>" context/
+	// context:<name> FrontendAttrs value is admitted). Scoped to SessionKey
+	// rather than a single Session for the identical structural reason
+	// refOwners is: the admitting call (Control/Solve, over POST /grpc) and
+	// the consuming call (Upload/Pull, over POST /session) are always two
+	// DIFFERENT hijacked connections — buildx dials /session and /grpc
+	// separately — so they can never share one Session.ID. Unlike
+	// refOwners' refcount-per-ref shape, a value here is consumed exactly
+	// once (map entry deleted on the first successful ConsumeUploadKey) and
+	// is NOT released early by SessionRegistry.Close: an admitted-but-not-
+	// yet-consumed token has no session of its own to tie a release to
+	// (the admitting /grpc session may legitimately close before the
+	// /session tunnel's Pull call ever arrives), so it stays valid until
+	// consumed or the process restarts. AdmitUploadKey bounds the SET SIZE
+	// per SessionKey via Limits.MaxUploadKeysPerSession to keep this from
+	// growing unboundedly for one client identity across many builds.
+	uploadKeys map[SessionKey]map[string]struct{}
 }
 
 // NewSessionRegistry returns an empty registry.
@@ -293,4 +314,74 @@ func (r *SessionRegistry) OwnsRef(key SessionKey, ref string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.refOwners[key][ref] > 0
+}
+
+// HasAdmittedSolve reports whether key has admitted at least one
+// Control/Solve ref that is still owned (i.e. OwnsRef would return true for
+// SOME ref under key). Phase 5's FileSend/DiffCopy mediation
+// (filesend.go) uses this to enforce the #185 synthesis's "allow only when
+// bound to an admitted Solve from the same SessionKey" rule: moby.filesync.
+// v1.FileSend.DiffCopy's BytesMessage carries no ref (or any other
+// identifying field) of its own to check with OwnsRef directly, so the only
+// meaningful check available is "has this identity+profile solved anything
+// at all yet."
+func (r *SessionRegistry) HasAdmittedSolve(key SessionKey) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.refOwners[key]) > 0
+}
+
+// AdmitUploadKey registers id as a one-use Upload/Pull token for key,
+// admitting it only if key currently holds fewer than maxKeys
+// not-yet-consumed tokens (maxKeys <= 0 disables the bound). Returns false
+// without recording anything once the bound is hit. A duplicate id already
+// admitted-but-not-yet-consumed is a harmless no-op success (mirrors
+// PutRef's tolerance of a repeated call) rather than a second, redundant
+// bound check.
+func (r *SessionRegistry) AdmitUploadKey(key SessionKey, id string, maxKeys int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.uploadKeys == nil {
+		r.uploadKeys = make(map[SessionKey]map[string]struct{})
+	}
+	keys, ok := r.uploadKeys[key]
+	if !ok {
+		keys = make(map[string]struct{})
+		r.uploadKeys[key] = keys
+	}
+	if _, exists := keys[id]; exists {
+		return true
+	}
+	if maxKeys > 0 && len(keys) >= maxKeys {
+		return false
+	}
+	keys[id] = struct{}{}
+	return true
+}
+
+// ConsumeUploadKey reports whether id is a currently-valid, not-yet-consumed
+// Upload/Pull token for key, and if so atomically removes it — the "one-use"
+// half of the #185 synthesis's "one-use token bound to an admitted stdin/
+// remote-context upload" requirement. A second call with the same id (or a
+// call naming an id that was never admitted at all) returns false: both
+// cases mean "this is not currently a valid token for a fresh Pull,"
+// deliberately collapsed to one outcome — see upload.go's
+// buildkit_upload_token_invalid audit reason.
+func (r *SessionRegistry) ConsumeUploadKey(key SessionKey, id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	keys, ok := r.uploadKeys[key]
+	if !ok {
+		return false
+	}
+	if _, exists := keys[id]; !exists {
+		return false
+	}
+	delete(keys, id)
+	if len(keys) == 0 {
+		delete(r.uploadKeys, key)
+	}
+	return true
 }

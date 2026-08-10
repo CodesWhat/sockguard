@@ -1,6 +1,7 @@
 package buildkitproxy
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -381,6 +382,182 @@ func TestSessionRegistryPutRefRaceWithClose(t *testing.T) {
 		}
 		if owners, ok := reg.refOwners[key]; ok && len(owners) != 0 {
 			t.Fatalf("iteration %d: refOwners[key] = %v after every session closed, want empty/absent", i, owners)
+		}
+	}
+}
+
+func TestSessionRegistryHasAdmittedSolve(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	s := reg.Open(key, EndpointGRPC, "")
+
+	if reg.HasAdmittedSolve(key) {
+		t.Fatal("HasAdmittedSolve() = true before any PutRef, want false")
+	}
+	if !reg.PutRef(s, "ref-1", 0) {
+		t.Fatal("PutRef failed")
+	}
+	if !reg.HasAdmittedSolve(key) {
+		t.Fatal("HasAdmittedSolve() = false after PutRef admitted a ref, want true")
+	}
+}
+
+func TestSessionRegistryHasAdmittedSolveIsPerKey(t *testing.T) {
+	reg := NewSessionRegistry()
+	key1 := SessionKey{ClientIdentity: "c1", Profile: "p"}
+	key2 := SessionKey{ClientIdentity: "c2", Profile: "p"}
+	s1 := reg.Open(key1, EndpointGRPC, "")
+	reg.PutRef(s1, "ref-1", 0)
+
+	if reg.HasAdmittedSolve(key2) {
+		t.Fatal("HasAdmittedSolve(key2) = true, want false — key2 never admitted anything")
+	}
+}
+
+func TestSessionRegistryAdmitUploadKeyFirstAdmissionSucceeds(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+
+	if !reg.AdmitUploadKey(key, "id-1", 0) {
+		t.Fatal("AdmitUploadKey() = false on first admission, want true")
+	}
+	if !reg.ConsumeUploadKey(key, "id-1") {
+		t.Fatal("ConsumeUploadKey() = false for a freshly admitted id, want true")
+	}
+}
+
+func TestSessionRegistryAdmitUploadKeyDuplicateIsIdempotent(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+
+	if !reg.AdmitUploadKey(key, "id-1", 1) {
+		t.Fatal("first AdmitUploadKey() = false, want true")
+	}
+	// A duplicate admission of the SAME id, even with maxKeys already at its
+	// bound, is a harmless no-op success — it must not count as a second
+	// key toward maxKeys.
+	if !reg.AdmitUploadKey(key, "id-1", 1) {
+		t.Fatal("duplicate AdmitUploadKey() for an already-admitted id = false, want true (idempotent)")
+	}
+	if reg.AdmitUploadKey(key, "id-2", 1) {
+		t.Fatal("AdmitUploadKey() for a genuinely new id = true, want false — maxKeys=1 is already at its bound")
+	}
+}
+
+func TestSessionRegistryAdmitUploadKeyRespectsMaxKeysBound(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+
+	if !reg.AdmitUploadKey(key, "id-1", 2) {
+		t.Fatal("AdmitUploadKey(id-1) = false, want true")
+	}
+	if !reg.AdmitUploadKey(key, "id-2", 2) {
+		t.Fatal("AdmitUploadKey(id-2) = false, want true")
+	}
+	if reg.AdmitUploadKey(key, "id-3", 2) {
+		t.Fatal("AdmitUploadKey(id-3) = true, want false — maxKeys=2 already holds 2 not-yet-consumed keys")
+	}
+}
+
+func TestSessionRegistryAdmitUploadKeyMaxKeysZeroOrNegativeDisablesBound(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+
+	for i, maxKeys := range []int{0, -1} {
+		id := fmt.Sprintf("id-%d", i)
+		if !reg.AdmitUploadKey(key, id, maxKeys) {
+			t.Fatalf("AdmitUploadKey(%q, maxKeys=%d) = false, want true (bound disabled)", id, maxKeys)
+		}
+	}
+}
+
+func TestSessionRegistryConsumeUploadKeyIsOneUse(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	reg.AdmitUploadKey(key, "id-1", 0)
+
+	if !reg.ConsumeUploadKey(key, "id-1") {
+		t.Fatal("first ConsumeUploadKey() = false, want true")
+	}
+	if reg.ConsumeUploadKey(key, "id-1") {
+		t.Fatal("second ConsumeUploadKey() for the same id = true, want false — one-use")
+	}
+}
+
+func TestSessionRegistryConsumeUploadKeyNeverAdmitted(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+
+	if reg.ConsumeUploadKey(key, "never-admitted") {
+		t.Fatal("ConsumeUploadKey() for a never-admitted id = true, want false")
+	}
+}
+
+func TestSessionRegistryConsumeUploadKeyUnknownIDUnderKnownKey(t *testing.T) {
+	// key DOES have an entry in uploadKeys (from admitting "id-1"), but
+	// "id-2" was never admitted under it — distinct from both "unknown key
+	// entirely" and "id-1 admitted, then consumed twice" above.
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	reg.AdmitUploadKey(key, "id-1", 0)
+
+	if reg.ConsumeUploadKey(key, "id-2") {
+		t.Fatal("ConsumeUploadKey() for an unadmitted id under a known key = true, want false")
+	}
+}
+
+func TestSessionRegistryConsumeUploadKeyUnknownKey(t *testing.T) {
+	reg := NewSessionRegistry()
+	// No AdmitUploadKey call at all for this key — reg.uploadKeys has no
+	// entry for it whatsoever, exercising ConsumeUploadKey's "key not
+	// present at all" branch distinctly from "id not present under a known
+	// key" above.
+	if reg.ConsumeUploadKey(SessionKey{ClientIdentity: "nobody", Profile: "p"}, "id-1") {
+		t.Fatal("ConsumeUploadKey() for an unknown SessionKey = true, want false")
+	}
+}
+
+func TestSessionRegistryConsumeUploadKeyCleansUpEmptyMapEntry(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	reg.AdmitUploadKey(key, "id-1", 0)
+	reg.ConsumeUploadKey(key, "id-1")
+
+	if _, ok := reg.uploadKeys[key]; ok {
+		t.Fatal("reg.uploadKeys[key] still present after its last key was consumed, want the map entry removed")
+	}
+}
+
+func TestSessionRegistryAdmitUploadKeyRaceWithConsume(t *testing.T) {
+	const iterations = 500
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+
+	for i := 0; i < iterations; i++ {
+		reg := NewSessionRegistry()
+		reg.AdmitUploadKey(key, "race-id", 0)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		successes := make(chan bool, 2)
+		go func() {
+			defer wg.Done()
+			successes <- reg.ConsumeUploadKey(key, "race-id")
+		}()
+		go func() {
+			defer wg.Done()
+			successes <- reg.ConsumeUploadKey(key, "race-id")
+		}()
+		wg.Wait()
+		close(successes)
+
+		successCount := 0
+		for ok := range successes {
+			if ok {
+				successCount++
+			}
+		}
+		if successCount != 1 {
+			t.Fatalf("iteration %d: %d concurrent ConsumeUploadKey calls succeeded, want exactly 1 — one-use must hold under a race", i, successCount)
 		}
 	}
 }

@@ -55,11 +55,17 @@ func TestBuildkitToPolicyTranslation(t *testing.T) {
 				AllowedRealms:     []string{"realm-a"},
 				AllowedScopes:     []string{"scope-a"},
 			},
-			Secrets:  BuildkitSecretsRequestBodyConfig{Allow: true, AllowedIDs: []string{"secret-a"}},
-			SSH:      BuildkitSSHRequestBodyConfig{Allow: true, AllowedIDs: []string{"ssh-a"}},
-			FileSync: BuildkitFileSyncRequestBodyConfig{Allow: true},
-			FileSend: BuildkitFileSendRequestBodyConfig{Allow: true},
-			Upload:   BuildkitUploadRequestBodyConfig{Allow: true},
+			Secrets: BuildkitSecretsRequestBodyConfig{Allow: true, AllowedIDs: []string{"secret-a"}},
+			SSH:     BuildkitSSHRequestBodyConfig{Allow: true, AllowedIDs: []string{"ssh-a"}},
+			FileSync: BuildkitFileSyncRequestBodyConfig{
+				Allow:         true,
+				MaxFiles:      10,
+				MaxTotalBytes: 1024,
+				MaxPathLength: 256,
+				MaxFileBytes:  512,
+			},
+			FileSend: BuildkitFileSendRequestBodyConfig{Allow: true, MaxBytes: 2048},
+			Upload:   BuildkitUploadRequestBodyConfig{Allow: true, MaxBytes: 4096},
 		},
 	}
 	build := BuildRequestBodyConfig{AllowHostNetwork: true, AllowRemoteContext: true, AllowRunInstructions: true}
@@ -73,6 +79,7 @@ func TestBuildkitToPolicyTranslation(t *testing.T) {
 				Allow:                     true,
 				AllowHostNetwork:          true,
 				AllowRemoteContext:        true,
+				AllowRunInstructions:      true,
 				AllowedCacheImportTypes:   []string{"registry"},
 				AllowedCacheExportTypes:   []string{"inline"},
 				AllowedCacheRegistries:    []string{"ghcr.io"},
@@ -88,11 +95,17 @@ func TestBuildkitToPolicyTranslation(t *testing.T) {
 				AllowedRealms:     []string{"realm-a"},
 				AllowedScopes:     []string{"scope-a"},
 			},
-			Secrets:  buildkitproxy.SecretsPolicy{Allow: true, AllowedIDs: []string{"secret-a"}},
-			SSH:      buildkitproxy.SSHPolicy{Allow: true, AllowedIDs: []string{"ssh-a"}},
-			FileSync: buildkitproxy.FileSyncPolicy{Allow: true},
-			FileSend: buildkitproxy.FileSendPolicy{Allow: true},
-			Upload:   buildkitproxy.UploadPolicy{Allow: true},
+			Secrets: buildkitproxy.SecretsPolicy{Allow: true, AllowedIDs: []string{"secret-a"}},
+			SSH:     buildkitproxy.SSHPolicy{Allow: true, AllowedIDs: []string{"ssh-a"}},
+			FileSync: buildkitproxy.FileSyncPolicy{
+				Allow:         true,
+				MaxFiles:      10,
+				MaxTotalBytes: 1024,
+				MaxPathLength: 256,
+				MaxFileBytes:  512,
+			},
+			FileSend: buildkitproxy.FileSendPolicy{Allow: true, MaxBytes: 2048},
+			Upload:   buildkitproxy.UploadPolicy{Allow: true, MaxBytes: 4096},
 		},
 	}
 
@@ -208,11 +221,17 @@ func TestValidateAllowsFullyPopulatedBuildkitConfig(t *testing.T) {
 				AllowedRealms:     []string{"realm-a"},
 				AllowedScopes:     []string{"repository:foo/bar:pull"},
 			},
-			Secrets:  BuildkitSecretsRequestBodyConfig{Allow: true, AllowedIDs: []string{"my-secret"}},
-			SSH:      BuildkitSSHRequestBodyConfig{Allow: true, AllowedIDs: []string{"default"}},
-			FileSync: BuildkitFileSyncRequestBodyConfig{Allow: true},
-			FileSend: BuildkitFileSendRequestBodyConfig{Allow: true},
-			Upload:   BuildkitUploadRequestBodyConfig{Allow: true},
+			Secrets: BuildkitSecretsRequestBodyConfig{Allow: true, AllowedIDs: []string{"my-secret"}},
+			SSH:     BuildkitSSHRequestBodyConfig{Allow: true, AllowedIDs: []string{"default"}},
+			FileSync: BuildkitFileSyncRequestBodyConfig{
+				Allow:         true,
+				MaxFiles:      1000,
+				MaxTotalBytes: 1 << 20,
+				MaxPathLength: 512,
+				MaxFileBytes:  1 << 20,
+			},
+			FileSend: BuildkitFileSendRequestBodyConfig{Allow: true, MaxBytes: 1 << 20},
+			Upload:   BuildkitUploadRequestBodyConfig{Allow: true, MaxBytes: 1 << 20},
 		},
 	}
 
@@ -261,6 +280,36 @@ func TestValidateRejectsBadBuildkitAllowlistEntries(t *testing.T) {
 			name:  "ssh allowed_ids empty string",
 			apply: func(cfg *Config) { cfg.RequestBody.Buildkit.Session.SSH.AllowedIDs = []string{""} },
 			field: "buildkit.session.ssh.allowed_ids",
+		},
+		{
+			name:  "file_sync max_files negative",
+			apply: func(cfg *Config) { cfg.RequestBody.Buildkit.Session.FileSync.MaxFiles = -1 },
+			field: "buildkit.session.file_sync.max_files",
+		},
+		{
+			name:  "file_sync max_total_bytes negative",
+			apply: func(cfg *Config) { cfg.RequestBody.Buildkit.Session.FileSync.MaxTotalBytes = -1 },
+			field: "buildkit.session.file_sync.max_total_bytes",
+		},
+		{
+			name:  "file_sync max_path_length negative",
+			apply: func(cfg *Config) { cfg.RequestBody.Buildkit.Session.FileSync.MaxPathLength = -1 },
+			field: "buildkit.session.file_sync.max_path_length",
+		},
+		{
+			name:  "file_sync max_file_bytes negative",
+			apply: func(cfg *Config) { cfg.RequestBody.Buildkit.Session.FileSync.MaxFileBytes = -1 },
+			field: "buildkit.session.file_sync.max_file_bytes",
+		},
+		{
+			name:  "file_send max_bytes negative",
+			apply: func(cfg *Config) { cfg.RequestBody.Buildkit.Session.FileSend.MaxBytes = -1 },
+			field: "buildkit.session.file_send.max_bytes",
+		},
+		{
+			name:  "upload max_bytes negative",
+			apply: func(cfg *Config) { cfg.RequestBody.Buildkit.Session.Upload.MaxBytes = -1 },
+			field: "buildkit.session.upload.max_bytes",
 		},
 	}
 

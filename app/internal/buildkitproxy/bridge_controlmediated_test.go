@@ -161,6 +161,33 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 			t.Fatal("registry does not own the ref from an admitted Solve")
 		}
 	})
+
+	t.Run("Solve naming more upload-session contexts than the cap is denied", func(t *testing.T) {
+		var daemonCalled atomic.Bool
+		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled.Store(true) })
+		// Upload-session URLs are http://, so admitting the Solve at all needs
+		// AllowRemoteContext; the cap is what this case exercises.
+		policy := Policy{Control: ControlPolicy{Solve: SolvePolicy{Allow: true, AllowRemoteContext: true}}}
+		limits := DefaultLimits()
+		limits.MaxUploadKeysPerSession = 1
+		tb := newTestBridge(t, EndpointGRPC, policy, limits, daemon)
+
+		req := &control.SolveRequest{Ref: "ref", FrontendAttrs: map[string]string{
+			"context":       "http://buildkit-session/id-a",
+			"context:extra": "http://buildkit-session/id-b",
+		}}
+		resp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, solvePath, req))
+		if err != nil {
+			t.Fatalf("RoundTrip: %v", err)
+		}
+		code, _ := grpcStatusOf(t, resp)
+		if code != grpcCodeResourceExhausted {
+			t.Fatalf("Grpc-Status = %d, want %d (RESOURCE_EXHAUSTED)", code, grpcCodeResourceExhausted)
+		}
+		if daemonCalled.Load() {
+			t.Fatal("a Solve exceeding the upload-key cap reached the daemon")
+		}
+	})
 }
 
 // TestBridgeControlMediatedStatus covers forwardControlMediated's Status

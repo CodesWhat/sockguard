@@ -154,12 +154,39 @@ func TestEvaluateSolveRequest(t *testing.T) {
 			wantCode:   grpcCodePermissionDenied,
 		},
 		{
-			name: "remote build context with allow_remote_context",
+			name: "remote build context with allow_remote_context and allow_run_instructions",
 			payload: mustMarshal(t, &control.SolveRequest{
 				Ref:           "r",
 				Frontend:      "dockerfile.v0",
 				FrontendAttrs: map[string]string{"context": "https://example.com/repo.git"},
 			}),
+			policy:     SolvePolicy{Allow: true, AllowRemoteContext: true, AllowRunInstructions: true},
+			wantDenied: false,
+		},
+		{
+			name: "remote build context denied when RUN instructions are restricted",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Frontend:      "dockerfile.v0",
+				FrontendAttrs: map[string]string{"context": "https://example.com/repo.git"},
+			}),
+			// allow_remote_context alone is not enough: buildkitd fetches the
+			// Dockerfile from the remote URL itself, so it never reaches
+			// hold-and-inspect — mirror classic /build and deny.
+			policy:     SolvePolicy{Allow: true, AllowRemoteContext: true},
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
+			name: "upload-session context is not treated as a remote fetch under RUN restriction",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:           "r",
+				Frontend:      "dockerfile.v0",
+				FrontendAttrs: map[string]string{"context": "http://buildkit-session/abc123"},
+			}),
+			// A buildkit-session upload is local (its Dockerfile still flows
+			// through the inspectable "dockerfile" FileSync stream), so it is
+			// admitted even with allow_run_instructions off.
 			policy:     SolvePolicy{Allow: true, AllowRemoteContext: true},
 			wantDenied: false,
 		},

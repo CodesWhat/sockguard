@@ -57,6 +57,7 @@
 package buildkitproxy
 
 import (
+	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -191,6 +192,17 @@ func isRemoteContextRef(value string) bool {
 	return scpLikeGitRefRegexp.MatchString(value)
 }
 
+// isUploadSessionContextRef reports whether value is a BuildKit upload-session
+// URL ("http://buildkit-session/<id>") — a local client-streamed upload, not a
+// remote git/HTTP fetch. isRemoteContextRef matches these too (http:// prefix),
+// so checkSolveFrontend uses this to exclude them from the RUN-inspection
+// remote-context denial. Uses the same scheme/host recognition as upload.go's
+// admitSolveUploadKeys so the two agree on exactly which values are uploads.
+func isUploadSessionContextRef(value string) bool {
+	u, err := url.Parse(value)
+	return err == nil && u.Scheme == "http" && u.Host == uploadSessionHost
+}
+
 // registryHostFromImageRef extracts the registry authority from an
 // image-like reference, using the same disambiguation rule Docker's own
 // reference grammar uses: split on the first '/'; if that first component
@@ -321,6 +333,20 @@ func checkSolveFrontend(req *control.SolveRequest, solvePolicy SolvePolicy) *med
 		case (key == "context" || strings.HasPrefix(key, "context:")) && isRemoteContextRef(value):
 			if !solvePolicy.AllowRemoteContext {
 				return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "a remote build context requires this profile's allow_remote_context")
+			}
+			// A genuinely-remote git/HTTP context has buildkitd fetch the
+			// Dockerfile ITSELF from the client-named URL — no FileSync/DiffCopy
+			// stream carries it, so filesync.go's hold-and-inspect never sees it
+			// and cannot enforce allow_run_instructions on it. Mirror classic
+			// POST /build (internal/filter/build.go), which denies exactly this
+			// combination rather than let a remote context bypass the RUN gate.
+			// An "http://buildkit-session/<id>" value is excluded: it is a local
+			// client-streamed upload (Upload/Pull, see upload.go), not a remote
+			// fetch — its Dockerfile still flows through the inspectable
+			// "dockerfile" FileSync stream, exactly as the classic path inspects
+			// (rather than denies) a stdin/spooled-tar context.
+			if !solvePolicy.AllowRunInstructions && !isUploadSessionContextRef(value) {
+				return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "a remote build context cannot be inspected while RUN instructions are restricted")
 			}
 		case key == "force-network-mode" && value == "host":
 			if !solvePolicy.AllowHostNetwork {
