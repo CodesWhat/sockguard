@@ -60,14 +60,23 @@ func TestValidateUpgradeRequest(t *testing.T) {
 func TestHeaderHasToken(t *testing.T) {
 	h := http.Header{}
 	h.Set("Connection", "keep-alive, Upgrade")
-	if !headerHasToken(h, "Connection", "upgrade") {
-		t.Error("headerHasToken() = false, want true (case-insensitive, comma-separated match)")
+
+	cases := []struct {
+		name  string
+		h     http.Header
+		token string
+		want  bool
+	}{
+		{"case-insensitive, comma-separated match", h, "upgrade", true},
+		{"absent token", h, "close", false},
+		{"empty header", http.Header{}, "upgrade", false},
 	}
-	if headerHasToken(h, "Connection", "close") {
-		t.Error("headerHasToken() = true for absent token, want false")
-	}
-	if headerHasToken(http.Header{}, "Connection", "upgrade") {
-		t.Error("headerHasToken() on empty header = true, want false")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := headerHasToken(tc.h, "Connection", tc.token); got != tc.want {
+				t.Errorf("headerHasToken() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -78,7 +87,7 @@ func TestRewriteSessionAdvertisement(t *testing.T) {
 	h.Add(sessionGRPCMethodHeader, "moby.filesync.v1.Auth")
 	h.Add(sessionGRPCMethodHeader, "  ") // blank after trim, must be dropped silently
 
-	rewriteSessionAdvertisement(h)
+	rewriteSessionAdvertisement(h, allowAllPolicy)
 
 	got := h.Values(sessionGRPCMethodHeader)
 	want := []string{"moby.filesync.v1.FileSync", "moby.filesync.v1.Auth"}
@@ -95,12 +104,33 @@ func TestRewriteSessionAdvertisement(t *testing.T) {
 func TestRewriteSessionAdvertisementNoHeaderIsNoop(t *testing.T) {
 	h := http.Header{}
 	h.Set("Other-Header", "unchanged")
-	rewriteSessionAdvertisement(h)
+	rewriteSessionAdvertisement(h, allowAllPolicy)
 	if len(h.Values(sessionGRPCMethodHeader)) != 0 {
 		t.Error("rewriteSessionAdvertisement invented a header that was never present")
 	}
 	if h.Get("Other-Header") != "unchanged" {
 		t.Error("rewriteSessionAdvertisement touched an unrelated header")
+	}
+}
+
+// TestRewriteSessionAdvertisementStripsPolicyDeniedService pins CodeRabbit's
+// finding: moby.filesync.v1.Auth is registered Mediate under EndpointSession
+// (so the policy-blind ServiceAdmitted would keep it), but a policy that
+// never turns Session.Auth.Allow on must still see it stripped — advertising
+// a registry-admitted-but-policy-denied service would invite a daemon
+// callback the bridge only rejects after the fact.
+func TestRewriteSessionAdvertisementStripsPolicyDeniedService(t *testing.T) {
+	h := http.Header{}
+	h.Add(sessionGRPCMethodHeader, "moby.filesync.v1.FileSync")
+	h.Add(sessionGRPCMethodHeader, "moby.filesync.v1.Auth")
+
+	p := Policy{Session: SessionPolicy{FileSync: FileSyncPolicy{Allow: true}}}
+	rewriteSessionAdvertisement(h, p)
+
+	got := h.Values(sessionGRPCMethodHeader)
+	want := []string{"moby.filesync.v1.FileSync"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("rewritten advertisement = %v, want %v (Auth is registry-admitted but policy-denied, and must be stripped)", got, want)
 	}
 }
 
@@ -132,72 +162,127 @@ func TestBufferedConnReadsBufferedBytesFirst(t *testing.T) {
 	}
 }
 
-func TestDialDaemonH2CDialError(t *testing.T) {
+// TestDialDaemonH2CDialAndWriteFailureModes tables the two failure points
+// that happen before any bytes come back from the daemon at all: the dial
+// itself, and writing the upgrade request onto an already-dead connection.
+func TestDialDaemonH2CDialAndWriteFailureModes(t *testing.T) {
 	wantErr := errors.New("boom")
-	_, _, err := dialDaemonH2C(context.Background(), &fakeDialer{err: wantErr}, "/grpc", http.Header{})
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("dialDaemonH2C() error = %v, want wrapping %v", err, wantErr)
+
+	cases := []struct {
+		name        string
+		dialer      *fakeDialer
+		wantErr     error  // checked via errors.Is when set
+		wantErrText string // checked via strings.Contains when set
+	}{
+		{
+			name:    "dial failure",
+			dialer:  &fakeDialer{err: wantErr},
+			wantErr: wantErr,
+		},
+		{
+			name: "write request failure (dead conn)",
+			dialer: func() *fakeDialer {
+				_, conn := net.Pipe()
+				_ = conn.Close() // both ends dead: any Write returns io.ErrClosedPipe immediately
+				return &fakeDialer{conn: conn}
+			}(),
+			wantErrText: "write daemon upgrade request",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := dialDaemonH2C(context.Background(), tc.dialer, "/grpc", http.Header{})
+			if err == nil {
+				t.Fatal("dialDaemonH2C() = nil error, want non-nil")
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("dialDaemonH2C() error = %v, want wrapping %v", err, tc.wantErr)
+			}
+			if tc.wantErrText != "" && !strings.Contains(err.Error(), tc.wantErrText) {
+				t.Fatalf("dialDaemonH2C() error = %v, want it to mention %q", err, tc.wantErrText)
+			}
+		})
 	}
 }
 
-func TestDialDaemonH2CRejectsNon101(t *testing.T) {
-	daemonSide, dialerSide := net.Pipe()
-	defer func() { _ = daemonSide.Close() }()
-
-	go func() {
-		req, err := http.ReadRequest(bufio.NewReader(daemonSide))
-		if err != nil {
-			return
-		}
-		_ = req.Body.Close()
-		_, _ = daemonSide.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"))
-	}()
-
-	_, _, err := dialDaemonH2C(context.Background(), &fakeDialer{conn: dialerSide}, "/session", http.Header{})
-	if err == nil {
-		t.Fatal("dialDaemonH2C() with a 403 daemon response = nil error, want an error")
+// TestDialDaemonH2CRejectsInvalidResponse tables every way the daemon's
+// response to the upgrade request can fail to be a genuine h2c upgrade: no
+// response at all, a non-101 status, and — pinning CodeRabbit's finding that
+// a 101 status alone doesn't prove the upgrade — a 101 whose
+// Connection/Upgrade headers don't actually say "h2c".
+func TestDialDaemonH2CRejectsInvalidResponse(t *testing.T) {
+	cases := []struct {
+		name        string
+		daemonReply func(daemonSide net.Conn)
+		wantErrText string
+	}{
+		{
+			name: "daemon closes without responding",
+			daemonReply: func(daemonSide net.Conn) {
+				// Close without ever writing a response: http.ReadResponse on
+				// the dialer side must fail (EOF), not hang or succeed.
+				_ = daemonSide.Close()
+			},
+			wantErrText: "read daemon upgrade response",
+		},
+		{
+			name: "non-101 status",
+			daemonReply: func(daemonSide net.Conn) {
+				_, _ = daemonSide.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"))
+			},
+			wantErrText: "403",
+		},
+		{
+			name: "101 missing Connection: Upgrade",
+			daemonReply: func(daemonSide net.Conn) {
+				_, _ = daemonSide.Write([]byte("HTTP/1.1 101 UPGRADED\r\nUpgrade: h2c\r\n\r\n"))
+			},
+			wantErrText: "missing \"Connection: Upgrade\"",
+		},
+		{
+			name: "101 with a non-h2c Upgrade token",
+			daemonReply: func(daemonSide net.Conn) {
+				_, _ = daemonSide.Write([]byte("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"))
+			},
+			wantErrText: "Upgrade header must be exactly",
+		},
+		{
+			name: "101 with multiple Upgrade values",
+			daemonReply: func(daemonSide net.Conn) {
+				_, _ = daemonSide.Write([]byte("HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: h2c\r\nUpgrade: websocket\r\n\r\n"))
+			},
+			wantErrText: "Upgrade header must be exactly",
+		},
 	}
-	if !strings.Contains(err.Error(), "403") {
-		t.Fatalf("dialDaemonH2C() error = %v, want it to mention the rejected status", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			daemonSide, dialerSide := net.Pipe()
+			defer func() { _ = daemonSide.Close() }()
+
+			go func() {
+				req, err := http.ReadRequest(bufio.NewReader(daemonSide))
+				if err != nil {
+					return
+				}
+				_ = req.Body.Close()
+				tc.daemonReply(daemonSide)
+			}()
+
+			_, _, err := dialDaemonH2C(context.Background(), &fakeDialer{conn: dialerSide}, "/session", http.Header{})
+			if err == nil {
+				t.Fatal("dialDaemonH2C() = nil error, want non-nil")
+			}
+			if !strings.Contains(err.Error(), tc.wantErrText) {
+				t.Fatalf("dialDaemonH2C() error = %v, want it to mention %q", err, tc.wantErrText)
+			}
+		})
 	}
 }
 
-func TestDialDaemonH2CWriteRequestFailure(t *testing.T) {
-	_, conn := net.Pipe()
-	_ = conn.Close() // both ends dead: any Write returns io.ErrClosedPipe immediately
-
-	_, _, err := dialDaemonH2C(context.Background(), &fakeDialer{conn: conn}, "/grpc", http.Header{})
-	if err == nil {
-		t.Fatal("dialDaemonH2C() with a dead conn = nil error, want an error writing the upgrade request")
-	}
-	if !strings.Contains(err.Error(), "write daemon upgrade request") {
-		t.Fatalf("dialDaemonH2C() error = %v, want it to mention writing the upgrade request", err)
-	}
-}
-
-func TestDialDaemonH2CReadResponseFailure(t *testing.T) {
-	daemonSide, dialerSide := net.Pipe()
-
-	go func() {
-		req, err := http.ReadRequest(bufio.NewReader(daemonSide))
-		if err != nil {
-			return
-		}
-		_ = req.Body.Close()
-		// Close without ever writing a response: http.ReadResponse on the
-		// dialer side must fail (EOF), not hang or succeed.
-		_ = daemonSide.Close()
-	}()
-
-	_, _, err := dialDaemonH2C(context.Background(), &fakeDialer{conn: dialerSide}, "/session", http.Header{})
-	if err == nil {
-		t.Fatal("dialDaemonH2C() with a daemon that closes without responding = nil error, want an error")
-	}
-	if !strings.Contains(err.Error(), "read daemon upgrade response") {
-		t.Fatalf("dialDaemonH2C() error = %v, want it to mention reading the upgrade response", err)
-	}
-}
-
+// TestDialDaemonH2CSuccess is left as a single integration-style test rather
+// than folded into the table above: unlike the failure modes, it asserts on
+// the daemon-observed request headers AND the returned response/conn, which
+// doesn't fit the table's single wantErrText shape.
 func TestDialDaemonH2CSuccess(t *testing.T) {
 	daemonSide, dialerSide := net.Pipe()
 	defer func() { _ = daemonSide.Close() }()
@@ -240,20 +325,32 @@ func TestDialDaemonH2CSuccess(t *testing.T) {
 	}
 }
 
-func TestHijackClientH2CNotAHijacker(t *testing.T) {
-	rec := httptest.NewRecorder()
-	_, err := hijackClientH2C(rec, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}})
-	if err == nil {
-		t.Fatal("hijackClientH2C() with a non-Hijacker ResponseWriter = nil error, want an error")
-	}
-}
+// TestHijackClientH2CHijackFailureModes tables the two ways obtaining the
+// hijacked connection itself can fail: the ResponseWriter never supported
+// hijacking at all, and Hijack() being called but returning its own error.
+func TestHijackClientH2CHijackFailureModes(t *testing.T) {
+	hijackErr := errors.New("hijack not supported here")
+	failingHijacker := newFakeHijackWriter(nil)
+	failingHijacker.hijackErr = hijackErr
 
-func TestHijackClientH2CHijackError(t *testing.T) {
-	w := newFakeHijackWriter(nil)
-	w.hijackErr = errors.New("hijack not supported here")
-	_, err := hijackClientH2C(w, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}})
-	if !errors.Is(err, w.hijackErr) {
-		t.Fatalf("hijackClientH2C() error = %v, want wrapping %v", err, w.hijackErr)
+	cases := []struct {
+		name    string
+		w       http.ResponseWriter
+		wantErr error // checked via errors.Is when set
+	}{
+		{"response writer does not support hijacking", httptest.NewRecorder(), nil},
+		{"Hijack() itself fails", failingHijacker, hijackErr},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := hijackClientH2C(tc.w, &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}})
+			if err == nil {
+				t.Fatal("hijackClientH2C() = nil error, want non-nil")
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("hijackClientH2C() error = %v, want wrapping %v", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -308,39 +405,54 @@ func TestHijackClientH2CSuccess(t *testing.T) {
 	}
 }
 
-func TestHijackClientH2CWriteResponseFailure(t *testing.T) {
-	// A response whose Body read fails makes resp.Write(buf) itself return an
-	// error (net/http chunks the body into the write when ContentLength < 0)
-	// — a distinct failure point from TestHijackClientH2CWriteFailure below,
-	// which exercises the subsequent buf.Flush() failing instead.
-	_, hijackSide := net.Pipe()
-	w := newFakeHijackWriter(hijackSide)
-
-	resp := &http.Response{
-		StatusCode:    http.StatusSwitchingProtocols,
-		Status:        "101 UPGRADED",
-		Proto:         "HTTP/1.1",
-		ProtoMajor:    1,
-		ProtoMinor:    1,
-		Header:        http.Header{"Connection": {"Upgrade"}, "Upgrade": {"h2c"}},
-		Body:          io.NopCloser(iotest.ErrReader(errors.New("boom"))),
-		ContentLength: -1,
+// TestHijackClientH2CWriteFailureModes tables the two ways replaying the
+// 101 response to the hijacked connection can fail: a response body whose
+// Read fails (net/http chunks the body into resp.Write itself when
+// ContentLength < 0, so this fails inside Write), and the peer already being
+// gone before Write/Flush is attempted at all.
+func TestHijackClientH2CWriteFailureModes(t *testing.T) {
+	cases := []struct {
+		name        string
+		setup       func() (http.ResponseWriter, *http.Response)
+		wantErrText string
+	}{
+		{
+			name: "response body read fails during Write",
+			setup: func() (http.ResponseWriter, *http.Response) {
+				_, hijackSide := net.Pipe()
+				resp := &http.Response{
+					StatusCode:    http.StatusSwitchingProtocols,
+					Status:        "101 UPGRADED",
+					Proto:         "HTTP/1.1",
+					ProtoMajor:    1,
+					ProtoMinor:    1,
+					Header:        http.Header{"Connection": {"Upgrade"}, "Upgrade": {"h2c"}},
+					Body:          io.NopCloser(iotest.ErrReader(errors.New("boom"))),
+					ContentLength: -1,
+				}
+				return newFakeHijackWriter(hijackSide), resp
+			},
+			wantErrText: "write 101 to client",
+		},
+		{
+			name: "peer gone before Write/Flush is attempted",
+			setup: func() (http.ResponseWriter, *http.Response) {
+				server, client := net.Pipe()
+				_ = server.Close()
+				return newFakeHijackWriter(client), &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}
+			},
+		},
 	}
-
-	if _, err := hijackClientH2C(w, resp); err == nil {
-		t.Fatal("hijackClientH2C() with a response body that fails to read = nil error, want an error")
-	} else if !strings.Contains(err.Error(), "write 101 to client") {
-		t.Fatalf("hijackClientH2C() error = %v, want it to mention writing the 101 response", err)
-	}
-}
-
-func TestHijackClientH2CWriteFailure(t *testing.T) {
-	server, client := net.Pipe()
-	_ = server.Close() // peer gone before Write/Flush is attempted
-
-	w := newFakeHijackWriter(client)
-	resp := &http.Response{StatusCode: http.StatusSwitchingProtocols, Header: http.Header{}}
-	if _, err := hijackClientH2C(w, resp); err == nil {
-		t.Fatal("hijackClientH2C() with a dead peer = nil error, want an error")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, resp := tc.setup()
+			_, err := hijackClientH2C(w, resp)
+			if err == nil {
+				t.Fatal("hijackClientH2C() = nil error, want non-nil")
+			}
+			if tc.wantErrText != "" && !strings.Contains(err.Error(), tc.wantErrText) {
+				t.Fatalf("hijackClientH2C() error = %v, want it to mention %q", err, tc.wantErrText)
+			}
+		})
 	}
 }

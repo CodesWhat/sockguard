@@ -93,11 +93,17 @@ func headerHasToken(h http.Header, name, token string) bool {
 }
 
 // rewriteSessionAdvertisement narrows the client's sessionGRPCMethodHeader
-// advertisement (read from src) down to services ServiceAdmitted reports as
-// having at least one non-Deny method under EndpointSession, replacing the
-// header's values on dst in place. If src carries no advertisement at all,
-// dst is left untouched. dst and src may be the same Header.
-func rewriteSessionAdvertisement(dst http.Header) {
+// advertisement (read from dst) down to services ServiceAdmittedByPolicy
+// reports as having at least one method that is BOTH non-Deny per Classify
+// AND allowed by p, replacing the header's values on dst in place. Consulting
+// p here — not just the static registry — matters: a service can be
+// registered Mediate/Passthrough in principle while this operator's resolved
+// policy still leaves it off (e.g. Auth advertised while
+// p.Session.Auth.Allow is false), and advertising it anyway would invite a
+// daemon callback the bridge only rejects after the fact instead of the
+// daemon never being told the service is available at all. If dst carries no
+// advertisement at all, dst is left untouched.
+func rewriteSessionAdvertisement(dst http.Header, p Policy) {
 	advertised := dst.Values(sessionGRPCMethodHeader)
 	if len(advertised) == 0 {
 		return
@@ -108,7 +114,7 @@ func rewriteSessionAdvertisement(dst http.Header) {
 		if service == "" {
 			continue
 		}
-		if ServiceAdmitted(EndpointSession, service) {
+		if ServiceAdmittedByPolicy(EndpointSession, service, p) {
 			dst.Add(sessionGRPCMethodHeader, service)
 		}
 	}
@@ -136,10 +142,15 @@ func (b *bufferedConn) Read(p []byte) (int, error) {
 // h2c-upgrade handshake sockguard's own client just performed against it:
 // write a POST request to path with header carrying exactly one
 // "Connection: Upgrade" / "Upgrade: h2c" pair, then read and validate a 101
-// response. Returns the raw (buffered-wrapped) connection and the daemon's
-// 101 response so the caller can replay it verbatim to the hijacked client
-// connection — required ordering per the synthesis: "require a valid
-// upstream 101 before hijacking downstream."
+// response. A 101 status code alone doesn't prove a genuine h2c upgrade — a
+// daemon could send 101 without "Connection: Upgrade", or with an Upgrade
+// header naming some other protocol — so the response headers are validated
+// the same way ValidateUpgradeRequest validates the incoming request, before
+// anything downstream (including clearing the dial-scoped deadline) treats
+// the connection as a live h2c tunnel. Returns the raw (buffered-wrapped)
+// connection and the daemon's 101 response so the caller can replay it
+// verbatim to the hijacked client connection — required ordering per the
+// synthesis: "require a valid upstream 101 before hijacking downstream."
 func dialDaemonH2C(ctx context.Context, dialer Dialer, path string, header http.Header) (net.Conn, *http.Response, error) {
 	conn, err := dialer.DialContext(ctx, "", "")
 	if err != nil {
@@ -178,6 +189,17 @@ func dialDaemonH2C(ctx context.Context, dialer Dialer, path string, header http.
 		_ = resp.Body.Close()
 		_ = conn.Close()
 		return nil, nil, fmt.Errorf("buildkitproxy: daemon refused h2c upgrade: status %d", resp.StatusCode)
+	}
+	if !headerHasToken(resp.Header, "Connection", "upgrade") {
+		_ = resp.Body.Close()
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("buildkitproxy: daemon's 101 response missing \"Connection: Upgrade\": got Connection %q", resp.Header.Values("Connection"))
+	}
+	respUpgrade := resp.Header.Values("Upgrade")
+	if len(respUpgrade) != 1 || !strings.EqualFold(strings.TrimSpace(respUpgrade[0]), "h2c") {
+		_ = resp.Body.Close()
+		_ = conn.Close()
+		return nil, nil, fmt.Errorf("buildkitproxy: daemon's 101 response Upgrade header must be exactly \"h2c\", got %q", respUpgrade)
 	}
 
 	// Clear the dial-scoped deadline now that the handshake is done; the

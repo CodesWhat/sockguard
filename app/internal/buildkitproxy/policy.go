@@ -76,6 +76,14 @@ func (p Policy) Configured() bool {
 // an Allowed() false) — a reason code nothing before Phase 2 could ever
 // produce, since Phase 1 had no live mediator, which is why this gate lands
 // now rather than waiting for Phase 3's per-message work.
+//
+// Each service's inner switch enumerates only that service's own registered
+// RPC method names, mirroring registry.go's classification map exactly — an
+// unrecognized rpcMethod on an otherwise-enabled service (e.g. a typo, or a
+// probe for a method the daemon never actually exposes) falls through to
+// this function's own `return false` rather than the service's Allow switch,
+// so Allowed is default-deny standalone and doesn't depend on a caller
+// having already run the triple through Classify.
 func (p Policy) Allowed(endpoint Endpoint, service, rpcMethod string) bool {
 	switch endpoint {
 	case EndpointGRPC:
@@ -96,16 +104,27 @@ func (p Policy) Allowed(endpoint Endpoint, service, rpcMethod string) bool {
 			// grpc.health.v1.Health entries) but its switch lives on
 			// SessionPolicy as Health — a Phase 1 struct-shape choice this
 			// phase inherits rather than revisits.
-			return p.Session.Health
+			switch rpcMethod {
+			case "Check", "Watch":
+				return p.Session.Health
+			}
 		}
 	case EndpointSession:
 		switch service {
 		case "moby.filesync.v1.Auth":
-			return p.Session.Auth.Allow
+			switch rpcMethod {
+			case "Credentials", "FetchToken", "GetTokenAuthority", "VerifyTokenAuthority":
+				return p.Session.Auth.Allow
+			}
 		case "moby.buildkit.secrets.v1.Secrets":
-			return p.Session.Secrets.Allow
+			if rpcMethod == "GetSecret" {
+				return p.Session.Secrets.Allow
+			}
 		case "moby.sshforward.v1.SSH":
-			return p.Session.SSH.Allow
+			switch rpcMethod {
+			case "CheckAgent", "ForwardAgent":
+				return p.Session.SSH.Allow
+			}
 		case "moby.filesync.v1.FileSync":
 			// Only DiffCopy is registered Mediate for this service —
 			// FileSync/TarStream is a named Deny example (registry.go's
@@ -114,9 +133,13 @@ func (p Policy) Allowed(endpoint Endpoint, service, rpcMethod string) bool {
 			// Deny short-circuit in bridge.go.
 			return rpcMethod == "DiffCopy" && p.Session.FileSync.Allow
 		case "moby.filesync.v1.FileSend":
-			return p.Session.FileSend.Allow
+			if rpcMethod == "DiffCopy" {
+				return p.Session.FileSend.Allow
+			}
 		case "moby.upload.v1.Upload":
-			return p.Session.Upload.Allow
+			if rpcMethod == "Pull" {
+				return p.Session.Upload.Allow
+			}
 		}
 	}
 	return false

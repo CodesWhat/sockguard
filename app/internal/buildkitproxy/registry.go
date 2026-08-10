@@ -175,6 +175,25 @@ func ServiceAdmitted(endpoint Endpoint, service string) bool {
 	return false
 }
 
+// ServiceAdmittedByPolicy reports whether service has at least one method
+// registered under endpoint that is BOTH non-Deny per Classify AND allowed by
+// p (Policy.Allowed) — the intersection ServiceAdmitted alone can't express,
+// since a service can carry a Mediate/Passthrough method the registry admits
+// in principle that this operator's policy still leaves off (see
+// Policy.Allowed's doc comment on why Classify and Allowed are separate,
+// necessary gates). upgrade.go's rewriteSessionAdvertisement uses this
+// instead of the policy-blind ServiceAdmitted, so a session advertisement
+// rewrite never keeps a service the selected policy actually denies — doing
+// so would invite a daemon callback the bridge only rejects after the fact.
+func ServiceAdmittedByPolicy(endpoint Endpoint, service string, p Policy) bool {
+	for m, d := range registry {
+		if m.Endpoint == endpoint && m.Service == service && d != Deny && p.Allowed(endpoint, service, m.Method) {
+			return true
+		}
+	}
+	return false
+}
+
 // DeniedExamples enumerates fully-qualified methods the #185 synthesis
 // calls out BY NAME as belonging to the deny-by-default surface: "LLBBridge/*,
 // nested Control/Session, containerd content, OTLP trace, Exporter

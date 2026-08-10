@@ -71,16 +71,52 @@ func TestPolicyConfiguredEachField(t *testing.T) {
 
 // TestPolicyAllowedZeroValueDeniesEverything asserts a zero-value Policy —
 // exactly like Configured() — admits nothing: Allowed must never say true
-// for a policy that denies everything.
+// for a policy that denies everything. Table-driven over every registry
+// entry, named per case (rather than a single loop with t.Errorf) so a
+// failure identifies exactly which method regressed.
 func TestPolicyAllowedZeroValueDeniesEverything(t *testing.T) {
 	p := Policy{}
 	for m, d := range registry {
 		if d == Deny {
 			continue
 		}
-		if p.Allowed(m.Endpoint, m.Service, m.Method) {
-			t.Errorf("zero-value Policy.Allowed(%s, %q, %q) = true, want false", m.Endpoint, m.Service, m.Method)
-		}
+		t.Run(m.Endpoint.String()+"/"+m.Service+"/"+m.Method, func(t *testing.T) {
+			if p.Allowed(m.Endpoint, m.Service, m.Method) {
+				t.Errorf("zero-value Policy.Allowed(%s, %q, %q) = true, want false", m.Endpoint, m.Service, m.Method)
+			}
+		})
+	}
+}
+
+// TestPolicyAllowedUnknownMethodOnAnAdmittedServiceDenies pins CodeRabbit's
+// finding: even a fully-permissive Policy must not admit an unregistered
+// method name on a service it otherwise allows — e.g.
+// Allowed(EndpointSession, "moby.filesync.v1.Auth", "Unknown") must be false
+// even with Session.Auth.Allow: true. Allowed mirrors registry.go's exact
+// per-service method names, not just each service's own Allow switch, so it
+// is default-deny standalone rather than relying on a prior Classify check
+// to have already filtered the method name.
+func TestPolicyAllowedUnknownMethodOnAnAdmittedServiceDenies(t *testing.T) {
+	cases := []struct {
+		name     string
+		endpoint Endpoint
+		service  string
+	}{
+		{"Control", EndpointGRPC, "moby.buildkit.v1.Control"},
+		{"Health", EndpointGRPC, "grpc.health.v1.Health"},
+		{"Auth", EndpointSession, "moby.filesync.v1.Auth"},
+		{"Secrets", EndpointSession, "moby.buildkit.secrets.v1.Secrets"},
+		{"SSH", EndpointSession, "moby.sshforward.v1.SSH"},
+		{"FileSync", EndpointSession, "moby.filesync.v1.FileSync"},
+		{"FileSend", EndpointSession, "moby.filesync.v1.FileSend"},
+		{"Upload", EndpointSession, "moby.upload.v1.Upload"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if allowAllPolicy.Allowed(tc.endpoint, tc.service, "Unknown") {
+				t.Errorf("fully-permissive Policy.Allowed(%s, %q, \"Unknown\") = true, want false", tc.endpoint, tc.service)
+			}
+		})
 	}
 }
 
@@ -132,10 +168,11 @@ func TestPolicyAllowedEachMediateOrPassthroughMethod(t *testing.T) {
 // shape, not revisited here).
 func TestPolicyAllowedHealthSharedAcrossEndpointNaming(t *testing.T) {
 	p := Policy{Session: SessionPolicy{Health: true}}
-	if !p.Allowed(EndpointGRPC, "grpc.health.v1.Health", "Check") {
-		t.Fatal("Policy{Session.Health: true}.Allowed(EndpointGRPC, health Check) = false, want true")
-	}
-	if !p.Allowed(EndpointGRPC, "grpc.health.v1.Health", "Watch") {
-		t.Fatal("Policy{Session.Health: true}.Allowed(EndpointGRPC, health Watch) = false, want true")
+	for _, method := range []string{"Check", "Watch"} {
+		t.Run(method, func(t *testing.T) {
+			if !p.Allowed(EndpointGRPC, "grpc.health.v1.Health", method) {
+				t.Fatalf("Policy{Session.Health: true}.Allowed(EndpointGRPC, health %s) = false, want true", method)
+			}
+		})
 	}
 }

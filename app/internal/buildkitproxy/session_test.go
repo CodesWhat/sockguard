@@ -4,6 +4,10 @@ import (
 	"testing"
 )
 
+// TestSessionRegistryOpenGetClose is left as a single sequential test rather
+// than a table: Open -> Get -> Close -> Get -> double-Close is an ordered
+// lifecycle where each step's assertions depend on the previous step having
+// actually run, not an independent scenario a table entry could isolate.
 func TestSessionRegistryOpenGetClose(t *testing.T) {
 	reg := NewSessionRegistry()
 	if reg.Len() != 0 {
@@ -57,37 +61,53 @@ func TestSessionRegistryOpenGetClose(t *testing.T) {
 	reg.Close(999999)
 }
 
-func TestSessionRegistryAssignsDistinctIDs(t *testing.T) {
-	reg := NewSessionRegistry()
-	key := SessionKey{ClientIdentity: "same-client", Profile: "same-profile"}
-
-	s1 := reg.Open(key, EndpointGRPC, "")
-	s2 := reg.Open(key, EndpointSession, "")
-
-	if s1.ID == s2.ID {
-		t.Fatalf("two Open() calls with the identical SessionKey produced the same ID (%d) — the registry must never collapse concurrent sessions from the same client+profile onto one record", s1.ID)
+// TestSessionRegistryDistinctSessionsNeverCollide tables the registry's two
+// "must never collapse onto one record" scenarios: the same SessionKey
+// opened twice (concurrent sessions from one client+profile), and two
+// different clients presenting the identical attacker-chosen
+// X-Docker-Expose-Session-Uuid — the #185 sign-off's "never UUID alone"
+// requirement, since SessionKey (identity+profile), not ClientUUID, is the
+// registry's trust boundary.
+func TestSessionRegistryDistinctSessionsNeverCollide(t *testing.T) {
+	cases := []struct {
+		name      string
+		key1      SessionKey
+		endpoint1 Endpoint
+		uuid1     string
+		key2      SessionKey
+		endpoint2 Endpoint
+		uuid2     string
+	}{
+		{
+			name:      "same SessionKey opened twice",
+			key1:      SessionKey{ClientIdentity: "same-client", Profile: "same-profile"},
+			endpoint1: EndpointGRPC,
+			key2:      SessionKey{ClientIdentity: "same-client", Profile: "same-profile"},
+			endpoint2: EndpointSession,
+		},
+		{
+			name:      "different clients presenting the same client-supplied UUID",
+			key1:      SessionKey{ClientIdentity: "client-a", Profile: "ci"},
+			endpoint1: EndpointGRPC,
+			uuid1:     "attacker-chosen-uuid",
+			key2:      SessionKey{ClientIdentity: "client-b", Profile: "ci"},
+			endpoint2: EndpointGRPC,
+			uuid2:     "attacker-chosen-uuid",
+		},
 	}
-	if reg.Len() != 2 {
-		t.Fatalf("Len() = %d, want 2", reg.Len())
-	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg := NewSessionRegistry()
+			s1 := reg.Open(tc.key1, tc.endpoint1, tc.uuid1)
+			s2 := reg.Open(tc.key2, tc.endpoint2, tc.uuid2)
 
-func TestSessionRegistryNeverKeysOnClientUUIDAlone(t *testing.T) {
-	// Two different clients presenting the SAME client-supplied UUID must not
-	// collide in the registry — the #185 sign-off's "never UUID alone"
-	// requirement. SessionKey (identity+profile), not ClientUUID, is the
-	// registry's trust boundary; ClientUUID is advisory metadata only.
-	reg := NewSessionRegistry()
-	sameUUID := "attacker-chosen-uuid"
-
-	s1 := reg.Open(SessionKey{ClientIdentity: "client-a", Profile: "ci"}, EndpointGRPC, sameUUID)
-	s2 := reg.Open(SessionKey{ClientIdentity: "client-b", Profile: "ci"}, EndpointGRPC, sameUUID)
-
-	if s1.ID == s2.ID {
-		t.Fatal("two different clients presenting the same X-Docker-Expose-Session-Uuid collided on one Session ID")
-	}
-	if reg.Len() != 2 {
-		t.Fatalf("Len() = %d, want 2 (both sessions must independently exist)", reg.Len())
+			if s1.ID == s2.ID {
+				t.Fatalf("two Open() calls produced the same ID (%d) — the registry must never collapse distinct sessions onto one record", s1.ID)
+			}
+			if reg.Len() != 2 {
+				t.Fatalf("Len() = %d, want 2 (both sessions must independently exist)", reg.Len())
+			}
+		})
 	}
 }
 

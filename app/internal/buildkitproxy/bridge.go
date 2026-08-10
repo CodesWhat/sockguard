@@ -73,6 +73,7 @@ type bridge struct {
 	clientLeg clientLegConn
 
 	closeOnce sync.Once
+	closeMu   sync.Mutex
 	closeErr  error
 }
 
@@ -98,7 +99,14 @@ func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Po
 	clientTransport := &http2.Transport{AllowHTTP: true}
 	cc, err := clientTransport.NewClientConn(legs.clientConn)
 	if err != nil {
-		return fmt.Errorf("buildkitproxy: establish client leg: %w", err)
+		// Route this through closeAll/finalErr too, rather than returning
+		// fmt.Errorf(...) directly: closeOnce still gives at-most-once
+		// semantics (the deferred closeAll(nil) above is a no-op once this
+		// call has already fired), and it keeps runBridge's error return
+		// flowing through the single synchronized path finalErr provides —
+		// see closeAll's doc comment for why a direct field read isn't safe.
+		b.closeAll(fmt.Errorf("buildkitproxy: establish client leg: %w", err))
+		return b.finalErr()
 	}
 	b.clientLeg = cc
 
@@ -112,7 +120,7 @@ func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Po
 		Handler: http.HandlerFunc(b.handleStream),
 	})
 
-	return b.closeErr
+	return b.finalErr()
 }
 
 // closeAll closes both legs of the tunnel exactly once. err, if non-nil, is
@@ -121,15 +129,37 @@ func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Po
 // in the bridge... must terminate the tunnel, never fall back to opaque
 // proxying"). A nil err (the normal path, via runBridge's deferred call)
 // just performs cleanup after a graceful end.
+//
+// closeAll is called from both runBridge's own goroutine (the deferred
+// cleanup, and the early client-leg-handshake-failure path) and stream
+// handler goroutines http2.Server spawns (recordDeniedAndMaybeClose, forward)
+// — closeErr is guarded by closeMu, not just closeOnce, because closing
+// legs.serverConn here and runBridge's ServeConn call noticing that closure
+// and returning are NOT themselves a synchronization point the Go memory
+// model recognizes: without closeMu, runBridge reading closeErr after
+// ServeConn returns would be a data race with a handler goroutine's write
+// inside this closure. See finalErr, which every closeErr read must go
+// through instead of touching the field directly.
 func (b *bridge) closeAll(err error) {
 	b.closeOnce.Do(func() {
+		b.closeMu.Lock()
 		b.closeErr = err
+		b.closeMu.Unlock()
 		if b.clientLeg != nil {
 			_ = b.clientLeg.Close()
 		}
 		_ = b.legs.clientConn.Close()
 		_ = b.legs.serverConn.Close()
 	})
+}
+
+// finalErr returns the error closeAll recorded (nil if closeAll was never
+// called, or was called with nil) — the only safe way to read closeErr once
+// more than one goroutine may have touched it. See closeAll's doc comment.
+func (b *bridge) finalErr() error {
+	b.closeMu.Lock()
+	defer b.closeMu.Unlock()
+	return b.closeErr
 }
 
 // handleStream is the http.Handler golang.org/x/net/http2.Server invokes
@@ -305,8 +335,14 @@ func (f flushWriter) Write(p []byte) (int, error) {
 }
 
 // limitedReadCloser caps the cumulative bytes read from r at limit,
-// returning errMessageTooLarge once exceeded rather than silently
-// truncating. A limit <= 0 disables the cap (returns r unchanged).
+// returning errMessageTooLarge once that many bytes are EXCEEDED — a body of
+// exactly limit bytes must still reach the underlying reader's own io.EOF
+// cleanly, never errMessageTooLarge. remaining tracks bytes still allowed,
+// but Read buffers one byte past it (following the same technique as the
+// stdlib's http.MaxBytesReader) so a single Read can distinguish "the
+// underlying reader stopped at exactly the cap" from "there was at least one
+// more byte beyond it" without needing a lookahead Read of its own. A limit
+// <= 0 disables the cap (returns r unchanged).
 type limitedReadCloser struct {
 	r         io.ReadCloser
 	remaining int64
@@ -320,15 +356,22 @@ func newLimitedReadCloser(r io.ReadCloser, limit int64) io.ReadCloser {
 }
 
 func (l *limitedReadCloser) Read(p []byte) (int, error) {
-	if l.remaining <= 0 {
-		return 0, errMessageTooLarge
-	}
-	if int64(len(p)) > l.remaining {
-		p = p[:l.remaining]
+	if int64(len(p)) > l.remaining+1 {
+		p = p[:l.remaining+1]
 	}
 	n, err := l.r.Read(p)
-	l.remaining -= int64(n)
-	return n, err
+
+	if int64(n) <= l.remaining {
+		l.remaining -= int64(n)
+		return n, err
+	}
+
+	// n is the one-byte-past-the-cap sentinel: the body is strictly larger
+	// than limit, not merely equal to it. Report exactly limit bytes read
+	// (never the sentinel byte itself) and errMessageTooLarge instead of err.
+	n = int(l.remaining)
+	l.remaining = 0
+	return n, errMessageTooLarge
 }
 
 func (l *limitedReadCloser) Close() error {

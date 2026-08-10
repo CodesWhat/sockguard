@@ -301,21 +301,22 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 // this function does not need to (and does not) re-check that invariant.
 //
 // IMPORTANT — this function governs STARTUP admission only, i.e. whether
-// sockguard refuses to boot at all. It does NOT mean a request to /session
-// or /grpc reaches the Docker socket unmediated once buildkitConfigured
-// admits the rule: the request-time guarantee that a
-// buildkitConfigured-admitted rule never falls through to an opaque
-// ReverseProxy pass-through lives in filter.buildkitPolicy.inspect (see
-// buildkit.go) and cmd/serve.go's withBuildkitMediator. As of issue #185
-// phase 2, POST /session and POST /grpc are admitted through to
+// sockguard refuses to boot at all. What actually happens to a /session or
+// /grpc request at request time depends on which of the two conditions above
+// admitted the rule, enforced by the filter inspector + mediator pair
+// (filter.buildkitPolicy.inspect in buildkit.go, and cmd/serve.go's
+// withBuildkitMediator): when request_body.buildkit IS configured for the
+// resolved policy, withBuildkitMediator hands POST /session and POST /grpc to
 // internal/buildkitproxy.Mediator, which terminates the h2c tunnel and
 // enforces buildkitproxy.Classify + Policy.Allowed per gRPC method — the
-// literal /moby.buildkit.v1.Control/<Method> probe path stays hard-denied
-// regardless of PolicyConfig.Buildkit.TunnelConfigured (see buildkit.go's
-// inspect doc comment for why: it carries no upgrade for any mediator to
-// terminate). Only the insecure_accept_opaque_buildkit_tunnels path retains
-// the pre-#185 opaque pass-through behavior; that flag's meaning and denial
-// message below are unchanged.
+// literal /moby.buildkit.v1.Control/<Method> probe path stays hard-denied by
+// the filter inspector regardless of PolicyConfig.Buildkit.TunnelConfigured
+// (see buildkit.go's inspect doc comment for why: it carries no upgrade for
+// any mediator to terminate). When request_body.buildkit is NOT configured —
+// the insecure_accept_opaque_buildkit_tunnels path — withBuildkitMediator is
+// a no-op and the request falls through to the plain ReverseProxy exactly as
+// it did pre-#185; that flag's meaning and denial message below are
+// unchanged.
 func validateBuildkitTunnelRulesForPolicy(scope string, insecure, buildkitConfigured bool, compiled []*filter.CompiledRule) error {
 	if insecure || buildkitConfigured {
 		return nil

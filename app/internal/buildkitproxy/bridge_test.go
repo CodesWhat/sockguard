@@ -253,22 +253,39 @@ func TestBridgeResponseSizeCapTripsResourceExhausted(t *testing.T) {
 	}
 }
 
-func TestLimitedReadCloserCapsBytes(t *testing.T) {
-	src := io.NopCloser(strings.NewReader("0123456789"))
-	lrc := newLimitedReadCloser(src, 5)
+// TestLimitedReadCloserCap is table-driven over the three size relationships
+// between a source and its cap. It pins the fix for CodeRabbit's off-by-one
+// finding: a source of EXACTLY the cap's length must reach a clean io.EOF,
+// never errMessageTooLarge — the cap's contract is "exceeds", not "reaches".
+func TestLimitedReadCloserCap(t *testing.T) {
+	cases := []struct {
+		name      string
+		srcLen    int
+		limit     int64
+		wantErr   error // nil means a clean io.EOF (io.ReadAll swallows it)
+		wantBytes int
+	}{
+		{"source shorter than the cap reaches a clean EOF", 3, 5, nil, 3},
+		{"source exactly at the cap reaches a clean EOF, not errMessageTooLarge", 5, 5, nil, 5},
+		{"source longer than the cap trips errMessageTooLarge", 6, 5, errMessageTooLarge, 5},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := io.NopCloser(strings.NewReader(strings.Repeat("x", tc.srcLen)))
+			lrc := newLimitedReadCloser(src, tc.limit)
 
-	buf := make([]byte, 3)
-	n, err := lrc.Read(buf)
-	if err != nil || n != 3 {
-		t.Fatalf("first Read = (%d, %v), want (3, nil)", n, err)
-	}
-	n, err = lrc.Read(buf)
-	if err != nil || n != 2 {
-		t.Fatalf("second Read = (%d, %v), want (2, nil) — should be capped to the 2 remaining bytes", n, err)
-	}
-	_, err = lrc.Read(buf)
-	if !errors.Is(err, errMessageTooLarge) {
-		t.Fatalf("Read after the cap is exhausted = %v, want errMessageTooLarge", err)
+			got, err := io.ReadAll(lrc)
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("ReadAll() error = %v, want nil", err)
+				}
+			} else if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("ReadAll() error = %v, want %v", err, tc.wantErr)
+			}
+			if len(got) != tc.wantBytes {
+				t.Fatalf("ReadAll() returned %d bytes, want %d", len(got), tc.wantBytes)
+			}
+		})
 	}
 }
 
