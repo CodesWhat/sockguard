@@ -1,6 +1,8 @@
 package buildkitproxy
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"testing"
 
@@ -450,4 +452,38 @@ func TestShortHash(t *testing.T) {
 	if a == "my-secret" || a == "" {
 		t.Fatalf("shortHash(%q) = %q, want a hash, not the raw input", "my-secret", a)
 	}
+	// The digest is salted per process (auditIDSalt) — an unsalted truncated
+	// SHA-256 of a short operator-chosen label would fall to an offline
+	// dictionary in milliseconds. Assert the output differs from the
+	// unsalted form so a refactor can't silently drop the salt.
+	unsalted := sha256.Sum256([]byte("my-secret"))
+	if a == hex.EncodeToString(unsalted[:6]) {
+		t.Fatal("shortHash output equals the unsalted SHA-256 truncation — auditIDSalt is not being applied")
+	}
+}
+
+// FuzzEvaluateGetSecretRequest fuzzes the credential-session decode/match
+// surface (decodeMediatedMessage plus a representative policy evaluator)
+// per the repo convention that filter matching gets fuzz coverage. The
+// invariant: never panic, and never admit a request unless its ID is
+// exactly the allowlisted one with no annotations.
+func FuzzEvaluateGetSecretRequest(f *testing.F) {
+	policy := SecretsPolicy{Allow: true, AllowedIDs: []string{"my-secret"}}
+	f.Add(mustMarshal(f, &secrets.GetSecretRequest{ID: "my-secret"}))
+	f.Add(mustMarshal(f, &secrets.GetSecretRequest{ID: "other", Annotations: map[string]string{"k": "v"}}))
+	f.Add(malformedPayload)
+	f.Add([]byte{})
+
+	f.Fuzz(func(t *testing.T, payload []byte) {
+		req, d := evaluateGetSecretRequest(payload, policy)
+		if d != nil {
+			if req != nil {
+				t.Fatal("denied evaluation also returned a non-nil request")
+			}
+			return
+		}
+		if req.GetID() != "my-secret" || len(req.GetAnnotations()) > 0 {
+			t.Fatalf("admitted a request outside the policy: %+v", req)
+		}
+	})
 }

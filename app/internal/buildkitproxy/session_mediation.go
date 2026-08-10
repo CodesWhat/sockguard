@@ -26,6 +26,7 @@
 package buildkitproxy
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -279,16 +280,36 @@ func evaluateForwardAgentID(r *http.Request, policy SSHPolicy) (id string, denia
 	return values[0], nil
 }
 
+// auditIDSalt is generated once per process from crypto/rand: it keeps
+// shortHash stable across log lines within one sockguard process (repeated
+// audit events for the same secret/SSH-agent ID still correlate) while
+// making the digest useless to an offline dictionary attack — real-world
+// secret/SSH IDs are short, guessable operator labels ("default",
+// "npm_token"), and an UNSALTED SHA-256 truncated to 48 bits is recovered
+// from a candidate list of those in milliseconds, which would leak the very
+// identifier shortHash exists to withhold. crypto/rand.Read never fails on
+// any supported platform without panicking internally (its own documented
+// contract since Go 1.24), so no error path exists here.
+var auditIDSalt = func() [16]byte {
+	var s [16]byte
+	_, _ = rand.Read(s[:])
+	return s
+}()
+
 // shortHash returns a fixed-length, non-reversible identifier for s derived
-// from its SHA-256 sum, truncated to 12 hex characters (48 bits) — enough to
-// correlate repeated audit events for the same secret/SSH-agent ID across
-// log lines without ever reproducing the ID itself. Per CLAUDE.md's "never
-// log secret contents" constraint (extended here to the IDENTIFIERS naming
-// secrets/SSH agents, which may themselves be operator-chosen labels worth
-// not exposing in plaintext logs), audit events carry this hash in place of
-// the raw ID — see bridge_session.go's forwardSecretsMediated/
-// forwardCheckAgent/forwardSSHAgentStream, the only callers.
+// from the SHA-256 sum of auditIDSalt||s, truncated to 12 hex characters
+// (48 bits) — enough to correlate repeated audit events for the same
+// secret/SSH-agent ID across log lines (within one process — the salt, and
+// therefore the hash for a given ID, changes on restart) without ever
+// reproducing the ID itself. Per CLAUDE.md's "never log secret contents"
+// constraint (extended here to the IDENTIFIERS naming secrets/SSH agents,
+// which may themselves be operator-chosen labels worth not exposing in
+// plaintext logs), audit events carry this hash in place of the raw ID —
+// see bridge_session.go's forwardSecretsMediated/forwardCheckAgent/
+// forwardSSHAgentStream, the only callers.
 func shortHash(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:6])
+	h := sha256.New()
+	h.Write(auditIDSalt[:])
+	h.Write([]byte(s))
+	return hex.EncodeToString(h.Sum(nil)[:6])
 }

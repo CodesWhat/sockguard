@@ -15,7 +15,7 @@ import (
 // message.
 var malformedPayload = []byte{0x08}
 
-func mustMarshal(t *testing.T, m proto.Message) []byte {
+func mustMarshal(t testing.TB, m proto.Message) []byte {
 	t.Helper()
 	b, err := proto.Marshal(m)
 	if err != nil {
