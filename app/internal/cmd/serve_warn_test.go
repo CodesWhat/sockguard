@@ -126,6 +126,46 @@ func TestWarnBodyBlindWritesOnce(t *testing.T) {
 	}
 }
 
+// warnOpaqueBuildkitTunnelDeprecatedOnce must fire only when
+// insecure_accept_opaque_buildkit_tunnels is enabled, and only once per Once
+// across reload chain rebuilds — mirroring TestWarnBodyBlindWritesOnce for
+// the analogous startup-acknowledgment warning.
+func TestWarnOpaqueBuildkitTunnelDeprecatedOnce(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	var once sync.Once
+
+	disabled := config.Defaults()
+	warnOpaqueBuildkitTunnelDeprecatedOnce(&disabled, logger, &once)
+	if buf.Len() != 0 {
+		t.Fatalf("disabled config logged: %q", buf.String())
+	}
+
+	enabled := config.Defaults()
+	enabled.InsecureAcceptOpaqueBuildkitTunnels = true //nolint:staticcheck // SA1019: exercising the deprecated flag intentionally
+	warnOpaqueBuildkitTunnelDeprecatedOnce(&enabled, logger, &once)
+	if got := strings.Count(buf.String(), "insecure_accept_opaque_buildkit_tunnels is deprecated"); got != 1 {
+		t.Fatalf("warning count after first enabled build = %d, want 1; log: %q", got, buf.String())
+	}
+
+	// Simulate the chain rebuild a hot-reload performs: same process, same
+	// Once, enabled again — must NOT log a second time.
+	warnOpaqueBuildkitTunnelDeprecatedOnce(&enabled, logger, &once)
+	if got := strings.Count(buf.String(), "insecure_accept_opaque_buildkit_tunnels is deprecated"); got != 1 {
+		t.Fatalf("warning count after reload rebuild = %d, want still 1; log: %q", got, buf.String())
+	}
+
+	// A fresh Once (fresh process) with the feature enabled warns again.
+	var fresh sync.Once
+	buf.Reset()
+	warnOpaqueBuildkitTunnelDeprecatedOnce(&enabled, logger, &fresh)
+	if got := strings.Count(buf.String(), "insecure_accept_opaque_buildkit_tunnels is deprecated"); got != 1 {
+		t.Fatalf("warning count with fresh Once = %d, want 1; log: %q", got, buf.String())
+	}
+}
+
 func TestWarnInsecureUpstreamSpecs(t *testing.T) {
 	t.Parallel()
 

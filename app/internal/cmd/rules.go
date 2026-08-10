@@ -229,6 +229,7 @@ func validateReadExfiltrationRules(cfg *config.Config, compiled []*filter.Compil
 }
 
 func validateBuildkitTunnelRules(cfg *config.Config, compiled []*filter.CompiledRule) error {
+	//nolint:staticcheck // SA1019: deprecated flag still needs validating for as long as it stays functional
 	return validateBuildkitTunnelRulesForPolicy("", cfg.InsecureAcceptOpaqueBuildkitTunnels, cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build).Configured(), compiled)
 }
 
@@ -441,6 +442,7 @@ func compileClientProfiles(cfg *config.Config) (map[string]filter.Policy, error)
 		if err := validateReadExfiltrationRulesForPolicy(profile.Name, cfg.InsecureAllowReadExfiltration, compiledRules); err != nil {
 			return nil, err
 		}
+		//nolint:staticcheck // SA1019: deprecated flag still needs validating for as long as it stays functional
 		if err := validateBuildkitTunnelRulesForPolicy(profile.Name, cfg.InsecureAcceptOpaqueBuildkitTunnels, profile.RequestBody.Buildkit.ToPolicy(profile.RequestBody.Build).Configured(), compiledRules); err != nil {
 			return nil, err
 		}

@@ -1,36 +1,82 @@
-# Sockguard — Drydock with Build Preset
+# Sockguard — Drydock with Mediated BuildKit Build Preset
 #
-# Extends drydock-with-compose.yaml with CLASSIC BUILDER support only —
-# `docker compose build` / `up --build` run with DOCKER_BUILDKIT=0 set in the
-# client environment. This is NOT Compose-BuildKit support: by default,
-# `docker compose build` never calls POST /build at all — it drives dockerd's
-# embedded BuildKit over two hijacked, unversioned streams, POST /session and
-# POST /grpc (Engine API 1.53 deprecated both; current Buildx 0.36.0 still
-# uses them). This preset does not open either endpoint — no
-# insecure_accept_opaque_buildkit_tunnels acknowledgment (now deprecated, see
-# migration.mdx) and no request_body.buildkit mediation policy (issue #185) —
-# so they stay DENIED here. THIS FAILURE IS INTENTIONAL: a default (BuildKit)
-# `docker compose build` against this preset will fail with a proxy denial on
-# /session or /grpc, not a bug to work around by widening this file. Use
-# drydock-with-mediated-build.yaml instead if you want that transport fully
-# inspected rather than falling back to classic /build.
+# Extends drydock-with-compose.yaml with MEDIATED BuildKit support —
+# `docker compose build` / `up --build` run with BuildKit ENABLED (the
+# Docker CLI default; no DOCKER_BUILDKIT=0 needed). Compose drives dockerd's
+# embedded BuildKit frontend/session bridge over two hijacked, unversioned
+# streams, POST /session and POST /grpc (Engine API 1.53 deprecated both;
+# current Buildx 0.36.0 still uses them). As of issue #185's gRPC mediation
+# epic, sockguard terminates both streams as h2c and inspects every gRPC
+# message crossing them instead of hijacking the bytes verbatim — see
+# docs/content/docs/security.mdx's "Compose / BuildKit Transport" section for
+# the full mediation model.
 #
-# To use this preset, set DOCKER_BUILDKIT=0 in the environment that runs
-# `docker compose build` / `up --build` (Compose honors it and falls back to
-# the classic, single-request-body /build endpoint sockguard can fully
-# inspect — Dockerfile RUN-instruction scanning, remote-context denial,
-# host-network denial all apply exactly as they do for portainer.yaml's
-# unrestricted /build access). See docs/content/docs/security.mdx's supported
-# transport matrix for the full breakdown of what each preset covers.
+# This is the successor to drydock-with-build.yaml's CLASSIC (POST /build)
+# builder path: both are now fully inspected transports, but this preset
+# covers the BuildKit path a stock `docker compose build` actually takes
+# without any client-side env var. Use drydock-with-build.yaml instead if you
+# specifically want the classic /build endpoint (e.g. DOCKER_BUILDKIT=0 is
+# already set in your environment for other reasons).
 #
-# Allows: everything in drydock-with-compose.yaml plus:
-#         POST /build — classic builder only, all three request-body build
-#                        flags left at their secure default (false below)
+# request_body.buildkit below is deliberately MINIMAL — only what a plain
+# `docker build`/`docker compose build` of a local Dockerfile against a local
+# context, tagging the result into the local image store, actually needs:
 #
-# Still denied: /session, /grpc, and any moby.buildkit.v1.Control method path
-# — see drydock-with-mediated-build.yaml for the fully-mediated BuildKit
-# alternative to this preset's classic-builder-only approach. Self-update
-# finalize exec is still denied — see drydock-with-compose.yaml.
+#   control.solve.allow + allowed_exporters: [image]
+#       Admits the Solve RPC and an "image"-typed exporter (local tag/load).
+#       allowed_exporter_registries stays EMPTY: an "image" exporter only
+#       needs a registry-host match when its "push" attr is true, so a plain
+#       local build/tag never touches that allowlist. Add hosts there (and
+#       flip request_body.build.allow_remote_context if pushing a
+#       remotely-built image) only if you need `docker push`/`--push`.
+#   control.allow_info / allow_list_workers / allow_status
+#       Passthrough worker/version metadata (no policy-relevant fields) plus
+#       the Status RPC buildx uses to stream build progress — without
+#       allow_status a mediated Solve can still complete, but buildx's own
+#       progress-reporting goroutine errors out and the build command exits
+#       non-zero even on a successful build. Status is gated on ref
+#       ownership (a Status call is only ever admitted for a ref this same
+#       client/profile actually Solved), so allowing it does not widen what
+#       a build can see.
+#   session.file_sync.allow
+#       REQUIRED: this is how the Dockerfile and local build context reach
+#       buildkitd at all. request_body.build.allow_run_instructions stays
+#       false below, so the synced Dockerfile still gets the same
+#       RUN-instruction hold-and-inspect scan the classic /build path
+#       applies — this is the actual safety win mediation adds over the
+#       opaque tunnel.
+#
+# Deliberately LEFT DENIED (secure default; widen only if you need it):
+#   request_body.build.{allow_remote_context,allow_host_network,
+#   allow_run_instructions} — all false, identical secure defaults to
+#   drydock-with-build.yaml's classic builder policy; reused verbatim for
+#   Solve's own entitlement/frontend checks (BuildkitRequestBodyConfig.ToPolicy).
+#   session.auth — OFF. A base-image pull during a mediated Solve can
+#   require FetchToken (Docker Hub and most registries challenge even
+#   anonymous pulls for a bearer token), and Auth's realm/scope allowlists
+#   match EXACTLY, not by pattern — there is no single generic allowlist
+#   that covers arbitrary Dockerfiles' arbitrary FROM images. If your build
+#   needs registry auth that dockerd's own daemon-level credentials
+#   (`docker login` on the host, or a configured registry mirror) do not
+#   already satisfy, enable session.auth with the exact registries/realms/
+#   scopes your Dockerfiles need.
+#   session.secrets, session.ssh — OFF. Only needed for
+#   `RUN --mount=type=secret`/`type=ssh`; enable with an exact ID allowlist
+#   if a Dockerfile uses either.
+#   session.file_send, session.upload — OFF. FileSend serves a local/tar
+#   export (`-o type=local`/`type=tar`, not admitted by allowed_exporters
+#   above); Upload serves a remote/stdin build context, which
+#   allow_remote_context: false already denies at the Solve level. Neither
+#   is reachable with this preset's other settings; left explicit for
+#   visibility.
+#
+# Still denied: classic POST /build (use drydock-with-build.yaml if you want
+# that transport instead), and the literal
+# /moby.buildkit.v1.Control/<Method> probe path (no h2c upgrade for any
+# mediator to terminate — see filter.buildkitPolicy's doc comment).
+# insecure_accept_opaque_buildkit_tunnels is NOT set — it is deprecated and
+# mutually exclusive with request_body.buildkit; see migration.mdx if you
+# are moving off it.
 
 upstream:
   socket: /var/run/docker.sock
@@ -78,16 +124,28 @@ request_body:
       - runc
   image_pull:
     allow_all_registries: true
-  # Classic builder: no remote build contexts (they can't be inspected for
-  # RUN instructions), no host-network builds, and RUN instructions stay
-  # denied — this preset does not widen build policy beyond what
-  # portainer.yaml's fully-open /build would additionally need. All three
-  # explicit false here is the secure default; left in place rather than
-  # omitted so the deny posture is visible at the call site.
+  # Mediated BuildKit Solve reuses these three flags verbatim (see
+  # BuildkitRequestBodyConfig.ToPolicy) — same secure defaults as the classic
+  # builder in drydock-with-build.yaml. Explicit false here so the deny
+  # posture is visible at the call site.
   build:
     allow_remote_context: false
     allow_host_network: false
     allow_run_instructions: false
+  # Mediated BuildKit gRPC policy (issue #185) — see header comment above for
+  # the full rationale behind each admitted/denied field.
+  buildkit:
+    control:
+      allow_info: true
+      allow_list_workers: true
+      allow_status: true
+      solve:
+        allow: true
+        allowed_exporters:
+          - image
+    session:
+      file_sync:
+        allow: true
 
 rules:
   # Health and metadata
@@ -154,9 +212,12 @@ rules:
   - match: { method: DELETE, path: "/images/**" }
     action: allow
 
-  # Classic builder only — see header comment. BuildKit's /session and
-  # /grpc stay denied by the catch-all rule below.
-  - match: { method: POST, path: "/build" }
+  # Mediated BuildKit tunnel only — see header comment. Classic /build and
+  # the literal /moby.buildkit.v1.Control/<Method> probe path stay denied by
+  # the catch-all rule below.
+  - match: { method: POST, path: "/session" }
+    action: allow
+  - match: { method: POST, path: "/grpc" }
     action: allow
 
   # Network read + lifecycle. list/inspect/connect carried over from
@@ -224,8 +285,8 @@ rules:
   - match: { method: GET, path: "/services/*" }
     action: allow
 
-  # Deny everything else — including /session and /grpc (BuildKit's opaque
-  # tunnel, see header comment).
+  # Deny everything else — including classic /build and the literal
+  # /moby.buildkit.v1.Control/<Method> probe path (see header comment).
   - match: { method: "*", path: "/**" }
     action: deny
-    reason: "not allowed by drydock-with-build preset"
+    reason: "not allowed by drydock-with-mediated-build preset"

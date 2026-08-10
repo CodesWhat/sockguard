@@ -23,12 +23,14 @@
 # Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
 # with DEFAULT settings never calls POST /build at all — it drives dockerd's
 # embedded BuildKit over the hijacked, unversioned POST /session and
-# POST /grpc streams instead, both denied here. Those streams carry secrets,
-# SSH agent forwarding, and file sync sockguard cannot inspect once opened.
-# Use drydock-with-build.yaml if you need `--build` support: it layers
-# CLASSIC builder support (POST /build only, requires DOCKER_BUILDKIT=0 in
-# the client environment) on top of everything in this preset. It does not
-# open /session or /grpc — BuildKit gRPC mediation is a future v1.7+ epic.
+# POST /grpc streams instead, both denied here. Use
+# drydock-with-mediated-build.yaml if you need `--build` support with
+# BuildKit's default (no env var) transport — it layers a
+# request_body.buildkit mediation policy (issue #185) on top of everything in
+# this preset, inspecting Solve/Status and the Dockerfile/context FileSync
+# stream instead of hijacking the tunnel unmediated. Use drydock-with-build.yaml
+# instead if you specifically want the CLASSIC builder (POST /build only,
+# requires DOCKER_BUILDKIT=0 in the client environment).
 #
 # Self-update: same caveat as drydock.yaml — the finalize exec
 # (runFinalizeCallbackInContainer) is still denied here. Use

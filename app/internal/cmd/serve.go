@@ -868,6 +868,7 @@ func withHijack(res *upstream.Resolver, logger *slog.Logger) func(http.Handler) 
 // combination unreachable in practice), this layer is a no-op and the
 // request falls through to next unchanged, exactly like Phase 1.
 func withBuildkitMediator(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {
+	warnIfOpaqueBuildkitTunnelDeprecated(cfg, logger)
 	defaultPolicy := cfg.RequestBody.Buildkit.ToPolicy(cfg.RequestBody.Build)
 	profilePolicies := make(map[string]buildkitproxy.Policy, len(cfg.Clients.Profiles))
 	for _, profile := range cfg.Clients.Profiles {
@@ -904,6 +905,41 @@ func withBuildkitMediator(cfg *config.Config, res *upstream.Resolver, logger *sl
 			}
 		})
 	}
+}
+
+// opaqueBuildkitTunnelWarnOnce gates warnIfOpaqueBuildkitTunnelDeprecated to a
+// single emission per process, like bodyBlindWritesWarnOnce — withBuildkitMediator
+// is a chain-build site rebuilt on every config hot-reload (the flag is not
+// in reload.ImmutableFields), so an unguarded warning here would repeat on
+// each reload.
+var opaqueBuildkitTunnelWarnOnce sync.Once
+
+// warnIfOpaqueBuildkitTunnelDeprecated surfaces the deprecation of
+// insecure_accept_opaque_buildkit_tunnels now that request_body.buildkit
+// (issue #185) provides full per-message mediation of the same POST
+// /session and POST /grpc endpoints the flag wholesale-admits with zero
+// inspection. validateBuildkitAckMutualExclusion (config/validate.go)
+// already rejects the flag combined with a configured request_body.buildkit
+// block, and validateAndCompileRules runs before the handler chain is ever
+// built, so by the time this fires request_body.buildkit is guaranteed
+// unconfigured everywhere — this warning and that validation error never
+// fire for the same config.
+func warnIfOpaqueBuildkitTunnelDeprecated(cfg *config.Config, logger *slog.Logger) {
+	warnOpaqueBuildkitTunnelDeprecatedOnce(cfg, logger, &opaqueBuildkitTunnelWarnOnce)
+}
+
+// warnOpaqueBuildkitTunnelDeprecatedOnce is the testable core of
+// warnIfOpaqueBuildkitTunnelDeprecated: the Once is injected so tests can
+// verify both the enable-check and the once-per-process gating without
+// racing other tests for the package-level guard.
+func warnOpaqueBuildkitTunnelDeprecatedOnce(cfg *config.Config, logger *slog.Logger, once *sync.Once) {
+	//nolint:staticcheck // SA1019: this is the deprecation warning's own enable-check
+	if !cfg.InsecureAcceptOpaqueBuildkitTunnels {
+		return
+	}
+	once.Do(func() {
+		logger.Warn("insecure_accept_opaque_buildkit_tunnels is deprecated: it admits POST /session and POST /grpc with zero inspection now that request_body.buildkit provides full per-message BuildKit mediation (issue #185); migrate to request_body.buildkit — this flag will be removed in a future major release")
+	})
 }
 
 func withOwnership(cfg *config.Config, res *upstream.Resolver, logger *slog.Logger) func(http.Handler) http.Handler {

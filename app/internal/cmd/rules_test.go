@@ -590,7 +590,7 @@ func TestValidateAndCompileRulesRejectsNamedClientProfileReadExfiltration(t *tes
 
 func TestValidateAndCompileRulesAllowsBuildkitTunnelWithExplicitOptIn(t *testing.T) {
 	cfg := config.Defaults()
-	cfg.InsecureAcceptOpaqueBuildkitTunnels = true
+	cfg.InsecureAcceptOpaqueBuildkitTunnels = true //nolint:staticcheck // SA1019: exercising the deprecated flag intentionally
 	cfg.Rules = []config.RuleConfig{
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/session"}, Action: "allow"},
 		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/grpc"}, Action: "allow"},

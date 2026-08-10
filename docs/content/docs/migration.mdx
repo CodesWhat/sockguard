@@ -26,6 +26,43 @@ Before switching the image tag, validate the current configuration with `sockgua
 
 See [Configuration](/configuration#request-body-inspection) for the full field mapping.
 
+### Migrating off `insecure_accept_opaque_buildkit_tunnels` (#185)
+
+`insecure_accept_opaque_buildkit_tunnels: true` is now **deprecated**: it still works — existing configs that set it keep running unchanged — but setting it logs a startup warning, and the flag will be removed in a future major release. Full BuildKit gRPC mediation (issue #185) supersedes it: `request_body.buildkit` inspects the `Control/Solve`/`Status` RPCs and the session `Auth`/`Secrets`/`SSH`/`FileSync`/`FileSend`/`Upload` callbacks per gRPC message, instead of admitting the whole `POST /session`/`POST /grpc` tunnel with zero inspection. The two are mutually exclusive — a config setting both fails validation with an error naming the conflict.
+
+To migrate, replace the acknowledgment with a `request_body.buildkit` policy scoped to what your Dockerfiles actually need. This is the minimum for a plain `docker build`/`docker compose build` of a local Dockerfile and context, tagging the result into the local image store (no push, no secrets, no remote context):
+
+```diff
+-insecure_accept_opaque_buildkit_tunnels: true
++request_body:
++  buildkit:
++    control:
++      allow_info: true
++      allow_list_workers: true
++      allow_status: true
++      solve:
++        allow: true
++        allowed_exporters: [image]
++    session:
++      file_sync:
++        allow: true
+
+ rules:
+   - match: { method: POST, path: "/session" }
+     action: allow
+   - match: { method: POST, path: "/grpc" }
+     action: allow
+```
+
+The rules admitting `POST /session` and `POST /grpc` don't change — only which acknowledgment or policy satisfies sockguard's startup admission check for those two rules changes. Widen from that minimum only as needed:
+
+- `docker push` / `--push`: add the destination registry hosts to `control.solve.allowed_exporter_registries`.
+- `RUN --mount=type=secret` / `type=ssh`: enable `session.secrets` / `session.ssh` with an exact ID allowlist.
+- Base-image pulls that need registry auth (most public registries included — Docker Hub issues anonymous pull tokens too — unless the daemon's own credentials already cover it): enable `session.auth` with the exact `allowed_registries` / `allowed_realms` / `allowed_scopes` your Dockerfiles need; these match exactly, not by pattern, so there's no single generic value that covers arbitrary images.
+- A remote (git/HTTP) build context, or `-o type=local` / `type=tar` output: `request_body.build.allow_remote_context: true`, or `session.upload` / `session.file_send` respectively.
+
+See the `drydock-with-mediated-build.yaml` / `portwing-with-mediated-build.yaml` presets for a complete, validated starting point, and [Security](/security#compose--buildkit-transport) / [Configuration](/configuration) for the full field reference.
+
 ## From Tecnativa/docker-socket-proxy
 
 Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. Replace the image:
