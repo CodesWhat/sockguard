@@ -46,10 +46,37 @@ func (c BuildkitSolveRequestBodyConfig) toPolicy(build BuildRequestBodyConfig) b
 		AllowRemoteContext:        build.AllowRemoteContext,
 		AllowedCacheImportTypes:   c.AllowedCacheImportTypes,
 		AllowedCacheExportTypes:   c.AllowedCacheExportTypes,
-		AllowedCacheRegistries:    c.AllowedCacheRegistries,
+		AllowedCacheRegistries:    normalizeRegistryHostList(c.AllowedCacheRegistries),
 		AllowedExporters:          c.AllowedExporters,
-		AllowedExporterRegistries: c.AllowedExporterRegistries,
+		AllowedExporterRegistries: normalizeRegistryHostList(c.AllowedExporterRegistries),
 	}
+}
+
+// normalizeRegistryHostList normalizes every entry through
+// normalizeAllowedRegistryHost so buildkitproxy's runtime registry-host
+// comparison (solve.go's registryHostFromImageRef, which always lowercases
+// and canonicalizes the host it extracts from a client-supplied ref) is
+// compared against the SAME canonical form an operator's config-side
+// allowlist entries are stored in — otherwise "Registry:5000" in config
+// would never match "registry:5000" extracted at runtime. This mirrors
+// internal/filter's newImagePullPolicy/normalizeRegistryHost precedent for
+// the exact same registry-host allowlist shape (buildkitproxy must not
+// import internal/filter or vice versa — see registry.go's package doc —
+// so each side keeps its own copy of the same normalization rule).
+// validateRegistryHostEntries already rejects any entry that fails to
+// normalize, so the skip-on-!ok below is only a defensive no-op against
+// what should be unreachable in a Validate()-passed Config.
+func normalizeRegistryHostList(values []string) []string {
+	if len(values) == 0 {
+		return values
+	}
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		if normalized, ok := normalizeAllowedRegistryHost(v); ok {
+			out = append(out, normalized)
+		}
+	}
+	return out
 }
 
 func (c BuildkitSessionRequestBodyConfig) toPolicy() buildkitproxy.SessionPolicy {

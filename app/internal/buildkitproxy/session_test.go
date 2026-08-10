@@ -1,6 +1,7 @@
 package buildkitproxy
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -286,6 +287,28 @@ func TestSessionRegistryCloseReleasesRefs(t *testing.T) {
 		}
 	})
 
+	t.Run("PutRef after Close is rejected without recording anything", func(t *testing.T) {
+		// Deterministic (non-racy) coverage of PutRef's still-registered
+		// gate — see TestSessionRegistryPutRefRaceWithClose below for the
+		// actual concurrent regression test. Calling PutRef with a *Session
+		// obtained before Close ran is exactly what a stream handler
+		// goroutine racing tunnel teardown would observe.
+		reg := NewSessionRegistry()
+		key := SessionKey{ClientIdentity: "c", Profile: "p"}
+		s := reg.Open(key, EndpointGRPC, "")
+		reg.Close(s.ID)
+
+		if reg.PutRef(s, "late-ref", 0) {
+			t.Fatal("PutRef after Close = true, want false (session no longer registered)")
+		}
+		if reg.OwnsRef(key, "late-ref") {
+			t.Fatal("registry-wide OwnsRef(late-ref) = true after a post-Close PutRef, want false")
+		}
+		if s.OwnsRef("late-ref") {
+			t.Fatal("session-local OwnsRef(late-ref) = true after a post-Close PutRef, want false (the gate runs before tryPutRef)")
+		}
+	})
+
 	t.Run("two sessions sharing a key: closing one leaves the other's ref owned", func(t *testing.T) {
 		reg := NewSessionRegistry()
 		key := SessionKey{ClientIdentity: "c", Profile: "p"}
@@ -309,4 +332,55 @@ func TestSessionRegistryCloseReleasesRefs(t *testing.T) {
 			t.Fatal("OwnsRef(shared-ref) after closing both sessions = true, want false")
 		}
 	})
+}
+
+// TestSessionRegistryPutRefRaceWithClose is the CodeRabbit-flagged
+// concurrent regression test for the two PutRef-vs-Close races PutRef's own
+// doc comment describes: (1) a PutRef landing after Close's refsSnapshot
+// publishing an orphaned refOwners entry nothing will ever release, and
+// (2) a tryPutRef insert landing between Close's r.sessions delete and its
+// refsSnapshot, putting the ref into Close's release loop without it ever
+// reaching refOwners — decrementing a count a still-open sibling session
+// sharing the SessionKey legitimately holds. A sibling session holding the
+// same ref throughout the race asserts both directions: its ownership must
+// survive the racing pair, and closing it afterwards must fully release the
+// index. Run under `go test -race` (per this package's validation gate) so
+// a synchronization bug here is caught as a data race too, not just a
+// logical assertion failure.
+func TestSessionRegistryPutRefRaceWithClose(t *testing.T) {
+	const iterations = 500
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+
+	for i := 0; i < iterations; i++ {
+		reg := NewSessionRegistry()
+		sibling := reg.Open(key, EndpointGRPC, "")
+		if !reg.PutRef(sibling, "race-ref", 0) {
+			t.Fatalf("iteration %d: sibling PutRef(race-ref) = false, want true", i)
+		}
+		s := reg.Open(key, EndpointGRPC, "")
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			reg.PutRef(s, "race-ref", 0)
+		}()
+		go func() {
+			defer wg.Done()
+			reg.Close(s.ID)
+		}()
+		wg.Wait()
+
+		if !reg.OwnsRef(key, "race-ref") {
+			t.Fatalf("iteration %d: OwnsRef(race-ref) = false while the sibling session still holds it — Close raced PutRef into releasing a count the closing session never contributed", i)
+		}
+
+		reg.Close(sibling.ID)
+		if reg.OwnsRef(key, "race-ref") {
+			t.Fatalf("iteration %d: OwnsRef(race-ref) = true after every session closed — orphaned refOwners entry", i)
+		}
+		if owners, ok := reg.refOwners[key]; ok && len(owners) != 0 {
+			t.Fatalf("iteration %d: refOwners[key] = %v after every session closed, want empty/absent", i, owners)
+		}
+	}
 }

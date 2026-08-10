@@ -380,6 +380,14 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 		if d == nil && !b.registry.OwnsRef(b.session.Key, req.GetRef()) {
 			d = deny(grpcCodePermissionDenied, "buildkit_ref_not_owned", "this ref does not belong to an admitted Solve for this client/profile")
 		}
+	default:
+		// Unreachable today — isControlMediatedMethod only routes Solve and
+		// Status here — but if it and this switch ever drift (a method added
+		// to one and not the other), fail CLOSED rather than fall through
+		// with d and ref left at their zero values, which would forward the
+		// message with ZERO policy evaluation in a package whose entire
+		// identity is default-deny. See grpcCodeInternal's doc comment.
+		d = deny(grpcCodeInternal, "buildkit_internal_error", "internal routing error")
 	}
 
 	if d != nil {
@@ -392,7 +400,7 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 	if method == "Solve" {
 		if !b.registry.PutRef(b.session, ref, b.limits.MaxRefsPerSession) {
 			writeGRPCStatus(w, grpcCodeResourceExhausted, "too many concurrent BuildKit solve refs admitted for this client")
-			b.audit(service, method, Deny, "buildkit_policy_denied")
+			b.audit(service, method, Deny, "buildkit_ref_limit_exceeded")
 			b.recordDeniedAndMaybeClose()
 			return
 		}

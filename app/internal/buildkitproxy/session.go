@@ -177,24 +177,26 @@ func (r *SessionRegistry) Open(key SessionKey, endpoint Endpoint, clientUUID str
 // same SessionKey also admitted stays owned; only this session's own
 // contribution is released. A no-op if id doesn't exist (already closed, or
 // never opened).
+//
+// The whole operation — unregistering from r.sessions, snapshotting the
+// session's refs, and decrementing their registry-wide counts — happens
+// under ONE r.mu critical section, mirroring PutRef (see its doc comment
+// for the two races this serialization closes and for the r.mu → s.mu lock
+// ordering refsSnapshot's nested s.mu acquisition follows).
 func (r *SessionRegistry) Close(id uint64) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	s, ok := r.sessions[id]
-	if ok {
-		delete(r.sessions, id)
-	}
-	r.mu.Unlock()
 	if !ok {
 		return
 	}
+	delete(r.sessions, id)
 
 	refs := s.refsSnapshot()
 	if len(refs) == 0 {
 		return
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
 	owners := r.refOwners[s.Key]
 	for _, ref := range refs {
 		if owners[ref] <= 1 {
@@ -228,7 +230,38 @@ func (r *SessionRegistry) Len() int {
 // s.Key in the registry-wide ownership index OwnsRef consults. Returns false
 // without recording anything if s already holds maxRefs distinct refs (see
 // Limits.MaxRefsPerSession); maxRefs <= 0 disables the bound.
+//
+// The whole operation — confirming s is still registered in r.sessions,
+// admitting the ref locally via tryPutRef, and publishing it to the
+// registry-wide index — happens under ONE r.mu critical section, mirroring
+// Close. Serializing the two on r.mu closes two races a finer-grained
+// scheme was shown to leave open:
+//
+//  1. A PutRef whose tryPutRef insert lands after Close has already taken
+//     its (then-empty) refsSnapshot would still publish to refOwners
+//     moments later — an entry for a session Close has already run for and
+//     will never run for again, so nothing would ever release it, and
+//     OwnsRef would report true for that SessionKey/ref for the rest of
+//     the process's lifetime.
+//  2. The mirror image: a tryPutRef insert landing between Close's
+//     r.sessions delete and its refsSnapshot puts the ref INTO the
+//     snapshot without it ever reaching refOwners — Close's decrement loop
+//     would then release a count this session never contributed, stealing
+//     ownership from a still-open sibling session sharing the same
+//     SessionKey (its Status calls would start failing
+//     buildkit_ref_not_owned).
+//
+// Lock ordering: tryPutRef (and Close's refsSnapshot) acquire s.mu strictly
+// NESTED inside the r.mu critical section, and no code path ever takes them
+// in the opposite order, so the nesting cannot deadlock.
 func (r *SessionRegistry) PutRef(s *Session, ref string, maxRefs int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if _, stillOpen := r.sessions[s.ID]; !stillOpen {
+		return false
+	}
+
 	admitted, isNew := s.tryPutRef(ref, maxRefs)
 	if !admitted {
 		return false
@@ -241,7 +274,6 @@ func (r *SessionRegistry) PutRef(s *Session, ref string, maxRefs int) bool {
 		return true
 	}
 
-	r.mu.Lock()
 	if r.refOwners == nil {
 		r.refOwners = make(map[SessionKey]map[string]int)
 	}
@@ -251,8 +283,6 @@ func (r *SessionRegistry) PutRef(s *Session, ref string, maxRefs int) bool {
 		r.refOwners[s.Key] = owners
 	}
 	owners[ref]++
-	r.mu.Unlock()
-
 	return true
 }
 

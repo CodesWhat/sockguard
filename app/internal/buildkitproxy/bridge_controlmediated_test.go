@@ -3,7 +3,9 @@ package buildkitproxy
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -31,8 +33,8 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 	const solvePath = "/moby.buildkit.v1.Control/Solve"
 
 	t.Run("malformed framing", func(t *testing.T) {
-		daemonCalled := false
-		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled = true })
+		var daemonCalled atomic.Bool
+		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled.Store(true) })
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), daemon)
 
 		resp, err := tb.driver.RoundTrip(newGRPCRequest(t, solvePath, "not a valid gRPC frame"))
@@ -43,14 +45,14 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		if code != grpcCodeInvalidArgument {
 			t.Fatalf("Grpc-Status = %d, want %d (INVALID_ARGUMENT); message = %q", code, grpcCodeInvalidArgument, msg)
 		}
-		if daemonCalled {
+		if daemonCalled.Load() {
 			t.Fatal("malformed framing reached the daemon")
 		}
 	})
 
 	t.Run("message exceeds size cap", func(t *testing.T) {
-		daemonCalled := false
-		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled = true })
+		var daemonCalled atomic.Bool
+		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled.Store(true) })
 		limits := DefaultLimits()
 		limits.MaxMessageBytes = 4
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, limits, daemon)
@@ -64,14 +66,14 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		if code != grpcCodeResourceExhausted {
 			t.Fatalf("Grpc-Status = %d, want %d (RESOURCE_EXHAUSTED)", code, grpcCodeResourceExhausted)
 		}
-		if daemonCalled {
+		if daemonCalled.Load() {
 			t.Fatal("an oversized message reached the daemon")
 		}
 	})
 
 	t.Run("unknown fields", func(t *testing.T) {
-		daemonCalled := false
-		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled = true })
+		var daemonCalled atomic.Bool
+		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled.Store(true) })
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), daemon)
 
 		req := &control.SolveRequest{Ref: "ref"}
@@ -84,14 +86,14 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		if code != grpcCodeFailedPrecondition {
 			t.Fatalf("Grpc-Status = %d, want %d (FAILED_PRECONDITION)", code, grpcCodeFailedPrecondition)
 		}
-		if daemonCalled {
+		if daemonCalled.Load() {
 			t.Fatal("a message with unknown fields reached the daemon")
 		}
 	})
 
 	t.Run("entitlement denied by policy", func(t *testing.T) {
-		daemonCalled := false
-		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled = true })
+		var daemonCalled atomic.Bool
+		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled.Store(true) })
 		policy := Policy{Control: ControlPolicy{Solve: SolvePolicy{Allow: true}}}
 		tb := newTestBridge(t, EndpointGRPC, policy, DefaultLimits(), daemon)
 
@@ -107,7 +109,7 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		if !strings.Contains(msg, "network.host") {
 			t.Fatalf("Grpc-Message = %q, want it to mention network.host", msg)
 		}
-		if daemonCalled {
+		if daemonCalled.Load() {
 			t.Fatal("an entitlement the policy denies reached the daemon")
 		}
 	})
@@ -186,8 +188,8 @@ func TestBridgeControlMediatedStatus(t *testing.T) {
 	})
 
 	t.Run("ref not owned by this session", func(t *testing.T) {
-		daemonCalled := false
-		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled = true })
+		var daemonCalled atomic.Bool
+		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled.Store(true) })
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), daemon)
 
 		resp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, statusPath, &control.StatusRequest{Ref: "never-solved"}))
@@ -198,7 +200,7 @@ func TestBridgeControlMediatedStatus(t *testing.T) {
 		if code != grpcCodePermissionDenied {
 			t.Fatalf("Grpc-Status = %d, want %d (PERMISSION_DENIED); message = %q", code, grpcCodePermissionDenied, msg)
 		}
-		if daemonCalled {
+		if daemonCalled.Load() {
 			t.Fatal("Status for an unowned ref reached the daemon")
 		}
 	})
@@ -224,4 +226,44 @@ func TestBridgeControlMediatedStatus(t *testing.T) {
 		_, _ = io.Copy(io.Discard, statusResp.Body)
 		_ = statusResp.Body.Close()
 	})
+}
+
+// TestForwardControlMediatedUnknownMethodFailsClosed exercises
+// forwardControlMediated's defensive switch default directly by calling it
+// with a method isControlMediatedMethod would never actually route here in
+// production (both list exactly "Solve" and "Status" today, and
+// handleStream only calls forwardControlMediated once isControlMediatedMethod
+// has already said yes). If the two ever drift — a method added to one and
+// not the other — this proves the fallback fails CLOSED: an Internal gRPC
+// status, "buildkit_internal_error" audited, rather than forwarding the
+// message with zero policy evaluation. No live daemon/driver connection is
+// needed since a denial returns before forwardWithBody would ever touch
+// b.clientLeg.
+func TestForwardControlMediatedUnknownMethodFailsClosed(t *testing.T) {
+	registry := NewSessionRegistry()
+	session := registry.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+	limits := DefaultLimits()
+	b := &bridge{
+		legs:     bridgeLegs{endpoint: EndpointGRPC},
+		session:  session,
+		policy:   allowAllPolicy,
+		limits:   limits,
+		logger:   noopLogger(),
+		guard:    newStreamAbuseGuard(limits),
+		registry: registry,
+	}
+
+	payload := mustMarshal(t, &control.SolveRequest{Ref: "r"})
+	req := newGRPCRequest(t, "/moby.buildkit.v1.Control/Prune", string(grpcFrame(payload)))
+	rec := httptest.NewRecorder()
+
+	b.forwardControlMediated(rec, req, "moby.buildkit.v1.Control", "Prune")
+
+	code, msg := grpcStatusOf(t, rec.Result())
+	if code != grpcCodeInternal {
+		t.Fatalf("Grpc-Status = %d, want %d (Internal)", code, grpcCodeInternal)
+	}
+	if msg == "" {
+		t.Fatal("Grpc-Message is empty, want a fixed denial message")
+	}
 }

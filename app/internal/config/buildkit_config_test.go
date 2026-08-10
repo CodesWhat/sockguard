@@ -105,6 +105,38 @@ func TestBuildkitToPolicyTranslation(t *testing.T) {
 	}
 }
 
+// TestBuildkitToPolicyNormalizesRegistryHostCase confirms Solve's cache/
+// exporter registry allowlists are normalized (lowercased, and
+// index.docker.io canonicalized to docker.io) at ToPolicy time — see
+// normalizeRegistryHostList's doc comment for why: buildkitproxy's
+// registryHostFromImageRef always lowercases the host it extracts from a
+// client-supplied ref, so a config entry that kept whatever case the
+// operator typed would otherwise never match at runtime (a CodeRabbit #226
+// finding: "Registry:5000" in config silently never matched "registry:5000"
+// extracted from a live request).
+func TestBuildkitToPolicyNormalizesRegistryHostCase(t *testing.T) {
+	cfg := BuildkitRequestBodyConfig{
+		Control: BuildkitControlRequestBodyConfig{
+			Solve: BuildkitSolveRequestBodyConfig{
+				Allow:                     true,
+				AllowedCacheRegistries:    []string{"Registry.Example.COM:5000", "INDEX.DOCKER.IO"},
+				AllowedExporterRegistries: []string{"Other.Example.COM"},
+			},
+		},
+	}
+
+	got := cfg.ToPolicy(BuildRequestBodyConfig{})
+	wantCache := []string{"registry.example.com:5000", "docker.io"}
+	wantExporter := []string{"other.example.com"}
+
+	if !reflect.DeepEqual(got.Control.Solve.AllowedCacheRegistries, wantCache) {
+		t.Fatalf("AllowedCacheRegistries = %v, want %v", got.Control.Solve.AllowedCacheRegistries, wantCache)
+	}
+	if !reflect.DeepEqual(got.Control.Solve.AllowedExporterRegistries, wantExporter) {
+		t.Fatalf("AllowedExporterRegistries = %v, want %v", got.Control.Solve.AllowedExporterRegistries, wantExporter)
+	}
+}
+
 // TestBuildkitToPolicyDoesNotCountBuildFlagsAsConfigured pins the
 // deliberate asymmetry documented on buildkitproxy.Policy.Configured: a
 // Solve policy whose ONLY non-zero fields are the ones reused from

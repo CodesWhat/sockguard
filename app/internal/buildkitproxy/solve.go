@@ -6,11 +6,60 @@
 // functions bridge.go's forwardControlMediated calls after framing/decode
 // succeeds, kept free of any http/gRPC-wire concerns so they're unit
 // testable without a live bridge.
+//
+// SolveRequest field-by-field disposition (every field in the vendored
+// control.SolveRequest message — a CodeRabbit review of this file's first
+// cut flagged that four of them, FrontendInputs/SourcePolicySession/
+// CompatibilityVersion/ProxyNetwork, were neither checked nor denied nor
+// documented; every field below now has an explicit disposition):
+//
+//   - Ref (1): must be non-empty (see evaluateSolveRequest's own check,
+//     "buildkit_invalid_ref") — an admitted empty Ref would let
+//     SessionRegistry.PutRef record ownership of "", and a later
+//     Control/Status{Ref:""} call would then pass OwnsRef's check for
+//     free.
+//   - Definition (2): the actual LLB op graph. Forwarded byte-for-byte,
+//     never decoded — per-op LLB inspection is a materially larger
+//     surface than Phase 3's scope (mediating Solve/Status at the level of
+//     frontend/cache/exporters/entitlements/source-policy), not attempted
+//     here.
+//   - ExporterDeprecated / ExporterAttrsDeprecated (3, 4): denied outright
+//     — see checkSolveCache.
+//   - Session (5): names a session UUID the daemon calls back through for
+//     Auth/Secrets/SSH/FileSync — that surface belongs to Phases 4-5's own
+//     per-message session-endpoint mediation, not Solve/Status; the field
+//     itself grants no capability this file mediates.
+//   - Frontend / FrontendAttrs (6, 7): checked — see checkSolveFrontend.
+//   - Cache (8): checked — see checkSolveCache/checkCacheEntry.
+//   - Entitlements (9): checked — see checkSolveEntitlements.
+//   - FrontendInputs (10): denied when non-empty — see
+//     checkSolveRemainingFields. Client-supplied LLB graphs substituted
+//     into the frontend's own inputs; no reviewed config surface exists to
+//     admit them selectively.
+//   - Internal (11): forwarded unexamined — only affects whether the
+//     daemon records the build in its own history; no policy-relevant
+//     effect.
+//   - SourcePolicy (12): checked — see checkSolveSourcePolicy.
+//   - Exporters (13): checked — see checkSolveExporters.
+//   - EnableSessionExporter (14): denied outright — see checkSolveExporters.
+//   - SourcePolicySession (15): denied when non-empty — see
+//     checkSolveSourcePolicy. Names a session that supplies source-policy
+//     rules out of band, which would otherwise bypass the inline
+//     SourcePolicy.Rules denial entirely — same no-enabling-knob rationale.
+//   - CompatibilityVersion (16): forwarded unexamined — a passive
+//     protocol/provenance version marker the solver records and defaults
+//     itself when unset; it does not change how the daemon evaluates any
+//     of the fields above.
+//   - ProxyNetwork (17): denied outright — see checkSolveRemainingFields.
+//     Opts the build into buildkitd forwarding its own host proxy
+//     configuration (which may embed credentials in a proxy URL) into the
+//     build; no reviewed config surface exists to admit it.
 package buildkitproxy
 
 import (
-	"fmt"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"google.golang.org/protobuf/proto"
@@ -111,17 +160,35 @@ func isKnownFrontendAttrKey(key string) bool {
 	return false
 }
 
+// scpLikeGitRefRegexp detects the scp-style git remote syntax —
+// "<user>@<host>:<path>", the form `git clone` accepts with no "://" scheme
+// at all (e.g. "bob@example.com:org/repo.git") — reproduced verbatim from
+// moby/buildkit's util/sshutil.gitSSHRegex (this package must not import
+// buildkit's implementation graph; see registry.go's package doc) so
+// isRemoteContextRef classifies exactly the strings BuildKit's own gitutil
+// would treat as a git remote, not a narrower or broader guess. A bare
+// "user@host" with no colon, or any string with no "@" at all, never
+// matches — this is deliberately the SAME ambiguity BuildKit's own detector
+// has (a local path that happens to look like "user@host:path" is
+// indistinguishable from a real scp-style remote), not a gap introduced
+// here.
+var scpLikeGitRefRegexp = regexp.MustCompile(`^([a-zA-Z0-9-_]+)@([a-zA-Z0-9-.]+):(.*?)(?:#(.*))?$`)
+
 // isRemoteContextRef reports whether a "context" or "context:<name>"
 // FrontendAttrs value names a remote location (a URL-shaped git/http(s)
-// context, mirroring classic POST /build's remote-context detection) rather
-// than a path within the build context sockguard already treats as local.
+// context, mirroring classic POST /build's remote-context detection, or an
+// scp-style git remote — see scpLikeGitRefRegexp) rather than a path within
+// the build context sockguard already treats as local.
 func isRemoteContextRef(value string) bool {
-	for _, prefix := range []string{"http://", "https://", "git://", "git@", "github.com/"} {
+	for _, prefix := range []string{"http://", "https://", "git://", "github.com/"} {
 		if strings.HasPrefix(value, prefix) {
 			return true
 		}
 	}
-	return strings.Contains(value, "://")
+	if strings.Contains(value, "://") {
+		return true
+	}
+	return scpLikeGitRefRegexp.MatchString(value)
 }
 
 // registryHostFromImageRef extracts the registry authority from an
@@ -158,10 +225,18 @@ func registryHostFromImageRef(ref string) (host string, ok bool) {
 // every Phase 3 policy check against policy.Control.Solve, in the order the
 // #185 synthesis lists them: unknown fields first (nothing else can be
 // trusted to mean what it says otherwise), then entitlements, frontend +
-// frontend attrs, cache, exporters, and source policy. Returns the decoded
-// request (for the caller to read Ref off, for ref-registry admission) and a
-// nil denial on success, or a nil request and non-nil denial on the first
-// check that fails.
+// frontend attrs, cache, exporters, source policy, and every other field
+// this file examines (checkSolveRemainingFields — see the file's header
+// comment for the full field-by-field disposition). Ref presence is
+// checked LAST, deliberately: it is a registration precondition ("this
+// request is otherwise fully policy-clean, so does it actually name
+// something the caller can register ownership of") rather than a content
+// check in its own right, and checking it last lets every other check's
+// own denial reason surface for a request that's simultaneously invalid in
+// more than one way, instead of always short-circuiting on "no ref" first.
+// Returns the decoded request (for the caller to read Ref off, for
+// ref-registry admission) and a nil denial on success, or a nil request and
+// non-nil denial on the first check that fails.
 func evaluateSolveRequest(payload []byte, policy Policy) (*control.SolveRequest, *mediationDenial) {
 	req := &control.SolveRequest{}
 	if err := proto.Unmarshal(payload, req); err != nil {
@@ -186,6 +261,17 @@ func evaluateSolveRequest(payload []byte, policy Policy) (*control.SolveRequest,
 	}
 	if d := checkSolveSourcePolicy(req); d != nil {
 		return nil, d
+	}
+	if d := checkSolveRemainingFields(req); d != nil {
+		return nil, d
+	}
+	if req.GetRef() == "" {
+		// An admitted empty Ref would let SessionRegistry.PutRef record
+		// ownership of "" for this session; a later Control/Status{Ref:""}
+		// call would then pass OwnsRef's check for free, without ever
+		// having named a ref this session actually solved. Deny before
+		// registration rather than let PutRef see it at all.
+		return nil, deny(grpcCodeInvalidArgument, "buildkit_invalid_ref", "solve request ref must not be empty")
 	}
 
 	return req, nil
@@ -281,13 +367,16 @@ func checkSolveCache(req *control.SolveRequest, solvePolicy SolvePolicy) *mediat
 
 // checkCacheEntry validates one CacheOptionsEntry (an import or an export)
 // against its direction's type allowlist and, for the "registry" type, the
-// shared cache-registry allowlist.
+// shared cache-registry allowlist. The denial message never includes
+// entry.GetType() — that's raw client-supplied content, and this package's
+// own mediationDenial doc comment forbids echoing it back into a
+// client-readable Grpc-Message.
 func checkCacheEntry(entry *control.CacheOptionsEntry, allowedTypes, allowedRegistries []string) *mediationDenial {
 	if entry == nil {
 		return nil
 	}
 	if !slices.Contains(allowedTypes, entry.GetType()) {
-		return deny(grpcCodePermissionDenied, "buildkit_policy_denied", fmt.Sprintf("cache type %q is not permitted", entry.GetType()))
+		return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "cache type is not permitted")
 	}
 	if entry.GetType() != "registry" {
 		return nil
@@ -307,17 +396,48 @@ func checkCacheEntry(entry *control.CacheOptionsEntry, allowedTypes, allowedRegi
 // DeniedExamples) — admitting the flag here would just let a build declare
 // intent to use a service the bridge only rejects once the daemon actually
 // tries to call back into it.
+//
+// The "push" attr is parsed with strconv.ParseBool, matching BuildKit's own
+// image exporter (which runs the identical attr through ParseBool) rather
+// than a bare `== "true"` comparison — "1", "T", "TRUE", etc. all enable
+// pushing in the real exporter and must not skip the registry check here. A
+// value ParseBool can't evaluate is denied outright rather than treated as
+// false: a push attribute sockguard cannot classify must not silently pass.
+// "name" may hold multiple comma-separated image refs (BuildKit pushes each
+// one), so every ref's registry — not just the first — must clear
+// AllowedExporterRegistries; an empty name with push enabled is denied since
+// there is nothing to validate.
 func checkSolveExporters(req *control.SolveRequest, solvePolicy SolvePolicy) *mediationDenial {
 	for _, exp := range req.GetExporters() {
 		if exp == nil {
 			continue
 		}
 		if !slices.Contains(solvePolicy.AllowedExporters, exp.GetType()) {
-			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", fmt.Sprintf("exporter type %q is not permitted", exp.GetType()))
+			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "exporter type is not permitted")
 		}
+		if exp.GetType() != "image" {
+			continue
+		}
+
 		attrs := exp.GetAttrs()
-		if exp.GetType() == "image" && attrs["push"] == "true" {
-			host, ok := registryHostFromImageRef(attrs["name"])
+		push := false
+		if raw, ok := attrs["push"]; ok {
+			parsed, err := strconv.ParseBool(raw)
+			if err != nil {
+				return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "exporter push value is not a supported boolean")
+			}
+			push = parsed
+		}
+		if !push {
+			continue
+		}
+
+		name := attrs["name"]
+		if name == "" {
+			return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "exporter push registry is not permitted")
+		}
+		for _, ref := range strings.Split(name, ",") {
+			host, ok := registryHostFromImageRef(ref)
 			if !ok || !slices.Contains(solvePolicy.AllowedExporterRegistries, host) {
 				return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "exporter push registry is not permitted")
 			}
@@ -335,10 +455,38 @@ func checkSolveExporters(req *control.SolveRequest, solvePolicy SolvePolicy) *me
 // registry allowlists elsewhere in the proxy, and no phase has added a
 // config surface to review/allow specific rewrite rules — matching the
 // "no enabling knob" posture registry.go's DeniedExamples uses for other
-// unaudited surfaces.
+// unaudited surfaces. SourcePolicySession (field 15) gets the identical
+// denial and rationale: it names a session that supplies source-policy
+// rules out of band instead of inline, which would otherwise bypass the
+// inline-rules check above entirely while achieving the exact same
+// image-reference rewriting.
 func checkSolveSourcePolicy(req *control.SolveRequest) *mediationDenial {
 	if req.GetSourcePolicy() != nil && len(req.GetSourcePolicy().GetRules()) > 0 {
 		return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "source policy rules are not supported")
+	}
+	if req.GetSourcePolicySession() != "" {
+		return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "source policy rules are not supported")
+	}
+	return nil
+}
+
+// checkSolveRemainingFields disposes of the SolveRequest fields no other
+// check function examines — see this file's header comment for the full
+// field-by-field audit. FrontendInputs (client-supplied LLB input graphs
+// substituted into the frontend's own inputs) and ProxyNetwork (opts the
+// build into buildkitd forwarding its own host proxy configuration —
+// potentially including credentials embedded in a proxy URL — into the
+// build) are both denied outright: neither has a reviewed config surface,
+// matching this file's "no enabling knob" posture for other unaudited
+// surfaces. Every other remaining field (CompatibilityVersion, Internal,
+// Session, Definition) needs no gate — see the header comment for why each
+// is safe to forward unexamined.
+func checkSolveRemainingFields(req *control.SolveRequest) *mediationDenial {
+	if len(req.GetFrontendInputs()) > 0 {
+		return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "frontend inputs are not supported")
+	}
+	if req.GetProxyNetwork() {
+		return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "proxy network is not supported")
 	}
 	return nil
 }

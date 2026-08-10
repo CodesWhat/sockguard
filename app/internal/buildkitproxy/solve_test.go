@@ -6,6 +6,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/codeswhat/sockguard/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/internal/buildkitproto/pb"
 	"github.com/codeswhat/sockguard/internal/buildkitproto/sourcepolicy"
 )
 
@@ -88,7 +89,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		},
 		{
 			name:       "network.host entitlement with allow_host_network",
-			payload:    mustMarshal(t, &control.SolveRequest{Entitlements: []string{"network.host"}}),
+			payload:    mustMarshal(t, &control.SolveRequest{Ref: "r", Entitlements: []string{"network.host"}}),
 			policy:     SolvePolicy{Allow: true, AllowHostNetwork: true},
 			wantDenied: false,
 		},
@@ -110,13 +111,13 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		},
 		{
 			name:       "empty frontend (raw LLB) is allowed",
-			payload:    mustMarshal(t, &control.SolveRequest{Frontend: ""}),
+			payload:    mustMarshal(t, &control.SolveRequest{Ref: "r", Frontend: ""}),
 			policy:     fullyAllowed,
 			wantDenied: false,
 		},
 		{
 			name:       "dockerfile.v0 frontend is allowed",
-			payload:    mustMarshal(t, &control.SolveRequest{Frontend: "dockerfile.v0"}),
+			payload:    mustMarshal(t, &control.SolveRequest{Ref: "r", Frontend: "dockerfile.v0"}),
 			policy:     fullyAllowed,
 			wantDenied: false,
 		},
@@ -134,6 +135,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "known build-arg: prefix family attr key",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:           "r",
 				Frontend:      "dockerfile.v0",
 				FrontendAttrs: map[string]string{"build-arg:FOO": "bar"},
 			}),
@@ -154,6 +156,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "remote build context with allow_remote_context",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:           "r",
 				Frontend:      "dockerfile.v0",
 				FrontendAttrs: map[string]string{"context": "https://example.com/repo.git"},
 			}),
@@ -163,6 +166,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "local build context needs no allow_remote_context",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:           "r",
 				Frontend:      "dockerfile.v0",
 				FrontendAttrs: map[string]string{"context": "."},
 			}),
@@ -183,6 +187,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "force-network-mode host with allow_host_network",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:           "r",
 				Frontend:      "dockerfile.v0",
 				FrontendAttrs: map[string]string{"force-network-mode": "host"},
 			}),
@@ -192,6 +197,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "force-network-mode non-host value needs no allowance",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:           "r",
 				Frontend:      "dockerfile.v0",
 				FrontendAttrs: map[string]string{"force-network-mode": "none"},
 			}),
@@ -247,6 +253,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "nil Cache is a no-op",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:   "r",
 				Cache: nil,
 			}),
 			policy:     fullyAllowed,
@@ -283,6 +290,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "cache import registry type on the registry allowlist",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
 				Cache: &control.CacheOptions{
 					Imports: []*control.CacheOptionsEntry{{Type: "registry", Attrs: map[string]string{"ref": "example.com/cache"}}},
 				},
@@ -297,6 +305,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "cache import non-registry type needs no registry allowance",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
 				Cache: &control.CacheOptions{
 					Imports: []*control.CacheOptionsEntry{{Type: "local"}},
 				},
@@ -319,6 +328,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "cache export registry type on the registry allowlist",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
 				Cache: &control.CacheOptions{
 					Exports: []*control.CacheOptionsEntry{{Type: "registry", Attrs: map[string]string{"ref": "example.com/cache"}}},
 				},
@@ -358,6 +368,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "image exporter push to an allowed registry",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
 				Exporters: []*control.Exporter{{
 					Type:  "image",
 					Attrs: map[string]string{"push": "true", "name": "example.com/img"},
@@ -373,6 +384,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "image exporter without push needs no registry allowance",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
 				Exporters: []*control.Exporter{{
 					Type:  "image",
 					Attrs: map[string]string{"push": "false", "name": "evil.example/img"},
@@ -402,6 +414,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 		{
 			name: "source policy with no rules is a no-op",
 			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:          "r",
 				SourcePolicy: &sourcepolicy.Policy{Version: 1},
 			}),
 			policy:     fullyAllowed,
@@ -411,6 +424,193 @@ func TestEvaluateSolveRequest(t *testing.T) {
 			name:       "fully permitted request admits and returns the decoded ref",
 			payload:    mustMarshal(t, &control.SolveRequest{Ref: "build-ref-1", Frontend: "dockerfile.v0"}),
 			policy:     fullyAllowed,
+			wantDenied: false,
+		},
+		{
+			name:       "empty ref is denied even when otherwise fully permitted",
+			payload:    mustMarshal(t, &control.SolveRequest{}),
+			policy:     fullyAllowed,
+			wantDenied: true,
+			wantReason: "buildkit_invalid_ref",
+			wantCode:   grpcCodeInvalidArgument,
+		},
+		{
+			name: "non-empty SourcePolicySession is always denied",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:                 "r",
+				SourcePolicySession: "some-session-id",
+			}),
+			policy:     fullyAllowed,
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
+			name: "non-empty FrontendInputs is always denied",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:            "r",
+				FrontendInputs: map[string]*pb.Definition{"context": nil},
+			}),
+			policy:     fullyAllowed,
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
+			name: "ProxyNetwork is always denied",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:          "r",
+				ProxyNetwork: true,
+			}),
+			policy:     fullyAllowed,
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
+			name: "CompatibilityVersion is forwarded unexamined",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:                  "r",
+				CompatibilityVersion: 3,
+			}),
+			policy:     fullyAllowed,
+			wantDenied: false,
+		},
+		{
+			name: "Internal is forwarded unexamined",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:      "r",
+				Internal: true,
+			}),
+			policy:     fullyAllowed,
+			wantDenied: false,
+		},
+		{
+			name: "Session is forwarded unexamined",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:     "r",
+				Session: "some-buildkit-session-uuid",
+			}),
+			policy:     fullyAllowed,
+			wantDenied: false,
+		},
+		{
+			name: "image exporter push=1 (ParseBool truthy) is gated exactly like push=true",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
+				Exporters: []*control.Exporter{{
+					Type:  "image",
+					Attrs: map[string]string{"push": "1", "name": "evil.example/img"},
+				}},
+			}),
+			policy: SolvePolicy{
+				Allow:                     true,
+				AllowedExporters:          []string{"image"},
+				AllowedExporterRegistries: []string{"example.com"},
+			},
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
+			name: "image exporter push=TRUE to an allowed registry is admitted",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
+				Exporters: []*control.Exporter{{
+					Type:  "image",
+					Attrs: map[string]string{"push": "TRUE", "name": "example.com/img"},
+				}},
+			}),
+			policy: SolvePolicy{
+				Allow:                     true,
+				AllowedExporters:          []string{"image"},
+				AllowedExporterRegistries: []string{"example.com"},
+			},
+			wantDenied: false,
+		},
+		{
+			name: "image exporter push value ParseBool cannot evaluate is denied",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
+				Exporters: []*control.Exporter{{
+					Type:  "image",
+					Attrs: map[string]string{"push": "sometimes", "name": "example.com/img"},
+				}},
+			}),
+			policy: SolvePolicy{
+				Allow:                     true,
+				AllowedExporters:          []string{"image"},
+				AllowedExporterRegistries: []string{"example.com"},
+			},
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
+			name: "image exporter push with comma-separated names all on the allowlist is admitted",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
+				Exporters: []*control.Exporter{{
+					Type:  "image",
+					Attrs: map[string]string{"push": "true", "name": "example.com/a,example.com/b"},
+				}},
+			}),
+			policy: SolvePolicy{
+				Allow:                     true,
+				AllowedExporters:          []string{"image"},
+				AllowedExporterRegistries: []string{"example.com"},
+			},
+			wantDenied: false,
+		},
+		{
+			name: "image exporter push with one of several comma-separated names off the allowlist is denied",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
+				Exporters: []*control.Exporter{{
+					Type:  "image",
+					Attrs: map[string]string{"push": "true", "name": "example.com/a,evil.example/b"},
+				}},
+			}),
+			policy: SolvePolicy{
+				Allow:                     true,
+				AllowedExporters:          []string{"image"},
+				AllowedExporterRegistries: []string{"example.com"},
+			},
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
+			name: "image exporter push=true with empty name is denied",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
+				Exporters: []*control.Exporter{{
+					Type:  "image",
+					Attrs: map[string]string{"push": "true"},
+				}},
+			}),
+			policy: SolvePolicy{
+				Allow:                     true,
+				AllowedExporters:          []string{"image"},
+				AllowedExporterRegistries: []string{"example.com"},
+			},
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
+			name: "non-image exporter type ignores push/name entirely",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref: "r",
+				Exporters: []*control.Exporter{{
+					Type:  "local",
+					Attrs: map[string]string{"push": "not-a-bool", "name": "evil.example/img"},
+				}},
+			}),
+			policy: SolvePolicy{
+				Allow:            true,
+				AllowedExporters: []string{"local"},
+			},
 			wantDenied: false,
 		},
 	}
@@ -528,9 +728,20 @@ func TestIsRemoteContextRef(t *testing.T) {
 		{"git@example.com:org/repo.git", true},
 		{"github.com/org/repo", true},
 		{"custom-scheme://thing", true},
+		// scp-like git remotes (no "://" at all) — the bypass CodeRabbit
+		// flagged: any "<user>@<host>:<path>" shape is a git remote to
+		// BuildKit's own gitutil/sshutil, not just a literal "git@" prefix.
+		{"bob@example.com:org/repo.git", true},
+		{"deploy-key@git.internal.example:team/app.git", true},
 		{".", false},
 		{"subdir", false},
 		{"", false},
+		// Looks superficially close to scp-like syntax but isn't: no colon
+		// (just a bare user@host, e.g. an email address) or no "@" at all
+		// must never match.
+		{"user@host", false},
+		{"path/with@in/it", false},
+		{"@no-user-before-at:path", false},
 	}
 	for _, tc := range cases {
 		if got := isRemoteContextRef(tc.value); got != tc.want {
