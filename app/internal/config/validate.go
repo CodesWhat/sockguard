@@ -1597,7 +1597,30 @@ func validateBuildkitConfig(prefix string, cfg BuildkitRequestBodyConfig) []stri
 	errs = append(errs, validateRegistryHostEntries(prefix, "buildkit.control.solve.allowed_cache_registries", cfg.Control.Solve.AllowedCacheRegistries)...)
 	errs = append(errs, validateBuildkitOpaqueEntries(prefix, "buildkit.control.solve.allowed_exporters", cfg.Control.Solve.AllowedExporters)...)
 	errs = append(errs, validateRegistryHostEntries(prefix, "buildkit.control.solve.allowed_exporter_registries", cfg.Control.Solve.AllowedExporterRegistries)...)
+
+	// Phase 5 (issue #185) cap overrides: zero means "use buildkitproxy.
+	// Limits' hardcoded default" (see BuildkitFileSyncRequestBodyConfig's
+	// doc comment), so zero is valid — only negative is operator error.
+	errs = append(errs, validateBuildkitNonNegative(prefix, "buildkit.session.file_sync.max_files", int64(cfg.Session.FileSync.MaxFiles))...)
+	errs = append(errs, validateBuildkitNonNegative(prefix, "buildkit.session.file_sync.max_total_bytes", cfg.Session.FileSync.MaxTotalBytes)...)
+	errs = append(errs, validateBuildkitNonNegative(prefix, "buildkit.session.file_sync.max_path_length", int64(cfg.Session.FileSync.MaxPathLength))...)
+	errs = append(errs, validateBuildkitNonNegative(prefix, "buildkit.session.file_sync.max_file_bytes", cfg.Session.FileSync.MaxFileBytes)...)
+	errs = append(errs, validateBuildkitNonNegative(prefix, "buildkit.session.file_send.max_bytes", cfg.Session.FileSend.MaxBytes)...)
+	errs = append(errs, validateBuildkitNonNegative(prefix, "buildkit.session.upload.max_bytes", cfg.Session.Upload.MaxBytes)...)
 	return errs
+}
+
+// validateBuildkitNonNegative rejects a negative Phase 5 cap-override value.
+// Zero is always valid (it means "inherit buildkitproxy.Limits' hardcoded
+// default" — see BuildkitFileSyncRequestBodyConfig's doc comment), so this
+// intentionally does not use the strictly-positive ">0" convention
+// validateClientsGlobalConcurrency/validateAdminConfig use for fields with no
+// such zero-means-default sentinel.
+func validateBuildkitNonNegative(prefix, field string, value int64) []string {
+	if value < 0 {
+		return []string{fmt.Sprintf("%s.%s must be >= 0, got %d", prefix, field, value)}
+	}
+	return nil
 }
 
 // validateBuildkitOpaqueEntries flags any entry that is empty or carries

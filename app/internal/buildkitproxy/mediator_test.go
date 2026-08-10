@@ -453,3 +453,104 @@ func TestCloseConnLoggedLogsCloseError(t *testing.T) {
 		t.Fatalf("log output = %q, want it to contain the connection label", logBuf.String())
 	}
 }
+
+func TestEffectiveLimitsOverridesEachFieldIndependently(t *testing.T) {
+	base := DefaultLimits()
+
+	cases := []struct {
+		name   string
+		policy Policy
+		check  func(t *testing.T, out Limits)
+	}{
+		{
+			name:   "FileSync.MaxFiles overrides MaxFileSyncFiles",
+			policy: Policy{Session: SessionPolicy{FileSync: FileSyncPolicy{MaxFiles: 7}}},
+			check: func(t *testing.T, out Limits) {
+				if out.MaxFileSyncFiles != 7 {
+					t.Errorf("MaxFileSyncFiles = %d, want 7", out.MaxFileSyncFiles)
+				}
+			},
+		},
+		{
+			name:   "FileSync.MaxTotalBytes overrides MaxFileSyncTotalBytes",
+			policy: Policy{Session: SessionPolicy{FileSync: FileSyncPolicy{MaxTotalBytes: 1234}}},
+			check: func(t *testing.T, out Limits) {
+				if out.MaxFileSyncTotalBytes != 1234 {
+					t.Errorf("MaxFileSyncTotalBytes = %d, want 1234", out.MaxFileSyncTotalBytes)
+				}
+			},
+		},
+		{
+			name:   "FileSync.MaxPathLength overrides MaxFileSyncPathLength",
+			policy: Policy{Session: SessionPolicy{FileSync: FileSyncPolicy{MaxPathLength: 99}}},
+			check: func(t *testing.T, out Limits) {
+				if out.MaxFileSyncPathLength != 99 {
+					t.Errorf("MaxFileSyncPathLength = %d, want 99", out.MaxFileSyncPathLength)
+				}
+			},
+		},
+		{
+			name:   "FileSync.MaxFileBytes overrides MaxFileSyncFileBytes",
+			policy: Policy{Session: SessionPolicy{FileSync: FileSyncPolicy{MaxFileBytes: 555}}},
+			check: func(t *testing.T, out Limits) {
+				if out.MaxFileSyncFileBytes != 555 {
+					t.Errorf("MaxFileSyncFileBytes = %d, want 555", out.MaxFileSyncFileBytes)
+				}
+			},
+		},
+		{
+			name:   "FileSend.MaxBytes overrides MaxFileSendBytes",
+			policy: Policy{Session: SessionPolicy{FileSend: FileSendPolicy{MaxBytes: 2048}}},
+			check: func(t *testing.T, out Limits) {
+				if out.MaxFileSendBytes != 2048 {
+					t.Errorf("MaxFileSendBytes = %d, want 2048", out.MaxFileSendBytes)
+				}
+			},
+		},
+		{
+			name:   "Upload.MaxBytes overrides MaxUploadBytes",
+			policy: Policy{Session: SessionPolicy{Upload: UploadPolicy{MaxBytes: 4096}}},
+			check: func(t *testing.T, out Limits) {
+				if out.MaxUploadBytes != 4096 {
+					t.Errorf("MaxUploadBytes = %d, want 4096", out.MaxUploadBytes)
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := effectiveLimits(base, tc.policy)
+			tc.check(t, out)
+		})
+	}
+}
+
+func TestEffectiveLimitsZeroPolicyValuesLeaveBaseUntouched(t *testing.T) {
+	base := DefaultLimits()
+	out := effectiveLimits(base, Policy{})
+	if out != base {
+		t.Fatalf("effectiveLimits(base, Policy{}) = %+v, want it to equal base %+v unchanged when every per-profile cap is zero", out, base)
+	}
+}
+
+func TestEffectiveLimitsLeavesEveryOtherFieldAtBase(t *testing.T) {
+	base := DefaultLimits()
+	base.MaxConcurrentStreams = 42
+	base.MaxMessageBytes = 123
+	base.DeniedStreamBudget = 9
+	base.MaxRefsPerSession = 3
+	base.MaxUploadKeysPerSession = 8
+
+	policy := Policy{Session: SessionPolicy{
+		FileSync: FileSyncPolicy{MaxFiles: 1, MaxTotalBytes: 1, MaxPathLength: 1, MaxFileBytes: 1},
+		FileSend: FileSendPolicy{MaxBytes: 1},
+		Upload:   UploadPolicy{MaxBytes: 1},
+	}}
+	out := effectiveLimits(base, policy)
+
+	if out.MaxConcurrentStreams != 42 || out.MaxMessageBytes != 123 || out.DeniedStreamBudget != 9 ||
+		out.MaxRefsPerSession != 3 || out.MaxUploadKeysPerSession != 8 {
+		t.Fatalf("effectiveLimits changed a Phase 2 field it has no business touching: %+v", out)
+	}
+}

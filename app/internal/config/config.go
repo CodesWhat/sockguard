@@ -1058,21 +1058,52 @@ type BuildkitSSHRequestBodyConfig struct {
 }
 
 // BuildkitFileSyncRequestBodyConfig gates moby.filesync.v1.FileSync/DiffCopy.
-// Path/file/byte caps and the Dockerfile hold-and-inspect behavior the #185
-// synthesis describes are phase 5 runtime concerns; phase 1 only ships the
-// Allow gate itself.
+// The Dockerfile hold-and-inspect behavior the #185 synthesis describes
+// reuses request_body.build's allow_run_instructions (threaded through by
+// BuildkitRequestBodyConfig.ToPolicy into buildkitproxy.SolvePolicy, the
+// same way request_body.build's allow_host_network/allow_remote_context are
+// reused for Solve — see BuildkitSolveRequestBodyConfig's doc comment); this
+// block has no allow_run_instructions field of its own for the identical
+// "don't let an operator widen one path and forget the other" reason. The
+// four caps below are Phase 5's own per-profile override of
+// buildkitproxy.Limits' hardcoded FileSync ceilings — zero (unset) leaves
+// the hardcoded default in place; see buildkitproxy.FileSyncPolicy's doc
+// comment for that zero-means-default convention.
 type BuildkitFileSyncRequestBodyConfig struct {
 	Allow bool `mapstructure:"allow"`
+	// MaxFiles caps the number of files/dirs a single FileSync/DiffCopy
+	// stream may declare. Zero uses buildkitproxy.Limits.MaxFileSyncFiles.
+	MaxFiles int `mapstructure:"max_files"`
+	// MaxTotalBytes caps the cumulative bytes relayed across an entire
+	// FileSync/DiffCopy stream. Zero uses
+	// buildkitproxy.Limits.MaxFileSyncTotalBytes.
+	MaxTotalBytes int64 `mapstructure:"max_total_bytes"`
+	// MaxPathLength caps the byte length of any single file path or symlink
+	// target. Zero uses buildkitproxy.Limits.MaxFileSyncPathLength.
+	MaxPathLength int `mapstructure:"max_path_length"`
+	// MaxFileBytes caps the bytes belonging to any ONE file within a
+	// FileSync/DiffCopy stream, including the Dockerfile hold-and-inspect
+	// buffer. Zero uses buildkitproxy.Limits.MaxFileSyncFileBytes.
+	MaxFileBytes int64 `mapstructure:"max_file_bytes"`
 }
 
 // BuildkitFileSendRequestBodyConfig gates moby.filesync.v1.FileSend/DiffCopy.
+// FileSend content is never inspected — only capped; see
+// buildkitproxy.rawByteCapValidator's doc comment for why.
 type BuildkitFileSendRequestBodyConfig struct {
 	Allow bool `mapstructure:"allow"`
+	// MaxBytes caps the cumulative bytes relayed for a single FileSend/
+	// DiffCopy stream. Zero uses buildkitproxy.Limits.MaxFileSendBytes.
+	MaxBytes int64 `mapstructure:"max_bytes"`
 }
 
-// BuildkitUploadRequestBodyConfig gates moby.upload.v1.Upload/Pull.
+// BuildkitUploadRequestBodyConfig gates moby.upload.v1.Upload/Pull. Upload
+// content is never inspected — only capped.
 type BuildkitUploadRequestBodyConfig struct {
 	Allow bool `mapstructure:"allow"`
+	// MaxBytes caps the cumulative bytes relayed for a single Upload/Pull
+	// stream. Zero uses buildkitproxy.Limits.MaxUploadBytes.
+	MaxBytes int64 `mapstructure:"max_bytes"`
 }
 
 // ClientsConfig configures coarse per-client access controls.

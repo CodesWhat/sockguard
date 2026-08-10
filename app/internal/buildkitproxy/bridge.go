@@ -227,10 +227,16 @@ func (b *bridge) handleStream(w http.ResponseWriter, r *http.Request) {
 			// Phase 4: Auth/Secrets/SSH get their own per-message decode/
 			// policy mediation instead of the plain byte-verbatim relay below
 			// — forwardSessionMediated audits its own outcome, so it is NOT
-			// also audited generically here. FileSync/FileSend/Upload are NOT
-			// in isSessionMediatedMethod's true set (Phase 5's scope) and
-			// fall through to the plain forward exactly as before.
+			// also audited generically here.
 			b.forwardSessionMediated(w, r, service, method)
+			return
+		}
+		if isStreamMediatedMethod(b.legs.endpoint, service, method) {
+			// Phase 5: FileSync/FileSend/Upload get per-message streaming
+			// decode/policy mediation instead of Phase 2's byte-verbatim
+			// relay -- forwardStreamMediated (streammediation.go) audits its
+			// own outcome, same convention as forwardControlMediated above.
+			b.forwardStreamMediated(w, r, service, method)
 			return
 		}
 		b.audit(service, method, disposition, "")
@@ -294,7 +300,11 @@ func (b *bridge) forwardWithBody(w http.ResponseWriter, r *http.Request, service
 		ContentLength: -1,
 	}
 
-	resp, err := b.clientLeg.RoundTrip(outReq)
+	// Carry the inbound stream's context onto the outgoing leg so a client
+	// disconnect cancels the daemon-side RoundTrip too, the way
+	// httputil.ReverseProxy propagates its inbound request context — a
+	// struct-literal http.Request otherwise defaults to context.Background().
+	resp, err := b.clientLeg.RoundTrip(outReq.WithContext(r.Context()))
 	if err != nil {
 		if errors.Is(err, errMessageTooLarge) {
 			writeGRPCStatus(w, grpcCodeResourceExhausted, "request message exceeds sockguard's size cap")
@@ -382,15 +392,15 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 	}
 
 	var (
-		d   *mediationDenial
-		ref string
+		d        *mediationDenial
+		ref      string
+		solveReq *control.SolveRequest
 	)
 	switch method {
 	case "Solve":
-		var req *control.SolveRequest
-		req, d = evaluateSolveRequest(payload, b.policy)
-		if req != nil {
-			ref = req.GetRef()
+		solveReq, d = evaluateSolveRequest(payload, b.policy)
+		if solveReq != nil {
+			ref = solveReq.GetRef()
 		}
 	case "Status":
 		var req *control.StatusRequest
@@ -419,6 +429,18 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 		if !b.registry.PutRef(b.session, ref, b.limits.MaxRefsPerSession) {
 			writeGRPCStatus(w, grpcCodeResourceExhausted, "too many concurrent BuildKit solve refs admitted for this client")
 			b.audit(service, method, Deny, "buildkit_ref_limit_exceeded")
+			b.recordDeniedAndMaybeClose()
+			return
+		}
+		// Phase 5 (issue #185): admit any upload-session URL this Solve's
+		// FrontendAttrs names as a one-use Upload/Pull token for this
+		// SessionKey -- see upload.go's admitSolveUploadKeys doc comment. A
+		// Solve naming more upload-session contexts than MaxUploadKeysPerSession
+		// is denied whole (deterministically) rather than forwarded with a
+		// random subset of its uploads admitted.
+		if !admitSolveUploadKeys(b.registry, b.session.Key, solveReq, b.limits.MaxUploadKeysPerSession) {
+			writeGRPCStatus(w, grpcCodeResourceExhausted, "too many BuildKit upload-session contexts named by this Solve for this client")
+			b.audit(service, method, Deny, "buildkit_upload_key_limit_exceeded")
 			b.recordDeniedAndMaybeClose()
 			return
 		}

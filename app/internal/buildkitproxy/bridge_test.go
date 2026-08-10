@@ -202,38 +202,48 @@ func TestBridgeDeniesWhenPolicyDoesNotAllowMediateMethod(t *testing.T) {
 }
 
 // TestBridgeForwardsAdmittedMethodVerbatim exercises the plain byte-verbatim
-// forward() path Phase 2 shipped, which Phase 3 leaves unchanged for every
-// Mediate method EXCEPT moby.buildkit.v1.Control's Solve/Status (those two
-// now route through forwardControlMediated — see
-// TestBridgeControlMediatedSolve* below for their own coverage) and, since
-// Phase 4, EXCEPT Auth/Secrets/SSH (isSessionMediatedMethod — see
-// bridge_sessionmediated_test.go for their coverage). Uses EndpointSession's
-// FileSync/DiffCopy, a Mediate method still deferred to Phase 5, specifically
-// so this test can send an arbitrary, non-gRPC-framed payload and still
-// assert byte-for-byte forwarding.
+// forward() path Phase 2 shipped. As of Phase 5 every Mediate method routes
+// through its own per-message forwarder (forwardControlMediated,
+// forwardSessionMediated, forwardStreamMediated — each with its own test
+// file), so the only traffic left on the plain forward is Passthrough
+// methods. Uses grpc.health.v1.Health/Check, a Passthrough method whose
+// bytes are never decoded, specifically so these cases can send an arbitrary,
+// non-gRPC-framed payload and still assert byte-for-byte forwarding.
 func TestBridgeForwardsAdmittedMethodVerbatim(t *testing.T) {
-	tb := newTestBridge(t, EndpointSession, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
+	cases := []struct {
+		name     string
+		endpoint Endpoint
+		path     string
+		payload  string
+	}{
+		{"health check", EndpointGRPC, "/grpc.health.v1.Health/Check", "this-is-the-exact-request-body-bytes"},
+		{"health watch", EndpointGRPC, "/grpc.health.v1.Health/Watch", "\x00\x01\x02not-grpc-framed\xff"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tb := newTestBridge(t, tc.endpoint, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
 
-	const payload = "this-is-the-exact-request-body-bytes"
-	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.filesync.v1.FileSync/DiffCopy", payload))
-	if err != nil {
-		t.Fatalf("RoundTrip: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", resp.StatusCode)
-	}
-	if got := resp.Header.Get("X-Daemon-Saw-Path"); got != "/moby.filesync.v1.FileSync/DiffCopy" {
-		t.Fatalf("daemon saw path %q, want /moby.filesync.v1.FileSync/DiffCopy", got)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("reading response body: %v", err)
-	}
-	if string(body) != payload {
-		t.Fatalf("response body = %q, want the daemon's exact echo %q (no re-encoding on the forward path)", body, payload)
-	}
-	if got := resp.Trailer.Get("Grpc-Status"); got != "0" {
-		t.Fatalf("Grpc-Status trailer = %q, want %q (the daemon's own trailer must pass through unmodified)", got, "0")
+			resp, err := tb.driver.RoundTrip(newGRPCRequest(t, tc.path, tc.payload))
+			if err != nil {
+				t.Fatalf("RoundTrip: %v", err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			if got := resp.Header.Get("X-Daemon-Saw-Path"); got != tc.path {
+				t.Fatalf("daemon saw path %q, want %q", got, tc.path)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("reading response body: %v", err)
+			}
+			if string(body) != tc.payload {
+				t.Fatalf("response body = %q, want the daemon's exact echo %q (no re-encoding on the forward path)", body, tc.payload)
+			}
+			if got := resp.Trailer.Get("Grpc-Status"); got != "0" {
+				t.Fatalf("Grpc-Status trailer = %q, want %q (the daemon's own trailer must pass through unmodified)", got, "0")
+			}
+		})
 	}
 }
 

@@ -6,8 +6,8 @@
 // buffer/decode/policy-check, then on admission forward the client's
 // ORIGINAL frame bytes verbatim, never re-encoded — calling into
 // session_mediation.go's pure evaluate* functions for the actual decisions.
-// FileSync/FileSend/Upload are Phase 5's scope and are NOT touched here;
-// they stay on bridge.go's plain byte-verbatim forward.
+// FileSync/FileSend/Upload are handled separately in streammediation.go
+// (isStreamMediatedMethod/forwardStreamMediated), not here.
 package buildkitproxy
 
 import (
@@ -23,9 +23,8 @@ import (
 
 // isSessionMediatedMethod reports whether service/method on endpoint is one
 // of Phase 4's per-message-mediated EndpointSession RPCs. FileSync/FileSend/
-// Upload deliberately stay OUT of this function's true set — Phase 5's
-// scope — so handleStream keeps routing them through the plain forward()
-// path unchanged.
+// Upload stay OUT of this function's true set — they are Phase 5's scope and
+// route through isStreamMediatedMethod/forwardStreamMediated instead.
 func isSessionMediatedMethod(endpoint Endpoint, service, method string) bool {
 	if endpoint != EndpointSession {
 		return false

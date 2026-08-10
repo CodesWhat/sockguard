@@ -44,6 +44,7 @@ func (c BuildkitSolveRequestBodyConfig) toPolicy(build BuildRequestBodyConfig) b
 		Allow:                     c.Allow,
 		AllowHostNetwork:          build.AllowHostNetwork,
 		AllowRemoteContext:        build.AllowRemoteContext,
+		AllowRunInstructions:      build.AllowRunInstructions,
 		AllowedCacheImportTypes:   c.AllowedCacheImportTypes,
 		AllowedCacheExportTypes:   c.AllowedCacheExportTypes,
 		AllowedCacheRegistries:    normalizeRegistryHostList(c.AllowedCacheRegistries),
@@ -99,8 +100,14 @@ func (c BuildkitSessionRequestBodyConfig) toPolicy() buildkitproxy.SessionPolicy
 			Allow:      c.SSH.Allow,
 			AllowedIDs: c.SSH.AllowedIDs,
 		},
-		FileSync: buildkitproxy.FileSyncPolicy{Allow: c.FileSync.Allow},
-		FileSend: buildkitproxy.FileSendPolicy{Allow: c.FileSend.Allow},
-		Upload:   buildkitproxy.UploadPolicy{Allow: c.Upload.Allow},
+		FileSync: buildkitproxy.FileSyncPolicy{
+			Allow:         c.FileSync.Allow,
+			MaxFiles:      c.FileSync.MaxFiles,
+			MaxTotalBytes: c.FileSync.MaxTotalBytes,
+			MaxPathLength: c.FileSync.MaxPathLength,
+			MaxFileBytes:  c.FileSync.MaxFileBytes,
+		},
+		FileSend: buildkitproxy.FileSendPolicy{Allow: c.FileSend.Allow, MaxBytes: c.FileSend.MaxBytes},
+		Upload:   buildkitproxy.UploadPolicy{Allow: c.Upload.Allow, MaxBytes: c.Upload.MaxBytes},
 	}
 }

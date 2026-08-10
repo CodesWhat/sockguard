@@ -12,6 +12,8 @@ import (
 	"os"
 	"path"
 	"strings"
+
+	"github.com/codeswhat/sockguard/internal/dockerfileinspect"
 )
 
 const maxBuildContextBytes = 512 << 20           // 512 MiB (compressed/on-wire cap)
@@ -314,33 +316,13 @@ func (l *limitedReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// dockerfileSyntaxFrontend returns the value of a BuildKit `# syntax=` parser
-// directive when one is in force, else "". Directives are only honored by
-// Docker at the very top of the file — the first blank line, regular comment,
-// instruction, or unrecognized directive ends the directive block — so this
-// mirrors that to avoid both bypasses and false positives on later comments.
+// dockerfileSyntaxFrontend delegates to internal/dockerfileinspect.
+// SyntaxFrontend — see that package's doc comment for why the actual parser
+// lives there rather than here: BuildKit gRPC mediation's Dockerfile
+// hold-and-inspect (issue #185 phase 5) needs the identical logic and this
+// package must not be imported the other way around.
 func dockerfileSyntaxFrontend(raw []byte) string {
-	for _, line := range strings.Split(string(raw), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "#") {
-			return "" // blank line or instruction ends the directive block
-		}
-		key, value, ok := strings.Cut(strings.TrimSpace(strings.TrimPrefix(trimmed, "#")), "=")
-		if !ok {
-			return "" // a plain comment (no '=') ends the directive block
-		}
-		switch strings.ToLower(strings.TrimSpace(key)) {
-		case "syntax":
-			if v := strings.TrimSpace(value); v != "" {
-				return v
-			}
-		case "escape":
-			// recognized directive; keep scanning the leading block
-		default:
-			return "" // unknown directive → treated as a comment, ends the block
-		}
-	}
-	return ""
+	return dockerfileinspect.SyntaxFrontend(raw)
 }
 
 func (io_ ioDeps) extractDockerfileFromTar(file *os.File, dockerfilePath string) ([]byte, bool, error) {
@@ -403,54 +385,13 @@ func looksLikeDockerfile(raw []byte, contentType string) bool {
 	return false
 }
 
+// dockerfileContainsRunInstruction and dockerfileInstruction delegate to
+// internal/dockerfileinspect — see dockerfileSyntaxFrontend's comment above
+// for why.
 func dockerfileContainsRunInstruction(raw []byte) bool {
-	lines := strings.Split(string(raw), "\n")
-	var logical string
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if logical == "" && strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-
-		if logical == "" {
-			logical = trimmed
-		} else {
-			logical = logical + " " + trimmed
-		}
-
-		if strings.HasSuffix(logical, "\\") {
-			logical = strings.TrimSpace(strings.TrimSuffix(logical, "\\"))
-			continue
-		}
-
-		instruction := dockerfileInstruction(logical)
-		if instruction == "RUN" || instruction == "ONBUILD RUN" {
-			return true
-		}
-		logical = ""
-	}
-
-	if logical == "" {
-		return false
-	}
-	instruction := dockerfileInstruction(logical)
-	return instruction == "RUN" || instruction == "ONBUILD RUN"
+	return dockerfileinspect.ContainsRunInstruction(raw)
 }
 
 func dockerfileInstruction(line string) string {
-	trimmed := strings.TrimSpace(line)
-	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-		return ""
-	}
-
-	fields := strings.Fields(trimmed)
-	first := strings.ToUpper(fields[0])
-	if first != "ONBUILD" || len(fields) < 2 {
-		return first
-	}
-	return first + " " + strings.ToUpper(fields[1])
+	return dockerfileinspect.Instruction(line)
 }

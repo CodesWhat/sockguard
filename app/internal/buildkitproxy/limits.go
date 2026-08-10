@@ -99,6 +99,59 @@ type Limits struct {
 	// relative to that while still bounding the worst case. Zero or negative
 	// disables the bound — DefaultLimits never does this.
 	MaxCredentialCallsPerSession int
+
+	// --- Phase 5 (issue #185): FileSync/FileSend/Upload resource caps ---
+	//
+	// Unlike the DoS-budget fields above, these six DO have operator-facing
+	// config knobs (request_body.buildkit.session.{file_sync,file_send,
+	// upload}) — the #185 phase 5 synthesis explicitly calls for them,
+	// departing from Phase 2's "no new knobs" posture for this specific
+	// surface. Because Policy (not Limits) is what varies per client
+	// profile, and Mediator.Limits is one value shared by every profile
+	// (see mediator.go's Mediator doc comment), a configured, positive
+	// per-profile value from Policy.Session.{FileSync,FileSend,Upload}
+	// overrides the corresponding field below for that one session —
+	// see mediator.go's effectiveLimits. The values here are therefore
+	// both "the hardcoded default when a profile leaves the knob at zero"
+	// AND (for a deployment with no request_body.buildkit.session cap
+	// configured anywhere) the actual enforced ceiling.
+
+	// MaxFileSyncFiles caps the number of PACKET_STAT entries (files/dirs)
+	// a single FileSync/DiffCopy stream may declare before sockguard denies
+	// the stream with buildkit_file_limit_exceeded.
+	MaxFileSyncFiles int
+	// MaxFileSyncTotalBytes caps the cumulative PACKET_DATA bytes relayed
+	// across an entire FileSync/DiffCopy stream (every file combined).
+	MaxFileSyncTotalBytes int64
+	// MaxFileSyncPathLength caps the byte length of any single Stat.Path or
+	// Stat.Linkname value — independent of MaxFileSyncFiles/
+	// MaxFileSyncTotalBytes, since a single pathologically long path is a
+	// distinct resource-exhaustion/parsing-cost concern from file count or
+	// data volume.
+	MaxFileSyncPathLength int
+	// MaxFileSyncFileBytes caps the PACKET_DATA bytes belonging to any ONE
+	// file within a FileSync/DiffCopy stream — including the Dockerfile
+	// hold-and-inspect buffer (see filesync.go), which must itself stay
+	// bounded rather than accumulate an arbitrarily large in-memory buffer
+	// before sockguard ever gets to render a policy decision on it.
+	MaxFileSyncFileBytes int64
+	// MaxFileSendBytes caps the cumulative bytes relayed for a single
+	// FileSend/DiffCopy stream (a build's exported output, daemon→client).
+	// FileSend content is never inspected — only capped.
+	MaxFileSendBytes int64
+	// MaxUploadBytes caps the cumulative bytes relayed for a single
+	// Upload/Pull stream (a client-streamed stdin/remote build context).
+	// Upload content is never inspected — only capped.
+	MaxUploadBytes int64
+	// MaxUploadKeysPerSession bounds how many distinct one-use Upload
+	// tokens a single SessionKey (client identity + profile) may have
+	// admitted-but-not-yet-consumed at once (see upload.go's
+	// admitSolveUploadKeys) — the same per-session DoS-budget shape as
+	// MaxRefsPerSession, and deliberately NOT a request_body.buildkit knob
+	// for the same reason MaxRefsPerSession isn't: it bounds sockguard's
+	// own bookkeeping cost, not a build capability an operator would ever
+	// want to widen. Zero or negative disables the bound.
+	MaxUploadKeysPerSession int
 }
 
 // DefaultLimits returns sockguard's Phase 2 DoS budget. See Limits' doc
@@ -114,6 +167,19 @@ func DefaultLimits() Limits {
 		MaxRefsPerSession:    256,
 
 		MaxCredentialCallsPerSession: 512,
+
+		// See the Phase 5 field doc comments above for what each bounds.
+		// 512 MiB matches internal/filter/build.go's maxBuildContextBytes
+		// convention for the classic /build path's own context-size cap —
+		// there is no reason a BuildKit-mediated context should be allowed
+		// a materially different ceiling than the classic one.
+		MaxFileSyncFiles:        100_000,
+		MaxFileSyncTotalBytes:   512 << 20,
+		MaxFileSyncPathLength:   4096,
+		MaxFileSyncFileBytes:    256 << 20,
+		MaxFileSendBytes:        512 << 20,
+		MaxUploadBytes:          512 << 20,
+		MaxUploadKeysPerSession: 64,
 	}
 }
 
