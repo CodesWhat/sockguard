@@ -104,12 +104,19 @@ jobs:
           #     100ms earlier, because the rebind came after that check.
           #
           # So nothing here asserts anything about the path in isolation,
-          # and reaching the socket ONCE is explicitly not enough. Both
-          # helpers are non-fatal: under `bash -e` a single ENOENT from a
-          # chmod racing a rebind would otherwise kill the step outright.
+          # and reaching the socket ONCE is explicitly not enough. Every
+          # command here is non-fatal: under `bash -e` a single ENOENT from
+          # one racing a rebind would otherwise kill the step outright.
+          #
+          # Group ownership rather than world access. This is a ROOTFUL
+          # podman API: anything that can talk to it has host-root-
+          # equivalent control, so it goes to the runner's primary group,
+          # not 0666. Short-lived single-purpose VM or not, this repo exists
+          # to stop exactly this kind of socket being handed out too widely.
           widen() {
-            sudo chmod 755 /run/podman 2>/dev/null || true
-            sudo chmod 666 /run/podman/podman.sock 2>/dev/null || true
+            sudo chgrp "$(id -g)" /run/podman /run/podman/podman.sock 2>/dev/null || true
+            sudo chmod 750 /run/podman 2>/dev/null || true
+            sudo chmod 660 /run/podman/podman.sock 2>/dev/null || true
           }
           # Deliberately unprivileged: this is the exact access the test
           # binary needs, so it fails here rather than inside the suite.
@@ -190,8 +197,9 @@ jobs:
       # failures that read like a proxy bug rather than a setup problem.
       - name: Verify socket is reachable unprivileged
         run: |
-          sudo chmod 755 /run/podman 2>/dev/null || true
-          sudo chmod 666 /run/podman/podman.sock 2>/dev/null || true
+          sudo chgrp "$(id -g)" /run/podman /run/podman/podman.sock 2>/dev/null || true
+          sudo chmod 750 /run/podman 2>/dev/null || true
+          sudo chmod 660 /run/podman/podman.sock 2>/dev/null || true
           if ! curl --fail --silent --show-error --max-time 5 --unix-socket /run/podman/podman.sock http://d/libpod/_ping >/dev/null; then
             echo "socket not reachable as $(whoami) immediately before the suite" >&2
             sudo ls -la /run/podman >&2 || true
