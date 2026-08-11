@@ -72,7 +72,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.6.0 is the latest stable release.** It delivers multiple independently scoped main listeners, fail-closed declarative admission mutations, effective-state resource-limit guarantees for container updates and Swarm services, Engine API 1.55 validation with a fail-closed Compose/BuildKit transport model, first-class Podman support across the Docker-compatible and native `/libpod` API surfaces, and the published tri-tool conformance matrix that now gates GA promotion. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v1.7.0 is the latest stable release.** It delivers full BuildKit gRPC mediation — terminating the hijacked session/gRPC tunnel and applying per-message policy to `Control/Solve`/`Control/Status`, credential forwarding (Auth/Secrets/SSH), and file-sync/upload streams, replacing the opaque-tunnel acknowledgment with real enforcement — plus per-field `request_body.network.endpoint_config` gates for static addressing, link-local IPs, MAC pinning, and gateway priority. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
