@@ -115,7 +115,7 @@ We use plain **Conventional Commits** — no emoji:
 | `chore` | Tooling, config, misc |
 | `revert` | Revert a previous commit |
 
-Scope is optional. Subject line should be imperative, lowercase, no trailing period. Add `!` before the colon for a breaking change (`feat(api)!: drop v1 tokens`), or add a `BREAKING CHANGE:` footer.
+Scope is optional. Subject line should be imperative, lowercase, no trailing period. Add `!` before the colon for a breaking change (`feat(api)!: drop v1 tokens`), or add a `BREAKING CHANGE:` footer. Git-generated subjects are exempt from validation: merge commits, `Revert "..."` commits, and `fixup!`/`squash!` autosquash commits.
 
 ```text
 feat(filter): add request body inspection

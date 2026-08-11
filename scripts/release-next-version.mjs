@@ -22,10 +22,12 @@ const PATCH_TYPES = new Set([
   'revert',
 ]);
 
-// The leading `(?:\S+\s+)?` also swallows a legacy leading emoji (e.g.
-// "🐛 fix: ...") so old, already-tagged commits still parse correctly.
+// The optional prefix swallows a legacy leading gitmoji (e.g. "🐛 fix: ...")
+// so old, already-tagged commits still parse — but only emoji, so arbitrary
+// prefixes like "wip fix: ..." don't count toward a release level. The class
+// covers pictographics plus variation selectors/ZWJ for composed emoji.
 const conventionalSubjectRegex =
-  /^(?:\S+\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
+  /^(?:[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{FE0F}\u{200D}]+\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
 
 function commitReleaseLevel(commit) {
   const message = String(commit ?? '').trim();

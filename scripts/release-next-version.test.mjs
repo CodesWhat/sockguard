@@ -136,6 +136,21 @@ describe('inferReleaseLevel', () => {
     assert.equal(inferReleaseLevel(['feat: no emoji']), 'minor');
   });
 
+  it('ignores arbitrary word prefixes before a conventional type', () => {
+    assert.equal(inferReleaseLevel(['wip feat: change policy']), null);
+  });
+
+  it('ignores word-prefixed subjects while still counting real commits', () => {
+    assert.equal(
+      inferReleaseLevel(['wip feat: change policy', '🐛 fix: actual fix']),
+      'patch',
+    );
+  });
+
+  it('accepts composed legacy emoji prefixes (variation selector)', () => {
+    assert.equal(inferReleaseLevel(['⬆️ deps: bump base image']), 'patch');
+  });
+
   it('handles scope in parentheses', () => {
     assert.equal(inferReleaseLevel(['✨ feat(core): scoped']), 'minor');
   });

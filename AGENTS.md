@@ -99,7 +99,7 @@ Plain Conventional Commits, no emoji: `<type>(<scope>): <description>`
 | `style` | UI/cosmetic changes |
 | `revert` | Revert a previous commit |
 
-Add `!` before the colon for a breaking change (`feat(api)!: drop v1 tokens`), or add a `BREAKING CHANGE:` footer. Allowed types are exactly the ones above — nothing else.
+Add `!` before the colon for a breaking change (`feat(api)!: drop v1 tokens`), or add a `BREAKING CHANGE:` footer. Allowed types are exactly the ones above — nothing else. Git-generated subjects are exempt from validation: merge commits, `Revert "..."` commits, and `fixup!`/`squash!` autosquash commits.
 
 ## Pre-push Checks (Lefthook)
 
