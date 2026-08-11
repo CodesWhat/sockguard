@@ -2,6 +2,11 @@
 
 import { execFileSync } from 'node:child_process';
 
+// Includes the current Conventional Commits type list (build, ci added
+// alongside the retired custom types they replace) plus legacy custom
+// types (security, deps) that only appear in old, already-tagged history.
+// Keep the legacy types here so old releases still parse correctly —
+// see the migration note in CHANGELOG.md.
 const PATCH_TYPES = new Set([
   'fix',
   'docs',
@@ -9,14 +14,18 @@ const PATCH_TYPES = new Set([
   'refactor',
   'perf',
   'test',
+  'build',
+  'ci',
   'chore',
   'security',
   'deps',
   'revert',
 ]);
 
+// The leading `(?:\S+\s+)?` also swallows a legacy leading emoji (e.g.
+// "🐛 fix: ...") so old, already-tagged commits still parse correctly.
 const conventionalSubjectRegex =
-  /^(?:\S+\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
+  /^(?:\S+\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
 
 function commitReleaseLevel(commit) {
   const message = String(commit ?? '').trim();

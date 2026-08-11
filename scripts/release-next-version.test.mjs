@@ -41,11 +41,39 @@ describe('inferReleaseLevel', () => {
   });
 
   it('returns patch for other patch types', () => {
-    for (const type of ['style', 'perf', 'test', 'chore', 'security', 'deps', 'revert']) {
+    for (const type of [
+      'style',
+      'perf',
+      'test',
+      'build',
+      'ci',
+      'chore',
+      'revert',
+    ]) {
+      assert.equal(
+        inferReleaseLevel([`${type}: something`]),
+        'patch',
+        `expected patch for type: ${type}`,
+      );
+    }
+  });
+
+  it('returns patch for legacy custom types kept for old history (no emoji prefix)', () => {
+    for (const type of ['security', 'deps']) {
+      assert.equal(
+        inferReleaseLevel([`${type}: something`]),
+        'patch',
+        `expected patch for legacy type: ${type}`,
+      );
+    }
+  });
+
+  it('returns patch for legacy custom types with a legacy emoji prefix', () => {
+    for (const type of ['security', 'deps']) {
       assert.equal(
         inferReleaseLevel([`🔧 ${type}: something`]),
         'patch',
-        `expected patch for type: ${type}`,
+        `expected patch for legacy type: ${type}`,
       );
     }
   });
