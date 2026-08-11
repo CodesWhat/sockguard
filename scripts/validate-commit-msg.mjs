@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Validates commit messages follow Gitmoji + Conventional Commits format.
- * Format: <emoji> <type>(<scope>): <description>
+ * Validates commit messages follow Conventional Commits format.
+ * Format: <type>(<scope>): <description>
  *
  * Usage: node scripts/validate-commit-msg.mjs <commit-msg-file>
  */
@@ -15,23 +15,55 @@ if (!msgFile) {
   process.exit(1);
 }
 
-const msg = readFileSync(msgFile, "utf8").trim().split("\n")[0];
+const ALLOWED_TYPES = [
+  "feat",
+  "fix",
+  "docs",
+  "style",
+  "refactor",
+  "perf",
+  "test",
+  "build",
+  "ci",
+  "chore",
+  "revert",
+];
 
-// Match: emoji + space + type(optional-scope): description
-const pattern =
-  /^[\p{Emoji_Presentation}\p{Extended_Pictographic}]+ \w+(\(\w[\w-]*\))?!?: .+$/u;
+const raw = readFileSync(msgFile, "utf8").trim();
+const lines = raw.split("\n");
+const msg = lines[0];
+
+// Merge commits, revert commits, and fixup!/squash! autosquash commits are exempt.
+const isMerge = /^Merge /.test(msg);
+const isRevert = /^Revert /.test(msg);
+const isAutosquash = /^(fixup|squash)! /.test(msg);
+
+if (isMerge || isRevert || isAutosquash) {
+  process.exit(0);
+}
+
+// Match: type(optional-scope)!: description
+const typePattern = `(?:${ALLOWED_TYPES.join("|")})`;
+const pattern = new RegExp(`^${typePattern}(\\([\\w-]+\\))?!?: .+$`);
 
 if (!pattern.test(msg)) {
   console.error("");
   console.error("AI_ACTION_REQUIRED: Commit message does not follow convention.");
   console.error("");
-  console.error("Expected: <emoji> <type>(<scope>): <description>");
+  console.error("Expected: <type>(<scope>): <description>");
   console.error(`Got:      ${msg}`);
   console.error("");
+  console.error(`Allowed types: ${ALLOWED_TYPES.join(", ")}`);
+  console.error("");
+  console.error('Use "!" before the colon for breaking changes: feat(api)!: drop v1 tokens');
+  console.error('Or add a "BREAKING CHANGE:" footer.');
+  console.error("");
   console.error("Examples:");
-  console.error('  \u2728 feat(filter): add request body inspection');
-  console.error('  \uD83D\uDC1B fix: resolve socket EACCES (#38)');
-  console.error('  \u267B\uFE0F refactor(proxy): simplify middleware chain');
+  console.error("  feat(filter): add request body inspection");
+  console.error("  fix: resolve socket EACCES (#38)");
+  console.error("  refactor(proxy): simplify middleware chain");
+  console.error("");
+  console.error("No emoji — plain Conventional Commits only.");
   console.error("");
   process.exit(1);
 }

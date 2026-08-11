@@ -95,32 +95,32 @@ npx biome format --write .  # Format
 
 ## Commit convention
 
-We use **Gitmoji + Conventional Commits**:
+We use plain **Conventional Commits** — no emoji:
 
 ```text
-<emoji> <type>(<scope>): <description>
+<type>(<scope>): <description>
 ```
 
-| Emoji | Type | Use |
-|-------|------|-----|
-| :sparkles: | `feat` | New feature |
-| :bug: | `fix` | Bug fix |
-| :memo: | `docs` | Documentation |
-| :lipstick: | `style` | UI/cosmetic changes |
-| :recycle: | `refactor` | Code refactor (no feature/fix) |
-| :zap: | `perf` | Performance improvement |
-| :white_check_mark: | `test` | Adding/updating tests |
-| :wrench: | `chore` | Build, config, tooling |
-| :lock: | `security` | Security fix |
-| :arrow_up: | `deps` | Dependency upgrade |
-| :wastebasket: | `revert` | Revert a previous commit |
+| Type | Use |
+|------|-----|
+| `feat` | New feature |
+| `fix` | Bug fix (including security fixes) |
+| `docs` | Documentation |
+| `style` | UI/cosmetic changes |
+| `refactor` | Code refactor (no feature/fix) |
+| `perf` | Performance improvement |
+| `test` | Adding/updating tests |
+| `build` | Build system, dependencies |
+| `ci` | CI/CD pipeline |
+| `chore` | Tooling, config, misc |
+| `revert` | Revert a previous commit |
 
-Scope is optional. Subject line should be imperative, lowercase, no trailing period.
+Scope is optional. Subject line should be imperative, lowercase, no trailing period. Add `!` before the colon for a breaking change (`feat(api)!: drop v1 tokens`), or add a `BREAKING CHANGE:` footer. Git-generated subjects are exempt from validation: merge commits, `Revert "..."` commits, and `fixup!`/`squash!` autosquash commits.
 
 ```text
-:sparkles: feat(filter): add request body inspection
-:bug: fix: resolve socket EACCES (#38)
-:recycle: refactor(proxy): simplify middleware chain
+feat(filter): add request body inspection
+fix: resolve socket EACCES (#38)
+refactor(proxy): simplify middleware chain
 ```
 
 ## Testing
