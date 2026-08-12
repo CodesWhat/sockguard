@@ -96,3 +96,136 @@ jobs:
           path: app/mutation-report.txt
           if-no-files-found: warn
           retention-days: 30
+
+  update-badge:
+    name: "🏷️ Update mutation score badge"
+    needs: gremlins
+    # gremlins sets job-level continue-on-error, so a failed package leg
+    # still lets this job run — badge-plumbing only, never blocking.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write  # commit the badge JSON back with GITHUB_TOKEN
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: true
+
+      - name: Download all package reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: reports
+          pattern: mutation-report-*-${{ github.run_id }}
+        continue-on-error: true  # no artifacts (e.g. every leg died) still lets the job report that below
+
+      # Weighted kill rate across the package matrix, NOT Gremlins'
+      # separate "mutator coverage" metric -- those two numbers read
+      # similarly but answer different questions, which is exactly how the
+      # badge went stale with the wrong one baked in before. Per Gremlins'
+      # own "Test efficacy" definition this is killed / (killed + lived),
+      # summed across every package report found, so one big package
+      # can't be drowned out by five small ones.
+      - name: Compute weighted mutation score
+        id: score
+        run: |
+          set -uo pipefail
+          shopt -s nullglob
+
+          total_killed=0
+          total_lived=0
+          reports_found=0
+
+          for f in reports/*/mutation-report.txt; do
+            killed=$(grep -oE 'Killed: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+')
+            lived=$(grep -oE 'Lived: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+')
+            if [ -z "$killed" ] || [ -z "$lived" ]; then
+              echo "::warning::could not parse Killed/Lived out of $f, skipping it"
+              continue
+            fi
+            total_killed=$((total_killed + killed))
+            total_lived=$((total_lived + lived))
+            reports_found=$((reports_found + 1))
+          done
+
+          if [ "$reports_found" -eq 0 ]; then
+            echo "::error::no parseable mutation-report.txt files found -- leaving the existing badge JSON untouched"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          total=$((total_killed + total_lived))
+          if [ "$total" -eq 0 ]; then
+            pct="0.0"
+          else
+            pct=$(awk -v k="$total_killed" -v t="$total" 'BEGIN { printf "%.1f", (k / t) * 100 }')
+          fi
+          color=$(awk -v p="$pct" 'BEGIN {
+            if (p >= 90) print "brightgreen";
+            else if (p >= 75) print "green";
+            else if (p >= 60) print "yellow";
+            else if (p >= 40) print "orange";
+            else print "red";
+          }')
+
+          echo "reports_found=${reports_found}" >> "$GITHUB_OUTPUT"
+          echo "killed=${total_killed}" >> "$GITHUB_OUTPUT"
+          echo "lived=${total_lived}" >> "$GITHUB_OUTPUT"
+          echo "pct=${pct}" >> "$GITHUB_OUTPUT"
+          echo "color=${color}" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Write badge JSON
+        if: steps.score.outputs.skip != 'true'
+        env:
+          PCT: ${{ steps.score.outputs.pct }}
+          COLOR: ${{ steps.score.outputs.color }}
+        run: |
+          set -euo pipefail
+          mkdir -p .github/badges
+          jq -n --arg label "mutation score" --arg message "${PCT}%" --arg color "$COLOR" \
+            '{schemaVersion: 1, label: $label, message: $message, color: $color}' \
+            > .github/badges/mutation-score.json
+
+      - name: Commit badge JSON
+        if: steps.score.outputs.skip != 'true'
+        env:
+          PCT: ${{ steps.score.outputs.pct }}
+          KILLED: ${{ steps.score.outputs.killed }}
+          LIVED: ${{ steps.score.outputs.lived }}
+          REPORTS_FOUND: ${{ steps.score.outputs.reports_found }}
+          TARGET_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/mutation-score.json
+          if git diff --cached --quiet; then
+            echo "mutation score unchanged at ${PCT}% -- nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(badges): update mutation score to ${PCT}% (killed ${KILLED}, lived ${LIVED}, ${REPORTS_FOUND} package reports)"
+          git push origin "HEAD:${TARGET_REF}"
+
+      - name: Summary
+        if: always()
+        env:
+          PCT: ${{ steps.score.outputs.pct }}
+          REPORTS_FOUND: ${{ steps.score.outputs.reports_found }}
+          SKIP: ${{ steps.score.outputs.skip }}
+        run: |
+          {
+            echo "### 🏷️ Mutation score badge"
+            if [ "$SKIP" = "true" ]; then
+              echo "- No parseable package reports found this run -- badge left unchanged."
+            else
+              echo "- Weighted test efficacy (killed / (killed + lived)) across ${REPORTS_FOUND} package report(s): **${PCT}%**"
+              echo "- Mode: ADVISORY (non-blocking) -- this only refreshes \`.github/badges/mutation-score.json\`, no gate."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
