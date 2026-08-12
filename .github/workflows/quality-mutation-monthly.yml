@@ -66,6 +66,10 @@ jobs:
 
       - name: Run Gremlins mutation testing
         working-directory: app
+        # shell: bash (rather than the default `bash -e {0}`) is required here:
+        # GitHub's default bash has -e but not -o pipefail, so `| tee` would
+        # report tee's exit code and mask a failing mutation run.
+        shell: bash
         run: |
           gremlins unleash --tags="" ${{ matrix.package }} 2>&1 | tee mutation-report.txt
         env:
