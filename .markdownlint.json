@@ -1,0 +1,7 @@
+{
+  "$comment": "Tunes markdownlint for CodeRabbit's review pass — nothing in CI or lefthook runs this locally, see .coderabbit.yaml tools.markdownlint",
+  "MD013": false,
+  "MD024": false,
+  "MD033": false,
+  "MD041": false
+}
