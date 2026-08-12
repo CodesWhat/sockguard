@@ -3,10 +3,15 @@
 
 rules:
   cache-poisoning:
-    # Cache poisoning via setup-go/setup-node cache steps requires attacker-controlled
-    # fork PRs with write access to the cache. Sockguard is a private repo with no
-    # pull_request_target triggers, so untrusted PRs cannot poison the cache.
-    # Re-evaluate if the repo goes public.
+    # zizmor flags any setup-go/setup-node caching step in a workflow that
+    # triggers on push to main/release branches or on a schedule, since a
+    # poisoned cache restored there could compromise a published artifact.
+    # ci-verify.yml never publishes anything, though: goreleaser-check runs
+    # `release --snapshot --clean --skip=publish`, and every other job here
+    # (CodeQL, go-lint, go-test, go-fuzz, ts-lint, ts-test, ts-build) is a
+    # lint/test/fuzz check with no artifact leaving the runner. The actual
+    # release publish path is release-from-tag.yml, which has caching
+    # disabled on its setup-go/setup-node steps instead of being ignored
+    # here.
     ignore:
       - ci-verify.yml
-      - release-from-tag.yml

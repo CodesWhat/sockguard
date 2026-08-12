@@ -42,10 +42,18 @@ jobs:
 
       - name: Run benchmarks
         working-directory: app
+        # shell: bash (rather than the default `bash -e {0}`) is required here:
+        # GitHub's default bash has -e but not -o pipefail, so `| tee` would
+        # report tee's exit code and mask a failing benchmark run.
+        shell: bash
         run: |
           go test -bench=. -benchmem -count=5 -timeout=20m ./... | tee benchmark-results.txt
 
       - name: Upload benchmark results
+        # Now that the run step actually fails on a failing benchmark, the
+        # default success condition would throw away the output of the run you
+        # most want to read.
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: benchmark-results-${{ github.run_id }}
