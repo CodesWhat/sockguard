@@ -56,6 +56,7 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	cfg.explicitLegacyListen = explicitLegacyListenFile(configPath)
+	cfg.explicitNetworkEndpointConfig = explicitNetworkEndpointConfigFile(configPath)
 
 	return &cfg, nil
 }
@@ -118,7 +119,60 @@ func explicitLegacyListenBytes(data []byte) bool {
 }
 
 func explicitLegacyListenSet(pv *viper.Viper) bool {
-	for _, key := range legacyListenKeys {
+	return explicitKeysSet(pv, legacyListenKeys)
+}
+
+// networkEndpointConfigKeys are the dotted config paths under
+// request_body.network.endpoint_config whose presence (via YAML or a
+// SOCKGUARD_REQUEST_BODY_NETWORK_ENDPOINT_CONFIG_* environment variable)
+// marks the granular endpoint-config block as explicitly configured, for the
+// allow_endpoint_config/endpoint_config mutual-exclusion check (#186). See
+// explicitNetworkEndpointConfigFile/Bytes and legacyListenKeys' doc comment
+// for why zero-value comparison cannot answer this question on its own.
+var networkEndpointConfigKeys = []string{
+	"request_body.network.endpoint_config.allow_static_addressing",
+	"request_body.network.endpoint_config.allow_link_local_ips",
+	"request_body.network.endpoint_config.allow_mac_pinning",
+	"request_body.network.endpoint_config.allow_gw_priority",
+	"request_body.network.endpoint_config.allow_aliases",
+}
+
+// explicitNetworkEndpointConfigFile is explicitLegacyListenFile's #186
+// counterpart: reports whether any request_body.network.endpoint_config.*
+// key was set via the YAML file at configPath or a matching
+// SOCKGUARD_REQUEST_BODY_NETWORK_ENDPOINT_CONFIG_* environment variable,
+// using a second, defaults-free Viper instance so registerDefaults' leaf
+// registrations cannot mask the answer.
+func explicitNetworkEndpointConfigFile(configPath string) bool {
+	pv := viper.New()
+	if configPath != "" {
+		pv.SetConfigFile(configPath)
+		_ = pv.ReadInConfig() // missing file is fine, same tolerance as Load
+	}
+	pv.SetEnvPrefix("SOCKGUARD")
+	pv.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	pv.AutomaticEnv()
+	return explicitKeysSet(pv, networkEndpointConfigKeys)
+}
+
+// explicitNetworkEndpointConfigBytes is explicitNetworkEndpointConfigFile's
+// LoadBytes counterpart: no environment overlay, matching LoadBytes' own
+// contract (env vars never affect a candidate/signed YAML body).
+func explicitNetworkEndpointConfigBytes(data []byte) bool {
+	pv := viper.New()
+	pv.SetConfigType("yaml")
+	if len(data) > 0 {
+		if err := pv.ReadConfig(bytes.NewReader(data)); err != nil {
+			return false
+		}
+	}
+	return explicitKeysSet(pv, networkEndpointConfigKeys)
+}
+
+// explicitKeysSet reports whether any of keys is set on pv — shared by the
+// legacy-listen and network-endpoint-config provenance checks above.
+func explicitKeysSet(pv *viper.Viper, keys []string) bool {
+	for _, key := range keys {
 		if pv.IsSet(key) {
 			return true
 		}
@@ -278,6 +332,7 @@ func LoadBytes(data []byte) (*Config, error) {
 	}
 
 	cfg.explicitLegacyListen = explicitLegacyListenBytes(data)
+	cfg.explicitNetworkEndpointConfig = explicitNetworkEndpointConfigBytes(data)
 
 	return &cfg, nil
 }

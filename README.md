@@ -73,7 +73,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.6.0 is the latest stable release.** It delivers multiple independently scoped main listeners, fail-closed declarative admission mutations, effective-state resource-limit guarantees for container updates and Swarm services, Engine API 1.55 validation with a fail-closed Compose/BuildKit transport model, first-class Podman support across the Docker-compatible and native `/libpod` API surfaces, and the published tri-tool conformance matrix that now gates GA promotion. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v1.7.0 is the latest stable release.** It delivers full BuildKit gRPC mediation — terminating the hijacked session/gRPC tunnel and applying per-message policy to `Control/Solve`/`Control/Status`, credential forwarding (Auth/Secrets/SSH), and file-sync/upload streams, replacing the opaque-tunnel acknowledgment with real enforcement — plus per-field `request_body.network.endpoint_config` gates for static addressing, link-local IPs, MAC pinning, and gateway priority. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center" id="quick-start">🚀 Quick Start</h2>
 
@@ -473,7 +473,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
 
-**v1.6.0 shipped on 2026-08-08** as the runtime-compatibility and policy-mediation feature line over v1.5. Full BuildKit gRPC mediation — bounding the session/gRPC tunnel that v1.6 gates behind an explicit acknowledgment — is the first committed epic in the [v1.7.0 milestone](https://github.com/CodesWhat/sockguard/milestone/2), alongside narrowing `allow_endpoint_config` to per-field gates. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
+**v1.6.0 shipped on 2026-08-08** as the runtime-compatibility and policy-mediation feature line over v1.5. Full BuildKit gRPC mediation — bounding the session/gRPC tunnel that v1.6 gates behind an explicit acknowledgment — is the first committed epic in the [v1.7.0 milestone](https://github.com/CodesWhat/sockguard/milestone/2). `request_body.network.endpoint_config.*` now provides the per-field gates ahead of that release (#186), covering endpoint settings on both network connect and container-create — see [Unreleased in CHANGELOG.md](CHANGELOG.md); `request_body.network.allow_endpoint_config: true` remains the broad whole-object override. See [CHANGELOG.md](CHANGELOG.md) for release history and the [roadmap docs](https://getsockguard.com/docs/roadmap) for compatibility evidence and scope boundaries.
 
 ### Shipped in v1.6.0
 

@@ -26,9 +26,13 @@ const maxLibpodNetworkBodyBytes = 1 << 20 // 1 MiB
 // Fields on the reused NetworkRequestBodyConfig with no libpod analog
 // (allow_swarm_scope, allow_ingress, allow_attachable, allow_config_only,
 // allow_config_from, allow_custom_ipam_drivers, allow_endpoint_config,
-// allow_disconnect_force, allow_disable_ipv4) are simply never consulted
-// here — see configuration.mdx's libpod_network section for the documented
-// list, rather than silently reinterpreting them against unrelated fields.
+// endpoint_config (#186's granular per-field gates), allow_disconnect_force,
+// allow_disable_ipv4) are simply never consulted here — see
+// configuration.mdx's libpod_network section for the documented list,
+// rather than silently reinterpreting them against unrelated fields. There
+// is no libpod-native network-connect endpoint at all (Podman's compat API
+// connect goes through the Docker-compat path, not libpod's own), so
+// endpoint_config has nothing to gate here regardless.
 type libpodNetworkCreateRequest struct {
 	Driver      string            `json:"driver"`
 	Options     map[string]string `json:"options"`

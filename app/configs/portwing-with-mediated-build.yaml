@@ -1,0 +1,245 @@
+# Sockguard — Portwing with Mediated BuildKit Build Preset
+#
+# Extends portwing-with-compose.yaml with MEDIATED BuildKit support —
+# `docker compose build` / `up --build` run with BuildKit ENABLED (the
+# Docker CLI default; no DOCKER_BUILDKIT=0 needed). Compose drives dockerd's
+# embedded BuildKit frontend/session bridge over two hijacked, unversioned
+# streams, POST /session and POST /grpc (Engine API 1.53 deprecated both;
+# current Buildx 0.36.0 still uses them). As of issue #185's gRPC mediation
+# epic, sockguard terminates both streams as h2c and inspects every gRPC
+# message crossing them instead of hijacking the bytes verbatim — see
+# docs/content/docs/security.mdx's "Compose / BuildKit Transport" section for
+# the full mediation model.
+#
+# This is the successor to portwing-with-build.yaml's CLASSIC (POST /build)
+# builder path: both are now fully inspected transports, but this preset
+# covers the BuildKit path a stock `docker compose build` actually takes
+# without any client-side env var. Use portwing-with-build.yaml instead if
+# you specifically want the classic /build endpoint (e.g. DOCKER_BUILDKIT=0
+# is already set in your environment for other reasons).
+#
+# request_body.buildkit below is deliberately MINIMAL — see
+# drydock-with-mediated-build.yaml's header comment for the full per-field
+# rationale (identical policy, reused verbatim here): control.solve.allow
+# plus an "image"-typed exporter for local tag/load, control.allow_info /
+# allow_list_workers / allow_status for worker metadata and ref-owned build
+# progress, and session.file_sync.allow — REQUIRED to get the Dockerfile and
+# build context to buildkitd at all, still subject to the same
+# RUN-instruction hold-and-inspect scan as classic /build since
+# request_body.build.allow_run_instructions stays false below.
+#
+# Deliberately LEFT DENIED (secure default; widen only if you need it):
+# request_body.build's three flags, session.auth/secrets/ssh/file_send/
+# upload — same rationale as drydock-with-mediated-build.yaml. In
+# particular, session.auth is OFF: a base-image pull can require FetchToken
+# even for anonymous/public registries, and its realm/scope allowlists match
+# EXACTLY, not by pattern, so there is no single generic allowlist that
+# covers arbitrary Dockerfiles' arbitrary FROM images — widen it with the
+# exact registries/realms/scopes your Dockerfiles need if dockerd's own
+# daemon-level credentials don't already cover the pull.
+#
+# Still denied: classic POST /build (use portwing-with-build.yaml if you want
+# that transport instead), and the literal
+# /moby.buildkit.v1.Control/<Method> probe path (no h2c upgrade for any
+# mediator to terminate — see filter.buildkitPolicy's doc comment).
+# insecure_accept_opaque_buildkit_tunnels is NOT set — it is deprecated and
+# mutually exclusive with request_body.buildkit; see migration.mdx if you
+# are moving off it.
+#
+# Log streaming: GET /containers/{id}/logs is required by Portwing's
+# GetContainerLogs() API. insecure_allow_read_exfiltration: true acknowledges
+# that container logs can contain secrets; see app/configs/portwing.yaml for
+# the full security-tradeoff rationale.
+insecure_allow_read_exfiltration: true
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Response redaction — all three disabled for the drydock passthrough topology.
+# See portwing.yaml header for standalone-mode guidance.
+#
+# deny_verbosity: verbose — detailed denial reasons flow to portwing/drydock
+# for operator-visible errors (portwing reads the reason field as of the
+# release after 0.8.1). The denial consumer in this topology is the trusted
+# Portwing agent / drydock controller, not an untrusted caller, so surfacing
+# the detailed reason is the right default here.
+response:
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
+  deny_verbosity: verbose
+
+# Portwing needs container creation for its orchestration flows. Container-create
+# bodies are inspected by default; bind-mounted workloads are denied until their
+# host paths are allowlisted here. Image pulls are inspected too; this preset
+# explicitly allows any registry so Portwing can track arbitrary images while still
+# denying fromSrc imports. The stock "runc" runtime is allowlisted because Portwing
+# (like drydock) recreates containers from inspect specs that carry an explicit
+# HostConfig.Runtime — without it every recreation is rejected at
+# POST /containers/create with 403 "runtime \"runc\" is not allowlisted".
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+    allowed_runtimes:
+      - runc
+  image_pull:
+    allow_all_registries: true
+  # Mediated BuildKit Solve reuses these three flags verbatim (see
+  # BuildkitRequestBodyConfig.ToPolicy) — same secure defaults as the classic
+  # builder in portwing-with-build.yaml. Explicit false here so the deny
+  # posture is visible at the call site.
+  build:
+    allow_remote_context: false
+    allow_host_network: false
+    allow_run_instructions: false
+  # Mediated BuildKit gRPC policy (issue #185) — see header comment above for
+  # the full rationale behind each admitted/denied field.
+  buildkit:
+    control:
+      allow_info: true
+      allow_list_workers: true
+      allow_status: true
+      solve:
+        allow: true
+        allowed_exporters:
+          - image
+    session:
+      file_sync:
+        allow: true
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads — list, inspect, stats, top, changes, and logs.
+  # /containers/*/logs is required by Portwing's GetContainerLogs() call.
+  # /containers/*/archive, /containers/*/export, and /containers/*/attach
+  # are intentionally omitted — those are bulk-data exfiltration paths that
+  # Portwing does not use. insecure_allow_read_exfiltration: true (set above)
+  # satisfies sockguard's startup validator for the logs path.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/logs" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  # Container lifecycle
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/update" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Container creation (for orchestration and passthrough to drydock)
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  # Image reads — list + inspect + history. Image names can be namespaced
+  # (linuxserver/qbittorrent:latest, ghcr.io/owner/repo:tag), so the
+  # middle is matched with `**`. The trailing /json or /history segment
+  # keeps the exfiltration validator happy by not matching /images/get
+  # or /images/*/get (raw tarball exfil).
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/**" }
+    action: allow
+
+  # Mediated BuildKit tunnel only — see header comment. Classic /build and
+  # the literal /moby.buildkit.v1.Control/<Method> probe path stay denied by
+  # the catch-all rule below.
+  - match: { method: POST, path: "/session" }
+    action: allow
+  - match: { method: POST, path: "/grpc" }
+    action: allow
+
+  # Network read + lifecycle. list/inspect carried over from portwing.yaml;
+  # create/connect/delete/disconnect are new here so compose can own its
+  # stack network's full lifecycle, including multi-network service attach.
+  # Body inspection defaults (deny custom drivers, deny driver opts) still
+  # apply to POST /networks/create.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/create" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: DELETE, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+
+  # Volume read + lifecycle. list/inspect carried over from portwing.yaml;
+  # create/delete are new here for compose-managed named volumes. Body
+  # inspection defaults (deny custom drivers, deny driver opts) still apply
+  # to POST /volumes/create.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+  - match: { method: POST, path: "/volumes/create" }
+    action: allow
+  - match: { method: DELETE, path: "/volumes/*" }
+    action: allow
+
+  # Distribution (registry digest checks for image freshness). Image
+  # references in the URL can be multi-segment (registry/owner/repo:tag).
+  - match: { method: GET, path: "/distribution/**/json" }
+    action: allow
+
+  # Swarm services — list + inspect. /services/*/logs is intentionally
+  # omitted to keep the exfiltration validator happy.
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+
+  # Deny everything else — including classic /build and the literal
+  # /moby.buildkit.v1.Control/<Method> probe path (see header comment), plus
+  # exec, secrets, plugins, and raw archive/export/attach streams.
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by portwing-with-mediated-build preset"

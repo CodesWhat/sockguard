@@ -16,6 +16,54 @@ The other v1.5 policy additions are opt-in: `restrict_namespace_sharing`, `allow
 
 Before switching the image tag, validate the current configuration with `sockguard validate --config /etc/sockguard/config.yaml` or the admin listener's `POST /admin/validate`. Deployments using macvlan/static-IP recreation should pay particular attention to `allow_endpoint_config`; the bundled drydock presets document that compatibility case inline.
 
+## From Sockguard v1.6 to v1.7
+
+### `allow_endpoint_config` can now be narrowed to per-field gates (#186)
+
+`request_body.network.allow_endpoint_config: true` still admits every `EndpointSettings` field exactly as before — no existing configuration needs to change. New deployments that only need one or two of those fields (Compose `Aliases` plus a static IP, say, but not MAC pinning) can opt into the narrower `request_body.network.endpoint_config` block instead: `allow_static_addressing`, `allow_link_local_ips`, `allow_mac_pinning`, and `allow_gw_priority` each gate one field independently and default to `false`; `allow_aliases` defaults to `true` to preserve the existing unconditional-allow behavior for Compose aliases. `endpoint_config` is only consulted when `allow_endpoint_config` is `false` — setting both is a load-time validation error, since the legacy flag already admits everything the granular block could.
+
+**`Links` and `DriverOpts` have no granular gate.** Neither field is covered by any `endpoint_config.allow_*` option, on either `POST /networks/*/connect` or `POST /containers/create`'s `NetworkingConfig.EndpointsConfig` — they remain denied under the granular block regardless of which other fields you enable. A workflow that needs either must keep `allow_endpoint_config: true` and accept whole-object access instead of narrowing to `endpoint_config`.
+
+See [Configuration](/configuration#request-body-inspection) for the full field mapping.
+
+### Migrating off `insecure_accept_opaque_buildkit_tunnels` (#185)
+
+`insecure_accept_opaque_buildkit_tunnels: true` is now **deprecated**: it still works — existing configs that set it keep running unchanged — but setting it logs a startup warning, and the flag will be removed in a future major release. Full BuildKit gRPC mediation (issue #185) supersedes it: `request_body.buildkit` inspects the `Control/Solve`/`Status` RPCs and the session `Auth`/`Secrets`/`SSH`/`FileSync`/`FileSend`/`Upload` callbacks per gRPC message, instead of admitting the whole `POST /session`/`POST /grpc` tunnel with zero inspection. The two are mutually exclusive — a config setting both fails validation with an error naming the conflict.
+
+To migrate, replace the acknowledgment with a `request_body.buildkit` policy scoped to what your Dockerfiles actually need. This is the minimum for a plain `docker build`/`docker compose build` of a local Dockerfile and context, tagging the result into the local image store (no push, no secrets, no remote context):
+
+```diff
+-insecure_accept_opaque_buildkit_tunnels: true
++request_body:
++  buildkit:
++    control:
++      allow_info: true
++      allow_list_workers: true
++      allow_status: true
++      solve:
++        allow: true
++        allowed_exporters: [image]
++    session:
++      file_sync:
++        allow: true
+
+ rules:
+   - match: { method: POST, path: "/session" }
+     action: allow
+   - match: { method: POST, path: "/grpc" }
+     action: allow
+```
+
+The rules admitting `POST /session` and `POST /grpc` don't change — only which acknowledgment or policy satisfies sockguard's startup admission check for those two rules changes. Widen from that minimum only as needed:
+
+- `docker push` / `--push`: add the destination registry hosts to `control.solve.allowed_exporter_registries`.
+- `RUN --mount=type=secret` / `type=ssh`: enable `session.secrets` / `session.ssh` with an exact ID allowlist.
+- Base-image pulls that need registry auth (most public registries included — Docker Hub issues anonymous pull tokens too — unless the daemon's own credentials already cover it): enable `session.auth` with the exact `allowed_registries` / `allowed_realms` / `allowed_scopes` your Dockerfiles need; these match exactly, not by pattern, so there's no single generic value that covers arbitrary images.
+- A remote (git/HTTP) build context: set `request_body.build.allow_remote_context: true`. A stdin or remote context that BuildKit streams back over the session also needs `session.upload.allow: true`.
+- `-o type=local` / `-o type=tar` output: add `local` / `tar` to `control.solve.allowed_exporters` **and** set `session.file_send.allow: true`. The exporter allowlist is empty by default and denies both.
+
+See the `drydock-with-mediated-build.yaml` / `portwing-with-mediated-build.yaml` presets for a complete, validated starting point, and [Security](/security#compose--buildkit-transport) / [Configuration](/configuration) for the full field reference.
+
 ## From Tecnativa/docker-socket-proxy
 
 Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. Replace the image:

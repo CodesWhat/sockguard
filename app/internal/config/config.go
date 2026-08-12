@@ -114,6 +114,20 @@ type Config struct {
 	// only matters once Listeners is also non-empty.
 	explicitLegacyListen bool
 
+	// explicitNetworkEndpointConfig records whether
+	// request_body.network.endpoint_config was set explicitly — a YAML key
+	// or a matching SOCKGUARD_REQUEST_BODY_NETWORK_ENDPOINT_CONFIG_*
+	// environment variable — as opposed to left at its defaulted value
+	// (EndpointConfigRequestBodyConfig.AllowAliases defaults to true, so the
+	// merged struct is never the Go zero value even when the operator never
+	// wrote the block — see EndpointConfigRequestBodyConfig's doc comment).
+	// Populated by Load/LoadBytes via a provenance-only Viper pass mirroring
+	// explicitLegacyListen, and consulted by validateNetworkEndpointConfig
+	// to reject request_body.network.allow_endpoint_config: true combined
+	// with an explicit endpoint_config block (#186). Unexported so it never
+	// round-trips through mapstructure/YAML/JSON.
+	explicitNetworkEndpointConfig bool
+
 	// InsecureAcceptOpaqueBuildkitTunnels acknowledges opening POST /session,
 	// POST /grpc, or a direct BuildKit Control-service method path. Both
 	// endpoints are unversioned opaque hijacked streams: dockerd's embedded
@@ -127,6 +141,16 @@ type Config struct {
 	// is set. Tecnativa GRPC=1/SESSION=1 compat vars still work (see
 	// ApplyCompat) but log a deprecation warning naming this key. A single
 	// global setting, not per-profile — see cmd/rules.go.
+	//
+	// Deprecated: request_body.buildkit (issue #185) now mediates both
+	// endpoints with full per-message inspection instead of admitting them
+	// wholesale. This flag stays functional — existing configs keep working —
+	// but setting it to true logs a startup deprecation warning
+	// (cmd/serve.go's warnIfOpaqueBuildkitTunnelDeprecated) steering operators
+	// toward request_body.buildkit, and it will be removed in a future major
+	// release. The two are mutually exclusive (see
+	// validateBuildkitAckMutualExclusion in validate.go), so the warning only
+	// ever fires for a config using this flag on its own.
 	InsecureAcceptOpaqueBuildkitTunnels bool `mapstructure:"insecure_accept_opaque_buildkit_tunnels"`
 }
 
@@ -142,6 +166,14 @@ func (c *Config) MarkLegacyListenExplicit() {
 // explicitly, for tests and validation.
 func (c *Config) ExplicitLegacyListen() bool {
 	return c.explicitLegacyListen
+}
+
+// ExplicitNetworkEndpointConfig reports whether
+// request_body.network.endpoint_config was set explicitly, for tests and
+// validation (#186's allow_endpoint_config/endpoint_config mutual-exclusion
+// check — see validateNetworkEndpointConfig).
+func (c *Config) ExplicitNetworkEndpointConfig() bool {
+	return c.explicitNetworkEndpointConfig
 }
 
 // ListenConfig configures a single proxy listener (unix socket or TCP).
@@ -379,6 +411,14 @@ type RequestBodyConfig struct {
 	Swarm            SwarmRequestBodyConfig            `mapstructure:"swarm"`
 	Node             NodeRequestBodyConfig             `mapstructure:"node"`
 	Plugin           PluginRequestBodyConfig           `mapstructure:"plugin"`
+	// Buildkit configures the (currently deny-only — see issue #185 phase 1)
+	// BuildKit gRPC mediation policy for POST /session and POST /grpc. An
+	// absent block denies both endpoints internally even when an outer HTTP
+	// rule allows them — there is no separate enabled toggle to drift out of
+	// sync with the sub-blocks below. See BuildkitRequestBodyConfig's doc
+	// comment for the full posture and validateBuildkitAckMutualExclusion in
+	// validate.go for its interaction with InsecureAcceptOpaqueBuildkitTunnels.
+	Buildkit BuildkitRequestBodyConfig `mapstructure:"buildkit"`
 	// LibpodPodCreate configures body inspection for POST /libpod/pods/create
 	// (Podman's native pod-create endpoint; pods have no Docker-compat
 	// equivalent, so this is its own top-level key rather than reusing
@@ -707,13 +747,62 @@ type NetworkRequestBodyConfig struct {
 	AllowIPAMOptions       bool `mapstructure:"allow_ipam_options"`
 	AllowDriverOptions     bool `mapstructure:"allow_driver_options"`
 	AllowEndpointConfig    bool `mapstructure:"allow_endpoint_config"`
-	AllowDisconnectForce   bool `mapstructure:"allow_disconnect_force"`
+	// EndpointConfig narrows allow_endpoint_config into independent per-field
+	// gates (#186) — see EndpointConfigRequestBodyConfig's doc comment for
+	// the field mapping and precedence rules. Only consulted when
+	// allow_endpoint_config is false/unset; setting both is a config
+	// validation error (validateNetworkEndpointConfig). Has no libpod analog
+	// — never consulted by the libpod_network inspector, see libpod_network.go.
+	EndpointConfig       EndpointConfigRequestBodyConfig `mapstructure:"endpoint_config"`
+	AllowDisconnectForce bool                            `mapstructure:"allow_disconnect_force"`
 	// AllowDisableIPv4 permits POST /networks/create with EnableIPv4 explicitly
 	// false (Engine API 1.48+). Docker defaults EnableIPv4 to true (unset and
 	// true both pass); a client-set false disables IPv4 addressing entirely,
 	// an unusual and rarely-intended posture, so it requires this opt-in.
 	// Default false.
 	AllowDisableIPv4 bool `mapstructure:"allow_disable_ipv4"`
+}
+
+// EndpointConfigRequestBodyConfig configures granular per-field admission for
+// Docker's EndpointSettings object — the payload carried by both
+// POST /networks/*/connect's EndpointConfig and POST /containers/create's
+// NetworkingConfig.EndpointsConfig entries (request_body.network's
+// allow_endpoint_config governs both, see filter_options.go's cross-wire).
+//
+// Precedence (#186): request_body.network.allow_endpoint_config: true is the
+// legacy whole-object escape hatch and, when set, admits every field
+// unchanged — this block is not consulted at all in that case, and setting
+// both is rejected at config-load time (validateNetworkEndpointConfig) to
+// avoid silent ambiguity. When allow_endpoint_config is false/unset, each
+// field below gates independently. EndpointSettings fields with no gate here
+// — Links (joining another container's linked alias namespace) and
+// DriverOpts — have no individual escape hatch under the granular form:
+// they are always denied, fail-closed, unless allow_endpoint_config: true is
+// used instead.
+type EndpointConfigRequestBodyConfig struct {
+	// AllowStaticAddressing permits IPAMConfig.IPv4Address/IPv6Address and the
+	// deprecated top-level Gateway/IPAddress/IPPrefixLen/IPv6Gateway/
+	// GlobalIPv6Address/GlobalIPv6PrefixLen fields. Default false.
+	AllowStaticAddressing bool `mapstructure:"allow_static_addressing"`
+	// AllowLinkLocalIPs permits IPAMConfig.LinkLocalIPs, independent of
+	// AllowStaticAddressing. Default false.
+	AllowLinkLocalIPs bool `mapstructure:"allow_link_local_ips"`
+	// AllowMACPinning permits MacAddress — shared by network connect's
+	// EndpointConfig and container-create's deprecated top-level MacAddress
+	// field. Default false.
+	AllowMACPinning bool `mapstructure:"allow_mac_pinning"`
+	// AllowGwPriority permits GwPriority (Engine API 1.55+, which network
+	// provides the container's default gateway when attached to more than
+	// one). Default false.
+	AllowGwPriority bool `mapstructure:"allow_gw_priority"`
+	// AllowAliases permits Aliases. Default true: this reproduces
+	// allow_endpoint_config's long-standing behavior of never gating Aliases
+	// at all — Docker Compose sets Aliases: [serviceName] on every endpoint
+	// it creates, so denying them by default would break every multi-network
+	// Compose recreate. Set explicitly to false to deny Aliases under the
+	// granular form; there is no equivalent opt-out under
+	// allow_endpoint_config: true, which always admits Aliases.
+	AllowAliases bool `mapstructure:"allow_aliases"`
 }
 
 // SecretRequestBodyConfig configures inspection for POST /secrets/create.
@@ -817,6 +906,214 @@ type PluginRequestBodyConfig struct {
 	AllowOfficial         bool     `mapstructure:"allow_official"`
 	AllowedRegistries     []string `mapstructure:"allowed_registries"`
 	AllowedSetEnvPrefixes []string `mapstructure:"allowed_set_env_prefixes"`
+}
+
+// BuildkitRequestBodyConfig configures sockguard's BuildKit gRPC mediation
+// policy (issue #185) for the two opaque tunnel endpoints POST /session and
+// POST /grpc. As of phase 1 this is schema and policy ONLY — there is no
+// runtime mediator yet, so a configured block still results in both
+// endpoints being denied at request time (see
+// filter.buildkitPolicy.inspect); the policy this struct describes is what
+// later phases will actually enforce once the h2c-terminating mediator
+// exists.
+//
+// Presence, not an "enabled" flag, is what matters: an absent block (the
+// Go zero value, identical to what a config that never mentions "buildkit:"
+// at all decodes to) denies /session and /grpc internally even when an
+// outer HTTP rule allows them. Every leaf below follows the same
+// "empty/false allowed_* = deny" convention as the rest of RequestBodyConfig
+// — see e.g. ImagePullRequestBodyConfig.AllowedRegistries.
+//
+// Works at the top level (RequestBodyConfig here) and per client profile
+// (ClientProfileConfig.RequestBody carries the identical type) exactly like
+// every other request_body.* block; there is no merge between the two —
+// see ClientProfileConfig's doc comment.
+type BuildkitRequestBodyConfig struct {
+	// Control gates moby.buildkit.v1.Control, reached over POST /grpc.
+	Control BuildkitControlRequestBodyConfig `mapstructure:"control"`
+	// Session gates the services buildkitd calls back into the client for,
+	// reached over POST /session.
+	Session BuildkitSessionRequestBodyConfig `mapstructure:"session"`
+}
+
+// BuildkitControlRequestBodyConfig gates moby.buildkit.v1.Control's Solve/
+// Status/Info/ListWorkers RPCs. Every other Control method (Prune,
+// DiskUsage, ListenBuildHistory, UpdateBuildHistory, the nested
+// Control/Session bidirectional stream) has no enabling knob at all in
+// v1.7 — see buildkitproxy.DeniedExamples — matching the #185 sign-off's
+// "hard-deny the rest, no enabling knobs" compatibility boundary.
+type BuildkitControlRequestBodyConfig struct {
+	// AllowInfo permits the passthrough Control/Info RPC (worker/buildkit
+	// version metadata; no policy-relevant fields). Default false.
+	AllowInfo bool `mapstructure:"allow_info"`
+	// AllowListWorkers permits the passthrough Control/ListWorkers RPC
+	// (worker capability metadata; no policy-relevant fields). Default
+	// false.
+	AllowListWorkers bool `mapstructure:"allow_list_workers"`
+	// AllowStatus permits the mediated Control/Status RPC. Once the
+	// mediator exists, a Status call is only ever admitted for a Ref that
+	// belongs to a Solve already admitted on the same client/profile (#185
+	// synthesis) — there is no independent allowlist here because Status
+	// has nothing to allowlist beyond that ownership check. Default false.
+	AllowStatus bool `mapstructure:"allow_status"`
+	// Solve gates the mediated Control/Solve RPC.
+	Solve BuildkitSolveRequestBodyConfig `mapstructure:"solve"`
+}
+
+// BuildkitSolveRequestBodyConfig gates moby.buildkit.v1.Control/Solve.
+//
+// Deliberately has no allow_run_instructions/allow_host_network/
+// allow_remote_context fields of its own: per the #185 synthesis, "the
+// existing request_body.build knobs ... apply to both classic /build and
+// BuildKit Solve" — BuildRequestBodyConfig's AllowHostNetwork/
+// AllowRemoteContext are reused verbatim (threaded through by
+// BuildkitRequestBodyConfig.ToPolicy, which takes the sibling
+// request_body.build block as a parameter for exactly this reuse), the same
+// way network.allow_endpoint_config (not a duplicate
+// container_create.allow_endpoint_config) governs both network connect and
+// container-create's embedded EndpointsConfig. Duplicating those flags here
+// would let an operator widen one path and forget the other.
+//
+// AllowRunInstructions has NO Phase 3 (issue #185) equivalent at all: unlike
+// classic POST /build, a dockerfile.v0-frontend Solve never puts the
+// Dockerfile's RUN instructions in the SolveRequest message itself — see
+// buildkitproxy.SolvePolicy's doc comment for why that is out of scope until
+// the file-sync mediation phase.
+//
+// The allowlists below (AllowedCacheImportTypes onward) are new in Phase 3:
+// once policy.go's mediator decodes a Solve, it validates
+// SolveRequest.Cache's imports/exports and SolveRequest.Exporters against
+// them — empty = deny, the standard RequestBodyConfig convention.
+type BuildkitSolveRequestBodyConfig struct {
+	// Allow permits the Control/Solve RPC at all. Default false.
+	Allow bool `mapstructure:"allow"`
+
+	// AllowedCacheImportTypes/AllowedCacheExportTypes gate the "Type" of each
+	// entry in a Solve's Cache.Imports/.Exports (e.g. "registry", "local",
+	// "gha", "s3", "inline"). Default empty (deny all).
+	AllowedCacheImportTypes []string `mapstructure:"allowed_cache_import_types"`
+	AllowedCacheExportTypes []string `mapstructure:"allowed_cache_export_types"`
+	// AllowedCacheRegistries gates the registry host of a "registry"-typed
+	// cache import/export's ref attribute — shared between imports and
+	// exports since both name the same kind of remote cache manifest
+	// location. Default empty (deny all).
+	AllowedCacheRegistries []string `mapstructure:"allowed_cache_registries"`
+
+	// AllowedExporters gates the "Type" of each entry in a Solve's Exporters
+	// (e.g. "image", "oci", "docker", "local", "tar"). Default empty (deny
+	// all).
+	AllowedExporters []string `mapstructure:"allowed_exporters"`
+	// AllowedExporterRegistries gates the registry host an "image"-typed
+	// exporter pushes to. Default empty (deny all).
+	AllowedExporterRegistries []string `mapstructure:"allowed_exporter_registries"`
+}
+
+// BuildkitSessionRequestBodyConfig gates the services buildkitd calls back
+// into the client for over POST /session. moby.buildkit.v1.frontend.LLBBridge,
+// moby.exporter.v1.Exporter, and
+// moby.buildkit.v1.sourcepolicy.policysession.PolicyVerifier have no
+// enabling knob at all — see buildkitproxy.DeniedExamples.
+type BuildkitSessionRequestBodyConfig struct {
+	// Health permits the passthrough grpc.health.v1.Health/{Check,Watch}
+	// RPCs. Default false.
+	Health bool `mapstructure:"health"`
+	// Auth gates moby.filesync.v1.Auth's four RPCs (Credentials,
+	// FetchToken, GetTokenAuthority, VerifyTokenAuthority) — "Auth/*" in
+	// the #185 synthesis; one Allow flag governs all four, since a client
+	// implementation cannot meaningfully use one without the others.
+	Auth BuildkitAuthRequestBodyConfig `mapstructure:"auth"`
+	// Secrets gates moby.buildkit.secrets.v1.Secrets/GetSecret.
+	Secrets BuildkitSecretsRequestBodyConfig `mapstructure:"secrets"`
+	// SSH gates moby.sshforward.v1.SSH's CheckAgent and ForwardAgent RPCs —
+	// "SSH/{CheckAgent,ForwardAgent}" in the #185 synthesis.
+	SSH BuildkitSSHRequestBodyConfig `mapstructure:"ssh"`
+	// FileSync gates moby.filesync.v1.FileSync/DiffCopy.
+	// FileSync/TarStream has no enabling knob — see
+	// buildkitproxy.DeniedExamples.
+	FileSync BuildkitFileSyncRequestBodyConfig `mapstructure:"file_sync"`
+	// FileSend gates moby.filesync.v1.FileSend/DiffCopy.
+	FileSend BuildkitFileSendRequestBodyConfig `mapstructure:"file_send"`
+	// Upload gates moby.upload.v1.Upload/Pull.
+	Upload BuildkitUploadRequestBodyConfig `mapstructure:"upload"`
+}
+
+// BuildkitAuthRequestBodyConfig gates moby.filesync.v1.Auth. Per the #185
+// synthesis ("registry/realm/scope allowlists"), once the mediator exists a
+// call is admitted only when its registry host, realm, and scope each match
+// one of the corresponding allowlists below (empty = deny, the standard
+// RequestBodyConfig convention) — Allow alone does not admit every host.
+type BuildkitAuthRequestBodyConfig struct {
+	Allow             bool     `mapstructure:"allow"`
+	AllowedRegistries []string `mapstructure:"allowed_registries"`
+	AllowedRealms     []string `mapstructure:"allowed_realms"`
+	AllowedScopes     []string `mapstructure:"allowed_scopes"`
+}
+
+// BuildkitSecretsRequestBodyConfig gates
+// moby.buildkit.secrets.v1.Secrets/GetSecret. Per the #185 synthesis
+// ("exact ID allowlists"), once the mediator exists a call is admitted only
+// when its secret ID exactly matches an entry in AllowedIDs (empty = deny).
+type BuildkitSecretsRequestBodyConfig struct {
+	Allow      bool     `mapstructure:"allow"`
+	AllowedIDs []string `mapstructure:"allowed_ids"`
+}
+
+// BuildkitSSHRequestBodyConfig gates moby.sshforward.v1.SSH. Per the #185
+// synthesis ("exact ID allowlists"), once the mediator exists a call is
+// admitted only when its SSH agent ID exactly matches an entry in
+// AllowedIDs (empty = deny).
+type BuildkitSSHRequestBodyConfig struct {
+	Allow      bool     `mapstructure:"allow"`
+	AllowedIDs []string `mapstructure:"allowed_ids"`
+}
+
+// BuildkitFileSyncRequestBodyConfig gates moby.filesync.v1.FileSync/DiffCopy.
+// The Dockerfile hold-and-inspect behavior the #185 synthesis describes
+// reuses request_body.build's allow_run_instructions (threaded through by
+// BuildkitRequestBodyConfig.ToPolicy into buildkitproxy.SolvePolicy, the
+// same way request_body.build's allow_host_network/allow_remote_context are
+// reused for Solve — see BuildkitSolveRequestBodyConfig's doc comment); this
+// block has no allow_run_instructions field of its own for the identical
+// "don't let an operator widen one path and forget the other" reason. The
+// four caps below are Phase 5's own per-profile override of
+// buildkitproxy.Limits' hardcoded FileSync ceilings — zero (unset) leaves
+// the hardcoded default in place; see buildkitproxy.FileSyncPolicy's doc
+// comment for that zero-means-default convention.
+type BuildkitFileSyncRequestBodyConfig struct {
+	Allow bool `mapstructure:"allow"`
+	// MaxFiles caps the number of files/dirs a single FileSync/DiffCopy
+	// stream may declare. Zero uses buildkitproxy.Limits.MaxFileSyncFiles.
+	MaxFiles int `mapstructure:"max_files"`
+	// MaxTotalBytes caps the cumulative bytes relayed across an entire
+	// FileSync/DiffCopy stream. Zero uses
+	// buildkitproxy.Limits.MaxFileSyncTotalBytes.
+	MaxTotalBytes int64 `mapstructure:"max_total_bytes"`
+	// MaxPathLength caps the byte length of any single file path or symlink
+	// target. Zero uses buildkitproxy.Limits.MaxFileSyncPathLength.
+	MaxPathLength int `mapstructure:"max_path_length"`
+	// MaxFileBytes caps the bytes belonging to any ONE file within a
+	// FileSync/DiffCopy stream, including the Dockerfile hold-and-inspect
+	// buffer. Zero uses buildkitproxy.Limits.MaxFileSyncFileBytes.
+	MaxFileBytes int64 `mapstructure:"max_file_bytes"`
+}
+
+// BuildkitFileSendRequestBodyConfig gates moby.filesync.v1.FileSend/DiffCopy.
+// FileSend content is never inspected — only capped; see
+// buildkitproxy.rawByteCapValidator's doc comment for why.
+type BuildkitFileSendRequestBodyConfig struct {
+	Allow bool `mapstructure:"allow"`
+	// MaxBytes caps the cumulative bytes relayed for a single FileSend/
+	// DiffCopy stream. Zero uses buildkitproxy.Limits.MaxFileSendBytes.
+	MaxBytes int64 `mapstructure:"max_bytes"`
+}
+
+// BuildkitUploadRequestBodyConfig gates moby.upload.v1.Upload/Pull. Upload
+// content is never inspected — only capped.
+type BuildkitUploadRequestBodyConfig struct {
+	Allow bool `mapstructure:"allow"`
+	// MaxBytes caps the cumulative bytes relayed for a single Upload/Pull
+	// stream. Zero uses buildkitproxy.Limits.MaxUploadBytes.
+	MaxBytes int64 `mapstructure:"max_bytes"`
 }
 
 // ClientsConfig configures coarse per-client access controls.
@@ -1295,6 +1592,24 @@ func Defaults() Config {
 			},
 			Plugin: PluginRequestBodyConfig{
 				AllowOfficial: true,
+			},
+			// Network.EndpointConfig.AllowAliases defaults true so the granular
+			// form's default reproduces allow_endpoint_config's long-standing
+			// unconditional-allow behavior for Aliases exactly (#186) — see
+			// EndpointConfigRequestBodyConfig's doc comment. LibpodNetwork
+			// reuses the same struct type and gets the identical default for
+			// posture consistency, even though it has no libpod-native network
+			// connect endpoint to gate and never consults EndpointConfig at all
+			// — see libpod_network.go.
+			Network: NetworkRequestBodyConfig{
+				EndpointConfig: EndpointConfigRequestBodyConfig{
+					AllowAliases: true,
+				},
+			},
+			LibpodNetwork: NetworkRequestBodyConfig{
+				EndpointConfig: EndpointConfigRequestBodyConfig{
+					AllowAliases: true,
+				},
 			},
 		},
 		Clients: ClientsConfig{

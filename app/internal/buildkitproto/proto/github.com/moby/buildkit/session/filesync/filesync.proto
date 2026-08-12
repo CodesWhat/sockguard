@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package moby.filesync.v1;
+
+// go_package is retargeted to sockguard's vendored-package layout so the
+// generated Go code's import statements resolve inside this module; this is
+// the ONLY deviation from the upstream file — see PROVENANCE.md.
+option go_package = "github.com/codeswhat/sockguard/internal/buildkitproto/filesync;filesync";
+
+import "github.com/tonistiigi/fsutil/types/wire.proto";
+
+// FileSync exposes local files from the client to the server.
+service FileSync{
+	rpc DiffCopy(stream fsutil.types.Packet) returns (stream fsutil.types.Packet);
+	rpc TarStream(stream fsutil.types.Packet) returns (stream fsutil.types.Packet);
+}
+
+// FileSend allows sending files from the server back to the client.
+service FileSend{
+	rpc DiffCopy(stream BytesMessage) returns (stream BytesMessage);
+}
+
+// BytesMessage contains a chunk of byte data
+message BytesMessage {
+	bytes data = 1;
+}

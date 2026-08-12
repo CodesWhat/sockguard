@@ -2,6 +2,11 @@
 
 import { execFileSync } from 'node:child_process';
 
+// Includes the current Conventional Commits type list (build, ci added
+// alongside the retired custom types they replace) plus legacy custom
+// types (security, deps) that only appear in old, already-tagged history.
+// Keep the legacy types here so old releases still parse correctly —
+// see the migration note in CHANGELOG.md.
 const PATCH_TYPES = new Set([
   'fix',
   'docs',
@@ -9,14 +14,20 @@ const PATCH_TYPES = new Set([
   'refactor',
   'perf',
   'test',
+  'build',
+  'ci',
   'chore',
   'security',
   'deps',
   'revert',
 ]);
 
+// The optional prefix swallows a legacy leading gitmoji (e.g. "🐛 fix: ...")
+// so old, already-tagged commits still parse — but only emoji, so arbitrary
+// prefixes like "wip fix: ..." don't count toward a release level. The class
+// covers pictographics plus variation selectors/ZWJ for composed emoji.
 const conventionalSubjectRegex =
-  /^(?:\S+\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
+  /^(?:[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{FE0F}\u{200D}]+\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
 
 function commitReleaseLevel(commit) {
   const message = String(commit ?? '').trim();

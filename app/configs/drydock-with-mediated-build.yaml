@@ -1,0 +1,292 @@
+# Sockguard — Drydock with Mediated BuildKit Build Preset
+#
+# Extends drydock-with-compose.yaml with MEDIATED BuildKit support —
+# `docker compose build` / `up --build` run with BuildKit ENABLED (the
+# Docker CLI default; no DOCKER_BUILDKIT=0 needed). Compose drives dockerd's
+# embedded BuildKit frontend/session bridge over two hijacked, unversioned
+# streams, POST /session and POST /grpc (Engine API 1.53 deprecated both;
+# current Buildx 0.36.0 still uses them). As of issue #185's gRPC mediation
+# epic, sockguard terminates both streams as h2c and inspects every gRPC
+# message crossing them instead of hijacking the bytes verbatim — see
+# docs/content/docs/security.mdx's "Compose / BuildKit Transport" section for
+# the full mediation model.
+#
+# This is the successor to drydock-with-build.yaml's CLASSIC (POST /build)
+# builder path: both are now fully inspected transports, but this preset
+# covers the BuildKit path a stock `docker compose build` actually takes
+# without any client-side env var. Use drydock-with-build.yaml instead if you
+# specifically want the classic /build endpoint (e.g. DOCKER_BUILDKIT=0 is
+# already set in your environment for other reasons).
+#
+# request_body.buildkit below is deliberately MINIMAL — only what a plain
+# `docker build`/`docker compose build` of a local Dockerfile against a local
+# context, tagging the result into the local image store, actually needs:
+#
+#   control.solve.allow + allowed_exporters: [image]
+#       Admits the Solve RPC and an "image"-typed exporter (local tag/load).
+#       allowed_exporter_registries stays EMPTY: an "image" exporter only
+#       needs a registry-host match when its "push" attr is true, so a plain
+#       local build/tag never touches that allowlist. Add hosts there (and
+#       flip request_body.build.allow_remote_context if pushing a
+#       remotely-built image) only if you need `docker push`/`--push`.
+#   control.allow_info / allow_list_workers / allow_status
+#       Passthrough worker/version metadata (no policy-relevant fields) plus
+#       the Status RPC buildx uses to stream build progress — without
+#       allow_status a mediated Solve can still complete, but buildx's own
+#       progress-reporting goroutine errors out and the build command exits
+#       non-zero even on a successful build. Status is gated on ref
+#       ownership (a Status call is only ever admitted for a ref this same
+#       client/profile actually Solved), so allowing it does not widen what
+#       a build can see.
+#   session.file_sync.allow
+#       REQUIRED: this is how the Dockerfile and local build context reach
+#       buildkitd at all. request_body.build.allow_run_instructions stays
+#       false below, so the synced Dockerfile still gets the same
+#       RUN-instruction hold-and-inspect scan the classic /build path
+#       applies — this is the actual safety win mediation adds over the
+#       opaque tunnel.
+#
+# Deliberately LEFT DENIED (secure default; widen only if you need it):
+#   request_body.build.{allow_remote_context,allow_host_network,
+#   allow_run_instructions} — all false, identical secure defaults to
+#   drydock-with-build.yaml's classic builder policy; reused verbatim for
+#   Solve's own entitlement/frontend checks (BuildkitRequestBodyConfig.ToPolicy).
+#   session.auth — OFF. A base-image pull during a mediated Solve can
+#   require FetchToken (Docker Hub and most registries challenge even
+#   anonymous pulls for a bearer token), and Auth's realm/scope allowlists
+#   match EXACTLY, not by pattern — there is no single generic allowlist
+#   that covers arbitrary Dockerfiles' arbitrary FROM images. If your build
+#   needs registry auth that dockerd's own daemon-level credentials
+#   (`docker login` on the host, or a configured registry mirror) do not
+#   already satisfy, enable session.auth with the exact registries/realms/
+#   scopes your Dockerfiles need.
+#   session.secrets, session.ssh — OFF. Only needed for
+#   `RUN --mount=type=secret`/`type=ssh`; enable with an exact ID allowlist
+#   if a Dockerfile uses either.
+#   session.file_send, session.upload — OFF. FileSend serves a local/tar
+#   export (`-o type=local`/`type=tar`, not admitted by allowed_exporters
+#   above); Upload serves a remote/stdin build context, which
+#   allow_remote_context: false already denies at the Solve level. Neither
+#   is reachable with this preset's other settings; left explicit for
+#   visibility.
+#
+# Still denied: classic POST /build (use drydock-with-build.yaml if you want
+# that transport instead), and the literal
+# /moby.buildkit.v1.Control/<Method> probe path (no h2c upgrade for any
+# mediator to terminate — see filter.buildkitPolicy's doc comment).
+# insecure_accept_opaque_buildkit_tunnels is NOT set — it is deprecated and
+# mutually exclusive with request_body.buildkit; see migration.mdx if you
+# are moving off it.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+
+health:
+  enabled: true
+  path: /health
+
+# Drydock's update flow inspects the running container, then submits the
+# inspect payload back to dockerd via POST /containers/create. If sockguard
+# redacts HostConfig.Binds / Config.Env / NetworkSettings to "<redacted>" in
+# the inspect response, drydock faithfully forwards that placeholder string
+# into the create body and dockerd rejects it (400 "includes invalid
+# characters for a local volume name"). Disable all three response
+# redactions for this preset — they are mutually exclusive with the
+# auto-updater use case this preset is designed for.
+response:
+  redact_mount_paths: false
+  redact_container_env: false
+  redact_network_topology: false
+
+# Drydock needs container creation during update flows. Container-create bodies
+# are inspected by default, but bind-mounted workloads are denied until you
+# allowlist their host paths here. Image pulls are inspected too; this preset
+# explicitly allows any registry so Drydock can continue tracking arbitrary
+# images while still denying `fromSrc` imports. Container updates are inspected
+# too; restart-policy/resource-control/device/capability changes stay denied
+# unless you explicitly allow them under request_body.container_update.
+request_body:
+  container_create:
+    allowed_bind_mounts: []
+    # Drydock recreates a container from its own inspect spec, which on most
+    # daemons carries an explicit HostConfig.Runtime ("runc"). Sockguard's
+    # allowed_runtimes allowlist denies a non-empty runtime unless it is
+    # listed (an empty/unset runtime selects the daemon default and is always
+    # allowed), so without this entry every update is rejected at
+    # POST /containers/create with 403 "runtime \"runc\" is not allowlisted"
+    # and drydock rolls the update back. Allow the stock runtime only.
+    allowed_runtimes:
+      - runc
+  image_pull:
+    allow_all_registries: true
+  # Mediated BuildKit Solve reuses these three flags verbatim (see
+  # BuildkitRequestBodyConfig.ToPolicy) — same secure defaults as the classic
+  # builder in drydock-with-build.yaml. Explicit false here so the deny
+  # posture is visible at the call site.
+  build:
+    allow_remote_context: false
+    allow_host_network: false
+    allow_run_instructions: false
+  # Mediated BuildKit gRPC policy (issue #185) — see header comment above for
+  # the full rationale behind each admitted/denied field.
+  buildkit:
+    control:
+      allow_info: true
+      allow_list_workers: true
+      allow_status: true
+      solve:
+        allow: true
+        allowed_exporters:
+          - image
+    session:
+      file_sync:
+        allow: true
+
+rules:
+  # Health and metadata
+  - match: { method: GET, path: "/_ping" }
+    action: allow
+  - match: { method: HEAD, path: "/_ping" }
+    action: allow
+  - match: { method: GET, path: "/version" }
+    action: allow
+  - match: { method: GET, path: "/info" }
+    action: allow
+  - match: { method: GET, path: "/events" }
+    action: allow
+
+  # Container reads — narrow set drydock needs (list + inspect + stats).
+  # Deliberately omits /containers/*/logs, /archive, /export, /attach to
+  # keep the exfiltration validator happy.
+  - match: { method: GET, path: "/containers/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/json" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/stats" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/top" }
+    action: allow
+  - match: { method: GET, path: "/containers/*/changes" }
+    action: allow
+
+  # Container lifecycle
+  - match: { method: POST, path: "/containers/*/start" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/stop" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/restart" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/kill" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/rename" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/update" }
+    action: allow
+  - match: { method: POST, path: "/containers/*/wait" }
+    action: allow
+  - match: { method: DELETE, path: "/containers/*" }
+    action: allow
+
+  # Container creation (for updates)
+  - match: { method: POST, path: "/containers/create" }
+    action: allow
+
+  # Image reads — list + inspect + history. Image names can be namespaced
+  # (linuxserver/qbittorrent:latest, ghcr.io/owner/repo:tag), so the
+  # middle is matched with `**`. The trailing /json or /history segment
+  # keeps the exfiltration validator happy by not matching /images/get
+  # or /images/*/get (raw tarball exfil).
+  - match: { method: GET, path: "/images/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/json" }
+    action: allow
+  - match: { method: GET, path: "/images/**/history" }
+    action: allow
+  - match: { method: POST, path: "/images/create" }
+    action: allow
+  - match: { method: DELETE, path: "/images/**" }
+    action: allow
+
+  # Mediated BuildKit tunnel only — see header comment. Classic /build and
+  # the literal /moby.buildkit.v1.Control/<Method> probe path stay denied by
+  # the catch-all rule below.
+  - match: { method: POST, path: "/session" }
+    action: allow
+  - match: { method: POST, path: "/grpc" }
+    action: allow
+
+  # Network read + lifecycle. list/inspect/connect carried over from
+  # drydock.yaml (connect: when the recreated container belongs to more than
+  # one network, drydock attaches the extra networks via
+  # POST /networks/{id}/connect — the create body only carries the first
+  # network). create/delete/disconnect are new here so compose can own its
+  # stack network's full lifecycle.
+  #
+  # Endpoint-config policy (request_body.network.endpoint_config, #186) is
+  # enforced identically on this connect call AND on POST /containers/create's
+  # own NetworkingConfig.EndpointsConfig. Endpoint Aliases default to allowed
+  # (Compose sets Aliases on every endpoint it creates, so a plain
+  # multi-network compose recreate works by default with no config change),
+  # but can be denied explicitly with endpoint_config.allow_aliases: false.
+  # Static IP addressing, link-local IPs, MAC pinning, and gateway priority
+  # each have their own granular gate (endpoint_config.allow_static_addressing /
+  # allow_link_local_ips / allow_mac_pinning / allow_gw_priority) an operator
+  # can enable individually for recreated containers that need one but not
+  # the others. Endpoint DriverOpts (e.g. macvlan with a pinned address) and
+  # Links have no granular gate at all — recreated containers that need
+  # either must set request_body.network.allow_endpoint_config: true here
+  # instead, which admits every endpoint field at once (and is mutually
+  # exclusive with endpoint_config — see Configuration docs), or the
+  # connect/create call for that network is denied. On drydock >=1.5.3 a
+  # denial fails the update and drydock rolls back to the old container
+  # (best-effort: if the rollback itself fails, drydock records it in its
+  # update-operation history/audit log without a push notification, so check
+  # drydock's operation history after a denied request). Older drydock
+  # versions could leave an orphaned Created container on the network
+  # instead.
+  - match: { method: GET, path: "/networks" }
+    action: allow
+  - match: { method: GET, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/connect" }
+    action: allow
+  - match: { method: POST, path: "/networks/create" }
+    action: allow
+  - match: { method: DELETE, path: "/networks/*" }
+    action: allow
+  - match: { method: POST, path: "/networks/*/disconnect" }
+    action: allow
+
+  # Volume read + lifecycle. list/inspect carried over from drydock.yaml;
+  # create/delete are new here for compose-managed named volumes.
+  - match: { method: GET, path: "/volumes" }
+    action: allow
+  - match: { method: GET, path: "/volumes/*" }
+    action: allow
+  - match: { method: POST, path: "/volumes/create" }
+    action: allow
+  - match: { method: DELETE, path: "/volumes/*" }
+    action: allow
+
+  # Distribution (registry digest checks for image freshness). Image
+  # references in the URL can be multi-segment (registry/owner/repo:tag).
+  - match: { method: GET, path: "/distribution/**/json" }
+    action: allow
+
+  # Swarm services — list + inspect. /services/*/logs is intentionally
+  # omitted to keep the exfiltration validator happy.
+  - match: { method: GET, path: "/services" }
+    action: allow
+  - match: { method: GET, path: "/services/*" }
+    action: allow
+
+  # Deny everything else — including classic /build and the literal
+  # /moby.buildkit.v1.Control/<Method> probe path (see header comment).
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by drydock-with-mediated-build preset"

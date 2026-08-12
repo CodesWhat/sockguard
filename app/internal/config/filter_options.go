@@ -16,8 +16,10 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 	// POST /networks/*/connect already gates via network.allow_endpoint_config,
 	// so a second knob would let an operator widen one endpoint and forget the
 	// other. One flag governs both — see filter.ContainerCreateOptions.AllowEndpointConfig.
+	// The granular endpoint_config block (#186) is cross-wired the same way.
 	containerCreate := c.ContainerCreate.ToFilterOptions()
 	containerCreate.AllowEndpointConfig = c.Network.AllowEndpointConfig
+	containerCreate.EndpointConfig = c.Network.EndpointConfig.ToFilterOptions()
 
 	return filter.PolicyConfig{
 		ContainerCreate:       containerCreate,
@@ -40,6 +42,11 @@ func (c RequestBodyConfig) ToFilterOptions() filter.PolicyConfig {
 		LibpodVolume:          c.LibpodVolume.ToFilterOptions(),
 		LibpodNetwork:         c.LibpodNetwork.ToFilterOptions(),
 		LibpodSecret:          c.LibpodSecret.ToFilterOptions(),
+		// Buildkit carries ONLY the Configured signal — see
+		// filter.BuildkitOptions's doc comment for why the richer
+		// buildkitproxy.Policy translation (c.Buildkit.ToPolicy(c.Build))
+		// isn't threaded through here yet.
+		Buildkit: filter.BuildkitOptions{TunnelConfigured: c.Buildkit.ToPolicy(c.Build).Configured()},
 	}
 }
 
@@ -235,8 +242,26 @@ func (c NetworkRequestBodyConfig) ToFilterOptions() filter.NetworkOptions {
 		AllowIPAMOptions:       c.AllowIPAMOptions,
 		AllowDriverOptions:     c.AllowDriverOptions,
 		AllowEndpointConfig:    c.AllowEndpointConfig,
+		EndpointConfig:         c.EndpointConfig.ToFilterOptions(),
 		AllowDisconnectForce:   c.AllowDisconnectForce,
 		AllowDisableIPv4:       c.AllowDisableIPv4,
+	}
+}
+
+// ToFilterOptions converts the granular endpoint_config block (#186) into
+// filter.EndpointConfigOptions. AllowAliases is inverted to DenyAliases: the
+// filter package's zero value must preserve the historical unconditional-
+// allow behavior for Aliases (DenyAliases false), while this config type's
+// zero value must not silently deny Aliases either — it defaults true via
+// config.Defaults() — so the two types intentionally use opposite polarity
+// for this one field. See EndpointConfigRequestBodyConfig's doc comment.
+func (c EndpointConfigRequestBodyConfig) ToFilterOptions() filter.EndpointConfigOptions {
+	return filter.EndpointConfigOptions{
+		AllowStaticAddressing: c.AllowStaticAddressing,
+		AllowLinkLocalIPs:     c.AllowLinkLocalIPs,
+		AllowMACPinning:       c.AllowMACPinning,
+		AllowGwPriority:       c.AllowGwPriority,
+		DenyAliases:           !c.AllowAliases,
 	}
 }
 

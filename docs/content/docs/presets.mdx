@@ -1,6 +1,6 @@
 ---
 title: Presets
-description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
+description: Ready-made sockguard configs for drydock, drydock with self-update, drydock with compose, drydock with build, drydock with mediated build, Portwing, Portwing with exec, Portwing with compose, Portwing with build, Portwing with mediated build, Traefik, Portainer, Watchtower, Homepage, Homarr, Diun, Autoheal, GitHub Actions and GitLab runners, the CIS Docker Benchmark, read-only dashboards, and Podman read-only monitoring.
 ---
 
 Sockguard ships with ready-made config presets for common Docker consumers. All presets are bundled in the container image at `/etc/sockguard/`.
@@ -72,11 +72,12 @@ through this proxy, not just a single standalone container.
 # Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
 # with default settings never calls POST /build at all — it drives dockerd's
 # embedded BuildKit over the hijacked, unversioned /session and /grpc streams
-# instead, both denied here. Use drydock-with-build.yaml if you need `--build`
-# support: it layers CLASSIC builder support (POST /build only, requires
-# DOCKER_BUILDKIT=0 in the client) on top of this preset without opening
-# /session or /grpc. See the Compose/BuildKit Transport section of the
-# security model docs for the full breakdown.
+# instead, both denied here. Use drydock-with-mediated-build.yaml if you want
+# `--build` support with BuildKit's default (no env var) transport, fully
+# mediated (issue #185) rather than opened wholesale. Use drydock-with-build.yaml
+# instead if you specifically want the CLASSIC builder (POST /build only,
+# requires DOCKER_BUILDKIT=0 in the client). See the Compose/BuildKit
+# Transport section of the security model docs for the full breakdown.
 # Self-update finalize exec is still denied, same caveat as drydock.yaml;
 # combine with drydock-with-selfupdate.yaml by hand if you need both
 ```
@@ -97,13 +98,49 @@ of only pulling pre-built ones — with the caveat that the client must run with
 #         secure defaults (allow_remote_context/allow_host_network/
 #         allow_run_instructions all false)
 # Still denies: /session, /grpc, and any moby.buildkit.v1.Control method path
-# — BuildKit's opaque session/gRPC tunnel carries secrets, SSH agent
-# forwarding, and file sync sockguard cannot inspect or bound once opened.
-# THIS FAILURE IS INTENTIONAL: modern Buildx defaults to BuildKit, so a
-# default `docker compose build` against this preset still fails with a
-# /session or /grpc denial. Set DOCKER_BUILDKIT=0 in the client environment
-# to fall back to the classic builder this preset actually supports.
-# BuildKit gRPC mediation is a v1.7+ epic, not implemented here.
+# — this preset does not open either endpoint, no insecure_accept_opaque_
+# buildkit_tunnels acknowledgment (now deprecated) and no request_body.buildkit
+# mediation policy. THIS FAILURE IS INTENTIONAL: modern Buildx defaults to
+# BuildKit, so a default `docker compose build` against this preset still
+# fails with a /session or /grpc denial. Set DOCKER_BUILDKIT=0 in the client
+# environment to fall back to the classic builder this preset actually
+# supports, or use drydock-with-mediated-build.yaml for the fully-mediated
+# BuildKit alternative.
+```
+
+## Drydock with Mediated Build (`drydock-with-mediated-build.yaml`)
+
+Extends `drydock-with-compose.yaml` with **mediated BuildKit** support —
+`docker compose build` / `up --build` run with BuildKit enabled (the Docker
+CLI default, no `DOCKER_BUILDKIT=0` needed). Sockguard terminates the
+`POST /session`/`POST /grpc` tunnel as h2c and inspects every gRPC message
+crossing it (issue #185) instead of admitting the tunnel wholesale.
+
+**Use for:** drydock-managed compose stacks that build images locally with
+BuildKit's default transport, where you want the same per-message inspection
+this preset's classic-builder sibling gets for `/build`.
+
+```yaml
+# Extends drydock-with-compose.yaml with:
+# Allows: POST /session, POST /grpc — mediated only; request_body.buildkit
+#         admits Control.Solve (an "image"-typed exporter, no push registry
+#         allowlisted), Control.Info/ListWorkers/Status (worker metadata and
+#         ref-owned build progress), and Session.FileSync (REQUIRED — this is
+#         how the Dockerfile and context reach buildkitd; still subject to
+#         the same RUN-instruction hold-and-inspect scan classic /build gets,
+#         since allow_run_instructions stays false)
+# request_body.build's three flags stay at their secure defaults
+# (allow_remote_context/allow_host_network/allow_run_instructions all false),
+# reused verbatim for Solve's own entitlement/frontend checks
+# Left denied by default (widen only if you need it): session.auth (base-image
+# pulls needing registry auth — exact realm/scope match, no generic default
+# covers arbitrary Dockerfiles), session.secrets/ssh (RUN --mount=type=secret/
+# ssh), session.file_send/upload (local/tar export, remote/stdin context)
+# Still denies: classic POST /build (use drydock-with-build.yaml instead) and
+# the literal /moby.buildkit.v1.Control/<Method> probe path (no h2c upgrade
+# for any mediator to terminate)
+# insecure_accept_opaque_buildkit_tunnels is NOT set — it is deprecated and
+# mutually exclusive with request_body.buildkit
 ```
 
 ## Portwing (`portwing.yaml`)
@@ -169,11 +206,12 @@ plain container orchestration.
 # Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
 # with default settings never calls POST /build at all — it drives dockerd's
 # embedded BuildKit over the hijacked, unversioned /session and /grpc streams
-# instead, both denied here. Use portwing-with-build.yaml if you need
-# `--build` support: it layers CLASSIC builder support (POST /build only,
-# requires DOCKER_BUILDKIT=0 in the client) on top of this preset without
-# opening /session or /grpc. See the Compose/BuildKit Transport section of
-# the security model docs for the full breakdown.
+# instead, both denied here. Use portwing-with-mediated-build.yaml if you want
+# `--build` support with BuildKit's default (no env var) transport, fully
+# mediated (issue #185) rather than opened wholesale. Use portwing-with-build.yaml
+# instead if you specifically want the CLASSIC builder (POST /build only,
+# requires DOCKER_BUILDKIT=0 in the client). See the Compose/BuildKit
+# Transport section of the security model docs for the full breakdown.
 # insecure_allow_read_exfiltration=true is inherited from portwing.yaml for the
 # GET /containers/*/logs rule (see the Portwing section above)
 # Exec is denied, same as portwing.yaml — combine with portwing-with-exec.yaml's
@@ -195,15 +233,53 @@ run with `DOCKER_BUILDKIT=0` set (see below).
 #         secure defaults (allow_remote_context/allow_host_network/
 #         allow_run_instructions all false)
 # Still denies: /session, /grpc, and any moby.buildkit.v1.Control method path
-# — BuildKit's opaque session/gRPC tunnel carries secrets, SSH agent
-# forwarding, and file sync sockguard cannot inspect or bound once opened.
-# THIS FAILURE IS INTENTIONAL: modern Buildx defaults to BuildKit, so a
-# default `docker compose build` against this preset still fails with a
-# /session or /grpc denial. Set DOCKER_BUILDKIT=0 in the client environment
-# to fall back to the classic builder this preset actually supports.
+# — this preset does not open either endpoint, no insecure_accept_opaque_
+# buildkit_tunnels acknowledgment (now deprecated) and no request_body.buildkit
+# mediation policy. THIS FAILURE IS INTENTIONAL: modern Buildx defaults to
+# BuildKit, so a default `docker compose build` against this preset still
+# fails with a /session or /grpc denial. Set DOCKER_BUILDKIT=0 in the client
+# environment to fall back to the classic builder this preset actually
+# supports, or use portwing-with-mediated-build.yaml for the fully-mediated
+# BuildKit alternative.
 # insecure_allow_read_exfiltration=true is inherited from portwing.yaml for the
 # GET /containers/*/logs rule (see the Portwing section above)
-# BuildKit gRPC mediation is a v1.7+ epic, not implemented here.
+```
+
+## Portwing with Mediated Build (`portwing-with-mediated-build.yaml`)
+
+Extends `portwing-with-compose.yaml` with **mediated BuildKit** support —
+`docker compose build` / `up --build` run with BuildKit enabled (the Docker
+CLI default, no `DOCKER_BUILDKIT=0` needed). Sockguard terminates the
+`POST /session`/`POST /grpc` tunnel as h2c and inspects every gRPC message
+crossing it (issue #185) instead of admitting the tunnel wholesale.
+
+**Use for:** Portwing-managed compose stacks that build images locally with
+BuildKit's default transport, where you want the same per-message inspection
+this preset's classic-builder sibling gets for `/build`.
+
+```yaml
+# Extends portwing-with-compose.yaml with:
+# Allows: POST /session, POST /grpc — mediated only; request_body.buildkit
+#         admits Control.Solve (an "image"-typed exporter, no push registry
+#         allowlisted), Control.Info/ListWorkers/Status (worker metadata and
+#         ref-owned build progress), and Session.FileSync (REQUIRED — this is
+#         how the Dockerfile and context reach buildkitd; still subject to
+#         the same RUN-instruction hold-and-inspect scan classic /build gets,
+#         since allow_run_instructions stays false)
+# request_body.build's three flags stay at their secure defaults
+# (allow_remote_context/allow_host_network/allow_run_instructions all false),
+# reused verbatim for Solve's own entitlement/frontend checks
+# Left denied by default (widen only if you need it): session.auth (base-image
+# pulls needing registry auth — exact realm/scope match, no generic default
+# covers arbitrary Dockerfiles), session.secrets/ssh (RUN --mount=type=secret/
+# ssh), session.file_send/upload (local/tar export, remote/stdin context)
+# Still denies: classic POST /build (use portwing-with-build.yaml instead) and
+# the literal /moby.buildkit.v1.Control/<Method> probe path (no h2c upgrade
+# for any mediator to terminate)
+# insecure_allow_read_exfiltration=true is inherited from portwing.yaml for the
+# GET /containers/*/logs rule (see the Portwing section above)
+# insecure_accept_opaque_buildkit_tunnels is NOT set — it is deprecated and
+# mutually exclusive with request_body.buildkit
 ```
 
 ## Traefik (`traefik.yaml`)

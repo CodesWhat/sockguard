@@ -9,6 +9,38 @@ import (
 
 const maxNetworkBodyBytes = 1 << 20 // 1 MiB
 
+// EndpointConfigOptions narrows AllowEndpointConfig into independent
+// per-field gates on Docker's EndpointSettings object (#186), so an operator
+// can admit a benign field (e.g. Aliases) without also admitting address
+// pinning. Only consulted when AllowEndpointConfig is false — see
+// denyEndpointConfigReason's precedence doc comment. Fields with no gate
+// here (Links, DriverOpts) have no individual escape hatch: only
+// AllowEndpointConfig: true can admit them, fail-closed by design.
+type EndpointConfigOptions struct {
+	// AllowStaticAddressing permits every field endpointHasStaticAddressFields
+	// checks: IPAMConfig.IPv4Address/IPv6Address and the deprecated top-level
+	// Gateway/IPAddress/IPPrefixLen/IPv6Gateway/GlobalIPv6Address/
+	// GlobalIPv6PrefixLen fields. Default false.
+	AllowStaticAddressing bool
+	// AllowLinkLocalIPs permits IPAMConfig.LinkLocalIPs, independent of
+	// AllowStaticAddressing. Default false.
+	AllowLinkLocalIPs bool
+	// AllowMACPinning permits MacAddress — shared by network connect's
+	// EndpointConfig and container-create's deprecated top-level MacAddress
+	// field (see container_create.go's denyRootMacAddressReason). Default false.
+	AllowMACPinning bool
+	// AllowGwPriority permits GwPriority (Engine API 1.55+). Default false.
+	AllowGwPriority bool
+	// DenyAliases denies Aliases when true. Inverted polarity (unlike every
+	// other field here) so a zero-value EndpointConfigOptions reproduces the
+	// historical, unconditional "Aliases always allowed" behavior exactly —
+	// see denyEndpointConfigReason's doc comment for why Aliases is never
+	// gated by default. config.EndpointConfigRequestBodyConfig exposes this
+	// to operators as allow_aliases (default true) and inverts it during
+	// ToFilterOptions.
+	DenyAliases bool
+}
+
 // NetworkOptions configures request-body policy checks for network write endpoints.
 type NetworkOptions struct {
 	AllowCustomDrivers     bool
@@ -22,7 +54,10 @@ type NetworkOptions struct {
 	AllowIPAMOptions       bool
 	AllowDriverOptions     bool
 	AllowEndpointConfig    bool
-	AllowDisconnectForce   bool
+	// EndpointConfig narrows AllowEndpointConfig into per-field gates (#186).
+	// Only consulted when AllowEndpointConfig is false.
+	EndpointConfig       EndpointConfigOptions
+	AllowDisconnectForce bool
 	// AllowDisableIPv4 permits POST /networks/create with EnableIPv4
 	// explicitly false (Engine API 1.48+). Default false.
 	AllowDisableIPv4 bool
@@ -40,6 +75,7 @@ type networkPolicy struct {
 	allowIPAMOptions       bool
 	allowDriverOptions     bool
 	allowEndpointConfig    bool
+	endpointConfig         EndpointConfigOptions
 	allowDisconnectForce   bool
 	allowDisableIPv4       bool
 }
@@ -115,6 +151,7 @@ func newNetworkPolicy(opts NetworkOptions) networkPolicy {
 		allowIPAMOptions:       opts.AllowIPAMOptions,
 		allowDriverOptions:     opts.AllowDriverOptions,
 		allowEndpointConfig:    opts.AllowEndpointConfig,
+		endpointConfig:         opts.EndpointConfig,
 		allowDisconnectForce:   opts.AllowDisconnectForce,
 		allowDisableIPv4:       opts.AllowDisableIPv4,
 	}
@@ -213,7 +250,7 @@ func (p networkPolicy) inspectConnect(logger *slog.Logger, r *http.Request, body
 	if req.EndpointConfig == nil {
 		return "", nil
 	}
-	if reason := denyEndpointConfigReason(*req.EndpointConfig, p.allowEndpointConfig, "network connect"); reason != "" {
+	if reason := denyEndpointConfigReason(*req.EndpointConfig, p.allowEndpointConfig, p.endpointConfig, "network connect"); reason != "" {
 		return reason, nil
 	}
 
@@ -221,30 +258,48 @@ func (p networkPolicy) inspectConnect(logger *slog.Logger, r *http.Request, body
 }
 
 // denyEndpointConfigReason evaluates a single Docker network endpoint config
-// (EndpointSettings) against the allow_endpoint_config policy, returning a
-// "<subject> denied: ..." message (or "" when allowed). subject distinguishes
-// the calling context in the denial grammar — "network connect" for
-// POST /networks/*/connect, "container create" for the primary/extra
-// networks carried in POST /containers/create's NetworkingConfig.EndpointsConfig
-// — mirroring the subject-prefixed pattern capabilityAddDenyReason already
-// uses to share a check between container-create and service inspection.
+// (EndpointSettings) against the allow_endpoint_config / endpoint_config
+// policy, returning a "<subject> denied: ..." message (or "" when allowed).
+// subject distinguishes the calling context in the denial grammar —
+// "network connect" for POST /networks/*/connect, "container create" for the
+// primary/extra networks carried in POST /containers/create's
+// NetworkingConfig.EndpointsConfig — mirroring the subject-prefixed pattern
+// capabilityAddDenyReason already uses to share a check between
+// container-create and service inspection.
 //
-// Aliases are deliberately NEVER gated here, independent of allow. Docker
-// Compose sets Aliases: [serviceName] on every endpoint it creates, so
-// gating aliases broke every multi-network Compose recreate under the
-// default policy. Aliases were also never enforced on container-create's
-// primary network (the only inspector that previously existed), so gating
-// them only at connect was a bypassable, low-value control rather than a
-// real guarantee. Links remains gated — joining another container's linked
-// alias namespace is a materially different, higher-privilege primitive.
-func denyEndpointConfigReason(ep networkEndpointConfig, allow bool, subject string) string {
+// Precedence (#186): allow (AllowEndpointConfig) is the legacy whole-object
+// escape hatch and, when true, always wins — every field is admitted and
+// granular is not consulted at all (config validation rejects a config that
+// sets both, so this is never an operator surprise in practice). When allow
+// is false, granular applies per field: AllowStaticAddressing,
+// AllowLinkLocalIPs, AllowMACPinning, and AllowGwPriority each gate their own
+// field independently. Links and DriverOpts have no granular field of their
+// own — with allow false they are always denied, fail-closed, regardless of
+// granular's other settings; only allow=true can admit them.
+//
+// Aliases are gated by granular.DenyAliases, which defaults false (allowed)
+// so the historical, unconditional-allow behavior is preserved when granular
+// is left at its zero value: Docker Compose sets Aliases: [serviceName] on
+// every endpoint it creates, so gating aliases by default broke every
+// multi-network Compose recreate. Aliases were also never enforced on
+// container-create's primary network (the only inspector that previously
+// existed), so gating them only at connect was a bypassable, low-value
+// control rather than a real guarantee. An operator who genuinely wants
+// Aliases denied can now do so explicitly via endpoint_config.allow_aliases:
+// false. Links remains unconditionally gated — joining another container's
+// linked alias namespace is a materially different, higher-privilege
+// primitive than an Aliases DNS name.
+func denyEndpointConfigReason(ep networkEndpointConfig, allow bool, granular EndpointConfigOptions, subject string) string {
 	if allow {
 		return ""
 	}
-	if endpointHasStaticIPConfig(ep) {
+	if !granular.AllowStaticAddressing && endpointHasStaticAddressFields(ep) {
 		return fmt.Sprintf("%s denied: endpoint static IP configuration is not allowed", subject)
 	}
-	if strings.TrimSpace(ep.MacAddress) != "" {
+	if !granular.AllowLinkLocalIPs && endpointHasLinkLocalIPs(ep) {
+		return fmt.Sprintf("%s denied: endpoint link-local IP addresses are not allowed", subject)
+	}
+	if !granular.AllowMACPinning && strings.TrimSpace(ep.MacAddress) != "" {
 		return fmt.Sprintf("%s denied: endpoint MAC address is not allowed", subject)
 	}
 	if len(ep.Links) > 0 {
@@ -253,8 +308,11 @@ func denyEndpointConfigReason(ep networkEndpointConfig, allow bool, subject stri
 	if len(ep.DriverOpts) > 0 {
 		return fmt.Sprintf("%s denied: endpoint driver options are not allowed", subject)
 	}
-	if ep.GwPriority != 0 {
+	if !granular.AllowGwPriority && ep.GwPriority != 0 {
 		return fmt.Sprintf("%s denied: endpoint gateway priority is not allowed", subject)
+	}
+	if granular.DenyAliases && len(ep.Aliases) > 0 {
+		return fmt.Sprintf("%s denied: endpoint aliases are not allowed", subject)
 	}
 	return ""
 }
@@ -272,11 +330,26 @@ func (p networkPolicy) inspectDisconnect(logger *slog.Logger, r *http.Request, b
 	return "", nil
 }
 
+// endpointHasStaticIPConfig reports whether endpoint carries any static
+// address configuration at all — either the "address" fields
+// (endpointHasStaticAddressFields) or IPAMConfig.LinkLocalIPs
+// (endpointHasLinkLocalIPs). Kept as the combined predicate for callers (and
+// mutation-kill tests) that predate the #186 per-field split; the granular
+// denyEndpointConfigReason path consults the two halves independently so
+// AllowStaticAddressing and AllowLinkLocalIPs can be set independently.
 func endpointHasStaticIPConfig(endpoint networkEndpointConfig) bool {
+	return endpointHasStaticAddressFields(endpoint) || endpointHasLinkLocalIPs(endpoint)
+}
+
+// endpointHasStaticAddressFields reports whether endpoint sets a static
+// IPv4/IPv6 address via IPAMConfig or the deprecated top-level
+// Gateway/IPAddress/IPPrefixLen/IPv6Gateway/GlobalIPv6Address/
+// GlobalIPv6PrefixLen fields — every static-addressing field except
+// IPAMConfig.LinkLocalIPs, which endpointHasLinkLocalIPs covers separately.
+func endpointHasStaticAddressFields(endpoint networkEndpointConfig) bool {
 	if endpoint.IPAMConfig != nil {
 		if strings.TrimSpace(endpoint.IPAMConfig.IPv4Address) != "" ||
-			strings.TrimSpace(endpoint.IPAMConfig.IPv6Address) != "" ||
-			len(endpoint.IPAMConfig.LinkLocalIPs) > 0 {
+			strings.TrimSpace(endpoint.IPAMConfig.IPv6Address) != "" {
 			return true
 		}
 	}
@@ -287,6 +360,11 @@ func endpointHasStaticIPConfig(endpoint networkEndpointConfig) bool {
 		strings.TrimSpace(endpoint.IPv6Gateway) != "" ||
 		strings.TrimSpace(endpoint.GlobalIPv6Address) != "" ||
 		endpoint.GlobalIPv6PrefixLen != 0
+}
+
+// endpointHasLinkLocalIPs reports whether endpoint sets IPAMConfig.LinkLocalIPs.
+func endpointHasLinkLocalIPs(endpoint networkEndpointConfig) bool {
+	return endpoint.IPAMConfig != nil && len(endpoint.IPAMConfig.LinkLocalIPs) > 0
 }
 
 func isNetworkWritePath(normalizedPath string) bool {

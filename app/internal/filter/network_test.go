@@ -536,3 +536,223 @@ func TestNetworkInspectConnectGwPriority(t *testing.T) {
 		})
 	}
 }
+
+// TestNetworkInspectConnectGranularEndpointConfig proves each #186 granular
+// gate independently admits its own field while every other field stays
+// denied — the point of narrowing allow_endpoint_config into per-field
+// controls in the first place.
+func TestNetworkInspectConnectGranularEndpointConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		granular   EndpointConfigOptions
+		body       string
+		wantReason string
+	}{
+		{
+			name:       "static IP denied with no granular allow",
+			granular:   EndpointConfigOptions{},
+			body:       `{"EndpointConfig":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}`,
+			wantReason: "network connect denied: endpoint static IP configuration is not allowed",
+		},
+		{
+			name:     "static IP allowed by AllowStaticAddressing alone",
+			granular: EndpointConfigOptions{AllowStaticAddressing: true},
+			body:     `{"EndpointConfig":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}`,
+		},
+		{
+			name:       "static IP still denied when only link-local is allowed",
+			granular:   EndpointConfigOptions{AllowLinkLocalIPs: true},
+			body:       `{"EndpointConfig":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}`,
+			wantReason: "network connect denied: endpoint static IP configuration is not allowed",
+		},
+		{
+			name:       "link-local IPs denied with no granular allow",
+			granular:   EndpointConfigOptions{},
+			body:       `{"EndpointConfig":{"IPAMConfig":{"LinkLocalIPs":["169.254.1.1"]}}}`,
+			wantReason: "network connect denied: endpoint link-local IP addresses are not allowed",
+		},
+		{
+			name:     "link-local IPs allowed by AllowLinkLocalIPs alone",
+			granular: EndpointConfigOptions{AllowLinkLocalIPs: true},
+			body:     `{"EndpointConfig":{"IPAMConfig":{"LinkLocalIPs":["169.254.1.1"]}}}`,
+		},
+		{
+			name:       "link-local IPs still denied when only static addressing is allowed",
+			granular:   EndpointConfigOptions{AllowStaticAddressing: true},
+			body:       `{"EndpointConfig":{"IPAMConfig":{"LinkLocalIPs":["169.254.1.1"]}}}`,
+			wantReason: "network connect denied: endpoint link-local IP addresses are not allowed",
+		},
+		{
+			name:       "MAC address denied with no granular allow",
+			granular:   EndpointConfigOptions{},
+			body:       `{"EndpointConfig":{"MacAddress":"02:42:ac:1e:00:0a"}}`,
+			wantReason: "network connect denied: endpoint MAC address is not allowed",
+		},
+		{
+			name:     "MAC address allowed by AllowMACPinning alone",
+			granular: EndpointConfigOptions{AllowMACPinning: true},
+			body:     `{"EndpointConfig":{"MacAddress":"02:42:ac:1e:00:0a"}}`,
+		},
+		{
+			name:       "GwPriority denied with no granular allow",
+			granular:   EndpointConfigOptions{},
+			body:       `{"EndpointConfig":{"GwPriority":10}}`,
+			wantReason: "network connect denied: endpoint gateway priority is not allowed",
+		},
+		{
+			name:     "GwPriority allowed by AllowGwPriority alone",
+			granular: EndpointConfigOptions{AllowGwPriority: true},
+			body:     `{"EndpointConfig":{"GwPriority":10}}`,
+		},
+		{
+			name:     "aliases allowed when granular is entirely zero-valued (default)",
+			granular: EndpointConfigOptions{},
+			body:     `{"EndpointConfig":{"Aliases":["web"]}}`,
+		},
+		{
+			name:       "aliases denied when DenyAliases is explicitly set",
+			granular:   EndpointConfigOptions{DenyAliases: true},
+			body:       `{"EndpointConfig":{"Aliases":["web"]}}`,
+			wantReason: "network connect denied: endpoint aliases are not allowed",
+		},
+		{
+			name:       "links have no granular escape hatch — always denied under granular mode",
+			granular:   EndpointConfigOptions{AllowStaticAddressing: true, AllowLinkLocalIPs: true, AllowMACPinning: true, AllowGwPriority: true},
+			body:       `{"EndpointConfig":{"Links":["db:database"]}}`,
+			wantReason: "network connect denied: endpoint links are not allowed",
+		},
+		{
+			name:       "driver options have no granular escape hatch — always denied under granular mode",
+			granular:   EndpointConfigOptions{AllowStaticAddressing: true, AllowLinkLocalIPs: true, AllowMACPinning: true, AllowGwPriority: true},
+			body:       `{"EndpointConfig":{"DriverOpts":{"foo":"bar"}}}`,
+			wantReason: "network connect denied: endpoint driver options are not allowed",
+		},
+		{
+			name:     "every granular field allowed together admits every gated field",
+			granular: EndpointConfigOptions{AllowStaticAddressing: true, AllowLinkLocalIPs: true, AllowMACPinning: true, AllowGwPriority: true},
+			body: `{"EndpointConfig":{
+				"IPAMConfig":{"IPv4Address":"172.30.0.10","LinkLocalIPs":["169.254.1.1"]},
+				"MacAddress":"02:42:ac:1e:00:0a",
+				"GwPriority":10
+			}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := newNetworkPolicy(NetworkOptions{EndpointConfig: tt.granular})
+			req := httptest.NewRequest(http.MethodPost, "/networks/app/connect", strings.NewReader(tt.body))
+
+			reason, err := policy.inspect(nil, req, "/networks/app/connect")
+			if err != nil {
+				t.Fatalf("inspect() error = %v", err)
+			}
+			if reason != tt.wantReason {
+				t.Fatalf("reason = %q, want %q", reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+// TestNetworkInspectConnectAllowEndpointConfigTakesPrecedenceOverGranular
+// proves the legacy whole-object AllowEndpointConfig wins over the granular
+// block, admitting even a field the granular options would deny — matching
+// the precedence documented on denyEndpointConfigReason and enforced at
+// config-load time by validateNetworkEndpointConfig (the two are mutually
+// exclusive in practice; this proves the runtime precedence in case they
+// were ever both non-zero regardless).
+func TestNetworkInspectConnectAllowEndpointConfigTakesPrecedenceOverGranular(t *testing.T) {
+	policy := newNetworkPolicy(NetworkOptions{
+		AllowEndpointConfig: true,
+		EndpointConfig:      EndpointConfigOptions{DenyAliases: true},
+	})
+	body := `{"EndpointConfig":{"IPAMConfig":{"IPv4Address":"172.30.0.10"},"MacAddress":"02:42:ac:1e:00:0a","Aliases":["web"],"GwPriority":10}}`
+	req := httptest.NewRequest(http.MethodPost, "/networks/app/connect", strings.NewReader(body))
+
+	reason, err := policy.inspect(nil, req, "/networks/app/connect")
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if reason != "" {
+		t.Fatalf("inspect() reason = %q, want empty (AllowEndpointConfig should win)", reason)
+	}
+}
+
+// FuzzNetworkConnectEndpointConfigGates fuzzes the #186 granular
+// endpoint-config gates (TestNetworkInspectConnectGranularEndpointConfig's
+// table, generalized) through the full inspect() entrypoint: for every
+// mutation-generated combination of granular EndpointConfigOptions and
+// network-connect body, it asserts the core fail-closed invariant a disabled
+// gate must uphold — if the decoded endpoint sets a field whose gate is off
+// (and the legacy AllowEndpointConfig escape hatch is also off), inspect()
+// must produce a non-empty denial reason for that field. Links and
+// DriverOpts have no granular gate at all, so they must always be denied
+// once AllowEndpointConfig is off, regardless of the other granular flags.
+func FuzzNetworkConnectEndpointConfigGates(f *testing.F) {
+	f.Add(false, false, false, false, false, true, []byte(`{"EndpointConfig":{"IPAMConfig":{"IPv4Address":"172.30.0.10"}}}`))
+	f.Add(false, false, false, false, false, true, []byte(`{"EndpointConfig":{"IPAMConfig":{"LinkLocalIPs":["169.254.1.1"]}}}`))
+	f.Add(false, false, false, false, false, true, []byte(`{"EndpointConfig":{"MacAddress":"02:42:ac:1e:00:0a"}}`))
+	f.Add(false, false, false, false, false, true, []byte(`{"EndpointConfig":{"GwPriority":10}}`))
+	f.Add(false, false, false, false, false, false, []byte(`{"EndpointConfig":{"Aliases":["web"]}}`))
+	f.Add(false, true, true, true, true, true, []byte(`{"EndpointConfig":{"Links":["db:database"]}}`))
+	f.Add(false, true, true, true, true, true, []byte(`{"EndpointConfig":{"DriverOpts":{"foo":"bar"}}}`))
+	f.Add(true, false, false, false, false, true, []byte(`{"EndpointConfig":{"MacAddress":"02:42:ac:1e:00:0a"}}`))
+
+	f.Fuzz(func(t *testing.T, allowEndpointConfig, allowStatic, allowLinkLocal, allowMAC, allowGw, allowAliases bool, body []byte) {
+		body = truncateParserFuzzBytes(body, maxNetworkInspectorFuzzBytes)
+
+		granular := EndpointConfigOptions{
+			AllowStaticAddressing: allowStatic,
+			AllowLinkLocalIPs:     allowLinkLocal,
+			AllowMACPinning:       allowMAC,
+			AllowGwPriority:       allowGw,
+			DenyAliases:           !allowAliases,
+		}
+		policy := newNetworkPolicy(NetworkOptions{
+			AllowEndpointConfig: allowEndpointConfig,
+			EndpointConfig:      granular,
+		})
+
+		req := newJSONInspectorFuzzRequest(http.MethodPost, "/networks/app/connect", "", body)
+		reason, err := policy.inspect(nil, req, "/networks/app/connect")
+		drainFuzzRequestBody(req)
+		if err != nil {
+			return
+		}
+		// The legacy whole-object flag wins outright (denyEndpointConfigReason's
+		// documented precedence) — nothing to assert per-field once it is set.
+		if allowEndpointConfig {
+			return
+		}
+
+		var decoded networkConnectRequest
+		if decodePolicySubsetJSON(body, &decoded) != nil || decoded.EndpointConfig == nil {
+			// Undecodable or absent EndpointConfig: inspect() either denies with
+			// its fixed "could not be inspected" message or has nothing to gate.
+			return
+		}
+		ep := *decoded.EndpointConfig
+
+		if !allowStatic && endpointHasStaticAddressFields(ep) && reason == "" {
+			t.Fatalf("static address field present, AllowStaticAddressing=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+		}
+		if !allowLinkLocal && endpointHasLinkLocalIPs(ep) && reason == "" {
+			t.Fatalf("link-local IPs present, AllowLinkLocalIPs=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+		}
+		if !allowMAC && strings.TrimSpace(ep.MacAddress) != "" && reason == "" {
+			t.Fatalf("MAC address present, AllowMACPinning=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+		}
+		if !allowGw && ep.GwPriority != 0 && reason == "" {
+			t.Fatalf("GwPriority present, AllowGwPriority=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+		}
+		if len(ep.Links) > 0 && reason == "" {
+			t.Fatalf("Links present but reason is empty despite Links having no granular gate (body=%s)", body)
+		}
+		if len(ep.DriverOpts) > 0 && reason == "" {
+			t.Fatalf("DriverOpts present but reason is empty despite DriverOpts having no granular gate (body=%s)", body)
+		}
+		if !allowAliases && len(ep.Aliases) > 0 && reason == "" {
+			t.Fatalf("Aliases present, AllowAliases=false, AllowEndpointConfig=false, but reason is empty (body=%s)", body)
+		}
+	})
+}

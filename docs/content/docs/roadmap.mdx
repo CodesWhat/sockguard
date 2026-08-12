@@ -56,6 +56,17 @@ repository release history.
 
 ## Compatibility boundary
 
+| Workflow | Current status |
+|---|---|
+| Portwing inventory, inspect, stats, logs, events, and lifecycle calls through Sockguard | Supported by `portwing.yaml`; exec requires `portwing-with-exec.yaml` |
+| Compose-managed networks and named volumes | Supported by `portwing-with-compose.yaml` or `drydock-with-compose.yaml` |
+| drydock discovery and container-state sync through Portwing Standard Mode | Supported; the agent handshake and state feed work through Sockguard |
+| Portwing Edge dial-out | Stable with drydock 1.6; drydock 1.5 requires `DD_EXPERIMENTAL_PORTWING=true` |
+| drydock-triggered remote updates through Portwing | **Not implemented** in either mode: Standard trigger routes return `501`; the current Edge protocol has no effective watcher/trigger response contract |
+| Compose `--build` through a bundled preset | **Supported** for both transports: classic `/build` via the `*-with-build.yaml` presets, and BuildKit's session/gRPC tunnel via the fully-mediated `*-with-mediated-build.yaml` presets (issue #185's gRPC mediation epic — see [Security](/security)) |
+
+The compatibility statement is deliberately narrower than “all three tools work together.” Monitoring and authorized container control work. Remote update orchestration does not yet, and Sockguard will not advertise a preset as enabling it until Portwing and drydock implement and test both sides of that contract.
+
 Sockguard will keep supporting documented Docker-compatible clients through
 versioned presets and explicit policy. It will not claim a compatibility path
 until the corresponding published images pass the real-daemon conformance

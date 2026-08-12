@@ -86,51 +86,94 @@ jobs:
         run: |
           sudo mkdir -p /run/podman
           sudo nohup podman system service --time=0 unix:///run/podman/podman.sock >/tmp/podman-rootful.log 2>&1 &
-          for i in $(seq 1 30); do
-            if sudo test -S /run/podman/podman.sock; then
+          # `podman system service` does not create its socket atomically or
+          # once. It binds the path, then unlinks and rebinds it during
+          # startup, and each rebind lands a fresh root-owned 0600 socket in
+          # a root-owned 0700 directory. The Go suite runs as the
+          # unprivileged runner user, so both have to be widened — and a
+          # rebind silently reverts whatever was widened before it.
+          #
+          # That single behaviour produced all three observed failures:
+          #   - "podman.sock never appeared", 60ms into a loop that should
+          #     have waited 30s (present on iteration 1, gone by the guard
+          #     on the next line).
+          #   - "chmod: cannot access ... No such file or directory", 50ms
+          #     after a test -S on that exact path had just passed.
+          #   - ten identical "connect: permission denied" test failures
+          #     after a setup step that had confirmed the socket reachable
+          #     100ms earlier, because the rebind came after that check.
+          #
+          # So nothing here asserts anything about the path in isolation,
+          # and reaching the socket ONCE is explicitly not enough. Every
+          # command here is non-fatal: under `bash -e` a single ENOENT from
+          # one racing a rebind would otherwise kill the step outright.
+          #
+          # Group ownership rather than world access. This is a ROOTFUL
+          # podman API: anything that can talk to it has host-root-
+          # equivalent control, so it goes to the runner's primary group,
+          # not 0666. Short-lived single-purpose VM or not, this repo exists
+          # to stop exactly this kind of socket being handed out too widely.
+          widen() {
+            sudo chgrp "$(id -g)" /run/podman /run/podman/podman.sock 2>/dev/null || true
+            sudo chmod 750 /run/podman 2>/dev/null || true
+            sudo chmod 660 /run/podman/podman.sock 2>/dev/null || true
+          }
+          # Deliberately unprivileged: this is the exact access the test
+          # binary needs, so it fails here rather than inside the suite.
+          ping_ok() {
+            curl --fail --silent --max-time 5 --unix-socket /run/podman/podman.sock http://d/libpod/_ping >/dev/null 2>&1
+          }
+
+          # Phase 1 — reachable at all.
+          ready=""
+          for _ in $(seq 1 30); do
+            widen
+            if ping_ok; then
+              ready=1
               break
             fi
             sleep 1
           done
-          sudo test -S /run/podman/podman.sock || { echo "rootful podman.sock never appeared" >&2; cat /tmp/podman-rootful.log >&2; exit 1; }
-          # The test process runs as the unprivileged runner user; the
-          # service above binds both the socket AND its parent directory
-          # root-owned (mode 0700 on /run/podman, mode 0600 on the socket
-          # itself). Widen both on this short-lived, single-purpose CI VM
-          # rather than running the whole Go test binary under sudo — a
-          # socket chmod alone still 403s at os.Stat/dial time if the
-          # containing directory isn't traversable by the runner user.
-          sudo chmod 755 /run/podman
-          sudo chmod 666 /run/podman/podman.sock
-          timeout 10s sudo podman -r --url unix:///run/podman/podman.sock version
-          # Verify as the unprivileged runner user (no sudo) so a
-          # permissions regression here fails loudly at setup with a clear
-          # message, instead of surfacing as a confusing "permission
-          # denied" deep inside the Go test suite. Retried, WITH the chmod
-          # re-applied each attempt: podman system service replaces the
-          # socket file after its initial bind on some startups, which
-          # silently undoes the one-shot chmod above and leaves a fresh
-          # root-owned 0600 socket — root connects fine, the runner user
-          # gets connect failures for the rest of the job (observed ~50%
-          # of runs; curl exit 7 does not distinguish EACCES from
-          # ECONNREFUSED, which made this look like a listener race).
-          for i in $(seq 1 10); do
-            sudo chmod 755 /run/podman
-            sudo chmod 666 /run/podman/podman.sock
-            if curl --fail --silent --show-error --max-time 5 --unix-socket /run/podman/podman.sock http://d/libpod/_ping; then
-              echo
-              break
-            fi
-            if [ "$i" -eq 10 ]; then
-              echo "libpod _ping never succeeded after 10 attempts" >&2
-              echo "--- socket state ---" >&2
-              sudo ls -la /run/podman >&2 || true
-              echo "--- service log ---" >&2
-              cat /tmp/podman-rootful.log >&2
-              exit 1
+          if [ -z "$ready" ]; then
+            echo "libpod _ping never succeeded after 30 attempts" >&2
+            echo "--- socket state ---" >&2
+            sudo ls -la /run/podman >&2 || true
+            echo "--- service log ---" >&2
+            cat /tmp/podman-rootful.log >&2
+            exit 1
+          fi
+
+          # Phase 2 — reachable and STILL settled. Ping without widening
+          # first: if podman rebinds, the replacement socket is root-owned
+          # 0600, so a bare ping starts failing and the streak resets. Five
+          # consecutive bare pings therefore mean the mode has survived five
+          # seconds untouched, i.e. startup is done rebinding. Waiting for
+          # first contact alone is what let the suite start against a socket
+          # that had already been replaced.
+          streak=0
+          settled=""
+          for _ in $(seq 1 60); do
+            if ping_ok; then
+              streak=$((streak + 1))
+              if [ "$streak" -ge 5 ]; then
+                settled=1
+                break
+              fi
+            else
+              streak=0
+              widen
             fi
             sleep 1
           done
+          if [ -z "$settled" ]; then
+            echo "rootful socket never stayed reachable for 5 consecutive checks" >&2
+            echo "--- socket state ---" >&2
+            sudo ls -la /run/podman >&2 || true
+            echo "--- service log ---" >&2
+            cat /tmp/podman-rootful.log >&2
+            exit 1
+          fi
+          echo "rootful podman service ready and settled on /run/podman/podman.sock"
 
       # Pulls the digest-pinned ref straight from helpers_test.go instead of
       # a hardcoded tag — see quality-integration.yml's identical step for
@@ -146,6 +189,24 @@ jobs:
           fi
           echo "Pre-pulling pinned sentinel image (rootful): ${ref}"
           sudo podman -r --url unix:///run/podman/podman.sock pull "${ref}"
+
+      # Cheap insurance directly ahead of the suite: the pre-pull above is
+      # the last root-side podman operation, so this is the final chance to
+      # catch a socket the runner user can't reach. Without it, a late
+      # rebind surfaces as ten identical "connect: permission denied" test
+      # failures that read like a proxy bug rather than a setup problem.
+      - name: Verify socket is reachable unprivileged
+        run: |
+          sudo chgrp "$(id -g)" /run/podman /run/podman/podman.sock 2>/dev/null || true
+          sudo chmod 750 /run/podman 2>/dev/null || true
+          sudo chmod 660 /run/podman/podman.sock 2>/dev/null || true
+          if ! curl --fail --silent --show-error --max-time 5 --unix-socket /run/podman/podman.sock http://d/libpod/_ping >/dev/null; then
+            echo "socket not reachable as $(whoami) immediately before the suite" >&2
+            sudo ls -la /run/podman >&2 || true
+            cat /tmp/podman-rootful.log >&2
+            exit 1
+          fi
+          echo "socket reachable as $(whoami)"
 
       - name: Run podman integration suite (rootful)
         working-directory: app
@@ -224,27 +285,28 @@ jobs:
           mkdir -p "${runtime_dir}/podman"
 
           nohup podman system service --time=0 "unix://${runtime_dir}/podman/podman.sock" >/tmp/podman-rootless.log 2>&1 &
-          for i in $(seq 1 30); do
-            if test -S "${runtime_dir}/podman/podman.sock"; then
+          # Single gate, for the same reason as the rootful leg above: the
+          # socket path appearing proves nothing (the service unlinks and
+          # rebinds it during startup, so a `test -S` that just passed can
+          # fail milliseconds later), and the service accepting connections
+          # is the condition that actually matters. Poll straight for that.
+          ready=""
+          for _ in $(seq 1 30); do
+            if timeout 10s podman --url "unix://${runtime_dir}/podman/podman.sock" version >/dev/null 2>&1; then
+              ready=1
               break
             fi
             sleep 1
           done
-          test -S "${runtime_dir}/podman/podman.sock" || { echo "rootless podman.sock never appeared" >&2; cat /tmp/podman-rootless.log >&2; exit 1; }
-          # Retried for the same reason as the rootful leg's _ping check:
-          # the socket file existing (just confirmed above) does not mean
-          # the service is accepting connections yet.
-          for i in $(seq 1 10); do
-            if timeout 10s podman --url "unix://${runtime_dir}/podman/podman.sock" version; then
-              break
-            fi
-            if [ "$i" -eq 10 ]; then
-              echo "rootless podman service never accepted a connection after 10 attempts" >&2
-              cat /tmp/podman-rootless.log >&2
-              exit 1
-            fi
-            sleep 1
-          done
+          if [ -z "$ready" ]; then
+            echo "rootless podman service never accepted a connection after 30 attempts" >&2
+            echo "--- socket state ---" >&2
+            ls -la "${runtime_dir}/podman" >&2 || true
+            echo "--- service log ---" >&2
+            cat /tmp/podman-rootless.log >&2
+            exit 1
+          fi
+          echo "rootless podman service ready on ${runtime_dir}/podman/podman.sock"
 
       - name: Pre-pull busybox sentinel image
         run: |

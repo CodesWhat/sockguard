@@ -79,7 +79,14 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowIPAMOptions:       true,
 			AllowDriverOptions:     true,
 			AllowEndpointConfig:    true,
-			AllowDisconnectForce:   true,
+			EndpointConfig: EndpointConfigRequestBodyConfig{
+				AllowStaticAddressing: true,
+				AllowLinkLocalIPs:     true,
+				AllowMACPinning:       true,
+				AllowGwPriority:       true,
+				AllowAliases:          true,
+			},
+			AllowDisconnectForce: true,
 		},
 		Secret: SecretRequestBodyConfig{
 			AllowCustomDrivers:   true,
@@ -134,6 +141,14 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowedRegistries:     []string{"plugins.example.com"},
 			AllowedSetEnvPrefixes: []string{"DEBUG=", "LOG_LEVEL="},
 		},
+		// LibpodNetwork.EndpointConfig.AllowAliases is set here purely so its
+		// ToFilterOptions() inversion (DenyAliases) matches the implicit
+		// filter.NetworkOptions{} zero value in want below — LibpodNetwork is
+		// otherwise untested here since libpod_network.go never consults
+		// EndpointConfig (no libpod-native network-connect endpoint exists).
+		LibpodNetwork: NetworkRequestBodyConfig{
+			EndpointConfig: EndpointConfigRequestBodyConfig{AllowAliases: true},
+		},
 	}
 
 	got := cfg.ToFilterOptions()
@@ -153,12 +168,20 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			RestrictNamespaceSharing:          true,
 			AllowedNamespaceSharingContainers: []string{"sidecar", "abc123"},
 			DenyNamespacePathMode:             true,
-			// AllowEndpointConfig has no ContainerCreateRequestBodyConfig field of
-			// its own — it is cross-wired from cfg.Network.AllowEndpointConfig
-			// (set true above) by RequestBodyConfig.ToFilterOptions. See
+			// AllowEndpointConfig and EndpointConfig have no
+			// ContainerCreateRequestBodyConfig field of their own — both are
+			// cross-wired from cfg.Network.AllowEndpointConfig/EndpointConfig
+			// (set above) by RequestBodyConfig.ToFilterOptions. See
 			// TestRequestBodyConfigToFilterOptionsWiresNetworkAllowEndpointConfigIntoContainerCreate
 			// for a focused regression on that cross-wire alone.
 			AllowEndpointConfig: true,
+			EndpointConfig: filter.EndpointConfigOptions{
+				AllowStaticAddressing: true,
+				AllowLinkLocalIPs:     true,
+				AllowMACPinning:       true,
+				AllowGwPriority:       true,
+				DenyAliases:           false,
+			},
 		},
 		Exec: filter.ExecOptions{
 			AllowPrivileged:  true,
@@ -214,7 +237,14 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowIPAMOptions:       true,
 			AllowDriverOptions:     true,
 			AllowEndpointConfig:    true,
-			AllowDisconnectForce:   true,
+			EndpointConfig: filter.EndpointConfigOptions{
+				AllowStaticAddressing: true,
+				AllowLinkLocalIPs:     true,
+				AllowMACPinning:       true,
+				AllowGwPriority:       true,
+				DenyAliases:           false,
+			},
+			AllowDisconnectForce: true,
 		},
 		Secret: filter.SecretOptions{
 			AllowCustomDrivers:   true,
@@ -307,6 +337,41 @@ func TestRequestBodyConfigToFilterOptionsWiresNetworkAllowEndpointConfigIntoCont
 			t.Error("ContainerCreate.AllowEndpointConfig = true, want false")
 		}
 	})
+}
+
+// TestRequestBodyConfigToFilterOptionsWiresNetworkEndpointConfigIntoContainerCreate
+// is TestRequestBodyConfigToFilterOptionsWiresNetworkAllowEndpointConfigIntoContainerCreate's
+// #186 counterpart: proves the granular endpoint_config block cross-wires
+// into both filter.NetworkOptions.EndpointConfig and
+// filter.ContainerCreateOptions.EndpointConfig from the single
+// request_body.network.endpoint_config block, with AllowAliases inverted to
+// DenyAliases on the way out.
+func TestRequestBodyConfigToFilterOptionsWiresNetworkEndpointConfigIntoContainerCreate(t *testing.T) {
+	got := (RequestBodyConfig{
+		Network: NetworkRequestBodyConfig{
+			EndpointConfig: EndpointConfigRequestBodyConfig{
+				AllowStaticAddressing: true,
+				AllowLinkLocalIPs:     true,
+				AllowMACPinning:       true,
+				AllowGwPriority:       true,
+				AllowAliases:          false,
+			},
+		},
+	}).ToFilterOptions()
+
+	want := filter.EndpointConfigOptions{
+		AllowStaticAddressing: true,
+		AllowLinkLocalIPs:     true,
+		AllowMACPinning:       true,
+		AllowGwPriority:       true,
+		DenyAliases:           true,
+	}
+	if !reflect.DeepEqual(got.Network.EndpointConfig, want) {
+		t.Errorf("Network.EndpointConfig = %#v, want %#v", got.Network.EndpointConfig, want)
+	}
+	if !reflect.DeepEqual(got.ContainerCreate.EndpointConfig, want) {
+		t.Errorf("ContainerCreate.EndpointConfig = %#v, want %#v (cross-wired from Network)", got.ContainerCreate.EndpointConfig, want)
+	}
 }
 
 func TestContainerCreateRequestBodyConfigToFilterOptionsMapsSelinuxAndSystemPaths(t *testing.T) {

@@ -172,6 +172,11 @@ type ContainerCreateOptions struct {
 	// inspector; see config.RequestBodyConfig.ToFilterOptions. Aliases are
 	// never gated regardless of this flag — see denyEndpointConfigReason.
 	AllowEndpointConfig bool
+	// EndpointConfig narrows AllowEndpointConfig into per-field gates (#186),
+	// cross-wired from request_body.network.endpoint_config the same way
+	// AllowEndpointConfig is cross-wired from request_body.network.allow_endpoint_config.
+	// Only consulted when AllowEndpointConfig is false.
+	EndpointConfig EndpointConfigOptions
 }
 
 type containerCreatePolicy struct {
@@ -217,6 +222,7 @@ type containerCreatePolicy struct {
 	allowTmpfsPrivilegedOptions bool
 
 	allowEndpointConfig bool
+	endpointConfig      EndpointConfigOptions
 
 	// Image trust — non-nil when mode != off.
 	imageTrustVerifier imageVerifier
@@ -311,6 +317,7 @@ func newContainerCreatePolicy(opts ContainerCreateOptions) containerCreatePolicy
 		denyUnconfinedSystemPaths:         opts.DenyUnconfinedSystemPaths,
 		allowTmpfsPrivilegedOptions:       opts.AllowTmpfsPrivilegedOptions,
 		allowEndpointConfig:               opts.AllowEndpointConfig,
+		endpointConfig:                    opts.EndpointConfig,
 	}
 
 	// Build image trust verifier. Errors are stored in imageTrustInitErr so
@@ -1349,7 +1356,7 @@ func (p containerCreatePolicy) denyNetworkingConfigReason(networkingConfig conta
 		if endpoint == nil {
 			continue
 		}
-		if reason := denyEndpointConfigReason(*endpoint, p.allowEndpointConfig, "container create"); reason != "" {
+		if reason := denyEndpointConfigReason(*endpoint, p.allowEndpointConfig, p.endpointConfig, "container create"); reason != "" {
 			return reason
 		}
 	}
@@ -1361,11 +1368,13 @@ func (p containerCreatePolicy) denyNetworkingConfigReason(networkingConfig conta
 // NetworkingConfig. The daemon applies it to the container's primary network
 // endpoint exactly the way a NetworkingConfig.EndpointsConfig[*].MacAddress
 // entry does, so it carries the identical MAC-pinning attack surface and
-// must be governed by the same allow_endpoint_config flag — otherwise a
-// client denied on EndpointsConfig could simply move the MAC address to
-// this legacy field and sail through unchecked.
+// must be governed by the same allow_endpoint_config / endpoint_config
+// policy (#186: either the legacy whole-object allow, or the granular
+// AllowMACPinning gate) — otherwise a client denied on EndpointsConfig could
+// simply move the MAC address to this legacy field and sail through
+// unchecked.
 func (p containerCreatePolicy) denyRootMacAddressReason(macAddress string) string {
-	if p.allowEndpointConfig {
+	if p.allowEndpointConfig || p.endpointConfig.AllowMACPinning {
 		return ""
 	}
 	if strings.TrimSpace(macAddress) == "" {

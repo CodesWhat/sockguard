@@ -6,13 +6,14 @@
 # `docker compose build` never calls POST /build at all — it drives dockerd's
 # embedded BuildKit over two hijacked, unversioned streams, POST /session and
 # POST /grpc (Engine API 1.53 deprecated both; current Buildx 0.36.0 still
-# uses them). Those streams carry secrets, SSH agent forwarding, and file
-# sync with no request body Sockguard can inspect or bound once opened, so
-# they stay DENIED here and require the dedicated
-# insecure_accept_opaque_buildkit_tunnels acknowledgment to open at all — no
-# preset sets it. THIS FAILURE IS INTENTIONAL: a default (BuildKit) `docker
-# compose build` against this preset will fail with a proxy denial on
-# /session or /grpc, not a bug to work around by widening this file.
+# uses them). This preset does not open either endpoint — no
+# insecure_accept_opaque_buildkit_tunnels acknowledgment (now deprecated, see
+# migration.mdx) and no request_body.buildkit mediation policy (issue #185) —
+# so they stay DENIED here. THIS FAILURE IS INTENTIONAL: a default (BuildKit)
+# `docker compose build` against this preset will fail with a proxy denial on
+# /session or /grpc, not a bug to work around by widening this file. Use
+# portwing-with-mediated-build.yaml instead if you want that transport fully
+# inspected rather than falling back to classic /build.
 #
 # To use this preset, set DOCKER_BUILDKIT=0 in the environment that runs
 # `docker compose build` / `up --build` (Compose honors it and falls back to
@@ -27,7 +28,8 @@
 #                        flags left at their secure default (false below)
 #
 # Still denied: /session, /grpc, and any moby.buildkit.v1.Control method path
-# (BuildKit gRPC mediation is a v1.7+ epic, not implemented here). Exec is
+# — see portwing-with-mediated-build.yaml for the fully-mediated BuildKit
+# alternative to this preset's classic-builder-only approach. Exec is
 # still denied — combine with portwing-with-exec.yaml's request_body.exec
 # block manually if you need both build and interactive exec.
 insecure_allow_read_exfiltration: true

@@ -46,7 +46,7 @@ jobs:
           persist-credentials: false
 
       - name: Run zizmor
-        uses: zizmorcore/zizmor-action@6599ee8b7a49aef6a770f63d261d214911a7ce02  # v0.6.0
+        uses: zizmorcore/zizmor-action@6fc4b006235f201fdab3722e17240ab420d580e5  # v0.6.1
         with:
           token: ${{ github.token }}
           # impostor-commit audit requires API access that harden-runner blocks
@@ -80,7 +80,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@e0647621c2984b5ed2f768cb892365bf2a616ad1  # v4.37.2
+        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
         with:
           languages: actions, go, javascript-typescript
           queries: security-and-quality
@@ -96,7 +96,7 @@ jobs:
         working-directory: app
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@e0647621c2984b5ed2f768cb892365bf2a616ad1  # v4.37.2
+        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
 
   dependency-review:
     name: "📦 Dependency Review"
@@ -143,21 +143,31 @@ jobs:
           fetch-depth: 0
 
       - name: Validate commit messages
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          pattern='^[\xF0-\xF4].*|^[\xE2-\xEF].*'
+          # Only inspects commits introduced by this PR (base branch..HEAD) —
+          # never warns about legacy emoji commits already on the base branch,
+          # including dev-branch commits that haven't been synced to main yet.
+          types='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
+          pattern="^(${types})(\\(\\w[\\w-]*\\))?!?:\\s.+\$"
 
           failed=0
           while IFS= read -r msg; do
             first_line="$(echo "${msg}" | head -n1)"
-            if ! echo "${first_line}" | grep -qP '^(\p{So}|\p{Emoji_Presentation})+\s+\w+(\(\w[\w-]*\))?!?:\s.+$'; then
+            # Merge, revert, and fixup!/squash! autosquash commits are exempt.
+            if echo "${first_line}" | grep -qP '^(Merge |Revert |fixup! |squash! )'; then
+              continue
+            fi
+            if ! echo "${first_line}" | grep -qP "${pattern}"; then
               echo "::warning::Non-conventional commit: ${first_line}"
               failed=1
             fi
-          done < <(git log --format=%s origin/main..HEAD)
+          done < <(git log --format=%s "origin/${BASE_REF}..HEAD")
 
           if [ "${failed}" -eq 1 ]; then
-            echo "::warning::Some commits don't follow emoji conventional format. Expected: <emoji> <type>(scope): description"
+            echo "::warning::Some commits don't follow Conventional Commits format. Expected: <type>(scope): description — no emoji. Allowed types: ${types//|/, }"
           fi
 
   goreleaser-check:
@@ -292,14 +302,21 @@ jobs:
         # differential (proxy-vs-daemon test harness), internal/testcert (test
         # certs), internal/testhelp (test helpers). Their *tests* still run as
         # regression checks; only their own statements are excluded so the gate
-        # and dashboard reflect shipping code. coverage.prod.txt keeps the real
-        # import paths for the gate (go tool cover needs them); coverage.qlty.txt
-        # additionally rewrites the module path to app/ because Qlty resolves
-        # paths against the repo root (sources under app/) and would otherwise
-        # report 100% of files "missing on disk" and fail validation.
+        # and dashboard reflect shipping code. internal/buildkitproto is also
+        # excluded: it is entirely protoc-generated marshal/decode code ("Code
+        # generated ... DO NOT EDIT", #185 phase 1) whose integrity is pinned
+        # by its provenance golden test, not statement coverage — counting its
+        # thousands of generated statements would let the gate be drowned out
+        # by codegen instead of measuring hand-written shipping logic (the
+        # hand-written internal/buildkitproxy package stays counted).
+        # coverage.prod.txt keeps the real import paths for the gate (go tool
+        # cover needs them); coverage.qlty.txt additionally rewrites the module
+        # path to app/ because Qlty resolves paths against the repo root
+        # (sources under app/) and would otherwise report 100% of files
+        # "missing on disk" and fail validation.
         working-directory: app
         run: |
-          grep -vE 'github.com/codeswhat/sockguard/(differential|internal/testcert|internal/testhelp)/' coverage.txt > coverage.prod.txt
+          grep -vE 'github.com/codeswhat/sockguard/(differential|internal/testcert|internal/testhelp|internal/buildkitproto)/' coverage.txt > coverage.prod.txt
           sed 's#github.com/codeswhat/sockguard/#app/#g' coverage.prod.txt > coverage.qlty.txt
 
       - name: Publish coverage to Qlty

@@ -1,0 +1,162 @@
+syntax = "proto3";
+
+// CURATED SUBSET of moby/buildkit's api/services/control/control.proto,
+// vendored for sockguard issue #185 (BuildKit gRPC mediation). See
+// ../../../../../../../PROVENANCE.md for the upstream source URL, git tag,
+// and sha256 of the full original file this was extracted from.
+//
+// Only the Control service's Solve and Status RPCs, and the message types
+// they transitively need, are kept. sockguard's #185 synthesis mediates
+// exactly these two (SolveRequest.Ref must belong to an admitted Solve from
+// the same client/profile; Status is read against that same ownership) and
+// treats every other Control method as deny-by-default at the
+// buildkitproxy method-classification-registry level — Prune, DiskUsage,
+// ListenBuildHistory, UpdateBuildHistory, and the nested Control/Session
+// bidirectional-stream escape hatch never need their message types decoded
+// because a denied method is rejected before any attempt to unmarshal its
+// payload. The full Control service definition (all 9 RPCs) is upstream's
+// api/services/control/control.proto; see buildkitproxy/registry.go for how
+// the removed methods are classified.
+//
+// Removed relative to upstream: DiskUsage/Prune/ListWorkers/Info/
+// ListenBuildHistory/UpdateBuildHistory RPCs and their request/response/
+// supporting messages (DiskUsageRequest/Response, PruneRequest,
+// UsageRecord, ListWorkersRequest/Response, InfoRequest/Response,
+// BuildHistoryRequest/Event/Record, UpdateBuildHistoryRequest/Response,
+// Descriptor, BuildResultInfo, BytesMessage) and the google/rpc/status.proto
+// import that only those removed messages needed (Vertex/VertexStatus/
+// VertexLog below still use google.protobuf.Timestamp, so that import is
+// retained).
+package moby.buildkit.v1;
+
+// go_package's alias is retargeted to sockguard's flat vendored-package
+// layout (package control, not upstream's moby_buildkit_v1) — this file is
+// already a curated subset, so this is one more deliberate deviation from
+// upstream, unlike the byte-for-byte full-vendor files. See PROVENANCE.md.
+option go_package = "github.com/codeswhat/sockguard/internal/buildkitproto/control;control";
+
+import "github.com/moby/buildkit/solver/pb/ops.proto";
+import "github.com/moby/buildkit/sourcepolicy/pb/policy.proto";
+import "google/protobuf/timestamp.proto";
+
+// Control is upstream's full gRPC service; only Solve and Status are
+// mediated by sockguard. The other 7 RPCs are classified (all Deny except
+// Info/ListWorkers, which are Passthrough) in buildkitproxy/registry.go
+// without any message types generated for them — see the file comment above.
+service Control {
+	rpc Solve(SolveRequest) returns (SolveResponse);
+	rpc Status(StatusRequest) returns (stream StatusResponse);
+}
+
+message SolveRequest {
+	string Ref = 1;
+	pb.Definition Definition = 2;
+	// ExporterDeprecated and ExporterAttrsDeprecated are deprecated in favor
+	// of the new Exporters. If these fields are set, then they will be
+	// appended to the Exporters field if Exporters was not explicitly set.
+	string ExporterDeprecated = 3;
+	map<string, string> ExporterAttrsDeprecated = 4;
+	string Session = 5;
+	string Frontend = 6;
+	map<string, string> FrontendAttrs = 7;
+	CacheOptions Cache = 8;
+	repeated string Entitlements = 9;
+	map<string, pb.Definition> FrontendInputs = 10;
+	bool Internal = 11; // Internal builds are not recorded in build history
+	moby.buildkit.v1.sourcepolicy.Policy SourcePolicy = 12;
+	repeated Exporter Exporters = 13;
+	bool EnableSessionExporter = 14;
+	string SourcePolicySession = 15;
+	int64 CompatibilityVersion = 16;
+	bool ProxyNetwork = 17;
+}
+
+message CacheOptions {
+	// ExportRefDeprecated is deprecated in favor or the new Exports since BuildKit v0.4.0.
+	// When ExportRefDeprecated is set, the solver appends
+	// {.Type = "registry", .Attrs = ExportAttrs.add("ref", ExportRef)}
+	// to Exports for compatibility. (planned to be removed)
+	string ExportRefDeprecated = 1;
+	// ImportRefsDeprecated is deprecated in favor or the new Imports since BuildKit v0.4.0.
+	// When ImportRefsDeprecated is set, the solver appends
+	// {.Type = "registry", .Attrs = {"ref": importRef}}
+	// for each of the ImportRefs entry to Imports for compatibility. (planned to be removed)
+	repeated string ImportRefsDeprecated = 2;
+	// ExportAttrsDeprecated is deprecated since BuildKit v0.4.0.
+	// See the description of ExportRefDeprecated.
+	map<string, string> ExportAttrsDeprecated = 3;
+	// Exports was introduced in BuildKit v0.4.0.
+	repeated CacheOptionsEntry Exports = 4;
+	// Imports was introduced in BuildKit v0.4.0.
+	repeated CacheOptionsEntry Imports = 5;
+}
+
+message CacheOptionsEntry {
+	// Type is like "registry" or "local"
+	string Type = 1;
+	// Attrs are like mode=(min,max), ref=example.com:5000/foo/bar .
+	// See cache importer/exporter implementations' documentation.
+	map<string, string> Attrs = 2;
+}
+
+message SolveResponse {
+	map<string, string> ExporterResponse = 1;
+}
+
+message StatusRequest {
+	string Ref = 1;
+}
+
+message StatusResponse {
+	repeated Vertex vertexes = 1;
+	repeated VertexStatus statuses = 2;
+	repeated VertexLog logs = 3;
+	repeated VertexWarning warnings = 4;
+}
+
+message Vertex {
+	string digest = 1;
+	repeated string inputs = 2;
+	string name = 3;
+	bool cached = 4;
+	google.protobuf.Timestamp started = 5;
+	google.protobuf.Timestamp completed = 6;
+	string error = 7; // typed errors?
+	pb.ProgressGroup progressGroup = 8;
+}
+
+message VertexStatus {
+	string ID = 1;
+	string vertex = 2;
+	string name = 3;
+	int64 current = 4;
+	int64 total = 5;
+	google.protobuf.Timestamp timestamp = 6;
+	google.protobuf.Timestamp started = 7;
+	google.protobuf.Timestamp completed = 8;
+}
+
+message VertexLog {
+	string vertex = 1;
+	google.protobuf.Timestamp timestamp = 2;
+	int64 stream = 3;
+	bytes msg = 4;
+}
+
+message VertexWarning {
+	string vertex = 1;
+	int64 level = 2;
+	bytes short = 3;
+	repeated bytes detail = 4;
+	string url = 5;
+	pb.SourceInfo info = 6;
+	repeated pb.Range ranges = 7;
+}
+
+// Exporter describes the output exporter
+message Exporter {
+	// Type identifies the exporter
+	string Type = 1;
+	// Attrs specifies exporter configuration
+	map<string, string> Attrs = 2;
+}

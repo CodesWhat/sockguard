@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+// CURATED copy of tonistiigi/fsutil's types/wire.proto, vendored
+// transitively for sockguard issue #185 (BuildKit gRPC mediation):
+// moby/buildkit's session/filesync/filesync.proto's FileSync.DiffCopy and
+// FileSync.TarStream streams carry fsutil.types.Packet. See
+// ../../../../../PROVENANCE.md for the upstream source URL, git tag, and
+// sha256 of the full original file.
+//
+// Removed relative to upstream: the
+// `import "github.com/planetscale/vtprotobuf/vtproto/ext.proto";` line and
+// message Packet's `option (vtproto.mempool) = true;` annotation are
+// dropped. vtprotobuf's ext.proto only adds generator-time annotations
+// (pooling/allocation hints for its own protoc-gen-go-vtproto plugin, part
+// of BuildKit's own build); sockguard's generation script (see
+// scripts/generate-buildkit-proto.sh) runs only plain protoc-gen-go, which
+// does not understand — and does not need — that plugin's extension. Adding
+// a vtprotobuf dependency to a pinned, protobuf-only vendoring path would
+// also cut against the #185 sign-off's "no new supply-chain surface beyond
+// google.golang.org/protobuf" constraint. The wire format produced by
+// plain protoc-gen-go is unaffected: unknown/removed options never change
+// how a message serializes.
+package fsutil.types;
+
+// go_package's alias is retargeted to sockguard's flat vendored-package
+// layout (package fsutiltypes, matching the directory name, not upstream's
+// bare "types") — this file is already a curated subset (see the vtprotobuf
+// removal note above), so this is one more deliberate deviation from
+// upstream. See PROVENANCE.md.
+option go_package = "github.com/codeswhat/sockguard/internal/buildkitproto/fsutiltypes;fsutiltypes";
+
+import "github.com/tonistiigi/fsutil/types/stat.proto";
+
+message Packet {
+  enum PacketType {
+    PACKET_STAT = 0;
+    PACKET_REQ = 1;
+    PACKET_DATA = 2;
+    PACKET_FIN = 3;
+    PACKET_ERR = 4;
+  }
+  PacketType type = 1;
+  Stat stat = 2;
+  uint32 ID = 3;
+  bytes data = 4;
+}
