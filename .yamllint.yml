@@ -1,0 +1,8 @@
+---
+# Tunes yamllint for CodeRabbit's review pass — nothing in CI or lefthook
+# runs this locally, see .coderabbit.yaml tools.yamllint
+extends: default
+rules:
+  document-start: disable
+  truthy: disable
+  line-length: disable
