@@ -23,7 +23,15 @@ jobs:
   benchmarks:
     name: "📊 Quality: Go Benchmarks"
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The Jun/Jul/Aug 2026 runs blew past 30m because benchmarkInspectPolicy
+    # (internal/filter/inspect_bench_test.go) called b.StopTimer()/b.StartTimer()
+    # every loop iteration, which forces two runtime.ReadMemStats() calls per
+    # iteration outside the timed window. With cheap per-op benchmarks that
+    # scaled b.N into the hundreds of thousands, the untimed ReadMemStats cost
+    # dominated wall time without showing up in ns/op. Fixed by dropping those
+    # calls (see git blame). Locally the full -count=5 suite now finishes in
+    # ~13m; this budget adds headroom for slower/shared CI hardware.
+    timeout-minutes: 40
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
