@@ -42,6 +42,10 @@ jobs:
 
       - name: Run benchmarks
         working-directory: app
+        # shell: bash (rather than the default `bash -e {0}`) is required here:
+        # GitHub's default bash has -e but not -o pipefail, so `| tee` would
+        # report tee's exit code and mask a failing benchmark run.
+        shell: bash
         run: |
           go test -bench=. -benchmem -count=5 -timeout=20m ./... | tee benchmark-results.txt
 

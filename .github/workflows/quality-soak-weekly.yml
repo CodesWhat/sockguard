@@ -104,6 +104,10 @@ jobs:
           SOAK_DURATION: ${{ steps.params.outputs.duration }}
           SOAK_CONCURRENCY: ${{ steps.params.outputs.concurrency }}
           SOAK_RSS_THRESHOLD: ${{ steps.params.outputs.rss_threshold }}
+        # shell: bash (rather than the default `bash -e {0}`) is required here:
+        # GitHub's default bash has -e but not -o pipefail, so `| tee` would
+        # report tee's exit code and mask a failing soak run.
+        shell: bash
         run: |
           scripts/soak.sh \
             --duration "${SOAK_DURATION}" \
