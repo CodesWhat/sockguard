@@ -40,8 +40,6 @@
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-integration.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/quality-integration.yml/badge.svg?branch=main" alt="Integration"></a>
   <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-fuzz-nightly.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/quality-fuzz-nightly.yml/badge.svg?branch=main" alt="Nightly fuzz"></a>
   <br>
-  <a href="https://goreportcard.com/report/github.com/CodesWhat/sockguard/app"><img src="https://goreportcard.com/badge/github.com/CodesWhat/sockguard/app" alt="Go Report Card"></a>
-  <a href="https://pkg.go.dev/github.com/CodesWhat/sockguard"><img src="https://pkg.go.dev/badge/github.com/CodesWhat/sockguard.svg" alt="Go Reference"></a>
   <a href="https://qlty.sh/gh/CodesWhat/projects/sockguard"><img src="https://qlty.sh/badges/5a115b54-7404-4e0e-b09d-2652fb1816e5/coverage.svg" alt="Coverage"></a>
   <a href="https://securityscorecards.dev/viewer/?uri=github.com/CodesWhat/sockguard"><img src="https://img.shields.io/ossf-scorecard/github.com/CodesWhat/sockguard?label=openssf+scorecard&style=flat" alt="OpenSSF Scorecard"></a>
   <a href="https://www.bestpractices.dev/projects/14030"><img src="https://www.bestpractices.dev/projects/14030/badge" alt="OpenSSF Best Practices"></a>
