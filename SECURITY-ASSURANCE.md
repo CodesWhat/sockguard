@@ -20,8 +20,8 @@ Sockguard is intended to:
   where configured;
 - apply resource, concurrency, timeout, and body-size limits at network and
   inspection boundaries; and
-- publish signed artifacts, SBOMs, and provenance only after the full release
-  verification pipeline passes.
+- publish signed artifacts, SBOMs, and provenance, then verify the published
+  artifacts against the expected workflow identity.
 
 An allowed Docker operation still runs with the authority of the Docker daemon.
 A policy that allows privileged container creation, host mounts, broad archive

@@ -14,9 +14,10 @@ handled confidentially.
 ## Enforcement
 
 Maintainers are responsible for clarifying and enforcing this standard. They
-may edit or remove comments, commits, issues, and pull requests that violate it,
-and may temporarily or permanently ban contributors for behavior they deem
-inappropriate, threatening, or harmful.
+may moderate comments and close or remove issues and pull requests that violate
+it. They may request that violating commits be reverted or removed from branch
+history, and may temporarily or permanently ban contributors for behavior they
+deem inappropriate, threatening, or harmful.
 
 For the full adopted standard, see the
 [Contributor Covenant v2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct/)
