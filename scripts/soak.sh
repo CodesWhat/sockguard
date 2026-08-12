@@ -113,7 +113,8 @@ done
 
 echo "==> Starting sockguard on ${PROXY_SOCK}"
 rm -f "${PROXY_SOCK}"
-"${BUILD_DIR}/sockguard" serve --config "${BENCH_DIR}/config.yaml" >/dev/null 2>&1 &
+"${BUILD_DIR}/sockguard" serve --config "${BENCH_DIR}/config.yaml" \
+  --listen-socket "${PROXY_SOCK}" --upstream-socket "${MOCK_SOCK}" >/dev/null 2>&1 &
 PROXY_PID=$!
 trap 'kill "${MOCK_PID}" "${PROXY_PID}" 2>/dev/null || true; rm -f "${MOCK_SOCK}" "${PROXY_SOCK}"; rm -rf "${BUILD_DIR}"; rm -f "${SAMPLES_TSV}"' EXIT
 
