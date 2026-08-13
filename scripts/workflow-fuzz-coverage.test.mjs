@@ -56,6 +56,18 @@ describe('fuzz workflow coverage', () => {
     workflowPaths.map((workflowPath) => [workflowPath, workflowFuzzers(workflowPath)]),
   );
 
+  it('registers only in-tree fuzz targets with their source package', () => {
+    for (const [workflowPath, tier] of tiers) {
+      for (const [name, packagePath] of tier) {
+        assert.equal(
+          source.get(name),
+          packagePath,
+          `${workflowPath} registers unknown or mis-mapped target ${name}`,
+        );
+      }
+    }
+  });
+
   it('schedules every in-tree fuzz target in at least one tier', () => {
     const uncovered = [];
 
