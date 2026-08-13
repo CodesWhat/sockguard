@@ -251,15 +251,20 @@ func TestNilEntityDeniedWithDescription(t *testing.T) {
 
 func TestNewRejectsKeylessConfigWithoutTrustedMaterial(t *testing.T) {
 	t.Parallel()
-	_, err := New(Config{
-		Mode: ModeEnforce,
-		AllowedKeyless: []KeylessIdentity{{
-			IssuerExact:    "https://issuer.example",
-			SubjectPattern: regexp.MustCompile(`^subject@example\.com$`),
-		}},
-	})
-	if err == nil || !strings.Contains(err.Error(), "TrustedMaterial") {
-		t.Fatalf("New(keyless without trusted material) error = %v, want TrustedMaterial error", err)
+	for _, mode := range []Mode{ModeWarn, ModeEnforce} {
+		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
+			_, err := New(Config{
+				Mode: mode,
+				AllowedKeyless: []KeylessIdentity{{
+					IssuerExact:    "https://issuer.example",
+					SubjectPattern: regexp.MustCompile(`^subject@example\.com$`),
+				}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "TrustedMaterial") {
+				t.Fatalf("New(keyless without trusted material) error = %v, want TrustedMaterial error", err)
+			}
+		})
 	}
 }
 

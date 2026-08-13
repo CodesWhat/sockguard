@@ -114,3 +114,21 @@ func TestDecode(t *testing.T) {
 		})
 	}
 }
+
+func FuzzDecode(f *testing.F) {
+	for _, seed := range []string{
+		`{"label":["a=b"]}`,
+		`{"label":{"a=b":true}}`,
+		`{"label":{"a=b":1}}`,
+		`{"label":true}`,
+		`{`,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, encoded string) {
+		if len(encoded) > MaxEncodedBytes+1 {
+			t.Skip()
+		}
+		_, _ = Decode(encoded)
+	})
+}

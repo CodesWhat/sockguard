@@ -124,6 +124,9 @@ func decodeLibpodNetworkLabels(body io.Reader) (map[string]string, error) {
 		return nil, err
 	}
 	data = bytes.TrimSpace(data)
+	if bytes.Equal(data, []byte("null")) {
+		return nil, errors.New("decode libpod network inspect object: object is null")
+	}
 	if len(data) > 0 && data[0] == '[' {
 		var arr []json.RawMessage
 		if err := json.Unmarshal(data, &arr); err != nil {

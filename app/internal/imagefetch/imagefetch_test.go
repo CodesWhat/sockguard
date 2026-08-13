@@ -297,12 +297,27 @@ func TestFetchCandidates_InvalidReference(t *testing.T) {
 	}
 }
 
-func TestReadLayerPayloadRejectsOversizePayload(t *testing.T) {
+func TestReadLayerPayloadLimit(t *testing.T) {
 	t.Parallel()
-	layer := static.NewLayer(bytes.Repeat([]byte("x"), maxPayloadBytes+1), types.MediaType(simpleSigningMediaType))
-	_, err := readLayerPayload(layer)
-	if err == nil || !strings.Contains(err.Error(), "exceeds") {
-		t.Fatalf("readLayerPayload(oversize) error = %v, want size-limit error", err)
+	tests := []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{name: "at limit", size: maxPayloadBytes},
+		{name: "oversize", size: maxPayloadBytes + 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			layer := static.NewLayer(bytes.Repeat([]byte("x"), tt.size), types.MediaType(simpleSigningMediaType))
+			_, err := readLayerPayload(layer)
+			if tt.wantErr && (err == nil || !strings.Contains(err.Error(), "exceeds")) {
+				t.Fatalf("readLayerPayload() error = %v, want size-limit error", err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("readLayerPayload() error = %v, want nil", err)
+			}
+		})
 	}
 }
 

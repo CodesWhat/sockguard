@@ -640,14 +640,15 @@ type AuditOptions struct {
 
 // AuditLogger writes stable JSON audit events to a dedicated sink.
 type AuditLogger struct {
-	events    chan auditEvent
-	done      chan struct{}
-	closeOnce sync.Once
-	wg        sync.WaitGroup
-	enc       *json.Encoder
-	now       func() string
-	dropped   atomic.Uint64
-	lastWarn  atomic.Int64
+	admissionMu sync.RWMutex
+	events      chan auditEvent
+	done        chan struct{}
+	closeOnce   sync.Once
+	wg          sync.WaitGroup
+	enc         *json.Encoder
+	now         func() string
+	dropped     atomic.Uint64
+	lastWarn    atomic.Int64
 }
 
 const auditLogBufferSize = 1024
@@ -897,6 +898,8 @@ func (l *AuditLogger) log(event auditEvent) {
 	if l == nil {
 		return
 	}
+	l.admissionMu.RLock()
+	defer l.admissionMu.RUnlock()
 	select {
 	case <-l.done:
 		l.recordDrop()
@@ -937,7 +940,9 @@ func (l *AuditLogger) Close() error {
 		return nil
 	}
 	l.closeOnce.Do(func() {
+		l.admissionMu.Lock()
 		close(l.done)
+		l.admissionMu.Unlock()
 		l.wg.Wait()
 	})
 	return nil

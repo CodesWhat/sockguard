@@ -375,13 +375,27 @@ func TestFilterRejectsChunkedSwarmInspectReadFailure(t *testing.T) {
 
 func TestStreamArrayResponseClosesOriginalUpstreamBody(t *testing.T) {
 	t.Parallel()
-	upstream := &closeTrackingBody{Reader: strings.NewReader(`[{"Name":"example"}]`)}
-	resp := &http.Response{Body: upstream, Header: make(http.Header)}
-	if err := streamArrayResponse(resp, func(map[string]any) error { return nil }); err != nil {
-		t.Fatalf("streamArrayResponse() error = %v", err)
+	mutationErr := errors.New("mutation failed")
+	tests := []struct {
+		name    string
+		mutate  func(map[string]any) error
+		wantErr error
+	}{
+		{name: "successful rewrite", mutate: func(map[string]any) error { return nil }},
+		{name: "rejected rewrite", mutate: func(map[string]any) error { return mutationErr }, wantErr: mutationErr},
 	}
-	if !upstream.closed {
-		t.Fatal("streamArrayResponse() did not close the original upstream body")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := &closeTrackingBody{Reader: strings.NewReader(`[{"Name":"example"}]`)}
+			resp := &http.Response{Body: upstream, Header: make(http.Header)}
+			err := streamArrayResponse(resp, tt.mutate)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("streamArrayResponse() error = %v, want %v", err, tt.wantErr)
+			}
+			if !upstream.closed {
+				t.Fatal("streamArrayResponse() did not close the original upstream body")
+			}
+		})
 	}
 }
 

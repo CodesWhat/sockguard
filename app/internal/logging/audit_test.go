@@ -292,6 +292,43 @@ func TestAuditLoggerDrainWritesQueuedEvents(t *testing.T) {
 	}
 }
 
+func TestAuditLoggerConcurrentLogAndCloseAccountsForEveryEvent(t *testing.T) {
+	const (
+		rounds   = 32
+		attempts = 512
+	)
+	for round := range rounds {
+		var buf bytes.Buffer
+		logger := NewAuditLogger(&buf)
+		logger.lastWarn.Store(time.Now().UnixNano())
+		start := make(chan struct{})
+		var workers sync.WaitGroup
+		for range attempts {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				<-start
+				logger.log(auditEvent{EventType: "shutdown_race"})
+			}()
+		}
+		closed := make(chan struct{})
+		go func() {
+			<-start
+			_ = logger.Close()
+			close(closed)
+		}()
+		close(start)
+		workers.Wait()
+		<-closed
+
+		written := bytes.Count(buf.Bytes(), []byte{'\n'})
+		accounted := written + int(logger.DroppedEvents())
+		if accounted != attempts {
+			t.Fatalf("round %d accounted events = %d (written=%d dropped=%d), want %d", round, accounted, written, logger.DroppedEvents(), attempts)
+		}
+	}
+}
+
 func TestAuditRequestHelpersHandleNilAndTLS(t *testing.T) {
 	if got := requestIDFromRequest(nil); got != "" {
 		t.Fatalf("requestIDFromRequest(nil) = %q, want empty", got)

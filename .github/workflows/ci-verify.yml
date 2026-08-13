@@ -398,6 +398,7 @@ jobs:
           - { name: FuzzEvaluateStatusRequest,   pkg: ./internal/buildkitproxy/ }
           - { name: FuzzRewriteSessionAdvertisement, pkg: ./internal/buildkitproxy/ }
           - { name: FuzzValidateUpgradeRequest,  pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzDecode,                  pkg: ./internal/dockerfilters/ }
           - { name: FuzzProxyHeadersAndBody,     pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,    pkg: ./internal/proxy/ }
           - { name: FuzzPathRoutingDifferential, pkg: ./differential/ }
