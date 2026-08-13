@@ -14,8 +14,8 @@ on:
     # surface — scope PR runs to those so doc-only PRs stay fast.
     paths:
       - 'app/**/*.go'
-      - 'app/go.mod'
-      - 'app/go.sum'
+      - 'go.mod'
+      - 'go.sum'
       - 'benchmarks/go.mod'
       - 'benchmarks/go.sum'
       - 'package.json'
@@ -55,7 +55,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
+          go-version-file: go.mod
 
       - name: Install govulncheck
         run: go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
@@ -241,7 +241,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
+          go-version-file: go.mod
 
       - name: Pull testssl.sh image
         # Pinned by digest (alongside the 3.2 tag) to match scripts/security-testssl.sh

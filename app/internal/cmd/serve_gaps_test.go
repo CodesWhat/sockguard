@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/admin"
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/logging"
-	"github.com/codeswhat/sockguard/internal/ratelimit"
-	"github.com/codeswhat/sockguard/internal/reload"
-	"github.com/codeswhat/sockguard/internal/testhelp"
+	"github.com/codeswhat/sockguard/app/internal/admin"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/ratelimit"
+	"github.com/codeswhat/sockguard/app/internal/reload"
+	"github.com/codeswhat/sockguard/app/internal/testhelp"
 )
 
 // TestWarnAssignedProfilesWithoutLimitsEmitsWarning seeds the four

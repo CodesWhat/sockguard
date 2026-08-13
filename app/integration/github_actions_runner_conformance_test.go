@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/ownership"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/ownership"
 )
 
 // ghaPresetConfigPath returns the absolute path to the GitHub Actions Runner

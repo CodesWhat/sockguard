@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	requestfilter "github.com/codeswhat/sockguard/internal/filter"
+	requestfilter "github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 // streamArrayBufferPool keeps growable bytes.Buffer instances warm so that

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/testcert"
+	"github.com/codeswhat/sockguard/app/internal/testcert"
 )
 
 func TestBuildMutualTLSServerConfig(t *testing.T) {

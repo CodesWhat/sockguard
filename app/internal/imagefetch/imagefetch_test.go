@@ -30,7 +30,7 @@ import (
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
 
-	"github.com/codeswhat/sockguard/internal/imagetrust"
+	"github.com/codeswhat/sockguard/app/internal/imagetrust"
 )
 
 const simpleSigningMediaType = "application/vnd.dev.cosign.simplesigning.v1+json"

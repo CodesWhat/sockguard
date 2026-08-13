@@ -159,7 +159,7 @@ const file_github_com_moby_buildkit_session_sshforward_ssh_proto_rawDesc = "" +
 	"\x03SSH\x12[\n" +
 	"\n" +
 	"CheckAgent\x12%.moby.sshforward.v1.CheckAgentRequest\x1a&.moby.sshforward.v1.CheckAgentResponse\x12V\n" +
-	"\fForwardAgent\x12 .moby.sshforward.v1.BytesMessage\x1a .moby.sshforward.v1.BytesMessage(\x010\x01BMZKgithub.com/codeswhat/sockguard/internal/buildkitproto/sshforward;sshforwardb\x06proto3"
+	"\fForwardAgent\x12 .moby.sshforward.v1.BytesMessage\x1a .moby.sshforward.v1.BytesMessage(\x010\x01BQZOgithub.com/codeswhat/sockguard/app/internal/buildkitproto/sshforward;sshforwardb\x06proto3"
 
 var (
 	file_github_com_moby_buildkit_session_sshforward_ssh_proto_rawDescOnce sync.Once

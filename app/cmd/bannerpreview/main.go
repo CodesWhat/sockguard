@@ -10,7 +10,7 @@ package main
 import (
 	"os"
 
-	"github.com/codeswhat/sockguard/internal/banner"
+	"github.com/codeswhat/sockguard/app/internal/banner"
 )
 
 func main() {

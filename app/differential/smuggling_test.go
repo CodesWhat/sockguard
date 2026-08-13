@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 // The HTTP request-smuggling axis of the differential. The ServeHTTP-based

@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/httpjson"
-	"github.com/codeswhat/sockguard/internal/logging"
-	"github.com/codeswhat/sockguard/internal/responsefilter"
+	"github.com/codeswhat/sockguard/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/responsefilter"
 )
 
 func testLogger() *slog.Logger {

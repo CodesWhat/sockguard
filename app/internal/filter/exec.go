@@ -12,7 +12,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/codeswhat/sockguard/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 const maxExecBodyBytes = 64 << 10 // 64 KiB

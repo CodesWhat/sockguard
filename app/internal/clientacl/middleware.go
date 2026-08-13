@@ -18,12 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/certmatch"
-	"github.com/codeswhat/sockguard/internal/dockerclient"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/httpjson"
-	"github.com/codeswhat/sockguard/internal/logging"
-	"github.com/codeswhat/sockguard/internal/pkipin"
+	"github.com/codeswhat/sockguard/app/internal/certmatch"
+	"github.com/codeswhat/sockguard/app/internal/dockerclient"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/pkipin"
 )
 
 const DefaultLabelPrefix = "com.sockguard.allow."

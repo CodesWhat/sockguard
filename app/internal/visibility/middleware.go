@@ -15,13 +15,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/dockerclient"
-	"github.com/codeswhat/sockguard/internal/dockerfilters"
-	"github.com/codeswhat/sockguard/internal/dockerresource"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/httpjson"
-	"github.com/codeswhat/sockguard/internal/inspectcache"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/dockerclient"
+	"github.com/codeswhat/sockguard/app/internal/dockerfilters"
+	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/app/internal/inspectcache"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // patternBufferPool pools bytes.Buffer instances so the pattern-filter writer

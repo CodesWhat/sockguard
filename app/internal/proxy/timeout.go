@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // WithRequestTimeout wraps next so that ordinary finite upstream requests are

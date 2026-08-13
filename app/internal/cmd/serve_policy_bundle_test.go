@@ -14,12 +14,12 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/tlog"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
-	"github.com/codeswhat/sockguard/internal/admin"
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/metrics"
-	"github.com/codeswhat/sockguard/internal/policybundle"
-	"github.com/codeswhat/sockguard/internal/reload"
+	"github.com/codeswhat/sockguard/app/internal/admin"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/metrics"
+	"github.com/codeswhat/sockguard/app/internal/policybundle"
+	"github.com/codeswhat/sockguard/app/internal/reload"
 )
 
 // stubBundleVerifier implements policybundle.Verifier with a static result

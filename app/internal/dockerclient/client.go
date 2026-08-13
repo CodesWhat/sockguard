@@ -10,7 +10,7 @@ package dockerclient
 import (
 	"net/http"
 
-	"github.com/codeswhat/sockguard/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 // NewWithRoundTripper returns an *http.Client whose transport is the shared

@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/health"
-	"github.com/codeswhat/sockguard/internal/inbound"
-	"github.com/codeswhat/sockguard/internal/metrics"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/health"
+	"github.com/codeswhat/sockguard/app/internal/inbound"
+	"github.com/codeswhat/sockguard/app/internal/metrics"
 )
 
 type listenerFeatureFileInfo struct {

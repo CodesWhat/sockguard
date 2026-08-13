@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	requestfilter "github.com/codeswhat/sockguard/internal/filter"
+	requestfilter "github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 type readFailAfterCloser struct {

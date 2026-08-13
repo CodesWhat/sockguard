@@ -12,8 +12,8 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/codeswhat/sockguard/internal/httpjson"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // Dialer is the minimal upstream-dialing seam the mediator needs to reach

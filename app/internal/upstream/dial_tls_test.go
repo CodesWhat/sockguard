@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/testcert"
+	"github.com/codeswhat/sockguard/app/internal/testcert"
 )
 
 // startTLSEchoServer starts a TLS listener using the bundle's server cert and

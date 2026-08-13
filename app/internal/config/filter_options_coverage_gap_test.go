@@ -10,7 +10,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 // TestImageTrustConfigToFilterOptionsRoundTrip verifies that every field in

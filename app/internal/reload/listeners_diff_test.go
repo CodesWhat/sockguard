@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/config"
 )
 
 func reloadListenerConfig() config.Config {
