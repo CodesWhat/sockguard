@@ -356,7 +356,9 @@ jobs:
     # Tier 1 — per-PR smoke-level fuzzing. Each fuzzer gets a fixed 60 s
     # coverage budget in its own matrix job so the whole matrix runs in
     # parallel and the critical path stays at ~1–2 min wall time regardless
-    # of how many fuzzers we ship. The deep-coverage tier lives in
+    # of how many fuzzers we ship. The attack-facing BuildKit gRPC parsers
+    # also live here so changes to them get immediate coverage feedback. The
+    # deep-coverage tier lives in
     # .github/workflows/quality-fuzz-nightly.yml where each fuzzer gets 15
     # minutes by default (configurable via workflow_dispatch input).
     #
@@ -390,6 +392,12 @@ jobs:
           - { name: FuzzSwarm,                   pkg: ./internal/filter/ }
           - { name: FuzzPlugin,                  pkg: ./internal/filter/ }
           - { name: FuzzNetwork,                 pkg: ./internal/filter/ }
+          - { name: FuzzReadUnaryGRPCMessage,    pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzEvaluateGetSecretRequest, pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzEvaluateSolveRequest,    pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzEvaluateStatusRequest,   pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzRewriteSessionAdvertisement, pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzValidateUpgradeRequest,  pkg: ./internal/buildkitproxy/ }
           - { name: FuzzProxyHeadersAndBody,     pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,    pkg: ./internal/proxy/ }
           - { name: FuzzPathRoutingDifferential, pkg: ./differential/ }
