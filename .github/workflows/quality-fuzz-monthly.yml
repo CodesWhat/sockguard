@@ -7,14 +7,15 @@ run-name: >-
 
 # Tier 3 of the fuzz strategy. Tier 1 lives in `ci-verify.yml go-fuzz`
 # (60-second smoke per PR/push), Tier 2 in `quality-fuzz-nightly.yml`
-# (15 minutes per fuzzer daily). This workflow gives every fuzzer a
-# 1-hour coverage budget on the first day of each month so we get one
-# very deep pass per month that can find paths the shorter tiers miss,
-# plus on-demand longer runs via `workflow_dispatch` before a release.
+# (15 minutes per fuzzer daily). This workflow gives the Docker filter
+# targets and lower-frequency fuzzers a 1-hour coverage budget on the first
+# day of each month so we get one very deep pass that can find paths the
+# shorter tiers miss, plus on-demand longer runs via `workflow_dispatch`
+# before a release.
 #
-# 1 hour per fuzzer × 9 fuzzers × matrix-parallel = ~1 hour wall time,
-# ~9 runner-hours total. That's well within the free-tier budget for
-# public repos and cheap insurance for a default-deny security proxy.
+# Matrix parallelism keeps the wall time near 1 hour. Keeping lower-risk
+# additions here instead of the daily tier bounds their recurring runner cost
+# while still giving every in-tree fuzz target a coverage-guided run.
 #
 # Crashes are uploaded with 180-day retention so a failing input from
 # an older monthly run stays recoverable long enough to turn into a
@@ -58,14 +59,45 @@ jobs:
         fuzzer:
           - { name: FuzzPathMatch,                 pkg: ./internal/filter/ }
           - { name: FuzzGlobToRegex,               pkg: ./internal/filter/ }
+          - { name: FuzzGlobToRegexString,         pkg: ./internal/filter/ }
           - { name: FuzzNormalizePath,             pkg: ./internal/filter/ }
           - { name: FuzzCompileRule,               pkg: ./internal/filter/ }
+          - { name: FuzzBuild,                     pkg: ./internal/filter/ }
+          - { name: FuzzContainerCreate,           pkg: ./internal/filter/ }
+          - { name: FuzzExec,                      pkg: ./internal/filter/ }
+          - { name: FuzzImagePull,                 pkg: ./internal/filter/ }
+          - { name: FuzzVolume,                    pkg: ./internal/filter/ }
+          - { name: FuzzSecret,                    pkg: ./internal/filter/ }
+          - { name: FuzzConfigWrite,               pkg: ./internal/filter/ }
+          - { name: FuzzService,                   pkg: ./internal/filter/ }
+          - { name: FuzzSwarm,                     pkg: ./internal/filter/ }
+          - { name: FuzzPlugin,                    pkg: ./internal/filter/ }
+          - { name: FuzzNetwork,                   pkg: ./internal/filter/ }
+          - { name: FuzzImageLoad,                 pkg: ./internal/filter/ }
+          - { name: FuzzContainerArchive,          pkg: ./internal/filter/ }
+          - { name: FuzzContainerUpdate,           pkg: ./internal/filter/ }
+          - { name: FuzzNode,                      pkg: ./internal/filter/ }
+          - { name: FuzzLibpodContainerCreate,     pkg: ./internal/filter/ }
+          - { name: FuzzMutationRoundTrip,         pkg: ./internal/filter/ }
+          - { name: FuzzNetworkConnectEndpointConfigGates, pkg: ./internal/filter/ }
+          - { name: FuzzContainerCreatePolicyInspectEndpointConfig, pkg: ./internal/filter/ }
+          - { name: FuzzContainerCreateEndpointConfigGates, pkg: ./internal/filter/ }
+          - { name: FuzzResourceLimitGuardContainerRequestDecode, pkg: ./internal/filter/ }
           - { name: FuzzLoadYAML,                  pkg: ./internal/config/ }
+          - { name: FuzzLoadBytesEndpointConfig,   pkg: ./internal/config/ }
+          - { name: FuzzEffectiveListenerValidation, pkg: ./internal/config/ }
+          - { name: FuzzLoadYAMLBuildkit,          pkg: ./internal/config/ }
           - { name: FuzzProxyHeadersAndBody,       pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,      pkg: ./internal/proxy/ }
           - { name: FuzzHijackBidirectionalStream, pkg: ./internal/proxy/ }
           - { name: FuzzPathRoutingDifferential,   pkg: ./differential/ }
           - { name: FuzzVisibilityFilter,          pkg: ./internal/visibility/ }
+          - { name: FuzzOwnershipMutateBody,       pkg: ./internal/ownership/ }
+          - { name: FuzzOwnershipMutateServiceBody, pkg: ./internal/ownership/ }
+          - { name: FuzzFilterModifyResponse,      pkg: ./internal/responsefilter/ }
+          - { name: FuzzImmutableListenerDiff,     pkg: ./internal/reload/ }
+          - { name: FuzzBuildConfig,               pkg: ./internal/policybundle/ }
+          - { name: FuzzToRegexString,             pkg: ./internal/glob/ }
 
     steps:
       - name: Harden Runner

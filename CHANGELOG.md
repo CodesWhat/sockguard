@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Tests
+
+- Every in-tree Go fuzz target now runs in at least one CI tier. The six BuildKit gRPC parser targets get per-PR coverage, lower-frequency targets join the monthly tier, and the monthly deep tier retains every Docker filter target from the nightly suite. A source-driven invariant prevents new fuzz functions from silently missing every workflow.
+
 ## [1.7.0] - 2026-08-11
 
 ### Security
