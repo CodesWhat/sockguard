@@ -1,0 +1,373 @@
+package imagetrust
+
+import (
+	"context"
+	"encoding/hex"
+	"errors"
+	"fmt"
+
+	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/internal/sigverify"
+	"github.com/sigstore/sigstore-go/pkg/root"
+	"github.com/sigstore/sigstore-go/pkg/tuf"
+	"github.com/sigstore/sigstore-go/pkg/verify"
+	"log/slog"
+	"regexp"
+	"strings"
+	"time"
+
+	sigsig "github.com/sigstore/sigstore/pkg/signature"
+)
+
+// Mode controls whether verification failures block container creation.
+type Mode string
+
+const (
+	// ModeOff skips all verification. Default.
+	ModeOff Mode = "off"
+	// ModeWarn verifies and emits an audit log record on failure, but always
+	// allows the request through.
+	ModeWarn Mode = "warn"
+	// ModeEnforce verifies and returns an error on failure. The caller must
+	// deny the request.
+	ModeEnforce Mode = "enforce"
+)
+
+// VerifyTimeout is the default context timeout for a single verification call.
+const VerifyTimeout = 10 * time.Second
+
+// Config is the parsed, validated configuration for image trust verification.
+// Construct it via BuildConfig; do not construct it directly.
+type Config struct {
+	// Mode controls whether failures block or warn.
+	Mode Mode
+	// AllowedSigningKeys is the set of parsed keyed verifiers.
+	AllowedSigningKeys []KeyedVerifier
+	// AllowedKeyless is the set of keyless (Fulcio) identity matchers.
+	AllowedKeyless []KeylessIdentity
+	// RequireRekorInclusion requires a Rekor tlog entry for keyless verification.
+	RequireRekorInclusion bool
+	// TrustedMaterial is the root trusted material for keyless Fulcio/Rekor
+	// verification. Must be set (non-nil) when keyless identities are configured.
+	// Tests inject VirtualSigstore here; production builds fetch via TUF.
+	TrustedMaterial root.TrustedMaterial
+	// VerifyTimeout overrides the default per-verification timeout.
+	VerifyTimeout time.Duration
+}
+
+// KeyedVerifier holds a parsed, ready-to-use public key verifier and its hex
+// fingerprint (sha256 of DER-encoded SPKI) for logging.
+type KeyedVerifier struct {
+	verifier    sigsig.Verifier
+	fingerprint string // hex sha256 of DER SPKI
+}
+
+// Fingerprint returns the hex sha256 SPKI fingerprint used in audit logs.
+func (k KeyedVerifier) Fingerprint() string { return k.fingerprint }
+
+// KeylessIdentity is a compiled Fulcio identity constraint. At least one must
+// match the leaf cert's issuer OID extension and SAN for the image to pass.
+type KeylessIdentity struct {
+	IssuerExact    string         // exact OIDC issuer URL
+	SubjectPattern *regexp.Regexp // compiled regex matched against the cert SAN
+}
+
+// SigningKeyConfig is the raw operator config entry for a single public key.
+type SigningKeyConfig struct {
+	PEM string
+}
+
+// KeylessConfig is the raw operator config entry for a single keyless identity.
+type KeylessConfig struct {
+	Issuer         string
+	SubjectPattern string
+}
+
+// RawConfig is the operator-facing configuration before validation. Use
+// BuildConfig to produce a Config.
+type RawConfig struct {
+	Mode                  Mode
+	AllowedSigningKeys    []SigningKeyConfig
+	AllowedKeyless        []KeylessConfig
+	RequireRekorInclusion bool
+	VerifyTimeoutStr      string
+}
+
+// BuildConfig validates and compiles a RawConfig into a ready-to-use Config.
+// Returns an error if mode != off and the verifier would be misconfigured.
+func BuildConfig(raw RawConfig) (Config, error) {
+	if raw.Mode == "" {
+		raw.Mode = ModeOff
+	}
+	switch raw.Mode {
+	case ModeOff, ModeWarn, ModeEnforce:
+	default:
+		return Config{}, fmt.Errorf("image_trust.mode must be off, warn, or enforce; got %q", raw.Mode)
+	}
+
+	if raw.Mode == ModeOff {
+		return Config{Mode: ModeOff}, nil
+	}
+
+	// Compile signing keys.
+	var keyedVerifiers []KeyedVerifier
+	for i, keyConf := range raw.AllowedSigningKeys {
+		verifier, fingerprint, err := sigverify.CompileKey(keyConf.PEM)
+		if err != nil {
+			return Config{}, fmt.Errorf("image_trust.allowed_signing_keys[%d]: %w", i, err)
+		}
+		keyedVerifiers = append(keyedVerifiers, KeyedVerifier{
+			verifier:    verifier,
+			fingerprint: fingerprint,
+		})
+	}
+
+	// Compile keyless identities.
+	var keylessIDs []KeylessIdentity
+	for i, kl := range raw.AllowedKeyless {
+		issuer, re, err := sigverify.CompileKeyless(kl.Issuer, kl.SubjectPattern)
+		if err != nil {
+			return Config{}, fmt.Errorf("image_trust.allowed_keyless[%d].%w", i, err)
+		}
+		keylessIDs = append(keylessIDs, KeylessIdentity{
+			IssuerExact:    issuer,
+			SubjectPattern: re,
+		})
+	}
+
+	if len(keyedVerifiers) == 0 && len(keylessIDs) == 0 {
+		return Config{}, errors.New("image_trust: mode is not off but no allowed_signing_keys or allowed_keyless entries are configured")
+	}
+
+	timeout := VerifyTimeout
+	if raw.VerifyTimeoutStr != "" {
+		d, err := time.ParseDuration(raw.VerifyTimeoutStr)
+		if err != nil || d <= 0 {
+			return Config{}, fmt.Errorf("image_trust.verify_timeout must be a positive duration, got %q", raw.VerifyTimeoutStr)
+		}
+		timeout = d
+	}
+
+	return Config{
+		Mode:                  raw.Mode,
+		AllowedSigningKeys:    keyedVerifiers,
+		AllowedKeyless:        keylessIDs,
+		RequireRekorInclusion: raw.RequireRekorInclusion,
+		VerifyTimeout:         timeout,
+	}, nil
+}
+
+// Verifier is the interface implemented by the image trust verifier.
+// Tests may substitute a stub.
+type Verifier interface {
+	// Verify checks whether the given sigstore bundle is a valid signature for
+	// the artifact described by imageRef + digestHex (sha256 hex without
+	// prefix).  Returns nil on success, a descriptive error on failure.
+	Verify(ctx context.Context, imageRef, digestHex string, entity verify.SignedEntity) error
+}
+
+// VerifyOutcome carries the result of a verification attempt together with
+// metadata for audit logging.
+type VerifyOutcome struct {
+	Allowed    bool
+	Verifier   string // "keyed:<fingerprint>" | "keyless:<issuer>/<san>" | "off" | "warn-bypass" | "denied"
+	FailureMsg string
+	ElapsedMS  int64
+	// VerifiedDigest is the resolved image manifest digest ("sha256:<hex>") that
+	// the winning signature vouched for, when verification succeeded against a
+	// fetched candidate. Callers pin the outgoing image reference to this digest
+	// to close the verify→pull TOCTOU. Empty for off/warn-bypass outcomes.
+	VerifiedDigest string
+}
+
+// Candidate is a single fetched signature to try against the configured
+// verifiers: the hex sha256 digest of the signed payload plus the reconstructed
+// sigstore bundle. The internal/imagefetch package produces these from the OCI
+// registry; the image passes if any candidate verifies.
+type Candidate struct {
+	DigestHex string
+	Entity    verify.SignedEntity
+	// ImageDigest is the resolved image manifest digest ("sha256:<hex>") that
+	// this signature's payload binds to. Surfaced in VerifyOutcome.VerifiedDigest
+	// so the caller can pin the outgoing image reference to the verified digest.
+	ImageDigest string
+}
+
+// LoadLiveTrustedRoot fetches the Sigstore public-good trust root via TUF, for
+// use as Config.TrustedMaterial when keyless identities are configured. It
+// performs network I/O and requires a writable TUF cache directory, so callers
+// should invoke it once at startup and fail closed if it errors. The returned
+// material refreshes itself in the background.
+//
+// Keyed-only verification never needs this; only call it when keyless
+// identities are present.
+func LoadLiveTrustedRoot() (root.TrustedMaterial, error) {
+	tr, err := root.NewLiveTrustedRoot(tuf.DefaultOptions())
+	if err != nil {
+		return nil, fmt.Errorf("fetch sigstore trust root via TUF: %w", err)
+	}
+	return tr, nil
+}
+
+// New builds and returns a Verifier from a Config. If cfg.Mode is ModeOff it
+// returns a no-op verifier that always passes without any network calls.
+func New(cfg Config) (Verifier, error) {
+	if cfg.Mode == ModeOff {
+		return &offVerifier{}, nil
+	}
+	return &sigstoreVerifier{cfg: cfg}, nil
+}
+
+// VerifyWithMode wraps Verify and applies mode semantics:
+//   - ModeOff: returns Allowed=true without calling Verify
+//   - ModeWarn: calls Verify; if it fails, logs the failure, returns Allowed=true
+//   - ModeEnforce: calls Verify; if it fails, returns Allowed=false
+func VerifyWithMode(ctx context.Context, v Verifier, cfg Config, logger *slog.Logger, imageRef, digestHex string, entity verify.SignedEntity) VerifyOutcome {
+	start := time.Now()
+
+	if cfg.Mode == ModeOff {
+		return VerifyOutcome{Allowed: true, Verifier: "off", ElapsedMS: time.Since(start).Milliseconds()}
+	}
+
+	err := v.Verify(ctx, imageRef, digestHex, entity)
+	elapsed := time.Since(start).Milliseconds()
+
+	if err == nil {
+		return VerifyOutcome{Allowed: true, Verifier: "verified", ElapsedMS: elapsed}
+	}
+
+	failMsg := err.Error()
+	switch cfg.Mode {
+	case ModeWarn:
+		if logger != nil {
+			logger.WarnContext(ctx, "image trust verification failed (warn mode — request allowed)",
+				"image_ref", logging.SafeString(imageRef),
+				"digest", logging.SafeString(digestHex),
+				"error", logging.SafeString(failMsg),
+				"elapsed_ms", elapsed,
+			)
+		}
+		return VerifyOutcome{Allowed: true, Verifier: "warn-bypass", FailureMsg: failMsg, ElapsedMS: elapsed}
+	default:
+		return VerifyOutcome{Allowed: false, Verifier: "denied", FailureMsg: failMsg, ElapsedMS: elapsed}
+	}
+}
+
+// VerifyCandidatesWithMode applies mode semantics over the set of signatures
+// fetched for an image:
+//   - ModeOff: returns Allowed=true without checking anything.
+//   - otherwise: tries each candidate; the first that verifies wins. If none
+//     verify (or none were fetched), the failure is reported per mode — warn
+//     logs and allows, enforce denies.
+//
+// fetchErr is the error from the fetch step (e.g. unsigned image, registry
+// unreachable); it is surfaced in the failure message when no candidates are
+// present so the operator sees why verification could not proceed.
+func VerifyCandidatesWithMode(ctx context.Context, v Verifier, cfg Config, logger *slog.Logger, imageRef string, candidates []Candidate, fetchErr error) VerifyOutcome {
+	start := time.Now()
+
+	if cfg.Mode == ModeOff {
+		return VerifyOutcome{Allowed: true, Verifier: "off", ElapsedMS: time.Since(start).Milliseconds()}
+	}
+
+	var verifyErrs []string
+	for _, c := range candidates {
+		if err := v.Verify(ctx, imageRef, c.DigestHex, c.Entity); err != nil {
+			verifyErrs = append(verifyErrs, err.Error())
+			continue
+		}
+		return VerifyOutcome{Allowed: true, Verifier: "verified", VerifiedDigest: c.ImageDigest, ElapsedMS: time.Since(start).Milliseconds()}
+	}
+
+	var failMsg string
+	switch {
+	case len(candidates) == 0 && fetchErr != nil:
+		failMsg = fetchErr.Error()
+	case len(candidates) == 0:
+		failMsg = fmt.Sprintf("no signatures found for %s", imageRef)
+	default:
+		failMsg = fmt.Sprintf("no configured signer matched %s: %s", imageRef, strings.Join(verifyErrs, "; "))
+	}
+
+	elapsed := time.Since(start).Milliseconds()
+	switch cfg.Mode {
+	case ModeWarn:
+		if logger != nil {
+			logger.WarnContext(ctx, "image trust verification failed (warn mode — request allowed)",
+				"image_ref", logging.SafeString(imageRef),
+				"error", logging.SafeString(failMsg),
+				"elapsed_ms", elapsed,
+			)
+		}
+		return VerifyOutcome{Allowed: true, Verifier: "warn-bypass", FailureMsg: failMsg, ElapsedMS: elapsed}
+	default:
+		return VerifyOutcome{Allowed: false, Verifier: "denied", FailureMsg: failMsg, ElapsedMS: elapsed}
+	}
+}
+
+// offVerifier is the no-op Verifier returned when mode = off.
+type offVerifier struct{}
+
+func (o *offVerifier) Verify(_ context.Context, _, _ string, _ verify.SignedEntity) error {
+	return nil
+}
+
+// sigstoreVerifier is the production verifier backed by sigstore-go.
+type sigstoreVerifier struct {
+	cfg Config
+}
+
+func (s *sigstoreVerifier) Verify(ctx context.Context, imageRef, digestHex string, entity verify.SignedEntity) error {
+	if entity == nil {
+		return fmt.Errorf("image trust: no signature bundle provided for %s", imageRef)
+	}
+
+	digestBytes, err := hex.DecodeString(strings.TrimPrefix(digestHex, "sha256:"))
+	if err != nil {
+		return fmt.Errorf("image trust: invalid digest %q: %w", digestHex, err)
+	}
+
+	if _, ok := ctx.Deadline(); !ok && s.cfg.VerifyTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, s.cfg.VerifyTimeout)
+		defer cancel()
+	}
+
+	var keyedErr, keylessErr error
+
+	for _, kv := range s.cfg.AllowedSigningKeys {
+		if err := s.verifyKeyed(ctx, entity, digestBytes, kv); err != nil {
+			keyedErr = err
+			continue
+		}
+		return nil
+	}
+
+	for _, kl := range s.cfg.AllowedKeyless {
+		if err := s.verifyKeyless(ctx, entity, digestBytes, kl); err != nil {
+			keylessErr = err
+			continue
+		}
+		return nil
+	}
+
+	var msgs []string
+	if keyedErr != nil {
+		msgs = append(msgs, fmt.Sprintf("keyed: %v", keyedErr))
+	}
+	if keylessErr != nil {
+		msgs = append(msgs, fmt.Sprintf("keyless: %v", keylessErr))
+	}
+	if len(msgs) == 0 {
+		return fmt.Errorf("image trust: no verifiers configured for %s", imageRef)
+	}
+	return fmt.Errorf("image trust verification failed for %s: %s", imageRef, strings.Join(msgs, "; "))
+}
+
+func (s *sigstoreVerifier) verifyKeyed(_ context.Context, entity verify.SignedEntity, digestBytes []byte, kv KeyedVerifier) error {
+	return sigverify.VerifyKeyed(entity, digestBytes, kv.verifier)
+}
+
+func (s *sigstoreVerifier) verifyKeyless(_ context.Context, entity verify.SignedEntity, digestBytes []byte, kl KeylessIdentity) error {
+	return sigverify.VerifyKeyless(entity, digestBytes, s.cfg.TrustedMaterial, kl.IssuerExact, kl.SubjectPattern, s.cfg.RequireRekorInclusion)
+}
