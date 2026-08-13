@@ -124,3 +124,16 @@ test("Gosec argument selection ignores unrelated action arguments", () => {
   `;
   assert.equal(gosecArgs(workflow), "-exclude-generated ./app/...");
 });
+
+test("the pre-push hook compiles every integration build-tag boundary", () => {
+  const hook = read("lefthook.yml");
+
+  assert.match(
+    hook,
+    /go test -run='\^\$' -tags=integration \.\/integration\/\.\.\./,
+  );
+  assert.match(
+    hook,
+    /go test -run='\^\$' -tags=podmanintegration \.\/integration\/\.\.\. \.\/internal\/cmd\/\.\.\./,
+  );
+});
