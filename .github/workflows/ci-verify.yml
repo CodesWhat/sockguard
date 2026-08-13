@@ -27,7 +27,7 @@ env:
 
 jobs:
   zizmor:
-    name: "🔒 Workflow Security"
+    name: "Workflow Security"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -57,7 +57,7 @@ jobs:
           advanced-security: false
 
   codeql:
-    name: "🔍 CodeQL Analysis"
+    name: "CodeQL Analysis"
     # CodeQL SARIF upload requires GitHub Advanced Security (GHAS), which is not
     # available on free private repos. Skip unless the repo is public.
     if: github.event.repository.visibility == 'public' && (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
@@ -171,7 +171,7 @@ jobs:
           fi
 
   goreleaser-check:
-    name: "📦 GoReleaser Config"
+    name: "GoReleaser Config"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -211,7 +211,7 @@ jobs:
           grep -Fq 'com.apple.quarantine' "${cask}"
 
   go-lint:
-    name: "🧹 Go Lint"
+    name: "Go Lint"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -256,7 +256,7 @@ jobs:
           working-directory: app
 
   go-test:
-    name: "🧪 Go Test"
+    name: "Go Test"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -468,7 +468,7 @@ jobs:
           if-no-files-found: ignore
 
   ts-lint:
-    name: "🎨 Biome Lint"
+    name: "Biome Lint"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -497,7 +497,7 @@ jobs:
         run: npx biome check .
 
   ts-test:
-    name: "🧪 TS Test"
+    name: "TS Test"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -526,7 +526,7 @@ jobs:
         run: npm test
 
   ts-build:
-    name: "🏗️ Build Workspaces"
+    name: "Build Workspaces"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -554,7 +554,7 @@ jobs:
         run: npx turbo build
 
   docker:
-    name: "🐳 Docker Build"
+    name: "Docker Build"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
