@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/inbound"
+	"github.com/codeswhat/sockguard/app/internal/inbound"
 )
 
 func TestAccessLogListenerNameComesOnlyFromInboundIdentity(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/inbound"
+	"github.com/codeswhat/sockguard/app/internal/inbound"
 )
 
 // AuditOptions configures dedicated audit-event fields that come from proxy

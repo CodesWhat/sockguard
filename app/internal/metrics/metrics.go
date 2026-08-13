@@ -15,9 +15,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/inbound"
-	"github.com/codeswhat/sockguard/internal/logging"
-	"github.com/codeswhat/sockguard/internal/version"
+	"github.com/codeswhat/sockguard/app/internal/inbound"
+	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/version"
 )
 
 const contentTypePrometheusText = "text/plain; version=0.0.4; charset=utf-8"

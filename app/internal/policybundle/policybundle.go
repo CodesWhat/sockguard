@@ -32,7 +32,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/verify"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
 
-	"github.com/codeswhat/sockguard/internal/sigverify"
+	"github.com/codeswhat/sockguard/app/internal/sigverify"
 )
 
 // VerifyTimeout is the default per-verification context timeout. Bundle

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/config"
 )
 
 func TestListenerConfigFieldInventoryPinsReloadContract(t *testing.T) {

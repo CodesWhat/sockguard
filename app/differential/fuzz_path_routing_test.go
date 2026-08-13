@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 // FuzzPathRoutingDifferential is the fuzzing counterpart of

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/dockerclient"
-	"github.com/codeswhat/sockguard/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/dockerclient"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 // TestNew_UsesResolverTransport pins the contract that dockerclient.New wires
