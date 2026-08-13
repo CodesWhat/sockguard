@@ -43,6 +43,11 @@ func TestDecode(t *testing.T) {
 			},
 		},
 		{
+			name:    "legacy object rejects non-boolean values",
+			input:   `{"label":{"a=b":1}}`,
+			wantErr: "unexpected label filter value type",
+		},
+		{
 			// Negation (key!=value) must pass through verbatim. Docker treats
 			// `!=` as an in-string sentinel; callers don't parse it, so round-
 			// tripping the literal string keeps the original semantics.

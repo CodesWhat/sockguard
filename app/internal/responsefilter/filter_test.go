@@ -16,6 +16,16 @@ type readFailAfterCloser struct {
 	err       error
 }
 
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed = true
+	return nil
+}
+
 func (r *readFailAfterCloser) Read(p []byte) (int, error) {
 	if len(r.remaining) > 0 {
 		n := copy(p, r.remaining)
@@ -360,6 +370,18 @@ func TestFilterRejectsChunkedSwarmInspectReadFailure(t *testing.T) {
 	}
 	if !errors.Is(err, readErr) {
 		t.Fatalf("ModifyResponse() error = %v, want errors.Is(..., readErr)", err)
+	}
+}
+
+func TestStreamArrayResponseClosesOriginalUpstreamBody(t *testing.T) {
+	t.Parallel()
+	upstream := &closeTrackingBody{Reader: strings.NewReader(`[{"Name":"example"}]`)}
+	resp := &http.Response{Body: upstream, Header: make(http.Header)}
+	if err := streamArrayResponse(resp, func(map[string]any) error { return nil }); err != nil {
+		t.Fatalf("streamArrayResponse() error = %v", err)
+	}
+	if !upstream.closed {
+		t.Fatal("streamArrayResponse() did not close the original upstream body")
 	}
 }
 

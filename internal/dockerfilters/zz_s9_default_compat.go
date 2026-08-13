@@ -60,7 +60,10 @@ func Decode(encoded string) (map[string][]string, error) {
 			filters[key] = values
 		case map[string]any:
 			values := make([]string, 0, len(typed))
-			for item := range typed {
+			for item, enabled := range typed {
+				if _, ok := enabled.(bool); !ok {
+					return nil, fmt.Errorf("decode filters: unexpected %s filter value type %T", key, enabled)
+				}
 				values = append(values, item)
 			}
 			slices.Sort(values)

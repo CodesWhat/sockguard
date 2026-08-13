@@ -50,6 +50,9 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	path := requestNormalizedPath(w, r)
+	if nativePath, ok := strings.CutPrefix(path, "/libpod"); ok {
+		path = nativePath
+	}
 	switch r.Method {
 	case http.MethodGet:
 		switch {

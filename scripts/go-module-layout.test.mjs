@@ -10,6 +10,11 @@ const rootModule = new URL("../go.mod", import.meta.url);
 const nestedModule = new URL("../app/go.mod", import.meta.url);
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 
+const gosecArgs = (workflow) =>
+  workflow.match(
+    /^[ \t]+(?:- )?uses:[ \t]+securego\/gosec@[^\n]+\n[ \t]+with:\n[ \t]+args:[ \t]+(.+)$/m,
+  )?.[1] ?? "";
+
 test("the repository root is the canonical Go module root", () => {
   assert.ok(existsSync(rootModule), "go.mod must live at the repository root");
   assert.ok(!existsSync(nestedModule), "app must not declare a mismatched nested module");
@@ -76,7 +81,7 @@ test("container and coverage tooling preserve app as the package subdirectory", 
 
 test("Gosec scans canonical app packages with audited suppressions", () => {
   const workflow = read(".github/workflows/security-grype.yml");
-  const args = workflow.match(/^\s+args:\s+(.+)$/m)?.[1] ?? "";
+  const args = gosecArgs(workflow);
 
   assert.match(args, /(?:^|\s)-exclude-generated(?:\s|$)/);
   assert.match(args, /(?:^|\s)-nosec-require-rules(?:\s|$)/);
@@ -92,4 +97,30 @@ test("Gosec scans canonical app packages with audited suppressions", () => {
     .split("\n")
     .filter(Boolean);
   assert.ok(packages.length > 0, "Gosec target must resolve at least one canonical package");
+
+  const generated = execFileSync("git", ["ls-files", "app"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  })
+    .trim()
+    .split("\n")
+    .filter((path) => path.endsWith(".go"))
+    .filter((path) => /^\/\/ Code generated .* DO NOT EDIT\.$/m.test(read(path)));
+  assert.equal(generated.length, 11, "approved generated-file inventory changed");
+  for (const path of generated) {
+    assert.match(path, /^app\/internal\/buildkitproto\/.+\.pb\.go$/);
+  }
+  assert.ok(generated.includes("app/internal/buildkitproto/health/health.pb.go"));
+});
+
+test("Gosec argument selection ignores unrelated action arguments", () => {
+  const workflow = `
+      - uses: example/unrelated@v1
+        with:
+          args: -no-fail ./ignored/...
+      - uses: securego/gosec@v2
+        with:
+          args: -exclude-generated ./app/...
+  `;
+  assert.equal(gosecArgs(workflow), "-exclude-generated ./app/...");
 });

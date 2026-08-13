@@ -215,6 +215,9 @@ func New(cfg Config) (Verifier, error) {
 	if cfg.Mode == ModeOff {
 		return &offVerifier{}, nil
 	}
+	if len(cfg.AllowedKeyless) > 0 && cfg.TrustedMaterial == nil {
+		return nil, errors.New("image_trust: keyless identities configured but TrustedMaterial is nil; call LoadLiveTrustedRoot and set Config.TrustedMaterial")
+	}
 	return &sigstoreVerifier{cfg: cfg}, nil
 }
 
@@ -333,11 +336,11 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, imageRef, digestHex strin
 		defer cancel()
 	}
 
-	var keyedErr, keylessErr error
+	var keyedErrs, keylessErrs []string
 
 	for _, kv := range s.cfg.AllowedSigningKeys {
 		if err := s.verifyKeyed(ctx, entity, digestBytes, kv); err != nil {
-			keyedErr = err
+			keyedErrs = append(keyedErrs, fmt.Sprintf("%s: %v", kv.fingerprint, err))
 			continue
 		}
 		return nil
@@ -345,18 +348,18 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, imageRef, digestHex strin
 
 	for _, kl := range s.cfg.AllowedKeyless {
 		if err := s.verifyKeyless(ctx, entity, digestBytes, kl); err != nil {
-			keylessErr = err
+			keylessErrs = append(keylessErrs, fmt.Sprintf("%s: %v", kl.IssuerExact, err))
 			continue
 		}
 		return nil
 	}
 
 	var msgs []string
-	if keyedErr != nil {
-		msgs = append(msgs, fmt.Sprintf("keyed: %v", keyedErr))
+	if len(keyedErrs) > 0 {
+		msgs = append(msgs, "keyed: "+strings.Join(keyedErrs, " | "))
 	}
-	if keylessErr != nil {
-		msgs = append(msgs, fmt.Sprintf("keyless: %v", keylessErr))
+	if len(keylessErrs) > 0 {
+		msgs = append(msgs, "keyless: "+strings.Join(keylessErrs, " | "))
 	}
 	if len(msgs) == 0 {
 		return fmt.Errorf("image trust: no verifiers configured for %s", imageRef)

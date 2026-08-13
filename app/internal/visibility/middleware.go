@@ -406,12 +406,14 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 	// Writing any bytes triggers an http.ResponseWriter downgrade to 502.
 	if mustHaveEmptyBody(p.statusCode) {
 		p.underlying.WriteHeader(p.statusCode)
+		p.headerWritten = true
 		return nil
 	}
 
 	// Only filter 2xx responses with a JSON body; pass through everything else.
 	if p.statusCode < http.StatusOK || p.statusCode >= http.StatusMultipleChoices {
 		p.underlying.WriteHeader(p.statusCode)
+		p.headerWritten = true
 		_, err := p.underlying.Write(p.body.Bytes())
 		return err
 	}
@@ -421,6 +423,7 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 	if err != nil || tok != json.Delim('[') {
 		// Not a JSON array — pass through unchanged.
 		p.underlying.WriteHeader(p.statusCode)
+		p.headerWritten = true
 		_, werr := p.underlying.Write(p.body.Bytes())
 		return werr
 	}
@@ -451,8 +454,8 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 
 	p.underlying.Header().Set("Content-Length", strconv.Itoa(out.Len()))
 	p.underlying.WriteHeader(p.statusCode)
-	_, err = p.underlying.Write(out.Bytes())
 	p.headerWritten = true
+	_, err = p.underlying.Write(out.Bytes())
 	return err
 }
 

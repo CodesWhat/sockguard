@@ -22,10 +22,10 @@ import (
 	"log/slog"
 	"strings"
 
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	protobundle "github.com/sigstore/protobuf-specs/gen/pb-go/bundle/v1"
 	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
 	protorekor "github.com/sigstore/protobuf-specs/gen/pb-go/rekor/v1"
-	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
 const (
@@ -129,21 +129,26 @@ func (f *Fetcher) FetchCandidates(ctx context.Context, logger *slog.Logger, imag
 	}
 
 	var candidates []imagetrust.Candidate
+	var candidateErrs []error
 	for _, sigImg := range sigImages {
 		cs, err := candidatesFromSigImage(sigImg, imageDigest)
+		candidates = append(candidates, cs...)
 		if err != nil {
 
 			if logger != nil {
 				logger.DebugContext(ctx, "skipping malformed cosign signature manifest",
 					"image_ref", logging.SafeString(imageRef), "resolved_digest", logging.SafeString(imageDigest.String()), "error", logging.SafeString(err.Error()))
 			}
-			continue
+			candidateErrs = append(candidateErrs, err)
 		}
-		candidates = append(candidates, cs...)
 	}
 
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("%w for %q (resolved %s)", ErrNoSignatures, imageRef, imageDigest)
+		baseErr := fmt.Errorf("%w for %q (resolved %s)", ErrNoSignatures, imageRef, imageDigest)
+		if len(candidateErrs) > 0 {
+			return nil, fmt.Errorf("%w: signature parsing failures: %w", baseErr, errors.Join(candidateErrs...))
+		}
+		return nil, baseErr
 	}
 	return candidates, nil
 }
@@ -216,6 +221,7 @@ func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash) ([]imagetrust.
 	}
 
 	var out []imagetrust.Candidate
+	var layerErrs []error
 	for _, layerDesc := range mf.Layers {
 		sigB64 := strings.TrimSpace(layerDesc.Annotations[cosignSignatureAnnotation])
 		if sigB64 == "" {
@@ -224,10 +230,12 @@ func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash) ([]imagetrust.
 
 		layer, err := sigImg.LayerByDigest(layerDesc.Digest)
 		if err != nil {
+			layerErrs = append(layerErrs, fmt.Errorf("layer %s: resolve blob: %w", layerDesc.Digest, err))
 			continue
 		}
 		payload, err := readLayerPayload(layer)
 		if err != nil {
+			layerErrs = append(layerErrs, fmt.Errorf("layer %s: read payload: %w", layerDesc.Digest, err))
 			continue
 		}
 
@@ -237,6 +245,7 @@ func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash) ([]imagetrust.
 
 		rawSig, err := base64.StdEncoding.DecodeString(sigB64)
 		if err != nil {
+			layerErrs = append(layerErrs, fmt.Errorf("layer %s: decode signature: %w", layerDesc.Digest, err))
 			continue
 		}
 
@@ -245,10 +254,12 @@ func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash) ([]imagetrust.
 			layerDesc.Annotations[cosignBundleAnnotation],
 		)
 		if err != nil {
+			layerErrs = append(layerErrs, fmt.Errorf("layer %s: build bundle: %w", layerDesc.Digest, err))
 			continue
 		}
 		b, err := bundle.NewBundle(pb)
 		if err != nil {
+			layerErrs = append(layerErrs, fmt.Errorf("layer %s: parse bundle: %w", layerDesc.Digest, err))
 			continue
 		}
 
@@ -259,7 +270,7 @@ func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash) ([]imagetrust.
 			ImageDigest: imageDigest.String(),
 		})
 	}
-	return out, nil
+	return out, errors.Join(layerErrs...)
 }
 
 func readLayerPayload(layer v1.Layer) ([]byte, error) {
@@ -269,7 +280,14 @@ func readLayerPayload(layer v1.Layer) ([]byte, error) {
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(io.LimitReader(rc, maxPayloadBytes))
+	payload, err := io.ReadAll(io.LimitReader(rc, maxPayloadBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(payload) > maxPayloadBytes {
+		return nil, fmt.Errorf("signature payload exceeds %d byte limit", maxPayloadBytes)
+	}
+	return payload, nil
 }
 
 // simpleSigningPayload is the subset of the cosign simple-signing payload we

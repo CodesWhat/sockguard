@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -293,6 +294,15 @@ func TestFetchCandidates_InvalidReference(t *testing.T) {
 	}
 	if errors.Is(err, ErrNoSignatures) {
 		t.Fatal("a parse error should not be reported as ErrNoSignatures")
+	}
+}
+
+func TestReadLayerPayloadRejectsOversizePayload(t *testing.T) {
+	t.Parallel()
+	layer := static.NewLayer(bytes.Repeat([]byte("x"), maxPayloadBytes+1), types.MediaType(simpleSigningMediaType))
+	_, err := readLayerPayload(layer)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("readLayerPayload(oversize) error = %v, want size-limit error", err)
 	}
 }
 

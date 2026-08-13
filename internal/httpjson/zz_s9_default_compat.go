@@ -18,11 +18,11 @@ var jsonBufferPool = sync.Pool{
 	},
 }
 
-var (
+const (
 	contentTypeHeader       = "Content-Type"
-	contentTypeJSONValue    = []string{"application/json"}
+	contentTypeJSONValue    = "application/json"
 	contentTypeOptionsKey   = "X-Content-Type-Options"
-	contentTypeOptionsValue = []string{"nosniff"}
+	contentTypeOptionsValue = "nosniff"
 )
 
 func getJSONBuffer() *bytes.Buffer {
@@ -46,8 +46,8 @@ func setJSONHeaders(header http.Header) {
 	if header == nil {
 		return
 	}
-	header[contentTypeHeader] = contentTypeJSONValue
-	header[contentTypeOptionsKey] = contentTypeOptionsValue
+	header.Set(contentTypeHeader, contentTypeJSONValue)
+	header.Set(contentTypeOptionsKey, contentTypeOptionsValue)
 }
 
 // Write serializes payload as JSON with the given status code.

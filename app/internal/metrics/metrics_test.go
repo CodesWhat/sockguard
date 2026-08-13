@@ -385,7 +385,7 @@ func TestSortKeysBucketFormattingAndLabelEscaping(t *testing.T) {
 	if got := formatBucket(0.025); got != "0.025" {
 		t.Fatalf("formatBucket(0.025) = %q, want 0.025", got)
 	}
-	if got := labelValue("quote\" slash\\\nnext"); got != `"quote\" slash\\\nnext"` {
+	if got := labelValue("quote\" slash\\\nnext\rline"); got != `"quote\" slash\\\nnext\rline"` {
 		t.Fatalf("labelValue escaped = %q", got)
 	}
 }

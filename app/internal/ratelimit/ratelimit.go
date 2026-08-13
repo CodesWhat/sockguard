@@ -255,8 +255,9 @@ type Limiter struct {
 	burst           float64
 	now             nowFn
 
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // newLimiterWithClock creates a Limiter with the given rate parameters and an
@@ -291,12 +292,7 @@ func (l *Limiter) evictionLoop() {
 // Stop halts the background eviction goroutine. Safe to call multiple times;
 // subsequent calls are no-ops via the closed stopCh.
 func (l *Limiter) Stop() {
-	select {
-	case <-l.stopCh:
-		// already stopped
-	default:
-		close(l.stopCh)
-	}
+	l.stopOnce.Do(func() { close(l.stopCh) })
 	l.wg.Wait()
 }
 

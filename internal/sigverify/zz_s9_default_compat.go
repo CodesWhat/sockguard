@@ -56,9 +56,6 @@ func CompileKeyless(issuer, subjectPattern string) (string, *regexp.Regexp, erro
 		return "", nil, errors.New("subject_pattern is required")
 	}
 
-	if _, err := regexp.Compile(pattern); err != nil {
-		return "", nil, fmt.Errorf("subject_pattern: %w", err)
-	}
 	re, err := regexp.Compile("^(?:" + pattern + ")$")
 	if err != nil {
 		return "", nil, fmt.Errorf("subject_pattern: %w", err)
@@ -104,6 +101,9 @@ func VerifyKeyless(
 ) error {
 	if trustedMaterial == nil {
 		return errors.New("keyless verification requires TrustedMaterial")
+	}
+	if issuerExact == "" || subjectPattern == nil {
+		return errors.New("keyless verification requires both an exact issuer and a compiled subject pattern")
 	}
 	opts := []verify.VerifierOption{verify.WithObserverTimestamps(1)}
 	if requireRekorInclusion {

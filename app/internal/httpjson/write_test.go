@@ -36,6 +36,23 @@ func TestWrite(t *testing.T) {
 	}
 }
 
+func TestSetJSONHeadersDoesNotShareMutableValues(t *testing.T) {
+	t.Parallel()
+	first := make(http.Header)
+	setJSONHeaders(first)
+	first["Content-Type"][0] = "text/plain"
+	first["X-Content-Type-Options"][0] = "unsafe"
+
+	second := make(http.Header)
+	setJSONHeaders(second)
+	if got := second.Get("Content-Type"); got != "application/json" {
+		t.Fatalf("second Content-Type = %q, want application/json", got)
+	}
+	if got := second.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("second X-Content-Type-Options = %q, want nosniff", got)
+	}
+}
+
 type trackingWriter struct {
 	header http.Header
 	status int

@@ -264,6 +264,13 @@ func TestAuditLoggerLogAndCloseEdgeBranches(t *testing.T) {
 	}
 	fullQueueLogger.events <- auditEvent{EventType: "queued"}
 	fullQueueLogger.log(auditEvent{EventType: "dropped"})
+	if got := fullQueueLogger.DroppedEvents(); got != 1 {
+		t.Fatalf("DroppedEvents() = %d, want 1", got)
+	}
+	closedLogger.log(auditEvent{EventType: "dropped_after_close"})
+	if got := closedLogger.DroppedEvents(); got != 2 {
+		t.Fatalf("DroppedEvents() after Close = %d, want 2", got)
+	}
 }
 
 func TestAuditLoggerDrainWritesQueuedEvents(t *testing.T) {

@@ -480,10 +480,11 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 	if resp.Body == nil {
 		return rejectResponse(errors.New("missing response body"))
 	}
-	defer func() { _ = resp.Body.Close() }()
+	upstreamBody := resp.Body
+	defer func() { _ = upstreamBody.Close() }()
 
 	limited := &io.LimitedReader{
-		R: resp.Body,
+		R: upstreamBody,
 		N: requestfilter.MaxResponseBodyBytes + 1,
 	}
 	dec := json.NewDecoder(limited)
@@ -1015,9 +1016,10 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 		return nil, errors.New("missing response body")
 	}
 
-	defer func() { _ = resp.Body.Close() }()
+	upstreamBody := resp.Body
+	defer func() { _ = upstreamBody.Close() }()
 
-	reader := &io.LimitedReader{R: resp.Body, N: requestfilter.MaxResponseBodyBytes + 1}
+	reader := &io.LimitedReader{R: upstreamBody, N: requestfilter.MaxResponseBodyBytes + 1}
 	body, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err

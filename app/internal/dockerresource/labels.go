@@ -3,6 +3,7 @@ package dockerresource
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -128,10 +129,13 @@ func decodeLibpodNetworkLabels(body io.Reader) (map[string]string, error) {
 		if err := json.Unmarshal(data, &arr); err != nil {
 			return nil, fmt.Errorf("decode libpod network inspect array: %w", err)
 		}
-		if len(arr) == 0 {
-			return nil, nil
+		if len(arr) != 1 {
+			return nil, fmt.Errorf("decode libpod network inspect array: expected one object, got %d", len(arr))
 		}
-		data = arr[0]
+		data = bytes.TrimSpace(arr[0])
+		if bytes.Equal(data, []byte("null")) {
+			return nil, errors.New("decode libpod network inspect array: object is null")
+		}
 	}
 	var payload struct {
 		Labels map[string]string `json:"labels"`

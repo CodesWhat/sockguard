@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codeswhat/sockguard/internal/inbound"
@@ -30,9 +32,12 @@ type AuditLogger struct {
 	wg        sync.WaitGroup
 	enc       *json.Encoder
 	now       func() string
+	dropped   atomic.Uint64
+	lastWarn  atomic.Int64
 }
 
 const auditLogBufferSize = 1024
+const auditDropWarningInterval = time.Minute
 
 // NewAuditLogger constructs a dedicated JSON audit logger.
 func NewAuditLogger(w io.Writer) *AuditLogger {
@@ -285,6 +290,7 @@ func (l *AuditLogger) log(event auditEvent) {
 	}
 	select {
 	case <-l.done:
+		l.recordDrop()
 		return
 	default:
 	}
@@ -293,7 +299,27 @@ func (l *AuditLogger) log(event auditEvent) {
 	select {
 	case l.events <- event:
 	default:
+		l.recordDrop()
 	}
+}
+
+func (l *AuditLogger) recordDrop() {
+	total := l.dropped.Add(1)
+	now := time.Now().UnixNano()
+	last := l.lastWarn.Load()
+	if now-last < auditDropWarningInterval.Nanoseconds() || !l.lastWarn.CompareAndSwap(last, now) {
+		return
+	}
+	slog.Warn("audit events dropped", "dropped_total", total)
+}
+
+// DroppedEvents reports events discarded because the buffer was full or the
+// logger had already closed.
+func (l *AuditLogger) DroppedEvents() uint64 {
+	if l == nil {
+		return 0
+	}
+	return l.dropped.Load()
 }
 
 // Close drains queued audit events before returning. It does not close the
