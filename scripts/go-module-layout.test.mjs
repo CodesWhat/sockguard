@@ -73,3 +73,23 @@ test("container and coverage tooling preserve app as the package subdirectory", 
     /sed 's#github\.com\/codeswhat\/sockguard\/#\#g' coverage\.prod\.txt > coverage\.qlty\.txt/,
   );
 });
+
+test("Gosec scans canonical app packages with audited suppressions", () => {
+  const workflow = read(".github/workflows/security-grype.yml");
+  const args = workflow.match(/^\s+args:\s+(.+)$/m)?.[1] ?? "";
+
+  assert.match(args, /(?:^|\s)-exclude-generated(?:\s|$)/);
+  assert.match(args, /(?:^|\s)-nosec-require-rules(?:\s|$)/);
+  assert.match(args, /(?:^|\s)-nosec-require-justification(?:\s|$)/);
+  assert.match(args, /(?:^|\s)\.\/app\/\.\.\.(?:\s|$)/);
+  assert.doesNotMatch(args, /(?:^|\s)-(?:no-fail|exclude|exclude-dir|exclude-rules)(?:=|\s|$)/);
+
+  const packages = execFileSync("go", ["list", "./app/..."], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  })
+    .trim()
+    .split("\n")
+    .filter(Boolean);
+  assert.ok(packages.length > 0, "Gosec target must resolve at least one canonical package");
+});

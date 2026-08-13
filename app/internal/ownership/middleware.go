@@ -850,11 +850,11 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 		return nil, false, fmt.Errorf("unsupported resource kind %q", kind)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+target, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+target, nil) // #nosec G704 -- InspectPath accepts only a validated engine resource identifier.
 	if err != nil {
 		return nil, false, fmt.Errorf("build inspect %s request: %w", kind, err)
 	}
-	resp, err := u.client.Do(req)
+	resp, err := u.client.Do(req) // #nosec G704 -- the inspector client targets the local container-engine socket, not the URL host.
 	if err != nil {
 		return nil, false, err
 	}
@@ -875,11 +875,11 @@ func (u upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 }
 
 func (u upstreamInspector) inspectExec(ctx context.Context, identifier string) (string, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/exec/"+url.PathEscape(identifier)+"/json", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/exec/"+url.PathEscape(identifier)+"/json", nil) // #nosec G704 -- the fixed local-engine URL contains only a path-escaped identifier.
 	if err != nil {
 		return "", false, fmt.Errorf("build inspect exec request: %w", err)
 	}
-	resp, err := u.client.Do(req)
+	resp, err := u.client.Do(req) // #nosec G704 -- the inspector client targets the local container-engine socket, not the URL host.
 	if err != nil {
 		return "", false, err
 	}

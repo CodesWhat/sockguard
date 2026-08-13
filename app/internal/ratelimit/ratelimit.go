@@ -79,6 +79,7 @@ func packState(tokenFP uint32, ms uint32) uint64 {
 }
 
 // unpackTokenFP extracts the 16.16 fixed-point token count from a packed word.
+// #nosec G115 -- intentional truncation to the lower 32-bit token field.
 func unpackTokenFP(w uint64) uint32 { return uint32(w) } //nolint:gosec // G115: intentional truncation to lower 32 bits (token field)
 
 // unpackMS extracts the millisecond timestamp from a packed word.
@@ -130,6 +131,7 @@ func newBucket(tokensPerSecond, burst float64, now nowFn) *bucket {
 		b.tpsFP = 1
 	}
 	initialFP := uint32(burst * float64(packedFracScale))
+	// #nosec G115 -- intentional mod-2^32 truncation of the millisecond timestamp.
 	ms := uint32(t.UnixMilli()) //nolint:gosec // G115: intentional mod-2^32 truncation of ms timestamp (wraps every ~49.7 days)
 	b.state.Store(packState(initialFP, ms))
 	b.lastAccessNs.Store(t.UnixNano())
@@ -170,6 +172,7 @@ func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
 	nowT := b.now()
 	nowNs := nowT.UnixNano()
 	b.lastAccessNs.Store(nowNs)
+	// #nosec G115 -- intentional mod-2^32 truncation of the millisecond timestamp.
 	nowMS := uint32(nowT.UnixMilli()) //nolint:gosec // G115: intentional mod-2^32 truncation of ms timestamp
 
 	for i := 0; i < maxCASRetries; i++ {
@@ -181,6 +184,7 @@ func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
 		// Casting the unsigned difference to int32 handles backwards-clock
 		// steps (negative elapsed → no refill) and the uint32 wraparound at
 		// ~49.7 days (see package-level comment).
+		// #nosec G115 -- intentional signed modular difference for backwards-clock detection.
 		elapsedMS := int32(nowMS - lastMS) //nolint:gosec // G115: intentional signed-modular-diff for backwards-clock detection
 
 		var newTokenFP uint64
@@ -189,7 +193,8 @@ func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
 			// refill = elapsed_ms * tpsFP / 1000
 			// Both elapsed_ms (int32, max ~2.1e9) and tpsFP (max ~4.3e9) fit
 			// in int64 when multiplied (~9.2e18 < int64 max).
-			refillFP := uint64(int64(elapsedMS)*int64(b.tpsFP)) / 1000 //nolint:gosec // G115: tpsFP <= 65535*65536 = 4,294,901,760 fits int64; product fits int64 (max ~9.2e18)
+			// #nosec G115 -- bounded elapsedMS and tpsFP keep the signed product non-negative and within int64.
+			refillFP := uint64(int64(elapsedMS)*int64(b.tpsFP)) / 1000 //nolint:gosec // G115: bounded product fits int64
 			newTokenFP = tokenFP + refillFP
 			if newTokenFP > b.burstFP {
 				newTokenFP = b.burstFP
@@ -217,7 +222,8 @@ func (b *bucket) AllowN(cost float64) (ok bool, retryAfter int) {
 		// deficitFP and tpsFP both carry ×packedFracScale, so the quotient is
 		// in seconds.
 		deficitFP := costFP - newTokenFP
-		retrySeconds := int((deficitFP + b.tpsFP - 1) / b.tpsFP) //nolint:gosec // G115: quotient is seconds; burst <= 65535 bounds deficitFP
+		// #nosec G115 -- burst <= 65535 bounds the seconds quotient to int range.
+		retrySeconds := int((deficitFP + b.tpsFP - 1) / b.tpsFP) //nolint:gosec // G115: bounded seconds quotient fits int
 		return false, retrySeconds
 	}
 

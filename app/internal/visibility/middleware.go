@@ -1019,11 +1019,11 @@ func (i upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 }
 
 func (i upstreamInspector) inspectExec(ctx context.Context, identifier string) (string, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/exec/"+url.PathEscape(identifier)+"/json", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/exec/"+url.PathEscape(identifier)+"/json", nil) // #nosec G704 -- the fixed local-engine URL contains only a path-escaped identifier.
 	if err != nil {
 		return "", false, err
 	}
-	resp, err := i.client.Do(req)
+	resp, err := i.client.Do(req) // #nosec G704 -- the inspector client targets the local container-engine socket, not the URL host.
 	if err != nil {
 		return "", false, err
 	}

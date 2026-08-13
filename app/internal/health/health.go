@@ -228,7 +228,7 @@ func (c *upstreamHealthChecker) check(ctx context.Context, upstreamSocket string
 		conn, err = c.dial(dialCtx, "unix", upstreamSocket)
 		status = "connected"
 		if err == nil {
-			conn.Close()
+			_ = conn.Close()
 		} else {
 			status = "unreachable"
 		}

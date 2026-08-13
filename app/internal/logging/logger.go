@@ -82,7 +82,7 @@ func outputWriter(output string) (io.Writer, io.Closer, error) {
 		// read/write matches how the Chainguard base image runs as
 		// a single identity and keeps log-scrape sidecars from
 		// grabbing request metadata they weren't granted access to.
-		f, err := os.OpenFile(normalized, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		f, err := os.OpenFile(normalized, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 -- arbitrary local output paths are an explicit configuration feature and normalizeOutput rejects unsafe values.
 		if err != nil {
 			return nil, nil, fmt.Errorf("open log output %q: %w", normalized, err)
 		}

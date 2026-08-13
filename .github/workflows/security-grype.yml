@@ -203,7 +203,7 @@ jobs:
       - name: Run Gosec
         uses: securego/gosec@9e75c0576c9878035d4221392108d458abe10fc3  # v2.28.0
         with:
-          args: -fmt sarif -out gosec-results.sarif ./app/...
+          args: -exclude-generated -nosec-require-rules -nosec-require-justification -fmt sarif -out gosec-results.sarif ./app/...
 
       - name: Upload Gosec SARIF
         if: always() && github.event.repository.visibility == 'public'
