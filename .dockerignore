@@ -1,6 +1,6 @@
-# The Dockerfile only COPYs app/ (and app/configs/ within it) into the
-# image. Everything else here is monorepo/tooling weight that has no
-# business in the build context.
+# The Dockerfile only COPYs the root module files and app/ (including its
+# configs) into the image. Everything else here is monorepo/tooling weight
+# that has no business in the build context.
 
 # Node monorepo workspaces (website/docs) — biggest offenders
 node_modules/

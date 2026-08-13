@@ -9,17 +9,19 @@ ARG BUILD_DATE=unknown
 ARG TARGETOS TARGETARCH
 WORKDIR /build
 
-COPY app/go.mod app/go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
 
-COPY app/ .
+COPY app/ ./app/
+# Temporary compatibility copy while imports move to their canonical /app paths.
+COPY app/internal/ ./internal/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w \
-      -X github.com/codeswhat/sockguard/internal/version.Version=${VERSION} \
-      -X github.com/codeswhat/sockguard/internal/version.Commit=${COMMIT} \
-      -X github.com/codeswhat/sockguard/internal/version.BuildDate=${BUILD_DATE}" \
+      -X github.com/codeswhat/sockguard/app/internal/version.Version=${VERSION} \
+      -X github.com/codeswhat/sockguard/app/internal/version.Commit=${COMMIT} \
+      -X github.com/codeswhat/sockguard/app/internal/version.BuildDate=${BUILD_DATE}" \
     -trimpath \
-    -o /sockguard ./cmd/sockguard/
+    -o /sockguard ./app/cmd/sockguard/
 RUN install -d -m 0700 /runtime/sockguard && touch /runtime/sockguard/.volume-init
 
 FROM cgr.dev/chainguard/static:latest@sha256:399c8cb4858f05aaa33f43f02a2e75f28d40f016c0f86e5ba6075769e3303791
