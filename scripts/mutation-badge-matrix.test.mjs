@@ -38,24 +38,29 @@ describe('quality mutation workflow', () => {
     const incompleteEnd = source.indexOf('          fi', incompleteStart);
     assert.notEqual(incompleteEnd, -1, 'end of incomplete-report branch not found');
     const incompleteBranch = source.slice(incompleteStart, incompleteEnd);
+    const exitIndex = incompleteBranch.indexOf('            exit 0');
+    assert.notEqual(exitIndex, -1, 'incomplete-report exit not found');
 
+    for (const output of ['reports_found', 'expected_reports']) {
+      const exportIndex = incompleteBranch.indexOf(
+        `            echo "${output}=\${${output}}" >> "$GITHUB_OUTPUT"`,
+      );
+      assert.ok(
+        exportIndex !== -1 && exportIndex < exitIndex,
+        `${output} is not exported before the incomplete-report exit`,
+      );
+    }
+
+    const summaryStart = source.indexOf('      - name: Summary\n');
+    assert.notEqual(summaryStart, -1, 'mutation summary step not found');
+    const summary = source.slice(summaryStart);
     assert.match(
-      incompleteBranch,
-      /echo "reports_found=\$\{reports_found\}" >> "\$GITHUB_OUTPUT"/u,
-      'incomplete-report branch does not export reports_found',
-    );
-    assert.match(
-      incompleteBranch,
-      /echo "expected_reports=\$\{expected_reports\}" >> "\$GITHUB_OUTPUT"/u,
-      'incomplete-report branch does not export expected_reports',
-    );
-    assert.match(
-      source,
+      summary,
       /EXPECTED_REPORTS: \$\{\{ steps\.score\.outputs\.expected_reports \}\}/u,
       'summary does not consume expected_reports',
     );
     assert.match(
-      source,
+      summary,
       /Incomplete report set: \$\{REPORTS_FOUND\} of \$\{EXPECTED_REPORTS\}; badge left unchanged\./u,
       'summary does not distinguish an incomplete report set from an empty one',
     );
