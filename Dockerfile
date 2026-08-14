@@ -13,8 +13,6 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY app/ ./app/
-# Temporary compatibility copy while imports move to their canonical /app paths.
-COPY internal/ ./internal/
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w \
       -X github.com/codeswhat/sockguard/app/internal/version.Version=${VERSION} \

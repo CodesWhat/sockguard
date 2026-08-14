@@ -24,6 +24,28 @@ test("the repository root is the canonical Go module root", () => {
   );
 });
 
+test("temporary staged compatibility packages are absent from the final tree", () => {
+  assert.ok(
+    !existsSync(new URL("../internal", import.meta.url)),
+    "the temporary root internal package tree must be removed",
+  );
+  assert.ok(
+    !existsSync(new URL("../differential", import.meta.url)),
+    "the temporary root differential symlink must be removed",
+  );
+  assert.doesNotMatch(read("Dockerfile"), /^COPY internal\/ \.\/internal\/$/m);
+
+  const workflow = read(".github/workflows/ci-verify.yml");
+  assert.match(
+    workflow,
+    /\{ name: FuzzDecode,\s+pkg: \.\/internal\/dockerfilters\/ \}/,
+  );
+  assert.match(
+    workflow,
+    /- name: Fuzz \$\{\{ matrix\.fuzzer\.name \}\}\n\s+working-directory: app/,
+  );
+});
+
 test("the binary has the package path implied by its repository directory", () => {
   const packageInfo = JSON.parse(
     execFileSync("go", ["list", "-json", "./app/cmd/sockguard"], {
