@@ -1,8 +1,8 @@
-import { Analytics } from "@vercel/analytics/next";
 import { DocsLayout } from "fumadocs-ui/layouts/docs";
 import { RootProvider } from "fumadocs-ui/provider/next";
 import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
+import { AnalyticsPageview } from "@/components/analytics-pageview";
 import { Footer } from "@/components/footer";
 import { SiteBackground } from "@/components/site-background";
 import { SiteHeader } from "@/components/site-header";
@@ -95,7 +95,7 @@ export default function RootLayout({
             <Footer />
           </div>
         </RootProvider>
-        <Analytics />
+        <AnalyticsPageview />
       </body>
     </html>
   );

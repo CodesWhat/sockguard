@@ -41,8 +41,8 @@ describe('Vercel security headers', () => {
       "object-src 'none'",
       "frame-ancestors 'none'",
       "form-action 'self'",
-      "script-src 'self' 'unsafe-inline'",
-      "connect-src 'self'",
+      "script-src 'self' 'unsafe-inline' https://e.codeswhat.com",
+      "connect-src 'self' https://e.codeswhat.com",
       "font-src 'self' data:",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: https://api.star-history.com https://github.com https://goreportcard.com https://img.shields.io https://pkg.go.dev",
@@ -51,6 +51,10 @@ describe('Vercel security headers', () => {
     }
 
     assert.doesNotMatch(csp, /'unsafe-eval'/);
-    assert.doesNotMatch(csp, /https?:[^;]*script-src|script-src[^;]*https?:/);
+    const scriptSrc = csp.match(/(?:^|; )script-src ([^;]+)/)?.[1];
+    const connectSrc = csp.match(/(?:^|; )connect-src ([^;]+)/)?.[1];
+    assert.equal(scriptSrc, "'self' 'unsafe-inline' https://e.codeswhat.com");
+    assert.equal(connectSrc, "'self' https://e.codeswhat.com");
+    assert.doesNotMatch(csp, /(?:\*\.posthog\.com|us\.posthog\.com|va\.vercel-scripts\.com|https:\/\/\*)/u);
   });
 });

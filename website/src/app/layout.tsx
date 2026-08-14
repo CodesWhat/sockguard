@@ -1,6 +1,6 @@
-import { Analytics } from "@vercel/analytics/next";
 import type { Metadata, Viewport } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
+import { AnalyticsPageview } from "@/components/analytics-pageview";
 import { ThemeProvider } from "@/components/theme-provider";
 import { BASE_URL, SITE_CONFIG } from "@/lib/site-config";
 import "./globals.css";
@@ -83,7 +83,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={`${ibmPlexSans.className} ${ibmPlexMono.variable}`}>
         <script dangerouslySetInnerHTML={{ __html: REVEAL_BOOTSTRAP }} />
         <ThemeProvider>{children}</ThemeProvider>
-        <Analytics />
+        <AnalyticsPageview />
       </body>
     </html>
   );

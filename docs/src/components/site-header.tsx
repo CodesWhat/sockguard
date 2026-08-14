@@ -1,6 +1,7 @@
 import Image from "next/image";
 import { GithubIcon } from "@/components/github-icon";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { TrackedAnchor } from "@/components/tracked-anchor";
 import { iconButtonCn, navLinkCn } from "@/lib/class-names";
 import { GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
 
@@ -11,7 +12,7 @@ import { GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
 
 export function SiteHeader({ maxWidthClassName = "max-w-6xl" }: { maxWidthClassName?: string }) {
   return (
-    <header className="sticky top-0 z-50 border-b border-border/60 bg-white/70 backdrop-blur-md dark:bg-neutral-950/70">
+    <header className="sticky top-0 z-50 border-b border-border/60 bg-fd-card">
       <div className={`mx-auto flex h-14 items-center justify-between px-4 ${maxWidthClassName}`}>
         <a href="/" className="flex items-center gap-2.5">
           <Image
@@ -26,18 +27,25 @@ export function SiteHeader({ maxWidthClassName = "max-w-6xl" }: { maxWidthClassN
           </span>
         </a>
         <nav className="flex items-center gap-1 sm:gap-2">
-          <a href="/docs" className={`hidden px-3 py-2 sm:inline-block ${navLinkCn}`}>
+          <TrackedAnchor
+            href="/docs"
+            ctaId="docs_root"
+            placement="header"
+            className={`hidden px-3 py-2 sm:inline-block ${navLinkCn}`}
+          >
             Docs
-          </a>
-          <a
+          </TrackedAnchor>
+          <TrackedAnchor
             href={GITHUB_URL}
+            ctaId="github_repository"
+            placement="header"
             target="_blank"
             rel="noopener noreferrer"
             aria-label="GitHub"
             className={iconButtonCn}
           >
             <GithubIcon className="h-5 w-5" />
-          </a>
+          </TrackedAnchor>
           <ThemeToggle />
         </nav>
       </div>
