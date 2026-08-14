@@ -5,9 +5,9 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/control"
-	"github.com/codeswhat/sockguard/internal/buildkitproto/pb"
-	"github.com/codeswhat/sockguard/internal/buildkitproto/sourcepolicy"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/pb"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/sourcepolicy"
 )
 
 // solveMediationReasonCodes is the complete, low-cardinality vocabulary

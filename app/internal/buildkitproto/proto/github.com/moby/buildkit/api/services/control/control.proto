@@ -33,7 +33,7 @@ package moby.buildkit.v1;
 // layout (package control, not upstream's moby_buildkit_v1) — this file is
 // already a curated subset, so this is one more deliberate deviation from
 // upstream, unlike the byte-for-byte full-vendor files. See PROVENANCE.md.
-option go_package = "github.com/codeswhat/sockguard/internal/buildkitproto/control;control";
+option go_package = "github.com/codeswhat/sockguard/app/internal/buildkitproto/control;control";
 
 import "github.com/moby/buildkit/solver/pb/ops.proto";
 import "github.com/moby/buildkit/sourcepolicy/pb/policy.proto";

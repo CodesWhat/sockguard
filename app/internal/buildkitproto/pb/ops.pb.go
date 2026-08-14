@@ -3866,7 +3866,7 @@ const file_github_com_moby_buildkit_solver_pb_ops_proto_rawDesc = "" +
 	"\x06SHARED\x10\x00\x12\v\n" +
 	"\aPRIVATE\x10\x01\x12\n" +
 	"\n" +
-	"\x06LOCKED\x10\x02B=Z;github.com/codeswhat/sockguard/internal/buildkitproto/pb;pbb\x06proto3"
+	"\x06LOCKED\x10\x02BAZ?github.com/codeswhat/sockguard/app/internal/buildkitproto/pb;pbb\x06proto3"
 
 var (
 	file_github_com_moby_buildkit_solver_pb_ops_proto_rawDescOnce sync.Once

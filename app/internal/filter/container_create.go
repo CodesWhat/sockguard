@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/imagefetch"
-	"github.com/codeswhat/sockguard/internal/imagetrust"
+	"github.com/codeswhat/sockguard/app/internal/imagefetch"
+	"github.com/codeswhat/sockguard/app/internal/imagetrust"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 )
 

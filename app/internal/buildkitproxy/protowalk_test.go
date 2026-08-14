@@ -7,8 +7,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/control"
-	"github.com/codeswhat/sockguard/internal/buildkitproto/pb"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/pb"
 )
 
 // unknownFieldBytes builds a minimal valid protobuf wire encoding of a

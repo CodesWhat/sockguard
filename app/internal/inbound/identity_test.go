@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/clientacl"
-	"github.com/codeswhat/sockguard/internal/inbound"
+	"github.com/codeswhat/sockguard/app/internal/clientacl"
+	"github.com/codeswhat/sockguard/app/internal/inbound"
 )
 
 type inboundTestContextKey struct{}

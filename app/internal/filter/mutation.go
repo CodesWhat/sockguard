@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/google/go-containerregistry/pkg/name"
 )
 

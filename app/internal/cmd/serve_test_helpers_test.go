@@ -11,9 +11,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // indexAfter returns the index immediately after the first occurrence of sub

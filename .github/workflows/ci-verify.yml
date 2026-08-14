@@ -27,7 +27,7 @@ env:
 
 jobs:
   zizmor:
-    name: "🔒 Workflow Security"
+    name: "Workflow Security"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -57,7 +57,7 @@ jobs:
           advanced-security: false
 
   codeql:
-    name: "🔍 CodeQL Analysis"
+    name: "CodeQL Analysis"
     # CodeQL SARIF upload requires GitHub Advanced Security (GHAS), which is not
     # available on free private repos. Skip unless the repo is public.
     if: github.event.repository.visibility == 'public' && (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
@@ -88,8 +88,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build Go
         run: go build ./...
@@ -171,7 +171,7 @@ jobs:
           fi
 
   goreleaser-check:
-    name: "📦 GoReleaser Config"
+    name: "GoReleaser Config"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -190,8 +190,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Run GoReleaser snapshot
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7.2.3
@@ -211,7 +211,7 @@ jobs:
           grep -Fq 'com.apple.quarantine' "${cask}"
 
   go-lint:
-    name: "🧹 Go Lint"
+    name: "Go Lint"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -230,8 +230,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Check gofmt
         working-directory: app
@@ -256,7 +256,7 @@ jobs:
           working-directory: app
 
   go-test:
-    name: "🧪 Go Test"
+    name: "Go Test"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -281,8 +281,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Run tests
         run: |
@@ -316,8 +316,8 @@ jobs:
         # "missing on disk" and fail validation.
         working-directory: app
         run: |
-          grep -vE 'github.com/codeswhat/sockguard/(differential|internal/testcert|internal/testhelp|internal/buildkitproto)/' coverage.txt > coverage.prod.txt
-          sed 's#github.com/codeswhat/sockguard/#app/#g' coverage.prod.txt > coverage.qlty.txt
+          grep -vE 'github.com/codeswhat/sockguard/app/(differential|internal/testcert|internal/testhelp|internal/buildkitproto)/' coverage.txt > coverage.prod.txt
+          sed 's#github.com/codeswhat/sockguard/##g' coverage.prod.txt > coverage.qlty.txt
 
       - name: Publish coverage to Qlty
         # OIDC auth — no token/secret to store or rotate (verified working on
@@ -356,7 +356,9 @@ jobs:
     # Tier 1 — per-PR smoke-level fuzzing. Each fuzzer gets a fixed 60 s
     # coverage budget in its own matrix job so the whole matrix runs in
     # parallel and the critical path stays at ~1–2 min wall time regardless
-    # of how many fuzzers we ship. The deep-coverage tier lives in
+    # of how many fuzzers we ship. The attack-facing BuildKit gRPC parsers
+    # also live here so changes to them get immediate coverage feedback. The
+    # deep-coverage tier lives in
     # .github/workflows/quality-fuzz-nightly.yml where each fuzzer gets 15
     # minutes by default (configurable via workflow_dispatch input).
     #
@@ -390,6 +392,13 @@ jobs:
           - { name: FuzzSwarm,                   pkg: ./internal/filter/ }
           - { name: FuzzPlugin,                  pkg: ./internal/filter/ }
           - { name: FuzzNetwork,                 pkg: ./internal/filter/ }
+          - { name: FuzzReadUnaryGRPCMessage,    pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzEvaluateGetSecretRequest, pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzEvaluateSolveRequest,    pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzEvaluateStatusRequest,   pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzRewriteSessionAdvertisement, pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzValidateUpgradeRequest,  pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzDecode,                  pkg: ./internal/dockerfilters/ }
           - { name: FuzzProxyHeadersAndBody,     pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,    pkg: ./internal/proxy/ }
           - { name: FuzzPathRoutingDifferential, pkg: ./differential/ }
@@ -410,8 +419,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Fuzz ${{ matrix.fuzzer.name }}
         working-directory: app
@@ -460,7 +469,7 @@ jobs:
           if-no-files-found: ignore
 
   ts-lint:
-    name: "🎨 Biome Lint"
+    name: "Biome Lint"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -489,7 +498,7 @@ jobs:
         run: npx biome check .
 
   ts-test:
-    name: "🧪 TS Test"
+    name: "TS Test"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -518,7 +527,7 @@ jobs:
         run: npm test
 
   ts-build:
-    name: "🏗️ Build Workspaces"
+    name: "Build Workspaces"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -546,7 +555,7 @@ jobs:
         run: npx turbo build
 
   docker:
-    name: "🐳 Docker Build"
+    name: "Docker Build"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20

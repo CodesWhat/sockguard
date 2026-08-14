@@ -12,7 +12,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/codeswhat/sockguard/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 const maxExecBodyBytes = 64 << 10 // 64 KiB
@@ -504,11 +504,11 @@ func newHTTPExecInspector(rt http.RoundTripper, urlPrefix string) ExecInspectFun
 	client := &http.Client{Transport: rt}
 
 	return func(ctx context.Context, id string) (ExecInspectResult, bool, error) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlPrefix+url.PathEscape(id)+"/json", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, urlPrefix+url.PathEscape(id)+"/json", nil) // #nosec G704 -- the injected transport targets the local container-engine socket, and the identifier is path-escaped.
 		if err != nil {
 			return ExecInspectResult{}, false, err
 		}
-		resp, err := client.Do(req)
+		resp, err := client.Do(req) // #nosec G704 -- the injected transport targets the local container-engine socket, not the URL host.
 		if err != nil {
 			return ExecInspectResult{}, false, err
 		}

@@ -8,12 +8,22 @@ import (
 	"strings"
 	"testing"
 
-	requestfilter "github.com/codeswhat/sockguard/internal/filter"
+	requestfilter "github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 type readFailAfterCloser struct {
 	remaining []byte
 	err       error
+}
+
+type closeTrackingBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closed = true
+	return nil
 }
 
 func (r *readFailAfterCloser) Read(p []byte) (int, error) {
@@ -360,6 +370,32 @@ func TestFilterRejectsChunkedSwarmInspectReadFailure(t *testing.T) {
 	}
 	if !errors.Is(err, readErr) {
 		t.Fatalf("ModifyResponse() error = %v, want errors.Is(..., readErr)", err)
+	}
+}
+
+func TestStreamArrayResponseClosesOriginalUpstreamBody(t *testing.T) {
+	t.Parallel()
+	mutationErr := errors.New("mutation failed")
+	tests := []struct {
+		name    string
+		mutate  func(map[string]any) error
+		wantErr error
+	}{
+		{name: "successful rewrite", mutate: func(map[string]any) error { return nil }},
+		{name: "rejected rewrite", mutate: func(map[string]any) error { return mutationErr }, wantErr: mutationErr},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := &closeTrackingBody{Reader: strings.NewReader(`[{"Name":"example"}]`)}
+			resp := &http.Response{Body: upstream, Header: make(http.Header)}
+			err := streamArrayResponse(resp, tt.mutate)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("streamArrayResponse() error = %v, want %v", err, tt.wantErr)
+			}
+			if !upstream.closed {
+				t.Fatal("streamArrayResponse() did not close the original upstream body")
+			}
+		})
 	}
 }
 

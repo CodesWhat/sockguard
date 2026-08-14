@@ -2,10 +2,46 @@ package reload
 
 import (
 	"reflect"
+	"sort"
+	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/config"
 )
+
+func TestListenerConfigFieldInventoryPinsReloadContract(t *testing.T) {
+	t.Parallel()
+	var got []string
+	var walk func(reflect.Type, string)
+	walk = func(typ reflect.Type, prefix string) {
+		for i := range typ.NumField() {
+			field := typ.Field(i)
+			name := strings.Split(field.Tag.Get("mapstructure"), ",")[0]
+			if field.Anonymous {
+				walk(field.Type, prefix)
+				continue
+			}
+			path := prefix + name
+			if field.Type.Kind() == reflect.Struct {
+				walk(field.Type, path+".")
+				continue
+			}
+			got = append(got, path)
+		}
+	}
+	walk(reflect.TypeOf(config.ListenerConfig{}), "")
+	sort.Strings(got)
+	want := []string{
+		"address", "allowed_profiles", "insecure_allow_plain_tcp",
+		"insecure_allow_unauthenticated_clients", "name", "socket", "socket_gid",
+		"socket_mode", "socket_uid", "tls.cert_file", "tls.client_ca_file",
+		"tls.common_names", "tls.dns_names", "tls.ip_addresses", "tls.key_file",
+		"tls.public_key_sha256_pins", "tls.uri_sans",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListenerConfig field inventory = %v, want %v; classify every new field as immutable or the sole mutable allowed_profiles field", got, want)
+	}
+}
 
 func reloadListenerConfig() config.Config {
 	cfg := config.Defaults()

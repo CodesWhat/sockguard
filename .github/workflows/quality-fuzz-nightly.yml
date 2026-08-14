@@ -10,13 +10,9 @@ run-name: >-
 # regressions fail fast. This workflow is where the deep coverage work
 # happens: 15 minutes per fuzzer by default (overridable via
 # `workflow_dispatch` input up to the job `timeout-minutes` cap), every
-# fuzzer in the suite, matrix-parallelized across runners so the whole
-# thing finishes in ~15 minutes of wall time.
-#
-# Two fuzzers ride exclusively in this tier for now — `FuzzLoadYAML` and
-# `FuzzHijackBidirectionalStream` have never run in CI before, and surfacing
-# their first-ever crashes through a nightly schedule instead of a blocking
-# PR check keeps merges unblocked while we triage anything they find.
+# core fuzzer suite, matrix-parallelized across runners so the whole thing
+# finishes in ~15 minutes of wall time. Lower-risk targets run in the monthly
+# tier so daily runner cost stays bounded.
 #
 # Crashes are uploaded as artifacts with 90-day retention so the failing
 # input is recoverable. The triage workflow is: download the artifact,
@@ -99,8 +95,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Resolve fuzz budget
         id: budget

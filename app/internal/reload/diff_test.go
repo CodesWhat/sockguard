@@ -5,7 +5,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/config"
 )
 
 func TestImmutableDiffEqualConfigs(t *testing.T) {

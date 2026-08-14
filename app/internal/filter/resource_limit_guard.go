@@ -48,9 +48,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/codeswhat/sockguard/internal/dockerresource"
-	"github.com/codeswhat/sockguard/internal/httpjson"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 const (
@@ -374,11 +374,11 @@ func NewDockerContainerUpdateInspectorWithRoundTripper(rt http.RoundTripper) Con
 		if !ok {
 			return ContainerUpdateInspectResult{}, false, fmt.Errorf("no inspect path for container %q", id)
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+requestPath, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+requestPath, nil) // #nosec G704 -- InspectPath accepts only a validated engine resource identifier.
 		if err != nil {
 			return ContainerUpdateInspectResult{}, false, err
 		}
-		resp, err := client.Do(req)
+		resp, err := client.Do(req) // #nosec G704 -- the injected transport targets the local container-engine socket, not the URL host.
 		if err != nil {
 			return ContainerUpdateInspectResult{}, false, err
 		}
@@ -701,11 +701,11 @@ func NewDockerServiceInspectorWithRoundTripper(rt http.RoundTripper) ServiceInsp
 		if !ok {
 			return ServiceInspectResult{}, false, fmt.Errorf("no inspect path for service %q", id)
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+requestPath, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+requestPath, nil) // #nosec G704 -- InspectPath accepts only a validated engine resource identifier.
 		if err != nil {
 			return ServiceInspectResult{}, false, err
 		}
-		resp, err := client.Do(req)
+		resp, err := client.Do(req) // #nosec G704 -- the injected transport targets the local container-engine socket, not the URL host.
 		if err != nil {
 			return ServiceInspectResult{}, false, err
 		}

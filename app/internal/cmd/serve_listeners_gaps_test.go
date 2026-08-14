@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/inbound"
+	"github.com/codeswhat/sockguard/app/internal/inbound"
 )
 
 // TestStatSocketIdentityGuardsAndSuccess covers statSocketIdentity's early

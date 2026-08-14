@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 func testLogger() *slog.Logger {

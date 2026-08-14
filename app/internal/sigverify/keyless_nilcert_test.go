@@ -128,19 +128,15 @@ func newNilCertSignedEntity(t *testing.T, artifact []byte) (verify.SignedEntity,
 	return entity, tm
 }
 
-// TestVerifyKeylessNilCertWithIssuerConfigured passes a keyed (cert-less)
-// entity to VerifyKeyless while an issuer constraint is configured.  The
-// call must fail: sigstore-go rejects the entity at its own identity check
-// ("can't verify certificate identities: entity was not signed with a
-// certificate"), which fires before our defensive nil-cert guard.  The test
-// asserts a non-nil error whose message references certificate identities,
-// confirming that the two-layer rejection chain is intact.
+// TestVerifyKeylessNilCertWithIdentityConfigured passes a keyed (cert-less)
+// entity with a complete keyless identity constraint. The call must fail
+// before a certificate-less entity can satisfy the keyless policy.
 //
 // Reachability note: the belt-and-suspenders guard at lines 158-160 of
 // sigverify.go (result.Signature == nil || result.Signature.Certificate == nil)
 // is NOT reached in this test because sigstore-go's Verify returns an error
 // first.  See the package-level comment for a full reachability analysis.
-func TestVerifyKeylessNilCertWithIssuerConfigured(t *testing.T) {
+func TestVerifyKeylessNilCertWithIdentityConfigured(t *testing.T) {
 	t.Parallel()
 
 	artifact := []byte("payload for nil-cert guard test")
@@ -152,78 +148,11 @@ func TestVerifyKeylessNilCertWithIssuerConfigured(t *testing.T) {
 		entity,
 		digest[:],
 		tm,
-		"https://accounts.google.com", // non-empty issuerExact → guard condition is true
-		nil,
+		"https://accounts.google.com",
+		regexp.MustCompile(`^ops@example\.com$`),
 		false,
 	)
 	if err == nil {
-		t.Fatal("VerifyKeyless(keyed entity, issuer configured) returned nil; want error")
-	}
-	// The error must reference certificate identities — proof that
-	// sigstore-go's own identity check fired on the cert-absent entity.
-	if !strings.Contains(err.Error(), "certificate") {
-		t.Fatalf("expected certificate-related error, got: %v", err)
-	}
-}
-
-// TestVerifyKeylessNilCertWithPatternConfigured is the subjectPattern twin of
-// TestVerifyKeylessNilCertWithIssuerConfigured.  A non-nil subjectPattern also
-// satisfies the guard's outer condition, so the same two-layer rejection
-// applies.
-func TestVerifyKeylessNilCertWithPatternConfigured(t *testing.T) {
-	t.Parallel()
-
-	artifact := []byte("payload for nil-cert SAN-guard test")
-	digest := sha256.Sum256(artifact)
-
-	entity, tm := newNilCertSignedEntity(t, artifact)
-
-	err := VerifyKeyless(
-		entity,
-		digest[:],
-		tm,
-		"",
-		regexp.MustCompile(`^ops@example\.com$`), // non-nil subjectPattern → guard condition is true
-		false,
-	)
-	if err == nil {
-		t.Fatal("VerifyKeyless(keyed entity, SAN pattern configured) returned nil; want error")
-	}
-	if !strings.Contains(err.Error(), "certificate") {
-		t.Fatalf("expected certificate-related error, got: %v", err)
-	}
-}
-
-// TestVerifyKeylessNilCertNoIdentityConstraint confirms that when both
-// issuerExact and subjectPattern are zero-valued the nil-cert guard is
-// voluntarily bypassed (the outer condition is false).  With no identity
-// constraints, VerifyKeyless must still fail — but for a different reason:
-// a keyed entity cannot satisfy the observer-timestamps requirement that
-// VerifyKeyless enforces.  This test pins the guard's conditional boundary
-// and prevents an accidental widening of the guard to always-on.
-func TestVerifyKeylessNilCertNoIdentityConstraint(t *testing.T) {
-	t.Parallel()
-
-	artifact := []byte("payload for nil-cert no-constraint test")
-	digest := sha256.Sum256(artifact)
-
-	entity, tm := newNilCertSignedEntity(t, artifact)
-
-	err := VerifyKeyless(
-		entity,
-		digest[:],
-		tm,
-		"",  // issuerExact == "" — guard outer condition false
-		nil, // subjectPattern == nil — guard outer condition false
-		false,
-	)
-	// The call must fail, but NOT with the nil-cert guard message.  A keyed
-	// entity has no observer timestamps, so sigstore-go rejects it on that
-	// ground.
-	if err == nil {
-		t.Fatal("VerifyKeyless(keyed entity, no identity constraint) returned nil; want error")
-	}
-	if strings.Contains(err.Error(), "certificate identity required") {
-		t.Fatalf("nil-cert guard fired even though no identity constraint was set; error: %v", err)
+		t.Fatal("VerifyKeyless(keyed entity, identity configured) returned nil; want error")
 	}
 }

@@ -7,7 +7,7 @@
 package filesync
 
 import (
-	fsutiltypes "github.com/codeswhat/sockguard/internal/buildkitproto/fsutiltypes"
+	fsutiltypes "github.com/codeswhat/sockguard/app/internal/buildkitproto/fsutiltypes"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -78,7 +78,7 @@ const file_github_com_moby_buildkit_session_filesync_filesync_proto_rawDesc = ""
 	"\bDiffCopy\x12\x14.fsutil.types.Packet\x1a\x14.fsutil.types.Packet(\x010\x01\x12;\n" +
 	"\tTarStream\x12\x14.fsutil.types.Packet\x1a\x14.fsutil.types.Packet(\x010\x012Z\n" +
 	"\bFileSend\x12N\n" +
-	"\bDiffCopy\x12\x1e.moby.filesync.v1.BytesMessage\x1a\x1e.moby.filesync.v1.BytesMessage(\x010\x01BIZGgithub.com/codeswhat/sockguard/internal/buildkitproto/filesync;filesyncb\x06proto3"
+	"\bDiffCopy\x12\x1e.moby.filesync.v1.BytesMessage\x1a\x1e.moby.filesync.v1.BytesMessage(\x010\x01BMZKgithub.com/codeswhat/sockguard/app/internal/buildkitproto/filesync;filesyncb\x06proto3"
 
 var (
 	file_github_com_moby_buildkit_session_filesync_filesync_proto_rawDescOnce sync.Once

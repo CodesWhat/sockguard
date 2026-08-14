@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/inbound"
+	"github.com/codeswhat/sockguard/app/internal/inbound"
 )
 
 type contextKey int

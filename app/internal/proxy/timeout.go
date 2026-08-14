@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // WithRequestTimeout wraps next so that ordinary finite upstream requests are
@@ -50,6 +50,9 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	path := requestNormalizedPath(w, r)
+	if nativePath, ok := strings.CutPrefix(path, "/libpod"); ok {
+		path = nativePath
+	}
 	switch r.Method {
 	case http.MethodGet:
 		switch {

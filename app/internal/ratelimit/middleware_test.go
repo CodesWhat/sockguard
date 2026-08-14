@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/logging"
-	"github.com/codeswhat/sockguard/internal/metrics"
+	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/metrics"
 )
 
 // okHandler is a trivial 200 OK handler used in middleware tests.

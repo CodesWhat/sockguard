@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sigstore/sigstore-go/pkg/bundle"
+	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
 	"github.com/sigstore/sigstore-go/pkg/tlog"
 	"github.com/sigstore/sigstore-go/pkg/verify"
@@ -172,6 +173,27 @@ func TestVerifyKeylessRequiresTrustedMaterial(t *testing.T) {
 	err := VerifyKeyless(nil, nil, nil, "https://accounts.google.com", regexp.MustCompile(`^ops@example\.com$`), false)
 	if err == nil || !strings.Contains(err.Error(), "TrustedMaterial") {
 		t.Fatalf("VerifyKeyless(nil material) error = %v, want TrustedMaterial complaint", err)
+	}
+}
+
+func TestVerifyKeylessRequiresCompleteIdentityConstraint(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		issuer  string
+		pattern *regexp.Regexp
+	}{
+		{name: "missing issuer", pattern: regexp.MustCompile(`^subject@example\.com$`)},
+		{name: "missing subject pattern", issuer: "https://issuer.example"},
+		{name: "missing both"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := VerifyKeyless(nil, nil, root.NewTrustedPublicKeyMaterial(nil), tt.issuer, tt.pattern, false)
+			if err == nil || !strings.Contains(err.Error(), "exact issuer and a compiled subject pattern") {
+				t.Fatalf("VerifyKeyless() error = %v, want complete identity constraint error", err)
+			}
+		})
 	}
 }
 

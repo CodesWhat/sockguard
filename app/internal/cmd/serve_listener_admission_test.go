@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/clientacl"
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/inbound"
-	"github.com/codeswhat/sockguard/internal/logging"
-	"github.com/codeswhat/sockguard/internal/reload"
+	"github.com/codeswhat/sockguard/app/internal/clientacl"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/inbound"
+	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/reload"
 )
 
 func admissionTestConfig() config.Config {

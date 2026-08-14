@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/control"
-	"github.com/codeswhat/sockguard/internal/buildkitproto/upload"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/upload"
 )
 
 func newUploadGRPCRequest(t *testing.T, urlhost, urlpath, body string) *http.Request {

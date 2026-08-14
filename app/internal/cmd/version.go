@@ -6,8 +6,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/codeswhat/sockguard/internal/ui"
-	"github.com/codeswhat/sockguard/internal/version"
+	"github.com/codeswhat/sockguard/app/internal/ui"
+	"github.com/codeswhat/sockguard/app/internal/version"
 )
 
 var versionOutput string

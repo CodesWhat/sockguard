@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/net/http2"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
 )
 
 // newConcurrencyTestBridge is newTestBridge's (bridge_test.go) sibling for

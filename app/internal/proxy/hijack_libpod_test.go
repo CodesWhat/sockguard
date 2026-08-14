@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 // TestIsHijackEndpointLibpod covers #148's libpod/ prefix peel in

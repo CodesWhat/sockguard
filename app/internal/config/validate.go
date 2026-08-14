@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/glob"
-	"github.com/codeswhat/sockguard/internal/pkipin"
-	"github.com/codeswhat/sockguard/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/glob"
+	"github.com/codeswhat/sockguard/app/internal/pkipin"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 	"github.com/google/go-containerregistry/pkg/name"
 )
 

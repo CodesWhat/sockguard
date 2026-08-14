@@ -1,0 +1,48 @@
+# The Dockerfile only COPYs the root module files and app/ (including its
+# configs) into the image. Everything else here is monorepo/tooling weight
+# that has no business in the build context.
+
+# Node monorepo workspaces (website/docs) — biggest offenders
+node_modules/
+website/
+docs/
+
+# Git, CI, and agent/tooling metadata
+.git/
+.github/
+.claude/
+.planning/
+.qlty/
+.secrets/
+.fuzz-artifacts/
+.playwright-mcp/
+.turbo/
+.vercel/
+
+# Repo-root scripts, docs, and config not read by the Go build
+scripts/
+benchmarks/
+chart/
+examples/
+dist/
+*.md
+*.png
+.DS_Store
+error.log
+docker-compose.yml
+biome.json
+knip.json
+lefthook.yml
+renovate.json
+turbo.json
+package.json
+package-lock.json
+.coderabbit.yaml
+.grype.yaml
+greptile.json
+
+# Local build/test artifacts under app/ that the Dockerfile never reads
+app/sockguard
+app/cover.out
+app/coverage.html
+app/.tmp/

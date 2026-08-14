@@ -78,6 +78,15 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: 24
+          # This job publishes real release notes for a tagged release —
+          # unlike ci-verify.yml, nothing here runs with --skip=publish.
+          # A poisoned dependency cache restored here could compromise a
+          # ready-to-publish artifact. setup-node auto-enables npm caching
+          # because root package.json declares "packageManager": "npm@...",
+          # so caching must be turned off explicitly via
+          # package-manager-cache, not via the cache input (zizmor
+          # cache-poisoning).
+          package-manager-cache: false
 
       - name: Extract changelog entry
         env:
@@ -129,8 +138,13 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+          # This job builds and publishes the actual release binaries — no
+          # --skip=publish here. A poisoned Go module cache restored here
+          # could compromise a ready-to-publish artifact, so caching stays
+          # off (zizmor cache-poisoning).
+          cache: false
 
       - name: Require Homebrew tap token
         if: ${{ !contains(github.ref_name, '-') }}

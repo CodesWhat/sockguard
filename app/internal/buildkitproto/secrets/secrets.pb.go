@@ -131,7 +131,7 @@ const file_github_com_moby_buildkit_session_secrets_secrets_proto_rawDesc = "" +
 	"\x11GetSecretResponse\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data2o\n" +
 	"\aSecrets\x12d\n" +
-	"\tGetSecret\x12*.moby.buildkit.secrets.v1.GetSecretRequest\x1a+.moby.buildkit.secrets.v1.GetSecretResponseBGZEgithub.com/codeswhat/sockguard/internal/buildkitproto/secrets;secretsb\x06proto3"
+	"\tGetSecret\x12*.moby.buildkit.secrets.v1.GetSecretRequest\x1a+.moby.buildkit.secrets.v1.GetSecretResponseBKZIgithub.com/codeswhat/sockguard/app/internal/buildkitproto/secrets;secretsb\x06proto3"
 
 var (
 	file_github_com_moby_buildkit_session_secrets_secrets_proto_rawDescOnce sync.Once

@@ -20,9 +20,9 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/codeswhat/sockguard/internal/version.Version={{.Version}}
-      - -X github.com/codeswhat/sockguard/internal/version.Commit={{.Commit}}
-      - -X github.com/codeswhat/sockguard/internal/version.BuildDate={{.Date}}
+      - -X github.com/codeswhat/sockguard/app/internal/version.Version={{.Version}}
+      - -X github.com/codeswhat/sockguard/app/internal/version.Commit={{.Commit}}
+      - -X github.com/codeswhat/sockguard/app/internal/version.BuildDate={{.Date}}
     flags:
       - -trimpath
 

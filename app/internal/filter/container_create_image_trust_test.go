@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/imagetrust"
+	"github.com/codeswhat/sockguard/app/internal/imagetrust"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 )
 

@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 // upstreamReachableTimeout bounds the startup reachability probe across all

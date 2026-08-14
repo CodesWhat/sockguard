@@ -25,8 +25,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/proxy"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/proxy"
 )
 
 // recordedRequest captures one request as the stand-in daemon received it —

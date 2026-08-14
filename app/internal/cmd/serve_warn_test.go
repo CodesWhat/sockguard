@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 // warnLabelACLOnce must fire only when container-label ACLs are enabled, and

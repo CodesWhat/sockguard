@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/health"
-	"github.com/codeswhat/sockguard/internal/ownership"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/health"
+	"github.com/codeswhat/sockguard/app/internal/ownership"
 )
 
 func TestProxyAllowsDockerPing(t *testing.T) {

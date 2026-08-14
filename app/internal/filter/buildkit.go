@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproxy"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproxy"
 )
 
 // BuildkitOptions carries the ONE signal Phase 1 of issue #185 (BuildKit

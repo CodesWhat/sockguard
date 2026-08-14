@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproxy"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproxy"
 )
 
 // TestBuildkitDefaultsAreAllDenied confirms the zero-value

@@ -59,14 +59,11 @@ func CompileKeyless(issuer, subjectPattern string) (string, *regexp.Regexp, erro
 	if pattern == "" {
 		return "", nil, errors.New("subject_pattern is required")
 	}
-	// Validate the raw pattern compiles, then anchor it so the SAN must match in
-	// full. Without anchoring, an unanchored pattern such as "ci@acme.com" would
+	// Anchor the pattern so the SAN must match in full. Without anchoring, an
+	// unanchored pattern such as "ci@acme.com" would
 	// match any SAN that merely *contains* it (e.g. "ci@acme.com.attacker.test"),
 	// letting a Fulcio cert for a different identity pass — both here and in
 	// sigstore-go's SANMatcher, which also matches on a substring basis.
-	if _, err := regexp.Compile(pattern); err != nil {
-		return "", nil, fmt.Errorf("subject_pattern: %w", err)
-	}
 	re, err := regexp.Compile("^(?:" + pattern + ")$")
 	if err != nil {
 		return "", nil, fmt.Errorf("subject_pattern: %w", err)
@@ -112,6 +109,9 @@ func VerifyKeyless(
 ) error {
 	if trustedMaterial == nil {
 		return errors.New("keyless verification requires TrustedMaterial")
+	}
+	if issuerExact == "" || subjectPattern == nil {
+		return errors.New("keyless verification requires both an exact issuer and a compiled subject pattern")
 	}
 	opts := []verify.VerifierOption{verify.WithObserverTimestamps(1)}
 	if requireRekorInclusion {
