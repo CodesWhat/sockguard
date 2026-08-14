@@ -145,6 +145,11 @@ jobs:
           total_killed=0
           total_lived=0
           reports_found=0
+          # One report per entry in the mutation job's matrix. A partial set
+          # would publish a score weighted toward whichever packages happened
+          # to survive, so it is treated as no result at all.
+          # Kept in sync by scripts/mutation-badge-matrix.test.mjs.
+          expected_reports=6
 
           for f in reports/*/mutation-report.txt; do
             killed=$(grep -oE 'Killed: [0-9]+' "$f" | head -1 | grep -oE '[0-9]+')
@@ -158,8 +163,15 @@ jobs:
             reports_found=$((reports_found + 1))
           done
 
-          if [ "$reports_found" -eq 0 ]; then
-            echo "::error::no parseable mutation-report.txt files found -- leaving the existing badge JSON untouched"
+          if [ "$reports_found" -ne "$expected_reports" ]; then
+            echo "reports_found=${reports_found}" >> "$GITHUB_OUTPUT"
+            echo "expected_reports=${expected_reports}" >> "$GITHUB_OUTPUT"
+            echo "::error::expected ${expected_reports} parseable mutation-report.txt files, found ${reports_found} -- the report set is incomplete, so the existing badge JSON is left untouched"
+            {
+              echo "### Mutation badge not updated"
+              echo
+              echo "Incomplete report set: ${reports_found} of ${expected_reports} packages produced a parseable report. The published score still reflects the last complete run."
+            } >> "${GITHUB_STEP_SUMMARY}"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -222,12 +234,13 @@ jobs:
         env:
           PCT: ${{ steps.score.outputs.pct }}
           REPORTS_FOUND: ${{ steps.score.outputs.reports_found }}
+          EXPECTED_REPORTS: ${{ steps.score.outputs.expected_reports }}
           SKIP: ${{ steps.score.outputs.skip }}
         run: |
           {
             echo "### 🏷️ Mutation score badge"
             if [ "$SKIP" = "true" ]; then
-              echo "- No parseable package reports found this run -- badge left unchanged."
+              echo "- Incomplete report set: ${REPORTS_FOUND} of ${EXPECTED_REPORTS}; badge left unchanged."
             else
               echo "- Weighted test efficacy (killed / (killed + lived)) across ${REPORTS_FOUND} package report(s): **${PCT}%**"
               echo "- Mode: ADVISORY (non-blocking) -- this only refreshes \`.github/badges/mutation-score.json\`, no gate."
