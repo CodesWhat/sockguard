@@ -3,6 +3,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { DiscordIcon } from "@/components/discord-icon";
 import { GithubIcon } from "@/components/github-icon";
+import { TrackedLink } from "@/components/tracked-link";
+import type { AnalyticsCtaId } from "@/lib/analytics-contract";
 import { iconButtonCn, navLinkCn } from "@/lib/class-names";
 import { GITHUB_RELEASES_URL, GITHUB_URL, SITE_CONFIG } from "@/lib/site-config";
 
@@ -13,11 +15,11 @@ const YEAR = new Date().getFullYear();
 const BLURB =
   "We built an open-source Docker socket proxy that blocks every request by default. Drop it in front of your socket and control exactly what gets through. Signed policy bundles, per-profile rollout modes, Prometheus metrics, all in one lean Go binary with zero daemon dependencies.";
 
-type FooterLink = { label: string; href: string; external?: boolean };
+type FooterLink = { label: string; href: string; external?: boolean; ctaId?: AnalyticsCtaId };
 
 const productLinks: FooterLink[] = [
-  { label: "Documentation", href: "/docs" },
-  { label: "GitHub", href: GITHUB_URL, external: true },
+  { label: "Documentation", href: "/docs", ctaId: "docs_root" },
+  { label: "GitHub", href: GITHUB_URL, external: true, ctaId: "github_repository" },
   { label: "Releases", href: GITHUB_RELEASES_URL, external: true },
   { label: "License", href: SITE_CONFIG.licenseUrl, external: true },
 ];
@@ -25,6 +27,20 @@ const productLinks: FooterLink[] = [
 // ─── Shared pieces ────────────────────────────────────────────────────────────
 
 function FooterLinkEl({ link, className }: { link: FooterLink; className?: string }) {
+  if (link.ctaId) {
+    return (
+      <TrackedLink
+        href={link.href}
+        ctaId={link.ctaId}
+        placement="footer"
+        target={link.external ? "_blank" : undefined}
+        rel={link.external ? "noopener noreferrer" : undefined}
+        className={className ?? navLinkCn}
+      >
+        {link.label}
+      </TrackedLink>
+    );
+  }
   if (link.external) {
     return (
       <a
@@ -60,27 +76,37 @@ function LinkColumn({ heading, links }: { heading: string; links: FooterLink[] }
 function SocialIcons() {
   return (
     <div className="-ml-2 flex items-center gap-1">
-      <a
+      <TrackedLink
         href={GITHUB_URL}
+        ctaId="github_repository"
+        placement="footer"
         target="_blank"
         rel="noopener noreferrer"
         className={iconButtonCn}
         aria-label="GitHub"
       >
         <GithubIcon className="h-5 w-5" />
-      </a>
-      <a
+      </TrackedLink>
+      <TrackedLink
         href={SITE_CONFIG.discordUrl}
+        ctaId="community_discord"
+        placement="footer"
         target="_blank"
         rel="noopener noreferrer"
         className={iconButtonCn}
         aria-label="Discord community"
       >
         <DiscordIcon className="h-5 w-5" />
-      </a>
-      <Link href="/docs" className={iconButtonCn} aria-label="Documentation">
+      </TrackedLink>
+      <TrackedLink
+        href="/docs"
+        ctaId="docs_root"
+        placement="footer"
+        className={iconButtonCn}
+        aria-label="Documentation"
+      >
         <BookOpen className="h-5 w-5" />
-      </Link>
+      </TrackedLink>
     </div>
   );
 }
