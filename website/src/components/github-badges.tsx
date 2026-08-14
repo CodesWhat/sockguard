@@ -16,11 +16,6 @@ const quality: Badge[] = [
     alt: "CI",
   },
   {
-    href: `https://goreportcard.com/report/github.com/${REPO_SLUG}`,
-    src: `https://goreportcard.com/badge/github.com/${REPO_SLUG}`,
-    alt: "Go Report Card",
-  },
-  {
     href: `https://pkg.go.dev/github.com/${REPO_SLUG}`,
     src: `https://pkg.go.dev/badge/github.com/${REPO_SLUG}.svg`,
     alt: "Go Reference",
