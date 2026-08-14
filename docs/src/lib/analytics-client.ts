@@ -1,3 +1,5 @@
+import type { PostHogConfig } from "posthog-js";
+
 import {
   type AnalyticsEnvironment,
   canonicalizePathname,
@@ -99,7 +101,7 @@ export function createPostHogOptions(token: string, routes: ReadonlySet<string>)
       web_vitals_attribution: false,
     },
     before_send: createBeforeSend(token, routes),
-  };
+  } satisfies PostHogOptions & Partial<PostHogConfig>;
 }
 
 export function createAnalyticsRuntime({
@@ -116,7 +118,7 @@ export function createAnalyticsRuntime({
   function dispatch(event: string, properties: AnalyticsProperties) {
     if (state === "ready" && client !== null) {
       client.capture(event, properties);
-    } else if (state === "loading") {
+    } else if (state === "idle" || state === "loading") {
       queue.push([event, properties]);
     }
   }
@@ -125,18 +127,19 @@ export function createAnalyticsRuntime({
     const path = canonicalizePathname(rawPathname, routes);
     dispatch("$pageview", {
       path,
-      surface: getSurface(rawPathname),
+      surface: getSurface(path),
       $current_url: `${PRODUCTION_ORIGIN}${path}`,
     });
   }
 
   function captureCta(rawPathname: unknown, ctaId: unknown, placement: unknown) {
-    const surface = getSurface(rawPathname);
+    const path = canonicalizePathname(rawPathname, routes);
+    const surface = getSurface(path);
     if (!isAllowedCta(surface, ctaId, placement)) {
       return;
     }
     dispatch("cta activated", {
-      path: canonicalizePathname(rawPathname, routes),
+      path,
       surface,
       cta_id: ctaId,
       placement,

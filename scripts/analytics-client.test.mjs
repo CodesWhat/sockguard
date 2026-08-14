@@ -124,6 +124,48 @@ test("valid initialization queues until the SDK is ready and emits canonical eve
   ]);
 });
 
+test("captures queued before initialization use canonical paths for their surfaces", async () => {
+  const calls = [];
+  const runtime = createAnalyticsRuntime({
+    env: VALID_ENV,
+    routes: ROUTES,
+    getDoNotTrack: () => null,
+    loadPostHog: async () => ({
+      init(token) {
+        calls.push(["init", token]);
+      },
+      capture(event, properties) {
+        calls.push(["capture", event, properties]);
+      },
+    }),
+  });
+
+  runtime.capturePageview("/docs?utm_source=secret#private");
+  runtime.captureCta("/docs?utm_source=secret#private", "github_repository", "footer");
+  assert.deepEqual(calls, []);
+
+  await runtime.initialize();
+
+  assert.deepEqual(calls, [
+    ["init", "phc_public-token_123"],
+    [
+      "capture",
+      "$pageview",
+      { path: "/docs", surface: "docs", $current_url: "https://getsockguard.com/docs" },
+    ],
+    [
+      "capture",
+      "cta activated",
+      {
+        path: "/docs",
+        surface: "docs",
+        cta_id: "github_repository",
+        placement: "footer",
+      },
+    ],
+  ]);
+});
+
 test("missing, partial, malformed, and DNT environments never load or capture", async () => {
   for (const { env, dnt } of [
     { env: {}, dnt: null },

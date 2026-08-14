@@ -182,7 +182,7 @@ function createCommonProperties(
 
   properties.schema_version = 1;
   properties.site = "sockguard";
-  properties.surface = getSurface(rawPath);
+  properties.surface = getSurface(path);
   properties.path = path;
 
   return properties;

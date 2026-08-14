@@ -161,6 +161,30 @@ test("pageviews are rebuilt from the canonical production URL and a minimal enve
   });
 });
 
+test("surface is derived from the canonical path instead of hostile raw path data", () => {
+  const beforeSend = createBeforeSend("phc_public-token_123", ROUTES);
+
+  assert.deepEqual(
+    beforeSend({
+      uuid: "018f0000-0000-7000-8000-000000000005",
+      event: "$pageview",
+      properties: { path: "/docs?utm_source=secret#private" },
+    }),
+    {
+      uuid: "018f0000-0000-7000-8000-000000000005",
+      event: "$pageview",
+      properties: {
+        token: "phc_public-token_123",
+        schema_version: 1,
+        site: "sockguard",
+        surface: "docs",
+        path: "/docs",
+        $current_url: `${PRODUCTION_ORIGIN}/docs`,
+      },
+    },
+  );
+});
+
 test("CTA events require an allowlisted tuple and retain no extra properties", () => {
   const beforeSend = createBeforeSend("phc_public-token_123", ROUTES);
   const base = {
