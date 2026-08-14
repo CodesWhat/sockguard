@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 
-import { collectAnalyticsRoutes, renderAnalyticsRouteManifest } from "./analytics-routes.mjs";
+import {
+  collectAnalyticsRoutes,
+  manifestMatches,
+  renderAnalyticsRouteManifest,
+} from "./analytics-routes.mjs";
 
 const repoRoot = new URL("..", import.meta.url);
 const websiteManifest = new URL("../website/src/lib/analytics-routes.generated.ts", import.meta.url);
@@ -34,4 +40,25 @@ test("both checked-in analytics route manifests exactly match route and docs sou
 
   assert.equal(readFileSync(websiteManifest, "utf8"), expected);
   assert.equal(readFileSync(docsManifest, "utf8"), expected);
+});
+
+test("manifest checks read the target directly and fail closed for missing or invalid targets", () => {
+  const root = mkdtempSync(join(tmpdir(), "sockguard-analytics-routes-"));
+
+  try {
+    const target = join(root, "manifest.ts");
+    assert.equal(manifestMatches(target, "expected"), false);
+
+    mkdirSync(target);
+    assert.equal(manifestMatches(target, "expected"), false);
+    rmSync(target, { recursive: true });
+
+    writeFileSync(target, "stale", "utf8");
+    assert.equal(manifestMatches(target, "expected"), false);
+
+    writeFileSync(target, "expected", "utf8");
+    assert.equal(manifestMatches(target, "expected"), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

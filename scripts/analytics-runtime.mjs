@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const RUNTIME_FILES = ["analytics-contract.ts", "analytics-client.ts", "analytics.ts"];
