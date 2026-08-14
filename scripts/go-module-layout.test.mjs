@@ -23,7 +23,7 @@ const pathEntryExists = (path) => {
 };
 
 const hasTemporaryInternalCopy = (dockerfile) =>
-  /^COPY[ \t]+internal\/?[ \t]+\.\/internal\/?[ \t]*$/m.test(dockerfile);
+  /^COPY[ \t]+internal\/?[ \t]+\.\/internal\/?[ \t]*$/im.test(dockerfile);
 
 const gosecArgs = (workflow) =>
   workflow.match(
@@ -67,6 +67,7 @@ test("temporary Docker COPY detection covers equivalent forms", () => {
     "COPY internal ./internal",
     "COPY  internal/   ./internal",
     "COPY\tinternal\t./internal/",
+    "copy internal ./internal",
   ]) {
     assert.equal(hasTemporaryInternalCopy(instruction), true, instruction);
   }
