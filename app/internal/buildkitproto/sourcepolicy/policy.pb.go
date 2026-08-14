@@ -510,7 +510,7 @@ const file_github_com_moby_buildkit_sourcepolicy_pb_policy_proto_rawDesc = "" +
 	"\tMatchType\x12\f\n" +
 	"\bWILDCARD\x10\x00\x12\t\n" +
 	"\x05EXACT\x10\x01\x12\t\n" +
-	"\x05REGEX\x10\x02BQZOgithub.com/codeswhat/sockguard/internal/buildkitproto/sourcepolicy;sourcepolicyb\x06proto3"
+	"\x05REGEX\x10\x02BUZSgithub.com/codeswhat/sockguard/app/internal/buildkitproto/sourcepolicy;sourcepolicyb\x06proto3"
 
 var (
 	file_github_com_moby_buildkit_sourcepolicy_pb_policy_proto_rawDescOnce sync.Once

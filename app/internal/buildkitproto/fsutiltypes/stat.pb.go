@@ -173,7 +173,7 @@ const file_github_com_tonistiigi_fsutil_types_stat_proto_rawDesc = "" +
 	" \x03(\v2\x1e.fsutil.types.Stat.XattrsEntryR\x06xattrs\x1a9\n" +
 	"\vXattrsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01BOZMgithub.com/codeswhat/sockguard/internal/buildkitproto/fsutiltypes;fsutiltypesb\x06proto3"
+	"\x05value\x18\x02 \x01(\fR\x05value:\x028\x01BSZQgithub.com/codeswhat/sockguard/app/internal/buildkitproto/fsutiltypes;fsutiltypesb\x06proto3"
 
 var (
 	file_github_com_tonistiigi_fsutil_types_stat_proto_rawDescOnce sync.Once

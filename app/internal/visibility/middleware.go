@@ -15,13 +15,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/dockerclient"
-	"github.com/codeswhat/sockguard/internal/dockerfilters"
-	"github.com/codeswhat/sockguard/internal/dockerresource"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/httpjson"
-	"github.com/codeswhat/sockguard/internal/inspectcache"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/dockerclient"
+	"github.com/codeswhat/sockguard/app/internal/dockerfilters"
+	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/app/internal/inspectcache"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // patternBufferPool pools bytes.Buffer instances so the pattern-filter writer
@@ -406,12 +406,14 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 	// Writing any bytes triggers an http.ResponseWriter downgrade to 502.
 	if mustHaveEmptyBody(p.statusCode) {
 		p.underlying.WriteHeader(p.statusCode)
+		p.headerWritten = true
 		return nil
 	}
 
 	// Only filter 2xx responses with a JSON body; pass through everything else.
 	if p.statusCode < http.StatusOK || p.statusCode >= http.StatusMultipleChoices {
 		p.underlying.WriteHeader(p.statusCode)
+		p.headerWritten = true
 		_, err := p.underlying.Write(p.body.Bytes())
 		return err
 	}
@@ -421,6 +423,7 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 	if err != nil || tok != json.Delim('[') {
 		// Not a JSON array — pass through unchanged.
 		p.underlying.WriteHeader(p.statusCode)
+		p.headerWritten = true
 		_, werr := p.underlying.Write(p.body.Bytes())
 		return werr
 	}
@@ -451,8 +454,8 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 
 	p.underlying.Header().Set("Content-Length", strconv.Itoa(out.Len()))
 	p.underlying.WriteHeader(p.statusCode)
-	_, err = p.underlying.Write(out.Bytes())
 	p.headerWritten = true
+	_, err = p.underlying.Write(out.Bytes())
 	return err
 }
 
@@ -1019,11 +1022,11 @@ func (i upstreamInspector) inspectResource(ctx context.Context, kind dockerresou
 }
 
 func (i upstreamInspector) inspectExec(ctx context.Context, identifier string) (string, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/exec/"+url.PathEscape(identifier)+"/json", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/exec/"+url.PathEscape(identifier)+"/json", nil) // #nosec G704 -- the fixed local-engine URL contains only a path-escaped identifier.
 	if err != nil {
 		return "", false, err
 	}
-	resp, err := i.client.Do(req)
+	resp, err := i.client.Do(req) // #nosec G704 -- the inspector client targets the local container-engine socket, not the URL host.
 	if err != nil {
 		return "", false, err
 	}

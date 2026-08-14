@@ -138,8 +138,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
           # This job builds and publishes the actual release binaries — no
           # --skip=publish here. A poisoned Go module cache restored here
           # could compromise a ready-to-publish artifact, so caching stays

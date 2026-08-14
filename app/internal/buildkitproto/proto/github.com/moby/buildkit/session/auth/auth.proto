@@ -5,7 +5,7 @@ package moby.filesync.v1;
 // go_package is retargeted to sockguard's vendored-package layout so the
 // generated Go code's import statements resolve inside this module; this is
 // the ONLY deviation from the upstream file — see PROVENANCE.md.
-option go_package = "github.com/codeswhat/sockguard/internal/buildkitproto/auth;auth";
+option go_package = "github.com/codeswhat/sockguard/app/internal/buildkitproto/auth;auth";
 
 service Auth{
 	rpc Credentials(CredentialsRequest) returns (CredentialsResponse);

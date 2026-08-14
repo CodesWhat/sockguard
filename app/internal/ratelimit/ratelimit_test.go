@@ -566,6 +566,23 @@ func TestLimiter_StopIsIdempotent(t *testing.T) {
 	l.Stop() // must not panic on double-close
 }
 
+func TestLimiter_StopIsSafeForConcurrentCallers(t *testing.T) {
+	t.Parallel()
+	l := NewLimiter(10, 10)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			l.Stop()
+		}()
+	}
+	close(start)
+	wg.Wait()
+}
+
 // compileEndpointCosts must accept any user-influenced glob string without
 // regex-compile failure. globToRegex is constructed so every input character
 // is either an explicit glob token or regexp.QuoteMeta'd; this test pins that

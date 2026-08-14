@@ -39,9 +39,9 @@
 6. **Sync release metadata** — sockguard does not hardcode its binary version in source. The binary's `sockguard version` output is injected at build time via goreleaser ldflags:
 
    ```
-   -X github.com/codeswhat/sockguard/internal/version.Version={{.Version}}
-   -X github.com/codeswhat/sockguard/internal/version.Commit={{.Commit}}
-   -X github.com/codeswhat/sockguard/internal/version.BuildDate={{.Date}}
+   -X github.com/codeswhat/sockguard/app/internal/version.Version={{.Version}}
+   -X github.com/codeswhat/sockguard/app/internal/version.Commit={{.Commit}}
+   -X github.com/codeswhat/sockguard/app/internal/version.BuildDate={{.Date}}
    ```
 
    The release-facing files still need explicit updates in the same PR:

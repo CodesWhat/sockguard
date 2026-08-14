@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/admin"
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/logging"
-	"github.com/codeswhat/sockguard/internal/policybundle"
-	"github.com/codeswhat/sockguard/internal/reload"
+	"github.com/codeswhat/sockguard/app/internal/admin"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/policybundle"
+	"github.com/codeswhat/sockguard/app/internal/reload"
 )
 
 // discardLogger is a package-level slog.Logger that writes to io.Discard.

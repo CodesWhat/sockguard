@@ -5,7 +5,7 @@ package moby.upload.v1;
 // go_package is retargeted to sockguard's vendored-package layout so the
 // generated Go code's import statements resolve inside this module; this is
 // the ONLY deviation from the upstream file — see PROVENANCE.md.
-option go_package = "github.com/codeswhat/sockguard/internal/buildkitproto/upload;upload";
+option go_package = "github.com/codeswhat/sockguard/app/internal/buildkitproto/upload;upload";
 
 service Upload {
 	rpc Pull(stream BytesMessage) returns (stream BytesMessage);

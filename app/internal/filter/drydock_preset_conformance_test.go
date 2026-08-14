@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 // The finalize exec argv drydock issues during self-update. It must match the

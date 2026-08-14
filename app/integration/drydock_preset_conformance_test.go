@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/ownership"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/ownership"
 )
 
 // The finalize exec argv drydock's self-update helper issues. Must match the

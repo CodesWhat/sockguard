@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/responsefilter"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/responsefilter"
 )
 
 func useRuleDeps(t *testing.T) {

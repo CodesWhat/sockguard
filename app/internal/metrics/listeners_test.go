@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/inbound"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/inbound"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 func TestListenerLabelIsPresentOnEveryDataPlaneMetricFamily(t *testing.T) {

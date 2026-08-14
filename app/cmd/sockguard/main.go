@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/codeswhat/sockguard/internal/cmd"
+	"github.com/codeswhat/sockguard/app/internal/cmd"
 )
 
 var execute = cmd.Execute

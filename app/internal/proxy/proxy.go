@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"net/http/httputil"
 
-	"github.com/codeswhat/sockguard/internal/httpjson"
-	"github.com/codeswhat/sockguard/internal/logging"
-	"github.com/codeswhat/sockguard/internal/responsefilter"
-	"github.com/codeswhat/sockguard/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/responsefilter"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 const (

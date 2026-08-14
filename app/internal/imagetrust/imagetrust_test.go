@@ -249,6 +249,25 @@ func TestNilEntityDeniedWithDescription(t *testing.T) {
 	}
 }
 
+func TestNewRejectsKeylessConfigWithoutTrustedMaterial(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []Mode{ModeWarn, ModeEnforce} {
+		t.Run(string(mode), func(t *testing.T) {
+			t.Parallel()
+			_, err := New(Config{
+				Mode: mode,
+				AllowedKeyless: []KeylessIdentity{{
+					IssuerExact:    "https://issuer.example",
+					SubjectPattern: regexp.MustCompile(`^subject@example\.com$`),
+				}},
+			})
+			if err == nil || !strings.Contains(err.Error(), "TrustedMaterial") {
+				t.Fatalf("New(keyless without trusted material) error = %v, want TrustedMaterial error", err)
+			}
+		})
+	}
+}
+
 // --- keyless verification using VirtualSigstore ---
 
 // TestKeylessVerification_Success verifies that an image signed with the
@@ -549,6 +568,7 @@ func TestVerify_AllVerifiersFail_CompositeError(t *testing.T) {
 		Mode: ModeEnforce,
 		// Wrong key — keyed verification fails.
 		AllowedSigningKeys: []KeyedVerifier{
+			{verifier: verifierA, fingerprint: "wrongkey1"},
 			{verifier: verifierA, fingerprint: "wrongkey2"},
 		},
 		// Wrong issuer — keyless verification also fails.
@@ -573,5 +593,10 @@ func TestVerify_AllVerifiersFail_CompositeError(t *testing.T) {
 	}
 	if !strings.Contains(verifyErr.Error(), "keyless:") {
 		t.Fatalf("error should contain 'keyless:' substring, got: %v", verifyErr)
+	}
+	for _, fingerprint := range []string{"wrongkey1", "wrongkey2"} {
+		if !strings.Contains(verifyErr.Error(), fingerprint) {
+			t.Fatalf("error should identify attempted key %q, got: %v", fingerprint, verifyErr)
+		}
 	}
 }

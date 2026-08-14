@@ -65,7 +65,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
 )
 
 // mediationDenial carries the gRPC status code, audit reason code (one of

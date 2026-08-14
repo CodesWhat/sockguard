@@ -5,6 +5,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/pem"
 	"regexp"
 	"strings"
@@ -201,17 +203,6 @@ func TestDisabledVerifier_RejectsCalls(t *testing.T) {
 	}
 }
 
-// --- DigestYAML ---
-
-func TestDigestYAML_Deterministic(t *testing.T) {
-	t.Parallel()
-	got := digestYAML([]byte("hello world"))
-	want := "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-	if got != want {
-		t.Fatalf("digestYAML(hello world) = %q, want %q", got, want)
-	}
-}
-
 // --- Verify happy + sad paths via VirtualSigstore (keyless) ---
 
 func TestVerify_KeylessHappyPath(t *testing.T) {
@@ -247,8 +238,10 @@ func TestVerify_KeylessHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if res.DigestHex != digestYAML(yaml) {
-		t.Fatalf("DigestHex = %q, want %q", res.DigestHex, digestYAML(yaml))
+	wantDigest := sha256.Sum256(yaml)
+	wantDigestHex := hex.EncodeToString(wantDigest[:])
+	if res.DigestHex != wantDigestHex {
+		t.Fatalf("DigestHex = %q, want %q", res.DigestHex, wantDigestHex)
 	}
 	if res.Signer == "" {
 		t.Fatal("Signer must be populated on success")
@@ -513,6 +506,11 @@ func TestVerify_KeyedBranchExecutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildConfig: %v", err)
 	}
+	cfg.AllowedSigningKeys[0].fingerprint = "wrongkey1"
+	cfg.AllowedSigningKeys = append(cfg.AllowedSigningKeys, KeyedVerifier{
+		verifier:    cfg.AllowedSigningKeys[0].verifier,
+		fingerprint: "wrongkey2",
+	})
 	v, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -524,5 +522,10 @@ func TestVerify_KeyedBranchExecutes(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "keyed:") {
 		t.Fatalf("expected error to mention the keyed branch, got %v", err)
+	}
+	for _, fingerprint := range []string{"wrongkey1", "wrongkey2"} {
+		if !strings.Contains(err.Error(), fingerprint) {
+			t.Fatalf("error should identify attempted key %q, got: %v", fingerprint, err)
+		}
 	}
 }

@@ -184,7 +184,7 @@ const file_github_com_tonistiigi_fsutil_types_wire_proto_rawDesc = "" +
 	"\n" +
 	"PACKET_FIN\x10\x03\x12\x0e\n" +
 	"\n" +
-	"PACKET_ERR\x10\x04BOZMgithub.com/codeswhat/sockguard/internal/buildkitproto/fsutiltypes;fsutiltypesb\x06proto3"
+	"PACKET_ERR\x10\x04BSZQgithub.com/codeswhat/sockguard/app/internal/buildkitproto/fsutiltypes;fsutiltypesb\x06proto3"
 
 var (
 	file_github_com_tonistiigi_fsutil_types_wire_proto_rawDescOnce sync.Once

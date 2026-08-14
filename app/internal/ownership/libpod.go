@@ -5,8 +5,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/codeswhat/sockguard/internal/dockerresource"
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 // libpod.go holds the owner-label mutation and cross-owner reference

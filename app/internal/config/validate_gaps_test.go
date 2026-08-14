@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/upstream"
+	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
 // TestEndpointSpecMapping exercises the endpointSpec function which adapts a

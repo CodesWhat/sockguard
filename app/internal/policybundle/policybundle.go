@@ -32,7 +32,7 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/verify"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
 
-	"github.com/codeswhat/sockguard/internal/sigverify"
+	"github.com/codeswhat/sockguard/app/internal/sigverify"
 )
 
 // VerifyTimeout is the default per-verification context timeout. Bundle
@@ -202,13 +202,6 @@ func LoadBundle(path string) (verify.SignedEntity, error) {
 	return b, nil
 }
 
-// digestYAML returns the sha256 hex digest of yaml. Exposed so wiring code
-// can stamp PolicySnapshot.BundleDigest even when verification is disabled.
-func digestYAML(yaml []byte) string {
-	h := sha256.Sum256(yaml)
-	return hex.EncodeToString(h[:])
-}
-
 // disabledVerifier is the no-op verifier returned when Enabled=false. It
 // rejects calls so a wiring bug can't accidentally bypass an enabled gate
 // by sneaking a disabled verifier through.
@@ -241,11 +234,11 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, yaml []byte, entity verif
 		defer cancel()
 	}
 
-	var keyedErr, keylessErr error
+	var keyedErrs, keylessErrs []string
 
 	for _, kv := range s.cfg.AllowedSigningKeys {
 		if err := s.verifyKeyed(ctx, entity, digestBytes[:], kv); err != nil {
-			keyedErr = err
+			keyedErrs = append(keyedErrs, fmt.Sprintf("%s: %v", kv.fingerprint, err))
 			continue
 		}
 		return VerifyResult{
@@ -257,7 +250,7 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, yaml []byte, entity verif
 
 	for _, kl := range s.cfg.AllowedKeyless {
 		if err := s.verifyKeyless(ctx, entity, digestBytes[:], kl); err != nil {
-			keylessErr = err
+			keylessErrs = append(keylessErrs, fmt.Sprintf("%s: %v", kl.IssuerExact, err))
 			continue
 		}
 		return VerifyResult{
@@ -268,11 +261,11 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, yaml []byte, entity verif
 	}
 
 	var msgs []string
-	if keyedErr != nil {
-		msgs = append(msgs, fmt.Sprintf("keyed: %v", keyedErr))
+	if len(keyedErrs) > 0 {
+		msgs = append(msgs, "keyed: "+strings.Join(keyedErrs, " | "))
 	}
-	if keylessErr != nil {
-		msgs = append(msgs, fmt.Sprintf("keyless: %v", keylessErr))
+	if len(keylessErrs) > 0 {
+		msgs = append(msgs, "keyless: "+strings.Join(keylessErrs, " | "))
 	}
 	if len(msgs) == 0 {
 		return VerifyResult{}, errors.New("policy_bundle: no verifiers configured")

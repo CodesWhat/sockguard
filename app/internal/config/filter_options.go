@@ -3,7 +3,7 @@ package config
 import (
 	"strings"
 
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 // ToFilterOptions converts request-body config into filter middleware policy

@@ -36,6 +36,33 @@ func TestWrite(t *testing.T) {
 	}
 }
 
+func TestSetJSONHeadersDoesNotShareMutableValues(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		header   string
+		mutation string
+		expected string
+	}{
+		{name: "content type", header: "Content-Type", mutation: "text/plain", expected: "application/json"},
+		{name: "content type options", header: "X-Content-Type-Options", mutation: "unsafe", expected: "nosniff"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			first := make(http.Header)
+			setJSONHeaders(first)
+			first[tt.header][0] = tt.mutation
+
+			second := make(http.Header)
+			setJSONHeaders(second)
+			if got := second.Get(tt.header); got != tt.expected {
+				t.Fatalf("second %s = %q, want %q", tt.header, got, tt.expected)
+			}
+		})
+	}
+}
+
 type trackingWriter struct {
 	header http.Header
 	status int

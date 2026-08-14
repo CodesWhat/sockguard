@@ -3,7 +3,7 @@
   "workspaces": {
     ".": {
       "entry": ["scripts/*.mjs"],
-      "ignoreBinaries": ["helm"]
+      "ignoreBinaries": ["go", "helm"]
     },
     "docs": {
       "entry": ["source.config.ts"]

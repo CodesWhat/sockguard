@@ -3,12 +3,12 @@ package cmd
 import (
 	"net/http"
 
-	"github.com/codeswhat/sockguard/internal/clientacl"
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/httpjson"
-	"github.com/codeswhat/sockguard/internal/inbound"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/clientacl"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/httpjson"
+	"github.com/codeswhat/sockguard/app/internal/inbound"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // withListenerAdmission enforces each effective listener's allowed_profiles

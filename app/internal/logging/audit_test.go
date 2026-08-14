@@ -264,6 +264,13 @@ func TestAuditLoggerLogAndCloseEdgeBranches(t *testing.T) {
 	}
 	fullQueueLogger.events <- auditEvent{EventType: "queued"}
 	fullQueueLogger.log(auditEvent{EventType: "dropped"})
+	if got := fullQueueLogger.DroppedEvents(); got != 1 {
+		t.Fatalf("DroppedEvents() = %d, want 1", got)
+	}
+	closedLogger.log(auditEvent{EventType: "dropped_after_close"})
+	if got := closedLogger.DroppedEvents(); got != 2 {
+		t.Fatalf("DroppedEvents() after Close = %d, want 2", got)
+	}
 }
 
 func TestAuditLoggerDrainWritesQueuedEvents(t *testing.T) {
@@ -282,6 +289,43 @@ func TestAuditLoggerDrainWritesQueuedEvents(t *testing.T) {
 	}
 	if got := event["event_type"]; got != "drained" {
 		t.Fatalf("event_type = %#v, want drained", got)
+	}
+}
+
+func TestAuditLoggerConcurrentLogAndCloseAccountsForEveryEvent(t *testing.T) {
+	const (
+		rounds   = 32
+		attempts = 512
+	)
+	for round := range rounds {
+		var buf bytes.Buffer
+		logger := NewAuditLogger(&buf)
+		logger.lastWarn.Store(time.Now().UnixNano())
+		start := make(chan struct{})
+		var workers sync.WaitGroup
+		for range attempts {
+			workers.Add(1)
+			go func() {
+				defer workers.Done()
+				<-start
+				logger.log(auditEvent{EventType: "shutdown_race"})
+			}()
+		}
+		closed := make(chan struct{})
+		go func() {
+			<-start
+			_ = logger.Close()
+			close(closed)
+		}()
+		close(start)
+		workers.Wait()
+		<-closed
+
+		written := bytes.Count(buf.Bytes(), []byte{'\n'})
+		accounted := written + int(logger.DroppedEvents())
+		if accounted != attempts {
+			t.Fatalf("round %d accounted events = %d (written=%d dropped=%d), want %d", round, accounted, written, logger.DroppedEvents(), attempts)
+		}
 	}
 }
 

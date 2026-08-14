@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/filter"
 )
 
 // makePatternPolicy builds a minimal compiledPolicy with name patterns for use
@@ -67,6 +67,35 @@ func TestFilterWriterFlushFilteredEmptyBodyOn204(t *testing.T) {
 	}
 	if body := rec.Body.String(); body != "" {
 		t.Fatalf("body = %q, want empty body for 204", body)
+	}
+}
+
+func TestFilterWriterMarksHeadersWrittenOnEveryCommittedPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "empty body status", status: http.StatusNoContent},
+		{name: "non-success status", status: http.StatusBadGateway, body: `upstream error`},
+		{name: "non-array success", status: http.StatusOK, body: `{}`},
+		{name: "filtered array", status: http.StatusOK, body: `[]`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			fw := newPatternFilterWriter(rec)
+			t.Cleanup(fw.release)
+			fw.WriteHeader(tt.status)
+			_, _ = fw.Write([]byte(tt.body))
+			if err := fw.flushFiltered("/containers/json", makePatternPolicy(t, "*")); err != nil {
+				t.Fatalf("flushFiltered() error = %v", err)
+			}
+			if !fw.headerWritten {
+				t.Fatal("flushFiltered() committed a response without recording headerWritten")
+			}
+		})
 	}
 }
 

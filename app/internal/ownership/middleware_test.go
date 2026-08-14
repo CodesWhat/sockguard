@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/dockerresource"
-	"github.com/codeswhat/sockguard/internal/filter"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 func testLogger() *slog.Logger {

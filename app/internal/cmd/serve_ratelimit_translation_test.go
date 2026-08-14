@@ -3,9 +3,9 @@ package cmd
 import (
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/config"
-	"github.com/codeswhat/sockguard/internal/ratelimit"
-	"github.com/codeswhat/sockguard/internal/testhelp"
+	"github.com/codeswhat/sockguard/app/internal/config"
+	"github.com/codeswhat/sockguard/app/internal/ratelimit"
+	"github.com/codeswhat/sockguard/app/internal/testhelp"
 )
 
 // TestConfigLimitsToRateLimitOptions_AllFields is a happy-path test for the

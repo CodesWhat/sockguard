@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/dockerresource"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

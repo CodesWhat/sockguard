@@ -13,7 +13,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/codeswhat/sockguard/internal/dockerfileinspect"
+	"github.com/codeswhat/sockguard/app/internal/dockerfileinspect"
 )
 
 const maxBuildContextBytes = 512 << 20           // 512 MiB (compressed/on-wire cap)

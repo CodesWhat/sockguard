@@ -53,7 +53,7 @@ var writeECPrivateKeyHook func(string, *ecdsa.PrivateKey) error = writeECPrivate
 
 // writePEMDeps hooks — swappable in tests.
 var openFileHook func(string) (io.WriteCloser, error) = func(path string) (io.WriteCloser, error) {
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600) // #nosec G304 -- paths are fixed bundle filenames beneath the caller-selected test certificate directory.
 }
 var encodePEMHook func(io.Writer, *pem.Block) error = pem.Encode
 

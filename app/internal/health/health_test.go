@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/codeswhat/sockguard/internal/testhelp"
-	"github.com/codeswhat/sockguard/internal/version"
+	"github.com/codeswhat/sockguard/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/app/internal/version"
 )
 
 type devNull struct{}

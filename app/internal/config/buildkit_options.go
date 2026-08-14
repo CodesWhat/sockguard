@@ -1,6 +1,6 @@
 package config
 
-import "github.com/codeswhat/sockguard/internal/buildkitproxy"
+import "github.com/codeswhat/sockguard/app/internal/buildkitproxy"
 
 // ToPolicy converts BuildkitRequestBodyConfig into buildkitproxy.Policy,
 // mirroring how RequestBodyConfig.ToFilterOptions translates into the filter

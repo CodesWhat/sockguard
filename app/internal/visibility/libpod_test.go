@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/dockerresource"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 func testVisibilityLogger() *slog.Logger {

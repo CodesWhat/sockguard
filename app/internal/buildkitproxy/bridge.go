@@ -15,8 +15,8 @@ import (
 
 	"golang.org/x/net/http2"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/control"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // errMessageTooLarge is returned by limitedReadCloser once a stream's

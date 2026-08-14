@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/name"
@@ -30,7 +31,7 @@ import (
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
 
-	"github.com/codeswhat/sockguard/internal/imagetrust"
+	"github.com/codeswhat/sockguard/app/internal/imagetrust"
 )
 
 const simpleSigningMediaType = "application/vnd.dev.cosign.simplesigning.v1+json"
@@ -293,6 +294,30 @@ func TestFetchCandidates_InvalidReference(t *testing.T) {
 	}
 	if errors.Is(err, ErrNoSignatures) {
 		t.Fatal("a parse error should not be reported as ErrNoSignatures")
+	}
+}
+
+func TestReadLayerPayloadLimit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{name: "at limit", size: maxPayloadBytes},
+		{name: "oversize", size: maxPayloadBytes + 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			layer := static.NewLayer(bytes.Repeat([]byte("x"), tt.size), types.MediaType(simpleSigningMediaType))
+			_, err := readLayerPayload(layer)
+			if tt.wantErr && (err == nil || !strings.Contains(err.Error(), "exceeds")) {
+				t.Fatalf("readLayerPayload() error = %v, want size-limit error", err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("readLayerPayload() error = %v, want nil", err)
+			}
+		})
 	}
 }
 

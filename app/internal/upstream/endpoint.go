@@ -227,8 +227,9 @@ func buildClientTLS(spec EndpointSpec, address string) (*tls.Config, error) {
 	}
 
 	tlsConfig := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		ServerName:         serverName,
+		MinVersion: tls.VersionTLS12,
+		ServerName: serverName,
+		// #nosec G402 -- opt-in and gated behind an explicit acknowledgement.
 		InsecureSkipVerify: spec.InsecureSkipTLSVerify, //nolint:gosec // opt-in, gated behind an explicit acknowledgement
 	}
 

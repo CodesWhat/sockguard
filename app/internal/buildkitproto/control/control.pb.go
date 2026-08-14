@@ -35,8 +35,8 @@
 package control
 
 import (
-	pb "github.com/codeswhat/sockguard/internal/buildkitproto/pb"
-	sourcepolicy "github.com/codeswhat/sockguard/internal/buildkitproto/sourcepolicy"
+	pb "github.com/codeswhat/sockguard/app/internal/buildkitproto/pb"
+	sourcepolicy "github.com/codeswhat/sockguard/app/internal/buildkitproto/sourcepolicy"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
@@ -1044,7 +1044,7 @@ const file_github_com_moby_buildkit_api_services_control_control_proto_rawDesc =
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x012\xa2\x01\n" +
 	"\aControl\x12H\n" +
 	"\x05Solve\x12\x1e.moby.buildkit.v1.SolveRequest\x1a\x1f.moby.buildkit.v1.SolveResponse\x12M\n" +
-	"\x06Status\x12\x1f.moby.buildkit.v1.StatusRequest\x1a .moby.buildkit.v1.StatusResponse0\x01BGZEgithub.com/codeswhat/sockguard/internal/buildkitproto/control;controlb\x06proto3"
+	"\x06Status\x12\x1f.moby.buildkit.v1.StatusRequest\x1a .moby.buildkit.v1.StatusResponse0\x01BKZIgithub.com/codeswhat/sockguard/app/internal/buildkitproto/control;controlb\x06proto3"
 
 var (
 	file_github_com_moby_buildkit_api_services_control_control_proto_rawDescOnce sync.Once

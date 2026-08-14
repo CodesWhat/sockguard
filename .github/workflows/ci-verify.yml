@@ -88,8 +88,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Build Go
         run: go build ./...
@@ -190,8 +190,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Run GoReleaser snapshot
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7.2.3
@@ -230,8 +230,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Check gofmt
         working-directory: app
@@ -281,8 +281,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Run tests
         run: |
@@ -316,8 +316,8 @@ jobs:
         # "missing on disk" and fail validation.
         working-directory: app
         run: |
-          grep -vE 'github.com/codeswhat/sockguard/(differential|internal/testcert|internal/testhelp|internal/buildkitproto)/' coverage.txt > coverage.prod.txt
-          sed 's#github.com/codeswhat/sockguard/#app/#g' coverage.prod.txt > coverage.qlty.txt
+          grep -vE 'github.com/codeswhat/sockguard/app/(differential|internal/testcert|internal/testhelp|internal/buildkitproto)/' coverage.txt > coverage.prod.txt
+          sed 's#github.com/codeswhat/sockguard/##g' coverage.prod.txt > coverage.qlty.txt
 
       - name: Publish coverage to Qlty
         # OIDC auth — no token/secret to store or rotate (verified working on
@@ -398,6 +398,7 @@ jobs:
           - { name: FuzzEvaluateStatusRequest,   pkg: ./internal/buildkitproxy/ }
           - { name: FuzzRewriteSessionAdvertisement, pkg: ./internal/buildkitproxy/ }
           - { name: FuzzValidateUpgradeRequest,  pkg: ./internal/buildkitproxy/ }
+          - { name: FuzzDecode,                  pkg: ./internal/dockerfilters/ }
           - { name: FuzzProxyHeadersAndBody,     pkg: ./internal/proxy/ }
           - { name: FuzzHijackHeadersAndBody,    pkg: ./internal/proxy/ }
           - { name: FuzzPathRoutingDifferential, pkg: ./differential/ }
@@ -418,8 +419,8 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: app/go.mod
-          cache-dependency-path: app/go.sum
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
 
       - name: Fuzz ${{ matrix.fuzzer.name }}
         working-directory: app

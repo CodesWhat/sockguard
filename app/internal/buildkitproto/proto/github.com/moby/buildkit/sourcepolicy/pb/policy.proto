@@ -5,7 +5,7 @@ package moby.buildkit.v1.sourcepolicy;
 // go_package is retargeted to sockguard's vendored-package layout so the
 // generated Go code's import statements resolve inside this module; this is
 // the ONLY deviation from the upstream file — see PROVENANCE.md.
-option go_package = "github.com/codeswhat/sockguard/internal/buildkitproto/sourcepolicy;sourcepolicy";
+option go_package = "github.com/codeswhat/sockguard/app/internal/buildkitproto/sourcepolicy;sourcepolicy";
 
 // Rule defines the action(s) to take when a source is matched
 message Rule {
