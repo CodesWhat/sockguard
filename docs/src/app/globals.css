@@ -36,6 +36,10 @@
   --fd-layout-width: 100vw;
 }
 
+#nd-subnav {
+  background-color: var(--color-fd-card);
+}
+
 /* ----------------------------------------------------------------------------
    Aurora background palettes. Each [data-bg] sets the --au-* color stops used
    by .aurora-mesh and the --au-glow used by accent glows.
