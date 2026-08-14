@@ -211,8 +211,10 @@ func benchmarkInspectPolicy(
 
 	b.ReportAllocs()
 	for b.Loop() {
+		b.StopTimer()
 		req = makeRequest()
 		normalizedPath = NormalizePath(req.URL.Path)
+		b.StartTimer()
 
 		denyReason, err = inspect(req, normalizedPath)
 		if err != nil {
