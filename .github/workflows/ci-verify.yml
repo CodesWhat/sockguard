@@ -27,7 +27,7 @@ env:
 
 jobs:
   zizmor:
-    name: "Workflow Security"
+    name: "🔒 Workflow Security"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -57,7 +57,7 @@ jobs:
           advanced-security: false
 
   codeql:
-    name: "CodeQL Analysis"
+    name: "🔍 CodeQL Analysis"
     # CodeQL SARIF upload requires GitHub Advanced Security (GHAS), which is not
     # available on free private repos. Skip unless the repo is public.
     if: github.event.repository.visibility == 'public' && (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
@@ -171,7 +171,7 @@ jobs:
           fi
 
   goreleaser-check:
-    name: "GoReleaser Config"
+    name: "📦 GoReleaser Config"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -211,7 +211,7 @@ jobs:
           grep -Fq 'com.apple.quarantine' "${cask}"
 
   go-lint:
-    name: "Go Lint"
+    name: "🧹 Go Lint"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -256,7 +256,7 @@ jobs:
           working-directory: app
 
   go-test:
-    name: "Go Test"
+    name: "🧪 Go Test"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -469,7 +469,7 @@ jobs:
           if-no-files-found: ignore
 
   ts-lint:
-    name: "Biome Lint"
+    name: "🎨 Biome Lint"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -498,7 +498,7 @@ jobs:
         run: npx biome check .
 
   ts-test:
-    name: "TS Test"
+    name: "🧪 TS Test"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -527,7 +527,7 @@ jobs:
         run: npm test
 
   ts-build:
-    name: "Build Workspaces"
+    name: "🏗️ Build Workspaces"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -555,7 +555,7 @@ jobs:
         run: npx turbo build
 
   docker:
-    name: "Docker Build"
+    name: "🐳 Docker Build"
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -624,3 +624,120 @@ jobs:
           test "$(sudo stat -c '%u:%g %a' "${runtime_socket}")" = "65532:65532 600"
           test "$(sudo curl --fail --silent --show-error \
             --unix-socket "${runtime_socket}" http://localhost/_ping)" = "OK"
+
+  bridge-workflow-security:
+    name: "Workflow Security"
+    if: ${{ always() }}
+    needs: zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Propagate upstream result
+        env:
+          UPSTREAM_RESULT: ${{ needs.zizmor.result }}
+        run: test "${UPSTREAM_RESULT}" = success
+
+  bridge-codeql-analysis:
+    name: "CodeQL Analysis"
+    if: ${{ always() }}
+    needs: codeql
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Propagate upstream result
+        env:
+          UPSTREAM_RESULT: ${{ needs.codeql.result }}
+        run: test "${UPSTREAM_RESULT}" = success
+
+  bridge-goreleaser-config:
+    name: "GoReleaser Config"
+    if: ${{ always() }}
+    needs: goreleaser-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Propagate upstream result
+        env:
+          UPSTREAM_RESULT: ${{ needs.goreleaser-check.result }}
+        run: test "${UPSTREAM_RESULT}" = success
+
+  bridge-go-lint:
+    name: "Go Lint"
+    if: ${{ always() }}
+    needs: go-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Propagate upstream result
+        env:
+          UPSTREAM_RESULT: ${{ needs.go-lint.result }}
+        run: test "${UPSTREAM_RESULT}" = success
+
+  bridge-go-test:
+    name: "Go Test"
+    if: ${{ always() }}
+    needs: go-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Propagate upstream result
+        env:
+          UPSTREAM_RESULT: ${{ needs.go-test.result }}
+        run: test "${UPSTREAM_RESULT}" = success
+
+  bridge-biome-lint:
+    name: "Biome Lint"
+    if: ${{ always() }}
+    needs: ts-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Propagate upstream result
+        env:
+          UPSTREAM_RESULT: ${{ needs.ts-lint.result }}
+        run: test "${UPSTREAM_RESULT}" = success
+
+  bridge-ts-test:
+    name: "TS Test"
+    if: ${{ always() }}
+    needs: ts-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Propagate upstream result
+        env:
+          UPSTREAM_RESULT: ${{ needs.ts-test.result }}
+        run: test "${UPSTREAM_RESULT}" = success
+
+  bridge-build-workspaces:
+    name: "Build Workspaces"
+    if: ${{ always() }}
+    needs: ts-build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Propagate upstream result
+        env:
+          UPSTREAM_RESULT: ${{ needs.ts-build.result }}
+        run: test "${UPSTREAM_RESULT}" = success
+
+  bridge-docker-build:
+    name: "Docker Build"
+    if: ${{ always() }}
+    needs: docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Propagate upstream result
+        env:
+          UPSTREAM_RESULT: ${{ needs.docker.result }}
+        run: test "${UPSTREAM_RESULT}" = success
