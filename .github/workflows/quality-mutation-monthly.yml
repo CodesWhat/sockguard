@@ -164,6 +164,8 @@ jobs:
           done
 
           if [ "$reports_found" -ne "$expected_reports" ]; then
+            echo "reports_found=${reports_found}" >> "$GITHUB_OUTPUT"
+            echo "expected_reports=${expected_reports}" >> "$GITHUB_OUTPUT"
             echo "::error::expected ${expected_reports} parseable mutation-report.txt files, found ${reports_found} -- the report set is incomplete, so the existing badge JSON is left untouched"
             {
               echo "### Mutation badge not updated"
@@ -232,12 +234,13 @@ jobs:
         env:
           PCT: ${{ steps.score.outputs.pct }}
           REPORTS_FOUND: ${{ steps.score.outputs.reports_found }}
+          EXPECTED_REPORTS: ${{ steps.score.outputs.expected_reports }}
           SKIP: ${{ steps.score.outputs.skip }}
         run: |
           {
             echo "### 🏷️ Mutation score badge"
             if [ "$SKIP" = "true" ]; then
-              echo "- No parseable package reports found this run -- badge left unchanged."
+              echo "- Incomplete report set: ${REPORTS_FOUND} of ${EXPECTED_REPORTS}; badge left unchanged."
             else
               echo "- Weighted test efficacy (killed / (killed + lived)) across ${REPORTS_FOUND} package report(s): **${PCT}%**"
               echo "- Mode: ADVISORY (non-blocking) -- this only refreshes \`.github/badges/mutation-score.json\`, no gate."
