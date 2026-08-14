@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -9,6 +9,21 @@ const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const rootModule = new URL("../go.mod", import.meta.url);
 const nestedModule = new URL("../app/go.mod", import.meta.url);
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+
+const pathEntryExists = (path) => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const hasTemporaryInternalCopy = (dockerfile) =>
+  /^COPY[ \t]+internal\/?[ \t]+\.\/internal\/?[ \t]*$/m.test(dockerfile);
 
 const gosecArgs = (workflow) =>
   workflow.match(
@@ -26,14 +41,14 @@ test("the repository root is the canonical Go module root", () => {
 
 test("temporary staged compatibility packages are absent from the final tree", () => {
   assert.ok(
-    !existsSync(new URL("../internal", import.meta.url)),
+    !pathEntryExists(new URL("../internal", import.meta.url)),
     "the temporary root internal package tree must be removed",
   );
   assert.ok(
-    !existsSync(new URL("../differential", import.meta.url)),
+    !pathEntryExists(new URL("../differential", import.meta.url)),
     "the temporary root differential symlink must be removed",
   );
-  assert.doesNotMatch(read("Dockerfile"), /^COPY internal\/ \.\/internal\/$/m);
+  assert.equal(hasTemporaryInternalCopy(read("Dockerfile")), false);
 
   const workflow = read(".github/workflows/ci-verify.yml");
   assert.match(
@@ -44,6 +59,17 @@ test("temporary staged compatibility packages are absent from the final tree", (
     workflow,
     /- name: Fuzz \$\{\{ matrix\.fuzzer\.name \}\}\n\s+working-directory: app/,
   );
+});
+
+test("temporary Docker COPY detection covers equivalent forms", () => {
+  for (const instruction of [
+    "COPY internal/ ./internal/",
+    "COPY internal ./internal",
+    "COPY  internal/   ./internal",
+    "COPY\tinternal\t./internal/",
+  ]) {
+    assert.equal(hasTemporaryInternalCopy(instruction), true, instruction);
+  }
 });
 
 test("the binary has the package path implied by its repository directory", () => {
