@@ -1,10 +1,13 @@
 "use client";
 
 import { ShieldCheck, Terminal, TriangleAlert, Zap } from "lucide-react";
+import { usePathname } from "next/navigation";
 import { useState } from "react";
 import { DockerRunSnippet } from "@/components/docker-run-snippet";
 import { SectionHeading } from "@/components/section-heading";
+import { TrackedLink } from "@/components/tracked-link";
 import { YamlBlock } from "@/components/yaml-block";
+import { captureCta } from "@/lib/analytics";
 import { SITE_CONFIG } from "@/lib/site-config";
 
 type Tab = "quick" | "secure";
@@ -51,6 +54,12 @@ rules:
 
 export function GetStarted() {
   const [tab, setTab] = useState<Tab>("quick");
+  const pathname = usePathname();
+
+  const activateTab = (id: Tab) => {
+    setTab(id);
+    captureCta(pathname, `install_${id}`, "get_started");
+  };
 
   return (
     <section className="border-t border-border/60 px-4 py-16">
@@ -72,16 +81,16 @@ export function GetStarted() {
               const currentIndex = TABS.findIndex((t) => t.id === tab);
               if (e.key === "ArrowRight") {
                 e.preventDefault();
-                setTab(TABS[(currentIndex + 1) % TABS.length].id);
+                activateTab(TABS[(currentIndex + 1) % TABS.length].id);
               } else if (e.key === "ArrowLeft") {
                 e.preventDefault();
-                setTab(TABS[(currentIndex - 1 + TABS.length) % TABS.length].id);
+                activateTab(TABS[(currentIndex - 1 + TABS.length) % TABS.length].id);
               } else if (e.key === "Home") {
                 e.preventDefault();
-                setTab(TABS[0].id);
+                activateTab(TABS[0].id);
               } else if (e.key === "End") {
                 e.preventDefault();
-                setTab(TABS[TABS.length - 1].id);
+                activateTab(TABS[TABS.length - 1].id);
               }
             }}
           >
@@ -96,7 +105,7 @@ export function GetStarted() {
                   aria-selected={active}
                   aria-controls="get-started-panel"
                   tabIndex={active ? 0 : -1}
-                  onClick={() => setTab(id)}
+                  onClick={() => activateTab(id)}
                   className={[
                     "flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-sm font-medium transition-colors",
                     active
@@ -150,12 +159,14 @@ export function GetStarted() {
               <p className="flex items-center gap-2 text-neutral-500 dark:text-neutral-400">
                 <ShieldCheck className="h-4 w-4 shrink-0 text-amber-500" />
                 We own the real socket. Your app only sees what you allow.{" "}
-                <a
+                <TrackedLink
                   href="/docs"
+                  ctaId="docs_root"
+                  placement="get_started"
                   className="font-medium text-neutral-900 underline-offset-4 hover:underline dark:text-neutral-100"
                 >
                   Full configuration docs →
-                </a>
+                </TrackedLink>
               </p>
             )}
           </div>

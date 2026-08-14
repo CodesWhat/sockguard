@@ -240,7 +240,7 @@ export function ComparisonPage({
               minutes.
             </p>
 
-            <CtaButtons />
+            <CtaButtons placement="comparison" />
           </div>
         </section>
       </MarketingShell>

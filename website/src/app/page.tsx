@@ -146,7 +146,7 @@ export default function Home() {
                 Prometheus metrics.
               </p>
 
-              <CtaButtons align="center" />
+              <CtaButtons align="center" placement="hero" />
 
               {/* Stat strip */}
               <div className="flex flex-wrap items-center justify-center gap-0 divide-x divide-neutral-200 dark:divide-neutral-700">
