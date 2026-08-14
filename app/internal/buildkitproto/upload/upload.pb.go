@@ -74,7 +74,7 @@ const file_github_com_moby_buildkit_session_upload_upload_proto_rawDesc = "" +
 	"\fBytesMessage\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data2P\n" +
 	"\x06Upload\x12F\n" +
-	"\x04Pull\x12\x1c.moby.upload.v1.BytesMessage\x1a\x1c.moby.upload.v1.BytesMessage(\x010\x01BEZCgithub.com/codeswhat/sockguard/internal/buildkitproto/upload;uploadb\x06proto3"
+	"\x04Pull\x12\x1c.moby.upload.v1.BytesMessage\x1a\x1c.moby.upload.v1.BytesMessage(\x010\x01BIZGgithub.com/codeswhat/sockguard/app/internal/buildkitproto/upload;uploadb\x06proto3"
 
 var (
 	file_github_com_moby_buildkit_session_upload_upload_proto_rawDescOnce sync.Once

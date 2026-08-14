@@ -44,8 +44,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/control"
-	"github.com/codeswhat/sockguard/internal/buildkitproto/upload"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/upload"
 )
 
 // uploadSessionHost is the literal URL host moby/buildkit's

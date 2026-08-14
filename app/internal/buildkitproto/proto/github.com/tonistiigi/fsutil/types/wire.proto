@@ -27,7 +27,7 @@ package fsutil.types;
 // bare "types") — this file is already a curated subset (see the vtprotobuf
 // removal note above), so this is one more deliberate deviation from
 // upstream. See PROVENANCE.md.
-option go_package = "github.com/codeswhat/sockguard/internal/buildkitproto/fsutiltypes;fsutiltypes";
+option go_package = "github.com/codeswhat/sockguard/app/internal/buildkitproto/fsutiltypes;fsutiltypes";
 
 import "github.com/tonistiigi/fsutil/types/stat.proto";
 

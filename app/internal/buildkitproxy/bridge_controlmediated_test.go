@@ -10,7 +10,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
 )
 
 // newFramedGRPCRequest is newGRPCRequest's sibling for forwardControlMediated's

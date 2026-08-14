@@ -17,8 +17,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/auth"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/auth"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 // isSessionMediatedMethod reports whether service/method on endpoint is one

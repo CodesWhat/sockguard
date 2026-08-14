@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/imagetrust"
-	"github.com/codeswhat/sockguard/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/imagetrust"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
 func TestMutationChainInjectsRequiredLabelBeforeContainerPolicy(t *testing.T) {

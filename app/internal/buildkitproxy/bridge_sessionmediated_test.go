@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/auth"
-	"github.com/codeswhat/sockguard/internal/buildkitproto/secrets"
-	"github.com/codeswhat/sockguard/internal/buildkitproto/sshforward"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/auth"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/secrets"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/sshforward"
 )
 
 // sessionAuthPolicy admits Auth/Secrets/SSH with a fixed, realistic set of

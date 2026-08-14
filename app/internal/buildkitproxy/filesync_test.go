@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/fsutiltypes"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/fsutiltypes"
 )
 
 func statPacket(path string) *fsutiltypes.Packet {

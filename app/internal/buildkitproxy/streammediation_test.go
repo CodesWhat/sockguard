@@ -12,7 +12,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
-	"github.com/codeswhat/sockguard/internal/buildkitproto/upload"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/upload"
 )
 
 func TestIsStreamMediatedMethod(t *testing.T) {

@@ -5,13 +5,13 @@ import (
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	bkauth "github.com/codeswhat/sockguard/internal/buildkitproto/auth"
-	bkcontrol "github.com/codeswhat/sockguard/internal/buildkitproto/control"
-	bkfilesync "github.com/codeswhat/sockguard/internal/buildkitproto/filesync"
-	bkhealth "github.com/codeswhat/sockguard/internal/buildkitproto/health"
-	bksecrets "github.com/codeswhat/sockguard/internal/buildkitproto/secrets"
-	bksshforward "github.com/codeswhat/sockguard/internal/buildkitproto/sshforward"
-	bkupload "github.com/codeswhat/sockguard/internal/buildkitproto/upload"
+	bkauth "github.com/codeswhat/sockguard/app/internal/buildkitproto/auth"
+	bkcontrol "github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
+	bkfilesync "github.com/codeswhat/sockguard/app/internal/buildkitproto/filesync"
+	bkhealth "github.com/codeswhat/sockguard/app/internal/buildkitproto/health"
+	bksecrets "github.com/codeswhat/sockguard/app/internal/buildkitproto/secrets"
+	bksshforward "github.com/codeswhat/sockguard/app/internal/buildkitproto/sshforward"
+	bkupload "github.com/codeswhat/sockguard/app/internal/buildkitproto/upload"
 )
 
 // vendoredFileDescriptors lists every generated buildkitproto file whose

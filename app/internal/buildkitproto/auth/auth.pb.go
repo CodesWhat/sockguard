@@ -489,7 +489,7 @@ const file_github_com_moby_buildkit_session_auth_auth_proto_rawDesc = "" +
 	"\n" +
 	"FetchToken\x12#.moby.filesync.v1.FetchTokenRequest\x1a$.moby.filesync.v1.FetchTokenResponse\x12l\n" +
 	"\x11GetTokenAuthority\x12*.moby.filesync.v1.GetTokenAuthorityRequest\x1a+.moby.filesync.v1.GetTokenAuthorityResponse\x12u\n" +
-	"\x14VerifyTokenAuthority\x12-.moby.filesync.v1.VerifyTokenAuthorityRequest\x1a..moby.filesync.v1.VerifyTokenAuthorityResponseBAZ?github.com/codeswhat/sockguard/internal/buildkitproto/auth;authb\x06proto3"
+	"\x14VerifyTokenAuthority\x12-.moby.filesync.v1.VerifyTokenAuthorityRequest\x1a..moby.filesync.v1.VerifyTokenAuthorityResponseBEZCgithub.com/codeswhat/sockguard/app/internal/buildkitproto/auth;authb\x06proto3"
 
 var (
 	file_github_com_moby_buildkit_session_auth_auth_proto_rawDescOnce sync.Once
