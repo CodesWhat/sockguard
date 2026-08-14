@@ -15,6 +15,7 @@ const requiredContexts = [
     bridge: "bridge-workflow-security",
     requiredName: "Workflow Security",
     pullRequestCondition: null,
+    bridgeCondition: "${{ always() }}",
   },
   {
     upstream: "codeql",
@@ -22,6 +23,8 @@ const requiredContexts = [
     bridge: "bridge-codeql-analysis",
     requiredName: "CodeQL Analysis",
     pullRequestCondition: "github.event_name == 'pull_request'",
+    bridgeCondition:
+      "${{ always() && github.event.repository.visibility == 'public' && (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}",
   },
   {
     upstream: "goreleaser-check",
@@ -29,6 +32,7 @@ const requiredContexts = [
     bridge: "bridge-goreleaser-config",
     requiredName: "GoReleaser Config",
     pullRequestCondition: "github.event_name != 'schedule'",
+    bridgeCondition: "${{ always() && github.event_name != 'schedule' }}",
   },
   {
     upstream: "go-lint",
@@ -36,6 +40,7 @@ const requiredContexts = [
     bridge: "bridge-go-lint",
     requiredName: "Go Lint",
     pullRequestCondition: "github.event_name != 'schedule'",
+    bridgeCondition: "${{ always() && github.event_name != 'schedule' }}",
   },
   {
     upstream: "go-test",
@@ -43,6 +48,7 @@ const requiredContexts = [
     bridge: "bridge-go-test",
     requiredName: "Go Test",
     pullRequestCondition: "github.event_name != 'schedule'",
+    bridgeCondition: "${{ always() && github.event_name != 'schedule' }}",
   },
   {
     upstream: "ts-lint",
@@ -50,6 +56,7 @@ const requiredContexts = [
     bridge: "bridge-biome-lint",
     requiredName: "Biome Lint",
     pullRequestCondition: "github.event_name != 'schedule'",
+    bridgeCondition: "${{ always() && github.event_name != 'schedule' }}",
   },
   {
     upstream: "ts-test",
@@ -57,6 +64,7 @@ const requiredContexts = [
     bridge: "bridge-ts-test",
     requiredName: "TS Test",
     pullRequestCondition: "github.event_name != 'schedule'",
+    bridgeCondition: "${{ always() && github.event_name != 'schedule' }}",
   },
   {
     upstream: "ts-build",
@@ -64,6 +72,7 @@ const requiredContexts = [
     bridge: "bridge-build-workspaces",
     requiredName: "Build Workspaces",
     pullRequestCondition: "github.event_name != 'schedule'",
+    bridgeCondition: "${{ always() && github.event_name != 'schedule' }}",
   },
   {
     upstream: "docker",
@@ -71,6 +80,7 @@ const requiredContexts = [
     bridge: "bridge-docker-build",
     requiredName: "Docker Build",
     pullRequestCondition: "github.event_name != 'schedule'",
+    bridgeCondition: "${{ always() && github.event_name != 'schedule' }}",
   },
 ];
 
@@ -90,6 +100,10 @@ function jobName(jobId) {
   return match[1];
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 describe("temporary review-gap CI bridges", () => {
   it("keeps the reverted upstream jobs under their legacy names", () => {
     for (const entry of requiredContexts) {
@@ -103,7 +117,7 @@ describe("temporary review-gap CI bridges", () => {
       if (entry.pullRequestCondition === null) {
         assert.doesNotMatch(block, /^    if:/m, entry.upstream);
       } else {
-        assert.match(block, new RegExp(entry.pullRequestCondition.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        assert.match(block, new RegExp(escapeRegExp(entry.pullRequestCondition)));
       }
     }
   });
@@ -121,7 +135,14 @@ describe("temporary review-gap CI bridges", () => {
         1,
         entry.requiredName,
       );
-      assert.match(bridge, /^    if: \$\{\{ always\(\) \}\}$/m, entry.bridge);
+      assert.match(
+        bridge,
+        new RegExp(
+          `^    if: ${escapeRegExp(entry.bridgeCondition)}$`,
+          "m",
+        ),
+        entry.bridge,
+      );
       assert.match(bridge, new RegExp(`^    needs: ${entry.upstream}$`, "m"), entry.bridge);
       assert.match(bridge, /^    permissions: \{\}$/m, entry.bridge);
       assert.match(
