@@ -196,15 +196,28 @@ function assertReusableCaller(source) {
 function assertFixedScripts() {
   for (const [name, markers] of FIXED_SCRIPTS) {
     const scriptPath = path.join(ROOT, "scripts", "ci", name);
-    assert.ok(fs.existsSync(scriptPath), `missing fixed script scripts/ci/${name}`);
-    const stat = fs.statSync(scriptPath);
-    assert.ok((stat.mode & 0o111) !== 0, `scripts/ci/${name} must be executable`);
-    const source = fs.readFileSync(scriptPath, "utf8");
-    assert.match(source, /^#!\/usr\/bin\/env bash\nset -euo pipefail\n/u);
-    for (const marker of markers) {
-      assert.ok(source.includes(marker), `scripts/ci/${name} is missing ${marker}`);
+    // Open once and reuse the same file descriptor for the stat and the
+    // read below, instead of a separate existsSync/statSync check followed
+    // by a path-based readFileSync — the latter is a check-then-use race
+    // (the file on disk could change between the check and the read).
+    let fd;
+    try {
+      fd = fs.openSync(scriptPath, "r");
+    } catch {
+      assert.fail(`missing fixed script scripts/ci/${name}`);
     }
-    assert.doesNotMatch(source, /\beval\b/u, `scripts/ci/${name} must not evaluate caller text`);
+    try {
+      const stat = fs.fstatSync(fd);
+      assert.ok((stat.mode & 0o111) !== 0, `scripts/ci/${name} must be executable`);
+      const source = fs.readFileSync(fd, "utf8");
+      assert.match(source, /^#!\/usr\/bin\/env bash\nset -euo pipefail\n/u);
+      for (const marker of markers) {
+        assert.ok(source.includes(marker), `scripts/ci/${name} is missing ${marker}`);
+      }
+      assert.doesNotMatch(source, /\beval\b/u, `scripts/ci/${name} must not evaluate caller text`);
+    } finally {
+      fs.closeSync(fd);
+    }
   }
 
   const fuzzScript = fs.readFileSync(path.join(ROOT, "scripts", "ci", "go-fuzz.sh"), "utf8");
