@@ -63,20 +63,17 @@ const FUZZERS = [
   ["FuzzLibpodPathIdentifiers", "./internal/visibility/"],
 ];
 
-// The nine required plain contexts a branch-protection ruleset (out of
-// scope for this migration) still demands. Two stay entirely local
-// (CodeQL Analysis, Docker Build); the other seven are produced by a
-// "legacy-*" bridge job that mirrors a reusable-workflow result. Remove
-// this map (and the bridge jobs) only when the ruleset itself has been
-// migrated to require the "Go CI / ..." / "Node CI / ..." contexts instead.
-const BRIDGES = new Map([
-  ["legacy-workflow-security", { checkName: "Workflow Security", needs: "go-ci", resultVar: "GO_CI_RESULT" }],
-  ["legacy-goreleaser", { checkName: "GoReleaser Config", needs: "go-ci", resultVar: "GO_CI_RESULT" }],
-  ["legacy-go-lint", { checkName: "Go Lint", needs: "go-ci", resultVar: "GO_CI_RESULT" }],
-  ["legacy-go-test", { checkName: "Go Test", needs: "go-ci", resultVar: "GO_CI_RESULT" }],
-  ["legacy-biome-lint", { checkName: "Biome Lint", needs: "node-ci", resultVar: "NODE_CI_RESULT" }],
-  ["legacy-ts-test", { checkName: "TS Test", needs: "node-ci", resultVar: "NODE_CI_RESULT" }],
-  ["legacy-build-workspaces", { checkName: "Build Workspaces", needs: "node-ci", resultVar: "NODE_CI_RESULT" }],
+// The X1 canary promoted; branch protection now requires only the reusable
+// "Go CI / ..." / "Node CI / ..." contexts. These legacy plain-name bridge
+// jobs must stay removed.
+const RETIRED_BRIDGES = new Map([
+  ["legacy-workflow-security", "Workflow Security"],
+  ["legacy-goreleaser", "GoReleaser Config"],
+  ["legacy-go-lint", "Go Lint"],
+  ["legacy-go-test", "Go Test"],
+  ["legacy-biome-lint", "Biome Lint"],
+  ["legacy-ts-test", "TS Test"],
+  ["legacy-build-workspaces", "Build Workspaces"],
 ]);
 
 const RETIRED_LOCAL_JOBS = ["zizmor", "goreleaser-check", "go-lint", "go-test", "go-fuzz", "ts-lint", "ts-test", "ts-build"];
@@ -101,8 +98,6 @@ const NODE_INPUTS = [
   "run-test: true",
   "run-build: true",
 ];
-
-const HARDEN_RUNNER = "step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920";
 
 function jobSection(source, jobId) {
   const lines = source.split("\n");
@@ -226,35 +221,14 @@ function assertFixedScripts() {
   }
 }
 
-function assertTemporaryBridges(source) {
-  for (const [jobId, { checkName, needs, resultVar }] of BRIDGES) {
-    const bridge = jobSection(source, jobId);
-    assert.ok(bridge, `missing temporary ${checkName} bridge (${jobId})`);
-    assert.ok(bridge.includes(`name: "${checkName}"`), `${jobId} has the wrong check name`);
-    assert.match(bridge, new RegExp(`^ {4}needs: ${needs}$`, "mu"));
-    // The node-ci bridges must additionally skip on `schedule`, since
-    // node-ci itself is skipped on that event (`if: github.event_name !=
-    // 'schedule'`) and would otherwise fail these always()-gated bridges
-    // closed on scheduled runs.
-    const ifCondition =
-      needs === "node-ci"
-        ? /^ {4}if: \$\{\{ always\(\) && github\.event_name != 'schedule' \}\}$/mu
-        : /^ {4}if: \$\{\{ always\(\) \}\}$/mu;
-    assert.match(bridge, ifCondition);
-    assert.match(
-      bridge,
-      new RegExp(
-        `^ {8}env:\\n {10}${resultVar}: \\$\\{\\{ needs\\.${needs}\\.result \\}\\}\\n {8}run: test "\\$\\{${resultVar}\\}" = "success"$`,
-        "mu",
-      ),
+function assertBridgesAbsent(source) {
+  for (const [jobId, checkName] of RETIRED_BRIDGES) {
+    assert.equal(jobSection(source, jobId), "", `${jobId} bridge job must stay removed`);
+    assert.doesNotMatch(
+      source,
+      new RegExp(`name:\\s*"${checkName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}"`, "u"),
+      `workflow must not report the retired "${checkName}" context`,
     );
-    assert.doesNotMatch(bridge, /^ {8}run:.*\$\{\{/mu);
-    const hardenRunnerUses = bridge.split("\n").filter((line) => {
-      const withoutComment = line.trim().split(/\s+#/u, 1)[0];
-      return withoutComment === `uses: ${HARDEN_RUNNER}`;
-    });
-    assert.equal(hardenRunnerUses.length, 1, `${jobId} must pin one harden-runner step`);
-    assert.match(bridge, /^ {10}egress-policy: block$/mu);
   }
 }
 
@@ -293,8 +267,8 @@ test("the local lint and release gates use the same isolated fixed adapters", ()
   assert.doesNotMatch(lefthook, /^ {6}run: golangci-lint run$/mu);
 });
 
-test("temporary bridges keep every required legacy context fail-closed", () => {
-  assertTemporaryBridges(fs.readFileSync(WORKFLOW, "utf8"));
+test("retired X1 bridge jobs must not be reintroduced", () => {
+  assertBridgesAbsent(fs.readFileSync(WORKFLOW, "utf8"));
 });
 
 test("retired local job ids stay retired", () => {
@@ -304,7 +278,7 @@ test("retired local job ids stay retired", () => {
   }
 });
 
-test("the contract rejects a moving reusable ref, a dropped permission, and a fail-open bridge", () => {
+test("the contract rejects a moving reusable ref, a dropped permission, and a reintroduced bridge", () => {
   const source = fs.readFileSync(WORKFLOW, "utf8");
   assert.throws(() => assertReusableCaller(source.replaceAll(SHARED_SHA, "main")));
 
@@ -312,39 +286,24 @@ test("the contract rejects a moving reusable ref, a dropped permission, and a fa
   const droppedPermission = goJob.replace("      security-events: write\n", "");
   assert.throws(() => assertReusableCaller(source.replace(goJob, droppedPermission)));
 
-  assert.throws(() =>
-    assertTemporaryBridges(
-      source.replace(
-        `test "\${GO_CI_RESULT}" = "success"`,
-        `test "\${GO_CI_RESULT}" != "cancelled"`,
-      ),
-    ),
-  );
-
-  const legacyGoTest = jobSection(source, "legacy-go-test");
-  assert.throws(
-    () =>
-      assertTemporaryBridges(
-        source.replace(legacyGoTest, legacyGoTest.replace(HARDEN_RUNNER, "example")),
-      ),
-    /legacy-go-test must pin one harden-runner step/u,
-  );
-  assert.throws(
-    () =>
-      assertTemporaryBridges(
-        source.replace(
-          legacyGoTest,
-          legacyGoTest.replace(`uses: ${HARDEN_RUNNER}`, `# ${HARDEN_RUNNER}`),
-        ),
-      ),
-    /legacy-go-test must pin one harden-runner step/u,
-  );
-
   const reintroducedRetiredJob = ["  go-lint:", '    name: "Go Lint"', "    runs-on: ubuntu-latest", "", ""].join(
     "\n",
   );
   assert.throws(
     () => assertReusableCaller(source.replace("  codeql:", `${reintroducedRetiredJob}  codeql:`)),
     /go-lint must move behind a reusable caller/u,
+  );
+
+  const reintroducedBridge = [
+    "  legacy-go-test:",
+    '    name: "Go Test"',
+    "    needs: go-ci",
+    "    runs-on: ubuntu-latest",
+    "",
+    "",
+  ].join("\n");
+  assert.throws(
+    () => assertBridgesAbsent(source.replace("  codeql:", `${reintroducedBridge}  codeql:`)),
+    /legacy-go-test bridge job must stay removed/u,
   );
 });
