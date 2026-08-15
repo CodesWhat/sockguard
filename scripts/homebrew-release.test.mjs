@@ -53,11 +53,10 @@ test("stable releases publish and smoke-test the Homebrew cask", () => {
 });
 
 test("branch CI renders and inspects the generated Homebrew cask", () => {
-  const workflow = read(".github/workflows/ci-verify.yml");
-  const goreleaserCheck = workflowJob(workflow, "goreleaser-check");
+  const goreleaserCheck = read("scripts/ci/go-release-check.sh");
 
-  assert.match(goreleaserCheck, /args: release --snapshot --clean --skip=publish/);
-  assert.match(goreleaserCheck, /cask="app\/dist\/homebrew\/Casks\/sockguard\.rb"/);
+  assert.match(goreleaserCheck, /release --snapshot --clean --skip=publish/);
+  assert.match(goreleaserCheck, /cask="dist\/homebrew\/Casks\/sockguard\.rb"/);
   assert.match(goreleaserCheck, /test -f "\$\{cask\}"/);
   assert.match(goreleaserCheck, /cask "sockguard" do/);
   assert.match(goreleaserCheck, /com\.apple\.quarantine/);

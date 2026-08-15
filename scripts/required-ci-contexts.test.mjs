@@ -9,14 +9,14 @@ const workflow = readFileSync(
 );
 
 const requiredJobs = new Map([
-  ['zizmor', 'Workflow Security'],
+  ['legacy-workflow-security', 'Workflow Security'],
   ['codeql', 'CodeQL Analysis'],
-  ['goreleaser-check', 'GoReleaser Config'],
-  ['go-lint', 'Go Lint'],
-  ['go-test', 'Go Test'],
-  ['ts-lint', 'Biome Lint'],
-  ['ts-test', 'TS Test'],
-  ['ts-build', 'Build Workspaces'],
+  ['legacy-goreleaser', 'GoReleaser Config'],
+  ['legacy-go-lint', 'Go Lint'],
+  ['legacy-go-test', 'Go Test'],
+  ['legacy-biome-lint', 'Biome Lint'],
+  ['legacy-ts-test', 'TS Test'],
+  ['legacy-build-workspaces', 'Build Workspaces'],
   ['docker', 'Docker Build'],
 ]);
 
