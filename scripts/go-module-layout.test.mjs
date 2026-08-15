@@ -53,12 +53,11 @@ test("temporary staged compatibility packages are absent from the final tree", (
   const workflow = read(".github/workflows/ci-verify.yml");
   assert.match(
     workflow,
-    /\{ name: FuzzDecode,\s+pkg: \.\/internal\/dockerfilters\/ \}/,
+    /"name":"FuzzDecode","pkg":"\.\/internal\/dockerfilters\/"/,
   );
-  assert.match(
-    workflow,
-    /- name: Fuzz \$\{\{ matrix\.fuzzer\.name \}\}\n\s+working-directory: app/,
-  );
+  // The reusable Go Fuzz job cds into module-directory (app) before running
+  // the caller-owned fuzzer, same as the old inline working-directory: app.
+  assert.match(workflow, /^      module-directory: app$/m);
 });
 
 test("temporary Docker COPY detection covers equivalent forms", () => {
@@ -117,14 +116,14 @@ test("container and coverage tooling preserve app as the package subdirectory", 
   assert.match(dockerfile, /^COPY app\/ \.\/app\/$/m);
   assert.match(dockerfile, /^    -o \/sockguard \.\/app\/cmd\/sockguard\/$/m);
 
-  const workflow = read(".github/workflows/ci-verify.yml");
+  // The Go Test coverage-gate filtering moved from an inline workflow step
+  // into the fixed scripts/ci/go-test.sh adapter the reusable Go CI test
+  // job runs; the qlty-rewrite (coverage.qlty.txt) step was dropped along
+  // with the qlty coverage upload (see PR description — accepted loss).
+  const goTestScript = read("scripts/ci/go-test.sh");
   assert.match(
-    workflow,
+    goTestScript,
     /grep -vE 'github\.com\/codeswhat\/sockguard\/app\/\(differential\|internal\/testcert\|internal\/testhelp\|internal\/buildkitproto\)\/'/,
-  );
-  assert.match(
-    workflow,
-    /sed 's#github\.com\/codeswhat\/sockguard\/#\#g' coverage\.prod\.txt > coverage\.qlty\.txt/,
   );
 });
 

@@ -5,7 +5,8 @@ run-name: >-
     format('🔀 Quality: Deep Fuzz — Manual by {0}', github.actor)
   }}
 
-# Tier 2 of the fuzz strategy. Tier 1 lives in `ci-verify.yml go-fuzz` and
+# Tier 2 of the fuzz strategy. Tier 1 lives in `ci-verify.yml`'s reusable
+# `go-ci` fuzz matrix and
 # gives every fuzzer a 60-second budget on every PR/push to main so obvious
 # regressions fail fast. This workflow is where the deep coverage work
 # happens: 15 minutes per fuzzer by default (overridable via

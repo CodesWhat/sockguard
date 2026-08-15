@@ -22,39 +22,175 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  GORELEASER_VERSION: v2.15.3
-
 jobs:
-  zizmor:
-    name: "Workflow Security"
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  # Reusable-workflow callers (CodesWhat/.github frozen SHA). Each job below
+  # runs the caller repo's own scripts/ci/*.sh so the underlying commands
+  # stay identical to what branch CI ran before this migration; only the
+  # orchestration moved to the shared org workflow.
+  #
+  # Reusable check runs report as "<caller job name> / <called job name>"
+  # (e.g. "Go CI / Go Lint"), which does not match the plain context names
+  # (Workflow Security, GoReleaser Config, Go Lint, Go Test, Biome Lint, TS
+  # Test, Build Workspaces) the branch-protection ruleset requires. The
+  # "legacy-*" bridge jobs below exist only to keep publishing those exact
+  # plain names, fail-closed on the reusable call's result, until the
+  # ruleset is migrated separately to require the new reusable contexts.
+  go-ci:
+    name: "Go CI"
+    # go-ci.yml's nested codeql job declares security-events: write even
+    # though run-codeql stays unset here — GitHub validates a called
+    # workflow's job-level permissions statically, regardless of if:
+    # gating, so the caller must still grant it.
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: CodesWhat/.github/.github/workflows/go-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7
+    with:
+      module-directory: app
+      go-version-file: go.mod
+      go-cache-dependency-path: go.sum
+      lint-check-name: Go Lint
+      test-check-name: Go Test
+      run-workflow-security: true
+      run-goreleaser: ${{ github.event_name != 'schedule' }}
+      fuzzers-json: >-
+        ${{ (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && '[{"name":"FuzzPathMatch","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegex","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegexString","pkg":"./internal/filter/"},{"name":"FuzzNormalizePath","pkg":"./internal/filter/"},{"name":"FuzzCompileRule","pkg":"./internal/filter/"},{"name":"FuzzBuild","pkg":"./internal/filter/"},{"name":"FuzzContainerCreate","pkg":"./internal/filter/"},{"name":"FuzzExec","pkg":"./internal/filter/"},{"name":"FuzzImagePull","pkg":"./internal/filter/"},{"name":"FuzzVolume","pkg":"./internal/filter/"},{"name":"FuzzSecret","pkg":"./internal/filter/"},{"name":"FuzzConfigWrite","pkg":"./internal/filter/"},{"name":"FuzzService","pkg":"./internal/filter/"},{"name":"FuzzSwarm","pkg":"./internal/filter/"},{"name":"FuzzPlugin","pkg":"./internal/filter/"},{"name":"FuzzNetwork","pkg":"./internal/filter/"},{"name":"FuzzReadUnaryGRPCMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateGetSecretRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateSolveRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateStatusRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzRewriteSessionAdvertisement","pkg":"./internal/buildkitproxy/"},{"name":"FuzzValidateUpgradeRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzDecode","pkg":"./internal/dockerfilters/"},{"name":"FuzzProxyHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzHijackHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzPathRoutingDifferential","pkg":"./differential/"},{"name":"FuzzVisibilityFilter","pkg":"./internal/visibility/"},{"name":"FuzzLibpodPathIdentifiers","pkg":"./internal/visibility/"}]' || '[]' }}
+
+  node-ci:
+    name: "Node CI"
+    if: github.event_name != 'schedule'
     permissions:
       contents: read
-      actions: read  # required by zizmor-action telemetry
+    uses: CodesWhat/.github/.github/workflows/node-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7
+    with:
+      node-version: 24
+      lockfile-path: package-lock.json
+      lint-check-name: Biome Lint
+      test-check-name: TS Test
+      build-check-name: Build Workspaces
+      run-lint: true
+      run-test: true
+      run-build: true
 
+  legacy-workflow-security:
+    name: "Workflow Security"
+    needs: go-ci
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: block
+      - name: Mirror reusable Go result
+        env:
+          GO_CI_RESULT: ${{ needs.go-ci.result }}
+        run: test "${GO_CI_RESULT}" = "success"
 
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+  legacy-goreleaser:
+    name: "GoReleaser Config"
+    needs: go-ci
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
-          persist-credentials: false
+          egress-policy: block
+      - name: Mirror reusable Go result
+        env:
+          GO_CI_RESULT: ${{ needs.go-ci.result }}
+        run: test "${GO_CI_RESULT}" = "success"
 
-      - name: Run zizmor
-        uses: zizmorcore/zizmor-action@6fc4b006235f201fdab3722e17240ab420d580e5  # v0.6.1
+  legacy-go-lint:
+    name: "Go Lint"
+    needs: go-ci
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
-          token: ${{ github.token }}
-          # impostor-commit audit requires API access that harden-runner blocks
-          # in the zizmor container. Skip online audits to keep the scan offline.
-          online-audits: false
-          # SARIF upload to code scanning requires GHAS, not available on free
-          # private repos. Re-enable when sockguard goes public.
-          advanced-security: false
+          egress-policy: block
+      - name: Mirror reusable Go result
+        env:
+          GO_CI_RESULT: ${{ needs.go-ci.result }}
+        run: test "${GO_CI_RESULT}" = "success"
+
+  legacy-go-test:
+    name: "Go Test"
+    needs: go-ci
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: block
+      - name: Mirror reusable Go result
+        env:
+          GO_CI_RESULT: ${{ needs.go-ci.result }}
+        run: test "${GO_CI_RESULT}" = "success"
+
+  legacy-biome-lint:
+    name: "Biome Lint"
+    needs: node-ci
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: block
+      - name: Mirror reusable Node result
+        env:
+          NODE_CI_RESULT: ${{ needs.node-ci.result }}
+        run: test "${NODE_CI_RESULT}" = "success"
+
+  legacy-ts-test:
+    name: "TS Test"
+    needs: node-ci
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: block
+      - name: Mirror reusable Node result
+        env:
+          NODE_CI_RESULT: ${{ needs.node-ci.result }}
+        run: test "${NODE_CI_RESULT}" = "success"
+
+  legacy-build-workspaces:
+    name: "Build Workspaces"
+    needs: node-ci
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: block
+      - name: Mirror reusable Node result
+        env:
+          NODE_CI_RESULT: ${{ needs.node-ci.result }}
+        run: test "${NODE_CI_RESULT}" = "success"
 
   codeql:
     name: "CodeQL Analysis"
@@ -169,390 +305,6 @@ jobs:
           if [ "${failed}" -eq 1 ]; then
             echo "::warning::Some commits don't follow Conventional Commits format. Expected: <type>(scope): description — no emoji. Allowed types: ${types//|/, }"
           fi
-
-  goreleaser-check:
-    name: "GoReleaser Config"
-    if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: audit
-
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Run GoReleaser snapshot
-        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7.2.3
-        with:
-          distribution: goreleaser
-          version: ${{ env.GORELEASER_VERSION }}
-          args: release --snapshot --clean --skip=publish
-          workdir: app
-
-      - name: Verify generated Homebrew cask
-        run: |
-          set -euo pipefail
-          cask="app/dist/homebrew/Casks/sockguard.rb"
-          test -f "${cask}"
-          grep -Fq 'cask "sockguard" do' "${cask}"
-          grep -Fq 'binary "sockguard"' "${cask}"
-          grep -Fq 'com.apple.quarantine' "${cask}"
-
-  go-lint:
-    name: "Go Lint"
-    if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: audit
-
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Check gofmt
-        working-directory: app
-        run: |
-          unformatted="$(gofmt -l .)"
-          if [ -n "${unformatted}" ]; then
-            echo "::error::gofmt found unformatted files — run 'gofmt -w .' in app/ and commit:"
-            echo "${unformatted}"
-            exit 1
-          fi
-
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9.3.0
-        with:
-          # Pin the linter so Go Lint is deterministic. Leaving it unpinned lets
-          # the action float to a newer golangci-lint whose staticcheck has
-          # regressed SA5011: it false-positives "possible nil pointer
-          # dereference" on `if x == nil { t.Fatal(...) }` guards (t.Fatal ends
-          # the test via Goexit, so the deref below is unreachable). v2.12.2
-          # matches the local lefthook go-lint version and reports 0 issues.
-          version: v2.12.2
-          working-directory: app
-
-  go-test:
-    name: "Go Test"
-    if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    # OIDC lets the Qlty coverage upload authenticate with no stored secret:
-    # id-token:write mints the OIDC token, contents:read is for checkout.
-    permissions:
-      contents: read
-      id-token: write
-
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: audit
-
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Run tests
-        run: |
-          go list ./... | grep -v '/internal/testcert$' | xargs go test -race -coverprofile=coverage.txt -covermode=atomic
-        working-directory: app
-
-      - name: Upload coverage
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: go-coverage
-          path: app/coverage.txt
-          retention-days: 14
-
-      - name: Build production-only coverage profile
-        # Drop non-production packages — those in NO binary's import closure:
-        # differential (proxy-vs-daemon test harness), internal/testcert (test
-        # certs), internal/testhelp (test helpers). Their *tests* still run as
-        # regression checks; only their own statements are excluded so the gate
-        # and dashboard reflect shipping code. internal/buildkitproto is also
-        # excluded: it is entirely protoc-generated marshal/decode code ("Code
-        # generated ... DO NOT EDIT", #185 phase 1) whose integrity is pinned
-        # by its provenance golden test, not statement coverage — counting its
-        # thousands of generated statements would let the gate be drowned out
-        # by codegen instead of measuring hand-written shipping logic (the
-        # hand-written internal/buildkitproxy package stays counted).
-        # coverage.prod.txt keeps the real import paths for the gate (go tool
-        # cover needs them); coverage.qlty.txt additionally rewrites the module
-        # path to app/ because Qlty resolves paths against the repo root
-        # (sources under app/) and would otherwise report 100% of files
-        # "missing on disk" and fail validation.
-        working-directory: app
-        run: |
-          grep -vE 'github.com/codeswhat/sockguard/app/(differential|internal/testcert|internal/testhelp|internal/buildkitproto)/' coverage.txt > coverage.prod.txt
-          sed 's#github.com/codeswhat/sockguard/##g' coverage.prod.txt > coverage.qlty.txt
-
-      - name: Publish coverage to Qlty
-        # OIDC auth — no token/secret to store or rotate (verified working on
-        # PR #115). Skipped on fork PRs, which GitHub does not grant
-        # id-token:write. Non-blocking until a green run confirms coverage lands
-        # in the dashboard, so a publish hiccup can't redden the release-gating
-        # job during the rc soak; the coverage gate below still enforces the
-        # floor regardless.
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        continue-on-error: true
-        uses: qltysh/qlty-action/coverage@08a0a862c159eae9b9003081da6663d96efef637  # v2.3.0
-        with:
-          oidc: true
-          files: app/coverage.qlty.txt
-          format: coverprofile
-
-      - name: Coverage gate
-        # Vendor-free floor on PRODUCTION code: fails the job when the weighted
-        # statement total of shipping packages drops below COVERAGE_MIN,
-        # independent of Qlty Cloud being reachable. Uses coverage.prod.txt
-        # (test harnesses/helpers excluded). Kept a touch under the real total
-        # (96.7% production-only as of 2026-06) so ordinary churn does not trip
-        # it; ratchet up as coverage climbs.
-        working-directory: app
-        env:
-          COVERAGE_MIN: "96"
-        run: |
-          total=$(go tool cover -func=coverage.prod.txt | awk '/^total:/ {print $3}' | tr -d '%')
-          echo "Production statement coverage: ${total}% (floor ${COVERAGE_MIN}%)"
-          awk -v t="$total" -v m="$COVERAGE_MIN" 'BEGIN { exit (t+0 >= m+0) ? 0 : 1 }' || {
-            echo "::error::production coverage ${total}% is below the ${COVERAGE_MIN}% floor"
-            exit 1
-          }
-
-  go-fuzz:
-    # Tier 1 — per-PR smoke-level fuzzing. Each fuzzer gets a fixed 60 s
-    # coverage budget in its own matrix job so the whole matrix runs in
-    # parallel and the critical path stays at ~1–2 min wall time regardless
-    # of how many fuzzers we ship. The attack-facing BuildKit gRPC parsers
-    # also live here so changes to them get immediate coverage feedback. The
-    # deep-coverage tier lives in
-    # .github/workflows/quality-fuzz-nightly.yml where each fuzzer gets 15
-    # minutes by default (configurable via workflow_dispatch input).
-    #
-    # `fail-fast: false` lets every fuzzer complete even if a sibling finds
-    # a crash, so one failure surfaces alongside the other fuzzers' state
-    # instead of aborting the run early. The Go test timeout stays above
-    # the fuzz budget so a hung input produces a stack dump instead of
-    # tying up the runner until the job-level ceiling fires.
-    name: "🔀 Go Fuzz (${{ matrix.fuzzer.name }})"
-    if: github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    strategy:
-      fail-fast: false
-      matrix:
-        fuzzer:
-          - { name: FuzzPathMatch,               pkg: ./internal/filter/ }
-          - { name: FuzzGlobToRegex,             pkg: ./internal/filter/ }
-          - { name: FuzzGlobToRegexString,       pkg: ./internal/filter/ }
-          - { name: FuzzNormalizePath,           pkg: ./internal/filter/ }
-          - { name: FuzzCompileRule,             pkg: ./internal/filter/ }
-          - { name: FuzzBuild,                   pkg: ./internal/filter/ }
-          - { name: FuzzContainerCreate,         pkg: ./internal/filter/ }
-          - { name: FuzzExec,                    pkg: ./internal/filter/ }
-          - { name: FuzzImagePull,               pkg: ./internal/filter/ }
-          - { name: FuzzVolume,                  pkg: ./internal/filter/ }
-          - { name: FuzzSecret,                  pkg: ./internal/filter/ }
-          - { name: FuzzConfigWrite,             pkg: ./internal/filter/ }
-          - { name: FuzzService,                 pkg: ./internal/filter/ }
-          - { name: FuzzSwarm,                   pkg: ./internal/filter/ }
-          - { name: FuzzPlugin,                  pkg: ./internal/filter/ }
-          - { name: FuzzNetwork,                 pkg: ./internal/filter/ }
-          - { name: FuzzReadUnaryGRPCMessage,    pkg: ./internal/buildkitproxy/ }
-          - { name: FuzzEvaluateGetSecretRequest, pkg: ./internal/buildkitproxy/ }
-          - { name: FuzzEvaluateSolveRequest,    pkg: ./internal/buildkitproxy/ }
-          - { name: FuzzEvaluateStatusRequest,   pkg: ./internal/buildkitproxy/ }
-          - { name: FuzzRewriteSessionAdvertisement, pkg: ./internal/buildkitproxy/ }
-          - { name: FuzzValidateUpgradeRequest,  pkg: ./internal/buildkitproxy/ }
-          - { name: FuzzDecode,                  pkg: ./internal/dockerfilters/ }
-          - { name: FuzzProxyHeadersAndBody,     pkg: ./internal/proxy/ }
-          - { name: FuzzHijackHeadersAndBody,    pkg: ./internal/proxy/ }
-          - { name: FuzzPathRoutingDifferential, pkg: ./differential/ }
-          - { name: FuzzVisibilityFilter,        pkg: ./internal/visibility/ }
-          - { name: FuzzLibpodPathIdentifiers,   pkg: ./internal/visibility/ }
-
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: audit
-
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Fuzz ${{ matrix.fuzzer.name }}
-        working-directory: app
-        env:
-          FUZZTIME: 60s
-          TEST_TIMEOUT: 5m
-          FUZZER: ${{ matrix.fuzzer.name }}
-          FUZZ_PKG: ${{ matrix.fuzzer.pkg }}
-        run: |
-          run_fuzz() {
-            # No pipefail in the implicit step shell — return go test's status,
-            # not tee's, so a crasher can't false-pass the step.
-            go test -run=^$ \
-              -fuzz="^${FUZZER}$" \
-              -fuzztime="${FUZZTIME}" \
-              -timeout="${TEST_TIMEOUT}" \
-              "${FUZZ_PKG}" 2>&1 | tee "${RUNNER_TEMP}/fuzz-${FUZZER}.log"
-            return "${PIPESTATUS[0]}"
-          }
-          # A real crasher always writes an input file under testdata/fuzz/;
-          # this is the distinction #198 exists to preserve.
-          new_crashers() {
-            git ls-files --others --exclude-standard -- '**/testdata/fuzz/**'
-          }
-          if run_fuzz; then
-            exit 0
-          fi
-          # Known coordinator-shutdown flake (#198): the run fails exactly at
-          # the fuzztime boundary with a bare 'context deadline exceeded' and
-          # no crasher written. Retry once on that exact signature only.
-          if grep -q "context deadline exceeded" "${RUNNER_TEMP}/fuzz-${FUZZER}.log" \
-              && [ -z "$(new_crashers)" ]; then
-            echo "::warning::${FUZZER}: deadline-exceeded at fuzztime expiry with no crasher written — retrying once (#198)"
-            run_fuzz
-          else
-            exit 1
-          fi
-
-      - name: Upload fuzz corpus on failure
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: fuzz-corpus-${{ matrix.fuzzer.name }}-${{ github.run_id }}
-          path: app/**/testdata/fuzz/${{ matrix.fuzzer.name }}/
-          retention-days: 30
-          if-no-files-found: ignore
-
-  ts-lint:
-    name: "Biome Lint"
-    if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: audit
-
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run Biome
-        run: npx biome check .
-
-  ts-test:
-    name: "TS Test"
-    if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: audit
-
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Run tests
-        run: npm test
-
-  ts-build:
-    name: "Build Workspaces"
-    if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: audit
-
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build all workspaces
-        run: npx turbo build
 
   docker:
     name: "Docker Build"
