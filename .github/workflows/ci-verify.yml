@@ -144,7 +144,7 @@ jobs:
   legacy-biome-lint:
     name: "Biome Lint"
     needs: node-ci
-    if: ${{ always() }}
+    if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -161,7 +161,7 @@ jobs:
   legacy-ts-test:
     name: "TS Test"
     needs: node-ci
-    if: ${{ always() }}
+    if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -178,7 +178,7 @@ jobs:
   legacy-build-workspaces:
     name: "Build Workspaces"
     needs: node-ci
-    if: ${{ always() }}
+    if: ${{ always() && github.event_name != 'schedule' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}

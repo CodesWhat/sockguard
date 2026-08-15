@@ -58,8 +58,6 @@ pre-push:
     # fixed adapter the GoReleaser Config CI gate runs.
     goreleaser-snapshot:
       run: ./scripts/ci/go-release-check.sh
-      skip:
-        - run: '! command -v goreleaser >/dev/null 2>&1'
       priority: 1
       timeout: 3m
 

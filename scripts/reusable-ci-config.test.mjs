@@ -232,7 +232,15 @@ function assertTemporaryBridges(source) {
     assert.ok(bridge, `missing temporary ${checkName} bridge (${jobId})`);
     assert.ok(bridge.includes(`name: "${checkName}"`), `${jobId} has the wrong check name`);
     assert.match(bridge, new RegExp(`^ {4}needs: ${needs}$`, "mu"));
-    assert.match(bridge, /^ {4}if: \$\{\{ always\(\) \}\}$/mu);
+    // The node-ci bridges must additionally skip on `schedule`, since
+    // node-ci itself is skipped on that event (`if: github.event_name !=
+    // 'schedule'`) and would otherwise fail these always()-gated bridges
+    // closed on scheduled runs.
+    const ifCondition =
+      needs === "node-ci"
+        ? /^ {4}if: \$\{\{ always\(\) && github\.event_name != 'schedule' \}\}$/mu
+        : /^ {4}if: \$\{\{ always\(\) \}\}$/mu;
+    assert.match(bridge, ifCondition);
     assert.match(
       bridge,
       new RegExp(
