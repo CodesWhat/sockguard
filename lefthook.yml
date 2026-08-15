@@ -54,16 +54,15 @@ pre-push:
 
     # Full release dry-run — mirrors what release-from-tag.yml runs in CI,
     # minus publish. Catches goreleaser config, build, archive, and dirty-tree
-    # bugs locally before they surface in a tagged release.
+    # bugs locally before they surface in a tagged release. Uses the same
+    # fixed adapter the GoReleaser Config CI gate runs.
     goreleaser-snapshot:
-      run: cd app && goreleaser release --snapshot --clean --skip=publish
-      skip:
-        - run: '! command -v goreleaser >/dev/null 2>&1'
+      run: ./scripts/ci/go-release-check.sh
       priority: 1
       timeout: 3m
 
     go-lint:
-      run: cd app && golangci-lint run
+      run: ./scripts/ci/go-lint.sh
       priority: 2
       timeout: 1m
 

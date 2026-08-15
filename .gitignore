@@ -26,6 +26,9 @@ Thumbs.db
 dist/
 bin/
 
+# scripts/ci/*.sh output (CI upload-artifact staging, also produced locally)
+/artifacts/
+
 # Environment
 .env
 .env.*

@@ -5,7 +5,8 @@ run-name: >-
     format('🔀 Quality: Deep Fuzz — Monthly, manual by {0}', github.actor)
   }}
 
-# Tier 3 of the fuzz strategy. Tier 1 lives in `ci-verify.yml go-fuzz`
+# Tier 3 of the fuzz strategy. Tier 1 lives in `ci-verify.yml`'s reusable
+# `go-ci` fuzz matrix
 # (60-second smoke per PR/push), Tier 2 in `quality-fuzz-nightly.yml`
 # (15 minutes per fuzzer daily). This workflow gives the Docker filter
 # targets and lower-frequency fuzzers a 1-hour coverage budget on the first

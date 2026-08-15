@@ -38,13 +38,22 @@ function sourceFuzzers() {
   return fuzzers;
 }
 
+// Matches both the inline YAML fuzz matrix used by the nightly/monthly
+// quality workflows (`- { name: Foo, pkg: ./bar/ }`) and the JSON
+// fuzzers-json array the branch-CI reusable Go CI caller passes
+// (`{"name":"Foo","pkg":"./bar/"}`).
+const FUZZ_ENTRY_PATTERN =
+  /(?:- \{ name: (Fuzz\w+),\s+pkg: ([^ }]+) \}|"name":"(Fuzz\w+)","pkg":"([^"]+)")/g;
+
 function workflowFuzzers(workflowPath) {
   const source = readFileSync(resolve(repoRoot, workflowPath), 'utf8');
   const fuzzers = new Map();
 
-  for (const match of source.matchAll(/- \{ name: (Fuzz\w+),\s+pkg: ([^ }]+) \}/g)) {
-    assert.ok(!fuzzers.has(match[1]), `${workflowPath} repeats ${match[1]}`);
-    fuzzers.set(match[1], match[2]);
+  for (const match of source.matchAll(FUZZ_ENTRY_PATTERN)) {
+    const name = match[1] ?? match[3];
+    const packagePath = match[2] ?? match[4];
+    assert.ok(!fuzzers.has(name), `${workflowPath} repeats ${name}`);
+    fuzzers.set(name, packagePath);
   }
 
   return fuzzers;
