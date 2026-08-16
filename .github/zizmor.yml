@@ -9,8 +9,8 @@ rules:
     # ci-verify.yml never publishes anything, though: the reusable go-ci
     # GoReleaser Config gate runs `release --snapshot --clean --skip=publish`,
     # and every other job here (go-ci's Go Lint/Go Test/fuzz matrix, node-ci's
-    # Biome Lint/TS Test/Build Workspaces, CodeQL, the legacy-* bridge jobs)
-    # is a lint/test/fuzz check with no artifact leaving the runner. The
+    # Biome Lint/TS Test/Build Workspaces, CodeQL) is a lint/test/fuzz check
+    # with no artifact leaving the runner. The
     # actual release publish path is release-from-tag.yml, which has caching
     # disabled on its setup-go/setup-node steps instead of being ignored
     # here.

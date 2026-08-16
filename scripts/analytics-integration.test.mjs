@@ -107,6 +107,22 @@ test("tracked links validate explicit CTA ids and placements at activation time"
   }
 });
 
+test("the cookieless envelope keeps the fields PostHog's server hash requires", () => {
+  const contract = source("website/src/lib/analytics-contract.ts");
+
+  // PostHog's cookieless server-hash ingestion step reads $raw_user_agent and
+  // $host straight off event.properties and drops the event — with a
+  // cookieless_missing_user_agent / cookieless_missing_host ingestion warning
+  // and zero rows ingested — if either is absent. posthog-js attaches both by
+  // default; before_send must require and forward them, not silently strip
+  // them. Regression guard: if these keys ever disappear from before_send (or
+  // the comment explaining why they're there), every cookieless event on
+  // Sockguard drops with no PostHog-side error beyond the ingestion warning.
+  assert.match(contract, /\$raw_user_agent/u);
+  assert.match(contract, /\$host/u);
+  assert.match(contract, /cookieless_missing_user_agent|cookieless server-hash/u);
+});
+
 test("all approved Sockguard marketing CTA families have exact annotations", () => {
   const header = source("website/src/components/site-header.tsx");
   const buttons = source("website/src/components/cta-buttons.tsx");
