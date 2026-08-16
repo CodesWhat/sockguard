@@ -11,12 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Indirect `golang.org/x/mod` moves to v0.40.0, clearing the transparency-log verification advisories GO-2026-6179 and GO-2026-6180 flagged by OpenSSF Scorecard. govulncheck already reported neither as reachable, and the patched Go 1.26.6 toolchain was in place; this clears the manifest-level findings.
 
+### Added
+
+- **Cookieless PostHog analytics across the marketing site and docs (#253).** Vercel Analytics is replaced by the shared cookieless PostHog project: anonymous server-hash ingestion with no cookies and no consent banner, finite route and CTA allowlists, minimal event filtering with Do Not Track support, an exact proxy-only CSP, production-only environment validation, and docs base-path handling. Website and docs share a synchronized analytics contract, covered by source-contract tests and tokenized, environment-free browser proofs. A follow-up (#261) makes the `before_send` allowlist rebuild require and forward `$raw_user_agent` and `$host` — PostHog's cookieless ingestion derives the anonymous distinct id from those properties, so every event was previously dropped at ingestion with `cookieless_missing_user_agent`; `$ip` is never added client-side and stays server-filled by the proxy.
+
 ### Changed
 
 - README Star History section now includes a live [Warpchart](https://warpchart.dev/r/CodesWhat/sockguard) growth chart alongside the existing chart.
+- **Branch CI now runs on CodesWhat's shared reusable workflows (#258).** Go and Node checks moved from bespoke inline jobs to the central `go-ci.yml`/`node-ci.yml` in `CodesWhat/.github`, pinned by commit. Temporary fail-closed `legacy-*` bridge jobs mirrored the nine plain required status-check context names so branch protection kept working unmodified during the migration; after the ruleset switched to the new `Go CI / *` and `Node CI / *` contexts, the bridges were removed (#260). Committed tests now pin the required-context list and the reusable-CI configuration so future drift fails CI instead of silently un-requiring a check.
 
 ### Fixed
 
+- **The monthly Go benchmark job no longer stalls out at its ceiling (#243).** `benchmarkInspectPolicy` wrapped per-iteration request setup in `b.StopTimer()`/`b.StartTimer()`, which forces two hidden `runtime.ReadMemStats` calls per loop iteration. The cost never appears in `ns/op`, but with `b.Loop()` calibrating these cheap benchmarks into six-figure iteration counts, a ~1s measurement ballooned to 40–90s of real wall time per rep, and the Jun/Jul/Aug 2026 scheduled runs were all cancelled at the 30-minute job ceiling. The timer toggling is dropped from the benchmark (the full `-count=5` suite finishes locally in ~13m again), and the job's ceiling moves from 30 to 40 minutes for headroom on slower shared CI hardware, with the failure mode documented inline.
 - Go module metadata now lives at the repository root, matching the declared module path and the repository's `v*` release tags (#240). Packages remain under `app/` and use their canonical `/app/...` import paths, so future revisions publish real packages instead of an empty synthetic root module.
 
 ### Tests
