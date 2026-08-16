@@ -634,9 +634,9 @@ These themes remain unscheduled until their scope and security boundary are conc
 Growth chart via [Warpchart](https://warpchart.dev):
 
 <div align="center">
-
-[![CodesWhat/sockguard star history · Warpchart](https://warpchart.dev/api/chart?repo=CodesWhat%2Fsockguard)](https://warpchart.dev/r/CodesWhat/sockguard)
-
+  <a href="https://warpchart.dev/r/CodesWhat/sockguard">
+    <img alt="CodesWhat/sockguard star history · Warpchart" src="https://warpchart.dev/api/chart?repo=CodesWhat%2Fsockguard" />
+  </a>
 </div>
 
 ## Community

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- README Star History section now includes a live [Warpchart](https://warpchart.dev/r/CodesWhat/sockguard) growth chart alongside the existing chart.
+
 ### Fixed
 
 - Go module metadata now lives at the repository root, matching the declared module path and the repository's `v*` release tags (#240). Packages remain under `app/` and use their canonical `/app/...` import paths, so future revisions publish real packages instead of an empty synthetic root module.
