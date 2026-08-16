@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Indirect `golang.org/x/mod` moves to v0.40.0, clearing the transparency-log verification advisories GO-2026-6179 and GO-2026-6180 flagged by OpenSSF Scorecard. govulncheck already reported neither as reachable, and the patched Go 1.26.6 toolchain was in place; this clears the manifest-level findings.
+
 ### Changed
 
 - README Star History section now includes a live [Warpchart](https://warpchart.dev/r/CodesWhat/sockguard) growth chart alongside the existing chart.
