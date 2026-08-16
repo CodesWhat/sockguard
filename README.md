@@ -631,6 +631,14 @@ These themes remain unscheduled until their scope and security boundary are conc
   </a>
 </div>
 
+Growth chart via [Warpchart](https://warpchart.dev):
+
+<div align="center">
+
+[![CodesWhat/sockguard star history · Warpchart](https://warpchart.dev/api/chart?repo=CodesWhat%2Fsockguard)](https://warpchart.dev/r/CodesWhat/sockguard)
+
+</div>
+
 ## Community
 
 Questions, feedback, and early support: [CodesWhat Discord](https://discord.gg/mWHCPJRzSx)
