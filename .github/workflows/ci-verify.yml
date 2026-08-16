@@ -29,12 +29,10 @@ jobs:
   # orchestration moved to the shared org workflow.
   #
   # Reusable check runs report as "<caller job name> / <called job name>"
-  # (e.g. "Go CI / Go Lint"), which does not match the plain context names
-  # (Workflow Security, GoReleaser Config, Go Lint, Go Test, Biome Lint, TS
-  # Test, Build Workspaces) the branch-protection ruleset requires. The
-  # "legacy-*" bridge jobs below exist only to keep publishing those exact
-  # plain names, fail-closed on the reusable call's result, until the
-  # ruleset is migrated separately to require the new reusable contexts.
+  # (e.g. "Go CI / Go Lint"). The X1 canary promoted and the main
+  # branch-protection ruleset now requires those reusable contexts directly,
+  # so the temporary "legacy-*" bridge jobs that mirrored the old plain
+  # context names have been removed.
   go-ci:
     name: "Go CI"
     # go-ci.yml's nested codeql job declares security-events: write even
@@ -72,125 +70,6 @@ jobs:
       run-lint: true
       run-test: true
       run-build: true
-
-  legacy-workflow-security:
-    name: "Workflow Security"
-    needs: go-ci
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: block
-      - name: Mirror reusable Go result
-        env:
-          GO_CI_RESULT: ${{ needs.go-ci.result }}
-        run: test "${GO_CI_RESULT}" = "success"
-
-  legacy-goreleaser:
-    name: "GoReleaser Config"
-    needs: go-ci
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: block
-      - name: Mirror reusable Go result
-        env:
-          GO_CI_RESULT: ${{ needs.go-ci.result }}
-        run: test "${GO_CI_RESULT}" = "success"
-
-  legacy-go-lint:
-    name: "Go Lint"
-    needs: go-ci
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: block
-      - name: Mirror reusable Go result
-        env:
-          GO_CI_RESULT: ${{ needs.go-ci.result }}
-        run: test "${GO_CI_RESULT}" = "success"
-
-  legacy-go-test:
-    name: "Go Test"
-    needs: go-ci
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: block
-      - name: Mirror reusable Go result
-        env:
-          GO_CI_RESULT: ${{ needs.go-ci.result }}
-        run: test "${GO_CI_RESULT}" = "success"
-
-  legacy-biome-lint:
-    name: "Biome Lint"
-    needs: node-ci
-    if: ${{ always() && github.event_name != 'schedule' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: block
-      - name: Mirror reusable Node result
-        env:
-          NODE_CI_RESULT: ${{ needs.node-ci.result }}
-        run: test "${NODE_CI_RESULT}" = "success"
-
-  legacy-ts-test:
-    name: "TS Test"
-    needs: node-ci
-    if: ${{ always() && github.event_name != 'schedule' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: block
-      - name: Mirror reusable Node result
-        env:
-          NODE_CI_RESULT: ${{ needs.node-ci.result }}
-        run: test "${NODE_CI_RESULT}" = "success"
-
-  legacy-build-workspaces:
-    name: "Build Workspaces"
-    needs: node-ci
-    if: ${{ always() && github.event_name != 'schedule' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
-        with:
-          egress-policy: block
-      - name: Mirror reusable Node result
-        env:
-          NODE_CI_RESULT: ${{ needs.node-ci.result }}
-        run: test "${NODE_CI_RESULT}" = "success"
 
   codeql:
     name: "CodeQL Analysis"
