@@ -224,9 +224,10 @@ function assertFixedScripts() {
 function assertBridgesAbsent(source) {
   for (const [jobId, checkName] of RETIRED_BRIDGES) {
     assert.equal(jobSection(source, jobId), "", `${jobId} bridge job must stay removed`);
+    const escaped = checkName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     assert.doesNotMatch(
       source,
-      new RegExp(`name:\\s*"${checkName.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}"`, "u"),
+      new RegExp(`^[ \\t]*name:\\s*["']?${escaped}["']?\\s*$`, "mu"),
       `workflow must not report the retired "${checkName}" context`,
     );
   }
@@ -305,5 +306,18 @@ test("the contract rejects a moving reusable ref, a dropped permission, and a re
   assert.throws(
     () => assertBridgesAbsent(source.replace("  codeql:", `${reintroducedBridge}  codeql:`)),
     /legacy-go-test bridge job must stay removed/u,
+  );
+
+  const renamedUnquotedBridge = [
+    "  shadow-go-test:",
+    "    name: Go Test",
+    "    needs: go-ci",
+    "    runs-on: ubuntu-latest",
+    "",
+    "",
+  ].join("\n");
+  assert.throws(
+    () => assertBridgesAbsent(source.replace("  codeql:", `${renamedUnquotedBridge}  codeql:`)),
+    /must not report the retired "Go Test" context/u,
   );
 });
