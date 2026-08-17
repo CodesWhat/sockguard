@@ -62,7 +62,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Install Gremlins
-        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@${GREMLINS_VERSION}
+        run: go install "github.com/go-gremlins/gremlins/cmd/gremlins@${GREMLINS_VERSION}"
 
       - name: Run Gremlins mutation testing
         working-directory: app
@@ -190,12 +190,14 @@ jobs:
             else print "red";
           }')
 
-          echo "reports_found=${reports_found}" >> "$GITHUB_OUTPUT"
-          echo "killed=${total_killed}" >> "$GITHUB_OUTPUT"
-          echo "lived=${total_lived}" >> "$GITHUB_OUTPUT"
-          echo "pct=${pct}" >> "$GITHUB_OUTPUT"
-          echo "color=${color}" >> "$GITHUB_OUTPUT"
-          echo "skip=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "reports_found=${reports_found}"
+            echo "killed=${total_killed}"
+            echo "lived=${total_lived}"
+            echo "pct=${pct}"
+            echo "color=${color}"
+            echo "skip=false"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Write badge JSON
         if: steps.score.outputs.skip != 'true'
