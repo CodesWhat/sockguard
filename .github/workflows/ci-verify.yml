@@ -136,11 +136,12 @@ jobs:
         uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
 
   dependency-review:
-    name: "📦 Dependency Review"
+    name: "Dependency Review"
     # Dependency Review requires GitHub Advanced Security on private repos.
     # Gated on public visibility so it auto-activates when the repo goes public.
-    # Disabled until the repository Dependency Graph setting is enabled.
-    if: ${{ false && github.event.repository.visibility == 'public' && github.event_name == 'pull_request' }}
+    # The repository Dependency Graph setting was enabled 2026-08-17, so this
+    # job now actually runs on every PR (sockguard#271 item 1).
+    if: ${{ github.event.repository.visibility == 'public' && github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -159,6 +160,67 @@ jobs:
 
       - name: Dependency Review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+
+  gitleaks:
+    name: "Gitleaks"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # gitleaks/gitleaks-action requires a paid GITLEAKS_LICENSE for org-owned
+    # repos (CodesWhat is an org), so this job runs the free, MIT-licensed
+    # gitleaks CLI directly instead. To bump: pick the new release's
+    # linux_x64 tarball sha256 from
+    # https://github.com/gitleaks/gitleaks/releases/download/vX.Y.Z/gitleaks_X.Y.Z_checksums.txt
+    # and update both env values together.
+    env:
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_LINUX_X64_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # gitleaks scans full history, not just the checked-out ref
+          persist-credentials: false
+
+      - name: Download gitleaks
+        run: |
+          set -euo pipefail
+          asset="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSL -o "$asset" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${asset}"
+          echo "${GITLEAKS_LINUX_X64_SHA256}  ${asset}" | sha256sum -c -
+          tar -xzf "$asset" gitleaks
+
+      - name: Scan for committed secrets
+        run: ./gitleaks detect --source . --no-banner --redact -v
+
+  actionlint:
+    name: "Actionlint"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Lint workflow files
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7  # v2.2.0
 
   commit-message:
     name: "💬 Commit Message"
@@ -212,6 +274,9 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
@@ -238,6 +303,29 @@ jobs:
           build-args: VERSION=ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Grype gates the image this job just built — the gating-posture rule is
+      # that Grype gates wherever the PR pipeline actually builds the artifact
+      # it scans, and "Docker Build" (this job) is that place for sockguard.
+      # security-grype.yml's own grype-image job stays scheduled/manual-only
+      # (it already skips pull_request via its job-level `if:`) so the image
+      # isn't scanned twice per PR.
+      - name: Run Grype vulnerability scanner
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
+        id: grype
+        with:
+          image: sockguard:ci
+          severity-cutoff: high
+          fail-build: true
+          output-format: sarif
+
+      - name: Upload Grype SARIF to code scanning
+        # Code scanning uploads require GHAS, not available on free private repos.
+        if: always() && github.event.repository.visibility == 'public'
+        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype-image
 
       - name: Verify fresh socket-volume startup
         shell: bash
