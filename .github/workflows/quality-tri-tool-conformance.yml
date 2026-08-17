@@ -166,7 +166,8 @@ jobs:
           EXPECTED_ROW_COUNT: 3
         run: |
           shopt -s nullglob
-          artifact_count=$(ls -1 artifacts/*.json 2>/dev/null | wc -l)
+          artifact_files=(artifacts/*.json)
+          artifact_count=${#artifact_files[@]}
 
           # Checked BEFORE the aggregation loop, not just the plain-emptiness
           # case after it: a row that dies (e.g. a runner crash) after some

@@ -1,0 +1,33 @@
+# Gitleaks config for the ci-verify.yml gitleaks job's secret scan. Extends
+# the default ruleset. Each allowlist below is scoped to the exact files its
+# verified non-secret appears in (condition = "AND" requires both the value
+# and the path to match), so the same string in any other file still fails
+# the scan. New findings anywhere else fail the scan too.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic Swarm unlock-key literal used across swarm-policy test fixtures, not a real Docker Swarm unlock key"
+condition = "AND"
+regexes = ['''SWMKEY-1-secret''']
+paths = [
+  '''^app/internal/filter/swarm_test\.go$''',
+]
+
+[[allowlists]]
+description = "Synthetic Swarm join-token literal used across swarm-policy test fixtures, not a real Docker Swarm join token"
+condition = "AND"
+regexes = ['''SWMTKN-1-join''']
+paths = [
+  '''^app/internal/filter/swarm_test\.go$''',
+  '''^app/internal/filter/inspect_bench_test\.go$''',
+]
+
+[[allowlists]]
+description = "Seccomp-profile test-table string ('Seccomp=default') that gitleaks' generic-api-key heuristic misreads as an API key"
+condition = "AND"
+regexes = ['''Seccomp=default''']
+paths = [
+  '''^app/internal/filter/container_create_test\.go$''',
+]
