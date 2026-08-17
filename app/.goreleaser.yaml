@@ -35,6 +35,14 @@ archives:
 checksum:
   name_template: checksums.txt
 
+sboms:
+  - id: cyclonedx
+    documents:
+      - "${artifact}.cyclonedx.json"
+    cmd: syft
+    args: ["$artifact", "--output", "cyclonedx-json=$document"]
+    artifacts: archive
+
 snapshot:
   version_template: "{{ incpatch .Version }}-dev"
 

@@ -55,7 +55,7 @@ test("stable releases publish and smoke-test the Homebrew cask", () => {
 test("branch CI renders and inspects the generated Homebrew cask", () => {
   const goreleaserCheck = read("scripts/ci/go-release-check.sh");
 
-  assert.match(goreleaserCheck, /release --snapshot --clean --skip=publish/);
+  assert.match(goreleaserCheck, /release --snapshot --clean --skip="\$\{skip\}"/);
   assert.match(goreleaserCheck, /cask="dist\/homebrew\/Casks\/sockguard\.rb"/);
   assert.match(goreleaserCheck, /test -f "\$\{cask\}"/);
   assert.match(goreleaserCheck, /cask "sockguard" do/);

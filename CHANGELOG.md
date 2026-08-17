@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Release binaries now ship a CycloneDX SBOM, and the SLSA claim is qualified to Build L2.** `app/.goreleaser.yaml` gains a `sboms:` block (syft, one CycloneDX document per archive) mirroring portwing's existing pattern, so every released `sockguard_<version>_<os>_<arch>.tar.gz` is attached to the GitHub release alongside a matching `.cyclonedx.json`. `release-from-tag.yml` installs syft via `anchore/sbom-action/download-syft` ahead of the GoReleaser run. RELEASING.md's previously-unqualified "SLSA attestation"/"SLSA build provenance" language is qualified to "SLSA Build L2" — what GitHub-hosted runners plus signed workflow-identity provenance actually deliver — and now notes that `v*` tags are protected against deletion/rewrite by a repo tag ruleset, with the Cosign signatures and SLSA Build L2 attestations serving as the signature of record instead of a git-tag signature.
 - Indirect `golang.org/x/mod` moves to v0.40.0, clearing the transparency-log verification advisories GO-2026-6179 and GO-2026-6180 flagged by OpenSSF Scorecard. govulncheck already reported neither as reachable, and the patched Go 1.26.6 toolchain was in place; this clears the manifest-level findings.
 
 ### Added
