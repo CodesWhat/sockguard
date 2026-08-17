@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **README migrated to the codified house shape (#270).** Header stack now runs logo → grabber → badge wall → `<hr>` → release note → Contents, matching the org-wide Product shape; the badge wall regroups into three ordered rows (identity, quality/security, social proof) and adds the qlty maintainability badge alongside the existing coverage badge. All emoji are dropped from headings, the Contents list, and the Features table's decorative icon column. The previously split "Community" and "Community & Support" sections are reconciled into one section carrying a single Issues/Discussions/Discord routing sentence, positioned after Built With per the skeleton.
 - README Star History section now includes a live [Warpchart](https://warpchart.dev/r/CodesWhat/sockguard) growth chart alongside the existing chart.
 - **Branch CI now runs on CodesWhat's shared reusable workflows (#258).** Go and Node checks moved from bespoke inline jobs to the central `go-ci.yml`/`node-ci.yml` in `CodesWhat/.github`, pinned by commit. Temporary fail-closed `legacy-*` bridge jobs mirrored the nine plain required status-check context names so branch protection kept working unmodified during the migration; after the ruleset switched to the new `Go CI / *` and `Node CI / *` contexts, the bridges were removed (#260). Committed tests now pin the required-context list and the reusable-CI configuration so future drift fails CI instead of silently un-requiring a check.
 
