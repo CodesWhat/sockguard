@@ -76,9 +76,13 @@ jobs:
 
   grype-image:
     name: "🐳 Security: Grype Container Scan"
-    # Image build is the heavy step; keep it on scheduled/manual runs.
-    # PRs get fast, accurate dependency coverage from grype-deps +
-    # govulncheck without paying for a Docker build on every push.
+    # PR-time image scanning now happens where the PR pipeline actually
+    # builds the artifact: ci-verify.yml's required "Docker Build" job scans
+    # the image it builds and fails the build on HIGH/CRITICAL findings
+    # (gating-posture rule: Grype gates wherever the artifact is built).
+    # This job stays scheduled/manual-only so the same image isn't scanned
+    # twice per PR; it still catches newly disclosed CVEs against unchanged
+    # images between PRs.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
