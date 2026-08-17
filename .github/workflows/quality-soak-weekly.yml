@@ -78,9 +78,11 @@ jobs:
         run: |
           # Defaults match the dispatch input defaults; scheduled runs
           # see empty inputs and fall back to these values.
-          echo "duration=${INPUT_DURATION:-4h}" >> "$GITHUB_OUTPUT"
-          echo "concurrency=${INPUT_CONCURRENCY:-20}" >> "$GITHUB_OUTPUT"
-          echo "rss_threshold=${INPUT_RSS_THRESHOLD:-67108864}" >> "$GITHUB_OUTPUT"
+          {
+            echo "duration=${INPUT_DURATION:-4h}"
+            echo "concurrency=${INPUT_CONCURRENCY:-20}"
+            echo "rss_threshold=${INPUT_RSS_THRESHOLD:-67108864}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Validate the soak script accepts the resolved parameters
         env:
