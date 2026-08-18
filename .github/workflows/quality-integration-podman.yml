@@ -85,6 +85,11 @@ jobs:
       - name: Start rootful podman system service
         run: |
           sudo mkdir -p /run/podman
+          # The redirect target is /tmp, writable by the invoking (non-root)
+          # user; only `podman system service` itself needs sudo. Piping
+          # through `sudo tee` instead would just hand the log file's
+          # ownership to root for no benefit.
+          # shellcheck disable=SC2024
           sudo nohup podman system service --time=0 unix:///run/podman/podman.sock >/tmp/podman-rootful.log 2>&1 &
           # `podman system service` does not create its socket atomically or
           # once. It binds the path, then unlinks and rebinds it during
