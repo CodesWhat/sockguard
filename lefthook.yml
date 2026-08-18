@@ -202,7 +202,7 @@ pre-push:
 
     # Shellcheck — lints every tracked *.sh script. Hard-fails (no skip)
     # when the binary is missing; see scripts/ci/shellcheck.sh for the
-    # install hint. Also runs in CI (node-ci lint job) so this is not the
+    # install hint. Also runs in the CI shellcheck job, so this is not the
     # only place it's enforced.
     shellcheck:
       run: ./scripts/ci/shellcheck.sh
