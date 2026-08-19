@@ -47,6 +47,43 @@ sboms:
     args: ["$artifact", "--output", "cyclonedx-json=$document", "--enrich", "all"]
     artifacts: archive
 
+# Keyless cosign signatures for the per-platform archives users actually
+# download. Until now only `sockguard-<tag>.tar.gz` -- the `git archive`
+# SOURCE snapshot built in the workflow's separate `release` job -- carried a
+# .sig/.pem, and the similar filename made that easy to mistake for coverage
+# of the binaries. It wasn't: v1.7.1 shipped four
+# `sockguard_1.7.1_<os>_<arch>.tar.gz` archives with a CycloneDX SBOM and
+# nothing else.
+#
+# Signs checksums.txt as well as the archives, so a consumer can verify the
+# whole release from one signature or any single archive on its own.
+#
+# Keyless needs `id-token: write` on the goreleaser job and the cosign binary
+# on PATH -- both added alongside this in release-from-tag.yml.
+signs:
+  - id: cosign-keyless
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: checksum
+  - id: cosign-keyless-archives
+    cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+    artifacts: archive
+
 snapshot:
   version_template: "{{ incpatch .Version }}-dev"
 

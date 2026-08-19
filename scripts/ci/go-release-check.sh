@@ -15,7 +15,15 @@ cd "${module_directory}"
 # PATH rather than failing the snapshot on a missing tool it doesn't need.
 # When syft is present (e.g. a dev machine with it installed) the snapshot
 # exercises the real sbom step for extra local coverage.
-skip="publish"
+#
+# Signing is skipped unconditionally, unlike sbom. The signs: blocks use
+# keyless cosign, which needs an ambient OIDC identity that only exists in
+# release-from-tag.yml's tagged run -- a dev machine with cosign installed
+# still can't produce one non-interactively, so gating on `command -v cosign`
+# the way sbom gates on syft would fail exactly where cosign IS present.
+# Signatures aren't part of what this dry-run checks (cask rendering, config
+# parse, build, archive) anyway.
+skip="publish,sign"
 if ! command -v syft >/dev/null 2>&1; then
   skip="${skip},sbom"
 fi
