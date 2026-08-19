@@ -578,7 +578,7 @@ These themes remain unscheduled until their scope and security boundary are conc
 | Tier | Theme |
 |---|---|
 | Security hardening (v1.x) | Continued mutation-test hardening of the rule-evaluation core and config validators |
-| Supply chain (v1.x) | `egress-policy: block` with curated allow-lists on high-privilege release jobs; SBOM generation for binary release artifacts |
+| Supply chain (v1.x) | `egress-policy: block` with curated allow-lists on high-privilege release jobs |
 | Policy refinement (v1.x) | Named rule path aliases and further response-policy refinement |
 | Internals (v1.x) | Code-review backlog: collapse the config → filter-options → policy translation layers behind a single source of truth; profiling-gated JSON redaction fast path |
 | Compliance (v1.x) | CIS Docker Benchmark control mapping, audit-ready policy templates |
