@@ -73,10 +73,31 @@ IMAGE_TAGS=(
 # steps in release-from-tag.yml. The .pem + .sig pair is what the
 # documented verify-blob invocation consumes.
 RELEASE_ARTIFACT="sockguard-${RELEASE_TAG}.tar.gz"
+
+# The per-platform archive is a DIFFERENT artifact from the one above:
+# `sockguard-v1.7.1.tar.gz` is the git-archive source snapshot, while
+# `sockguard_1.7.1_linux_amd64.tar.gz` is a compiled GoReleaser build. Both
+# are cosign-signed, and the near-identical names are exactly why the docs
+# call the distinction out -- so QA-6 checks a real one of each rather than
+# assuming the source tarball speaks for the binaries.
+#
+# linux/amd64 stands in for all four archives: they're signed by one
+# goreleaser `signs:` block in a single job, so a config or identity problem
+# fails all of them together. Downloading all four to prove that would cost
+# four more asset pulls per release for no additional signal.
+BINARY_ARCHIVE="sockguard_${RELEASE_TAG#v}_linux_amd64.tar.gz"
+CHECKSUMS_FILE="checksums.txt"
+
 RELEASE_ASSETS=(
   "${RELEASE_ARTIFACT}"
   "${RELEASE_ARTIFACT}.sig"
   "${RELEASE_ARTIFACT}.pem"
+  "${BINARY_ARCHIVE}"
+  "${BINARY_ARCHIVE}.sig"
+  "${BINARY_ARCHIVE}.pem"
+  "${CHECKSUMS_FILE}"
+  "${CHECKSUMS_FILE}.sig"
+  "${CHECKSUMS_FILE}.pem"
 )
 
 if [ "${DRY_RUN}" -eq 1 ]; then
@@ -95,18 +116,23 @@ $(printf '    - %s\n' "${RELEASE_ASSETS[@]}")
       --certificate-identity-regexp '${IDENTITY_REGEX}' \\
       --certificate-oidc-issuer '${ISSUER}' \\
       <image>
-  cosign blob command:
+  cosign blob command (run for the source tarball, the per-platform
+  archive, and checksums.txt):
     cosign verify-blob \\
-      --certificate '${RELEASE_ARTIFACT}.pem' \\
-      --signature   '${RELEASE_ARTIFACT}.sig' \\
+      --certificate '<artifact>.pem' \\
+      --signature   '<artifact>.sig' \\
       --certificate-identity-regexp '${IDENTITY_REGEX}' \\
       --certificate-oidc-issuer '${ISSUER}' \\
-      '${RELEASE_ARTIFACT}'
+      '<artifact>'
+  checksum command:
+    sha256sum --check --ignore-missing '${CHECKSUMS_FILE}'
+  provenance command:
+    gh attestation verify '${BINARY_ARCHIVE}' --repo '${REPO}'
 EOF
   exit 0
 fi
 
-for tool in cosign gh; do
+for tool in cosign gh sha256sum; do
   if ! command -v "${tool}" >/dev/null; then
     echo "verify-published-release.sh: ${tool} not found on PATH" >&2
     exit 1
@@ -152,12 +178,39 @@ for asset in "${RELEASE_ASSETS[@]}"; do
     --clobber
 done
 
-echo "==> cosign verify-blob ${RELEASE_ARTIFACT}"
-(cd "${WORK_DIR}" && cosign verify-blob \
-  --certificate "${RELEASE_ARTIFACT}.pem" \
-  --signature   "${RELEASE_ARTIFACT}.sig" \
-  --certificate-identity-regexp "${IDENTITY_REGEX}" \
-  --certificate-oidc-issuer "${ISSUER}" \
-  "${RELEASE_ARTIFACT}" >/dev/null)
+verify_blob() {
+  local artifact="$1"
+  echo "==> cosign verify-blob ${artifact}"
+  (cd "${WORK_DIR}" && cosign verify-blob \
+    --certificate "${artifact}.pem" \
+    --signature   "${artifact}.sig" \
+    --certificate-identity-regexp "${IDENTITY_REGEX}" \
+    --certificate-oidc-issuer "${ISSUER}" \
+    "${artifact}" >/dev/null)
+}
+
+verify_blob "${RELEASE_ARTIFACT}"
+verify_blob "${BINARY_ARCHIVE}"
+verify_blob "${CHECKSUMS_FILE}"
+
+# The second documented route: verify checksums.txt once, then check an
+# archive against it. --ignore-missing because only one of the four archives
+# was downloaded above.
+echo "==> sha256sum --check ${CHECKSUMS_FILE} (covers ${BINARY_ARCHIVE})"
+(cd "${WORK_DIR}" && sha256sum --check --ignore-missing "${CHECKSUMS_FILE}" >/dev/null)
+
+# Build provenance for the compiled archive. Retried like verify_image: this
+# is an API lookup against GitHub's attestation store, not a local check.
+echo "==> gh attestation verify ${BINARY_ARCHIVE}"
+for attempt in 1 2 3; do
+  if (cd "${WORK_DIR}" && gh attestation verify "${BINARY_ARCHIVE}" --repo "${REPO}" >/dev/null 2>&1); then
+    break
+  fi
+  if [ "${attempt}" -eq 3 ]; then
+    echo "==> FAIL: gh attestation verify ${BINARY_ARCHIVE} after 3 attempts" >&2
+    exit 1
+  fi
+  sleep 5
+done
 
 echo "==> QA-6: all published artifacts verify against documented identity"
