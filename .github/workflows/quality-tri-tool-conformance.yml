@@ -31,7 +31,7 @@ on:
   workflow_dispatch:
     inputs:
       sockguard_image:
-        description: "Full sockguard image reference to test. Empty = the compose bundle's own default (codeswhat/sockguard:1.5.1), same as a scheduled run. For the pre-GA gate documented in RELEASING.md, pass the release-candidate ref explicitly (e.g. ghcr.io/codeswhat/sockguard:1.6.0-rc.11) -- never leave this empty when gating a specific candidate."
+        description: "Full sockguard image reference to test. Empty resolves per row: current-standard/current-edge resolve the newest published stable release tag (same as a scheduled run); legacy-floor stays pinned to the audited floor codeswhat/sockguard:1.5.1. For the pre-GA gate documented in RELEASING.md, pass the release-candidate ref explicitly (e.g. ghcr.io/codeswhat/sockguard:1.6.0-rc.11) -- never leave this empty when gating a specific candidate."
         required: false
         default: ""
       portwing_version:
@@ -103,9 +103,15 @@ jobs:
         with:
           egress-policy: audit
 
+      # fetch-depth: 0 (not the default shallow depth-1) -- run-matrix.sh's
+      # current-standard/current-edge rows resolve the sockguard image from
+      # `git tag --list 'v*'` (same pattern as release-cut.yml's "Find
+      # latest release tag" step), which needs the full tag history to be
+      # present in this checkout or it resolves nothing.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Verify Docker daemon is reachable
