@@ -1,8 +1,8 @@
-name: "⏱️ Quality: Soak"
+name: "Quality: Soak"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '⏱️ Quality: Soak — Weekly' ||
-    format('⏱️ Quality: Soak — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Soak — Weekly' ||
+    format('Quality: Soak — Manual by {0}', github.actor)
   }}
 
 # QA-3's RSS + thread-count soak. Runs sockguard in front of mockdocker
@@ -47,7 +47,7 @@ concurrency:
 
 jobs:
   soak:
-    name: "⏱️ Soak (sockguard RSS + thread drift)"
+    name: "Soak (sockguard RSS + thread drift)"
     runs-on: ubuntu-24.04
     # Allow 30 minutes for build + warmup + post-run reporting on top of
     # the 4-hour soak; well under the 6-hour github-hosted ceiling.

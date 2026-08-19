@@ -1,8 +1,8 @@
-name: "🤝 Quality: Tri-Tool Conformance"
+name: "Quality: Tri-Tool Conformance"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🤝 Quality: Tri-Tool Conformance — Weekly' ||
-    format('🤝 Quality: Tri-Tool Conformance — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Tri-Tool Conformance — Weekly' ||
+    format('Quality: Tri-Tool Conformance — Manual by {0}', github.actor)
   }}
 
 # #150 — the published Sockguard + Portwing + drydock conformance matrix.
@@ -54,7 +54,7 @@ concurrency:
 
 jobs:
   self-test:
-    name: "🧪 Harness self-test"
+    name: "Harness self-test"
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -84,7 +84,7 @@ jobs:
         run: scripts/tri-tool-conformance/run-matrix.sh --self-test
 
   matrix:
-    name: "🤝 ${{ matrix.row }}"
+    name: "${{ matrix.row }}"
     needs: self-test
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -149,7 +149,7 @@ jobs:
           if-no-files-found: warn
 
   summary:
-    name: "📋 Summary"
+    name: "Summary"
     needs: matrix
     if: always()
     runs-on: ubuntu-24.04
@@ -201,7 +201,7 @@ jobs:
           fi
 
           {
-            echo "### 🤝 Tri-tool conformance matrix"
+            echo "### Tri-tool conformance matrix"
             echo ""
             echo "| Row | Overall | Sockguard | Portwing | drydock | Assertions |"
             echo "|---|---|---|---|---|---|"

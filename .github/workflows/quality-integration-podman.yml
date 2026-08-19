@@ -1,9 +1,9 @@
-name: "🦭 Quality: Integration (Podman)"
+name: "Quality: Integration (Podman)"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🦭 Quality: Integration (Podman) — Nightly' ||
-    github.event_name == 'pull_request' && format('🦭 Quality: Integration (Podman) — PR #{0}', github.event.pull_request.number) ||
-    format('🦭 Quality: Integration (Podman) — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Integration (Podman) — Nightly' ||
+    github.event_name == 'pull_request' && format('Quality: Integration (Podman) — PR #{0}', github.event.pull_request.number) ||
+    format('Quality: Integration (Podman) — Manual by {0}', github.actor)
   }}
 
 # Runs the podmanintegration-tagged suite (app/integration/*_test.go plus
@@ -55,7 +55,7 @@ concurrency:
 
 jobs:
   integration-podman-rootful:
-    name: "🦭 Integration (rootful podman)"
+    name: "Integration (rootful podman)"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
@@ -223,7 +223,7 @@ jobs:
         run: go test -tags=podmanintegration -count=1 -timeout=10m ./integration/... ./internal/cmd/...
 
   integration-podman-rootless:
-    name: "🦭 Integration (rootless podman)"
+    name: "Integration (rootless podman)"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # See the workflow-level comment above: rootless is exercised for

@@ -1,8 +1,8 @@
-name: "🧬 Quality: Mutation Testing"
+name: "Quality: Mutation Testing"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🧬 Quality: Mutation Testing — Monthly schedule' ||
-    format('🧬 Quality: Mutation Testing — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Mutation Testing — Monthly schedule' ||
+    format('Quality: Mutation Testing — Manual by {0}', github.actor)
   }}
 
 # Monthly/manual quality signal using Gremlins (Go mutation tester).
@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   gremlins:
-    name: "🧬 Quality: Gremlins (${{ matrix.name }})"
+    name: "Quality: Gremlins (${{ matrix.name }})"
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     continue-on-error: true  # advisory — review results, don't block
@@ -115,7 +115,7 @@ jobs:
           retention-days: 30
 
   update-badge:
-    name: "🏷️ Update mutation score badge"
+    name: "Update mutation score badge"
     needs: gremlins
     # gremlins sets job-level continue-on-error, so a failed package leg
     # still lets this job run — badge-plumbing only, never blocking.
@@ -261,7 +261,7 @@ jobs:
           SKIP: ${{ steps.score.outputs.skip }}
         run: |
           {
-            echo "### 🏷️ Mutation score badge"
+            echo "### Mutation score badge"
             if [ "$SKIP" = "true" ]; then
               echo "- Incomplete report set: ${REPORTS_FOUND} of ${EXPECTED_REPORTS}; badge left unchanged."
             else

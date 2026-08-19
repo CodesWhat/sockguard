@@ -26,7 +26,7 @@
 
 4. **Pre-GA tri-tool conformance gate** (minor/major GA promotions only — e.g. cutting v1.6.0 stable off an already-soaked `-rc.N`; skip for patch releases that don't touch the tri-tool surface) — #150's published Sockguard + Portwing + drydock conformance matrix does not run on every PR (see `.github/workflows/quality-tri-tool-conformance.yml`'s header for why), so it has to be run deliberately before promoting a candidate to GA:
 
-   - Go to **Actions → 🤝 Quality: Tri-Tool Conformance → Run workflow**
+   - Go to **Actions → Quality: Tri-Tool Conformance → Run workflow**
    - Set `sockguard_image` to the release-candidate image (e.g. `ghcr.io/codeswhat/sockguard:1.6.0-rc.11`) — never leave it empty when gating a specific candidate; an empty input falls through to the compose bundle's own pinned default (`codeswhat/sockguard:1.5.1`), the same as a scheduled run, not the candidate you're trying to gate
    - Require all three matrix rows (`current-standard`, `current-edge`, `legacy-floor`) green before proceeding; the `summary` job's aggregated `$GITHUB_STEP_SUMMARY` and each row's `conformance-<row>.json` artifact have the per-assertion detail if anything fails
 

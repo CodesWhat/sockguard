@@ -1,8 +1,8 @@
-name: "🔭 Quality: Engine API Version Watch (monthly)"
+name: "Quality: Engine API Version Watch (monthly)"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🔭 Quality: Engine API Version Watch — Monthly schedule' ||
-    format('🔭 Quality: Engine API Version Watch — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Engine API Version Watch — Monthly schedule' ||
+    format('Quality: Engine API Version Watch — Manual by {0}', github.actor)
   }}
 
 # Sockguard's request/response inspectors are validated against a specific
@@ -38,7 +38,7 @@ concurrency:
 
 jobs:
   check-engine-api-version:
-    name: "🔭 Check Engine API version ceiling"
+    name: "Check Engine API version ceiling"
     runs-on: ubuntu-24.04
     timeout-minutes: 10
 
