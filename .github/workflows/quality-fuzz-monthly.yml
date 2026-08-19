@@ -1,8 +1,8 @@
-name: "🔀 Quality: Deep Fuzz (monthly)"
+name: "Quality: Deep Fuzz (monthly)"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🔀 Quality: Deep Fuzz — Monthly schedule' ||
-    format('🔀 Quality: Deep Fuzz — Monthly, manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Deep Fuzz — Monthly schedule' ||
+    format('Quality: Deep Fuzz — Monthly, manual by {0}', github.actor)
   }}
 
 # Tier 3 of the fuzz strategy. Tier 1 lives in `ci-verify.yml`'s reusable
@@ -48,7 +48,7 @@ concurrency:
 
 jobs:
   monthly-fuzz:
-    name: "🔀 Fuzz ${{ matrix.fuzzer.name }} (monthly)"
+    name: "Fuzz ${{ matrix.fuzzer.name }} (monthly)"
     runs-on: ubuntu-24.04
     # 6-hour ceiling is the hard cap regardless of the fuzztime input.
     # Anything longer should run on a dedicated box, not a shared runner.

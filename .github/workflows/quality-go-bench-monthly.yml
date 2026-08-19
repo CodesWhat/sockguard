@@ -1,8 +1,8 @@
-name: "⚡ Quality: Go Benchmarks"
+name: "Quality: Go Benchmarks"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '⚡ Quality: Benchmarks — Monthly schedule' ||
-    format('⚡ Quality: Benchmarks — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Benchmarks — Monthly schedule' ||
+    format('Quality: Benchmarks — Manual by {0}', github.actor)
   }}
 
 # Monthly quality signal: run benchmarks to catch performance regressions.
@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   benchmarks:
-    name: "📊 Quality: Go Benchmarks"
+    name: "Quality: Go Benchmarks"
     runs-on: ubuntu-24.04
     # The Jun/Jul/Aug 2026 runs blew past 30m because benchmarkInspectPolicy
     # (internal/filter/inspect_bench_test.go) called b.StopTimer()/b.StartTimer()

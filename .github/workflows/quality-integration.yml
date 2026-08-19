@@ -1,9 +1,9 @@
-name: "🐋 Quality: Integration"
+name: "Quality: Integration"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🐋 Quality: Integration — Nightly' ||
-    github.event_name == 'pull_request' && format('🐋 Quality: Integration — PR #{0}', github.event.pull_request.number) ||
-    format('🐋 Quality: Integration — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Integration — Nightly' ||
+    github.event_name == 'pull_request' && format('Quality: Integration — PR #{0}', github.event.pull_request.number) ||
+    format('Quality: Integration — Manual by {0}', github.actor)
   }}
 
 # Runs the build-tagged integration suite (app/integration/) against the
@@ -37,7 +37,7 @@ concurrency:
 
 jobs:
   integration:
-    name: "🐋 Integration (real dockerd)"
+    name: "Integration (real dockerd)"
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 

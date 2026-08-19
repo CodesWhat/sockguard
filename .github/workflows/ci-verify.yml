@@ -1,9 +1,9 @@
-name: "✅ CI: Verify"
+name: "CI: Verify"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '✅ CI: Verify — Weekly schedule' ||
-    github.event_name == 'pull_request' && format('✅ CI: Verify — PR #{0}', github.event.pull_request.number) ||
-    format('✅ CI: Verify — {0}', github.ref_name)
+    github.event_name == 'schedule' && 'CI: Verify — Weekly schedule' ||
+    github.event_name == 'pull_request' && format('CI: Verify — PR #{0}', github.event.pull_request.number) ||
+    format('CI: Verify — {0}', github.ref_name)
   }}
 
 on:
@@ -266,11 +266,10 @@ jobs:
         uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7  # v2.2.0
 
   commit-message:
-    name: "💬 Commit Message"
+    name: "Commit Message"
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    continue-on-error: true  # advisory — does not block merge
 
     steps:
       # Stage 1 of the harden-runner egress rollout: pure `git log` against
@@ -294,11 +293,36 @@ jobs:
       - name: Validate commit messages
         env:
           BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # Only inspects commits introduced by this PR (base branch..HEAD) —
-          # never warns about legacy emoji commits already on the base branch,
-          # including dev-branch commits that haven't been synced to main yet.
+          # Only inspects commits introduced by this PR (base branch..HEAD),
+          # so legacy emoji commits already on the base branch never fail it.
+          #
+          # A promotion PR is the exception: `dev/v1.7 -> main` re-presents
+          # every commit on the dev branch as "introduced by this PR", and
+          # this repo's history predates the gate — eight gitmoji subjects
+          # from the #185 BuildKit series sit on dev/v1.7 and not on main.
+          # That history is published and never gets rewritten (CLAUDE.md),
+          # so a blocking gate here would deadlock every release cut. Those
+          # commits were already validated when they landed on the dev
+          # branch, which is where the gate belongs, so skip the promotion
+          # PR rather than re-judging them.
+          #
+          # Same-repo only: `github.head_ref` is attacker-chosen on a fork,
+          # so without the repo check anyone could name a fork branch
+          # `dev/anything`, target main, and skip the gate outright.
+          if [ "${HEAD_REPO}" = "${REPOSITORY}" ]; then
+            case "${BASE_REF}:${HEAD_REF}" in
+              main:dev/*|main:maintenance/*)
+                echo "Promotion PR (${HEAD_REF} -> ${BASE_REF}) — commits were validated on the dev branch, skipping."
+                exit 0
+                ;;
+            esac
+          fi
+
           types='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
           pattern="^(${types})(\\(\\w[\\w-]*\\))?!?:\\s.+\$"
 
@@ -310,13 +334,14 @@ jobs:
               continue
             fi
             if ! echo "${first_line}" | grep -qP "${pattern}"; then
-              echo "::warning::Non-conventional commit: ${first_line}"
+              echo "::error::Non-conventional commit: ${first_line}"
               failed=1
             fi
           done < <(git log --format=%s "origin/${BASE_REF}..HEAD")
 
           if [ "${failed}" -eq 1 ]; then
-            echo "::warning::Some commits don't follow Conventional Commits format. Expected: <type>(scope): description — no emoji. Allowed types: ${types//|/, }"
+            echo "::error::Some commits don't follow Conventional Commits format. Expected: <type>(scope): description — no emoji. Allowed types: ${types//|/, }"
+            exit 1
           fi
 
   docker:

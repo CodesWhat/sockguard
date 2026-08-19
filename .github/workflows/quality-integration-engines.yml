@@ -1,9 +1,9 @@
-name: "🐋 Quality: Integration — Engine Matrix"
+name: "Quality: Integration — Engine Matrix"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🐋 Quality: Integration — Engine Matrix (Weekly)' ||
-    github.event_name == 'pull_request' && format('🐋 Quality: Integration — Engine Matrix — PR #{0}', github.event.pull_request.number) ||
-    format('🐋 Quality: Integration — Engine Matrix — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Integration — Engine Matrix (Weekly)' ||
+    github.event_name == 'pull_request' && format('Quality: Integration — Engine Matrix — PR #{0}', github.event.pull_request.number) ||
+    format('Quality: Integration — Engine Matrix — Manual by {0}', github.actor)
   }}
 
 # Runs the build-tagged integration suite (app/integration/) against a pinned
@@ -40,7 +40,7 @@ concurrency:
 
 jobs:
   integration:
-    name: "🐋 Integration (Engine ${{ matrix.engine }})"
+    name: "Integration (Engine ${{ matrix.engine }})"
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
