@@ -113,3 +113,4 @@ See `lefthook.yml` for exact commands. The pre-push pipeline is piped (sequentia
 - `.planning/` is gitignored — local-only working notes; never reference its contents in committed files.
 - CHANGELOG and README updates should be atomic with each logical change.
 - **Roadmap summary lives in `README.md`** (committed). Local-only longer-form notes live under `.planning/` and stay gitignored.
+- `greptile.json` (`{"skipReview": "AUTOMATIC"}`) keeps Greptile dormant until the `second-opinion` label triggers the caller workflow at `.github/workflows/greptile.yml`, summoning it as an independent second-opinion reviewer alongside CodeRabbit.
