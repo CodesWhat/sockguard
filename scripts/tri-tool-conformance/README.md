@@ -29,7 +29,17 @@ tested there.
 resolves it once, at run time, from local `git tag` history (`git tag
 --list 'v*' --sort=-v:refname`, prerelease tags filtered out — the same
 logic `release-cut.yml`'s "Find latest release tag" step uses) to a
-concrete version like `codeswhat/sockguard:1.7.1`. That's deliberate: we
+concrete version like `codeswhat/sockguard:1.7.1`.
+
+Newest-first, it stops at the first tag whose image is actually published
+(`docker manifest inspect`), because a tag and its image aren't
+simultaneous — `v1.7.1` is pushed minutes before release-from-tag finishes
+publishing `codeswhat/sockguard:1.7.1`, and a failed publish job leaves a
+tag with no image behind indefinitely. "Current" means the newest sockguard
+you can actually pull, not the newest one tagged. Each skipped tag is
+announced on stderr, so a broken publish shows up in the log instead of
+passing quietly as an older version. A registry it can't reach is fatal,
+not a reason to walk back. That's deliberate: we
 already burned three CI runs bisecting a failure on a row that just said
 `latest` and left no record of what image that actually was at the time.
 The resolved triple is echoed into both the run log (`sockguard=... portwing=...

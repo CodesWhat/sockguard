@@ -81,6 +81,91 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Is `codeswhat/sockguard:<version>` actually pullable from Docker Hub?
+#
+# `docker manifest inspect` rather than the Hub REST API: Docker is already a
+# hard dependency of every non-self-test row, it needs no token dance or tag
+# pagination, and it resolves the same reference the compose bundle pulls --
+# a bare `codeswhat/*` ref is Docker Hub, not GHCR, and the two registries
+# diverge.
+#
+# Three-way result, because "the registry says no" and "we could not ask" are
+# different facts and only the first one licenses walking back a version:
+#   0 = published, 1 = registry answered and the tag is absent, 2 = query failed
+sockguard_tag_is_published() {
+  local ref="codeswhat/sockguard:$1" out rc=0
+  # `|| rc=$?`, not `if ...; then return 0; fi; rc=$?` -- a failed `if` with no
+  # `else` exits 0, so the latter reads every failure as rc 0.
+  out="$(docker manifest inspect "$ref" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    return 0
+  fi
+  case "$out" in
+    *"manifest unknown"*|*"not found"*|*"no such manifest"*) return 1 ;;
+  esac
+  echo "FATAL: sockguard_tag_is_published: could not query the registry for ${ref} (docker manifest inspect exit ${rc}): ${out}" >&2
+  return 2
+}
+
+# Resolves "the newest published stable sockguard release", walking local tag
+# history newest-first and stopping at the first tag whose image is actually on
+# Docker Hub. Tag filtering is the same awk-based prerelease filter as
+# release-cut.yml's "Find latest release tag" step (v*-sorted, hyphenated
+# prerelease tags dropped), read here at run time instead of computed once in a
+# workflow step.
+#
+# The walk-back exists because a git tag and its published image are not
+# simultaneous: `v1.7.1` is pushed minutes before release-from-tag finishes
+# publishing `codeswhat/sockguard:1.7.1`, and a release whose publish job
+# failed leaves a tag with no image behind indefinitely. Resolving to a tag
+# in either window hands the row an unpullable reference. "Current" here means
+# the newest sockguard a user can actually pull, not the newest one tagged.
+#
+# Every skip is announced on stderr -- a silently-skipped tag would hide a
+# broken publish, which is the same class of quiet-wrong-version bug this
+# function exists to fix (#289 item 2: current-* rows already float
+# portwing/drydock to latest, but sockguard silently stayed pinned to the
+# legacy-floor default). Likewise both failure modes exit FATAL rather than
+# falling back to the audited floor: a checkout missing tag history (e.g. the
+# default shallow depth-1 clone) and a registry we cannot reach must both fail
+# loudly, not quietly reintroduce that bug by another route.
+resolve_latest_sockguard_version() {
+  local tags tag version probe_rc skipped=0
+  tags="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-v:refname | awk '!/-/')"
+  if [ -z "$tags" ]; then
+    echo "FATAL: resolve_latest_sockguard_version: no stable v* tags found in ${REPO_ROOT} -- checkout is missing tag history (needs fetch-depth: 0)" >&2
+    exit 1
+  fi
+
+  while IFS= read -r tag; do
+    [ -n "$tag" ] || continue
+    version="${tag#v}"
+
+    # `|| probe_rc=$?` for the same reason as in sockguard_tag_is_published:
+    # reading `$?` after a failed `if` would silently yield 0.
+    probe_rc=0
+    sockguard_tag_is_published "$version" || probe_rc=$?
+
+    if [ "$probe_rc" -eq 0 ]; then
+      if [ "$skipped" -gt 0 ]; then
+        echo "resolve_latest_sockguard_version: resolved to ${tag} after skipping ${skipped} unpublished tag(s)." >&2
+      fi
+      echo "$version"
+      return 0
+    fi
+
+    # rc 2 already printed its own FATAL. Exiting here rather than returning
+    # propagates through the `$(...)` the caller reads -- see the call site.
+    [ "$probe_rc" -eq 1 ] || exit 1
+
+    echo "WARN: resolve_latest_sockguard_version: ${tag} is tagged in git but codeswhat/sockguard:${version} is not published on Docker Hub -- trying the next older tag. If a release just cut, its publish job may still be running; if not, that release's image push failed." >&2
+    skipped=$((skipped + 1))
+  done <<<"$tags"
+
+  echo "FATAL: resolve_latest_sockguard_version: no stable v* tag in ${REPO_ROOT} has a published codeswhat/sockguard image on Docker Hub (checked ${skipped} tag(s)) -- refusing to fall back to the legacy floor." >&2
+  exit 1
+}
+
 # ---------------------------------------------------------------------------
 # --self-test: no Docker, no network. Proves the normalizer + diff logic
 # that assertion 10 depends on actually work before trusting them in a live
@@ -210,6 +295,94 @@ run_self_test() {
     echo "PASS: route_drift_status fails closed on an empty observed-routes set"
   fi
 
+  # resolve_latest_sockguard_version (defined above, alongside
+  # sockguard_tag_is_published, so it's callable here) must walk tag history
+  # correctly under every shape a registry probe can come back in, without
+  # ever making a real network call. Shadow `docker` with a stub selected by
+  # $stub_mode and unset it again once this section is done, so nothing
+  # later in the script can silently talk to the fake instead of the real
+  # docker binary.
+  local newest_stable second_newest_stable
+  newest_stable="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-v:refname | awk '!/-/' | head -n1)"
+  second_newest_stable="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-v:refname | awk '!/-/' | awk 'NR==2')"
+
+  local stub_mode
+  docker() {
+    local ver="${3##*:}"
+    case "$stub_mode" in
+      all-published)
+        return 0
+        ;;
+      newest-missing)
+        if [ "v${ver}" = "$newest_stable" ]; then
+          echo "no such manifest: docker.io/codeswhat/sockguard:${ver}" >&2
+          return 1
+        fi
+        return 0
+        ;;
+      registry-down)
+        echo 'Get "https://registry-1.docker.io/v2/": dial tcp: i/o timeout' >&2
+        return 1
+        ;;
+      none-published)
+        echo "no such manifest: docker.io/codeswhat/sockguard:${ver}" >&2
+        return 1
+        ;;
+    esac
+  }
+
+  local resolver_err="${SCRATCH_DIR}/resolve-latest-sockguard-version.err"
+  local resolver_out resolver_rc
+
+  stub_mode="all-published"
+  resolver_out="$(resolve_latest_sockguard_version 2>"$resolver_err")"
+  resolver_rc=$?
+  if [ "$resolver_rc" -eq 0 ] && [ "$resolver_out" = "${newest_stable#v}" ]; then
+    echo "PASS: resolve_latest_sockguard_version resolves to the newest tag when the registry reports every tag published"
+  else
+    echo "FAIL: resolve_latest_sockguard_version(all-published) rc=${resolver_rc} out='${resolver_out}', want rc 0 out '${newest_stable#v}'" >&2
+    failed=1
+  fi
+
+  stub_mode="newest-missing"
+  resolver_out="$(resolve_latest_sockguard_version 2>"$resolver_err")"
+  resolver_rc=$?
+  if [ "$resolver_rc" -eq 0 ] && [ "$resolver_out" = "${second_newest_stable#v}" ] && grep -q "WARN" "$resolver_err"; then
+    echo "PASS: resolve_latest_sockguard_version walks back to the next tag and warns on stderr when only the newest is unpublished"
+  else
+    echo "FAIL: resolve_latest_sockguard_version(newest-missing) rc=${resolver_rc} out='${resolver_out}', want rc 0 out '${second_newest_stable#v}' with WARN on stderr: $(cat "$resolver_err")" >&2
+    failed=1
+  fi
+
+  stub_mode="registry-down"
+  resolver_out="$(resolve_latest_sockguard_version 2>"$resolver_err")"
+  resolver_rc=$?
+  # No WARN: an unreachable registry must fail on the FIRST tag it checks,
+  # not silently walk back through older tags the way an absent-manifest
+  # response does -- a walk-back here would eventually hit the same FATAL
+  # message anyway (exhausting every tag), so checking for FATAL text alone
+  # would not catch a regression that let this case fall into the walk-back
+  # path instead of exiting immediately.
+  if [ "$resolver_rc" -ne 0 ] && [ -z "$resolver_out" ] && grep -q "FATAL" "$resolver_err" \
+      && grep -q -F "could not query the registry" "$resolver_err" && ! grep -q "WARN" "$resolver_err"; then
+    echo "PASS: resolve_latest_sockguard_version fails loudly (FATAL, could not query the registry) instead of walking back when the registry is unreachable"
+  else
+    echo "FAIL: resolve_latest_sockguard_version(registry-down) rc=${resolver_rc} out='${resolver_out}', want a non-zero rc, empty stdout, FATAL/could not query the registry on stderr, and no WARN (no walk-back): $(cat "$resolver_err")" >&2
+    failed=1
+  fi
+
+  stub_mode="none-published"
+  resolver_out="$(resolve_latest_sockguard_version 2>"$resolver_err")"
+  resolver_rc=$?
+  if [ "$resolver_rc" -ne 0 ] && [ -z "$resolver_out" ] && grep -q -F "no stable v* tag" "$resolver_err"; then
+    echo "PASS: resolve_latest_sockguard_version fails when no stable v* tag has a published image"
+  else
+    echo "FAIL: resolve_latest_sockguard_version(none-published) rc=${resolver_rc} out='${resolver_out}', want a non-zero rc, empty stdout, and 'no stable v* tag' on stderr: $(cat "$resolver_err")" >&2
+    failed=1
+  fi
+
+  unset -f docker
+
   if [ "$failed" -eq 0 ]; then
     echo "== self-test OK =="
     return 0
@@ -231,28 +404,6 @@ fi
 # ---------------------------------------------------------------------------
 # Row configuration
 # ---------------------------------------------------------------------------
-
-# Resolves "the newest published stable sockguard release" from local tag
-# history -- the same awk-based prerelease filter as release-cut.yml's "Find
-# latest release tag" step (v*-sorted, hyphenated prerelease tags dropped),
-# just read here at run time instead of computed once in a workflow step.
-# Chosen over a Docker Hub tag-listing call: git tag history is already on
-# disk from checkout, so this stays network-free and avoids inventing
-# pagination/rate-limit handling and semver parsing in this script. Exits
-# FATAL rather than silently falling back to a floor version -- a checkout
-# missing tag history (e.g. the default shallow depth-1 clone) must fail
-# loudly here, not quietly reintroduce the bug this exists to fix (#289
-# item 2: current-* rows already float portwing/drydock to latest, but
-# sockguard silently stayed pinned to the legacy-floor default).
-resolve_latest_sockguard_version() {
-  local latest_tag
-  latest_tag="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-v:refname | awk '!/-/' | head -n1)"
-  if [ -z "$latest_tag" ]; then
-    echo "FATAL: resolve_latest_sockguard_version: no stable v* tags found in ${REPO_ROOT} -- checkout is missing tag history (needs fetch-depth: 0)" >&2
-    exit 1
-  fi
-  echo "${latest_tag#v}"
-}
 
 case "$ROW" in
   current-standard)
