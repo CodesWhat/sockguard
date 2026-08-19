@@ -8,15 +8,20 @@ const workflow = readFileSync(
   'utf8',
 );
 
-// The nine contexts the main branch-protection ruleset requires after the
-// X1 migration to reusable workflows. CodeQL Analysis and Docker Build stay
+// The thirteen contexts the main branch-protection ruleset requires after
+// the X1 migration to reusable workflows plus the PR-gate closure that added
+// dependency-review, gitleaks, actionlint, and shellcheck. CodeQL Analysis,
+// Docker Build, Dependency Review, Gitleaks, Actionlint, and Shellcheck stay
 // local and publish their own `name:` field. The other seven are the
 // go-ci/node-ci reusable callers' nested check results, which GitHub
 // reports as "<caller job name> / <check name>". Update this list only
 // alongside a ruleset change.
 const REQUIRED_CONTEXTS = [
+  'Actionlint',
   'CodeQL Analysis',
+  'Dependency Review',
   'Docker Build',
+  'Gitleaks',
   'Go CI / Go Lint',
   'Go CI / Go Test',
   'Go CI / GoReleaser Config',
@@ -24,6 +29,7 @@ const REQUIRED_CONTEXTS = [
   'Node CI / Biome Lint',
   'Node CI / Build Workspaces',
   'Node CI / TS Test',
+  'Shellcheck',
 ];
 
 function jobSection(jobId) {
@@ -43,14 +49,18 @@ function jobName(jobId) {
 }
 
 describe('required CI contexts', () => {
-  it('requires exactly the nine post-X1 contexts', () => {
-    assert.equal(REQUIRED_CONTEXTS.length, 9);
-    assert.equal(new Set(REQUIRED_CONTEXTS).size, 9);
+  it('requires exactly the thirteen post-X1 contexts', () => {
+    assert.equal(REQUIRED_CONTEXTS.length, 13);
+    assert.equal(new Set(REQUIRED_CONTEXTS).size, 13);
   });
 
-  it('publishes the stable local context for CodeQL Analysis and Docker Build', () => {
+  it('publishes the stable local context for CodeQL Analysis, Docker Build, Dependency Review, Gitleaks, Actionlint, and Shellcheck', () => {
     assert.equal(jobName('codeql'), 'CodeQL Analysis');
     assert.equal(jobName('docker'), 'Docker Build');
+    assert.equal(jobName('dependency-review'), 'Dependency Review');
+    assert.equal(jobName('gitleaks'), 'Gitleaks');
+    assert.equal(jobName('actionlint'), 'Actionlint');
+    assert.equal(jobName('shellcheck'), 'Shellcheck');
   });
 
   it('publishes the caller job name every composite context is prefixed with', () => {

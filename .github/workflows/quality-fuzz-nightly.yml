@@ -48,7 +48,7 @@ concurrency:
 jobs:
   deep-fuzz:
     name: "🔀 Fuzz ${{ matrix.fuzzer.name }}"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Job-level cap is the hard ceiling regardless of what -fuzztime asks
     # for. Keep it comfortably above the default budget run twice (the Fuzz
     # step retries the known boundary flake once → ~2×15m + setup) and above
@@ -83,10 +83,25 @@ jobs:
           - { name: FuzzVisibilityFilter,          pkg: ./internal/visibility/ }
 
     steps:
+      # Stage 1 of the harden-runner egress rollout: pure Go build/fuzz, no
+      # Docker. github.com/proxy.golang.org/sum.golang.org cover module
+      # fetch + sumdb; the objects/release-assets hosts cover
+      # actions/setup-go's toolchain download on a runner-image cache miss
+      # (no org precedent yet for Go jobs specifically, so this errs toward
+      # the extra defensive hosts rather than a minimal guess).
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            proxy.golang.org:443
+            sum.golang.org:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

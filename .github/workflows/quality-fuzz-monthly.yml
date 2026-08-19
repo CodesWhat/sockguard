@@ -49,7 +49,7 @@ concurrency:
 jobs:
   monthly-fuzz:
     name: "🔀 Fuzz ${{ matrix.fuzzer.name }} (monthly)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # 6-hour ceiling is the hard cap regardless of the fuzztime input.
     # Anything longer should run on a dedicated box, not a shared runner.
     timeout-minutes: 360
@@ -101,9 +101,15 @@ jobs:
           - { name: FuzzToRegexString,             pkg: ./internal/glob/ }
 
     steps:
+      # Stays audit for stage 1: this job already has an open, in-repo
+      # question (skip_harden_runner above) about whether harden-runner's
+      # own audit pipeline contributes to the OOM risk on long (up to 6h)
+      # fuzz runs. Flipping egress mode here would confound that
+      # investigation, so this waits for it to resolve rather than moving
+      # with the otherwise-identical quality-fuzz-nightly.yml job.
       - name: Harden Runner
         if: ${{ inputs.skip_harden_runner != true }}
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
