@@ -22,7 +22,7 @@ run-name: >-
 #   - rootless: a per-user `podman system service` on the runner account's
 #     XDG_RUNTIME_DIR socket, needing usable newuidmap/newgidmap and
 #     /etc/subuid /etc/subgid ranges for the runner user. GitHub's
-#     ubuntu-latest image ships all of that, but the runner has no logind
+#     ubuntu-24.04 image ships all of that, but the runner has no logind
 #     session (no interactive login, so no auto-created /run/user/<uid>)
 #     and podman's rootless network/storage setup is more failure-prone in a
 #     freshly-provisioned container-less VM than the well-trodden rootful
@@ -56,10 +56,13 @@ concurrency:
 jobs:
   integration-podman-rootful:
     name: "🦭 Integration (rootful podman)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
+      # Stays audit for stage 1: `apt-get install podman` resolves through
+      # whichever Ubuntu archive mirror the runner region picks — not a
+      # fixed, documented endpoint set. Revisit in stage 2.
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
@@ -221,7 +224,7 @@ jobs:
 
   integration-podman-rootless:
     name: "🦭 Integration (rootless podman)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # See the workflow-level comment above: rootless is exercised for
     # coverage but never blocks a PR on runner infrastructure quirks that
@@ -229,6 +232,8 @@ jobs:
     continue-on-error: true
 
     steps:
+      # Stays audit for stage 1: same apt-get/mirror reasoning as the
+      # rootful leg above. Revisit in stage 2.
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
@@ -253,7 +258,7 @@ jobs:
 
       - name: Verify rootless prerequisites
         run: |
-          # ubuntu-latest ships newuidmap/newgidmap (from the uidmap
+          # ubuntu-24.04 ships newuidmap/newgidmap (from the uidmap
           # package, installed above defensively in case the base image
           # ever drops it) as setuid-root binaries, plus a default
           # /etc/subuid and /etc/subgid range for the runner user — both
@@ -262,7 +267,7 @@ jobs:
           # if either is ever missing on a future runner image.
           #
           # Checked by grepping the files directly rather than `getent
-          # subuid`/`getent subgid`: glibc on ubuntu-latest has no subuid/
+          # subuid`/`getent subgid`: glibc on ubuntu-24.04 has no subuid/
           # subgid NSS database registered at all, so getent fails with
           # "Unknown database" regardless of what /etc/subuid actually
           # contains — it's not a signal of a missing range.
@@ -273,7 +278,7 @@ jobs:
 
       - name: Start rootless podman system service
         run: |
-          # The runner user has no logind session on ubuntu-latest (no
+          # The runner user has no logind session on ubuntu-24.04 (no
           # interactive login), so XDG_RUNTIME_DIR / /run/user/<uid> is
           # never auto-created the way it would be on a desktop or a
           # `machinectl shell` session. Create and own it explicitly rather

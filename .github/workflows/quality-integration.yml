@@ -38,10 +38,13 @@ concurrency:
 jobs:
   integration:
     name: "🐋 Integration (real dockerd)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
+      # Stays audit for stage 1: pulls the busybox sentinel image from
+      # Docker Hub, whose CDN endpoints (production.cloudflare.docker.com
+      # and friends) aren't a fixed, documented set. Revisit in stage 2.
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:

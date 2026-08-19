@@ -39,13 +39,26 @@ concurrency:
 jobs:
   govulncheck:
     name: "🔍 Security: Govulncheck"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # Stage 1 of the harden-runner egress rollout: pure Go, no Docker.
+      # Same base endpoints as quality-fuzz-nightly.yml plus vuln.go.dev for
+      # govulncheck's own vulnerability database fetch.
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            proxy.golang.org:443
+            sum.golang.org:443
+            vuln.go.dev:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -84,12 +97,16 @@ jobs:
     # twice per PR; it still catches newly disclosed CVEs against unchanged
     # images between PRs.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
     steps:
+      # Stays audit for stage 1: builds the Wolfi/Chainguard-based image
+      # before scanning it, and that base-image pull can land on any of
+      # Chainguard's CDN endpoints — not a fixed set. Same reasoning as
+      # ci-verify.yml's "Docker Build" job. Revisit in stage 2.
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
@@ -141,16 +158,30 @@ jobs:
 
   grype-deps:
     name: "📦 Security: Grype Dependency Scan (Go + npm)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
     steps:
+      # Stage 1 of the harden-runner egress rollout: static scan of the
+      # checked-out repo, no Docker build. Same endpoint set drydock already
+      # runs in block mode for its own (npm-only) grype-deps job — this
+      # extends it to the identical Go+npm scan sockguard runs.
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            get.anchore.io:443
+            grype.anchore.io:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -188,16 +219,25 @@ jobs:
 
   gosec:
     name: "🔐 Security: Gosec SAST"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
     steps:
+      # Stage 1 of the harden-runner egress rollout: gosec runs as a
+      # digest-pinned GHCR container action, so ghcr.io + the GHCR pull CDN
+      # host are the entire footprint beyond checkout.
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            ghcr.io:443
+            pkg-containers.githubusercontent.com:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -229,9 +269,15 @@ jobs:
     # DAST is heavy (builds sockguard, pulls the testssl image, probes a
     # live listener) — keep it on scheduled/manual runs, not every PR.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      # Stays audit PERMANENTLY, not just for stage 1: this is the DAST-class
+      # job — it pulls a third-party scanner image and drives it against a
+      # live listener it opens itself, so there is no stable allowlist to
+      # write (unlike security-scorecard.yml's Scorecard job, which has the
+      # same permanent-audit posture for the same reason: it queries a live,
+      # third-party analysis surface).
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:

@@ -39,14 +39,22 @@ concurrency:
 jobs:
   check-engine-api-version:
     name: "🔭 Check Engine API version ceiling"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
 
     steps:
+      # Stage 1 of the harden-runner egress rollout: the only external call
+      # this job makes is curl against docs.docker.com — a single, stable
+      # vendor host.
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            docs.docker.com:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
