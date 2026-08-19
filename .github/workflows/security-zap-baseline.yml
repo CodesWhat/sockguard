@@ -1,8 +1,8 @@
-name: "🕷️ Security: ZAP Baseline (DAST)"
+name: "Security: ZAP Baseline (DAST)"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🕷️ Security: ZAP Baseline — Weekly run' ||
-    format('🕷️ Security: ZAP Baseline — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Security: ZAP Baseline — Weekly run' ||
+    format('Security: ZAP Baseline — Manual by {0}', github.actor)
   }}
 
 # getsockguard.com and its /docs subpath are static surfaces: no auth, no
@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   zap-baseline:
-    name: "🕷️ ZAP Baseline: ${{ matrix.name }}"
+    name: "ZAP Baseline: ${{ matrix.name }}"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -193,5 +193,26 @@ describe('required CI contexts', () => {
     for (const context of REQUIRED_CONTEXTS) {
       assert.doesNotMatch(context, /\p{Extended_Pictographic}/u, context);
     }
+  });
+
+  it('keeps emoji out of every workflow and job name', () => {
+    // A check context is matched by exact string, so an emoji in a job
+    // name is a decorative character that's load-bearing for merges — and
+    // the whole set has to stay clean, not just the names that happen to
+    // be required today, or promoting one later silently orphans it.
+    // security-zap-baseline.yml landed with emoji one merge after the
+    // original sweep, which is why this is a test and not a one-off edit.
+    const dir = resolve(import.meta.dirname, '../.github/workflows');
+    const offenders = [];
+    for (const file of readdirSync(dir).filter((f) => f.endsWith('.yml'))) {
+      const lines = readFileSync(resolve(dir, file), 'utf8').split('\n');
+      lines.forEach((line, i) => {
+        if (!/^\s*(name|run-name):/u.test(line)) return;
+        if (/\p{Extended_Pictographic}/u.test(line)) {
+          offenders.push(`${file}:${i + 1} ${line.trim()}`);
+        }
+      });
+    }
+    assert.deepEqual(offenders, [], `emoji in workflow names:\n${offenders.join('\n')}`);
   });
 });
