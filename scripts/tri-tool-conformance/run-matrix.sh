@@ -302,9 +302,23 @@ run_self_test() {
   # $stub_mode and unset it again once this section is done, so nothing
   # later in the script can silently talk to the fake instead of the real
   # docker binary.
-  local newest_stable second_newest_stable
-  newest_stable="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-v:refname | awk '!/-/' | head -n1)"
-  second_newest_stable="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-v:refname | awk '!/-/' | awk 'NR==2')"
+  #
+  # `git` is stubbed for the same reason `docker` is. Reading the real tag
+  # list made this section pass locally and fail in CI, where the Node test
+  # gate checks out at the default depth 1 and has no tags at all: every case
+  # took the "no stable v* tags found" exit, and none-published still "passed"
+  # -- non-zero for entirely the wrong reason. A fixed synthetic list also
+  # lets the expectations below be exact constants instead of whatever the
+  # newest release happens to be this week, and pins the prerelease filter
+  # (v2.1.0-rc.1 must never win).
+  local newest_stable="v2.0.0" second_newest_stable="v1.9.0"
+  git() {
+    if [ "${3:-}" = "tag" ]; then
+      printf '%s\n' v2.1.0-rc.1 v2.0.0 v1.9.0 v1.8.0
+      return 0
+    fi
+    command git "$@"
+  }
 
   local stub_mode
   docker() {
@@ -382,6 +396,7 @@ run_self_test() {
   fi
 
   unset -f docker
+  unset -f git
 
   if [ "$failed" -eq 0 ]; then
     echo "== self-test OK =="
