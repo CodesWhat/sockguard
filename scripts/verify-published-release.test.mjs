@@ -28,6 +28,26 @@ describe('verify-published-release.sh', () => {
     assert.match(result.stdout, /sockguard-v1\.2\.3\.tar\.gz/);
   });
 
+  // QA-6 exists to fail the tag when docs/content/docs/verification.mdx and
+  // the pipeline drift apart. It can only do that for surfaces it actually
+  // exercises: it verified the source tarball alone while the docs also
+  // document the per-platform archive, checksums.txt, and provenance, so it
+  // would have gone green on all three no matter what they did.
+  it('covers the per-platform archive, checksums, and provenance', () => {
+    const result = runVerify(['--dry-run', '--tag', 'v1.2.3']);
+
+    assert.equal(result.status, 0, result.stderr);
+    // Underscores and no `v`: the compiled GoReleaser archive, NOT the
+    // `sockguard-v1.2.3.tar.gz` source snapshot asserted above.
+    assert.match(result.stdout, /sockguard_1\.2\.3_linux_amd64\.tar\.gz/u);
+    assert.match(result.stdout, /sockguard_1\.2\.3_linux_amd64\.tar\.gz\.sig/u);
+    assert.match(result.stdout, /sockguard_1\.2\.3_linux_amd64\.tar\.gz\.pem/u);
+    assert.match(result.stdout, /checksums\.txt\.sig/u);
+    assert.match(result.stdout, /checksums\.txt\.pem/u);
+    assert.match(result.stdout, /sha256sum --check --ignore-missing/u);
+    assert.match(result.stdout, /gh attestation verify/u);
+  });
+
   it('embeds the documented identity regex and issuer', () => {
     const result = runVerify(['--dry-run', '--tag', 'v1.2.3']);
 

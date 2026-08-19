@@ -137,3 +137,54 @@ passing signature, anything else means stop and investigate.
 When release provenance is published, the release also includes
 `sockguard-v<TAG>.tar.gz.intoto.jsonl`. Verify that attestation separately
 from the detached tarball signature before relying on it for SLSA evidence.
+
+## Verifying the per-platform binary archives
+
+`sockguard-v<TAG>.tar.gz` above is the **source** snapshot. The archives
+you download to actually run sockguard are the per-platform ones,
+`sockguard_<VERSION>_<OS>_<ARCH>.tar.gz` (note the underscores and the
+missing `v`). They're easy to confuse, so check which file you have
+before picking a command.
+
+Each per-platform archive ships its own `.sig` and `.pem`, and so does
+`checksums.txt`. Verify a single archive directly:
+
+```bash
+cosign verify-blob \
+  --certificate "sockguard_<VERSION>_linux_amd64.tar.gz.pem" \
+  --signature   "sockguard_<VERSION>_linux_amd64.tar.gz.sig" \
+  --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  "sockguard_<VERSION>_linux_amd64.tar.gz"
+```
+
+Or verify `checksums.txt` once and check any archive against it, which is
+the cheaper route when you're pulling several platforms:
+
+```bash
+cosign verify-blob \
+  --certificate "checksums.txt.pem" \
+  --signature   "checksums.txt.sig" \
+  --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
+  --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  "checksums.txt"
+
+sha256sum --check --ignore-missing checksums.txt
+```
+
+The archives also carry GitHub build-provenance attestations, which record
+the workflow and commit that produced them:
+
+```bash
+gh attestation verify "sockguard_<VERSION>_linux_amd64.tar.gz" \
+  --repo CodesWhat/sockguard
+```
+
+Each archive additionally ships a CycloneDX SBOM as
+`sockguard_<VERSION>_<OS>_<ARCH>.tar.gz.cyclonedx.json`.
+
+<Callout type="info">
+  Signatures and provenance on the per-platform archives start with the
+  first release cut after this change. Earlier releases have the SBOM only,
+  so a missing `.sig` on an older tag is expected rather than a red flag.
+</Callout>

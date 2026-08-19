@@ -13,9 +13,9 @@ only shows up against what `ghcr.io`/`docker.io`/`quay.io` actually publish.
 
 | Row | sockguard | portwing | drydock | Mode |
 |---|---|---|---|---|
-| `current-standard` | input/default image | `latest` | `latest` | Standard (shared secret) |
-| `current-edge` | input/default image | `latest` | `latest` | Edge (Ed25519) + configured exec |
-| `legacy-floor` | input/default image | `0.8.1` | `1.5.2` (+`DD_EXPERIMENTAL_PORTWING=true`) | Standard only |
+| `current-standard` | input/newest stable release | `latest` | `latest` | Standard (shared secret) |
+| `current-edge` | input/newest stable release | `latest` | `latest` | Edge (Ed25519) + configured exec |
+| `legacy-floor` | input/`1.5.1` | `0.8.1` | `1.5.2` (+`DD_EXPERIMENTAL_PORTWING=true`) | Standard only |
 
 `legacy-floor`'s pins are the audited-floor versions from sockguard PR #155
 and are **not** overridable by the workflow's `portwing_version`/
@@ -23,6 +23,28 @@ and are **not** overridable by the workflow's `portwing_version`/
 compatibility promise honest, so letting a manual override drift it would
 defeat the point. Edge mode is unsupported on portwing 0.8.1 and isn't
 tested there.
+
+`current-standard`/`current-edge`'s sockguard default is **not** a floating
+`latest` the way portwing/drydock's is on those same rows: `run-matrix.sh`
+resolves it once, at run time, from local `git tag` history (`git tag
+--list 'v*' --sort=-v:refname`, prerelease tags filtered out — the same
+logic `release-cut.yml`'s "Find latest release tag" step uses) to a
+concrete version like `codeswhat/sockguard:1.7.1`.
+
+Newest-first, it stops at the first tag whose image is actually published
+(`docker manifest inspect`), because a tag and its image aren't
+simultaneous — `v1.7.1` is pushed minutes before release-from-tag finishes
+publishing `codeswhat/sockguard:1.7.1`, and a failed publish job leaves a
+tag with no image behind indefinitely. "Current" means the newest sockguard
+you can actually pull, not the newest one tagged. Each skipped tag is
+announced on stderr, so a broken publish shows up in the log instead of
+passing quietly as an older version. A registry it can't reach is fatal,
+not a reason to walk back. That's deliberate: we
+already burned three CI runs bisecting a failure on a row that just said
+`latest` and left no record of what image that actually was at the time.
+The resolved triple is echoed into both the run log (`sockguard=... portwing=...
+drydock=...`) and the job summary table, so a red run always names its own
+inputs (#289 item 2).
 
 ## Running it
 
