@@ -313,11 +313,11 @@ ENGINE_API_VERSION="unknown"
 echo "== #150 tri-tool conformance: row=${ROW} mode=${MODE} preset=${PRESET_FILE} project=${PROJECT} =="
 echo "   sockguard=${SOCKGUARD_IMAGE_RESOLVED} portwing=${PORTWING_IMAGE_RESOLVED} drydock=${DRYDOCK_IMAGE_RESOLVED}"
 
-# shellcheck disable=SC2329 # invoked indirectly via `trap cleanup EXIT` below
+# shellcheck disable=SC2317,SC2329 # invoked indirectly via `trap cleanup EXIT` below (SC2317 is the pre-0.10 code for SC2329)
 cleanup() {
   local id
   for id in "${SENTINEL_IDS[@]:-}"; do
-    [ -n "$id" ] && docker rm -f "$id" >/dev/null 2>&1 || true
+    if [ -n "$id" ]; then docker rm -f "$id" >/dev/null 2>&1 || true; fi
   done
   compose down -v --remove-orphans >/dev/null 2>&1 || true
   rm -f "${BUNDLE_DIR}/portwing_token.txt" "${BUNDLE_DIR}/portwing_ed25519.pem" "${BUNDLE_DIR}/portwing_authorized_keys"
@@ -410,7 +410,7 @@ done
 # Helpers used by more than one assertion
 # ---------------------------------------------------------------------------
 
-# shellcheck disable=SC2329 # invoked indirectly via `wait_until ... sockguard_ping_ok`
+# shellcheck disable=SC2317,SC2329 # invoked indirectly via `wait_until ... sockguard_ping_ok` (SC2317 is the pre-0.10 code for SC2329)
 sockguard_ping_ok() {
   [ "$(probe_curl_status http://localhost/_ping 2>/dev/null)" = "200" ]
 }
@@ -424,7 +424,7 @@ create_sentinel() {
 }
 
 WANT_STATE=""
-# shellcheck disable=SC2329 # invoked indirectly via `wait_until ... sentinel_state_matches`
+# shellcheck disable=SC2317,SC2329 # invoked indirectly via `wait_until ... sentinel_state_matches` (SC2317 is the pre-0.10 code for SC2329)
 sentinel_state_matches() {
   [ "$(docker inspect --format '{{.State.Status}}' "$PRIMARY_SENTINEL_ID" 2>/dev/null)" = "$WANT_STATE" ]
 }
