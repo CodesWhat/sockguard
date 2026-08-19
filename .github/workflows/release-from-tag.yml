@@ -19,7 +19,7 @@ concurrency:
 jobs:
   verify-ci:
     name: "✅ Release: Verify Prior CI Success"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20  # Poll loop waits for prior branch CI status on tag SHA
     permissions:
       contents: read
@@ -57,7 +57,7 @@ jobs:
 
   changelog:
     name: "📝 Release: Extract Changelog"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     needs: [verify-ci]
     permissions:
@@ -117,7 +117,7 @@ jobs:
 
   goreleaser:
     name: "📦 Release: Go Binaries"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [verify-ci, changelog]
     permissions:
@@ -178,7 +178,7 @@ jobs:
 
   release:
     name: "🚀 Release: Docker Build & Push"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     environment: release-publish
     needs: [goreleaser]
@@ -551,7 +551,7 @@ jobs:
     # mirror and downloads the release assets via `gh release download`,
     # so a documentation drift between docs and pipeline fails the tag.
     name: "🔍 Release: Verify Published Artifacts (QA-6)"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: [release]
     permissions:

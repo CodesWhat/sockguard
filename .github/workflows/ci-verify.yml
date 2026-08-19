@@ -43,7 +43,7 @@ jobs:
       actions: read
       contents: read
       security-events: write
-    uses: CodesWhat/.github/.github/workflows/go-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7
+    uses: CodesWhat/.github/.github/workflows/go-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7 # main, 2026-08-16 (no tags in .github; comment cites freeze date)
     with:
       module-directory: app
       go-version-file: go.mod
@@ -51,6 +51,14 @@ jobs:
       lint-check-name: Go Lint
       test-check-name: Go Test
       run-workflow-security: true
+      # Stage 1 of the harden-runner egress rollout (see quality-*/security-*
+      # workflows for the rest of stage 1): zizmor only talks to ghcr.io for
+      # its own container image plus github.com/pkg-containers for the pull —
+      # same endpoint set drydock's own security-actions job (ci-verify.yml)
+      # uses for this identical CodesWhat/.github go-ci.yml workflow-security
+      # job, so this follows established org precedent rather than a guess.
+      workflow-security-egress-policy: block
+      workflow-security-allowed-endpoints: "ghcr.io:443 github.com:443 pkg-containers.githubusercontent.com:443"
       run-goreleaser: ${{ github.event_name != 'schedule' }}
       fuzzers-json: >-
         ${{ (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) && '[{"name":"FuzzPathMatch","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegex","pkg":"./internal/filter/"},{"name":"FuzzGlobToRegexString","pkg":"./internal/filter/"},{"name":"FuzzNormalizePath","pkg":"./internal/filter/"},{"name":"FuzzCompileRule","pkg":"./internal/filter/"},{"name":"FuzzBuild","pkg":"./internal/filter/"},{"name":"FuzzContainerCreate","pkg":"./internal/filter/"},{"name":"FuzzExec","pkg":"./internal/filter/"},{"name":"FuzzImagePull","pkg":"./internal/filter/"},{"name":"FuzzVolume","pkg":"./internal/filter/"},{"name":"FuzzSecret","pkg":"./internal/filter/"},{"name":"FuzzConfigWrite","pkg":"./internal/filter/"},{"name":"FuzzService","pkg":"./internal/filter/"},{"name":"FuzzSwarm","pkg":"./internal/filter/"},{"name":"FuzzPlugin","pkg":"./internal/filter/"},{"name":"FuzzNetwork","pkg":"./internal/filter/"},{"name":"FuzzReadUnaryGRPCMessage","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateGetSecretRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateSolveRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzEvaluateStatusRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzRewriteSessionAdvertisement","pkg":"./internal/buildkitproxy/"},{"name":"FuzzValidateUpgradeRequest","pkg":"./internal/buildkitproxy/"},{"name":"FuzzDecode","pkg":"./internal/dockerfilters/"},{"name":"FuzzProxyHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzHijackHeadersAndBody","pkg":"./internal/proxy/"},{"name":"FuzzPathRoutingDifferential","pkg":"./differential/"},{"name":"FuzzVisibilityFilter","pkg":"./internal/visibility/"},{"name":"FuzzLibpodPathIdentifiers","pkg":"./internal/visibility/"}]' || '[]' }}
@@ -60,7 +68,7 @@ jobs:
     if: github.event_name != 'schedule'
     permissions:
       contents: read
-    uses: CodesWhat/.github/.github/workflows/node-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7
+    uses: CodesWhat/.github/.github/workflows/node-ci.yml@01bf40b06b110946f12a49b82e407d77c6480df7 # main, 2026-08-16 (no tags in .github; comment cites freeze date)
     with:
       node-version: 24
       lockfile-path: package-lock.json
@@ -74,16 +82,23 @@ jobs:
   shellcheck:
     name: "Shellcheck"
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
 
     steps:
+      # Stage 1 of the harden-runner egress rollout: shellcheck is
+      # runner-image-preinstalled (no tool download) and only checks out the
+      # repo, so github.com/actions endpoints are the entire footprint.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -98,7 +113,7 @@ jobs:
     # CodeQL SARIF upload requires GitHub Advanced Security (GHAS), which is not
     # available on free private repos. Skip unless the repo is public.
     if: github.event.repository.visibility == 'public' && (github.event_name == 'pull_request' || github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       actions: read
@@ -106,6 +121,10 @@ jobs:
       security-events: write
 
     steps:
+      # Stays audit for stage 1: codeql-action's query-bundle CDN and the Go
+      # build step's module fetches aren't a fixed, documented endpoint set,
+      # and drydock (the org's own harden-runner precedent) keeps its CodeQL
+      # job on audit for the same reason. Revisit in stage 2.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
@@ -142,16 +161,26 @@ jobs:
     # The repository Dependency Graph setting was enabled 2026-08-17, so this
     # job now actually runs on every PR (sockguard#271 item 1).
     if: ${{ github.event.repository.visibility == 'public' && github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
 
     steps:
+      # Stage 1 of the harden-runner egress rollout: same job, same tool,
+      # and the same endpoint set (including api.deps.dev for
+      # dependency-review-action's changed-package metadata lookup) drydock
+      # already runs in block mode for this identical job.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            api.deps.dev:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -163,7 +192,7 @@ jobs:
 
   gitleaks:
     name: "Gitleaks"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -178,10 +207,20 @@ jobs:
       GITLEAKS_LINUX_X64_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 
     steps:
+      # Stage 1 of the harden-runner egress rollout: same "download a GitHub
+      # release tarball, verify its checksum, run it" shape as drydock's own
+      # "secrets" job, so this reuses drydock's exact block-mode endpoint set
+      # for that pattern.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -203,12 +242,16 @@ jobs:
 
   actionlint:
     name: "Actionlint"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read
 
     steps:
+      # Stays audit for stage 1: raven-actions/actionlint's default inputs
+      # enable pyflakes (pip-installed) and shellcheck alongside its own
+      # GitHub-release binary fetch, none of which resolve to a single
+      # documented endpoint set. Revisit in stage 2.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
@@ -225,15 +268,22 @@ jobs:
   commit-message:
     name: "💬 Commit Message"
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     continue-on-error: true  # advisory — does not block merge
 
     steps:
+      # Stage 1 of the harden-runner egress rollout: pure `git log` against
+      # the checked-out repo, no other tool download — github.com/actions
+      # endpoints are the entire footprint.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -272,12 +322,16 @@ jobs:
   docker:
     name: "Docker Build"
     if: github.event_name != 'schedule'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
     steps:
+      # Stays audit for stage 1: builds the Wolfi/Chainguard-based image
+      # before scanning it, and that base-image pull can land on any of
+      # Chainguard's CDN endpoints — not a fixed set. Same reasoning as
+      # security-grype.yml's grype-image job. Revisit in stage 2.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
