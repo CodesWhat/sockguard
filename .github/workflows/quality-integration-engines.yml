@@ -1,9 +1,9 @@
-name: "🐋 Quality: Integration — Engine Matrix"
+name: "Quality: Integration — Engine Matrix"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🐋 Quality: Integration — Engine Matrix (Weekly)' ||
-    github.event_name == 'pull_request' && format('🐋 Quality: Integration — Engine Matrix — PR #{0}', github.event.pull_request.number) ||
-    format('🐋 Quality: Integration — Engine Matrix — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Integration — Engine Matrix (Weekly)' ||
+    github.event_name == 'pull_request' && format('Quality: Integration — Engine Matrix — PR #{0}', github.event.pull_request.number) ||
+    format('Quality: Integration — Engine Matrix — Manual by {0}', github.actor)
   }}
 
 # Runs the build-tagged integration suite (app/integration/) against a pinned
@@ -40,8 +40,8 @@ concurrency:
 
 jobs:
   integration:
-    name: "🐋 Integration (Engine ${{ matrix.engine }})"
-    runs-on: ubuntu-latest
+    name: "Integration (Engine ${{ matrix.engine }})"
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     strategy:
@@ -56,8 +56,11 @@ jobs:
           - v29.7.2
 
     steps:
+      # Stays audit for stage 1: pulls a pinned Engine release binary plus
+      # the busybox sentinel image from Docker Hub — same variable-CDN
+      # reasoning as quality-integration.yml. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 

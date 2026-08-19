@@ -1,8 +1,8 @@
-name: "🧬 Quality: Mutation Testing"
+name: "Quality: Mutation Testing"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🧬 Quality: Mutation Testing — Monthly schedule' ||
-    format('🧬 Quality: Mutation Testing — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Mutation Testing — Monthly schedule' ||
+    format('Quality: Mutation Testing — Manual by {0}', github.actor)
   }}
 
 # Monthly/manual quality signal using Gremlins (Go mutation tester).
@@ -24,8 +24,8 @@ concurrency:
 
 jobs:
   gremlins:
-    name: "🧬 Quality: Gremlins (${{ matrix.name }})"
-    runs-on: ubuntu-latest
+    name: "Quality: Gremlins (${{ matrix.name }})"
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     continue-on-error: true  # advisory — review results, don't block
     strategy:
@@ -46,10 +46,23 @@ jobs:
             package: ./internal/cmd
 
     steps:
+      # Stage 1 of the harden-runner egress rollout: pure Go build plus
+      # `go install` of gremlins from its module path, no Docker. Same
+      # endpoint set as quality-fuzz-nightly.yml — see that file's comment
+      # for the reasoning on each host.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            proxy.golang.org:443
+            sum.golang.org:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -62,7 +75,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Install Gremlins
-        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@${GREMLINS_VERSION}
+        run: go install "github.com/go-gremlins/gremlins/cmd/gremlins@${GREMLINS_VERSION}"
 
       - name: Run Gremlins mutation testing
         working-directory: app
@@ -102,20 +115,28 @@ jobs:
           retention-days: 30
 
   update-badge:
-    name: "🏷️ Update mutation score badge"
+    name: "Update mutation score badge"
     needs: gremlins
     # gremlins sets job-level continue-on-error, so a failed package leg
     # still lets this job run — badge-plumbing only, never blocking.
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: write  # commit the badge JSON back with GITHUB_TOKEN
     steps:
+      # Stage 1 of the harden-runner egress rollout: only downloads
+      # artifacts and pushes a commit back to origin — all GitHub-internal
+      # traffic.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -190,12 +211,14 @@ jobs:
             else print "red";
           }')
 
-          echo "reports_found=${reports_found}" >> "$GITHUB_OUTPUT"
-          echo "killed=${total_killed}" >> "$GITHUB_OUTPUT"
-          echo "lived=${total_lived}" >> "$GITHUB_OUTPUT"
-          echo "pct=${pct}" >> "$GITHUB_OUTPUT"
-          echo "color=${color}" >> "$GITHUB_OUTPUT"
-          echo "skip=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "reports_found=${reports_found}"
+            echo "killed=${total_killed}"
+            echo "lived=${total_lived}"
+            echo "pct=${pct}"
+            echo "color=${color}"
+            echo "skip=false"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Write badge JSON
         if: steps.score.outputs.skip != 'true'
@@ -238,7 +261,7 @@ jobs:
           SKIP: ${{ steps.score.outputs.skip }}
         run: |
           {
-            echo "### 🏷️ Mutation score badge"
+            echo "### Mutation score badge"
             if [ "$SKIP" = "true" ]; then
               echo "- Incomplete report set: ${REPORTS_FOUND} of ${EXPECTED_REPORTS}; badge left unchanged."
             else

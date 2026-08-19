@@ -1,28 +1,15 @@
-name: "🛡️ Security: Grype & Govulncheck"
+name: "Security: Grype & Govulncheck"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '🛡️ Security: Grype & Govulncheck — Weekly run' ||
-    github.event_name == 'pull_request' && format('🛡️ Security: Grype & Govulncheck — PR #{0}', github.event.pull_request.number) ||
-    format('🛡️ Security: Grype & Govulncheck — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Security: Grype & Govulncheck — Weekly run' ||
+    github.event_name == 'pull_request' && format('Security: Grype & Govulncheck — PR #{0}', github.event.pull_request.number) ||
+    format('Security: Grype & Govulncheck — Manual by {0}', github.actor)
   }}
 
 on:
   workflow_dispatch:
   pull_request:
     branches: [main, 'dev/*']
-    # Dependency / source / build changes are what move the security
-    # surface — scope PR runs to those so doc-only PRs stay fast.
-    paths:
-      - 'app/**/*.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'benchmarks/go.mod'
-      - 'benchmarks/go.sum'
-      - 'package.json'
-      - 'package-lock.json'
-      - '**/package.json'
-      - 'Dockerfile'
-      - '.github/workflows/security-grype.yml'
   schedule:
     - cron: '15 7 * * 1'  # Weekly on Monday at 07:15 UTC
 
@@ -37,15 +24,110 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  govulncheck:
-    name: "🔍 Security: Govulncheck"
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  # Dependency / source / build changes are what move the security surface —
+  # scope PR runs to those so doc-only PRs stay fast. This used to be a
+  # `paths:` filter on the `pull_request:` trigger above, but a required
+  # status check on a job inside a workflow that never triggers produces NO
+  # check run at all — GitHub has nothing to mark "expected" or "green", so
+  # branch protection blocks a doc-only PR forever. A job that *skips*
+  # inside a workflow that *did* trigger reports `skipped`, which satisfies
+  # branch protection. So the path scoping moved from the trigger into this
+  # gate job instead, and the workflow itself always triggers on PRs now.
+  changes:
+    name: "Security: Changed Paths"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      security: ${{ steps.filter.outputs.security }}
     steps:
+      # Stage 1 of the harden-runner egress rollout: pure `git fetch`/`git
+      # diff` against the checked-out repo, no other tool download —
+      # github.com/actions endpoints are the entire footprint. Stays audit
+      # like the rest of this file's jobs pending stage 2 review.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0  # need base-branch history to diff a PR against it
+
+      - name: Determine whether security-relevant paths changed
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -uo pipefail
+          # Deliberately no `-e`: every failure path below must fail OPEN
+          # (still run the scans) rather than abort the job and silently
+          # skip a security check with no clear reason why.
+
+          if [ "${EVENT_NAME}" != "pull_request" ]; then
+            echo "security=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Exactly the path set removed from the pull_request trigger above.
+          patterns='^(app/.*\.go|go\.mod|go\.sum|benchmarks/go\.mod|benchmarks/go\.sum|package\.json|package-lock\.json|(.*/)?package\.json|Dockerfile|\.github/workflows/security-grype\.yml)$'
+
+          if ! git fetch --quiet origin "${BASE_REF}"; then
+            echo "::warning::changes: could not fetch origin/${BASE_REF} — failing open, running the security scans"
+            echo "security=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if ! changed="$(git diff --name-only "origin/${BASE_REF}...HEAD")"; then
+            echo "::warning::changes: git diff against origin/${BASE_REF} failed — failing open, running the security scans"
+            echo "security=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # grep -c (not -q) so the pipeline always reads all of stdin —
+          # grep -q can exit as soon as it finds a match, sending SIGPIPE
+          # back up the pipe before printf has finished writing, which
+          # under `set -o pipefail` can flip a real match into a failure.
+          if printf '%s\n' "${changed}" | grep -cE "${patterns}" >/dev/null; then
+            echo "security=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "security=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  govulncheck:
+    name: "Security: Govulncheck"
+    needs: changes
+    if: needs.changes.outputs.security == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Stage 1 of the harden-runner egress rollout: pure Go, no Docker.
+      # Same base endpoints as quality-fuzz-nightly.yml plus vuln.go.dev for
+      # govulncheck's own vulnerability database fetch.
+      - name: Harden Runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            proxy.golang.org:443
+            sum.golang.org:443
+            vuln.go.dev:443
+            # setup-go resolves go.mod's version against actions/go-versions
+            # first, then falls back to go.dev/dl/?mode=json. Warm runners hit
+            # the manifest and never touch go.dev, so leaving this out passes
+            # until the day the toolchain isn't cached and the job dies with
+            # no related change.
+            go.dev:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -75,19 +157,27 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   grype-image:
-    name: "🐳 Security: Grype Container Scan"
-    # Image build is the heavy step; keep it on scheduled/manual runs.
-    # PRs get fast, accurate dependency coverage from grype-deps +
-    # govulncheck without paying for a Docker build on every push.
+    name: "Security: Grype Container Scan"
+    # PR-time image scanning now happens where the PR pipeline actually
+    # builds the artifact: ci-verify.yml's required "Docker Build" job scans
+    # the image it builds and fails the build on HIGH/CRITICAL findings
+    # (gating-posture rule: Grype gates wherever the artifact is built).
+    # This job stays scheduled/manual-only so the same image isn't scanned
+    # twice per PR; it still catches newly disclosed CVEs against unchanged
+    # images between PRs.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
     steps:
+      # Stays audit for stage 1: builds the Wolfi/Chainguard-based image
+      # before scanning it, and that base-image pull can land on any of
+      # Chainguard's CDN endpoints — not a fixed set. Same reasoning as
+      # ci-verify.yml's "Docker Build" job. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
@@ -121,7 +211,7 @@ jobs:
       - name: Upload Grype SARIF to code scanning
         # Code scanning uploads require GHAS, not available on free private repos.
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-image
@@ -136,17 +226,33 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   grype-deps:
-    name: "📦 Security: Grype Dependency Scan (Go + npm)"
-    runs-on: ubuntu-latest
+    name: "Security: Grype Dependency Scan (Go + npm)"
+    needs: changes
+    if: needs.changes.outputs.security == 'true'
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
     steps:
+      # Stage 1 of the harden-runner egress rollout: static scan of the
+      # checked-out repo, no Docker build. Same endpoint set drydock already
+      # runs in block mode for its own (npm-only) grype-deps job — this
+      # extends it to the identical Go+npm scan sockguard runs.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            get.anchore.io:443
+            grype.anchore.io:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -168,7 +274,7 @@ jobs:
 
       - name: Upload Grype dependency SARIF
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
         with:
           sarif_file: ${{ steps.grype-deps.outputs.sarif }}
           category: grype-deps
@@ -183,15 +289,25 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   gosec:
-    name: "🔐 Security: Gosec SAST"
-    runs-on: ubuntu-latest
+    name: "Security: Gosec SAST"
+    needs: changes
+    if: needs.changes.outputs.security == 'true'
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
       security-events: write
     steps:
+      # Stays audit for stage 1, same as Docker Build and grype-image: gosec
+      # runs as a container action, and harden-runner's block mode drops
+      # container egress silently rather than rejecting it, so every module
+      # lookup gosec makes burns a full TCP timeout instead of failing fast.
+      # Measured: this job completes in ~2 minutes on every other branch and
+      # blew past timeout-minutes: 15 twice under block, with no denied
+      # domain in the harden-runner log to show why. Revisit in stage 2,
+      # when the container jobs get their egress characterised properly.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
@@ -207,7 +323,7 @@ jobs:
 
       - name: Upload Gosec SARIF
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
         with:
           sarif_file: gosec-results.sarif
           category: gosec
@@ -221,15 +337,21 @@ jobs:
     # builder unit tests); this catches the case where someone weakens
     # the wire posture from production config or a future env var that
     # the code-level tests would not exercise.
-    name: "🔒 Security: testssl.sh (sockguard TLS posture)"
+    name: "Security: testssl.sh (sockguard TLS posture)"
     # DAST is heavy (builds sockguard, pulls the testssl image, probes a
     # live listener) — keep it on scheduled/manual runs, not every PR.
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
+      # Stays audit PERMANENTLY, not just for stage 1: this is the DAST-class
+      # job — it pulls a third-party scanner image and drives it against a
+      # live listener it opens itself, so there is no stable allowlist to
+      # write (unlike security-scorecard.yml's Scorecard job, which has the
+      # same permanent-audit posture for the same reason: it queries a live,
+      # third-party analysis surface).
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 

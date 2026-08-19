@@ -3,3 +3,4 @@ set -euo pipefail
 
 npm ci
 npx biome check .
+npx knip

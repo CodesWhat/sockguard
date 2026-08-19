@@ -21,9 +21,16 @@ const FIXED_SCRIPTS = new Map([
   ],
   [
     "go-release-check.sh",
-    ["goreleaser/goreleaser/v2@v2.15.3", "release --snapshot --clean --skip=publish", "cask "],
+    [
+      "goreleaser/goreleaser/v2@v2.15.3",
+      'skip="publish"',
+      "command -v syft",
+      'release --snapshot --clean --skip="${skip}"',
+      "cask ",
+    ],
   ],
   ["go-fuzz.sh", ["FUZZER", "PKG", "fuzztime=60s"]],
+  ["shellcheck.sh", ["command -v shellcheck", "git ls-files -z '*.sh'", "shellcheck \"${scripts[@]}\""]],
   ["node-lint.sh", ["npm ci", "biome check"]],
   ["node-test.sh", ["npm ci", "npm test"]],
   ["node-build.sh", ["npm ci", "turbo build"]],

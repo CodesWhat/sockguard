@@ -1,4 +1,5 @@
 {
+  "name": "sockguard",
   "private": true,
   "workspaces": [
     "website",
@@ -18,10 +19,10 @@
     "prepare": "test -d .git && lefthook install || true"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.7",
-    "knip": "6.32.0",
+    "@biomejs/biome": "2.5.8",
+    "knip": "6.32.2",
     "lefthook": "2.1.10",
-    "turbo": "2.10.9"
+    "turbo": "2.10.10"
   },
   "overrides": {
     "next": {

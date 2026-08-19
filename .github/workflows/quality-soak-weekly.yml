@@ -1,8 +1,8 @@
-name: "⏱️ Quality: Soak"
+name: "Quality: Soak"
 run-name: >-
   ${{
-    github.event_name == 'schedule' && '⏱️ Quality: Soak — Weekly' ||
-    format('⏱️ Quality: Soak — Manual by {0}', github.actor)
+    github.event_name == 'schedule' && 'Quality: Soak — Weekly' ||
+    format('Quality: Soak — Manual by {0}', github.actor)
   }}
 
 # QA-3's RSS + thread-count soak. Runs sockguard in front of mockdocker
@@ -47,17 +47,30 @@ concurrency:
 
 jobs:
   soak:
-    name: "⏱️ Soak (sockguard RSS + thread drift)"
-    runs-on: ubuntu-latest
+    name: "Soak (sockguard RSS + thread drift)"
+    runs-on: ubuntu-24.04
     # Allow 30 minutes for build + warmup + post-run reporting on top of
     # the 4-hour soak; well under the 6-hour github-hosted ceiling.
     timeout-minutes: 270
 
     steps:
+      # Stage 1 of the harden-runner egress rollout: sockguard runs
+      # in-process against mockdocker, no Docker on the runner itself. Same
+      # endpoint set as quality-fuzz-nightly.yml — see that file's comment
+      # for the reasoning on each host.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
-          egress-policy: audit
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            raw.githubusercontent.com:443
+            objects.githubusercontent.com:443
+            release-assets.githubusercontent.com:443
+            proxy.golang.org:443
+            sum.golang.org:443
+            *.actions.githubusercontent.com:443
+          disable-sudo: true
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -78,9 +91,11 @@ jobs:
         run: |
           # Defaults match the dispatch input defaults; scheduled runs
           # see empty inputs and fall back to these values.
-          echo "duration=${INPUT_DURATION:-4h}" >> "$GITHUB_OUTPUT"
-          echo "concurrency=${INPUT_CONCURRENCY:-20}" >> "$GITHUB_OUTPUT"
-          echo "rss_threshold=${INPUT_RSS_THRESHOLD:-67108864}" >> "$GITHUB_OUTPUT"
+          {
+            echo "duration=${INPUT_DURATION:-4h}"
+            echo "concurrency=${INPUT_CONCURRENCY:-20}"
+            echo "rss_threshold=${INPUT_RSS_THRESHOLD:-67108864}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Validate the soak script accepts the resolved parameters
         env:

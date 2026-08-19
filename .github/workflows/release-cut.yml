@@ -1,5 +1,5 @@
-name: "🏷️ Release: Cut"
-run-name: "🏷️ Release: Cut — manual by ${{ github.actor }}"
+name: "Release: Cut"
+run-name: "Release: Cut — manual by ${{ github.actor }}"
 
 on:
   workflow_dispatch:
@@ -23,15 +23,15 @@ env:
 
 jobs:
   cut:
-    name: "🏷️ Release: Cut Tag"
-    runs-on: ubuntu-latest
+    name: "Release: Cut Tag"
+    runs-on: ubuntu-24.04
     timeout-minutes: 20  # Includes CI-success polling for target SHA before tagging
     permissions:
       actions: read
       contents: write  # Push the annotated release tag
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
@@ -196,7 +196,7 @@ jobs:
           RELEASE_TAG: ${{ steps.next.outputs.release_tag }}
         run: |
           {
-            echo "### 🏷️ Release Cut Summary"
+            echo "### Release Cut Summary"
             echo "- Target SHA: \`${TARGET_SHA}\`"
             echo "- Bump level: \`${RELEASE_LEVEL}\`"
             echo "- Next version: \`${NEXT_VERSION}\`"

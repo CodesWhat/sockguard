@@ -1,0 +1,1 @@
+10049	IGNORE	Storable and Cacheable Content (informational) - www.getsockguard.com serves content-hashed static assets (/_next/static/**) with Cache-Control: public,max-age=31536000,immutable. That is the intended threat model for hashed bundle filenames (verified 2026-08-17), not a vulnerability; matches the same suppression in drydock's .zap/rules.tsv.

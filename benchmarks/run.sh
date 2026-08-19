@@ -42,7 +42,7 @@ MOCK_PID=$!
 trap 'kill "${MOCK_PID}" 2>/dev/null || true; rm -f "${MOCK_SOCK}" "${PROXY_SOCK}"; rm -rf "${BUILD_DIR}"' EXIT
 
 # Wait for mock socket
-for i in 1 2 3 4 5 6 7 8 9 10; do
+for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -S "${MOCK_SOCK}" ] && break
   sleep 0.2
 done
@@ -56,7 +56,7 @@ rm -f "${PROXY_SOCK}"
 PROXY_PID=$!
 trap 'kill "${MOCK_PID}" "${PROXY_PID}" 2>/dev/null || true; rm -f "${MOCK_SOCK}" "${PROXY_SOCK}"; rm -rf "${BUILD_DIR}"' EXIT
 
-for i in 1 2 3 4 5 6 7 8 9 10; do
+for _ in 1 2 3 4 5 6 7 8 9 10; do
   [ -S "${PROXY_SOCK}" ] && break
   sleep 0.2
 done
@@ -79,7 +79,7 @@ if [ -x "${WOLLO_BIN}" ]; then
     >"${WOLLO_LOG}" 2>&1 &
   WOLLO_PID=$!
   trap 'kill "${MOCK_PID}" "${PROXY_PID}" ${WOLLO_PID:-} 2>/dev/null || true; rm -f "${MOCK_SOCK}" "${PROXY_SOCK}" "${WOLLO_SOCK}"; rm -rf "${BUILD_DIR}"' EXIT
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     [ -S "${WOLLO_SOCK}" ] && break
     sleep 0.2
   done
