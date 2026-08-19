@@ -40,7 +40,11 @@ sboms:
     documents:
       - "${artifact}.cyclonedx.json"
     cmd: syft
-    args: ["$artifact", "--output", "cyclonedx-json=$document"]
+    # Mirrors GoReleaser's own default syft args (sbom.go:80) apart from the
+    # output format. Naming `args:` at all replaces the whole default slice, so
+    # --enrich all has to be restated or the SBOM ships without dependency
+    # license data.
+    args: ["$artifact", "--output", "cyclonedx-json=$document", "--enrich", "all"]
     artifacts: archive
 
 snapshot:
