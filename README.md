@@ -46,7 +46,7 @@
 
 <h2 align="center">Contents</h2>
 
-- [Documentation](https://getsockguard.com/docs)
+- [Docs site](https://getsockguard.com/docs)
 - [Website](https://getsockguard.com)
 - [Quick Start](#quick-start)
 - [Recent Updates](#recent-updates)
