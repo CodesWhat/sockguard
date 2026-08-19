@@ -61,7 +61,7 @@ jobs:
       # Stage 1 of the harden-runner egress rollout: no Docker in this leg,
       # just the route-normalizer self-test against the checked-out repo.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -99,7 +99,7 @@ jobs:
       # current-standard rows can each resolve to different registry hosts —
       # not a fixed endpoint set. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
@@ -159,7 +159,7 @@ jobs:
       # artifacts and aggregates JSON locally — all GitHub-internal traffic,
       # no checkout even needed.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: block
           allowed-endpoints: >

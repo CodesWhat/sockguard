@@ -92,7 +92,7 @@ jobs:
       # runner-image-preinstalled (no tool download) and only checks out the
       # repo, so github.com/actions endpoints are the entire footprint.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -126,7 +126,7 @@ jobs:
       # and drydock (the org's own harden-runner precedent) keeps its CodeQL
       # job on audit for the same reason. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
@@ -136,7 +136,7 @@ jobs:
           persist-credentials: false
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
+        uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
         with:
           languages: actions, go, javascript-typescript
           queries: security-and-quality
@@ -152,7 +152,7 @@ jobs:
         working-directory: app
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
+        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
 
   dependency-review:
     name: "Dependency Review"
@@ -172,7 +172,7 @@ jobs:
       # dependency-review-action's changed-package metadata lookup) drydock
       # already runs in block mode for this identical job.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -212,7 +212,7 @@ jobs:
       # "secrets" job, so this reuses drydock's exact block-mode endpoint set
       # for that pattern.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -253,7 +253,7 @@ jobs:
       # GitHub-release binary fetch, none of which resolve to a single
       # documented endpoint set. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
@@ -277,7 +277,7 @@ jobs:
       # the checked-out repo, no other tool download — github.com/actions
       # endpoints are the entire footprint.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -333,7 +333,7 @@ jobs:
       # Chainguard's CDN endpoints — not a fixed set. Same reasoning as
       # security-grype.yml's grype-image job. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
@@ -376,7 +376,7 @@ jobs:
       - name: Upload Grype SARIF to code scanning
         # Code scanning uploads require GHAS, not available on free private repos.
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-image

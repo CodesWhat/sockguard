@@ -12,68 +12,60 @@
 </div>
 
 <p align="center">
+  <!-- row 1, identity -->
   <a href="https://github.com/CodesWhat/sockguard/releases"><img src="https://img.shields.io/github/v/release/CodesWhat/sockguard?include_prereleases&label=release" alt="Release"></a>
+  <a href="https://github.com/orgs/CodesWhat/packages/container/package/sockguard"><img src="https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-informational?logo=linux&logoColor=white" alt="Multi-arch"></a>
+  <a href="https://github.com/orgs/CodesWhat/packages/container/package/sockguard"><img src="https://img.shields.io/docker/image-size/codeswhat/sockguard/latest?logo=docker&logoColor=white&label=image%20size" alt="Image size"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-C9A227" alt="License Apache-2.0"></a>
+  <br>
+  <!-- row 2, quality/security -->
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml/badge.svg?branch=main" alt="CI"></a>
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-integration.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/quality-integration.yml/badge.svg?branch=main" alt="Integration"></a>
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-fuzz-nightly.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/quality-fuzz-nightly.yml/badge.svg?branch=main" alt="Nightly fuzz"></a>
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/security-grype.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/security-grype.yml/badge.svg?branch=main" alt="Weekly Grype"></a>
+  <a href="https://securityscorecards.dev/viewer/?uri=github.com/CodesWhat/sockguard"><img src="https://img.shields.io/ossf-scorecard/github.com/CodesWhat/sockguard?label=openssf+scorecard&style=flat" alt="OpenSSF Scorecard"></a>
+  <a href="https://www.bestpractices.dev/projects/14030"><img src="https://www.bestpractices.dev/projects/14030/badge" alt="OpenSSF Best Practices"></a>
+  <a href="https://qlty.sh/gh/CodesWhat/projects/sockguard"><img src="https://qlty.sh/badges/5a115b54-7404-4e0e-b09d-2652fb1816e5/maintainability.svg" alt="Maintainability"></a>
+  <a href="https://qlty.sh/gh/CodesWhat/projects/sockguard"><img src="https://qlty.sh/badges/5a115b54-7404-4e0e-b09d-2652fb1816e5/coverage.svg" alt="Coverage"></a>
+  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-mutation-monthly.yml"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/CodesWhat/sockguard/main/.github/badges/mutation-score.json" alt="Mutation score"></a>
+  <br>
+  <!-- row 3, social proof -->
   <a href="https://github.com/CodesWhat/sockguard/releases"><img src="https://img.shields.io/github/downloads/CodesWhat/sockguard/total?label=downloads" alt="Release downloads"></a>
   <a href="https://github.com/CodesWhat/sockguard/pkgs/container/sockguard"><img src="https://img.shields.io/badge/GHCR-image-2ea44f?logo=github&logoColor=white" alt="GHCR"></a>
   <a href="https://hub.docker.com/r/codeswhat/sockguard"><img src="https://img.shields.io/docker/pulls/codeswhat/sockguard?logo=docker&logoColor=white&label=Docker+Hub" alt="Docker Hub pulls"></a>
   <a href="https://quay.io/repository/codeswhat/sockguard"><img src="https://img.shields.io/badge/Quay.io-image-ee0000?logo=redhat&logoColor=white" alt="Quay.io"></a>
-  <br>
-  <a href="https://github.com/orgs/CodesWhat/packages/container/package/sockguard"><img src="https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-informational?logo=linux&logoColor=white" alt="Multi-arch"></a>
-  <a href="https://github.com/orgs/CodesWhat/packages/container/package/sockguard"><img src="https://img.shields.io/docker/image-size/codeswhat/sockguard/latest?logo=docker&logoColor=white&label=image%20size" alt="Image size"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-C9A227" alt="License Apache-2.0"></a>
-</p>
-
-<p align="center">
   <a href="https://github.com/CodesWhat/sockguard/stargazers"><img src="https://img.shields.io/github/stars/CodesWhat/sockguard?style=flat" alt="Stars"></a>
-  <a href="https://github.com/CodesWhat/sockguard/forks"><img src="https://img.shields.io/github/forks/CodesWhat/sockguard?style=flat" alt="Forks"></a>
   <a href="https://github.com/CodesWhat/sockguard/issues"><img src="https://img.shields.io/github/issues/CodesWhat/sockguard?style=flat" alt="Issues"></a>
-  <a href="https://github.com/CodesWhat/sockguard/commits/main"><img src="https://img.shields.io/github/last-commit/CodesWhat/sockguard?style=flat" alt="Last commit"></a>
-  <a href="https://github.com/CodesWhat/sockguard/commits/main"><img src="https://img.shields.io/github/commit-activity/m/CodesWhat/sockguard?style=flat" alt="Commit activity"></a>
-  <br>
   <a href="https://github.com/CodesWhat/sockguard/discussions"><img src="https://img.shields.io/github/discussions/CodesWhat/sockguard?style=flat" alt="Discussions"></a>
-  <a href="https://github.com/CodesWhat/sockguard"><img src="https://img.shields.io/github/repo-size/CodesWhat/sockguard?style=flat" alt="Repo size"></a>
-  <img src="https://komarev.com/ghpvc/?username=CodesWhat-sockguard&label=repo+views&style=flat" alt="Repo views">
 </p>
-
-<p align="center">
-  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/ci-verify.yml/badge.svg?branch=main" alt="CI"></a>
-  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-integration.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/quality-integration.yml/badge.svg?branch=main" alt="Integration"></a>
-  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-fuzz-nightly.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/quality-fuzz-nightly.yml/badge.svg?branch=main" alt="Nightly fuzz"></a>
-  <br>
-  <a href="https://qlty.sh/gh/CodesWhat/projects/sockguard"><img src="https://qlty.sh/badges/5a115b54-7404-4e0e-b09d-2652fb1816e5/coverage.svg" alt="Coverage"></a>
-  <a href="https://securityscorecards.dev/viewer/?uri=github.com/CodesWhat/sockguard"><img src="https://img.shields.io/ossf-scorecard/github.com/CodesWhat/sockguard?label=openssf+scorecard&style=flat" alt="OpenSSF Scorecard"></a>
-  <a href="https://www.bestpractices.dev/projects/14030"><img src="https://www.bestpractices.dev/projects/14030/badge" alt="OpenSSF Best Practices"></a>
-  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/security-grype.yml"><img src="https://github.com/CodesWhat/sockguard/actions/workflows/security-grype.yml/badge.svg?branch=main" alt="Weekly Grype"></a>
-  <a href="https://github.com/CodesWhat/sockguard/actions/workflows/quality-mutation-monthly.yml"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/CodesWhat/sockguard/main/.github/badges/mutation-score.json" alt="Mutation score"></a>
-</p>
-
-<hr>
-
-<h2 align="center">📑 Contents</h2>
-
-- [📖 Documentation](https://getsockguard.com/docs)
-- [🌐 Website](https://getsockguard.com)
-- [🚀 Quick Start](#quick-start)
-- [🆕 Recent Updates](#recent-updates)
-- [🤔 Why Sockguard](#why-sockguard)
-- [✨ Features](#features)
-- [🔌 Supported Profiles](#supported-profiles)
-- [⚖️ Feature Comparison](#feature-comparison)
-- [⚙️ Configuration](#configuration)
-- [🔧 CLI](#cli)
-- [🔄 Migration](#migration)
-- [🗺️ Roadmap](#roadmap)
-- [📖 Documentation](#documentation)
-- [⭐ Star History](#star-history)
-- [🛠️ Built With](#built-with)
-- [🤝 Community & Support](#community--support)
 
 <hr>
 
 > [!NOTE]
 > **v1.7.0 is the latest stable release.** It delivers full BuildKit gRPC mediation — terminating the hijacked session/gRPC tunnel and applying per-message policy to `Control/Solve`/`Control/Status`, credential forwarding (Auth/Secrets/SSH), and file-sync/upload streams, replacing the opaque-tunnel acknowledgment with real enforcement — plus per-field `request_body.network.endpoint_config` gates for static addressing, link-local IPs, MAC pinning, and gateway priority. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
-<h2 align="center" id="quick-start">🚀 Quick Start</h2>
+<h2 align="center">Contents</h2>
+
+- [Docs site](https://getsockguard.com/docs)
+- [Website](https://getsockguard.com)
+- [Quick Start](#quick-start)
+- [Recent Updates](#recent-updates)
+- [Why Sockguard](#why-sockguard)
+- [Features](#features)
+- [Supported Profiles](#supported-profiles)
+- [Feature Comparison](#feature-comparison)
+- [Configuration](#configuration)
+- [CLI](#cli)
+- [Migration](#migration)
+- [Roadmap](#roadmap)
+- [Documentation](#documentation)
+- [Star History](#star-history)
+- [Built With](#built-with)
+- [Community & Support](#community--support)
+
+<hr>
+
+<h2 align="center" id="quick-start">Quick Start</h2>
 
 Drop sockguard in front of any Docker API consumer. The proxy filters requests, your app stays unchanged.
 
@@ -215,7 +207,7 @@ The named-volume quick start creates that socket and its parent directory as UID
 
 <hr>
 
-<h2 align="center" id="recent-updates">🆕 Recent Updates</h2>
+<h2 align="center" id="recent-updates">Recent Updates</h2>
 
 <details>
 <summary><strong>Latest release highlights</strong></summary>
@@ -246,7 +238,7 @@ See [CHANGELOG.md](CHANGELOG.md) for the full itemized history.
 
 <hr>
 
-<h2 align="center" id="why-sockguard">🤔 Why Sockguard</h2>
+<h2 align="center" id="why-sockguard">Why Sockguard</h2>
 
 The Docker socket is **root access to your host**. Every container with socket access can escape containment, mount the host filesystem, and pivot to other containers. Yet tools like Traefik, Portainer, and drydock need socket access to function.
 
@@ -254,37 +246,37 @@ Most existing socket proxies stop at method/path or regex filtering. Tecnativa g
 
 <hr>
 
-<h2 align="center" id="features">✨ Features</h2>
+<h2 align="center" id="features">Features</h2>
 
-| | Feature | Description |
-|---|---|---|
-| 🛡️ | **Default-Deny Posture** | Everything blocked unless explicitly allowed. No match means deny. |
-| 🎛️ | **Granular Control** | Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching. |
-| 📋 | **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 17 bundled workload presets (including CIS Docker Benchmark, self-hosted GitHub Actions runners, GitLab Runner, and Portwing) plus the default config. |
-| 📊 | **Structured Access Logging** | JSON access logs with method, raw path, normalized path, decision, matched rule, latency, canonical request ID, W3C `traceparent` correlation fields, and client info. Untrusted string fields escape CR/LF record delimiters as visible `\r`/`\n` sequences before reaching `slog`, preserving forensic content without allowing forged records even through custom handlers. Use `normalized_path` for SIEM correlation and policy analysis; raw `path` is preserved for forensic replay. Canonical request IDs are generated from a buffered pool so request logging does not block on a fresh entropy read per request. |
-| 🔐 | **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
-| 🌐 | **Client ACL Primitives** | Optional source-CIDR admission checks, client-container label ACLs, listener certificate selectors (CN/DNS/IP/URI SAN/SPKI), profile certificate selectors (CN/DNS/IP/URI/SPIFFE/SPKI), and unix peer credentials let one proxy differentiate callers before the global rule set runs. When mTLS is enabled, certificate selectors follow the verified client leaf certificate rather than an unverified peer slice entry. |
-| 🗃️ | **Safe Inspect Strategy** | Visibility checks reuse a bounded, short-lived singleflight cache, while authorization-critical ownership checks always inspect current Docker state so a deleted/recreated name or retagged image cannot inherit a stale allow decision. |
-| 🔍 | **Request Body Inspection** | `POST /containers/create`, `/containers/*/update`, `/containers/*/exec`, `/exec/*/start`, `PUT /containers/*/archive`, `/images/create`, `/images/load`, `/build`, `/volumes/create`, `/networks/create`, `/networks/*/connect`, `/networks/*/disconnect`, `/secrets/create`, `/configs/create`, `/services/create`, `/services/*/update`, `/swarm/init`, `/swarm/join`, `/swarm/update`, `/swarm/unlock`, `/nodes/*/update`, `/plugins/pull`, `/plugins/*/upgrade`, `/plugins/*/set`, and `/plugins/create` are inspected before Docker sees the request. Sockguard blocks privileged or host-bound workloads, non-allowlisted mounts/devices/commands/remotes, unsafe network/service/swarm/node controls, image archive imports outside registry policy, and unsafe container filesystem archives. `POST /plugins/create` is inspected whether the tar upload arrives as a raw body or `multipart/form-data`. Oversized bodies on bounded JSON/tar inspectors are rejected with `413 Payload Too Large` before any upstream call. These inspectors intentionally decode the policy-relevant subset of Docker's schema and still defer full-schema validation to Docker itself. |
-| 🏷️ | **Owner Label Isolation** | A proxy instance can stamp label-capable creates plus build-produced images with an owner label, auto-filter labeled list/prune/events calls, and deny cross-owner access across containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state — including images, named volumes, networks, secrets, and configs referenced inside container/service payloads. |
-| 🫥 | **Visibility-Controlled Reads** | Redacts env, mount, network, config, plugin, and swarm-sensitive metadata by default, can hide labeled list/inspect plus selected service/task log reads behind per-client visibility rules, and keeps raw archive/export and stream-style reads behind explicit opt-in. |
-| 🧱 | **Body-Blind Write Guardrail** | Any remaining write Sockguard cannot safely constrain stays behind explicit `insecure_allow_body_blind_writes` opt-in instead of being silently exposed. Today that guardrail chiefly covers arbitrary exec without `request_body.exec.allowed_commands`, `POST /swarm/join` without `request_body.swarm.allowed_join_remote_addrs`, and plugin setting writes without explicit allowed assignment prefixes. For exec, the flag is wired into request-time enforcement too: with it set, an unpinned exec is admitted instead of denied, but `allow_privileged`/`allow_root_user`/`allowed_env_vars`/`denied_env_vars`/`allowed_env_values` still gate it exactly as configured. |
-| 🔄 | **Tecnativa Compatible** | Drop-in replacement for the current Tecnativa env surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. |
-| 🎚️ | **Rollout Modes** | Per-profile `mode: enforce\|warn\|audit` lets operators stage a tighter policy without breaking callers. `warn`/`audit` pass-through with `decision=would_deny` on the audit record and a `mode` label on the deny/throttle counters, so dashboards compare blocked vs. would-have-been-blocked volume side by side. |
-| 🔁 | **Hot-Reload + Policy Versioning** | `reload.enabled: true` watches the config file via fsnotify (Linux inotify / macOS kqueue) and accepts `SIGHUP`. The new policy goes through the full validator + rule compiler and is atomically swapped behind the running handler; immutable fields (listeners, log, health, metrics, admin, policy-bundle trust material) refuse the reload. A monotonic generation counter is exposed at `GET /admin/policy/version` and via the `sockguard_policy_version` gauge. |
-| 🧪 | **Admin API** | Opt-in `POST /admin/validate` accepts a candidate YAML body and returns the same verdict the offline `sockguard validate` command would — perfect for a CI gate before promoting a config. `GET /admin/policy/version` reports `{version, loaded_at, rules, profiles, source, config_sha256, bundle_signer?}`. Both endpoints can ride the main listener or move to a dedicated `admin.listen.*` (socket or TCP, mTLS-aware) firewalled from Docker-API consumers. |
-| ✍️ | **Signed Policy Bundles** | `policy_bundle.enabled: true` requires a cosign sigstore bundle to vouch for the YAML config bytes. Keyed (PEM) and keyless (Fulcio + Rekor) trust paths reuse the same sigstore-go stack as image trust. Verification runs at startup before any rule compiles and again on every hot reload — unsigned or tampered bundles abort startup and reject reloads with `reject_signature` on `sockguard_config_reload_total`. The verified signer and YAML digest are stamped on the policy-version snapshot. |
-| 🪶 | **Minimal Attack Surface** | Wolfi-based image. Cosign-signed with SBOM and build provenance. |
-| ⚡ | **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
-| 🩺 | **Health, Watchdog + Readiness** | `/health` endpoint with cached upstream reachability probes, an opt-in active Docker socket watchdog that logs state transitions, and an opt-in `/ready` probe that issues a real `GET /containers/json` against the Docker API — returning `503` when the daemon accepts connections but has stopped answering, the wedged-daemon case a raw socket dial misses. |
-| ⏱️ | **Upstream Request Timeout** | `upstream.request_timeout` (default `60s`) bounds finite proxied requests with a total deadline, turning a hung response body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`). Streaming and long-lived endpoints (events, follow logs/stats, pull/build/push/load, export, archive/`docker cp`, attach, container wait) are exempt. Set `"off"` to disable. |
-| 📈 | **Prometheus Metrics** | Opt-in `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, active request gauge, upstream watchdog + readiness state/check metrics, plus `sockguard_build_info` and `sockguard_start_time_seconds` gauges for version panels and uptime alerts. |
-| 🔗 | **Trace/Log Correlation** | Preserves valid W3C `traceparent` context or generates local context, forwards a proxy-local span ID, and records trace fields in access, audit, and upstream error logs without an OTLP exporter. |
-| 🧪 | **Battle-Tested** | 96%+ statement coverage (enforced by a CI coverage gate), race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
+| Feature | Description |
+|---|---|
+| **Default-Deny Posture** | Everything blocked unless explicitly allowed. No match means deny. |
+| **Granular Control** | Allow start/stop while blocking create/exec. Per-operation POST controls with glob matching. |
+| **YAML Configuration** | Declarative rules, glob path patterns, first-match-wins evaluation, and canonical path matching that strips API versions, collapses dot segments, and decodes escaped separators before policy evaluation. 17 bundled workload presets (including CIS Docker Benchmark, self-hosted GitHub Actions runners, GitLab Runner, and Portwing) plus the default config. |
+| **Structured Access Logging** | JSON access logs with method, raw path, normalized path, decision, matched rule, latency, canonical request ID, W3C `traceparent` correlation fields, and client info. Untrusted string fields escape CR/LF record delimiters as visible `\r`/`\n` sequences before reaching `slog`, preserving forensic content without allowing forged records even through custom handlers. Use `normalized_path` for SIEM correlation and policy analysis; raw `path` is preserved for forensic replay. Canonical request IDs are generated from a buffered pool so request logging does not block on a fresh entropy read per request. |
+| **mTLS for Remote TCP** | Non-loopback TCP listeners require mutual TLS by default. Plaintext TCP is explicit legacy mode only. |
+| **Client ACL Primitives** | Optional source-CIDR admission checks, client-container label ACLs, listener certificate selectors (CN/DNS/IP/URI SAN/SPKI), profile certificate selectors (CN/DNS/IP/URI/SPIFFE/SPKI), and unix peer credentials let one proxy differentiate callers before the global rule set runs. When mTLS is enabled, certificate selectors follow the verified client leaf certificate rather than an unverified peer slice entry. |
+| **Safe Inspect Strategy** | Visibility checks reuse a bounded, short-lived singleflight cache, while authorization-critical ownership checks always inspect current Docker state so a deleted/recreated name or retagged image cannot inherit a stale allow decision. |
+| **Request Body Inspection** | `POST /containers/create`, `/containers/*/update`, `/containers/*/exec`, `/exec/*/start`, `PUT /containers/*/archive`, `/images/create`, `/images/load`, `/build`, `/volumes/create`, `/networks/create`, `/networks/*/connect`, `/networks/*/disconnect`, `/secrets/create`, `/configs/create`, `/services/create`, `/services/*/update`, `/swarm/init`, `/swarm/join`, `/swarm/update`, `/swarm/unlock`, `/nodes/*/update`, `/plugins/pull`, `/plugins/*/upgrade`, `/plugins/*/set`, and `/plugins/create` are inspected before Docker sees the request. Sockguard blocks privileged or host-bound workloads, non-allowlisted mounts/devices/commands/remotes, unsafe network/service/swarm/node controls, image archive imports outside registry policy, and unsafe container filesystem archives. `POST /plugins/create` is inspected whether the tar upload arrives as a raw body or `multipart/form-data`. Oversized bodies on bounded JSON/tar inspectors are rejected with `413 Payload Too Large` before any upstream call. These inspectors intentionally decode the policy-relevant subset of Docker's schema and still defer full-schema validation to Docker itself. |
+| **Owner Label Isolation** | A proxy instance can stamp label-capable creates plus build-produced images with an owner label, auto-filter labeled list/prune/events calls, and deny cross-owner access across containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state — including images, named volumes, networks, secrets, and configs referenced inside container/service payloads. |
+| **Visibility-Controlled Reads** | Redacts env, mount, network, config, plugin, and swarm-sensitive metadata by default, can hide labeled list/inspect plus selected service/task log reads behind per-client visibility rules, and keeps raw archive/export and stream-style reads behind explicit opt-in. |
+| **Body-Blind Write Guardrail** | Any remaining write Sockguard cannot safely constrain stays behind explicit `insecure_allow_body_blind_writes` opt-in instead of being silently exposed. Today that guardrail chiefly covers arbitrary exec without `request_body.exec.allowed_commands`, `POST /swarm/join` without `request_body.swarm.allowed_join_remote_addrs`, and plugin setting writes without explicit allowed assignment prefixes. For exec, the flag is wired into request-time enforcement too: with it set, an unpinned exec is admitted instead of denied, but `allow_privileged`/`allow_root_user`/`allowed_env_vars`/`denied_env_vars`/`allowed_env_values` still gate it exactly as configured. |
+| **Tecnativa Compatible** | Drop-in replacement for the current Tecnativa env surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. |
+| **Rollout Modes** | Per-profile `mode: enforce\|warn\|audit` lets operators stage a tighter policy without breaking callers. `warn`/`audit` pass-through with `decision=would_deny` on the audit record and a `mode` label on the deny/throttle counters, so dashboards compare blocked vs. would-have-been-blocked volume side by side. |
+| **Hot-Reload + Policy Versioning** | `reload.enabled: true` watches the config file via fsnotify (Linux inotify / macOS kqueue) and accepts `SIGHUP`. The new policy goes through the full validator + rule compiler and is atomically swapped behind the running handler; immutable fields (listeners, log, health, metrics, admin, policy-bundle trust material) refuse the reload. A monotonic generation counter is exposed at `GET /admin/policy/version` and via the `sockguard_policy_version` gauge. |
+| **Admin API** | Opt-in `POST /admin/validate` accepts a candidate YAML body and returns the same verdict the offline `sockguard validate` command would — perfect for a CI gate before promoting a config. `GET /admin/policy/version` reports `{version, loaded_at, rules, profiles, source, config_sha256, bundle_signer?}`. Both endpoints can ride the main listener or move to a dedicated `admin.listen.*` (socket or TCP, mTLS-aware) firewalled from Docker-API consumers. |
+| **Signed Policy Bundles** | `policy_bundle.enabled: true` requires a cosign sigstore bundle to vouch for the YAML config bytes. Keyed (PEM) and keyless (Fulcio + Rekor) trust paths reuse the same sigstore-go stack as image trust. Verification runs at startup before any rule compiles and again on every hot reload — unsigned or tampered bundles abort startup and reject reloads with `reject_signature` on `sockguard_config_reload_total`. The verified signer and YAML digest are stamped on the policy-version snapshot. |
+| **Minimal Attack Surface** | Wolfi-based image. Cosign-signed with SBOM and build provenance. |
+| **Streaming-Safe** | Preserves Docker streaming endpoints (logs, attach, events) without breaking timeouts, while reaping idle TCP keep-alive connections after 120s. |
+| **Health, Watchdog + Readiness** | `/health` endpoint with cached upstream reachability probes, an opt-in active Docker socket watchdog that logs state transitions, and an opt-in `/ready` probe that issues a real `GET /containers/json` against the Docker API — returning `503` when the daemon accepts connections but has stopped answering, the wedged-daemon case a raw socket dial misses. |
+| **Upstream Request Timeout** | `upstream.request_timeout` (default `60s`) bounds finite proxied requests with a total deadline, turning a hung response body or heavy read into a fast `504` (`reason_code=upstream_request_timeout`). Streaming and long-lived endpoints (events, follow logs/stats, pull/build/push/load, export, archive/`docker cp`, attach, container wait) are exempt. Set `"off"` to disable. |
+| **Prometheus Metrics** | Opt-in `/metrics` endpoint with low-cardinality request counters, deny counters, latency histograms, active request gauge, upstream watchdog + readiness state/check metrics, plus `sockguard_build_info` and `sockguard_start_time_seconds` gauges for version panels and uptime alerts. |
+| **Trace/Log Correlation** | Preserves valid W3C `traceparent` context or generates local context, forwards a proxy-local span ID, and records trace fields in access, audit, and upstream error logs without an OTLP exporter. |
+| **Battle-Tested** | 96%+ statement coverage (enforced by a CI coverage gate), race-detector clean, monthly Gremlins mutation testing, and fuzz testing on filter, config, proxy, and hijack paths. |
 
 <hr>
 
-<h2 align="center" id="supported-profiles">🔌 Supported Profiles</h2>
+<h2 align="center" id="supported-profiles">Supported Profiles</h2>
 
 ### Bundled presets (18)
 
@@ -303,7 +295,7 @@ Rules can cover method/path filters, body-aware write inspection, declarative ad
 <hr>
 
 <a id="comparison"></a>
-<h2 align="center" id="feature-comparison">⚖️ Feature Comparison</h2>
+<h2 align="center" id="feature-comparison">Feature Comparison</h2>
 
 <details>
 <summary><strong>How does Sockguard compare to other Docker socket proxies?</strong></summary>
@@ -336,7 +328,7 @@ How we stack up against other Docker socket proxies:
 
 <hr>
 
-<h2 align="center" id="configuration">⚙️ Configuration</h2>
+<h2 align="center" id="configuration">Configuration</h2>
 
 ### Environment Variables (Tecnativa-compatible)
 
@@ -409,7 +401,7 @@ Bundled presets and ready-to-run compose stacks are summarized in [Supported Pro
 
 <hr>
 
-<h2 align="center" id="cli">🔧 CLI</h2>
+<h2 align="center" id="cli">CLI</h2>
 
 Install the latest stable native binary on macOS or Linux through the CodesWhat Homebrew tap:
 
@@ -437,7 +429,7 @@ Output is text by default or JSON via `-o json`.
 <hr>
 
 <a id="migrating-from-tecnativa"></a>
-<h2 align="center" id="migration">🔄 Migration</h2>
+<h2 align="center" id="migration">Migration</h2>
 
 <details>
 <summary><strong>Migrating from Tecnativa or LinuxServer socket proxies</strong></summary>
@@ -467,7 +459,7 @@ LinuxServer's socket-proxy env surface is already Tecnativa-compatible for the b
 
 <hr>
 
-<h2 align="center" id="roadmap">🗺️ Roadmap</h2>
+<h2 align="center" id="roadmap">Roadmap</h2>
 
 <details>
 <summary><strong>Version themes & highlights</strong></summary>
@@ -596,7 +588,7 @@ These themes remain unscheduled until their scope and security boundary are conc
 
 <hr>
 
-<h2 align="center" id="documentation">📖 Documentation</h2>
+<h2 align="center" id="documentation">Documentation</h2>
 
 | Resource | Link |
 | --- | --- |
@@ -623,13 +615,7 @@ These themes remain unscheduled until their scope and security boundary are conc
 
 <hr>
 
-<a id="star-history"></a>
-
-<div align="center">
-  <a href="https://star-history.com/#CodesWhat/sockguard&Date">
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=CodesWhat/sockguard&type=Date" />
-  </a>
-</div>
+<h2 align="center" id="star-history">Star History</h2>
 
 Growth chart via [Warpchart](https://warpchart.dev):
 
@@ -638,12 +624,6 @@ Growth chart via [Warpchart](https://warpchart.dev):
     <img alt="CodesWhat/sockguard star history · Warpchart" src="https://warpchart.dev/api/chart?repo=CodesWhat%2Fsockguard" />
   </a>
 </div>
-
-## Community
-
-Questions, feedback, and early support: [CodesWhat Discord](https://discord.gg/mWHCPJRzSx)
-
-Please file concrete bugs and feature requests in [GitHub Issues](https://github.com/CodesWhat/sockguard/issues) so they do not get lost in chat.
 
 ---
 
@@ -672,7 +652,9 @@ Please file concrete bugs and feature requests in [GitHub Issues](https://github
 
 ### Community & Support
 
-Issues, ideas, and pull requests are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md), use [SECURITY.md](SECURITY.md) for private vulnerability disclosure, and use [GitHub Discussions](https://github.com/CodesWhat/sockguard/discussions) for design questions.
+**[GitHub Issues](https://github.com/CodesWhat/sockguard/issues)** for bugs and feature requests, **[GitHub Discussions](https://github.com/CodesWhat/sockguard/discussions)** for design questions and Q&A, and the **[CodesWhat Discord](https://discord.gg/mWHCPJRzSx)** for real-time chat.
+
+Start with [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request, and use [SECURITY.md](SECURITY.md) for private vulnerability disclosure.
 
 For local fuzz triage, run `scripts/local-fuzz.sh --suite ci --fuzztime 2m`. Use `--suite ultra` for every fuzzer, `--timeout` to set the Go watchdog explicitly, and `--docker --platform linux/amd64` when you want closer GitHub Actions parity.
 

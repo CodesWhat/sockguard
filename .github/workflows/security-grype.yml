@@ -46,7 +46,7 @@ jobs:
       # Same base endpoints as quality-fuzz-nightly.yml plus vuln.go.dev for
       # govulncheck's own vulnerability database fetch.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -114,7 +114,7 @@ jobs:
       # Chainguard's CDN endpoints — not a fixed set. Same reasoning as
       # ci-verify.yml's "Docker Build" job. Revisit in stage 2.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
@@ -148,7 +148,7 @@ jobs:
       - name: Upload Grype SARIF to code scanning
         # Code scanning uploads require GHAS, not available on free private repos.
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-image
@@ -175,7 +175,7 @@ jobs:
       # runs in block mode for its own (npm-only) grype-deps job — this
       # extends it to the identical Go+npm scan sockguard runs.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -209,7 +209,7 @@ jobs:
 
       - name: Upload Grype dependency SARIF
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
         with:
           sarif_file: ${{ steps.grype-deps.outputs.sarif }}
           category: grype-deps
@@ -240,7 +240,7 @@ jobs:
       # domain in the harden-runner log to show why. Revisit in stage 2,
       # when the container jobs get their egress characterised properly.
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
@@ -256,7 +256,7 @@ jobs:
 
       - name: Upload Gosec SARIF
         if: always() && github.event.repository.visibility == 'public'
-        uses: github/codeql-action/upload-sarif@e4fba868fa4b1b91e1fdab776edc8cfbe6e9fb81  # v4.37.3
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
         with:
           sarif_file: gosec-results.sarif
           category: gosec
@@ -284,7 +284,7 @@ jobs:
       # same permanent-audit posture for the same reason: it queries a live,
       # third-party analysis surface).
       - name: Harden Runner
-        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
           egress-policy: audit
 
