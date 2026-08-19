@@ -24,7 +24,7 @@ env:
 jobs:
   cut:
     name: "🏷️ Release: Cut Tag"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20  # Includes CI-success polling for target SHA before tagging
     permissions:
       actions: read

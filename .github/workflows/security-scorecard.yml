@@ -21,7 +21,7 @@ jobs:
     name: "🏅 Security: Scorecard Analysis"
     # OpenSSF Scorecard only runs on public repos; SARIF upload also requires GHAS.
     if: github.event.repository.visibility == 'public'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read  # Checkout code
@@ -29,6 +29,11 @@ jobs:
       id-token: write  # Publish results to OpenSSF REST API
 
     steps:
+      # Stays audit PERMANENTLY, not just for stage 1: OpenSSF Scorecard
+      # queries a live, third-party best-practices/dependency-analysis
+      # surface (deps.dev, OSV, the GitHub REST API, etc.) with no stable,
+      # enumerable endpoint set — same permanent-audit posture as
+      # security-grype.yml's testssl DAST job.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
