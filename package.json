@@ -1,4 +1,5 @@
 {
+  "name": "sockguard",
   "private": true,
   "workspaces": [
     "website",
