@@ -57,6 +57,12 @@ jobs:
             proxy.golang.org:443
             sum.golang.org:443
             vuln.go.dev:443
+            # setup-go resolves go.mod's version against actions/go-versions
+            # first, then falls back to go.dev/dl/?mode=json. Warm runners hit
+            # the manifest and never touch go.dev, so leaving this out passes
+            # until the day the toolchain isn't cached and the job dies with
+            # no related change.
+            go.dev:443
             *.actions.githubusercontent.com:443
           disable-sudo: true
 
@@ -225,19 +231,18 @@ jobs:
       contents: read
       security-events: write
     steps:
-      # Stage 1 of the harden-runner egress rollout: gosec runs as a
-      # digest-pinned GHCR container action, so ghcr.io + the GHCR pull CDN
-      # host are the entire footprint beyond checkout.
+      # Stays audit for stage 1, same as Docker Build and grype-image: gosec
+      # runs as a container action, and harden-runner's block mode drops
+      # container egress silently rather than rejecting it, so every module
+      # lookup gosec makes burns a full TCP timeout instead of failing fast.
+      # Measured: this job completes in ~2 minutes on every other branch and
+      # blew past timeout-minutes: 15 twice under block, with no denied
+      # domain in the harden-runner log to show why. Revisit in stage 2,
+      # when the container jobs get their egress characterised properly.
       - name: Harden Runner
         uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920  # v2.20.0
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            github.com:443
-            ghcr.io:443
-            pkg-containers.githubusercontent.com:443
-            *.actions.githubusercontent.com:443
-          disable-sudo: true
+          egress-policy: audit
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
