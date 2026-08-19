@@ -5,16 +5,20 @@ import { GITHUB_URL, REPO_SLUG } from "@/lib/site-config";
 
 // Star History = clean framed card, title above the chart (left-aligned).
 
-const DARK_SRC = `https://api.star-history.com/svg?repos=${REPO_SLUG}&type=timeline&theme=dark&legend=top-left`;
-const LIGHT_SRC = `https://api.star-history.com/svg?repos=${REPO_SLUG}&type=timeline&legend=top-left`;
-const CHART_HREF = `https://www.star-history.com/#${REPO_SLUG}&type=timeline&legend=top-left`;
+// Warpchart, not star-history.com: GitHub restricted the stargazer API that
+// star-history.com replays per request, so its SVG now returns an error card
+// at HTTP 200. Warpchart accumulates its own time series and is unaffected.
+const CHART_API = `https://warpchart.dev/api/chart?repo=${encodeURIComponent(REPO_SLUG)}`;
+const DARK_SRC = `${CHART_API}&theme=dark`;
+const LIGHT_SRC = CHART_API;
+const CHART_HREF = `https://warpchart.dev/r/${REPO_SLUG}`;
 
 function StarChart({ className }: { className?: string }) {
   return (
     <a href={CHART_HREF} target="_blank" rel="noopener" className={className}>
       {/* Swap on the .dark class (theme toggle), not prefers-color-scheme */}
-      <img src={LIGHT_SRC} alt="Star History Chart" className="w-full dark:hidden" />
-      <img src={DARK_SRC} alt="Star History Chart" className="hidden w-full dark:block" />
+      <img src={LIGHT_SRC} alt="Star history chart" className="w-full dark:hidden" />
+      <img src={DARK_SRC} alt="Star history chart" className="hidden w-full dark:block" />
     </a>
   );
 }
