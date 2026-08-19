@@ -100,10 +100,10 @@ negative-auth-probe containers) via an `EXIT` trap.
    `allow_privileged: false` gate, `deny_verbosity: verbose` since #158).
 8. **Remote update trigger** — creates a sentinel pinned at an old
    `busybox` digest through the proxied socket, waits for it to reach
-   drydock's own `GET /api/containers` store (paginated `{data: [...]}`
+   drydock's own `GET /api/v1/containers` store (paginated `{data: [...]}`
    envelope on every drydock version — presence proves the full
    sockguard-mediated Portwing inventory-sync path), then fires
-   `POST /api/triggers/docker/update` (agent-qualified when the document
+   `POST /api/v1/triggers/docker/update` (agent-qualified when the document
    names one) with the required `{id: <drydock container id>}` body — the
    shape pinned from drydock's `app/api/trigger.ts` (#211). Every row
    passes only on the documented refusal (`404`/`501`): the audited bundle
@@ -242,10 +242,18 @@ require a follow-up patch to this harness:
   2026-08-08/09 live runs (#211) and a local repro against the published
   pair. The body requires drydock's own container-store `id` (400 "Invalid
   trigger request body" otherwise, on every drydock version). `GET
-  /api/containers` returns a paginated `{data: [...]}` envelope on both
+  /api/v1/containers` returns a paginated `{data: [...]}` envelope on both
   drydock latest and the 1.5.2 legacy pin — the first store-poll read it
-  as a bare array and could never see the sentinel. And the update flow
-  itself is bounded by the audited bundle: no docker update trigger is
+  as a bare array and could never see the sentinel. The unversioned
+  `/api/containers`/`/api/triggers/*` aliases this assertion used until
+  CodesWhat/drydock#802 were removed (410) in drydock v1.6.0; polling
+  them silently produced the same empty-result timeout as a real sync
+  failure, because the 410 body fed straight into `jq '.data // .'`, the
+  resulting type error went to `2>/dev/null`, and an empty result is what
+  a real sync failure looks like too. The harness now uses `/api/v1` and
+  fails loudly on a non-2xx response or a jq parse error instead of
+  swallowing both. And the update flow itself is bounded by the audited
+  bundle: no docker update trigger is
   configured in drydock (correctly-shaped invocations are refused 404
   "trigger not found" on every version), and the published pair cannot
   flag `updateAvailable` in this topology at all — drydock's watch-now

@@ -1015,12 +1015,17 @@ assert_remote_update_trigger() {
   # published pair (2026-08-09). Two facts bound what this assertion can
   # honestly claim, on EVERY row:
   #
-  #   1. GET /api/containers returns a paginated envelope {data: [...]}
+  #   1. GET /api/v1/containers returns a paginated envelope {data: [...]}
   #      on both drydock latest and the 1.5.2 legacy pin (v1.5.2
   #      app/api/container/crud-context.ts ContainerListResponse) -- the
-  #      earlier bare-array read made this poll return empty forever.
+  #      earlier bare-array read made this poll return empty forever. The
+  #      unversioned /api/containers alias used before
+  #      (CodesWhat/drydock#802) 410s as of drydock v1.6.0
+  #      (app/api/index.ts sendUnversionedApiTombstone) --
+  #      it was NEVER a drydock sync regression, just this harness polling
+  #      a removed alias and silently discarding the resulting jq error.
   #   2. The audited tri-tool bundle configures NO docker update trigger in
-  #      drydock, so a correctly-shaped POST /api/triggers/docker/update
+  #      drydock, so a correctly-shaped POST /api/v1/triggers/docker/update
   #      with drydock's own store {id} is refused 404 "trigger not found"
   #      on every drydock version. There is no topology in this bundle
   #      where updates flow: drydock's watch-now delegates registry checks
@@ -1060,10 +1065,50 @@ assert_remote_update_trigger() {
   # to 10s inside curl --max-time on top of the 5s sleep, so counting
   # iterations would let a stalled store consume ~3x the advertised window.
   local doc="" dd_id="" dd_agent="" remaining
+  local containers_body="${SCRATCH_DIR}/containers-response.json"
+  local containers_status containers_jq_err
   local deadline=$(( SECONDS + STORE_SYNC_TIMEOUT ))
   while (( SECONDS < deadline )); do
-    doc="$(curl --silent --max-time 10 "http://127.0.0.1:3000/api/containers?limit=500" 2>/dev/null \
-      | jq -c --arg n "$sentinel" '[(.data // .) | .[]? | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty' 2>/dev/null)"
+    if ! containers_status="$(curl --silent --max-time 10 --output "$containers_body" \
+        --write-out '%{http_code}' "http://127.0.0.1:3000/api/v1/containers?limit=500" 2>"${SCRATCH_DIR}/containers-curl-err.log")"; then
+      # curl itself failed to get a response at all (connection refused,
+      # timeout, etc) -- transient, keep polling like before rather than
+      # failing on the first hiccup.
+      remaining=$(( deadline - SECONDS ))
+      (( remaining <= 0 )) && break
+      sleep $(( remaining < 5 ? remaining : 5 ))
+      continue
+    fi
+    case "$containers_status" in
+      2??)
+        ;;
+      *)
+        # drydock answered, just not with success -- this is drydock (or
+        # the harness's URL for it) misbehaving, not "sentinel not synced
+        # yet". Fail loudly now instead of retrying an error into a
+        # timeout that looks identical to a real sync failure.
+        #
+        # No 5xx-is-transient carve-out on purpose: assert_auth_handshake
+        # has already waited up to 90s for drydock to log the portwing
+        # agent authenticating, and that's the same express app serving
+        # this route, so warm-up is over by the time this runs. Retrying a
+        # 5xx here would re-hide exactly the class of error this branch
+        # exists to surface.
+        record_result "$name" FAIL "harness error, not a conformance failure -- GET /api/v1/containers returned ${containers_status}: $(head -c 300 "$containers_body" 2>/dev/null)"
+        return 1
+        ;;
+    esac
+    # /api/v1/containers always answers 2xx with the {data: [...]} envelope
+    # (drydock app/api/container/crud-context.ts ContainerListResponse) --
+    # no bare-array fallback needed now that a non-2xx response is caught
+    # above instead of being fed into this filter.
+    if ! doc="$(jq -c --arg n "$sentinel" \
+        '[.data[]? | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty' \
+        "$containers_body" 2>"${SCRATCH_DIR}/containers-jq-err.log")"; then
+      containers_jq_err="$(cat "${SCRATCH_DIR}/containers-jq-err.log" 2>/dev/null)"
+      record_result "$name" FAIL "harness bug, not a conformance failure -- jq failed to parse the /api/v1/containers response (${containers_jq_err}): $(head -c 300 "$containers_body" 2>/dev/null)"
+      return 1
+    fi
     if [ -n "$doc" ]; then
       break
     fi
@@ -1072,7 +1117,7 @@ assert_remote_update_trigger() {
     sleep $(( remaining < 5 ? remaining : 5 ))
   done
   if [ -z "$doc" ]; then
-    record_result "$name" FAIL "sentinel never appeared in drydock's /api/containers store within ${STORE_SYNC_TIMEOUT}s"
+    record_result "$name" FAIL "sentinel never appeared in drydock's /api/v1/containers store within ${STORE_SYNC_TIMEOUT}s"
     return 1
   fi
   dd_id="$(jq -r '.id // empty' <<<"$doc")"
@@ -1082,7 +1127,7 @@ assert_remote_update_trigger() {
     return 1
   fi
 
-  local trigger_url="http://127.0.0.1:3000/api/triggers/docker/update"
+  local trigger_url="http://127.0.0.1:3000/api/v1/triggers/docker/update"
   if [ -n "$dd_agent" ]; then
     trigger_url="${trigger_url}/${dd_agent}"
   fi
