@@ -34,8 +34,8 @@ reviews:
   assess_linked_issues: true
   related_issues: true
   related_prs: true
-  suggested_labels: false
-  auto_apply_labels: false
+  suggested_labels: true
+  auto_apply_labels: true
   suggested_reviewers: false
   auto_assign_reviewers: false
   enable_prompt_for_ai_agents: true
@@ -89,6 +89,14 @@ reviews:
     - path: "docs/**"
       instructions: |
         Docs site. Review for accuracy against the code, not prose style.
+
+  labeling_instructions:
+    - label: "second-opinion"
+      instructions: |
+        Apply this label when the diff hits any of: security-sensitive code
+        (auth, release workflows, proxy/socket logic), a large refactor, or
+        a case where your findings conflict with the author's stated intent.
+        The label summons Greptile as an independent second-opinion reviewer.
 
   finishing_touches:
     docstrings:
