@@ -30,6 +30,7 @@ const FIXED_SCRIPTS = new Map([
     ],
   ],
   ["go-fuzz.sh", ["FUZZER", "PKG", "fuzztime=60s"]],
+  ["shellcheck.sh", ["command -v shellcheck", "git ls-files -z '*.sh'", "shellcheck \"${scripts[@]}\""]],
   ["node-lint.sh", ["npm ci", "biome check"]],
   ["node-test.sh", ["npm ci", "npm test"]],
   ["node-build.sh", ["npm ci", "turbo build"]],
