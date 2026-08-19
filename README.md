@@ -615,13 +615,7 @@ These themes remain unscheduled until their scope and security boundary are conc
 
 <hr>
 
-<a id="star-history"></a>
-
-<div align="center">
-  <a href="https://star-history.com/#CodesWhat/sockguard&Date">
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=CodesWhat/sockguard&type=Date" />
-  </a>
-</div>
+<h2 align="center" id="star-history">Star History</h2>
 
 Growth chart via [Warpchart](https://warpchart.dev):
 
