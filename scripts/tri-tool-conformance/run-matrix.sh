@@ -232,6 +232,28 @@ fi
 # Row configuration
 # ---------------------------------------------------------------------------
 
+# Resolves "the newest published stable sockguard release" from local tag
+# history -- the same awk-based prerelease filter as release-cut.yml's "Find
+# latest release tag" step (v*-sorted, hyphenated prerelease tags dropped),
+# just read here at run time instead of computed once in a workflow step.
+# Chosen over a Docker Hub tag-listing call: git tag history is already on
+# disk from checkout, so this stays network-free and avoids inventing
+# pagination/rate-limit handling and semver parsing in this script. Exits
+# FATAL rather than silently falling back to a floor version -- a checkout
+# missing tag history (e.g. the default shallow depth-1 clone) must fail
+# loudly here, not quietly reintroduce the bug this exists to fix (#289
+# item 2: current-* rows already float portwing/drydock to latest, but
+# sockguard silently stayed pinned to the legacy-floor default).
+resolve_latest_sockguard_version() {
+  local latest_tag
+  latest_tag="$(git -C "$REPO_ROOT" tag --list 'v*' --sort=-v:refname | awk '!/-/' | head -n1)"
+  if [ -z "$latest_tag" ]; then
+    echo "FATAL: resolve_latest_sockguard_version: no stable v* tags found in ${REPO_ROOT} -- checkout is missing tag history (needs fetch-depth: 0)" >&2
+    exit 1
+  fi
+  echo "${latest_tag#v}"
+}
+
 case "$ROW" in
   current-standard)
     COMPOSE_FILES=("${BUNDLE_DIR}/docker-compose.yml" "${BUNDLE_DIR}/docker-compose.conformance-overlay.yml")
@@ -277,7 +299,30 @@ case "$ROW" in
     ;;
 esac
 
-SOCKGUARD_IMAGE_RESOLVED="${SOCKGUARD_IMAGE_INPUT:-codeswhat/sockguard:1.5.1}"
+# An explicit --sockguard-image/sockguard_image always wins outright, for
+# every row, unconditionally -- RELEASING.md's pre-GA gate depends on this
+# to test a specific release-candidate ref rather than whatever a row would
+# otherwise default to. Below that: legacy-floor keeps the deliberate
+# audited-floor 1.5.1 pin (sockguard PR #155 -- see the legacy-floor case
+# arm above), while current-standard/current-edge resolve the newest
+# published stable release from tag history, the same way they already
+# float portwing/drydock to `latest` (#289 item 2). Concrete rather than
+# `latest`, unlike the other two tools, so a future failure names exactly
+# what it tested instead of "latest" as of an unknown moment -- see the
+# sockguard=/portwing=/drydock= log line below.
+if [ -n "$SOCKGUARD_IMAGE_INPUT" ]; then
+  SOCKGUARD_IMAGE_RESOLVED="$SOCKGUARD_IMAGE_INPUT"
+elif [ "$ROW" = "legacy-floor" ]; then
+  SOCKGUARD_IMAGE_RESOLVED="codeswhat/sockguard:1.5.1"
+else
+  # Not `$(...)` inlined directly into the assignment: resolve_latest_sockguard_version's
+  # own `exit 1` only kills the command-substitution subshell, not this
+  # script, so the failure must be caught explicitly here or a resolver
+  # FATAL would silently fall through to an empty version string instead
+  # of stopping the row.
+  SOCKGUARD_VERSION_RESOLVED="$(resolve_latest_sockguard_version)" || exit 1
+  SOCKGUARD_IMAGE_RESOLVED="codeswhat/sockguard:${SOCKGUARD_VERSION_RESOLVED}"
+fi
 PORTWING_IMAGE_RESOLVED="ghcr.io/codeswhat/portwing:${PORTWING_VERSION}"
 DRYDOCK_IMAGE_RESOLVED="codeswhat/drydock:${DRYDOCK_VERSION}"
 

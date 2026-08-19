@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The tri-tool conformance matrix's `current-*` rows now actually test a current sockguard (#289).** `current-standard` and `current-edge` floated portwing and drydock to `latest` but left sockguard on `codeswhat/sockguard:1.5.1` — the compose bundle's audited-floor default — so 1.6.0, 1.7.0, and 1.7.1 had never been through the weekly suite. `run-matrix.sh` now resolves those two rows to the newest published stable release from local tag history (`git tag --list 'v*' --sort=-v:refname` with prerelease tags filtered, the same logic `release-cut.yml` already uses), which is why the matrix job's checkout moves to `fetch-depth: 0`. Deliberately a concrete version rather than a floating `latest` like the other two tools: a row that only records "latest" leaves no way to tell afterwards what it tested, which cost three CI runs while bisecting a drydock regression. An explicit `sockguard_image` input still wins outright for every row, so RELEASING.md's pre-GA candidate gate is unchanged, and `legacy-floor` keeps its audited-floor pins. Resolution fails loudly on a checkout with no tag history rather than falling back to the floor and silently reintroducing the bug.
+
 ## [1.7.1] - 2026-08-19
 
 ### Security
