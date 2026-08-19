@@ -23,7 +23,11 @@ const FIXED_SCRIPTS = new Map([
     "go-release-check.sh",
     [
       "goreleaser/goreleaser/v2@v2.15.3",
-      'skip="publish"',
+      // `sign` is load-bearing, not cosmetic: the signs: blocks use keyless
+      // cosign, which needs an OIDC identity only the tagged release run has.
+      // Dropping it back to just "publish" fails this dry-run on any machine
+      // that has cosign installed, which includes CI.
+      'skip="publish,sign"',
       "command -v syft",
       'release --snapshot --clean --skip="${skip}"',
       "cask ",
