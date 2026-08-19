@@ -70,7 +70,7 @@ runs:
             "${runs_url}")"
 
           success_count="$(echo "${runs_json}" | jq '[.workflow_runs[] | select(.conclusion == "success" and ((.head_branch // "") | length > 0))] | length')"
-          in_progress_count="$(echo "${runs_json}" | jq '[.workflow_runs[] | select(.status != "completed" and ((.head_branch // "") | length > 0))] | length')"
+          noncompleted_count="$(echo "${runs_json}" | jq '[.workflow_runs[] | select(.status != "completed" and ((.head_branch // "") | length > 0))] | length')"
           completed_count="$(echo "${runs_json}" | jq '[.workflow_runs[] | select(.status == "completed" and ((.head_branch // "") | length > 0))] | length')"
 
           if [ "${success_count}" -gt 0 ]; then
@@ -78,14 +78,18 @@ runs:
             exit 0
           fi
 
-          if [ "${completed_count}" -gt 0 ] && [ "${in_progress_count}" -eq 0 ]; then
+          if [ "${completed_count}" -gt 0 ] && [ "${noncompleted_count}" -eq 0 ]; then
             echo "::error::${CI_WORKFLOW_NAME} branch push runs for ${TARGET_SHA} completed without success."
             echo "${runs_json}" | jq '.workflow_runs[] | select((.head_branch // "") | length > 0) | {id, status, conclusion, head_branch, html_url}'
             exit 1
           fi
 
-          if [ "${in_progress_count}" -gt 0 ]; then
-            echo "Attempt ${attempt}/${MAX_ATTEMPTS}: ${CI_WORKFLOW_NAME} branch push run on ${TARGET_SHA} is in progress, waiting for it to finish..."
+          # `noncompleted_count` is `status != "completed"`, which covers
+          # queued/waiting/requested as well as in_progress -- so this says
+          # "not finished" rather than "running", which would be a claim the
+          # count doesn't actually support.
+          if [ "${noncompleted_count}" -gt 0 ]; then
+            echo "Attempt ${attempt}/${MAX_ATTEMPTS}: ${CI_WORKFLOW_NAME} branch push run on ${TARGET_SHA} has not completed yet, waiting for it to finish..."
           else
             echo "Attempt ${attempt}/${MAX_ATTEMPTS}: no ${CI_WORKFLOW_NAME} branch push run recorded yet for ${TARGET_SHA}, waiting for one to start..."
           fi
