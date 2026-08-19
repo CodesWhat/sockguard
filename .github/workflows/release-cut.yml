@@ -54,11 +54,14 @@ jobs:
           echo "Target SHA: ${sha}"
 
       - name: Verify successful branch CI on target SHA
+        # No max-attempts override: a prior "20" (5 min) here cut the gate off
+        # 9s before a real CI: Verify run (~6m45s) succeeded on the target SHA,
+        # failing the v1.7.1 cut. Inherit the action's own 40-attempt (10 min)
+        # default instead of maintaining a second, driftable number here.
         uses: ./.github/actions/verify-ci-success
         with:
           workflow-file: ${{ env.CI_VERIFY_WORKFLOW_FILE }}
           target-sha: ${{ steps.target.outputs.sha }}
-          max-attempts: "20"
           github-token: ${{ github.token }}
 
       - name: Find latest release tag

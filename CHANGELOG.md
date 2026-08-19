@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`release-cut.yml`'s CI gate no longer times out before `CI: Verify` can finish (#288).** The gate's "Verify successful branch CI on target SHA" step overrode the `verify-ci-success` composite action's default `max-attempts` (40 attempts, 10 minutes at 15s apart) down to `20` (5 minutes), but a `CI: Verify` push run on `main` takes ~6m45s — the v1.7.1 cut's gate timed out at 17:58:13, nine seconds before the run it was waiting on reported success. The override is removed so the gate inherits the action's own default instead of a second, driftable number; `release-from-tag.yml`'s equivalent gate never overrode it and was unaffected. The action's polling log line and timeout error are also sharpened: the wait message now distinguishes "a run is in progress" from "no run recorded yet," and the timeout error links directly to the workflow's run list so a future timeout is diagnosable from the log alone.
+
 ## [1.7.1] - 2026-08-19
 
 ### Security

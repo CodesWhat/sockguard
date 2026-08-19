@@ -84,9 +84,13 @@ runs:
             exit 1
           fi
 
-          echo "Attempt ${attempt}/${MAX_ATTEMPTS}: waiting for ${CI_WORKFLOW_NAME} branch push run on ${TARGET_SHA}..."
+          if [ "${in_progress_count}" -gt 0 ]; then
+            echo "Attempt ${attempt}/${MAX_ATTEMPTS}: ${CI_WORKFLOW_NAME} branch push run on ${TARGET_SHA} is in progress, waiting for it to finish..."
+          else
+            echo "Attempt ${attempt}/${MAX_ATTEMPTS}: no ${CI_WORKFLOW_NAME} branch push run recorded yet for ${TARGET_SHA}, waiting for one to start..."
+          fi
           sleep "${sleep_seconds}"
         done
 
-        echo "::error::Timed out waiting for successful ${CI_WORKFLOW_NAME} branch push run on ${TARGET_SHA}."
+        echo "::error::Timed out waiting for successful ${CI_WORKFLOW_NAME} branch push run on ${TARGET_SHA} after ${MAX_ATTEMPTS} attempts. Check ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/workflows/${CI_WORKFLOW_ID} for a run against ${TARGET_SHA} -- if one completed successfully shortly after this timeout, the max-attempts budget for this caller is too tight."
         exit 1
