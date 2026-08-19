@@ -294,6 +294,8 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           # Only inspects commits introduced by this PR (base branch..HEAD),
@@ -308,12 +310,18 @@ jobs:
           # commits were already validated when they landed on the dev
           # branch, which is where the gate belongs, so skip the promotion
           # PR rather than re-judging them.
-          case "${BASE_REF}:${HEAD_REF}" in
-            main:dev/*|main:maintenance/*)
-              echo "Promotion PR (${HEAD_REF} -> ${BASE_REF}) — commits were validated on the dev branch, skipping."
-              exit 0
-              ;;
-          esac
+          #
+          # Same-repo only: `github.head_ref` is attacker-chosen on a fork,
+          # so without the repo check anyone could name a fork branch
+          # `dev/anything`, target main, and skip the gate outright.
+          if [ "${HEAD_REPO}" = "${REPOSITORY}" ]; then
+            case "${BASE_REF}:${HEAD_REF}" in
+              main:dev/*|main:maintenance/*)
+                echo "Promotion PR (${HEAD_REF} -> ${BASE_REF}) — commits were validated on the dev branch, skipping."
+                exit 0
+                ;;
+            esac
+          fi
 
           types='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
           pattern="^(${types})(\\(\\w[\\w-]*\\))?!?:\\s.+\$"
