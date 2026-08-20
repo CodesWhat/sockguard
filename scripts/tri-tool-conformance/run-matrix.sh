@@ -1015,29 +1015,43 @@ assert_remote_update_trigger() {
   # published pair (2026-08-09). Two facts bound what this assertion can
   # honestly claim, on EVERY row:
   #
-  #   1. GET /api/containers returns a paginated envelope {data: [...]}
+  #   1. GET /api/v1/containers returns a paginated envelope {data: [...]}
   #      on both drydock latest and the 1.5.2 legacy pin (v1.5.2
   #      app/api/container/crud-context.ts ContainerListResponse) -- the
-  #      earlier bare-array read made this poll return empty forever.
+  #      earlier bare-array read made this poll return empty forever. The
+  #      unversioned /api/containers alias used before
+  #      (CodesWhat/drydock#802) 410s as of drydock v1.6.0
+  #      (app/api/index.ts sendUnversionedApiTombstone) --
+  #      it was NEVER a drydock sync regression, just this harness polling
+  #      a removed alias and silently discarding the resulting jq error.
   #   2. The audited tri-tool bundle configures NO docker update trigger in
-  #      drydock, so a correctly-shaped POST /api/triggers/docker/update
-  #      with drydock's own store {id} is refused 404 "trigger not found"
-  #      on every drydock version. There is no topology in this bundle
-  #      where updates flow: drydock's watch-now delegates registry checks
-  #      to the Portwing agent, whose watcher endpoint answers 501
-  #      "registry checking is performed by the Drydock controller"
-  #      (portwing internal/adapter/drydock/routes.go), so updateAvailable
-  #      can never flip either. A malformed body is still 400 "Invalid
-  #      trigger request body" -- that distinction is what proves the
-  #      request shape is right.
+  #      drydock, so a correctly-shaped POST /api/v1/triggers/docker/update
+  #      with drydock's own store {id} is refused on every drydock version.
+  #      1.5.2 refuses it 404 "trigger not found"; 1.6.x gets one step
+  #      further and refuses it 400 "No update available for this
+  #      container", which still means it accepted the request shape.
+  #      There is no topology in this bundle where updates flow: drydock's
+  #      watch-now delegates registry checks to the Portwing agent, whose
+  #      watcher endpoint answers 501 "registry checking is performed by
+  #      the Drydock controller" (portwing
+  #      internal/adapter/drydock/routes.go), so updateAvailable can never
+  #      flip either. A malformed body is a different 400, "Invalid trigger
+  #      request body" -- reading the body rather than the bare status is
+  #      what keeps that distinction, and what proves the request shape is
+  #      right.
   #
   # So the end-to-end proof this row CAN give: the sentinel created through
   # sockguard's proxied socket reaches drydock's store via Portwing's
   # sockguard-mediated inventory sync (presence), and a correctly-shaped
-  # trigger invocation reaches drydock's trigger API and is refused as
-  # unconfigured/not-implemented (404/501) -- the documented boundary for
-  # the audited bundle. A 2xx here means an UNCONFIGURED trigger executed
-  # (alarming, fail); a 400 means the request shape regressed (fail).
+  # trigger invocation reaches drydock's trigger API and is refused, as
+  # unconfigured (404 "trigger not found") or as having nothing to update
+  # (400 "no update available") -- the documented boundary for the audited
+  # bundle. Both accepted refusals are matched on the response BODY, not on
+  # the status alone: a wrong trigger URL also answers 404, so a bare-status
+  # check would let this assertion pass while testing nothing, which is the
+  # exact shape of the bug that hid in the store poll above. A 2xx means an
+  # UNCONFIGURED trigger executed (alarming, fail); anything else, including
+  # any other 400, is a fail that prints the status and body.
   local sentinel="tt-conf-sentinel-update-$$"
   local create_resp id
   create_resp="$(create_sentinel "$sentinel" "$OLD_BUSYBOX_REF")"
@@ -1060,10 +1074,58 @@ assert_remote_update_trigger() {
   # to 10s inside curl --max-time on top of the 5s sleep, so counting
   # iterations would let a stalled store consume ~3x the advertised window.
   local doc="" dd_id="" dd_agent="" remaining
+  local containers_body="${SCRATCH_DIR}/containers-response.json"
+  local containers_status containers_jq_err
   local deadline=$(( SECONDS + STORE_SYNC_TIMEOUT ))
   while (( SECONDS < deadline )); do
-    doc="$(curl --silent --max-time 10 "http://127.0.0.1:3000/api/containers?limit=500" 2>/dev/null \
-      | jq -c --arg n "$sentinel" '[(.data // .) | .[]? | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty' 2>/dev/null)"
+    if ! containers_status="$(curl --silent --max-time 10 --output "$containers_body" \
+        --write-out '%{http_code}' "http://127.0.0.1:3000/api/v1/containers?limit=500" 2>"${SCRATCH_DIR}/containers-curl-err.log")"; then
+      # curl itself failed to get a response at all (connection refused,
+      # timeout, etc) -- transient, keep polling like before rather than
+      # failing on the first hiccup.
+      remaining=$(( deadline - SECONDS ))
+      (( remaining <= 0 )) && break
+      sleep $(( remaining < 5 ? remaining : 5 ))
+      continue
+    fi
+    case "$containers_status" in
+      2??)
+        ;;
+      *)
+        # drydock answered, just not with success -- this is drydock (or
+        # the harness's URL for it) misbehaving, not "sentinel not synced
+        # yet". Fail loudly now instead of retrying an error into a
+        # timeout that looks identical to a real sync failure.
+        #
+        # No 5xx-is-transient carve-out on purpose: assert_auth_handshake
+        # has already waited up to 90s for drydock to log the portwing
+        # agent authenticating, and that's the same express app serving
+        # this route, so warm-up is over by the time this runs. Retrying a
+        # 5xx here would re-hide exactly the class of error this branch
+        # exists to surface.
+        record_result "$name" FAIL "harness error, not a conformance failure -- GET /api/v1/containers returned ${containers_status}: $(head -c 300 "$containers_body" 2>/dev/null)"
+        return 1
+        ;;
+    esac
+    # /api/v1/containers answers 2xx with the {data: [...]} envelope (drydock
+    # app/api/container/crud-context.ts ContainerListResponse), so assert that
+    # shape rather than tolerating anything else. `.data[]?` on its own would
+    # swallow a missing, null, or scalar `.data` and hand back an empty result
+    # with exit 0 -- a 2xx error envelope would then decay into the same
+    # "sentinel never appeared" timeout this whole branch exists to stop. An
+    # empty `.data` array is NOT that case: it's the normal not-synced-yet
+    # state and still polls to the deadline.
+    if ! doc="$(jq -c --arg n "$sentinel" \
+        'if (.data | type) != "array" then
+           error("expected a data array, got \(.data | type)")
+         else
+           [.data[] | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty
+         end' \
+        "$containers_body" 2>"${SCRATCH_DIR}/containers-jq-err.log")"; then
+      containers_jq_err="$(cat "${SCRATCH_DIR}/containers-jq-err.log" 2>/dev/null)"
+      record_result "$name" FAIL "harness bug, not a conformance failure -- jq could not read the /api/v1/containers response (${containers_jq_err}): $(head -c 300 "$containers_body" 2>/dev/null)"
+      return 1
+    fi
     if [ -n "$doc" ]; then
       break
     fi
@@ -1072,7 +1134,7 @@ assert_remote_update_trigger() {
     sleep $(( remaining < 5 ? remaining : 5 ))
   done
   if [ -z "$doc" ]; then
-    record_result "$name" FAIL "sentinel never appeared in drydock's /api/containers store within ${STORE_SYNC_TIMEOUT}s"
+    record_result "$name" FAIL "sentinel never appeared in drydock's /api/v1/containers store within ${STORE_SYNC_TIMEOUT}s"
     return 1
   fi
   dd_id="$(jq -r '.id // empty' <<<"$doc")"
@@ -1082,7 +1144,7 @@ assert_remote_update_trigger() {
     return 1
   fi
 
-  local trigger_url="http://127.0.0.1:3000/api/triggers/docker/update"
+  local trigger_url="http://127.0.0.1:3000/api/v1/triggers/docker/update"
   if [ -n "$dd_agent" ]; then
     trigger_url="${trigger_url}/${dd_agent}"
   fi
@@ -1094,17 +1156,55 @@ assert_remote_update_trigger() {
     "$trigger_url" 2>/dev/null)"
 
   case "$trigger_status" in
-    404|501)
-      record_result "$name" PASS "sentinel synced into drydock's store through sockguard-mediated Portwing polling; a correctly-shaped trigger invocation was refused as unconfigured/not-implemented (${trigger_status}) -- the audited bundle's documented boundary"
+    404)
+      # Body-checked for the same reason the 400 arm below is: a bare status
+      # is not evidence. A wrong trigger URL -- exactly the bug that hid here
+      # for a month -- also answers 404, so accepting any 404 would let this
+      # assertion pass while testing nothing.
+      #
+      # The pattern is `trigger <something> not found`, not the literal
+      # "trigger not found" the README used to claim. drydock 1.5.2 actually
+      # answers {"error":"Remote update trigger portwing.docker.update not
+      # found"} (run 32323163685), and the middle is the agent-qualified
+      # trigger name, so it varies with the row. Requiring the word "trigger"
+      # before "not found" is what keeps a bare {"error":"Not Found"} from
+      # an unrouted request out.
+      if jq -e '(.error // "") | test("trigger .*not found"; "i")' \
+          "${SCRATCH_DIR}/trigger-response.json" >/dev/null 2>&1; then
+        record_result "$name" PASS "sentinel synced into drydock's store through sockguard-mediated Portwing polling; a correctly-shaped trigger invocation was refused as unconfigured (404: $(jq -r '.error' "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)) -- the audited bundle's documented boundary"
+      else
+        record_result "$name" FAIL "trigger invocation returned 404 but not drydock's unconfigured-trigger refusal -- most likely a wrong trigger URL rather than a conformance failure; body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
+      fi
       ;;
     2*)
       record_result "$name" FAIL "an update trigger the audited bundle never configures ACCEPTED the invocation (${trigger_status}) -- the documented boundary no longer holds; body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
       ;;
     400)
-      record_result "$name" FAIL "trigger invocation was refused 400 -- the request shape regressed (want the unconfigured-trigger 404/501); body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
+      # drydock 1.6.x refuses the same invocation 400 "No update available for
+      # this container" where 1.5.2 refused it 404 "trigger not found". Both
+      # are the audited bundle's documented boundary reached by different
+      # routes: 1.6.x gets far enough to evaluate the container and find
+      # nothing to update, which means it accepted the request shape. Matching
+      # on the body rather than on the drydock version keeps this assertion
+      # version-agnostic, and keeps a bare 400 -- drydock's "Invalid trigger
+      # request body" -- a shape regression, which is the thing this arm was
+      # written to catch.
+      if jq -e '(.error // "") | test("no update available"; "i")' \
+          "${SCRATCH_DIR}/trigger-response.json" >/dev/null 2>&1; then
+        record_result "$name" PASS "sentinel synced into drydock's store through sockguard-mediated Portwing polling; a correctly-shaped trigger invocation was refused with no update available (400) -- the audited bundle's documented boundary"
+      else
+        record_result "$name" FAIL "trigger invocation was refused 400 -- the request shape regressed (want 404 'trigger not found' or 400 'no update available'); body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
+      fi
       ;;
     *)
-      record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)), want 404/501"
+      # 501 used to sit in the accepting arm alongside 404, unvalidated. No
+      # row has ever returned it: the 2026-08-20 run recorded 404 on
+      # legacy-floor (drydock 1.5.2) and 400 on both current-* rows (1.6.x).
+      # The 501 in the bundle README is Portwing's own trigger endpoint, a
+      # different service from the drydock:3000 API this posts to. Failing
+      # here prints the status and body, so a real 501 becomes a pinnable
+      # fact rather than a silent pass on a status nobody has observed.
+      record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)), want 404 'trigger not found' or 400 'no update available'"
       ;;
   esac
 }
