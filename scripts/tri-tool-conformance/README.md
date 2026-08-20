@@ -113,7 +113,9 @@ negative-auth-probe containers) via an `EXIT` trap.
    update candidates in this topology anyway (drydock's watch-now delegates
    registry checks to the Portwing agent, whose watcher endpoint answers
    `501` expecting controller-side checking). drydock 1.5.2 refuses with
-   `404` "trigger not found"; 1.6.x gets one step further and refuses with
+   `404` `{"error":"Remote update trigger <name> not found"}` (the middle is
+   the agent-qualified trigger name, so the match is on `trigger ... not
+   found` rather than a literal string); 1.6.x gets one step further and refuses with
    `400` "No update available for this container", which still means it
    accepted the request shape. **Both accepted refusals are matched on the
    response body, not on the status alone** — a wrong trigger URL also

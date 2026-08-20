@@ -1160,12 +1160,18 @@ assert_remote_update_trigger() {
       # Body-checked for the same reason the 400 arm below is: a bare status
       # is not evidence. A wrong trigger URL -- exactly the bug that hid here
       # for a month -- also answers 404, so accepting any 404 would let this
-      # assertion pass while testing nothing. drydock says "trigger not found"
-      # when the trigger genuinely isn't configured, which is the refusal the
-      # audited bundle documents.
-      if jq -e '(.error // "") | test("trigger not found"; "i")' \
+      # assertion pass while testing nothing.
+      #
+      # The pattern is `trigger <something> not found`, not the literal
+      # "trigger not found" the README used to claim. drydock 1.5.2 actually
+      # answers {"error":"Remote update trigger portwing.docker.update not
+      # found"} (run 32323163685), and the middle is the agent-qualified
+      # trigger name, so it varies with the row. Requiring the word "trigger"
+      # before "not found" is what keeps a bare {"error":"Not Found"} from
+      # an unrouted request out.
+      if jq -e '(.error // "") | test("trigger .*not found"; "i")' \
           "${SCRATCH_DIR}/trigger-response.json" >/dev/null 2>&1; then
-        record_result "$name" PASS "sentinel synced into drydock's store through sockguard-mediated Portwing polling; a correctly-shaped trigger invocation was refused as unconfigured (404 trigger not found) -- the audited bundle's documented boundary"
+        record_result "$name" PASS "sentinel synced into drydock's store through sockguard-mediated Portwing polling; a correctly-shaped trigger invocation was refused as unconfigured (404: $(jq -r '.error' "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)) -- the audited bundle's documented boundary"
       else
         record_result "$name" FAIL "trigger invocation returned 404 but not drydock's unconfigured-trigger refusal -- most likely a wrong trigger URL rather than a conformance failure; body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
       fi
