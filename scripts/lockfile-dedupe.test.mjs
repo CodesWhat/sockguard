@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { classify, collectDrift, isIgnoredPostcssOverrideDrift, parseNpmJson } from "./lockfile-dedupe.mjs";
+import {
+  classify,
+  collectDrift,
+  isIgnoredPostcssOverrideDrift,
+  parseNpmJson,
+} from "./lockfile-dedupe.mjs";
 
 const NEXT_POSTCSS_CHANGE = {
   from: { name: "postcss", version: "8.4.0", path: "/repo/node_modules/next/node_modules/postcss" },
@@ -64,7 +69,11 @@ describe("classify", () => {
   });
 
   it("does not apply the postcss allowance to the install report", () => {
-    const installReport = { add: [WORKSPACE_POSTCSS_ADD], remove: [], change: [NEXT_POSTCSS_CHANGE] };
+    const installReport = {
+      add: [WORKSPACE_POSTCSS_ADD],
+      remove: [],
+      change: [NEXT_POSTCSS_CHANGE],
+    };
     const dedupeReport = cleanReport();
 
     const result = classify({ installReport, dedupeReport });

@@ -32,10 +32,11 @@ test("website features live in extracted data modules", () => {
       "Remote Upstreams & Failover",
     ],
   );
-  assert.deepEqual(
-    [...new Set(features.map((feature) => feature.category))].sort(),
-    ["control", "operations", "security"],
-  );
+  assert.deepEqual([...new Set(features.map((feature) => feature.category))].sort(), [
+    "control",
+    "operations",
+    "security",
+  ]);
 });
 
 test("website comparison rows live in extracted data modules", () => {

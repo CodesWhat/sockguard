@@ -33,10 +33,7 @@ const gosecArgs = (workflow) =>
 test("the repository root is the canonical Go module root", () => {
   assert.ok(existsSync(rootModule), "go.mod must live at the repository root");
   assert.ok(!existsSync(nestedModule), "app must not declare a mismatched nested module");
-  assert.match(
-    readFileSync(rootModule, "utf8"),
-    /^module github\.com\/codeswhat\/sockguard$/m,
-  );
+  assert.match(readFileSync(rootModule, "utf8"), /^module github\.com\/codeswhat\/sockguard$/m);
 });
 
 test("temporary staged compatibility packages are absent from the final tree", () => {
@@ -51,10 +48,7 @@ test("temporary staged compatibility packages are absent from the final tree", (
   assert.equal(hasTemporaryInternalCopy(read("Dockerfile")), false);
 
   const workflow = read(".github/workflows/ci-verify.yml");
-  assert.match(
-    workflow,
-    /"name":"FuzzDecode","pkg":"\.\/internal\/dockerfilters\/"/,
-  );
+  assert.match(workflow, /"name":"FuzzDecode","pkg":"\.\/internal\/dockerfilters\/"/);
   // The reusable Go Fuzz job cds into module-directory (app) before running
   // the caller-owned fuzzer, same as the old inline working-directory: app.
   assert.match(workflow, /^      module-directory: app$/m);
@@ -86,10 +80,7 @@ test("the binary has the package path implied by its repository directory", () =
 });
 
 test("tooling does not point back to the old nested module files", () => {
-  const stalePaths = [
-    ["app", "go.mod"].join("/"),
-    ["app", "go.sum"].join("/"),
-  ];
+  const stalePaths = [["app", "go.mod"].join("/"), ["app", "go.sum"].join("/")];
   const grep = spawnSync(
     "git",
     [
@@ -176,10 +167,7 @@ test("Gosec argument selection ignores unrelated action arguments", () => {
 test("the pre-push hook compiles every integration build-tag boundary", () => {
   const hook = read("lefthook.yml");
 
-  assert.match(
-    hook,
-    /go test -run='\^\$' -tags=integration \.\/integration\/\.\.\./,
-  );
+  assert.match(hook, /go test -run='\^\$' -tags=integration \.\/integration\/\.\.\./);
   assert.match(
     hook,
     /go test -run='\^\$' -tags=podmanintegration \.\/integration\/\.\.\. \.\/internal\/cmd\/\.\.\./,

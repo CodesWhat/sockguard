@@ -36,7 +36,10 @@ test("stable releases publish and smoke-test the Homebrew cask", () => {
   const goreleaser = workflowJob(workflow, "goreleaser");
   const verifyHomebrew = workflowJob(workflow, "verify-homebrew");
 
-  assert.match(goreleaser, /^          HOMEBREW_TAP_TOKEN: \$\{\{ secrets\.HOMEBREW_TAP_TOKEN \}\}$/m);
+  assert.match(
+    goreleaser,
+    /^          HOMEBREW_TAP_TOKEN: \$\{\{ secrets\.HOMEBREW_TAP_TOKEN \}\}$/m,
+  );
   assert.match(goreleaser, /^        if: \$\{\{ !contains\(github\.ref_name, '-'\) \}\}$/m);
   assert.match(goreleaser, /test -n "\$\{HOMEBREW_TAP_TOKEN\}"/);
   assert.match(goreleaser, /HOMEBREW_TAP_TOKEN is required/);

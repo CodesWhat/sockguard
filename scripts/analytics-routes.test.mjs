@@ -11,7 +11,10 @@ import {
 } from "./analytics-routes.mjs";
 
 const repoRoot = new URL("..", import.meta.url);
-const websiteManifest = new URL("../website/src/lib/analytics-routes.generated.ts", import.meta.url);
+const websiteManifest = new URL(
+  "../website/src/lib/analytics-routes.generated.ts",
+  import.meta.url,
+);
 const docsManifest = new URL("../docs/src/lib/analytics-routes.generated.ts", import.meta.url);
 
 test("route manifest covers every finite marketing, comparison, and docs page", () => {
@@ -29,8 +32,14 @@ test("route manifest covers every finite marketing, comparison, and docs page", 
     assert.equal(routes.includes(route), true, `missing analytics route ${route}`);
   }
 
-  assert.equal(routes.some((route) => route.startsWith("/api/")), false);
-  assert.equal(routes.some((route) => route.includes("[")), false);
+  assert.equal(
+    routes.some((route) => route.startsWith("/api/")),
+    false,
+  );
+  assert.equal(
+    routes.some((route) => route.includes("[")),
+    false,
+  );
   assert.equal(new Set(routes).size, routes.length);
   assert.deepEqual(routes, [...routes].sort());
 });

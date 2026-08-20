@@ -15,10 +15,7 @@ const SHARED_SHA = "01bf40b06b110946f12a49b82e407d77c6480df7";
 // requiring an exact-text match.
 const FIXED_SCRIPTS = new Map([
   ["go-test.sh", ["go test -race", "COVERAGE_MIN", "internal/buildkitproto"]],
-  [
-    "go-lint.sh",
-    ["golangci-lint/v2/cmd/golangci-lint@v2.12.2", "gofmt -l", "GOLANGCI_LINT_CACHE"],
-  ],
+  ["go-lint.sh", ["golangci-lint/v2/cmd/golangci-lint@v2.12.2", "gofmt -l", "GOLANGCI_LINT_CACHE"]],
   [
     "go-release-check.sh",
     [
@@ -34,7 +31,10 @@ const FIXED_SCRIPTS = new Map([
     ],
   ],
   ["go-fuzz.sh", ["FUZZER", "PKG", "fuzztime=60s"]],
-  ["shellcheck.sh", ["command -v shellcheck", "git ls-files -z '*.sh'", "shellcheck \"${scripts[@]}\""]],
+  [
+    "shellcheck.sh",
+    ["command -v shellcheck", "git ls-files -z '*.sh'", 'shellcheck "${scripts[@]}"'],
+  ],
   ["node-lint.sh", ["npm ci", "biome check"]],
   ["node-test.sh", ["npm ci", "npm test"]],
   ["node-build.sh", ["npm ci", "turbo build"]],
@@ -87,7 +87,16 @@ const RETIRED_BRIDGES = new Map([
   ["legacy-build-workspaces", "Build Workspaces"],
 ]);
 
-const RETIRED_LOCAL_JOBS = ["zizmor", "goreleaser-check", "go-lint", "go-test", "go-fuzz", "ts-lint", "ts-test", "ts-build"];
+const RETIRED_LOCAL_JOBS = [
+  "zizmor",
+  "goreleaser-check",
+  "go-lint",
+  "go-test",
+  "go-fuzz",
+  "ts-lint",
+  "ts-test",
+  "ts-build",
+];
 
 const GO_INPUTS = [
   "module-directory: app",
@@ -180,9 +189,16 @@ function assertReusableCaller(source) {
     /^ {6}security-events: write$/mu,
     "go-ci caller must grant the nested CodeQL job's statically validated permission",
   );
-  assert.doesNotMatch(go, /run-codeql:\s*true/u, "CodeQL must stay local, not routed through go-ci");
+  assert.doesNotMatch(
+    go,
+    /run-codeql:\s*true/u,
+    "CodeQL must stay local, not routed through go-ci",
+  );
 
-  assert.ok(jobSection(source, "codeql"), "CodeQL must remain local to keep javascript-typescript coverage");
+  assert.ok(
+    jobSection(source, "codeql"),
+    "CodeQL must remain local to keep javascript-typescript coverage",
+  );
   assert.ok(jobSection(source, "dependency-review"), "dependency review must remain local");
   assert.ok(jobSection(source, "commit-message"), "commit-message must remain local");
   assert.ok(jobSection(source, "docker"), "Docker Build must remain local");
@@ -255,7 +271,9 @@ test("required go-ci and node-ci inputs must be exact YAML lines", () => {
     ["node-ci", NODE_INPUTS],
   ]) {
     for (const input of inputs) {
-      assert.throws(() => assertReusableCaller(source.replace(`      ${input}`, `      # ${input}`)));
+      assert.throws(() =>
+        assertReusableCaller(source.replace(`      ${input}`, `      # ${input}`)),
+      );
       assert.throws(() =>
         assertReusableCaller(source.replace(`      ${input}`, `      decoy-${input}`)),
       );
@@ -275,7 +293,10 @@ test("reusable jobs invoke fixed repository-owned scripts", () => {
 test("the local lint and release gates use the same isolated fixed adapters", () => {
   const lefthook = fs.readFileSync(LEFTHOOK, "utf8");
   assert.match(lefthook, /^ {4}go-lint:\n {6}run: \.\/scripts\/ci\/go-lint\.sh$/mu);
-  assert.match(lefthook, /^ {4}goreleaser-snapshot:\n {6}run: \.\/scripts\/ci\/go-release-check\.sh$/mu);
+  assert.match(
+    lefthook,
+    /^ {4}goreleaser-snapshot:\n {6}run: \.\/scripts\/ci\/go-release-check\.sh$/mu,
+  );
   assert.doesNotMatch(lefthook, /^ {6}run: golangci-lint run$/mu);
 });
 
@@ -298,9 +319,13 @@ test("the contract rejects a moving reusable ref, a dropped permission, and a re
   const droppedPermission = goJob.replace("      security-events: write\n", "");
   assert.throws(() => assertReusableCaller(source.replace(goJob, droppedPermission)));
 
-  const reintroducedRetiredJob = ["  go-lint:", '    name: "Go Lint"', "    runs-on: ubuntu-latest", "", ""].join(
-    "\n",
-  );
+  const reintroducedRetiredJob = [
+    "  go-lint:",
+    '    name: "Go Lint"',
+    "    runs-on: ubuntu-latest",
+    "",
+    "",
+  ].join("\n");
   assert.throws(
     () => assertReusableCaller(source.replace("  codeql:", `${reintroducedRetiredJob}  codeql:`)),
     /go-lint must move behind a reusable caller/u,
