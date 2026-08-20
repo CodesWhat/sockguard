@@ -150,55 +150,18 @@ pre-push:
 
     # Lockfile hygiene — catches orphaned hoisted packages (e.g. a stale
     # next@15.5.15 left behind after a version bump) before they ship to
-    # CI and surface as stale dependency-scan findings. Non-mutating:
-    # --dry-run only reports what `npm dedupe` would change; we fail the
-    # push if anything would.
+    # CI and surface as stale dependency-scan findings. Runs two probes and
+    # tells them apart: an `npm install --dry-run` that still reports
+    # changes means the local node_modules is stale (run `npm ci`), not
+    # lockfile drift. Only once that probe is clean does `npm dedupe
+    # --dry-run` get to mean anything, and only then do its changes get
+    # reported as real drift. Both probes are non-mutating. Logic lives in
+    # scripts/lockfile-dedupe.mjs so it has tests instead of being retyped
+    # inline here.
     lockfile-dedupe:
-      run: |
-        out=$(npm dedupe --dry-run --json 2>&1)
-        if ! printf '%s\n' "$out" | node -e '
-          const fs = require("node:fs");
-          const out = fs.readFileSync(0, "utf8");
-          const jsonStart = out.indexOf("{");
-          if (jsonStart === -1) process.exit(1);
-
-          const report = JSON.parse(out.slice(jsonStart));
-          const postcssOverridePath = "/node_modules/next/node_modules/postcss";
-          const workspacePostcssPaths = [
-            "/docs/node_modules/postcss",
-            "/website/node_modules/postcss",
-          ];
-          // Match on package + path only, not pinned versions: Next vendors its
-          // own postcss under next/node_modules and the workspaces hoist a newer
-          // one, so npm dedupe always reports this churn. Hardcoding the versions
-          // here meant every postcss bump silently broke the guard until the
-          // literals were updated by hand.
-          const isIgnoredPostcssOverrideDrift = (entry) => {
-            const from = entry.from ?? entry;
-            const to = entry.to ?? entry;
-            const isNextOverrideDowngrade = from.name === "postcss" &&
-              to.name === "postcss" &&
-              from.path?.endsWith(postcssOverridePath) &&
-              to.path?.endsWith(postcssOverridePath);
-            const isWorkspacePostcssHoist = entry.name === "postcss" &&
-              workspacePostcssPaths.some((path) => entry.path?.endsWith(path));
-            return isNextOverrideDowngrade || isWorkspacePostcssHoist;
-          };
-
-          const drift = [
-            ...(report.add ?? []).filter((entry) => !isIgnoredPostcssOverrideDrift(entry)),
-            ...(report.remove ?? []).filter((entry) => !isIgnoredPostcssOverrideDrift(entry)),
-            ...(report.change ?? []).filter((entry) => !isIgnoredPostcssOverrideDrift(entry)),
-          ];
-
-          process.exit(drift.length === 0 ? 0 : 1);
-        '; then
-          echo "Lockfile drift detected — run 'npm dedupe' and commit the result:"
-          echo "$out"
-          exit 1
-        fi
+      run: node scripts/lockfile-dedupe.mjs
       priority: 7
-      timeout: 30s
+      timeout: 2m
 
     # Shellcheck — lints every tracked *.sh script. Hard-fails (no skip)
     # when the binary is missing; see scripts/ci/shellcheck.sh for the
