@@ -119,6 +119,24 @@ describe("inferReleaseLevel", () => {
     assert.equal(inferReleaseLevel(["wip feat: change policy"]), null);
   });
 
+  // A prefix run has to start with a real pictographic character. These are
+  // invisible on their own and aren't emoji, so they must not buy a release
+  // level the way a gitmoji does.
+  it("ignores a bare ZWJ or variation selector standing in for a gitmoji", () => {
+    assert.equal(inferReleaseLevel(["‍ feat: invisible prefix"]), null);
+    assert.equal(inferReleaseLevel(["️ fix: invisible prefix"]), null);
+    assert.equal(inferReleaseLevel(["‍️ fix: invisible prefix"]), null);
+  });
+
+  // The flip side: composed sequences are still one prefix, because the
+  // joiners are allowed everywhere except the first position.
+  it("counts composed emoji sequences as a single gitmoji prefix", () => {
+    assert.equal(inferReleaseLevel(["\u{1F468}‍\u{1F469}‍\u{1F467} feat: family"]), "minor");
+    assert.equal(inferReleaseLevel(["\u{1F44D}\u{1F3FD} chore: skin tone"]), "patch");
+    assert.equal(inferReleaseLevel(["\u{1F1FA}\u{1F1F8} fix: regional pair"]), "patch");
+    assert.equal(inferReleaseLevel(["✨️ feat: presentation selector"]), "minor");
+  });
+
   it("ignores word-prefixed subjects while still counting real commits", () => {
     assert.equal(inferReleaseLevel(["wip feat: change policy", "🐛 fix: actual fix"]), "patch");
   });

@@ -24,11 +24,17 @@ const PATCH_TYPES = new Set([
 
 // The optional prefix swallows a legacy leading gitmoji (e.g. "🐛 fix: ...")
 // so old, already-tagged commits still parse — but only emoji, so arbitrary
-// prefixes like "wip fix: ..." don't count toward a release level. The class
-// covers pictographics plus variation selectors/ZWJ for composed emoji.
+// prefixes like "wip fix: ..." don't count toward a release level.
+//
+// The run has to *start* with a pictographic character; only after that are
+// variation selectors and ZWJ allowed, so composed sequences (skin tones,
+// flags, "👨‍👩‍👦") still match as one prefix. Writing it as a single class of
+// [pictographic + FE0F + 200D]+ also accepted a bare U+200D or U+FE0F on its
+// own, which is invisible and isn't an emoji, so "<ZWJ> feat: ..." counted as
+// a minor release and quietly broke the only-emoji contract above.
 const conventionalSubjectRegex =
-  // biome-ignore lint/suspicious/noMisleadingCharacterClass: single-codepoint alternatives that `+` walks as a run, which is what makes ZWJ sequences match; not a composed grapheme inside the class
-  /^(?:[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{FE0F}\u{200D}]+\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
+  // biome-ignore lint/suspicious/noMisleadingCharacterClass: the second class is a continuation set matching one codepoint at a time, not an attempt to spell a composed grapheme inside a class; the leading class already forces a real pictographic base
+  /^(?:[\p{Extended_Pictographic}\p{Emoji_Presentation}][\p{Extended_Pictographic}\p{Emoji_Presentation}\u{FE0F}\u{200D}]*\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
 
 function commitReleaseLevel(commit) {
   const message = String(commit ?? "").trim();
