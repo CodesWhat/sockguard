@@ -101,8 +101,10 @@ negative-auth-probe containers) via an `EXIT` trap.
 8. **Remote update trigger** — creates a sentinel pinned at an old
    `busybox` digest through the proxied socket, waits for it to reach
    drydock's own `GET /api/v1/containers` store (paginated `{data: [...]}`
-   envelope on every drydock version — presence proves the full
-   sockguard-mediated Portwing inventory-sync path), then fires
+   envelope on the `legacy-floor` 1.5.2 pin and on the current release the
+   `current-*` rows resolve — presence proves the full sockguard-mediated
+   Portwing inventory-sync path; anything else on a `2xx` is treated as a
+   harness failure rather than polled to a timeout), then fires
    `POST /api/v1/triggers/docker/update` (agent-qualified when the document
    names one) with the required `{id: <drydock container id>}` body — the
    shape pinned from drydock's `app/api/trigger.ts` (#211). Every row

@@ -1098,15 +1098,23 @@ assert_remote_update_trigger() {
         return 1
         ;;
     esac
-    # /api/v1/containers always answers 2xx with the {data: [...]} envelope
-    # (drydock app/api/container/crud-context.ts ContainerListResponse) --
-    # no bare-array fallback needed now that a non-2xx response is caught
-    # above instead of being fed into this filter.
+    # /api/v1/containers answers 2xx with the {data: [...]} envelope (drydock
+    # app/api/container/crud-context.ts ContainerListResponse), so assert that
+    # shape rather than tolerating anything else. `.data[]?` on its own would
+    # swallow a missing, null, or scalar `.data` and hand back an empty result
+    # with exit 0 -- a 2xx error envelope would then decay into the same
+    # "sentinel never appeared" timeout this whole branch exists to stop. An
+    # empty `.data` array is NOT that case: it's the normal not-synced-yet
+    # state and still polls to the deadline.
     if ! doc="$(jq -c --arg n "$sentinel" \
-        '[.data[]? | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty' \
+        'if (.data | type) != "array" then
+           error("expected a data array, got \(.data | type)")
+         else
+           [.data[] | select((.name // "") == $n or (.name // "") == ("/" + $n))] | first // empty
+         end' \
         "$containers_body" 2>"${SCRATCH_DIR}/containers-jq-err.log")"; then
       containers_jq_err="$(cat "${SCRATCH_DIR}/containers-jq-err.log" 2>/dev/null)"
-      record_result "$name" FAIL "harness bug, not a conformance failure -- jq failed to parse the /api/v1/containers response (${containers_jq_err}): $(head -c 300 "$containers_body" 2>/dev/null)"
+      record_result "$name" FAIL "harness bug, not a conformance failure -- jq could not read the /api/v1/containers response (${containers_jq_err}): $(head -c 300 "$containers_body" 2>/dev/null)"
       return 1
     fi
     if [ -n "$doc" ]; then
