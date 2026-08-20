@@ -62,9 +62,7 @@ export function assertSafeNanoidVersions(lockfile) {
 
     const version = parseStableVersion(path, metadata.version);
     if (!isPatched(version)) {
-      throw new Error(
-        `${ADVISORY}: ${path} resolves vulnerable version ${metadata.version}`,
-      );
+      throw new Error(`${ADVISORY}: ${path} resolves vulnerable version ${metadata.version}`);
     }
   }
 

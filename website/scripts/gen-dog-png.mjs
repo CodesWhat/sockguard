@@ -31,6 +31,7 @@ function parseLine(line) {
   let i = 0;
   while (i < line.length) {
     if (line[i] === "\x1b") {
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: ESC is the CSI introducer of the SGR sequences this parser reads out of dog_color.ans; it's the data, not a stray control byte
       const m = /^\x1b\[([0-9;]*)m/.exec(line.slice(i));
       if (m) {
         const ps = m[1].split(";").map((x) => (x === "" ? 0 : Number(x)));

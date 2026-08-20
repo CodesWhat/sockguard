@@ -8,31 +8,34 @@
 // tripwire diff against testdata/access-log-fixture.jsonl -- pure jq, no
 // Docker, no network -- so it can run on every push the same way
 // verify-published-release.sh's --dry-run does.
-import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
-import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { dirname, resolve } from "node:path";
+import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(scriptDir, '..');
-const scriptPath = resolve(scriptDir, 'tri-tool-conformance', 'run-matrix.sh');
+const repoRoot = resolve(scriptDir, "..");
+const scriptPath = resolve(scriptDir, "tri-tool-conformance", "run-matrix.sh");
 
 function runSelfTest() {
-  return spawnSync('bash', [scriptPath, '--self-test'], {
+  return spawnSync("bash", [scriptPath, "--self-test"], {
     cwd: repoRoot,
-    encoding: 'utf8',
+    encoding: "utf8",
   });
 }
 
-describe('tri-tool-conformance/run-matrix.sh --self-test', () => {
-  it('passes the route normalizer + tripwire diff self-test', () => {
+describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
+  it("passes the route normalizer + tripwire diff self-test", () => {
     const result = runSelfTest();
 
     assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
     assert.match(result.stdout, /== self-test OK ==/);
     assert.match(result.stdout, /PASS: known-routes\.json parses as valid JSON/);
-    assert.match(result.stdout, /PASS: normalizer produced the expected 6 route shapes from the fixture/);
+    assert.match(
+      result.stdout,
+      /PASS: normalizer produced the expected 6 route shapes from the fixture/,
+    );
     assert.match(
       result.stdout,
       /PASS: diff logic isolated the fixture's one deliberately-unknown route \(GET \/containers\/\*\/attach\)/,
@@ -43,15 +46,18 @@ describe('tri-tool-conformance/run-matrix.sh --self-test', () => {
     );
   });
 
-  it('requires either --row or --self-test', () => {
-    const result = spawnSync('bash', [scriptPath], { cwd: repoRoot, encoding: 'utf8' });
+  it("requires either --row or --self-test", () => {
+    const result = spawnSync("bash", [scriptPath], { cwd: repoRoot, encoding: "utf8" });
 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /--row is required/);
   });
 
-  it('rejects an unknown --row value', () => {
-    const result = spawnSync('bash', [scriptPath, '--row', 'bogus'], { cwd: repoRoot, encoding: 'utf8' });
+  it("rejects an unknown --row value", () => {
+    const result = spawnSync("bash", [scriptPath, "--row", "bogus"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    });
 
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /unknown --row 'bogus'/);

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync } from "node:child_process";
 
 // Includes the current Conventional Commits type list (build, ci added
 // alongside the retired custom types they replace) plus legacy custom
@@ -8,44 +8,51 @@ import { execFileSync } from 'node:child_process';
 // Keep the legacy types here so old releases still parse correctly —
 // see the migration note in CHANGELOG.md.
 const PATCH_TYPES = new Set([
-  'fix',
-  'docs',
-  'style',
-  'refactor',
-  'perf',
-  'test',
-  'build',
-  'ci',
-  'chore',
-  'security',
-  'deps',
-  'revert',
+  "fix",
+  "docs",
+  "style",
+  "refactor",
+  "perf",
+  "test",
+  "build",
+  "ci",
+  "chore",
+  "security",
+  "deps",
+  "revert",
 ]);
 
 // The optional prefix swallows a legacy leading gitmoji (e.g. "🐛 fix: ...")
 // so old, already-tagged commits still parse — but only emoji, so arbitrary
-// prefixes like "wip fix: ..." don't count toward a release level. The class
-// covers pictographics plus variation selectors/ZWJ for composed emoji.
+// prefixes like "wip fix: ..." don't count toward a release level.
+//
+// The run has to *start* with a pictographic character; only after that are
+// variation selectors and ZWJ allowed, so composed sequences (skin tones,
+// flags, "👨‍👩‍👦") still match as one prefix. Writing it as a single class of
+// [pictographic + FE0F + 200D]+ also accepted a bare U+200D or U+FE0F on its
+// own, which is invisible and isn't an emoji, so "<ZWJ> feat: ..." counted as
+// a minor release and quietly broke the only-emoji contract above.
 const conventionalSubjectRegex =
-  /^(?:[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{FE0F}\u{200D}]+\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
+  // biome-ignore lint/suspicious/noMisleadingCharacterClass: the second class is a continuation set matching one codepoint at a time, not an attempt to spell a composed grapheme inside a class; the leading class already forces a real pictographic base
+  /^(?:[\p{Extended_Pictographic}\p{Emoji_Presentation}][\p{Extended_Pictographic}\p{Emoji_Presentation}\u{FE0F}\u{200D}]*\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
 
 function commitReleaseLevel(commit) {
-  const message = String(commit ?? '').trim();
+  const message = String(commit ?? "").trim();
   let releaseLevel = null;
 
   if (message) {
     if (/\bBREAKING[ -]CHANGE:/iu.test(message)) {
-      releaseLevel = 'major';
+      releaseLevel = "major";
     } else {
       const subject = message.split(/\r?\n/u, 1)[0];
       const match = subject.match(conventionalSubjectRegex);
       if (match?.groups) {
-        if (match.groups.breakingA === '!' || match.groups.breakingB === '!') {
-          releaseLevel = 'major';
-        } else if (match.groups.type === 'feat') {
-          releaseLevel = 'minor';
+        if (match.groups.breakingA === "!" || match.groups.breakingB === "!") {
+          releaseLevel = "major";
+        } else if (match.groups.type === "feat") {
+          releaseLevel = "minor";
         } else if (PATCH_TYPES.has(match.groups.type)) {
-          releaseLevel = 'patch';
+          releaseLevel = "patch";
         }
       }
     }
@@ -59,15 +66,15 @@ export function inferReleaseLevel(commits) {
 
   for (const commit of commits) {
     const level = commitReleaseLevel(commit);
-    if (level === 'major') {
-      return 'major';
+    if (level === "major") {
+      return "major";
     }
-    if (level === 'minor') {
-      releaseLevel = 'minor';
+    if (level === "minor") {
+      releaseLevel = "minor";
       continue;
     }
-    if (level === 'patch' && releaseLevel == null) {
-      releaseLevel = 'patch';
+    if (level === "patch" && releaseLevel == null) {
+      releaseLevel = "patch";
     }
   }
 
@@ -75,7 +82,7 @@ export function inferReleaseLevel(commits) {
 }
 
 export function bumpSemver(currentVersion, level) {
-  const match = String(currentVersion ?? '')
+  const match = String(currentVersion ?? "")
     .trim()
     .match(/^v?(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$/u);
   if (!match?.groups) {
@@ -86,13 +93,13 @@ export function bumpSemver(currentVersion, level) {
   const minor = Number(match.groups.minor);
   const patch = Number(match.groups.patch);
 
-  if (level === 'major') {
+  if (level === "major") {
     return `${major + 1}.0.0`;
   }
-  if (level === 'minor') {
+  if (level === "minor") {
     return `${major}.${minor + 1}.0`;
   }
-  if (level === 'patch') {
+  if (level === "patch") {
     return `${major}.${minor}.${patch + 1}`;
   }
 
@@ -104,10 +111,10 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i];
     const value = argv[i + 1];
-    if (!key.startsWith('--')) {
+    if (!key.startsWith("--")) {
       continue;
     }
-    if (value === undefined || value.startsWith('--')) {
+    if (value === undefined || value.startsWith("--")) {
       throw new Error(`Missing value for argument: ${key}`);
     }
     args[key.slice(2)] = value;
@@ -118,12 +125,12 @@ function parseArgs(argv) {
 
 function getCommitMessages(fromRef, toRef) {
   const range = `${fromRef}..${toRef}`;
-  const output = execFileSync('git', ['log', '--format=%B%x00', range], {
-    encoding: 'utf8',
+  const output = execFileSync("git", ["log", "--format=%B%x00", range], {
+    encoding: "utf8",
   });
 
   return output
-    .split('\0')
+    .split("\0")
     .map((message) => message.trim())
     .filter(Boolean);
 }
@@ -134,24 +141,24 @@ export function formatCLIError(error) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const bump = args.bump ?? 'auto';
+  const bump = args.bump ?? "auto";
   const current = args.current;
 
   if (!current) {
-    throw new Error('--current is required');
+    throw new Error("--current is required");
   }
 
   let releaseLevel = bump;
-  if (bump === 'auto') {
+  if (bump === "auto") {
     const fromRef = args.from;
-    const toRef = args.to ?? 'HEAD';
+    const toRef = args.to ?? "HEAD";
     if (!fromRef) {
-      throw new Error('--from is required when --bump auto');
+      throw new Error("--from is required when --bump auto");
     }
     const commits = getCommitMessages(fromRef, toRef);
     releaseLevel = inferReleaseLevel(commits);
     if (!releaseLevel) {
-      throw new Error('No releasable commits found between refs');
+      throw new Error("No releasable commits found between refs");
     }
   }
 

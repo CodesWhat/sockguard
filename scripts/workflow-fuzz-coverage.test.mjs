@@ -1,14 +1,14 @@
-import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, relative, resolve } from 'node:path';
-import { describe, it } from 'node:test';
+import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
+import { describe, it } from "node:test";
 
-const repoRoot = resolve(import.meta.dirname, '..');
-const appRoot = resolve(repoRoot, 'app');
+const repoRoot = resolve(import.meta.dirname, "..");
+const appRoot = resolve(repoRoot, "app");
 const workflowPaths = [
-  '.github/workflows/ci-verify.yml',
-  '.github/workflows/quality-fuzz-nightly.yml',
-  '.github/workflows/quality-fuzz-monthly.yml',
+  ".github/workflows/ci-verify.yml",
+  ".github/workflows/quality-fuzz-nightly.yml",
+  ".github/workflows/quality-fuzz-monthly.yml",
 ];
 
 function walkGoFiles(directory) {
@@ -19,7 +19,7 @@ function walkGoFiles(directory) {
       return walkGoFiles(path);
     }
 
-    return entry.isFile() && entry.name.endsWith('.go') ? [path] : [];
+    return entry.isFile() && entry.name.endsWith(".go") ? [path] : [];
   });
 }
 
@@ -29,7 +29,7 @@ function sourceFuzzers() {
   for (const path of walkGoFiles(appRoot)) {
     const packagePath = `./${relative(appRoot, dirname(path))}/`;
 
-    for (const match of readFileSync(path, 'utf8').matchAll(/^func (Fuzz\w+)\(/gm)) {
+    for (const match of readFileSync(path, "utf8").matchAll(/^func (Fuzz\w+)\(/gm)) {
       assert.ok(!fuzzers.has(match[1]), `duplicate fuzz function ${match[1]}`);
       fuzzers.set(match[1], packagePath);
     }
@@ -46,7 +46,7 @@ const FUZZ_ENTRY_PATTERN =
   /(?:- \{ name: (Fuzz\w+),\s+pkg: ([^ }]+) \}|"name":"(Fuzz\w+)","pkg":"([^"]+)")/g;
 
 function workflowFuzzers(workflowPath) {
-  const source = readFileSync(resolve(repoRoot, workflowPath), 'utf8');
+  const source = readFileSync(resolve(repoRoot, workflowPath), "utf8");
   const fuzzers = new Map();
 
   for (const match of source.matchAll(FUZZ_ENTRY_PATTERN)) {
@@ -59,13 +59,13 @@ function workflowFuzzers(workflowPath) {
   return fuzzers;
 }
 
-describe('fuzz workflow coverage', () => {
+describe("fuzz workflow coverage", () => {
   const source = sourceFuzzers();
   const tiers = new Map(
     workflowPaths.map((workflowPath) => [workflowPath, workflowFuzzers(workflowPath)]),
   );
 
-  it('registers only in-tree fuzz targets with their source package', () => {
+  it("registers only in-tree fuzz targets with their source package", () => {
     for (const [workflowPath, tier] of tiers) {
       for (const [name, packagePath] of tier) {
         assert.equal(
@@ -77,7 +77,7 @@ describe('fuzz workflow coverage', () => {
     }
   });
 
-  it('schedules every in-tree fuzz target in at least one tier', () => {
+  it("schedules every in-tree fuzz target in at least one tier", () => {
     const uncovered = [];
 
     for (const [name, packagePath] of source) {
@@ -97,14 +97,18 @@ describe('fuzz workflow coverage', () => {
       );
     }
 
-    assert.deepEqual(uncovered.sort(), [], `uncovered fuzz targets: ${uncovered.sort().join(', ')}`);
+    assert.deepEqual(
+      uncovered.sort(),
+      [],
+      `uncovered fuzz targets: ${uncovered.sort().join(", ")}`,
+    );
   });
 
-  it('keeps every nightly Docker filter target in the monthly deep tier', () => {
-    const nightly = tiers.get('.github/workflows/quality-fuzz-nightly.yml');
-    const monthly = tiers.get('.github/workflows/quality-fuzz-monthly.yml');
+  it("keeps every nightly Docker filter target in the monthly deep tier", () => {
+    const nightly = tiers.get(".github/workflows/quality-fuzz-nightly.yml");
+    const monthly = tiers.get(".github/workflows/quality-fuzz-monthly.yml");
     const missing = [...nightly]
-      .filter(([, packagePath]) => packagePath === './internal/filter/')
+      .filter(([, packagePath]) => packagePath === "./internal/filter/")
       .map(([name]) => name)
       .filter((name) => !monthly.has(name))
       .sort();
@@ -112,7 +116,7 @@ describe('fuzz workflow coverage', () => {
     assert.deepEqual(
       missing,
       [],
-      `monthly fuzz is missing nightly Docker filter targets: ${missing.join(', ')}`,
+      `monthly fuzz is missing nightly Docker filter targets: ${missing.join(", ")}`,
     );
   });
 });

@@ -17,10 +17,16 @@ test("release-facing metadata agrees on the current stable version", () => {
   assert.match(chart, new RegExp(`^appVersion: "${stableVersion.replaceAll(".", "\\.")}"$`, "m"));
 
   const readme = read("README.md");
-  assert.match(readme, new RegExp(`\\*\\*${stableTag.replaceAll(".", "\\.")} is the latest stable release\\.\\*\\*`));
+  assert.match(
+    readme,
+    new RegExp(`\\*\\*${stableTag.replaceAll(".", "\\.")} is the latest stable release\\.\\*\\*`),
+  );
 
   const changelog = read("CHANGELOG.md");
-  assert.match(changelog, new RegExp(`^## \\[${stableVersion.replaceAll(".", "\\.")}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m"));
+  assert.match(
+    changelog,
+    new RegExp(`^## \\[${stableVersion.replaceAll(".", "\\.")}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m"),
+  );
 });
 
 test("the current stable version is the roadmap HEAD", () => {
@@ -29,7 +35,11 @@ test("the current stable version is the roadmap HEAD", () => {
   assert.equal(milestone.status, "released", `${stableTag} roadmap milestone must be released`);
 
   const released = roadmap.filter(({ status }) => status === "released");
-  assert.equal(released.at(-1)?.version, stableTag, `${stableTag} must be the latest released milestone`);
+  assert.equal(
+    released.at(-1)?.version,
+    stableTag,
+    `${stableTag} must be the latest released milestone`,
+  );
 });
 
 test("README workflow badges reference existing workflow files", () => {
