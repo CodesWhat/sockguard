@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const rootModule = new URL("../go.mod", import.meta.url);
@@ -33,10 +33,7 @@ const gosecArgs = (workflow) =>
 test("the repository root is the canonical Go module root", () => {
   assert.ok(existsSync(rootModule), "go.mod must live at the repository root");
   assert.ok(!existsSync(nestedModule), "app must not declare a mismatched nested module");
-  assert.match(
-    readFileSync(rootModule, "utf8"),
-    /^module github\.com\/codeswhat\/sockguard$/m,
-  );
+  assert.match(readFileSync(rootModule, "utf8"), /^module github\.com\/codeswhat\/sockguard$/m);
 });
 
 test("temporary staged compatibility packages are absent from the final tree", () => {
@@ -51,13 +48,10 @@ test("temporary staged compatibility packages are absent from the final tree", (
   assert.equal(hasTemporaryInternalCopy(read("Dockerfile")), false);
 
   const workflow = read(".github/workflows/ci-verify.yml");
-  assert.match(
-    workflow,
-    /"name":"FuzzDecode","pkg":"\.\/internal\/dockerfilters\/"/,
-  );
+  assert.match(workflow, /"name":"FuzzDecode","pkg":"\.\/internal\/dockerfilters\/"/);
   // The reusable Go Fuzz job cds into module-directory (app) before running
   // the caller-owned fuzzer, same as the old inline working-directory: app.
-  assert.match(workflow, /^      module-directory: app$/m);
+  assert.match(workflow, /^ {6}module-directory: app$/m);
 });
 
 test("temporary Docker COPY detection covers equivalent forms", () => {
@@ -86,10 +80,7 @@ test("the binary has the package path implied by its repository directory", () =
 });
 
 test("tooling does not point back to the old nested module files", () => {
-  const stalePaths = [
-    ["app", "go.mod"].join("/"),
-    ["app", "go.sum"].join("/"),
-  ];
+  const stalePaths = [["app", "go.mod"].join("/"), ["app", "go.sum"].join("/")];
   const grep = spawnSync(
     "git",
     [
@@ -114,7 +105,7 @@ test("container and coverage tooling preserve app as the package subdirectory", 
   const dockerfile = read("Dockerfile");
   assert.match(dockerfile, /^COPY go\.mod go\.sum \.\/$/m);
   assert.match(dockerfile, /^COPY app\/ \.\/app\/$/m);
-  assert.match(dockerfile, /^    -o \/sockguard \.\/app\/cmd\/sockguard\/$/m);
+  assert.match(dockerfile, /^ {4}-o \/sockguard \.\/app\/cmd\/sockguard\/$/m);
 
   // The Go Test coverage-gate filtering moved from an inline workflow step
   // into the fixed scripts/ci/go-test.sh adapter the reusable Go CI test
@@ -176,10 +167,7 @@ test("Gosec argument selection ignores unrelated action arguments", () => {
 test("the pre-push hook compiles every integration build-tag boundary", () => {
   const hook = read("lefthook.yml");
 
-  assert.match(
-    hook,
-    /go test -run='\^\$' -tags=integration \.\/integration\/\.\.\./,
-  );
+  assert.match(hook, /go test -run='\^\$' -tags=integration \.\/integration\/\.\.\./);
   assert.match(
     hook,
     /go test -run='\^\$' -tags=podmanintegration \.\/integration\/\.\.\. \.\/internal\/cmd\/\.\.\./,

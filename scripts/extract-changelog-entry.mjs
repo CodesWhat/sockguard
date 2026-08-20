@@ -1,15 +1,15 @@
 #!/usr/bin/env node
 
-import { readFileSync } from 'node:fs';
+import { readFileSync } from "node:fs";
 
 function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeVersion(version) {
-  return String(version ?? '')
+  return String(version ?? "")
     .trim()
-    .replace(/^v/u, '');
+    .replace(/^v/u, "");
 }
 
 function listChangelogVersions(changelog) {
@@ -27,21 +27,21 @@ function listChangelogVersions(changelog) {
 export function extractChangelogEntry(changelog, version) {
   const normalizedVersion = normalizeVersion(version);
   if (!normalizedVersion) {
-    throw new Error('Version is required');
+    throw new Error("Version is required");
   }
 
-  const content = String(changelog ?? '');
+  const content = String(changelog ?? "");
   const versionHeadingRegex = new RegExp(
     `^##\\s+\\[${escapeRegExp(normalizedVersion)}\\].*$`,
-    'mu',
+    "mu",
   );
   const startMatch = content.match(versionHeadingRegex);
   if (!startMatch) {
     const availableVersions = listChangelogVersions(content).slice(0, 10);
     const availableText =
       availableVersions.length > 0
-        ? ` Available versions: ${availableVersions.join(', ')}`
-        : ' No version headings found in changelog.';
+        ? ` Available versions: ${availableVersions.join(", ")}`
+        : " No version headings found in changelog.";
     throw new Error(
       `Changelog entry not found for version ${normalizedVersion}. Expected heading: ## [${normalizedVersion}] - YYYY-MM-DD.${availableText}`,
     );
@@ -49,7 +49,7 @@ export function extractChangelogEntry(changelog, version) {
 
   const strictHeadingRegex = new RegExp(
     `^##\\s+\\[${escapeRegExp(normalizedVersion)}\\]\\s+-\\s+\\d{4}-\\d{2}-\\d{2}\\s*$`,
-    'u',
+    "u",
   );
   if (!strictHeadingRegex.test(startMatch[0])) {
     throw new Error(
@@ -72,11 +72,11 @@ function parseArgs(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i += 1) {
     const key = argv[i];
-    if (!key.startsWith('--')) {
+    if (!key.startsWith("--")) {
       continue;
     }
     const value = argv[i + 1];
-    if (value === undefined || value.startsWith('--')) {
+    if (value === undefined || value.startsWith("--")) {
       throw new Error(`Missing value for argument: ${key}`);
     }
     args[key.slice(2)] = value;
@@ -92,13 +92,13 @@ export function formatCLIError(error) {
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const version = args.version;
-  const file = args.file ?? 'CHANGELOG.md';
+  const file = args.file ?? "CHANGELOG.md";
 
   if (!version) {
-    throw new Error('--version is required');
+    throw new Error("--version is required");
   }
 
-  const changelog = readFileSync(file, 'utf8');
+  const changelog = readFileSync(file, "utf8");
   const entry = extractChangelogEntry(changelog, version);
   console.log(entry);
 }
