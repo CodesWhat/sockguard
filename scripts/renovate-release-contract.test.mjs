@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { after, describe, it } from "node:test";
 
 const repoRoot = resolve(import.meta.dirname, "..");
@@ -30,7 +30,7 @@ function renovateGuardScript() {
   return workflow
     .slice(runStart + "        run: |\n".length, nextStep)
     .split("\n")
-    .map((line) => line.replace(/^          /, ""))
+    .map((line) => line.replace(/^ {10}/, ""))
     .join("\n");
 }
 

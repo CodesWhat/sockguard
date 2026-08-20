@@ -30,7 +30,7 @@ function indentedBlock(source, heading, indentation) {
   const prefix = " ".repeat(indentation);
   const startMarker = `${prefix}${heading}:`;
   const lines = source.split("\n");
-  const start = lines.findIndex((line) => line === startMarker);
+  const start = lines.indexOf(startMarker);
   assert.notEqual(start, -1, `${heading} block at indentation ${indentation} not found`);
 
   const endOffset = lines
@@ -47,31 +47,31 @@ describe("rendered Helm security context", () => {
     const daemonSet = renderChart();
     const podSecurityContext = indentedBlock(daemonSet, "securityContext", 6);
 
-    assert.match(podSecurityContext, /^        runAsNonRoot: true$/m);
-    assert.match(podSecurityContext, /^        runAsUser: 65532$/m);
-    assert.match(podSecurityContext, /^        runAsGroup: 65532$/m);
-    assert.match(podSecurityContext, /^        seccompProfile:$/m);
-    assert.match(podSecurityContext, /^          type: RuntimeDefault$/m);
+    assert.match(podSecurityContext, /^ {8}runAsNonRoot: true$/m);
+    assert.match(podSecurityContext, /^ {8}runAsUser: 65532$/m);
+    assert.match(podSecurityContext, /^ {8}runAsGroup: 65532$/m);
+    assert.match(podSecurityContext, /^ {8}seccompProfile:$/m);
+    assert.match(podSecurityContext, /^ {10}type: RuntimeDefault$/m);
   });
 
   it("keeps the container filesystem, privilege, and capability restrictions", () => {
     const daemonSet = renderChart();
     const containerSecurityContext = indentedBlock(daemonSet, "securityContext", 10);
 
-    assert.match(containerSecurityContext, /^            readOnlyRootFilesystem: true$/m);
-    assert.match(containerSecurityContext, /^            allowPrivilegeEscalation: false$/m);
-    assert.match(containerSecurityContext, /^            capabilities:$/m);
-    assert.match(containerSecurityContext, /^                - ALL$/m);
+    assert.match(containerSecurityContext, /^ {12}readOnlyRootFilesystem: true$/m);
+    assert.match(containerSecurityContext, /^ {12}allowPrivilegeEscalation: false$/m);
+    assert.match(containerSecurityContext, /^ {12}capabilities:$/m);
+    assert.match(containerSecurityContext, /^ {16}- ALL$/m);
   });
 
   it("retains the secure identity when the Docker socket group is added", () => {
     const daemonSet = renderChart(["--set", "podSecurityContext.supplementalGroups[0]=999"]);
     const podSecurityContext = indentedBlock(daemonSet, "securityContext", 6);
 
-    assert.match(podSecurityContext, /^        runAsNonRoot: true$/m);
-    assert.match(podSecurityContext, /^        runAsUser: 65532$/m);
-    assert.match(podSecurityContext, /^        runAsGroup: 65532$/m);
-    assert.match(podSecurityContext, /^        supplementalGroups:$/m);
-    assert.match(podSecurityContext, /^        - 999$/m);
+    assert.match(podSecurityContext, /^ {8}runAsNonRoot: true$/m);
+    assert.match(podSecurityContext, /^ {8}runAsUser: 65532$/m);
+    assert.match(podSecurityContext, /^ {8}runAsGroup: 65532$/m);
+    assert.match(podSecurityContext, /^ {8}supplementalGroups:$/m);
+    assert.match(podSecurityContext, /^ {8}- 999$/m);
   });
 });

@@ -51,14 +51,14 @@ function jobSection(workflow, jobId) {
   const jobStart = workflow.indexOf(`  ${jobId}:\n`);
   assert.notEqual(jobStart, -1, `missing required CI job ${jobId}`);
 
-  const nextJob = workflow.slice(jobStart + 1).search(/^  [a-z0-9-]+:\n/m);
+  const nextJob = workflow.slice(jobStart + 1).search(/^ {2}[a-z0-9-]+:\n/m);
   return nextJob === -1
     ? workflow.slice(jobStart)
     : workflow.slice(jobStart, jobStart + 1 + nextJob);
 }
 
 function jobName(workflow, jobId) {
-  const match = jobSection(workflow, jobId).match(/^    name: "([^"]+)"$/m);
+  const match = jobSection(workflow, jobId).match(/^ {4}name: "([^"]+)"$/m);
   assert.ok(match, `required CI job ${jobId} must have an explicit name`);
   return match[1];
 }

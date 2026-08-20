@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-import { comparisonRows } from "./data/comparison-rows.ts";
-import { features } from "./data/features.ts";
-import { faqItems } from "./data/faq.ts";
 import { roadmap } from "../lib/site-content.ts";
+import { comparisonRows } from "./data/comparison-rows.ts";
+import { faqItems } from "./data/faq.ts";
+import { features } from "./data/features.ts";
 
 test("website features live in extracted data modules", () => {
   assert.equal(features.length, 19);

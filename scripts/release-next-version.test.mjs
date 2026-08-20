@@ -1,11 +1,11 @@
+import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import assert from "node:assert/strict";
-import { inferReleaseLevel, bumpSemver, formatCLIError } from "./release-next-version.mjs";
+import { bumpSemver, formatCLIError, inferReleaseLevel } from "./release-next-version.mjs";
 
 const scriptPath = fileURLToPath(new URL("./release-next-version.mjs", import.meta.url));
 

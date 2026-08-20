@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const rootModule = new URL("../go.mod", import.meta.url);
@@ -51,7 +51,7 @@ test("temporary staged compatibility packages are absent from the final tree", (
   assert.match(workflow, /"name":"FuzzDecode","pkg":"\.\/internal\/dockerfilters\/"/);
   // The reusable Go Fuzz job cds into module-directory (app) before running
   // the caller-owned fuzzer, same as the old inline working-directory: app.
-  assert.match(workflow, /^      module-directory: app$/m);
+  assert.match(workflow, /^ {6}module-directory: app$/m);
 });
 
 test("temporary Docker COPY detection covers equivalent forms", () => {
@@ -105,7 +105,7 @@ test("container and coverage tooling preserve app as the package subdirectory", 
   const dockerfile = read("Dockerfile");
   assert.match(dockerfile, /^COPY go\.mod go\.sum \.\/$/m);
   assert.match(dockerfile, /^COPY app\/ \.\/app\/$/m);
-  assert.match(dockerfile, /^    -o \/sockguard \.\/app\/cmd\/sockguard\/$/m);
+  assert.match(dockerfile, /^ {4}-o \/sockguard \.\/app\/cmd\/sockguard\/$/m);
 
   // The Go Test coverage-gate filtering moved from an inline workflow step
   // into the fixed scripts/ci/go-test.sh adapter the reusable Go CI test

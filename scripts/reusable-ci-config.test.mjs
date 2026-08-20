@@ -26,6 +26,7 @@ const FIXED_SCRIPTS = new Map([
       // that has cosign installed, which includes CI.
       'skip="publish,sign"',
       "command -v syft",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash from go-release-check.sh, matched as text; no `skip` binding exists here so biome's fix would throw
       'release --snapshot --clean --skip="${skip}"',
       "cask ",
     ],
@@ -33,6 +34,7 @@ const FIXED_SCRIPTS = new Map([
   ["go-fuzz.sh", ["FUZZER", "PKG", "fuzztime=60s"]],
   [
     "shellcheck.sh",
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash from shellcheck.sh, matched as text; `scripts[@]` isn't valid in a template literal so biome's fix would not parse
     ["command -v shellcheck", "git ls-files -z '*.sh'", 'shellcheck "${scripts[@]}"'],
   ],
   ["node-lint.sh", ["npm ci", "biome check"]],

@@ -27,6 +27,7 @@ const PATCH_TYPES = new Set([
 // prefixes like "wip fix: ..." don't count toward a release level. The class
 // covers pictographics plus variation selectors/ZWJ for composed emoji.
 const conventionalSubjectRegex =
+  // biome-ignore lint/suspicious/noMisleadingCharacterClass: single-codepoint alternatives that `+` walks as a run, which is what makes ZWJ sequences match; not a composed grapheme inside the class
   /^(?:[\p{Extended_Pictographic}\p{Emoji_Presentation}\u{FE0F}\u{200D}]+\s+)?(?<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|security|deps|revert)(?<breakingA>!)?(?:\([^)]+\))?(?<breakingB>!)?:\s.+$/u;
 
 function commitReleaseLevel(commit) {

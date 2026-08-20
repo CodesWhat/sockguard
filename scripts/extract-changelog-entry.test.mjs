@@ -1,10 +1,10 @@
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import assert from "node:assert/strict";
 import { extractChangelogEntry, formatCLIError } from "./extract-changelog-entry.mjs";
 
 const scriptPath = fileURLToPath(new URL("./extract-changelog-entry.mjs", import.meta.url));

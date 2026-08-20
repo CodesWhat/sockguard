@@ -30,6 +30,7 @@ describe("quality fuzz workflows", () => {
       const lines = resolveBudgetRunBlock(source).split("\n");
 
       const timeoutLineIndex = lines.findIndex((line) =>
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal bash from the workflow's own `run:` block, matched as text; no FUZZTIME binding exists here
         line.includes('fuzz_timeout_for_budget "${FUZZTIME}" 600'),
       );
       const firstOutputLineIndex = lines.findIndex((line) => line.includes('>> "$GITHUB_OUTPUT"'));
