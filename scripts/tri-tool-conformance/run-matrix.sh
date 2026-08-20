@@ -1044,10 +1044,14 @@ assert_remote_update_trigger() {
   # sockguard's proxied socket reaches drydock's store via Portwing's
   # sockguard-mediated inventory sync (presence), and a correctly-shaped
   # trigger invocation reaches drydock's trigger API and is refused, as
-  # unconfigured/not-implemented (404/501) or as having nothing to update
+  # unconfigured (404 "trigger not found") or as having nothing to update
   # (400 "no update available") -- the documented boundary for the audited
-  # bundle. A 2xx here means an UNCONFIGURED trigger executed (alarming,
-  # fail); any other 400 means the request shape regressed (fail).
+  # bundle. Both accepted refusals are matched on the response BODY, not on
+  # the status alone: a wrong trigger URL also answers 404, so a bare-status
+  # check would let this assertion pass while testing nothing, which is the
+  # exact shape of the bug that hid in the store poll above. A 2xx means an
+  # UNCONFIGURED trigger executed (alarming, fail); anything else, including
+  # any other 400, is a fail that prints the status and body.
   local sentinel="tt-conf-sentinel-update-$$"
   local create_resp id
   create_resp="$(create_sentinel "$sentinel" "$OLD_BUSYBOX_REF")"
@@ -1152,8 +1156,19 @@ assert_remote_update_trigger() {
     "$trigger_url" 2>/dev/null)"
 
   case "$trigger_status" in
-    404|501)
-      record_result "$name" PASS "sentinel synced into drydock's store through sockguard-mediated Portwing polling; a correctly-shaped trigger invocation was refused as unconfigured/not-implemented (${trigger_status}) -- the audited bundle's documented boundary"
+    404)
+      # Body-checked for the same reason the 400 arm below is: a bare status
+      # is not evidence. A wrong trigger URL -- exactly the bug that hid here
+      # for a month -- also answers 404, so accepting any 404 would let this
+      # assertion pass while testing nothing. drydock says "trigger not found"
+      # when the trigger genuinely isn't configured, which is the refusal the
+      # audited bundle documents.
+      if jq -e '(.error // "") | test("trigger not found"; "i")' \
+          "${SCRATCH_DIR}/trigger-response.json" >/dev/null 2>&1; then
+        record_result "$name" PASS "sentinel synced into drydock's store through sockguard-mediated Portwing polling; a correctly-shaped trigger invocation was refused as unconfigured (404 trigger not found) -- the audited bundle's documented boundary"
+      else
+        record_result "$name" FAIL "trigger invocation returned 404 but not drydock's unconfigured-trigger refusal -- most likely a wrong trigger URL rather than a conformance failure; body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
+      fi
       ;;
     2*)
       record_result "$name" FAIL "an update trigger the audited bundle never configures ACCEPTED the invocation (${trigger_status}) -- the documented boundary no longer holds; body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
@@ -1172,11 +1187,18 @@ assert_remote_update_trigger() {
           "${SCRATCH_DIR}/trigger-response.json" >/dev/null 2>&1; then
         record_result "$name" PASS "sentinel synced into drydock's store through sockguard-mediated Portwing polling; a correctly-shaped trigger invocation was refused with no update available (400) -- the audited bundle's documented boundary"
       else
-        record_result "$name" FAIL "trigger invocation was refused 400 -- the request shape regressed (want the unconfigured-trigger 404/501, or 400 'no update available'); body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
+        record_result "$name" FAIL "trigger invocation was refused 400 -- the request shape regressed (want 404 'trigger not found' or 400 'no update available'); body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
       fi
       ;;
     *)
-      record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)), want 404/501"
+      # 501 used to sit in the accepting arm alongside 404, unvalidated. No
+      # row has ever returned it: the 2026-08-20 run recorded 404 on
+      # legacy-floor (drydock 1.5.2) and 400 on both current-* rows (1.6.x).
+      # The 501 in the bundle README is Portwing's own trigger endpoint, a
+      # different service from the drydock:3000 API this posts to. Failing
+      # here prints the status and body, so a real 501 becomes a pinnable
+      # fact rather than a silent pass on a status nobody has observed.
+      record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)), want 404 'trigger not found' or 400 'no update available'"
       ;;
   esac
 }

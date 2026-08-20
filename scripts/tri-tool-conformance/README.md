@@ -115,9 +115,13 @@ negative-auth-probe containers) via an `EXIT` trap.
    `501` expecting controller-side checking). drydock 1.5.2 refuses with
    `404` "trigger not found"; 1.6.x gets one step further and refuses with
    `400` "No update available for this container", which still means it
-   accepted the request shape. A `2xx` — an unconfigured trigger executing
-   — or any other `400` — drydock's "Invalid trigger request body", the
-   request shape regressing — is a failure. The body is what separates the
+   accepted the request shape. **Both accepted refusals are matched on the
+   response body, not on the status alone** — a wrong trigger URL also
+   answers `404`, so a bare-status check would pass while testing nothing,
+   which is the same shape as the bug that hid in the store poll. A `2xx` —
+   an unconfigured trigger executing — or anything else, including drydock's
+   other `400` "Invalid trigger request body" — is a failure that prints the
+   status and body. The body is what separates the
    two `400`s, so this stays version-agnostic rather than branching on a
    drydock version.
 9. **Expected denials** — `POST /build` denied with a reason;
