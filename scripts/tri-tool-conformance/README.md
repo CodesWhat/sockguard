@@ -108,13 +108,18 @@ negative-auth-probe containers) via an `EXIT` trap.
    `POST /api/v1/triggers/docker/update` (agent-qualified when the document
    names one) with the required `{id: <drydock container id>}` body — the
    shape pinned from drydock's `app/api/trigger.ts` (#211). Every row
-   passes only on the documented refusal (`404`/`501`): the audited bundle
-   configures no docker update trigger in drydock, and the published pair
-   cannot compute update candidates in this topology anyway (drydock's
-   watch-now delegates registry checks to the Portwing agent, whose
-   watcher endpoint answers `501` expecting controller-side checking). A
-   `2xx` — an unconfigured trigger executing — or a `400` — the request
-   shape regressing — is a failure.
+   passes only on the documented refusal: the audited bundle configures no
+   docker update trigger in drydock, and the published pair cannot compute
+   update candidates in this topology anyway (drydock's watch-now delegates
+   registry checks to the Portwing agent, whose watcher endpoint answers
+   `501` expecting controller-side checking). drydock 1.5.2 refuses with
+   `404` "trigger not found"; 1.6.x gets one step further and refuses with
+   `400` "No update available for this container", which still means it
+   accepted the request shape. A `2xx` — an unconfigured trigger executing
+   — or any other `400` — drydock's "Invalid trigger request body", the
+   request shape regressing — is a failure. The body is what separates the
+   two `400`s, so this stays version-agnostic rather than branching on a
+   drydock version.
 9. **Expected denials** — `POST /build` denied with a reason;
    `POST /containers/*/exec` denied on the non-exec preset (skipped on
    `current-edge`, which runs the exec-enabled preset by design — see
@@ -255,9 +260,10 @@ require a follow-up patch to this harness:
   a real sync failure looks like too. The harness now uses `/api/v1` and
   fails loudly on a non-2xx response or a jq parse error instead of
   swallowing both. And the update flow itself is bounded by the audited
-  bundle: no docker update trigger is
-  configured in drydock (correctly-shaped invocations are refused 404
-  "trigger not found" on every version), and the published pair cannot
+  bundle: no docker update trigger is configured in drydock
+  (correctly-shaped invocations are refused on every version, 404 "trigger
+  not found" on 1.5.2 and 400 "No update available for this container" on
+  1.6.x), and the published pair cannot
   flag `updateAvailable` in this topology at all — drydock's watch-now
   delegates registry checking to the Portwing agent
   (`Error watching on agent: Request failed with status code 501`), while

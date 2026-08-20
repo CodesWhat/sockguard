@@ -1026,23 +1026,28 @@ assert_remote_update_trigger() {
   #      a removed alias and silently discarding the resulting jq error.
   #   2. The audited tri-tool bundle configures NO docker update trigger in
   #      drydock, so a correctly-shaped POST /api/v1/triggers/docker/update
-  #      with drydock's own store {id} is refused 404 "trigger not found"
-  #      on every drydock version. There is no topology in this bundle
-  #      where updates flow: drydock's watch-now delegates registry checks
-  #      to the Portwing agent, whose watcher endpoint answers 501
-  #      "registry checking is performed by the Drydock controller"
-  #      (portwing internal/adapter/drydock/routes.go), so updateAvailable
-  #      can never flip either. A malformed body is still 400 "Invalid
-  #      trigger request body" -- that distinction is what proves the
-  #      request shape is right.
+  #      with drydock's own store {id} is refused on every drydock version.
+  #      1.5.2 refuses it 404 "trigger not found"; 1.6.x gets one step
+  #      further and refuses it 400 "No update available for this
+  #      container", which still means it accepted the request shape.
+  #      There is no topology in this bundle where updates flow: drydock's
+  #      watch-now delegates registry checks to the Portwing agent, whose
+  #      watcher endpoint answers 501 "registry checking is performed by
+  #      the Drydock controller" (portwing
+  #      internal/adapter/drydock/routes.go), so updateAvailable can never
+  #      flip either. A malformed body is a different 400, "Invalid trigger
+  #      request body" -- reading the body rather than the bare status is
+  #      what keeps that distinction, and what proves the request shape is
+  #      right.
   #
   # So the end-to-end proof this row CAN give: the sentinel created through
   # sockguard's proxied socket reaches drydock's store via Portwing's
   # sockguard-mediated inventory sync (presence), and a correctly-shaped
-  # trigger invocation reaches drydock's trigger API and is refused as
-  # unconfigured/not-implemented (404/501) -- the documented boundary for
-  # the audited bundle. A 2xx here means an UNCONFIGURED trigger executed
-  # (alarming, fail); a 400 means the request shape regressed (fail).
+  # trigger invocation reaches drydock's trigger API and is refused, as
+  # unconfigured/not-implemented (404/501) or as having nothing to update
+  # (400 "no update available") -- the documented boundary for the audited
+  # bundle. A 2xx here means an UNCONFIGURED trigger executed (alarming,
+  # fail); any other 400 means the request shape regressed (fail).
   local sentinel="tt-conf-sentinel-update-$$"
   local create_resp id
   create_resp="$(create_sentinel "$sentinel" "$OLD_BUSYBOX_REF")"
@@ -1154,7 +1159,21 @@ assert_remote_update_trigger() {
       record_result "$name" FAIL "an update trigger the audited bundle never configures ACCEPTED the invocation (${trigger_status}) -- the documented boundary no longer holds; body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
       ;;
     400)
-      record_result "$name" FAIL "trigger invocation was refused 400 -- the request shape regressed (want the unconfigured-trigger 404/501); body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
+      # drydock 1.6.x refuses the same invocation 400 "No update available for
+      # this container" where 1.5.2 refused it 404 "trigger not found". Both
+      # are the audited bundle's documented boundary reached by different
+      # routes: 1.6.x gets far enough to evaluate the container and find
+      # nothing to update, which means it accepted the request shape. Matching
+      # on the body rather than on the drydock version keeps this assertion
+      # version-agnostic, and keeps a bare 400 -- drydock's "Invalid trigger
+      # request body" -- a shape regression, which is the thing this arm was
+      # written to catch.
+      if jq -e '(.error // "") | test("no update available"; "i")' \
+          "${SCRATCH_DIR}/trigger-response.json" >/dev/null 2>&1; then
+        record_result "$name" PASS "sentinel synced into drydock's store through sockguard-mediated Portwing polling; a correctly-shaped trigger invocation was refused with no update available (400) -- the audited bundle's documented boundary"
+      else
+        record_result "$name" FAIL "trigger invocation was refused 400 -- the request shape regressed (want the unconfigured-trigger 404/501, or 400 'no update available'); body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)"
+      fi
       ;;
     *)
       record_result "$name" FAIL "trigger invocation returned ${trigger_status} (body: $(head -c 300 "${SCRATCH_DIR}/trigger-response.json" 2>/dev/null)), want 404/501"
