@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.3] - 2026-08-21
+
+### Fixed
+
+- **The v1.7.2 tag cut (run 32487019961) shipped no artifacts, release, or images: the publish run (run 32487678759) died signing `checksums.txt` (#271).** The `cosign` that `sigstore/cosign-installer` now installs defaults to the new sigstore bundle format and the signing-config flow, and either one makes cosign ignore `--output-signature`/`--output-certificate` and demand a `--bundle` path the `signs:` blocks never pass, so the `goreleaser` job failed with `create bundle file: open : no such file or directory`. The archive-signing config added in #271 could only be exercised on a real tagged cut, and this was the first one since it landed. Both `signs:` blocks in `app/.goreleaser.yaml` now pass `--new-bundle-format=false` and `--use-signing-config=false`, restoring the legacy `.sig`/`.pem` output the docs and `verify-published-release.sh` (QA-6) are built around; every `cosign-installer` step now pins `cosign-release: v3.1.3` so CI runs the exact binary the flags were verified against instead of floating to whatever the installer ships next. Verified locally by reproducing the exact CI error against the old arg set and then walking the fixed arg set through to the point cosign hands off to CI's ambient OIDC identity, which is as far as a dev machine can take it. v1.7.2 stays a tag with no published release — the tag ruleset forbids deleting or rewriting it — and v1.7.3 ships the content it was supposed to carry.
+
 ## [1.7.2] - 2026-08-21
 
 ### Security

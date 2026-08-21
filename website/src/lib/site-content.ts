@@ -174,12 +174,24 @@ export const roadmap: Milestone[] = [
     emoji: "🔧",
     status: "released",
     items: [
+      "The publish run failed while signing checksums.txt against cosign v3's new bundle-format defaults, so this tag shipped no artifacts, release, or images; v1.7.3 carries its content",
       "Per-platform release archives are now cosign-signed and carry SLSA build provenance, closing the gap where only the source tarball was signed and attested",
       "The tri-tool conformance matrix's store-sync poll reads drydock's versioned /api/v1 endpoints and stops swallowing its own errors",
       "current-standard and current-edge conformance rows now resolve sockguard to the newest published stable release instead of a stale floor pin",
       "The lockfile-dedupe pre-push hook no longer misreports a stale node_modules as lockfile drift",
       "release-cut.yml's CI gate no longer times out before CI: Verify can finish",
       "Biome now lints and formats the 38 tracked .mjs files it had never been checking",
+    ],
+  },
+  {
+    version: "v1.7.3",
+    title: "Cosign v3 Signing Fix",
+    emoji: "🔏",
+    status: "released",
+    items: [
+      "Fixes the v1.7.2 publish failure: cosign v3 defaults to the new sigstore bundle format and signing-config flow, which made it ignore the signs: blocks' output flags and demand an unset --bundle path",
+      "Both signs: blocks now pass --new-bundle-format=false and --use-signing-config=false, restoring the legacy .sig/.pem output the docs and QA-6 verification rely on",
+      "Every cosign-installer step pins cosign-release v3.1.3 so CI runs the exact binary the flags were verified against",
     ],
   },
   {
