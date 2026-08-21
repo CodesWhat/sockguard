@@ -57,7 +57,7 @@ describe("Vercel security headers", () => {
     // Retired star-chart hosts stay retired (#303): both failed silently at
     // HTTP 200, which is why the chart is a committed SVG now. Same pattern
     // as the Go Report Card removal in #283.
-    assert.doesNotMatch(csp, /(?:warpchart\.dev|star-history\.com)/u);
+    assert.doesNotMatch(csp, /(?:warpchart\.dev|star-history\.com)/iu);
     const scriptSrc = csp.match(/(?:^|; )script-src ([^;]+)/)?.[1];
     const connectSrc = csp.match(/(?:^|; )connect-src ([^;]+)/)?.[1];
     assert.equal(scriptSrc, "'self' 'unsafe-inline' https://e.codeswhat.com");

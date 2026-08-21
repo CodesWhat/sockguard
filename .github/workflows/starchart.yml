@@ -6,6 +6,13 @@ name: Star Chart
 # is exactly what main=GA forbids. Regenerating at the cut means the chart
 # in a released README is as of that release.
 #
+# On this repo the release event alone is not enough: GoReleaser publishes
+# the release with GITHUB_TOKEN, and GitHub suppresses workflow runs caused
+# by that credential, so `release: [published]` never fires on our own cuts
+# (it would fire for a release published by hand). The reliable path is the
+# dispatch in RELEASING.md's metadata-sync step, run before tagging so the
+# released README carries the current chart.
+#
 # The accent is the repository's logo colour; the dark-theme variant is
 # derived inside the reusable workflow (lightness lift at fixed hue and
 # saturation until it clears 6:1 on #0d1117 — #c05a0c derives to #f0710f),
