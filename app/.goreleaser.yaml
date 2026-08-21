@@ -68,6 +68,14 @@ signs:
     args:
       - sign-blob
       - "--yes"
+      # cosign v3 defaults to the new sigstore bundle format and to the
+      # signing-config flow, either of which makes it ignore the two output
+      # flags below and demand a --bundle path (this is what failed the
+      # v1.7.2 cut, run 32487678759). Opt back into the legacy flow so the
+      # .sig/.pem pair the docs and QA-6 verify-blob commands rely on keeps
+      # being produced. The bundle-format migration is tracked separately.
+      - "--new-bundle-format=false"
+      - "--use-signing-config=false"
       - "--output-signature=${signature}"
       - "--output-certificate=${certificate}"
       - "${artifact}"
@@ -79,6 +87,14 @@ signs:
     args:
       - sign-blob
       - "--yes"
+      # cosign v3 defaults to the new sigstore bundle format and to the
+      # signing-config flow, either of which makes it ignore the two output
+      # flags below and demand a --bundle path (this is what failed the
+      # v1.7.2 cut, run 32487678759). Opt back into the legacy flow so the
+      # .sig/.pem pair the docs and QA-6 verify-blob commands rely on keeps
+      # being produced. The bundle-format migration is tracked separately.
+      - "--new-bundle-format=false"
+      - "--use-signing-config=false"
       - "--output-signature=${signature}"
       - "--output-certificate=${certificate}"
       - "${artifact}"

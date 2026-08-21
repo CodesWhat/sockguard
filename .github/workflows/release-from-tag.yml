@@ -168,9 +168,15 @@ jobs:
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
 
       # Required by .goreleaser.yaml's `signs:` blocks, which shell out to
-      # cosign during `goreleaser release`.
+      # cosign during `goreleaser release`. The release is pinned, not floated:
+      # the installer's default cosign moved to v3 semantics between v1.7.1 and
+      # v1.7.2 and broke the signs blocks mid-cut (run 32487678759). The signs
+      # blocks' legacy-output flags below are verified against exactly this
+      # version, so the two move together or not at all.
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+        with:
+          cosign-release: "v3.1.3"
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94  # v7.2.3
@@ -349,6 +355,8 @@ jobs:
       - name: Install cosign
         if: steps.build.outcome == 'success' || steps.manifest-retry.outcome == 'success'
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+        with:
+          cosign-release: "v3.1.3"  # keep in lockstep with the goreleaser job's pin above
 
       - name: Sign container images
         if: always() && steps.digest.outputs.value
@@ -590,6 +598,8 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6  # v4.1.2
+        with:
+          cosign-release: "v3.1.3"  # keep in lockstep with the goreleaser job's pin above
 
       - name: Verify published image + tarball signatures
         env:
