@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.4] - 2026-08-21
+
+### Changed
+
+- **The star-history chart is now a committed first-party SVG pair; the Warpchart embed is gone from the README and the website (#303).** Decision reversal relayed 2026-08-19: D12 is dead. This is the second replacement — star-history.com (#264) broke when GitHub restricted the stargazer API it replays, and both it and the self-hosted alternative failed *silently at HTTP 200*, which is the actual argument for a committed artifact: it needs nothing at runtime, a stale chart is visible, and a missing one is a visibly broken image. The pair (`website/public/star-history.svg` + `-dark.svg`) is generated from GitHub's own stargazer timestamps and regenerated at each release cut by the new `.github/workflows/starchart.yml`, which calls the shared `CodesWhat/.github` reusable workflow (pinned by full SHA) with the repo's accent `#c05a0c`; the dark variant `#f0710f` is derived inside the workflow by lightness lift, so there is one colour to keep in sync. The README embeds the pair through a `<picture>` element rather than an `<img>`, because a media query inside an `<img>`-embedded SVG resolves against the OS preference, not GitHub's theme toggle. `warpchart.dev` is removed from the site CSP `img-src` in `website/vercel.json` and its lockstep test, the site component renders the committed pair with the light/dark class swap preserved, and a new `scripts/star-chart-contract.test.mjs` pins the `<picture>` shape and asserts neither `warpchart.dev` nor `star-history.com` can come back — the same pattern as the Go Report Card removal in #283. No PAT anywhere: the Actions `GITHUB_TOKEN` already reads a public repo's stargazers.
+
+### Added
+
+- **A daily `Main Is Released` monitor now asserts that `main`'s HEAD points at a release tag.** The main=GA invariant restored in v1.7.3 — `main` carries the released version, so default-branch scanners describe software users actually run — previously had nothing watching it; sockguard's 2026-08-20 baseline had `main` 69 commits past v1.7.1. The new `.github/workflows/main-is-released.yml` calls the shared `CodesWhat/.github` reusable workflow (pinned by full SHA) on a best-effort daily schedule plus manual dispatch, with `contents: read` only; the schedule goes live once the file reaches `main`. It is deliberately not a required check: with schedule/dispatch-only triggers no check run is ever reported on a PR's commits, so a required context by this name could never be satisfied and would deadlock every merge into `main`. It is a monitor, not a gate.
+
 ## [1.7.3] - 2026-08-21
 
 ### Fixed

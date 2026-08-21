@@ -42,7 +42,7 @@
 <hr>
 
 > [!NOTE]
-> **v1.7.3 is the latest stable release.** It patches the v1.7 BuildKit gRPC mediation line with per-platform release-archive signing and SLSA build provenance, a hardened PR-gate security posture (Dependency Review, Gitleaks, Actionlint, required Grype image scanning), and conformance-harness fixes that keep the weekly Sockguard + Portwing + drydock matrix honest. v1.7.2 shipped no artifacts — its publish run died signing `checksums.txt` against cosign v3's new bundle-format defaults — and v1.7.3 carries the content it was supposed to. The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
+> **v1.7.4 is the latest stable release.** It replaces the dead Warpchart star-chart embed with a committed first-party SVG pair regenerated at each release cut, and adds a daily monitor asserting `main`'s HEAD points at a release tag so default-branch scanners always describe the shipped version. It follows v1.7.3, which patched the v1.7 BuildKit gRPC mediation line with per-platform release-archive signing, SLSA build provenance, and the cosign v3 signing fix (v1.7.2 shipped no artifacts; v1.7.3 carried its content). The YAML schema, CLI flags, env vars, admin endpoints, and Prometheus metric names remain stable under the v1.x contract. See [CHANGELOG.md](CHANGELOG.md) for the complete release notes.
 
 <h2 align="center">Contents</h2>
 
@@ -212,6 +212,7 @@ The named-volume quick start creates that socket and its parent directory as UID
 <details>
 <summary><strong>Latest release highlights</strong></summary>
 
+- **v1.7.4 shipped on 2026-08-21** — the star-history chart is now a committed first-party SVG pair (light + dark) regenerated at each release cut, replacing the dead Warpchart embed, whose domain leaves the site CSP; a contract test keeps both retired chart hosts from coming back (#303). A daily `Main Is Released` monitor now asserts `main`'s HEAD points at a release tag, so Scorecard, CodeQL, and Grype runs against the default branch always describe the shipped version.
 - **v1.7.3 shipped on 2026-08-21** — the v1.7.2 tag's publish run died signing `checksums.txt` because the cosign that `sigstore/cosign-installer` now installs defaults to the new sigstore bundle format and ignores the `signs:` blocks' output flags; both blocks now pass `--new-bundle-format=false`/`--use-signing-config=false` and every `cosign-installer` step pins `v3.1.3` (#271). v1.7.2 remains a tag with no published artifacts; v1.7.3 ships its content.
 - **v1.7.2 shipped on 2026-08-21** — per-platform release archives are now cosign-signed and carry SLSA build provenance, closing the gap where only the source tarball was signed and attested (#271); the tri-tool conformance matrix's store-sync poll now reads drydock's versioned `/api/v1` endpoints and stops swallowing its own errors, and `current-standard`/`current-edge` rows resolve sockguard to the newest published stable release instead of a stale floor pin (#289); the `lockfile-dedupe` pre-push hook no longer reports a stale `node_modules` as lockfile drift (#295); `release-cut.yml`'s CI gate no longer times out before `CI: Verify` can finish (#288); and Biome now lints and formats the 38 tracked `.mjs` files it had never been checking, which surfaced and fixed a misleading-character-class bug in the release-version classifier (#297).
 - **v1.7.1 shipped on 2026-08-19** — closes four PR-gate gaps from the house security-gating audit: Dependency Review and a new Gitleaks job now run and block on every PR, a new Actionlint job lints workflow files, and Grype image scanning moves into the required Docker Build job (#271); release binaries now ship a CycloneDX SBOM per archive and the SLSA claim is qualified to Build L2 (#279); a weekly ZAP baseline DAST scan covers the static getsockguard.com site and docs (#280); cookieless PostHog analytics replaces Vercel Analytics (#253); branch protection grows from 9 to 17 required contexts and all CI job names drop decorative emoji (#285); and CI runners pin to `ubuntu-24.04` with harden-runner beginning its move off blanket audit-mode egress (#282).
@@ -620,11 +621,17 @@ These themes remain unscheduled until their scope and security boundary are conc
 
 <h2 align="center" id="star-history">Star History</h2>
 
-Growth chart via [Warpchart](https://warpchart.dev):
-
+<!-- Committed SVG pair, regenerated at each release cut by
+     .github/workflows/starchart.yml. A <picture> element, never an <img>:
+     GitHub's theme toggle sets color-scheme on the page and drives the
+     media query below, whereas a media query inside an <img>-embedded SVG
+     resolves against the OS preference and shows the wrong card. -->
 <div align="center">
-  <a href="https://warpchart.dev/r/CodesWhat/sockguard">
-    <img alt="CodesWhat/sockguard star history · Warpchart" src="https://warpchart.dev/api/chart?repo=CodesWhat%2Fsockguard" />
+  <a href="https://github.com/CodesWhat/sockguard/stargazers">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="website/public/star-history-dark.svg">
+      <img alt="Star history for CodesWhat/sockguard" src="website/public/star-history.svg">
+    </picture>
   </a>
 </div>
 

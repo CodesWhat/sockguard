@@ -50,6 +50,7 @@
    - `website/src/lib/site-content.ts` and `README.md` — roadmap/current-release copy
    - `chart/sockguard/Chart.yaml` — chart version plus the default application image tag (see [Helm chart](#helm-chart) below)
    - `docs/content/docs/roadmap.mdx` — served on the docs site; it went stale for a full release line because it wasn't on this list
+   - Star chart — dispatch `gh workflow run starchart.yml --ref dev/v1.7` and let it commit (or confirm "chart unchanged") before tagging. The workflow's `release: [published]` trigger never fires on this repo's own cuts: GoReleaser publishes the release with `GITHUB_TOKEN`, and GitHub suppresses workflow runs caused by that credential. Without this step the released README ships the previous release's chart.
 
    `scripts/release-metadata.test.mjs` enforces that the website version, latest released roadmap milestone, Helm chart/application versions, README latest-stable banner, and CHANGELOG release heading all agree.
 

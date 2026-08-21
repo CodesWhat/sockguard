@@ -1,0 +1,39 @@
+name: Star Chart
+
+# Regenerates the committed star-history SVG pair (light + dark) via the
+# shared reusable workflow. The trigger is the release cut, not a cron: a
+# committed artifact refreshed on a schedule mutates underneath a tag, which
+# is exactly what main=GA forbids. Regenerating at the cut means the chart
+# in a released README is as of that release.
+#
+# On this repo the release event alone is not enough: GoReleaser publishes
+# the release with GITHUB_TOKEN, and GitHub suppresses workflow runs caused
+# by that credential, so `release: [published]` never fires on our own cuts
+# (it would fire for a release published by hand). The reliable path is the
+# dispatch in RELEASING.md's metadata-sync step, run before tagging so the
+# released README carries the current chart.
+#
+# The accent is the repository's logo colour; the dark-theme variant is
+# derived inside the reusable workflow (lightness lift at fixed hue and
+# saturation until it clears 6:1 on #0d1117 — #c05a0c derives to #f0710f),
+# so there is only one value to keep in sync. The registry is in ops
+# standards/readme-shape.md.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  starchart:
+    permissions:
+      contents: write # Commit the regenerated pair back to the dev branch.
+    uses: CodesWhat/.github/.github/workflows/starchart-refresh.yml@a66a777304d657a90161a8859dbc0dfa7d5020f7 # main 2026-08-21
+    with:
+      # Never main: nothing pushes straight to main under the strict flow,
+      # and the reusable workflow rejects a default-branch target anyway.
+      branch: dev/v1.7
+      output-path: website/public/star-history.svg
+      accent: "#c05a0c"
