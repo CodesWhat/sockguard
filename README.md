@@ -620,11 +620,17 @@ These themes remain unscheduled until their scope and security boundary are conc
 
 <h2 align="center" id="star-history">Star History</h2>
 
-Growth chart via [Warpchart](https://warpchart.dev):
-
+<!-- Committed SVG pair, regenerated at each release cut by
+     .github/workflows/starchart.yml. A <picture> element, never an <img>:
+     GitHub's theme toggle sets color-scheme on the page and drives the
+     media query below, whereas a media query inside an <img>-embedded SVG
+     resolves against the OS preference and shows the wrong card. -->
 <div align="center">
-  <a href="https://warpchart.dev/r/CodesWhat/sockguard">
-    <img alt="CodesWhat/sockguard star history · Warpchart" src="https://warpchart.dev/api/chart?repo=CodesWhat%2Fsockguard" />
+  <a href="https://github.com/CodesWhat/sockguard/stargazers">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="website/public/star-history-dark.svg">
+      <img alt="Star history for CodesWhat/sockguard" src="website/public/star-history.svg">
+    </picture>
   </a>
 </div>
 

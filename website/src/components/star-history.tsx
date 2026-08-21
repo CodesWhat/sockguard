@@ -1,17 +1,19 @@
 import { GithubIcon } from "@/components/github-icon";
 import { SectionHeading } from "@/components/section-heading";
 import { TrackedLink } from "@/components/tracked-link";
-import { GITHUB_URL, REPO_SLUG } from "@/lib/site-config";
+import { GITHUB_URL } from "@/lib/site-config";
 
 // Star History = clean framed card, title above the chart (left-aligned).
 
-// Warpchart, not star-history.com: GitHub restricted the stargazer API that
-// star-history.com replays per request, so its SVG now returns an error card
-// at HTTP 200. Warpchart accumulates its own time series and is unaffected.
-const CHART_API = `https://warpchart.dev/api/chart?repo=${encodeURIComponent(REPO_SLUG)}`;
-const DARK_SRC = `${CHART_API}&theme=dark`;
-const LIGHT_SRC = CHART_API;
-const CHART_HREF = `https://warpchart.dev/r/${REPO_SLUG}`;
+// A committed first-party SVG pair, not a third-party embed. Both previous
+// options failed silently at HTTP 200 (see #303), which is the argument for
+// a committed artifact: it needs nothing at runtime, a stale chart is
+// visible, and a missing one is a visibly broken image. It also keeps the
+// cookieless posture — no visitor IPs leave our infrastructure.
+// Regenerated at each release cut by .github/workflows/starchart.yml.
+const LIGHT_SRC = "/star-history.svg";
+const DARK_SRC = "/star-history-dark.svg";
+const CHART_HREF = `${GITHUB_URL}/stargazers`;
 
 function StarChart({ className }: { className?: string }) {
   return (
