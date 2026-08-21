@@ -57,7 +57,10 @@ describe("verify-published-release.sh", () => {
       result.stdout,
       /\^https:\/\/github\.com\/CodesWhat\/sockguard\/\.github\/workflows\/release-from-tag\.yml@refs\/tags\/\.\+\$/,
     );
-    assert.match(result.stdout, /https:\/\/token\.actions\.githubusercontent\.com/);
+    assert.match(
+      result.stdout,
+      /^ {2}issuer:\s+https:\/\/token\.actions\.githubusercontent\.com$/m,
+    );
   });
 
   it("lowercases GITHUB_REPOSITORY for the ghcr path", () => {
