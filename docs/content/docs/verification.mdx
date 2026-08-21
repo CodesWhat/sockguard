@@ -118,14 +118,12 @@ supply-chain compromise until proven otherwise:
 ## Verifying release tarballs
 
 The GitHub release assets (`sockguard-v<TAG>.tar.gz`) are also
-cosign-signed. The release workflow uploads a detached signature
-(`.sig`), a signing certificate (`.pem`), and a sigstore bundle
-(`.bundle`) alongside each tarball.
+cosign-signed. The release workflow uploads a sigstore bundle
+(`.sigstore.json`) alongside each tarball:
 
 ```bash
 cosign verify-blob \
-  --certificate "sockguard-v<TAG>.tar.gz.pem" \
-  --signature   "sockguard-v<TAG>.tar.gz.sig" \
+  --bundle "sockguard-v<TAG>.tar.gz.sigstore.json" \
   --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   "sockguard-v<TAG>.tar.gz"
@@ -133,6 +131,27 @@ cosign verify-blob \
 
 Same interpretation as the image verify: a clean exit code is a
 passing signature, anything else means stop and investigate.
+
+<Callout type="info">
+  Releases in the v1.7 line also publish a legacy detached signature
+  (`.sig`) and signing certificate (`.pem`), so tooling scripted against the
+  older `cosign verify-blob --signature --certificate` invocation keeps
+  working:
+
+  ```bash
+  cosign verify-blob \
+    --certificate "sockguard-v<TAG>.tar.gz.pem" \
+    --signature   "sockguard-v<TAG>.tar.gz.sig" \
+    --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
+    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
+    "sockguard-v<TAG>.tar.gz"
+  ```
+
+  This is a one-line transition: cosign's own `sign-blob` deprecated these
+  output flags in favor of the bundle format above, so the `.sig`/`.pem`
+  pair is not published past the v1.7 line. Migrate to `--bundle` before
+  then.
+</Callout>
 
 When release provenance is published, the release also includes
 `sockguard-v<TAG>.tar.gz.intoto.jsonl`. Verify that attestation separately
@@ -146,13 +165,12 @@ you download to actually run sockguard are the per-platform ones,
 missing `v`). They're easy to confuse, so check which file you have
 before picking a command.
 
-Each per-platform archive ships its own `.sig` and `.pem`, and so does
-`checksums.txt`. Verify a single archive directly:
+Each per-platform archive ships its own `.sigstore.json` bundle, and so
+does `checksums.txt`. Verify a single archive directly:
 
 ```bash
 cosign verify-blob \
-  --certificate "sockguard_<VERSION>_linux_amd64.tar.gz.pem" \
-  --signature   "sockguard_<VERSION>_linux_amd64.tar.gz.sig" \
+  --bundle "sockguard_<VERSION>_linux_amd64.tar.gz.sigstore.json" \
   --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   "sockguard_<VERSION>_linux_amd64.tar.gz"
@@ -163,14 +181,20 @@ the cheaper route when you're pulling several platforms:
 
 ```bash
 cosign verify-blob \
-  --certificate "checksums.txt.pem" \
-  --signature   "checksums.txt.sig" \
+  --bundle "checksums.txt.sigstore.json" \
   --certificate-identity-regexp '^https://github.com/CodesWhat/sockguard/.github/workflows/release-from-tag.yml@refs/tags/.+$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   "checksums.txt"
 
 sha256sum --check --ignore-missing checksums.txt
 ```
+
+<Callout type="info">
+  Releases in the v1.7 line also publish a legacy `.sig`/`.pem` pair
+  alongside each `.sigstore.json` bundle for these archives, verifiable the
+  same way as the release tarball's legacy pair above. That pair is not
+  published past the v1.7 line -- migrate to `--bundle`.
+</Callout>
 
 The archives also carry GitHub build-provenance attestations, which record
 the workflow and commit that produced them:
@@ -186,5 +210,6 @@ Each archive additionally ships a CycloneDX SBOM as
 <Callout type="info">
   Signatures and provenance on the per-platform archives start with the
   first release cut after this change. Earlier releases have the SBOM only,
-  so a missing `.sig` on an older tag is expected rather than a red flag.
+  so a missing `.sigstore.json` on an older tag is expected rather than a
+  red flag.
 </Callout>

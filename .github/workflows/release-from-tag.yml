@@ -450,38 +450,32 @@ jobs:
         run: |
           set -euo pipefail
           artifact="dist/sockguard-${RELEASE_TAG}.tar.gz"
+
+          # New sigstore bundle format (#308), cosign v3's own default: one
+          # file carries signature + certificate + Rekor inclusion proof.
+          # No --new-bundle-format / --use-signing-config overrides -- this
+          # invocation exists to exercise the defaults the legacy call below
+          # opts out of.
           cosign sign-blob --yes \
-            --bundle "${artifact}.bundle" \
+            --bundle "${artifact}.sigstore.json" \
+            "${artifact}"
+
+          # Legacy .sig/.pem pair, dual-published for the v1.7 line so
+          # consumers already scripted against verify-blob --signature/
+          # --certificate have a release line to migrate on. A second,
+          # independent sign-blob invocation -- not derived from the bundle
+          # above -- so each artifact has its own Rekor entry. Drop this call
+          # (and the .sig/.pem assets below) in the v1.8 line.
+          cosign sign-blob --yes \
             --new-bundle-format=false \
+            --use-signing-config=false \
             --output-signature "${artifact}.sig" \
             --output-certificate "${artifact}.pem" \
             "${artifact}"
 
-          # Cosign v3 may only emit bundle output in some keyless flows.
-          # Materialize legacy signature/cert files from the bundle when needed.
-          if [ ! -s "${artifact}.sig" ]; then
-            sig_b64="$(jq -r '.base64Signature // .messageSignature.signature // empty' "${artifact}.bundle")"
-            if [ -n "${sig_b64}" ]; then
-              printf '%s' "${sig_b64}" | base64 --decode > "${artifact}.sig"
-            fi
-          fi
-
-          if [ ! -s "${artifact}.pem" ]; then
-            cert_pem="$(jq -r '.cert // empty' "${artifact}.bundle")"
-            if [ -n "${cert_pem}" ]; then
-              printf '%s\n' "${cert_pem}" > "${artifact}.pem"
-            else
-              cert_der_b64="$(jq -r '.verificationMaterial.certificate.rawBytes // empty' "${artifact}.bundle")"
-              if [ -n "${cert_der_b64}" ]; then
-                printf '%s' "${cert_der_b64}" | base64 --decode | openssl x509 -inform DER -out "${artifact}.pem"
-              fi
-            fi
-          fi
-
-          if [ ! -s "${artifact}.sig" ] || [ ! -s "${artifact}.pem" ]; then
+          if [ ! -s "${artifact}.sigstore.json" ] || [ ! -s "${artifact}.sig" ] || [ ! -s "${artifact}.pem" ]; then
             echo "::error::Expected signature outputs were not generated"
             ls -la dist
-            jq 'keys' "${artifact}.bundle" || true
             exit 1
           fi
 
@@ -494,6 +488,12 @@ jobs:
           artifact="dist/sockguard-${RELEASE_TAG}.tar.gz"
           identity_regex="^https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-from-tag.yml@refs/tags/.+$"
           issuer="https://token.actions.githubusercontent.com"
+
+          cosign verify-blob \
+            --bundle "${artifact}.sigstore.json" \
+            --certificate-identity-regexp "${identity_regex}" \
+            --certificate-oidc-issuer "${issuer}" \
+            "${artifact}" >/dev/null
 
           cosign verify-blob \
             --signature "${artifact}.sig" \
@@ -531,7 +531,7 @@ jobs:
           assets=(
             "dist/sockguard-${RELEASE_TAG}.tar.gz"
             "dist/sockguard-${RELEASE_TAG}.tar.gz.sha256"
-            "dist/sockguard-${RELEASE_TAG}.tar.gz.bundle"
+            "dist/sockguard-${RELEASE_TAG}.tar.gz.sigstore.json"
             "dist/sockguard-${RELEASE_TAG}.tar.gz.sig"
             "dist/sockguard-${RELEASE_TAG}.tar.gz.pem"
           )
