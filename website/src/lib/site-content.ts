@@ -195,6 +195,16 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v1.7.4",
+    title: "First-Party Star Chart & Release Monitor",
+    emoji: "📈",
+    status: "released",
+    items: [
+      "The star-history chart is a committed first-party SVG pair regenerated at each release cut, replacing the dead Warpchart embed, whose domain is out of the site CSP",
+      "A daily Main Is Released monitor asserts main's HEAD points at a release tag, so default-branch scanners always describe the shipped version",
+    ],
+  },
+  {
     version: "v1.8.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
