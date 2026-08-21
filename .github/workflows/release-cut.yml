@@ -179,6 +179,17 @@ jobs:
 
           echo "Validated CHANGELOG entry for ${RELEASE_TAG}."
 
+      - name: Check computed release tag against release metadata
+        env:
+          RELEASE_TAG: ${{ steps.next.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          # Catches the tag-vs-metadata gap before a tag is ever pushed --
+          # see the identical check in release-from-tag.yml's verify-ci job,
+          # which also covers the manual `git tag && git push` fallback
+          # RELEASING.md documents for when this workflow can't be used.
+          node scripts/verify-tag-release-metadata.mjs --tag "${RELEASE_TAG}"
+
       - name: Create and push release tag
         env:
           RELEASE_TAG: ${{ steps.next.outputs.release_tag }}

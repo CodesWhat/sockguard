@@ -48,6 +48,29 @@ jobs:
 
           echo "Tag version: ${tag_version}"
 
+      - name: Setup Node (for release metadata check)
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: 24
+          # This job's checkout is what release-cut.yml pushed and what
+          # downstream jobs (goreleaser, docker publish) build from -- a
+          # poisoned npm cache restored here sits on the same critical path
+          # the changelog job's identical comment describes below.
+          # setup-node auto-enables npm caching because root package.json
+          # declares "packageManager": "npm@...", so caching must be turned
+          # off explicitly via package-manager-cache (zizmor cache-poisoning).
+          package-manager-cache: false
+
+      - name: Check tag against release metadata
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! node scripts/verify-tag-release-metadata.mjs --tag "${RELEASE_TAG}"; then
+            echo "::error::Tag ${RELEASE_TAG} disagrees with release-facing metadata (website/chart/CHANGELOG). See RELEASING.md step 6 and issue #304."
+            exit 1
+          fi
+
       - name: Wait for successful branch CI on tag SHA
         uses: ./.github/actions/verify-ci-success
         with:
