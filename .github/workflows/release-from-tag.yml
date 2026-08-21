@@ -643,3 +643,116 @@ jobs:
             echo "- Downloaded the signed release tarball + .sig + .pem and ran the documented \`cosign verify-blob\`"
             echo "- See \`docs/content/docs/verification.mdx\` for the canonical operator-facing invocation"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  release-image-scan:
+    # Issue #318: neither Grype surface ever scanned the artifact users
+    # actually pull — `security-grype.yml`'s scheduled job and ci-verify.yml's
+    # PR-time gate both `docker build` from source, single-platform. This job
+    # scans the *published* multi-arch manifest by digest, straight from the
+    # registry, one platform at a time (Grype can't scan a manifest list in
+    # one pass). Deliberately self-contained: it re-derives the tag with its
+    # own `docker/metadata-action` call instead of consuming a `release` job
+    # output, so it never touches that job's diff and stays a trivial rebase
+    # against other in-flight changes to this file.
+    name: "Release: Grype Scan (Published Image, ${{ matrix.platform }})"
+    needs: [release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            slug: linux-amd64
+          - platform: linux/arm64
+            slug: linux-arm64
+    steps:
+      # Stays audit, same reasoning as security-grype.yml's grype-image job:
+      # pulls a published image from GHCR, no fixed allowlist yet.
+      - name: Harden Runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
+        with:
+          egress-policy: audit
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        # Only the full-semver tag matters here: it's the one `release`
+        # always publishes, prerelease or stable. Scoped to ghcr.io alone —
+        # GITHUB_TOKEN reads it with no extra secret; docker.io/quay.io carry
+        # the identical manifest (release job pushes one multi-arch build to
+        # all three) so scanning ghcr.io's copy covers all three.
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+
+      - name: Resolve platform-specific digest
+        id: platform_digest
+        env:
+          IMAGE_REF: ${{ fromJSON(steps.meta.outputs.json).tags[0] }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          os="${PLATFORM%%/*}"
+          arch="${PLATFORM##*/}"
+          # Strip the :tag suffix rather than rebuilding from github.repository:
+          # GHCR rejects mixed-case paths and github.repository preserves the
+          # repo's actual case (CodesWhat/sockguard); IMAGE_REF is already the
+          # lowercased ref docker/metadata-action produced, so reusing its
+          # image portion keeps the case consistent with what actually pulls.
+          image_no_tag="${IMAGE_REF%:*}"
+          manifest="$(docker buildx imagetools inspect "${IMAGE_REF}" --raw)"
+          digest="$(printf '%s' "${manifest}" | jq -r --arg os "${os}" --arg arch "${arch}" \
+            '.manifests[] | select(.platform.os == $os and .platform.architecture == $arch) | .digest')"
+          if [ -z "${digest}" ] || [ "${digest}" = "null" ]; then
+            echo "::error::No manifest found for platform ${PLATFORM} in ${IMAGE_REF}"
+            exit 1
+          fi
+          echo "ref=${image_no_tag}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Grype vulnerability scanner
+        # Same severity gate as security-grype.yml's grype-image job: fail on
+        # HIGH/CRITICAL. This is the one gate that scans what got published,
+        # not what CI built from source.
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
+        id: grype
+        with:
+          image: ${{ steps.platform_digest.outputs.ref }}
+          severity-cutoff: high
+          fail-build: true
+          output-format: sarif
+
+      - name: Upload Grype SARIF to code scanning
+        if: always() && github.event.repository.visibility == 'public'
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype-release-${{ matrix.slug }}
+
+      - name: Summarize
+        if: always()
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE_REF: ${{ steps.platform_digest.outputs.ref }}
+        run: |
+          {
+            echo "### Grype Container Scan — Published Image (${PLATFORM})"
+            echo "- Scanned the published multi-arch manifest by resolved platform digest, pulled from the registry (not a from-source build)"
+            echo "- Image: \`${IMAGE_REF}\`"
+            echo "- Fails on any HIGH or CRITICAL finding"
+          } >> "$GITHUB_STEP_SUMMARY"
