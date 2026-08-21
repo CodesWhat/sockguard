@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A daily `Main Is Released` monitor now asserts that `main` points at a release tag.** The main=GA invariant restored in v1.7.3 — every commit on `main` is a tagged release, so default-branch scanners describe software users actually run — previously had nothing watching it; sockguard's 2026-08-20 baseline had `main` 69 commits past v1.7.1. The new `.github/workflows/main-is-released.yml` calls the shared `CodesWhat/.github` reusable workflow (pinned by full SHA) on a daily schedule plus manual dispatch, with `contents: read` only. It is deliberately not a required check: a promotion PR's merge result is untagged by definition, so requiring it would deadlock every cut. It is a monitor, not a gate.
+
 ## [1.7.3] - 2026-08-21
 
 ### Fixed

@@ -1,0 +1,28 @@
+name: Main Is Released
+
+# Asserts the invariant behind main=GA: every commit on main is a tagged
+# release, so scanners pointed at main (Scorecard, CodeQL, Grype) describe
+# software users actually run. Sockguard's 2026-08-20 baseline had main 69
+# commits past v1.7.1 — the worst drift in the org — which is what this
+# monitor exists to catch early.
+#
+# Schedule + dispatch only, no push trigger: a promotion merge is untagged
+# for the seconds between the merge and the tag push, and a red run in that
+# window is noise, not drift. The daily run catches anything real.
+#
+# Deliberately NOT a required context. A promotion PR's merge result is
+# untagged by definition, so requiring this would deadlock every release
+# cut. It is a monitor, not a gate.
+
+on:
+  schedule:
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  released:
+    permissions:
+      contents: read # Read main and its tags.
+    uses: CodesWhat/.github/.github/workflows/main-is-released.yml@a66a777304d657a90161a8859dbc0dfa7d5020f7 # main 2026-08-21
