@@ -90,3 +90,4 @@ testssl-output.txt
 # the repo root. CI uploads it as a build artifact; it is local triage
 # output and should never be committed.
 conformance-*.json
+.codex/
