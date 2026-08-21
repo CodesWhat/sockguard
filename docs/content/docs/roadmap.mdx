@@ -1,27 +1,26 @@
 ---
 title: Roadmap
-description: Sockguard's shipped v1.6 work, committed v1.7 priorities, and twelve-month direction.
+description: Sockguard's shipped v1.7 work, committed v1.8 priorities, and twelve-month direction.
 ---
 
-Sockguard v1.6 is the current stable feature line. This roadmap covers the next
-twelve months, through August 2027. It describes direction and priorities, not
-promises about dates. A feature is available only after the release notes say it
-has shipped.
+Sockguard v1.7 is the current stable feature line, with v1.7.2 the latest
+release. This roadmap covers the next twelve months, through August 2027. It
+describes direction and priorities, not promises about dates. A feature is
+available only after the release notes say it has shipped.
 
-## Committed for v1.7
+## Committed for v1.8
 
-Implementation is tracked in the
-[v1.7.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/2).
+Implementation is tracked in
+[issue #185](https://github.com/CodesWhat/sockguard/issues/185), the BuildKit
+gRPC mediation epic.
 
 | Track | Outcome required before release |
 |---|---|
-| BuildKit mediation | Replace the explicit blind-tunnel acknowledgement with bounded, fail-closed mediation for the BuildKit session and gRPC transport where the protocol permits it |
-| Endpoint configuration | Narrow `allow_endpoint_config` from one broad switch to per-field policy gates, with compatibility tests for existing Compose and API clients |
-| Regression hardening | Preserve the v1.6 Docker Engine, Podman, Portwing, and Drydock conformance matrix while the policy surface changes |
+| BuildKit RUN-instruction coverage | Close the remaining #185 gap: a frontend-less BuildKit Solve (raw LLB, no `dockerfile.v0` frontend) still buries RUN-equivalent instructions in opaque serialized op bytes outside the phase 1-6 mediator's inspection scope, so `allow_run_instructions` has no real enforcement path for non-Dockerfile frontends |
 
 ## Twelve-month direction
 
-After v1.7, work remains risk- and demand-driven:
+After v1.8, work remains risk- and demand-driven:
 
 - continue mutation-test hardening of rule evaluation, request-body inspection,
   response redaction, and configuration validation;
@@ -38,19 +37,33 @@ manager, or general host firewall. OPA/Rego, WASM, or Go plugin support remains
 unscheduled because extending the policy engine also extends the trusted
 computing base.
 
-## Shipped in v1.6
+## Shipped in v1.7
 
-Sockguard v1.6.0 shipped on 2026-08-08. The release added:
+Sockguard v1.7.2, the latest release in the v1.7 line, shipped on 2026-08-21.
+The v1.7 line added:
 
-- multiple independently scoped Unix and TCP listeners;
-- fail-closed admission mutations;
-- effective-state resource-limit guarantees for container and Swarm updates;
-- Docker Engine API 1.55 and current Compose/BuildKit compatibility handling;
-- native Podman `/libpod` policy coverage; and
-- a weekly published-image conformance matrix with Portwing and Drydock.
+- BuildKit gRPC mediation: fail-closed policy enforcement over the previously
+  opaque `/session`/`/grpc` BuildKit tunnel across six phases — schema and
+  policy foundation, h2c termination and stream routing, per-message
+  Solve/Status mediation and ref ownership, credential session mediation for
+  Auth/Secrets/SSH, FileSync/FileSend/Upload stream mediation, and fuzzing plus
+  mediated-build presets — replacing the opt-in opaque-tunnel acknowledgment;
+- `request_body.network.endpoint_config` per-field gates, narrowing
+  `allow_endpoint_config` from one broad switch to independent controls for
+  static addressing, link-local IPs, MAC pinning, gateway priority, and
+  aliases;
+- four PR-gate gaps closed: Dependency Review, Gitleaks secret scanning, and
+  Actionlint workflow linting all now run and block on every PR, and Grype
+  image scanning moved into the required Docker Build job;
+- per-platform release archives now cosign-signed and SLSA build
+  provenance-attested, closing the gap where only the source tarball carried a
+  signature; and
+- conformance-matrix and release-tooling fixes: the tri-tool matrix's
+  store-sync poll and current-release resolution, the lockfile-dedupe pre-push
+  hook, and the release-cut workflow's CI gate timeout.
 
 The complete evidence is in the
-[v1.6.0 milestone](https://github.com/CodesWhat/sockguard/milestone/1),
+[v1.7.0 GitHub milestone](https://github.com/CodesWhat/sockguard/milestone/2),
 [CHANGELOG](https://github.com/CodesWhat/sockguard/blob/main/CHANGELOG.md), and
 repository release history.
 
