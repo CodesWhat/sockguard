@@ -49,6 +49,7 @@
    - `website/src/lib/site-config.ts` — current stable version shown by the site
    - `website/src/lib/site-content.ts` and `README.md` — roadmap/current-release copy
    - `chart/sockguard/Chart.yaml` — chart version plus the default application image tag (see [Helm chart](#helm-chart) below)
+   - `docs/content/docs/roadmap.mdx` — served on the docs site; it went stale for a full release line because it wasn't on this list
 
    `scripts/release-metadata.test.mjs` enforces that the website version, latest released roadmap milestone, Helm chart/application versions, README latest-stable banner, and CHANGELOG release heading all agree.
 
