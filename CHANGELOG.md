@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`release-cut.yml` and `release-from-tag.yml` now fail a release when the tag disagrees with the release-facing metadata files.** `scripts/release-metadata.test.mjs` only ever asserted the website version, Helm chart version/appVersion, README banner, and CHANGELOG heading agree with *each other* — it never read the tag being released, so all four files could agree while being stale relative to reality. That's exactly how v1.7.1 shipped claiming 1.7.0 (#304). The new `scripts/verify-tag-release-metadata.mjs` closes the gap: stable tags (`vX.Y.Z`) require exact agreement across `website/src/lib/site-config.ts`, `chart/sockguard/Chart.yaml`, and a dated CHANGELOG heading; prerelease tags (`vX.Y.Z-rc.N`) only require the CHANGELOG heading, since the website and chart correctly still show the current *stable* version while an rc is soaking. The check runs twice: in `release-cut.yml` before the tag is ever pushed, and in `release-from-tag.yml`'s `verify-ci` job immediately after the tag-format assertion, before any artifact builds — so the manual `git tag && git push` fallback RELEASING.md documents is covered too.
+
 ## [1.7.4] - 2026-08-21
 
 ### Changed
