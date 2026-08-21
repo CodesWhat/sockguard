@@ -70,8 +70,9 @@ IMAGE_TAGS=(
 )
 
 # Release-asset filenames produced by the goreleaser + tarball signing
-# steps in release-from-tag.yml. The .pem + .sig pair is what the
-# documented verify-blob invocation consumes.
+# steps in release-from-tag.yml. The v1.7 line dual-publishes both the
+# legacy .sig/.pem pair and the new sigstore .sigstore.json bundle (#308);
+# the documented verify-blob invocations consume one or the other.
 RELEASE_ARTIFACT="sockguard-${RELEASE_TAG}.tar.gz"
 
 # The per-platform archive is a DIFFERENT artifact from the one above:
@@ -92,12 +93,15 @@ RELEASE_ASSETS=(
   "${RELEASE_ARTIFACT}"
   "${RELEASE_ARTIFACT}.sig"
   "${RELEASE_ARTIFACT}.pem"
+  "${RELEASE_ARTIFACT}.sigstore.json"
   "${BINARY_ARCHIVE}"
   "${BINARY_ARCHIVE}.sig"
   "${BINARY_ARCHIVE}.pem"
+  "${BINARY_ARCHIVE}.sigstore.json"
   "${CHECKSUMS_FILE}"
   "${CHECKSUMS_FILE}.sig"
   "${CHECKSUMS_FILE}.pem"
+  "${CHECKSUMS_FILE}.sigstore.json"
 )
 
 if [ "${DRY_RUN}" -eq 1 ]; then
@@ -116,8 +120,14 @@ $(printf '    - %s\n' "${RELEASE_ASSETS[@]}")
       --certificate-identity-regexp '${IDENTITY_REGEX}' \\
       --certificate-oidc-issuer '${ISSUER}' \\
       <image>
-  cosign blob command (run for the source tarball, the per-platform
-  archive, and checksums.txt):
+  cosign blob commands (run for the source tarball, the per-platform
+  archive, and checksums.txt -- the v1.7 line dual-publishes both forms,
+  #308):
+    cosign verify-blob \\
+      --bundle '<artifact>.sigstore.json' \\
+      --certificate-identity-regexp '${IDENTITY_REGEX}' \\
+      --certificate-oidc-issuer '${ISSUER}' \\
+      '<artifact>'
     cosign verify-blob \\
       --certificate '<artifact>.pem' \\
       --signature   '<artifact>.sig' \\
@@ -180,7 +190,7 @@ done
 
 verify_blob() {
   local artifact="$1"
-  echo "==> cosign verify-blob ${artifact}"
+  echo "==> cosign verify-blob ${artifact} (legacy .sig/.pem, #308 transition)"
   (cd "${WORK_DIR}" && cosign verify-blob \
     --certificate "${artifact}.pem" \
     --signature   "${artifact}.sig" \
@@ -188,6 +198,20 @@ verify_blob() {
     --certificate-oidc-issuer "${ISSUER}" \
     "${artifact}" >/dev/null)
 }
+
+verify_blob_bundle() {
+  local artifact="$1"
+  echo "==> cosign verify-blob ${artifact} (sigstore bundle)"
+  (cd "${WORK_DIR}" && cosign verify-blob \
+    --bundle "${artifact}.sigstore.json" \
+    --certificate-identity-regexp "${IDENTITY_REGEX}" \
+    --certificate-oidc-issuer "${ISSUER}" \
+    "${artifact}" >/dev/null)
+}
+
+verify_blob_bundle "${RELEASE_ARTIFACT}"
+verify_blob_bundle "${BINARY_ARCHIVE}"
+verify_blob_bundle "${CHECKSUMS_FILE}"
 
 verify_blob "${RELEASE_ARTIFACT}"
 verify_blob "${BINARY_ARCHIVE}"

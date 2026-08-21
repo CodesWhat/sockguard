@@ -92,11 +92,11 @@ Swap `-a` for `-s` if you want to GPG-sign locally, but signing is optional and 
 
 1. **verify-ci** — confirms `ci-verify.yml` passed on the tag SHA; fails the release otherwise
 2. **changelog** — extracts the CHANGELOG entry for the tag into release notes
-3. **goreleaser** — builds Linux and Darwin `amd64` + `arm64` binaries, archives, checksums, and a CycloneDX SBOM per archive (via syft); attaches them to the GitHub release; and updates `Casks/sockguard.rb` in `CodesWhat/homebrew-tap` for stable tags
+3. **goreleaser** — builds Linux and Darwin `amd64` + `arm64` binaries, archives, checksums, and a CycloneDX SBOM per archive (via syft); cosign-signs `checksums.txt` and each archive, dual-publishing a sigstore bundle (`.sigstore.json`) alongside a legacy `.sig`/`.pem` pair for the v1.7 line; attaches them to the GitHub release; and updates `Casks/sockguard.rb` in `CodesWhat/homebrew-tap` for stable tags
 4. **release** — builds and pushes the multi-arch Docker image, then:
    - Signs the image with cosign (keyless, via GitHub OIDC)
    - Verifies the cosign signature in the same job
-   - Signs the release tarball with cosign (blob signing)
+   - Signs the release tarball with cosign (blob signing) — the v1.7 line dual-publishes a sigstore bundle (`.sigstore.json`) alongside a legacy `.sig`/`.pem` pair; see `docs/content/docs/verification.mdx`
    - Attests SLSA Build L2 provenance (public repo only; activates automatically when the repo is public)
 5. **verify-homebrew** — on stable tags, clears the hosted runner's implicit `--no-quarantine` setting, installs the cask from `CodesWhat/homebrew-tap` on macOS, proves the installed version matches the tag and has no quarantine attribute, then uninstalls it
 6. **verify-published** — QA-6 end-to-end gate: pulls each published image tag (ghcr, docker.io, quay.io) and the release tarball + signature assets, then runs the *exact* `cosign verify` / `cosign verify-blob` commands published in `docs/content/docs/verification.mdx`. Catches drift between the operator-facing docs and the actual pipeline.
