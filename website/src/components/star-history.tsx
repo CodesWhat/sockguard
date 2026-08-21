@@ -1,12 +1,16 @@
 import { GithubIcon } from "@/components/github-icon";
 import { SectionHeading } from "@/components/section-heading";
-import { GITHUB_URL, REPO_SLUG } from "@/lib/site-config";
+import { GITHUB_URL } from "@/lib/site-config";
 
 // Star History = clean framed card, title above the chart (left-aligned).
 
-const DARK_SRC = `https://api.star-history.com/svg?repos=${REPO_SLUG}&type=timeline&theme=dark&legend=top-left`;
-const LIGHT_SRC = `https://api.star-history.com/svg?repos=${REPO_SLUG}&type=timeline&legend=top-left`;
-const CHART_HREF = `https://www.star-history.com/#${REPO_SLUG}&type=timeline&legend=top-left`;
+// A committed first-party SVG pair, not a third-party embed: the
+// star-history.com SVG endpoint returns an error card at HTTP 200 since
+// GitHub restricted the stargazer API it replays (#303). Frozen on this
+// maintenance line; dev/v1.7 carries the regeneration wiring.
+const LIGHT_SRC = "/star-history.svg";
+const DARK_SRC = "/star-history-dark.svg";
+const CHART_HREF = `${GITHUB_URL}/stargazers`;
 
 function StarChart({ className }: { className?: string }) {
   return (
