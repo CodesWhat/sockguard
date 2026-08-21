@@ -45,7 +45,7 @@ describe('Vercel security headers', () => {
       "connect-src 'self'",
       "font-src 'self' data:",
       "style-src 'self' 'unsafe-inline'",
-      "img-src 'self' data: https://api.star-history.com https://github.com https://goreportcard.com https://img.shields.io https://pkg.go.dev",
+      "img-src 'self' data: https://github.com https://goreportcard.com https://img.shields.io https://pkg.go.dev",
     ]) {
       assert.match(csp, new RegExp(`(?:^|; )${directive.replaceAll(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?:;|$)`));
     }

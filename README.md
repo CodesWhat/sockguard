@@ -613,9 +613,16 @@ These themes remain unscheduled until their scope and security boundary are conc
 
 <a id="star-history"></a>
 
+<!-- Committed SVG pair (frozen on this maintenance line; dev/v1.7 carries
+     the regeneration wiring). A <picture> element, never an <img>: GitHub's
+     theme toggle drives the media query below, whereas a media query inside
+     an <img>-embedded SVG resolves against the OS preference. -->
 <div align="center">
-  <a href="https://star-history.com/#CodesWhat/sockguard&Date">
-    <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=CodesWhat/sockguard&type=Date" />
+  <a href="https://github.com/CodesWhat/sockguard/stargazers">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="website/public/star-history-dark.svg">
+      <img alt="Star history for CodesWhat/sockguard" src="website/public/star-history.svg">
+    </picture>
   </a>
 </div>
 
