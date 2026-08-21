@@ -128,7 +128,8 @@ The chart is in `chart/sockguard/`. It is not auto-published by any current work
 1. Edit `chart/sockguard/Chart.yaml`:
    - `version:` — chart semver (increment independently of the app version)
    - `appVersion:` — set to the container image tag **without** the git tag's leading `v` (e.g. `"1.4.3"` or `"1.5.0-rc.2"`); the DaemonSet uses this value verbatim when `image.tag` is empty
-2. Commit the change in the same PR or as a follow-up patch commit on `main` before tagging.
+2. Move the digest pin: `chart/sockguard/values.yaml`'s `image.tag` pins `<appVersion>@sha256:<digest>` — once the release images are live, resolve the new multi-arch manifest-list digest (`docker buildx imagetools inspect codeswhat/sockguard:<appVersion>`, use the top-level `Digest:` field, not a per-platform one) and update both the tag number and the digest together. `scripts/release-metadata.test.mjs` only checks that the tag component agrees with `appVersion`; it can't verify the digest itself is current, so this step is easy to forget (#305).
+3. Commit the change in the same PR or as a follow-up patch commit on `main` before tagging.
 
 There is no chart-release workflow at this time. If you publish to a Helm repository, do so after the Docker images are live.
 
