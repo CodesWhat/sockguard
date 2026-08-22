@@ -60,6 +60,75 @@ func TestClientCacheHitsWithinTTL(t *testing.T) {
 	}
 }
 
+// TestClientCacheReResolvesWhenCachedContainerNoLongerLive is the regression
+// test for the stale-identity finding: within the cache TTL, if the
+// container backing a cached found=true entry is torn down (verifyLive
+// starts returning false — e.g. Docker reassigned the IP to a brand-new
+// container), the next Lookup for the same IP must re-resolve instead of
+// applying the stale container's cached identity/labels to the new owner.
+func TestClientCacheReResolvesWhenCachedContainerNoLongerLive(t *testing.T) {
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var calls atomic.Int32
+	var live atomic.Bool
+	live.Store(true)
+
+	resolver := func(_ context.Context, addr netip.Addr) (resolvedClient, bool, error) {
+		calls.Add(1)
+		return resolvedClient{ID: "container-x", Name: "x", Labels: map[string]string{"team": "x-owner"}}, true, nil
+	}
+
+	cache := newClientCache(
+		10*time.Second,
+		4,
+		func() time.Time { return baseNow.Add(time.Duration(nowOffset.Load())) },
+		resolver,
+	)
+	cache.verifyLive = func(_ context.Context, id string) bool {
+		if id != "container-x" {
+			t.Fatalf("verifyLive called with unexpected id %q", id)
+		}
+		return live.Load()
+	}
+
+	ip := mustAddr(t, "10.0.0.5")
+
+	client, found, err := cache.Lookup(context.Background(), ip)
+	if err != nil || !found || client.ID != "container-x" {
+		t.Fatalf("first lookup = (%+v, found=%v, err=%v), want container-x", client, found, err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("resolver calls after first lookup = %d, want 1", got)
+	}
+
+	// Container X is torn down; its IP is about to be reassigned. Still well
+	// within the 10s TTL.
+	live.Store(false)
+	nowOffset.Store(int64(2 * time.Second))
+
+	// A new container Y (with different labels) now answers at the same IP.
+	resolver2Called := atomic.Bool{}
+	cache.resolve = func(_ context.Context, addr netip.Addr) (resolvedClient, bool, error) {
+		calls.Add(1)
+		resolver2Called.Store(true)
+		return resolvedClient{ID: "container-y", Name: "y", Labels: map[string]string{"team": "y-owner"}}, true, nil
+	}
+
+	client, found, err = cache.Lookup(context.Background(), ip)
+	if err != nil || !found {
+		t.Fatalf("second lookup = (%+v, found=%v, err=%v)", client, found, err)
+	}
+	if !resolver2Called.Load() {
+		t.Fatal("expected a fresh resolve after the cached container stopped being live")
+	}
+	if client.ID != "container-y" {
+		t.Fatalf("second lookup resolved to %q, want container-y (stale container-x identity served instead)", client.ID)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("resolver calls after cached container died = %d, want 2", got)
+	}
+}
+
 func TestClientCacheCoalescesConcurrentMissesPerIP(t *testing.T) {
 	const callers = 16
 

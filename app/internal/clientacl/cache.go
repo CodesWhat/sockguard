@@ -51,6 +51,17 @@ type clientCache struct {
 	// callers from the same IP skip the expensive re-compile path. May be
 	// nil when label ACLs are disabled.
 	augment func(resolvedClient) resolvedClient
+	// verifyLive re-checks a cached client's container ID against current
+	// daemon state before trusting a found=true cache HIT. Docker recycles a
+	// container's IP the instant it's torn down, so without this check a
+	// cache hit could apply container X's memoized labels/ACL rules to a
+	// request that actually came from a brand-new container Y that reused
+	// X's IP within ttl. A single-container inspect costs the same as the
+	// liveness check resolve() already performs on every cache MISS, so
+	// this closes the gap without reintroducing the O(n) /containers/json
+	// listing the cache exists to avoid. Nil disables the check (e.g. in
+	// tests that don't wire it up).
+	verifyLive func(context.Context, string) bool
 
 	mu       sync.Mutex
 	entries  map[netip.Addr]*list.Element // value: *clientCacheNode
@@ -75,10 +86,11 @@ func newClientCache(
 	}
 }
 
-// Lookup returns the resolvedClient for addr, using cached state when
-// fresh and coalescing concurrent misses into one upstream call. Errors
-// are never cached — a transient upstream blip should recover on the
-// next caller instead of being pinned to a stale failure verdict.
+// Lookup returns the resolvedClient for addr, using cached state when fresh
+// and verifyLive-confirmed (see clientCache.verifyLive), and coalescing
+// concurrent misses into one upstream call. Errors are never cached — a
+// transient upstream blip should recover on the next caller instead of being
+// pinned to a stale failure verdict.
 //
 // Cache hits do NOT promote the entry to the LRU front: the hit-path
 // critical section is map-lookup + two scalar reads, no list write.
@@ -97,9 +109,26 @@ func (c *clientCache) Lookup(ctx context.Context, addr netip.Addr) (resolvedClie
 		if now.Sub(node.entry.at) < c.ttl {
 			client, found := node.entry.client, node.entry.found
 			c.mu.Unlock()
-			return client, found, nil
+			// Re-verify a found=true hit against current daemon state before
+			// trusting it — see the verifyLive doc comment on clientCache.
+			if !found || c.verifyLive == nil || c.verifyLive(ctx, client.ID) {
+				return client, found, nil
+			}
+			// The cached container no longer exists: its IP may already have
+			// been reassigned to a different container. Fall through to a
+			// fresh resolve instead of applying its stale identity.
+		} else {
+			c.mu.Unlock()
 		}
+	} else {
+		c.mu.Unlock()
 	}
+
+	return c.resolveAndStore(ctx, addr)
+}
+
+func (c *clientCache) resolveAndStore(ctx context.Context, addr netip.Addr) (resolvedClient, bool, error) {
+	c.mu.Lock()
 	if call, ok := c.inFlight[addr]; ok {
 		c.mu.Unlock()
 		<-call.done

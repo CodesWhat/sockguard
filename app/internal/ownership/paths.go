@@ -76,7 +76,13 @@ func imageIdentifier(normPath string) (string, bool) {
 	// it here, imageIdentifier would return "{name}/get", the ownership inspect
 	// would 404, and the request would pass through unfiltered, letting a client
 	// export another owner's image.
-	for _, suffix := range []string{"/json", "/history", "/push", "/tag", "/get"} {
+	//
+	// "/attestations" (GET /images/{name}/attestations, Engine API 1.53+) lists
+	// an image's signer/predicate metadata and must be owner-checked against
+	// {name} for the same reason: without it, imageIdentifier would return
+	// "{name}/attestations", the ownership inspect would 404, and the request
+	// would pass through unfiltered.
+	for _, suffix := range []string{"/json", "/history", "/push", "/tag", "/get", "/attestations"} {
 		if strings.HasSuffix(rest, suffix) {
 			return strings.TrimSuffix(rest, suffix), true
 		}
