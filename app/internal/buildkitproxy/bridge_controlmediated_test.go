@@ -166,8 +166,10 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		var daemonCalled atomic.Bool
 		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled.Store(true) })
 		// Upload-session URLs are http://, so admitting the Solve at all needs
-		// AllowRemoteContext; the cap is what this case exercises.
-		policy := Policy{Control: ControlPolicy{Solve: SolvePolicy{Allow: true, AllowRemoteContext: true}}}
+		// AllowRemoteContext, and (since they are no longer exempt from the
+		// RUN-restriction gate) AllowRunInstructions; the cap is what this
+		// case exercises.
+		policy := Policy{Control: ControlPolicy{Solve: SolvePolicy{Allow: true, AllowRemoteContext: true, AllowRunInstructions: true}}}
 		limits := DefaultLimits()
 		limits.MaxUploadKeysPerSession = 1
 		tb := newTestBridge(t, EndpointGRPC, policy, limits, daemon)
