@@ -1599,6 +1599,37 @@ func TestMiddlewareAllowsUnownedImageAccessByDefault(t *testing.T) {
 	}
 }
 
+// TestMiddlewareDeniesImageAttestationsForCrossOwnerImage is the regression
+// test for the /images/{name}/attestations owner-isolation bypass: before the
+// imageIdentifier fix, the composite "{name}/attestations" identifier never
+// matches the fakeInspector's resources keyed on the bare image name, so the
+// inspect reports not-found, checkOwnedResource passes the request through,
+// and this test's next handler (which fails the test) runs. After the fix,
+// the identifier resolves to the bare name, the owner mismatch is detected,
+// and the request is denied before reaching next.
+func TestMiddlewareDeniesImageAttestationsForCrossOwnerImage(t *testing.T) {
+	t.Parallel()
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+	fi := fakeInspector{
+		resources: map[string]map[string]inspectResult{
+			"images": {
+				"busybox:latest": {labels: map[string]string{"com.sockguard.owner": "job-999"}, found: true},
+			},
+		},
+	}
+	handler := middlewareWithDeps(testLogger(), opts, fi.inspectResource, fi.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected image attestations access to be denied")
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/images/busybox:latest/attestations", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
 func TestMiddlewareDeniesExecAccessForCrossOwnerContainer(t *testing.T) {
 	t.Parallel()
 	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
@@ -2210,6 +2241,14 @@ func TestIdentifierHelpers(t *testing.T) {
 	}
 	if id, ok := imageIdentifier("/images/registry.io/team/app/get"); !ok || id != "registry.io/team/app" {
 		t.Fatalf("imageIdentifier(namespaced get) = (%q, %v), want (registry.io/team/app, true)", id, ok)
+	}
+	// Attestation listing (Engine API 1.53+) must resolve to {name} so the
+	// owner-isolation check applies to the referenced image. Without the
+	// "/attestations" suffix, imageIdentifier returns the whole
+	// "{name}/attestations" remainder, the ownership inspect 404s, and the
+	// request passes through unfiltered.
+	if id, ok := imageIdentifier("/images/busybox:latest/attestations"); !ok || id != "busybox:latest" {
+		t.Fatalf("imageIdentifier(attestations) = (%q, %v), want (busybox:latest, true)", id, ok)
 	}
 	// Bare multi-image export (/images/get?names=) takes query params, not a
 	// path identifier, and must stay excluded.
