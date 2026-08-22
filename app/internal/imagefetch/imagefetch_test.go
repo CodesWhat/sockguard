@@ -70,13 +70,14 @@ func signingKeyPair(t *testing.T) (sigsig.Signer, string) {
 	return signer, pubPEM
 }
 
-// simpleSigningPayloadFor builds a cosign simple-signing payload that vouches for
-// the given manifest digest.
-func simpleSigningPayloadFor(t *testing.T, manifestDigest string) []byte {
+// simpleSigningPayloadFor builds a cosign simple-signing payload that vouches
+// for the given manifest digest in dockerReference (the repository the signer
+// claims, e.g. "example.com/app").
+func simpleSigningPayloadFor(t *testing.T, dockerReference, manifestDigest string) []byte {
 	t.Helper()
 	doc := map[string]any{
 		"critical": map[string]any{
-			"identity": map[string]any{"docker-reference": "example.com/app"},
+			"identity": map[string]any{"docker-reference": dockerReference},
 			"image":    map[string]any{"docker-manifest-digest": manifestDigest},
 			"type":     cosignSimpleSigningType,
 		},
@@ -152,7 +153,7 @@ func TestFetchCandidates_ClassicKeyed_Success(t *testing.T) {
 	ref, desc := pushSubjectImage(t, host, "app")
 
 	signer, pubPEM := signingKeyPair(t)
-	payload := simpleSigningPayloadFor(t, desc.Digest.String())
+	payload := simpleSigningPayloadFor(t, ref.Context().Name(), desc.Digest.String())
 	sig, err := signer.SignMessage(bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("sign: %v", err)
@@ -183,7 +184,7 @@ func TestFetchCandidates_ClassicKeyed_TamperedSignatureFails(t *testing.T) {
 	ref, desc := pushSubjectImage(t, host, "app")
 
 	signer, pubPEM := signingKeyPair(t)
-	payload := simpleSigningPayloadFor(t, desc.Digest.String())
+	payload := simpleSigningPayloadFor(t, ref.Context().Name(), desc.Digest.String())
 	sig, err := signer.SignMessage(bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("sign: %v", err)
@@ -214,7 +215,7 @@ func TestFetchCandidates_DigestBindingMismatchRejected(t *testing.T) {
 	// Sign a payload that vouches for a DIFFERENT image digest.
 	wrong := sha256.Sum256([]byte("not-this-image"))
 	wrongDigest := "sha256:" + hex.EncodeToString(wrong[:])
-	payload := simpleSigningPayloadFor(t, wrongDigest)
+	payload := simpleSigningPayloadFor(t, ref.Context().Name(), wrongDigest)
 	sig, err := signer.SignMessage(bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("sign: %v", err)
@@ -228,6 +229,84 @@ func TestFetchCandidates_DigestBindingMismatchRejected(t *testing.T) {
 	_, err = NewFetcher().FetchCandidates(ctx, nil, ref.Name())
 	if !errors.Is(err, ErrNoSignatures) {
 		t.Fatalf("got err %v, want ErrNoSignatures (transplanted signature must be rejected)", err)
+	}
+}
+
+// TestFetchCandidates_RepositoryBindingMismatchRejected is a regression test
+// for the cross-repository signature-transplant finding: a genuinely-signed
+// manifest and its cosign signature are copied byte-for-byte from the
+// repository they were signed for into a different, attacker-controlled
+// repository (mirroring keeps the digest identical since content is
+// addressed by hash). Before the fix, payloadBindsTo only checked the
+// manifest digest, so the copied signature verified for the attacker's
+// repository too; after the fix it must not, because the payload's
+// docker-reference names the victim's repository, not the attacker's.
+func TestFetchCandidates_RepositoryBindingMismatchRejected(t *testing.T) {
+	ctx := context.Background()
+	host := testRegistry(t)
+
+	img, err := random.Image(256, 1)
+	if err != nil {
+		t.Fatalf("random image: %v", err)
+	}
+	victimRef, err := name.ParseReference(fmt.Sprintf("%s/victim/app:v1", host))
+	if err != nil {
+		t.Fatalf("parse victim ref: %v", err)
+	}
+	if err := remote.Write(victimRef, img); err != nil {
+		t.Fatalf("push victim image: %v", err)
+	}
+	desc, err := remote.Head(victimRef)
+	if err != nil {
+		t.Fatalf("head victim image: %v", err)
+	}
+
+	// The attacker mirrors the identical, byte-for-byte image into their own
+	// repository; content-addressing means it resolves to the same digest.
+	attackerRef, err := name.ParseReference(fmt.Sprintf("%s/attacker/app:v1", host))
+	if err != nil {
+		t.Fatalf("parse attacker ref: %v", err)
+	}
+	if err := remote.Write(attackerRef, img); err != nil {
+		t.Fatalf("push attacker image: %v", err)
+	}
+
+	// A genuine signature for the victim's repository.
+	signer, pubPEM := signingKeyPair(t)
+	payload := simpleSigningPayloadFor(t, victimRef.Context().Name(), desc.Digest.String())
+	sig, err := signer.SignMessage(bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	// The attacker copies the identical signature manifest (public, non-secret
+	// data) into their own repository at the classic .sig tag.
+	pushClassicSignature(t, attackerRef, desc.Digest, payload, map[string]string{
+		cosignSignatureAnnotation: base64.StdEncoding.EncodeToString(sig),
+	})
+
+	// A client pulling from the attacker's repository must get no verified
+	// candidates: the signature's docker-reference names victim/app, not
+	// attacker/app, even though the digest matches exactly.
+	_, err = NewFetcher().FetchCandidates(ctx, nil, attackerRef.Name())
+	if !errors.Is(err, ErrNoSignatures) {
+		t.Fatalf("got err %v, want ErrNoSignatures (transplanted cross-repository signature must be rejected)", err)
+	}
+
+	// Sanity check: the identical signature+payload DOES verify against the
+	// victim's own repository, proving the rejection above is about repository
+	// identity and not a broken signature.
+	pushClassicSignature(t, victimRef, desc.Digest, payload, map[string]string{
+		cosignSignatureAnnotation: base64.StdEncoding.EncodeToString(sig),
+	})
+	candidates, err := NewFetcher().FetchCandidates(ctx, nil, victimRef.Name())
+	if err != nil {
+		t.Fatalf("FetchCandidates(victim): %v", err)
+	}
+	v, cfg := keyedVerifier(t, pubPEM)
+	outcome := imagetrust.VerifyCandidatesWithMode(ctx, v, cfg, nil, victimRef.Name(), candidates, nil)
+	if !outcome.Allowed {
+		t.Fatalf("verification denied a valid same-repository signature: %s", outcome.FailureMsg)
 	}
 }
 
@@ -248,7 +327,7 @@ func TestFetchCandidates_GoodAndBadLayers_GoodWins(t *testing.T) {
 	ref, desc := pushSubjectImage(t, host, "app")
 
 	signer, pubPEM := signingKeyPair(t)
-	payload := simpleSigningPayloadFor(t, desc.Digest.String())
+	payload := simpleSigningPayloadFor(t, ref.Context().Name(), desc.Digest.String())
 	goodSig, err := signer.SignMessage(bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("sign: %v", err)
@@ -324,24 +403,48 @@ func TestReadLayerPayloadLimit(t *testing.T) {
 // --- unit tests for the keyless reconstruction internals ---
 
 func TestPayloadBindsTo(t *testing.T) {
+	repo, err := name.NewRepository("example.com/app")
+	if err != nil {
+		t.Fatalf("name.NewRepository: %v", err)
+	}
 	digest := v1.Hash{Algorithm: "sha256", Hex: "ab" + hexRepeat(62)}
-	good := simpleSigningPayloadFor(t, digest.String())
-	if !payloadBindsTo(good, digest) {
+	good := simpleSigningPayloadFor(t, "example.com/app", digest.String())
+	if !payloadBindsTo(good, digest, repo) {
 		t.Fatal("payloadBindsTo rejected a matching payload")
 	}
 
 	other := v1.Hash{Algorithm: "sha256", Hex: "cd" + hexRepeat(62)}
-	if payloadBindsTo(good, other) {
+	if payloadBindsTo(good, other, repo) {
 		t.Fatal("payloadBindsTo accepted a mismatched digest")
 	}
 
-	wrongType := []byte(`{"critical":{"type":"something else","image":{"docker-manifest-digest":"` + digest.String() + `"}}}`)
-	if payloadBindsTo(wrongType, digest) {
+	wrongType := []byte(`{"critical":{"type":"something else","identity":{"docker-reference":"example.com/app"},"image":{"docker-manifest-digest":"` + digest.String() + `"}}}`)
+	if payloadBindsTo(wrongType, digest, repo) {
 		t.Fatal("payloadBindsTo accepted a non-cosign payload type")
 	}
 
-	if payloadBindsTo([]byte("not json"), digest) {
+	if payloadBindsTo([]byte("not json"), digest, repo) {
 		t.Fatal("payloadBindsTo accepted invalid JSON")
+	}
+
+	// Regression for the cross-repository signature-transplant finding: a
+	// genuinely-signed manifest+signature payload for one repository (both are
+	// public, non-secret data) must not verify when the identical bytes are
+	// copied into a different, attacker-controlled repository — the digest
+	// alone matches, but the signer's claimed identity doesn't.
+	attackerRepo, err := name.NewRepository("attacker.example/anything")
+	if err != nil {
+		t.Fatalf("name.NewRepository: %v", err)
+	}
+	if payloadBindsTo(good, digest, attackerRepo) {
+		t.Fatal("payloadBindsTo accepted a payload signed for a different repository (signature-transplant)")
+	}
+
+	// A payload missing docker-reference entirely must fail closed rather than
+	// silently skip the repository check.
+	noIdentity := []byte(`{"critical":{"type":"` + cosignSimpleSigningType + `","image":{"docker-manifest-digest":"` + digest.String() + `"}}}`)
+	if payloadBindsTo(noIdentity, digest, repo) {
+		t.Fatal("payloadBindsTo accepted a payload with no docker-reference")
 	}
 }
 
