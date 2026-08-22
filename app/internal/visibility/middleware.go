@@ -536,24 +536,35 @@ func newVisibilityDepsClient(client *http.Client) visibilityDeps {
 	inspector := upstreamInspector{
 		client: client,
 	}
+	// noMemoizeTTL disables cross-request memoization on both caches below
+	// (only genuinely concurrent callers still share a result, via each
+	// cache's in-flight coalescing). Docker container/network/image names and
+	// tags are mutable and get freed the instant the underlying resource is
+	// deleted, so memoizing a positive verdict by name — the way inspectcache
+	// otherwise would for a positive TTL — could apply a since-deleted
+	// resource's labels (or name/image metadata) to a same-named resource a
+	// different owner creates within the TTL window, defeating the visibility
+	// check it's meant to feed. Every single-resource inspect here already
+	// costs the same one upstream call whether or not it's cached, so
+	// disabling memoization has no throughput cost to offset against that
+	// risk. Ownership's equivalent inspect path makes the identical choice —
+	// see its middleware.go — for the same reason.
+	const noMemoizeTTL = 0
 	cache := inspectcache.New(
-		inspectcache.DefaultTTL,
+		noMemoizeTTL,
 		inspectcache.DefaultMaxSize,
 		time.Now,
 		func(ctx context.Context, kind, identifier string) (map[string]string, bool, error) {
 			return inspector.inspectResource(ctx, dockerresource.Kind(kind), identifier)
 		},
 	)
-	// Meta lookups (name/image pattern axes) get their own cache instance.
-	// Only single-resource reads reach this path (resourceVisibleWithPolicy
-	// for GET /containers/{id}/json and friends) — list responses are
-	// filtered from their own payload via itemVisibleByPatterns and never
-	// inspect upstream. The cache flattens repeated polls of the same
-	// resource (and exec→container resolution) to one upstream inspect per
-	// TTL window, with the same coalescing semantics as the label cache
-	// above.
+	// Meta lookups (name/image pattern axes) get their own cache instance,
+	// same noMemoizeTTL rationale as above. Only single-resource reads reach
+	// this path (resourceVisibleWithPolicy for GET /containers/{id}/json and
+	// friends) — list responses are filtered from their own payload via
+	// itemVisibleByPatterns and never inspect upstream.
 	metaCache := inspectcache.New(
-		inspectcache.DefaultTTL,
+		noMemoizeTTL,
 		inspectcache.DefaultMaxSize,
 		time.Now,
 		func(ctx context.Context, kind, identifier string) (*resourceMeta, bool, error) {

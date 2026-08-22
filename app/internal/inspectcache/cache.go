@@ -39,8 +39,12 @@ type key struct {
 }
 
 // Cache coalesces concurrent upstream inspect calls for the same resource
-// and memoizes successful (found) results for a short TTL. Not-found results
-// are intentionally never memoized — see Lookup — to avoid an owner-isolation
+// and, when constructed with a positive TTL, memoizes successful (found)
+// results for that duration. A non-positive TTL disables memoization
+// entirely: only genuinely concurrent callers share a result (via the
+// in-flight coalescing below); every call that lands after the resolve
+// completes hits the resolver fresh. Not-found results are intentionally
+// never memoized regardless of TTL — see Lookup — to avoid an owner-isolation
 // window where a name created within the TTL is still treated as nonexistent.
 //
 // V is the resolved value type (label maps, inspect metadata, ...). The cache
@@ -126,14 +130,23 @@ func (c *Cache[V]) Lookup(ctx context.Context, kind, identifier string) (V, bool
 	value, found, err := c.resolve(ctx, kind, identifier)
 
 	c.mu.Lock()
-	// Only memoize positive (found) results. Caching a not-found verdict would
-	// open an owner-isolation window: an attacker could inspect a not-yet-
-	// existing name (caching found=false → pass-through), then within the TTL a
-	// victim creates a resource with that name, and the attacker's subsequent
+	// Only memoize positive (found) results, and only when the cache was
+	// constructed with a positive TTL. Caching a not-found verdict would open
+	// an owner-isolation window: an attacker could inspect a not-yet-existing
+	// name (caching found=false → pass-through), then within the TTL a victim
+	// creates a resource with that name, and the attacker's subsequent
 	// operations would hit the stale negative entry and bypass the ownership
 	// check. Concurrent identical misses are still coalesced via inFlight; they
 	// just are not persisted past that in-flight window.
-	if err == nil && found {
+	//
+	// A non-positive TTL closes the parallel found=true race: Docker names and
+	// tags are mutable and get reused (delete + recreate under a different
+	// owner within the window), so memoizing even a positive result can hand
+	// out a stale identity's verdict for a resource that has since changed
+	// hands. Callers for whom that race matters (e.g. visibility) construct
+	// the cache with ttl<=0 to keep in-flight coalescing without the
+	// across-request memoization.
+	if err == nil && found && c.ttl > 0 {
 		c.storeLocked(cacheKey, value, found, c.now())
 	}
 	delete(c.inFlight, cacheKey)
