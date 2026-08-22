@@ -154,13 +154,17 @@ func TestMiddlewareHidesContainerReadSubresources(t *testing.T) {
 }
 
 // TestMiddlewareHidesImageReadSubresources is the image-side counterpart:
-// history and single-image export of a hidden image must 404, not leak.
+// history, single-image export, and attestation listing of a hidden image
+// must 404, not leak. Attestations (Engine API 1.53+) is the regression case:
+// before imageReadIdentifier recognized the suffix, this path fell through to
+// the unconditional "visible" default and reached upstream unfiltered.
 func TestMiddlewareHidesImageReadSubresources(t *testing.T) {
 	t.Parallel()
 	for _, path := range []string{
 		"/v1.53/images/secretimg/history",
 		"/v1.53/images/secretimg/get",
 		"/v1.53/images/registry.io/team/app/get",
+		"/v1.53/images/secretimg/attestations",
 	} {
 		t.Run(path, func(t *testing.T) {
 			logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -644,6 +648,11 @@ func TestImageReadIdentifierBranches(t *testing.T) {
 	// Namespaced image ref (contains "/") must be preserved, not truncated
 	if id, ok := imageReadIdentifier("/images/registry.io/team/app/json"); !ok || id != "registry.io/team/app" {
 		t.Fatalf("namespaced: expected registry.io/team/app, got id=%q ok=%v", id, ok)
+	}
+	// Attestation listing (Engine API 1.53+) must gate too, so a hidden image's
+	// signer/predicate metadata isn't disclosed through this unrecognized path.
+	if id, ok := imageReadIdentifier("/images/sha256:abc/attestations"); !ok || id != "sha256:abc" {
+		t.Fatalf("attestations: expected sha256:abc, got id=%q ok=%v", id, ok)
 	}
 }
 

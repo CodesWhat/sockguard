@@ -177,18 +177,21 @@ type ControlPolicy struct {
 // Phase 3 (issue #185) is the first phase that actually reads these fields:
 // bridge.go's forwardControlMediated decodes a Solve request and checks its
 // Entitlements/Frontend/FrontendAttrs/Cache/Exporters against them before
-// forwarding. AllowRunInstructions has no Phase 3 equivalent: unlike classic
-// POST /build (build.go), a BuildKit Solve using the dockerfile.v0 frontend
-// never puts the Dockerfile's RUN instructions in the SolveRequest message
-// itself — the daemon's embedded frontend resolves those from the build
-// context, which sockguard cannot see until the file-sync mediation Phase 5
-// ships (the #185 synthesis's "temporal enforcement on file-sync": Solve is
-// forwarded before the daemon requests the Dockerfile). A raw, frontend-less
-// Solve (Frontend == "") embeds its instructions as opaque serialized LLB Op
-// bytes (solver/pb/ops.proto's Definition.Def is `repeated bytes`, not
-// nested protobuf messages) that Phase 3's protobuf-reflection-based
-// unknown-field walk (see protowalk.go) cannot decode either — a full LLB
-// op-graph content policy is out of Phase 3's scope.
+// forwarding. AllowRunInstructions has only a partial Phase 3 equivalent:
+// unlike classic POST /build (build.go), a BuildKit Solve using the
+// dockerfile.v0 frontend never puts the Dockerfile's RUN instructions in the
+// SolveRequest message itself — the daemon's embedded frontend resolves
+// those from the build context, which sockguard cannot see until the
+// file-sync mediation Phase 5 ships (the #185 synthesis's "temporal
+// enforcement on file-sync": Solve is forwarded before the daemon requests
+// the Dockerfile). A raw, frontend-less Solve (Frontend == "") is different:
+// it embeds its instructions directly as an ExecOp in its own LLB op graph
+// (solver/pb/ops.proto's Definition.Def, a `repeated bytes` field Phase 3's
+// protobuf-reflection-based unknown-field walk cannot decode — see
+// protowalk.go), so solve.go's checkSolveDefinitionExec does a second,
+// targeted proto.Unmarshal pass per Op to deny ExecOp (or anything it cannot
+// decode) instead. A full LLB op-graph content policy beyond that targeted
+// check remains out of Phase 3's scope.
 type SolvePolicy struct {
 	Allow              bool
 	AllowHostNetwork   bool

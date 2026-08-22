@@ -3,9 +3,13 @@
 
 image:
   repository: codeswhat/sockguard
-  # Empty defaults to the chart's appVersion (a pinned release tag) rather than
-  # the mutable "latest". Override with --set image.tag=… to track another tag.
-  tag: "@sha256:114cfaa345154c239a1e55e21e3b83bcea78396645c785a9321edb9585920fcc"
+  # Pinned to the release tag plus its multi-arch manifest-list digest, not
+  # the mutable "latest". The tag component must match Chart.yaml's
+  # appVersion — scripts/release-metadata.test.mjs checks this on every
+  # release, but the digest itself has to be moved by hand (see
+  # RELEASING.md's Helm chart step). Override with --set image.tag=… to
+  # track a different tag.
+  tag: "1.7.4@sha256:3563c094544c1df867ec46d7fcc15cca1c93807fd8831f3d7306531c4e345c4e"
   pullPolicy: IfNotPresent
 
 # Path the liveness/readiness probes hit. Must match config.health.path below.

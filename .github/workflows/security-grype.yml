@@ -393,3 +393,134 @@ jobs:
             echo "- Fails on any HIGH or CRITICAL finding"
             echo "- Tool: drwetter/testssl.sh:3.2 (DAST-class)"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  resolve-latest-release:
+    # Issue #318, scheduled half: `grype-image` above (and ci-verify.yml's
+    # PR-time gate) only ever scan an image `docker build` from source. A CVE
+    # disclosed against a base-image layer only present in the *published*
+    # multi-arch manifest — different digest, real multi-platform layers a
+    # single-platform CI build never produces — stays invisible between
+    # releases. This resolves the latest published release tag so the
+    # scan below can pull the real thing.
+    name: "Security: Resolve Latest Published Release"
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.latest_release.outputs.version }}
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            github.com:443
+            api.github.com:443
+            *.actions.githubusercontent.com:443
+
+      - name: Resolve latest published, non-prerelease tag
+        id: latest_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release list --repo "${REPOSITORY}" --exclude-drafts --exclude-pre-releases \
+            --limit 1 --json tagName --jq '.[0].tagName')"
+          if [ -z "${tag}" ]; then
+            echo "::error::Could not resolve a latest published release tag from ${REPOSITORY}"
+            exit 1
+          fi
+          echo "Latest published release: ${tag}"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+  grype-published-release:
+    name: "Security: Grype Scan (Published Release Image, ${{ matrix.platform }})"
+    needs: resolve-latest-release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            slug: linux-amd64
+          - platform: linux/arm64
+            slug: linux-arm64
+    steps:
+      # Stays audit, same reasoning as grype-image above: pulls a published
+      # image from GHCR, no fixed allowlist yet.
+      - name: Harden Runner
+        uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
+        with:
+          egress-policy: audit
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve platform-specific digest
+        id: platform_digest
+        env:
+          IMAGE_TAG: ${{ needs.resolve-latest-release.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          # GHCR rejects mixed-case paths; github.repository preserves the
+          # repo's actual case (CodesWhat/sockguard), same lowercasing
+          # scripts/verify-published-release.sh already does for the same
+          # reason.
+          repo_lower="$(printf '%s' "${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
+          image_ref="ghcr.io/${repo_lower}:${IMAGE_TAG}"
+          os="${PLATFORM%%/*}"
+          arch="${PLATFORM##*/}"
+          manifest="$(docker buildx imagetools inspect "${image_ref}" --raw)"
+          digest="$(printf '%s' "${manifest}" | jq -r --arg os "${os}" --arg arch "${arch}" \
+            '.manifests[] | select(.platform.os == $os and .platform.architecture == $arch) | .digest')"
+          if [ -z "${digest}" ] || [ "${digest}" = "null" ]; then
+            echo "::error::No manifest found for platform ${PLATFORM} in ${image_ref}"
+            exit 1
+          fi
+          echo "ref=ghcr.io/${repo_lower}@${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Grype vulnerability scanner
+        # Same severity gate as grype-image above: fail on HIGH/CRITICAL.
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2  # v7.4.0
+        id: grype
+        with:
+          image: ${{ steps.platform_digest.outputs.ref }}
+          severity-cutoff: high
+          fail-build: true
+          output-format: sarif
+
+      - name: Upload Grype SARIF to code scanning
+        if: always() && github.event.repository.visibility == 'public'
+        uses: github/codeql-action/upload-sarif@5595ccaf912efad79be6eef63a5619ff05969be3  # v4.37.6
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype-published-release-${{ matrix.slug }}
+
+      - name: Summarize
+        if: always()
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          IMAGE_REF: ${{ steps.platform_digest.outputs.ref }}
+        run: |
+          {
+            echo "### Grype Container Scan — Published Release Image (${PLATFORM})"
+            echo "- Scanned \`${IMAGE_REF}\` (resolved platform digest, pulled from the registry)"
+            echo "- Surfaces CVEs disclosed against the published manifest between releases"
+            echo "- Fails on any HIGH or CRITICAL finding"
+          } >> "$GITHUB_STEP_SUMMARY"

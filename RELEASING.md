@@ -50,9 +50,9 @@
    - `website/src/lib/site-content.ts` and `README.md` — roadmap/current-release copy
    - `chart/sockguard/Chart.yaml` — chart version plus the default application image tag (see [Helm chart](#helm-chart) below)
    - `docs/content/docs/roadmap.mdx` — served on the docs site; it went stale for a full release line because it wasn't on this list
-   - Star chart — dispatch `gh workflow run starchart.yml --ref dev/v1.7` and let it commit (or confirm "chart unchanged") before tagging. The workflow's `release: [published]` trigger never fires on this repo's own cuts: GoReleaser publishes the release with `GITHUB_TOKEN`, and GitHub suppresses workflow runs caused by that credential. Without this step the released README ships the previous release's chart.
+   - Star chart — dispatch `gh workflow run starchart.yml --ref dev/v1.7` and let it commit (or confirm "chart unchanged") before tagging. The workflow is dispatch-only and commits to whatever branch it was dispatched on: a `release: [published]` trigger would never fire on this repo's own cuts, because GoReleaser publishes the release with `GITHUB_TOKEN` and GitHub suppresses workflow runs caused by that credential (CodesWhat/.github#36). Without this step the released README ships the previous release's chart.
 
-   `scripts/release-metadata.test.mjs` enforces that the website version, latest released roadmap milestone, Helm chart/application versions, README latest-stable banner, and CHANGELOG release heading all agree.
+   `scripts/release-metadata.test.mjs` enforces that the website version, latest released roadmap milestone, Helm chart/application versions, README latest-stable banner, and CHANGELOG release heading all agree with each other. It never reads the tag itself, so it stays green even if all of those files are stale relative to what's actually being tagged. `scripts/verify-tag-release-metadata.mjs` closes that gap by comparing the tag against `website/src/lib/site-config.ts`, `chart/sockguard/Chart.yaml`, and the CHANGELOG heading directly, and runs as a gate in both `release-cut.yml` (before the tag is pushed) and `release-from-tag.yml` (right after the tag-format assertion, before any artifact builds) — so skipping this step now hard-fails the cut instead of shipping a mislabeled release the way v1.7.1 did (#304). For a stable tag it requires exact agreement across all three files; for a prerelease tag (`vX.Y.Z-rc.N`) it only requires the CHANGELOG heading, since the website and chart correctly still show the current stable version while an rc soaks.
 
 7. **Lefthook pre-push** — runs automatically on `git push`. Sequence: clean-tree → goreleaser snapshot → go-lint → go-test → go-fuzz smoke → lockfile-dedupe → knip → biome → ts-test → build → zizmor. The push is blocked if any step fails. Branch CI independently runs the same GoReleaser snapshot and asserts that it rendered `dist/homebrew/Casks/sockguard.rb`.
 
@@ -92,11 +92,11 @@ Swap `-a` for `-s` if you want to GPG-sign locally, but signing is optional and 
 
 1. **verify-ci** — confirms `ci-verify.yml` passed on the tag SHA; fails the release otherwise
 2. **changelog** — extracts the CHANGELOG entry for the tag into release notes
-3. **goreleaser** — builds Linux and Darwin `amd64` + `arm64` binaries, archives, checksums, and a CycloneDX SBOM per archive (via syft); attaches them to the GitHub release; and updates `Casks/sockguard.rb` in `CodesWhat/homebrew-tap` for stable tags
+3. **goreleaser** — builds Linux and Darwin `amd64` + `arm64` binaries, archives, checksums, and a CycloneDX SBOM per archive (via syft); cosign-signs `checksums.txt` and each archive, dual-publishing a sigstore bundle (`.sigstore.json`) alongside a legacy `.sig`/`.pem` pair for the v1.7 line; attaches them to the GitHub release; and updates `Casks/sockguard.rb` in `CodesWhat/homebrew-tap` for stable tags
 4. **release** — builds and pushes the multi-arch Docker image, then:
    - Signs the image with cosign (keyless, via GitHub OIDC)
    - Verifies the cosign signature in the same job
-   - Signs the release tarball with cosign (blob signing)
+   - Signs the release tarball with cosign (blob signing) — the v1.7 line dual-publishes a sigstore bundle (`.sigstore.json`) alongside a legacy `.sig`/`.pem` pair; see `docs/content/docs/verification.mdx`
    - Attests SLSA Build L2 provenance (public repo only; activates automatically when the repo is public)
 5. **verify-homebrew** — on stable tags, clears the hosted runner's implicit `--no-quarantine` setting, installs the cask from `CodesWhat/homebrew-tap` on macOS, proves the installed version matches the tag and has no quarantine attribute, then uninstalls it
 6. **verify-published** — QA-6 end-to-end gate: pulls each published image tag (ghcr, docker.io, quay.io) and the release tarball + signature assets, then runs the *exact* `cosign verify` / `cosign verify-blob` commands published in `docs/content/docs/verification.mdx`. Catches drift between the operator-facing docs and the actual pipeline.
@@ -128,7 +128,8 @@ The chart is in `chart/sockguard/`. It is not auto-published by any current work
 1. Edit `chart/sockguard/Chart.yaml`:
    - `version:` — chart semver (increment independently of the app version)
    - `appVersion:` — set to the container image tag **without** the git tag's leading `v` (e.g. `"1.4.3"` or `"1.5.0-rc.2"`); the DaemonSet uses this value verbatim when `image.tag` is empty
-2. Commit the change in the same PR or as a follow-up patch commit on `main` before tagging.
+2. Move the digest pin: `chart/sockguard/values.yaml`'s `image.tag` pins `<appVersion>@sha256:<digest>` — once the release images are live, resolve the new multi-arch manifest-list digest (`docker buildx imagetools inspect codeswhat/sockguard:<appVersion>`, use the top-level `Digest:` field, not a per-platform one) and update both the tag number and the digest together. `scripts/release-metadata.test.mjs` only checks that the tag component agrees with `appVersion`; it can't verify the digest itself is current, so this step is easy to forget (#305).
+3. Commit the change in the same PR or as a follow-up patch commit on `main` before tagging.
 
 There is no chart-release workflow at this time. If you publish to a Helm repository, do so after the Docker images are live.
 

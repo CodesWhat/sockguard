@@ -48,6 +48,19 @@ describe("verify-published-release.sh", () => {
     assert.match(result.stdout, /gh attestation verify/u);
   });
 
+  // #308: the v1.7 line dual-publishes the new sigstore bundle format
+  // alongside the legacy .sig/.pem pair. Both must appear in the asset list
+  // and the dry-run plan, or QA-6 would silently stop covering one of them.
+  it("covers the dual-published sigstore bundle alongside the legacy pair", () => {
+    const result = runVerify(["--dry-run", "--tag", "v1.2.3"]);
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /sockguard-v1\.2\.3\.tar\.gz\.sigstore\.json/u);
+    assert.match(result.stdout, /sockguard_1\.2\.3_linux_amd64\.tar\.gz\.sigstore\.json/u);
+    assert.match(result.stdout, /checksums\.txt\.sigstore\.json/u);
+    assert.match(result.stdout, /cosign verify-blob \\\s+--bundle/u);
+  });
+
   it("embeds the documented identity regex and issuer", () => {
     const result = runVerify(["--dry-run", "--tag", "v1.2.3"]);
 
@@ -57,7 +70,10 @@ describe("verify-published-release.sh", () => {
       result.stdout,
       /\^https:\/\/github\.com\/CodesWhat\/sockguard\/\.github\/workflows\/release-from-tag\.yml@refs\/tags\/\.\+\$/,
     );
-    assert.match(result.stdout, /https:\/\/token\.actions\.githubusercontent\.com/);
+    assert.match(
+      result.stdout,
+      /^ {2}issuer:\s+https:\/\/token\.actions\.githubusercontent\.com$/m,
+    );
   });
 
   it("lowercases GITHUB_REPOSITORY for the ghcr path", () => {

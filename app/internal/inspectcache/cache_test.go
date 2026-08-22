@@ -219,6 +219,36 @@ func TestCacheResolvesAfterMissThenCreate(t *testing.T) {
 	}
 }
 
+// TestCacheZeroTTLDisablesMemoizationOfPositiveResults locks in the ttl<=0
+// contract that newVisibilityDepsClient relies on (see
+// TestNewVisibilityDepsClientResolvesFreshAfterNameReuse in the visibility
+// package for the actual stale-cache-content-leak regression test): a cache
+// constructed with a non-positive TTL must re-resolve on every sequential
+// call instead of memoizing a found=true result.
+func TestCacheZeroTTLDisablesMemoizationOfPositiveResults(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	cache := New(
+		0,
+		4,
+		time.Now,
+		func(context.Context, string, string) (map[string]string, bool, error) {
+			calls.Add(1)
+			return map[string]string{"owner": "job-123"}, true, nil
+		},
+	)
+
+	if _, found, err := cache.Lookup(context.Background(), "containers", "abc123"); err != nil || !found {
+		t.Fatalf("first lookup = (%v, found=%v), want (nil, found=true)", err, found)
+	}
+	if _, found, err := cache.Lookup(context.Background(), "containers", "abc123"); err != nil || !found {
+		t.Fatalf("second lookup = (%v, found=%v), want (nil, found=true)", err, found)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("resolver calls with ttl<=0 = %d, want 2 (positive results must not be memoized)", got)
+	}
+}
+
 // TestCacheReturnsSameMapAcrossLookups locks in the read-only contract of
 // Lookup: the returned map is shared with the cache and concurrent waiters,
 // so callers must not mutate it. Verified by asserting two consecutive

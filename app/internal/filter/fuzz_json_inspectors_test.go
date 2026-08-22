@@ -82,6 +82,7 @@ func FuzzConfigWrite(f *testing.F) {
 func FuzzService(f *testing.F) {
 	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox","Mounts":[{"Type":"bind","Source":"/allowed"}]}}}`))
 	f.Add("/services/svc-1/update", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"registry.example.com/acme/web:latest","Mounts":[{"Type":"bind","Source":"/allowed"}]}},"Networks":[{"Target":"host"}]}`))
+	f.Add("/services/create", []byte(`{"TaskTemplate":{"ContainerSpec":{"Image":"busybox"},"Networks":[{"Target":"host"}]}}`))
 	f.Add("/v1.54/services/create", []byte(`{`))
 	f.Add("/services/create", bytes.Repeat([]byte("a"), maxServiceBodyBytes+1))
 	// Privileges block seeds — exercise the seccomp/AppArmor/SELinux/NoNewPrivileges

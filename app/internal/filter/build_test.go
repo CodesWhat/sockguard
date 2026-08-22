@@ -150,6 +150,39 @@ func TestMiddlewareAllowsBuildWithoutRunInstructionsAndPreservesBody(t *testing.
 	}
 }
 
+// TestMiddlewareDeniesBuildWithDuplicateDockerfileTarEntry guards against a
+// tar context carrying two entries at the requested Dockerfile path: standard
+// tar/archive extraction is last-entry-wins, so scanning (and approving on)
+// only the first, benign entry would let a later, RUN-carrying entry reach
+// the daemon unmodified and unscanned. The request must be denied rather
+// than approved on the first entry's content.
+func TestMiddlewareDeniesBuildWithDuplicateDockerfileTarEntry(t *testing.T) {
+	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
+	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	rules := []*CompiledRule{r1, r2}
+
+	handler := verboseMiddleware(rules, testLogger())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("expected build to be denied")
+	}))
+
+	payload := mustBuildContextTarDuplicateDockerfile(t, "FROM busybox\nCOPY . /app\n", "FROM busybox\nRUN id\n")
+	req := httptest.NewRequest(http.MethodPost, "/build", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	var body DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(body.Reason, "unable to inspect") {
+		t.Fatalf("reason = %q, want an uninspectable-context denial", body.Reason)
+	}
+}
+
 func TestBuildContextStreaming(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
@@ -1137,6 +1170,30 @@ func TestExtractDockerfileFromTarReaderSkipsNonRegularEntry(t *testing.T) {
 	}
 }
 
+func TestExtractDockerfileFromTarReaderDeniesDuplicateEntry(t *testing.T) {
+	// A second tar entry at the same Dockerfile path must not be silently
+	// resolved to the first (or last) match: extraction must report ok=false
+	// so the caller treats the context as un-inspectable.
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, body := range []string{"FROM busybox\n", "FROM busybox\nRUN id\n"} {
+		_ = tw.WriteHeader(&tar.Header{Name: "Dockerfile", Typeflag: tar.TypeReg, Size: int64(len(body)), Mode: 0o644})
+		_, _ = tw.Write([]byte(body))
+	}
+	_ = tw.Close()
+
+	got, ok, err := defaultIODeps().extractDockerfileFromTarReader(tar.NewReader(&buf), "Dockerfile")
+	if err != nil {
+		t.Fatalf("extractDockerfileFromTarReader() error = %v", err)
+	}
+	if ok {
+		t.Fatalf("extractDockerfileFromTarReader() ok=true, want false for duplicate entries; got %q", got)
+	}
+	if got != nil {
+		t.Fatalf("extractDockerfileFromTarReader() body = %q, want nil", got)
+	}
+}
+
 func TestExtractBuildDockerfileRawDockerfilePath(t *testing.T) {
 	// Exercises line 222: extractBuildDockerfile succeeds via the raw-Dockerfile path.
 	// Requirements:
@@ -1316,6 +1373,33 @@ func mustBuildContextTar(t *testing.T, dockerfilePath string, dockerfile string)
 			t.Fatalf("write tar header: %v", err)
 		}
 		if _, err := tw.Write([]byte(file.body)); err != nil {
+			t.Fatalf("write tar body: %v", err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// mustBuildContextTarDuplicateDockerfile builds a tar with two entries named
+// "Dockerfile" — first, then second — to exercise the last-entry-wins
+// ambiguity a real tar/archive extractor resolves but sockguard's inspection
+// must not silently trust either side of.
+func mustBuildContextTarDuplicateDockerfile(t *testing.T, first, second string) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, body := range []string{first, second} {
+		if err := tw.WriteHeader(&tar.Header{
+			Name: "Dockerfile",
+			Mode: 0o644,
+			Size: int64(len(body)),
+		}); err != nil {
+			t.Fatalf("write tar header: %v", err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
 			t.Fatalf("write tar body: %v", err)
 		}
 	}

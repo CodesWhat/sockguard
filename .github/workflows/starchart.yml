@@ -1,17 +1,17 @@
 name: Star Chart
 
 # Regenerates the committed star-history SVG pair (light + dark) via the
-# shared reusable workflow. The trigger is the release cut, not a cron: a
-# committed artifact refreshed on a schedule mutates underneath a tag, which
-# is exactly what main=GA forbids. Regenerating at the cut means the chart
-# in a released README is as of that release.
+# shared reusable workflow. Dispatch-only, and dispatch on the dev branch:
+# RELEASING.md's metadata-sync step runs
 #
-# On this repo the release event alone is not enough: GoReleaser publishes
-# the release with GITHUB_TOKEN, and GitHub suppresses workflow runs caused
-# by that credential, so `release: [published]` never fires on our own cuts
-# (it would fire for a release published by hand). The reliable path is the
-# dispatch in RELEASING.md's metadata-sync step, run before tagging so the
-# released README carries the current chart.
+#   gh workflow run starchart.yml --ref dev/vX.Y
+#
+# before each cut, so the chart in a released README is as of that release.
+# Not a cron — a committed artifact refreshed on a schedule mutates
+# underneath a tag, which main=GA forbids. And not `release: [published]` —
+# GoReleaser publishes our releases with GITHUB_TOKEN, whose events GitHub
+# suppresses, so that trigger never fires on this repo's own cuts
+# (CodesWhat/.github#36).
 #
 # The accent is the repository's logo colour; the dark-theme variant is
 # derived inside the reusable workflow (lightness lift at fixed hue and
@@ -20,8 +20,6 @@ name: Star Chart
 # standards/readme-shape.md.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
 
 permissions: {}
@@ -29,11 +27,12 @@ permissions: {}
 jobs:
   starchart:
     permissions:
-      contents: write # Commit the regenerated pair back to the dev branch.
-    uses: CodesWhat/.github/.github/workflows/starchart-refresh.yml@a66a777304d657a90161a8859dbc0dfa7d5020f7 # main 2026-08-21
+      contents: write # Commit the regenerated pair back to the dispatched branch.
+    uses: CodesWhat/.github/.github/workflows/starchart-refresh.yml@11004e42d7d19e86eb3b7777c467ec9522b784e1 # main 2026-08-21
     with:
-      # Never main: nothing pushes straight to main under the strict flow,
-      # and the reusable workflow rejects a default-branch target anyway.
-      branch: dev/v1.7
+      # The branch the dispatch ran on, so nothing rotates at a branch cut.
+      # The reusable workflow rejects a default-branch target, so a stray
+      # dispatch on main fails loudly instead of committing to it.
+      branch: ${{ github.ref_name }}
       output-path: website/public/star-history.svg
       accent: "#c05a0c"

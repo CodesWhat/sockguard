@@ -40,11 +40,12 @@ func TestAddVisibilityLabelFiltersAcceptsLegacyEncoding(t *testing.T) {
 	}
 }
 
-// The meta cache wired by newVisibilityDeps must flatten repeated
+// A standalone inspectcache.Cache (as used directly below) flattens repeated
 // single-resource pattern checks to one upstream inspect per TTL window, and
-// re-inspect after the TTL expires. This drives the same
-// cache→inspectResourceMeta→pattern-match shape production uses, with a fake
-// clock and a counting resolver in place of the daemon.
+// re-inspects after the TTL expires. Production's own cache→
+// inspectResourceMeta→pattern-match wiring (newVisibilityDepsClient) uses a
+// non-positive TTL instead — see TestNewVisibilityDepsClientResolvesFreshAfterNameReuse
+// — so a positive-verdict cache hit is never served across a name/tag reuse.
 func TestResourceVisibleWithPolicyUsesMetaCache(t *testing.T) {
 	t.Parallel()
 
@@ -130,5 +131,59 @@ func TestResourceVisibleWithPolicyHidesNonMatchingViaCache(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("upstream inspects = %d, want 1", calls)
+	}
+}
+
+// TestNewVisibilityDepsClientResolvesFreshAfterNameReuse is the regression
+// test for the stale-cache-content-leak finding: production's cache wiring
+// (newVisibilityDepsClient) must not memoize a positive inspect verdict
+// across a name reuse. Docker frees a container's name the instant it's
+// deleted and lets a differently-labeled container claim it immediately, so
+// a memoized "team=alice" verdict for "shared-name" could otherwise still be
+// served after the real "shared-name" now belongs to team=bob.
+func TestNewVisibilityDepsClientResolvesFreshAfterNameReuse(t *testing.T) {
+	t.Parallel()
+
+	calls := 0
+	currentTeam := "alice"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"Config": map[string]any{"Labels": map[string]string{"team": currentTeam}},
+		})
+	}))
+	t.Cleanup(srv.Close)
+
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			r2 := r.Clone(r.Context())
+			r2.URL.Scheme = "http"
+			r2.URL.Host = srv.Listener.Addr().String()
+			return srv.Client().Transport.RoundTrip(r2)
+		}),
+	}
+	deps := newVisibilityDepsClient(client)
+
+	labels, found, err := deps.inspectResource(context.Background(), dockerresource.KindContainer, "shared-name")
+	if err != nil || !found {
+		t.Fatalf("first inspect = (%v, found=%v), want (nil, found=true)", err, found)
+	}
+	if labels["team"] != "alice" {
+		t.Fatalf("first inspect labels = %v, want team=alice", labels)
+	}
+
+	// Simulate delete + recreate under the same name with a different owner,
+	// all within what would have been the cache's TTL window.
+	currentTeam = "bob"
+
+	labels, found, err = deps.inspectResource(context.Background(), dockerresource.KindContainer, "shared-name")
+	if err != nil || !found {
+		t.Fatalf("second inspect = (%v, found=%v), want (nil, found=true)", err, found)
+	}
+	if labels["team"] != "bob" {
+		t.Fatalf("second inspect labels = %v, want team=bob (stale team=alice verdict served instead)", labels)
+	}
+	if calls != 2 {
+		t.Fatalf("upstream inspect calls = %d, want 2 (a memoized positive verdict would show 1)", calls)
 	}
 }

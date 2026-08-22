@@ -30,6 +30,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/root"
@@ -215,20 +216,58 @@ type Candidate struct {
 	ImageDigest string
 }
 
-// LoadLiveTrustedRoot fetches the Sigstore public-good trust root via TUF, for
-// use as Config.TrustedMaterial when keyless identities are configured. It
-// performs network I/O and requires a writable TUF cache directory, so callers
-// should invoke it once at startup and fail closed if it errors. The returned
-// material refreshes itself in the background.
+// liveTrustedRootMu guards liveTrustedRootMat, memoizing the process-wide TUF
+// trust root built by LoadLiveTrustedRoot. sigstore-go's root.NewLiveTrustedRoot
+// spawns a background goroutine that refreshes the root every 24h for the life
+// of the process and has no way to stop it (tuf.DefaultOptions() never sets
+// Options.Context, so the goroutine's exit channel is nil and never fires), so
+// building a new one on every call — as config hot-reload does every time it
+// rebuilds image-trust policy, which happens on every reload regardless of
+// whether image_trust itself changed, once per client profile and once per
+// request-body surface that configures keyless identities — leaks one
+// goroutine+ticker per call for the rest of the process's life. Memoizing
+// ensures at most one is ever created.
+var (
+	liveTrustedRootMu  sync.Mutex
+	liveTrustedRootMat root.TrustedMaterial
+	// newLiveTrustedRoot builds the trust root; overridden in tests to avoid
+	// real network I/O.
+	newLiveTrustedRoot = func() (root.TrustedMaterial, error) {
+		tr, err := root.NewLiveTrustedRoot(tuf.DefaultOptions())
+		if err != nil {
+			return nil, fmt.Errorf("fetch sigstore trust root via TUF: %w", err)
+		}
+		return tr, nil
+	}
+)
+
+// LoadLiveTrustedRoot returns the process-wide Sigstore public-good trust
+// root fetched via TUF, for use as Config.TrustedMaterial when keyless
+// identities are configured. It performs network I/O and requires a writable
+// TUF cache directory on first use; callers should fail closed if it errors.
+//
+// The underlying TUF client refreshes the returned material in the background
+// for the life of the process and cannot be stopped once created, so this
+// function builds it at most once per process — every call after the first
+// successful build returns the same instance — rather than once per caller.
+// A failed build is not memoized, so a transient error (e.g. no network yet at
+// startup) is retried on the next call rather than permanently failing every
+// subsequent keyless verification until the process restarts.
 //
 // Keyed-only verification never needs this; only call it when keyless
 // identities are present.
 func LoadLiveTrustedRoot() (root.TrustedMaterial, error) {
-	tr, err := root.NewLiveTrustedRoot(tuf.DefaultOptions())
-	if err != nil {
-		return nil, fmt.Errorf("fetch sigstore trust root via TUF: %w", err)
+	liveTrustedRootMu.Lock()
+	defer liveTrustedRootMu.Unlock()
+	if liveTrustedRootMat != nil {
+		return liveTrustedRootMat, nil
 	}
-	return tr, nil
+	tm, err := newLiveTrustedRoot()
+	if err != nil {
+		return nil, err
+	}
+	liveTrustedRootMat = tm
+	return liveTrustedRootMat, nil
 }
 
 // New builds and returns a Verifier from a Config. If cfg.Mode is ModeOff it

@@ -122,6 +122,81 @@ func TestEvaluateSolveRequest(t *testing.T) {
 			wantDenied: false,
 		},
 		{
+			name: "raw LLB definition with an ExecOp is denied while RUN instructions are restricted",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:      "r",
+				Frontend: "",
+				Definition: &pb.Definition{
+					Def: [][]byte{mustMarshal(t, &pb.Op{Op: &pb.Op_Exec{Exec: &pb.ExecOp{}}})},
+				},
+			}),
+			policy:     fullyAllowed,
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
+			name: "raw LLB definition with an ExecOp is admitted with allow_run_instructions",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:      "r",
+				Frontend: "",
+				Definition: &pb.Definition{
+					Def: [][]byte{mustMarshal(t, &pb.Op{Op: &pb.Op_Exec{Exec: &pb.ExecOp{}}})},
+				},
+			}),
+			policy: SolvePolicy{
+				Allow:                fullyAllowed.Allow,
+				AllowHostNetwork:     fullyAllowed.AllowHostNetwork,
+				AllowRemoteContext:   fullyAllowed.AllowRemoteContext,
+				AllowRunInstructions: true,
+			},
+			wantDenied: false,
+		},
+		{
+			name: "raw LLB definition without an ExecOp is admitted while RUN instructions are restricted",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:      "r",
+				Frontend: "",
+				Definition: &pb.Definition{
+					Def: [][]byte{mustMarshal(t, &pb.Op{Op: &pb.Op_Source{Source: &pb.SourceOp{Identifier: "docker-image://busybox"}}})},
+				},
+			}),
+			policy:     fullyAllowed,
+			wantDenied: false,
+		},
+		{
+			name: "raw LLB definition with an undecodable op is denied while RUN instructions are restricted",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:      "r",
+				Frontend: "",
+				Definition: &pb.Definition{
+					Def: [][]byte{malformedPayload},
+				},
+			}),
+			policy:     fullyAllowed,
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
+			name: "raw LLB definition with an ExecOp nested inside a BuildOp is denied while RUN instructions are restricted",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:      "r",
+				Frontend: "",
+				Definition: &pb.Definition{
+					Def: [][]byte{mustMarshal(t, &pb.Op{Op: &pb.Op_Build{Build: &pb.BuildOp{
+						Def: &pb.Definition{
+							Def: [][]byte{mustMarshal(t, &pb.Op{Op: &pb.Op_Exec{Exec: &pb.ExecOp{}}})},
+						},
+					}}})},
+				},
+			}),
+			policy:     fullyAllowed,
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
 			name: "unknown FrontendAttrs key",
 			payload: mustMarshal(t, &control.SolveRequest{
 				Frontend:      "dockerfile.v0",
@@ -178,16 +253,31 @@ func TestEvaluateSolveRequest(t *testing.T) {
 			wantCode:   grpcCodePermissionDenied,
 		},
 		{
-			name: "upload-session context is not treated as a remote fetch under RUN restriction",
+			name: "upload-session context still requires allow_run_instructions",
 			payload: mustMarshal(t, &control.SolveRequest{
 				Ref:           "r",
 				Frontend:      "dockerfile.v0",
 				FrontendAttrs: map[string]string{"context": "http://buildkit-session/abc123"},
 			}),
-			// A buildkit-session upload is local (its Dockerfile still flows
-			// through the inspectable "dockerfile" FileSync stream), so it is
-			// admitted even with allow_run_instructions off.
+			// A buildkit-session upload context can have its Dockerfile
+			// resolved directly from the same fetched context archive by
+			// BuildKit's dockerui frontend, bypassing the "dockerfile"-named
+			// FileSync/DiffCopy stream filesync.go inspects — so it gets no
+			// exemption from the RUN-restriction gate any other remote-shaped
+			// context is subject to.
 			policy:     SolvePolicy{Allow: true, AllowRemoteContext: true},
+			wantDenied: true,
+			wantReason: "buildkit_policy_denied",
+			wantCode:   grpcCodePermissionDenied,
+		},
+		{
+			name: "upload-session context is admitted with allow_run_instructions",
+			payload: mustMarshal(t, &control.SolveRequest{
+				Ref:           "r",
+				Frontend:      "dockerfile.v0",
+				FrontendAttrs: map[string]string{"context": "http://buildkit-session/abc123"},
+			}),
+			policy:     SolvePolicy{Allow: true, AllowRemoteContext: true, AllowRunInstructions: true},
 			wantDenied: false,
 		},
 		{

@@ -389,6 +389,7 @@ func newACLResolveClientForClient(client *http.Client, labelPrefix string) func(
 		client: client,
 	}
 	cache := newClientCache(clientCacheTTL, clientCacheMaxSize, time.Now, resolver.resolveClient)
+	cache.verifyLive = resolver.isContainerLive
 	if labelPrefix != "" {
 		cache.augment = func(c resolvedClient) resolvedClient {
 			return withCompiledLabelRules(c, labelPrefix)

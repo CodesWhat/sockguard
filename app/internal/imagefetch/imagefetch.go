@@ -16,11 +16,16 @@
 // Each signature manifest layer carries a "simple signing" payload (the layer
 // blob) plus cosign annotations: the raw signature, and — for keyless
 // signatures — the Fulcio certificate and the Rekor inclusion bundle. The
-// signature is computed over sha256(payload), and the payload itself names the
-// image digest it vouches for. imagefetch enforces that binding (rejecting any
-// signature whose payload does not reference the exact resolved manifest
-// digest) before handing the bundle to the verifier, which prevents a valid
-// signature for one image from being transplanted onto another.
+// signature is computed over sha256(payload), and the payload itself names
+// both the image digest and the source registry/repository (docker-reference)
+// it vouches for. imagefetch enforces both bindings (rejecting any signature
+// whose payload does not reference the exact resolved manifest digest, or
+// whose docker-reference names a different registry/repository than the one
+// being pulled from) before handing the bundle to the verifier. Digest binding
+// alone stops a signature for image B being transplanted onto image A;
+// docker-reference binding additionally stops a genuinely-signed
+// manifest+signature pair — both public, non-secret data — from being copied
+// byte-for-byte into an attacker-controlled repository and re-verifying there.
 package imagefetch
 
 import (
@@ -152,7 +157,7 @@ func (f *Fetcher) FetchCandidates(ctx context.Context, logger *slog.Logger, imag
 	var candidates []imagetrust.Candidate
 	var candidateErrs []error
 	for _, sigImg := range sigImages {
-		cs, err := candidatesFromSigImage(sigImg, imageDigest)
+		cs, err := candidatesFromSigImage(sigImg, imageDigest, ref.Context())
 		candidates = append(candidates, cs...)
 		if err != nil {
 			// A malformed signature manifest must not mask a sibling valid one;
@@ -238,8 +243,8 @@ func (f *Fetcher) discoverSignatureImages(ctx context.Context, ref name.Referenc
 }
 
 // candidatesFromSigImage extracts one verification candidate per signature layer
-// whose simple-signing payload binds to imageDigest.
-func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash) ([]imagetrust.Candidate, error) {
+// whose simple-signing payload binds to imageDigest in wantRepo.
+func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash, wantRepo name.Repository) ([]imagetrust.Candidate, error) {
 	mf, err := sigImg.Manifest()
 	if err != nil {
 		return nil, fmt.Errorf("read signature manifest: %w", err)
@@ -265,9 +270,12 @@ func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash) ([]imagetrust.
 		}
 
 		// Security-critical binding: the payload must vouch for exactly the image
-		// we resolved. Without this, a valid signature for image B could be
-		// replayed to authorize creating image A.
-		if !payloadBindsTo(payload, imageDigest) {
+		// digest we resolved, in exactly the repository being pulled from. Without
+		// the digest check, a valid signature for image B could be replayed to
+		// authorize creating image A. Without the repository check, a genuinely
+		// signed manifest+signature for repoA@sha256:X could be copied verbatim
+		// into an attacker-controlled repoB and still verify for repoB@sha256:X.
+		if !payloadBindsTo(payload, imageDigest, wantRepo) {
 			continue
 		}
 
@@ -320,9 +328,12 @@ func readLayerPayload(layer v1.Layer) ([]byte, error) {
 }
 
 // simpleSigningPayload is the subset of the cosign simple-signing payload we
-// inspect to bind a signature to an image digest.
+// inspect to bind a signature to an image digest and a source repository.
 type simpleSigningPayload struct {
 	Critical struct {
+		Identity struct {
+			DockerReference string `json:"docker-reference"`
+		} `json:"identity"`
 		Image struct {
 			DockerManifestDigest string `json:"docker-manifest-digest"`
 		} `json:"image"`
@@ -330,7 +341,11 @@ type simpleSigningPayload struct {
 	} `json:"critical"`
 }
 
-func payloadBindsTo(payload []byte, imageDigest v1.Hash) bool {
+// payloadBindsTo reports whether payload is a well-formed cosign simple-signing
+// payload that vouches for imageDigest in wantRepo. Both the manifest digest and
+// the docker-reference identity must match: the digest alone only proves content
+// integrity, not that the signer intended this repository to serve it.
+func payloadBindsTo(payload []byte, imageDigest v1.Hash, wantRepo name.Repository) bool {
 	var ss simpleSigningPayload
 	if err := json.Unmarshal(payload, &ss); err != nil {
 		return false
@@ -338,7 +353,29 @@ func payloadBindsTo(payload []byte, imageDigest v1.Hash) bool {
 	if ss.Critical.Type != cosignSimpleSigningType {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(ss.Critical.Image.DockerManifestDigest), imageDigest.String())
+	if !strings.EqualFold(strings.TrimSpace(ss.Critical.Image.DockerManifestDigest), imageDigest.String()) {
+		return false
+	}
+	return payloadRepositoryMatches(ss.Critical.Identity.DockerReference, wantRepo)
+}
+
+// payloadRepositoryMatches reports whether dockerReference — the
+// critical.identity.docker-reference the signer embedded in the payload — names
+// the same registry/repository as wantRepo. Cosign's own payload builder
+// (sigstore/pkg/signature/payload.Cosign.SimpleContainerImage) always sets this
+// field, defaulting to the signed image's own repository when the signer
+// supplies no explicit claimed identity, so a missing or mismatched value means
+// the signature was not issued for this repository and must not verify here.
+func payloadRepositoryMatches(dockerReference string, wantRepo name.Repository) bool {
+	dockerReference = strings.TrimSpace(dockerReference)
+	if dockerReference == "" {
+		return false
+	}
+	claimed, err := name.ParseReference(dockerReference, name.WeakValidation)
+	if err != nil {
+		return false
+	}
+	return claimed.Context().Name() == wantRepo.Name()
 }
 
 // buildBundle assembles a sigstore protobuf bundle from a cosign signature

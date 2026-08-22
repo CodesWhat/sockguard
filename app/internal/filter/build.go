@@ -329,12 +329,25 @@ func (io_ ioDeps) extractDockerfileFromTar(file *os.File, dockerfilePath string)
 	return io_.extractDockerfileFromTarReader(tar.NewReader(file), dockerfilePath)
 }
 
+// extractDockerfileFromTarReader scans the entire tar for entries whose
+// normalized path matches dockerfilePath rather than returning on the first
+// match. Standard tar/archive extraction (both the classic builder's
+// untar-to-tempdir and BuildKit's fsutil-based context sync) is last-entry-
+// wins: a later same-named entry silently overwrites an earlier one on disk.
+// So a tar with two "Dockerfile" entries would let this scan inspect one
+// entry while the daemon builds from the other. There is no reliable way to
+// replicate the daemon's own extraction order/semantics here across builder
+// backends and versions, so on any duplicate match the context is treated as
+// un-inspectable (ok=false, matching the "unable to inspect" deny path) —
+// deny-on-ambiguity, not a best-effort guess at which entry wins.
 func (io_ ioDeps) extractDockerfileFromTarReader(tr *tar.Reader, dockerfilePath string) ([]byte, bool, error) {
 	want := normalizeBuildDockerfilePath(dockerfilePath)
+	var body []byte
+	found := false
 	for {
 		header, err := tr.Next()
 		if errors.Is(err, io.EOF) {
-			return nil, false, nil
+			return body, found, nil
 		}
 		if err != nil {
 			if strings.Contains(err.Error(), "invalid tar header") {
@@ -350,14 +363,18 @@ func (io_ ioDeps) extractDockerfileFromTarReader(tr *tar.Reader, dockerfilePath 
 			continue
 		}
 
-		body, err := io_.ReadAllLimited(tr, maxBuildDockerfileBytes+1)
+		if found {
+			return nil, false, nil
+		}
+
+		entryBody, err := io_.ReadAllLimited(tr, maxBuildDockerfileBytes+1)
 		if err != nil {
 			return nil, false, fmt.Errorf("read Dockerfile entry: %w", err)
 		}
-		if len(body) > maxBuildDockerfileBytes {
+		if len(entryBody) > maxBuildDockerfileBytes {
 			return nil, false, fmt.Errorf("%w: %d bytes", errBuildDockerfileTooLarge, maxBuildDockerfileBytes)
 		}
-		return body, true, nil
+		body, found = entryBody, true
 	}
 }
 
