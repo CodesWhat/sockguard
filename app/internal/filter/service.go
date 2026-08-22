@@ -100,7 +100,14 @@ type servicePolicy struct {
 type serviceRequest struct {
 	TaskTemplate struct {
 		ContainerSpec serviceContainerSpec `json:"ContainerSpec"`
+		// Networks is the modern location for swarm network attachments
+		// (moby TaskSpec.Networks), the CLI/API-preferred replacement for the
+		// deprecated top-level ServiceSpec.Networks below. Both must be
+		// checked for a "host" Target or the host-network deny can be
+		// bypassed by using this field instead of the deprecated one.
+		Networks []serviceNetwork `json:"Networks"`
 	} `json:"TaskTemplate"`
+	// Networks is the deprecated top-level ServiceSpec.Networks location.
 	Networks []serviceNetwork `json:"Networks"`
 }
 
@@ -353,6 +360,11 @@ func (p servicePolicy) inspect(logger *slog.Logger, r *http.Request, normalizedP
 
 	if !p.allowHostNetwork {
 		for _, network := range req.Networks {
+			if strings.EqualFold(strings.TrimSpace(network.Target), "host") {
+				return "service denied: host network is not allowed", nil
+			}
+		}
+		for _, network := range req.TaskTemplate.Networks {
 			if strings.EqualFold(strings.TrimSpace(network.Target), "host") {
 				return "service denied: host network is not allowed", nil
 			}
