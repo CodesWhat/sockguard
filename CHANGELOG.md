@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.5-rc.1] - 2026-08-22
+
 ### Security
 
 - **Grype now scans the published multi-arch image, not just from-source builds (#318).** Both existing Grype surfaces — `ci-verify.yml`'s required PR-time gate and `security-grype.yml`'s scheduled `grype-image` job — `docker build` from source and scan that, single-platform. Neither ever touched the actual multi-arch manifest users pull from GHCR/Docker Hub/Quay, so a CVE present only in a published-platform layer (a different resolved base-image digest, or an arm64-only issue a single-platform CI build never produces) was invisible to every gate. `release-from-tag.yml` gains a `release-image-scan` job that runs after the image publishes and is signed: it resolves the tag docker/metadata-action just pushed, reads the manifest list via `docker buildx imagetools inspect`, and runs Grype against each platform's resolved digest (`linux/amd64`, `linux/arm64`) straight from the registry, failing on the same HIGH/CRITICAL threshold the existing gates use. `security-grype.yml` gains a parallel scheduled pair (`resolve-latest-release` + `grype-published-release`) that resolves the latest published, non-prerelease tag via `gh release list` and scans it the same way, so a CVE disclosed against an unchanged published image surfaces between releases too. Both scan ghcr.io only — GITHUB_TOKEN reads it with no extra secret, and docker.io/quay.io carry the identical multi-arch manifest `release` pushes to all three registries. SARIF uploads to code scanning under per-platform categories, same as the existing `grype-image` job.
