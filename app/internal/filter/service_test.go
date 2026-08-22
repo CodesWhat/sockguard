@@ -61,6 +61,29 @@ func TestServiceInspectDeniesHostNetwork(t *testing.T) {
 	}
 }
 
+func TestServiceInspectDeniesHostNetworkUnderTaskTemplate(t *testing.T) {
+	policy := newServicePolicy(ServiceOptions{})
+
+	req := httptest.NewRequest(http.MethodPost, "/services/create", strings.NewReader(`{
+		"TaskTemplate": {
+			"ContainerSpec": {
+				"Image": "nginx:latest"
+			},
+			"Networks": [
+				{"Target": "host"}
+			]
+		}
+	}`))
+
+	denyReason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+	if err != nil {
+		t.Fatalf("inspect() error = %v", err)
+	}
+	if denyReason != "service denied: host network is not allowed" {
+		t.Fatalf("denyReason = %q, want host network denial", denyReason)
+	}
+}
+
 func TestServiceInspectDeniesRegistryNotAllowlisted(t *testing.T) {
 	policy := newServicePolicy(ServiceOptions{
 		AllowOfficial: false,
