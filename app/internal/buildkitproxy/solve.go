@@ -18,11 +18,16 @@
 //     SessionRegistry.PutRef record ownership of "", and a later
 //     Control/Status{Ref:""} call would then pass OwnsRef's check for
 //     free.
-//   - Definition (2): the actual LLB op graph. Forwarded byte-for-byte,
-//     never decoded — per-op LLB inspection is a materially larger
-//     surface than Phase 3's scope (mediating Solve/Status at the level of
-//     frontend/cache/exporters/entitlements/source-policy), not attempted
-//     here.
+//   - Definition (2): the actual LLB op graph. Forwarded byte-for-byte on
+//     the wire in every case — full per-op LLB inspection remains out of
+//     Phase 3's scope. But for a frontend-less Solve (Frontend == ""),
+//     checkSolveDefinitionExec decodes each Op and denies when
+//     AllowRunInstructions is false and the graph contains (or cannot be
+//     proven not to contain) an ExecOp — see that function's doc comment.
+//     A Solve naming a frontend builds its own Definition server-side from
+//     FrontendAttrs, so a client-supplied Definition alongside a non-empty
+//     Frontend is not meaningfully actionable here and is left to the
+//     frontend/daemon.
 //   - ExporterDeprecated / ExporterAttrsDeprecated (3, 4): denied outright
 //     — see checkSolveCache.
 //   - Session (5): names a session UUID the daemon calls back through for
@@ -57,7 +62,6 @@
 package buildkitproxy
 
 import (
-	"net/url"
 	"regexp"
 	"slices"
 	"strconv"
@@ -66,6 +70,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
+	"github.com/codeswhat/sockguard/app/internal/buildkitproto/pb"
 )
 
 // mediationDenial carries the gRPC status code, audit reason code (one of
@@ -192,17 +197,6 @@ func isRemoteContextRef(value string) bool {
 	return scpLikeGitRefRegexp.MatchString(value)
 }
 
-// isUploadSessionContextRef reports whether value is a BuildKit upload-session
-// URL ("http://buildkit-session/<id>") — a local client-streamed upload, not a
-// remote git/HTTP fetch. isRemoteContextRef matches these too (http:// prefix),
-// so checkSolveFrontend uses this to exclude them from the RUN-inspection
-// remote-context denial. Uses the same scheme/host recognition as upload.go's
-// admitSolveUploadKeys so the two agree on exactly which values are uploads.
-func isUploadSessionContextRef(value string) bool {
-	u, err := url.Parse(value)
-	return err == nil && u.Scheme == "http" && u.Host == uploadSessionHost
-}
-
 // registryHostFromImageRef extracts the registry authority from an
 // image-like reference, using the same disambiguation rule Docker's own
 // reference grammar uses: split on the first '/'; if that first component
@@ -263,6 +257,9 @@ func evaluateSolveRequest(payload []byte, policy Policy) (*control.SolveRequest,
 		return nil, d
 	}
 	if d := checkSolveFrontend(req, solvePolicy); d != nil {
+		return nil, d
+	}
+	if d := checkSolveDefinitionExec(req, solvePolicy); d != nil {
 		return nil, d
 	}
 	if d := checkSolveCache(req, solvePolicy); d != nil {
@@ -340,12 +337,16 @@ func checkSolveFrontend(req *control.SolveRequest, solvePolicy SolvePolicy) *med
 			// and cannot enforce allow_run_instructions on it. Mirror classic
 			// POST /build (internal/filter/build.go), which denies exactly this
 			// combination rather than let a remote context bypass the RUN gate.
-			// An "http://buildkit-session/<id>" value is excluded: it is a local
-			// client-streamed upload (Upload/Pull, see upload.go), not a remote
-			// fetch — its Dockerfile still flows through the inspectable
-			// "dockerfile" FileSync stream, exactly as the classic path inspects
-			// (rather than denies) a stdin/spooled-tar context.
-			if !solvePolicy.AllowRunInstructions && !isUploadSessionContextRef(value) {
+			// An "http://buildkit-session/<id>" upload-session value gets no
+			// exemption here: against real BuildKit (frontend/dockerui's
+			// initContext), an HTTP(s)-shaped context — upload-session URLs
+			// included — can have bctx.dockerfile set directly from the fetched
+			// context archive itself, bypassing the "dockerfile"-named
+			// FileSync/DiffCopy stream filesync.go's hold-and-inspect relies on
+			// entirely. There is no way to tell from FrontendAttrs alone whether
+			// a given upload-session context will resolve that way, so it must
+			// be treated the same as any other remote-shaped context.
+			if !solvePolicy.AllowRunInstructions {
 				return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "a remote build context cannot be inspected while RUN instructions are restricted")
 			}
 		case key == "force-network-mode" && value == "host":
@@ -355,6 +356,62 @@ func checkSolveFrontend(req *control.SolveRequest, solvePolicy SolvePolicy) *med
 		}
 	}
 	return nil
+}
+
+// solveDefinitionExecMaxDepth bounds definitionIsExecFree's recursion into
+// nested BuildOp Definitions (an Op_Build node carries its own full nested
+// Definition, whose Ops can themselves include another BuildOp) so a client
+// cannot force unbounded recursion by nesting BuildOps — the same
+// depth-cap pattern internal/filter/json_mutate.go's mutationMaxDepth uses
+// for JSON nesting. Nesting past the cap is treated as unprovable, not
+// silently accepted.
+const solveDefinitionExecMaxDepth = 32
+
+// checkSolveDefinitionExec enforces AllowRunInstructions against a raw,
+// frontend-less Solve (Frontend == ""). Unlike a dockerfile.v0 solve — whose
+// RUN instructions arrive as Dockerfile text the daemon's embedded frontend
+// resolves from the build context — a frontend-less Solve embeds command
+// execution directly in its own LLB op graph: solver/pb/ops.proto's ExecOp
+// is precisely what a Dockerfile RUN instruction compiles down to. The
+// Definition carrying that graph is opaque `repeated bytes` at the
+// SolveRequest level (each entry an individually-marshaled pb.Op), so
+// protowalk.go's reflection-based unknown-field walk cannot see inside it —
+// definitionIsExecFree does a second, targeted proto.Unmarshal pass per Op
+// instead.
+func checkSolveDefinitionExec(req *control.SolveRequest, solvePolicy SolvePolicy) *mediationDenial {
+	if req.GetFrontend() != "" || solvePolicy.AllowRunInstructions {
+		return nil
+	}
+	if !definitionIsExecFree(req.GetDefinition(), solveDefinitionExecMaxDepth) {
+		return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "RUN instructions are not allowed")
+	}
+	return nil
+}
+
+// definitionIsExecFree reports whether every Op reachable from def — walking
+// into a BuildOp's own nested Definition up to maxDepth levels — contains no
+// ExecOp. An Op this function cannot decode, or nesting deeper than
+// maxDepth, is NOT treated as exec-free: an unevaluable signal must not
+// pass, matching checkSolveEntitlements' unrecognized-entitlement denial and
+// internal/filter/build.go's "unable to inspect" default-deny posture for
+// content it cannot parse.
+func definitionIsExecFree(def *pb.Definition, maxDepth int) bool {
+	if maxDepth < 0 {
+		return false
+	}
+	for _, opBytes := range def.GetDef() {
+		op := &pb.Op{}
+		if err := proto.Unmarshal(opBytes, op); err != nil {
+			return false
+		}
+		if op.GetExec() != nil {
+			return false
+		}
+		if build := op.GetBuild(); build != nil && !definitionIsExecFree(build.GetDef(), maxDepth-1) {
+			return false
+		}
+	}
+	return true
 }
 
 // checkSolveCache enforces the cache import/export allowlists. The
