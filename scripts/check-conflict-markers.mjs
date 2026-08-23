@@ -9,7 +9,7 @@
 // the surrounding `<<<<<<<`/`>>>>>>>` this catches.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -28,9 +28,22 @@ export function findConflictMarkers(text) {
   return hits;
 }
 
+// Repo-location env vars (set by git when running hooks) would override cwd
+// and point ls-files at a different repo; drop them so cwd is authoritative.
+const GIT_LOCATION_VARS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_PREFIX",
+];
+
 export function listTrackedFiles(cwd = process.cwd()) {
+  const env = { ...process.env };
+  for (const name of GIT_LOCATION_VARS) delete env[name];
   const out = execFileSync("git", ["ls-files", "-z"], {
     cwd,
+    env,
     maxBuffer: 64 * 1024 * 1024,
   });
   return out.toString("utf8").split("\0").filter(Boolean);
@@ -50,7 +63,11 @@ export function scanTrackedFiles(cwd = process.cwd()) {
   for (const file of listTrackedFiles(cwd)) {
     let buf;
     try {
-      buf = readFileSync(path.join(cwd, file));
+      const filePath = path.join(cwd, file);
+      // Only regular files: readFileSync follows symlinks, so a tracked link
+      // to an unbounded target like /dev/zero would hang the scan.
+      if (!lstatSync(filePath).isFile()) continue;
+      buf = readFileSync(filePath);
     } catch {
       continue; // deleted-but-tracked or unreadable; not our concern
     }

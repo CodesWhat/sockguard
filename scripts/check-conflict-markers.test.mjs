@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { findConflictMarkers, scanTrackedFiles } from "./check-conflict-markers.mjs";
 
@@ -44,6 +48,26 @@ test("does not flag near-misses: wrong length or not at line start", () => {
   assert.deepEqual(findConflictMarkers("<".repeat(8)), []); // eight, not seven
   assert.deepEqual(findConflictMarkers(`code ${OURS} inline`), []); // not at column 0
   assert.deepEqual(findConflictMarkers(`${OURS}x`), []); // seven then non-space
+});
+
+test("skips tracked symbolic links instead of reading through them", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "sockguard-conflict-"));
+  // Under a git hook, GIT_DIR/GIT_INDEX_FILE point at the outer repo and
+  // would make these git calls mutate its index despite cwd — scrub them.
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")),
+  );
+  try {
+    execFileSync("git", ["init", "-q"], { cwd: dir, env });
+    // The link's target is untracked and contains a marker; unfixed code
+    // follows the link, reads the marker, and reports a finding for "link".
+    writeFileSync(path.join(dir, "target.txt"), `${OURS} ours\n`);
+    symlinkSync("target.txt", path.join(dir, "link"));
+    execFileSync("git", ["add", "link"], { cwd: dir, env });
+    assert.deepEqual(scanTrackedFiles(dir), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("the tracked tree contains no unresolved conflict markers", () => {
