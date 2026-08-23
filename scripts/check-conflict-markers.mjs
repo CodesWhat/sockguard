@@ -9,7 +9,7 @@
 // the surrounding `<<<<<<<`/`>>>>>>>` this catches.
 
 import { execFileSync } from "node:child_process";
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -63,13 +63,18 @@ export function scanTrackedFiles(cwd = process.cwd()) {
   for (const file of listTrackedFiles(cwd)) {
     let buf;
     try {
-      const filePath = path.join(cwd, file);
-      // Only regular files: readFileSync follows symlinks, so a tracked link
-      // to an unbounded target like /dev/zero would hang the scan.
-      if (!lstatSync(filePath).isFile()) continue;
-      buf = readFileSync(filePath);
+      // O_NOFOLLOW rejects a tracked symlink at open (following one could
+      // read an unbounded target like /dev/zero), and fstat on the fd we
+      // read from can't race a swap of the path between check and read.
+      const fd = openSync(path.join(cwd, file), constants.O_RDONLY | constants.O_NOFOLLOW);
+      try {
+        if (!fstatSync(fd).isFile()) continue;
+        buf = readFileSync(fd);
+      } finally {
+        closeSync(fd);
+      }
     } catch {
-      continue; // deleted-but-tracked or unreadable; not our concern
+      continue; // deleted-but-tracked, a symlink, or unreadable; not our concern
     }
     if (isProbablyBinary(buf)) continue;
     for (const hit of findConflictMarkers(buf.toString("utf8"))) {
