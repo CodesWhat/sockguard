@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.5] - 2026-08-23
+
+v1.7.5 promotes `1.7.5-rc.1` to stable. The delta since the candidate is release and CI infrastructure only: a guard against unresolved git conflict markers in tracked files (#336), the two fixes below, and the v1.7.5 metadata stamp, in which the Helm chart's default image digest pin is temporarily cleared — `image.tag` falls back to `appVersion` until the 1.7.5 images are live and the multi-arch manifest-list digest can be resolved and re-pinned per RELEASING.md's Helm section. Headlines, all carried from the candidate: the `TaskTemplate.Networks` host-network deny (#332), three closed build-time RUN-instruction gate bypasses (#333), closed cross-owner attestations access and two stale identity caches (#334), image-trust goroutine-leak and cross-repo signature-transplant hardening (#335), Grype scanning of the published multi-arch image (#318), rekor v1.5.4 removing `openpgp` from the build graph (#326), and dual-published sigstore bundle signatures ahead of cosign's legacy-format removal (#308).
+
+### Fixed
+
+- **Nightly and weekly Go quality jobs no longer die on harden-runner's egress block (#338).** `quality-fuzz-nightly.yml`, `quality-soak-weekly.yml`, `quality-go-bench-monthly.yml`, `quality-mutation-monthly.yml`, and `security-grype.yml`'s `govulncheck` job allowed `proxy.golang.org:443` but not `storage.googleapis.com:443`; `proxy.golang.org` serves module zips via signed redirects to that host, and the 1.26.6 toolchain bump invalidated the module cache, so the redirect got hit on a cold cache instead of being absorbed silently. Runs 32632014919 (Deep Fuzz nightly) and 32624289342 (Soak weekly) both failed in test setup with `domain not allowed: storage.googleapis.com.` fetching `github.com/klauspost/compress@v1.19.1`. `storage.googleapis.com:443` is now in every affected allowlist.
+- **The conflict-marker scan skips tracked symbolic links instead of reading through them (#341).** `scripts/check-conflict-markers.mjs` read every `git ls-files` entry with `readFileSync`, which follows symlinks — a tracked link pointing at an unbounded target like `/dev/zero` would hang the scan, and a link out of the repo would scan foreign content. Each entry is now opened with `O_NOFOLLOW` and checked with `fstat` on the descriptor actually read, so a symlink is rejected at open and the check can't race a swap of the path — git itself stores a symlink as its target path, which can't contain a marker line, so nothing legitimate is skipped.
+- **`release-cut.yml` now refuses to cut a prerelease tag when dispatched on the default branch (#337).** v1.7.5-rc.1 was cut with the workflow dispatched on `main` after merging `dev/v1.7` in, leaving `main` on a prerelease and the daily `Main Is Released` monitor failing — the rc tag is already published and can't be unwound. A new guard step, placed right after the tag string is computed (covering both the explicit `release_tag` input and the auto-computed path), fails with `::error::` when the resolved tag is hyphenated and `github.ref_name` matches the repository's default branch.
+
 ## [1.7.5-rc.1] - 2026-08-22
 
 ### Security

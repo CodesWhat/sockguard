@@ -90,11 +90,11 @@ test("website comparison rows live in extracted data modules", () => {
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // Cosign v3 signing-fix release.
+  // v1.7.5 security-patch release.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v1.7.4", "latest released milestone must be v1.7.4");
+  assert.equal(latestReleased.version, "v1.7.5", "latest released milestone must be v1.7.5");
   assert.equal(latestReleased.status, "released");
 
   // Must retain the previous stable milestones.

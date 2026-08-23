@@ -3,7 +3,7 @@ title: Roadmap
 description: Sockguard's shipped v1.7 work, committed v1.8 priorities, and twelve-month direction.
 ---
 
-Sockguard v1.7 is the current stable feature line, with v1.7.4 the latest
+Sockguard v1.7 is the current stable feature line, with v1.7.5 the latest
 release. This roadmap covers the next twelve months, through August 2027. It
 describes direction and priorities, not promises about dates. A feature is
 available only after the release notes say it has shipped.
@@ -16,7 +16,7 @@ gRPC mediation epic.
 
 | Track | Outcome required before release |
 |---|---|
-| BuildKit RUN-instruction coverage | Close the remaining #185 gap: a frontend-less BuildKit Solve (raw LLB, no `dockerfile.v0` frontend) still buries RUN-equivalent instructions in opaque serialized op bytes outside the phase 1-6 mediator's inspection scope, so `allow_run_instructions` has no real enforcement path for non-Dockerfile frontends |
+| BuildKit RUN-instruction coverage | Finish the #185 non-Dockerfile-frontend story: v1.7.5's bounded-depth LLB walk denies any `ExecOp`, and any op that fails to decode, in frontend-less Solves when `allow_run_instructions` is false — a blanket refusal. The remaining work is real per-instruction mediation of raw-LLB and third-party frontends, so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale |
 
 ## Twelve-month direction
 
@@ -39,11 +39,17 @@ computing base.
 
 ## Shipped in v1.7
 
-Sockguard v1.7.4, the latest release in the v1.7 line, shipped on 2026-08-21.
-The v1.7.2 tag's publish run died signing `checksums.txt` against cosign v3's
-new bundle-format defaults, so it shipped no artifacts, release, or images;
-v1.7.3 fixed the signing flags and carried v1.7.2's content, and v1.7.4 adds
-the committed first-party star chart and the daily main-is-released monitor.
+Sockguard v1.7.5, the latest release in the v1.7 line, shipped on 2026-08-23,
+promoting the `1.7.5-rc.1` security candidate to stable: the Swarm
+host-network deny now covers `TaskTemplate.Networks`, three build-time
+RUN-instruction gate bypasses are closed, cross-owner attestations access and
+two stale identity caches are closed, image-trust verification rejects
+cross-repository signature transplants, and Grype scans the published
+multi-arch image per platform. Earlier in the line: the v1.7.2 tag's publish
+run died signing `checksums.txt` against cosign v3's new bundle-format
+defaults, so it shipped no artifacts, release, or images; v1.7.3 fixed the
+signing flags and carried v1.7.2's content, and v1.7.4 added the committed
+first-party star chart and the daily main-is-released monitor.
 The v1.7 line added:
 
 - BuildKit gRPC mediation: fail-closed policy enforcement over the previously

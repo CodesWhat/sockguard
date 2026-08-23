@@ -3,13 +3,16 @@
 
 image:
   repository: codeswhat/sockguard
-  # Pinned to the release tag plus its multi-arch manifest-list digest, not
-  # the mutable "latest". The tag component must match Chart.yaml's
-  # appVersion — scripts/release-metadata.test.mjs checks this on every
-  # release, but the digest itself has to be moved by hand (see
-  # RELEASING.md's Helm chart step). Override with --set image.tag=… to
-  # track a different tag.
-  tag: "1.7.4@sha256:3563c094544c1df867ec46d7fcc15cca1c93807fd8831f3d7306531c4e345c4e"
+  # Normally pinned to the release tag plus its multi-arch manifest-list
+  # digest, not the mutable "latest". The tag component must match
+  # Chart.yaml's appVersion — scripts/release-metadata.test.mjs checks this
+  # on every release, but the digest itself has to be moved by hand (see
+  # RELEASING.md's Helm chart step). Cleared for the v1.7.5 cut: the 1.7.5
+  # digest doesn't exist until the release images publish, so image.tag
+  # falls back to appVersion; the digest pin returns in the first commit
+  # after the images are live. Override with --set image.tag=… to track a
+  # different tag.
+  tag: ""
   pullPolicy: IfNotPresent
 
 # Path the liveness/readiness probes hit. Must match config.health.path below.
