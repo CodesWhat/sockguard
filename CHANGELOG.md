@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Nightly and weekly Go quality jobs no longer die on harden-runner's egress block (#337).** `quality-fuzz-nightly.yml`, `quality-soak-weekly.yml`, `quality-go-bench-monthly.yml`, `quality-mutation-monthly.yml`, and `security-grype.yml`'s `govulncheck` job allowed `proxy.golang.org:443` but not `storage.googleapis.com:443`; `proxy.golang.org` serves module zips via signed redirects to that host, and the 1.26.6 toolchain bump invalidated the module cache, so the redirect got hit on a cold cache instead of being absorbed silently. Runs 32632014919 (Deep Fuzz nightly) and 32624289342 (Soak weekly) both failed in test setup with `domain not allowed: storage.googleapis.com.` fetching `github.com/klauspost/compress@v1.19.1`. `storage.googleapis.com:443` is now in every affected allowlist.
+
 ## [1.7.5-rc.1] - 2026-08-22
 
 ### Security
