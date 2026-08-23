@@ -285,13 +285,16 @@ func TestWriteECPrivateKey(t *testing.T) {
 		t.Fatal("expected combined cert/key load to fail for a key-only PEM file")
 	}
 
+	// Deliberately invalid raw key material: the point (1,1) is not on P-256,
+	// which is what makes writeECPrivateKey fail. The non-deprecated key
+	// constructors validate their inputs, so they can't produce an invalid key.
 	invalidKey := &ecdsa.PrivateKey{
 		PublicKey: ecdsa.PublicKey{
 			Curve: elliptic.P256(),
-			X:     big.NewInt(1),
-			Y:     big.NewInt(1),
+			X:     big.NewInt(1), //nolint:staticcheck // SA1019: see above
+			Y:     big.NewInt(1), //nolint:staticcheck // SA1019: see above
 		},
-		D: big.NewInt(1),
+		D: big.NewInt(1), //nolint:staticcheck // SA1019: see above
 	}
 	err = writeECPrivateKey(filepath.Join(t.TempDir(), "invalid-key.pem"), invalidKey)
 	if err == nil || !strings.Contains(err.Error(), "marshal EC private key") {
