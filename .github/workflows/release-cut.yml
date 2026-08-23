@@ -144,6 +144,27 @@ jobs:
             echo "release_tag=${release_tag}"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Refuse prerelease cuts on the default branch
+        env:
+          RELEASE_TAG: ${{ steps.next.outputs.release_tag }}
+          REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # main always equals the GA tag users run; -rc.N tags belong on dev
+          # or maintenance branches. v1.7.5-rc.1 got cut with this workflow
+          # dispatched on main after a dev/v1.7 merge, leaving main on a
+          # prerelease with no way to unwind the published tag. This guard
+          # stops the next one before the tag is ever pushed.
+          case "${RELEASE_TAG}" in
+            *-*)
+              if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
+                echo "::error::Refusing to cut prerelease ${RELEASE_TAG} from ${DEFAULT_BRANCH}. Prereleases cut from dev or maintenance branches so main stays on the GA tag."
+                exit 1
+              fi
+              ;;
+          esac
+
       - name: Assert Renovate targets release branch
         env:
           RELEASE_TAG: ${{ steps.next.outputs.release_tag }}
