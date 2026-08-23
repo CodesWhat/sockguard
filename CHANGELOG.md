@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Helm chart's default image is re-pinned to the published 1.7.5 multi-arch manifest-list digest.** The pin was cleared for the v1.7.5 cut because the digest can't exist before the release images publish; with `codeswhat/sockguard:1.7.5` live on Docker Hub, `values.yaml` now pins `1.7.5@sha256:5b1f74e768516289841ba74630fd8527ac60c63159f34ecd9c1bb241e3ff101c`, resolved with `docker buildx imagetools inspect`, per RELEASING.md's Helm section.
+
 ## [1.7.5] - 2026-08-23
 
 v1.7.5 promotes `1.7.5-rc.1` to stable. The delta since the candidate is release and CI infrastructure only: a guard against unresolved git conflict markers in tracked files (#336), the two fixes below, and the v1.7.5 metadata stamp, in which the Helm chart's default image digest pin is temporarily cleared — `image.tag` falls back to `appVersion` until the 1.7.5 images are live and the multi-arch manifest-list digest can be resolved and re-pinned per RELEASING.md's Helm section. Headlines, all carried from the candidate: the `TaskTemplate.Networks` host-network deny (#332), three closed build-time RUN-instruction gate bypasses (#333), closed cross-owner attestations access and two stale identity caches (#334), image-trust goroutine-leak and cross-repo signature-transplant hardening (#335), Grype scanning of the published multi-arch image (#318), rekor v1.5.4 removing `openpgp` from the build graph (#326), and dual-published sigstore bundle signatures ahead of cosign's legacy-format removal (#308).
