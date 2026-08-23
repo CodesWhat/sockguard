@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.5] - 2026-08-23
+
+v1.7.5 promotes `1.7.5-rc.1` to stable. The delta since the candidate is release and CI infrastructure only: a guard against unresolved git conflict markers in tracked files (#336), the two fixes below, and the v1.7.5 metadata stamp, in which the Helm chart's default image digest pin is temporarily cleared — `image.tag` falls back to `appVersion` until the 1.7.5 images are live and the multi-arch manifest-list digest can be resolved and re-pinned per RELEASING.md's Helm section. Headlines, all carried from the candidate: the `TaskTemplate.Networks` host-network deny (#332), three closed build-time RUN-instruction gate bypasses (#333), closed cross-owner attestations access and two stale identity caches (#334), image-trust goroutine-leak and cross-repo signature-transplant hardening (#335), Grype scanning of the published multi-arch image (#318), rekor v1.5.4 removing `openpgp` from the build graph (#326), and dual-published sigstore bundle signatures ahead of cosign's legacy-format removal (#308).
+
 ### Fixed
 
 - **Nightly and weekly Go quality jobs no longer die on harden-runner's egress block (#338).** `quality-fuzz-nightly.yml`, `quality-soak-weekly.yml`, `quality-go-bench-monthly.yml`, `quality-mutation-monthly.yml`, and `security-grype.yml`'s `govulncheck` job allowed `proxy.golang.org:443` but not `storage.googleapis.com:443`; `proxy.golang.org` serves module zips via signed redirects to that host, and the 1.26.6 toolchain bump invalidated the module cache, so the redirect got hit on a cold cache instead of being absorbed silently. Runs 32632014919 (Deep Fuzz nightly) and 32624289342 (Soak weekly) both failed in test setup with `domain not allowed: storage.googleapis.com.` fetching `github.com/klauspost/compress@v1.19.1`. `storage.googleapis.com:443` is now in every affected allowlist.

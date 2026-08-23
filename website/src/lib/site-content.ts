@@ -205,6 +205,18 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
+    version: "v1.7.5",
+    title: "Security Patch: Filter Bypass Closures",
+    emoji: "🔒",
+    status: "released",
+    items: [
+      "Swarm services can no longer reach the host network through TaskTemplate.Networks, closing a silent bypass of allow_host_network: false",
+      "Three build-time RUN-instruction gate bypasses are closed: duplicate-Dockerfile context tars, frontend-less raw-LLB Solves, and upload-session contexts",
+      "Cross-owner image-attestations access and two stale identity caches are closed, and image-trust verification rejects cross-repository signature transplants",
+      "Grype now scans the published multi-arch image per platform, on release and weekly, instead of only from-source CI builds",
+    ],
+  },
+  {
     version: "v1.8.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
