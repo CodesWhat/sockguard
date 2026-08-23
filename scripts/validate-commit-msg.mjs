@@ -33,9 +33,11 @@ const raw = readFileSync(msgFile, "utf8").trim();
 const lines = raw.split("\n");
 const msg = lines[0];
 
-// Merge commits, revert commits, and fixup!/squash! autosquash commits are exempt.
+// Git-generated subjects are exempt: merge commits, `Revert "..."` commits,
+// and fixup!/squash! autosquash commits. Hand-written subjects that merely
+// start with "Revert " still validate (use the `revert` type for those).
 const isMerge = /^Merge /.test(msg);
-const isRevert = /^Revert /.test(msg);
+const isRevert = /^Revert ".+"$/.test(msg);
 const isAutosquash = /^(fixup|squash)! /.test(msg);
 
 if (isMerge || isRevert || isAutosquash) {
