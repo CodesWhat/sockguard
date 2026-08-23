@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`release-from-tag.yml`'s Node and Go setup steps no longer cache dependencies.** This workflow publishes real release artifacts with no `--skip=publish`, so a poisoned dependency cache restored here could compromise a ready-to-publish build — the same risk `main` already closed. Backported: `actions/setup-node` gets `package-manager-cache: false` and `actions/setup-go` gets `cache: false`, matching what `main` ships.
+
 ### Changed
 
 - **The star-history chart is now a committed first-party SVG pair; the star-history.com embed is gone from the README and the website (#303).** The star-history.com SVG endpoint returns an error card at HTTP 200 since GitHub restricted the stargazer API it replays, so the embed had failed silently. The pair (`website/public/star-history.svg` + `-dark.svg`) is frozen on this maintenance line — `dev/v1.7` carries the regeneration wiring — and the README embeds it through a `<picture>` element so GitHub's theme toggle, not the OS preference, picks the variant. `api.star-history.com` is removed from the site CSP `img-src` in `website/vercel.json` and its lockstep test in the same change.
