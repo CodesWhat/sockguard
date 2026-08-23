@@ -83,18 +83,23 @@ Env vars use `SOCKGUARD_` prefix with underscore nesting: `SOCKGUARD_LISTEN_SOCK
 
 ## Commit Convention
 
-Gitmoji + Conventional Commits: `<emoji> <type>(<scope>): <description>`
+Plain Conventional Commits, no emoji: `<type>(<scope>): <description>`
 
-| Emoji | Type | Use |
-|-------|------|-----|
-| :sparkles: | `feat` | New feature |
-| :bug: | `fix` | Bug fix |
-| :memo: | `docs` | Documentation |
-| :recycle: | `refactor` | Refactor |
-| :white_check_mark: | `test` | Tests |
-| :wrench: | `chore` | Config/tooling |
-| :lock: | `security` | Security fix |
-| :zap: | `perf` | Performance |
+| Type | Use |
+|------|-----|
+| `feat` | New feature |
+| `fix` | Bug fix (including security fixes) |
+| `docs` | Documentation |
+| `refactor` | Refactor |
+| `test` | Tests |
+| `build` | Build system, dependencies |
+| `ci` | CI/CD pipeline |
+| `chore` | Config/tooling |
+| `perf` | Performance |
+| `style` | UI/cosmetic changes |
+| `revert` | Revert a previous commit |
+
+Add `!` before the colon for a breaking change (`feat(api)!: drop v1 tokens`), or add a `BREAKING CHANGE:` footer. Allowed types are exactly the ones above — nothing else. Git-generated subjects are exempt from validation: merge commits, `Revert "..."` commits, and `fixup!`/`squash!` autosquash commits.
 
 ## Pre-push Checks (Lefthook)
 
