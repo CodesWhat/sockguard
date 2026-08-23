@@ -88,7 +88,8 @@ jobs:
       # fetch + sumdb; the objects/release-assets hosts cover
       # actions/setup-go's toolchain download on a runner-image cache miss
       # (no org precedent yet for Go jobs specifically, so this errs toward
-      # the extra defensive hosts rather than a minimal guess).
+      # the extra defensive hosts rather than a minimal guess). proxy.golang.org
+      # serves module zips via signed redirects to storage.googleapis.com.
       - name: Harden Runner
         uses: step-security/harden-runner@b09bb98e06d4d774595224525879c09bc6e98c40  # v2.20.1
         with:
@@ -99,6 +100,7 @@ jobs:
             objects.githubusercontent.com:443
             release-assets.githubusercontent.com:443
             proxy.golang.org:443
+            storage.googleapis.com:443
             sum.golang.org:443
             *.actions.githubusercontent.com:443
           disable-sudo: true

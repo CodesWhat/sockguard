@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Nightly and weekly Go quality jobs no longer die on harden-runner's egress block (#338).** `quality-fuzz-nightly.yml`, `quality-soak-weekly.yml`, `quality-go-bench-monthly.yml`, `quality-mutation-monthly.yml`, and `security-grype.yml`'s `govulncheck` job allowed `proxy.golang.org:443` but not `storage.googleapis.com:443`; `proxy.golang.org` serves module zips via signed redirects to that host, and the 1.26.6 toolchain bump invalidated the module cache, so the redirect got hit on a cold cache instead of being absorbed silently. Runs 32632014919 (Deep Fuzz nightly) and 32624289342 (Soak weekly) both failed in test setup with `domain not allowed: storage.googleapis.com.` fetching `github.com/klauspost/compress@v1.19.1`. `storage.googleapis.com:443` is now in every affected allowlist.
 - **`release-cut.yml` now refuses to cut a prerelease tag when dispatched on the default branch (#337).** v1.7.5-rc.1 was cut with the workflow dispatched on `main` after merging `dev/v1.7` in, leaving `main` on a prerelease and the daily `Main Is Released` monitor failing — the rc tag is already published and can't be unwound. A new guard step, placed right after the tag string is computed (covering both the explicit `release_tag` input and the auto-computed path), fails with `::error::` when the resolved tag is hyphenated and `github.ref_name` matches the repository's default branch.
 
 ## [1.7.5-rc.1] - 2026-08-22
