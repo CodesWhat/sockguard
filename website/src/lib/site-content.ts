@@ -211,7 +211,7 @@ export const roadmap: Milestone[] = [
     status: "released",
     items: [
       "Swarm services can no longer reach the host network through TaskTemplate.Networks, closing a silent bypass of allow_host_network: false",
-      "Three build-time RUN-instruction gate bypasses are closed: duplicate-Dockerfile context tars, frontend-less raw-LLB Solves, and upload-session contexts",
+      "Three build-time RUN-instruction gate bypasses are closed: duplicate-Dockerfile context tars, upload-session contexts, and frontend-less raw-LLB Solves — the latter now denied outright (any ExecOp, or any op that fails to decode) when allow_run_instructions is false",
       "Cross-owner image-attestations access and two stale identity caches are closed, and image-trust verification rejects cross-repository signature transplants",
       "Grype now scans the published multi-arch image per platform, on release and weekly, instead of only from-source CI builds",
     ],
@@ -222,7 +222,7 @@ export const roadmap: Milestone[] = [
     emoji: "🧩",
     status: "next",
     items: [
-      "Close the remaining #185 gap: a frontend-less BuildKit Solve (raw LLB, no dockerfile.v0 frontend) still buries RUN-equivalent instructions in opaque serialized op bytes outside the phase 1-6 mediator's inspection scope, so allow_run_instructions has no real enforcement path for non-Dockerfile frontends yet",
+      "Finish the #185 non-Dockerfile-frontend story: v1.7.5's bounded-depth LLB walk denies any ExecOp, and any op that fails to decode, in frontend-less Solves when allow_run_instructions is false — a blanket refusal; the remaining work is real per-instruction mediation of raw-LLB and third-party frontends so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale",
     ],
   },
 ];

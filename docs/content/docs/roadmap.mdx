@@ -16,7 +16,7 @@ gRPC mediation epic.
 
 | Track | Outcome required before release |
 |---|---|
-| BuildKit RUN-instruction coverage | Close the remaining #185 gap: a frontend-less BuildKit Solve (raw LLB, no `dockerfile.v0` frontend) still buries RUN-equivalent instructions in opaque serialized op bytes outside the phase 1-6 mediator's inspection scope, so `allow_run_instructions` has no real enforcement path for non-Dockerfile frontends |
+| BuildKit RUN-instruction coverage | Finish the #185 non-Dockerfile-frontend story: v1.7.5's bounded-depth LLB walk denies any `ExecOp`, and any op that fails to decode, in frontend-less Solves when `allow_run_instructions` is false — a blanket refusal. The remaining work is real per-instruction mediation of raw-LLB and third-party frontends, so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale |
 
 ## Twelve-month direction
 
