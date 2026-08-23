@@ -36,7 +36,7 @@ commit-msg:
   commands:
     convention:
       run: node scripts/validate-commit-msg.mjs {1}
-      fail_text: "Commit message does not follow Gitmoji + Conventional Commits format"
+      fail_text: "Commit message does not follow Conventional Commits format"
 
 pre-push:
   piped: true
