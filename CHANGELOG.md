@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`release-cut.yml` now refuses to cut a prerelease tag when dispatched on the default branch (#337).** v1.7.5-rc.1 was cut with the workflow dispatched on `main` after merging `dev/v1.7` in, leaving `main` on a prerelease and the daily `Main Is Released` monitor failing — the rc tag is already published and can't be unwound. A new guard step, placed right after the tag string is computed (covering both the explicit `release_tag` input and the auto-computed path), fails with `::error::` when the resolved tag is hyphenated and `github.ref_name` matches the repository's default branch.
+
 ## [1.7.5-rc.1] - 2026-08-22
 
 ### Security
