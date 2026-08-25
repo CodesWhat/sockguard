@@ -750,12 +750,17 @@ assert_edge_unknown_key_probe() {
     return 1
   fi
 
+  # ALLOW_INSECURE_EDGE_URL: the plaintext drydock URL over the private compose
+  # network is by design; current portwing refuses it without this opt-in and
+  # would fail to load config before ever reaching the unknown-key rejection
+  # this probe exists to observe.
   if ! docker run -d --name "$bad_container" --network "$net" \
       -v "${vol}:/var/run/sockguard:ro" \
       -v "${key_file}:/run/secrets/portwing_key:ro" \
       -e DOCKER_SOCKET=/var/run/sockguard/sockguard.sock \
       -e AGENT_NAME="$agent_name" \
       -e DRYDOCK_URL=http://drydock:3000 \
+      -e ALLOW_INSECURE_EDGE_URL=true \
       -e PRIVATE_KEY_FILE=/run/secrets/portwing_key \
       "$PORTWING_IMAGE_RESOLVED" >"${SCRATCH_DIR}/badkey.cid" 2>"${SCRATCH_DIR}/badkey-run.err"; then
     record_result "$name" FAIL "could not start the throwaway unknown-key agent-config probe: $(cat "${SCRATCH_DIR}/badkey-run.err")"
