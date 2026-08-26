@@ -35,26 +35,27 @@ type Stat = {
   label: string;
 };
 
+// Stat values are a periodically refreshed snapshot, not live-fetched.
 const stats: Stat[] = [
   {
     href: `${GITHUB_URL}/stargazers`,
     icon: Star,
     iconClass: "fill-amber-400 text-amber-400",
-    value: "★",
+    value: "8",
     label: "stars",
   },
   {
     href: DOCKER_HUB_URL,
     icon: Download,
     iconClass: "text-sky-500",
-    value: "⬇",
+    value: "5.9K",
     label: "pulls",
   },
   {
     href: `${GITHUB_URL}/forks`,
     icon: GitFork,
     iconClass: "text-violet-500",
-    value: "⑂",
+    value: "0",
     label: "forks",
   },
 ];
