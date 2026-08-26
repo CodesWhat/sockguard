@@ -87,8 +87,13 @@ function StatTiles() {
             className="group flex items-center gap-2.5 rounded-xl border border-neutral-200 bg-white/50 px-4 py-2.5 backdrop-blur-sm transition-colors hover:border-neutral-300 hover:bg-white/80 dark:border-neutral-800 dark:bg-neutral-900/50 dark:hover:border-neutral-700 dark:hover:bg-neutral-900/80"
           >
             <Icon className={`h-4 w-4 shrink-0 ${s.iconClass}`} />
-            <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
-              {s.label}
+            <span className="flex items-baseline gap-1.5">
+              <span className="text-sm font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">
+                {s.value}
+              </span>
+              <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                {s.label}
+              </span>
             </span>
           </a>
         );
