@@ -179,7 +179,7 @@ func TestBuildServeHandlerAppliesAssignedProfileRateLimit(t *testing.T) {
 				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny", Reason: "deny all"},
 			},
 			Limits: config.LimitsConfig{
-				Rate: &config.RateLimitConfig{TokensPerSecond: 1, Burst: 1},
+				Rate: &config.RateLimitConfig{TokensPerSecond: 0.001, Burst: 1},
 			},
 		},
 	}
