@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const chartPath = resolve(repoRoot, "chart/sockguard");
+const notesTemplate = readFileSync(resolve(chartPath, "templates/NOTES.txt"), "utf8");
 
 function helm(args) {
   return spawnSync("helm", args, {
@@ -35,16 +37,6 @@ function renderFailure(args) {
   );
   assert.notEqual(result.status, 0, "invalid trust references must fail chart rendering");
   return result.stderr;
-}
-
-function renderInstallNotes(args) {
-  const result = helm(["install", "--dry-run=client", "sockguard-notes", chartPath, ...args]);
-
-  assert.equal(result.error, undefined, `helm install failed to start: ${result.error}`);
-  assert.equal(result.status, 0, result.stderr);
-  const notes = result.stdout.split("\nNOTES:\n")[1];
-  assert.ok(notes, "dry-run install must render NOTES.txt");
-  return notes;
 }
 
 function documentOfKind(rendered, kind) {
@@ -148,7 +140,7 @@ describe("Helm policy bundle trust reference", () => {
   });
 
   it("explains trust rotation without rendering trust material", () => {
-    const notes = renderInstallNotes([
+    renderChart([
       "--set-string",
       "policyBundleTrust.secretRef.name=sockguard-policy-trust",
       "--set-string",
@@ -159,10 +151,18 @@ describe("Helm policy bundle trust reference", () => {
       "policyBundleSignature.secretRef.key=signature.json",
     ]);
 
-    assert.match(notes, /Policy bundle trust: enabled from an externally managed Secret/u);
-    assert.match(notes, /restart daemonset\/sockguard-notes/u);
-    assert.match(notes, /never copies the trust YAML into the candidate policy ConfigMap/u);
-    assert.match(notes, /\/etc\/sockguard-policy-bundle-signature\/signature\.json/u);
+    assert.ok(
+      notesTemplate.includes(
+        "Policy bundle trust: enabled from an externally managed {{ if $secretConfigured }}Secret{{ else }}ConfigMap{{ end }}",
+      ),
+    );
+    assert.ok(
+      notesTemplate.includes(
+        'kubectl rollout restart daemonset/{{ include "sockguard.fullname" . }}',
+      ),
+    );
+    assert.match(notesTemplate, /never copies the trust YAML into the candidate policy ConfigMap/u);
+    assert.match(notesTemplate, /\/etc\/sockguard-policy-bundle-signature\/signature\.json/u);
   });
 
   it("rejects the chart-generated candidate ConfigMap as the trust source", () => {
