@@ -101,34 +101,49 @@ func newClientCache(
 // only degrade the eviction order under sustained pressure — a
 // trade we accept given the small (256/1024) cap.
 func (c *clientCache) Lookup(ctx context.Context, addr netip.Addr) (resolvedClient, bool, error) {
-	now := c.now()
+	for {
+		now := c.now()
 
-	c.mu.Lock()
-	if elem, ok := c.entries[addr]; ok {
-		node := elem.Value.(*clientCacheNode)
-		if now.Sub(node.entry.at) < c.ttl {
-			client, found := node.entry.client, node.entry.found
-			c.mu.Unlock()
-			// Re-verify a found=true hit against current daemon state before
-			// trusting it — see the verifyLive doc comment on clientCache.
-			if !found || c.verifyLive == nil || c.verifyLive(ctx, client.ID) {
-				return client, found, nil
+		c.mu.Lock()
+		if elem, ok := c.entries[addr]; ok {
+			node := elem.Value.(*clientCacheNode)
+			if now.Sub(node.entry.at) < c.ttl {
+				entry := node.entry
+				c.mu.Unlock()
+				// Re-verify a found=true hit against current daemon state before
+				// trusting it — see the verifyLive doc comment on clientCache.
+				if !entry.found || c.verifyLive == nil || c.verifyLive(ctx, entry.client.ID) {
+					return entry.client, entry.found, nil
+				}
+
+				// The cached container no longer exists: its IP may already have
+				// been reassigned to a different container. Remove the stale entry
+				// only if another caller has not refreshed it while verification
+				// was in progress.
+				c.mu.Lock()
+				current, exists := c.entries[addr]
+				if !exists {
+					return c.resolveAndStoreLocked(ctx, addr)
+				}
+				currentEntry := current.Value.(*clientCacheNode).entry
+				if current != elem || currentEntry.at != entry.at || currentEntry.client.ID != entry.client.ID || currentEntry.found != entry.found {
+					c.mu.Unlock()
+					continue
+				}
+				delete(c.entries, addr)
+				c.order.Remove(current)
+				return c.resolveAndStoreLocked(ctx, addr)
 			}
-			// The cached container no longer exists: its IP may already have
-			// been reassigned to a different container. Fall through to a
-			// fresh resolve instead of applying its stale identity.
-		} else {
-			c.mu.Unlock()
 		}
-	} else {
-		c.mu.Unlock()
-	}
 
-	return c.resolveAndStore(ctx, addr)
+		return c.resolveAndStoreLocked(ctx, addr)
+	}
 }
 
-func (c *clientCache) resolveAndStore(ctx context.Context, addr netip.Addr) (resolvedClient, bool, error) {
-	c.mu.Lock()
+// resolveAndStoreLocked joins or creates the in-flight lookup for addr. The
+// caller must hold c.mu so the cache miss and in-flight registration are one
+// atomic decision; the helper always releases the lock before returning.
+func (c *clientCache) resolveAndStoreLocked(ctx context.Context, addr netip.Addr) (resolvedClient, bool, error) {
 	if call, ok := c.inFlight[addr]; ok {
 		c.mu.Unlock()
 		<-call.done
