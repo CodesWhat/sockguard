@@ -9,7 +9,7 @@
 //   - session/upload/uploadprovider/provider.go's Uploader.Add generates the
 //     id (`identity.NewID()`) and returns exactly
 //     "http://buildkit-session/" + id — the literal host "buildkit-session"
-//     and URL shape this file's admitSolveUploadKeys looks for in a Solve's
+//     and URL shape this file's solveUploadKeys looks for in a Solve's
 //     FrontendAttrs.
 //   - session/upload/upload.go's client-side New() sets the "urlpath" (
 //     keyPath, the URL's Path — "/<id>") and "urlhost" (keyHost, "buildkit-
@@ -54,15 +54,15 @@ import (
 // see this file's package doc for the exact upstream source confirming it.
 const uploadSessionHost = "buildkit-session"
 
-// admitSolveUploadKeys scans an admitted SolveRequest's FrontendAttrs for
+// solveUploadKeys scans an admitted SolveRequest's FrontendAttrs for
 // "context" and "context:<name>" values shaped like an upload-session URL
 // (isRemoteContextRef's own isKnownFrontendAttrKey/checkSolveFrontend gate
 // in solve.go already allowed these keys through; this is a second,
 // independent pass over the SAME already-admitted attrs, looking for a
 // value shape neither of those functions specifically recognizes) and
-// registers each one as a one-use Upload/Pull token for key. Called from
-// bridge.go's forwardControlMediated once a Solve is fully admitted
-// (post-PutRef) — see this file's package doc for why the id embedded in
+// returns each id for atomic admission alongside the Solve ref. Called from
+// bridge.go's forwardControlMediated after message-policy evaluation — see
+// this file's package doc for why the id embedded in
 // the URL, not the FrontendAttrs key or value string itself, is what later
 // binds a specific Upload/Pull call back to this Solve.
 //
@@ -75,18 +75,14 @@ const uploadSessionHost = "buildkit-session"
 // with — not a new denial surface layered on top of an already-decided
 // admission.
 //
-// Candidate ids are collected and sorted before admission so the outcome is
-// independent of Go's randomized map-iteration order: when a Solve names more
-// upload-session contexts than maxKeys allows, admission is deterministic and
-// all-or-nothing. Returns false if any candidate cannot be admitted (the
-// maxKeys bound is hit), so the caller denies the whole Solve rather than
-// forwarding one whose Upload/Pull tokens would then succeed or fail at
-// random.
-func admitSolveUploadKeys(registry *SessionRegistry, key SessionKey, req *control.SolveRequest, maxKeys int) bool {
+// Candidate ids are deduplicated and sorted so admission is independent of
+// Go's randomized map-iteration order.
+func solveUploadKeys(req *control.SolveRequest) []string {
 	if req == nil {
-		return true
+		return nil
 	}
 	var ids []string
+	seen := make(map[string]struct{})
 	for k, v := range req.GetFrontendAttrs() {
 		if k != "context" && !isContextAttrKey(k) {
 			continue
@@ -99,15 +95,14 @@ func admitSolveUploadKeys(registry *SessionRegistry, key SessionKey, req *contro
 		if id == "" || id == "." || id == "/" {
 			continue
 		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	for _, id := range ids {
-		if !registry.AdmitUploadKey(key, id, maxKeys) {
-			return false
-		}
-	}
-	return true
+	return ids
 }
 
 // isContextAttrKey reports whether k is a named-additional-build-context
@@ -135,7 +130,7 @@ func (b *bridge) forwardUploadMediated(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 	id := path.Base(r.Header.Get("urlpath"))
-	if id == "" || id == "." || id == "/" || !b.registry.ConsumeUploadKey(b.session.Key, id) {
+	if id == "" || id == "." || id == "/" || !b.registry.ConsumeUploadKey(b.session.Key, b.session.ClientUUID, id) {
 		writeGRPCStatus(w, grpcCodePermissionDenied, "Upload/Pull token is not a currently valid, admitted upload for this client/profile")
 		b.audit(service, method, Deny, "buildkit_upload_token_invalid")
 		b.recordDeniedAndMaybeClose()

@@ -21,6 +21,7 @@ reach the Docker daemon.`,
 
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "/etc/sockguard/sockguard.yaml", "config file path (missing file falls back to built-in defaults + env overrides)")
+	rootCmd.PersistentFlags().String("policy-bundle-trust-config", "", "out-of-band signed-policy trust config path")
 }
 
 // Execute runs the root command.

@@ -816,6 +816,38 @@ func (h stubHijacker) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return h.conn, h.rw, h.err
 }
 
+type deadlineResponseWriter struct {
+	http.ResponseWriter
+	deadlines []time.Time
+}
+
+func (w *deadlineResponseWriter) SetReadDeadline(deadline time.Time) error {
+	w.deadlines = append(w.deadlines, deadline)
+	return nil
+}
+
+func TestAccessLogPreservesResponseControllerReadDeadline(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	want := time.Now().Add(time.Minute)
+	underlying := &deadlineResponseWriter{ResponseWriter: httptest.NewRecorder()}
+
+	handler := AccessLogMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if err := http.NewResponseController(w).SetReadDeadline(want); err != nil {
+			t.Fatalf("SetReadDeadline() error = %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	handler.ServeHTTP(underlying, httptest.NewRequest(http.MethodPost, "/containers/create", nil))
+
+	if len(underlying.deadlines) != 1 {
+		t.Fatalf("SetReadDeadline() calls = %d, want 1", len(underlying.deadlines))
+	}
+	if !underlying.deadlines[0].Equal(want) {
+		t.Fatalf("SetReadDeadline() = %v, want %v", underlying.deadlines[0], want)
+	}
+}
+
 func TestResponseCaptureHijack(t *testing.T) {
 	serverConn, clientConn := net.Pipe()
 	t.Cleanup(func() {

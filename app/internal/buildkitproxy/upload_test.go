@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/buildkitproto/control"
@@ -23,13 +24,20 @@ func newUploadGRPCRequest(t *testing.T, urlhost, urlpath, body string) *http.Req
 	return req
 }
 
+func admitUploadID(t *testing.T, registry *SessionRegistry, key SessionKey, id string) {
+	t.Helper()
+	session := registry.Open(key, EndpointGRPC, "")
+	if got := registry.admitSolve(session, testBuildkitSessionID, "upload-test-ref-"+id, []string{id}, 0, 0); got != solveAdmissionSucceeded {
+		t.Fatalf("admitSolve() = %v, want solveAdmissionSucceeded", got)
+	}
+	registry.Close(session.ID)
+}
+
 func TestUploadDeniesWrongURLHost(t *testing.T) {
 	daemonCalled := false
 	daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled = true })
 	tb := newTestBridge(t, EndpointSession, allowAllPolicy, DefaultLimits(), daemon)
-	if !tb.registry.AdmitUploadKey(tb.session.Key, "abc123", 0) {
-		t.Fatal("AdmitUploadKey failed")
-	}
+	admitUploadID(t, tb.registry, tb.session.Key, "abc123")
 
 	resp, err := tb.driver.RoundTrip(newUploadGRPCRequest(t, "not-buildkit-session", "/abc123", ""))
 	if err != nil {
@@ -48,9 +56,7 @@ func TestUploadDeniesMissingURLPath(t *testing.T) {
 	daemonCalled := false
 	daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled = true })
 	tb := newTestBridge(t, EndpointSession, allowAllPolicy, DefaultLimits(), daemon)
-	if !tb.registry.AdmitUploadKey(tb.session.Key, "abc123", 0) {
-		t.Fatal("AdmitUploadKey failed")
-	}
+	admitUploadID(t, tb.registry, tb.session.Key, "abc123")
 
 	resp, err := tb.driver.RoundTrip(newUploadGRPCRequest(t, uploadSessionHost, "", ""))
 	if err != nil {
@@ -69,7 +75,7 @@ func TestUploadDeniesUnadmittedToken(t *testing.T) {
 	daemonCalled := false
 	daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled = true })
 	tb := newTestBridge(t, EndpointSession, allowAllPolicy, DefaultLimits(), daemon)
-	// Deliberately never admitted via AdmitUploadKey.
+	// Deliberately never admitted by a Solve.
 
 	resp, err := tb.driver.RoundTrip(newUploadGRPCRequest(t, uploadSessionHost, "/never-admitted", ""))
 	if err != nil {
@@ -92,9 +98,7 @@ func TestUploadAdmittedTokenRelaysVerbatimThenIsOneUse(t *testing.T) {
 		w.Header().Set(http.TrailerPrefix+"Grpc-Status", "0")
 	})
 	tb := newTestBridge(t, EndpointSession, allowAllPolicy, DefaultLimits(), daemon)
-	if !tb.registry.AdmitUploadKey(tb.session.Key, "abc123", 0) {
-		t.Fatal("AdmitUploadKey failed")
-	}
+	admitUploadID(t, tb.registry, tb.session.Key, "abc123")
 
 	payload := mustMarshal(t, &upload.BytesMessage{Data: []byte("uploaded-bytes")})
 	resp, err := tb.driver.RoundTrip(newUploadGRPCRequest(t, uploadSessionHost, "/abc123", string(grpcFrame(payload))))
@@ -131,9 +135,7 @@ func TestUploadURLPathRecoversBareIDViaPathBase(t *testing.T) {
 		w.Header().Set(http.TrailerPrefix+"Grpc-Status", "0")
 	})
 	tb := newTestBridge(t, EndpointSession, allowAllPolicy, DefaultLimits(), daemon)
-	if !tb.registry.AdmitUploadKey(tb.session.Key, "deadbeef", 0) {
-		t.Fatal("AdmitUploadKey failed")
-	}
+	admitUploadID(t, tb.registry, tb.session.Key, "deadbeef")
 
 	resp, err := tb.driver.RoundTrip(newUploadGRPCRequest(t, uploadSessionHost, "/deadbeef", ""))
 	if err != nil {
@@ -157,9 +159,8 @@ func TestUploadRequestUnknownFieldsDenied(t *testing.T) {
 	fake := &drainingFakeClientLeg{}
 	b := newUnitTestBridge(t, fake)
 	b.legs.endpoint = EndpointSession
-	if !b.registry.AdmitUploadKey(b.session.Key, "abc123", 0) {
-		t.Fatal("AdmitUploadKey failed")
-	}
+	b.session.ClientUUID = testBuildkitSessionID
+	admitUploadID(t, b.registry, b.session.Key, "abc123")
 
 	req := httptest.NewRequest(http.MethodPost, "/moby.upload.v1.Upload/Pull", bytes.NewReader(grpcFrame(unknownFieldBytes())))
 	req.Header.Set("urlhost", uploadSessionHost)
@@ -185,9 +186,7 @@ func TestUploadResponseUnknownFieldsDenied(t *testing.T) {
 		w.Header().Set(http.TrailerPrefix+"Grpc-Status", "0")
 	})
 	tb := newTestBridge(t, EndpointSession, allowAllPolicy, DefaultLimits(), daemon)
-	if !tb.registry.AdmitUploadKey(tb.session.Key, "abc123", 0) {
-		t.Fatal("AdmitUploadKey failed")
-	}
+	admitUploadID(t, tb.registry, tb.session.Key, "abc123")
 
 	resp, err := tb.driver.RoundTrip(newUploadGRPCRequest(t, uploadSessionHost, "/abc123", ""))
 	if err != nil {
@@ -203,10 +202,9 @@ func TestUploadByteCapExceeded(t *testing.T) {
 	fake := &drainingFakeClientLeg{}
 	b := newUnitTestBridge(t, fake)
 	b.legs.endpoint = EndpointSession
+	b.session.ClientUUID = testBuildkitSessionID
 	b.limits.MaxUploadBytes = 5
-	if !b.registry.AdmitUploadKey(b.session.Key, "abc123", 0) {
-		t.Fatal("AdmitUploadKey failed")
-	}
+	admitUploadID(t, b.registry, b.session.Key, "abc123")
 
 	payload := mustMarshal(t, &upload.BytesMessage{Data: bytes.Repeat([]byte("z"), 100)})
 	req := httptest.NewRequest(http.MethodPost, "/moby.upload.v1.Upload/Pull", bytes.NewReader(grpcFrame(payload)))
@@ -222,102 +220,81 @@ func TestUploadByteCapExceeded(t *testing.T) {
 	}
 }
 
-// --- admitSolveUploadKeys --------------------------------------------------
+// --- solveUploadKeys -------------------------------------------------------
 
-func TestAdmitSolveUploadKeysNilRequestIsNoop(t *testing.T) {
-	registry := NewSessionRegistry()
-	key := SessionKey{ClientIdentity: "c", Profile: "p"}
-	admitSolveUploadKeys(registry, key, nil, 0)
-	if registry.HasAdmittedSolve(key) {
-		t.Fatal("HasAdmittedSolve unexpectedly true after a nil SolveRequest")
-	}
-	if registry.ConsumeUploadKey(key, "anything") {
-		t.Fatal("ConsumeUploadKey unexpectedly succeeded — nothing should have been admitted")
+func TestSolveUploadKeysNilRequestIsEmpty(t *testing.T) {
+	if got := solveUploadKeys(nil); len(got) != 0 {
+		t.Fatalf("solveUploadKeys(nil) = %v, want empty", got)
 	}
 }
 
-func TestAdmitSolveUploadKeysAdmitsContextAndNamedContextURLs(t *testing.T) {
-	registry := NewSessionRegistry()
-	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+func TestSolveUploadKeysExtractsContextAndNamedContextURLs(t *testing.T) {
 	req := &control.SolveRequest{FrontendAttrs: map[string]string{
 		"context":            "http://buildkit-session/id-one",
 		"context:additional": "http://buildkit-session/id-two",
 	}}
-	admitSolveUploadKeys(registry, key, req, 0)
-
-	if !registry.ConsumeUploadKey(key, "id-one") {
-		t.Fatal("id-one was not admitted from the \"context\" attr")
-	}
-	if !registry.ConsumeUploadKey(key, "id-two") {
-		t.Fatal("id-two was not admitted from the \"context:additional\" attr")
+	want := []string{"id-one", "id-two"}
+	if got := solveUploadKeys(req); !slices.Equal(got, want) {
+		t.Fatalf("solveUploadKeys() = %v, want %v", got, want)
 	}
 }
 
-func TestAdmitSolveUploadKeysSkipsNonMatchingOrMalformedValues(t *testing.T) {
-	registry := NewSessionRegistry()
-	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+func TestSolveUploadKeysSkipsNonMatchingOrMalformedValues(t *testing.T) {
 	req := &control.SolveRequest{FrontendAttrs: map[string]string{
 		"context":            "https://github.com/example/repo.git",
 		"filename":           "Dockerfile",
 		"context:bad-url":    "://not a url",
 		"context:wrong-host": "http://not-buildkit-session/id",
 	}}
-	admitSolveUploadKeys(registry, key, req, 0)
-
-	if registry.HasAdmittedSolve(key) {
-		t.Fatal("HasAdmittedSolve should only reflect PutRef, not upload keys")
-	}
-	// None of the above should have registered any upload key at all.
-	if registry.ConsumeUploadKey(key, "id") || registry.ConsumeUploadKey(key, "repo.git") || registry.ConsumeUploadKey(key, "Dockerfile") {
-		t.Fatal("a non-upload-session-shaped FrontendAttrs value was incorrectly admitted as an upload key")
+	if got := solveUploadKeys(req); len(got) != 0 {
+		t.Fatalf("solveUploadKeys() = %v, want empty", got)
 	}
 }
 
-func TestAdmitSolveUploadKeysRespectsMaxKeys(t *testing.T) {
+func TestSessionRegistryAdmitSolveRejectsUploadOverflowAtomically(t *testing.T) {
 	registry := NewSessionRegistry()
 	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	session := registry.Open(key, EndpointGRPC, "")
 	req := &control.SolveRequest{FrontendAttrs: map[string]string{
 		"context:a": "http://buildkit-session/id-a",
 		"context:b": "http://buildkit-session/id-b",
 	}}
-	// Two candidates, maxKeys=1: admission must fail (all-or-nothing signal to
-	// the caller) and be deterministic — the sorted-first id ("id-a") is the
-	// one that gets registered, never a random subset dependent on map order.
-	if admitSolveUploadKeys(registry, key, req, 1) {
-		t.Fatal("admitSolveUploadKeys = true, want false when candidates exceed maxKeys")
+	if got := registry.admitSolve(session, testBuildkitSessionID, "ref", solveUploadKeys(req), 0, 1); got != solveAdmissionUploadLimitExceeded {
+		t.Fatalf("admitSolve() = %v, want solveAdmissionUploadLimitExceeded", got)
 	}
-	if !registry.ConsumeUploadKey(key, "id-a") {
-		t.Fatal("id-a (sorted first) should have been the admitted key")
+	if registry.OwnsRef(key, "ref") {
+		t.Fatal("rejected Solve retained ref ownership")
 	}
-	if registry.ConsumeUploadKey(key, "id-b") {
-		t.Fatal("id-b should not have been admitted once the maxKeys bound was hit")
+	if registry.ConsumeUploadKey(key, testBuildkitSessionID, "id-a") || registry.ConsumeUploadKey(key, testBuildkitSessionID, "id-b") {
+		t.Fatal("rejected Solve retained an upload id")
 	}
 }
 
-func TestAdmitSolveUploadKeysAllAdmittedReturnsTrue(t *testing.T) {
+func TestSessionRegistryAdmitSolvePublishesRefAndUploadIDs(t *testing.T) {
 	registry := NewSessionRegistry()
 	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	session := registry.Open(key, EndpointGRPC, "")
 	req := &control.SolveRequest{FrontendAttrs: map[string]string{
 		"context:a": "http://buildkit-session/id-a",
 		"context:b": "http://buildkit-session/id-b",
 	}}
-	if !admitSolveUploadKeys(registry, key, req, 5) {
-		t.Fatal("admitSolveUploadKeys = false, want true when all candidates fit under maxKeys")
+	if got := registry.admitSolve(session, testBuildkitSessionID, "ref", solveUploadKeys(req), 5, 5); got != solveAdmissionSucceeded {
+		t.Fatalf("admitSolve() = %v, want solveAdmissionSucceeded", got)
 	}
-	if !registry.ConsumeUploadKey(key, "id-a") || !registry.ConsumeUploadKey(key, "id-b") {
-		t.Fatal("both candidate ids should have been admitted")
+	if !registry.OwnsRef(key, "ref") {
+		t.Fatal("admitted Solve did not publish ref ownership")
+	}
+	if !registry.ConsumeUploadKey(key, testBuildkitSessionID, "id-a") || !registry.ConsumeUploadKey(key, testBuildkitSessionID, "id-b") {
+		t.Fatal("admitted Solve did not publish both upload ids")
 	}
 }
 
-func TestAdmitSolveUploadKeysSkipsRootPathIDs(t *testing.T) {
-	registry := NewSessionRegistry()
-	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+func TestSolveUploadKeysSkipsRootPathIDs(t *testing.T) {
 	req := &control.SolveRequest{FrontendAttrs: map[string]string{
 		"context": "http://buildkit-session/",
 	}}
-	admitSolveUploadKeys(registry, key, req, 0)
-	if registry.ConsumeUploadKey(key, "/") || registry.ConsumeUploadKey(key, ".") {
-		t.Fatal("an upload-session URL with an empty/root path must not be admitted as a token")
+	if got := solveUploadKeys(req); len(got) != 0 {
+		t.Fatalf("solveUploadKeys() = %v, want empty", got)
 	}
 }
 

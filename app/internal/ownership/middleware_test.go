@@ -2084,31 +2084,31 @@ func TestAllowOwnershipRequest(t *testing.T) {
 		},
 	}
 
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/networks/net-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/networks/net-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(network) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/volumes/vol-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/volumes/vol-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(volume) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/images/busybox:latest/json", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(image) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/services/svc-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/services/svc-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(service) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/services/svc-1/logs", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/services/svc-1/logs", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(service logs) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/tasks/task-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/tasks/task-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(task) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/tasks/task-1/logs", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/tasks/task-1/logs", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(task logs) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/secrets/sec-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/secrets/sec-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(secret) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/configs/cfg-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/configs/cfg-1", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(config) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
 	nodefi := fakeInspector{
@@ -2116,7 +2116,7 @@ func TestAllowOwnershipRequest(t *testing.T) {
 			"nodes": {"node-1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
 		},
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/nodes/node-1", opts, nodefi.inspectResource, nodefi.inspectExec, nil); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/nodes/node-1", opts, nodefi.inspectResource, nodefi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(node) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
 	swarmfi := fakeInspector{
@@ -2124,19 +2124,19 @@ func TestAllowOwnershipRequest(t *testing.T) {
 			"swarm": {"": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true}},
 		},
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/swarm", opts, swarmfi.inspectResource, swarmfi.inspectExec, nil); err != nil || verdict != verdictAllow {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/swarm", opts, swarmfi.inspectResource, swarmfi.inspectExec, nil); err != nil || verdict != verdictAllow {
 		t.Fatalf("allowOwnershipRequest(swarm) = (%v, %v), want verdictAllow/nil", verdict, err)
 	}
-	if verdict, reason, err := allowOwnershipRequest(context.Background(), "/images/busybox:latest/json", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictDeny || !strings.Contains(reason, "owner policy denied access to image") {
+	if verdict, reason, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/images/busybox:latest/json", Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictDeny || !strings.Contains(reason, "owner policy denied access to image") {
 		t.Fatalf("allowOwnershipRequest(image deny) = (%v, %q, %v), want verdictDeny/image denial/nil", verdict, reason, err)
 	}
 	execfi := fakeInspector{
 		execs: map[string]execResult{"missing": {found: false}},
 	}
-	if verdict, reason, err := allowOwnershipRequest(context.Background(), "/exec/missing/start", opts, execfi.inspectResource, execfi.inspectExec, nil); err != nil || verdict != verdictPassThrough || reason != "" {
+	if verdict, reason, err := allowOwnershipRequest(context.Background(), http.MethodPost, "/exec/missing/start", opts, execfi.inspectResource, execfi.inspectExec, nil); err != nil || verdict != verdictPassThrough || reason != "" {
 		t.Fatalf("allowOwnershipRequest(exec missing) = (%v, %q, %v), want verdictPassThrough/\"\"/nil", verdict, reason, err)
 	}
-	if verdict, _, err := allowOwnershipRequest(context.Background(), "/info", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictPassThrough {
+	if verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodGet, "/info", opts, fi.inspectResource, fi.inspectExec, nil); err != nil || verdict != verdictPassThrough {
 		t.Fatalf("allowOwnershipRequest(no match) = (%v, %v), want verdictPassThrough/nil", verdict, err)
 	}
 }
@@ -2213,33 +2213,33 @@ func TestOwnershipSetDenied(t *testing.T) {
 
 func TestIdentifierHelpers(t *testing.T) {
 	t.Parallel()
-	if id, ok := networkIdentifier("/networks/net-1"); !ok || id != "net-1" {
+	if id, ok := networkIdentifier(http.MethodGet, "/networks/net-1"); !ok || id != "net-1" {
 		t.Fatalf("networkIdentifier() = (%q, %v), want (net-1, true)", id, ok)
 	}
-	if _, ok := networkIdentifier("/networks/create"); ok {
+	if _, ok := networkIdentifier(http.MethodPost, "/networks/create"); ok {
 		t.Fatal("expected /networks/create to be excluded")
 	}
-	if id, ok := volumeIdentifier("/volumes/vol-1"); !ok || id != "vol-1" {
+	if id, ok := volumeIdentifier(http.MethodGet, "/volumes/vol-1"); !ok || id != "vol-1" {
 		t.Fatalf("volumeIdentifier() = (%q, %v), want (vol-1, true)", id, ok)
 	}
-	if _, ok := volumeIdentifier("/volumes/prune"); ok {
+	if _, ok := volumeIdentifier(http.MethodPost, "/volumes/prune"); ok {
 		t.Fatal("expected /volumes/prune to be excluded")
 	}
-	if id, ok := imageIdentifier("/images/busybox:latest/json"); !ok || id != "busybox:latest" {
+	if id, ok := imageIdentifier(http.MethodGet, "/images/busybox:latest/json"); !ok || id != "busybox:latest" {
 		t.Fatalf("imageIdentifier() = (%q, %v), want (busybox:latest, true)", id, ok)
 	}
-	if id, ok := imageIdentifier("/images/custom/history"); !ok || id != "custom" {
+	if id, ok := imageIdentifier(http.MethodGet, "/images/custom/history"); !ok || id != "custom" {
 		t.Fatalf("imageIdentifier(history) = (%q, %v), want (custom, true)", id, ok)
 	}
-	if id, ok := imageIdentifier("/images/custom"); !ok || id != "custom" {
+	if id, ok := imageIdentifier(http.MethodDelete, "/images/custom"); !ok || id != "custom" {
 		t.Fatalf("imageIdentifier(raw) = (%q, %v), want (custom, true)", id, ok)
 	}
 	// Single-image export (data exfiltration): /images/{name}/get must resolve
 	// to {name} so the owner-isolation check applies to the exported image.
-	if id, ok := imageIdentifier("/images/busybox:latest/get"); !ok || id != "busybox:latest" {
+	if id, ok := imageIdentifier(http.MethodGet, "/images/busybox:latest/get"); !ok || id != "busybox:latest" {
 		t.Fatalf("imageIdentifier(get) = (%q, %v), want (busybox:latest, true)", id, ok)
 	}
-	if id, ok := imageIdentifier("/images/registry.io/team/app/get"); !ok || id != "registry.io/team/app" {
+	if id, ok := imageIdentifier(http.MethodGet, "/images/registry.io/team/app/get"); !ok || id != "registry.io/team/app" {
 		t.Fatalf("imageIdentifier(namespaced get) = (%q, %v), want (registry.io/team/app, true)", id, ok)
 	}
 	// Attestation listing (Engine API 1.53+) must resolve to {name} so the
@@ -2247,15 +2247,15 @@ func TestIdentifierHelpers(t *testing.T) {
 	// "/attestations" suffix, imageIdentifier returns the whole
 	// "{name}/attestations" remainder, the ownership inspect 404s, and the
 	// request passes through unfiltered.
-	if id, ok := imageIdentifier("/images/busybox:latest/attestations"); !ok || id != "busybox:latest" {
+	if id, ok := imageIdentifier(http.MethodGet, "/images/busybox:latest/attestations"); !ok || id != "busybox:latest" {
 		t.Fatalf("imageIdentifier(attestations) = (%q, %v), want (busybox:latest, true)", id, ok)
 	}
 	// Bare multi-image export (/images/get?names=) takes query params, not a
 	// path identifier, and must stay excluded.
-	if _, ok := imageIdentifier("/images/get"); ok {
+	if _, ok := imageIdentifier(http.MethodGet, "/images/get"); ok {
 		t.Fatal("expected bare /images/get to be excluded")
 	}
-	if _, ok := imageIdentifier("/images/prune"); ok {
+	if _, ok := imageIdentifier(http.MethodPost, "/images/prune"); ok {
 		t.Fatal("expected /images/prune to be excluded")
 	}
 	if id, ok := execIdentifier("/exec/exec-1/start"); !ok || id != "exec-1" {
@@ -2264,13 +2264,13 @@ func TestIdentifierHelpers(t *testing.T) {
 	if _, ok := execIdentifier("/exec/"); ok {
 		t.Fatal("expected empty exec identifier to be excluded")
 	}
-	if id, ok := serviceIdentifier("/services/web"); !ok || id != "web" {
+	if id, ok := serviceIdentifier(http.MethodGet, "/services/web"); !ok || id != "web" {
 		t.Fatalf("serviceIdentifier() = (%q, %v), want (web, true)", id, ok)
 	}
-	if id, ok := serviceIdentifier("/services/web/logs"); !ok || id != "web" {
+	if id, ok := serviceIdentifier(http.MethodGet, "/services/web/logs"); !ok || id != "web" {
 		t.Fatalf("serviceIdentifier(logs) = (%q, %v), want (web, true)", id, ok)
 	}
-	if _, ok := serviceIdentifier("/services/create"); ok {
+	if _, ok := serviceIdentifier(http.MethodPost, "/services/create"); ok {
 		t.Fatal("expected /services/create to be excluded")
 	}
 	if id, ok := taskIdentifier("/tasks/task-1"); !ok || id != "task-1" {
@@ -2279,16 +2279,16 @@ func TestIdentifierHelpers(t *testing.T) {
 	if id, ok := taskIdentifier("/tasks/task-1/logs"); !ok || id != "task-1" {
 		t.Fatalf("taskIdentifier(logs) = (%q, %v), want (task-1, true)", id, ok)
 	}
-	if id, ok := secretIdentifier("/secrets/sec-1"); !ok || id != "sec-1" {
+	if id, ok := secretIdentifier(http.MethodGet, "/secrets/sec-1"); !ok || id != "sec-1" {
 		t.Fatalf("secretIdentifier() = (%q, %v), want (sec-1, true)", id, ok)
 	}
-	if _, ok := secretIdentifier("/secrets/create"); ok {
+	if _, ok := secretIdentifier(http.MethodPost, "/secrets/create"); ok {
 		t.Fatal("expected /secrets/create to be excluded")
 	}
-	if id, ok := configIdentifier("/configs/cfg-1"); !ok || id != "cfg-1" {
+	if id, ok := configIdentifier(http.MethodGet, "/configs/cfg-1"); !ok || id != "cfg-1" {
 		t.Fatalf("configIdentifier() = (%q, %v), want (cfg-1, true)", id, ok)
 	}
-	if _, ok := configIdentifier("/configs/create"); ok {
+	if _, ok := configIdentifier(http.MethodPost, "/configs/create"); ok {
 		t.Fatal("expected /configs/create to be excluded")
 	}
 	if id, ok := nodeIdentifier("/nodes/node-1"); !ok || id != "node-1" {
@@ -2302,6 +2302,68 @@ func TestIdentifierHelpers(t *testing.T) {
 	}
 	if isSwarmPath("/swarm/update") {
 		t.Fatal("expected /swarm/update to be excluded from swarm inspect path")
+	}
+}
+
+func TestMiddlewareChecksKeywordNamedResourcesOutsideCollectionActions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		kind       dockerresource.Kind
+		identifier string
+	}{
+		{name: "container create action", method: http.MethodPost, target: "/containers/create/start", kind: dockerresource.KindContainer, identifier: "create"},
+		{name: "container json action", method: http.MethodPost, target: "/containers/json/start", kind: dockerresource.KindContainer, identifier: "json"},
+		{name: "container prune action", method: http.MethodPost, target: "/containers/prune/start", kind: dockerresource.KindContainer, identifier: "prune"},
+		{name: "network create inspect", method: http.MethodGet, target: "/networks/create", kind: dockerresource.KindNetwork, identifier: "create"},
+		{name: "network prune inspect", method: http.MethodHead, target: "/networks/prune", kind: dockerresource.KindNetwork, identifier: "prune"},
+		{name: "volume create inspect", method: http.MethodGet, target: "/volumes/create", kind: dockerresource.KindVolume, identifier: "create"},
+		{name: "volume prune inspect", method: http.MethodHead, target: "/volumes/prune", kind: dockerresource.KindVolume, identifier: "prune"},
+		{name: "image json delete", method: http.MethodDelete, target: "/images/json", kind: dockerresource.KindImage, identifier: "json"},
+		{name: "image create delete", method: http.MethodDelete, target: "/images/create", kind: dockerresource.KindImage, identifier: "create"},
+		{name: "image search delete", method: http.MethodDelete, target: "/images/search", kind: dockerresource.KindImage, identifier: "search"},
+		{name: "image get delete", method: http.MethodDelete, target: "/images/get", kind: dockerresource.KindImage, identifier: "get"},
+		{name: "image load delete", method: http.MethodDelete, target: "/images/load", kind: dockerresource.KindImage, identifier: "load"},
+		{name: "image prune delete", method: http.MethodDelete, target: "/images/prune", kind: dockerresource.KindImage, identifier: "prune"},
+		{name: "service create inspect", method: http.MethodGet, target: "/services/create", kind: dockerresource.KindService, identifier: "create"},
+		{name: "secret create inspect", method: http.MethodHead, target: "/secrets/create", kind: dockerresource.KindSecret, identifier: "create"},
+		{name: "config create inspect", method: http.MethodGet, target: "/configs/create", kind: dockerresource.KindConfig, identifier: "create"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var gotKind dockerresource.Kind
+			var gotIdentifier string
+			nextCalled := false
+			handler := middlewareWithDeps(testLogger(), Options{
+				Owner:    "alice",
+				LabelKey: "com.sockguard.owner",
+			}, func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+				gotKind = kind
+				gotIdentifier = identifier
+				return map[string]string{"com.sockguard.owner": "bob"}, true, nil
+			}, func(context.Context, string) (string, bool, error) {
+				return "", false, nil
+			})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				nextCalled = true
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.target, nil))
+
+			if nextCalled {
+				t.Fatal("keyword-named cross-owner resource reached upstream")
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if gotKind != tt.kind || gotIdentifier != tt.identifier {
+				t.Fatalf("inspect = %s/%q, want %s/%q", gotKind, gotIdentifier, tt.kind, tt.identifier)
+			}
+		})
 	}
 }
 

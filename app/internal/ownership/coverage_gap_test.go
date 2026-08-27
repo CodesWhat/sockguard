@@ -130,7 +130,7 @@ func TestAllowOwnershipRequestSwarmUpdate(t *testing.T) {
 		},
 	}
 
-	verdict, _, err := allowOwnershipRequest(context.Background(), "/swarm/update", opts, fi.inspectResource, fi.inspectExec, nil)
+	verdict, _, err := allowOwnershipRequest(context.Background(), http.MethodPost, "/swarm/update", opts, fi.inspectResource, fi.inspectExec, nil)
 	if err != nil {
 		t.Fatalf("allowOwnershipRequest(swarm update) error = %v", err)
 	}
@@ -185,7 +185,7 @@ func TestAllowOwnershipRequestExecError(t *testing.T) {
 		},
 	}
 
-	_, _, err := allowOwnershipRequest(context.Background(), "/exec/exec-bad/start", opts, fi.inspectResource, fi.inspectExec, nil)
+	_, _, err := allowOwnershipRequest(context.Background(), http.MethodPost, "/exec/exec-bad/start", opts, fi.inspectResource, fi.inspectExec, nil)
 	if err == nil {
 		t.Fatal("expected error from exec lookup failure")
 	}

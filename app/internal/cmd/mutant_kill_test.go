@@ -522,6 +522,7 @@ func TestRunServe_SocketCleanupOnlyForUnixSocket(t *testing.T) {
 		}
 		deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
 		deps.shutdownServer = func(server *http.Server, ctx context.Context) error { return nil }
+		deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(1), nil }
 
 		removeCalled := false
 		deps.removePath = func(string) error {
@@ -562,6 +563,7 @@ func TestRunServe_SocketCleanupOnlyForUnixSocket(t *testing.T) {
 		}
 		deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
 		deps.shutdownServer = func(server *http.Server, ctx context.Context) error { return nil }
+		deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(1), nil }
 
 		removeCalled := false
 		deps.removePath = func(string) error {
@@ -614,6 +616,7 @@ func TestRunServe_SocketRemoveNotExistIgnored(t *testing.T) {
 	}
 	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
 	deps.shutdownServer = func(server *http.Server, ctx context.Context) error { return nil }
+	deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(1), nil }
 	deps.removePath = func(string) error { return os.ErrNotExist }
 
 	if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
@@ -651,6 +654,7 @@ func TestRunServe_SocketRemoveOtherErrorLogs(t *testing.T) {
 	}
 	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
 	deps.shutdownServer = func(server *http.Server, ctx context.Context) error { return nil }
+	deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(1), nil }
 	deps.removePath = func(string) error { return errors.New("permission denied") }
 
 	if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
@@ -806,6 +810,7 @@ func TestRunServe_AdminSocketRemovedWhenSocketPathSet(t *testing.T) {
 	deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) {}
 	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) { c <- syscall.SIGINT }
 	deps.shutdownServer = func(_ *http.Server, _ context.Context) error { return nil }
+	deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(1), nil }
 
 	var removed []string
 	deps.removePath = func(p string) error {

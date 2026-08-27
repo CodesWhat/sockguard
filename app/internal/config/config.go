@@ -1418,21 +1418,12 @@ type ReloadConfig struct {
 
 // PolicyBundleConfig configures verification of signed policy bundles.
 //
-// When Enabled, sockguard reads the YAML config file bytes and the sigstore
-// bundle JSON at SignaturePath, then asks the policybundle verifier to
-// confirm the bundle signs the YAML's sha256 digest under one of the
-// configured trust paths (AllowedSigningKeys or AllowedKeyless). Both
-// startup load and SIGHUP / fsnotify-driven reloads consult the verifier;
-// an unsigned or invalid bundle fails startup and rejects reloads with the
-// reject_signature metrics reason. The verified signer fingerprint or
-// identity is published on GET /admin/policy/version so operators can
-// confirm exactly who vouched for the running policy.
-//
-// SignaturePath is reload-mutable so an operator can re-sign without
-// rotating the YAML; the other fields (enable / trust material / Rekor
-// requirement / timeout) are reload-immutable for the same reasons as the
-// listener / TLS material: changing the trust root mid-reload would
-// silently expand the set of accepted signers.
+// The out-of-band file selected by --policy-bundle-trust-config reuses this
+// block for Enabled, trust roots, Rekor posture, and timeout. SignaturePath
+// remains in the signed candidate YAML so an operator can rotate its bundle
+// on reload. Copies of the pinned fields in the candidate are ignored: the
+// file being authenticated cannot disable its own gate or redefine who is
+// trusted to sign it.
 type PolicyBundleConfig struct {
 	Enabled               bool                     `mapstructure:"enabled"`
 	SignaturePath         string                   `mapstructure:"signature_path"`

@@ -2,6 +2,7 @@ package buildkitproxy
 
 import (
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -108,10 +109,11 @@ func TestBridgeRapidDeniedStreamChurnTerminatesTunnelWithoutLeak(t *testing.T) {
 	tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, limits, echoDaemonHandler())
 
 	const churn = 50
-	done := make(chan struct{}, churn)
+	var workers sync.WaitGroup
+	workers.Add(churn)
 	for i := 0; i < churn; i++ {
 		go func() {
-			defer func() { done <- struct{}{} }()
+			defer workers.Done()
 			resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Prune", ""))
 			if err != nil {
 				return // tunnel may already be torn down under this churn — expected
@@ -120,9 +122,11 @@ func TestBridgeRapidDeniedStreamChurnTerminatesTunnelWithoutLeak(t *testing.T) {
 			_ = resp.Body.Close()
 		}()
 	}
-	for i := 0; i < churn; i++ {
-		<-done
-	}
+	workersDone := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(workersDone)
+	}()
 
 	select {
 	case <-tb.done:
@@ -131,5 +135,11 @@ func TestBridgeRapidDeniedStreamChurnTerminatesTunnelWithoutLeak(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("runBridge did not terminate the tunnel after rapid denied-stream churn exceeded the budget")
+	}
+
+	select {
+	case <-workersDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("concurrent RoundTrip calls remained blocked after the denied-stream budget terminated the tunnel")
 	}
 }

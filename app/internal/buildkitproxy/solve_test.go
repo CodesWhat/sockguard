@@ -603,7 +603,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 			wantDenied: false,
 		},
 		{
-			name: "Session is forwarded unexamined",
+			name: "valid Session is admitted",
 			payload: mustMarshal(t, &control.SolveRequest{
 				Ref:     "r",
 				Session: "some-buildkit-session-uuid",
@@ -734,7 +734,17 @@ func TestEvaluateSolveRequest(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req, d := evaluateSolveRequest(tc.payload, Policy{Control: ControlPolicy{Solve: tc.policy}})
+			// This table predates mandatory Solve/session correlation and focuses
+			// on every other field's disposition. Supply the ordinary valid
+			// session fixture unless the payload is malformed; dedicated boundary
+			// cases live in admission_security_test.go.
+			payload := tc.payload
+			var solveReq control.SolveRequest
+			if err := proto.Unmarshal(payload, &solveReq); err == nil && solveReq.GetSession() == "" {
+				solveReq.Session = testBuildkitSessionID
+				payload = mustMarshal(t, &solveReq)
+			}
+			req, d := evaluateSolveRequest(payload, Policy{Control: ControlPolicy{Solve: tc.policy}})
 			if tc.wantDenied {
 				if d == nil {
 					t.Fatal("want a denial, got nil")
@@ -760,7 +770,7 @@ func TestEvaluateSolveRequest(t *testing.T) {
 	}
 
 	t.Run("returns the decoded Ref for admitted requests", func(t *testing.T) {
-		req, d := evaluateSolveRequest(mustMarshal(t, &control.SolveRequest{Ref: "build-ref-1"}), Policy{Control: ControlPolicy{Solve: SolvePolicy{Allow: true}}})
+		req, d := evaluateSolveRequest(mustMarshal(t, &control.SolveRequest{Ref: "build-ref-1", Session: testBuildkitSessionID}), Policy{Control: ControlPolicy{Solve: SolvePolicy{Allow: true}}})
 		if d != nil {
 			t.Fatalf("want admission, got denial %+v", d)
 		}

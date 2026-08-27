@@ -141,7 +141,7 @@ func middlewareWithDeps(
 				return
 			}
 
-			verdict, reason, err := allowOwnershipRequest(r.Context(), normPath, opts, inspectResource, inspectExec, refs)
+			verdict, reason, err := allowOwnershipRequest(r.Context(), r.Method, normPath, opts, inspectResource, inspectExec, refs)
 			if err != nil {
 				logger.ErrorContext(r.Context(), "owner policy lookup failed", "error", logging.SafeString(err.Error()), "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
 				logging.SetDeniedWithCode(w, r, reasonCodeOwnerPolicyLookupFailed, "owner policy lookup failed", nil)
@@ -179,32 +179,32 @@ func (o Options) normalized() Options {
 // still consume another owner's image, volume, network, secret, or config.
 func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ownershipRequestReferences, error) {
 	switch {
-	case normPath == "/containers/create":
+	case r.Method == http.MethodPost && normPath == "/containers/create":
 		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
-	case normPath == "/networks/create", normPath == "/volumes/create", normPath == "/secrets/create", normPath == "/configs/create":
+	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/secrets/create" || normPath == "/configs/create"):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
-	case normPath == "/services/create", isServiceUpdatePath(normPath):
+	case r.Method == http.MethodPost && (normPath == "/services/create" || isServiceUpdatePath(normPath)):
 		return mutateServiceOwnershipBody(r, opts.LabelKey, opts.Owner)
-	case isNodeUpdatePath(normPath), isSwarmUpdatePath(normPath):
+	case r.Method == http.MethodPost && (isNodeUpdatePath(normPath) || isSwarmUpdatePath(normPath)):
 		return nil, addOwnerLabelToBody(r, opts.LabelKey, opts.Owner)
-	case normPath == "/build":
+	case r.Method == http.MethodPost && (normPath == "/build" || normPath == libpodPrefix+"build"):
 		return nil, addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
-	case normPath == libpodContainerCreatePath:
+	case r.Method == http.MethodPost && normPath == libpodContainerCreatePath:
 		return mutateLibpodContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
-	case normPath == libpodPodCreatePath:
+	case r.Method == http.MethodPost && normPath == libpodPodCreatePath:
 		return mutateLibpodPodCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
-	case normPath == libpodNetworkCreatePath:
+	case r.Method == http.MethodPost && normPath == libpodNetworkCreatePath:
 		return nil, addOwnerLabelToLibpodBody(r, opts.LabelKey, opts.Owner, "labels")
-	case normPath == libpodVolumeCreatePath:
+	case r.Method == http.MethodPost && normPath == libpodVolumeCreatePath:
 		return nil, addOwnerLabelToLibpodBody(r, opts.LabelKey, opts.Owner, "Labels")
-	case normPath == libpodSecretCreatePath:
+	case r.Method == http.MethodPost && normPath == libpodSecretCreatePath:
 		// libpod secret create has no JSON body envelope at all — the body is
 		// the raw secret payload, and driver/labels are URL query parameters
 		// (see internal/filter/libpod_secret.go's doc comment). The existing
 		// build-query mutator already does exactly this "decode 'labels' query
 		// param as a JSON-encoded map, inject, re-encode" shape.
 		return nil, addOwnerLabelToBuildQuery(r, opts.LabelKey, opts.Owner)
-	case needsOwnerFilter(normPath), libpodNeedsOwnerFilter(normPath):
+	case needsOwnerFilter(r.Method, normPath), (r.Method == http.MethodGet || r.Method == http.MethodHead) && libpodNeedsOwnerFilter(normPath):
 		return nil, addOwnerLabelFilter(r, opts.LabelKey, opts.Owner)
 	default:
 		return nil, nil
@@ -219,13 +219,14 @@ func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ow
 // function.
 func allowOwnershipRequest(
 	ctx context.Context,
+	method string,
 	normPath string,
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
 	refs *ownershipRequestReferences,
 ) (ownershipVerdict, string, error) {
-	verdict, reason, err := allowOwnershipRequestUnprefixed(ctx, normPath, opts, inspectResource, inspectExec, refs)
+	verdict, reason, err := allowOwnershipRequestUnprefixed(ctx, method, normPath, opts, inspectResource, inspectExec, refs)
 	if verdict == verdictDeny && isLibpodOwnershipPath(normPath) {
 		reason = "libpod " + reason
 	}
@@ -234,6 +235,7 @@ func allowOwnershipRequest(
 
 func allowOwnershipRequestUnprefixed(
 	ctx context.Context,
+	method string,
 	normPath string,
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
@@ -261,7 +263,7 @@ func allowOwnershipRequestUnprefixed(
 		}
 	}
 
-	verdict, reason, err := allowPathOwnershipRequest(ctx, normPath, opts, inspectResource, inspectExec)
+	verdict, reason, err := allowPathOwnershipRequest(ctx, method, normPath, opts, inspectResource, inspectExec)
 	if err != nil || verdict == verdictDeny {
 		return verdict, reason, err
 	}
@@ -273,12 +275,13 @@ func allowOwnershipRequestUnprefixed(
 
 func allowPathOwnershipRequest(
 	ctx context.Context,
+	method string,
 	normPath string,
 	opts Options,
 	inspectResource func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error),
 	inspectExec func(context.Context, string) (string, bool, error),
 ) (ownershipVerdict, string, error) {
-	if identifier, ok := containerIdentifier(normPath); ok {
+	if identifier, ok := containerIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, identifier, opts, false)
 	}
 	if execID, ok := execIdentifier(normPath); ok {
@@ -291,25 +294,25 @@ func allowPathOwnershipRequest(
 		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
-	if identifier, ok := networkIdentifier(normPath); ok {
+	if identifier, ok := networkIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindNetwork, identifier, opts, false)
 	}
-	if identifier, ok := volumeIdentifier(normPath); ok {
+	if identifier, ok := volumeIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindVolume, identifier, opts, false)
 	}
-	if identifier, ok := imageIdentifier(normPath); ok {
+	if identifier, ok := imageIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
 	}
-	if identifier, ok := serviceIdentifier(normPath); ok {
+	if identifier, ok := serviceIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindService, identifier, opts, false)
 	}
 	if identifier, ok := taskIdentifier(normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindTask, identifier, opts, false)
 	}
-	if identifier, ok := secretIdentifier(normPath); ok {
+	if identifier, ok := secretIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)
 	}
-	if identifier, ok := configIdentifier(normPath); ok {
+	if identifier, ok := configIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindConfig, identifier, opts, false)
 	}
 	if identifier, ok := nodeIdentifier(normPath); ok {
@@ -327,7 +330,7 @@ func allowPathOwnershipRequest(
 	// KindSecret) since Podman's compat API is a translation layer over the
 	// same underlying resource store for those kinds; pods have no
 	// Docker-compat equivalent and use dockerresource.KindLibpodPod.
-	if identifier, ok := libpodContainerIdentifier(normPath); ok {
+	if identifier, ok := libpodContainerIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, identifier, opts, false)
 	}
 	if execID, ok := libpodExecIdentifier(normPath); ok {
@@ -340,16 +343,16 @@ func allowPathOwnershipRequest(
 		}
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, containerID, opts, false)
 	}
-	if identifier, ok := libpodPodIdentifier(normPath); ok {
+	if identifier, ok := libpodPodIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindLibpodPod, identifier, opts, false)
 	}
-	if identifier, ok := libpodNetworkIdentifier(normPath); ok {
+	if identifier, ok := libpodNetworkIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindNetwork, identifier, opts, false)
 	}
-	if identifier, ok := libpodVolumeIdentifier(normPath); ok {
+	if identifier, ok := libpodVolumeIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindVolume, identifier, opts, false)
 	}
-	if identifier, ok := libpodSecretIdentifier(normPath); ok {
+	if identifier, ok := libpodSecretIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)
 	}
 	return verdictPassThrough, "", nil

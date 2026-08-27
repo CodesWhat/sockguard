@@ -3,6 +3,9 @@ package metrics
 import (
 	"bufio"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -104,6 +107,101 @@ func TestRouteCategoryKeepsDockerPathLabelsBounded(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRouteCategoryCollapsesUnrecognizedActionsToFiniteTemplates(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		format string
+		want   string
+	}{
+		{name: "system", format: "/system/custom-%d", want: "/system/{action}"},
+		{name: "container", format: "/containers/web/custom-%d", want: "/containers/{id}/{action}"},
+		{name: "exec", format: "/exec/process/custom-%d", want: "/exec/{id}/{action}"},
+		{name: "image", format: "/images/alpine/custom-%d", want: "/images/{id}/{action}"},
+		{name: "volume", format: "/volumes/data/custom-%d", want: "/volumes/{id}/{action}"},
+		{name: "network", format: "/networks/frontend/custom-%d", want: "/networks/{id}/{action}"},
+		{name: "secret", format: "/secrets/password/custom-%d", want: "/secrets/{id}/{action}"},
+		{name: "config", format: "/configs/settings/custom-%d", want: "/configs/{id}/{action}"},
+		{name: "service", format: "/services/web/custom-%d", want: "/services/{id}/{action}"},
+		{name: "swarm", format: "/swarm/custom-%d", want: "/swarm/{action}"},
+		{name: "node", format: "/nodes/worker/custom-%d", want: "/nodes/{id}/{action}"},
+		{name: "plugin", format: "/plugins/example/custom-%d", want: "/plugins/{name}/{action}"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for i := 0; i < 100; i++ {
+				path := fmt.Sprintf(tt.format, i)
+				if got := RouteCategory(path); got != tt.want {
+					t.Fatalf("RouteCategory(%q) = %q, want %q", path, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestRouteCategoryPreservesKnownFiniteTemplates(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		path string
+		want string
+	}{
+		{path: "/containers/web/logs", want: "/containers/{id}/logs"},
+		{path: "/exec/process/resize", want: "/exec/{id}/resize"},
+		{path: "/images/get", want: "/images/get"},
+		{path: "/images/alpine/push", want: "/images/{id}/push"},
+		{path: "/volumes/prune", want: "/volumes/prune"},
+		{path: "/networks/prune", want: "/networks/prune"},
+		{path: "/secrets/password/update", want: "/secrets/{id}/update"},
+		{path: "/configs/settings/update", want: "/configs/{id}/update"},
+		{path: "/services/web/logs", want: "/services/{id}/logs"},
+		{path: "/swarm/unlockkey", want: "/swarm/unlockkey"},
+		{path: "/nodes/worker/update", want: "/nodes/{id}/update"},
+		{path: "/plugins/example/set", want: "/plugins/{name}/set"},
+	}
+
+	for _, tt := range tests {
+		if got := RouteCategory(tt.path); got != tt.want {
+			t.Errorf("RouteCategory(%q) = %q, want %q", tt.path, got, tt.want)
+		}
+	}
+}
+
+func TestUntrustedMethodsAndUnknownRoutesCollapseToBoundedSeries(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+	for i := 0; i < 100; i++ {
+		req := httptest.NewRequest(fmt.Sprintf("CUSTOM-%d", i), fmt.Sprintf("/untrusted-%d/value", i), nil)
+		registry.observe(req, &logging.RequestMeta{
+			Decision:   "deny",
+			ReasonCode: "matched_deny_rule",
+		}, http.StatusForbidden, 0.001)
+	}
+
+	if got := syncMapLen(&registry.requests); got != 1 {
+		t.Fatalf("request series = %d, want 1", got)
+	}
+	if got := syncMapLen(&registry.denies); got != 1 {
+		t.Fatalf("deny series = %d, want 1", got)
+	}
+	if got := syncMapLen(&registry.duration); got != 1 {
+		t.Fatalf("duration series = %d, want 1", got)
+	}
+	out := renderMetrics(t, registry)
+	assertContains(t, out, `method="OTHER"`)
+	assertContains(t, out, `route="unknown"`)
+}
+
+func syncMapLen(m *sync.Map) int {
+	count := 0
+	m.Range(func(_, _ any) bool {
+		count++
+		return true
+	})
+	return count
 }
 
 func TestHandlerWritesPrometheusTextFormat(t *testing.T) {
@@ -317,10 +415,10 @@ func TestRouteCategoryCoversDockerRouteFamiliesAndPathEdges(t *testing.T) {
 		// here so a future refactor can't silently reintroduce the filter
 		// package's bug on this side.
 		{name: "three-part version prefix stripped", path: "/v5.0.0/containers/json", want: "/containers/json"},
-		{name: "invalid version prefix kept", path: "/v1x/containers/json", want: "/v1x/..."},
+		{name: "invalid version prefix kept", path: "/v1x/containers/json", want: "unknown"},
 		{name: "container collection", path: "/containers", want: "/containers"},
 		{name: "system known tail", path: "/system/df", want: "/system/df"},
-		{name: "system id tail", path: "/system/foo/bar", want: "/system/{id}/bar"},
+		{name: "system unknown path", path: "/system/foo/bar", want: "/system/{action}"},
 		{name: "exec collection", path: "/exec", want: "/exec"},
 		{name: "exec id", path: "/exec/abc", want: "/exec/{id}"},
 		{name: "image collection", path: "/images", want: "/images"},
@@ -339,7 +437,7 @@ func TestRouteCategoryCoversDockerRouteFamiliesAndPathEdges(t *testing.T) {
 		{name: "swarm collection", path: "/swarm", want: "/swarm"},
 		{name: "swarm known prefix", path: "/swarm/update", want: "/swarm/update"},
 		{name: "nodes id", path: "/nodes/node-1/update", want: "/nodes/{id}/update"},
-		{name: "unknown prefix", path: "/distribution/alpine/json", want: "/distribution/..."},
+		{name: "unknown prefix", path: "/distribution/alpine/json", want: "unknown"},
 	}
 
 	for _, tt := range tests {
@@ -490,6 +588,40 @@ func TestResponseWriterFlushAndHijackDelegation(t *testing.T) {
 	}
 	if conn != nil || buf != nil {
 		t.Fatalf("Hijack without support returned conn=%v buf=%v, want nils", conn, buf)
+	}
+}
+
+type metricsDeadlineResponseWriter struct {
+	http.ResponseWriter
+	deadlines []time.Time
+}
+
+func (w *metricsDeadlineResponseWriter) SetReadDeadline(deadline time.Time) error {
+	w.deadlines = append(w.deadlines, deadline)
+	return nil
+}
+
+func TestMiddlewarePreservesResponseControllerDeadlineThroughAccessLog(t *testing.T) {
+	t.Parallel()
+	registry := NewRegistry()
+	want := time.Now().Add(time.Minute)
+	underlying := &metricsDeadlineResponseWriter{ResponseWriter: httptest.NewRecorder()}
+	handler := logging.AccessLogMiddleware(slog.New(slog.NewTextHandler(io.Discard, nil)))(
+		registry.Middleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if err := http.NewResponseController(w).SetReadDeadline(want); err != nil {
+				t.Fatalf("SetReadDeadline() error = %v", err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		})),
+	)
+
+	handler.ServeHTTP(underlying, httptest.NewRequest(http.MethodPost, "/containers/create", nil))
+
+	if len(underlying.deadlines) != 1 {
+		t.Fatalf("SetReadDeadline() calls = %d, want 1", len(underlying.deadlines))
+	}
+	if !underlying.deadlines[0].Equal(want) {
+		t.Fatalf("SetReadDeadline() = %v, want %v", underlying.deadlines[0], want)
 	}
 }
 
