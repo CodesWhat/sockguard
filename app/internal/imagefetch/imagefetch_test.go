@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -28,6 +29,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/google/go-containerregistry/pkg/v1/static"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+	"github.com/sigstore/sigstore-go/pkg/bundle"
+	"github.com/sigstore/sigstore-go/pkg/testing/ca"
+	"github.com/sigstore/sigstore-go/pkg/tlog"
 	"github.com/sigstore/sigstore/pkg/cryptoutils"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
 
@@ -130,6 +134,27 @@ func pushClassicSignature(t *testing.T, ref name.Reference, digest v1.Hash, payl
 	}
 }
 
+func pushReferrerSignature(t *testing.T, ref name.Reference, subject v1.Descriptor, payload []byte, annotations map[string]string) {
+	t.Helper()
+	layer := static.NewLayer(payload, types.MediaType(simpleSigningMediaType))
+	sigImg, err := mutate.Append(empty.Image, mutate.Addendum{
+		Layer:       layer,
+		Annotations: annotations,
+	})
+	if err != nil {
+		t.Fatalf("build referrer signature image: %v", err)
+	}
+	sigImg = mutate.ConfigMediaType(sigImg, types.MediaType(cosignSigArtifactType))
+	sigImg = mutate.Subject(sigImg, subject).(v1.Image)
+	digest, err := sigImg.Digest()
+	if err != nil {
+		t.Fatalf("digest referrer signature image: %v", err)
+	}
+	if err := remote.Write(ref.Context().Digest(digest.String()), sigImg); err != nil {
+		t.Fatalf("push referrer signature image: %v", err)
+	}
+}
+
 // keyedVerifier builds an enforce-mode keyed verifier for the given public key.
 func keyedVerifier(t *testing.T, pubPEM string) (imagetrust.Verifier, imagetrust.Config) {
 	t.Helper()
@@ -145,6 +170,67 @@ func keyedVerifier(t *testing.T, pubPEM string) (imagetrust.Verifier, imagetrust
 		t.Fatalf("new verifier: %v", err)
 	}
 	return v, cfg
+}
+
+func keylessRegistryAnnotations(t *testing.T, virtualSigstore *ca.VirtualSigstore, entity *ca.TestEntity) map[string]string {
+	t.Helper()
+	signatureContent, err := entity.SignatureContent()
+	if err != nil {
+		t.Fatalf("signature content: %v", err)
+	}
+	messageSignature, ok := signatureContent.(*bundle.MessageSignature)
+	if !ok {
+		t.Fatalf("signature content type = %T, want *bundle.MessageSignature", signatureContent)
+	}
+	verificationContent, err := entity.VerificationContent()
+	if err != nil {
+		t.Fatalf("verification content: %v", err)
+	}
+	certificate, ok := verificationContent.(*bundle.Certificate)
+	if !ok {
+		t.Fatalf("verification content type = %T, want *bundle.Certificate", verificationContent)
+	}
+	certPEM, err := cryptoutils.MarshalCertificateToPEM(certificate.Certificate())
+	if err != nil {
+		t.Fatalf("marshal certificate: %v", err)
+	}
+	tlogEntries, err := entity.TlogEntries()
+	if err != nil {
+		t.Fatalf("tlog entries: %v", err)
+	}
+	if len(tlogEntries) != 1 {
+		t.Fatalf("tlog entries = %d, want 1", len(tlogEntries))
+	}
+	entry := tlogEntries[0].TransparencyLogEntry()
+	signedEntryTimestamp, err := virtualSigstore.RekorSignPayload(tlog.RekorPayload{
+		Body:           base64.StdEncoding.EncodeToString(entry.GetCanonicalizedBody()),
+		IntegratedTime: entry.GetIntegratedTime(),
+		LogIndex:       entry.GetLogIndex(),
+		LogID:          hex.EncodeToString(entry.GetLogId().GetKeyId()),
+	})
+	if err != nil {
+		t.Fatalf("sign Rekor annotation payload: %v", err)
+	}
+	rekorAnnotation, err := json.Marshal(map[string]any{
+		"SignedEntryTimestamp": signedEntryTimestamp,
+		"Payload": map[string]any{
+			"body":           base64.StdEncoding.EncodeToString(entry.GetCanonicalizedBody()),
+			"integratedTime": entry.GetIntegratedTime(),
+			"logIndex":       entry.GetLogIndex(),
+			"logID":          hex.EncodeToString(entry.GetLogId().GetKeyId()),
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal Rekor annotation: %v", err)
+	}
+	if _, err := tlogEntryFromAnnotation(string(rekorAnnotation)); err != nil {
+		t.Fatalf("parse reconstructed Rekor annotation: %v", err)
+	}
+	return map[string]string{
+		cosignSignatureAnnotation: base64.StdEncoding.EncodeToString(messageSignature.Signature()),
+		cosignCertAnnotation:      string(certPEM),
+		cosignBundleAnnotation:    string(rekorAnnotation),
+	}
 }
 
 func TestFetchCandidates_ClassicKeyed_Success(t *testing.T) {
@@ -175,6 +261,104 @@ func TestFetchCandidates_ClassicKeyed_Success(t *testing.T) {
 	outcome := imagetrust.VerifyCandidatesWithMode(ctx, v, cfg, nil, ref.Name(), candidates, nil)
 	if !outcome.Allowed {
 		t.Fatalf("verification denied a valid signature: %s", outcome.FailureMsg)
+	}
+}
+
+func TestFetchCandidates_ReferrersKeyed_Success(t *testing.T) {
+	ctx := context.Background()
+	host := testRegistry(t)
+	ref, desc := pushSubjectImage(t, host, "referrers-only")
+
+	signer, pubPEM := signingKeyPair(t)
+	payload := simpleSigningPayloadFor(t, ref.Context().Name(), desc.Digest.String())
+	sig, err := signer.SignMessage(bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	pushReferrerSignature(t, ref, *desc, payload, map[string]string{
+		cosignSignatureAnnotation: base64.StdEncoding.EncodeToString(sig),
+	})
+
+	candidates, err := NewFetcher().FetchCandidates(ctx, nil, ref.Name())
+	if err != nil {
+		t.Fatalf("FetchCandidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("got %d candidates, want 1", len(candidates))
+	}
+
+	v, cfg := keyedVerifier(t, pubPEM)
+	outcome := imagetrust.VerifyCandidatesWithMode(ctx, v, cfg, nil, ref.Name(), candidates, nil)
+	if !outcome.Allowed {
+		t.Fatalf("verification denied a valid referrers signature: %s", outcome.FailureMsg)
+	}
+}
+
+func TestFetchCandidates_ClassicKeyless_Success(t *testing.T) {
+	ctx := context.Background()
+	host := testRegistry(t)
+	ref, desc := pushSubjectImage(t, host, "keyless")
+	payload := simpleSigningPayloadFor(t, ref.Context().Name(), desc.Digest.String())
+
+	virtualSigstore, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	const issuer = "https://issuer.example"
+	const subject = "builder@example.com"
+	entity, err := virtualSigstore.Sign(subject, issuer, payload)
+	if err != nil {
+		t.Fatalf("sign keyless payload: %v", err)
+	}
+	pushClassicSignature(t, ref, desc.Digest, payload, keylessRegistryAnnotations(t, virtualSigstore, entity))
+
+	candidates, err := NewFetcher().FetchCandidates(ctx, nil, ref.Name())
+	if err != nil {
+		t.Fatalf("FetchCandidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("got %d candidates, want 1", len(candidates))
+	}
+	wantTlogEntries, err := entity.TlogEntries()
+	if err != nil {
+		t.Fatalf("source tlog entries: %v", err)
+	}
+	gotTlogEntries, err := candidates[0].Entity.TlogEntries()
+	if err != nil {
+		t.Fatalf("reconstructed tlog entries: %v", err)
+	}
+	if len(wantTlogEntries) != 1 || len(gotTlogEntries) != 1 {
+		t.Fatalf("tlog entry counts = (%d, %d), want (1, 1)", len(wantTlogEntries), len(gotTlogEntries))
+	}
+	wantTlog := wantTlogEntries[0]
+	gotTlog := gotTlogEntries[0]
+	if gotTlog.LogIndex() != wantTlog.LogIndex() ||
+		gotTlog.IntegratedTime() != wantTlog.IntegratedTime() ||
+		gotTlog.LogKeyID() != wantTlog.LogKeyID() ||
+		fmt.Sprint(gotTlog.Body()) != fmt.Sprint(wantTlog.Body()) {
+		t.Fatalf("reconstructed tlog entry differs from source\nsource: %v\ngot: %v", wantTlog.TransparencyLogEntry(), gotTlog.TransparencyLogEntry())
+	}
+	if !gotTlog.HasInclusionPromise() {
+		t.Fatal("reconstructed tlog entry has no inclusion promise")
+	}
+
+	cfg := imagetrust.Config{
+		Mode:            imagetrust.ModeEnforce,
+		TrustedMaterial: virtualSigstore,
+		AllowedKeyless: []imagetrust.KeylessIdentity{{
+			IssuerExact:    issuer,
+			SubjectPattern: regexp.MustCompile(`^builder@example\.com$`),
+		}},
+		RequireRekorInclusion: true,
+		VerifyTimeout:         imagetrust.VerifyTimeout,
+	}
+	verifier, err := imagetrust.New(cfg)
+	if err != nil {
+		t.Fatalf("new keyless verifier: %v", err)
+	}
+	outcome := imagetrust.VerifyCandidatesWithMode(ctx, verifier, cfg, nil, ref.Name(), candidates, nil)
+	if !outcome.Allowed {
+		t.Fatalf("verification denied a valid reconstructed keyless candidate: %s", outcome.FailureMsg)
 	}
 }
 

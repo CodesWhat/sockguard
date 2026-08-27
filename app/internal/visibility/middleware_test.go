@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -701,13 +702,11 @@ func TestNetworkInspectIdentifierBranches(t *testing.T) {
 	if _, ok := networkInspectIdentifier("/networks/net/sub"); ok {
 		t.Fatal("sub-path should not match")
 	}
-	// Reserved word: create
-	if _, ok := networkInspectIdentifier("/networks/create"); ok {
-		t.Fatal("create should not match")
+	if id, ok := networkInspectIdentifier("/networks/create"); !ok || id != "create" {
+		t.Fatalf("keyword-named resource = (%q, %v), want (create, true)", id, ok)
 	}
-	// Reserved word: prune
-	if _, ok := networkInspectIdentifier("/networks/prune"); ok {
-		t.Fatal("prune should not match")
+	if id, ok := networkInspectIdentifier("/networks/prune"); !ok || id != "prune" {
+		t.Fatalf("keyword-named resource = (%q, %v), want (prune, true)", id, ok)
 	}
 	// Happy path
 	if id, ok := networkInspectIdentifier("/networks/net-abc"); !ok || id != "net-abc" {
@@ -729,13 +728,11 @@ func TestVolumeInspectIdentifierBranches(t *testing.T) {
 	if _, ok := volumeInspectIdentifier("/volumes/vol/sub"); ok {
 		t.Fatal("sub-path should not match")
 	}
-	// Reserved word: create
-	if _, ok := volumeInspectIdentifier("/volumes/create"); ok {
-		t.Fatal("create should not match")
+	if id, ok := volumeInspectIdentifier("/volumes/create"); !ok || id != "create" {
+		t.Fatalf("keyword-named resource = (%q, %v), want (create, true)", id, ok)
 	}
-	// Reserved word: prune
-	if _, ok := volumeInspectIdentifier("/volumes/prune"); ok {
-		t.Fatal("prune should not match")
+	if id, ok := volumeInspectIdentifier("/volumes/prune"); !ok || id != "prune" {
+		t.Fatalf("keyword-named resource = (%q, %v), want (prune, true)", id, ok)
 	}
 	// Happy path
 	if id, ok := volumeInspectIdentifier("/volumes/vol-abc"); !ok || id != "vol-abc" {
@@ -770,8 +767,8 @@ func TestSecretInspectIdentifierBranches(t *testing.T) {
 	if _, ok := secretInspectIdentifier("/secrets/sec/sub"); ok {
 		t.Fatal("sub-path should not match")
 	}
-	if _, ok := secretInspectIdentifier("/secrets/create"); ok {
-		t.Fatal("create should not match")
+	if id, ok := secretInspectIdentifier("/secrets/create"); !ok || id != "create" {
+		t.Fatalf("keyword-named resource = (%q, %v), want (create, true)", id, ok)
 	}
 	if id, ok := secretInspectIdentifier("/secrets/sec-1"); !ok || id != "sec-1" {
 		t.Fatalf("expected match sec-1, got id=%q ok=%v", id, ok)
@@ -789,8 +786,8 @@ func TestConfigInspectIdentifierBranches(t *testing.T) {
 	if _, ok := configInspectIdentifier("/configs/cfg/sub"); ok {
 		t.Fatal("sub-path should not match")
 	}
-	if _, ok := configInspectIdentifier("/configs/create"); ok {
-		t.Fatal("create should not match")
+	if id, ok := configInspectIdentifier("/configs/create"); !ok || id != "create" {
+		t.Fatalf("keyword-named resource = (%q, %v), want (create, true)", id, ok)
 	}
 	if id, ok := configInspectIdentifier("/configs/cfg-1"); !ok || id != "cfg-1" {
 		t.Fatalf("expected match cfg-1, got id=%q ok=%v", id, ok)
@@ -1029,8 +1026,8 @@ func TestServiceInspectIdentifierBranches(t *testing.T) {
 	if _, ok := serviceInspectIdentifier("/services/svc/sub"); ok {
 		t.Fatal("sub-path should not match")
 	}
-	if _, ok := serviceInspectIdentifier("/services/create"); ok {
-		t.Fatal("create should not match")
+	if id, ok := serviceInspectIdentifier("/services/create"); !ok || id != "create" {
+		t.Fatalf("keyword-named resource = (%q, %v), want (create, true)", id, ok)
 	}
 	if id, ok := serviceInspectIdentifier("/services/svc-1"); !ok || id != "svc-1" {
 		t.Fatalf("expected match svc-1, got id=%q ok=%v", id, ok)
@@ -1455,6 +1452,124 @@ func TestMiddlewareReturnsNotFoundForInvisibleExpandedReadTargets(t *testing.T) 
 			}
 		})
 	}
+}
+
+func TestMiddlewareHidesKeywordNamedResourcesOnReads(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		kind       dockerresource.Kind
+		identifier string
+	}{
+		{name: "network create", method: http.MethodGet, target: "/v1.53/networks/create", kind: dockerresource.KindNetwork, identifier: "create"},
+		{name: "network prune", method: http.MethodHead, target: "/v1.53/networks/prune", kind: dockerresource.KindNetwork, identifier: "prune"},
+		{name: "volume create", method: http.MethodGet, target: "/v1.53/volumes/create", kind: dockerresource.KindVolume, identifier: "create"},
+		{name: "volume prune", method: http.MethodHead, target: "/v1.53/volumes/prune", kind: dockerresource.KindVolume, identifier: "prune"},
+		{name: "service create", method: http.MethodGet, target: "/v1.53/services/create", kind: dockerresource.KindService, identifier: "create"},
+		{name: "secret create", method: http.MethodHead, target: "/v1.53/secrets/create", kind: dockerresource.KindSecret, identifier: "create"},
+		{name: "config create", method: http.MethodGet, target: "/v1.53/configs/create", kind: dockerresource.KindConfig, identifier: "create"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			nextCalled := false
+			var gotKind dockerresource.Kind
+			var gotIdentifier string
+			handler := middlewareWithDeps(slog.New(slog.NewTextHandler(io.Discard, nil)), Options{
+				VisibleResourceLabels: []string{"team=alice"},
+			}, visibilityDeps{
+				inspectResource: func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+					gotKind = kind
+					gotIdentifier = identifier
+					return map[string]string{"team": "bob"}, true, nil
+				},
+			})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				nextCalled = true
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.target, nil))
+
+			if nextCalled {
+				t.Fatal("hidden keyword-named resource reached upstream")
+			}
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+			if gotKind != tt.kind || gotIdentifier != tt.identifier {
+				t.Fatalf("inspect = %s/%q, want %s/%q", gotKind, gotIdentifier, tt.kind, tt.identifier)
+			}
+		})
+	}
+}
+
+func TestCombinedVisibilityPolicyUsesOneFreshInspect(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		kind   dockerresource.Kind
+		body   string
+		policy compiledPolicy
+	}{
+		{
+			name: "container",
+			kind: dockerresource.KindContainer,
+			body: `{"Name":"/web","Image":"nginx:latest","Config":{"Labels":{"team":"alice"}}}`,
+			policy: compiledPolicy{
+				selectors:    []compiledSelector{{key: "team", value: "alice", hasValue: true}},
+				namePatterns: mustCompilePatterns(t, "web"),
+			},
+		},
+		{
+			name: "image",
+			kind: dockerresource.KindImage,
+			body: `{"RepoTags":["nginx:latest"],"Config":{"Labels":{"team":"alice"}}}`,
+			policy: compiledPolicy{
+				selectors:     []compiledSelector{{key: "team", value: "alice", hasValue: true}},
+				imagePatterns: mustCompilePatterns(t, "nginx:*"),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			t.Cleanup(srv.Close)
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				r2 := r.Clone(r.Context())
+				r2.URL.Scheme = "http"
+				r2.URL.Host = srv.Listener.Addr().String()
+				return srv.Client().Transport.RoundTrip(r2)
+			})}
+			deps := newVisibilityDepsClient(client)
+
+			for attempt := int32(1); attempt <= 2; attempt++ {
+				visible, err := resourceVisibleWithPolicy(context.Background(), deps, tt.kind, "shared", &tt.policy)
+				if err != nil || !visible {
+					t.Fatalf("attempt %d: visible = %v, err = %v; want true, nil", attempt, visible, err)
+				}
+				if got := calls.Load(); got != attempt {
+					t.Fatalf("attempt %d: upstream inspect calls = %d, want %d", attempt, got, attempt)
+				}
+			}
+		})
+	}
+}
+
+func mustCompilePatterns(t *testing.T, patterns ...string) []compiledPattern {
+	t.Helper()
+	compiled, err := compilePatterns(patterns)
+	if err != nil {
+		t.Fatalf("compilePatterns() error = %v", err)
+	}
+	return compiled
 }
 
 // ---- name_patterns and image_patterns: container list filtering ----

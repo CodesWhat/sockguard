@@ -145,6 +145,108 @@ func TestListenUnixSocketStaleProbeSafetyMatrix(t *testing.T) {
 	}
 }
 
+func TestUnixListenerClosePreservesReplacementPath(t *testing.T) {
+	path := shortSocketPath(t, "replacement")
+	ln, err := newServeTestDeps().listenUnixSocket(path)
+	if err != nil {
+		t.Fatalf("listenUnixSocket() error = %v", err)
+	}
+
+	originalPath := path + ".original"
+	if err := os.Rename(path, originalPath); err != nil {
+		_ = ln.Close()
+		t.Fatalf("rename bound socket: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("replacement"), 0o600); err != nil {
+		_ = ln.Close()
+		t.Fatalf("write replacement path: %v", err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("replacement path was removed by listener close: %v", err)
+	}
+	if string(got) != "replacement" {
+		t.Fatalf("replacement contents = %q, want replacement", got)
+	}
+}
+
+func TestBindListenersCaptureUnixSocketIdentityForEveryRole(t *testing.T) {
+	deps := newServeTestDeps()
+	deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(77), nil }
+	deps.createServeListener = func(*config.Config) (net.Listener, error) { return &serveTestListener{}, nil }
+	deps.createNamedListener = func(*config.Config, config.ListenerConfig) (net.Listener, error) { return &serveTestListener{}, nil }
+	deps.createAdminListener = func(*config.Config) (net.Listener, error) { return &serveTestListener{}, nil }
+
+	legacyCfg := testServeConfig()
+	legacyCfg.Listen.Socket = "/run/legacy.sock"
+	legacyCfg.Listen.Address = ""
+	legacy, err := bindMainListeners(legacyCfg, deps, http.NotFoundHandler(), newListenerStatusBoard())
+	if err != nil {
+		t.Fatalf("bind legacy listener: %v", err)
+	}
+	if len(legacy) != 1 || !legacy[0].socketIdentity.valid {
+		t.Fatalf("legacy socket identity = %+v, want captured", legacy)
+	}
+
+	explicitCfg := testServeConfig()
+	explicitCfg.Listeners = []config.ListenerConfig{{
+		Name: "ci", ListenConfig: config.ListenConfig{Socket: "/run/ci.sock"}, AllowedProfiles: []string{"*"},
+	}}
+	explicit, err := bindMainListeners(explicitCfg, deps, http.NotFoundHandler(), newListenerStatusBoard())
+	if err != nil {
+		t.Fatalf("bind explicit listener: %v", err)
+	}
+	if len(explicit) != 1 || !explicit[0].socketIdentity.valid {
+		t.Fatalf("explicit socket identity = %+v, want captured", explicit)
+	}
+
+	adminCfg := testServeConfig()
+	adminCfg.Admin.Enabled = true
+	adminCfg.Admin.Listen.Socket = "/run/admin.sock"
+	admin, err := bindAdminServer(adminCfg, newDiscardLogger(), nil, nil, deps, newListenerStatusBoard())
+	if err != nil {
+		t.Fatalf("bind admin listener: %v", err)
+	}
+	if admin == nil || !admin.socketIdentity.valid {
+		t.Fatalf("admin socket identity = %+v, want captured", admin)
+	}
+}
+
+func TestBindMainListenersRollbackRemovesOwnedUnixSocket(t *testing.T) {
+	cfg := testServeConfig()
+	cfg.Listeners = []config.ListenerConfig{
+		{Name: "ci", ListenConfig: config.ListenConfig{Socket: "/run/ci.sock"}, AllowedProfiles: []string{"*"}},
+		{Name: "ops", ListenConfig: config.ListenConfig{Socket: "/run/ops.sock"}, AllowedProfiles: []string{"*"}},
+	}
+	deps := newServeTestDeps()
+	binds := 0
+	deps.createNamedListener = func(*config.Config, config.ListenerConfig) (net.Listener, error) {
+		binds++
+		if binds == 1 {
+			return &serveTestListener{}, nil
+		}
+		return nil, errors.New("bind failed")
+	}
+	deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(88), nil }
+	var removed []string
+	deps.removePath = func(path string) error {
+		removed = append(removed, path)
+		return nil
+	}
+
+	_, err := bindMainListeners(cfg, deps, http.NotFoundHandler(), newListenerStatusBoard())
+	if err == nil {
+		t.Fatal("bindMainListeners() error = nil, want second bind failure")
+	}
+	if fmt.Sprint(removed) != fmt.Sprint([]string{"/run/ci.sock"}) {
+		t.Fatalf("rollback removals = %v, want owned /run/ci.sock", removed)
+	}
+}
+
 type closeOrderListener struct {
 	name  string
 	mu    *sync.Mutex
@@ -444,8 +546,13 @@ func TestShutdownServersUsesFreshContextAndStopsAllMembersConcurrently(t *testin
 	parent, cancel := context.WithCancel(context.Background())
 	cancel()
 	done := make(chan struct{})
+	adminMember := &listenerMember{
+		identity: adminIdentity,
+		listener: &serveTestListener{},
+		server:   newAdminHTTPServer(http.NotFoundHandler()),
+	}
 	go func() {
-		shutdownServers(parent, deps, cfg, members, newAdminHTTPServer(http.NotFoundHandler()), registry, board, newDiscardLogger())
+		shutdownServers(parent, deps, cfg, members, adminMember, registry, board, newDiscardLogger())
 		close(done)
 	}()
 	for i := 0; i < 3; i++ {

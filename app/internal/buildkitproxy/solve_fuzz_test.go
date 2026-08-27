@@ -17,12 +17,13 @@ import (
 // buildkit_internal_error are all real #185 audit reason codes too, but they
 // are produced by bridge.go's forwardControlMediated/handleStream, never by
 // evaluateSolveRequest in isolation — this fuzz target calls
-// evaluateSolveRequest directly, so only its own four reasons are valid here.
+// evaluateSolveRequest directly, so only its own fixed reasons are valid here.
 var solveMediationReasonCodes = map[string]bool{
 	"buildkit_protocol_error":     true,
 	"buildkit_schema_unsupported": true,
 	"buildkit_policy_denied":      true,
 	"buildkit_invalid_ref":        true,
+	"buildkit_invalid_session":    true,
 }
 
 // solveMediationGRPCCodes mirrors solveMediationReasonCodes for the gRPC
@@ -105,7 +106,7 @@ func mustMarshalFuzz(m proto.Message) []byte {
 func FuzzEvaluateSolveRequest(f *testing.F) {
 	seeds := []proto.Message{
 		&control.SolveRequest{},         // empty ref -> buildkit_invalid_ref
-		&control.SolveRequest{Ref: "r"}, // minimal admit
+		&control.SolveRequest{Ref: "r"}, // minimal admit once the seed loop supplies Session
 		&control.SolveRequest{Ref: "r", Entitlements: []string{"security.insecure"}}, // always denied
 		&control.SolveRequest{Ref: "r", Entitlements: []string{"network.host"}},
 		&control.SolveRequest{Entitlements: []string{"network.host"}}, // no ref, deny path taken first for entitlement
@@ -148,11 +149,17 @@ func FuzzEvaluateSolveRequest(f *testing.F) {
 
 	for _, idx := range []uint8{0, 1, 2} {
 		for _, m := range seeds {
+			if req, ok := m.(*control.SolveRequest); ok && req.GetSession() == "" {
+				req.Session = testBuildkitSessionID
+			}
 			f.Add(mustMarshalFuzz(m), idx)
 		}
 	}
+	// Keep the missing-session denial in the seed corpus separately from the
+	// valid-session fixtures above, which preserve deep policy coverage.
+	f.Add(mustMarshalFuzz(&control.SolveRequest{Ref: "r"}), uint8(2))
 
-	unknownFieldsReq := &control.SolveRequest{Ref: "r"}
+	unknownFieldsReq := &control.SolveRequest{Ref: "r", Session: testBuildkitSessionID}
 	unknownFieldsReq.ProtoReflect().SetUnknown(unknownFieldBytes())
 	f.Add(mustMarshalFuzz(unknownFieldsReq), uint8(2))
 

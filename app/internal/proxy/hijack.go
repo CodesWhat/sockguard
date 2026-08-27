@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,6 +26,7 @@ import (
 const hijackBufSize = 64 * 1024
 
 const hijackDialTimeout = 5 * time.Second
+const hijackHandshakeTimeout = 30 * time.Second
 const hijackInactivityTimeout = 10 * time.Minute
 
 type bytePool interface {
@@ -139,14 +141,14 @@ func HijackHandlerWithDialer(dialer upstream.Dialer, logger *slog.Logger, next h
 // Docker API version prefixes (/v1.XX/, or Podman's three-part /v5.0.0/) are
 // stripped before matching.
 func isHijackEndpoint(method, path string) bool {
-	return isHijackEndpointNormalized(method, filter.NormalizePath(path))
+	return filter.IsHijackCandidatePath(method, filter.NormalizePath(path))
 }
 
 func isHijackRequest(w http.ResponseWriter, r *http.Request) bool {
 	if r == nil {
 		return false
 	}
-	return isHijackEndpointNormalized(r.Method, requestHijackPath(w, r))
+	return filter.IsHijackCandidatePath(r.Method, requestHijackPath(w, r))
 }
 
 func requestHijackPath(w http.ResponseWriter, r *http.Request) string {
@@ -157,39 +159,6 @@ func requestHijackPath(w http.ResponseWriter, r *http.Request) string {
 		return meta.NormPath
 	}
 	return filter.NormalizePath(r.URL.Path)
-}
-
-func isHijackEndpointNormalized(method, path string) bool {
-	if method != http.MethodPost {
-		return false
-	}
-
-	// Match: /containers/{id}/attach or /exec/{id}/start
-	p, ok := strings.CutPrefix(path, "/")
-	if !ok {
-		return false
-	}
-
-	// Podman's native libpod API namespaces the same two hijack endpoints
-	// under /libpod/ (#148: /libpod/containers/{id}/attach,
-	// /libpod/exec/{id}/start). Peel that segment before the resource/action
-	// check below so both namespaces upgrade identically. internal/filter's
-	// isLibpodContainerAttachPath / isLibpodExecStartPath must stay in
-	// parity with this — see TestHijackFilterParity.
-	p, _ = strings.CutPrefix(p, "libpod/")
-
-	resource, remainder, ok := strings.Cut(p, "/")
-	if !ok || resource == "" {
-		return false
-	}
-
-	_, action, ok := strings.Cut(remainder, "/")
-	if !ok || action == "" || strings.Contains(action, "/") {
-		return false
-	}
-
-	return (resource == "containers" && action == "attach") ||
-		(resource == "exec" && action == "start")
 }
 
 func writeHijackBadGateway(w http.ResponseWriter, logger *slog.Logger, path, message string) {
@@ -340,7 +309,37 @@ func writeHijackUpstreamRequest(upstreamConn net.Conn, w http.ResponseWriter, r 
 	// everywhere else in the proxy for endpoint matching and logging.
 	logPath := requestHijackPath(w, r)
 	upstreamReq := newUpstreamHijackRequest(r, r.URL.Path)
-	if err := upstreamReq.Write(upstreamConn); err != nil {
+
+	clientController := http.NewResponseController(w)
+	clientDeadlineSet := false
+	if err := clientController.SetReadDeadline(timeNowHook().Add(hijackHandshakeTimeout)); err != nil {
+		if !errors.Is(err, http.ErrNotSupported) {
+			closeConn(logger, upstreamConn, "upstream connection", logPath)
+			logger.Error("hijack: set client body deadline failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(logPath))
+			writeHijackBadGateway(w, logger, logPath, "failed to forward request to upstream")
+			return false
+		}
+	} else {
+		clientDeadlineSet = true
+	}
+
+	if err := upstreamConn.SetWriteDeadline(timeNowHook().Add(hijackHandshakeTimeout)); err != nil {
+		if clientDeadlineSet {
+			_ = clientController.SetReadDeadline(time.Time{})
+		}
+		closeConn(logger, upstreamConn, "upstream connection", logPath)
+		logger.Error("hijack: set upstream request deadline failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(logPath))
+		writeHijackBadGateway(w, logger, logPath, "failed to forward request to upstream")
+		return false
+	}
+
+	writeErr := upstreamReq.Write(upstreamConn)
+	upstreamClearErr := upstreamConn.SetWriteDeadline(time.Time{})
+	var clientClearErr error
+	if clientDeadlineSet {
+		clientClearErr = clientController.SetReadDeadline(time.Time{})
+	}
+	if err := errors.Join(writeErr, upstreamClearErr, clientClearErr); err != nil {
 		closeConn(logger, upstreamConn, "upstream connection", logPath)
 		logger.Error("hijack: write request to upstream failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(logPath))
 		writeHijackBadGateway(w, logger, logPath, "failed to forward request to upstream")
@@ -356,10 +355,21 @@ func readHijackUpstreamResponse(
 	r *http.Request,
 	logger *slog.Logger,
 ) (*bufio.Reader, *http.Response, bool) {
+	if err := upstreamConn.SetReadDeadline(timeNowHook().Add(hijackHandshakeTimeout)); err != nil {
+		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
+		logger.Error("hijack: set upstream response deadline failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(r.URL.Path))
+		writeHijackBadGateway(w, logger, r.URL.Path, "failed to read upstream response")
+		return nil, nil, false
+	}
+
 	// Use a large buffer so data arriving immediately after the 101 header isn't lost.
 	upstreamBuf := bufio.NewReaderSize(upstreamConn, hijackBufSize)
-	resp, err := readResponseHook(upstreamBuf, r)
-	if err != nil {
+	resp, readErr := readResponseHook(upstreamBuf, r)
+	clearErr := upstreamConn.SetReadDeadline(time.Time{})
+	if err := errors.Join(readErr, clearErr); err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
 		closeConn(logger, upstreamConn, "upstream connection", r.URL.Path)
 		logger.Error("hijack: read upstream response failed", "error", logging.SafeString(err.Error()), "path", logging.SafeString(r.URL.Path))
 		writeHijackBadGateway(w, logger, r.URL.Path, "failed to read upstream response")

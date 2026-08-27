@@ -1,6 +1,9 @@
 package ownership
 
-import "strings"
+import (
+	"net/http"
+	"strings"
+)
 
 // libpod_paths.go is paths.go's counterpart for Podman's native /libpod/
 // API family (#148 PR5). Every matcher here is exact-prefix-guarded on
@@ -50,17 +53,18 @@ func libpodNeedsOwnerFilter(normPath string) bool {
 // just inspect — a client acting on another owner's container through the
 // libpod route family must be denied the same as through the Docker-compat
 // one.
-func libpodContainerIdentifier(normPath string) (string, bool) {
+func libpodContainerIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, libpodPrefix+"containers/") {
 		return "", false
 	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, libpodPrefix+"containers/"), "/")
-	switch identifier {
-	case "", "create", "json", "prune":
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, libpodPrefix+"containers/"), "/")
+	if identifier == "" {
 		return "", false
-	default:
-		return identifier, true
 	}
+	if !hasTail && ((method == http.MethodGet || method == http.MethodHead) && identifier == "json" || method == http.MethodPost && (identifier == "create" || identifier == "prune")) {
+		return "", false
+	}
+	return identifier, true
 }
 
 // libpodExecIdentifier matches /libpod/exec/{id}/..., the libpod
@@ -85,60 +89,64 @@ func libpodExecIdentifier(normPath string) (string, bool) {
 // counterpart of containerIdentifier for KindLibpodPod. "stats" is reserved
 // alongside "json"/"create"/"prune" because GET /libpod/pods/stats is a
 // collection-level endpoint (all pods' stats), not a per-pod one.
-func libpodPodIdentifier(normPath string) (string, bool) {
+func libpodPodIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, libpodPrefix+"pods/") {
 		return "", false
 	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, libpodPrefix+"pods/"), "/")
-	switch identifier {
-	case "", "create", "json", "prune", "stats":
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, libpodPrefix+"pods/"), "/")
+	if identifier == "" {
 		return "", false
-	default:
-		return identifier, true
 	}
+	if !hasTail && ((method == http.MethodGet || method == http.MethodHead) && (identifier == "json" || identifier == "stats") || method == http.MethodPost && (identifier == "create" || identifier == "prune")) {
+		return "", false
+	}
+	return identifier, true
 }
 
 // libpodNetworkIdentifier matches /libpod/networks/{id}/..., checked against
 // the Docker-compat KindNetwork path (see dockerresource.KindLibpodNetwork's
 // doc comment on why ownership's write-side check does not need the
 // libpod-native inspect path the way visibility's does).
-func libpodNetworkIdentifier(normPath string) (string, bool) {
+func libpodNetworkIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, libpodPrefix+"networks/") {
 		return "", false
 	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, libpodPrefix+"networks/"), "/")
-	switch identifier {
-	case "", "create", "prune", "json":
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, libpodPrefix+"networks/"), "/")
+	if identifier == "" {
 		return "", false
-	default:
-		return identifier, true
 	}
+	if !hasTail && ((method == http.MethodGet || method == http.MethodHead) && identifier == "json" || method == http.MethodPost && (identifier == "create" || identifier == "prune")) {
+		return "", false
+	}
+	return identifier, true
 }
 
 // libpodVolumeIdentifier matches /libpod/volumes/{id}/....
-func libpodVolumeIdentifier(normPath string) (string, bool) {
+func libpodVolumeIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, libpodPrefix+"volumes/") {
 		return "", false
 	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, libpodPrefix+"volumes/"), "/")
-	switch identifier {
-	case "", "create", "prune", "json":
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, libpodPrefix+"volumes/"), "/")
+	if identifier == "" {
 		return "", false
-	default:
-		return identifier, true
 	}
+	if !hasTail && ((method == http.MethodGet || method == http.MethodHead) && identifier == "json" || method == http.MethodPost && (identifier == "create" || identifier == "prune")) {
+		return "", false
+	}
+	return identifier, true
 }
 
 // libpodSecretIdentifier matches /libpod/secrets/{id}/....
-func libpodSecretIdentifier(normPath string) (string, bool) {
+func libpodSecretIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, libpodPrefix+"secrets/") {
 		return "", false
 	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, libpodPrefix+"secrets/"), "/")
-	switch identifier {
-	case "", "create", "json":
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, libpodPrefix+"secrets/"), "/")
+	if identifier == "" {
 		return "", false
-	default:
-		return identifier, true
 	}
+	if !hasTail && ((method == http.MethodGet || method == http.MethodHead) && identifier == "json" || method == http.MethodPost && identifier == "create") {
+		return "", false
+	}
+	return identifier, true
 }

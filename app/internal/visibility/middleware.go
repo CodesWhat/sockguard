@@ -114,10 +114,16 @@ type resourceMeta struct {
 	repoTags []string
 }
 
+type resourceDetails struct {
+	labels map[string]string
+	meta   *resourceMeta
+}
+
 type visibilityDeps struct {
-	inspectResource     func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error)
-	inspectExec         func(context.Context, string) (string, bool, error)
-	inspectResourceMeta func(context.Context, dockerresource.Kind, string) (*resourceMeta, bool, error)
+	inspectResource        func(context.Context, dockerresource.Kind, string) (map[string]string, bool, error)
+	inspectExec            func(context.Context, string) (string, bool, error)
+	inspectResourceMeta    func(context.Context, dockerresource.Kind, string) (*resourceMeta, bool, error)
+	inspectResourceDetails func(context.Context, dockerresource.Kind, string) (*resourceDetails, bool, error)
 }
 
 type upstreamInspector struct {
@@ -275,6 +281,7 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 			logger.ErrorContext(r.Context(), "visibility pattern filter: upstream response exceeds size limit",
 				"limit_bytes", filter.MaxResponseBodyBytes, "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
 			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityResponseTooLarge, "upstream response too large to filter", nil)
+			clearUpstreamRepresentationHeaders(w.Header())
 			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "upstream response too large to filter"})
 			return
 		}
@@ -282,12 +289,32 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 			logger.ErrorContext(r.Context(), "visibility pattern list filter failed", "error", logging.SafeString(err.Error()))
 			if !interceptingW.headerWritten {
 				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility pattern filter failed", nil)
+				clearUpstreamRepresentationHeaders(w.Header())
 				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility pattern filter failed"})
 			}
 		}
 		return
 	}
 	next.ServeHTTP(w, r)
+}
+
+func clearUpstreamRepresentationHeaders(header http.Header) {
+	for _, name := range []string{
+		"Accept-Ranges",
+		"Content-Digest",
+		"Content-Encoding",
+		"Content-Language",
+		"Content-Length",
+		"Content-Location",
+		"Content-Range",
+		"Digest",
+		"ETag",
+		"Last-Modified",
+		"Repr-Digest",
+		"Transfer-Encoding",
+	} {
+		header.Del(name)
+	}
 }
 
 // handleVisibilityInspectRequest applies the inspect / single-resource
@@ -550,7 +577,7 @@ func newVisibilityDepsClient(client *http.Client) visibilityDeps {
 	// risk. Ownership's equivalent inspect path makes the identical choice —
 	// see its middleware.go — for the same reason.
 	const noMemoizeTTL = 0
-	cache := inspectcache.New(
+	labelCache := inspectcache.New(
 		noMemoizeTTL,
 		inspectcache.DefaultMaxSize,
 		time.Now,
@@ -558,27 +585,40 @@ func newVisibilityDepsClient(client *http.Client) visibilityDeps {
 			return inspector.inspectResource(ctx, dockerresource.Kind(kind), identifier)
 		},
 	)
-	// Meta lookups (name/image pattern axes) get their own cache instance,
-	// same noMemoizeTTL rationale as above. Only single-resource reads reach
-	// this path (resourceVisibleWithPolicy for GET /containers/{id}/json and
-	// friends) — list responses are filtered from their own payload via
-	// itemVisibleByPatterns and never inspect upstream.
-	metaCache := inspectcache.New(
+	// Container/image labels and pattern metadata live in the same inspect
+	// response. Decode them together so a combined policy pays for one upstream
+	// request, while the non-positive TTL still prevents cross-request reuse.
+	detailsCache := inspectcache.New(
 		noMemoizeTTL,
 		inspectcache.DefaultMaxSize,
 		time.Now,
-		func(ctx context.Context, kind, identifier string) (*resourceMeta, bool, error) {
-			return inspector.inspectResourceMeta(ctx, dockerresource.Kind(kind), identifier)
+		func(ctx context.Context, kind, identifier string) (*resourceDetails, bool, error) {
+			return inspector.inspectResourceDetails(ctx, dockerresource.Kind(kind), identifier)
 		},
 	)
+	lookupDetails := func(ctx context.Context, kind dockerresource.Kind, identifier string) (*resourceDetails, bool, error) {
+		return detailsCache.Lookup(ctx, string(kind), identifier)
+	}
 	return visibilityDeps{
 		inspectResource: func(ctx context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
-			return cache.Lookup(ctx, string(kind), identifier)
+			if kind == dockerresource.KindContainer || kind == dockerresource.KindImage {
+				details, found, err := lookupDetails(ctx, kind, identifier)
+				if err != nil || !found {
+					return nil, found, err
+				}
+				return details.labels, true, nil
+			}
+			return labelCache.Lookup(ctx, string(kind), identifier)
 		},
 		inspectExec: inspector.inspectExec,
 		inspectResourceMeta: func(ctx context.Context, kind dockerresource.Kind, identifier string) (*resourceMeta, bool, error) {
-			return metaCache.Lookup(ctx, string(kind), identifier)
+			details, found, err := lookupDetails(ctx, kind, identifier)
+			if err != nil || !found {
+				return nil, found, err
+			}
+			return details.meta, true, nil
 		},
+		inspectResourceDetails: lookupDetails,
 	}
 }
 
@@ -769,6 +809,19 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 // resourceVisibleWithPolicy checks both label selectors and name/image pattern
 // axes for a single container or image resource.
 func resourceVisibleWithPolicy(ctx context.Context, deps visibilityDeps, kind dockerresource.Kind, identifier string, policy *compiledPolicy) (bool, error) {
+	if len(policy.selectors) > 0 && policy.hasPatternAxes() && deps.inspectResourceDetails != nil {
+		details, found, err := deps.inspectResourceDetails(ctx, kind, identifier)
+		if err != nil {
+			return false, err
+		}
+		if !found {
+			return true, nil
+		}
+		if !matchesSelectors(details.labels, policy.selectors) {
+			return false, nil
+		}
+		return resourceMetaMatchesPatterns(details.meta, kind, policy), nil
+	}
 	// Check label selectors first (uses the cached inspect path).
 	if len(policy.selectors) > 0 {
 		labels, found, err := deps.inspectResource(ctx, kind, identifier)
@@ -889,20 +942,16 @@ func matchesSelectors(labels map[string]string, selectors []compiledSelector) bo
 
 // singleSegmentIdentifier strips prefix from normPath and returns the
 // remaining single segment as an identifier. It returns ok=false when the
-// remainder is empty, contains "/", or matches any reserved keyword such as
-// "create" or "prune" that Docker reuses for collection-level endpoints.
-func singleSegmentIdentifier(normPath, prefix string, reserved ...string) (string, bool) {
+// remainder is empty or contains "/". This matcher is reached only for
+// GET/HEAD requests, so write-only collection keywords remain valid resource
+// names here.
+func singleSegmentIdentifier(normPath, prefix string) (string, bool) {
 	if !strings.HasPrefix(normPath, prefix) {
 		return "", false
 	}
 	rest := strings.TrimPrefix(normPath, prefix)
 	if rest == "" || strings.Contains(rest, "/") {
 		return "", false
-	}
-	for _, r := range reserved {
-		if rest == r {
-			return "", false
-		}
 	}
 	return rest, true
 }
@@ -960,11 +1009,11 @@ func imageReadIdentifier(normPath string) (string, bool) {
 }
 
 func networkInspectIdentifier(normPath string) (string, bool) {
-	return singleSegmentIdentifier(normPath, "/networks/", "create", "prune")
+	return singleSegmentIdentifier(normPath, "/networks/")
 }
 
 func volumeInspectIdentifier(normPath string) (string, bool) {
-	return singleSegmentIdentifier(normPath, "/volumes/", "create", "prune")
+	return singleSegmentIdentifier(normPath, "/volumes/")
 }
 
 func execInspectIdentifier(normPath string) (string, bool) {
@@ -972,7 +1021,7 @@ func execInspectIdentifier(normPath string) (string, bool) {
 }
 
 func serviceInspectIdentifier(normPath string) (string, bool) {
-	return singleSegmentIdentifier(normPath, "/services/", "create")
+	return singleSegmentIdentifier(normPath, "/services/")
 }
 
 func serviceLogsIdentifier(normPath string) (string, bool) {
@@ -988,11 +1037,11 @@ func taskLogsIdentifier(normPath string) (string, bool) {
 }
 
 func secretInspectIdentifier(normPath string) (string, bool) {
-	return singleSegmentIdentifier(normPath, "/secrets/", "create")
+	return singleSegmentIdentifier(normPath, "/secrets/")
 }
 
 func configInspectIdentifier(normPath string) (string, bool) {
-	return singleSegmentIdentifier(normPath, "/configs/", "create")
+	return singleSegmentIdentifier(normPath, "/configs/")
 }
 
 func nodeInspectIdentifier(normPath string) (string, bool) {
@@ -1094,6 +1143,82 @@ func (i upstreamInspector) inspectResourceMeta(ctx context.Context, kind dockerr
 		return nil, false, err
 	}
 	return meta, true, nil
+}
+
+func (i upstreamInspector) inspectResourceDetails(ctx context.Context, kind dockerresource.Kind, identifier string) (*resourceDetails, bool, error) {
+	requestPath, ok := dockerresource.InspectPath(kind, identifier)
+	if !ok || kind != dockerresource.KindContainer && kind != dockerresource.KindImage {
+		return nil, false, fmt.Errorf("unsupported resource kind %q for combined inspect", kind)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker"+requestPath, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	resp, err := i.client.Do(req)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, false, fmt.Errorf("inspect %s %q returned status %d", kind, identifier, resp.StatusCode)
+	}
+	details, err := decodeResourceDetails(resp.Body, kind)
+	if err != nil {
+		return nil, false, err
+	}
+	return details, true, nil
+}
+
+func decodeResourceDetails(body io.Reader, kind dockerresource.Kind) (*resourceDetails, error) {
+	switch kind {
+	case dockerresource.KindContainer:
+		var payload struct {
+			Name   string   `json:"Name"`
+			Names  []string `json:"Names"`
+			Image  string   `json:"Image"`
+			Config struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		names := payload.Names
+		if len(names) == 0 && payload.Name != "" {
+			names = []string{payload.Name}
+		}
+		return &resourceDetails{
+			labels: payload.Config.Labels,
+			meta:   &resourceMeta{names: names, image: payload.Image},
+		}, nil
+	case dockerresource.KindImage:
+		var payload struct {
+			RepoTags []string `json:"RepoTags"`
+			Config   struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"Config"`
+			ContainerConfig struct {
+				Labels map[string]string `json:"Labels"`
+			} `json:"ContainerConfig"`
+		}
+		if err := json.NewDecoder(body).Decode(&payload); err != nil {
+			return nil, err
+		}
+		labels := payload.Config.Labels
+		if len(labels) == 0 {
+			labels = payload.ContainerConfig.Labels
+		}
+		return &resourceDetails{
+			labels: labels,
+			meta:   &resourceMeta{repoTags: payload.RepoTags},
+		}, nil
+	default:
+		return nil, fmt.Errorf("unsupported resource kind %q for combined inspect", kind)
+	}
 }
 
 func decodeResourceMeta(body io.Reader, kind dockerresource.Kind) (*resourceMeta, error) {

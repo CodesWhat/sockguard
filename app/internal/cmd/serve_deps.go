@@ -34,6 +34,7 @@ type serveDeps struct {
 	dialUpstream        func(string, string, time.Duration) (net.Conn, error)
 	listenNetwork       func(string, string) (net.Listener, error)
 	lstatPath           func(string) (os.FileInfo, error)
+	statPath            func(string) (os.FileInfo, error)
 	isAddrInUse         func(error) bool
 	createServeListener func(*config.Config) (net.Listener, error)
 	createAdminListener func(*config.Config) (net.Listener, error)
@@ -73,6 +74,7 @@ func newServeDeps() *serveDeps {
 		dialUpstream:        net.DialTimeout,
 		listenNetwork:       net.Listen,
 		lstatPath:           os.Lstat,
+		statPath:            os.Stat,
 		isAddrInUse:         isAddrInUse,
 		probeUnixSocket:     defaultProbeUnixSocket,
 		chown:               os.Chown,
@@ -213,12 +215,14 @@ func (d *serveDeps) createSocketListener(prefix, path, modeValue string, uid, gi
 	if err != nil {
 		return nil, err
 	}
+	socketIdentity := statSocketIdentity(d.lstatPath, path)
 
 	if uid == nil && gid == nil {
 		return ln, nil
 	}
 	if err := d.chownSocket(path, uid, gid); err != nil {
 		_ = ln.Close()
+		_ = removeSocketIfOwned(d, path, socketIdentity)
 		return nil, err
 	}
 	return ln, nil
@@ -299,6 +303,7 @@ func (d *serveDeps) listenUnixSocketWithMode(path string, fileMode os.FileMode) 
 	return d.withUmask(socketCreateUmask(fileMode), func() (net.Listener, error) {
 		ln, err := d.listenNetwork("unix", path)
 		if err == nil {
+			disableUnixListenerAutoUnlink(ln)
 			return ln, nil
 		}
 		if !d.isAddrInUse(err) {
@@ -341,8 +346,15 @@ func (d *serveDeps) listenUnixSocketWithMode(path string, fileMode os.FileMode) 
 		if err != nil {
 			return nil, err
 		}
+		disableUnixListenerAutoUnlink(ln)
 		return ln, nil
 	})
+}
+
+func disableUnixListenerAutoUnlink(ln net.Listener) {
+	if unixListener, ok := ln.(*net.UnixListener); ok {
+		unixListener.SetUnlinkOnClose(false)
+	}
 }
 
 // defaultProbeUnixSocket dials path with a short timeout and returns the exact

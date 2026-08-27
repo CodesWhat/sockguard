@@ -14,8 +14,8 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/filter"
 )
 
-// TestIsHijackEndpointLibpod covers #148's libpod/ prefix peel in
-// isHijackEndpointNormalized: /libpod/containers/{id}/attach and
+// TestIsHijackEndpointLibpod covers #148's libpod routes:
+// /libpod/containers/{id}/attach and
 // /libpod/exec/{id}/start must upgrade exactly like their Docker-compat
 // counterparts, including through a three-part Podman semver version prefix.
 func TestIsHijackEndpointLibpod(t *testing.T) {
@@ -89,15 +89,9 @@ func TestIsHijackEndpointLibpodDoesNotAllocate(t *testing.T) {
 	}
 }
 
-// TestHijackFilterParity is the #148 design doc's parity invariant: every
-// path internal/proxy's hijack layer treats as a connection-upgrade
-// candidate must be one internal/filter's own routing recognizes too, and
-// vice versa. A path where the two disagree is a two-parser-drift smuggling
-// bug — one layer would forward traffic (or apply body inspection) the other
-// layer never accounted for. filter.IsHijackCandidatePath is exported
-// specifically to let this test exercise the real production matchers on
-// both sides of the package split rather than a hand-duplicated copy of
-// either one's logic.
+// TestHijackFilterParity pins the normalization boundary between proxy and
+// filter. The proxy must normalize versioned paths before calling the shared
+// filter predicate.
 func TestHijackFilterParity(t *testing.T) {
 	tests := []struct {
 		method string
@@ -130,7 +124,7 @@ func TestHijackFilterParity(t *testing.T) {
 		name := tt.method + " " + tt.path
 		t.Run(name, func(t *testing.T) {
 			normalized := filter.NormalizePath(tt.path)
-			hijackWant := isHijackEndpointNormalized(tt.method, normalized)
+			hijackWant := isHijackEndpoint(tt.method, tt.path)
 			filterWant := filter.IsHijackCandidatePath(tt.method, normalized)
 			if hijackWant != filterWant {
 				t.Fatalf("parity mismatch for %s %s (normalized %q): hijack layer = %v, filter layer = %v",
@@ -144,7 +138,7 @@ func TestHijackFilterParity(t *testing.T) {
 // regression test. Real Podman requires a version prefix
 // (/v5.x.y/libpod/...) on every route except the bare _ping — unlike
 // dockerd, which accepts unversioned paths. The hijack layer strips that
-// prefix internally for endpoint matching (isHijackEndpointNormalized) and
+// prefix internally for endpoint matching and
 // rule evaluation, but it must NOT forward the stripped path upstream: doing
 // so reaches Podman without its version prefix and 404s, breaking libpod
 // exec-start (interactive/attached exec) even when policy allows it. The

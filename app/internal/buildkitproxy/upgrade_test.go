@@ -115,7 +115,7 @@ func TestRewriteSessionAdvertisementNoHeaderIsNoop(t *testing.T) {
 
 // TestRewriteSessionAdvertisementStripsPolicyDeniedService pins CodeRabbit's
 // finding: moby.filesync.v1.Auth is registered Mediate under EndpointSession
-// (so the policy-blind ServiceAdmitted would keep it), but a policy that
+// (so the registry admits it in principle), but a policy that
 // never turns Session.Auth.Allow on must still see it stripped — advertising
 // a registry-admitted-but-policy-denied service would invite a daemon
 // callback the bridge only rejects after the fact.

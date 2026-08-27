@@ -45,7 +45,6 @@ func TestSessionRegistryManySessionsManyRefsConcurrentStress(t *testing.T) {
 							t.Errorf("worker %d session %d: PutRef(%q) = false, want true (no cap configured)", w, s, ref)
 						}
 						_ = reg.OwnsRef(key, ref)
-						_ = sess.OwnsRef(ref)
 					}(r)
 				}
 				innerWG.Wait()

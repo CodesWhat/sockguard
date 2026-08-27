@@ -58,6 +58,8 @@ type testBridge struct {
 	err  error
 }
 
+const testBuildkitSessionID = "test-buildkit-session"
+
 func newTestBridge(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler) *testBridge {
 	t.Helper()
 	return newTestBridgeWithLogger(t, endpoint, policy, limits, daemonHandler, noopLogger())
@@ -78,7 +80,11 @@ func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, lim
 	go daemonSrv.ServeConn(daemonSide, &http2.ServeConnOpts{Handler: daemonHandler})
 
 	registry := NewSessionRegistry()
-	session := registry.Open(SessionKey{ClientIdentity: "test-client", Profile: "test-profile"}, endpoint, "")
+	clientUUID := ""
+	if endpoint == EndpointSession {
+		clientUUID = testBuildkitSessionID
+	}
+	session := registry.Open(SessionKey{ClientIdentity: "test-client", Profile: "test-profile"}, endpoint, clientUUID)
 
 	legs := bridgeLegs{endpoint: endpoint, serverConn: serverLeg, clientConn: clientLegForBridge}
 	tb := &testBridge{registry: registry, session: session, done: make(chan struct{})}
@@ -198,6 +204,29 @@ func TestBridgeDeniesWhenPolicyDoesNotAllowMediateMethod(t *testing.T) {
 	}
 	if daemonCalled {
 		t.Fatal("Solve reached the daemon despite Control.Solve.Allow being false")
+	}
+}
+
+func TestBridgeFailsClosedWhenMediatedMethodHasNoDispatcher(t *testing.T) {
+	registry := NewSessionRegistry()
+	session := registry.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
+	limits := DefaultLimits()
+	b := &bridge{
+		legs:     bridgeLegs{endpoint: EndpointGRPC},
+		session:  session,
+		limits:   limits,
+		logger:   noopLogger(),
+		guard:    newStreamAbuseGuard(limits),
+		registry: registry,
+	}
+	rec := httptest.NewRecorder()
+	req := newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", "opaque")
+
+	b.forwardAdmitted(rec, req, "moby.buildkit.v1.Control", "Info", Mediate)
+
+	code, msg := grpcStatusOf(t, rec.Result())
+	if code != grpcCodeInternal {
+		t.Fatalf("Grpc-Status = %d, want %d (INTERNAL); message = %q", code, grpcCodeInternal, msg)
 	}
 }
 

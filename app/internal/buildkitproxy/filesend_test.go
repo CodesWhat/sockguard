@@ -17,8 +17,8 @@ func newFileSendTestBridge(t *testing.T, limits Limits, daemonHandler http.Handl
 	t.Helper()
 	tb := newTestBridge(t, EndpointSession, allowAllPolicy, limits, daemonHandler)
 	if admitSolve {
-		if !tb.registry.PutRef(tb.session, "ref-1", 0) {
-			t.Fatal("PutRef failed to admit ref-1")
+		if got := tb.registry.admitSolve(tb.session, tb.session.ClientUUID, "ref-1", nil, 0, 0); got != solveAdmissionSucceeded {
+			t.Fatalf("admitSolve() = %v, want solveAdmissionSucceeded", got)
 		}
 	}
 	return tb
@@ -83,8 +83,9 @@ func TestFileSendAdmittedSolveRelaysVerbatimBothDirections(t *testing.T) {
 func TestFileSendRequestByteCapExceeded(t *testing.T) {
 	fake := &drainingFakeClientLeg{}
 	b := newUnitTestBridge(t, fake)
-	if !b.registry.PutRef(b.session, "ref-1", 0) {
-		t.Fatal("PutRef failed to admit ref-1")
+	b.session.ClientUUID = testBuildkitSessionID
+	if got := b.registry.admitSolve(b.session, b.session.ClientUUID, "ref-1", nil, 0, 0); got != solveAdmissionSucceeded {
+		t.Fatalf("admitSolve() = %v, want solveAdmissionSucceeded", got)
 	}
 	b.limits.MaxFileSendBytes = 5
 

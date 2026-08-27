@@ -65,6 +65,7 @@ type reloadCoordinator struct {
 	// trust gate would be bypassable by anyone with write access to the
 	// YAML file.
 	bundleVerifier policybundle.Verifier
+	bundleTrust    config.PolicyBundleConfig
 }
 
 // reloadCoordinatorParams bundles the inputs newReloadCoordinator needs.
@@ -92,7 +93,7 @@ func newReloadCoordinator(p reloadCoordinatorParams) *reloadCoordinator {
 	if p.InitialTeardown == nil {
 		p.InitialTeardown = func() {}
 	}
-	return &reloadCoordinator{
+	coordinator := &reloadCoordinator{
 		chainTeardown:  p.InitialTeardown,
 		activeCfg:      p.Cfg,
 		rootCtx:        p.RootCtx,
@@ -105,6 +106,11 @@ func newReloadCoordinator(p reloadCoordinatorParams) *reloadCoordinator {
 		versioner:      p.Versioner,
 		bundleVerifier: p.BundleVerifier,
 	}
+	if p.BundleVerifier != nil && p.Cfg != nil {
+		coordinator.bundleTrust = p.Cfg.PolicyBundle
+		coordinator.bundleTrust.SignaturePath = ""
+	}
+	return coordinator
 }
 
 // stop halts the current chain's goroutines. Idempotent so it is safe
@@ -150,7 +156,6 @@ func (c *reloadCoordinator) reload() {
 		c.runtime.metrics.ObserveConfigReload("reject_signature")
 		return
 	}
-
 	// When a bundle is enabled, parse the EXACT bytes that were just verified
 	// (no env overlay) so the applied config matches the signature and cannot be
 	// diverted by a concurrent file swap (#8) or SOCKGUARD_* env vars (#16).
@@ -169,6 +174,18 @@ func (c *reloadCoordinator) reload() {
 		)
 		c.runtime.metrics.ObserveConfigReload("reject_load")
 		return
+	}
+	if c.bundleVerifier != nil {
+		pinPolicyBundleTrust(newCfg, c.bundleTrust)
+		if vars := config.CompatEnvironmentVariables(); len(vars) > 0 {
+			c.logger.Warn("config reload rejected: signed policy cannot use compatibility environment variables",
+				"result", "reject_compat",
+				"path", c.cfgFile,
+				"variables", strings.Join(vars, ","),
+			)
+			c.runtime.metrics.ObserveConfigReload("reject_compat")
+			return
+		}
 	}
 
 	if changed := reload.ImmutableDiff(c.activeCfg, newCfg); len(changed) > 0 {
@@ -296,7 +313,7 @@ func (c *reloadCoordinator) reload() {
 // TOCTOU (#8) and keeps environment variables from overriding signed policy on
 // reload (#16).
 func (c *reloadCoordinator) verifyBundle() (*policybundle.VerifyResult, []byte, error) {
-	if c.bundleVerifier == nil || !c.activeCfg.PolicyBundle.Enabled {
+	if c.bundleVerifier == nil || !c.bundleTrust.Enabled {
 		return nil, nil, nil
 	}
 	yamlBytes, err := c.deps.readConfigBytes(c.cfgFile)

@@ -214,6 +214,23 @@ func (b *bridge) handleStream(w http.ResponseWriter, r *http.Request) {
 			b.recordDeniedAndMaybeClose()
 			return
 		}
+		b.forwardAdmitted(w, r, service, method, disposition)
+	default:
+		// Deny, and (defensively) anything Classify might ever return that
+		// isn't Mediate/Passthrough — fail closed rather than assume a new
+		// Disposition value is safe to forward.
+		writeGRPCStatus(w, grpcCodePermissionDenied, fmt.Sprintf("%s/%s is denied by sockguard's BuildKit mediation policy", service, method))
+		b.audit(service, method, Deny, "buildkit_method_denied")
+		b.recordDeniedAndMaybeClose()
+	}
+}
+
+func (b *bridge) forwardAdmitted(w http.ResponseWriter, r *http.Request, service, method string, disposition Disposition) {
+	switch disposition {
+	case Passthrough:
+		b.audit(service, method, Passthrough, "")
+		b.forward(w, r, service, method)
+	case Mediate:
 		if isControlMediatedMethod(b.legs.endpoint, service, method) {
 			// Phase 3: Control/Solve and Control/Status get per-message
 			// decode/policy mediation instead of Phase 2's byte-verbatim
@@ -239,14 +256,12 @@ func (b *bridge) handleStream(w http.ResponseWriter, r *http.Request) {
 			b.forwardStreamMediated(w, r, service, method)
 			return
 		}
-		b.audit(service, method, disposition, "")
-		b.forward(w, r, service, method)
+		writeGRPCStatus(w, grpcCodeInternal, "internal routing error")
+		b.audit(service, method, Deny, "buildkit_internal_error")
+		b.recordDeniedAndMaybeClose()
 	default:
-		// Deny, and (defensively) anything Classify might ever return that
-		// isn't Mediate/Passthrough — fail closed rather than assume a new
-		// Disposition value is safe to forward.
-		writeGRPCStatus(w, grpcCodePermissionDenied, fmt.Sprintf("%s/%s is denied by sockguard's BuildKit mediation policy", service, method))
-		b.audit(service, method, Deny, "buildkit_method_denied")
+		writeGRPCStatus(w, grpcCodeInternal, "internal routing error")
+		b.audit(service, method, Deny, "buildkit_internal_error")
 		b.recordDeniedAndMaybeClose()
 	}
 }
@@ -426,21 +441,43 @@ func (b *bridge) forwardControlMediated(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if method == "Solve" {
-		if !b.registry.PutRef(b.session, ref, b.limits.MaxRefsPerSession) {
+		switch b.registry.admitSolve(
+			b.session,
+			solveReq.GetSession(),
+			ref,
+			solveUploadKeys(solveReq),
+			b.limits.MaxRefsPerSession,
+			b.limits.MaxUploadKeysPerSession,
+		) {
+		case solveAdmissionSucceeded:
+		case solveAdmissionRefLimitExceeded:
 			writeGRPCStatus(w, grpcCodeResourceExhausted, "too many concurrent BuildKit solve refs admitted for this client")
 			b.audit(service, method, Deny, "buildkit_ref_limit_exceeded")
 			b.recordDeniedAndMaybeClose()
 			return
-		}
-		// Phase 5 (issue #185): admit any upload-session URL this Solve's
-		// FrontendAttrs names as a one-use Upload/Pull token for this
-		// SessionKey -- see upload.go's admitSolveUploadKeys doc comment. A
-		// Solve naming more upload-session contexts than MaxUploadKeysPerSession
-		// is denied whole (deterministically) rather than forwarded with a
-		// random subset of its uploads admitted.
-		if !admitSolveUploadKeys(b.registry, b.session.Key, solveReq, b.limits.MaxUploadKeysPerSession) {
+		case solveAdmissionUploadLimitExceeded:
 			writeGRPCStatus(w, grpcCodeResourceExhausted, "too many BuildKit upload-session contexts named by this Solve for this client")
 			b.audit(service, method, Deny, "buildkit_upload_key_limit_exceeded")
+			b.recordDeniedAndMaybeClose()
+			return
+		case solveAdmissionSessionIDMissing:
+			writeGRPCStatus(w, grpcCodeInvalidArgument, "BuildKit Solve requires a correlated client session")
+			b.audit(service, method, Deny, "buildkit_session_mismatch")
+			b.recordDeniedAndMaybeClose()
+			return
+		case solveAdmissionSessionIDInvalid, solveAdmissionRefInvalid, solveAdmissionUploadIDInvalid:
+			writeGRPCStatus(w, grpcCodeInvalidArgument, "BuildKit Solve contains an invalid persistent identifier")
+			b.audit(service, method, Deny, "buildkit_protocol_error")
+			b.recordDeniedAndMaybeClose()
+			return
+		case solveAdmissionSessionLimitExceeded:
+			writeGRPCStatus(w, grpcCodeResourceExhausted, "too many distinct BuildKit session identifiers admitted on this tunnel")
+			b.audit(service, method, Deny, "buildkit_session_limit_exceeded")
+			b.recordDeniedAndMaybeClose()
+			return
+		default:
+			writeGRPCStatus(w, grpcCodeInternal, "BuildKit session closed during Solve admission")
+			b.audit(service, method, Deny, "buildkit_internal_error")
 			b.recordDeniedAndMaybeClose()
 			return
 		}

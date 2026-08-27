@@ -30,10 +30,10 @@
 //     frontend/daemon.
 //   - ExporterDeprecated / ExporterAttrsDeprecated (3, 4): denied outright
 //     — see checkSolveCache.
-//   - Session (5): names a session UUID the daemon calls back through for
-//     Auth/Secrets/SSH/FileSync — that surface belongs to Phases 4-5's own
-//     per-message session-endpoint mediation, not Solve/Status; the field
-//     itself grants no capability this file mediates.
+//   - Session (5): names the session the daemon calls back through for
+//     Auth/Secrets/SSH/FileSync. It must pass the same canonical identifier
+//     validation as POST /session before admission can publish correlated
+//     capability state.
 //   - Frontend / FrontendAttrs (6, 7): checked — see checkSolveFrontend.
 //   - Cache (8): checked — see checkSolveCache/checkCacheEntry.
 //   - Entitlements (9): checked — see checkSolveEntitlements.
@@ -274,13 +274,16 @@ func evaluateSolveRequest(payload []byte, policy Policy) (*control.SolveRequest,
 	if d := checkSolveRemainingFields(req); d != nil {
 		return nil, d
 	}
-	if req.GetRef() == "" {
+	if ref := req.GetRef(); ref == "" || len(ref) > maxBuildkitRefBytes {
 		// An admitted empty Ref would let SessionRegistry.PutRef record
 		// ownership of "" for this session; a later Control/Status{Ref:""}
 		// call would then pass OwnsRef's check for free, without ever
 		// having named a ref this session actually solved. Deny before
 		// registration rather than let PutRef see it at all.
-		return nil, deny(grpcCodeInvalidArgument, "buildkit_invalid_ref", "solve request ref must not be empty")
+		return nil, deny(grpcCodeInvalidArgument, "buildkit_invalid_ref", "solve request ref is missing or too long")
+	}
+	if _, ok := canonicalBuildkitSessionID(req.GetSession()); !ok {
+		return nil, deny(grpcCodeInvalidArgument, "buildkit_invalid_session", "solve request session identifier is invalid")
 	}
 
 	return req, nil
@@ -561,9 +564,8 @@ func checkSolveSourcePolicy(req *control.SolveRequest) *mediationDenial {
 // potentially including credentials embedded in a proxy URL — into the
 // build) are both denied outright: neither has a reviewed config surface,
 // matching this file's "no enabling knob" posture for other unaudited
-// surfaces. Every other remaining field (CompatibilityVersion, Internal,
-// Session, Definition) needs no gate — see the header comment for why each
-// is safe to forward unexamined.
+// surfaces. CompatibilityVersion, Internal, and Definition need no gate;
+// Session is validated separately in evaluateSolveRequest before admission.
 func checkSolveRemainingFields(req *control.SolveRequest) *mediationDenial {
 	if len(req.GetFrontendInputs()) > 0 {
 		return deny(grpcCodePermissionDenied, "buildkit_policy_denied", "frontend inputs are not supported")

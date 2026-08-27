@@ -954,6 +954,30 @@ func TestFilterModifyResponse_DeniesAttestationStatementByDefault(t *testing.T) 
 	}
 }
 
+func TestFilterModifyResponse_ParsesAttestationStatementLikeDocker(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"1", "yes", "TRUE", "arbitrary"} {
+		value := value
+		t.Run("true_"+value, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, "/v1.55/images/alpine/attestations?statement="+value, `{"manifests":[]}`)
+			if err := New(Options{}).ModifyResponse(resp); !errors.Is(err, ErrResponseRejected) {
+				t.Fatalf("ModifyResponse(statement=%q) error = %v, want ErrResponseRejected", value, err)
+			}
+		})
+	}
+	for _, value := range []string{"", "0", "no", "false", "none", "NO", "False", "NONE"} {
+		value := value
+		t.Run("false_"+value, func(t *testing.T) {
+			t.Parallel()
+			resp := newResponseForTest(t, http.MethodGet, "/v1.55/images/alpine/attestations?statement="+value, `{"manifests":[]}`)
+			if err := New(Options{}).ModifyResponse(resp); err != nil {
+				t.Fatalf("ModifyResponse(statement=%q) error = %v, want nil", value, err)
+			}
+		})
+	}
+}
+
 func TestFilterModifyResponse_AllowsAttestationStatementWhenConfigured(t *testing.T) {
 	t.Parallel()
 	filter := New(Options{AllowAttestationStatements: true})

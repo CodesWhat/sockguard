@@ -802,7 +802,20 @@ func methodLabel(req *http.Request) string {
 	if req == nil || req.Method == "" {
 		return "UNKNOWN"
 	}
-	return req.Method
+	switch req.Method {
+	case http.MethodGet,
+		http.MethodHead,
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodDelete,
+		http.MethodPatch,
+		http.MethodOptions,
+		http.MethodConnect,
+		http.MethodTrace:
+		return req.Method
+	default:
+		return "OTHER"
+	}
 }
 
 // listenerLabel returns the operator-configured listener name (#149) a
@@ -872,7 +885,7 @@ func RouteCategory(rawPath string) string {
 	case "_ping", "version", "events", "info", "build":
 		return "/" + segments[0]
 	case "system":
-		return routeWithStaticTail("system", segments, map[string]bool{"df": true})
+		return systemRoute(segments)
 	case "containers":
 		return containerRoute(segments)
 	case "exec":
@@ -880,9 +893,9 @@ func RouteCategory(rawPath string) string {
 	case "images":
 		return imageRoute(segments)
 	case "volumes":
-		return routeWithStaticTail("volumes", segments, map[string]bool{"create": true})
+		return routeWithStaticTail("volumes", segments, map[string]bool{"create": true, "prune": true})
 	case "networks":
-		return routeWithStaticTail("networks", segments, map[string]bool{"create": true})
+		return routeWithStaticTail("networks", segments, map[string]bool{"create": true, "prune": true})
 	case "secrets":
 		return routeWithStaticTail("secrets", segments, map[string]bool{"create": true})
 	case "configs":
@@ -890,13 +903,13 @@ func RouteCategory(rawPath string) string {
 	case "services":
 		return routeWithStaticTail("services", segments, map[string]bool{"create": true})
 	case "swarm":
-		return routeWithKnownPrefix("swarm", segments)
+		return swarmRoute(segments)
 	case "nodes":
 		return routeWithID("nodes", segments)
 	case "plugins":
 		return pluginRoute(segments)
 	default:
-		return "/" + segments[0] + "/..."
+		return "unknown"
 	}
 }
 
@@ -935,7 +948,7 @@ func containerRoute(segments []string) string {
 	if len(segments) == 1 {
 		return "/containers"
 	}
-	if segments[1] == "json" || segments[1] == "create" || segments[1] == "prune" {
+	if len(segments) == 2 && (segments[1] == "json" || segments[1] == "create" || segments[1] == "prune") {
 		return "/containers/" + segments[1]
 	}
 	return routeWithID("containers", segments)
@@ -945,8 +958,8 @@ func imageRoute(segments []string) string {
 	if len(segments) == 1 {
 		return "/images"
 	}
-	switch segments[1] {
-	case "json", "create", "load", "prune", "search":
+	switch {
+	case len(segments) == 2 && isKnownAction(segments[1], "json", "create", "get", "load", "prune", "search"):
 		return "/images/" + segments[1]
 	}
 	return routeWithID("images", segments)
@@ -956,31 +969,47 @@ func pluginRoute(segments []string) string {
 	if len(segments) == 1 {
 		return "/plugins"
 	}
-	switch segments[1] {
-	case "pull", "create", "privileges":
+	switch {
+	case len(segments) == 2 && isKnownAction(segments[1], "pull", "create", "privileges"):
 		return "/plugins/" + segments[1]
 	}
 	if len(segments) == 2 {
 		return "/plugins/{name}"
 	}
-	return "/plugins/{name}/" + segments[2]
+	if len(segments) == 3 && isKnownRouteAction("plugins", segments[2]) {
+		return "/plugins/{name}/" + segments[2]
+	}
+	return "/plugins/{name}/{action}"
 }
 
 func routeWithStaticTail(prefix string, segments []string, static map[string]bool) string {
 	if len(segments) == 1 {
 		return "/" + prefix
 	}
-	if static[segments[1]] {
+	if len(segments) == 2 && static[segments[1]] {
 		return "/" + prefix + "/" + segments[1]
 	}
 	return routeWithID(prefix, segments)
 }
 
-func routeWithKnownPrefix(prefix string, segments []string) string {
+func systemRoute(segments []string) string {
 	if len(segments) == 1 {
-		return "/" + prefix
+		return "/system"
 	}
-	return "/" + prefix + "/" + segments[1]
+	if len(segments) == 2 && segments[1] == "df" {
+		return "/system/df"
+	}
+	return "/system/{action}"
+}
+
+func swarmRoute(segments []string) string {
+	if len(segments) == 1 {
+		return "/swarm"
+	}
+	if len(segments) == 2 && isKnownAction(segments[1], "init", "join", "leave", "unlockkey", "update") {
+		return "/swarm/" + segments[1]
+	}
+	return "/swarm/{action}"
 }
 
 func routeWithID(prefix string, segments []string) string {
@@ -990,12 +1019,44 @@ func routeWithID(prefix string, segments []string) string {
 	if len(segments) == 2 {
 		return "/" + prefix + "/{id}"
 	}
-	// Docker image names may contain slashes (registry/owner/repo:tag), so
-	// the {id} slot has to swallow every segment between the prefix and the
-	// trailing action verb. Without this, /images/owner/repo:tag/json would
-	// expose "owner" as the id and drop the /json action — every distinct
-	// image becomes its own timeseries.
-	return "/" + prefix + "/{id}/" + segments[len(segments)-1]
+	// Docker image names may contain slashes (registry/owner/repo:tag), so the
+	// {id} slot swallows every segment between the prefix and a known trailing
+	// action. For every resource family, an unrecognized action is replaced by
+	// the finite {action} template rather than copied from the request path.
+	action := segments[len(segments)-1]
+	if isKnownRouteAction(prefix, action) {
+		return "/" + prefix + "/{id}/" + action
+	}
+	return "/" + prefix + "/{id}/{action}"
+}
+
+func isKnownRouteAction(prefix, action string) bool {
+	switch prefix {
+	case "containers":
+		return isKnownAction(action,
+			"archive", "attach", "changes", "exec", "export", "json", "kill", "logs",
+			"pause", "rename", "resize", "restart", "start", "stats", "stop", "top",
+			"unpause", "update", "wait",
+		)
+	case "exec":
+		return isKnownAction(action, "json", "resize", "start")
+	case "images":
+		return isKnownAction(action, "get", "history", "json", "push", "tag")
+	case "networks":
+		return isKnownAction(action, "connect", "disconnect")
+	case "secrets", "configs", "nodes":
+		return action == "update"
+	case "services":
+		return isKnownAction(action, "logs", "update")
+	case "plugins":
+		return isKnownAction(action, "disable", "enable", "json", "push", "set", "upgrade")
+	default:
+		return false
+	}
+}
+
+func isKnownAction(action string, known ...string) bool {
+	return slices.Contains(known, action)
 }
 
 type responseWriter struct {
@@ -1061,6 +1122,10 @@ func (w *responseWriter) WriteHeader(status int) {
 
 func (w *responseWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
+}
+
+func (w *responseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 func (w *responseWriter) Flush() {

@@ -122,12 +122,20 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 }
 
 func hasCompatEnvVars() bool {
+	return len(CompatEnvironmentVariables()) > 0
+}
+
+// CompatEnvironmentVariables returns the Tecnativa rule-generating
+// environment variables present in the process environment. Signed policy
+// startup and reload use this to reject any unsigned policy mutations.
+func CompatEnvironmentVariables() []string {
+	var found []string
 	for _, key := range compatVars {
 		if _, ok := os.LookupEnv(key); ok {
-			return true
+			found = append(found, key)
 		}
 	}
-	return false
+	return found
 }
 
 func warnInvalidCompatEnvVars(logger *slog.Logger) {

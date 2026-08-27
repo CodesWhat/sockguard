@@ -110,6 +110,16 @@ func TestReadUnaryGRPCMessage(t *testing.T) {
 	}
 }
 
+func TestReadUnaryGRPCMessagePayloadSharesFrameAllocation(t *testing.T) {
+	frame, payload, err := readUnaryGRPCMessage(bytes.NewReader(grpcFrame([]byte("payload"))), 0)
+	if err != nil {
+		t.Fatalf("readUnaryGRPCMessage: %v", err)
+	}
+	if &frame[grpcMessageHeaderLen] != &payload[0] {
+		t.Fatal("payload does not share the frame backing allocation")
+	}
+}
+
 // errReaderAfterN returns nBytes bytes of 'a' then a permanent error on any
 // further Read — used to exercise readUnaryGRPCMessage's "confirming end of
 // stream" branch when the underlying reader fails (rather than cleanly

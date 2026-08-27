@@ -10,7 +10,7 @@ import (
 // connection reopens the Rapid Reset class (CVE-2023-44487): a malicious
 // client can open many streams and reset them before sockguard finishes
 // classifying/forwarding, forcing repeated work per stream. golang.org/x/net
-// v0.57.0 (this package's pinned version) already carries upstream's
+// v0.58.0 (this package's pinned version) already carries upstream's
 // connection-level Rapid Reset mitigation inside http2.Server itself; Limits
 // adds sockguard-specific, defense-in-depth caps on top: a hard concurrent
 // stream ceiling and a budget on how many denied/errored streams a single
@@ -146,7 +146,7 @@ type Limits struct {
 	// MaxUploadKeysPerSession bounds how many distinct one-use Upload
 	// tokens a single SessionKey (client identity + profile) may have
 	// admitted-but-not-yet-consumed at once (see upload.go's
-	// admitSolveUploadKeys) — the same per-session DoS-budget shape as
+	// solveUploadKeys) — the same per-session DoS-budget shape as
 	// MaxRefsPerSession, and deliberately NOT a request_body.buildkit knob
 	// for the same reason MaxRefsPerSession isn't: it bounds sockguard's
 	// own bookkeeping cost, not a build capability an operator would ever
