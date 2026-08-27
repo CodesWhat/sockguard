@@ -64,3 +64,16 @@ test("metrics docs distinguish UNKNOWN and OTHER method fallbacks", () => {
     /nil requests and empty methods use `UNKNOWN`; every non-empty nonstandard method collapses to `OTHER`\./iu,
   );
 });
+
+test("release docs distinguish candidate and stable source branches", () => {
+  const releasing = read("RELEASING.md").replaceAll(/\s+/gu, " ");
+
+  assert.match(
+    releasing,
+    /Dispatch prerelease tags from `dev\/vX\.Y` or `maintenance\/X\.Y\.x`; dispatch stable tags from `main`\./u,
+  );
+  assert.match(
+    releasing,
+    /The workflow rejects a prerelease dispatched from `main` before it creates a tag\./u,
+  );
+});

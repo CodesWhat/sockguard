@@ -8,9 +8,9 @@ run-name: >-
 
 on:
   push:
-    branches: [main, 'dev/*', 'release/*']
+    branches: [main, 'dev/*', 'maintenance/*', 'release/*']
   pull_request:
-    branches: [main, 'dev/*']
+    branches: [main, 'dev/*', 'maintenance/*']
   merge_group:
   schedule:
     - cron: '30 6 * * 1'  # Weekly on Monday at 06:30 UTC

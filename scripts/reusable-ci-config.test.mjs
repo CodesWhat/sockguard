@@ -262,11 +262,16 @@ function assertBridgesAbsent(source) {
   }
 }
 
-function assertReleaseBranchPushTrigger(source) {
+function assertReleaseBranchTriggers(source) {
   assert.match(
     source,
-    /^ {2}push:\n {4}branches: \[main, 'dev\/\*', 'release\/\*'\]$/mu,
-    "CI must run after merges to release development branches so release-cut can verify the exact tag target SHA",
+    /^ {2}push:\n {4}branches: \[main, 'dev\/\*', 'maintenance\/\*', 'release\/\*'\]$/mu,
+    "CI must run after merges to release branches so release-cut can verify the exact tag target SHA",
+  );
+  assert.match(
+    source,
+    /^ {2}pull_request:\n {4}branches: \[main, 'dev\/\*', 'maintenance\/\*'\]$/mu,
+    "CI must run on pull requests into every protected integration branch family",
   );
 }
 
@@ -321,10 +326,11 @@ test("retired local job ids stay retired", () => {
   }
 });
 
-test("release development branch pushes run exact-SHA CI", () => {
+test("development and maintenance release branches run exact-SHA CI", () => {
   const source = fs.readFileSync(WORKFLOW, "utf8");
-  assertReleaseBranchPushTrigger(source);
-  assert.throws(() => assertReleaseBranchPushTrigger(source.replace("'dev/*', ", "")));
+  assertReleaseBranchTriggers(source);
+  assert.throws(() => assertReleaseBranchTriggers(source.replaceAll("'dev/*', ", "")));
+  assert.throws(() => assertReleaseBranchTriggers(source.replaceAll("'maintenance/*', ", "")));
 });
 
 test("the contract rejects a moving reusable ref, a dropped permission, and a reintroduced bridge", () => {
