@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -91,5 +92,73 @@ func TestRequestPrincipalFailsClosedAfterUnixPeerLookupFailure(t *testing.T) {
 
 	if _, err := RequestPrincipal(req); !errors.Is(err, peerErr) {
 		t.Fatalf("RequestPrincipal() error = %v, want wrapped peer lookup error", err)
+	}
+}
+
+func TestRequestPrincipalRejectsUnavailableIdentity(t *testing.T) {
+	tests := []struct {
+		name    string
+		request *http.Request
+		wantErr string
+	}{
+		{
+			name:    "nil request",
+			wantErr: "nil request",
+		},
+		{
+			name: "verified certificate without encoded form",
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/session", nil)
+				cert := &x509.Certificate{}
+				req.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{cert}}}
+				return req
+			}(),
+			wantErr: "no encoded form",
+		},
+		{
+			name: "invalid remote address",
+			request: func() *http.Request {
+				req := httptest.NewRequest(http.MethodPost, "/session", nil)
+				req.RemoteAddr = "bad host!"
+				return req
+			}(),
+			wantErr: "invalid remote address",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := RequestPrincipal(tt.request); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("RequestPrincipal() error = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNormalizedRemoteHostValidatesDNSFallback(t *testing.T) {
+	tests := []struct {
+		name       string
+		remoteAddr string
+		want       string
+		wantOK     bool
+	}{
+		{name: "empty", remoteAddr: "  "},
+		{name: "empty after brackets", remoteAddr: "[]"},
+		{name: "hostname too long", remoteAddr: strings.Repeat("a", 254)},
+		{name: "empty label", remoteAddr: "host..example"},
+		{name: "label too long", remoteAddr: strings.Repeat("a", 64) + ".example"},
+		{name: "leading hyphen", remoteAddr: "-host.example"},
+		{name: "trailing hyphen", remoteAddr: "host-.example"},
+		{name: "invalid character", remoteAddr: "host_name.example"},
+		{name: "canonical hostname", remoteAddr: " API.Example.COM. ", want: "api.example.com", wantOK: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := normalizedRemoteHost(tt.remoteAddr)
+			if got != tt.want || ok != tt.wantOK {
+				t.Fatalf("normalizedRemoteHost(%q) = (%q, %v), want (%q, %v)", tt.remoteAddr, got, ok, tt.want, tt.wantOK)
+			}
+		})
 	}
 }

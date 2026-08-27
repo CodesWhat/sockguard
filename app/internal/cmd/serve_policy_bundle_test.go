@@ -515,6 +515,71 @@ func TestVerifyPolicyBundleAtStartup_ParseError(t *testing.T) {
 	}
 }
 
+func TestLoadPolicyBundleTrustConfig(t *testing.T) {
+	t.Run("read error", func(t *testing.T) {
+		deps := newServeTestDeps()
+		sentinel := errors.New("read trust config")
+		deps.readConfigBytes = func(string) ([]byte, error) { return nil, sentinel }
+
+		if _, err := loadPolicyBundleTrustConfig(deps, "/trust.yaml"); !errors.Is(err, sentinel) {
+			t.Fatalf("loadPolicyBundleTrustConfig() error = %v, want %v", err, sentinel)
+		}
+	})
+
+	t.Run("parse error", func(t *testing.T) {
+		deps := newServeTestDeps()
+		deps.readConfigBytes = func(string) ([]byte, error) { return []byte("policy_bundle: ["), nil }
+
+		if _, err := loadPolicyBundleTrustConfig(deps, "/trust.yaml"); err == nil {
+			t.Fatal("loadPolicyBundleTrustConfig() error = nil, want parse failure")
+		}
+	})
+
+	t.Run("disabled", func(t *testing.T) {
+		deps := newServeTestDeps()
+		deps.readConfigBytes = func(string) ([]byte, error) { return []byte("policy_bundle:\n  enabled: false\n"), nil }
+
+		if _, err := loadPolicyBundleTrustConfig(deps, "/trust.yaml"); err == nil || !strings.Contains(err.Error(), "enabled must be true") {
+			t.Fatalf("loadPolicyBundleTrustConfig() error = %v, want disabled-trust failure", err)
+		}
+	})
+
+	t.Run("strips candidate signature path", func(t *testing.T) {
+		deps := newServeTestDeps()
+		deps.readConfigBytes = func(string) ([]byte, error) {
+			return []byte("policy_bundle:\n  enabled: true\n  signature_path: /candidate.bundle.json\n  allowed_keyless:\n    - issuer: https://issuer.example\n      subject_pattern: principal@example.com\n"), nil
+		}
+
+		trust, err := loadPolicyBundleTrustConfig(deps, "/trust.yaml")
+		if err != nil {
+			t.Fatalf("loadPolicyBundleTrustConfig() error = %v", err)
+		}
+		if trust.SignaturePath != "" {
+			t.Fatalf("SignaturePath = %q, want empty out-of-band trust value", trust.SignaturePath)
+		}
+		if !trust.Enabled || len(trust.AllowedKeyless) != 1 {
+			t.Fatalf("trust = %+v, want enabled identity trust", trust)
+		}
+	})
+}
+
+func TestSamePolicyConfigFile(t *testing.T) {
+	deps := newServeTestDeps()
+	path := filepath.Join(t.TempDir(), "policy.yaml")
+	if err := os.WriteFile(path, []byte("rules: []\n"), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	alias := filepath.Join(filepath.Dir(path), ".", filepath.Base(path))
+	if !samePolicyConfigFile(deps, path, alias) {
+		t.Fatal("samePolicyConfigFile() = false for paths resolving to the same file")
+	}
+
+	deps.statPath = nil
+	if samePolicyConfigFile(deps, path, filepath.Join(filepath.Dir(path), "other.yaml")) {
+		t.Fatal("samePolicyConfigFile() = true without file metadata for distinct paths")
+	}
+}
+
 // metricsReloadCount returns the value of sockguard_config_reload_total{result}
 // and a boolean indicating whether the metric line was present. The boolean
 // guards against the silent-zero ambiguity: a missing metric line is (0, false)
