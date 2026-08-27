@@ -144,30 +144,46 @@ jobs:
             echo "release_tag=${release_tag}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Refuse prerelease cuts on the default branch
+      - name: Validate release source branch
         env:
           RELEASE_TAG: ${{ steps.next.outputs.release_tag }}
           REF_NAME: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          # main always equals the GA tag users run; -rc.N tags belong on dev
-          # or maintenance branches. v1.7.5-rc.1 got cut with this workflow
-          # dispatched on main after a dev/v1.7 merge, leaving main on a
-          # prerelease with no way to unwind the published tag. This guard
-          # stops the next one before the tag is ever pushed.
+          minor="$(printf '%s' "${RELEASE_TAG}" | sed -E 's/^v?([0-9]+)\.([0-9]+)\..*/\1.\2/')"
+
+          # main always equals the GA tag users run. Candidates belong on the
+          # matching development or maintenance branch, and stable tags belong
+          # on the protected default branch after promotion. This blocks both
+          # the v1.7.5-rc.1 failure mode (a prerelease cut from main) and the
+          # inverse bypass (an explicit stable tag cut directly from dev).
           case "${RELEASE_TAG}" in
             *-*)
-              if [ "${REF_NAME}" = "${DEFAULT_BRANCH}" ]; then
-                echo "::error::Refusing to cut prerelease ${RELEASE_TAG} from ${DEFAULT_BRANCH}. Prereleases cut from dev or maintenance branches so main stays on the GA tag."
+              dev_branch="dev/v${minor}"
+              maintenance_branch="maintenance/${minor}.x"
+              case "${REF_NAME}" in
+                "${dev_branch}"|"${maintenance_branch}") ;;
+                *)
+                  echo "::error::Refusing to cut prerelease ${RELEASE_TAG} from ${REF_NAME}. Use ${dev_branch} or ${maintenance_branch}."
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              if [ "${REF_NAME}" != "${DEFAULT_BRANCH}" ]; then
+                echo "::error::Refusing to cut stable ${RELEASE_TAG} from ${REF_NAME}. Stable tags must cut from ${DEFAULT_BRANCH} after promotion."
                 exit 1
               fi
               ;;
           esac
 
+          echo "Release source ${REF_NAME} is valid for ${RELEASE_TAG}."
+
       - name: Assert Renovate targets release branch
         env:
           RELEASE_TAG: ${{ steps.next.outputs.release_tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           # Renovate names exactly one base branch (a pattern would expand to every
@@ -176,13 +192,16 @@ jobs:
           # a stale target fails here instead of quietly aiming the bot at a dead
           # branch until someone retargets each PR by hand.
           minor="$(printf '%s' "${RELEASE_TAG}" | sed -E 's/^v?([0-9]+)\.([0-9]+)\..*/\1.\2/')"
-          dev_branch="dev/v${minor}"
+          case "${REF_NAME}" in
+            maintenance/*) release_branch="${REF_NAME}" ;;
+            *) release_branch="dev/v${minor}" ;;
+          esac
           renovate_base="$(jq -r '.baseBranchPatterns // .baseBranches // [] | join(",")' renovate.json)"
-          if [ "${renovate_base}" != "${dev_branch}" ]; then
-            echo "::error::renovate.json targets '${renovate_base}' but this cut is for ${dev_branch}. Update baseBranchPatterns to [\"${dev_branch}\"] and re-dispatch."
+          if [ "${renovate_base}" != "${release_branch}" ]; then
+            echo "::error::renovate.json targets '${renovate_base}' but this cut is for ${release_branch}. Update baseBranchPatterns to [\"${release_branch}\"] and re-dispatch."
             exit 1
           fi
-          echo "renovate.json targets ${dev_branch}."
+          echo "renovate.json targets ${release_branch}."
 
       - name: Validate CHANGELOG entry for release tag
         env:

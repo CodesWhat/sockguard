@@ -74,6 +74,6 @@ test("release docs distinguish candidate and stable source branches", () => {
   );
   assert.match(
     releasing,
-    /The workflow rejects a prerelease dispatched from `main` before it creates a tag\./u,
+    /The workflow rejects a prerelease dispatched from `main` or a branch for another release line, and it rejects a stable release dispatched outside `main`, before it creates a tag\./u,
   );
 });

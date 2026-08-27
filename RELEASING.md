@@ -66,7 +66,7 @@
 
 **Preferred path: use the `release-cut` workflow.**
 
-Go to **Actions → Release: Cut** → **Run workflow** and select the branch that owns the tag. Dispatch prerelease tags from `dev/vX.Y` or `maintenance/X.Y.x`; dispatch stable tags from `main`. The workflow rejects a prerelease dispatched from `main` before it creates a tag.
+Go to **Actions → Release: Cut** → **Run workflow** and select the branch that owns the tag. Dispatch prerelease tags from `dev/vX.Y` or `maintenance/X.Y.x`; dispatch stable tags from `main`. The workflow rejects a prerelease dispatched from `main` or a branch for another release line, and it rejects a stable release dispatched outside `main`, before it creates a tag.
 
 The workflow:
 
