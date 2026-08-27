@@ -151,7 +151,15 @@ fi
       docs,
       /\^https:\/\/github\.com\/CodesWhat\/sockguard\/\.github\/workflows\/release-from-tag\.yml@refs\/tags\/\.\+\$/u,
     );
-    assert.match(docs, /https:\/\/token\.actions\.githubusercontent\.com/u);
+    assert.ok(
+      docs
+        .split("\n")
+        .some(
+          (line) =>
+            line.trim() ===
+            "--certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \\",
+        ),
+    );
     assert.match(docs, /cosign verify-blob \\\s+--bundle/u);
   });
 
