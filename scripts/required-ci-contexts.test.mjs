@@ -158,6 +158,13 @@ describe("required CI contexts", () => {
     assert.equal(jobName(securityGrype, "gosec"), "Security: Gosec SAST");
   });
 
+  it("runs required security checks on every release pull-request branch family", () => {
+    assert.match(
+      securityGrype,
+      /^ {2}pull_request:\n {4}branches: \[main, 'dev\/\*', 'maintenance\/\*'\]$/mu,
+    );
+  });
+
   it("gates every required Security: * job on the changes job instead of a trigger-level paths filter", () => {
     // A required status check on a job inside a workflow that never
     // triggers produces no check run at all, which deadlocks branch
