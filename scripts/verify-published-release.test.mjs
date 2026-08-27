@@ -163,6 +163,23 @@ fi
     assert.match(docs, /cosign verify-blob \\\s+--bundle/u);
   });
 
+  it("documents the v1.7.2 release-asset exception", () => {
+    const docs = readFileSync(resolve(repoRoot, "docs/content/docs/verification.mdx"), "utf8");
+    const normalizedDocs = docs.replaceAll(/\s+/gu, " ");
+
+    assert.match(
+      normalizedDocs,
+      /v1\.7\.2 has no GitHub release or release assets because its publish workflow failed/u,
+    );
+    assert.equal(
+      normalizedDocs.match(
+        /v1\.7\.2 has no GitHub release or release assets because its publish workflow failed/gu,
+      )?.length,
+      2,
+      "both historical verification callouts must name the v1.7.2 exception",
+    );
+  });
+
   it("embeds the documented identity regex and issuer", () => {
     const result = runVerify(["--dry-run", "--tag", "v1.2.3"]);
 

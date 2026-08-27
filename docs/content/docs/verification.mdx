@@ -133,11 +133,12 @@ Same interpretation as the image verify: a clean exit code is a
 passing signature, anything else means stop and investigate.
 
 <Callout type="info">
-  Sockguard v2 and later publish only the sigstore bundle above. Releases in
-  the v1.7 line also publish a legacy detached signature
+  Sockguard v2 and later publish only the sigstore bundle above. Published
+  releases in the v1.7 line also carry a legacy detached signature
   (`.sig`) and signing certificate (`.pem`), so tooling scripted against the
   older `cosign verify-blob --signature --certificate` invocation keeps
-  working:
+  working. v1.7.2 has no GitHub release or release assets because its publish
+  workflow failed.
 
   ```bash
   cosign verify-blob \
@@ -193,8 +194,10 @@ sha256sum --check --ignore-missing checksums.txt
   dual-published those bundles with the legacy `.sig`/`.pem` pair for the
   source tarball, checksums, and binary archives. v1.7.3-v1.7.4 published
   only the legacy pair for checksums and binary archives; v1.7.0-v1.7.1 did
-  not sign those binary artifacts. Use the assets actually attached to the
-  historical release rather than assuming every v1.7 tag has the same set.
+  not sign those binary artifacts. v1.7.2 has no GitHub release or release
+  assets because its publish workflow failed. Use the assets actually attached
+  to the historical release rather than assuming every v1.7 tag has the same
+  set.
 </Callout>
 
 The archives also carry GitHub build-provenance attestations, which record

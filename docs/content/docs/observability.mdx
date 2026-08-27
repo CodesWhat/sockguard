@@ -85,8 +85,9 @@ all default to `false`, so existing deployments stay quiet until you opt in.
 ### Label cardinality
 
 `method` is limited to `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH`,
-`OPTIONS`, `CONNECT`, `TRACE`, `UNKNOWN`, and `OTHER`. An arbitrary method
-never becomes a new series; every nonstandard value collapses to `OTHER`.
+`OPTIONS`, `CONNECT`, `TRACE`, `UNKNOWN`, and `OTHER`. Nil requests and empty
+methods use `UNKNOWN`; every non-empty nonstandard method collapses to `OTHER`.
+An arbitrary method never becomes a new series.
 
 `route` is templated to bound cardinality: container/image IDs collapse to
 `{id}`, and namespaced image references like

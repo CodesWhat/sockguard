@@ -54,3 +54,13 @@ test("README workflow badges reference existing workflow files", () => {
     );
   }
 });
+
+test("metrics docs distinguish UNKNOWN and OTHER method fallbacks", () => {
+  const observability = read("docs/content/docs/observability.mdx");
+  const normalizedObservability = observability.replaceAll(/\s+/gu, " ");
+
+  assert.match(
+    normalizedObservability,
+    /nil requests and empty methods use `UNKNOWN`; every non-empty nonstandard method collapses to `OTHER`\./iu,
+  );
+});
