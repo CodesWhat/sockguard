@@ -22,11 +22,21 @@ Sockguard implements multiple layers of filtering:
 ### Layer 0: Policy Integrity
 
 Before any request is evaluated, Sockguard can verify that the loaded
-configuration was signed by a trusted key. When `policy_bundle.enabled: true`,
-the on-disk YAML is treated as untrusted until a cosign sigstore bundle at
-`policy_bundle.signature_path` confirms it. An unsigned, malformed, or
-wrong-key bundle aborts startup with a wrapped `policy bundle:` error — no
-rules compile, no listener opens.
+configuration was signed by pinned out-of-band trust. Signed mode requires
+`sockguard serve --policy-bundle-trust-config <path>`. That separate bootstrap
+file reuses the `policy_bundle` schema for `enabled`, signing keys or keyless
+identities, Rekor posture, and `verify_timeout`. The signed candidate carries
+its own `policy_bundle.signature_path`, but any candidate copies of trust
+fields are ignored and replaced by the bootstrap values.
+
+The bootstrap and candidate must resolve to different files. The same path,
+symlinks to the same target, and hardlinks to the same inode are rejected.
+`policy_bundle.enabled: true` in the candidate without the bootstrap flag is
+also rejected because the file being authenticated cannot select or disable
+its own trust gate. Verification completes before the operational logger is
+constructed, before any rules compile, and before a listener opens. Early
+diagnostics use a fixed stderr logger, so unverified logging config cannot open
+or truncate a requested output path.
 
 Two verification paths are supported:
 
@@ -39,11 +49,17 @@ Two verification paths are supported:
 
 Verification also runs on every **hot reload**. A reload whose bundle fails
 verification is rejected with `result=reject_signature` in
-`sockguard_config_reload_total` and never touches the running policy. The
-trust material (`enabled`, `allowed_signing_keys`, `allowed_keyless`,
-`require_rekor_inclusion`, `verify_timeout`) is reload-immutable so a SIGHUP
-cannot silently widen the set of accepted signers; only `signature_path` is
-reload-mutable so an operator can re-sign without a restart.
+`sockguard_config_reload_total` and never touches the running policy. Bootstrap
+trust is pinned for the process lifetime; only the signed candidate's
+`signature_path` is reload-mutable so an operator can re-sign without a
+restart.
+
+Signed mode also rejects every rule-generating Tecnativa variable, including
+section variables, `POST`, `GRPC`/`SESSION`, and granular `ALLOW_*` variables.
+The presence of one at startup fails before rule compilation, even if its
+value is false. If one appears later, reload records `result=reject_compat`
+and preserves the active policy. This prevents unsigned environment state
+from changing a verified rule set or opening a BuildKit transport.
 
 The verified signer (`keyed:<spki-fingerprint>` or `keyless:<issuer>:<san>`)
 and the YAML's SHA-256 digest are stamped onto `GET /admin/policy/version` in
@@ -117,7 +133,7 @@ This filtering only applies at exec create — see Known Limitations below for w
 
 `POST /images/create` is inspected by default. Sockguard blocks `fromSrc` imports unless explicitly allowed and constrains pulls to Docker Hub official images unless the operator opts into `allow_all_registries` or an explicit registry allowlist.
 
-`POST /build` is inspected by default. Sockguard blocks remote build contexts, `networkmode=host`, and Dockerfiles containing `RUN` instructions unless those behaviors are explicitly allowed.
+`POST /build` and native Podman's `POST /libpod/build` are inspected by default through the same `request_body.build` policy. Sockguard blocks primary remote contexts, Podman URL/image additional contexts, `networkmode=host`, and Dockerfiles containing `RUN` instructions unless those behaviors are explicitly allowed. Podman host volume controls, local-path additional contexts, multipart local contexts, and resource-usage output to a daemon-host file require `insecure_allow_body_blind_writes`; all other build checks remain active when that acknowledgment is set. Direct and version-prefixed libpod requests follow the same body-sensitive startup validation as Docker's classic builder.
 
 `POST /services/create` and `POST /services/*/update` are inspected by default. Sockguard blocks host-network services, bind mounts outside `request_body.service.allowed_bind_mounts`, and service images outside the configured official/allowlisted registry set. The same `allowed_capabilities` / `allow_all_capabilities` capability allowlist, `allow_sysctls` sysctl gate, and `image_trust` cosign verification that apply to container-create are also enforced against the service's ContainerSpec, so swarm workloads cannot bypass container-create policy by going through the service API.
 
@@ -137,11 +153,11 @@ Deployments that don't want to admit the whole `EndpointSettings` object can nar
 
 `POST /swarm/unlock` and `POST /nodes/*/update` are inspected by default. Swarm unlock is denied unless explicitly allowed, and node updates block role, availability, name, and arbitrary label mutations unless the corresponding node policy permits them. The default owner-label key remains allowed for controlled node claims.
 
-Bounded JSON/tar inspectors read request bodies under per-endpoint byte caps and return `413 Payload Too Large` when those caps are exceeded, instead of streaming unbounded bodies into memory. A malformed or hostile client cannot tie up the filter or the Docker daemon with oversized payloads — the bounded reader short-circuits before the JSON decode or tar parse even begins. The filter also applies a 30-second read deadline to the request body before an inspector runs, so a client that opens a request and then dribbles the body slowly cannot pin the inspector indefinitely. On the upstream side, the reverse-proxy and side-channel transports set a 30-second response-header timeout, so a Docker daemon that accepts a connection but never replies cannot pin a goroutine; streaming endpoints send headers promptly and are unaffected.
+Bounded JSON/tar inspectors read request bodies under per-endpoint byte caps and return `413 Payload Too Large` when those caps are exceeded, instead of streaming unbounded bodies into memory. A malformed or hostile client cannot tie up the filter or the Docker daemon with oversized payloads because the bounded reader short-circuits before the JSON decode or tar parse begins. The filter also applies a 30-second read deadline to the request body before an inspector runs. The access-log and metrics wrappers preserve the response-controller interface used for that deadline, so enabling either layer cannot bypass it. On the upstream side, the reverse-proxy and side-channel transports set a 30-second response-header timeout. Attach and exec-start add a 30-second deadline across client body forwarding, upstream request writes, and the wait for response headers; the deadline is cleared only after a valid `101 Switching Protocols` response, then the long-lived stream uses its inactivity guard.
 
 These inspectors intentionally decode only the Docker request fields Sockguard actually enforces. They are not full Docker-schema validators, so full payload validation still belongs to Docker once Sockguard has checked the policy-relevant subset.
 
-The remaining blind-write guardrail covers body-bearing writes Sockguard still cannot constrain safely, chiefly arbitrary exec without an allowlist, `POST /swarm/join` without configured `allowed_join_remote_addrs`, and plugin setting writes without allowed assignment prefixes. Validation refuses to start with those rules allowed unless you explicitly set `insecure_allow_body_blind_writes: true`, to keep the enforcement boundary honest. For exec specifically, the flag is also wired into request-time enforcement, not just startup validation: with it set and `allowed_commands` empty, an otherwise-clean exec create/start is allowed instead of unconditionally denied — but only the argv-allowlist gate is lifted. `exec.allow_privileged`, `exec.allow_root_user`, `exec.allowed_env_vars`/`denied_env_vars`, and `exec.allowed_env_values` all still apply exactly as configured, so a privileged, root, or value-policy-violating exec attempt is denied the same as it would be with a pinned command list.
+The remaining blind-write guardrail covers controls Sockguard still cannot constrain safely, chiefly arbitrary exec without an allowlist, `POST /swarm/join` without configured `allowed_join_remote_addrs`, plugin setting writes without allowed assignment prefixes, Podman build host/local/multipart or resource-usage host-file controls, and the documented uninspected libpod write surface. Validation refuses to start with broad uninspected rules unless you explicitly set `insecure_allow_body_blind_writes: true`, to keep the enforcement boundary honest. The flag is also wired into request-time enforcement for exec and Podman build. It lifts only the specific uninspectable gate; every other configured exec or build check still applies.
 
 Sockguard now applies the same honesty rule to every recognized data-exfiltration surface. Validation refuses to start broad rules that would expose `GET /containers/*/archive`, `GET /containers/*/export`, `GET /containers/*/logs`, `GET /containers/*/attach/ws`, `POST /containers/*/attach`, `GET /services/*/logs`, `GET /tasks/*/logs`, `GET /images/get`, `GET /images/*/get`, `POST /images/*/push`, or `POST /plugins/*/push` unless you explicitly set `insecure_allow_read_exfiltration: true`. Image and plugin pushes are Docker API writes, but they read local artifacts and transmit them to a caller-selected registry, so they carry the same exfiltration risk; the option name is retained for configuration compatibility. Because this validation layer only sees method + path, `/containers/*/logs` is treated conservatively whether or not the caller also sets `follow=1`. That keeps backup/export, raw-stream, and deliberate registry-publish use cases possible without letting a casual wildcard rule silently include them.
 
@@ -156,12 +172,17 @@ Modern `docker build` and `docker compose build` no longer speak the classic `PO
 | Opaque BuildKit tunnel (deprecated) | `POST /session`, `POST /grpc` | No — whole tunnel admitted with zero inspection | Denied; requires the deprecated `insecure_accept_opaque_buildkit_tunnels: true` |
 | Native gRPC-over-h2c | `moby.buildkit.v1.Control/*` | No — same control plane, bare HTTP/1.1 transport | Denied unconditionally — sockguard's listener has no h2c support outside the two hijack-capable tunnel endpoints, so nothing can dial this path end-to-end |
 
-`request_body.buildkit.control.solve` gates the `Solve` RPC: `security.insecure` is always denied with no enabling knob, `network.host` requires `request_body.build.allow_host_network`, and cache import/export types, cache registries, exporter types, and exporter-push registries each have their own allowlist (empty = deny, the standard `request_body.*` convention). The frontend check pairs with `request_body.build.allow_run_instructions`: a Dockerfile synced over the session's `FileSync` stream gets the identical RUN-instruction hold-and-inspect scan the classic `/build` path already applies, unless it arrives via a genuinely remote context, which requires `request_body.build.allow_remote_context` for the same reason classic `/build` does — both flags are the sibling `request_body.build` block's own fields, reused verbatim rather than duplicated under `buildkit`. `control.allow_status` gates the `Status` RPC, admitted only for a ref this same client/profile actually `Solve`d, so one tenant cannot poll another's build. The session RPCs buildkitd calls back into the client for — `session.auth` (registry credentials, exact realm/scope match), `session.secrets` and `session.ssh` (exact-ID allowlists), `session.file_sync`/`file_send` (byte/file/path caps), and `session.upload` (a one-use token bound to an admitted `Solve`) — each stay denied until their own `allow`/allowlist fields are set. See [Configuration](/configuration) for the full field reference.
+`request_body.buildkit.control.solve` gates the `Solve` RPC: `security.insecure` is always denied with no enabling knob, `network.host` requires `request_body.build.allow_host_network`, and cache import/export types, cache registries, exporter types, and exporter-push registries each have their own allowlist (empty means deny, the standard `request_body.*` convention). The frontend check pairs with `request_body.build.allow_run_instructions`: a Dockerfile synced over the session's `FileSync` stream gets the identical RUN-instruction hold-and-inspect scan the classic `/build` path already applies, unless it arrives via a genuinely remote context, which requires `request_body.build.allow_remote_context` for the same reason classic `/build` does. `control.allow_status` gates the `Status` RPC, admitted only for a ref this same trusted principal, selected profile, and BuildKit session actually `Solve`d, so one tenant or simultaneous build cannot poll another's state. The principal comes from the verified mTLS certificate, Unix peer credentials, or normalized remote host instead of a source port or caller-controlled session header. Ref ownership and upload IDs are committed atomically only after every limit check passes. Session, ref, and upload identifiers are rejected before persistence when they exceed 256 bytes; one control tunnel can retain at most 256 distinct BuildKit session IDs; and an unconsumed upload grant expires after one hour while remaining valid across a normal control-tunnel close. Session `auth`, `secrets`, `ssh`, `file_sync`, `file_send`, and `upload` calls each stay denied until their own policy allows them, and a registry method classified for mediation but missing a dispatcher fails closed rather than becoming raw passthrough. See [Configuration](/configuration) for the full field reference.
 
 `insecure_accept_opaque_buildkit_tunnels` is now **deprecated**: it still works — existing configs that set it keep running unchanged — but setting it to `true` logs a startup warning steering operators toward `request_body.buildkit`, and the flag will be removed in a future major release. The flag and `request_body.buildkit` are mutually exclusive (mediation supersedes the wholesale acknowledgment), so a config cannot set both, and the deprecation warning only ever fires for a config using the flag on its own. If you see a build fail against a preset with a `/session` or `/grpc` denial, that means neither a classic-builder rule nor a `request_body.buildkit` policy is configured for that path: either switch the client to the classic builder (`DOCKER_BUILDKIT=0`, the `*-with-build.yaml` presets), configure `request_body.buildkit` for the fully-mediated path (the `*-with-mediated-build.yaml` presets), or — not recommended for new deployments — fall back to the deprecated acknowledgment. Tecnativa's `GRPC=1` / `SESSION=1` compat env vars still auto-set the deprecated acknowledgment with their own compat-specific warning; migrating off either warning means configuring `request_body.buildkit` instead. See [Migration](/migration) for the step-by-step move from the acknowledgment to a mediated policy.
 
 ### Layer 6: Owner Label Isolation
 When `ownership.owner` is set, Sockguard stamps label-capable creates and build-produced images with an owner label, injects owner filters into list/prune/events responses, and freshly inspects target resources on individual requests to deny cross-owner access. Ownership decisions are intentionally uncached because Docker names and image tags can be rebound to different resources. The checks cover owned containers, images, networks, volumes, services, tasks, secrets, configs, nodes, and swarm state, with service writes stamping both the service and its task template so downstream tasks inherit the same owner identity, `/nodes` using Docker's `node.label` filter key, and unlabeled node/swarm resources only claimable through their update paths.
+
+Collection-action words are reserved only for the method and exact path that
+perform that action. A container, network, volume, service, secret, or config
+named `create`, `prune`, `json`, or another reused keyword still receives the
+normal owner check on inspect and trailing-action paths.
 
 The same boundary applies to references embedded inside container and service payloads, not only the resource named by the URL. Container creates authorize the requested image, named volumes, custom network mode, every endpoint-config network, and every `container:<ref>` namespace-sharing target. Service creates and updates authorize the task image, named volumes, networks, secrets, and configs. A foreign label or unresolved workload dependency is denied before Docker sees the request; only an image that successfully resolves and is genuinely unlabeled can use `allow_unowned_images`. Create new volumes, networks, secrets, and configs through their owner-stamping endpoints before attaching them to a workload. This turns one shared Docker socket into N isolated identity views without leaving workload dependencies as an ownership side door.
 
@@ -183,6 +204,14 @@ Together with request-side visibility and exfiltration guardrails, the read-side
 
 Single-resource inspect denials honor rollout mode: under a profile in `warn` or `audit` mode, a target that visibility policy would hide is forwarded upstream with a `would_deny` audit verdict instead of being hard-`404`'d, so visibility policy can be staged like every other deny gate. When `response.name_patterns` or `response.image_patterns` filter a list response, Sockguard buffers the upstream body under an 8 MiB cap and rejects a larger response with a `502` rather than buffering it unbounded.
 
+Write-only collection words remain valid resource identifiers for `GET` and
+`HEAD`, so keyword-named networks, volumes, services, secrets, and configs do
+not bypass visibility. A single container or image check that combines labels
+with name/image patterns obtains both from one bounded inspect response. If a
+buffered visibility rewrite must generate its own `502`, Sockguard removes
+stale upstream representation headers before writing the replacement JSON so
+clients do not see a mismatched length or encoding.
+
 These controls are on by default where they are pure redaction because runtime env vars routinely carry credentials and Docker read APIs expose raw host mount paths plus internal network layout.
 
 ### Layer 8: Structured Access And Audit Logging
@@ -203,7 +232,7 @@ When `health.watchdog.enabled` is true, Sockguard actively probes the upstream D
 | Risk Level | Endpoints |
 |-----------|-----------|
 | **Critical** | `POST /containers/create`, `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `PUT /containers/{id}/archive` |
-| **High** | `POST /images/create`, `POST /images/load`, `POST /build`, `POST /services/create`, `POST /services/{id}/update`, `POST /swarm/init`, `POST /swarm/join`, `POST /swarm/update`, `POST /swarm/unlock`, `POST /nodes/{id}/update`, `POST /plugins/pull`, `POST /plugins/{name}/upgrade`, `POST /plugins/{name}/set`, `POST /plugins/create` |
+| **High** | `POST /images/create`, `POST /images/load`, `POST /build`, `POST /libpod/build`, `POST /services/create`, `POST /services/{id}/update`, `POST /swarm/init`, `POST /swarm/join`, `POST /swarm/update`, `POST /swarm/unlock`, `POST /nodes/{id}/update`, `POST /plugins/pull`, `POST /plugins/{name}/upgrade`, `POST /plugins/{name}/set`, `POST /plugins/create` |
 | **Medium** | `POST /containers/{id}/update`, `POST /volumes/create`, `POST /networks/create`, `POST /networks/{id}/connect`, `POST /networks/{id}/disconnect`, `POST /secrets/create`, `POST /configs/create`, `DELETE /containers/{id}` |
 | **Low** | `GET /containers/json`, `GET /events`, `GET /version`, `GET /_ping` |
 

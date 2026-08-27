@@ -112,7 +112,11 @@ test("roadmap data is valid and matches expected milestones", () => {
 
   const nextMilestones = roadmap.filter((m) => m.status === "next");
   assert.equal(nextMilestones.length, 1, "roadmap must have exactly one next milestone");
-  assert.equal(nextMilestones[0].version, "v1.8.0", "v1.8.0 must be the next milestone");
+  assert.equal(nextMilestones[0].version, "v2.0.0", "v2.0.0 must be the next milestone");
+
+  const v210 = roadmap.find((m) => m.version === "v2.1.0");
+  assert.ok(v210, "roadmap must retain the RUN-instruction work as v2.1.0");
+  assert.equal(v210.status, "planned", "v2.1.0 must remain planned until v2.0.0 ships");
 
   // Every milestone must have a non-empty items array
   for (const milestone of roadmap) {

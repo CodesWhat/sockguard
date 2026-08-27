@@ -22,6 +22,11 @@ config: |
   upstream:
     socket: /var/run/docker.sock
 
+  listen:
+    address: ":2375"
+    insecure_allow_plain_tcp: true
+    insecure_allow_unauthenticated_clients: true
+
   log:
     level: info
     format: json
@@ -44,25 +49,43 @@ config: |
       action: deny
       reason: "no matching allow rule — override config in values.yaml"
 
+# Optional out-of-band trust configuration for signed policy bundles. Reference
+# exactly one externally managed object containing the trust YAML. It must be a
+# different Kubernetes object from both the candidate and signature bundle.
+# The chart mounts it separately and never copies its contents into the
+# chart-generated candidate policy ConfigMap.
+policyBundleTrust:
+  secretRef: {}
+    # name: sockguard-policy-trust
+    # key: trust.yaml
+  configMapRef: {}
+    # name: sockguard-policy-trust
+    # key: trust.yaml
+
+# External sigstore bundle for the signed candidate policy. Configure this
+# together with policyBundleTrust and set the candidate's
+# policy_bundle.signature_path to the fixed mounted path:
+# /etc/sockguard-policy-bundle-signature/signature.json
+policyBundleSignature:
+  secretRef: {}
+    # name: sockguard-policy-signature
+    # key: signature.json
+  configMapRef: {}
+    # name: sockguard-policy-signature
+    # key: signature.json
+
 # Service exposing sockguard within the cluster.
 service:
   type: ClusterIP
   port: 2375
-  # Sockguard listens on plaintext TCP :2375 by default inside the pod.
-  # For non-loopback TCP you must either set both
-  # SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP=true and
-  # SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS=true
-  # (trusted cluster-internal traffic only) or configure listen.tls in config above.
+  # The default candidate YAML listens on plaintext TCP :2375 inside the pod
+  # with both explicit acknowledgments. This is for trusted cluster-internal
+  # traffic only. Configure listen.tls in config above for untrusted networks.
 
-# Extra environment variables for the sockguard container.
-# Useful for the two-flag plaintext opt-in, log level overrides, etc.
-env:
-  - name: SOCKGUARD_LISTEN_ADDRESS
-    value: ":2375"
-  - name: SOCKGUARD_LISTEN_INSECURE_ALLOW_PLAIN_TCP
-    value: "true"
-  - name: SOCKGUARD_LISTEN_INSECURE_ALLOW_UNAUTHENTICATED_CLIENTS
-    value: "true"
+# Extra environment variables for unsigned deployments. Signed-policy mode
+# intentionally discards SOCKGUARD_* overlays, so every setting that affects a
+# signed deployment must live in the signed config above.
+env: []
 
 resources: {}
   # Recommended starting point:

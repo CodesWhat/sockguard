@@ -64,6 +64,91 @@ The rules admitting `POST /session` and `POST /grpc` don't change — only which
 
 See the `drydock-with-mediated-build.yaml` / `portwing-with-mediated-build.yaml` presets for a complete, validated starting point, and [Security](/security#compose--buildkit-transport) / [Configuration](/configuration) for the full field reference.
 
+## From Sockguard v1.7.5 to v2.0.0
+
+### Split signed-policy trust from the signed candidate
+
+Existing signed-policy deployments must move trust roots out of the candidate
+before upgrading. Create a second bootstrap file that reuses the existing
+`policy_bundle` fields for `enabled`, `allowed_signing_keys`, `allowed_keyless`,
+`require_rekor_inclusion`, and `verify_timeout`. Leave only `signature_path` in
+the signed candidate:
+
+```yaml filename="policy-bundle-trust.yaml"
+policy_bundle:
+  enabled: true
+  allowed_signing_keys:
+    - pem: |
+        -----BEGIN PUBLIC KEY-----
+        ...
+        -----END PUBLIC KEY-----
+  require_rekor_inclusion: true
+  verify_timeout: 10s
+```
+
+```yaml filename="sockguard.yaml"
+policy_bundle:
+  signature_path: /etc/sockguard/sockguard.yaml.bundle
+```
+
+Changing the candidate invalidates its old bundle. Sign the exact updated
+bytes before starting the new binary, then add the required serve flag:
+
+```bash
+cosign sign-blob --bundle /etc/sockguard/sockguard.yaml.bundle /etc/sockguard/sockguard.yaml
+```
+
+```text
+sockguard serve --config /etc/sockguard/sockguard.yaml --policy-bundle-trust-config /etc/sockguard/policy-bundle-trust.yaml
+```
+
+The two paths must identify different files. Sockguard rejects equal paths,
+symlinks to the same target, and hardlinks to the same inode. Candidate copies
+of trust fields are ignored; `policy_bundle.enabled: true` in the candidate
+without the new flag is a startup error.
+
+Signed-policy mode also rejects rule-generating Tecnativa variables, including
+section variables, `POST`, `GRPC`/`SESSION`, and granular `ALLOW_*` variables,
+even when set to false. Convert those generated grants into YAML rules before
+signing. All `SOCKGUARD_*` settings that affect a signed deployment, including
+listener settings, must be present in the signed YAML because environment
+overlays are discarded after verification. A variable added after startup
+makes reload record `reject_compat` and preserve the active policy.
+
+Helm users must configure `policyBundleTrust` and `policyBundleSignature`
+together. The chart mounts the external signature object at
+`/etc/sockguard-policy-bundle-signature/signature.json`; set the candidate's
+`policy_bundle.signature_path` to that path before signing. The trust ConfigMap
+reference cannot name the chart-generated candidate ConfigMap, and trust plus
+signature data cannot share one Secret or ConfigMap because Kubernetes grants
+write authority at the object level. The chart also moves its default listener
+settings from unsigned environment variables into the candidate YAML. If you
+replace the chart's `config` value, keep an explicit `listen` block in the
+signed policy so the Service and probes can reach the pod.
+
+### Review tightened request handling
+
+- Native `POST /libpod/build` now uses `request_body.build`. A policy that
+  allows this path must explicitly permit remote contexts, host networking,
+  or Dockerfile `RUN` instructions if the workload needs them.
+- `response.allow_attestation_statements: false` now follows daemon query
+  semantics. Empty, `0`, `no`, `false`, and `none` are false; every other
+  non-empty `statement` value is treated as a request for protected content.
+- Owner and visibility checks now cover resources named after collection
+  actions such as `create`, `prune`, and `json`. No config change is required,
+  but a cross-owner or hidden resource that previously slipped through by name
+  now returns the configured denial.
+- Inspected bodies and attach/exec upgrade handshakes have effective 30-second
+  deadlines. Long-lived upgraded streams are unchanged after a valid `101`.
+- Mediated BuildKit refs and uploads are correlated by trusted caller
+  principal, selected profile, and BuildKit session. Multiple simultaneous
+  builds from one caller no longer share consumable session state. Persistent
+  identifiers are limited to 256 bytes, one control tunnel can retain at most
+  256 BuildKit session IDs, and abandoned upload grants expire after one hour.
+- Prometheus method and route labels are finite. Custom HTTP methods appear as
+  `method="OTHER"`; unknown path families appear as `route="unknown"`. Update
+  dashboards that previously expected raw custom values.
+
 ## From Tecnativa/docker-socket-proxy
 
 Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. Replace the image:
@@ -81,6 +166,11 @@ Sockguard accepts the current Tecnativa environment-variable surface, including 
 ```
 
 That gets you current Tecnativa env-surface compatibility. If you intentionally want section-wide raw archive/export or log/attach streaming parity from `CONTAINERS=1` or `IMAGES=1`, also set `SOCKGUARD_INSECURE_ALLOW_READ_EXFILTRATION=true`; otherwise move to YAML and allow only the list/inspect endpoints you actually need.
+
+Tecnativa compatibility mode and signed-policy mode are separate migration
+stages. Rule-generating compatibility variables are unsigned process state, so
+Sockguard rejects them whenever `--policy-bundle-trust-config` is active.
+Convert the generated allow surface to YAML first, validate it, then sign it.
 
 When ready, migrate to YAML config for more control:
 

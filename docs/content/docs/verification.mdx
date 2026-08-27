@@ -133,10 +133,12 @@ Same interpretation as the image verify: a clean exit code is a
 passing signature, anything else means stop and investigate.
 
 <Callout type="info">
-  Releases in the v1.7 line also publish a legacy detached signature
+  Sockguard v2 and later publish only the sigstore bundle above. Published
+  releases in the v1.7 line also carry a legacy detached signature
   (`.sig`) and signing certificate (`.pem`), so tooling scripted against the
   older `cosign verify-blob --signature --certificate` invocation keeps
-  working:
+  working. v1.7.2 has no GitHub release or release assets because its publish
+  workflow failed.
 
   ```bash
   cosign verify-blob \
@@ -147,15 +149,13 @@ passing signature, anything else means stop and investigate.
     "sockguard-v<TAG>.tar.gz"
   ```
 
-  This is a one-line transition: cosign's own `sign-blob` deprecated these
-  output flags in favor of the bundle format above, so the `.sig`/`.pem`
-  pair is not published past the v1.7 line. Migrate to `--bundle` before
-  then.
+  Cosign's own `sign-blob` deprecated those output flags in favor of the
+  bundle format. Use `--bundle` for current releases.
 </Callout>
 
 When release provenance is published, the release also includes
 `sockguard-v<TAG>.tar.gz.intoto.jsonl`. Verify that attestation separately
-from the detached tarball signature before relying on it for SLSA evidence.
+from the tarball's cosign bundle before relying on it for SLSA evidence.
 
 ## Verifying the per-platform binary archives
 
@@ -190,10 +190,14 @@ sha256sum --check --ignore-missing checksums.txt
 ```
 
 <Callout type="info">
-  Releases in the v1.7 line also publish a legacy `.sig`/`.pem` pair
-  alongside each `.sigstore.json` bundle for these archives, verifiable the
-  same way as the release tarball's legacy pair above. That pair is not
-  published past the v1.7 line -- migrate to `--bundle`.
+  Sockguard v2 and later publish only `.sigstore.json` bundles. v1.7.5
+  dual-published those bundles with the legacy `.sig`/`.pem` pair for the
+  source tarball, checksums, and binary archives. v1.7.3-v1.7.4 published
+  only the legacy pair for checksums and binary archives; v1.7.0-v1.7.1 did
+  not sign those binary artifacts. v1.7.2 has no GitHub release or release
+  assets because its publish workflow failed. Use the assets actually attached
+  to the historical release rather than assuming every v1.7 tag has the same
+  set.
 </Callout>
 
 The archives also carry GitHub build-provenance attestations, which record

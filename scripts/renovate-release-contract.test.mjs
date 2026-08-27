@@ -34,7 +34,7 @@ function renovateGuardScript() {
     .join("\n");
 }
 
-function runGuard(baseBranchPatterns, releaseTag = "v1.7.0") {
+function runGuard(baseBranchPatterns, releaseTag = "v2.0.0") {
   const fixture = resolve(tempRoot, baseBranchPatterns.join("-").replaceAll("/", "-"));
   rmSync(fixture, { recursive: true, force: true });
   mkdirSync(fixture);
@@ -53,24 +53,24 @@ describe("Renovate release branch contract", () => {
   it("targets exactly the active integration branch", () => {
     const config = renovateConfig();
 
-    assert.deepEqual(config.baseBranchPatterns, ["dev/v1.7"]);
+    assert.deepEqual(config.baseBranchPatterns, ["dev/v2.0"]);
     assert.equal(config.baseBranches, undefined);
   });
 
   it("accepts the branch derived from the release tag", () => {
-    const result = runGuard(["dev/v1.7"]);
+    const result = runGuard(["dev/v2.0"]);
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /renovate\.json targets dev\/v1\.7/);
+    assert.match(result.stdout, /renovate\.json targets dev\/v2\.0/);
   });
 
   it("rejects a stale or multi-branch Renovate target", () => {
     const stale = runGuard(["dev/v1.6"]);
-    const multiple = runGuard(["dev/v1.7", "dev/v1.6"]);
+    const multiple = runGuard(["dev/v2.0", "dev/v1.7"]);
 
     assert.notEqual(stale.status, 0);
-    assert.match(stale.stdout, /targets 'dev\/v1\.6' but this cut is for dev\/v1\.7/);
+    assert.match(stale.stdout, /targets 'dev\/v1\.6' but this cut is for dev\/v2\.0/);
     assert.notEqual(multiple.status, 0);
-    assert.match(multiple.stdout, /targets 'dev\/v1\.7,dev\/v1\.6' but this cut is for dev\/v1\.7/);
+    assert.match(multiple.stdout, /targets 'dev\/v2\.0,dev\/v1\.7' but this cut is for dev\/v2\.0/);
   });
 });
