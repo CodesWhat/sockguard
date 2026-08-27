@@ -42,6 +42,21 @@ func FuzzBuild(f *testing.F) {
 	})
 }
 
+func FuzzClassifyPodmanAdditionalBuildContexts(f *testing.F) {
+	f.Add("docs=url:https://example.com/docs.tar")
+	f.Add(`{"docs":{"IsURL":true,"Value":"https://example.com/docs.tar"}}`)
+	f.Add("docs=localpath:/srv/docs")
+	f.Add("docs=image:docker.io/library/alpine:3.22")
+	f.Add("docs=unsupported:value")
+
+	f.Fuzz(func(t *testing.T, value string) {
+		remote, blind, malformed := classifyPodmanAdditionalBuildContexts([]string{value})
+		if malformed != "" && (remote || blind) {
+			t.Fatalf("malformed %q also reported remote=%v blind=%v", malformed, remote, blind)
+		}
+	})
+}
+
 func FuzzContainerCreate(f *testing.F) {
 	f.Add([]byte(`{"Image":"busybox:1.37","HostConfig":{"Privileged":true}}`))
 	f.Add([]byte(`{"Image":"busybox:1.37","HostConfig":{"NetworkMode":"host"}}`))
