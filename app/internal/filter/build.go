@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
@@ -69,7 +70,8 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 
 	query := r.URL.Query()
 	if normalizedPath == "/libpod/build" {
-		if denyReason := p.inspectLibpodBuildControls(r); denyReason != "" {
+		query = foldQueryKeys(query)
+		if denyReason := p.inspectLibpodBuildControls(r, query); denyReason != "" {
 			return denyReason, nil
 		}
 	}
@@ -97,10 +99,6 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 		}
 		return fmt.Sprintf("build denied: remote build context %q is not allowed", remote), nil
 	}
-	if len(query["remote"]) > 0 && p.allowRemoteContext && p.allowRunInstructions {
-		return "", nil
-	}
-
 	if p.allowRunInstructions || r.Body == nil {
 		return "", nil
 	}
@@ -162,8 +160,7 @@ type legacyPodmanAdditionalBuildContext struct {
 	DownloadedCache string
 }
 
-func (p buildPolicy) inspectLibpodBuildControls(r *http.Request) string {
-	query := r.URL.Query()
+func (p buildPolicy) inspectLibpodBuildControls(r *http.Request, query url.Values) string {
 	requiresRemoteContext, requiresBlindWrites, malformed := classifyPodmanAdditionalBuildContexts(query["additionalbuildcontexts"])
 	if malformed != "" {
 		return "build denied: malformed additional build context: " + malformed
@@ -174,15 +171,15 @@ func (p buildPolicy) inspectLibpodBuildControls(r *http.Request) string {
 	if requiresBlindWrites && !p.allowBlindWrites {
 		return "build denied: uninspectable additional build context requires insecure_allow_body_blind_writes"
 	}
-	requiresBlindWrites, malformed = classifyPodmanRusageControls(query)
+	rusageBlindWrites, malformed := classifyPodmanRusageControls(query)
 	if malformed != "" {
 		return "build denied: malformed rusage control: " + malformed
 	}
-	if requiresBlindWrites && !p.allowBlindWrites {
+	if rusageBlindWrites && !p.allowBlindWrites {
 		return "build denied: Podman resource usage log requires insecure_allow_body_blind_writes"
 	}
 
-	if queryControlPresent(query, "volume", "volumes", "transientRunMounts") && !p.allowBlindWrites {
+	if queryControlPresent(query, "volume", "volumes", "transientrunmounts") && !p.allowBlindWrites {
 		return "build denied: Podman host volume mounts require insecure_allow_body_blind_writes"
 	}
 
@@ -192,6 +189,15 @@ func (p buildPolicy) inspectLibpodBuildControls(r *http.Request) string {
 	}
 
 	return ""
+}
+
+func foldQueryKeys(query url.Values) url.Values {
+	folded := make(url.Values, len(query))
+	for key, values := range query {
+		name := strings.ToLower(key)
+		folded[name] = append(folded[name], values...)
+	}
+	return folded
 }
 
 func classifyPodmanAdditionalBuildContexts(values []string) (requiresRemoteContext, requiresBlindWrites bool, malformed string) {

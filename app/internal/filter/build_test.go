@@ -230,6 +230,11 @@ func TestMiddlewareDeniesUnsafeNativeLibpodBuildQueryControls(t *testing.T) {
 			wantReason: "remote additional build context",
 		},
 		{
+			name:       "mixed-case additional URL context",
+			target:     "/libpod/build?AdditionalBuildContexts=docs%3Durl%3Ahttps%3A%2F%2Fexample.com%2Fdocs.tar",
+			wantReason: "remote additional build context",
+		},
+		{
 			name:       "legacy JSON additional URL context",
 			target:     "/libpod/build?additionalbuildcontexts=%7B%22docs%22%3A%7B%22IsURL%22%3Atrue%2C%22IsImage%22%3Afalse%2C%22Value%22%3A%22https%3A%2F%2Fexample.com%2Fdocs.tar%22%2C%22DownloadedCache%22%3A%22%22%7D%7D",
 			wantReason: "remote additional build context",
@@ -245,8 +250,18 @@ func TestMiddlewareDeniesUnsafeNativeLibpodBuildQueryControls(t *testing.T) {
 			wantReason: "remote build context",
 		},
 		{
+			name:       "mixed-case primary remote context",
+			target:     "/libpod/build?Remote=https%3A%2F%2Fexample.com%2Fcontext.tar",
+			wantReason: "remote build context",
+		},
+		{
 			name:       "later host network cannot hide behind bridge first value",
 			target:     "/libpod/build?networkmode=bridge&networkmode=host",
+			wantReason: "host network",
+		},
+		{
+			name:       "mixed-case host network",
+			target:     "/libpod/build?NetworkMode=host",
 			wantReason: "host network",
 		},
 		{
@@ -270,6 +285,11 @@ func TestMiddlewareDeniesUnsafeNativeLibpodBuildQueryControls(t *testing.T) {
 			wantReason: "host volume",
 		},
 		{
+			name:       "mixed-case volume host mount",
+			target:     "/libpod/build?Volume=%2Fsrv%2Fsecrets%3A%2Frun%2Fsecrets%3Aro",
+			wantReason: "host volume",
+		},
+		{
 			name:       "plural volumes host mount",
 			target:     "/v5.6.0/libpod/build?volumes=%2Fsrv%2Fsecrets%3A%2Frun%2Fsecrets%3Aro",
 			wantReason: "host volume",
@@ -277,6 +297,11 @@ func TestMiddlewareDeniesUnsafeNativeLibpodBuildQueryControls(t *testing.T) {
 		{
 			name:       "transient run mount",
 			target:     "/libpod/build?transientRunMounts=type%3Dbind%2Csrc%3D%2Fsrv%2Fsecrets%2Ctarget%3D%2Frun%2Fsecrets",
+			wantReason: "host volume",
+		},
+		{
+			name:       "mixed-case transient run mount",
+			target:     "/libpod/build?TransientRunMounts=type%3Dbind%2Csrc%3D%2Fsrv%2Fsecrets%2Ctarget%3D%2Frun%2Fsecrets",
 			wantReason: "host volume",
 		},
 		{
@@ -292,6 +317,11 @@ func TestMiddlewareDeniesUnsafeNativeLibpodBuildQueryControls(t *testing.T) {
 		{
 			name:       "standalone resource usage log file",
 			target:     "/libpod/build?rusagelogfile=%2Fetc%2Fsockguard-build-rusage",
+			wantReason: "resource usage log",
+		},
+		{
+			name:       "mixed-case resource usage log file",
+			target:     "/libpod/build?RusageLogFile=%2Fetc%2Fsockguard-build-rusage",
 			wantReason: "resource usage log",
 		},
 		{
