@@ -262,6 +262,14 @@ function assertBridgesAbsent(source) {
   }
 }
 
+function assertReleaseBranchPushTrigger(source) {
+  assert.match(
+    source,
+    /^ {2}push:\n {4}branches: \[main, 'dev\/\*', 'release\/\*'\]$/mu,
+    "CI must run after merges to release development branches so release-cut can verify the exact tag target SHA",
+  );
+}
+
 test("sockguard calls the reusable workflows at the frozen organization SHA", () => {
   assertReusableCaller(fs.readFileSync(WORKFLOW, "utf8"));
 });
@@ -311,6 +319,12 @@ test("retired local job ids stay retired", () => {
   for (const jobId of RETIRED_LOCAL_JOBS) {
     assert.equal(jobSection(source, jobId), "", `${jobId} must stay removed`);
   }
+});
+
+test("release development branch pushes run exact-SHA CI", () => {
+  const source = fs.readFileSync(WORKFLOW, "utf8");
+  assertReleaseBranchPushTrigger(source);
+  assert.throws(() => assertReleaseBranchPushTrigger(source.replace("'dev/*', ", "")));
 });
 
 test("the contract rejects a moving reusable ref, a dropped permission, and a reintroduced bridge", () => {

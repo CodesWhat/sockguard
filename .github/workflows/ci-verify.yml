@@ -8,7 +8,7 @@ run-name: >-
 
 on:
   push:
-    branches: [main, 'release/*']
+    branches: [main, 'dev/*', 'release/*']
   pull_request:
     branches: [main, 'dev/*']
   merge_group:
