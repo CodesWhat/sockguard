@@ -2,7 +2,9 @@
 
 ## Before tagging
 
-1. **Clean tree on `main`**
+1. **Clean tree on the release source branch**
+
+   Use the active `dev/vX.Y` branch, or a `maintenance/X.Y.x` branch, for a prerelease. Use `main` for a stable release.
 
    ```
    git status            # must be clean
@@ -64,9 +66,11 @@
 
 **Preferred path: use the `release-cut` workflow.**
 
-Go to **Actions → Release: Cut** → **Run workflow** on `main`. The workflow:
+Go to **Actions → Release: Cut** → **Run workflow** and select the branch that owns the tag. Dispatch prerelease tags from `dev/vX.Y` or `maintenance/X.Y.x`; dispatch stable tags from `main`. The workflow rejects a prerelease dispatched from `main` or a branch for another release line, and it rejects a stable release dispatched outside `main`, before it creates a tag.
 
-- Polls until `ci-verify.yml` has a successful run on HEAD
+The workflow:
+
+- Polls until `ci-verify.yml` has a successful push run on the selected branch's HEAD
 - Computes the next **stable** semver from conventional-commit history — **or**, if you supply the optional `release_tag` input (e.g. `v1.4.0-rc.1`), cuts that exact tag instead. This is how prereleases / rc's are cut: the auto-computer only emits stable versions.
 - Validates the CHANGELOG entry is non-empty for the tag
 - Creates and pushes an annotated tag using the repo bot identity

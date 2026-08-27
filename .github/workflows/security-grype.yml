@@ -9,7 +9,7 @@ run-name: >-
 on:
   workflow_dispatch:
   pull_request:
-    branches: [main, 'dev/*']
+    branches: [main, 'dev/*', 'maintenance/*']
   schedule:
     - cron: '15 7 * * 1'  # Weekly on Monday at 07:15 UTC
 
