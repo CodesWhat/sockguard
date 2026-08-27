@@ -137,7 +137,7 @@ describe("required CI contexts", () => {
     // `dev/vX.Y -> main` re-presents every commit on the dev branch as
     // "introduced by this PR". This repo's history predates the gate — the
     // #185 BuildKit series landed eight gitmoji subjects that are on
-    // dev/v1.7 and not on main — and published history is never rewritten,
+    // dev/v2.0 and not on main — and published history is never rewritten,
     // so without this exemption a blocking gate deadlocks every release
     // cut. Those commits are validated when they land on the dev branch,
     // which is where the gate belongs.

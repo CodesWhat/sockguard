@@ -57,7 +57,7 @@ func NewMediator(dialer Dialer, logger *slog.Logger) *Mediator {
 // registry (see SessionKey's doc comment) and policy is the already-resolved
 // effective policy for this request (global or client-profile) — the caller
 // resolves both before calling, e.g. from internal/clientacl's client-
-// profile selection plus a remote-address or TLS-identity signal.
+// profile selection plus a stable verified principal signal.
 func (m *Mediator) ServeGRPC(w http.ResponseWriter, r *http.Request, policy Policy, key SessionKey) {
 	m.serve(EndpointGRPC, w, r, policy, key)
 }
@@ -78,6 +78,17 @@ func (m *Mediator) serve(endpoint Endpoint, w http.ResponseWriter, r *http.Reque
 			"error", logging.SafeString(err.Error()), "path", logging.SafeString(logPath), "endpoint", endpoint.String())
 		_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: "invalid BuildKit tunnel upgrade request"})
 		return
+	}
+	clientUUID := ""
+	if endpoint == EndpointSession {
+		var ok bool
+		clientUUID, ok = buildkitSessionID(r)
+		if !ok {
+			m.Logger.Warn("buildkit: rejecting session tunnel without one valid session id",
+				"path", logging.SafeString(logPath), "endpoint", endpoint.String())
+			_ = httpjson.Write(w, http.StatusBadRequest, httpjson.ErrorResponse{Message: "invalid BuildKit session identifier"})
+			return
+		}
 	}
 
 	outHeader := r.Header.Clone()
@@ -104,7 +115,7 @@ func (m *Mediator) serve(endpoint Endpoint, w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	session := m.Registry.Open(key, endpoint, r.Header.Get(sessionUUIDHeader))
+	session := m.Registry.Open(key, endpoint, clientUUID)
 	defer m.Registry.Close(session.ID)
 
 	legs := bridgeLegs{endpoint: endpoint}
@@ -124,6 +135,14 @@ func (m *Mediator) serve(endpoint Endpoint, w http.ResponseWriter, r *http.Reque
 		return
 	}
 	m.Logger.Info("buildkit: tunnel closed", "endpoint", endpoint.String(), "session_id", session.ID)
+}
+
+func buildkitSessionID(r *http.Request) (string, bool) {
+	values := r.Header.Values(sessionUUIDHeader)
+	if len(values) != 1 {
+		return "", false
+	}
+	return canonicalBuildkitSessionID(values[0])
 }
 
 // effectiveLimits merges Phase 5 (issue #185)'s per-profile FileSync/

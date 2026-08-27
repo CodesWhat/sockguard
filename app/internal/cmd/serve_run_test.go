@@ -19,11 +19,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sigstore/sigstore-go/pkg/verify"
 	"github.com/spf13/cobra"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
 	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/policybundle"
 	"github.com/codeswhat/sockguard/app/internal/testhelp"
 )
 
@@ -151,6 +153,215 @@ func TestRunServeWithDepsUsesInjectedLoadConfig(t *testing.T) {
 	err := runServeWithDeps(newServeCommand(), nil, deps)
 	if err == nil || !strings.Contains(err.Error(), "config load: boom") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunServeDoesNotOpenConfiguredLogBeforeValidation(t *testing.T) {
+	cfg := testServeConfig()
+	cfg.Log.Output = filepath.Join(t.TempDir(), "untrusted.log")
+
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) { return cfg, nil }
+	loggerCalls := 0
+	deps.newLogger = func(string, string, string) (*slog.Logger, io.Closer, error) {
+		loggerCalls++
+		return newDiscardLogger(), nil, nil
+	}
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		return nil, errors.New("invalid policy")
+	}
+
+	err := runServeWithDeps(newServeCommand(), nil, deps)
+	if err == nil || !strings.Contains(err.Error(), "config validation: invalid policy") {
+		t.Fatalf("runServeWithDeps() error = %v, want validation failure", err)
+	}
+	if loggerCalls != 0 {
+		t.Fatalf("newLogger calls = %d, want 0 before config validation", loggerCalls)
+	}
+	if _, statErr := os.Stat(cfg.Log.Output); !os.IsNotExist(statErr) {
+		t.Fatalf("untrusted log path exists after rejected config: %v", statErr)
+	}
+}
+
+func TestRunServePinsSignedPolicyTrustOutOfBand(t *testing.T) {
+	const trustPath = "/operator/policy-trust.yaml"
+	const candidateYAML = `policy_bundle:
+  enabled: false
+  signature_path: /candidate/cfg.bundle.json
+  allowed_signing_keys:
+    - pem: hostile-key
+`
+	const trustYAML = `policy_bundle:
+  enabled: true
+  allowed_signing_keys:
+    - pem: pinned-key
+`
+
+	cmd := newServeCommand()
+	cmd.Flags().String("policy-bundle-trust-config", "", "")
+	if err := cmd.Flags().Set("policy-bundle-trust-config", trustPath); err != nil {
+		t.Fatalf("set policy trust flag: %v", err)
+	}
+
+	candidate, err := config.LoadBytes([]byte(candidateYAML))
+	if err != nil {
+		t.Fatalf("parse candidate fixture: %v", err)
+	}
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) { return candidate, nil }
+	deps.readConfigBytes = func(path string) ([]byte, error) {
+		if path == trustPath {
+			return []byte(trustYAML), nil
+		}
+		return []byte(candidateYAML), nil
+	}
+	deps.loadConfigBytes = config.LoadBytes
+	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return &stubEntity{}, nil }
+	var builtFrom config.PolicyBundleConfig
+	deps.buildBundleVerifier = func(pb config.PolicyBundleConfig) (policybundle.Verifier, error) {
+		builtFrom = pb
+		return &stubBundleVerifier{res: policybundle.VerifyResult{Signer: "keyed:pinned"}}, nil
+	}
+	deps.newLogger = func(string, string, string) (*slog.Logger, io.Closer, error) {
+		return newDiscardLogger(), nil, nil
+	}
+	stop := errors.New("stop after verified config capture")
+	var applied *config.Config
+	deps.validateRules = func(cfg *config.Config) ([]*filter.CompiledRule, error) {
+		applied = cfg
+		return nil, stop
+	}
+
+	err = runServeWithDeps(cmd, nil, deps)
+	if !errors.Is(err, stop) {
+		t.Fatalf("runServeWithDeps() error = %v, want wrapped %v", err, stop)
+	}
+	if !builtFrom.Enabled || len(builtFrom.AllowedSigningKeys) != 1 || builtFrom.AllowedSigningKeys[0].PEM != "pinned-key" {
+		t.Fatalf("verifier trust = %+v, want enabled pinned-key trust", builtFrom)
+	}
+	if applied == nil {
+		t.Fatal("verified config never reached validation")
+	}
+	if !applied.PolicyBundle.Enabled || len(applied.PolicyBundle.AllowedSigningKeys) != 1 || applied.PolicyBundle.AllowedSigningKeys[0].PEM != "pinned-key" {
+		t.Fatalf("applied policy trust = %+v, want pinned trust", applied.PolicyBundle)
+	}
+	if applied.PolicyBundle.SignaturePath != "/candidate/cfg.bundle.json" {
+		t.Fatalf("signature path = %q, want signed candidate path", applied.PolicyBundle.SignaturePath)
+	}
+}
+
+func TestRunServeRejectsSelfAuthenticatedPolicyBundle(t *testing.T) {
+	cfg := testServeConfig()
+	cfg.PolicyBundle.Enabled = true
+	cfg.PolicyBundle.SignaturePath = "/candidate/cfg.bundle.json"
+	cfg.PolicyBundle.AllowedSigningKeys = []config.PolicyBundleSigningKey{{PEM: "candidate-key"}}
+
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) { return cfg, nil }
+	loggerCalls := 0
+	deps.newLogger = func(string, string, string) (*slog.Logger, io.Closer, error) {
+		loggerCalls++
+		return newDiscardLogger(), nil, nil
+	}
+
+	err := runServeWithDeps(newServeCommand(), nil, deps)
+	if err == nil || !strings.Contains(err.Error(), "policy-bundle-trust-config") {
+		t.Fatalf("runServeWithDeps() error = %v, want out-of-band trust guidance", err)
+	}
+	if loggerCalls != 0 {
+		t.Fatalf("newLogger calls = %d, want 0 for self-authenticated candidate", loggerCalls)
+	}
+}
+
+func TestRunServeRejectsTrustConfigThatIsTheCandidateFile(t *testing.T) {
+	sharedPath := filepath.Join(t.TempDir(), "candidate.yaml")
+	trustPath := sharedPath + ".trust"
+	const sharedYAML = `policy_bundle:
+  enabled: true
+  signature_path: /candidate/cfg.bundle.json
+  allowed_signing_keys:
+    - pem: self-authenticated-key
+`
+	if err := os.WriteFile(sharedPath, []byte(sharedYAML), 0o600); err != nil {
+		t.Fatalf("write shared config: %v", err)
+	}
+	if err := os.Symlink(sharedPath, trustPath); err != nil {
+		t.Fatalf("symlink trust config to candidate: %v", err)
+	}
+	originalCfgFile := cfgFile
+	cfgFile = sharedPath
+	t.Cleanup(func() { cfgFile = originalCfgFile })
+
+	cmd := newServeCommand()
+	cmd.Flags().String("policy-bundle-trust-config", "", "")
+	if err := cmd.Flags().Set("policy-bundle-trust-config", trustPath); err != nil {
+		t.Fatalf("set policy trust flag: %v", err)
+	}
+	candidate, err := config.LoadBytes([]byte(sharedYAML))
+	if err != nil {
+		t.Fatalf("parse shared fixture: %v", err)
+	}
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) { return candidate, nil }
+	deps.readConfigBytes = func(string) ([]byte, error) { return []byte(sharedYAML), nil }
+	deps.loadConfigBytes = config.LoadBytes
+	deps.buildBundleVerifier = func(config.PolicyBundleConfig) (policybundle.Verifier, error) {
+		return &stubBundleVerifier{}, nil
+	}
+
+	err = runServeWithDeps(cmd, nil, deps)
+	if err == nil || !strings.Contains(err.Error(), "must be a different file") {
+		t.Fatalf("runServeWithDeps() error = %v, want same-file trust rejection", err)
+	}
+}
+
+func TestRunServeRejectsCompatEnvironmentInSignedMode(t *testing.T) {
+	t.Setenv("CONTAINERS", "1")
+	const trustPath = "/operator/policy-trust.yaml"
+	const candidateYAML = `policy_bundle:
+  signature_path: /candidate/cfg.bundle.json
+`
+	const trustYAML = `policy_bundle:
+  enabled: true
+  allowed_signing_keys:
+    - pem: pinned-key
+`
+
+	cmd := newServeCommand()
+	cmd.Flags().String("policy-bundle-trust-config", "", "")
+	if err := cmd.Flags().Set("policy-bundle-trust-config", trustPath); err != nil {
+		t.Fatalf("set policy trust flag: %v", err)
+	}
+
+	candidate, err := config.LoadBytes([]byte(candidateYAML))
+	if err != nil {
+		t.Fatalf("parse candidate fixture: %v", err)
+	}
+	deps := newServeTestDeps()
+	deps.loadConfig = func(string) (*config.Config, error) { return candidate, nil }
+	deps.readConfigBytes = func(path string) ([]byte, error) {
+		if path == trustPath {
+			return []byte(trustYAML), nil
+		}
+		return []byte(candidateYAML), nil
+	}
+	deps.loadConfigBytes = config.LoadBytes
+	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return &stubEntity{}, nil }
+	deps.buildBundleVerifier = func(config.PolicyBundleConfig) (policybundle.Verifier, error) {
+		return &stubBundleVerifier{res: policybundle.VerifyResult{Signer: "keyed:pinned"}}, nil
+	}
+	validationCalls := 0
+	deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
+		validationCalls++
+		return nil, nil
+	}
+
+	err = runServeWithDeps(cmd, nil, deps)
+	if err == nil || !strings.Contains(err.Error(), "compatibility environment") {
+		t.Fatalf("runServeWithDeps() error = %v, want signed-policy compat rejection", err)
+	}
+	if validationCalls != 0 {
+		t.Fatalf("validateRules calls = %d, want 0 after compat rejection", validationCalls)
 	}
 }
 
@@ -560,13 +771,15 @@ func TestRunServeErrorPaths(t *testing.T) {
 		}
 	})
 
-	t.Run("validate and close log output", func(t *testing.T) {
+	t.Run("validate before opening log output", func(t *testing.T) {
 		deps := newRunServeDeps()
 		var errOut strings.Builder
 		cmd := newServeCommand()
 		cmd.SetErr(&errOut)
 
+		loggerCalls := 0
 		deps.newLogger = func(level, format, output string) (*slog.Logger, io.Closer, error) {
+			loggerCalls++
 			return newDiscardLogger(), &serveTestCloser{err: errors.New("close boom")}, nil
 		}
 		deps.validateRules = func(*config.Config) ([]*filter.CompiledRule, error) {
@@ -577,8 +790,11 @@ func TestRunServeErrorPaths(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "config validation: validation boom") {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(errOut.String(), "failed to close log output: close boom") {
-			t.Fatalf("expected log output close warning, got: %q", errOut.String())
+		if loggerCalls != 0 {
+			t.Fatalf("newLogger calls = %d, want 0 for invalid config", loggerCalls)
+		}
+		if errOut.String() != "" {
+			t.Fatalf("unexpected pre-validation logger output: %q", errOut.String())
 		}
 	})
 
@@ -867,6 +1083,7 @@ func TestRunServeLifecyclePaths(t *testing.T) {
 			shutdownCalled = true
 			return nil
 		}
+		deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(1), nil }
 		deps.removePath = func(string) error {
 			removeCalled = true
 			return nil

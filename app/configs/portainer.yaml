@@ -25,13 +25,18 @@ health:
 # inspected too, and this preset widens those controls to preserve Portainer's
 # expected functionality. Exec and swarm-management writes still require the
 # unsafe opt-in below because Portainer allows arbitrary commands and cluster
-# mutation.
+# mutation. Inspected request bodies have a 30-second read deadline even with
+# access logging enabled; attach and exec-start use the same finite handshake
+# window before a successful protocol upgrade clears it for the live stream.
 request_body:
   container_create:
     allowed_bind_mounts: []
   image_pull:
     allow_all_registries: true
   build:
+    # Covers Docker /build plus Podman /libpod/build primary and URL/image
+    # additional contexts. Podman host/local/multipart and rusage host-file
+    # controls use the global blind-write acknowledgment below.
     allow_remote_context: true
     allow_host_network: true
     allow_run_instructions: true
@@ -40,8 +45,10 @@ request_body:
 # /images/{name}/attestations (Engine API 1.53+) without Portainer or this
 # preset ever having reasoned about it. allow_attestation_statements defaults
 # to false; set explicitly here so the deny posture for full attestation
-# statement content (?statement=true) is visible at the call site rather than
-# relying on the implicit default.
+# statement content is visible at the call site rather than relying on the
+# implicit default. Query values follow daemon boolean semantics: empty, 0,
+# no, false, and none do not request the statement; every other non-empty
+# value, including 1 and yes, does.
 response:
   allow_attestation_statements: false
 

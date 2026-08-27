@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { GithubIcon } from "@/components/github-icon";
 import { SectionHeading } from "@/components/section-heading";
 import { TrackedLink } from "@/components/tracked-link";
@@ -19,8 +20,20 @@ function StarChart({ className }: { className?: string }) {
   return (
     <a href={CHART_HREF} target="_blank" rel="noopener" className={className}>
       {/* Swap on the .dark class (theme toggle), not prefers-color-scheme */}
-      <img src={LIGHT_SRC} alt="Star history chart" className="w-full dark:hidden" />
-      <img src={DARK_SRC} alt="Star history chart" className="hidden w-full dark:block" />
+      <Image
+        src={LIGHT_SRC}
+        alt="Star history chart"
+        width={900}
+        height={460}
+        className="h-auto w-full dark:hidden"
+      />
+      <Image
+        src={DARK_SRC}
+        alt="Star history chart"
+        width={900}
+        height={460}
+        className="hidden h-auto w-full dark:block"
+      />
     </a>
   );
 }

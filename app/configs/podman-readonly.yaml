@@ -17,8 +17,12 @@
 # guardrail. Widen the allowlist yourself (and add the acknowledgment) if
 # your monitoring tool genuinely needs log streaming.
 #
-# No write operations are allowed on either surface — this preset never
-# needs insecure_allow_body_blind_writes either.
+# No write operations are allowed on either surface. This includes native
+# POST /libpod/build. If you add that path later, it uses request_body.build
+# for primary/additional remote contexts, host-network, and Dockerfile RUN
+# inspection. Host volume, local-path additional, and multipart local controls
+# plus rusage output to a daemon-host file additionally require
+# insecure_allow_body_blind_writes.
 #
 # Use for: dashboards and monitoring tools watching a Podman host that want
 # least-privilege reads instead of readonly.yaml's blanket GET /**.

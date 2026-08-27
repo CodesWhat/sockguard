@@ -496,6 +496,10 @@ func (rc *responseCapture) Write(b []byte) (int, error) {
 	return n, err
 }
 
+func (rc *responseCapture) Unwrap() http.ResponseWriter {
+	return rc.ResponseWriter
+}
+
 // Flush delegates to the underlying ResponseWriter if it implements http.Flusher.
 func (rc *responseCapture) Flush() {
 	if f, ok := rc.ResponseWriter.(http.Flusher); ok {

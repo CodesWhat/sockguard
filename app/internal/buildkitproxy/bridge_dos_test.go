@@ -154,7 +154,7 @@ func TestBridgeMaxConcurrentStreamsEnforced(t *testing.T) {
 // off-by-one fix) and one byte OVER it (must trip RESOURCE_EXHAUSTED,
 // stream-local, without tearing down the tunnel).
 func TestBridgeControlMediatedSolveSizeCapBoundary(t *testing.T) {
-	payload := mustMarshal(t, &control.SolveRequest{Ref: "boundary-ref"})
+	payload := mustMarshal(t, &control.SolveRequest{Ref: "boundary-ref", Session: testBuildkitSessionID})
 
 	t.Run("payload exactly at the cap is admitted", func(t *testing.T) {
 		limits := DefaultLimits()

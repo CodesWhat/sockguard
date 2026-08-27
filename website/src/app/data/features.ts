@@ -48,7 +48,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "We parse every container, image, build, volume, network, secret, config, service, swarm, node, and plugin write to block privileged or host-namespace workloads, non-allowlisted mounts/devices, device requests, device cgroup rules, commands, remotes, unsafe network/swarm/node controls, archive writes, and tar imports. We inspect multipart plugin uploads too, and reject oversized bounded bodies with 413 before the inspector runs.",
+      "We parse every container, image, build, volume, network, secret, config, service, swarm, node, and plugin write to block privileged or host-namespace workloads, non-allowlisted mounts/devices, unsafe controls, archive writes, and tar imports. Native Podman builds add fail-closed primary/additional-context, host-mount, and resource-usage host-file handling on top of the shared classic-build policy. Bounded inspectors reject oversized bodies with 413 and enforce a 30-second read deadline through logging and metrics.",
     category: "security",
   },
   {
@@ -66,7 +66,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Stamp label-capable creates, node/swarm claim updates, and build images with an owner label. Labeled list, prune, and event reads are auto-filtered, and cross-owner access is denied across workload and control-plane resources.",
+      "Stamp label-capable creates, node/swarm claim updates, and build images with an owner label. Labeled list, prune, and event reads are auto-filtered, cross-owner access is denied, and method-aware path handling keeps resources named after API actions inside the boundary.",
     category: "control",
   },
   {
@@ -75,7 +75,7 @@ export const features: Feature[] = [
     color: "text-blue-500 dark:text-blue-400",
     bg: "bg-blue-100 dark:bg-blue-900/50",
     description:
-      "Gate callers by source CIDR, bridge-network container labels, mTLS certificate selectors (CN, DNS/IP/URI SAN, SHA-256 SPKI pin), and unix peer credentials before the global policy runs.",
+      "Gate callers by source CIDR, bridge-network container labels, mTLS certificate selectors (CN, DNS/IP/URI SAN, SHA-256 SPKI pin), and unix peer credentials before the global policy runs. The trusted principal and selected profile also isolate mediated BuildKit session state.",
     category: "control",
   },
   {
@@ -102,7 +102,7 @@ export const features: Feature[] = [
     color: "text-amber-500 dark:text-amber-400",
     bg: "bg-amber-100 dark:bg-amber-900/50",
     description:
-      "Our opt-in Prometheus metrics expose request totals, deny counts, latency buckets, active requests, watchdog state, plus build_info and start_time gauges for version panels and uptime alerts. We feed /health from the active Docker socket watchdog and log state transitions; trace/log correlation works without an OTLP exporter.",
+      "Our opt-in Prometheus metrics expose request totals, deny counts, latency buckets, active requests, watchdog state, plus build_info and start_time gauges. Method and unknown-route labels are finite, so caller-controlled values cannot grow the registry without bound. Trace/log correlation works without an OTLP exporter.",
     category: "operations",
   },
   {
@@ -120,7 +120,7 @@ export const features: Feature[] = [
     color: "text-amber-500 dark:text-amber-400",
     bg: "bg-amber-100 dark:bg-amber-900/50",
     description:
-      "Migrating from Tecnativa? We match its full env surface: section vars, ALLOW_RESTARTS, SOCKET_PATH, and LOG_LEVEL. Swap us in without touching your config.",
+      "Migrating from Tecnativa? We match its full env surface in unsigned mode: section vars, ALLOW_RESTARTS, SOCKET_PATH, and LOG_LEVEL. Signed policies reject rule-generating compatibility variables so environment state cannot change verified rules.",
     category: "operations",
   },
   {
@@ -137,7 +137,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "Treat the on-disk YAML config as untrusted until a cosign / sigstore bundle confirms it. Supports keyed (PEM ECDSA/RSA/ed25519) and keyless (Fulcio + Rekor) verification. Bundle is checked at startup and on every hot reload — a bad signature rejects the reload and leaves the running policy untouched.",
+      "Pin keyed or keyless sigstore trust in a separate bootstrap file selected with --policy-bundle-trust-config. The candidate's policy_bundle block carries its signature path, while bootstrap values override any candidate trust fields. Startup and every hot reload verify before applying policy.",
     category: "security",
   },
   {
@@ -155,7 +155,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "We use label selectors to hide labeled list, inspect, and selected service/task log reads for non-matching resources. Env/mount/network/config/plugin/swarm-sensitive metadata is redacted by default, and raw archive/export reads stay behind explicit opt-in.",
+      "We use label selectors to hide labeled list, inspect, and selected service/task log reads. Keyword-named resources stay covered, and combined label plus name/image checks use one bounded inspect. Sensitive metadata is redacted by default, while raw archive/export reads require explicit opt-in.",
     category: "security",
   },
   {
@@ -191,7 +191,7 @@ export const features: Feature[] = [
     color: "text-amber-500 dark:text-amber-400",
     bg: "bg-amber-100 dark:bg-amber-900/50",
     description:
-      "We watch for config changes with fsnotify and support SIGHUP reload with immutable-field gating: listener, upstream socket, and trust-material fields require a restart. `POST /admin/validate` dry-runs a candidate config without touching the running policy. `GET /admin/policy/version` returns the generation counter, config SHA-256, and verified bundle signer. Optionally bind the admin API to a dedicated listener so admin traffic never traverses the Docker-API filter chain.",
+      "We watch for config changes with fsnotify and support SIGHUP reload with immutable-field gating. Signed trust stays pinned in the separate bootstrap file; only the candidate's signature path rotates on reload. `POST /admin/validate` dry-runs a candidate, and `GET /admin/policy/version` returns its generation, SHA-256, and verified signer.",
     category: "operations",
   },
   {

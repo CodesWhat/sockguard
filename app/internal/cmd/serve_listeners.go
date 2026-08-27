@@ -100,8 +100,7 @@ type listenerMember struct {
 	server     *http.Server
 	hijacked   *hijackedConnTracker
 	socketPath string
-	// socketIdentity is the (dev, ino) pair captured immediately after bind,
-	// for explicit listeners[*] entries only (see bindMainListeners). It
+	// socketIdentity is the (dev, ino) pair captured immediately after bind. It
 	// guards shutdown-time removal: a socket path is only unlinked if it
 	// still resolves to the exact inode this process created.
 	socketIdentity socketIdentity
@@ -196,16 +195,14 @@ func socketIdentityFromFileInfo(info os.FileInfo) socketIdentity {
 }
 
 // removeSocketIfOwned unlinks path only when it still identifies the same
-// inode captured at bind time (want). An unknown identity (want.valid ==
-// false — e.g. explicit listeners bound before this hardening, or a legacy
-// member which does not record one) falls back to unconditional removal,
-// matching pre-#149 behavior for those paths.
+// inode captured at bind time (want). An unknown identity is never sufficient
+// authority to remove a path.
 func removeSocketIfOwned(deps *serveDeps, path string, want socketIdentity) error {
 	if path == "" {
 		return nil
 	}
 	if !want.valid {
-		return deps.removePath(path)
+		return nil
 	}
 	got := statSocketIdentity(deps.lstatPath, path)
 	if !got.valid || got != want {
@@ -257,7 +254,7 @@ func bindMainListeners(cfg *config.Config, deps *serveDeps, handler http.Handler
 			ln, err = deps.createServeListener(cfg)
 		}
 		if err != nil {
-			closeMembersReverse(members)
+			closeMembersReverse(deps, members)
 			if explicit {
 				return nil, fmt.Errorf("listener %q: %w", entry.Name, err)
 			}
@@ -280,7 +277,7 @@ func bindMainListeners(cfg *config.Config, deps *serveDeps, handler http.Handler
 			hijacked:   trackHijackedConnections(server),
 			socketPath: entry.Socket,
 		}
-		if explicit && entry.Socket != "" {
+		if entry.Socket != "" {
 			member.socketIdentity = statSocketIdentity(deps.lstatPath, entry.Socket)
 		}
 		board.register(identity, health.ListenerStateBound)
@@ -290,12 +287,13 @@ func bindMainListeners(cfg *config.Config, deps *serveDeps, handler http.Handler
 }
 
 // closeMembersReverse closes every bound member's listener in reverse bind
-// order — the standard two-phase-bind rollback shape. Closing a
-// *net.UnixListener also unlinks its socket file (Go's default
-// SetUnlinkOnClose behavior), so no separate removePath call is needed here.
-func closeMembersReverse(members []*listenerMember) {
+// order, then removes its socket only when the captured identity still owns
+// the path.
+func closeMembersReverse(deps *serveDeps, members []*listenerMember) {
 	for i := len(members) - 1; i >= 0; i-- {
-		_ = members[i].listener.Close()
+		member := members[i]
+		_ = member.listener.Close()
+		_ = removeSocketIfOwned(deps, member.socketPath, member.socketIdentity)
 	}
 }
 

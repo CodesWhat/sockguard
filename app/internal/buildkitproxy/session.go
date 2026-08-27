@@ -5,18 +5,57 @@ import (
 	"time"
 )
 
+const (
+	// BuildKit currently generates 25-byte lowercase base-36 identifiers for
+	// sessions, refs, and upload ids. These bounds leave ample compatibility
+	// room for opaque future formats while preventing one gRPC message from
+	// pinning frame-sized strings in the long-lived registry indexes.
+	maxBuildkitSessionIDBytes = 256
+	maxBuildkitRefBytes       = 256
+	maxBuildkitUploadIDBytes  = 256
+
+	// One Control tunnel normally names one BuildKit session. This generous
+	// ceiling prevents repeated Solves that reuse one ref from bypassing
+	// MaxRefsPerSession and growing solveSessions without bound.
+	maxBuildkitSessionIDsPerSession = 256
+
+	// Upload callbacks normally start while Solve is active. Keeping their
+	// admission valid for a full hour preserves delayed Pull calls after the
+	// /grpc control tunnel closes while ensuring abandoned ids eventually stop
+	// consuming a principal's quota.
+	uploadKeyTTL = time.Hour
+)
+
+// canonicalBuildkitSessionID validates the opaque identifier shared by the
+// POST /session header and Control/Solve.Session. BuildKit's current base-36
+// ids are a strict subset of this conservative ASCII alphabet; UUID-shaped
+// and similarly opaque future ids remain compatible without admitting path
+// separators, whitespace, control bytes, or non-ASCII confusables.
+func canonicalBuildkitSessionID(id string) (string, bool) {
+	if id == "" || len(id) > maxBuildkitSessionIDBytes {
+		return "", false
+	}
+	for i := range len(id) {
+		c := id[i]
+		if (c >= 'a' && c <= 'z') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '.' {
+			continue
+		}
+		return "", false
+	}
+	return id, true
+}
+
 // SessionKey identifies who a mediated BuildKit tunnel belongs to. Per the
 // #185 Phase 2 sign-off ("session/ref registry keyed by client identity +
-// profile — never UUID alone"), the registry never trusts the
-// client-supplied X-Docker-Expose-Session-Uuid value as its key: that header
-// is attacker-controlled and two unrelated clients could present the same
-// (or colliding) value. ClientIdentity and Profile are resolved by the
-// caller — cmd/serve.go's wiring layer, which owns internal/clientacl and
-// must not be imported back into this package (see mediator.go's Dialer doc
-// comment for the same layering reason) — from whatever identity signal
-// sockguard already trusts elsewhere for that connection (TLS client
-// certificate CN, unix peer credentials, or at minimum the remote address),
-// paired with the policy profile selected for the request.
+// profile — never UUID alone"), the registry never trusts a client-supplied
+// BuildKit session identifier by itself. ClientIdentity and Profile are
+// resolved by cmd/serve.go's wiring layer from a verified certificate
+// fingerprint, captured Unix peer credentials, or a normalized remote host
+// fallback. Cross-endpoint capabilities add the BuildKit session identifier
+// as a third, untrusted-but-correlating component in buildkitSessionKey.
 type SessionKey struct {
 	ClientIdentity string
 	Profile        string
@@ -28,9 +67,7 @@ type SessionKey struct {
 // that actually opened it instead of trusting a caller-supplied ref string
 // on its own (the #185 synthesis's "buildkit_ref_not_owned" audit reason,
 // Control/Status's "ref must belong to an admitted Solve from the same
-// client/profile" requirement). Phase 2 defines the shape and gives Session
-// a place to hold it, but nothing populates it yet — no phase-2 code path
-// ever calls Session.PutRef.
+// client/profile" requirement).
 type RefState struct {
 	Ref      string
 	OpenedAt time.Time
@@ -44,7 +81,9 @@ type RefState struct {
 // profile is frozen at tunnel open"). ID is a sockguard-assigned, per-process
 // monotonic counter, never derived from client input, used to correlate this
 // session's audit log lines without exposing (or trusting) the client's own
-// session UUID.
+// session ID. ClientUUID is the BuildKit-generated correlation component
+// presented on POST /session; registry authorization always combines it with
+// Key and never treats it as a principal.
 type Session struct {
 	ID         uint64
 	Key        SessionKey
@@ -53,44 +92,18 @@ type Session struct {
 	ClientUUID string
 	OpenedAt   time.Time
 
-	mu   sync.Mutex
-	Refs map[string]*RefState
-}
-
-// PutRef records ref as owned by this session. Phase 3+ calls this when a
-// Control/Solve this session issued completes; Phase 2 never calls it in any
-// production code path, but the method exists now so the registry's shape
-// doesn't change out from under the phase that actually needs it.
-func (s *Session) PutRef(ref string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Refs[ref] = &RefState{Ref: ref, OpenedAt: time.Now()}
-}
-
-// OwnsRef reports whether ref was previously recorded via PutRef on this
-// session.
-func (s *Session) OwnsRef(ref string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.Refs[ref]
-	return ok
+	mu               sync.Mutex
+	Refs             map[string]*RefState
+	buildkitSessions map[string]struct{}
 }
 
 // tryPutRef atomically checks the per-session cap (maxRefs <= 0 disables it)
 // and records ref locally if there's room, reporting whether ref is now
 // admitted (ok) and whether this call is what newly admitted it (isNew).
-// isNew distinguishes a genuinely new ref from a re-PutRef of one the
-// session already holds: SessionRegistry.PutRef must only increment the
-// registry-wide refcount once per distinct ref per session, matching
-// exactly how Close later decrements it once per entry in s.Refs — an
-// unconditional increment on every call would let a client that calls Solve
-// twice with the same Ref leak the registry-wide count by one forever, since
-// Close only ever removes one contribution per distinct ref regardless of
-// how many times PutRef added it locally. SessionRegistry.PutRef calls this
-// under s.mu exactly once so the check-then-insert can never race against a
-// concurrent PutRef call on the same session from another HTTP/2 stream
-// (client-driven concurrency the streamAbuseGuard doc comment already notes
-// as a live abuse surface).
+// isNew distinguishes a genuinely new ref from a repeated admission of one
+// the session already holds: SessionRegistry.PutRef must only increment the
+// registry-wide refcount once per distinct ref per session, matching exactly
+// how Close later decrements it once per entry in s.Refs.
 func (s *Session) tryPutRef(ref string, maxRefs int) (ok, isNew bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,6 +130,25 @@ func (s *Session) refsSnapshot() []string {
 	return out
 }
 
+func (s *Session) buildkitSessionsSnapshot() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, 0, len(s.buildkitSessions))
+	for id := range s.buildkitSessions {
+		out = append(out, id)
+	}
+	return out
+}
+
+type buildkitSessionKey struct {
+	Principal SessionKey
+	ID        string
+}
+
+type uploadKeyState struct {
+	ExpiresAt time.Time
+}
+
 // SessionRegistry tracks every currently-open mediated BuildKit tunnel.
 // Safe for concurrent use.
 type SessionRegistry struct {
@@ -126,7 +158,7 @@ type SessionRegistry struct {
 
 	// refOwners is Phase 3's ref-ownership index: which SessionKey (client
 	// identity + profile — see SessionKey's doc comment) admitted a given
-	// BuildKit ref via PutRef, so a later Control/Status call naming that ref
+	// BuildKit ref via an admitted Solve, so a later Control/Status call naming that ref
 	// can be checked with OwnsRef against the identity+profile that ran the
 	// Solve, NOT against the single connection/Session.ID that happened to
 	// carry it. buildx typically opens Solve and Status as two concurrent
@@ -142,13 +174,20 @@ type SessionRegistry struct {
 	// only removes the contribution the session it's closing actually made.
 	refOwners map[SessionKey]map[string]int
 
-	// uploadKeys is Phase 5 (issue #185)'s one-use Upload/Pull token index:
-	// which SessionKey admitted a given upload-URL id (see upload.go's
-	// admitSolveUploadKeys, called from bridge.go's forwardControlMediated
+	// solveSessions binds session-side capabilities to the BuildKit session
+	// identifier named by Control/Solve and presented by POST /session. The
+	// caller-supplied identifier is safe only as the final component of this
+	// key; Principal remains the trusted client identity plus policy profile.
+	solveSessions map[buildkitSessionKey]int
+
+	// uploadKeys is Phase 5 (issue #185)'s one-use Upload/Pull credential index:
+	// which principal/profile/BuildKit-session scope admitted a given upload
+	// URL id (see upload.go's
+	// solveUploadKeys, called from bridge.go's forwardControlMediated
 	// once a Solve naming an "http://buildkit-session/<id>" context/
-	// context:<name> FrontendAttrs value is admitted). Scoped to SessionKey
-	// rather than a single Session for the identical structural reason
-	// refOwners is: the admitting call (Control/Solve, over POST /grpc) and
+	// context:<name> FrontendAttrs value is admitted). Scoped to
+	// buildkitSessionKey rather than a single tunnel because the admitting
+	// call (Control/Solve, over POST /grpc) and
 	// the consuming call (Upload/Pull, over POST /session) are always two
 	// DIFFERENT hijacked connections — buildx dials /session and /grpc
 	// separately — so they can never share one Session.ID. Unlike
@@ -158,42 +197,77 @@ type SessionRegistry struct {
 	// yet-consumed token has no session of its own to tie a release to
 	// (the admitting /grpc session may legitimately close before the
 	// /session tunnel's Pull call ever arrives), so it stays valid until
-	// consumed or the process restarts. AdmitUploadKey bounds the SET SIZE
-	// per SessionKey via Limits.MaxUploadKeysPerSession to keep this from
-	// growing unboundedly for one client identity across many builds.
-	uploadKeys map[SessionKey]map[string]struct{}
+	// consumed or the process restarts. AdmitSolve bounds the SET SIZE per
+	// SessionKey via Limits.MaxUploadKeysPerSession to keep this from growing
+	// unboundedly for one client identity across many builds.
+	uploadKeys map[buildkitSessionKey]map[string]uploadKeyState
+
+	now func() time.Time
 }
+
+type solveAdmissionResult uint8
+
+const (
+	solveAdmissionSucceeded solveAdmissionResult = iota
+	solveAdmissionRefLimitExceeded
+	solveAdmissionUploadLimitExceeded
+	solveAdmissionSessionIDMissing
+	solveAdmissionSessionIDInvalid
+	solveAdmissionSessionLimitExceeded
+	solveAdmissionRefInvalid
+	solveAdmissionUploadIDInvalid
+	solveAdmissionSessionClosed
+)
 
 // NewSessionRegistry returns an empty registry.
 func NewSessionRegistry() *SessionRegistry {
-	return &SessionRegistry{sessions: make(map[uint64]*Session)}
+	return &SessionRegistry{sessions: make(map[uint64]*Session), now: time.Now}
+}
+
+// setNow replaces the registry clock. Production uses time.Now; tests inject
+// a deterministic clock so upload expiry can be exercised without sleeping.
+func (r *SessionRegistry) setNow(now func() time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if now == nil {
+		r.now = time.Now
+		return
+	}
+	r.now = now
+}
+
+func (r *SessionRegistry) currentTimeLocked() time.Time {
+	if r.now == nil {
+		return time.Now()
+	}
+	return r.now()
 }
 
 // Open registers a new session for key and returns it. clientUUID is the
-// client-supplied X-Docker-Expose-Session-Uuid header value (or empty
-// string) — recorded as advisory metadata for logs/correlation only; see
-// SessionKey's doc comment for why it is never the registry's trust
-// boundary.
+// client-supplied X-Docker-Expose-Session-Uuid header value (or empty on the
+// /grpc control tunnel). It is used only in combination with key; see
+// SessionKey's doc comment.
 func (r *SessionRegistry) Open(key SessionKey, endpoint Endpoint, clientUUID string) *Session {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.nextID++
 	s := &Session{
-		ID:         r.nextID,
-		Key:        key,
-		Endpoint:   endpoint,
-		Profile:    key.Profile,
-		ClientUUID: clientUUID,
-		OpenedAt:   time.Now(),
-		Refs:       make(map[string]*RefState),
+		ID:               r.nextID,
+		Key:              key,
+		Endpoint:         endpoint,
+		Profile:          key.Profile,
+		ClientUUID:       clientUUID,
+		OpenedAt:         time.Now(),
+		Refs:             make(map[string]*RefState),
+		buildkitSessions: make(map[string]struct{}),
 	}
 	r.sessions[s.ID] = s
 	return s
 }
 
 // Close removes the session with the given ID, releasing every ref it
-// admitted via PutRef from the registry-wide ownership index (see
+// admitted via a Solve from the registry-wide ownership index (see
 // refOwners's doc comment) — a ref another still-open session sharing the
 // same SessionKey also admitted stays owned; only this session's own
 // contribution is released. A no-op if id doesn't exist (already closed, or
@@ -201,7 +275,7 @@ func (r *SessionRegistry) Open(key SessionKey, endpoint Endpoint, clientUUID str
 //
 // The whole operation — unregistering from r.sessions, snapshotting the
 // session's refs, and decrementing their registry-wide counts — happens
-// under ONE r.mu critical section, mirroring PutRef (see its doc comment
+// under ONE r.mu critical section, mirroring admitSolve (see its doc comment
 // for the two races this serialization closes and for the r.mu → s.mu lock
 // ordering refsSnapshot's nested s.mu acquisition follows).
 func (r *SessionRegistry) Close(id uint64) {
@@ -214,10 +288,6 @@ func (r *SessionRegistry) Close(id uint64) {
 	delete(r.sessions, id)
 
 	refs := s.refsSnapshot()
-	if len(refs) == 0 {
-		return
-	}
-
 	owners := r.refOwners[s.Key]
 	for _, ref := range refs {
 		if owners[ref] <= 1 {
@@ -228,6 +298,15 @@ func (r *SessionRegistry) Close(id uint64) {
 	}
 	if len(owners) == 0 {
 		delete(r.refOwners, s.Key)
+	}
+
+	for _, buildkitSessionID := range s.buildkitSessionsSnapshot() {
+		scope := buildkitSessionKey{Principal: s.Key, ID: buildkitSessionID}
+		if r.solveSessions[scope] <= 1 {
+			delete(r.solveSessions, scope)
+		} else {
+			r.solveSessions[scope]--
+		}
 	}
 }
 
@@ -246,40 +325,16 @@ func (r *SessionRegistry) Len() int {
 	return len(r.sessions)
 }
 
-// PutRef registers ref as owned by session s, both locally (s.Refs, via
-// Session.tryPutRef — used above by Close to know what to release) and under
-// s.Key in the registry-wide ownership index OwnsRef consults. Returns false
-// without recording anything if s already holds maxRefs distinct refs (see
-// Limits.MaxRefsPerSession); maxRefs <= 0 disables the bound.
-//
-// The whole operation — confirming s is still registered in r.sessions,
-// admitting the ref locally via tryPutRef, and publishing it to the
-// registry-wide index — happens under ONE r.mu critical section, mirroring
-// Close. Serializing the two on r.mu closes two races a finer-grained
-// scheme was shown to leave open:
-//
-//  1. A PutRef whose tryPutRef insert lands after Close has already taken
-//     its (then-empty) refsSnapshot would still publish to refOwners
-//     moments later — an entry for a session Close has already run for and
-//     will never run for again, so nothing would ever release it, and
-//     OwnsRef would report true for that SessionKey/ref for the rest of
-//     the process's lifetime.
-//  2. The mirror image: a tryPutRef insert landing between Close's
-//     r.sessions delete and its refsSnapshot puts the ref INTO the
-//     snapshot without it ever reaching refOwners — Close's decrement loop
-//     would then release a count this session never contributed, stealing
-//     ownership from a still-open sibling session sharing the same
-//     SessionKey (its Status calls would start failing
-//     buildkit_ref_not_owned).
-//
-// Lock ordering: tryPutRef (and Close's refsSnapshot) acquire s.mu strictly
-// NESTED inside the r.mu critical section, and no code path ever takes them
-// in the opposite order, so the nesting cannot deadlock.
+// PutRef registers ref as owned by session s, both locally for Close cleanup
+// and under s.Key in the registry-wide ownership index. Returns false without
+// recording anything if the session is closed or already holds maxRefs
+// distinct refs; maxRefs <= 0 disables the bound. Production Solve admission
+// uses admitSolve so ref and upload-id publication stay atomic.
 func (r *SessionRegistry) PutRef(s *Session, ref string, maxRefs int) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, stillOpen := r.sessions[s.ID]; !stillOpen {
+	if open, stillOpen := r.sessions[s.ID]; !stillOpen || open != s {
 		return false
 	}
 
@@ -288,18 +343,14 @@ func (r *SessionRegistry) PutRef(s *Session, ref string, maxRefs int) bool {
 		return false
 	}
 	if !isNew {
-		// s already held this exact ref (a repeated PutRef, e.g. a retried
-		// Solve with the same client-chosen Ref) — the registry-wide
-		// refcount was already incremented for it once; see tryPutRef's doc
-		// comment for why incrementing again here would leak the count.
 		return true
 	}
 
 	if r.refOwners == nil {
 		r.refOwners = make(map[SessionKey]map[string]int)
 	}
-	owners, ok := r.refOwners[s.Key]
-	if !ok {
+	owners := r.refOwners[s.Key]
+	if owners == nil {
 		owners = make(map[string]int)
 		r.refOwners[s.Key] = owners
 	}
@@ -307,7 +358,136 @@ func (r *SessionRegistry) PutRef(s *Session, ref string, maxRefs int) bool {
 	return true
 }
 
-// OwnsRef reports whether ref was admitted via PutRef by ANY session sharing
+// admitSolve atomically publishes a Solve's ref ownership and upload ids.
+// Every limit and session-liveness check runs before either index is mutated,
+// so a rejected Solve cannot leave behind ownership or a usable partial id.
+func (r *SessionRegistry) admitSolve(s *Session, buildkitSessionID, ref string, uploadIDs []string, maxRefs, maxUploadKeys int) solveAdmissionResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if open, stillOpen := r.sessions[s.ID]; !stillOpen || open != s {
+		return solveAdmissionSessionClosed
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if buildkitSessionID == "" {
+		return solveAdmissionSessionIDMissing
+	}
+	if _, ok := canonicalBuildkitSessionID(buildkitSessionID); !ok {
+		return solveAdmissionSessionIDInvalid
+	}
+	if ref == "" || len(ref) > maxBuildkitRefBytes {
+		return solveAdmissionRefInvalid
+	}
+	for _, id := range uploadIDs {
+		if id == "" || len(id) > maxBuildkitUploadIDBytes {
+			return solveAdmissionUploadIDInvalid
+		}
+	}
+
+	_, refExists := s.Refs[ref]
+	if !refExists && maxRefs > 0 && len(s.Refs) >= maxRefs {
+		return solveAdmissionRefLimitExceeded
+	}
+	_, buildkitSessionExists := s.buildkitSessions[buildkitSessionID]
+	if !buildkitSessionExists && len(s.buildkitSessions) >= maxBuildkitSessionIDsPerSession {
+		return solveAdmissionSessionLimitExceeded
+	}
+
+	now := r.currentTimeLocked()
+	totalUploadIDs := r.purgeExpiredUploadKeysForPrincipalLocked(s.Key, now)
+	scope := buildkitSessionKey{Principal: s.Key, ID: buildkitSessionID}
+	existingUploadIDs := r.uploadKeys[scope]
+	newUploadIDs := make([]string, 0, len(uploadIDs))
+	seen := make(map[string]struct{}, len(uploadIDs))
+	for _, id := range uploadIDs {
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		if _, exists := existingUploadIDs[id]; !exists {
+			newUploadIDs = append(newUploadIDs, id)
+		}
+	}
+	if maxUploadKeys > 0 && totalUploadIDs+len(newUploadIDs) > maxUploadKeys {
+		return solveAdmissionUploadLimitExceeded
+	}
+
+	if !refExists {
+		s.Refs[ref] = &RefState{Ref: ref, OpenedAt: time.Now()}
+		if r.refOwners == nil {
+			r.refOwners = make(map[SessionKey]map[string]int)
+		}
+		owners := r.refOwners[s.Key]
+		if owners == nil {
+			owners = make(map[string]int)
+			r.refOwners[s.Key] = owners
+		}
+		owners[ref]++
+	}
+	if !buildkitSessionExists {
+		s.buildkitSessions[buildkitSessionID] = struct{}{}
+		if r.solveSessions == nil {
+			r.solveSessions = make(map[buildkitSessionKey]int)
+		}
+		r.solveSessions[scope]++
+	}
+	if len(newUploadIDs) > 0 {
+		if r.uploadKeys == nil {
+			r.uploadKeys = make(map[buildkitSessionKey]map[string]uploadKeyState)
+		}
+		ids := r.uploadKeys[scope]
+		if ids == nil {
+			ids = make(map[string]uploadKeyState)
+			r.uploadKeys[scope] = ids
+		}
+		for _, id := range newUploadIDs {
+			ids[id] = uploadKeyState{ExpiresAt: now.Add(uploadKeyTTL)}
+		}
+	}
+	return solveAdmissionSucceeded
+}
+
+// purgeExpiredUploadKeysForPrincipalLocked removes expired upload ids for one
+// principal/profile and returns the number of live ids still consuming that
+// principal's quota. Caller must hold r.mu.
+func (r *SessionRegistry) purgeExpiredUploadKeysForPrincipalLocked(principal SessionKey, now time.Time) int {
+	total := 0
+	for scope, ids := range r.uploadKeys {
+		if scope.Principal != principal {
+			continue
+		}
+		for id, state := range ids {
+			if !now.Before(state.ExpiresAt) {
+				delete(ids, id)
+				continue
+			}
+			total++
+		}
+		if len(ids) == 0 {
+			delete(r.uploadKeys, scope)
+		}
+	}
+	return total
+}
+
+// purgeExpiredUploadKeysForScopeLocked removes expired upload ids for one
+// principal/profile/session scope. Caller must hold r.mu.
+func (r *SessionRegistry) purgeExpiredUploadKeysForScopeLocked(scope buildkitSessionKey, now time.Time) {
+	ids := r.uploadKeys[scope]
+	for id, state := range ids {
+		if !now.Before(state.ExpiresAt) {
+			delete(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		delete(r.uploadKeys, scope)
+	}
+}
+
+// OwnsRef reports whether ref was admitted by ANY session sharing
 // key — see refOwners's doc comment for why ownership is checked at the
 // client-identity+profile granularity, not per individual connection.
 func (r *SessionRegistry) OwnsRef(key SessionKey, ref string) bool {
@@ -316,48 +496,19 @@ func (r *SessionRegistry) OwnsRef(key SessionKey, ref string) bool {
 	return r.refOwners[key][ref] > 0
 }
 
-// HasAdmittedSolve reports whether key has admitted at least one
-// Control/Solve ref that is still owned (i.e. OwnsRef would return true for
-// SOME ref under key). Phase 5's FileSend/DiffCopy mediation
+// HasAdmittedSolve reports whether key and buildkitSessionID have admitted at
+// least one Control/Solve on an open control tunnel. Phase 5's
+// FileSend/DiffCopy mediation
 // (filesend.go) uses this to enforce the #185 synthesis's "allow only when
-// bound to an admitted Solve from the same SessionKey" rule: moby.filesync.
+// bound to an admitted Solve from the same correlated session" rule: moby.filesync.
 // v1.FileSend.DiffCopy's BytesMessage carries no ref (or any other
 // identifying field) of its own to check with OwnsRef directly, so the only
-// meaningful check available is "has this identity+profile solved anything
-// at all yet."
-func (r *SessionRegistry) HasAdmittedSolve(key SessionKey) bool {
+// meaningful check available is "has this principal/profile/session scope
+// solved anything at all yet."
+func (r *SessionRegistry) HasAdmittedSolve(key SessionKey, buildkitSessionID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return len(r.refOwners[key]) > 0
-}
-
-// AdmitUploadKey registers id as a one-use Upload/Pull token for key,
-// admitting it only if key currently holds fewer than maxKeys
-// not-yet-consumed tokens (maxKeys <= 0 disables the bound). Returns false
-// without recording anything once the bound is hit. A duplicate id already
-// admitted-but-not-yet-consumed is a harmless no-op success (mirrors
-// PutRef's tolerance of a repeated call) rather than a second, redundant
-// bound check.
-func (r *SessionRegistry) AdmitUploadKey(key SessionKey, id string, maxKeys int) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	if r.uploadKeys == nil {
-		r.uploadKeys = make(map[SessionKey]map[string]struct{})
-	}
-	keys, ok := r.uploadKeys[key]
-	if !ok {
-		keys = make(map[string]struct{})
-		r.uploadKeys[key] = keys
-	}
-	if _, exists := keys[id]; exists {
-		return true
-	}
-	if maxKeys > 0 && len(keys) >= maxKeys {
-		return false
-	}
-	keys[id] = struct{}{}
-	return true
+	return r.solveSessions[buildkitSessionKey{Principal: key, ID: buildkitSessionID}] > 0
 }
 
 // ConsumeUploadKey reports whether id is a currently-valid, not-yet-consumed
@@ -368,11 +519,13 @@ func (r *SessionRegistry) AdmitUploadKey(key SessionKey, id string, maxKeys int)
 // cases mean "this is not currently a valid token for a fresh Pull,"
 // deliberately collapsed to one outcome — see upload.go's
 // buildkit_upload_token_invalid audit reason.
-func (r *SessionRegistry) ConsumeUploadKey(key SessionKey, id string) bool {
+func (r *SessionRegistry) ConsumeUploadKey(key SessionKey, buildkitSessionID, id string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	keys, ok := r.uploadKeys[key]
+	scope := buildkitSessionKey{Principal: key, ID: buildkitSessionID}
+	r.purgeExpiredUploadKeysForScopeLocked(scope, r.currentTimeLocked())
+	keys, ok := r.uploadKeys[scope]
 	if !ok {
 		return false
 	}
@@ -381,7 +534,7 @@ func (r *SessionRegistry) ConsumeUploadKey(key SessionKey, id string) bool {
 	}
 	delete(keys, id)
 	if len(keys) == 0 {
-		delete(r.uploadKeys, key)
+		delete(r.uploadKeys, scope)
 	}
 	return true
 }

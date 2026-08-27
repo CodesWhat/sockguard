@@ -9,7 +9,9 @@ native surface at `/libpod/...`. Sockguard proxies both from one instance —
 point `upstream.socket` at the Podman socket instead of Docker's, and every
 existing rule, preset, and inspector that targets the Docker-compat paths
 keeps working unchanged. The `/libpod/...` surface gets its own,
-structurally separate set of inspectors described below.
+structurally separate set of inspectors described below, except native build,
+which shares the existing `request_body.build` policy because both endpoints
+carry the same build-context and query controls.
 
 ```yaml
 upstream:
@@ -48,6 +50,7 @@ on.
 |---|---|---|
 | `POST /libpod/containers/create` | `request_body.libpod_container_create` | Podman's native SpecGenerator create body. Field names mirror `container_create` where the semantics map across (privileged, host netns/pidns/ipcns/userns, bind-mount/device allowlists, capabilities, seccomp/AppArmor, `image_trust`), plus two libpod-only gates: `allow_systemd_mode` and `allow_custom_id_mappings`. |
 | `POST /libpod/pods/create` | `request_body.libpod_pod_create` | Pods have no Docker-compat equivalent. Covers pod-level host network (`allow_host_network`), shared PID namespace (`allow_shared_pid_namespace`), and the infra image's registry (`allowed_infra_image_registries`). |
+| `POST /libpod/build` | `request_body.build`, shared with Docker `POST /build` | Covers primary remote contexts, URL/image `additionalbuildcontexts`, `networkmode=host`, and Dockerfiles containing `RUN`. Host/local/multipart and resource-usage host-file controls require the global blind-write acknowledgment. Direct and version-prefixed requests use the same tar/gzip bounds and body-sensitive startup validation as Docker's classic builder. |
 | `POST /libpod/containers/{name}/exec`, `POST /libpod/exec/{id}/start` | `request_body.exec` — **shared with Docker-compat** | libpod exec bodies use Docker's own field names on the wire, so there is deliberately no separate `libpod_exec` block. One `allowed_commands`/`allow_privileged`/`allow_root_user`/env-var policy governs exec on both surfaces, so nothing can be configured for one path family and forgotten for the other. |
 | `POST /libpod/volumes/create` | `request_body.libpod_volume` | Reuses the `volume` config shape, decoded against libpod's wire format (driver options live under `Options`, not `DriverOpts`). |
 | `POST /libpod/networks/create` | `request_body.libpod_network` | Reuses the `network` config shape, decoded against libpod's wire format (snake_case fields, no swarm/ingress/attachable/config-only concepts — libpod predates and is independent of Docker's swarm mode). |
@@ -66,6 +69,19 @@ modeling is out of scope for v1.6. Admitting any of them requires the same
 `insecure_allow_body_blind_writes: true` acknowledgment that covers
 uninspected exec, exactly like every other body-bearing write sockguard
 cannot yet constrain.
+
+`POST /libpod/build` has partial, fail-closed coverage instead of being a wholly
+blind endpoint. An allow rule is checked for primary remote contexts, every
+current or legacy `additionalbuildcontexts` value, host networking, and
+Dockerfile `RUN` instructions before Podman sees it. URL/image additional
+contexts use `request_body.build.allow_remote_context`. Host volume controls
+(`volume`, `volumes`, and `transientRunMounts`), `localpath:` additional
+contexts, multipart local contexts, and `rusage` output to the daemon-host path
+named by `rusagelogfile` require
+`insecure_allow_body_blind_writes: true` because no narrower policy models
+those host-facing inputs. Malformed, empty, unsupported, and duplicate
+additional-context definitions stay denied even when all acknowledgments are
+enabled.
 
 Treat `play/kube` with more caution than a typical blind write. A single
 request can carry a **multi-container, multi-pod** Kubernetes manifest —
@@ -120,6 +136,10 @@ same way they cover Docker-compat:
   volumes, secrets — is owner-filtered and visibility-filtered, so switching
   a client from Docker-compat to libpod-native paths is not a way around
   isolation configured on the Docker-compat side.
+- Resource names that happen to equal an API action word remain protected.
+  Owner matching reserves keywords only for the exact method and collection
+  path, while `GET` and `HEAD` visibility treats write-only keywords as normal
+  resource identifiers.
 - libpod network inspect responses are unwrapped from Podman's occasional
   single-element-array envelope (`GET /libpod/networks/{id}/json` sometimes
   returns `[{...}]` instead of a bare object) before label extraction.

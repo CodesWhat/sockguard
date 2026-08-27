@@ -1,27 +1,42 @@
 package ownership
 
-import "strings"
+import (
+	"net/http"
+	"strings"
+)
 
-func needsOwnerFilter(normPath string) bool {
+func needsOwnerFilter(method, normPath string) bool {
+	if method == http.MethodPost {
+		switch normPath {
+		case "/containers/prune", "/images/prune", "/networks/prune", "/volumes/prune":
+			return true
+		default:
+			return false
+		}
+	}
+	if method != http.MethodGet && method != http.MethodHead {
+		return false
+	}
 	switch normPath {
-	case "/events", "/containers/json", "/containers/prune", "/images/json", "/images/prune", "/networks", "/networks/prune", "/volumes", "/volumes/prune", "/services", "/tasks", "/secrets", "/configs", "/nodes":
+	case "/events", "/containers/json", "/images/json", "/networks", "/volumes", "/services", "/tasks", "/secrets", "/configs", "/nodes":
 		return true
 	default:
 		return false
 	}
 }
 
-func containerIdentifier(normPath string) (string, bool) {
+func containerIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, "/containers/") {
 		return "", false
 	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/containers/"), "/")
-	switch identifier {
-	case "", "create", "json", "prune":
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/containers/"), "/")
+	if identifier == "" {
 		return "", false
-	default:
-		return identifier, true
 	}
+	if !hasTail && ((method == http.MethodGet || method == http.MethodHead) && identifier == "json" || method == http.MethodPost && (identifier == "create" || identifier == "prune")) {
+		return "", false
+	}
+	return identifier, true
 }
 
 func execIdentifier(normPath string) (string, bool) {
@@ -35,40 +50,49 @@ func execIdentifier(normPath string) (string, bool) {
 	return identifier, true
 }
 
-func networkIdentifier(normPath string) (string, bool) {
+func networkIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, "/networks/") {
 		return "", false
 	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/networks/"), "/")
-	switch identifier {
-	case "", "create", "prune":
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/networks/"), "/")
+	if identifier == "" {
 		return "", false
-	default:
-		return identifier, true
 	}
+	if !hasTail && method == http.MethodPost && (identifier == "create" || identifier == "prune") {
+		return "", false
+	}
+	return identifier, true
 }
 
-func volumeIdentifier(normPath string) (string, bool) {
+func volumeIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, "/volumes/") {
 		return "", false
 	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/volumes/"), "/")
-	switch identifier {
-	case "", "create", "prune":
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/volumes/"), "/")
+	if identifier == "" {
 		return "", false
-	default:
-		return identifier, true
 	}
+	if !hasTail && method == http.MethodPost && (identifier == "create" || identifier == "prune") {
+		return "", false
+	}
+	return identifier, true
 }
 
-func imageIdentifier(normPath string) (string, bool) {
+func imageIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, "/images/") {
 		return "", false
 	}
 	rest := strings.TrimPrefix(normPath, "/images/")
-	switch rest {
-	case "", "json", "create", "search", "get", "load", "prune":
+	if rest == "" {
 		return "", false
+	}
+	if !strings.Contains(rest, "/") {
+		if (method == http.MethodGet || method == http.MethodHead) && (rest == "json" || rest == "search" || rest == "get") {
+			return "", false
+		}
+		if method == http.MethodPost && (rest == "create" || rest == "load" || rest == "prune") {
+			return "", false
+		}
 	}
 
 	// "/get" exports a single image as a tarball (GET /images/{name}/get) — a
@@ -90,17 +114,18 @@ func imageIdentifier(normPath string) (string, bool) {
 	return rest, true
 }
 
-func serviceIdentifier(normPath string) (string, bool) {
+func serviceIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, "/services/") {
 		return "", false
 	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/services/"), "/")
-	switch identifier {
-	case "", "create":
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/services/"), "/")
+	if identifier == "" {
 		return "", false
-	default:
-		return identifier, true
 	}
+	if !hasTail && method == http.MethodPost && identifier == "create" {
+		return "", false
+	}
+	return identifier, true
 }
 
 func isServiceUpdatePath(normPath string) bool {
@@ -108,7 +133,7 @@ func isServiceUpdatePath(normPath string) bool {
 		return false
 	}
 	identifier, tail, ok := strings.Cut(strings.TrimPrefix(normPath, "/services/"), "/")
-	return ok && identifier != "" && identifier != "create" && tail == "update"
+	return ok && identifier != "" && tail == "update"
 }
 
 func taskIdentifier(normPath string) (string, bool) {
@@ -122,30 +147,32 @@ func taskIdentifier(normPath string) (string, bool) {
 	return identifier, true
 }
 
-func secretIdentifier(normPath string) (string, bool) {
+func secretIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, "/secrets/") {
 		return "", false
 	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/secrets/"), "/")
-	switch identifier {
-	case "", "create":
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/secrets/"), "/")
+	if identifier == "" {
 		return "", false
-	default:
-		return identifier, true
 	}
+	if !hasTail && method == http.MethodPost && identifier == "create" {
+		return "", false
+	}
+	return identifier, true
 }
 
-func configIdentifier(normPath string) (string, bool) {
+func configIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, "/configs/") {
 		return "", false
 	}
-	identifier, _, _ := strings.Cut(strings.TrimPrefix(normPath, "/configs/"), "/")
-	switch identifier {
-	case "", "create":
+	identifier, _, hasTail := strings.Cut(strings.TrimPrefix(normPath, "/configs/"), "/")
+	if identifier == "" {
 		return "", false
-	default:
-		return identifier, true
 	}
+	if !hasTail && method == http.MethodPost && identifier == "create" {
+		return "", false
+	}
+	return identifier, true
 }
 
 func nodeIdentifier(normPath string) (string, bool) {

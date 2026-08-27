@@ -100,6 +100,16 @@ func TestReadGRPCFrame(t *testing.T) {
 	}
 }
 
+func TestReadGRPCFramePayloadSharesFrameAllocation(t *testing.T) {
+	frame, payload, err := readGRPCFrame(bytes.NewReader(grpcFrame([]byte("payload"))), 0)
+	if err != nil {
+		t.Fatalf("readGRPCFrame: %v", err)
+	}
+	if &frame[grpcMessageHeaderLen] != &payload[0] {
+		t.Fatal("payload does not share the frame backing allocation")
+	}
+}
+
 // TestReadGRPCFrameMultipleFramesInSequence confirms readGRPCFrame reads one
 // frame at a time off a stream carrying several — the streaming shape every
 // caller in this package actually needs, unlike readUnaryGRPCMessage's

@@ -21,6 +21,9 @@ func newUpgradeRequest(t *testing.T, path string) *http.Request {
 	r := httptest.NewRequest(http.MethodPost, path, nil)
 	r.Header.Set("Connection", "Upgrade")
 	r.Header.Set("Upgrade", "h2c")
+	if path == "/session" {
+		r.Header.Set(sessionUUIDHeader, testBuildkitSessionID)
+	}
 	return r
 }
 

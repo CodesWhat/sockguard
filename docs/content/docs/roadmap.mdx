@@ -1,14 +1,26 @@
 ---
 title: Roadmap
-description: Sockguard's shipped v1.7 work, committed v1.8 priorities, and twelve-month direction.
+description: Sockguard's shipped v1.7 work, committed v2.0 hardening, and twelve-month direction.
 ---
 
 Sockguard v1.7 is the current stable feature line, with v1.7.5 the latest
-release. This roadmap covers the next twelve months, through August 2027. It
-describes direction and priorities, not promises about dates. A feature is
-available only after the release notes say it has shipped.
+release. v2.0 is the next line because pinning signed-policy trust outside the
+candidate changes the v1 public configuration and CLI contract. This roadmap
+covers the next twelve months, through August 2027. It describes direction and
+priorities, not promises about dates. A feature is available only after the
+release notes say it has shipped.
 
-## Committed for v1.8
+## Committed for v2.0
+
+| Track | Outcome required before release |
+|---|---|
+| Signed-policy integrity | Bootstrap trust is selected out of band, cannot share authority with the signed candidate or rotatable signature object, is pinned across reload, and rejects unsigned compatibility rule mutation |
+| Native Podman builds | `/libpod/build` constrains primary and additional contexts, host-facing controls, host networking, Dockerfile `RUN`, and owner labeling on direct and versioned paths |
+| BuildKit isolation | Caller identity comes from verified certificates or Unix peer credentials where available, session state is correlated by principal/profile/session, Solve admission is atomic, and upgrade handshakes are bounded |
+| Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, response errors clear stale representation headers, and inspected bodies retain deadlines through logging and metrics |
+| Release surfaces | README, docs, website, Helm, verification assets, migration guidance, and the v2 development branch contract agree before the first candidate is tagged |
+
+## Planned for v2.1
 
 Implementation is tracked in
 [issue #185](https://github.com/CodesWhat/sockguard/issues/185), the BuildKit
@@ -20,7 +32,7 @@ gRPC mediation epic.
 
 ## Twelve-month direction
 
-After v1.8, work remains risk- and demand-driven:
+After v2.1, work remains risk- and demand-driven:
 
 - continue mutation-test hardening of rule evaluation, request-body inspection,
   response redaction, and configuration validation;

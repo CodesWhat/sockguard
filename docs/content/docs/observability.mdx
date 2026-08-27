@@ -68,7 +68,7 @@ all default to `false`, so existing deployments stay quiet until you opt in.
 | -------------------------------------------- | --------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `sockguard_build_info`                       | gauge     | `version`, `commit`, `build_date`, `go_version`         | Constant `1`. Use for version panels and Grafana annotations.                                      |
 | `sockguard_start_time_seconds`               | gauge     | —                                                       | Unix epoch when the metrics registry was created. Use for `time() - sockguard_start_time_seconds`. |
-| `sockguard_http_requests_total`              | counter   | `decision`, `method`, `profile`, `route`, `status`      | One per completed request. `decision` ∈ `{allow, deny, would_deny, error}`.                        |
+| `sockguard_http_requests_total`              | counter   | `decision`, `method`, `profile`, `route`, `status`      | One per completed request. `decision` ∈ `{allow, deny, would_deny, error}`. Method is a finite enum described below. |
 | `sockguard_http_denied_requests_total`       | counter   | `mode`, `profile`, `reason_code`, `route`               | Only deny-decision rows. `mode` ∈ `{enforce, warn, audit}`. Use for policy-violation alerts. Rule index is in the structured audit log (`matched_rule` field). |
 | `sockguard_http_request_duration_seconds`    | histogram | `decision`, `method`, `profile`, `route`                | Buckets: `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10` seconds.                        |
 | `sockguard_http_requests_active`             | gauge     | —                                                       | Currently in-flight requests. Spikes during streaming endpoints (logs/attach/events).              |
@@ -79,17 +79,22 @@ all default to `false`, so existing deployments stay quiet until you opt in.
 | `sockguard_throttle_requests_total`          | counter   | `profile`, `reason_code`, `mode`                        | Throttle denials. `reason_code` ∈ `{rate_limit_exceeded, concurrency_cap, priority_floor}`. `mode` ∈ `{enforce, warn, audit}`. |
 | `sockguard_inflight_requests`                | gauge     | `profile`                                               | In-flight count for profiles with `max_inflight` configured. Reflects real concurrency, including `warn`/`audit`-mode requests that would have been denied. |
 | `sockguard_policy_version`                   | gauge     | —                                                       | Monotonic policy generation counter. Ticks once at startup and once per successful hot reload. Matches the `version` field in `GET /admin/policy/version`. |
-| `sockguard_config_reload_total`              | counter   | `result`                                                | Hot-reload outcomes. `result` ∈ `{ok, reject_load, reject_validation, reject_immutable, reject_signature}`. |
+| `sockguard_config_reload_total`              | counter   | `result`                                                | Hot-reload outcomes. `result` ∈ `{ok, reject_load, reject_validation, reject_immutable, reject_signature, reject_compat}`. |
 | `sockguard_config_reload_last_success_timestamp_seconds` | gauge | —                                          | Unix timestamp of the last successful reload. Omitted from scrape output until the first successful reload. |
 
 ### Label cardinality
 
+`method` is limited to `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `PATCH`,
+`OPTIONS`, `CONNECT`, `TRACE`, `UNKNOWN`, and `OTHER`. An arbitrary method
+never becomes a new series; every nonstandard value collapses to `OTHER`.
+
 `route` is templated to bound cardinality: container/image IDs collapse to
 `{id}`, and namespaced image references like
 `/images/linuxserver/qbittorrent:latest/json` collapse to
-`/images/{id}/json`. Profile names come from `clients.client_certificate_profiles`
-or `clients.source_ip_profiles`; if neither matches, requests are tagged
-`profile="default"`.
+`/images/{id}/json`. Every unrecognized first path segment collapses to the
+single `unknown` route instead of retaining caller-controlled text. Profile
+names come from configured profile assignments; if none matches, requests are
+tagged `profile="default"`.
 
 `reason_code` is a bounded enum: `matched_deny_rule`, `no_matching_allow_rule`,
 `request_body_policy_denied`, `request_body_too_large`,
@@ -214,8 +219,11 @@ event did not produce a successful reload — check
 sum by (result) (rate(sockguard_config_reload_total[1h]))
 ```
 
-`reject_signature` means the cosign bundle verification failed; `reject_immutable`
-means an operator tried to change a listener or TLS field without restarting.
+`reject_signature` means the cosign bundle verification failed;
+`reject_immutable` means an operator tried to change a listener or TLS field
+without restarting. `reject_compat` means a rule-generating Tecnativa variable
+was present while signed-policy mode was active, so the verified running policy
+was preserved.
 
 ## Active upstream watchdog
 

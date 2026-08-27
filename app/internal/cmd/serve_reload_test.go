@@ -296,6 +296,38 @@ func TestReloadCoordinatorSwapsOnSuccess(t *testing.T) {
 	}
 }
 
+func TestReloadCoordinatorSuccessfulReloadChangesAllowToDenyBehavior(t *testing.T) {
+	initial := config.Defaults()
+	initial.Response.DenyVerbosity = "verbose"
+	initial.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"}}
+	f := newReloadCoordinatorFixture(t, &initial)
+
+	before := httptest.NewRecorder()
+	f.swappable.ServeHTTP(before, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if before.Code != http.StatusOK || before.Body.String() != "v1" {
+		t.Fatalf("pre-reload response = (%d, %q), want (200, v1)", before.Code, before.Body.String())
+	}
+
+	candidate := initial
+	candidate.Rules = []config.RuleConfig{{
+		Match:  config.MatchConfig{Method: "GET", Path: "/x"},
+		Action: "deny",
+		Reason: "reloaded deny policy",
+	}}
+	f.loadCfg = &candidate
+	f.coordinator.deps.validateRules = validateAndCompileRules
+	f.coordinator.reload()
+
+	after := httptest.NewRecorder()
+	f.swappable.ServeHTTP(after, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if after.Code != http.StatusForbidden {
+		t.Fatalf("post-reload status = %d, want 403", after.Code)
+	}
+	if !strings.Contains(after.Body.String(), "reloaded deny policy") {
+		t.Fatalf("post-reload body = %q, want configured deny reason", after.Body.String())
+	}
+}
+
 func TestReloadCoordinatorStopIsIdempotent(t *testing.T) {
 	initial := config.Defaults()
 	initial.Rules = []config.RuleConfig{{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"}}

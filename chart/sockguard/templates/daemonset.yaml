@@ -1,3 +1,109 @@
+{{- $policyBundleTrust := .Values.policyBundleTrust -}}
+{{- if not (kindIs "map" $policyBundleTrust) -}}
+  {{- fail "policyBundleTrust must be a map containing secretRef or configMapRef" -}}
+{{- end -}}
+{{- $secretRef := get $policyBundleTrust "secretRef" -}}
+{{- $configMapRef := get $policyBundleTrust "configMapRef" -}}
+{{- if not (kindIs "map" $secretRef) -}}
+  {{- fail "policyBundleTrust.secretRef must be a map with name and key" -}}
+{{- end -}}
+{{- if not (kindIs "map" $configMapRef) -}}
+  {{- fail "policyBundleTrust.configMapRef must be a map with name and key" -}}
+{{- end -}}
+{{- $secretEnabled := gt (len $secretRef) 0 -}}
+{{- $configMapEnabled := gt (len $configMapRef) 0 -}}
+{{- if and $secretEnabled $configMapEnabled -}}
+  {{- fail "only one of secretRef or configMapRef may be configured under policyBundleTrust" -}}
+{{- end -}}
+{{- $secretName := "" -}}
+{{- $secretKey := "" -}}
+{{- if $secretEnabled -}}
+  {{- if or (not (hasKey $secretRef "name")) (not (hasKey $secretRef "key")) -}}
+    {{- fail "policyBundleTrust.secretRef requires non-empty name and key" -}}
+  {{- end -}}
+  {{- if or (not (kindIs "string" (get $secretRef "name"))) (not (kindIs "string" (get $secretRef "key"))) -}}
+    {{- fail "policyBundleTrust.secretRef requires non-empty name and key" -}}
+  {{- end -}}
+  {{- $secretName = trim (get $secretRef "name") -}}
+  {{- $secretKey = trim (get $secretRef "key") -}}
+  {{- if or (eq $secretName "") (eq $secretKey "") -}}
+    {{- fail "policyBundleTrust.secretRef requires non-empty name and key" -}}
+  {{- end -}}
+{{- end -}}
+{{- $configMapName := "" -}}
+{{- $configMapKey := "" -}}
+{{- if $configMapEnabled -}}
+  {{- if or (not (hasKey $configMapRef "name")) (not (hasKey $configMapRef "key")) -}}
+    {{- fail "policyBundleTrust.configMapRef requires non-empty name and key" -}}
+  {{- end -}}
+  {{- if or (not (kindIs "string" (get $configMapRef "name"))) (not (kindIs "string" (get $configMapRef "key"))) -}}
+    {{- fail "policyBundleTrust.configMapRef requires non-empty name and key" -}}
+  {{- end -}}
+  {{- $configMapName = trim (get $configMapRef "name") -}}
+  {{- $configMapKey = trim (get $configMapRef "key") -}}
+  {{- if or (eq $configMapName "") (eq $configMapKey "") -}}
+    {{- fail "policyBundleTrust.configMapRef requires non-empty name and key" -}}
+  {{- end -}}
+{{- end -}}
+{{- $policyBundleTrustEnabled := or $secretEnabled $configMapEnabled -}}
+{{- $policyBundleSignature := .Values.policyBundleSignature -}}
+{{- if not (kindIs "map" $policyBundleSignature) -}}
+  {{- fail "policyBundleSignature must be a map containing secretRef or configMapRef" -}}
+{{- end -}}
+{{- $signatureSecretRef := get $policyBundleSignature "secretRef" -}}
+{{- $signatureConfigMapRef := get $policyBundleSignature "configMapRef" -}}
+{{- if not (kindIs "map" $signatureSecretRef) -}}
+  {{- fail "policyBundleSignature.secretRef must be a map with name and key" -}}
+{{- end -}}
+{{- if not (kindIs "map" $signatureConfigMapRef) -}}
+  {{- fail "policyBundleSignature.configMapRef must be a map with name and key" -}}
+{{- end -}}
+{{- $signatureSecretEnabled := gt (len $signatureSecretRef) 0 -}}
+{{- $signatureConfigMapEnabled := gt (len $signatureConfigMapRef) 0 -}}
+{{- if and $signatureSecretEnabled $signatureConfigMapEnabled -}}
+  {{- fail "only one of secretRef or configMapRef may be configured under policyBundleSignature" -}}
+{{- end -}}
+{{- $signatureSecretName := "" -}}
+{{- $signatureSecretKey := "" -}}
+{{- if $signatureSecretEnabled -}}
+  {{- if or (not (hasKey $signatureSecretRef "name")) (not (hasKey $signatureSecretRef "key")) -}}
+    {{- fail "policyBundleSignature.secretRef requires non-empty name and key" -}}
+  {{- end -}}
+  {{- if or (not (kindIs "string" (get $signatureSecretRef "name"))) (not (kindIs "string" (get $signatureSecretRef "key"))) -}}
+    {{- fail "policyBundleSignature.secretRef requires non-empty name and key" -}}
+  {{- end -}}
+  {{- $signatureSecretName = trim (get $signatureSecretRef "name") -}}
+  {{- $signatureSecretKey = trim (get $signatureSecretRef "key") -}}
+  {{- if or (eq $signatureSecretName "") (eq $signatureSecretKey "") -}}
+    {{- fail "policyBundleSignature.secretRef requires non-empty name and key" -}}
+  {{- end -}}
+{{- end -}}
+{{- $signatureConfigMapName := "" -}}
+{{- $signatureConfigMapKey := "" -}}
+{{- if $signatureConfigMapEnabled -}}
+  {{- if or (not (hasKey $signatureConfigMapRef "name")) (not (hasKey $signatureConfigMapRef "key")) -}}
+    {{- fail "policyBundleSignature.configMapRef requires non-empty name and key" -}}
+  {{- end -}}
+  {{- if or (not (kindIs "string" (get $signatureConfigMapRef "name"))) (not (kindIs "string" (get $signatureConfigMapRef "key"))) -}}
+    {{- fail "policyBundleSignature.configMapRef requires non-empty name and key" -}}
+  {{- end -}}
+  {{- $signatureConfigMapName = trim (get $signatureConfigMapRef "name") -}}
+  {{- $signatureConfigMapKey = trim (get $signatureConfigMapRef "key") -}}
+  {{- if or (eq $signatureConfigMapName "") (eq $signatureConfigMapKey "") -}}
+    {{- fail "policyBundleSignature.configMapRef requires non-empty name and key" -}}
+  {{- end -}}
+{{- end -}}
+{{- $policyBundleSignatureEnabled := or $signatureSecretEnabled $signatureConfigMapEnabled -}}
+{{- if ne $policyBundleTrustEnabled $policyBundleSignatureEnabled -}}
+  {{- fail "policyBundleTrust and policyBundleSignature must be configured together" -}}
+{{- end -}}
+{{- if or (and $secretEnabled $signatureSecretEnabled (eq $secretName $signatureSecretName)) (and $configMapEnabled $signatureConfigMapEnabled (eq $configMapName $signatureConfigMapName)) -}}
+  {{- fail "policyBundleTrust and policyBundleSignature must reference different Kubernetes objects" -}}
+{{- end -}}
+{{- $candidateConfigMapName := include "sockguard.fullname" . -}}
+{{- if and $configMapEnabled (eq $configMapName $candidateConfigMapName) -}}
+  {{- fail "policyBundleTrust.configMapRef must not reference the chart-generated candidate policy ConfigMap" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -44,6 +150,10 @@ spec:
             - serve
             - --config
             - /etc/sockguard/sockguard.yaml
+            {{- if $policyBundleTrustEnabled }}
+            - --policy-bundle-trust-config
+            - /etc/sockguard-policy-bundle-trust/trust.yaml
+            {{- end }}
           ports:
             - name: proxy
               containerPort: 2375
@@ -77,6 +187,14 @@ spec:
             - name: config
               mountPath: /etc/sockguard
               readOnly: true
+            {{- if $policyBundleTrustEnabled }}
+            - name: policy-bundle-trust
+              mountPath: /etc/sockguard-policy-bundle-trust
+              readOnly: true
+            - name: policy-bundle-signature
+              mountPath: /etc/sockguard-policy-bundle-signature
+              readOnly: true
+            {{- end }}
       volumes:
         - name: docker-sock
           hostPath:
@@ -85,3 +203,33 @@ spec:
         - name: config
           configMap:
             name: {{ include "sockguard.fullname" . }}
+        {{- if $policyBundleTrustEnabled }}
+        - name: policy-bundle-trust
+          {{- if $secretEnabled }}
+          secret:
+            secretName: {{ $secretName | quote }}
+            items:
+              - key: {{ $secretKey | quote }}
+                path: trust.yaml
+          {{- else }}
+          configMap:
+            name: {{ $configMapName | quote }}
+            items:
+              - key: {{ $configMapKey | quote }}
+                path: trust.yaml
+          {{- end }}
+        - name: policy-bundle-signature
+          {{- if $signatureSecretEnabled }}
+          secret:
+            secretName: {{ $signatureSecretName | quote }}
+            items:
+              - key: {{ $signatureSecretKey | quote }}
+                path: signature.json
+          {{- else }}
+          configMap:
+            name: {{ $signatureConfigMapName | quote }}
+            items:
+              - key: {{ $signatureConfigMapKey | quote }}
+                path: signature.json
+          {{- end }}
+        {{- end }}

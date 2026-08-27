@@ -8,15 +8,15 @@ Sockguard sits between your Docker daemon socket and any process that needs Dock
 
 - Default-deny: requests are blocked unless explicitly permitted by a YAML policy rule
 - Method + path filtering: allow or block specific HTTP methods and URL path patterns
-- Request body inspection: filter container create, exec, image pull, volume, network, secret, config, service, swarm, node, and plugin requests on body content
-- Per-client policies: different rule sets per CIDR range, Docker label, TLS certificate selector (including SPKI pinning), or Unix peer credential
-- Read-side redaction: strip sensitive fields from GET responses so callers only see what their policy allows
-- Signed policy bundles: cosign keyed and keyless signatures, Rekor transparency log inclusion — unsigned or tampered bundles are rejected at load time
+- Request body inspection: filter container create, exec, image pull/load, Docker and native Podman builds (including Podman additional contexts, host/local/multipart controls, and resource-usage host-file output), volume, network, secret, config, service, swarm, node, and plugin requests; bounded body reads have a 30-second deadline through logging and metrics
+- Per-client policies: different rule sets per CIDR range, Docker label, TLS certificate selector (including SPKI pinning), or Unix peer credential; the trusted principal and selected profile isolate mediated BuildKit session state, with bounded persistent IDs and expiring upload grants
+- Read-side redaction: strip sensitive fields from responses, keep keyword-named resources covered, and coalesce combined label plus name/image checks into one bounded inspect
+- Signed policy bundles: pin keyed or keyless trust, Rekor posture, and verification timeout in a separate bootstrap file selected with --policy-bundle-trust-config; the candidate's policy_bundle block carries its signature path while bootstrap values override candidate trust fields
 - Container image trust: block container or swarm-service deployment when an image isn't signed or doesn't match a trusted digest (enforce or warn mode)
 - Rollout modes: enforce (deny), warn (allow + log), audit (shadow policy check without blocking) — per-profile
 - Rate limits: per-profile token-bucket rate limits and global priority gates
-- Hot-reload: SIGHUP or fsnotify watches reload config without restarting the proxy
-- Prometheus metrics: socket-proxy request counts, deny counts, and latency histograms
+- Hot-reload: SIGHUP or fsnotify reloads config without restarting; signature and compatibility failures preserve the active policy with bounded result labels
+- Prometheus metrics: request counts, deny counts, and latency histograms with finite HTTP method and unknown-route label sets
 - TLS 1.3 mTLS listener: expose a remote TCP listener with mutual TLS for multi-host setups
 - Audit log: structured JSON audit log with reason codes and W3C traceparent correlation
 - Active upstream watchdog: detects and reports Docker daemon unavailability via /health endpoint

@@ -33,6 +33,7 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	{method: http.MethodPost, path: "/images/create"},
 	{method: http.MethodPost, path: "/images/load"},
 	{method: http.MethodPost, path: "/build"},
+	{method: http.MethodPost, path: "/libpod/build"},
 	{method: http.MethodPost, path: "/volumes/create"},
 	{method: http.MethodPost, path: "/networks/create"},
 	{method: http.MethodPost, path: "/networks/sockguard-test/connect"},
@@ -397,7 +398,7 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		// libpod exec paths (#148 design doc decision C3) — same field,
 		// same condition.
 		return len(requestBody.Exec.AllowedCommands) > 0
-	case "/containers/sockguard-test/update", "/containers/sockguard-test/archive", "/images/create", "/images/load", "/build":
+	case "/containers/sockguard-test/update", "/containers/sockguard-test/archive", "/images/create", "/images/load", "/build", "/libpod/build":
 		return true
 	case "/volumes/create", "/networks/create", "/networks/sockguard-test/connect", "/networks/sockguard-test/disconnect", "/secrets/create", "/configs/create", "/services/create", "/services/sockguard-test/update", "/swarm/init", "/plugins/pull", "/plugins/sockguard-test/upgrade":
 		return true

@@ -112,6 +112,9 @@ services:
 # Start the proxy (default command)
 sockguard serve
 
+# Start with a signed policy and separate pinned trust
+sockguard serve --config /etc/sockguard/sockguard.yaml --policy-bundle-trust-config /etc/sockguard/policy-bundle-trust.yaml
+
 # Validate configuration and print the compiled rule table
 sockguard validate -c /etc/sockguard/sockguard.yaml
 
@@ -128,6 +131,15 @@ sockguard version
 normalization as the running proxy, and reports the decision in
 text (default) or JSON (`-o json`). Use it to sanity-check a
 ruleset before any traffic hits the proxy.
+
+Signed-policy mode requires the candidate and bootstrap trust config to be
+different files, including after symlink or hardlink resolution. The trust
+file uses `policy_bundle.enabled`, signing identities, Rekor posture, and the
+verification timeout. The signed candidate carries
+`policy_bundle.signature_path`. Rule-generating Tecnativa variables cannot be
+combined with this mode; migrate those grants to YAML before signing. See
+[Signed Policy Bundles](/configuration#signed-policy-bundles) for the complete
+layout.
 
 ## Next Steps
 

@@ -430,7 +430,12 @@ func (f *Filter) denyAttestationStatement(resp *http.Response, normPath string) 
 	if !isImageAttestationsPath(normPath) {
 		return false
 	}
-	return strings.EqualFold(resp.Request.URL.Query().Get("statement"), "true")
+	switch strings.ToLower(strings.TrimSpace(resp.Request.URL.Query().Get("statement"))) {
+	case "", "0", "no", "false", "none":
+		return false
+	default:
+		return true
+	}
 }
 
 // redactFieldAnyShape zeroes payload[key] to the empty form of its own JSON

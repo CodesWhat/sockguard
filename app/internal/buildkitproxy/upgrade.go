@@ -20,8 +20,9 @@ import (
 // value is restated rather than shared.
 const h2cDialTimeout = 5 * time.Second
 
-// sessionUUIDHeader is the client-supplied session correlation ID. Recorded
-// on Session as advisory metadata only — see SessionKey's doc comment.
+// sessionUUIDHeader is the client-supplied session correlation ID. It is
+// never trusted alone; cross-endpoint state combines it with the verified
+// principal and profile described by SessionKey.
 const sessionUUIDHeader = "X-Docker-Expose-Session-Uuid"
 
 // sessionGRPCMethodHeader advertises, on a POST /session upgrade request,

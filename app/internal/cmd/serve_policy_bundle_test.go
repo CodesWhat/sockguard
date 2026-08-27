@@ -197,6 +197,50 @@ func TestPolicyBundleReload_RejectsBadSignature(t *testing.T) {
 	}
 }
 
+func TestPolicyBundleReload_RejectsCompatEnvironment(t *testing.T) {
+	t.Setenv("CONTAINERS", "1")
+	verifier := &stubBundleVerifier{res: policybundle.VerifyResult{Signer: "keyed:abcd"}}
+	f := newPolicyBundleFixture(t, policyBundleInitialConfig(), verifier)
+	before := fmt.Sprintf("%p", f.swappable.Current())
+
+	f.coordinator.reload()
+
+	if got, ok := metricsReloadCount(t, f.registry, "reject_compat"); !ok || got != 1 {
+		t.Fatalf("reject_compat count = %d (found=%v), want 1", got, ok)
+	}
+	if got, ok := metricsReloadCount(t, f.registry, "ok"); ok && got != 0 {
+		t.Fatalf("ok count = %d, want 0", got)
+	}
+	if after := fmt.Sprintf("%p", f.swappable.Current()); after != before {
+		t.Fatal("compat-tainted signed reload swapped the active handler")
+	}
+}
+
+func TestPolicyBundleReload_PinsTrustAgainstCandidateChanges(t *testing.T) {
+	initial := policyBundleInitialConfig()
+	initial.PolicyBundle.AllowedSigningKeys = []config.PolicyBundleSigningKey{{PEM: "pinned-key"}}
+	verifier := &stubBundleVerifier{res: policybundle.VerifyResult{Signer: "keyed:pinned"}}
+	f := newPolicyBundleFixture(t, initial, verifier)
+
+	candidate := config.Defaults()
+	candidate.PolicyBundle.Enabled = false
+	candidate.PolicyBundle.SignaturePath = "/new/sig.bundle.json"
+	candidate.PolicyBundle.AllowedSigningKeys = []config.PolicyBundleSigningKey{{PEM: "hostile-key"}}
+	f.loadCfg = &candidate
+	f.coordinator.reload()
+
+	if got, ok := metricsReloadCount(t, f.registry, "ok"); !ok || got != 1 {
+		t.Fatalf("ok count = %d (found=%v), want 1", got, ok)
+	}
+	active := f.coordinator.activeCfg.PolicyBundle
+	if !active.Enabled || len(active.AllowedSigningKeys) != 1 || active.AllowedSigningKeys[0].PEM != "pinned-key" {
+		t.Fatalf("active trust = %+v, want enabled pinned-key trust", active)
+	}
+	if active.SignaturePath != "/new/sig.bundle.json" {
+		t.Fatalf("active signature path = %q, want signed candidate path", active.SignaturePath)
+	}
+}
+
 func TestPolicyBundleReload_SkipsWhenDisabled(t *testing.T) {
 	cfg := config.Defaults()
 	verifier := &stubBundleVerifier{err: errors.New("MUST NOT BE CALLED")}
@@ -347,9 +391,10 @@ func TestVerifyPolicyBundleAtStartup_NoSignaturePath(t *testing.T) {
 	cfg := newStartupCfg()
 	cfg.PolicyBundle.SignaturePath = ""
 	deps := newServeTestDeps()
+	deps.readConfigBytes = func(string) ([]byte, error) { return []byte("rules: []\n"), nil }
 	_, _, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
-	if err == nil {
-		t.Fatal("err = nil, want failure when signature_path is empty")
+	if err == nil || !strings.Contains(err.Error(), "signature_path") {
+		t.Fatalf("err = %v, want signature_path failure", err)
 	}
 }
 
@@ -367,7 +412,9 @@ func TestVerifyPolicyBundleAtStartup_ReadError(t *testing.T) {
 func TestVerifyPolicyBundleAtStartup_LoadEntityError(t *testing.T) {
 	cfg := newStartupCfg()
 	deps := newServeTestDeps()
-	deps.readConfigBytes = func(string) ([]byte, error) { return []byte("rules: []\n"), nil }
+	deps.readConfigBytes = func(string) ([]byte, error) {
+		return []byte("policy_bundle:\n  signature_path: /tmp/sig.bundle.json\nrules: []\n"), nil
+	}
 	sentinel := errors.New("load entity failed")
 	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return nil, sentinel }
 	_, _, err := verifyPolicyBundleAtStartup(context.Background(), cfg, "/tmp/cfg.yaml", deps, &stubBundleVerifier{}, newDiscardLogger())
@@ -379,7 +426,9 @@ func TestVerifyPolicyBundleAtStartup_LoadEntityError(t *testing.T) {
 func TestVerifyPolicyBundleAtStartup_VerifyError(t *testing.T) {
 	cfg := newStartupCfg()
 	deps := newServeTestDeps()
-	deps.readConfigBytes = func(string) ([]byte, error) { return []byte("rules: []\n"), nil }
+	deps.readConfigBytes = func(string) ([]byte, error) {
+		return []byte("policy_bundle:\n  signature_path: /tmp/sig.bundle.json\nrules: []\n"), nil
+	}
 	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return &stubEntity{}, nil }
 	sentinel := errors.New("signature mismatch")
 	verifier := &stubBundleVerifier{err: sentinel}
@@ -392,7 +441,9 @@ func TestVerifyPolicyBundleAtStartup_VerifyError(t *testing.T) {
 func TestVerifyPolicyBundleAtStartup_Success(t *testing.T) {
 	cfg := newStartupCfg()
 	deps := newServeTestDeps()
-	deps.readConfigBytes = func(string) ([]byte, error) { return []byte("rules: []\n"), nil }
+	deps.readConfigBytes = func(string) ([]byte, error) {
+		return []byte("policy_bundle:\n  signature_path: /tmp/sig.bundle.json\nrules: []\n"), nil
+	}
 	deps.loadBundleEntity = func(string) (verify.SignedEntity, error) { return &stubEntity{}, nil }
 	want := policybundle.VerifyResult{Signer: "keyed:1234", DigestHex: "abcd", ElapsedMS: 42}
 	verifier := &stubBundleVerifier{res: want}
@@ -420,7 +471,7 @@ func TestVerifyPolicyBundleAtStartup_ParsesVerifiedBytesNotFile(t *testing.T) {
 	cfg := newStartupCfg()
 	deps := newServeTestDeps()
 
-	const verifiedYAML = "upstream:\n  socket: /verified/docker.sock\n"
+	const verifiedYAML = "policy_bundle:\n  signature_path: /tmp/sig.bundle.json\nupstream:\n  socket: /verified/docker.sock\n"
 	var verifiedBytes []byte
 	deps.readConfigBytes = func(string) ([]byte, error) {
 		verifiedBytes = []byte(verifiedYAML)

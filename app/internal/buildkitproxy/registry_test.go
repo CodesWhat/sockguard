@@ -19,6 +19,19 @@ func TestClassifyRegisteredMethods(t *testing.T) {
 	}
 }
 
+func TestEveryMediatedRegistryMethodHasDispatcher(t *testing.T) {
+	for m, disposition := range registry {
+		if disposition != Mediate {
+			continue
+		}
+		if !isControlMediatedMethod(m.Endpoint, m.Service, m.Method) &&
+			!isSessionMediatedMethod(m.Endpoint, m.Service, m.Method) &&
+			!isStreamMediatedMethod(m.Endpoint, m.Service, m.Method) {
+			t.Errorf("%s/%s.%s is Mediate but has no dispatcher", m.Endpoint, m.Service, m.Method)
+		}
+	}
+}
+
 func TestClassifyDeniedExamples(t *testing.T) {
 	if len(DeniedExamples) == 0 {
 		t.Fatal("DeniedExamples is empty")
@@ -84,41 +97,8 @@ func TestEndpointString(t *testing.T) {
 	}
 }
 
-func TestServiceAdmitted(t *testing.T) {
-	cases := []struct {
-		name     string
-		endpoint Endpoint
-		service  string
-		want     bool
-	}{
-		{"grpc Control has admitted methods", EndpointGRPC, "moby.buildkit.v1.Control", true},
-		{"grpc Health has admitted methods", EndpointGRPC, "grpc.health.v1.Health", true},
-		{"session Auth has admitted methods", EndpointSession, "moby.filesync.v1.Auth", true},
-		{"session Secrets has admitted methods", EndpointSession, "moby.buildkit.secrets.v1.Secrets", true},
-		{"session SSH has admitted methods", EndpointSession, "moby.sshforward.v1.SSH", true},
-		{"session FileSync has admitted methods", EndpointSession, "moby.filesync.v1.FileSync", true},
-		{"session FileSend has admitted methods", EndpointSession, "moby.filesync.v1.FileSend", true},
-		{"session Upload has admitted methods", EndpointSession, "moby.upload.v1.Upload", true},
-		{"session LLBBridge is fully denied", EndpointSession, "moby.buildkit.v1.frontend.LLBBridge", false},
-		{"session Exporter is fully denied", EndpointSession, "moby.exporter.v1.Exporter", false},
-		{"unknown service", EndpointSession, "moby.notreal.v1.Bogus", false},
-		{"known service on wrong endpoint", EndpointSession, "moby.buildkit.v1.Control", false},
-		{"empty service", EndpointGRPC, "", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := ServiceAdmitted(tc.endpoint, tc.service); got != tc.want {
-				t.Errorf("ServiceAdmitted(%s, %q) = %v, want %v", tc.endpoint, tc.service, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestServiceAdmittedByPolicy pins CodeRabbit's finding: the plain,
-// policy-blind ServiceAdmitted isn't enough to decide what a session
-// advertisement rewrite should keep, because a service can be
-// registry-admitted (ServiceAdmitted true) while the resolved Policy still
-// denies every one of its methods. ServiceAdmittedByPolicy must require both.
+// TestServiceAdmittedByPolicy pins that a session advertisement rewrite
+// requires both registry admission and the resolved policy's admission.
 func TestServiceAdmittedByPolicy(t *testing.T) {
 	cases := []struct {
 		name     string

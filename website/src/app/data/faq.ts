@@ -7,12 +7,12 @@ export const faqItems: Array<{ question: string; answer: string }> = [
   {
     question: "How is Sockguard different from Tecnativa's docker-socket-proxy?",
     answer:
-      "Tecnativa filters by URL path using environment variables. Sockguard adds request body inspection — we parse every container, exec, image, build, volume, network, service, swarm, and plugin write to block privileged workloads, non-allowlisted mounts and devices, unsafe sysctls, and more. We also support per-client policy profiles (route different callers to different rule sets by CIDR, mTLS certificate, or unix peer), signed policy bundles (cosign), container image trust verification, per-profile rollout modes (enforce / warn / audit), Prometheus metrics, and hot-reload with an admin API. Tecnativa has none of these. We also ship a Tecnativa-compatible env surface so you can swap us in without touching your existing config.",
+      "Tecnativa filters by URL path using environment variables. Sockguard also inspects request bodies across container, exec, image, Docker and Podman build, volume, network, service, swarm, and plugin writes. Per-client profiles, signed policies, image trust, rollout modes, bounded Prometheus metrics, and hot reload add controls Tecnativa does not provide. The compatibility env surface remains a drop-in path for unsigned mode; convert generated rules to YAML before enabling signed-policy trust.",
   },
   {
     question: "Does Sockguard inspect request bodies?",
     answer:
-      "Yes — request body inspection is one of our core differentiators. We parse the JSON body on every write endpoint: container create and exec, image build and load, volume create, network create, secret and config create, service create and update, swarm init and join, node update, and plugin install. We check for privileged mode, host namespace sharing, non-allowlisted bind mounts and devices, capability additions, unsafe sysctls, non-allowlisted runtimes, and more. Oversized bodies return 413 before the inspector runs. We also inspect multipart plugin uploads and gzip-bomb guard all archive paths.",
+      "Yes. We inspect container create and exec, image build and load, Docker's classic build, native Podman's /libpod/build, volume, network, secret, config, service, swarm, node, and plugin writes. Native Podman build checks primary and additional remote contexts, host networking, every repeated query control, Dockerfile RUN policy, and resource-usage host-file output. Host/local/multipart and host-file controls require the global blind-write acknowledgment. Oversized bounded bodies return 413, and a 30-second read deadline stops slow clients from pinning an inspector even when logging and metrics are enabled.",
   },
   {
     question: "Can Sockguard listen over TCP, and is remote access secure?",
@@ -22,7 +22,7 @@ export const faqItems: Array<{ question: string; answer: string }> = [
   {
     question: "What are signed policy bundles and container image trust?",
     answer:
-      "Signed policy bundles let you treat the on-disk YAML config as untrusted until a cosign / sigstore bundle confirms it. We support keyed (PEM ECDSA/RSA/ed25519) and keyless (Fulcio + Rekor) verification. The bundle is checked at startup and on every hot reload — a bad signature rejects the reload and leaves the running policy untouched. Container image trust goes further: before forwarding a POST /containers/create to the daemon, we resolve the image to its registry manifest digest, discover cosign signatures, and verify them against your configured signer identity. In enforce mode a container create is denied if the image is unsigned or signed by the wrong identity.",
+      "Signed policy bundles treat the candidate YAML as untrusted until a cosign bundle verifies it. Keyed or keyless trust, Rekor posture, and the verification timeout live in a separate bootstrap file selected with --policy-bundle-trust-config; the signed candidate carries its signature path and cannot authenticate itself. Verification runs at startup and every reload. Container image trust separately resolves workload images to digests and enforces the configured signer identity before deployment.",
   },
   {
     question: "Is Sockguard production-ready and what license does it use?",
@@ -32,6 +32,6 @@ export const faqItems: Array<{ question: string; answer: string }> = [
   {
     question: "How do I migrate from Tecnativa's docker-socket-proxy?",
     answer:
-      "We match Tecnativa's full environment-variable surface — CONTAINERS, EVENTS, SERVICES, NETWORKS, VOLUMES, TASKS, NODES, CONFIGS, SECRETS, ALLOW_RESTARTS, SOCKET_PATH, LOG_LEVEL, and the full section-variable set. Point DOCKER_HOST at the Sockguard socket instead of Tecnativa's and your existing env config continues to work. Sockguard's built-in Tecnativa env-var compatibility layer covers the same allow surface. Once migrated you can layer on body inspection, per-client profiles, and signed policies incrementally without breaking running workloads — use a profile in warn mode to measure what would have been denied before flipping to enforce.",
+      "Point DOCKER_HOST at Sockguard and keep the current Tecnativa section and ALLOW_* variables for the initial unsigned migration. Then translate the generated allow surface into YAML, add body policy and per-client profiles, and use warn mode to measure tighter rules. Signed-policy mode is the final step: it rejects rule-generating compatibility variables so unsigned environment state cannot change a verified policy.",
   },
 ];

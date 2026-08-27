@@ -11,6 +11,19 @@ variable) rather than the raw socket.
 Default policy: DENY ALL except /_ping, /version, and /events.
 Override 'config' in values.yaml to define your allow rules.
 
+{{- $trust := .Values.policyBundleTrust }}
+{{- $secretConfigured := and (kindIs "map" $trust.secretRef) (gt (len $trust.secretRef) 0) }}
+{{- $configMapConfigured := and (kindIs "map" $trust.configMapRef) (gt (len $trust.configMapRef) 0) }}
+{{- if or $secretConfigured $configMapConfigured }}
+
+Policy bundle trust: enabled from an externally managed {{ if $secretConfigured }}Secret{{ else }}ConfigMap{{ end }}.
+The chart mounts it separately and never copies the trust YAML into the candidate policy ConfigMap.
+Set policy_bundle.signature_path in the candidate policy to:
+  /etc/sockguard-policy-bundle-signature/signature.json
+After rotating the external trust object, restart the pods so immutable trust is reloaded:
+  kubectl rollout restart daemonset/{{ include "sockguard.fullname" . }}
+{{- end }}
+
 Health check:
   kubectl port-forward daemonset/{{ include "sockguard.fullname" . }} 2375:2375
   curl http://localhost:2375/health
