@@ -41,42 +41,42 @@ func TestVerify_NoVerifiersConfiguredReturnsError(t *testing.T) {
 	}
 }
 
-// TestLoadBundle_CorruptJSONReturnsError covers the "file exists but is
-// not a valid sigstore bundle" path inside LoadBundle, distinct from the
-// already-tested missing-path case.
-func TestLoadBundle_CorruptJSONReturnsError(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "garbage.json")
-	if err := os.WriteFile(path, []byte("{not valid sigstore bundle"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
+// TestLoadBundleRejectsInvalidFiles covers malformed and oversized bundle
+// files, distinct from the already-tested missing-path case.
+func TestLoadBundleRejectsInvalidFiles(t *testing.T) {
+	tests := []struct {
+		name       string
+		contents   []byte
+		truncateTo int64
+		wantErr    error
+		wantText   string
+	}{
+		{name: "corrupt JSON", contents: []byte("{not valid sigstore bundle"), wantText: "policy_bundle"},
+		{name: "oversized", truncateTo: MaxBundleFileBytes + 1, wantErr: boundedio.ErrTooLarge},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "bundle.json")
+			if err := os.WriteFile(path, tc.contents, 0o600); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+			if tc.truncateTo > 0 {
+				if err := os.Truncate(path, tc.truncateTo); err != nil {
+					t.Fatalf("Truncate: %v", err)
+				}
+			}
 
-	_, err := LoadBundle(path)
-	if err == nil {
-		t.Fatal("LoadBundle(corrupt) err = nil, want non-nil")
-	}
-	if !strings.Contains(err.Error(), "policy_bundle") {
-		t.Errorf("err = %q, want a policy_bundle-prefixed error", err.Error())
-	}
-}
-
-func TestLoadBundleRejectsOversizedFile(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "oversized.json")
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatalf("Create: %v", err)
-	}
-	if err := f.Truncate(MaxBundleFileBytes + 1); err != nil {
-		f.Close()
-		t.Fatalf("Truncate: %v", err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	if _, err := LoadBundle(path); !errors.Is(err, boundedio.ErrTooLarge) {
-		t.Fatalf("LoadBundle oversized error = %v, want ErrTooLarge", err)
+			_, err := LoadBundle(path)
+			if err == nil {
+				t.Fatal("LoadBundle error = nil, want non-nil")
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("LoadBundle error = %v, want %v", err, tc.wantErr)
+			}
+			if tc.wantText != "" && !strings.Contains(err.Error(), tc.wantText) {
+				t.Fatalf("LoadBundle error = %q, want text %q", err, tc.wantText)
+			}
+		})
 	}
 }

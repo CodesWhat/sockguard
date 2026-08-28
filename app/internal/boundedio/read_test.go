@@ -2,6 +2,7 @@ package boundedio
 
 import (
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,15 +16,26 @@ func TestReadFileEnforcesLimit(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	data, err := ReadFile(path, 5)
-	if err != nil {
-		t.Fatalf("ReadFile(exact limit): %v", err)
+	tests := []struct {
+		name    string
+		limit   int64
+		want    string
+		wantErr error
+	}{
+		{name: "exact limit", limit: 5, want: "12345"},
+		{name: "oversized", limit: 4, wantErr: ErrTooLarge},
+		{name: "largest limit", limit: math.MaxInt64, want: "12345"},
 	}
-	if string(data) != "12345" {
-		t.Fatalf("ReadFile data = %q, want exact contents", data)
-	}
-	if _, err := ReadFile(path, 4); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("ReadFile(over limit) error = %v, want ErrTooLarge", err)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := ReadFile(path, tc.limit)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("ReadFile(limit=%d) error = %v, want %v", tc.limit, err, tc.wantErr)
+			}
+			if string(data) != tc.want {
+				t.Fatalf("ReadFile(limit=%d) data = %q, want %q", tc.limit, data, tc.want)
+			}
+		})
 	}
 }
 

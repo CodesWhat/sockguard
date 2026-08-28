@@ -319,7 +319,8 @@ func (f *Fetcher) visitSignatureImages(ctx context.Context, ref name.Reference, 
 	add := func(img v1.Image) error {
 		dig, err := img.Digest()
 		if err != nil {
-			return nil
+			// An image without a digest cannot be deduplicated or verified.
+			return nil //nolint:nilerr // Skip this unusable manifest and continue discovery.
 		}
 		if _, dup := seen[dig.String()]; dup {
 			return nil

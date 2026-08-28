@@ -36,12 +36,17 @@ func ReadFile(path string, maxBytes int64) (_ []byte, returnErr error) {
 		return nil, fmt.Errorf("read %q: %w (%d byte limit)", path, ErrTooLarge, maxBytes)
 	}
 
-	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(data)) > maxBytes {
+	var lookahead [1]byte
+	n, err := f.Read(lookahead[:])
+	if n > 0 {
 		return nil, fmt.Errorf("read %q: %w (%d byte limit)", path, ErrTooLarge, maxBytes)
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
 	}
 	return data, nil
 }
