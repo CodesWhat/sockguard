@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -62,9 +63,37 @@ type recordingLayerImage struct {
 	resolutions int
 }
 
+type manifestErrorImage struct {
+	v1.Image
+	err error
+}
+
+type layerResultImage struct {
+	v1.Image
+	layer v1.Layer
+	err   error
+}
+
+type compressedErrorLayer struct {
+	v1.Layer
+	err error
+}
+
 func (i *recordingLayerImage) LayerByDigest(digest v1.Hash) (v1.Layer, error) {
 	i.resolutions++
 	return i.Image.LayerByDigest(digest)
+}
+
+func (i manifestErrorImage) Manifest() (*v1.Manifest, error) {
+	return nil, i.err
+}
+
+func (i layerResultImage) LayerByDigest(v1.Hash) (v1.Layer, error) {
+	return i.layer, i.err
+}
+
+func (l compressedErrorLayer) Compressed() (io.ReadCloser, error) {
+	return nil, l.err
 }
 
 func (l terminalErrorLayer) Compressed() (io.ReadCloser, error) {
@@ -360,6 +389,164 @@ func TestCandidateBudgetCountsEveryRegistryAnnotationMap(t *testing.T) {
 	want := fmt.Sprintf("cosign annotation material exceeds %d byte limit", maxAnnotationBytes)
 	if !errors.Is(err, errRegistryInputLimit) || !strings.Contains(err.Error(), want) {
 		t.Fatalf("addManifestAnnotations() error = %v, want %q", err, want)
+	}
+}
+
+func TestCandidateBudgetRejectsOverflowFromEachAnnotationMap(t *testing.T) {
+	overflow := map[string]string{"annotation": strings.Repeat("x", maxAnnotationBytes)}
+	tests := []struct {
+		name  string
+		apply func(*candidateBudget) error
+	}{
+		{
+			name: "index",
+			apply: func(b *candidateBudget) error {
+				return b.addIndexAnnotations(&v1.IndexManifest{Annotations: overflow})
+			},
+		},
+		{
+			name: "index subject",
+			apply: func(b *candidateBudget) error {
+				return b.addIndexAnnotations(&v1.IndexManifest{Subject: &v1.Descriptor{Annotations: overflow}})
+			},
+		},
+		{
+			name: "referrer descriptor",
+			apply: func(b *candidateBudget) error {
+				return b.addIndexAnnotations(&v1.IndexManifest{Manifests: []v1.Descriptor{{Annotations: overflow}}})
+			},
+		},
+		{
+			name: "manifest",
+			apply: func(b *candidateBudget) error {
+				return b.addManifestAnnotations(&v1.Manifest{Annotations: overflow})
+			},
+		},
+		{
+			name: "manifest config",
+			apply: func(b *candidateBudget) error {
+				return b.addManifestAnnotations(&v1.Manifest{Config: v1.Descriptor{Annotations: overflow}})
+			},
+		},
+		{
+			name: "manifest subject",
+			apply: func(b *candidateBudget) error {
+				return b.addManifestAnnotations(&v1.Manifest{Subject: &v1.Descriptor{Annotations: overflow}})
+			},
+		},
+		{
+			name: "manifest layer",
+			apply: func(b *candidateBudget) error {
+				return b.addManifestAnnotations(&v1.Manifest{Layers: []v1.Descriptor{{Annotations: overflow}}})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			budget := &candidateBudget{annotationBytes: 1}
+			err := tt.apply(budget)
+			if !errors.Is(err, errRegistryInputLimit) {
+				t.Fatalf("annotation overflow error = %v, want errRegistryInputLimit", err)
+			}
+		})
+	}
+}
+
+func TestMetadataLimitReadCloserBoundaryReads(t *testing.T) {
+	r := &metadataLimitReadCloser{
+		body:      io.NopCloser(strings.NewReader("ab")),
+		remaining: 2,
+	}
+	if n, err := r.Read(nil); n != 0 || err != nil {
+		t.Fatalf("Read(nil) = (%d, %v), want (0, nil)", n, err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("ReadAll(exact limit): %v", err)
+	}
+	if string(got) != "ab" {
+		t.Fatalf("ReadAll(exact limit) = %q, want ab", got)
+	}
+}
+
+func TestCandidatesFromSigImageReportsBoundaryFailures(t *testing.T) {
+	repo, err := name.NewRepository("example.com/app")
+	if err != nil {
+		t.Fatalf("name.NewRepository: %v", err)
+	}
+	digest := v1.Hash{Algorithm: "sha256", Hex: strings.Repeat("a", 64)}
+	payload := simpleSigningPayloadFor(t, repo.Name(), digest.String())
+	annotations := map[string]string{
+		cosignSignatureAnnotation: base64.StdEncoding.EncodeToString([]byte("signature")),
+	}
+	baseImage := signatureImageWithLayers(t, payload, annotations, 1)
+
+	t.Run("manifest read", func(t *testing.T) {
+		wantErr := errors.New("manifest unavailable")
+		_, gotErr := candidatesFromSigImage(manifestErrorImage{Image: baseImage, err: wantErr}, digest, repo)
+		if !errors.Is(gotErr, wantErr) {
+			t.Fatalf("candidatesFromSigImage() error = %v, want %v", gotErr, wantErr)
+		}
+	})
+
+	t.Run("layer resolution", func(t *testing.T) {
+		wantErr := errors.New("blob unavailable")
+		_, gotErr := candidatesFromSigImage(layerResultImage{Image: baseImage, err: wantErr}, digest, repo)
+		if !errors.Is(gotErr, wantErr) {
+			t.Fatalf("candidatesFromSigImage() error = %v, want %v", gotErr, wantErr)
+		}
+	})
+
+	t.Run("layer read", func(t *testing.T) {
+		wantErr := errors.New("blob read failed")
+		img := layerResultImage{
+			Image: baseImage,
+			layer: compressedErrorLayer{
+				err: wantErr,
+			},
+		}
+		_, gotErr := candidatesFromSigImage(img, digest, repo)
+		if !errors.Is(gotErr, wantErr) {
+			t.Fatalf("candidatesFromSigImage() error = %v, want %v", gotErr, wantErr)
+		}
+	})
+
+	t.Run("signature encoding", func(t *testing.T) {
+		img := signatureImageWithLayers(t, payload, map[string]string{
+			cosignSignatureAnnotation: "%%%",
+		}, 1)
+		_, gotErr := candidatesFromSigImage(img, digest, repo)
+		if gotErr == nil || !strings.Contains(gotErr.Error(), "decode signature") {
+			t.Fatalf("candidatesFromSigImage() error = %v, want signature decode error", gotErr)
+		}
+	})
+
+	t.Run("certificate encoding", func(t *testing.T) {
+		img := signatureImageWithLayers(t, payload, map[string]string{
+			cosignSignatureAnnotation: base64.StdEncoding.EncodeToString([]byte("signature")),
+			cosignCertAnnotation:      "not a certificate",
+		}, 1)
+		_, gotErr := candidatesFromSigImage(img, digest, repo)
+		if gotErr == nil || !strings.Contains(gotErr.Error(), "build bundle") {
+			t.Fatalf("candidatesFromSigImage() error = %v, want bundle construction error", gotErr)
+		}
+	})
+
+}
+
+func TestFetchCandidatesReportsMalformedSignatureDiagnostics(t *testing.T) {
+	host := testRegistry(t)
+	ref, subject := pushSubjectImage(t, host, "malformed-signature")
+	payload := simpleSigningPayloadFor(t, ref.Context().Name(), subject.Digest.String())
+	pushClassicSignatureImage(t, ref, subject.Digest, signatureImageWithLayers(t, payload, map[string]string{
+		cosignSignatureAnnotation: "%%%",
+	}, 1))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	_, err := NewFetcher().FetchCandidates(context.Background(), logger, ref.Name())
+	if !errors.Is(err, ErrNoSignatures) || !strings.Contains(err.Error(), "signature parsing failures") {
+		t.Fatalf("FetchCandidates() error = %v, want ErrNoSignatures with parsing diagnostics", err)
 	}
 }
 

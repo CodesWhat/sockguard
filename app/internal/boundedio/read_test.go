@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,5 +31,18 @@ func TestReadFilePreservesMissingFileError(t *testing.T) {
 	_, err := ReadFile(filepath.Join(t.TempDir(), "missing"), 4)
 	if !os.IsNotExist(err) {
 		t.Fatalf("ReadFile missing error = %v, want os.IsNotExist", err)
+	}
+}
+
+func TestReadFileRejectsNonPositiveLimitBeforeOpening(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing")
+	for _, limit := range []int64{0, -1} {
+		_, err := ReadFile(path, limit)
+		if err == nil || !strings.Contains(err.Error(), "max bytes must be positive") {
+			t.Fatalf("ReadFile(limit=%d) error = %v, want positive-limit error", limit, err)
+		}
+		if os.IsNotExist(err) {
+			t.Fatalf("ReadFile(limit=%d) opened the path before validating the limit", limit)
+		}
 	}
 }

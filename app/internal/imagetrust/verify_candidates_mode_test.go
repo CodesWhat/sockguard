@@ -38,12 +38,23 @@ type cancelThenPassVerifier struct {
 	calls  int
 }
 
+type cancelThenSucceedVerifier struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
 func (v *cancelThenPassVerifier) Verify(_ context.Context, _, _ string, _ verify.SignedEntity) error {
 	v.calls++
 	if v.calls == 1 {
 		v.cancel()
 		return errors.New("first candidate failed")
 	}
+	return nil
+}
+
+func (v *cancelThenSucceedVerifier) Verify(_ context.Context, _, _ string, _ verify.SignedEntity) error {
+	v.calls++
+	v.cancel()
 	return nil
 }
 
@@ -227,6 +238,31 @@ func TestVerifyCandidatesWithMode_CancellationStopsFallback(t *testing.T) {
 	if !strings.Contains(outcome.FailureMsg, context.Canceled.Error()) {
 		t.Fatalf("FailureMsg = %q, want context cancellation", outcome.FailureMsg)
 	}
+}
+
+func TestVerifyCandidatesWithMode_CancellationBoundaries(t *testing.T) {
+	t.Parallel()
+	cfg := minimalCfgForMode(t, ModeEnforce)
+	candidates := []Candidate{{DigestHex: "aaaa", ImageDigest: "sha256:aaaa"}}
+
+	t.Run("before first candidate", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		v := &countingVerifier{inner: &alwaysPassVerifier{}}
+		outcome := VerifyCandidatesWithMode(ctx, v, cfg, nil, "reg/img:tag", candidates, nil)
+		if outcome.Allowed || v.calls != 0 || !strings.Contains(outcome.FailureMsg, context.Canceled.Error()) {
+			t.Fatalf("pre-canceled outcome = %+v, calls = %d; want denial without verification", outcome, v.calls)
+		}
+	})
+
+	t.Run("after successful candidate", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		v := &cancelThenSucceedVerifier{cancel: cancel}
+		outcome := VerifyCandidatesWithMode(ctx, v, cfg, nil, "reg/img:tag", candidates, nil)
+		if outcome.Allowed || v.calls != 1 || !strings.Contains(outcome.FailureMsg, context.Canceled.Error()) {
+			t.Fatalf("post-canceled outcome = %+v, calls = %d; want denial after one verification", outcome, v.calls)
+		}
+	})
 }
 
 // TestVerifyCandidatesWithMode_NilCandidatesNoFetchErr_Denied ensures that

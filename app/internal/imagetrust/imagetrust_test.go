@@ -178,6 +178,37 @@ func TestVerifyWithMode_Off_AlwaysAllows(t *testing.T) {
 	}
 }
 
+func TestVerifyWithMode_ContextBoundaries(t *testing.T) {
+	t.Parallel()
+	cfg := minimalCfgForMode(t, ModeEnforce)
+
+	t.Run("successful verification", func(t *testing.T) {
+		outcome := VerifyWithMode(context.Background(), &alwaysPassVerifier{}, cfg, nil, "img:latest", "abc", nil)
+		if !outcome.Allowed || outcome.Verifier != "verified" {
+			t.Fatalf("successful outcome = %+v, want verified allowance", outcome)
+		}
+	})
+
+	t.Run("canceled before verification", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		v := &countingVerifier{inner: &alwaysPassVerifier{}}
+		outcome := VerifyWithMode(ctx, v, cfg, nil, "img:latest", "abc", nil)
+		if outcome.Allowed || v.calls != 0 || !strings.Contains(outcome.FailureMsg, context.Canceled.Error()) {
+			t.Fatalf("pre-canceled outcome = %+v, calls = %d; want denial without verification", outcome, v.calls)
+		}
+	})
+
+	t.Run("canceled after successful verification", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		v := &cancelThenSucceedVerifier{cancel: cancel}
+		outcome := VerifyWithMode(ctx, v, cfg, nil, "img:latest", "abc", nil)
+		if outcome.Allowed || v.calls != 1 || !strings.Contains(outcome.FailureMsg, context.Canceled.Error()) {
+			t.Fatalf("post-canceled outcome = %+v, calls = %d; want denial after one verification", outcome, v.calls)
+		}
+	})
+}
+
 // --- mode=warn ---
 
 // TestVerifyWithMode_Warn_AllowsOnFailure ensures that a verification failure
