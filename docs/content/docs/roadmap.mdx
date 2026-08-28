@@ -1,38 +1,40 @@
 ---
 title: Roadmap
-description: Sockguard's shipped v1.7 work, committed v2.0 hardening, and twelve-month direction.
+description: Sockguard's shipped v1.7 and v2.0 work, planned v2.1 focus, and later direction.
 ---
 
-Sockguard v1.7 is the current stable feature line, with v1.7.5 the latest
-release. v2.0 is the next line because pinning signed-policy trust outside the
-candidate changes the v1 public configuration and CLI contract. This roadmap
-covers the next twelve months, through August 2027. It describes direction and
-priorities, not promises about dates. A feature is available only after the
-release notes say it has shipped.
+Sockguard v2.0 is the current stable feature line, with v2.0.0 the latest
+release. It moves signed-policy trust outside the candidate it authenticates,
+an intentional compatibility break that existing signed-policy deployments
+must handle through the [v2 migration](/migration#from-sockguard-v175-to-v200).
+v2.1 is the next planned line. This roadmap describes direction and priorities,
+not promises about dates. A feature is available only after the release notes
+say it has shipped.
 
-## Committed for v2.0
+## Shipped in v2.0.0
 
-| Track | Outcome required before release |
+| Track | Delivered |
 |---|---|
-| Signed-policy integrity | Bootstrap trust is selected out of band, cannot share authority with the signed candidate or rotatable signature object, is pinned across reload, and rejects unsigned compatibility rule mutation |
+| Signed-policy integrity | Bootstrap trust is selected out of band, cannot share authority with the signed candidate or rotatable signature object, stays pinned across reload, and rejects unsigned compatibility-rule mutation |
 | Native Podman builds | `/libpod/build` constrains primary and additional contexts, host-facing controls, host networking, Dockerfile `RUN`, and owner labeling on direct and versioned paths |
-| BuildKit isolation | Caller identity comes from verified certificates or Unix peer credentials where available, session state is correlated by principal/profile/session, Solve admission is atomic, and upgrade handshakes are bounded |
-| Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, response errors clear stale representation headers, and inspected bodies retain deadlines through logging and metrics |
-| Release surfaces | README, docs, website, Helm, verification assets, migration guidance, and the v2 development branch contract agree before the first candidate is tagged |
+| BuildKit isolation | Caller identity comes from verified certificates or Unix peer credentials where available, session state is correlated by principal, profile, and session, Solve admission is atomic, and upgrade handshakes are bounded |
+| Proxy hardening | Socket cleanup is inode-owned, method-aware resource routing covers keyword names, generated response errors clear stale representation headers, inspected bodies retain deadlines through logging and metrics, and request metric labels have finite cardinality |
+| Release surfaces | README, docs, website, Helm metadata, verification assets, and migration guidance agree on v2.0.0; release blobs use sigstore bundles only and published metadata is read back before the release succeeds |
 
 ## Planned for v2.1
 
-Implementation is tracked in
-[issue #185](https://github.com/CodesWhat/sockguard/issues/185), the BuildKit
-gRPC mediation epic.
+The general BuildKit gRPC mediation work shipped under
+[issue #185](https://github.com/CodesWhat/sockguard/issues/185). v2.1 extends
+that completed foundation into selective instruction-level mediation for the
+remaining frontend-less and third-party-frontend paths.
 
 | Track | Outcome required before release |
 |---|---|
-| BuildKit RUN-instruction coverage | Finish the #185 non-Dockerfile-frontend story: v1.7.5's bounded-depth LLB walk denies any `ExecOp`, and any op that fails to decode, in frontend-less Solves when `allow_run_instructions` is false — a blanket refusal. The remaining work is real per-instruction mediation of raw-LLB and third-party frontends, so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale |
+| BuildKit RUN-instruction coverage | Extend the shipped non-Dockerfile-frontend guard: Sockguard's bounded-depth LLB walk denies any `ExecOp`, and any op that fails to decode, in frontend-less Solves when `allow_run_instructions` is false. The remaining work is real per-instruction mediation of raw-LLB and third-party frontends, so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale |
 
 ## Twelve-month direction
 
-After v2.1, work remains risk- and demand-driven:
+Beyond the next planned line, work remains risk- and demand-driven:
 
 - continue mutation-test hardening of rule evaluation, request-body inspection,
   response redaction, and configuration validation;
@@ -51,7 +53,7 @@ computing base.
 
 ## Shipped in v1.7
 
-Sockguard v1.7.5, the latest release in the v1.7 line, shipped on 2026-08-23,
+Sockguard v1.7.5, the final release in the v1.7 line, shipped on 2026-08-23,
 promoting the `1.7.5-rc.1` security candidate to stable: the Swarm
 host-network deny now covers `TaskTemplate.Networks`, three build-time
 RUN-instruction gate bypasses are closed, cross-owner attestations access and

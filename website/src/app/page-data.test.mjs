@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SITE_CONFIG } from "../lib/site-config.ts";
 import { roadmap } from "../lib/site-content.ts";
 import { comparisonRows } from "./data/comparison-rows.ts";
 import { faqItems } from "./data/faq.ts";
@@ -90,11 +91,11 @@ test("website comparison rows live in extracted data modules", () => {
 test("roadmap data is valid and matches expected milestones", () => {
   assert.ok(roadmap.length > 0, "roadmap must be non-empty");
 
-  // v1.7.5 security-patch release.
+  // v2.0.0 whole-app hardening release.
   const releasedMilestones = roadmap.filter((m) => m.status === "released");
   assert.ok(releasedMilestones.length > 0, "must have at least one released milestone");
   const latestReleased = releasedMilestones[releasedMilestones.length - 1];
-  assert.equal(latestReleased.version, "v1.7.5", "latest released milestone must be v1.7.5");
+  assert.equal(latestReleased.version, "v2.0.0", "latest released milestone must be v2.0.0");
   assert.equal(latestReleased.status, "released");
 
   // Must retain the previous stable milestones.
@@ -112,11 +113,24 @@ test("roadmap data is valid and matches expected milestones", () => {
 
   const nextMilestones = roadmap.filter((m) => m.status === "next");
   assert.equal(nextMilestones.length, 1, "roadmap must have exactly one next milestone");
-  assert.equal(nextMilestones[0].version, "v2.0.0", "v2.0.0 must be the next milestone");
+  assert.equal(nextMilestones[0].version, "v2.1.0", "v2.1.0 must be the next milestone");
 
   const v210 = roadmap.find((m) => m.version === "v2.1.0");
   assert.ok(v210, "roadmap must retain the RUN-instruction work as v2.1.0");
-  assert.equal(v210.status, "planned", "v2.1.0 must remain planned until v2.0.0 ships");
+  assert.equal(v210.status, "next", "v2.1.0 must become next after v2.0.0 ships");
+  assert.ok(
+    v210.items.every((item) => !item.includes("#185")),
+    "v2.1.0 must not present closed issue #185 as the owner of planned work",
+  );
+
+  assert.ok(
+    latestReleased.items.some(
+      (item) =>
+        item.includes("archives and checksums use sigstore bundles") &&
+        item.includes("images are signed and verified by digest"),
+    ),
+    "v2.0.0 must distinguish blob bundles from registry image signatures",
+  );
 
   // Every milestone must have a non-empty items array
   for (const milestone of roadmap) {
@@ -125,6 +139,15 @@ test("roadmap data is valid and matches expected milestones", () => {
       `milestone ${milestone.version} must have non-empty items array`,
     );
   }
+});
+
+test("CLI demo keeps release-specific provenance explicitly illustrative", () => {
+  assert.deepEqual(SITE_CONFIG.cliDemo, {
+    commit: "<sha>",
+    built: "<rfc3339>",
+    goVersion: "go1.26.6",
+    logTime: "<rfc3339>",
+  });
 });
 
 test("faqItems data is valid", () => {
