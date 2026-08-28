@@ -236,7 +236,7 @@ export const roadmap: Milestone[] = [
     emoji: "🧩",
     status: "next",
     items: [
-      "Finish the #185 non-Dockerfile-frontend story: v2.0.0's bounded-depth LLB walk denies any ExecOp, and any op that fails to decode, in frontend-less Solves when allow_run_instructions is false — a blanket refusal; the remaining work is real per-instruction mediation of raw-LLB and third-party frontends so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale",
+      "Extend the shipped BuildKit gRPC mediation foundation: v2.0.0's bounded-depth LLB walk denies any ExecOp, and any op that fails to decode, in frontend-less Solves when allow_run_instructions is false — a blanket refusal; the remaining work is real per-instruction mediation of raw-LLB and third-party frontends so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale",
     ],
   },
 ];

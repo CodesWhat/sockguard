@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SITE_CONFIG } from "../lib/site-config.ts";
 import { roadmap } from "../lib/site-content.ts";
 import { comparisonRows } from "./data/comparison-rows.ts";
 import { faqItems } from "./data/faq.ts";
@@ -117,6 +118,10 @@ test("roadmap data is valid and matches expected milestones", () => {
   const v210 = roadmap.find((m) => m.version === "v2.1.0");
   assert.ok(v210, "roadmap must retain the RUN-instruction work as v2.1.0");
   assert.equal(v210.status, "next", "v2.1.0 must become next after v2.0.0 ships");
+  assert.ok(
+    v210.items.every((item) => !item.includes("#185")),
+    "v2.1.0 must not present closed issue #185 as the owner of planned work",
+  );
 
   assert.ok(
     latestReleased.items.some(
@@ -134,6 +139,16 @@ test("roadmap data is valid and matches expected milestones", () => {
       `milestone ${milestone.version} must have non-empty items array`,
     );
   }
+});
+
+test("CLI demo provenance matches the v2 release candidate", () => {
+  assert.equal(SITE_CONFIG.cliDemo.commit, "7a9b575");
+  assert.equal(SITE_CONFIG.cliDemo.built, "2026-08-28T05:58:23Z");
+  assert.equal(SITE_CONFIG.cliDemo.goVersion, "go1.26.6");
+  assert.ok(
+    Date.parse(SITE_CONFIG.cliDemo.logStart) > Date.parse(SITE_CONFIG.cliDemo.built),
+    "CLI demo logs must start after the represented binary was built",
+  );
 });
 
 test("faqItems data is valid", () => {

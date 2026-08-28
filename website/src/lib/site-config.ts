@@ -16,6 +16,13 @@ export const SITE_CONFIG = {
   name: "Sockguard",
   /** Current release version shown in the hero badge. */
   version: "2.0.0",
+  /** Provenance represented by the hand-rendered CLI demo. */
+  cliDemo: {
+    commit: "7a9b575",
+    built: "2026-08-28T05:58:23Z",
+    goVersion: "go1.26.6",
+    logStart: "2026-08-28T06:00:00.000Z",
+  },
   /** Short product tagline used in page titles and OG metadata. */
   tagline: "Control what gets through",
   /** Default meta / OpenGraph / Twitter description. */

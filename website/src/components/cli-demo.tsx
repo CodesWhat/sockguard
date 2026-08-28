@@ -71,7 +71,9 @@ const RAW_FRAMES: RawFrame[] = [
             {"  "}
             {bold("sockguard")} v{SITE_CONFIG.version}
             {"  "}
-            {dim("(commit fe0a643, built 2026-06-11T00:00:00Z, go1.26.4)")}
+            {dim(
+              `(commit ${SITE_CONFIG.cliDemo.commit}, built ${SITE_CONFIG.cliDemo.built}, ${SITE_CONFIG.cliDemo.goVersion})`,
+            )}
           </>
         ),
       },
@@ -127,7 +129,8 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("commit")} {"  "}fe0a643
+            {dim("commit")} {"  "}
+            {SITE_CONFIG.cliDemo.commit}
           </>
         ),
       },
@@ -136,7 +139,8 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("built ")} {"  "}2026-06-11T00:00:00Z
+            {dim("built ")} {"  "}
+            {SITE_CONFIG.cliDemo.built}
           </>
         ),
       },
@@ -145,7 +149,8 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("go    ")} {"  "}go1.26.4
+            {dim("go    ")} {"  "}
+            {SITE_CONFIG.cliDemo.goVersion}
           </>
         ),
       },
@@ -605,7 +610,7 @@ function buildLogLines(): RawFrameLine[] {
 
   // Timestamps cascade a few ms apart so the eye registers them as a
   // live stream rather than a bulk dump.
-  let t = new Date("2026-05-14T00:00:00.000Z").getTime();
+  let t = new Date(SITE_CONFIG.cliDemo.logStart).getTime();
   return entries.map((e) => {
     t += 120 + Math.floor(Math.random() * 180);
     const iso = new Date(t).toISOString();
