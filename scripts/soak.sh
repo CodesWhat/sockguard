@@ -205,6 +205,20 @@ run_worker() {
   WORKER_PIDS+=("$!")
 }
 
+wait_for_workers() {
+  local worker_pid
+  local worker_failed=0
+  for worker_pid in "${WORKER_PIDS[@]}"; do
+    if ! wait "${worker_pid}"; then
+      worker_failed=1
+    fi
+  done
+  if [ "${worker_failed}" -ne 0 ]; then
+    echo "==> FAIL: one or more load workers exited unsuccessfully" >&2
+    return 1
+  fi
+}
+
 echo "==> Soaking for ${DURATION} (concurrency ${CONCURRENCY}/worker)"
 run_worker "soak_ping"        GET  /_ping
 run_worker "soak_containers"  GET  /containers/json
@@ -226,16 +240,7 @@ while [ "$(date +%s)" -lt "${SAMPLE_END}" ]; do
     >> "${SAMPLES_TSV}"
 done
 
-worker_failed=0
-for worker_pid in "${WORKER_PIDS[@]}"; do
-  if ! wait "${worker_pid}"; then
-    worker_failed=1
-  fi
-done
-if [ "${worker_failed}" -ne 0 ]; then
-  echo "==> FAIL: one or more load workers exited unsuccessfully" >&2
-  exit 1
-fi
+wait_for_workers
 
 FINAL_RSS_KB="$(read_rss_kb "${PROXY_PID}")"
 FINAL_THREADS="$(read_threads "${PROXY_PID}")"

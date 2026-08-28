@@ -28,6 +28,30 @@ describe("soak.sh", () => {
     assert.doesNotMatch(script, /^wait\s*$/mu);
   });
 
+  it("returns failure when any load worker exits unsuccessfully", () => {
+    const script = readFileSync(scriptPath, "utf8");
+    const [, waitForWorkers] = script.match(/(wait_for_workers\(\) \{[\s\S]*?\n\})/u) ?? [
+      undefined,
+      "",
+    ];
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `${waitForWorkers}
+WORKER_PIDS=()
+(exit 0) & WORKER_PIDS+=("$!")
+(exit 7) & WORKER_PIDS+=("$!")
+wait_for_workers`,
+      ],
+      { encoding: "utf8" },
+    );
+
+    assert.ok(waitForWorkers, "wait_for_workers function not found");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /one or more load workers exited unsuccessfully/u);
+  });
+
   it("terminates and reaps load workers during early cleanup", () => {
     const script = readFileSync(scriptPath, "utf8");
     const [, cleanup] = script.match(/cleanup\(\) \{([\s\S]*?)\n\}/u) ?? [undefined, ""];
