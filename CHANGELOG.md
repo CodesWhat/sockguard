@@ -7,9 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-08-28
+
+v2.0.0 promotes `2.0.0-rc.4` after the exact candidate passed the four-hour
+soak and all three published-image tri-tool conformance rows. Proxy behavior
+is unchanged from rc.4, and the GA delta is release metadata plus
+release-contract tooling and tests. The Helm image digest is temporarily clear
+for the cut, so the chart falls back to `appVersion: "2.0.0"` until the stable
+multi-arch manifest exists and can be re-pinned on the active development line.
+
+### Security
+
+- **Signed-policy trust now comes from a separate bootstrap file selected out of band.** A signed candidate can no longer select, replace, or disable the keyed or keyless trust that authenticates it; v1 deployments must split trust from candidate policy and add `--policy-bundle-trust-config` before upgrading.
+- **Native Podman builds and mediated BuildKit sessions are fail-closed at their real trust boundaries.** `/libpod/build` constrains primary and additional contexts, host-facing writes, networking, Dockerfile instructions, and owner labels, while BuildKit state is isolated by verified caller principal, selected profile, and bounded session identity.
+
 ### Fixed
 
-- **Release qualification now fails closed at every publication and soak boundary.** The tag-triggered publisher requires stable tags to equal the protected default-branch head and prereleases to equal the matching development or maintenance head. Helm metadata validation rejects duplicate or unsupported YAML shapes, preserves unspaced hashes in plain scalars, binds the default image repository, and renders the complete image reference. The soak waits only for its finite load workers, terminates them on early failure, and lets successful four-hour traffic reach the final memory and thread assertions instead of waiting on its intentionally long-lived daemons until the workflow timeout.
+- **The composed proxy is hardened across request, response, listener, ownership, and observability paths.** Body and upgrade deadlines survive middleware wrappers, Unix sockets are removed only by inode ownership, collection keywords cannot bypass resource authorization, generated errors clear stale representation headers, and attacker-controlled methods and routes cannot grow metric cardinality.
+- **The Helm chart supports the v2 signed-policy boundary directly.** Candidate policy, bootstrap trust, and signature objects mount separately; incomplete or conflicting references fail at render time; and signed listener settings remain inside the authenticated candidate.
+- **Release publication and candidate qualification are fail-closed and reliable.** GitHub release pages publish and read back the tagged release notes, image provenance persists its linked artifact metadata, and RC4 verification proved 18 release assets with bundle-only signature artifacts plus matching signed images on GHCR, Docker Hub, and Quay. The exact candidate completed the four-hour soak with all three load workers at zero errors and reached the final RSS and thread assertions.
+- **Release tags and complete Helm image metadata are revalidated at publication time.** The tag-triggered publisher requires stable tags to equal the protected default-branch head and prereleases to equal the matching development or maintenance head, so the documented manual path cannot bypass promotion. The Helm gate rejects duplicate and unsupported YAML shapes, preserves unspaced hashes in plain scalars, requires the shipped image repository, and proves the default chart renders the complete versioned image reference.
+- **Soak qualification owns every process it starts.** The four-hour run retains Harden Runner telemetry without triggering its hosted-runner reclamation bug, waits only for finite load workers, and terminates and reaps those workers if qualification fails early.
+- **Local fuzz staging copies only source inputs.** Tracked and nonignored working-tree files reach every worker while ignored worktrees, secrets, and build output stay out of the copied tree.
+
+### Changed
+
+- **v2 release blobs use sigstore bundles only.** Source and per-platform archives plus `checksums.txt` publish `.sigstore.json` bundles and documented `verify-blob --bundle` paths; the v1.7 transition-only detached `.sig` and `.pem` assets are retired.
 
 ## [2.0.0-rc.4] - 2026-08-28
 
