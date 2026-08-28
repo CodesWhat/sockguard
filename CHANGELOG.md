@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0-rc.3] - 2026-08-28
+
+### Fixed
+
+- **The four-hour soak no longer loses its GitHub-hosted runner to Harden Runner's block-mode control-plane bug.** The long-running workflow retains runtime telemetry in audit mode until [step-security/harden-runner#679](https://github.com/step-security/harden-runner/issues/679) is resolved; both earlier v2 candidate attempts ended with that upstream 10-to-24-minute reclamation signature before the final RSS-growth assertion could complete.
+- **Local fuzz isolation no longer multiplies ignored worktrees and secrets into every worker.** Worker staging now copies Git-tracked and nonignored untracked files only, while preserving current working-tree edits, so nested `.claude/` worktrees, `.secrets/`, build output, and other ignored local state cannot fill the disk before fuzzing starts.
+
 ## [2.0.0-rc.2] - 2026-08-27
 
 ### Fixed

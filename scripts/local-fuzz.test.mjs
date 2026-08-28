@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const scriptPath = resolve(scriptDir, "local-fuzz.sh");
+const copyScriptPath = resolve(scriptDir, "copy-fuzz-source.sh");
 
 function runLocalFuzz(args) {
   return spawnSync("bash", [scriptPath, ...args], {
@@ -16,7 +18,70 @@ function runLocalFuzz(args) {
   });
 }
 
+function cleanGitEnvironment() {
+  const result = spawnSync("git", ["rev-parse", "--local-env-vars"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+
+  const environment = { ...process.env };
+  for (const name of result.stdout.trim().split("\n")) {
+    delete environment[name];
+  }
+  return environment;
+}
+
 describe("local-fuzz.sh", () => {
+  it("stages tracked and nonignored working files without ignored local state", (t) => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "sockguard-fuzz-copy-"));
+    t.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+
+    const source = join(fixtureRoot, "source");
+    const destination = join(fixtureRoot, "destination");
+    mkdirSync(join(source, ".claude", "worktrees"), { recursive: true });
+    mkdirSync(join(source, ".secrets"), { recursive: true });
+    writeFileSync(join(source, ".gitignore"), ".claude/\n.secrets/\nignored.txt\n*.env\n");
+    writeFileSync(join(source, "tracked.txt"), "committed\n");
+    writeFileSync(join(source, ".claude", "worktrees", "nested.txt"), "ignored\n");
+    writeFileSync(join(source, ".secrets", "credential.env"), "ignored\n");
+    writeFileSync(join(source, "ignored.txt"), "ignored\n");
+
+    for (const args of [
+      ["init", "--quiet", source],
+      ["-C", source, "add", ".gitignore", "tracked.txt"],
+      ["init", "--quiet", join(source, "nested")],
+    ]) {
+      const result = spawnSync("git", args, {
+        encoding: "utf8",
+        env: cleanGitEnvironment(),
+      });
+      assert.equal(result.status, 0, result.stderr);
+    }
+
+    writeFileSync(join(source, "tracked.txt"), "working tree\n");
+    writeFileSync(join(source, "untracked.txt"), "untracked\n");
+    writeFileSync(join(source, "nested", "source.txt"), "tracked by nested repo\n");
+    const nestedAdd = spawnSync("git", ["-C", join(source, "nested"), "add", "source.txt"], {
+      encoding: "utf8",
+      env: cleanGitEnvironment(),
+    });
+    assert.equal(nestedAdd.status, 0, nestedAdd.stderr);
+
+    const outerGitDirectory = spawnSync("git", ["rev-parse", "--absolute-git-dir"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+    }).stdout.trim();
+    const result = spawnSync("bash", [copyScriptPath, source, destination], {
+      encoding: "utf8",
+      env: { ...process.env, GIT_DIR: outerGitDirectory, GIT_WORK_TREE: repoRoot },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(join(destination, "tracked.txt"), "utf8"), "working tree\n");
+    assert.equal(readFileSync(join(destination, "untracked.txt"), "utf8"), "untracked\n");
+    assert.equal(existsSync(join(destination, ".claude")), false);
+    assert.equal(existsSync(join(destination, ".secrets")), false);
+    assert.equal(existsSync(join(destination, "ignored.txt")), false);
+    assert.equal(existsSync(join(destination, "nested")), false);
+  });
+
   it("prints CI-suite native fuzz commands in dry-run mode", () => {
     const result = runLocalFuzz([
       "--dry-run",
