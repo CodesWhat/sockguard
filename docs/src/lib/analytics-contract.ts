@@ -33,6 +33,70 @@ const WEB_VITAL_KEYS = [
   "$web_vitals_LCP_value",
 ] as const;
 
+// Acquisition attribution. posthog-js is allowed to collect campaign params and
+// the referrer, but only the campaign values and the referrer's HOSTNAME are
+// forwarded. $referrer itself is never copied onto the outgoing properties: a
+// full referrer URL can carry a path from a private page, and createBeforeSend
+// builds its result from a fresh object, so anything not copied here cannot
+// reach the wire. Click identifiers (gclid, fbclid, msclkid, ...) are
+// deliberately excluded — they are per-click identifiers, not campaign labels.
+const CAMPAIGN_KEYS = [
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+] as const;
+
+const MAX_ACQUISITION_VALUE_LENGTH = 200;
+
+// posthog-js reports direct traffic with this sentinel rather than a hostname.
+const DIRECT_REFERRER = "$direct";
+
+// A bare hostname: dot-separated LDH labels, no scheme, credentials, port,
+// path, or query. Anything else is dropped rather than trimmed, so a
+// surprising $referring_domain shape fails closed instead of leaking a path.
+const HOSTNAME_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/u;
+
+function sanitizeCampaignValue(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed === "" || trimmed.length > MAX_ACQUISITION_VALUE_LENGTH) {
+    return null;
+  }
+  return trimmed;
+}
+
+function sanitizeReferringDomain(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed === DIRECT_REFERRER) {
+    return trimmed;
+  }
+  if (trimmed === "" || trimmed.length > MAX_ACQUISITION_VALUE_LENGTH) {
+    return null;
+  }
+  const lowered = trimmed.toLowerCase();
+  return HOSTNAME_PATTERN.test(lowered) ? lowered : null;
+}
+
+function applyAcquisitionProperties(properties: CaptureProperties, input: CaptureProperties): void {
+  const referringDomain = sanitizeReferringDomain(input.$referring_domain);
+  if (referringDomain !== null) {
+    properties.$referring_domain = referringDomain;
+  }
+  for (const key of CAMPAIGN_KEYS) {
+    const value = sanitizeCampaignValue(input[key]);
+    if (value !== null) {
+      properties[key] = value;
+    }
+  }
+}
+
 export type AnalyticsConfig = {
   token: string;
   apiHost: typeof POSTHOG_API_HOST;
@@ -239,6 +303,7 @@ export function createBeforeSend(token: string, routes: ReadonlySet<string>) {
     if (input.event === "$pageview" || input.event === "$pageleave") {
       properties.$current_url = `${PRODUCTION_ORIGIN}${properties.path}`;
       properties.$pathname = properties.path;
+      applyAcquisitionProperties(properties, input.properties);
       return createCaptureResult(input, properties);
     }
 
