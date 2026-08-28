@@ -32,17 +32,22 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "weekly" as const,
       priority: 0.7,
     },
+    // Mirrors docs/content/docs/meta.json's page list, minus "index" (served
+    // as /docs above). sitemap.test.mjs fails if the two drift apart — this
+    // list silently lost "podman" and "roadmap" once already.
     ...[
       "getting-started",
       "configuration",
-      "security",
-      "verification",
+      "multi-host",
       "presets",
+      "podman",
       "cis-docker-benchmark",
       "observability",
       "admin",
       "migration",
-      "multi-host",
+      "roadmap",
+      "security",
+      "verification",
     ].map((slug) => ({
       url: `${BASE_URL}/docs/${slug}`,
       lastModified: new Date(),
