@@ -74,6 +74,13 @@ type layerResultImage struct {
 	err   error
 }
 
+type selectedLayerResultImage struct {
+	v1.Image
+	digest v1.Hash
+	layer  v1.Layer
+	err    error
+}
+
 type compressedErrorLayer struct {
 	v1.Layer
 	err error
@@ -90,6 +97,13 @@ func (i manifestErrorImage) Manifest() (*v1.Manifest, error) {
 
 func (i layerResultImage) LayerByDigest(v1.Hash) (v1.Layer, error) {
 	return i.layer, i.err
+}
+
+func (i selectedLayerResultImage) LayerByDigest(digest v1.Hash) (v1.Layer, error) {
+	if digest == i.digest {
+		return i.layer, i.err
+	}
+	return i.Image.LayerByDigest(digest)
 }
 
 func (l compressedErrorLayer) Compressed() (io.ReadCloser, error) {
@@ -535,6 +549,94 @@ func TestCandidatesFromSigImageReportsBoundaryFailures(t *testing.T) {
 
 }
 
+func TestCandidatesFromSigImageSkipsMalformedLayerForValidSibling(t *testing.T) {
+	repo, err := name.NewRepository("example.com/app")
+	if err != nil {
+		t.Fatalf("name.NewRepository: %v", err)
+	}
+	digest := v1.Hash{Algorithm: "sha256", Hex: strings.Repeat("a", 64)}
+	payload := simpleSigningPayloadFor(t, repo.Name(), digest.String())
+	siblingPayload := append(append([]byte(nil), payload...), '\n')
+	validAnnotations := map[string]string{
+		cosignSignatureAnnotation: base64.StdEncoding.EncodeToString([]byte("signature")),
+	}
+	tests := []struct {
+		name             string
+		firstAnnotations map[string]string
+		wrap             func(v1.Image, v1.Hash) v1.Image
+		wantDiagnostic   string
+	}{
+		{
+			name:             "layer resolution",
+			firstAnnotations: validAnnotations,
+			wrap: func(img v1.Image, firstDigest v1.Hash) v1.Image {
+				return selectedLayerResultImage{Image: img, digest: firstDigest, err: errors.New("blob unavailable")}
+			},
+			wantDiagnostic: "resolve blob",
+		},
+		{
+			name:             "layer read",
+			firstAnnotations: validAnnotations,
+			wrap: func(img v1.Image, firstDigest v1.Hash) v1.Image {
+				return selectedLayerResultImage{
+					Image:  img,
+					digest: firstDigest,
+					layer:  compressedErrorLayer{err: errors.New("blob read failed")},
+				}
+			},
+			wantDiagnostic: "read payload",
+		},
+		{
+			name: "signature encoding",
+			firstAnnotations: map[string]string{
+				cosignSignatureAnnotation: "%%%",
+			},
+			wantDiagnostic: "decode signature",
+		},
+		{
+			name: "certificate encoding",
+			firstAnnotations: map[string]string{
+				cosignSignatureAnnotation: base64.StdEncoding.EncodeToString([]byte("signature")),
+				cosignCertAnnotation:      "not a certificate",
+			},
+			wantDiagnostic: "build bundle",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			img, buildErr := mutate.Append(empty.Image,
+				mutate.Addendum{
+					Layer:       static.NewLayer(payload, types.MediaType(simpleSigningMediaType)),
+					Annotations: tt.firstAnnotations,
+				},
+				mutate.Addendum{
+					Layer:       static.NewLayer(siblingPayload, types.MediaType(simpleSigningMediaType)),
+					Annotations: validAnnotations,
+				},
+			)
+			if buildErr != nil {
+				t.Fatalf("build signature image: %v", buildErr)
+			}
+			if tt.wrap != nil {
+				manifest, manifestErr := img.Manifest()
+				if manifestErr != nil {
+					t.Fatalf("read signature manifest: %v", manifestErr)
+				}
+				img = tt.wrap(img, manifest.Layers[0].Digest)
+			}
+
+			candidates, gotErr := candidatesFromSigImage(img, digest, repo)
+			if len(candidates) != 1 {
+				t.Fatalf("candidatesFromSigImage() candidates = %d, want valid sibling", len(candidates))
+			}
+			if gotErr == nil || !strings.Contains(gotErr.Error(), tt.wantDiagnostic) {
+				t.Fatalf("candidatesFromSigImage() error = %v, want first-layer diagnostic %q", gotErr, tt.wantDiagnostic)
+			}
+		})
+	}
+}
+
 func TestFetchCandidatesReportsMalformedSignatureDiagnostics(t *testing.T) {
 	host := testRegistry(t)
 	ref, subject := pushSubjectImage(t, host, "malformed-signature")
@@ -542,11 +644,23 @@ func TestFetchCandidatesReportsMalformedSignatureDiagnostics(t *testing.T) {
 	pushClassicSignatureImage(t, ref, subject.Digest, signatureImageWithLayers(t, payload, map[string]string{
 		cosignSignatureAnnotation: "%%%",
 	}, 1))
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	_, err := NewFetcher().FetchCandidates(context.Background(), logger, ref.Name())
 	if !errors.Is(err, ErrNoSignatures) || !strings.Contains(err.Error(), "signature parsing failures") {
 		t.Fatalf("FetchCandidates() error = %v, want ErrNoSignatures with parsing diagnostics", err)
+	}
+	logOutput := logs.String()
+	for _, want := range []string{
+		"skipping malformed cosign signature manifest",
+		"image_ref=" + ref.Name(),
+		"resolved_digest=" + subject.Digest.String(),
+		"decode signature",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("debug log = %q, want %q", logOutput, want)
+		}
 	}
 }
 
