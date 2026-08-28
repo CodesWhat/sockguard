@@ -63,13 +63,12 @@ func readGRPCFrame(r io.Reader, maxLen int64) (frame, payload []byte, err error)
 		return nil, nil, errMessageTooLarge
 	}
 
-	payload = make([]byte, length)
+	frame = make([]byte, grpcMessageHeaderLen+length)
+	copy(frame, header[:])
+	payload = frame[grpcMessageHeaderLen:]
 	if _, err := io.ReadFull(r, payload); err != nil {
 		return nil, nil, fmt.Errorf("%w: reading message payload: %w", errStreamFrameProtocolError, err)
 	}
 
-	frame = make([]byte, grpcMessageHeaderLen+len(payload))
-	copy(frame, header[:])
-	copy(frame[grpcMessageHeaderLen:], payload)
 	return frame, payload, nil
 }

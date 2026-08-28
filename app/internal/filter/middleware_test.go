@@ -1539,6 +1539,33 @@ func TestBodyReadDeadlineIsSetForAllowedRequests(t *testing.T) {
 	}
 }
 
+func TestAccessLogAndFilterPreserveBodyReadDeadline(t *testing.T) {
+	allow, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/containers/create", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("compile rule: %v", err)
+	}
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := logging.AccessLogMiddleware(testLogger())(
+		MiddlewareWithOptions([]*CompiledRule{allow}, testLogger(), Options{})(inner),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"Image":"alpine"}`))
+	capturing := &deadlineCapturingWriter{ResponseWriter: httptest.NewRecorder()}
+	handler.ServeHTTP(capturing, req)
+
+	if len(capturing.deadlines) != 2 {
+		t.Fatalf("SetReadDeadline calls = %d, want set plus clear", len(capturing.deadlines))
+	}
+	if capturing.deadlines[0].IsZero() {
+		t.Fatal("first SetReadDeadline is zero, want inspection deadline")
+	}
+	if !capturing.deadlines[1].IsZero() {
+		t.Fatalf("second SetReadDeadline = %v, want cleared deadline", capturing.deadlines[1])
+	}
+}
+
 // TestBodyReadDeadlineIsNotSetForDeniedRequests confirms that the deadline is
 // only applied when the path actually passes the rule evaluation stage.
 func TestBodyReadDeadlineIsNotSetForDeniedRequests(t *testing.T) {

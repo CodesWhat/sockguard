@@ -143,6 +143,24 @@ func TestValidateAndCompileRulesAllowsBuildWithRequestBodyInspection(t *testing.
 	}
 }
 
+func TestBodySensitiveWriteCatalogTreatsLibpodBuildAsInspected(t *testing.T) {
+	var endpoint bodySensitiveWriteEndpoint
+	found := false
+	for _, candidate := range bodySensitiveWriteEndpoints {
+		if candidate.method == http.MethodPost && candidate.path == "/libpod/build" {
+			endpoint = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("POST /libpod/build is missing from the body-sensitive write catalog")
+	}
+	if !bodyInspectionConfiguredForEndpoint(config.RequestBodyConfig{}, endpoint) {
+		t.Fatal("POST /libpod/build is not recognized as covered by request_body.build inspection")
+	}
+}
+
 func TestValidateAndCompileRulesAllowsServiceWritesWithRequestBodyInspection(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{

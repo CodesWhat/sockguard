@@ -236,8 +236,9 @@ export function createBeforeSend(token: string, routes: ReadonlySet<string>) {
     properties.$raw_user_agent = rawUserAgent;
     properties.$host = host;
 
-    if (input.event === "$pageview") {
+    if (input.event === "$pageview" || input.event === "$pageleave") {
       properties.$current_url = `${PRODUCTION_ORIGIN}${properties.path}`;
+      properties.$pathname = properties.path;
       return createCaptureResult(input, properties);
     }
 

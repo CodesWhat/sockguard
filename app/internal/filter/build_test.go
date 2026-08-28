@@ -122,6 +122,490 @@ func TestMiddlewareDeniesBuildWithRunInstructionByDefault(t *testing.T) {
 	}
 }
 
+func TestMiddlewareInspectsNativeLibpodBuildRequests(t *testing.T) {
+	allowed, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/libpod/build", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("compile allow rule: %v", err)
+	}
+	denied, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	if err != nil {
+		t.Fatalf("compile deny rule: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		path       string
+		dockerfile string
+		headers    http.Header
+		wantReason string
+	}{
+		{
+			name:       "host network",
+			path:       "/libpod/build?networkmode=host",
+			dockerfile: "FROM busybox\nCOPY . /app\n",
+			wantReason: "host network",
+		},
+		{
+			name:       "version-prefixed remote context",
+			path:       "/v5.0.0/libpod/build?remote=https%3A%2F%2Fgithub.com%2Facme%2Fapp.git",
+			wantReason: "remote build context",
+		},
+		{
+			name:       "malformed registry authentication header",
+			path:       "/libpod/build",
+			dockerfile: "FROM busybox\nCOPY . /app\n",
+			headers: http.Header{
+				"X-Registry-Config": []string{"not-valid-base64!!!"},
+			},
+			wantReason: "X-Registry-Config header is not valid base64",
+		},
+		{
+			name:       "version-prefixed Dockerfile RUN",
+			path:       "/v5.0.0/libpod/build",
+			dockerfile: "FROM busybox\nRUN id\n",
+			wantReason: "RUN instructions",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body io.Reader
+			if tt.dockerfile != "" {
+				body = bytes.NewReader(mustBuildContextTar(t, "Dockerfile", tt.dockerfile))
+			}
+			req := httptest.NewRequest(http.MethodPost, tt.path, body)
+			for name, values := range tt.headers {
+				req.Header[name] = append([]string(nil), values...)
+			}
+			rec := httptest.NewRecorder()
+			upstreamCalls := 0
+			handler := verboseMiddleware([]*CompiledRule{allowed, denied}, testLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+			}
+			var response DenialResponse
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !strings.Contains(response.Reason, tt.wantReason) {
+				t.Fatalf("reason = %q, want substring %q", response.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestMiddlewareDeniesUnsafeNativeLibpodBuildQueryControls(t *testing.T) {
+	allowed, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/libpod/build", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("compile allow rule: %v", err)
+	}
+	denied, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	if err != nil {
+		t.Fatalf("compile deny rule: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		target     string
+		headers    http.Header
+		wantReason string
+	}{
+		{
+			name:       "additional URL context",
+			target:     "/libpod/build?additionalbuildcontexts=docs%3Durl%3Ahttps%3A%2F%2Fexample.com%2Fdocs.tar",
+			wantReason: "remote additional build context",
+		},
+		{
+			name:       "version-prefixed additional image context",
+			target:     "/v5.6.0/libpod/build?additionalbuildcontexts=base%3Dimage%3Adocker.io%2Flibrary%2Falpine%3A3.22",
+			wantReason: "remote additional build context",
+		},
+		{
+			name:       "mixed-case additional URL context",
+			target:     "/libpod/build?AdditionalBuildContexts=docs%3Durl%3Ahttps%3A%2F%2Fexample.com%2Fdocs.tar",
+			wantReason: "remote additional build context",
+		},
+		{
+			name:       "legacy JSON additional URL context",
+			target:     "/libpod/build?additionalbuildcontexts=%7B%22docs%22%3A%7B%22IsURL%22%3Atrue%2C%22IsImage%22%3Afalse%2C%22Value%22%3A%22https%3A%2F%2Fexample.com%2Fdocs.tar%22%2C%22DownloadedCache%22%3A%22%22%7D%7D",
+			wantReason: "remote additional build context",
+		},
+		{
+			name:       "later remote value cannot hide behind first local value",
+			target:     "/v5.6.0/libpod/build?additionalbuildcontexts=base%3Dimage%3Aalpine%3A3.22&additionalbuildcontexts=docs%3Durl%3Ahttps%3A%2F%2Fexample.com%2Fdocs.tar",
+			wantReason: "remote additional build context",
+		},
+		{
+			name:       "later primary remote context cannot hide behind empty first value",
+			target:     "/libpod/build?remote=&remote=https%3A%2F%2Fexample.com%2Fcontext.tar",
+			wantReason: "remote build context",
+		},
+		{
+			name:       "mixed-case primary remote context",
+			target:     "/libpod/build?Remote=https%3A%2F%2Fexample.com%2Fcontext.tar",
+			wantReason: "remote build context",
+		},
+		{
+			name:       "later host network cannot hide behind bridge first value",
+			target:     "/libpod/build?networkmode=bridge&networkmode=host",
+			wantReason: "host network",
+		},
+		{
+			name:       "mixed-case host network",
+			target:     "/libpod/build?NetworkMode=host",
+			wantReason: "host network",
+		},
+		{
+			name:       "malformed additional context",
+			target:     "/libpod/build?additionalbuildcontexts=missing-name-value-separator",
+			wantReason: "additional build context",
+		},
+		{
+			name:       "malformed legacy JSON additional context",
+			target:     "/libpod/build?additionalbuildcontexts=%7B%22docs%22%3A",
+			wantReason: "additional build context",
+		},
+		{
+			name:       "duplicate additional context name",
+			target:     "/libpod/build?additionalbuildcontexts=docs%3Dimage%3Aalpine%3A3.22&additionalbuildcontexts=docs%3Durl%3Ahttps%3A%2F%2Fexample.com%2Fdocs.tar",
+			wantReason: "additional build context",
+		},
+		{
+			name:       "singular volume host mount",
+			target:     "/libpod/build?volume=%2Fsrv%2Fsecrets%3A%2Frun%2Fsecrets%3Aro",
+			wantReason: "host volume",
+		},
+		{
+			name:       "mixed-case volume host mount",
+			target:     "/libpod/build?Volume=%2Fsrv%2Fsecrets%3A%2Frun%2Fsecrets%3Aro",
+			wantReason: "host volume",
+		},
+		{
+			name:       "plural volumes host mount",
+			target:     "/v5.6.0/libpod/build?volumes=%2Fsrv%2Fsecrets%3A%2Frun%2Fsecrets%3Aro",
+			wantReason: "host volume",
+		},
+		{
+			name:       "transient run mount",
+			target:     "/libpod/build?transientRunMounts=type%3Dbind%2Csrc%3D%2Fsrv%2Fsecrets%2Ctarget%3D%2Frun%2Fsecrets",
+			wantReason: "host volume",
+		},
+		{
+			name:       "mixed-case transient run mount",
+			target:     "/libpod/build?TransientRunMounts=type%3Dbind%2Csrc%3D%2Fsrv%2Fsecrets%2Ctarget%3D%2Frun%2Fsecrets",
+			wantReason: "host volume",
+		},
+		{
+			name:       "resource usage log file",
+			target:     "/libpod/build?rusage=true&rusagelogfile=%2Fetc%2Fsockguard-build-rusage",
+			wantReason: "resource usage log",
+		},
+		{
+			name:       "version-prefixed resource usage log with uppercase boolean",
+			target:     "/v5.6.0/libpod/build?rusage=TRUE&rusagelogfile=%2Fetc%2Fsockguard-build-rusage",
+			wantReason: "resource usage log",
+		},
+		{
+			name:       "standalone resource usage log file",
+			target:     "/libpod/build?rusagelogfile=%2Fetc%2Fsockguard-build-rusage",
+			wantReason: "resource usage log",
+		},
+		{
+			name:       "mixed-case resource usage log file",
+			target:     "/libpod/build?RusageLogFile=%2Fetc%2Fsockguard-build-rusage",
+			wantReason: "resource usage log",
+		},
+		{
+			name:       "disabled resource usage still cannot expose a log file",
+			target:     "/libpod/build?rusage=False&rusagelogfile=%2Fetc%2Fsockguard-build-rusage",
+			wantReason: "resource usage log",
+		},
+		{
+			name:       "earlier resource usage log cannot hide behind final empty value",
+			target:     "/libpod/build?rusagelogfile=%2Fetc%2Fsockguard-build-rusage&rusagelogfile=",
+			wantReason: "resource usage log",
+		},
+		{
+			name:       "later resource usage log cannot hide behind first empty value",
+			target:     "/libpod/build?rusagelogfile=&rusagelogfile=%2Fetc%2Fsockguard-build-rusage",
+			wantReason: "resource usage log",
+		},
+		{
+			name:       "malformed mixed-case resource usage boolean",
+			target:     "/libpod/build?rusage=TrUe",
+			wantReason: "malformed rusage",
+		},
+		{
+			name:       "version-prefixed malformed uppercase on resource usage boolean",
+			target:     "/v5.6.0/libpod/build?rusage=ON",
+			wantReason: "malformed rusage",
+		},
+		{
+			name:       "empty resource usage boolean",
+			target:     "/libpod/build?rusage=",
+			wantReason: "malformed rusage",
+		},
+		{
+			name:       "malformed repeated resource usage boolean cannot hide behind valid final value",
+			target:     "/libpod/build?rusage=invalid&rusage=true",
+			wantReason: "malformed rusage",
+		},
+		{
+			name:       "malformed final resource usage boolean cannot hide behind valid first value",
+			target:     "/libpod/build?rusage=true&rusage=invalid",
+			wantReason: "malformed rusage",
+		},
+		{
+			name:   "multipart additional local context",
+			target: "/libpod/build",
+			headers: http.Header{
+				"Content-Type": []string{"multipart/form-data; boundary=sockguard-test"},
+			},
+			wantReason: "multipart build context",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := mustBuildContextTar(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")
+			req := httptest.NewRequest(http.MethodPost, tt.target, bytes.NewReader(payload))
+			for name, values := range tt.headers {
+				req.Header[name] = append([]string(nil), values...)
+			}
+			rec := httptest.NewRecorder()
+			upstreamCalls := 0
+			handler := verboseMiddleware([]*CompiledRule{allowed, denied}, testLogger())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if upstreamCalls != 0 {
+				t.Fatalf("upstream calls = %d, want 0", upstreamCalls)
+			}
+			var response DenialResponse
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if !strings.Contains(response.Reason, tt.wantReason) {
+				t.Fatalf("reason = %q, want substring %q", response.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestMiddlewareAppliesNativeLibpodBuildControlAcknowledgements(t *testing.T) {
+	allowed, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/libpod/build", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("compile allow rule: %v", err)
+	}
+	denied, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	if err != nil {
+		t.Fatalf("compile deny rule: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		target  string
+		headers http.Header
+		options BuildOptions
+	}{
+		{
+			name:    "additional URL context uses remote context acknowledgement",
+			target:  "/libpod/build?additionalbuildcontexts=docs%3Durl%3Ahttps%3A%2F%2Fexample.com%2Fdocs.tar",
+			options: BuildOptions{AllowRemoteContext: true},
+		},
+		{
+			name:    "legacy JSON image context uses remote context acknowledgement",
+			target:  "/v5.5.2/libpod/build?additionalbuildcontexts=%7B%22base%22%3A%7B%22IsURL%22%3Afalse%2C%22IsImage%22%3Atrue%2C%22Value%22%3A%22alpine%3A3.22%22%2C%22DownloadedCache%22%3A%22%22%7D%7D",
+			options: BuildOptions{AllowRemoteContext: true},
+		},
+		{
+			name:    "volume uses blind-write acknowledgement",
+			target:  "/libpod/build?volume=%2Fsrv%2Fcache%3A%2Fcache",
+			options: BuildOptions{AllowBlindWrites: true},
+		},
+		{
+			name:    "local path additional context uses blind-write acknowledgement",
+			target:  "/libpod/build?additionalbuildcontexts=docs%3Dlocalpath%3A%2Fsrv%2Fdocs",
+			options: BuildOptions{AllowBlindWrites: true},
+		},
+		{
+			name:    "resource usage log uses blind-write acknowledgement",
+			target:  "/libpod/build?rusage=True&rusagelogfile=%2Fvar%2Flog%2Fsockguard-build-rusage",
+			options: BuildOptions{AllowBlindWrites: true},
+		},
+		{
+			name:    "standalone resource usage log uses blind-write acknowledgement",
+			target:  "/v5.6.0/libpod/build?rusagelogfile=%2Fvar%2Flog%2Fsockguard-build-rusage",
+			options: BuildOptions{AllowBlindWrites: true},
+		},
+		{
+			name:    "all repeated resource usage values are accepted when valid",
+			target:  "/libpod/build?rusage=on&rusage=T&rusage=1&rusage=FALSE&rusage=F&rusage=0",
+			options: BuildOptions{},
+		},
+		{
+			name:   "multipart additional context uses blind-write acknowledgement",
+			target: "/libpod/build",
+			headers: http.Header{
+				"Content-Type": []string{"multipart/form-data; boundary=sockguard-test"},
+			},
+			options: BuildOptions{AllowBlindWrites: true, AllowRunInstructions: true},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := mustBuildContextTar(t, "Dockerfile", "FROM busybox\nCOPY . /app\n")
+			req := httptest.NewRequest(http.MethodPost, tt.target, bytes.NewReader(payload))
+			for name, values := range tt.headers {
+				req.Header[name] = append([]string(nil), values...)
+			}
+			rec := httptest.NewRecorder()
+			upstreamCalls := 0
+			handler := MiddlewareWithOptions([]*CompiledRule{allowed, denied}, testLogger(), Options{
+				PolicyConfig: PolicyConfig{
+					DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+					Build:                 tt.options,
+				},
+			})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				upstreamCalls++
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusNoContent, rec.Body.String())
+			}
+			if upstreamCalls != 1 {
+				t.Fatalf("upstream calls = %d, want 1", upstreamCalls)
+			}
+		})
+	}
+}
+
+func TestMiddlewareRejectsMalformedLibpodAdditionalContextDespiteAcknowledgements(t *testing.T) {
+	allowed, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/libpod/build", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("compile allow rule: %v", err)
+	}
+	denied, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	if err != nil {
+		t.Fatalf("compile deny rule: %v", err)
+	}
+	handler := MiddlewareWithOptions([]*CompiledRule{allowed, denied}, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			Build: BuildOptions{
+				AllowRemoteContext:   true,
+				AllowRunInstructions: true,
+				AllowBlindWrites:     true,
+			},
+		},
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("malformed additional build context reached upstream")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/libpod/build?additionalbuildcontexts=docs%3Durl%3A", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
+func TestMiddlewareRejectsMalformedLibpodRusageDespiteAcknowledgements(t *testing.T) {
+	allowed, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/libpod/build", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("compile allow rule: %v", err)
+	}
+	denied, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	if err != nil {
+		t.Fatalf("compile deny rule: %v", err)
+	}
+	handler := MiddlewareWithOptions([]*CompiledRule{allowed, denied}, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			Build: BuildOptions{
+				AllowRemoteContext:   true,
+				AllowHostNetwork:     true,
+				AllowRunInstructions: true,
+				AllowBlindWrites:     true,
+			},
+		},
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("malformed rusage value reached upstream")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/libpod/build?rusage=true&rusage=TrUe&rusagelogfile=%2Ftmp%2Frusage", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	var response DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(response.Reason, "malformed rusage") {
+		t.Fatalf("reason = %q, want malformed rusage denial", response.Reason)
+	}
+}
+
+func TestMiddlewareBlindWriteAcknowledgementDoesNotBypassLibpodBuildRestrictions(t *testing.T) {
+	allowed, err := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/libpod/build", Action: ActionAllow, Index: 0})
+	if err != nil {
+		t.Fatalf("compile allow rule: %v", err)
+	}
+	denied, err := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})
+	if err != nil {
+		t.Fatalf("compile deny rule: %v", err)
+	}
+	handler := MiddlewareWithOptions([]*CompiledRule{allowed, denied}, testLogger(), Options{
+		PolicyConfig: PolicyConfig{
+			DenyResponseVerbosity: DenyResponseVerbosityVerbose,
+			Build: BuildOptions{
+				AllowRunInstructions: true,
+				AllowBlindWrites:     true,
+			},
+		},
+	})(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("restricted Podman build reached upstream")
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/libpod/build?rusage=true&rusagelogfile=%2Ftmp%2Frusage&networkmode=host", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	var response DenialResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !strings.Contains(response.Reason, "host network") {
+		t.Fatalf("reason = %q, want host network denial", response.Reason)
+	}
+}
+
 func TestMiddlewareAllowsBuildWithoutRunInstructionsAndPreservesBody(t *testing.T) {
 	r1, _ := CompileRule(Rule{Methods: []string{http.MethodPost}, Pattern: "/build", Action: ActionAllow, Index: 0})
 	r2, _ := CompileRule(Rule{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Reason: "deny all", Index: 1})

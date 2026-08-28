@@ -1,6 +1,7 @@
 package sigverify
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,6 +10,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
@@ -170,7 +172,7 @@ func TestCompileKeyless(t *testing.T) {
 // caller that forgets to inject TUF roots must fail closed.
 func TestVerifyKeylessRequiresTrustedMaterial(t *testing.T) {
 	t.Parallel()
-	err := VerifyKeyless(nil, nil, nil, "https://accounts.google.com", regexp.MustCompile(`^ops@example\.com$`), false)
+	err := VerifyKeyless(context.Background(), nil, nil, nil, "https://accounts.google.com", regexp.MustCompile(`^ops@example\.com$`), false)
 	if err == nil || !strings.Contains(err.Error(), "TrustedMaterial") {
 		t.Fatalf("VerifyKeyless(nil material) error = %v, want TrustedMaterial complaint", err)
 	}
@@ -189,7 +191,7 @@ func TestVerifyKeylessRequiresCompleteIdentityConstraint(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := VerifyKeyless(nil, nil, root.NewTrustedPublicKeyMaterial(nil), tt.issuer, tt.pattern, false)
+			err := VerifyKeyless(context.Background(), nil, nil, root.NewTrustedPublicKeyMaterial(nil), tt.issuer, tt.pattern, false)
 			if err == nil || !strings.Contains(err.Error(), "exact issuer and a compiled subject pattern") {
 				t.Fatalf("VerifyKeyless() error = %v, want complete identity constraint error", err)
 			}
@@ -223,6 +225,7 @@ func TestVerifyKeylessIssuerMismatch(t *testing.T) {
 	// before our belt-and-suspenders fires, so any non-nil error proves
 	// the issuer constraint reached the policy.
 	err = VerifyKeyless(
+		context.Background(),
 		entity,
 		digest[:],
 		vs,
@@ -259,6 +262,7 @@ func TestVerifyKeylessSANMismatch(t *testing.T) {
 	}
 
 	err = VerifyKeyless(
+		context.Background(),
 		entity,
 		digest[:],
 		vs,
@@ -325,6 +329,18 @@ func newKeyedSignedEntity(t *testing.T, priv *ecdsa.PrivateKey, artifact []byte)
 	return entity, verifier
 }
 
+type cancelingVerifier struct {
+	sigsig.Verifier
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (v *cancelingVerifier) VerifySignature(signature, message io.Reader, opts ...sigsig.VerifyOption) error {
+	v.calls++
+	v.cancel()
+	return v.Verifier.VerifySignature(signature, message, opts...)
+}
+
 // TestVerifyKeyedSuccess confirms that VerifyKeyed returns nil when the entity
 // was signed with the key that the compiled verifier corresponds to and the
 // digest matches the signed artifact.
@@ -340,8 +356,38 @@ func TestVerifyKeyedSuccess(t *testing.T) {
 	entity, verifier := newKeyedSignedEntity(t, priv, artifact)
 
 	digest := sha256.Sum256(artifact)
-	if err := VerifyKeyed(entity, digest[:], verifier); err != nil {
+	if err := VerifyKeyed(context.Background(), entity, digest[:], verifier); err != nil {
 		t.Fatalf("VerifyKeyed(valid) error = %v, want nil", err)
+	}
+}
+
+func TestVerifyKeyedRejectsCancellationBeforeAndDuringCrypto(t *testing.T) {
+	t.Parallel()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	artifact := []byte("payload bytes")
+	entity, verifier := newKeyedSignedEntity(t, priv, artifact)
+	digest := sha256.Sum256(artifact)
+
+	preCanceled, cancelBefore := context.WithCancel(context.Background())
+	cancelBefore()
+	before := &cancelingVerifier{Verifier: verifier, cancel: func() {}}
+	if err := VerifyKeyed(preCanceled, entity, digest[:], before); !errors.Is(err, context.Canceled) {
+		t.Fatalf("pre-canceled VerifyKeyed error = %v, want context canceled", err)
+	}
+	if before.calls != 0 {
+		t.Fatalf("pre-canceled verifier calls = %d, want 0", before.calls)
+	}
+
+	during, cancelDuring := context.WithCancel(context.Background())
+	duringVerifier := &cancelingVerifier{Verifier: verifier, cancel: cancelDuring}
+	if err := VerifyKeyed(during, entity, digest[:], duringVerifier); !errors.Is(err, context.Canceled) {
+		t.Fatalf("mid-verification cancellation error = %v, want context canceled", err)
+	}
+	if duringVerifier.calls != 1 {
+		t.Fatalf("mid-verification verifier calls = %d, want 1", duringVerifier.calls)
 	}
 }
 
@@ -361,7 +407,7 @@ func TestVerifyKeyedDigestMismatch(t *testing.T) {
 
 	tampered := []byte("tampered bytes")
 	digest := sha256.Sum256(tampered)
-	if err := VerifyKeyed(entity, digest[:], verifier); err == nil {
+	if err := VerifyKeyed(context.Background(), entity, digest[:], verifier); err == nil {
 		t.Fatal("VerifyKeyed(digest mismatch) returned nil; want error")
 	}
 }
@@ -389,6 +435,7 @@ func TestVerifyKeylessSuccess(t *testing.T) {
 	}
 
 	if err := VerifyKeyless(
+		context.Background(),
 		entity,
 		digest[:],
 		vs,

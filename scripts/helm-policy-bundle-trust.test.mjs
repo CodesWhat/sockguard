@@ -1,0 +1,351 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, it } from "node:test";
+
+const repoRoot = resolve(import.meta.dirname, "..");
+const chartPath = resolve(repoRoot, "chart/sockguard");
+const notesTemplate = readFileSync(resolve(chartPath, "templates/NOTES.txt"), "utf8");
+const signaturePath = "/etc/sockguard-policy-bundle-signature/signature.json";
+const signedPolicyConfig = `upstream:
+  socket: /var/run/docker.sock
+
+listen:
+  address: ":2375"
+  insecure_allow_plain_tcp: true
+  insecure_allow_unauthenticated_clients: true
+
+policy_bundle:
+  signature_path: ${signaturePath}`;
+
+function helm(args) {
+  return spawnSync("helm", args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+}
+
+function renderChart(args = []) {
+  const result = helm(["template", "sockguard", chartPath, ...args]);
+
+  assert.equal(
+    result.error,
+    undefined,
+    `helm is required to test the rendered chart: ${result.error}`,
+  );
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout;
+}
+
+function renderRelease(args = []) {
+  const result = helm(["install", "sockguard", chartPath, "--dry-run=client", ...args]);
+
+  assert.equal(
+    result.error,
+    undefined,
+    `helm is required to test the rendered chart: ${result.error}`,
+  );
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout;
+}
+
+function helmMajorVersion() {
+  const result = helm(["version", "--template", "{{.Version}}"]);
+
+  assert.equal(result.error, undefined, `helm is required to test the chart: ${result.error}`);
+  assert.equal(result.status, 0, result.stderr);
+  const match = result.stdout.trim().match(/^v?(\d+)\./u);
+  assert.ok(match, `could not parse Helm version: ${result.stdout}`);
+  return Number(match[1]);
+}
+
+function withSignaturePath(args) {
+  return [...args, "--set-string", `config=${signedPolicyConfig}`];
+}
+
+function renderFailure(args) {
+  const result = helm(["template", "sockguard", chartPath, ...args]);
+
+  assert.equal(
+    result.error,
+    undefined,
+    `helm is required to test the rendered chart: ${result.error}`,
+  );
+  assert.notEqual(result.status, 0, "invalid trust references must fail chart rendering");
+  return result.stderr;
+}
+
+function documentOfKind(rendered, kind) {
+  const document = rendered
+    .split(/^---\s*$/m)
+    .find((candidate) => new RegExp(`^kind: ${kind}$`, "m").test(candidate));
+  assert.ok(document, `rendered chart must contain a ${kind}`);
+  return document;
+}
+
+describe("Helm policy bundle trust reference", () => {
+  it("leaves the unsigned default deployment unchanged", () => {
+    const rendered = renderChart();
+    const daemonSet = documentOfKind(rendered, "DaemonSet");
+    const candidateConfigMap = documentOfKind(rendered, "ConfigMap");
+
+    assert.doesNotMatch(daemonSet, /policy-bundle-trust-config/u);
+    assert.doesNotMatch(daemonSet, /policy-bundle-trust/u);
+    assert.doesNotMatch(daemonSet, /policy-bundle-signature/u);
+    assert.doesNotMatch(candidateConfigMap, /trust\.yaml/u);
+  });
+
+  it("mounts externally managed trust and signature Secrets at separate paths", () => {
+    const rendered = renderChart(
+      withSignaturePath([
+        "--set-string",
+        "policyBundleTrust.secretRef.name=sockguard-policy-trust",
+        "--set-string",
+        "policyBundleTrust.secretRef.key=trust.yaml",
+        "--set-string",
+        "policyBundleSignature.secretRef.name=sockguard-policy-signature",
+        "--set-string",
+        "policyBundleSignature.secretRef.key=signature.json",
+      ]),
+    );
+    const daemonSet = documentOfKind(rendered, "DaemonSet");
+    const candidateConfigMap = documentOfKind(rendered, "ConfigMap");
+
+    assert.match(
+      daemonSet,
+      /- --policy-bundle-trust-config\s+- \/etc\/sockguard-policy-bundle-trust\/trust\.yaml/u,
+    );
+    assert.match(
+      daemonSet,
+      /- name: policy-bundle-trust\s+mountPath: \/etc\/sockguard-policy-bundle-trust\s+readOnly: true/u,
+    );
+    assert.match(
+      daemonSet,
+      /- name: policy-bundle-trust\s+secret:\s+secretName: "sockguard-policy-trust"\s+items:\s+- key: "trust\.yaml"\s+path: trust\.yaml/u,
+    );
+    assert.match(
+      daemonSet,
+      /- name: policy-bundle-signature\s+mountPath: \/etc\/sockguard-policy-bundle-signature\s+readOnly: true/u,
+    );
+    assert.match(
+      daemonSet,
+      /- name: policy-bundle-signature\s+secret:\s+secretName: "sockguard-policy-signature"\s+items:\s+- key: "signature\.json"\s+path: signature\.json/u,
+    );
+    assert.doesNotMatch(candidateConfigMap, /sockguard-policy-trust|trust\.yaml/u);
+  });
+
+  it("keeps listener settings inside the candidate policy instead of unsigned env overlays", () => {
+    const rendered = renderChart(
+      withSignaturePath([
+        "--set-string",
+        "policyBundleTrust.secretRef.name=sockguard-policy-trust",
+        "--set-string",
+        "policyBundleTrust.secretRef.key=trust.yaml",
+        "--set-string",
+        "policyBundleSignature.secretRef.name=sockguard-policy-signature",
+        "--set-string",
+        "policyBundleSignature.secretRef.key=signature.json",
+      ]),
+    );
+    const daemonSet = documentOfKind(rendered, "DaemonSet");
+    const candidateConfigMap = documentOfKind(rendered, "ConfigMap");
+
+    assert.doesNotMatch(daemonSet, /SOCKGUARD_LISTEN_/u);
+    assert.match(candidateConfigMap, /listen:\s+address: ":2375"/u);
+    assert.match(candidateConfigMap, /insecure_allow_plain_tcp: true/u);
+    assert.match(candidateConfigMap, /insecure_allow_unauthenticated_clients: true/u);
+  });
+
+  it("mounts externally managed ConfigMaps as alternative trust and signature sources", () => {
+    const rendered = renderChart(
+      withSignaturePath([
+        "--set-string",
+        "policyBundleTrust.configMapRef.name=sockguard-policy-trust",
+        "--set-string",
+        "policyBundleTrust.configMapRef.key=trust.yaml",
+        "--set-string",
+        "policyBundleSignature.configMapRef.name=sockguard-policy-signature",
+        "--set-string",
+        "policyBundleSignature.configMapRef.key=signature.json",
+      ]),
+    );
+    const daemonSet = documentOfKind(rendered, "DaemonSet");
+
+    assert.match(
+      daemonSet,
+      /- name: policy-bundle-trust\s+configMap:\s+name: "sockguard-policy-trust"\s+items:\s+- key: "trust\.yaml"\s+path: trust\.yaml/u,
+    );
+    assert.match(
+      daemonSet,
+      /- name: policy-bundle-signature\s+configMap:\s+name: "sockguard-policy-signature"\s+items:\s+- key: "signature\.json"\s+path: signature\.json/u,
+    );
+  });
+
+  it("explains trust rotation without rendering trust material", () => {
+    const secretArgs = withSignaturePath([
+      "--set-string",
+      "policyBundleTrust.secretRef.name=sockguard-policy-trust",
+      "--set-string",
+      "policyBundleTrust.secretRef.key=trust.yaml",
+      "--set-string",
+      "policyBundleSignature.secretRef.name=sockguard-policy-signature",
+      "--set-string",
+      "policyBundleSignature.secretRef.key=signature.json",
+    ]);
+
+    if (helmMajorVersion() >= 4) {
+      const secretRendered = renderRelease(secretArgs);
+      const configMapRendered = renderRelease(
+        withSignaturePath([
+          "--set-string",
+          "policyBundleTrust.configMapRef.name=sockguard-policy-trust",
+          "--set-string",
+          "policyBundleTrust.configMapRef.key=trust.yaml",
+          "--set-string",
+          "policyBundleSignature.configMapRef.name=sockguard-policy-signature",
+          "--set-string",
+          "policyBundleSignature.configMapRef.key=signature.json",
+        ]),
+      );
+
+      assert.match(
+        secretRendered,
+        /Policy bundle trust: enabled from an externally managed Secret\./u,
+      );
+      assert.match(
+        configMapRendered,
+        /Policy bundle trust: enabled from an externally managed ConfigMap\./u,
+      );
+      for (const rendered of [secretRendered, configMapRendered]) {
+        assert.match(rendered, /kubectl rollout restart daemonset\/sockguard/u);
+        assert.match(rendered, /never copies the trust YAML into the candidate policy ConfigMap/u);
+        assert.match(rendered, /\/etc\/sockguard-policy-bundle-signature\/signature\.json/u);
+      }
+      return;
+    }
+
+    renderChart(secretArgs);
+    assert.match(notesTemplate, /Policy bundle trust: enabled from an externally managed/u);
+    assert.match(
+      notesTemplate,
+      /kubectl rollout restart daemonset\/\{\{ include "sockguard\.fullname" \. \}\}/u,
+    );
+    assert.match(notesTemplate, /never copies the trust YAML into the candidate policy ConfigMap/u);
+    assert.match(notesTemplate, /\/etc\/sockguard-policy-bundle-signature\/signature\.json/u);
+  });
+
+  it("requires the candidate policy to use the mounted signature path", () => {
+    const refs = [
+      "--set-string",
+      "policyBundleTrust.secretRef.name=sockguard-policy-trust",
+      "--set-string",
+      "policyBundleTrust.secretRef.key=trust.yaml",
+      "--set-string",
+      "policyBundleSignature.secretRef.name=sockguard-policy-signature",
+      "--set-string",
+      "policyBundleSignature.secretRef.key=signature.json",
+    ];
+    const missing = renderFailure(refs);
+
+    assert.match(
+      missing,
+      /policy_bundle\.signature_path must be \/etc\/sockguard-policy-bundle-signature\/signature\.json/u,
+    );
+
+    const incorrect = renderFailure([
+      ...refs,
+      "--set-string",
+      "config=policy_bundle:\n  signature_path: /tmp/signature.json",
+    ]);
+    assert.match(
+      incorrect,
+      /policy_bundle\.signature_path must be \/etc\/sockguard-policy-bundle-signature\/signature\.json/u,
+    );
+  });
+
+  it("rejects the chart-generated candidate ConfigMap as the trust source", () => {
+    const stderr = renderFailure([
+      "--set-string",
+      "policyBundleTrust.configMapRef.name=sockguard",
+      "--set-string",
+      "policyBundleTrust.configMapRef.key=sockguard.yaml",
+      "--set-string",
+      "policyBundleSignature.secretRef.name=sockguard-policy-signature",
+      "--set-string",
+      "policyBundleSignature.secretRef.key=signature.json",
+    ]);
+
+    assert.match(stderr, /must not reference the chart-generated candidate policy ConfigMap/u);
+  });
+
+  it("rejects trust and signature data stored in the same Kubernetes object", () => {
+    const secret = renderFailure([
+      "--set-string",
+      "policyBundleTrust.secretRef.name=combined-policy-object",
+      "--set-string",
+      "policyBundleTrust.secretRef.key=trust.yaml",
+      "--set-string",
+      "policyBundleSignature.secretRef.name=combined-policy-object",
+      "--set-string",
+      "policyBundleSignature.secretRef.key=signature.json",
+    ]);
+    assert.match(secret, /must reference different Kubernetes objects/u);
+
+    const configMap = renderFailure([
+      "--set-string",
+      "policyBundleTrust.configMapRef.name=combined-policy-object",
+      "--set-string",
+      "policyBundleTrust.configMapRef.key=trust.yaml",
+      "--set-string",
+      "policyBundleSignature.configMapRef.name=combined-policy-object",
+      "--set-string",
+      "policyBundleSignature.configMapRef.key=signature.json",
+    ]);
+    assert.match(configMap, /must reference different Kubernetes objects/u);
+  });
+
+  it("rejects unpaired trust and signature references", () => {
+    const trustOnly = renderFailure([
+      "--set-string",
+      "policyBundleTrust.secretRef.name=sockguard-policy-trust",
+      "--set-string",
+      "policyBundleTrust.secretRef.key=trust.yaml",
+    ]);
+    assert.match(trustOnly, /must be configured together/u);
+
+    const signatureOnly = renderFailure([
+      "--set-string",
+      "policyBundleSignature.secretRef.name=sockguard-policy-signature",
+      "--set-string",
+      "policyBundleSignature.secretRef.key=signature.json",
+    ]);
+    assert.match(signatureOnly, /must be configured together/u);
+  });
+
+  it("rejects simultaneous Secret and ConfigMap references", () => {
+    const stderr = renderFailure([
+      "--set-string",
+      "policyBundleTrust.secretRef.name=secret-trust",
+      "--set-string",
+      "policyBundleTrust.secretRef.key=trust.yaml",
+      "--set-string",
+      "policyBundleTrust.configMapRef.name=configmap-trust",
+      "--set-string",
+      "policyBundleTrust.configMapRef.key=trust.yaml",
+    ]);
+
+    assert.match(stderr, /only one of secretRef or configMapRef may be configured/u);
+  });
+
+  it("rejects incomplete and malformed references", () => {
+    const incomplete = renderFailure([
+      "--set-string",
+      "policyBundleTrust.secretRef.name=secret-trust",
+    ]);
+    assert.match(incomplete, /secretRef requires non-empty name and key/u);
+
+    const malformed = renderFailure(["--set-string", "policyBundleTrust.configMapRef=not-a-map"]);
+    assert.match(malformed, /configMapRef must be a map with name and key/u);
+  });
+});

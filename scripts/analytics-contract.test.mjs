@@ -167,9 +167,68 @@ test("pageviews are rebuilt from the canonical production URL and a minimal enve
       surface: "marketing",
       path: "/compare",
       $current_url: `${PRODUCTION_ORIGIN}/compare`,
+      $pathname: "/compare",
       ...COOKIELESS_HASH_PROPERTIES,
     },
   });
+});
+
+test("pageleave events are rebuilt from the canonical production URL just like pageviews", () => {
+  const timestamp = new Date("2026-08-14T12:00:05.000Z");
+  const beforeSend = createBeforeSend("phc_public-token_123", ROUTES);
+  const result = beforeSend({
+    uuid: "018f0000-0000-7000-8000-000000000009",
+    event: "$pageleave",
+    timestamp,
+    properties: {
+      ...COOKIELESS_HASH_PROPERTIES,
+      token: "attacker-token",
+      // posthog-js emits $pageleave itself, carrying $current_url rather
+      // than a hand-supplied path.
+      $current_url: `${PRODUCTION_ORIGIN}/compare/?utm_source=secret#secret`,
+      title: "Private title",
+    },
+  });
+
+  assert.deepEqual(result, {
+    uuid: "018f0000-0000-7000-8000-000000000009",
+    event: "$pageleave",
+    timestamp,
+    properties: {
+      token: "phc_public-token_123",
+      schema_version: 1,
+      site: "sockguard",
+      surface: "marketing",
+      path: "/compare",
+      $current_url: `${PRODUCTION_ORIGIN}/compare`,
+      $pathname: "/compare",
+      ...COOKIELESS_HASH_PROPERTIES,
+    },
+  });
+  assert.equal(result.properties.$pathname, result.properties.path);
+  assert.equal(new URL(result.properties.$current_url).pathname, result.properties.$pathname);
+});
+
+test("$pathname mirrors the canonical path for both pageviews and pageleaves, even when it collapses to /_other", () => {
+  const beforeSend = createBeforeSend("phc_public-token_123", ROUTES);
+
+  for (const event of ["$pageview", "$pageleave"]) {
+    const known = beforeSend({
+      uuid: "018f0000-0000-7000-8000-00000000000a",
+      event,
+      properties: { ...COOKIELESS_HASH_PROPERTIES, path: "/docs/security" },
+    });
+    assert.equal(known.properties.$pathname, "/docs/security");
+    assert.equal(known.properties.$pathname, known.properties.path);
+
+    const unlisted = beforeSend({
+      uuid: "018f0000-0000-7000-8000-00000000000b",
+      event,
+      properties: { ...COOKIELESS_HASH_PROPERTIES, path: "/private/unlisted" },
+    });
+    assert.equal(unlisted.properties.$pathname, "/_other");
+    assert.equal(unlisted.properties.$pathname, unlisted.properties.path);
+  }
 });
 
 test("before_send requires and forwards the cookieless server-hash fields", () => {
@@ -240,6 +299,7 @@ test("surface is derived from the canonical path instead of hostile raw path dat
         surface: "docs",
         path: "/docs",
         $current_url: `${PRODUCTION_ORIGIN}/docs`,
+        $pathname: "/docs",
         ...COOKIELESS_HASH_PROPERTIES,
       },
     },

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const scriptPath = resolve(scriptDir, "soak.sh");
+const workflowPath = resolve(repoRoot, ".github/workflows/quality-soak-weekly.yml");
 
 function runSoak(args) {
   return spawnSync("bash", [scriptPath, ...args], {
@@ -16,6 +18,63 @@ function runSoak(args) {
 }
 
 describe("soak.sh", () => {
+  it("waits only for finite load workers and propagates each failure", () => {
+    const script = readFileSync(scriptPath, "utf8");
+
+    assert.match(script, /^WORKER_PIDS=\(\)$/mu);
+    assert.match(script, /WORKER_PIDS\+=\("\$!"\)/u);
+    assert.match(script, /for worker_pid in "\$\{WORKER_PIDS\[@\]\}"/u);
+    assert.match(script, /if ! wait "\$\{worker_pid\}"/u);
+    assert.doesNotMatch(script, /^wait\s*$/mu);
+  });
+
+  it("returns failure when any load worker exits unsuccessfully", () => {
+    const script = readFileSync(scriptPath, "utf8");
+    const [, waitForWorkers] = script.match(/(wait_for_workers\(\) \{[\s\S]*?\n\})/u) ?? [
+      undefined,
+      "",
+    ];
+    const result = spawnSync(
+      "bash",
+      [
+        "-c",
+        `${waitForWorkers}
+WORKER_PIDS=()
+(exit 0) & WORKER_PIDS+=("$!")
+(exit 7) & WORKER_PIDS+=("$!")
+wait_for_workers`,
+      ],
+      { encoding: "utf8" },
+    );
+
+    assert.ok(waitForWorkers, "wait_for_workers function not found");
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /one or more load workers exited unsuccessfully/u);
+  });
+
+  it("terminates and reaps load workers during early cleanup", () => {
+    const script = readFileSync(scriptPath, "utf8");
+    const [, cleanup] = script.match(/cleanup\(\) \{([\s\S]*?)\n\}/u) ?? [undefined, ""];
+
+    assert.ok(cleanup, "cleanup function not found");
+    assert.match(cleanup, /for worker_pid in "\$\{WORKER_PIDS\[@\]\}"/u);
+    assert.match(cleanup, /kill "\$\{worker_pid\}"/u);
+    assert.match(cleanup, /wait "\$\{worker_pid\}"/u);
+    assert.match(script, /^trap cleanup EXIT$/mu);
+  });
+
+  it("keeps the four-hour workflow in audit mode while block mode can reclaim the runner", () => {
+    const workflow = readFileSync(workflowPath, "utf8");
+    const [, hardenRunner] = workflow.match(
+      /- name: Harden Runner([\s\S]*?)\n\s+- name: Checkout/u,
+    ) ?? [undefined, ""];
+
+    assert.ok(hardenRunner, "Harden Runner step not found");
+    assert.match(hardenRunner, /^[ \t]*egress-policy:[ \t]*audit[ \t]*$/mu);
+    assert.doesNotMatch(hardenRunner, /^[ \t]*allowed-endpoints:/mu);
+    assert.match(hardenRunner, /step-security\/harden-runner#679/u);
+  });
+
   it("prints the resolved soak plan in dry-run mode", () => {
     const result = runSoak(["--dry-run"]);
 

@@ -35,26 +35,27 @@ type Stat = {
   label: string;
 };
 
+// Stat values are a periodically refreshed snapshot, not live-fetched.
 const stats: Stat[] = [
   {
     href: `${GITHUB_URL}/stargazers`,
     icon: Star,
     iconClass: "fill-amber-400 text-amber-400",
-    value: "★",
+    value: "8",
     label: "stars",
   },
   {
     href: DOCKER_HUB_URL,
     icon: Download,
     iconClass: "text-sky-500",
-    value: "⬇",
+    value: "5.9K",
     label: "pulls",
   },
   {
     href: `${GITHUB_URL}/forks`,
     icon: GitFork,
     iconClass: "text-violet-500",
-    value: "⑂",
+    value: "0",
     label: "forks",
   },
 ];
@@ -86,8 +87,13 @@ function StatTiles() {
             className="group flex items-center gap-2.5 rounded-xl border border-neutral-200 bg-white/50 px-4 py-2.5 backdrop-blur-sm transition-colors hover:border-neutral-300 hover:bg-white/80 dark:border-neutral-800 dark:bg-neutral-900/50 dark:hover:border-neutral-700 dark:hover:bg-neutral-900/80"
           >
             <Icon className={`h-4 w-4 shrink-0 ${s.iconClass}`} />
-            <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
-              {s.label}
+            <span className="flex items-baseline gap-1.5">
+              <span className="text-sm font-semibold tabular-nums text-neutral-900 dark:text-neutral-100">
+                {s.value}
+              </span>
+              <span className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
+                {s.label}
+              </span>
             </span>
           </a>
         );

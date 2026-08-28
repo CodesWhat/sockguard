@@ -1,50 +1,84 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
+import { extractChartImageTag } from "./chart-image-tag.mjs";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const valuesPath = resolve(repoRoot, "chart/sockguard/values.yaml");
 const chartPath = resolve(repoRoot, "chart/sockguard/Chart.yaml");
 
-// Regression test for #305: the chart's default image.tag pinned a digest
-// belonging to codeswhat/sockguard:1.5.1 for four releases (v1.6.0 through
-// v1.7.2) because nothing checked that the pinned tag component still
-// agreed with Chart.yaml's appVersion. The digest itself can't be verified
-// offline (that requires a registry round-trip — see RELEASING.md's Helm
-// chart section), but the tag/appVersion agreement is checkable here and is
-// exactly the drift that rotted silently.
-function readImageTag(values) {
-  const match = values.match(/^\s*tag:\s*"([^"]*)"\s*$/m);
-  assert.ok(match, "chart/sockguard/values.yaml must set image.tag as a quoted string");
-  return match[1];
-}
-
+// Regression test for #305: the chart's default image.tag pinned a stale
+// release for four releases. The digest itself can't be verified offline
+// (that requires a registry round-trip — see RELEASING.md's Helm chart
+// section), but this contract rejects every local state except the empty
+// prepublication value or the exact appVersion plus a valid digest shape.
 function readAppVersion(chart) {
   const match = chart.match(/^appVersion:\s*"([^"]*)"\s*$/m);
   assert.ok(match, "chart/sockguard/Chart.yaml must set appVersion");
   return match[1];
 }
 
+function assertValidReleaseImageTag(tag, appVersion) {
+  if (tag === "") {
+    return;
+  }
+
+  const escapedAppVersion = appVersion.replaceAll(".", "\\.");
+  assert.match(
+    tag,
+    new RegExp(`^${escapedAppVersion}@sha256:[0-9a-f]{64}$`),
+    `image.tag must be empty before publication or exactly ${appVersion}@sha256:<64 lowercase hex characters> after publication`,
+  );
+}
+
 describe("chart default image pin", () => {
-  it("pins the tag component to Chart.yaml's appVersion wherever tag@digest is used", () => {
-    const tag = readImageTag(readFileSync(valuesPath, "utf8"));
+  it("is empty before publication or pins the exact appVersion and manifest digest", () => {
+    const tag = extractChartImageTag(readFileSync(valuesPath, "utf8"));
     const appVersion = readAppVersion(readFileSync(chartPath, "utf8"));
 
-    if (!tag.includes("@sha256:")) {
-      // Not a digest pin (e.g. left empty to fall back to appVersion, or set
-      // to a bare tag) — nothing to check here.
-      return;
-    }
+    assertValidReleaseImageTag(tag, appVersion);
+  });
 
-    const [tagComponent] = tag.split("@sha256:");
-    assert.equal(
-      tagComponent,
-      appVersion,
-      `chart/sockguard/values.yaml pins image.tag="${tag}", whose tag component ` +
-        `("${tagComponent}") does not match Chart.yaml's appVersion ("${appVersion}"). ` +
-        "The digest has to move together with the tag on every release — see " +
-        "RELEASING.md's Helm chart section.",
+  it("renders the complete expected default image reference", () => {
+    const tag = extractChartImageTag(readFileSync(valuesPath, "utf8"));
+    const appVersion = readAppVersion(readFileSync(chartPath, "utf8"));
+    const effectiveTag = tag || appVersion;
+    const result = spawnSync(
+      "helm",
+      ["template", "sockguard", resolve(repoRoot, "chart/sockguard")],
+      {
+        encoding: "utf8",
+      },
     );
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, new RegExp(`image: "codeswhat/sockguard:${effectiveTag}"`, "u"));
+  });
+
+  it("rejects stale bare tags", () => {
+    assert.throws(
+      () => assertValidReleaseImageTag("1.7.5", "2.0.0"),
+      /image\.tag must be empty before publication or exactly/u,
+    );
+  });
+
+  it("rejects a stale tag paired with a well-shaped digest", () => {
+    assert.throws(
+      () => assertValidReleaseImageTag(`1.7.5@sha256:${"a".repeat(64)}`, "2.0.0"),
+      /image\.tag must be empty before publication or exactly/u,
+    );
+  });
+
+  it("accepts the exact appVersion paired with a lowercase digest", () => {
+    assert.doesNotThrow(() =>
+      assertValidReleaseImageTag(`2.0.0@sha256:${"a".repeat(64)}`, "2.0.0"),
+    );
+  });
+
+  it("rejects malformed and uppercase digests", () => {
+    assert.throws(() => assertValidReleaseImageTag("2.0.0@sha256:abc", "2.0.0"));
+    assert.throws(() => assertValidReleaseImageTag(`2.0.0@sha256:${"A".repeat(64)}`, "2.0.0"));
   });
 });

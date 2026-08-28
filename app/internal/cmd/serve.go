@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -87,6 +88,57 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		return fmt.Errorf("apply flag overrides: %w", err)
 	}
 
+	// Startup diagnostics before policy verification and validation always go
+	// to stderr. Opening a path requested by an unverified or invalid config
+	// would let that config create or truncate arbitrary files before the
+	// process rejects it.
+	bootstrapLogger := slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), nil))
+
+	trustPath := policyBundleTrustConfigPath(cmd)
+	var bundleVerifier policybundle.Verifier
+	var bundleResult *policybundle.VerifyResult
+	signedMode := trustPath != ""
+	if !signedMode && cfg.PolicyBundle.Enabled {
+		return errors.New("policy_bundle.enabled in the candidate config cannot authenticate itself; provide --policy-bundle-trust-config with out-of-band trust material")
+	}
+	if signedMode {
+		if samePolicyConfigFile(deps, cfgFile, trustPath) {
+			return errors.New("policy bundle trust config must be a different file from the signed candidate config")
+		}
+		pinnedTrust, loadErr := loadPolicyBundleTrustConfig(deps, trustPath)
+		if loadErr != nil {
+			return fmt.Errorf("policy bundle trust config: %w", loadErr)
+		}
+		pinPolicyBundleTrust(cfg, pinnedTrust)
+		bundleVerifier, err = deps.buildBundleVerifier(pinnedTrust)
+		if err != nil {
+			return fmt.Errorf("policy bundle verifier: %w", err)
+		}
+		var signedCfg *config.Config
+		bundleResult, signedCfg, err = verifyPolicyBundleAtStartup(cmd.Context(), cfg, cfgFile, deps, bundleVerifier, bootstrapLogger)
+		if err != nil {
+			return fmt.Errorf("policy bundle: %w", err)
+		}
+		if err := applyFlagOverrides(cmd, signedCfg); err != nil {
+			return fmt.Errorf("apply flag overrides: %w", err)
+		}
+		cfg = signedCfg
+	}
+
+	// Tecnativa compatibility mode expands legacy env vars like CONTAINERS=1
+	// into explicit allow/deny rules before normal validation and compilation.
+	if signedMode {
+		if vars := config.CompatEnvironmentVariables(); len(vars) > 0 {
+			return fmt.Errorf("signed policy cannot be combined with rule-generating compatibility environment variables: %s", strings.Join(vars, ", "))
+		}
+	}
+	compatActive := config.ApplyCompat(cfg, bootstrapLogger)
+
+	rules, err := deps.validateRules(cfg)
+	if err != nil {
+		return fmt.Errorf("config validation: %w", err)
+	}
+
 	logger, logOutputCloser, err := deps.newLogger(cfg.Log.Level, cfg.Log.Format, cfg.Log.Output)
 	if err != nil {
 		return fmt.Errorf("logger: %w", err)
@@ -99,33 +151,6 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 			fmt.Fprintf(cmd.ErrOrStderr(), "failed to close log output: %v\n", closeErr)
 		}
 	}()
-
-	// Bundle verification, when configured, runs BEFORE anything consumes the
-	// config (audit logger, compat expansion, rule compilation, the handler
-	// chain). A startup that cannot verify the signature is fatal: sockguard
-	// would otherwise be serving rules an attacker may have tampered with on
-	// disk. The verifier itself is reload-immutable (trust material is in
-	// [[reload-immutable-fields]]) so the same instance is reused for
-	// SIGHUP/fsnotify reloads.
-	bundleVerifier, err := deps.buildBundleVerifier(cfg.PolicyBundle)
-	if err != nil {
-		return fmt.Errorf("policy bundle verifier: %w", err)
-	}
-	bundleResult, signedCfg, err := verifyPolicyBundleAtStartup(cmd.Context(), cfg, cfgFile, deps, bundleVerifier, logger)
-	if err != nil {
-		return fmt.Errorf("policy bundle: %w", err)
-	}
-	if signedCfg != nil {
-		// The signed YAML is authoritative. Re-apply CLI flag overrides — still
-		// the highest-precedence operator input, supplied at launch — on top of
-		// the signed config, then drop the env-overlaid gate config entirely so
-		// every downstream consumer (audit logger, compat, rule compiler, chain,
-		// reload coordinator) reads only verified policy.
-		if err := applyFlagOverrides(cmd, signedCfg); err != nil {
-			return fmt.Errorf("apply flag overrides: %w", err)
-		}
-		cfg = signedCfg
-	}
 
 	var auditLogger *logging.AuditLogger
 	var auditLogOutputCloser io.Closer
@@ -142,15 +167,6 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 				fmt.Fprintf(cmd.ErrOrStderr(), "failed to close audit log output: %v\n", closeErr)
 			}
 		}()
-	}
-
-	// Tecnativa compatibility mode expands legacy env vars like CONTAINERS=1
-	// into explicit allow/deny rules before normal validation and compilation.
-	compatActive := config.ApplyCompat(cfg, logger)
-
-	rules, err := deps.validateRules(cfg)
-	if err != nil {
-		return fmt.Errorf("config validation: %w", err)
 	}
 	warnIfDefaultProfileExcluded(cfg, logger)
 	runtime, err := newServeRuntime(cfg, logger, deps)
@@ -216,7 +232,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	adminMember, err := bindAdminServer(cfg, logger, auditLogger, versioner, deps, board)
 	if err != nil {
-		closeMembersReverse(members)
+		closeMembersReverse(deps, members)
 		return err
 	}
 	allMembers := append([]*listenerMember(nil), members...)
@@ -320,11 +336,7 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 	}
 	stopWatchdog()
 
-	var adminServer *http.Server
-	if adminMember != nil {
-		adminServer = adminMember.server
-	}
-	shutdownServers(cmd.Context(), deps, cfg, members, adminServer, runtime.metrics, board, logger)
+	shutdownServers(cmd.Context(), deps, cfg, members, adminMember, runtime.metrics, board, logger)
 	logger.Info("sockguard stopped")
 	return serveFailure
 }
@@ -369,7 +381,7 @@ func bindAdminServer(
 // removes any unix sockets sockguard owns. Errors from each step are
 // logged but do not block subsequent steps — shutdown must always make
 // progress so a partial failure can't leave a stale listener behind.
-func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, members []*listenerMember, adminServer *http.Server, registry *metrics.Registry, board *listenerStatusBoard, logger *slog.Logger) {
+func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, members []*listenerMember, adminMember *listenerMember, registry *metrics.Registry, board *listenerStatusBoard, logger *slog.Logger) {
 	// The command context has normally already been canceled by SIGTERM. A
 	// fresh background-derived deadline gives every server the promised grace
 	// period instead of entering Shutdown with an already-canceled context.
@@ -381,7 +393,7 @@ func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, m
 	// Shutdown calls below: the gauge means "safe to route new traffic here",
 	// not "still finishing in-flight requests" — see Registry.SetListenerUp.
 	setListenersUp(registry, members, false)
-	if adminServer != nil {
+	if adminMember != nil {
 		registry.SetListenerUp("admin", string(inbound.RoleAdmin), string(networkFor(cfg.Admin.Listen.ListenConfig)), false)
 		board.setState("admin", health.ListenerStateDraining)
 	}
@@ -393,26 +405,27 @@ func shutdownServers(ctx context.Context, deps *serveDeps, cfg *config.Config, m
 		shutdownMainListeners(shutdownCtx, deps, members, board, logger)
 	}()
 
-	if adminServer != nil {
+	if adminMember != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := deps.shutdownServer(adminServer, shutdownCtx); err != nil {
+			if err := deps.shutdownServer(adminMember.server, shutdownCtx); err != nil {
 				logger.Error("admin shutdown error", "error", err)
 				if shutdownCtx.Err() != nil {
-					_ = adminServer.Close()
+					_ = adminMember.server.Close()
+					_ = adminMember.listener.Close()
 				}
 			}
 		}()
 	}
 	wg.Wait()
 
-	if adminServer != nil {
+	if adminMember != nil {
 		board.setState("admin", health.ListenerStateStopped)
 	}
 
-	if cfg.Admin.Enabled && cfg.Admin.Listen.Configured() && cfg.Admin.Listen.Socket != "" {
-		if err := deps.removePath(cfg.Admin.Listen.Socket); err != nil && !os.IsNotExist(err) {
+	if adminMember != nil && adminMember.socketPath != "" {
+		if err := removeSocketIfOwned(deps, adminMember.socketPath, adminMember.socketIdentity); err != nil && !os.IsNotExist(err) {
 			logger.Error("remove admin socket error", "socket", cfg.Admin.Listen.Socket, "error", err)
 		}
 	}
@@ -636,16 +649,13 @@ func buildServeClientProfiles(cfg *config.Config, res *upstream.Resolver) (map[s
 	return clientProfiles, nil
 }
 
-// attachRuntimeInspectors wires the runtime-bound inspectors (currently the
-// Docker-compat and libpod exec-start inspectors, both of which need the
-// upstream) onto a PolicyConfig shaped by config translation. Each inspector
-// issues its GET through the shared upstream resolver so exec-identity
-// lookups follow the same active endpoint as the exec-create/start they
-// guard under failover. Centralized so every call path that produces a
-// filter.PolicyConfig destined for live request evaluation gets the same
-// wiring — a future runtime dependency added here propagates to both the
-// default policy and every client profile without revisiting two call
-// sites.
+// attachRuntimeInspectors wires runtime-only policy inputs onto a PolicyConfig
+// shaped by config translation. The Docker-compat and libpod exec-start
+// inspectors issue their GET through the shared upstream resolver so identity
+// lookups follow the same active endpoint as the request they guard. The global
+// blind-write acknowledgment is attached here too because it is not part of a
+// profile's request_body block. Keeping this centralized gives the default
+// policy and every client profile the same runtime wiring.
 func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy filter.PolicyConfig) filter.PolicyConfig {
 	policy.Exec.InspectStart = filter.NewDockerExecInspectorWithRoundTripper(upstreamResolverFor(res, cfg))
 	// libpod's POST /libpod/exec/{id}/start re-check queries a different
@@ -659,6 +669,7 @@ func attachRuntimeInspectors(cfg *config.Config, res *upstream.Resolver, policy 
 	// the same as every client profile's PolicyConfig, since this function
 	// runs for both the default policy and every named profile.
 	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
+	policy.Build.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
 	return policy
 }
 
@@ -896,7 +907,15 @@ func withBuildkitMediator(cfg *config.Config, res *upstream.Resolver, logger *sl
 				return
 			}
 
-			key := buildkitproxy.SessionKey{ClientIdentity: r.RemoteAddr, Profile: profileName}
+			principal, err := clientacl.RequestPrincipal(r)
+			if err != nil {
+				logger.ErrorContext(r.Context(), "BuildKit client identity lookup failed", "error", err)
+				logging.SetDeniedWithCode(w, r, "client_identity_lookup_failed", "client identity lookup failed", filter.NormalizePath)
+				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "client identity lookup failed"})
+				return
+			}
+
+			key := buildkitproxy.SessionKey{ClientIdentity: principal, Profile: profileName}
 			switch normPath {
 			case "/grpc":
 				mediator.ServeGRPC(w, r, policy, key)
@@ -1190,25 +1209,12 @@ func withPolicyVersionEndpoint(cfg *config.Config, logger *slog.Logger, versione
 	})
 }
 
-// verifyPolicyBundleAtStartup runs the bundle verifier against the raw
-// YAML bytes of the on-disk config file. Returns (nil, nil) when
-// policy_bundle is disabled so the caller can skip stamping bundle
-// metadata onto the initial snapshot. Otherwise returns (*VerifyResult,
-// nil) on success or (nil, err) on any failure — startup must abort in
-// that case because the trust gate is the whole point of the feature.
-//
-// The supplied ctx is the cobra command context; SIGINT/SIGTERM during
-// startup verification must cancel the verifier rather than block until the
-// per-bundle deadline expires.
 // verifyPolicyBundleAtStartup verifies the signed policy bundle and, on success,
 // returns the authoritative *config.Config parsed from the exact bytes that were
-// verified. The signed YAML is read once: the same byte slice is both checked
-// against the signature and parsed (via deps.loadConfigBytes, which applies no
-// SOCKGUARD_* environment overlay). This closes the verify-then-load TOCTOU
-// (#8) — verification and application can no longer see different file contents
-// — and stops environment variables from silently overriding signed policy
-// (#16). When policy_bundle is disabled it returns (nil, nil, nil) and the
-// caller keeps using the env-overlaid config.
+// verified. cfg carries trust pinned by the out-of-band trust config; only the
+// signature path is read from the candidate YAML. The signed YAML is read once:
+// the same byte slice is both checked and parsed without an environment overlay.
+// The supplied context also cancels an in-flight verifier during shutdown.
 func verifyPolicyBundleAtStartup(
 	parent context.Context,
 	cfg *config.Config,
@@ -1223,15 +1229,20 @@ func verifyPolicyBundleAtStartup(
 	if cfgFile == "" {
 		return nil, nil, errors.New("policy_bundle.enabled=true but no --config file was supplied; sockguard cannot verify an in-memory default")
 	}
-	if cfg.PolicyBundle.SignaturePath == "" {
-		return nil, nil, errors.New("policy_bundle.signature_path is required when policy_bundle.enabled=true")
-	}
 
 	yamlBytes, err := deps.readConfigBytes(cfgFile)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read config YAML for verification: %w", err)
 	}
-	entity, err := deps.loadBundleEntity(cfg.PolicyBundle.SignaturePath)
+	signedCfg, err := deps.loadConfigBytes(yamlBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse verified config: %w", err)
+	}
+	pinPolicyBundleTrust(signedCfg, cfg.PolicyBundle)
+	if signedCfg.PolicyBundle.SignaturePath == "" {
+		return nil, nil, errors.New("policy_bundle.signature_path is required when signed policy is enabled")
+	}
+	entity, err := deps.loadBundleEntity(signedCfg.PolicyBundle.SignaturePath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1246,20 +1257,58 @@ func verifyPolicyBundleAtStartup(
 		return nil, nil, err
 	}
 
-	// Parse the verified bytes — never a fresh re-read — so the applied config is
-	// exactly what was signed, with no environment overlay.
-	signedCfg, err := deps.loadConfigBytes(yamlBytes)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse verified config: %w", err)
-	}
-
 	logger.Info("policy bundle verified",
-		"signature_path", cfg.PolicyBundle.SignaturePath,
+		"signature_path", signedCfg.PolicyBundle.SignaturePath,
 		"signer", result.Signer,
 		"digest", result.DigestHex,
 		"elapsed_ms", result.ElapsedMS,
 	)
 	return &result, signedCfg, nil
+}
+
+func policyBundleTrustConfigPath(cmd *cobra.Command) string {
+	flag := cmd.Flag("policy-bundle-trust-config")
+	if flag == nil {
+		return ""
+	}
+	return strings.TrimSpace(flag.Value.String())
+}
+
+func loadPolicyBundleTrustConfig(deps *serveDeps, path string) (config.PolicyBundleConfig, error) {
+	data, err := deps.readConfigBytes(path)
+	if err != nil {
+		return config.PolicyBundleConfig{}, err
+	}
+	cfg, err := deps.loadConfigBytes(data)
+	if err != nil {
+		return config.PolicyBundleConfig{}, err
+	}
+	if !cfg.PolicyBundle.Enabled {
+		return config.PolicyBundleConfig{}, errors.New("policy_bundle.enabled must be true in the out-of-band trust config")
+	}
+	trust := cfg.PolicyBundle
+	trust.SignaturePath = ""
+	return trust, nil
+}
+
+func samePolicyConfigFile(deps *serveDeps, candidatePath, trustPath string) bool {
+	candidateAbs, candidateErr := filepath.Abs(candidatePath)
+	trustAbs, trustErr := filepath.Abs(trustPath)
+	if candidateErr == nil && trustErr == nil && candidateAbs == trustAbs {
+		return true
+	}
+	if deps.statPath == nil {
+		return false
+	}
+	candidateInfo, candidateErr := deps.statPath(candidatePath)
+	trustInfo, trustErr := deps.statPath(trustPath)
+	return candidateErr == nil && trustErr == nil && os.SameFile(candidateInfo, trustInfo)
+}
+
+func pinPolicyBundleTrust(cfg *config.Config, trust config.PolicyBundleConfig) {
+	signaturePath := cfg.PolicyBundle.SignaturePath
+	cfg.PolicyBundle = trust
+	cfg.PolicyBundle.SignaturePath = signaturePath
 }
 
 // bundleVerifyDeadline returns the wall-clock budget for one verification

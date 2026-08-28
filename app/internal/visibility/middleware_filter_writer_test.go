@@ -1,6 +1,7 @@
 package visibility
 
 import (
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -192,5 +193,58 @@ func TestFilterWriterCapsOversizedResponse(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "too large") {
 		t.Fatalf("body = %q, want too-large message", rec.Body.String())
+	}
+}
+
+func TestGeneratedFilterErrorsReplaceUpstreamRepresentationOnWire(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body func() string
+	}{
+		{name: "oversized", body: func() string { return strings.Repeat("x", filter.MaxResponseBodyBytes+1) }},
+		{name: "filter failure", body: func() string { return `[{"Names":` }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			handler := middlewareWithDeps(slog.New(slog.NewTextHandler(io.Discard, nil)), Options{
+				NamePatterns: []string{"*"},
+			}, visibilityDeps{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Encoding", "gzip")
+				w.Header().Set("Content-Length", "99999999")
+				w.Header().Set("Content-Range", "bytes 0-9/10")
+				w.Header().Set("ETag", `"upstream"`)
+				_, _ = io.WriteString(w, tt.body())
+			}))
+			srv := httptest.NewServer(handler)
+			t.Cleanup(srv.Close)
+
+			client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+			resp, err := client.Get(srv.URL + "/v1.53/containers/json")
+			if err != nil {
+				t.Fatalf("GET generated error: %v", err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("read generated error: %v", err)
+			}
+			if resp.StatusCode != http.StatusBadGateway {
+				t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusBadGateway, body)
+			}
+			for _, name := range []string{"Content-Encoding", "Content-Range", "ETag"} {
+				if got := resp.Header.Get(name); got != "" {
+					t.Errorf("%s = %q, want empty", name, got)
+				}
+			}
+			var payload map[string]string
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode generated error JSON: %v; body: %q", err, body)
+			}
+			if payload["message"] == "" {
+				t.Fatalf("generated error payload = %#v, want message", payload)
+			}
+		})
 	}
 }

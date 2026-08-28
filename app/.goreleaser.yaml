@@ -47,13 +47,9 @@ sboms:
     args: ["$artifact", "--output", "cyclonedx-json=$document", "--enrich", "all"]
     artifacts: archive
 
-# Keyless cosign signatures for the per-platform archives users actually
-# download. Until now only `sockguard-<tag>.tar.gz` -- the `git archive`
-# SOURCE snapshot built in the workflow's separate `release` job -- carried a
-# .sig/.pem, and the similar filename made that easy to mistake for coverage
-# of the binaries. It wasn't: v1.7.1 shipped four
-# `sockguard_1.7.1_<os>_<arch>.tar.gz` archives with a CycloneDX SBOM and
-# nothing else.
+# Keyless cosign bundles for the per-platform archives users actually
+# download. The source snapshot built in the workflow's separate `release`
+# job is a different artifact and has its own bundle.
 #
 # Signs checksums.txt as well as the archives, so a consumer can verify the
 # whole release from one signature or any single archive on its own.
@@ -61,66 +57,16 @@ sboms:
 # Keyless needs `id-token: write` on the goreleaser job and the cosign binary
 # on PATH -- both added alongside this in release-from-tag.yml.
 #
-# Dual-published for this v1.7 line (#308): cosign v3 made the new sigstore
-# bundle format (single `.sigstore.json` per artifact) the default, and
-# "sign-blob"'s legacy `--output-signature`/`--output-certificate` flags will
-# eventually go away. The `cosign-keyless*` blocks below opt back out with
-# `--new-bundle-format=false --use-signing-config=false` so the .sig/.pem
-# pair consumers already depend on keeps publishing; the `*-bundle` blocks
-# alongside them run a second, independent `sign-blob` invocation with v3's
-# own defaults to publish the new format at the same time. Drop the legacy
-# pair (and the two `cosign-keyless`/`cosign-keyless-archives` blocks below)
-# in the v1.8 line once the bundle format has burned in.
+# v2 publishes only the sigstore bundle format: one `.sigstore.json` file per
+# artifact carries the signature, certificate, and Rekor inclusion proof.
 signs:
-  - id: cosign-keyless
-    cmd: cosign
-    signature: "${artifact}.sig"
-    certificate: "${artifact}.pem"
-    args:
-      - sign-blob
-      - "--yes"
-      # cosign v3 defaults to the new sigstore bundle format and to the
-      # signing-config flow, either of which makes it ignore the two output
-      # flags below and demand a --bundle path (this is what failed the
-      # v1.7.2 cut, run 32487678759). Opt back into the legacy flow so the
-      # .sig/.pem pair the docs and QA-6 verify-blob commands rely on keeps
-      # being produced during the v1.7 dual-publish transition (#308).
-      - "--new-bundle-format=false"
-      - "--use-signing-config=false"
-      - "--output-signature=${signature}"
-      - "--output-certificate=${certificate}"
-      - "${artifact}"
-    artifacts: checksum
-  - id: cosign-keyless-archives
-    cmd: cosign
-    signature: "${artifact}.sig"
-    certificate: "${artifact}.pem"
-    args:
-      - sign-blob
-      - "--yes"
-      # cosign v3 defaults to the new sigstore bundle format and to the
-      # signing-config flow, either of which makes it ignore the two output
-      # flags below and demand a --bundle path (this is what failed the
-      # v1.7.2 cut, run 32487678759). Opt back into the legacy flow so the
-      # .sig/.pem pair the docs and QA-6 verify-blob commands rely on keeps
-      # being produced during the v1.7 dual-publish transition (#308).
-      - "--new-bundle-format=false"
-      - "--use-signing-config=false"
-      - "--output-signature=${signature}"
-      - "--output-certificate=${certificate}"
-      - "${artifact}"
-    artifacts: archive
   - id: cosign-keyless-bundle
     cmd: cosign
     signature: "${artifact}.sigstore.json"
     args:
       - sign-blob
       - "--yes"
-      # New sigstore bundle format (#308), cosign v3's own default: a single
-      # file carries the signature, certificate, and Rekor inclusion proof.
-      # No --new-bundle-format / --use-signing-config overrides here -- this
-      # block exists specifically to exercise the defaults the legacy blocks
-      # above opt out of.
+      # Cosign v3's bundle format. No legacy-output overrides belong here.
       - "--bundle=${signature}"
       - "${artifact}"
     artifacts: checksum
@@ -130,8 +76,7 @@ signs:
     args:
       - sign-blob
       - "--yes"
-      # New sigstore bundle format (#308), cosign v3's own default. See
-      # cosign-keyless-bundle above.
+      # Same bundle contract as checksums.txt above.
       - "--bundle=${signature}"
       - "${artifact}"
     artifacts: archive
@@ -140,7 +85,9 @@ snapshot:
   version_template: "{{ incpatch .Version }}-dev"
 
 changelog:
-  disable: true  # Release notes come from CHANGELOG.md via extract-changelog-entry.mjs
+  # The workflow supplies --release-notes, which makes GoReleaser load that
+  # file and skip generated notes. Disabling this pipe skips the file load too.
+  disable: false
 
 release:
   draft: false

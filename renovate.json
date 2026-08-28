@@ -1,5 +1,5 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["local>CodesWhat/.github:renovate-config"],
-  "baseBranchPatterns": ["dev/v1.7"]
+  "baseBranchPatterns": ["dev/v2.0"]
 }

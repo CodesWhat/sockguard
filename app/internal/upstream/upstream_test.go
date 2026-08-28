@@ -680,6 +680,58 @@ func TestResolver_Demote_TwoEndpoints_FlipsSelection(t *testing.T) {
 	}
 }
 
+func TestResolver_RoundTripConnectionFailureDemotesPrimary(t *testing.T) {
+	t.Parallel()
+	primary := tempSocketPath(t, "roundtrip-primary-down")
+	secondary := startUnixServer(t, "roundtrip-secondary", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "secondary")
+	}))
+	r, err := New([]Endpoint{
+		{Name: "primary", Network: "unix", Address: primary},
+		{Name: "secondary", Network: "unix", Address: secondary},
+	}, Options{
+		Interval: -1,
+		Probe: func(_ context.Context, ep Endpoint) error {
+			if ep.Name == "primary" {
+				return errors.New("primary remains unreachable")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	r.setHealth(context.Background(), r.states[0], true)
+	r.setHealth(context.Background(), r.states[1], true)
+
+	req, err := http.NewRequest(http.MethodGet, "http://docker/_ping", nil)
+	if err != nil {
+		t.Fatalf("new primary request: %v", err)
+	}
+	if _, err := r.RoundTrip(req); err == nil {
+		t.Fatal("primary RoundTrip error = nil, want connection failure")
+	}
+	if r.states[0].healthy.Load() {
+		t.Fatal("primary remained healthy after RoundTrip connection failure")
+	}
+	if got := r.Active().Name; got != "secondary" {
+		t.Fatalf("active endpoint = %q, want secondary", got)
+	}
+
+	resp, err := r.RoundTrip(req.Clone(context.Background()))
+	if err != nil {
+		t.Fatalf("secondary RoundTrip: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read secondary response: %v", err)
+	}
+	if got := string(body); got != "secondary" {
+		t.Fatalf("secondary response = %q, want secondary", got)
+	}
+}
+
 func TestResolver_Demote_SingleEndpoint_IsNoOp(t *testing.T) {
 	t.Parallel()
 	ep := Endpoint{Name: "/tmp/sole.sock", Network: "unix", Address: "/tmp/sole.sock"}

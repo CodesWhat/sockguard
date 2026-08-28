@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -586,6 +587,72 @@ func RequestProfile(r *http.Request) (string, bool) {
 	}
 	value, _ := r.Context().Value(contextKeyProfile).(string)
 	return value, value != ""
+}
+
+// RequestPrincipal returns the stable connection principal used to correlate
+// security state across requests. Verified mTLS identity wins over captured
+// Unix peer credentials; when neither authentication mechanism is present,
+// the server-observed remote host is the fallback. Source ports are never
+// part of the result.
+func RequestPrincipal(r *http.Request) (string, error) {
+	if r == nil {
+		return "", errors.New("client principal unavailable: nil request")
+	}
+
+	if leaf := clientCertificateLeaf(r); leaf != nil {
+		fingerprint, ok := clientCertificateFingerprint(leaf)
+		if !ok {
+			return "", errors.New("client principal unavailable: verified certificate has no encoded form")
+		}
+		return fmt.Sprintf("mtls:sha256:%x", fingerprint), nil
+	}
+
+	identity, _ := r.Context().Value(contextKeyConnectionIdentity).(connectionIdentity)
+	if identity.unixPeerErr != nil {
+		return "", fmt.Errorf("client principal unavailable: read Unix peer credentials: %w", identity.unixPeerErr)
+	}
+	if identity.unixPeer != nil {
+		peer := identity.unixPeer
+		return fmt.Sprintf("unix:uid=%d;gid=%d;pid=%d", peer.UID, peer.GID, peer.PID), nil
+	}
+
+	host, ok := normalizedRemoteHost(r.RemoteAddr)
+	if !ok {
+		return "", fmt.Errorf("client principal unavailable: invalid remote address %q", r.RemoteAddr)
+	}
+	return "remote:" + host, nil
+}
+
+func normalizedRemoteHost(remoteAddr string) (string, bool) {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if remoteAddr == "" {
+		return "", false
+	}
+
+	host := remoteAddr
+	if splitHost, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = splitHost
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return addr.Unmap().String(), true
+	}
+
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "" || len(host) > 253 {
+		return "", false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return "", false
+		}
+		for _, c := range label {
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+				return "", false
+			}
+		}
+	}
+	return host, true
 }
 
 func selectProfile(r *http.Request, clientIP netip.Addr, ipOK bool, compiled compiledOptions) (string, profileMatchStrategy, bool, error) {

@@ -8,9 +8,9 @@ run-name: >-
 
 on:
   push:
-    branches: [main, 'release/*']
+    branches: [main, 'dev/*', 'maintenance/*', 'release/*']
   pull_request:
-    branches: [main, 'dev/*']
+    branches: [main, 'dev/*', 'maintenance/*']
   merge_group:
   schedule:
     - cron: '30 6 * * 1'  # Weekly on Monday at 06:30 UTC
@@ -301,10 +301,10 @@ jobs:
           # Only inspects commits introduced by this PR (base branch..HEAD),
           # so legacy emoji commits already on the base branch never fail it.
           #
-          # A promotion PR is the exception: `dev/v1.7 -> main` re-presents
+          # A promotion PR is the exception: `dev/v2.0 -> main` re-presents
           # every commit on the dev branch as "introduced by this PR", and
           # this repo's history predates the gate — eight gitmoji subjects
-          # from the #185 BuildKit series sit on dev/v1.7 and not on main.
+          # from the active release series sit on dev/v2.0 and not on main.
           # That history is published and never gets rewritten (CLAUDE.md),
           # so a blocking gate here would deadlock every release cut. Those
           # commits were already validated when they landed on the dev

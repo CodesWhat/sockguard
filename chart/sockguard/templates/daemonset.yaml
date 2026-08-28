@@ -1,3 +1,38 @@
+{{- $policyBundleTrust := include "sockguard.bundleRef" (dict "label" "policyBundleTrust" "value" .Values.policyBundleTrust) | fromJson -}}
+{{- $policyBundleSignature := include "sockguard.bundleRef" (dict "label" "policyBundleSignature" "value" .Values.policyBundleSignature) | fromJson -}}
+{{- $policyBundleTrustEnabled := get $policyBundleTrust "enabled" -}}
+{{- $policyBundleSignatureEnabled := get $policyBundleSignature "enabled" -}}
+{{- if ne $policyBundleTrustEnabled $policyBundleSignatureEnabled -}}
+  {{- fail "policyBundleTrust and policyBundleSignature must be configured together" -}}
+{{- end -}}
+{{- $trustKind := get $policyBundleTrust "kind" -}}
+{{- $trustName := get $policyBundleTrust "name" -}}
+{{- $trustKey := get $policyBundleTrust "key" -}}
+{{- $signatureKind := get $policyBundleSignature "kind" -}}
+{{- $signatureName := get $policyBundleSignature "name" -}}
+{{- $signatureKey := get $policyBundleSignature "key" -}}
+{{- if and $policyBundleTrustEnabled (eq $trustKind $signatureKind) (eq $trustName $signatureName) -}}
+  {{- fail "policyBundleTrust and policyBundleSignature must reference different Kubernetes objects" -}}
+{{- end -}}
+{{- $candidateConfigMapName := include "sockguard.fullname" . -}}
+{{- if and $policyBundleTrustEnabled (eq $trustKind "configMap") (eq $trustName $candidateConfigMapName) -}}
+  {{- fail "policyBundleTrust.configMapRef must not reference the chart-generated candidate policy ConfigMap" -}}
+{{- end -}}
+{{- if $policyBundleTrustEnabled -}}
+  {{- $signaturePath := "" -}}
+  {{- if kindIs "string" .Values.config -}}
+    {{- $candidateConfig := fromYaml .Values.config -}}
+    {{- if kindIs "map" $candidateConfig -}}
+      {{- $candidatePolicyBundle := get $candidateConfig "policy_bundle" -}}
+      {{- if and (kindIs "map" $candidatePolicyBundle) (kindIs "string" (get $candidatePolicyBundle "signature_path")) -}}
+        {{- $signaturePath = get $candidatePolicyBundle "signature_path" -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if ne $signaturePath "/etc/sockguard-policy-bundle-signature/signature.json" -}}
+    {{- fail "policy_bundle.signature_path must be /etc/sockguard-policy-bundle-signature/signature.json when policy bundle trust is configured" -}}
+  {{- end -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -44,6 +79,10 @@ spec:
             - serve
             - --config
             - /etc/sockguard/sockguard.yaml
+            {{- if $policyBundleTrustEnabled }}
+            - --policy-bundle-trust-config
+            - /etc/sockguard-policy-bundle-trust/trust.yaml
+            {{- end }}
           ports:
             - name: proxy
               containerPort: 2375
@@ -77,6 +116,14 @@ spec:
             - name: config
               mountPath: /etc/sockguard
               readOnly: true
+            {{- if $policyBundleTrustEnabled }}
+            - name: policy-bundle-trust
+              mountPath: /etc/sockguard-policy-bundle-trust
+              readOnly: true
+            - name: policy-bundle-signature
+              mountPath: /etc/sockguard-policy-bundle-signature
+              readOnly: true
+            {{- end }}
       volumes:
         - name: docker-sock
           hostPath:
@@ -85,3 +132,33 @@ spec:
         - name: config
           configMap:
             name: {{ include "sockguard.fullname" . }}
+        {{- if $policyBundleTrustEnabled }}
+        - name: policy-bundle-trust
+          {{- if eq $trustKind "secret" }}
+          secret:
+            secretName: {{ $trustName | quote }}
+            items:
+              - key: {{ $trustKey | quote }}
+                path: trust.yaml
+          {{- else }}
+          configMap:
+            name: {{ $trustName | quote }}
+            items:
+              - key: {{ $trustKey | quote }}
+                path: trust.yaml
+          {{- end }}
+        - name: policy-bundle-signature
+          {{- if eq $signatureKind "secret" }}
+          secret:
+            secretName: {{ $signatureName | quote }}
+            items:
+              - key: {{ $signatureKey | quote }}
+                path: signature.json
+          {{- else }}
+          configMap:
+            name: {{ $signatureName | quote }}
+            items:
+              - key: {{ $signatureKey | quote }}
+                path: signature.json
+          {{- end }}
+        {{- end }}

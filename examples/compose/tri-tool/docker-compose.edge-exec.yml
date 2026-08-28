@@ -92,6 +92,11 @@ services:
       - DOCKER_SOCKET=/var/run/sockguard/sockguard.sock
       - AGENT_NAME=tri-tool-edge-host
       - DRYDOCK_URL=http://drydock:3000
+      # Portwing refuses a plaintext (http/ws) controller URL unless this opt-in
+      # is set. Here drydock is a co-located service on this bundle's private
+      # compose network, reached over plain http by design, so the opt-in is the
+      # intended configuration rather than a downgrade.
+      - ALLOW_INSECURE_EDGE_URL=true
       - PRIVATE_KEY_FILE=/run/secrets/portwing_key
     secrets:
       - portwing_key

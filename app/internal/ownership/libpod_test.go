@@ -1,6 +1,7 @@
 package ownership
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -145,6 +146,94 @@ func TestMiddlewareStampsOwnerLabelOnLibpodSecretCreateQueryParam(t *testing.T) 
 	}
 	if labels["com.sockguard.owner"] != "job-123" {
 		t.Fatalf("labels query param = %#v, want owner label", labels)
+	}
+}
+
+func TestMiddlewareStampsOwnerLabelOnlyOnLibpodBuildPost(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		method      string
+		target      string
+		wantStamped bool
+		wantStatus  int
+	}{
+		{
+			name:        "direct build",
+			method:      http.MethodPost,
+			target:      `/libpod/build?cachefrom=base&labels=%7B%22existing%22%3A%22value%22%2C%22com.sockguard.owner%22%3A%22attacker%22%7D`,
+			wantStamped: true,
+			wantStatus:  http.StatusAccepted,
+		},
+		{
+			name:        "versioned build",
+			method:      http.MethodPost,
+			target:      `/v5.0.0/libpod/build?cachefrom=base&labels=%7B%22existing%22%3A%22value%22%2C%22com.sockguard.owner%22%3A%22attacker%22%7D`,
+			wantStamped: true,
+			wantStatus:  http.StatusAccepted,
+		},
+		{
+			name:       "get build is untouched",
+			method:     http.MethodGet,
+			target:     `/libpod/build?cachefrom=base&labels=%7B%22existing%22%3A%22value%22%2C%22com.sockguard.owner%22%3A%22attacker%22%7D`,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name:       "sibling path is untouched",
+			method:     http.MethodPost,
+			target:     `/libpod/build/context?cachefrom=base&labels=%7B%22existing%22%3A%22value%22%2C%22com.sockguard.owner%22%3A%22attacker%22%7D`,
+			wantStatus: http.StatusAccepted,
+		},
+		{
+			name:       "malformed labels fail closed",
+			method:     http.MethodPost,
+			target:     `/libpod/build?labels=not-json`,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			forwarded := false
+			handler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+				fakeInspector{}.inspectResource,
+				fakeInspector{}.inspectExec,
+			)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				forwarded = true
+				if got := r.URL.Query().Get("cachefrom"); got != "base" && tt.wantStatus != http.StatusBadRequest {
+					t.Fatalf("cachefrom = %q, want base", got)
+				}
+				var labels map[string]string
+				if err := json.Unmarshal([]byte(r.URL.Query().Get("labels")), &labels); err != nil {
+					t.Fatalf("decode forwarded labels: %v", err)
+				}
+				wantOwner := "attacker"
+				if tt.wantStamped {
+					wantOwner = "job-123"
+				}
+				if got := labels["com.sockguard.owner"]; got != wantOwner {
+					t.Fatalf("owner label = %q, want %q", got, wantOwner)
+				}
+				if got := labels["existing"]; got != "value" {
+					t.Fatalf("existing label = %q, want value", got)
+				}
+				w.WriteHeader(http.StatusAccepted)
+			}))
+
+			req := httptest.NewRequest(tt.method, tt.target, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if got := forwarded; got != (tt.wantStatus != http.StatusBadRequest) {
+				t.Fatalf("forwarded = %v, want %v", got, tt.wantStatus != http.StatusBadRequest)
+			}
+		})
 	}
 }
 
@@ -376,6 +465,54 @@ func TestMiddlewareLibpodReadPathOwnershipDispatch(t *testing.T) {
 			}
 			if !strings.Contains(rec.Body.String(), "libpod ") {
 				t.Fatalf("deny body = %q, want libpod-prefixed reason", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestMiddlewareLibpodChecksKeywordNamedResourcesOutsideCollectionActions(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		method     string
+		target     string
+		kind       dockerresource.Kind
+		identifier string
+	}{
+		{name: "container create action", method: http.MethodPost, target: "/libpod/containers/create/start", kind: dockerresource.KindContainer, identifier: "create"},
+		{name: "container json inspect", method: http.MethodGet, target: "/libpod/containers/json/json", kind: dockerresource.KindContainer, identifier: "json"},
+		{name: "container prune action", method: http.MethodPost, target: "/libpod/containers/prune/start", kind: dockerresource.KindContainer, identifier: "prune"},
+		{name: "pod create inspect", method: http.MethodGet, target: "/libpod/pods/create/json", kind: dockerresource.KindLibpodPod, identifier: "create"},
+		{name: "pod stats inspect", method: http.MethodGet, target: "/libpod/pods/stats/json", kind: dockerresource.KindLibpodPod, identifier: "stats"},
+		{name: "network create inspect", method: http.MethodGet, target: "/libpod/networks/create/json", kind: dockerresource.KindNetwork, identifier: "create"},
+		{name: "network prune inspect", method: http.MethodGet, target: "/libpod/networks/prune/json", kind: dockerresource.KindNetwork, identifier: "prune"},
+		{name: "volume json inspect", method: http.MethodGet, target: "/libpod/volumes/json/json", kind: dockerresource.KindVolume, identifier: "json"},
+		{name: "secret create inspect", method: http.MethodGet, target: "/libpod/secrets/create/json", kind: dockerresource.KindSecret, identifier: "create"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var gotKind dockerresource.Kind
+			var gotIdentifier string
+			handler := middlewareWithDeps(testLogger(), Options{
+				Owner:    "alice",
+				LabelKey: "com.sockguard.owner",
+			}, func(_ context.Context, kind dockerresource.Kind, identifier string) (map[string]string, bool, error) {
+				gotKind = kind
+				gotIdentifier = identifier
+				return map[string]string{"com.sockguard.owner": "bob"}, true, nil
+			}, fakeInspector{}.inspectExec)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("keyword-named cross-owner libpod resource reached upstream")
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(tt.method, tt.target, nil))
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+			}
+			if gotKind != tt.kind || gotIdentifier != tt.identifier {
+				t.Fatalf("inspect = %s/%q, want %s/%q", gotKind, gotIdentifier, tt.kind, tt.identifier)
 			}
 		})
 	}

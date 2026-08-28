@@ -430,7 +430,7 @@ func matchesImagePullInspection(normalizedPath string) bool {
 }
 
 func matchesBuildInspection(normalizedPath string) bool {
-	return normalizedPath == "/build"
+	return normalizedPath == "/build" || normalizedPath == "/libpod/build"
 }
 
 func matchesContainerUpdateInspection(normalizedPath string) bool {

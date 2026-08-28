@@ -71,7 +71,9 @@ const RAW_FRAMES: RawFrame[] = [
             {"  "}
             {bold("sockguard")} v{SITE_CONFIG.version}
             {"  "}
-            {dim("(commit fe0a643, built 2026-06-11T00:00:00Z, go1.26.4)")}
+            {dim(
+              `(commit ${SITE_CONFIG.cliDemo.commit}, built ${SITE_CONFIG.cliDemo.built}, ${SITE_CONFIG.cliDemo.goVersion})`,
+            )}
           </>
         ),
       },
@@ -127,7 +129,8 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("commit")} {"  "}fe0a643
+            {dim("commit")} {"  "}
+            {SITE_CONFIG.cliDemo.commit}
           </>
         ),
       },
@@ -136,7 +139,8 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("built ")} {"  "}2026-06-11T00:00:00Z
+            {dim("built ")} {"  "}
+            {SITE_CONFIG.cliDemo.built}
           </>
         ),
       },
@@ -145,7 +149,8 @@ const RAW_FRAMES: RawFrame[] = [
         content: (
           <>
             {"  "}
-            {dim("go    ")} {"  "}go1.26.4
+            {dim("go    ")} {"  "}
+            {SITE_CONFIG.cliDemo.goVersion}
           </>
         ),
       },
@@ -603,18 +608,14 @@ function buildLogLines(): RawFrameLine[] {
     },
   ];
 
-  // Timestamps cascade a few ms apart so the eye registers them as a
-  // live stream rather than a bulk dump.
-  let t = new Date("2026-05-14T00:00:00.000Z").getTime();
   return entries.map((e) => {
-    t += 120 + Math.floor(Math.random() * 180);
-    const iso = new Date(t).toISOString();
     const levelCls = e.level === "INFO" ? tok.cyan : tok.yellow;
     return {
       kind: "text",
       content: (
         <span className="whitespace-nowrap text-[0.72rem]">
-          <span className={tok.dim}>time={iso}</span> <span className={tok.dim}>level=</span>
+          <span className={tok.dim}>time={SITE_CONFIG.cliDemo.logTime}</span>{" "}
+          <span className={tok.dim}>level=</span>
           <span className={levelCls}>{e.level}</span> <span className={tok.dim}>msg=</span>
           &quot;{e.msg}&quot;{" "}
           {e.fields.map(([k, v]) => (
@@ -865,9 +866,10 @@ export function CliDemo({ className, typeMs = 35, lineMs = 55, autoStart = true 
         </div>
       </div>
       <p className="mt-3 text-center text-xs text-neutral-500 dark:text-neutral-400">
-        A hand-rendered recreation of the real CLI — every frame mirrors what{" "}
-        <code className="rounded bg-neutral-200 px-1 dark:bg-neutral-800">sockguard</code> actually
-        prints. Use the controls above to pause, restart, or change speed.
+        A hand-rendered recreation of the real CLI. Commands, fields, and decisions mirror what{" "}
+        <code className="rounded bg-neutral-200 px-1 dark:bg-neutral-800">sockguard</code> prints;
+        release provenance and timestamps are explicit placeholders. Use the controls above to
+        pause, restart, or change speed.
       </p>
     </div>
   );

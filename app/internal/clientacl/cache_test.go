@@ -3,6 +3,7 @@ package clientacl
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -178,6 +179,65 @@ func TestClientCacheCoalescesConcurrentMissesPerIP(t *testing.T) {
 
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("resolver calls for concurrent burst = %d, want 1", got)
+	}
+}
+
+func TestClientCacheStaleVerificationDoesNotOverwriteNewerResolve(t *testing.T) {
+	baseNow := time.Unix(1_700_000_000, 0)
+	var nowOffset atomic.Int64
+	var calls atomic.Int32
+	resolver := func(_ context.Context, _ netip.Addr) (resolvedClient, bool, error) {
+		call := calls.Add(1)
+		return resolvedClient{ID: fmt.Sprintf("container-%d", call)}, true, nil
+	}
+
+	cache := newClientCache(
+		10*time.Second,
+		8,
+		func() time.Time { return baseNow.Add(time.Duration(nowOffset.Load())) },
+		resolver,
+	)
+	ip := mustAddr(t, "10.0.0.8")
+	if _, _, err := cache.Lookup(context.Background(), ip); err != nil {
+		t.Fatalf("prime cache: %v", err)
+	}
+
+	verificationStarted := make(chan struct{})
+	releaseVerification := make(chan struct{})
+	var verifications atomic.Int32
+	cache.verifyLive = func(context.Context, string) bool {
+		if verifications.Add(1) == 1 {
+			close(verificationStarted)
+			<-releaseVerification
+			return false
+		}
+		return true
+	}
+
+	result := make(chan resolvedClient, 1)
+	errs := make(chan error, 1)
+	go func() {
+		client, _, err := cache.Lookup(context.Background(), ip)
+		result <- client
+		errs <- err
+	}()
+	<-verificationStarted
+
+	nowOffset.Store(int64(11 * time.Second))
+	refreshed, found, err := cache.Lookup(context.Background(), ip)
+	if err != nil || !found || refreshed.ID != "container-2" {
+		t.Fatalf("refresh lookup = (%+v, found=%v, err=%v), want container-2", refreshed, found, err)
+	}
+	close(releaseVerification)
+
+	if err := <-errs; err != nil {
+		t.Fatalf("stale verification lookup: %v", err)
+	}
+	if got := <-result; got.ID != "container-2" {
+		t.Fatalf("stale verification lookup resolved %q, want newer container-2", got.ID)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("resolver calls = %d, want 2 without an overwrite from the stale verification", got)
 	}
 }
 

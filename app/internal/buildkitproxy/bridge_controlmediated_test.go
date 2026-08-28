@@ -57,7 +57,7 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		limits.MaxMessageBytes = 4
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, limits, daemon)
 
-		payload := mustMarshal(t, &control.SolveRequest{Ref: "a-ref-longer-than-four-bytes"})
+		payload := mustMarshal(t, &control.SolveRequest{Ref: "a-ref-longer-than-four-bytes", Session: testBuildkitSessionID})
 		resp, err := tb.driver.RoundTrip(newGRPCRequest(t, solvePath, string(grpcFrame(payload))))
 		if err != nil {
 			t.Fatalf("RoundTrip: %v", err)
@@ -76,7 +76,7 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		daemon := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { daemonCalled.Store(true) })
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), daemon)
 
-		req := &control.SolveRequest{Ref: "ref"}
+		req := &control.SolveRequest{Ref: "ref", Session: testBuildkitSessionID}
 		req.ProtoReflect().SetUnknown(unknownFieldBytes())
 		resp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, solvePath, req))
 		if err != nil {
@@ -97,7 +97,7 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		policy := Policy{Control: ControlPolicy{Solve: SolvePolicy{Allow: true}}}
 		tb := newTestBridge(t, EndpointGRPC, policy, DefaultLimits(), daemon)
 
-		req := &control.SolveRequest{Ref: "ref", Entitlements: []string{"network.host"}}
+		req := &control.SolveRequest{Ref: "ref", Session: testBuildkitSessionID, Entitlements: []string{"network.host"}}
 		resp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, solvePath, req))
 		if err != nil {
 			t.Fatalf("RoundTrip: %v", err)
@@ -119,7 +119,7 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		limits.MaxRefsPerSession = 1
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, limits, echoDaemonHandler())
 
-		resp1, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, solvePath, &control.SolveRequest{Ref: "ref-1"}))
+		resp1, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, solvePath, &control.SolveRequest{Ref: "ref-1", Session: testBuildkitSessionID}))
 		if err != nil {
 			t.Fatalf("RoundTrip 1: %v", err)
 		}
@@ -128,7 +128,7 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		}
 		_ = resp1.Body.Close()
 
-		resp2, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, solvePath, &control.SolveRequest{Ref: "ref-2"}))
+		resp2, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, solvePath, &control.SolveRequest{Ref: "ref-2", Session: testBuildkitSessionID}))
 		if err != nil {
 			t.Fatalf("RoundTrip 2: %v", err)
 		}
@@ -141,7 +141,7 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 	t.Run("admitted Solve forwards the exact frame and registers the ref", func(t *testing.T) {
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
 
-		payload := mustMarshal(t, &control.SolveRequest{Ref: "admitted-ref"})
+		payload := mustMarshal(t, &control.SolveRequest{Ref: "admitted-ref", Session: testBuildkitSessionID})
 		frame := grpcFrame(payload)
 		resp, err := tb.driver.RoundTrip(newGRPCRequest(t, solvePath, string(frame)))
 		if err != nil {
@@ -174,7 +174,7 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		limits.MaxUploadKeysPerSession = 1
 		tb := newTestBridge(t, EndpointGRPC, policy, limits, daemon)
 
-		req := &control.SolveRequest{Ref: "ref", FrontendAttrs: map[string]string{
+		req := &control.SolveRequest{Ref: "ref", Session: testBuildkitSessionID, FrontendAttrs: map[string]string{
 			"context":       "http://buildkit-session/id-a",
 			"context:extra": "http://buildkit-session/id-b",
 		}}
@@ -188,6 +188,12 @@ func TestBridgeControlMediatedSolve(t *testing.T) {
 		}
 		if daemonCalled.Load() {
 			t.Fatal("a Solve exceeding the upload-key cap reached the daemon")
+		}
+		if tb.registry.OwnsRef(tb.session.Key, "ref") {
+			t.Fatal("a Solve rejected by the upload-key cap retained ref ownership")
+		}
+		if tb.registry.ConsumeUploadKey(tb.session.Key, testBuildkitSessionID, "id-a") || tb.registry.ConsumeUploadKey(tb.session.Key, testBuildkitSessionID, "id-b") {
+			t.Fatal("a Solve rejected by the upload-key cap retained a partially admitted upload id")
 		}
 	})
 }
@@ -237,7 +243,7 @@ func TestBridgeControlMediatedStatus(t *testing.T) {
 	t.Run("ref owned via a prior admitted Solve on the same session", func(t *testing.T) {
 		tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
 
-		solveResp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, solvePath, &control.SolveRequest{Ref: "owned-ref"}))
+		solveResp, err := tb.driver.RoundTrip(newFramedGRPCRequest(t, solvePath, &control.SolveRequest{Ref: "owned-ref", Session: testBuildkitSessionID}))
 		if err != nil {
 			t.Fatalf("Solve RoundTrip: %v", err)
 		}
@@ -282,7 +288,7 @@ func TestForwardControlMediatedUnknownMethodFailsClosed(t *testing.T) {
 		registry: registry,
 	}
 
-	payload := mustMarshal(t, &control.SolveRequest{Ref: "r"})
+	payload := mustMarshal(t, &control.SolveRequest{Ref: "r", Session: testBuildkitSessionID})
 	req := newGRPCRequest(t, "/moby.buildkit.v1.Control/Prune", string(grpcFrame(payload)))
 	rec := httptest.NewRecorder()
 

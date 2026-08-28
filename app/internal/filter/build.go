@@ -4,13 +4,16 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/codeswhat/sockguard/app/internal/dockerfileinspect"
@@ -24,17 +27,22 @@ const defaultBuildDockerfilePath = "Dockerfile"
 var errBuildDockerfileTooLarge = errors.New("dockerfile exceeds byte limit")
 var errBuildContextDecompressedTooLarge = errors.New("decompressed build context exceeds byte limit")
 
-// BuildOptions configures request-body/query inspection for POST /build.
+// BuildOptions configures request-body/query inspection for POST /build and
+// POST /libpod/build.
 type BuildOptions struct {
 	AllowRemoteContext   bool
 	AllowHostNetwork     bool
 	AllowRunInstructions bool
+	// AllowBlindWrites acknowledges Podman build controls that can expose
+	// host paths but do not have a narrower request_body.build policy.
+	AllowBlindWrites bool
 }
 
 type buildPolicy struct {
 	allowRemoteContext   bool
 	allowHostNetwork     bool
 	allowRunInstructions bool
+	allowBlindWrites     bool
 	io                   ioDeps
 }
 
@@ -43,12 +51,13 @@ func newBuildPolicy(opts BuildOptions) buildPolicy {
 		allowRemoteContext:   opts.AllowRemoteContext,
 		allowHostNetwork:     opts.AllowHostNetwork,
 		allowRunInstructions: opts.AllowRunInstructions,
+		allowBlindWrites:     opts.AllowBlindWrites,
 		io:                   defaultIODeps(),
 	}
 }
 
 func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
-	if r == nil || r.Method != http.MethodPost || normalizedPath != "/build" {
+	if r == nil || r.Method != http.MethodPost || !matchesBuildInspection(normalizedPath) {
 		return "", nil
 	}
 	if p.io.CreateTempFile == nil {
@@ -60,23 +69,36 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 	}
 
 	query := r.URL.Query()
+	if normalizedPath == "/libpod/build" {
+		query = foldQueryKeys(query)
+		if denyReason := p.inspectLibpodBuildControls(r, query); denyReason != "" {
+			return denyReason, nil
+		}
+	}
 	// WHY: Host-network builds are denied even when the request also uses a
 	// remote context, so this must run before the remote-context branch returns
 	// its own denial or allow decision.
-	if !p.allowHostNetwork && strings.EqualFold(strings.TrimSpace(query.Get("networkmode")), "host") {
-		return "build denied: host network mode is not allowed", nil
+	if !p.allowHostNetwork {
+		for _, networkMode := range query["networkmode"] {
+			if strings.EqualFold(strings.TrimSpace(networkMode), "host") {
+				return "build denied: host network mode is not allowed", nil
+			}
+		}
 	}
 
-	if remote := strings.TrimSpace(query.Get("remote")); remote != "" {
+	for _, remoteValue := range query["remote"] {
+		remote := strings.TrimSpace(remoteValue)
+		if remote == "" {
+			continue
+		}
 		if p.allowRemoteContext {
 			if p.allowRunInstructions {
-				return "", nil
+				continue
 			}
 			return "build denied: remote build contexts cannot be inspected while RUN instructions are restricted", nil
 		}
 		return fmt.Sprintf("build denied: remote build context %q is not allowed", remote), nil
 	}
-
 	if p.allowRunInstructions || r.Body == nil {
 		return "", nil
 	}
@@ -129,6 +151,147 @@ func (p buildPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath str
 	r.Body = spool.requestBody()
 	r.ContentLength = size
 	return "", nil
+}
+
+type legacyPodmanAdditionalBuildContext struct {
+	IsURL           bool
+	IsImage         bool
+	Value           string
+	DownloadedCache string
+}
+
+func (p buildPolicy) inspectLibpodBuildControls(r *http.Request, query url.Values) string {
+	requiresRemoteContext, requiresBlindWrites, malformed := classifyPodmanAdditionalBuildContexts(query["additionalbuildcontexts"])
+	if malformed != "" {
+		return "build denied: malformed additional build context: " + malformed
+	}
+	if requiresRemoteContext && !p.allowRemoteContext {
+		return "build denied: remote additional build context is not allowed"
+	}
+	if requiresBlindWrites && !p.allowBlindWrites {
+		return "build denied: uninspectable additional build context requires insecure_allow_body_blind_writes"
+	}
+	rusageBlindWrites, malformed := classifyPodmanRusageControls(query)
+	if malformed != "" {
+		return "build denied: malformed rusage control: " + malformed
+	}
+	if rusageBlindWrites && !p.allowBlindWrites {
+		return "build denied: Podman resource usage log requires insecure_allow_body_blind_writes"
+	}
+
+	if queryControlPresent(query, "volume", "volumes", "transientrunmounts") && !p.allowBlindWrites {
+		return "build denied: Podman host volume mounts require insecure_allow_body_blind_writes"
+	}
+
+	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
+	if strings.HasPrefix(contentType, "multipart/") && !p.allowBlindWrites {
+		return "build denied: Podman multipart build context requires insecure_allow_body_blind_writes"
+	}
+
+	return ""
+}
+
+func foldQueryKeys(query url.Values) url.Values {
+	folded := make(url.Values, len(query))
+	for key, values := range query {
+		name := strings.ToLower(key)
+		folded[name] = append(folded[name], values...)
+	}
+	return folded
+}
+
+func classifyPodmanAdditionalBuildContexts(values []string) (requiresRemoteContext, requiresBlindWrites bool, malformed string) {
+	seenNames := make(map[string]struct{})
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			return false, false, "empty value"
+		}
+		if strings.HasPrefix(value, "{") {
+			var contexts map[string]legacyPodmanAdditionalBuildContext
+			if err := json.Unmarshal([]byte(value), &contexts); err != nil {
+				return false, false, "invalid legacy JSON"
+			}
+			for name, context := range contexts {
+				name = strings.TrimSpace(name)
+				context.Value = strings.TrimSpace(context.Value)
+				if name == "" || context.Value == "" || (context.IsURL && context.IsImage) {
+					return false, false, "invalid legacy JSON entry"
+				}
+				if _, duplicate := seenNames[name]; duplicate {
+					return false, false, "duplicate context name"
+				}
+				seenNames[name] = struct{}{}
+				if context.IsURL || context.IsImage {
+					requiresRemoteContext = true
+				}
+				if (!context.IsURL && !context.IsImage) || strings.TrimSpace(context.DownloadedCache) != "" {
+					requiresBlindWrites = true
+				}
+			}
+			continue
+		}
+
+		name, source, found := strings.Cut(value, "=")
+		name = strings.TrimSpace(name)
+		source = strings.TrimSpace(source)
+		if !found || name == "" || source == "" {
+			return false, false, "expected name=value"
+		}
+		if _, duplicate := seenNames[name]; duplicate {
+			return false, false, "duplicate context name"
+		}
+		seenNames[name] = struct{}{}
+
+		switch {
+		case strings.HasPrefix(source, "url:"):
+			if strings.TrimSpace(strings.TrimPrefix(source, "url:")) == "" {
+				return false, false, "empty URL context"
+			}
+			requiresRemoteContext = true
+		case strings.HasPrefix(source, "image:"):
+			if strings.TrimSpace(strings.TrimPrefix(source, "image:")) == "" {
+				return false, false, "empty image context"
+			}
+			requiresRemoteContext = true
+		case strings.HasPrefix(source, "localpath:"):
+			if strings.TrimSpace(strings.TrimPrefix(source, "localpath:")) == "" {
+				return false, false, "empty local path context"
+			}
+			requiresBlindWrites = true
+		default:
+			return false, false, "unsupported context type"
+		}
+	}
+	return requiresRemoteContext, requiresBlindWrites, ""
+}
+
+func classifyPodmanRusageControls(query map[string][]string) (requiresBlindWrites bool, malformed string) {
+	for _, value := range query["rusage"] {
+		if value == "on" {
+			continue
+		}
+		if _, err := strconv.ParseBool(value); err != nil {
+			return false, "invalid boolean value"
+		}
+	}
+
+	for _, file := range query["rusagelogfile"] {
+		if file != "" {
+			requiresBlindWrites = true
+		}
+	}
+
+	return requiresBlindWrites, ""
+}
+
+func queryControlPresent(query map[string][]string, names ...string) bool {
+	for _, name := range names {
+		if _, present := query[name]; present {
+			return true
+		}
+	}
+	return false
 }
 
 type spooledRequestBody struct {

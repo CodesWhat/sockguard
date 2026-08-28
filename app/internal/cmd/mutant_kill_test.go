@@ -522,6 +522,7 @@ func TestRunServe_SocketCleanupOnlyForUnixSocket(t *testing.T) {
 		}
 		deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
 		deps.shutdownServer = func(server *http.Server, ctx context.Context) error { return nil }
+		deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(1), nil }
 
 		removeCalled := false
 		deps.removePath = func(string) error {
@@ -562,6 +563,7 @@ func TestRunServe_SocketCleanupOnlyForUnixSocket(t *testing.T) {
 		}
 		deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
 		deps.shutdownServer = func(server *http.Server, ctx context.Context) error { return nil }
+		deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(1), nil }
 
 		removeCalled := false
 		deps.removePath = func(string) error {
@@ -614,6 +616,7 @@ func TestRunServe_SocketRemoveNotExistIgnored(t *testing.T) {
 	}
 	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
 	deps.shutdownServer = func(server *http.Server, ctx context.Context) error { return nil }
+	deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(1), nil }
 	deps.removePath = func(string) error { return os.ErrNotExist }
 
 	if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
@@ -651,6 +654,7 @@ func TestRunServe_SocketRemoveOtherErrorLogs(t *testing.T) {
 	}
 	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) {}
 	deps.shutdownServer = func(server *http.Server, ctx context.Context) error { return nil }
+	deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(1), nil }
 	deps.removePath = func(string) error { return errors.New("permission denied") }
 
 	if err := runServeWithDeps(newServeCommand(), nil, deps); err == nil || !strings.Contains(err.Error(), "server error") {
@@ -806,6 +810,7 @@ func TestRunServe_AdminSocketRemovedWhenSocketPathSet(t *testing.T) {
 	deps.startServing = func(_ *http.Server, _ net.Listener, errCh chan<- error) {}
 	deps.notifySignals = func(c chan<- os.Signal, _ ...os.Signal) { c <- syscall.SIGINT }
 	deps.shutdownServer = func(_ *http.Server, _ context.Context) error { return nil }
+	deps.lstatPath = func(string) (os.FileInfo, error) { return socketFileInfo(1), nil }
 
 	var removed []string
 	deps.removePath = func(p string) error {
@@ -853,34 +858,6 @@ func TestDefaultBuildBundleVerifier_PropagatesBuildConfigError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no allowed_signing_keys") {
 		t.Fatalf("error = %q, want substring %q", err.Error(), "no allowed_signing_keys")
-	}
-}
-
-// TestDefaultBuildBundleVerifier_RejectsKeylessWithoutTUF pins the
-// CONDITIONALS_NEGATION mutant at serve_deps.go:112
-// (`cfg.TrustedMaterial == nil` → `!=`). The mutant inverts the guard so
-// the function returns the helpful "configure allowed_signing_keys for now"
-// error only when TUF roots ARE wired — i.e. never under current production
-// — making the friendly error unreachable. We pin the original error by
-// content to detect the mutation.
-func TestDefaultBuildBundleVerifier_RejectsKeylessWithoutTUF(t *testing.T) {
-	pb := config.PolicyBundleConfig{
-		Enabled: true,
-		AllowedKeyless: []config.PolicyBundleKeyless{
-			{Issuer: "https://accounts.example.com", SubjectPattern: `^ci@example\.com$`},
-		},
-	}
-
-	verifier, err := defaultBuildBundleVerifier(pb)
-	if err == nil {
-		t.Fatalf("expected error for keyless without TUF; got verifier=%v err=nil", verifier)
-	}
-	// The serve_deps.go error message is the canary — policybundle.New
-	// returns a different message under the mutation, so this assertion is
-	// what differentiates the two paths.
-	if !strings.Contains(err.Error(), "production TUF trust root is not yet wired") {
-		t.Fatalf("error = %q, want the serve_deps.go canary message containing %q",
-			err.Error(), "production TUF trust root is not yet wired")
 	}
 }
 

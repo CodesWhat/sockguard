@@ -325,22 +325,7 @@ fi
 
 copy_repo() {
   local dest="$1"
-  mkdir -p "$dest"
-  (
-    cd "$REPO_ROOT"
-    COPYFILE_DISABLE=1 tar \
-      --exclude='.git' \
-      --exclude='.fuzz-artifacts' \
-      --exclude='node_modules' \
-      --exclude='website/.next' \
-      --exclude='website/out' \
-      --exclude='docs/.next' \
-      --exclude='docs/out' \
-      -cf - .
-  ) | (
-    cd "$dest"
-    tar -xf -
-  )
+  "$REPO_ROOT/scripts/copy-fuzz-source.sh" "$REPO_ROOT" "$dest"
 }
 
 run_native_fuzzer() {

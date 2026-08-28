@@ -217,12 +217,26 @@ export const roadmap: Milestone[] = [
     ],
   },
   {
-    version: "v1.8.0",
+    version: "v2.0.0",
+    title: "Pinned Policy Trust & Whole-App Hardening",
+    emoji: "🛡️",
+    status: "released",
+    items: [
+      "Signed policies pin keyed or keyless trust in a separate bootstrap file selected out of band, with bounded YAML and bundle inputs; candidate YAML can no longer select, replace, or disable its own trust",
+      "Native Podman builds gain fail-closed primary/additional-context controls, host-write acknowledgments, Dockerfile inspection, and owner-label stamping",
+      "BuildKit state is isolated by trusted caller principal, selected profile, and session ID, with atomic admission, bounded persistent IDs, expiring upload grants, and bounded upgrade handshakes",
+      "Unix socket ownership, response filtering, keyword-named resource authorization, metric cardinality, and inspected-body deadlines are hardened across the composed proxy",
+      "Helm supports separate candidate, trust, and signature objects with signed listener settings and render-time trust-boundary validation",
+      "Release archives and checksums use sigstore bundles; images are signed and verified by digest, with verified publication metadata and persisted provenance records",
+    ],
+  },
+  {
+    version: "v2.1.0",
     title: "BuildKit RUN-Instruction Coverage",
     emoji: "🧩",
     status: "next",
     items: [
-      "Finish the #185 non-Dockerfile-frontend story: v1.7.5's bounded-depth LLB walk denies any ExecOp, and any op that fails to decode, in frontend-less Solves when allow_run_instructions is false — a blanket refusal; the remaining work is real per-instruction mediation of raw-LLB and third-party frontends so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale",
+      "Extend the shipped BuildKit gRPC mediation foundation: v2.0.0's bounded-depth LLB walk denies any ExecOp, and any op that fails to decode, in frontend-less Solves when allow_run_instructions is false — a blanket refusal; the remaining work is real per-instruction mediation of raw-LLB and third-party frontends so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale",
     ],
   },
 ];

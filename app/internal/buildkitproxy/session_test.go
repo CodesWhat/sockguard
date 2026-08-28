@@ -113,46 +113,24 @@ func TestSessionRegistryDistinctSessionsNeverCollide(t *testing.T) {
 	}
 }
 
-func TestSessionPutRefAndOwnsRef(t *testing.T) {
-	reg := NewSessionRegistry()
-	s := reg.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
-
-	if s.OwnsRef("sha256:abc") {
-		t.Fatal("OwnsRef() before any PutRef = true, want false")
-	}
-
-	s.PutRef("sha256:abc")
-	if !s.OwnsRef("sha256:abc") {
-		t.Fatal("OwnsRef() after PutRef = false, want true")
-	}
-	if s.OwnsRef("sha256:different") {
-		t.Fatal("OwnsRef() for an unrelated ref = true, want false")
-	}
-
-	ref, ok := s.Refs["sha256:abc"]
-	if !ok {
-		t.Fatal("Refs map does not contain the ref PutRef recorded")
-	}
-	if ref.Ref != "sha256:abc" {
-		t.Errorf("RefState.Ref = %q, want %q", ref.Ref, "sha256:abc")
-	}
-	if ref.OpenedAt.IsZero() {
-		t.Error("RefState.OpenedAt is zero, want a real timestamp")
-	}
-}
-
 // TestSessionRegistryOtherSessionCannotOwnAnothersRef guards the Phase 3+
-// invariant this skeleton exists for: two independent sessions' ref sets
-// never leak into each other.
+// invariant that ref ownership never leaks across identity/profile keys.
 func TestSessionRegistryOtherSessionCannotOwnAnothersRef(t *testing.T) {
 	reg := NewSessionRegistry()
-	s1 := reg.Open(SessionKey{ClientIdentity: "a", Profile: "p"}, EndpointGRPC, "")
-	s2 := reg.Open(SessionKey{ClientIdentity: "b", Profile: "p"}, EndpointGRPC, "")
+	key1 := SessionKey{ClientIdentity: "a", Profile: "p"}
+	key2 := SessionKey{ClientIdentity: "b", Profile: "p"}
+	s1 := reg.Open(key1, EndpointGRPC, "")
+	reg.Open(key2, EndpointGRPC, "")
 
-	s1.PutRef("sha256:only-s1")
+	if !reg.PutRef(s1, "sha256:only-s1", 0) {
+		t.Fatal("PutRef failed")
+	}
 
-	if s2.OwnsRef("sha256:only-s1") {
-		t.Fatal("session s2 reports owning a ref only s1 ever recorded")
+	if !reg.OwnsRef(key1, "sha256:only-s1") {
+		t.Fatal("admitting key does not own its ref")
+	}
+	if reg.OwnsRef(key2, "sha256:only-s1") {
+		t.Fatal("unrelated key reports owning the ref")
 	}
 }
 
@@ -202,8 +180,9 @@ func TestSessionRefsSnapshot(t *testing.T) {
 		t.Fatalf("refsSnapshot() on a fresh session = %v, want empty", got)
 	}
 
-	s.PutRef("ref-1")
-	s.PutRef("ref-2")
+	if !reg.PutRef(s, "ref-1", 0) || !reg.PutRef(s, "ref-2", 0) {
+		t.Fatal("PutRef failed")
+	}
 
 	got := s.refsSnapshot()
 	want := map[string]bool{"ref-1": true, "ref-2": true}
@@ -305,9 +284,6 @@ func TestSessionRegistryCloseReleasesRefs(t *testing.T) {
 		if reg.OwnsRef(key, "late-ref") {
 			t.Fatal("registry-wide OwnsRef(late-ref) = true after a post-Close PutRef, want false")
 		}
-		if s.OwnsRef("late-ref") {
-			t.Fatal("session-local OwnsRef(late-ref) = true after a post-Close PutRef, want false (the gate runs before tryPutRef)")
-		}
 	})
 
 	t.Run("two sessions sharing a key: closing one leaves the other's ref owned", func(t *testing.T) {
@@ -391,14 +367,14 @@ func TestSessionRegistryHasAdmittedSolve(t *testing.T) {
 	key := SessionKey{ClientIdentity: "c", Profile: "p"}
 	s := reg.Open(key, EndpointGRPC, "")
 
-	if reg.HasAdmittedSolve(key) {
-		t.Fatal("HasAdmittedSolve() = true before any PutRef, want false")
+	if reg.HasAdmittedSolve(key, testBuildkitSessionID) {
+		t.Fatal("HasAdmittedSolve() = true before any Solve admission, want false")
 	}
-	if !reg.PutRef(s, "ref-1", 0) {
-		t.Fatal("PutRef failed")
+	if got := reg.admitSolve(s, testBuildkitSessionID, "ref-1", nil, 0, 0); got != solveAdmissionSucceeded {
+		t.Fatalf("admitSolve() = %v, want solveAdmissionSucceeded", got)
 	}
-	if !reg.HasAdmittedSolve(key) {
-		t.Fatal("HasAdmittedSolve() = false after PutRef admitted a ref, want true")
+	if !reg.HasAdmittedSolve(key, testBuildkitSessionID) {
+		t.Fatal("HasAdmittedSolve() = false after a Solve admission, want true")
 	}
 }
 
@@ -407,66 +383,67 @@ func TestSessionRegistryHasAdmittedSolveIsPerKey(t *testing.T) {
 	key1 := SessionKey{ClientIdentity: "c1", Profile: "p"}
 	key2 := SessionKey{ClientIdentity: "c2", Profile: "p"}
 	s1 := reg.Open(key1, EndpointGRPC, "")
-	reg.PutRef(s1, "ref-1", 0)
+	reg.admitSolve(s1, testBuildkitSessionID, "ref-1", nil, 0, 0)
 
-	if reg.HasAdmittedSolve(key2) {
+	if reg.HasAdmittedSolve(key2, testBuildkitSessionID) {
 		t.Fatal("HasAdmittedSolve(key2) = true, want false — key2 never admitted anything")
 	}
 }
 
-func TestSessionRegistryAdmitUploadKeyFirstAdmissionSucceeds(t *testing.T) {
+func TestSessionRegistryAdmitSolveFirstUploadAdmissionSucceeds(t *testing.T) {
 	reg := NewSessionRegistry()
 	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	session := reg.Open(key, EndpointGRPC, "")
 
-	if !reg.AdmitUploadKey(key, "id-1", 0) {
-		t.Fatal("AdmitUploadKey() = false on first admission, want true")
+	if got := reg.admitSolve(session, testBuildkitSessionID, "ref-1", []string{"id-1"}, 0, 0); got != solveAdmissionSucceeded {
+		t.Fatalf("AdmitSolve() = %v, want solveAdmissionSucceeded", got)
 	}
-	if !reg.ConsumeUploadKey(key, "id-1") {
+	if !reg.ConsumeUploadKey(key, testBuildkitSessionID, "id-1") {
 		t.Fatal("ConsumeUploadKey() = false for a freshly admitted id, want true")
 	}
 }
 
-func TestSessionRegistryAdmitUploadKeyDuplicateIsIdempotent(t *testing.T) {
+func TestSessionRegistryAdmitSolveDuplicateUploadIDIsIdempotent(t *testing.T) {
 	reg := NewSessionRegistry()
 	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	session := reg.Open(key, EndpointGRPC, "")
 
-	if !reg.AdmitUploadKey(key, "id-1", 1) {
-		t.Fatal("first AdmitUploadKey() = false, want true")
+	if got := reg.admitSolve(session, testBuildkitSessionID, "ref-1", []string{"id-1"}, 0, 1); got != solveAdmissionSucceeded {
+		t.Fatalf("first AdmitSolve() = %v, want solveAdmissionSucceeded", got)
 	}
 	// A duplicate admission of the SAME id, even with maxKeys already at its
 	// bound, is a harmless no-op success — it must not count as a second
 	// key toward maxKeys.
-	if !reg.AdmitUploadKey(key, "id-1", 1) {
-		t.Fatal("duplicate AdmitUploadKey() for an already-admitted id = false, want true (idempotent)")
+	if got := reg.admitSolve(session, testBuildkitSessionID, "ref-1", []string{"id-1"}, 0, 1); got != solveAdmissionSucceeded {
+		t.Fatalf("duplicate AdmitSolve() = %v, want solveAdmissionSucceeded", got)
 	}
-	if reg.AdmitUploadKey(key, "id-2", 1) {
-		t.Fatal("AdmitUploadKey() for a genuinely new id = true, want false — maxKeys=1 is already at its bound")
-	}
-}
-
-func TestSessionRegistryAdmitUploadKeyRespectsMaxKeysBound(t *testing.T) {
-	reg := NewSessionRegistry()
-	key := SessionKey{ClientIdentity: "c", Profile: "p"}
-
-	if !reg.AdmitUploadKey(key, "id-1", 2) {
-		t.Fatal("AdmitUploadKey(id-1) = false, want true")
-	}
-	if !reg.AdmitUploadKey(key, "id-2", 2) {
-		t.Fatal("AdmitUploadKey(id-2) = false, want true")
-	}
-	if reg.AdmitUploadKey(key, "id-3", 2) {
-		t.Fatal("AdmitUploadKey(id-3) = true, want false — maxKeys=2 already holds 2 not-yet-consumed keys")
+	if got := reg.admitSolve(session, testBuildkitSessionID, "ref-1", []string{"id-2"}, 0, 1); got != solveAdmissionUploadLimitExceeded {
+		t.Fatalf("AdmitSolve() for a new id = %v, want solveAdmissionUploadLimitExceeded", got)
 	}
 }
 
-func TestSessionRegistryAdmitUploadKeyMaxKeysZeroOrNegativeDisablesBound(t *testing.T) {
+func TestSessionRegistryAdmitSolveRespectsMaxUploadKeysBound(t *testing.T) {
 	reg := NewSessionRegistry()
 	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	session := reg.Open(key, EndpointGRPC, "")
+
+	if got := reg.admitSolve(session, testBuildkitSessionID, "ref-1", []string{"id-1", "id-2"}, 0, 2); got != solveAdmissionSucceeded {
+		t.Fatalf("AdmitSolve() at cap = %v, want solveAdmissionSucceeded", got)
+	}
+	if got := reg.admitSolve(session, testBuildkitSessionID, "ref-1", []string{"id-3"}, 0, 2); got != solveAdmissionUploadLimitExceeded {
+		t.Fatalf("AdmitSolve() over cap = %v, want solveAdmissionUploadLimitExceeded", got)
+	}
+}
+
+func TestSessionRegistryAdmitSolveMaxUploadKeysZeroOrNegativeDisablesBound(t *testing.T) {
+	reg := NewSessionRegistry()
+	key := SessionKey{ClientIdentity: "c", Profile: "p"}
+	session := reg.Open(key, EndpointGRPC, "")
 
 	for i, maxKeys := range []int{0, -1} {
 		id := fmt.Sprintf("id-%d", i)
-		if !reg.AdmitUploadKey(key, id, maxKeys) {
-			t.Fatalf("AdmitUploadKey(%q, maxKeys=%d) = false, want true (bound disabled)", id, maxKeys)
+		if got := reg.admitSolve(session, testBuildkitSessionID, fmt.Sprintf("ref-%d", i), []string{id}, 0, maxKeys); got != solveAdmissionSucceeded {
+			t.Fatalf("AdmitSolve(%q, maxKeys=%d) = %v, want solveAdmissionSucceeded", id, maxKeys, got)
 		}
 	}
 }
@@ -474,12 +451,13 @@ func TestSessionRegistryAdmitUploadKeyMaxKeysZeroOrNegativeDisablesBound(t *test
 func TestSessionRegistryConsumeUploadKeyIsOneUse(t *testing.T) {
 	reg := NewSessionRegistry()
 	key := SessionKey{ClientIdentity: "c", Profile: "p"}
-	reg.AdmitUploadKey(key, "id-1", 0)
+	session := reg.Open(key, EndpointGRPC, "")
+	reg.admitSolve(session, testBuildkitSessionID, "ref-1", []string{"id-1"}, 0, 0)
 
-	if !reg.ConsumeUploadKey(key, "id-1") {
+	if !reg.ConsumeUploadKey(key, testBuildkitSessionID, "id-1") {
 		t.Fatal("first ConsumeUploadKey() = false, want true")
 	}
-	if reg.ConsumeUploadKey(key, "id-1") {
+	if reg.ConsumeUploadKey(key, testBuildkitSessionID, "id-1") {
 		t.Fatal("second ConsumeUploadKey() for the same id = true, want false — one-use")
 	}
 }
@@ -488,7 +466,7 @@ func TestSessionRegistryConsumeUploadKeyNeverAdmitted(t *testing.T) {
 	reg := NewSessionRegistry()
 	key := SessionKey{ClientIdentity: "c", Profile: "p"}
 
-	if reg.ConsumeUploadKey(key, "never-admitted") {
+	if reg.ConsumeUploadKey(key, testBuildkitSessionID, "never-admitted") {
 		t.Fatal("ConsumeUploadKey() for a never-admitted id = true, want false")
 	}
 }
@@ -499,20 +477,21 @@ func TestSessionRegistryConsumeUploadKeyUnknownIDUnderKnownKey(t *testing.T) {
 	// entirely" and "id-1 admitted, then consumed twice" above.
 	reg := NewSessionRegistry()
 	key := SessionKey{ClientIdentity: "c", Profile: "p"}
-	reg.AdmitUploadKey(key, "id-1", 0)
+	session := reg.Open(key, EndpointGRPC, "")
+	reg.admitSolve(session, testBuildkitSessionID, "ref-1", []string{"id-1"}, 0, 0)
 
-	if reg.ConsumeUploadKey(key, "id-2") {
+	if reg.ConsumeUploadKey(key, testBuildkitSessionID, "id-2") {
 		t.Fatal("ConsumeUploadKey() for an unadmitted id under a known key = true, want false")
 	}
 }
 
 func TestSessionRegistryConsumeUploadKeyUnknownKey(t *testing.T) {
 	reg := NewSessionRegistry()
-	// No AdmitUploadKey call at all for this key — reg.uploadKeys has no
+	// No admitted Solve at all for this key — reg.uploadKeys has no
 	// entry for it whatsoever, exercising ConsumeUploadKey's "key not
 	// present at all" branch distinctly from "id not present under a known
 	// key" above.
-	if reg.ConsumeUploadKey(SessionKey{ClientIdentity: "nobody", Profile: "p"}, "id-1") {
+	if reg.ConsumeUploadKey(SessionKey{ClientIdentity: "nobody", Profile: "p"}, testBuildkitSessionID, "id-1") {
 		t.Fatal("ConsumeUploadKey() for an unknown SessionKey = true, want false")
 	}
 }
@@ -520,32 +499,34 @@ func TestSessionRegistryConsumeUploadKeyUnknownKey(t *testing.T) {
 func TestSessionRegistryConsumeUploadKeyCleansUpEmptyMapEntry(t *testing.T) {
 	reg := NewSessionRegistry()
 	key := SessionKey{ClientIdentity: "c", Profile: "p"}
-	reg.AdmitUploadKey(key, "id-1", 0)
-	reg.ConsumeUploadKey(key, "id-1")
+	session := reg.Open(key, EndpointGRPC, "")
+	reg.admitSolve(session, testBuildkitSessionID, "ref-1", []string{"id-1"}, 0, 0)
+	reg.ConsumeUploadKey(key, testBuildkitSessionID, "id-1")
 
-	if _, ok := reg.uploadKeys[key]; ok {
+	if _, ok := reg.uploadKeys[buildkitSessionKey{Principal: key, ID: testBuildkitSessionID}]; ok {
 		t.Fatal("reg.uploadKeys[key] still present after its last key was consumed, want the map entry removed")
 	}
 }
 
-func TestSessionRegistryAdmitUploadKeyRaceWithConsume(t *testing.T) {
+func TestSessionRegistryConsumeUploadKeyRace(t *testing.T) {
 	const iterations = 500
 	key := SessionKey{ClientIdentity: "c", Profile: "p"}
 
 	for i := 0; i < iterations; i++ {
 		reg := NewSessionRegistry()
-		reg.AdmitUploadKey(key, "race-id", 0)
+		session := reg.Open(key, EndpointGRPC, "")
+		reg.admitSolve(session, testBuildkitSessionID, "race-ref", []string{"race-id"}, 0, 0)
 
 		var wg sync.WaitGroup
 		wg.Add(2)
 		successes := make(chan bool, 2)
 		go func() {
 			defer wg.Done()
-			successes <- reg.ConsumeUploadKey(key, "race-id")
+			successes <- reg.ConsumeUploadKey(key, testBuildkitSessionID, "race-id")
 		}()
 		go func() {
 			defer wg.Done()
-			successes <- reg.ConsumeUploadKey(key, "race-id")
+			successes <- reg.ConsumeUploadKey(key, testBuildkitSessionID, "race-id")
 		}()
 		wg.Wait()
 		close(successes)

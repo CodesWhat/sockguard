@@ -45,6 +45,19 @@ func TestExecuteInvokesServeCommandByDefault(t *testing.T) {
 	}
 }
 
+func TestRootExposesOutOfBandPolicyTrustFlag(t *testing.T) {
+	flag := rootCmd.PersistentFlags().Lookup("policy-bundle-trust-config")
+	if flag == nil {
+		t.Fatal("root command is missing --policy-bundle-trust-config")
+	}
+	if flag.DefValue != "" {
+		t.Fatalf("default trust config path = %q, want empty", flag.DefValue)
+	}
+	if !strings.Contains(flag.Usage, "out-of-band") {
+		t.Fatalf("flag usage = %q, want out-of-band trust boundary", flag.Usage)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 

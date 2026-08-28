@@ -28,7 +28,10 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/upstream"
 )
 
-const wantHijackInactivityTimeout = 10 * time.Minute
+const (
+	wantHijackHandshakeTimeout  = 30 * time.Second
+	wantHijackInactivityTimeout = 10 * time.Minute
+)
 
 // safeBuffer is a goroutine-safe bytes.Buffer for concurrent log capture.
 type safeBuffer struct {
@@ -164,6 +167,20 @@ type loggingTestResponseWriter struct {
 	meta   *logging.RequestMeta
 }
 
+type hijackDeadlineResponseWriter struct {
+	http.ResponseWriter
+	readDeadlines []time.Time
+	readDeadline  func(time.Time) error
+}
+
+func (w *hijackDeadlineResponseWriter) SetReadDeadline(deadline time.Time) error {
+	w.readDeadlines = append(w.readDeadlines, deadline)
+	if w.readDeadline != nil {
+		return w.readDeadline(deadline)
+	}
+	return nil
+}
+
 func (w *loggingTestResponseWriter) Header() http.Header {
 	if w.header == nil {
 		w.header = make(http.Header)
@@ -282,6 +299,89 @@ func TestRequestHijackHelpersHandleNilRequest(t *testing.T) {
 	if got := requestHijackPath(httptest.NewRecorder(), nil); got != "" {
 		t.Fatalf("requestHijackPath(nil) = %q, want empty", got)
 	}
+}
+
+func TestWriteHijackUpstreamRequestBoundsAndClearsHandshakeIO(t *testing.T) {
+	upstreamConn := &funcConn{}
+	writer := &hijackDeadlineResponseWriter{ResponseWriter: httptest.NewRecorder()}
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", strings.NewReader("stdin"))
+	start := time.Now()
+
+	if !writeHijackUpstreamRequest(upstreamConn, writer, req, slog.New(slog.NewTextHandler(io.Discard, nil))) {
+		t.Fatal("writeHijackUpstreamRequest = false, want true")
+	}
+
+	if len(writer.readDeadlines) != 2 {
+		t.Fatalf("client read deadlines = %v, want finite deadline followed by clear", writer.readDeadlines)
+	}
+	assertDeadlineNear(t, writer.readDeadlines[0], start, time.Now(), wantHijackHandshakeTimeout)
+	if !writer.readDeadlines[1].IsZero() {
+		t.Fatalf("final client read deadline = %v, want zero", writer.readDeadlines[1])
+	}
+	if len(upstreamConn.writeDeadlines) != 2 {
+		t.Fatalf("upstream write deadlines = %v, want finite deadline followed by clear", upstreamConn.writeDeadlines)
+	}
+	assertDeadlineNear(t, upstreamConn.writeDeadlines[0], start, time.Now(), wantHijackHandshakeTimeout)
+	if !upstreamConn.writeDeadlines[1].IsZero() {
+		t.Fatalf("final upstream write deadline = %v, want zero", upstreamConn.writeDeadlines[1])
+	}
+}
+
+func TestReadHijackUpstreamResponseBoundsAndClearsHeaderRead(t *testing.T) {
+	response := bytes.NewReader([]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n"))
+	upstreamConn := &funcConn{readFn: response.Read}
+	req := httptest.NewRequest(http.MethodPost, "/containers/abc/attach", nil)
+	start := time.Now()
+
+	_, resp, ok := readHijackUpstreamResponse(upstreamConn, httptest.NewRecorder(), req, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if !ok {
+		t.Fatal("readHijackUpstreamResponse = false, want true")
+	}
+	defer resp.Body.Close()
+
+	if len(upstreamConn.readDeadlines) != 2 {
+		t.Fatalf("upstream read deadlines = %v, want finite deadline followed by clear", upstreamConn.readDeadlines)
+	}
+	assertDeadlineNear(t, upstreamConn.readDeadlines[0], start, time.Now(), wantHijackHandshakeTimeout)
+	if !upstreamConn.readDeadlines[1].IsZero() {
+		t.Fatalf("final upstream read deadline = %v, want zero", upstreamConn.readDeadlines[1])
+	}
+}
+
+func TestHijackHandshakeFailsWhenDeadlineCannotBeApplied(t *testing.T) {
+	wantErr := errors.New("deadline unavailable")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	newRequest := func() *http.Request {
+		return httptest.NewRequest(http.MethodPost, "/containers/abc/attach", strings.NewReader("stdin"))
+	}
+
+	t.Run("client body read", func(t *testing.T) {
+		writer := &hijackDeadlineResponseWriter{
+			ResponseWriter: httptest.NewRecorder(),
+			readDeadline:   func(time.Time) error { return wantErr },
+		}
+		if writeHijackUpstreamRequest(&funcConn{}, writer, newRequest(), logger) {
+			t.Fatal("writeHijackUpstreamRequest = true when the client read deadline failed")
+		}
+	})
+
+	t.Run("upstream request write", func(t *testing.T) {
+		conn := &funcConn{writeDeadlineFn: func(time.Time) error { return wantErr }}
+		if writeHijackUpstreamRequest(conn, httptest.NewRecorder(), newRequest(), logger) {
+			t.Fatal("writeHijackUpstreamRequest = true when the upstream write deadline failed")
+		}
+	})
+
+	t.Run("upstream response headers", func(t *testing.T) {
+		response := bytes.NewReader([]byte("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n"))
+		conn := &funcConn{
+			readFn:         response.Read,
+			readDeadlineFn: func(time.Time) error { return wantErr },
+		}
+		if _, _, ok := readHijackUpstreamResponse(conn, httptest.NewRecorder(), newRequest(), logger); ok {
+			t.Fatal("readHijackUpstreamResponse = true when the upstream read deadline failed")
+		}
+	})
 }
 
 func TestHijackHandler_NonHijackPassthrough(t *testing.T) {
@@ -1916,10 +2016,10 @@ func TestHandleHijack_StreamingActivityRefreshesInactivityDeadlines(t *testing.T
 		t.Fatalf("client write deadline calls = %d, want at least 1", clientConn.writeDeadlineCalls)
 	}
 
-	assertDeadlineNearTimeout(t, upstreamConn.readDeadlines[0], start, end)
-	assertDeadlineNearTimeout(t, upstreamConn.writeDeadlines[0], start, end)
-	assertDeadlineNearTimeout(t, clientConn.readDeadlines[0], start, end)
-	assertDeadlineNearTimeout(t, clientConn.writeDeadlines[0], start, end)
+	assertDeadlineNearTimeout(t, upstreamConn.readDeadlines[len(upstreamConn.readDeadlines)-1], start, end)
+	assertDeadlineNearTimeout(t, upstreamConn.writeDeadlines[len(upstreamConn.writeDeadlines)-1], start, end)
+	assertDeadlineNearTimeout(t, clientConn.readDeadlines[len(clientConn.readDeadlines)-1], start, end)
+	assertDeadlineNearTimeout(t, clientConn.writeDeadlines[len(clientConn.writeDeadlines)-1], start, end)
 }
 
 // TestReadInactivityDeadlineRefreshIsThrottled exercises the same throttle
@@ -2845,9 +2945,13 @@ func TestPutHijackBufferRestoresFullLengthBeforeReuse(t *testing.T) {
 
 func assertDeadlineNearTimeout(t *testing.T, got, start, end time.Time) {
 	t.Helper()
+	assertDeadlineNear(t, got, start, end, wantHijackInactivityTimeout)
+}
 
-	lowerBound := start.Add(wantHijackInactivityTimeout - time.Second)
-	upperBound := end.Add(wantHijackInactivityTimeout + time.Second)
+func assertDeadlineNear(t *testing.T, got, start, end time.Time, timeout time.Duration) {
+	t.Helper()
+	lowerBound := start.Add(timeout - time.Second)
+	upperBound := end.Add(timeout + time.Second)
 	if got.Before(lowerBound) || got.After(upperBound) {
 		t.Fatalf("deadline = %v, want between %v and %v", got, lowerBound, upperBound)
 	}
@@ -3050,6 +3154,9 @@ func TestHijackConstantsArePinned(t *testing.T) {
 	}
 	if hijackDialTimeout != 5*time.Second {
 		t.Errorf("hijackDialTimeout = %v, want 5s", hijackDialTimeout)
+	}
+	if hijackHandshakeTimeout != 30*time.Second {
+		t.Errorf("hijackHandshakeTimeout = %v, want 30s", hijackHandshakeTimeout)
 	}
 	if hijackInactivityTimeout != 10*time.Minute {
 		t.Errorf("hijackInactivityTimeout = %v, want 10m", hijackInactivityTimeout)

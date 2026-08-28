@@ -16,10 +16,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
 	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/imagetrust"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/policybundle"
 )
@@ -34,6 +36,7 @@ type serveDeps struct {
 	dialUpstream        func(string, string, time.Duration) (net.Conn, error)
 	listenNetwork       func(string, string) (net.Listener, error)
 	lstatPath           func(string) (os.FileInfo, error)
+	statPath            func(string) (os.FileInfo, error)
 	isAddrInUse         func(error) bool
 	createServeListener func(*config.Config) (net.Listener, error)
 	createAdminListener func(*config.Config) (net.Listener, error)
@@ -66,13 +69,14 @@ func newServeDeps() *serveDeps {
 	deps := &serveDeps{
 		loadConfig:          config.Load,
 		loadConfigBytes:     config.LoadBytes,
-		readConfigBytes:     os.ReadFile,
+		readConfigBytes:     config.ReadFile,
 		newLogger:           logging.New,
 		newAuditLogger:      logging.NewAudit,
 		validateRules:       validateAndCompileRules,
 		dialUpstream:        net.DialTimeout,
 		listenNetwork:       net.Listen,
 		lstatPath:           os.Lstat,
+		statPath:            os.Stat,
 		isAddrInUse:         isAddrInUse,
 		probeUnixSocket:     defaultProbeUnixSocket,
 		chown:               os.Chown,
@@ -99,7 +103,16 @@ func newServeDeps() *serveDeps {
 //
 // When pb.Enabled=false the returned Verifier rejects calls — wiring code
 // must guard on Enabled before invoking Verify.
+var loadBundleTrustedMaterial = imagetrust.LoadLiveTrustedRoot
+
 func defaultBuildBundleVerifier(pb config.PolicyBundleConfig) (policybundle.Verifier, error) {
+	return buildBundleVerifier(pb, loadBundleTrustedMaterial)
+}
+
+func buildBundleVerifier(
+	pb config.PolicyBundleConfig,
+	loadTrustedMaterial func() (root.TrustedMaterial, error),
+) (policybundle.Verifier, error) {
 	raw := policybundle.RawConfig{
 		Enabled:               pb.Enabled,
 		RequireRekorInclusion: pb.RequireRekorInclusion,
@@ -118,13 +131,12 @@ func defaultBuildBundleVerifier(pb config.PolicyBundleConfig) (policybundle.Veri
 	if err != nil {
 		return nil, err
 	}
-	// Keyless verification against the public sigstore TUF roots is not yet
-	// wired; if the operator configured keyless identities we surface a
-	// clear error rather than silently falling back to "no trust material".
-	// Production TUF wiring is a follow-up; for now keyed is fully
-	// supported and keyless paths live behind tests using VirtualSigstore.
-	if len(cfg.AllowedKeyless) > 0 && cfg.TrustedMaterial == nil {
-		return nil, errors.New("policy_bundle.allowed_keyless is configured but the production TUF trust root is not yet wired; configure allowed_signing_keys for now")
+	if len(cfg.AllowedKeyless) > 0 {
+		trustedMaterial, loadErr := loadTrustedMaterial()
+		if loadErr != nil {
+			return nil, fmt.Errorf("policy_bundle: load keyless trust root: %w", loadErr)
+		}
+		cfg.TrustedMaterial = trustedMaterial
 	}
 	return policybundle.New(cfg)
 }
@@ -213,12 +225,14 @@ func (d *serveDeps) createSocketListener(prefix, path, modeValue string, uid, gi
 	if err != nil {
 		return nil, err
 	}
+	socketIdentity := statSocketIdentity(d.lstatPath, path)
 
 	if uid == nil && gid == nil {
 		return ln, nil
 	}
 	if err := d.chownSocket(path, uid, gid); err != nil {
 		_ = ln.Close()
+		_ = removeSocketIfOwned(d, path, socketIdentity)
 		return nil, err
 	}
 	return ln, nil
@@ -299,6 +313,7 @@ func (d *serveDeps) listenUnixSocketWithMode(path string, fileMode os.FileMode) 
 	return d.withUmask(socketCreateUmask(fileMode), func() (net.Listener, error) {
 		ln, err := d.listenNetwork("unix", path)
 		if err == nil {
+			disableUnixListenerAutoUnlink(ln)
 			return ln, nil
 		}
 		if !d.isAddrInUse(err) {
@@ -341,8 +356,15 @@ func (d *serveDeps) listenUnixSocketWithMode(path string, fileMode os.FileMode) 
 		if err != nil {
 			return nil, err
 		}
+		disableUnixListenerAutoUnlink(ln)
 		return ln, nil
 	})
+}
+
+func disableUnixListenerAutoUnlink(ln net.Listener) {
+	if unixListener, ok := ln.(*net.UnixListener); ok {
+		unixListener.SetUnlinkOnClose(false)
+	}
 }
 
 // defaultProbeUnixSocket dials path with a short timeout and returns the exact

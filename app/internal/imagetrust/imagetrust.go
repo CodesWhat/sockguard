@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -35,8 +36,10 @@ import (
 
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
+	"github.com/sigstore/sigstore-go/pkg/util"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
+	"github.com/theupdateframework/go-tuf/v2/metadata/fetcher"
 
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/sigverify"
@@ -54,9 +57,12 @@ const (
 	// ModeEnforce verifies and returns an error on failure. The caller must
 	// deny the request.
 	ModeEnforce Mode = "enforce"
+
+	liveTrustedRootDownloadTimeout = 15 * time.Second
 )
 
-// VerifyTimeout is the default context timeout for a single verification call.
+// VerifyTimeout is the default end-to-end image-trust deadline. Registry I/O
+// observes the context directly; local verification checks it cooperatively.
 const VerifyTimeout = 10 * time.Second
 
 // Config is the parsed, validated configuration for image trust verification.
@@ -74,7 +80,7 @@ type Config struct {
 	// verification. Must be set (non-nil) when keyless identities are configured.
 	// Tests inject VirtualSigstore here; production builds fetch via TUF.
 	TrustedMaterial root.TrustedMaterial
-	// VerifyTimeout overrides the default per-verification timeout.
+	// VerifyTimeout overrides the default end-to-end image-trust deadline.
 	VerifyTimeout time.Duration
 }
 
@@ -228,12 +234,15 @@ type Candidate struct {
 // goroutine+ticker per call for the rest of the process's life. Memoizing
 // ensures at most one is ever created.
 var (
-	liveTrustedRootMu  sync.Mutex
-	liveTrustedRootMat root.TrustedMaterial
+	liveTrustedRootMu         sync.Mutex
+	liveTrustedRootMat        root.TrustedMaterial
+	newLiveTrustedRootFactory = func(opts *tuf.Options) (root.TrustedMaterial, error) {
+		return root.NewLiveTrustedRoot(opts)
+	}
 	// newLiveTrustedRoot builds the trust root; overridden in tests to avoid
 	// real network I/O.
 	newLiveTrustedRoot = func() (root.TrustedMaterial, error) {
-		tr, err := root.NewLiveTrustedRoot(tuf.DefaultOptions())
+		tr, err := newLiveTrustedRootFactory(newLiveTrustedRootOptions(liveTrustedRootDownloadTimeout))
 		if err != nil {
 			return nil, fmt.Errorf("fetch sigstore trust root via TUF: %w", err)
 		}
@@ -241,10 +250,18 @@ var (
 	}
 )
 
+func newLiveTrustedRootOptions(downloadTimeout time.Duration) *tuf.Options {
+	tufFetcher := fetcher.NewDefaultFetcher()
+	tufFetcher.SetHTTPUserAgent(util.ConstructUserAgent())
+	tufFetcher.SetHTTPClient(&http.Client{Timeout: downloadTimeout})
+	return tuf.DefaultOptions().WithDisableLocalCache().WithFetcher(tufFetcher)
+}
+
 // LoadLiveTrustedRoot returns the process-wide Sigstore public-good trust
 // root fetched via TUF, for use as Config.TrustedMaterial when keyless
-// identities are configured. It performs network I/O and requires a writable
-// TUF cache directory on first use; callers should fail closed if it errors.
+// identities are configured. It performs bounded network I/O without a local
+// cache so it works under a read-only filesystem; callers should fail closed
+// if it errors.
 //
 // The underlying TUF client refreshes the returned material in the background
 // for the life of the process and cannot be stopped once created, so this
@@ -293,7 +310,15 @@ func VerifyWithMode(ctx context.Context, v Verifier, cfg Config, logger *slog.Lo
 		return VerifyOutcome{Allowed: true, Verifier: "off", ElapsedMS: time.Since(start).Milliseconds()}
 	}
 
-	err := v.Verify(ctx, imageRef, digestHex, entity)
+	var err error
+	if contextErr := ctx.Err(); contextErr != nil {
+		err = fmt.Errorf("image trust verification canceled: %w", contextErr)
+	} else {
+		err = v.Verify(ctx, imageRef, digestHex, entity)
+		if contextErr := ctx.Err(); contextErr != nil {
+			err = fmt.Errorf("image trust verification canceled: %w", contextErr)
+		}
+	}
 	elapsed := time.Since(start).Milliseconds()
 
 	if err == nil {
@@ -336,9 +361,21 @@ func VerifyCandidatesWithMode(ctx context.Context, v Verifier, cfg Config, logge
 
 	var verifyErrs []string
 	for _, c := range candidates {
+		if contextErr := ctx.Err(); contextErr != nil {
+			verifyErrs = append(verifyErrs, fmt.Sprintf("image trust verification canceled: %v", contextErr))
+			break
+		}
 		if err := v.Verify(ctx, imageRef, c.DigestHex, c.Entity); err != nil {
+			if contextErr := ctx.Err(); contextErr != nil {
+				verifyErrs = append(verifyErrs, fmt.Sprintf("image trust verification canceled: %v", contextErr))
+				break
+			}
 			verifyErrs = append(verifyErrs, err.Error())
 			continue
+		}
+		if contextErr := ctx.Err(); contextErr != nil {
+			verifyErrs = append(verifyErrs, fmt.Sprintf("image trust verification canceled: %v", contextErr))
+			break
 		}
 		return VerifyOutcome{Allowed: true, Verifier: "verified", VerifiedDigest: c.ImageDigest, ElapsedMS: time.Since(start).Milliseconds()}
 	}
@@ -391,19 +428,25 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, imageRef, digestHex strin
 		return fmt.Errorf("image trust: invalid digest %q: %w", digestHex, err)
 	}
 
-	// Bound the verification if the caller didn't already set a deadline, so a
-	// keyless path that reaches out to Rekor can't hang unbounded. Mirrors the
-	// policy-bundle verifier's guard.
+	// Apply the configured verification deadline when the caller did not already
+	// provide one. Sigstore-go verification is synchronous, so the context is
+	// checked before work begins and after each verification attempt.
 	if _, ok := ctx.Deadline(); !ok && s.cfg.VerifyTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.cfg.VerifyTimeout)
 		defer cancel()
 	}
+	return s.verify(ctx, imageRef, entity, digestBytes)
+}
 
+func (s *sigstoreVerifier) verify(ctx context.Context, imageRef string, entity verify.SignedEntity, digestBytes []byte) error {
 	var keyedErrs, keylessErrs []string
 
 	for _, kv := range s.cfg.AllowedSigningKeys {
 		if err := s.verifyKeyed(ctx, entity, digestBytes, kv); err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
 			keyedErrs = append(keyedErrs, fmt.Sprintf("%s: %v", kv.fingerprint, err))
 			continue
 		}
@@ -412,6 +455,9 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, imageRef, digestHex strin
 
 	for _, kl := range s.cfg.AllowedKeyless {
 		if err := s.verifyKeyless(ctx, entity, digestBytes, kl); err != nil {
+			if ctx.Err() != nil {
+				return err
+			}
 			keylessErrs = append(keylessErrs, fmt.Sprintf("%s: %v", kl.IssuerExact, err))
 			continue
 		}
@@ -431,10 +477,10 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, imageRef, digestHex strin
 	return fmt.Errorf("image trust verification failed for %s: %s", imageRef, strings.Join(msgs, "; "))
 }
 
-func (s *sigstoreVerifier) verifyKeyed(_ context.Context, entity verify.SignedEntity, digestBytes []byte, kv KeyedVerifier) error {
-	return sigverify.VerifyKeyed(entity, digestBytes, kv.verifier)
+func (s *sigstoreVerifier) verifyKeyed(ctx context.Context, entity verify.SignedEntity, digestBytes []byte, kv KeyedVerifier) error {
+	return sigverify.VerifyKeyed(ctx, entity, digestBytes, kv.verifier)
 }
 
-func (s *sigstoreVerifier) verifyKeyless(_ context.Context, entity verify.SignedEntity, digestBytes []byte, kl KeylessIdentity) error {
-	return sigverify.VerifyKeyless(entity, digestBytes, s.cfg.TrustedMaterial, kl.IssuerExact, kl.SubjectPattern, s.cfg.RequireRekorInclusion)
+func (s *sigstoreVerifier) verifyKeyless(ctx context.Context, entity verify.SignedEntity, digestBytes []byte, kl KeylessIdentity) error {
+	return sigverify.VerifyKeyless(ctx, entity, digestBytes, s.cfg.TrustedMaterial, kl.IssuerExact, kl.SubjectPattern, s.cfg.RequireRekorInclusion)
 }
