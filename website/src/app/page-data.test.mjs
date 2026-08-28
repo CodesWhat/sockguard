@@ -141,14 +141,13 @@ test("roadmap data is valid and matches expected milestones", () => {
   }
 });
 
-test("CLI demo provenance matches the v2 release candidate", () => {
-  assert.equal(SITE_CONFIG.cliDemo.commit, "7a9b575");
-  assert.equal(SITE_CONFIG.cliDemo.built, "2026-08-28T05:58:23Z");
-  assert.equal(SITE_CONFIG.cliDemo.goVersion, "go1.26.6");
-  assert.ok(
-    Date.parse(SITE_CONFIG.cliDemo.logStart) > Date.parse(SITE_CONFIG.cliDemo.built),
-    "CLI demo logs must start after the represented binary was built",
-  );
+test("CLI demo keeps release-specific provenance explicitly illustrative", () => {
+  assert.deepEqual(SITE_CONFIG.cliDemo, {
+    commit: "<sha>",
+    built: "<rfc3339>",
+    goVersion: "go1.26.6",
+    logTime: "<rfc3339>",
+  });
 });
 
 test("faqItems data is valid", () => {
