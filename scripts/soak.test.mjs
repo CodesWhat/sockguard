@@ -28,6 +28,17 @@ describe("soak.sh", () => {
     assert.doesNotMatch(script, /^wait\s*$/mu);
   });
 
+  it("terminates and reaps load workers during early cleanup", () => {
+    const script = readFileSync(scriptPath, "utf8");
+    const [, cleanup] = script.match(/cleanup\(\) \{([\s\S]*?)\n\}/u) ?? [undefined, ""];
+
+    assert.ok(cleanup, "cleanup function not found");
+    assert.match(cleanup, /for worker_pid in "\$\{WORKER_PIDS\[@\]\}"/u);
+    assert.match(cleanup, /kill "\$\{worker_pid\}"/u);
+    assert.match(cleanup, /wait "\$\{worker_pid\}"/u);
+    assert.match(script, /^trap cleanup EXIT$/mu);
+  });
+
   it("keeps the four-hour workflow in audit mode while block mode can reclaim the runner", () => {
     const workflow = readFileSync(workflowPath, "utf8");
     const [, hardenRunner] = workflow.match(

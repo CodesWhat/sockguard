@@ -320,6 +320,25 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       ),
     );
   });
+
+  it("does not truncate an unspaced hash in the default Helm image repository", () => {
+    const result = checkTagReleaseMetadata({
+      tag: "v1.7.4",
+      siteConfig: SITE_CONFIG,
+      chart: CHART,
+      values: VALUES.replace(
+        "repository: codeswhat/sockguard",
+        "repository: codeswhat/sockguard#evil",
+      ),
+      changelog: CHANGELOG,
+    });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("chart/sockguard/values.yaml") && error.includes("image.repository"),
+      ),
+    );
+  });
 });
 
 describe("checkTagReleaseMetadata: prerelease tags", () => {

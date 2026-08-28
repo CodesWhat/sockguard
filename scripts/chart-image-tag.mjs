@@ -44,7 +44,7 @@ function parseStringValue(source, field) {
     return singleQuoted[1].replaceAll("''", "'");
   }
 
-  const plain = source.match(/^([^\s#]+)\s*(?:#.*)?$/u);
+  const plain = source.match(/^([^\s]+)(?:\s+#.*)?$/u);
   if (plain) {
     return plain[1];
   }

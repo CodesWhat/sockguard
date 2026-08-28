@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Release qualification now fails closed at every publication and soak boundary.** The tag-triggered publisher requires stable tags to equal the protected default-branch head and prereleases to equal the matching development or maintenance head. Helm metadata validation rejects duplicate or unsupported YAML shapes, binds the default image repository, and renders the complete image reference. The soak waits only for its finite load workers, so successful four-hour traffic reaches the final memory and thread assertions instead of waiting on its intentionally long-lived daemons until the workflow timeout.
+- **Release qualification now fails closed at every publication and soak boundary.** The tag-triggered publisher requires stable tags to equal the protected default-branch head and prereleases to equal the matching development or maintenance head. Helm metadata validation rejects duplicate or unsupported YAML shapes, preserves unspaced hashes in plain scalars, binds the default image repository, and renders the complete image reference. The soak waits only for its finite load workers, terminates them on early failure, and lets successful four-hour traffic reach the final memory and thread assertions instead of waiting on its intentionally long-lived daemons until the workflow timeout.
 
 ## [2.0.0-rc.4] - 2026-08-28
 

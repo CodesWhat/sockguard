@@ -176,7 +176,21 @@ TOTAL_SECONDS="$(duration_to_seconds "${DURATION}")"
 # deny-response codepath is also surfaced.
 WORKER_LOG_DIR="$(mktemp -d)"
 WORKER_PIDS=()
-trap 'kill "${MOCK_PID}" "${PROXY_PID}" 2>/dev/null || true; rm -f "${MOCK_SOCK}" "${PROXY_SOCK}"; rm -rf "${BUILD_DIR}" "${WORKER_LOG_DIR}"; rm -f "${SAMPLES_TSV}"' EXIT
+
+cleanup() {
+  local worker_pid
+  for worker_pid in "${WORKER_PIDS[@]}"; do
+    kill "${worker_pid}" 2>/dev/null || true
+  done
+  for worker_pid in "${WORKER_PIDS[@]}"; do
+    wait "${worker_pid}" 2>/dev/null || true
+  done
+  kill "${MOCK_PID}" "${PROXY_PID}" 2>/dev/null || true
+  rm -f "${MOCK_SOCK}" "${PROXY_SOCK}"
+  rm -rf "${BUILD_DIR}" "${WORKER_LOG_DIR}"
+  rm -f "${SAMPLES_TSV}"
+}
+trap cleanup EXIT
 
 run_worker() {
   local label="$1" method="$2" path="$3"
