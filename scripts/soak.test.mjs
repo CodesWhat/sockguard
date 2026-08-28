@@ -18,6 +18,16 @@ function runSoak(args) {
 }
 
 describe("soak.sh", () => {
+  it("waits only for finite load workers and propagates each failure", () => {
+    const script = readFileSync(scriptPath, "utf8");
+
+    assert.match(script, /^WORKER_PIDS=\(\)$/mu);
+    assert.match(script, /WORKER_PIDS\+=\("\$!"\)/u);
+    assert.match(script, /for worker_pid in "\$\{WORKER_PIDS\[@\]\}"/u);
+    assert.match(script, /if ! wait "\$\{worker_pid\}"/u);
+    assert.doesNotMatch(script, /^wait\s*$/mu);
+  });
+
   it("keeps the four-hour workflow in audit mode while block mode can reclaim the runner", () => {
     const workflow = readFileSync(workflowPath, "utf8");
     const [, hardenRunner] = workflow.match(

@@ -27,6 +27,16 @@ test("release-facing metadata agrees on the current stable version", () => {
     changelog,
     new RegExp(`^## \\[${stableVersion.replaceAll(".", "\\.")}\\] - \\d{4}-\\d{2}-\\d{2}$`, "m"),
   );
+
+  const docsRoadmap = read("docs/content/docs/roadmap.mdx").replaceAll(/\s+/gu, " ");
+  const stableFeatureLine = stableVersion.split(".").slice(0, 2).join(".");
+  assert.match(
+    docsRoadmap,
+    new RegExp(
+      `\\bSockguard v${stableFeatureLine.replaceAll(".", "\\.")} is the current stable feature line, with v${stableVersion.replaceAll(".", "\\.")}\\b,? the latest release\\b`,
+    ),
+    "docs roadmap must bind the website version to its current stable feature line",
+  );
 });
 
 test("the current stable version is the roadmap HEAD", () => {
@@ -76,6 +86,11 @@ test("release docs distinguish candidate and stable source branches", () => {
     releasing,
     /The workflow rejects a prerelease dispatched from `main` or a branch for another release line, and it rejects a stable release dispatched outside `main`, before it creates a tag\./u,
   );
+  assert.match(
+    releasing,
+    /tag-triggered publisher independently resolves the protected branch that owns the release line/u,
+  );
+  assert.match(releasing, /manual path cannot bypass promotion through `main`/u);
 });
 
 test("signed-policy docs distinguish keyed and keyless startup requirements", () => {
@@ -160,4 +175,22 @@ test("signed-policy docs distinguish keyed and keyless startup requirements", ()
   assert.doesNotMatch(cisExample, /subject_prefix/u);
   assert.match(configuration, /Never mount or deploy the private signing key with the proxy/u);
   assert.match(migration, /Never mount or deploy the private signing key with Sockguard/u);
+});
+
+test("release docs keep Helm metadata lockstep and use a two-stage digest flow", () => {
+  const releasing = read("RELEASING.md").replaceAll(/\s+/gu, " ");
+
+  assert.match(releasing, /Keep `version` and `appVersion` equal to the stable release version\./u);
+  assert.match(
+    releasing,
+    /Before tagging, leave `image\.tag` empty so the chart falls back to `appVersion`\./u,
+  );
+  assert.match(
+    releasing,
+    /After the release images are live, pin `image\.tag` to `<appVersion>@sha256:<digest>` in the active development branch\./u,
+  );
+  assert.match(releasing, /The tagged chart selects the versioned release tag/u);
+  assert.doesNotMatch(releasing, /tagged chart selects the immutable release tag/u);
+  assert.doesNotMatch(releasing, /increment independently of the app version/u);
+  assert.doesNotMatch(releasing, /follow-up patch commit on `main` before tagging/u);
 });

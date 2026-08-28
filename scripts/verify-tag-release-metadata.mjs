@@ -4,7 +4,8 @@
  * release-facing metadata files at that commit.
  *
  * scripts/release-metadata.test.mjs already asserts the website version,
- * Helm chart version/appVersion, README banner, and CHANGELOG heading agree
+ * Helm chart version/appVersion, empty prepublication image pin, README banner,
+ * and CHANGELOG heading agree
  * with EACH OTHER -- it never reads the tag actually being released. All
  * four files can agree with each other while being stale relative to what's
  * being tagged: that's exactly how v1.7.1 shipped claiming 1.7.0 (#304).
@@ -12,7 +13,8 @@
  * files.
  *
  * Stable tags (vX.Y.Z) require exact agreement: SITE_CONFIG.version, the
- * Helm chart's version and appVersion, and a dated CHANGELOG heading.
+ * Helm chart's version and appVersion, an empty prepublication image pin, and
+ * a dated CHANGELOG heading.
  *
  * Prerelease tags (vX.Y.Z-rc.N) are cut while the website/chart still show
  * the current *stable* version -- that's correct, not stale, since the
@@ -21,10 +23,14 @@
  * "Validate CHANGELOG entry for release tag" step already enforces.
  */
 import { readFileSync } from "node:fs";
+import { extractChartImageConfig, extractChartImageTag } from "./chart-image-tag.mjs";
 import { extractChangelogEntry } from "./extract-changelog-entry.mjs";
+
+export { extractChartImageTag };
 
 const STABLE_VERSION_PATTERN = /^\d+\.\d+\.\d+$/u;
 const TAG_PATTERN = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)$/u;
+const EXPECTED_CHART_IMAGE_REPOSITORY = "codeswhat/sockguard";
 
 export function normalizeTag(tag) {
   const match = String(tag ?? "")
@@ -62,7 +68,7 @@ export function extractChartVersions(source) {
  * malformed tag or unparseable file, since those aren't "the tag disagrees
  * with reality", they're "this script can't tell".
  */
-export function checkTagReleaseMetadata({ tag, siteConfig, chart, changelog }) {
+export function checkTagReleaseMetadata({ tag, siteConfig, chart, values, changelog }) {
   const version = normalizeTag(tag);
   const isPrerelease = !STABLE_VERSION_PATTERN.test(version);
   const errors = [];
@@ -92,6 +98,18 @@ export function checkTagReleaseMetadata({ tag, siteConfig, chart, changelog }) {
   if (chartAppVersion !== version) {
     errors.push(
       `chart/sockguard/Chart.yaml appVersion is '${chartAppVersion}', tag is 'v${version}'.`,
+    );
+  }
+
+  const chartImage = extractChartImageConfig(values);
+  if (chartImage.repository !== EXPECTED_CHART_IMAGE_REPOSITORY) {
+    errors.push(
+      `chart/sockguard/values.yaml image.repository must be '${EXPECTED_CHART_IMAGE_REPOSITORY}'; found '${chartImage.repository}'.`,
+    );
+  }
+  if (chartImage.tag !== "") {
+    errors.push(
+      `chart/sockguard/values.yaml image.tag must be empty before stable tag v${version} is created; found '${chartImage.tag}'.`,
     );
   }
 
@@ -134,16 +152,19 @@ function main() {
 
   const siteConfigPath = args["site-config"] ?? "website/src/lib/site-config.ts";
   const chartPath = args.chart ?? "chart/sockguard/Chart.yaml";
+  const valuesPath = args.values ?? "chart/sockguard/values.yaml";
   const changelogPath = args.changelog ?? "CHANGELOG.md";
 
   const siteConfig = readFileSync(siteConfigPath, "utf8");
   const chart = readFileSync(chartPath, "utf8");
+  const values = readFileSync(valuesPath, "utf8");
   const changelog = readFileSync(changelogPath, "utf8");
 
   const { version, isPrerelease, errors } = checkTagReleaseMetadata({
     tag,
     siteConfig,
     chart,
+    values,
     changelog,
   });
 
@@ -159,7 +180,7 @@ function main() {
   console.log(
     isPrerelease
       ? `Tag v${version} is a prerelease; CHANGELOG heading present.`
-      : `Tag v${version} agrees with website, chart, and CHANGELOG metadata.`,
+      : `Tag v${version} agrees with website, chart, Helm image, and CHANGELOG metadata.`,
   );
 }
 

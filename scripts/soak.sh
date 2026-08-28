@@ -175,6 +175,7 @@ TOTAL_SECONDS="$(duration_to_seconds "${DURATION}")"
 # is read-side; deny path is exercised steadily so a leak in the
 # deny-response codepath is also surfaced.
 WORKER_LOG_DIR="$(mktemp -d)"
+WORKER_PIDS=()
 trap 'kill "${MOCK_PID}" "${PROXY_PID}" 2>/dev/null || true; rm -f "${MOCK_SOCK}" "${PROXY_SOCK}"; rm -rf "${BUILD_DIR}" "${WORKER_LOG_DIR}"; rm -f "${SAMPLES_TSV}"' EXIT
 
 run_worker() {
@@ -187,6 +188,7 @@ run_worker() {
     -duration "${DURATION}" \
     -scenario "${label}" \
     > "${WORKER_LOG_DIR}/${label}.json" &
+  WORKER_PIDS+=("$!")
 }
 
 echo "==> Soaking for ${DURATION} (concurrency ${CONCURRENCY}/worker)"
@@ -210,7 +212,16 @@ while [ "$(date +%s)" -lt "${SAMPLE_END}" ]; do
     >> "${SAMPLES_TSV}"
 done
 
-wait
+worker_failed=0
+for worker_pid in "${WORKER_PIDS[@]}"; do
+  if ! wait "${worker_pid}"; then
+    worker_failed=1
+  fi
+done
+if [ "${worker_failed}" -ne 0 ]; then
+  echo "==> FAIL: one or more load workers exited unsuccessfully" >&2
+  exit 1
+fi
 
 FINAL_RSS_KB="$(read_rss_kb "${PROXY_PID}")"
 FINAL_THREADS="$(read_threads "${PROXY_PID}")"
