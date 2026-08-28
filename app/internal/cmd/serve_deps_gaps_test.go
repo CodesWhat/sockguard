@@ -1,14 +1,196 @@
 package cmd
 
 import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/sigstore/sigstore-go/pkg/root"
+	"github.com/sigstore/sigstore-go/pkg/testing/ca"
+
+	"github.com/codeswhat/sockguard/app/internal/boundedio"
 	"github.com/codeswhat/sockguard/app/internal/config"
 )
+
+func testPolicyPublicKeyPEM(t *testing.T) string {
+	t.Helper()
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate policy signing key: %v", err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(privateKey.Public())
+	if err != nil {
+		t.Fatalf("marshal policy public key: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+}
+
+func TestBuildBundleVerifierTrustModes(t *testing.T) {
+	virtualSigstore, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	const issuer = "https://issuer.example"
+	const subject = "ci@example.com"
+	payload := []byte("rules: []\n")
+	entity, err := virtualSigstore.Sign(subject, issuer, payload)
+	if err != nil {
+		t.Fatalf("sign policy: %v", err)
+	}
+	loadErr := errors.New("TUF unavailable")
+	wantSigner := "keyless:" + issuer + ":" + subject
+	keyedTrust := []config.PolicyBundleSigningKey{{PEM: testPolicyPublicKeyPEM(t)}}
+	keylessTrust := []config.PolicyBundleKeyless{{Issuer: issuer, SubjectPattern: `^ci@example\.com$`}}
+	tests := []struct {
+		name          string
+		cfg           config.PolicyBundleConfig
+		material      root.TrustedMaterial
+		loadErr       error
+		wantLoadCalls int
+		wantErr       error
+		wantErrText   string
+		verifyKeyless bool
+		wantSigner    string
+	}{
+		{
+			name:          "keyless trust loads and verifies",
+			cfg:           config.PolicyBundleConfig{Enabled: true, AllowedKeyless: keylessTrust, RequireRekorInclusion: true},
+			material:      virtualSigstore,
+			wantLoadCalls: 1,
+			verifyKeyless: true,
+			wantSigner:    wantSigner,
+		},
+		{
+			name:          "trust load failure aborts startup",
+			cfg:           config.PolicyBundleConfig{Enabled: true, AllowedKeyless: keylessTrust},
+			loadErr:       loadErr,
+			wantLoadCalls: 1,
+			wantErr:       loadErr,
+			wantErrText:   "load keyless trust root",
+		},
+		{
+			name:          "keyed-only startup stays offline",
+			cfg:           config.PolicyBundleConfig{Enabled: true, AllowedSigningKeys: keyedTrust},
+			wantLoadCalls: 0,
+		},
+		{
+			name: "mixed trust loads and falls back to keyless",
+			cfg: config.PolicyBundleConfig{
+				Enabled:            true,
+				AllowedSigningKeys: keyedTrust,
+				AllowedKeyless:     keylessTrust,
+			},
+			material:      virtualSigstore,
+			wantLoadCalls: 1,
+			verifyKeyless: true,
+			wantSigner:    wantSigner,
+		},
+		{
+			name: "disabled config does not load trust",
+			cfg: config.PolicyBundleConfig{
+				Enabled:        false,
+				AllowedKeyless: []config.PolicyBundleKeyless{{Issuer: "stale", SubjectPattern: "[stale"}},
+			},
+			wantLoadCalls: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			loadCalls := 0
+			verifier, err := buildBundleVerifier(tt.cfg, func() (root.TrustedMaterial, error) {
+				loadCalls++
+				return tt.material, tt.loadErr
+			})
+			if tt.wantErr != nil {
+				if err == nil || !errors.Is(err, tt.wantErr) {
+					t.Fatalf("buildBundleVerifier() = verifier %v, error %v; want %v", verifier, err, tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErrText) {
+					t.Fatalf("error = %q, want %q", err.Error(), tt.wantErrText)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("buildBundleVerifier: %v", err)
+				}
+				if verifier == nil {
+					t.Fatal("buildBundleVerifier returned nil verifier")
+				}
+			}
+			if loadCalls != tt.wantLoadCalls {
+				t.Fatalf("trusted material load calls = %d, want %d", loadCalls, tt.wantLoadCalls)
+			}
+			if !tt.verifyKeyless {
+				return
+			}
+			result, err := verifier.Verify(context.Background(), payload, entity)
+			if err != nil {
+				t.Fatalf("Verify keyless entity: %v", err)
+			}
+			if result.Signer != tt.wantSigner {
+				t.Fatalf("Signer = %q, want %q", result.Signer, tt.wantSigner)
+			}
+		})
+	}
+}
+
+func TestDefaultBuildBundleVerifierUsesProductionTrustLoader(t *testing.T) {
+	virtualSigstore, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	originalLoader := loadBundleTrustedMaterial
+	t.Cleanup(func() { loadBundleTrustedMaterial = originalLoader })
+	loadCalls := 0
+	loadBundleTrustedMaterial = func() (root.TrustedMaterial, error) {
+		loadCalls++
+		return virtualSigstore, nil
+	}
+
+	verifier, err := defaultBuildBundleVerifier(config.PolicyBundleConfig{
+		Enabled: true,
+		AllowedKeyless: []config.PolicyBundleKeyless{
+			{Issuer: "https://issuer.example", SubjectPattern: `^ci@example\.com$`},
+		},
+	})
+	if err != nil {
+		t.Fatalf("defaultBuildBundleVerifier: %v", err)
+	}
+	if verifier == nil {
+		t.Fatal("defaultBuildBundleVerifier returned nil verifier")
+	}
+	if loadCalls != 1 {
+		t.Fatalf("production trusted material load calls = %d, want 1", loadCalls)
+	}
+}
+
+func TestNewServeDepsUsesBoundedConfigReader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sockguard.yaml")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.Truncate(config.MaxConfigFileBytes + 1); err != nil {
+		f.Close()
+		t.Fatalf("Truncate: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := newServeDeps().readConfigBytes(path); !errors.Is(err, boundedio.ErrTooLarge) {
+		t.Fatalf("default readConfigBytes error = %v, want ErrTooLarge", err)
+	}
+}
 
 // TestCreateNamedListenerImplUnixSocket covers the listeners[*] unix-socket
 // bind path (#149) — createNamedListenerImpl was entirely unexercised

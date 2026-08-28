@@ -96,7 +96,7 @@ image_trust:
   mode: enforce
   allowed_keyless:
     - issuer: https://token.actions.githubusercontent.com
-      subject_prefix: https://github.com/your-org/
+      subject_pattern: '^https://github\.com/your-org/.+$'
 ```
 
 Do **not** flip `allow_privileged`, `allow_host_network`, `allow_host_pid`, or `allow_host_ipc` to `true` without a change-management review — those undo the core Section 5 controls this preset is designed to evidence.

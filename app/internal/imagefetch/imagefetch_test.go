@@ -14,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
@@ -152,6 +153,42 @@ func pushReferrerSignature(t *testing.T, ref name.Reference, subject v1.Descript
 	}
 	if err := remote.Write(ref.Context().Digest(digest.String()), sigImg); err != nil {
 		t.Fatalf("push referrer signature image: %v", err)
+	}
+}
+
+func TestFetchCandidatesAcceptsParameterizedManifestContentType(t *testing.T) {
+	baseRegistry := registry.New(registry.WithReferrersSupport(true))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorded := httptest.NewRecorder()
+		baseRegistry.ServeHTTP(recorded, r)
+		for key, values := range recorded.Header() {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/manifests/sha256-") && strings.HasSuffix(r.URL.Path, ".sig") {
+			w.Header().Set("Content-Type", recorded.Header().Get("Content-Type")+"; charset=utf-8")
+		}
+		w.WriteHeader(recorded.Code)
+		_, _ = w.Write(recorded.Body.Bytes())
+	}))
+	t.Cleanup(server.Close)
+	hostURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse registry URL: %v", err)
+	}
+	ref, subject := pushSubjectImage(t, hostURL.Host, "parameterized-content-type")
+	payload := simpleSigningPayloadFor(t, ref.Context().Name(), subject.Digest.String())
+	pushClassicSignature(t, ref, subject.Digest, payload, map[string]string{
+		cosignSignatureAnnotation: base64.StdEncoding.EncodeToString([]byte("signature")),
+	})
+
+	candidates, err := NewFetcher().FetchCandidates(context.Background(), nil, ref.Name())
+	if err != nil {
+		t.Fatalf("FetchCandidates() error = %v, want nil", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("FetchCandidates() candidates = %d, want 1", len(candidates))
 	}
 }
 

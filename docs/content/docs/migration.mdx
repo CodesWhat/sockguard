@@ -92,15 +92,50 @@ policy_bundle:
 ```
 
 Changing the candidate invalidates its old bundle. Sign the exact updated
-bytes before starting the new binary, then add the required serve flag:
+bytes on a trusted workstation with the private key matching
+`allowed_signing_keys`, deploy only the candidate and bundle, then add the
+required serve flag. Never mount or deploy the private signing key with
+Sockguard:
 
 ```bash
-cosign sign-blob --bundle /etc/sockguard/sockguard.yaml.bundle /etc/sockguard/sockguard.yaml
+cosign sign-blob --key ./policy-signing.key --bundle ./sockguard.yaml.bundle ./sockguard.yaml
 ```
 
 ```text
 sockguard serve --config /etc/sockguard/sockguard.yaml --policy-bundle-trust-config /etc/sockguard/policy-bundle-trust.yaml
 ```
+
+For keyless signing, replace `allowed_signing_keys` with an exact
+`allowed_keyless` issuer and subject pattern, then omit `--key` from the
+`cosign sign-blob --yes` command. A GitHub Actions signing job also needs
+`permissions: id-token: write`. Keyless trust fetches the public Sigstore root
+through TUF initially and refreshes it about every 24 hours, so ongoing egress
+is required. The loader uses no local cache, bounds each HTTP request to 15
+seconds, and works with Sockguard's read-only container filesystem. An initial
+load failure aborts startup; a failed background refresh is logged and retains
+the last valid root.
+
+`policy_bundle.verify_timeout` is a cooperative local-verification deadline.
+Sockguard checks it before beginning and after each synchronous Sigstore
+verification attempt, rejects late success, and stops signer fallback. It does
+not preempt an individual crypto call, and TUF downloads use their separate
+15-second HTTP bound.
+Candidate and bootstrap YAML files are capped at 16 MiB, and bundle JSON at
+4 MiB, before parsing or verification. Only regular files are accepted; FIFOs,
+devices, directories, and other non-regular paths are rejected without blocking.
+
+Image trust also caps every registry GET response at 4 MiB, including redirect
+destinations; referrers at 32 descriptors; distinct signature images at 16;
+layers per signature manifest at 32; aggregate verification candidates at 16;
+aggregate annotation keys and values at 256 KiB; each simple-signing payload at
+1 MiB; and all payload reads for one image at 16 MiB. Exceeding any limit aborts
+discovery, even when a valid sibling signature exists. `enforce` denies the
+request, while `warn` logs the failed discovery and forwards it.
+Signature references must be direct image manifests; OCI indexes are rejected
+instead of recursively traversed, and payload layers with alternate URLs are
+rejected before blob resolution. Legal media-type parameters on direct manifests
+are accepted. Discovery deadlines preserve their cancellation cause instead of
+being reported as an unsigned image.
 
 The two paths must identify different files. Sockguard rejects equal paths,
 symlinks to the same target, and hardlinks to the same inode. Candidate copies

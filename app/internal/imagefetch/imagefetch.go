@@ -39,12 +39,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
+	"net/http"
 	"strings"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 	protobundle "github.com/sigstore/protobuf-specs/gen/pb-go/bundle/v1"
 	protocommon "github.com/sigstore/protobuf-specs/gen/pb-go/common/v1"
 	protorekor "github.com/sigstore/protobuf-specs/gen/pb-go/rekor/v1"
@@ -80,6 +83,17 @@ const (
 	// maxPayloadBytes caps the simple-signing payload blob read. Real payloads
 	// are a few hundred bytes; the cap defends against a hostile registry.
 	maxPayloadBytes = 1 << 20
+
+	// Registry-controlled signature metadata is intentionally bounded well
+	// above normal cosign output, where an image normally has one signature
+	// image with one layer and a few kilobytes of annotations.
+	maxReferrerDescriptors   = 32
+	maxSignatureImages       = 16
+	maxSignatureLayers       = 32
+	maxCandidates            = 16
+	maxAnnotationBytes       = 256 << 10
+	maxAggregatePayloadBytes = 16 << 20
+	maxMetadataResponseBytes = 4 << 20
 )
 
 // ErrNoSignatures is returned when an image resolves successfully but carries no
@@ -87,10 +101,13 @@ const (
 // must treat this as a verification failure (deny).
 var ErrNoSignatures = errors.New("no cosign signatures found")
 
+var errRegistryInputLimit = errors.New("registry signature input limit exceeded")
+
 // Fetcher discovers and reconstructs image signatures. The zero value is not
 // usable; construct one with NewFetcher.
 type Fetcher struct {
 	keychain   authn.Keychain
+	transport  http.RoundTripper
 	remoteOpts []remote.Option
 	nameOpts   []name.Option
 }
@@ -99,16 +116,26 @@ type Fetcher struct {
 // ambient Docker keychain (mounted config.json), falling back to anonymous
 // access for public images.
 func NewFetcher() *Fetcher {
-	return &Fetcher{keychain: authn.DefaultKeychain}
+	return &Fetcher{
+		keychain:  authn.DefaultKeychain,
+		transport: remote.DefaultTransport,
+	}
 }
 
 // Option configures a Fetcher. Used by tests to point at an in-memory registry.
 type Option func(*Fetcher)
 
-// WithRemoteOptions appends go-containerregistry remote options applied to every
-// registry call (e.g. a custom transport for an httptest registry).
+// WithRemoteOptions appends non-transport go-containerregistry options applied
+// to every registry call. Use WithRegistryTransport for a custom transport so
+// Sockguard can retain its metadata response-size boundary around it.
 func WithRemoteOptions(opts ...remote.Option) Option {
 	return func(f *Fetcher) { f.remoteOpts = append(f.remoteOpts, opts...) }
+}
+
+// WithRegistryTransport replaces the base registry transport. Sockguard wraps
+// it with the same metadata response-size boundary used in production.
+func WithRegistryTransport(transport http.RoundTripper) Option {
+	return func(f *Fetcher) { f.transport = transport }
 }
 
 // WithNameOptions appends name-parsing options (e.g. name.Insecure for plain-HTTP
@@ -127,10 +154,88 @@ func NewFetcherWith(opts ...Option) *Fetcher {
 }
 
 func (f *Fetcher) opts(ctx context.Context) []remote.Option {
-	out := make([]remote.Option, 0, len(f.remoteOpts)+2)
-	out = append(out, remote.WithContext(ctx), remote.WithAuthFromKeychain(f.keychain))
+	baseTransport := f.transport
+	if baseTransport == nil {
+		baseTransport = remote.DefaultTransport
+	}
+	out := make([]remote.Option, 0, len(f.remoteOpts)+3)
+	out = append(out,
+		remote.WithContext(ctx),
+		remote.WithAuthFromKeychain(f.keychain),
+	)
 	out = append(out, f.remoteOpts...)
+	// Install this last so an opaque remote.WithTransport option cannot replace
+	// the input boundary. Custom transports belong in WithRegistryTransport and
+	// become the wrapped base instead.
+	out = append(out, remote.WithTransport(&metadataLimitTransport{base: baseTransport}))
 	return out
+}
+
+func (f *Fetcher) signatureImage(ctx context.Context, ref name.Reference) (v1.Image, error) {
+	desc, err := remote.Get(ref, f.opts(ctx)...)
+	if err != nil {
+		return nil, err
+	}
+	mediaType, _, err := mime.ParseMediaType(string(desc.MediaType))
+	if err != nil {
+		return nil, fmt.Errorf("signature reference %q has invalid media type %q: %w", ref.Name(), desc.MediaType, err)
+	}
+	desc.MediaType = types.MediaType(mediaType)
+	if !desc.MediaType.IsImage() {
+		return nil, fmt.Errorf("signature reference %q has media type %q; image manifest required", ref.Name(), desc.MediaType)
+	}
+	return desc.Image()
+}
+
+type metadataLimitTransport struct {
+	base http.RoundTripper
+}
+
+func (t *metadataLimitTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil || req.Method != http.MethodGet {
+		return resp, err
+	}
+	// Apply the ceiling to every GET response, not just URLs whose current path
+	// looks like a manifest or referrers endpoint. net/http follows redirects by
+	// issuing a fresh request for the Location URL, which may be an opaque CDN
+	// path; limiting every hop keeps a registry from redirecting around the
+	// metadata boundary. Signature blobs retain the stricter 1 MiB payload cap.
+	resp.Body = &metadataLimitReadCloser{
+		body:      resp.Body,
+		remaining: maxMetadataResponseBytes,
+	}
+	return resp, nil
+}
+
+type metadataLimitReadCloser struct {
+	body      io.ReadCloser
+	remaining int64
+}
+
+func (r *metadataLimitReadCloser) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.remaining > 0 {
+		if int64(len(p)) > r.remaining {
+			p = p[:r.remaining]
+		}
+		n, err := r.body.Read(p)
+		r.remaining -= int64(n)
+		return n, err
+	}
+
+	var probe [1]byte
+	if n, err := r.body.Read(probe[:]); n > 0 {
+		return 0, inputLimitError("registry metadata response exceeds %d byte limit", maxMetadataResponseBytes)
+	} else {
+		return 0, err
+	}
+}
+
+func (r *metadataLimitReadCloser) Close() error {
+	return r.body.Close()
 }
 
 // FetchCandidates resolves imageRef to its manifest digest, discovers cosign
@@ -149,26 +254,29 @@ func (f *Fetcher) FetchCandidates(ctx context.Context, logger *slog.Logger, imag
 	}
 	imageDigest := desc.Digest
 
-	sigImages, err := f.discoverSignatureImages(ctx, ref, imageDigest)
-	if err != nil {
-		return nil, fmt.Errorf("discover signatures for %q: %w", imageRef, err)
-	}
-
 	var candidates []imagetrust.Candidate
 	var candidateErrs []error
-	for _, sigImg := range sigImages {
-		cs, err := candidatesFromSigImage(sigImg, imageDigest, ref.Context())
+	budget := &candidateBudget{}
+	err = f.visitSignatureImages(ctx, ref, imageDigest, budget, func(sigImg v1.Image) error {
+		cs, candidateErr := candidatesFromSigImageWithBudget(sigImg, imageDigest, ref.Context(), budget)
+		if errors.Is(candidateErr, errRegistryInputLimit) {
+			return candidateErr
+		}
 		candidates = append(candidates, cs...)
-		if err != nil {
+		if candidateErr != nil {
 			// A malformed signature manifest must not mask a sibling valid one;
 			// skip it and keep scanning. Leave a debug breadcrumb so an operator
 			// can tell a verification miss apart from a silently-dropped manifest.
 			if logger != nil {
 				logger.DebugContext(ctx, "skipping malformed cosign signature manifest",
-					"image_ref", logging.SafeString(imageRef), "resolved_digest", logging.SafeString(imageDigest.String()), "error", logging.SafeString(err.Error()))
+					"image_ref", logging.SafeString(imageRef), "resolved_digest", logging.SafeString(imageDigest.String()), "error", logging.SafeString(candidateErr.Error()))
 			}
-			candidateErrs = append(candidateErrs, err)
+			candidateErrs = append(candidateErrs, candidateErr)
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("discover signatures for %q: %w", imageRef, err)
 	}
 
 	if len(candidates) == 0 {
@@ -198,56 +306,160 @@ func PinnedReference(imageRef, digest string) (string, error) {
 	return pinned.Name(), nil
 }
 
-// discoverSignatureImages returns the distinct signature manifests attached to
-// imageDigest via the classic .sig tag and via OCI 1.1 referrers. Discovery
-// failures from either method are non-fatal: a registry without referrers
-// support still yields the classic tag, and vice versa.
-func (f *Fetcher) discoverSignatureImages(ctx context.Context, ref name.Reference, imageDigest v1.Hash) ([]v1.Image, error) {
+// visitSignatureImages visits each distinct signature manifest attached to
+// imageDigest via the classic .sig tag and OCI 1.1 referrers. Images are
+// processed as they are discovered instead of being retained as an attacker-
+// sized slice. Discovery failures from either method remain non-fatal so a
+// registry without referrers support can still yield the classic tag, and vice
+// versa. Explicit input-limit failures always stop discovery and fail closed.
+func (f *Fetcher) visitSignatureImages(ctx context.Context, ref name.Reference, imageDigest v1.Hash, budget *candidateBudget, visit func(v1.Image) error) error {
 	seen := make(map[string]struct{})
-	var imgs []v1.Image
+	signatureImages := 0
 
-	add := func(img v1.Image) {
+	add := func(img v1.Image) error {
 		dig, err := img.Digest()
 		if err != nil {
-			return
+			return nil
 		}
 		if _, dup := seen[dig.String()]; dup {
-			return
+			return nil
+		}
+		if signatureImages >= maxSignatureImages {
+			return inputLimitError("cosign signature images exceed %d limit", maxSignatureImages)
 		}
 		seen[dig.String()] = struct{}{}
-		imgs = append(imgs, img)
+		signatureImages++
+		return visit(img)
 	}
 
 	// Classic layout: repo:sha256-<hex>.sig
 	sigTag := ref.Context().Tag(fmt.Sprintf("%s-%s.sig", imageDigest.Algorithm, imageDigest.Hex))
-	if img, err := remote.Image(sigTag, f.opts(ctx)...); err == nil {
-		add(img)
+	if img, err := f.signatureImage(ctx, sigTag); err == nil {
+		if err := add(img); err != nil {
+			return err
+		}
+	} else if errors.Is(err, errRegistryInputLimit) {
+		return err
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
 
 	// OCI 1.1 referrers layout.
 	digestRef := ref.Context().Digest(imageDigest.String())
 	if idx, err := remote.Referrers(digestRef, f.opts(ctx)...); err == nil {
 		if im, err := idx.IndexManifest(); err == nil {
+			if err := budget.addIndexAnnotations(im); err != nil {
+				return err
+			}
+			if len(im.Manifests) > maxReferrerDescriptors {
+				return inputLimitError("registry returned %d referrers; limit is %d", len(im.Manifests), maxReferrerDescriptors)
+			}
 			for _, m := range im.Manifests {
 				if m.ArtifactType != cosignSigArtifactType {
 					continue
 				}
-				if rImg, err := remote.Image(ref.Context().Digest(m.Digest.String()), f.opts(ctx)...); err == nil {
-					add(rImg)
+				if rImg, err := f.signatureImage(ctx, ref.Context().Digest(m.Digest.String())); err == nil {
+					if err := add(rImg); err != nil {
+						return err
+					}
+				} else if errors.Is(err, errRegistryInputLimit) {
+					return err
+				} else if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
 				}
 			}
 		}
+	} else if errors.Is(err, errRegistryInputLimit) {
+		return err
+	} else if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
 
-	return imgs, nil
+	return ctx.Err()
 }
 
 // candidatesFromSigImage extracts one verification candidate per signature layer
 // whose simple-signing payload binds to imageDigest in wantRepo.
 func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash, wantRepo name.Repository) ([]imagetrust.Candidate, error) {
+	return candidatesFromSigImageWithBudget(sigImg, imageDigest, wantRepo, &candidateBudget{})
+}
+
+type candidateBudget struct {
+	annotationBytes int
+	payloadBytes    int64
+	candidates      int
+}
+
+func inputLimitError(format string, args ...any) error {
+	return fmt.Errorf("%w: %s", errRegistryInputLimit, fmt.Sprintf(format, args...))
+}
+
+func (b *candidateBudget) addAnnotationMap(annotations map[string]string) error {
+	for key, value := range annotations {
+		materialBytes := len(key) + len(value)
+		if materialBytes > maxAnnotationBytes-b.annotationBytes {
+			return inputLimitError("cosign annotation material exceeds %d byte limit", maxAnnotationBytes)
+		}
+		b.annotationBytes += materialBytes
+	}
+	return nil
+}
+
+func (b *candidateBudget) addIndexAnnotations(im *v1.IndexManifest) error {
+	if err := b.addAnnotationMap(im.Annotations); err != nil {
+		return err
+	}
+	if im.Subject != nil {
+		if err := b.addAnnotationMap(im.Subject.Annotations); err != nil {
+			return err
+		}
+	}
+	for _, manifest := range im.Manifests {
+		if err := b.addAnnotationMap(manifest.Annotations); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *candidateBudget) addManifestAnnotations(mf *v1.Manifest) error {
+	if err := b.addAnnotationMap(mf.Annotations); err != nil {
+		return err
+	}
+	if err := b.addAnnotationMap(mf.Config.Annotations); err != nil {
+		return err
+	}
+	if mf.Subject != nil {
+		if err := b.addAnnotationMap(mf.Subject.Annotations); err != nil {
+			return err
+		}
+	}
+	for _, layer := range mf.Layers {
+		if err := b.addAnnotationMap(layer.Annotations); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (b *candidateBudget) addCandidate() error {
+	if b.candidates >= maxCandidates {
+		return inputLimitError("cosign verification candidates exceed %d limit", maxCandidates)
+	}
+	b.candidates++
+	return nil
+}
+
+func candidatesFromSigImageWithBudget(sigImg v1.Image, imageDigest v1.Hash, wantRepo name.Repository, budget *candidateBudget) ([]imagetrust.Candidate, error) {
 	mf, err := sigImg.Manifest()
 	if err != nil {
 		return nil, fmt.Errorf("read signature manifest: %w", err)
+	}
+	if len(mf.Layers) > maxSignatureLayers {
+		return nil, inputLimitError("signature manifest has %d layers; limit is %d", len(mf.Layers), maxSignatureLayers)
+	}
+	if err := budget.addManifestAnnotations(mf); err != nil {
+		return nil, err
 	}
 
 	var out []imagetrust.Candidate
@@ -257,14 +469,20 @@ func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash, wantRepo name.
 		if sigB64 == "" {
 			continue
 		}
+		if len(layerDesc.URLs) != 0 {
+			return out, inputLimitError("cosign signature payload layer uses alternate URLs")
+		}
 
 		layer, err := sigImg.LayerByDigest(layerDesc.Digest)
 		if err != nil {
 			layerErrs = append(layerErrs, fmt.Errorf("layer %s: resolve blob: %w", layerDesc.Digest, err))
 			continue
 		}
-		payload, err := readLayerPayload(layer)
+		payload, err := readLayerPayloadWithBudget(layer, budget)
 		if err != nil {
+			if errors.Is(err, errRegistryInputLimit) {
+				return out, err
+			}
 			layerErrs = append(layerErrs, fmt.Errorf("layer %s: read payload: %w", layerDesc.Digest, err))
 			continue
 		}
@@ -300,6 +518,9 @@ func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash, wantRepo name.
 		}
 
 		digest := sha256.Sum256(payload)
+		if err := budget.addCandidate(); err != nil {
+			return out, err
+		}
 		out = append(out, imagetrust.Candidate{
 			DigestHex:   hex.EncodeToString(digest[:]),
 			Entity:      b,
@@ -310,6 +531,10 @@ func candidatesFromSigImage(sigImg v1.Image, imageDigest v1.Hash, wantRepo name.
 }
 
 func readLayerPayload(layer v1.Layer) ([]byte, error) {
+	return readLayerPayloadWithBudget(layer, &candidateBudget{})
+}
+
+func readLayerPayloadWithBudget(layer v1.Layer, budget *candidateBudget) ([]byte, error) {
 	// cosign simple-signing layers are stored uncompressed; Compressed() returns
 	// the raw stored blob (the payload) without attempting gunzip.
 	rc, err := layer.Compressed()
@@ -317,12 +542,24 @@ func readLayerPayload(layer v1.Layer) ([]byte, error) {
 		return nil, err
 	}
 	defer rc.Close()
-	payload, err := io.ReadAll(io.LimitReader(rc, maxPayloadBytes+1))
+	remaining := int64(maxAggregatePayloadBytes) - budget.payloadBytes
+	if remaining < 0 {
+		return nil, inputLimitError("cosign signature payload material exceeds %d byte limit", maxAggregatePayloadBytes)
+	}
+	readLimit := int64(maxPayloadBytes)
+	if remaining < readLimit {
+		readLimit = remaining
+	}
+	payload, err := io.ReadAll(io.LimitReader(rc, readLimit+1))
+	if len(payload) > maxPayloadBytes {
+		return nil, inputLimitError("signature payload exceeds %d byte limit", maxPayloadBytes)
+	}
+	if int64(len(payload)) > remaining {
+		return nil, inputLimitError("cosign signature payload material exceeds %d byte limit", maxAggregatePayloadBytes)
+	}
+	budget.payloadBytes += int64(len(payload))
 	if err != nil {
 		return nil, err
-	}
-	if len(payload) > maxPayloadBytes {
-		return nil, fmt.Errorf("signature payload exceeds %d byte limit", maxPayloadBytes)
 	}
 	return payload, nil
 }

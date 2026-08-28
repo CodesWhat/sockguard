@@ -16,10 +16,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/verify"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
 	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/imagetrust"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/policybundle"
 )
@@ -67,7 +69,7 @@ func newServeDeps() *serveDeps {
 	deps := &serveDeps{
 		loadConfig:          config.Load,
 		loadConfigBytes:     config.LoadBytes,
-		readConfigBytes:     os.ReadFile,
+		readConfigBytes:     config.ReadFile,
 		newLogger:           logging.New,
 		newAuditLogger:      logging.NewAudit,
 		validateRules:       validateAndCompileRules,
@@ -101,7 +103,16 @@ func newServeDeps() *serveDeps {
 //
 // When pb.Enabled=false the returned Verifier rejects calls — wiring code
 // must guard on Enabled before invoking Verify.
+var loadBundleTrustedMaterial = imagetrust.LoadLiveTrustedRoot
+
 func defaultBuildBundleVerifier(pb config.PolicyBundleConfig) (policybundle.Verifier, error) {
+	return buildBundleVerifier(pb, loadBundleTrustedMaterial)
+}
+
+func buildBundleVerifier(
+	pb config.PolicyBundleConfig,
+	loadTrustedMaterial func() (root.TrustedMaterial, error),
+) (policybundle.Verifier, error) {
 	raw := policybundle.RawConfig{
 		Enabled:               pb.Enabled,
 		RequireRekorInclusion: pb.RequireRekorInclusion,
@@ -120,13 +131,12 @@ func defaultBuildBundleVerifier(pb config.PolicyBundleConfig) (policybundle.Veri
 	if err != nil {
 		return nil, err
 	}
-	// Keyless verification against the public sigstore TUF roots is not yet
-	// wired; if the operator configured keyless identities we surface a
-	// clear error rather than silently falling back to "no trust material".
-	// Production TUF wiring is a follow-up; for now keyed is fully
-	// supported and keyless paths live behind tests using VirtualSigstore.
-	if len(cfg.AllowedKeyless) > 0 && cfg.TrustedMaterial == nil {
-		return nil, errors.New("policy_bundle.allowed_keyless is configured but the production TUF trust root is not yet wired; configure allowed_signing_keys for now")
+	if len(cfg.AllowedKeyless) > 0 {
+		trustedMaterial, loadErr := loadTrustedMaterial()
+		if loadErr != nil {
+			return nil, fmt.Errorf("policy_bundle: load keyless trust root: %w", loadErr)
+		}
+		cfg.TrustedMaterial = trustedMaterial
 	}
 	return policybundle.New(cfg)
 }

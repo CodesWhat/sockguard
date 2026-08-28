@@ -222,7 +222,7 @@ export const roadmap: Milestone[] = [
     emoji: "🛡️",
     status: "next",
     items: [
-      "Signed policies pin keyed or keyless trust in a separate bootstrap file selected out of band; candidate YAML can no longer select, replace, or disable its own trust",
+      "Signed policies pin keyed or keyless trust in a separate bootstrap file selected out of band, with bounded YAML and bundle inputs; candidate YAML can no longer select, replace, or disable its own trust",
       "Native Podman builds gain fail-closed primary/additional-context controls, host-write acknowledgments, Dockerfile inspection, and owner-label stamping",
       "BuildKit state is isolated by trusted caller principal, selected profile, and session ID, with atomic admission, bounded persistent IDs, expiring upload grants, and bounded upgrade handshakes",
       "Unix socket ownership, response filtering, keyword-named resource authorization, metric cardinality, and inspected-body deadlines are hardened across the composed proxy",

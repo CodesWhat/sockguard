@@ -312,6 +312,38 @@ func TestKeylessVerification_Success(t *testing.T) {
 	}
 }
 
+func TestKeylessVerification_RejectsCanceledContext(t *testing.T) {
+	t.Parallel()
+	artifact := []byte("manifest data - canceled verification")
+	digestHex := artDigest(artifact)
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	const issuer = "https://github.com/login/oauth"
+	const subject = "test@example.com"
+	entity, err := vs.Sign(subject, issuer, artifact)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+	v, err := New(Config{
+		Mode:            ModeEnforce,
+		TrustedMaterial: vs,
+		VerifyTimeout:   VerifyTimeout,
+		AllowedKeyless: []KeylessIdentity{
+			{IssuerExact: issuer, SubjectPattern: regexp.MustCompile(`^test@example\.com$`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := v.Verify(ctx, "example.com/img@sha256:"+digestHex, digestHex, entity); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Verify error = %v, want context canceled", err)
+	}
+}
+
 // TestKeylessVerification_IssuerMismatch checks that a signature from the
 // wrong OIDC issuer is rejected.
 func TestKeylessVerification_IssuerMismatch(t *testing.T) {

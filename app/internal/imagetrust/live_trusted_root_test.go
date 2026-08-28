@@ -2,11 +2,74 @@ package imagetrust
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/root"
+	"github.com/sigstore/sigstore-go/pkg/tuf"
 )
+
+func TestLiveTrustedRootBuilderUsesHardenedOptions(t *testing.T) {
+	originalFactory := newLiveTrustedRootFactory
+	t.Cleanup(func() { newLiveTrustedRootFactory = originalFactory })
+
+	stub := &stubTrustedMaterial{id: 0}
+	var captured *tuf.Options
+	newLiveTrustedRootFactory = func(opts *tuf.Options) (root.TrustedMaterial, error) {
+		captured = opts
+		return stub, nil
+	}
+
+	got, err := newLiveTrustedRoot()
+	if err != nil {
+		t.Fatalf("newLiveTrustedRoot: %v", err)
+	}
+	if got != root.TrustedMaterial(stub) {
+		t.Fatal("newLiveTrustedRoot returned a different trusted material instance")
+	}
+	if captured == nil {
+		t.Fatal("newLiveTrustedRootFactory was not called")
+	}
+	if !captured.DisableLocalCache {
+		t.Fatal("DisableLocalCache = false, want true for the production builder")
+	}
+}
+
+func TestLiveTrustedRootOptionsSupportReadOnlyRuntime(t *testing.T) {
+	opts := newLiveTrustedRootOptions(25 * time.Millisecond)
+	if !opts.DisableLocalCache {
+		t.Fatal("DisableLocalCache = false, want true for read-only container filesystems")
+	}
+}
+
+func TestLiveTrustedRootOptionsBoundStalledDownloads(t *testing.T) {
+	requestStarted := make(chan struct{})
+	var requestStartedOnce sync.Once
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestStartedOnce.Do(func() { close(requestStarted) })
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+
+	const timeout = 25 * time.Millisecond
+	opts := newLiveTrustedRootOptions(timeout).WithRepositoryBaseURL(server.URL)
+	started := time.Now()
+	_, err := root.NewLiveTrustedRoot(opts)
+	if err == nil {
+		t.Fatal("NewLiveTrustedRoot error = nil, want stalled download failure")
+	}
+	select {
+	case <-requestStarted:
+	default:
+		t.Fatal("TUF mirror was never requested")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("stalled TUF load took %s, want a bounded failure near %s", elapsed, timeout)
+	}
+}
 
 // stubTrustedMaterial is a distinguishable root.TrustedMaterial instance used
 // to check LoadLiveTrustedRoot's memoization by pointer identity rather than

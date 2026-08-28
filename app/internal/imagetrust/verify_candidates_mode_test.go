@@ -33,6 +33,20 @@ func (c *countingVerifier) Verify(ctx context.Context, imageRef, digestHex strin
 
 var _ Verifier = (*countingVerifier)(nil)
 
+type cancelThenPassVerifier struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (v *cancelThenPassVerifier) Verify(_ context.Context, _, _ string, _ verify.SignedEntity) error {
+	v.calls++
+	if v.calls == 1 {
+		v.cancel()
+		return errors.New("first candidate failed")
+	}
+	return nil
+}
+
 // minimalCfgForMode returns the smallest valid Config for the given mode.
 // For modes that require verifiers it uses a freshly-generated ECDSA key.
 func minimalCfgForMode(t *testing.T, mode Mode) Config {
@@ -190,6 +204,28 @@ func TestVerifyCandidatesWithMode_FirstCandidateVerifies_Allowed(t *testing.T) {
 	// called exactly once.
 	if cv.calls != 1 {
 		t.Fatalf("Verify called %d time(s); want exactly 1 (first-wins)", cv.calls)
+	}
+}
+
+func TestVerifyCandidatesWithMode_CancellationStopsFallback(t *testing.T) {
+	t.Parallel()
+	cfg := minimalCfgForMode(t, ModeEnforce)
+	ctx, cancel := context.WithCancel(context.Background())
+	v := &cancelThenPassVerifier{cancel: cancel}
+	candidates := []Candidate{
+		{DigestHex: "aaaa", ImageDigest: "sha256:aaaa"},
+		{DigestHex: "bbbb", ImageDigest: "sha256:bbbb"},
+	}
+
+	outcome := VerifyCandidatesWithMode(ctx, v, cfg, nil, "reg/img:tag", candidates, nil)
+	if outcome.Allowed {
+		t.Fatal("canceled verification must deny in enforce mode")
+	}
+	if v.calls != 1 {
+		t.Fatalf("Verify calls = %d, want 1 with no post-cancellation fallback", v.calls)
+	}
+	if !strings.Contains(outcome.FailureMsg, context.Canceled.Error()) {
+		t.Fatalf("FailureMsg = %q, want context cancellation", outcome.FailureMsg)
 	}
 }
 

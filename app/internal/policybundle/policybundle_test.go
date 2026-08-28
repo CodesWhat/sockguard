@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -243,8 +244,40 @@ func TestVerify_KeylessHappyPath(t *testing.T) {
 	if res.DigestHex != wantDigestHex {
 		t.Fatalf("DigestHex = %q, want %q", res.DigestHex, wantDigestHex)
 	}
-	if res.Signer == "" {
-		t.Fatal("Signer must be populated on success")
+	wantSigner := "keyless:" + issuer + ":" + subject
+	if res.Signer != wantSigner {
+		t.Fatalf("Signer = %q, want verified certificate identity %q", res.Signer, wantSigner)
+	}
+}
+
+func TestVerify_RejectsCanceledContext(t *testing.T) {
+	t.Parallel()
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	const issuer = "https://github.com/login/oauth"
+	const subject = "ops@example.com"
+	yaml := []byte("rules: []\n")
+	entity, err := vs.Sign(subject, issuer, yaml)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+	v, err := New(Config{
+		Enabled:         true,
+		TrustedMaterial: vs,
+		VerifyTimeout:   VerifyTimeout,
+		AllowedKeyless: []KeylessIdentity{
+			{IssuerExact: issuer, SubjectPattern: regexp.MustCompile(`^ops@example\.com$`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := v.Verify(ctx, yaml, entity); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Verify error = %v, want context canceled", err)
 	}
 }
 

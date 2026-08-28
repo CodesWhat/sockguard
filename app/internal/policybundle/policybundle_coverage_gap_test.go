@@ -2,12 +2,15 @@ package policybundle
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/sigstore/sigstore-go/pkg/testing/ca"
+
+	"github.com/codeswhat/sockguard/app/internal/boundedio"
 )
 
 // TestVerify_NoVerifiersConfiguredReturnsError exercises the
@@ -55,5 +58,25 @@ func TestLoadBundle_CorruptJSONReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "policy_bundle") {
 		t.Errorf("err = %q, want a policy_bundle-prefixed error", err.Error())
+	}
+}
+
+func TestLoadBundleRejectsOversizedFile(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "oversized.json")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.Truncate(MaxBundleFileBytes + 1); err != nil {
+		f.Close()
+		t.Fatalf("Truncate: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if _, err := LoadBundle(path); !errors.Is(err, boundedio.ErrTooLarge) {
+		t.Fatalf("LoadBundle oversized error = %v, want ErrTooLarge", err)
 	}
 }
