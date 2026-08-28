@@ -137,7 +137,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "Pin keyed or keyless sigstore trust in a separate bootstrap file selected with --policy-bundle-trust-config. The candidate's policy_bundle block carries its signature path, while bootstrap values override any candidate trust fields. Startup and every hot reload verify before applying policy.",
+      "Pin keyed or keyless sigstore trust in a separate bootstrap file selected with --policy-bundle-trust-config. Candidate and trust YAML stop at 16 MiB, bundles at 4 MiB, and cooperative cancellation stops signer fallback. Startup and every hot reload verify before applying policy.",
     category: "security",
   },
   {
@@ -146,7 +146,7 @@ export const features: Feature[] = [
     color: "text-rose-500 dark:text-rose-400",
     bg: "bg-rose-100 dark:bg-rose-900/50",
     description:
-      "Verify cosign signatures on a container's image before `POST /containers/create` reaches the daemon. Keyed (PEM ECDSA/RSA/ed25519) and keyless (Fulcio issuer + SAN, optional Rekor inclusion) verification, configurable per client profile. `enforce` denies unsigned or wrong-signer images; `warn` logs the failure and forwards the request.",
+      "Verify cosign signatures on a container's image before `POST /containers/create` reaches the daemon. Keyed and keyless trust is configurable per client profile, with redirect-safe registry response limits, direct-manifest signature references, no alternate payload URLs, bounded signature fan-out, and aggregate payload budgets. Legal media-type parameters remain compatible. `enforce` denies unsigned or wrong-signer images; `warn` logs the failure and forwards the request.",
     category: "security",
   },
   {

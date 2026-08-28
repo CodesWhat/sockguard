@@ -31,6 +31,10 @@ fields are ignored and replaced by the bootstrap values.
 
 The bootstrap and candidate must resolve to different files. The same path,
 symlinks to the same target, and hardlinks to the same inode are rejected.
+Both YAML files are capped at 16 MiB, and the referenced Sigstore bundle is
+capped at 4 MiB, before parsing or verification.
+Only regular files are accepted. Inputs are opened nonblocking and FIFOs,
+devices, directories, and other non-regular paths are rejected.
 `policy_bundle.enabled: true` in the candidate without the bootstrap flag is
 also rejected because the file being authenticated cannot select or disable
 its own trust gate. Verification completes before the operational logger is
@@ -45,7 +49,12 @@ Two verification paths are supported:
 - **Keyless (Fulcio + Rekor)** — `policy_bundle.allowed_keyless` entries
   constrain the Fulcio cert chain by exact OIDC issuer URL and subject SAN
   regex. When `policy_bundle.require_rekor_inclusion: true`, a Rekor
-  transparency-log entry is additionally required.
+  transparency-log entry is additionally required. The process loads and
+  memoizes the public Sigstore trust root through TUF initially, then refreshes
+  it about every 24 hours, so ongoing egress is required. The loader uses no
+  local cache, bounds each HTTP request to 15 seconds, and remains compatible
+  with the read-only runtime filesystem. An initial load failure aborts startup;
+  a failed background refresh is logged and retains the last valid root.
 
 Verification also runs on every **hot reload**. A reload whose bundle fails
 verification is rejected with `result=reject_signature` in
@@ -53,6 +62,14 @@ verification is rejected with `result=reject_signature` in
 trust is pinned for the process lifetime; only the signed candidate's
 `signature_path` is reload-mutable so an operator can re-sign without a
 restart.
+
+`policy_bundle.verify_timeout` is a cooperative deadline for local Sigstore
+verification. Sockguard checks cancellation before beginning and after each
+synchronous verification attempt, rejects late success, and stops signer
+fallback. Sigstore-go does not expose context-aware verification, so an
+individual crypto call cannot be preempted. Rekor inclusion proofs are checked
+locally from the bundle. TUF root downloads use their separate 15-second HTTP
+bound.
 
 Signed mode also rejects every rule-generating Tecnativa variable, including
 section variables, `POST`, `GRPC`/`SESSION`, and granular `ALLOW_*` variables.
@@ -136,6 +153,8 @@ This filtering only applies at exec create — see Known Limitations below for w
 `POST /build` and native Podman's `POST /libpod/build` are inspected by default through the same `request_body.build` policy. Sockguard blocks primary remote contexts, Podman URL/image additional contexts, `networkmode=host`, and Dockerfiles containing `RUN` instructions unless those behaviors are explicitly allowed. Podman host volume controls, local-path additional contexts, multipart local contexts, and resource-usage output to a daemon-host file require `insecure_allow_body_blind_writes`; all other build checks remain active when that acknowledgment is set. Direct and version-prefixed libpod requests follow the same body-sensitive startup validation as Docker's classic builder.
 
 `POST /services/create` and `POST /services/*/update` are inspected by default. Sockguard blocks host-network services, bind mounts outside `request_body.service.allowed_bind_mounts`, and service images outside the configured official/allowlisted registry set. The same `allowed_capabilities` / `allow_all_capabilities` capability allowlist, `allow_sysctls` sysctl gate, and `image_trust` cosign verification that apply to container-create are also enforced against the service's ContainerSpec, so swarm workloads cannot bypass container-create policy by going through the service API.
+
+Image-trust discovery stops before hostile registry material can grow without bound. Every registry GET response stops at 4 MiB, including redirect destinations; a request can process at most 32 referrer descriptors, 16 distinct signature images, 32 layers per signature manifest, 16 aggregate verification candidates, 256 KiB of aggregate annotation keys and values, 1 MiB per simple-signing payload, and 16 MiB across all payload reads for one image. Any limit breach rejects discovery even when a valid sibling signature exists. In `enforce` mode that denies the request; in `warn` mode Sockguard logs the failed discovery and forwards it. Signature references must resolve directly to image manifests; OCI indexes are rejected instead of recursively traversed, and payload layers with alternate URLs are rejected before blob resolution. Legal media-type parameters on direct manifests are accepted. Discovery deadlines retain their cancellation cause instead of being reported as an unsigned image. Signature images are processed as they are discovered instead of retained together.
 
 `POST /volumes/create`, `POST /secrets/create`, and `POST /configs/create` are inspected by default. Sockguard blocks non-local volume drivers and driver options unless explicitly allowed, and blocks custom or template drivers on secrets/configs unless explicitly allowed.
 

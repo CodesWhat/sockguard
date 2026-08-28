@@ -77,3 +77,87 @@ test("release docs distinguish candidate and stable source branches", () => {
     /The workflow rejects a prerelease dispatched from `main` or a branch for another release line, and it rejects a stable release dispatched outside `main`, before it creates a tag\./u,
   );
 });
+
+test("signed-policy docs distinguish keyed and keyless startup requirements", () => {
+  const readme = read("README.md").replaceAll(/\s+/gu, " ");
+  const configuration = read("docs/content/docs/configuration.mdx").replaceAll(/\s+/gu, " ");
+  const migration = read("docs/content/docs/migration.mdx").replaceAll(/\s+/gu, " ");
+  const security = read("docs/content/docs/security.mdx").replaceAll(/\s+/gu, " ");
+  const websiteFeatures = read("website/src/app/data/features.ts").replaceAll(/\s+/gu, " ");
+  const websiteFaq = read("website/src/app/data/faq.ts").replaceAll(/\s+/gu, " ");
+  const cisExample = read("examples/compose/cis-docker-benchmark/README.md").replaceAll(
+    /\s+/gu,
+    " ",
+  );
+
+  assert.match(configuration, /cosign sign-blob --key \.\/policy-signing\.key/u);
+  assert.match(migration, /cosign sign-blob --key \.\/policy-signing\.key/u);
+  assert.match(configuration, /For the keyless entry, omit `--key`/u);
+  assert.match(migration, /For keyless signing, replace `allowed_signing_keys`/u);
+  assert.match(configuration, /cosign sign-blob --yes/u);
+  assert.match(configuration, /permissions: id-token: write/u);
+  assert.match(migration, /permissions: id-token: write/u);
+  assert.match(configuration, /Keyless trust loads the public Sigstore root initially/u);
+  assert.match(readme, /Keyless trust loads initially and refreshes about every 24 hours/u);
+  assert.match(readme, /startup fails closed if the initial load fails/u);
+  assert.match(migration, /Keyless trust fetches the public Sigstore root through TUF initially/u);
+  assert.match(migration, /An initial load failure aborts startup/u);
+  assert.match(
+    security,
+    /process loads and memoizes the public Sigstore trust root through TUF initially/u,
+  );
+  assert.match(configuration, /A keyed-only bootstrap does not load TUF material/u);
+  assert.match(configuration, /does not use a local TUF cache/u);
+  assert.match(configuration, /refreshes it about every 24 hours/u);
+  assert.match(
+    configuration,
+    /failed background refresh is logged and retains the last valid root/u,
+  );
+  assert.match(security, /refreshes it about every 24 hours/u);
+  assert.match(configuration, /verify_timeout` supplies a cooperative deadline/u);
+  assert.match(
+    configuration,
+    /before beginning and after each synchronous Sigstore verification attempt/u,
+  );
+  assert.match(configuration, /Sigstore-go cannot preempt an individual crypto call/u);
+  assert.match(security, /Rekor inclusion proofs are checked locally from the bundle/u);
+  assert.doesNotMatch(configuration, /per-verification network timeout/u);
+  assert.doesNotMatch(configuration, /no-op when the image reference is empty/u);
+  assert.match(configuration, /empty image reference is denied at Sockguard/u);
+  assert.match(configuration, /Every YAML configuration file is capped at 16 MiB/u);
+  assert.match(configuration, /Sigstore bundle JSON is capped at 4 MiB/u);
+  assert.match(configuration, /Only regular files are accepted/u);
+  assert.match(security, /FIFOs, devices, directories, and other non-regular paths are rejected/u);
+  assert.match(configuration, /4 MiB for every registry GET response/u);
+  assert.match(configuration, /including redirect destinations/u);
+  assert.match(configuration, /32 referrer descriptors/u);
+  assert.match(configuration, /16 distinct signature images/u);
+  assert.match(configuration, /32 layers per signature manifest/u);
+  assert.match(configuration, /16 aggregate verification candidates/u);
+  assert.match(configuration, /256 KiB of aggregate annotation keys and values/u);
+  assert.match(configuration, /In `enforce` mode a limit breach denies the request/u);
+  assert.match(configuration, /in `warn` mode it logs the failed discovery and forwards/u);
+  assert.match(configuration, /Signature references must resolve directly to image manifests/u);
+  assert.match(
+    configuration,
+    /payload layers with alternate URLs are rejected before blob resolution/u,
+  );
+  assert.match(configuration, /Legal media-type parameters on direct manifests are accepted/u);
+  assert.match(configuration, /Registry deadline and cancellation errors retain their cause/u);
+  assert.match(configuration, /1 MiB per simple-signing payload/u);
+  assert.match(configuration, /16 MiB across all payload reads for one image/u);
+  assert.match(configuration, /even when a valid sibling signature exists/u);
+  assert.match(security, /Image-trust discovery stops before hostile registry material/u);
+  assert.match(security, /In `enforce` mode that denies the request/u);
+  assert.match(security, /in `warn` mode Sockguard logs the failed discovery and forwards/u);
+  assert.match(websiteFeatures, /Candidate and trust YAML stop at 16 MiB, bundles at 4 MiB/u);
+  assert.match(websiteFeatures, /redirect-safe registry response limits/u);
+  assert.match(websiteFeatures, /no alternate payload URLs/u);
+  assert.match(websiteFaq, /accepts legal manifest media-type parameters/u);
+  assert.match(websiteFaq, /cooperative verification deadline/u);
+  assert.match(websiteFaq, /non-regular inputs are refused/u);
+  assert.match(cisExample, /subject_pattern: '\^https:\/\/github\\\.com\/your-org\/\.\+\$'/u);
+  assert.doesNotMatch(cisExample, /subject_prefix/u);
+  assert.match(configuration, /Never mount or deploy the private signing key with the proxy/u);
+  assert.match(migration, /Never mount or deploy the private signing key with Sockguard/u);
+});

@@ -34,7 +34,7 @@ type PolicySnapshot struct {
 	// layout to Docker API callers on the main listener.
 	BundleSource string `json:"bundle_source,omitempty"`
 	// BundleSigner is a stable identifier of the accepting trust path:
-	// "keyed:<spki-fingerprint>" or "keyless:<issuer>:<san-pattern>".
+	// "keyed:<spki-fingerprint>" or "keyless:<issuer>:<san>".
 	// Empty when policy_bundle is disabled.
 	BundleSigner string `json:"bundle_signer,omitempty"`
 	// BundleDigest is the sha256 hex digest of the YAML bytes verified

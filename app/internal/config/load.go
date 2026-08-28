@@ -9,7 +9,17 @@ import (
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
+
+	"github.com/codeswhat/sockguard/app/internal/boundedio"
 )
+
+// MaxConfigFileBytes caps every YAML configuration file read from disk.
+const MaxConfigFileBytes int64 = 16 << 20
+
+// ReadFile loads a YAML configuration source under MaxConfigFileBytes.
+func ReadFile(path string) ([]byte, error) {
+	return boundedio.ReadFile(path, MaxConfigFileBytes)
+}
 
 // Load reads config from the given YAML file path, applies env var overrides,
 // and returns the merged Config. A missing file is OK; parse errors are not.
@@ -24,13 +34,18 @@ func Load(configPath string) (*Config, error) {
 	defaults := Defaults()
 	setLoadDefaults(v, defaults)
 
-	// Read YAML file if it exists
+	// Read YAML file if it exists.
 	if configPath != "" {
-		v.SetConfigFile(configPath)
-		if err := v.ReadInConfig(); err != nil {
-			if _, statErr := os.Stat(configPath); statErr != nil && os.IsNotExist(statErr) {
+		data, err := ReadFile(configPath)
+		if err != nil {
+			if os.IsNotExist(err) {
 				// File doesn't exist — that's fine, use defaults
 			} else {
+				return nil, err
+			}
+		} else {
+			v.SetConfigType("yaml")
+			if err := v.ReadConfig(bytes.NewReader(data)); err != nil {
 				return nil, err
 			}
 		}
@@ -95,8 +110,10 @@ var legacyListenKeys = []string{
 func explicitLegacyListenFile(configPath string) bool {
 	pv := viper.New()
 	if configPath != "" {
-		pv.SetConfigFile(configPath)
-		_ = pv.ReadInConfig() // missing file is fine, same tolerance as Load
+		if data, err := ReadFile(configPath); err == nil {
+			pv.SetConfigType("yaml")
+			_ = pv.ReadConfig(bytes.NewReader(data))
+		}
 	}
 	pv.SetEnvPrefix("SOCKGUARD")
 	pv.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -146,8 +163,10 @@ var networkEndpointConfigKeys = []string{
 func explicitNetworkEndpointConfigFile(configPath string) bool {
 	pv := viper.New()
 	if configPath != "" {
-		pv.SetConfigFile(configPath)
-		_ = pv.ReadInConfig() // missing file is fine, same tolerance as Load
+		if data, err := ReadFile(configPath); err == nil {
+			pv.SetConfigType("yaml")
+			_ = pv.ReadConfig(bytes.NewReader(data))
+		}
 	}
 	pv.SetEnvPrefix("SOCKGUARD")
 	pv.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))

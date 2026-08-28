@@ -603,7 +603,7 @@ type ImageTrustConfig struct {
 	// RequireRekorInclusion requires a Rekor tlog inclusion proof for keyless
 	// verification. Default true.
 	RequireRekorInclusion bool `mapstructure:"require_rekor_inclusion"`
-	// VerifyTimeout overrides the default 10s per-verification timeout.
+	// VerifyTimeout overrides the default 10s end-to-end image-trust deadline.
 	VerifyTimeout string `mapstructure:"verify_timeout"`
 }
 

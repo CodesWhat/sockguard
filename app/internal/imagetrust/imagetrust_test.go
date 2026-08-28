@@ -178,6 +178,37 @@ func TestVerifyWithMode_Off_AlwaysAllows(t *testing.T) {
 	}
 }
 
+func TestVerifyWithMode_ContextBoundaries(t *testing.T) {
+	t.Parallel()
+	cfg := minimalCfgForMode(t, ModeEnforce)
+
+	t.Run("successful verification", func(t *testing.T) {
+		outcome := VerifyWithMode(context.Background(), &alwaysPassVerifier{}, cfg, nil, "img:latest", "abc", nil)
+		if !outcome.Allowed || outcome.Verifier != "verified" {
+			t.Fatalf("successful outcome = %+v, want verified allowance", outcome)
+		}
+	})
+
+	t.Run("canceled before verification", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		v := &countingVerifier{inner: &alwaysPassVerifier{}}
+		outcome := VerifyWithMode(ctx, v, cfg, nil, "img:latest", "abc", nil)
+		if outcome.Allowed || v.calls != 0 || !strings.Contains(outcome.FailureMsg, context.Canceled.Error()) {
+			t.Fatalf("pre-canceled outcome = %+v, calls = %d; want denial without verification", outcome, v.calls)
+		}
+	})
+
+	t.Run("canceled after successful verification", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		v := &cancelThenSucceedVerifier{cancel: cancel}
+		outcome := VerifyWithMode(ctx, v, cfg, nil, "img:latest", "abc", nil)
+		if outcome.Allowed || v.calls != 1 || !strings.Contains(outcome.FailureMsg, context.Canceled.Error()) {
+			t.Fatalf("post-canceled outcome = %+v, calls = %d; want denial after one verification", outcome, v.calls)
+		}
+	})
+}
+
 // --- mode=warn ---
 
 // TestVerifyWithMode_Warn_AllowsOnFailure ensures that a verification failure
@@ -309,6 +340,38 @@ func TestKeylessVerification_Success(t *testing.T) {
 
 	if err := v.Verify(context.Background(), "example.com/img@sha256:"+digestHex, digestHex, entity); err != nil {
 		t.Fatalf("keyless verify success: %v", err)
+	}
+}
+
+func TestKeylessVerification_RejectsCanceledContext(t *testing.T) {
+	t.Parallel()
+	artifact := []byte("manifest data - canceled verification")
+	digestHex := artDigest(artifact)
+	vs, err := ca.NewVirtualSigstore()
+	if err != nil {
+		t.Fatalf("NewVirtualSigstore: %v", err)
+	}
+	const issuer = "https://github.com/login/oauth"
+	const subject = "test@example.com"
+	entity, err := vs.Sign(subject, issuer, artifact)
+	if err != nil {
+		t.Fatalf("vs.Sign: %v", err)
+	}
+	v, err := New(Config{
+		Mode:            ModeEnforce,
+		TrustedMaterial: vs,
+		VerifyTimeout:   VerifyTimeout,
+		AllowedKeyless: []KeylessIdentity{
+			{IssuerExact: issuer, SubjectPattern: regexp.MustCompile(`^test@example\.com$`)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := v.Verify(ctx, "example.com/img@sha256:"+digestHex, digestHex, entity); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Verify error = %v, want context canceled", err)
 	}
 }
 

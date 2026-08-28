@@ -6,6 +6,7 @@
 package sigverify
 
 import (
+	"context"
 	"crypto"
 	"crypto/sha256"
 	"encoding/hex"
@@ -74,7 +75,10 @@ func CompileKeyless(issuer, subjectPattern string) (string, *regexp.Regexp, erro
 // VerifyKeyed runs sigstore-go's bundle verification against the given raw
 // public-key verifier. Returns nil on success; otherwise an error describing
 // why the bundle did not match.
-func VerifyKeyed(entity verify.SignedEntity, digestBytes []byte, signer sigsig.Verifier) error {
+func VerifyKeyed(ctx context.Context, entity verify.SignedEntity, digestBytes []byte, signer sigsig.Verifier) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("keyed verification canceled: %w", err)
+	}
 	tm := root.NewTrustedPublicKeyMaterial(func(_ string) (root.TimeConstrainedVerifier, error) {
 		return root.NewExpiringKey(signer, time.Time{}, time.Time{}), nil
 	})
@@ -87,19 +91,17 @@ func VerifyKeyed(entity verify.SignedEntity, digestBytes []byte, signer sigsig.V
 		verify.WithKey(),
 	)
 	_, err = v.Verify(entity, policy)
+	if contextErr := ctx.Err(); contextErr != nil {
+		return fmt.Errorf("keyed verification canceled: %w", contextErr)
+	}
 	return err
 }
 
-// VerifyKeyless runs sigstore-go's bundle verification against a Fulcio
-// identity constraint (issuerExact + subjectPattern). The trusted material
-// is required; callers must inject TUF roots in production or a
-// VirtualSigstore in tests. When requireRekorInclusion is true, a Rekor
-// inclusion proof is mandatory.
-//
-// Returns nil on success; otherwise an error describing the mismatch. After a
-// successful sigstore-go verify, the function performs a defensive
-// belt-and-suspenders match on the returned cert's Issuer and SAN.
+// VerifyKeyless verifies a keyless entity against an exact issuer and subject
+// pattern. Call VerifyKeylessIdentity when the verified SAN is needed for
+// audit attribution.
 func VerifyKeyless(
+	ctx context.Context,
 	entity verify.SignedEntity,
 	digestBytes []byte,
 	trustedMaterial root.TrustedMaterial,
@@ -107,11 +109,38 @@ func VerifyKeyless(
 	subjectPattern *regexp.Regexp,
 	requireRekorInclusion bool,
 ) error {
+	_, err := VerifyKeylessIdentity(
+		ctx,
+		entity,
+		digestBytes,
+		trustedMaterial,
+		issuerExact,
+		subjectPattern,
+		requireRekorInclusion,
+	)
+	return err
+}
+
+// VerifyKeylessIdentity runs keyless verification and returns the verified
+// certificate SAN for audit attribution. The trusted material is required;
+// callers must inject TUF roots in production or a VirtualSigstore in tests.
+func VerifyKeylessIdentity(
+	ctx context.Context,
+	entity verify.SignedEntity,
+	digestBytes []byte,
+	trustedMaterial root.TrustedMaterial,
+	issuerExact string,
+	subjectPattern *regexp.Regexp,
+	requireRekorInclusion bool,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("keyless verification canceled: %w", err)
+	}
 	if trustedMaterial == nil {
-		return errors.New("keyless verification requires TrustedMaterial")
+		return "", errors.New("keyless verification requires TrustedMaterial")
 	}
 	if issuerExact == "" || subjectPattern == nil {
-		return errors.New("keyless verification requires both an exact issuer and a compiled subject pattern")
+		return "", errors.New("keyless verification requires both an exact issuer and a compiled subject pattern")
 	}
 	opts := []verify.VerifierOption{verify.WithObserverTimestamps(1)}
 	if requireRekorInclusion {
@@ -119,7 +148,7 @@ func VerifyKeyless(
 	}
 	v, err := verify.NewVerifier(trustedMaterial, opts...)
 	if err != nil {
-		return fmt.Errorf("build keyless verifier: %w", err)
+		return "", fmt.Errorf("build keyless verifier: %w", err)
 	}
 
 	pattern := ""
@@ -128,15 +157,15 @@ func VerifyKeyless(
 	}
 	sanMatcher, err := verify.NewSANMatcher("", pattern)
 	if err != nil {
-		return fmt.Errorf("compile SAN matcher: %w", err)
+		return "", fmt.Errorf("compile SAN matcher: %w", err)
 	}
 	issuerMatcher, err := verify.NewIssuerMatcher(issuerExact, "")
 	if err != nil {
-		return fmt.Errorf("compile issuer matcher: %w", err)
+		return "", fmt.Errorf("compile issuer matcher: %w", err)
 	}
 	certID, err := verify.NewCertificateIdentity(sanMatcher, issuerMatcher, certificate.Extensions{})
 	if err != nil {
-		return fmt.Errorf("build cert identity: %w", err)
+		return "", fmt.Errorf("build cert identity: %w", err)
 	}
 
 	policy := verify.NewPolicy(
@@ -144,8 +173,11 @@ func VerifyKeyless(
 		verify.WithCertificateIdentity(certID),
 	)
 	result, err := v.Verify(entity, policy)
+	if contextErr := ctx.Err(); contextErr != nil {
+		return "", fmt.Errorf("keyless verification canceled: %w", contextErr)
+	}
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	// Belt-and-suspenders issuer/SAN re-check. sigstore-go's policy gate above
@@ -157,15 +189,16 @@ func VerifyKeyless(
 	// to inspect.
 	if issuerExact != "" || subjectPattern != nil {
 		if result.Signature == nil || result.Signature.Certificate == nil {
-			return fmt.Errorf("keyless: certificate identity required (issuer or SAN pattern configured) but verification result has no certificate")
+			return "", fmt.Errorf("keyless: certificate identity required (issuer or SAN pattern configured) but verification result has no certificate")
 		}
 		cert := result.Signature.Certificate
 		if issuerExact != "" && cert.Issuer != issuerExact {
-			return fmt.Errorf("keyless: issuer mismatch: got %q, want %q", cert.Issuer, issuerExact)
+			return "", fmt.Errorf("keyless: issuer mismatch: got %q, want %q", cert.Issuer, issuerExact)
 		}
 		if subjectPattern != nil && !subjectPattern.MatchString(cert.SubjectAlternativeName) {
-			return fmt.Errorf("keyless: SAN %q does not match pattern %q", cert.SubjectAlternativeName, subjectPattern.String())
+			return "", fmt.Errorf("keyless: SAN %q does not match pattern %q", cert.SubjectAlternativeName, subjectPattern.String())
 		}
+		return cert.SubjectAlternativeName, nil
 	}
-	return nil
+	return "", errors.New("keyless: verified result did not include a configured identity")
 }

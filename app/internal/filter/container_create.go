@@ -38,7 +38,7 @@ type ImageTrustOptions struct {
 	AllowedKeyless []KeylessOptions
 	// RequireRekorInclusion requires a Rekor tlog entry for keyless bundles.
 	RequireRekorInclusion bool
-	// VerifyTimeout overrides the default per-verification timeout.
+	// VerifyTimeout overrides the default end-to-end image-trust deadline.
 	VerifyTimeout string
 }
 
@@ -358,8 +358,8 @@ func buildImageTrustFields(opts ImageTrustOptions) imageTrustFields {
 		return f
 	}
 	// Keyless verification needs a TUF-backed trust root for the Fulcio and
-	// Rekor public keys. Fetch it once here; a failure (no network, read-only
-	// TUF cache) must fail closed rather than allow unverified keyless images.
+	// Rekor public keys. Fetch it once here; a network or download failure must
+	// fail closed rather than allow unverified keyless images.
 	// Keyed-only configs skip this entirely.
 	if len(cfg.AllowedKeyless) > 0 {
 		tm, tmErr := imagetrust.LoadLiveTrustedRoot()

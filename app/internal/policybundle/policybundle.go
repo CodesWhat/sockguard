@@ -32,13 +32,16 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/verify"
 	sigsig "github.com/sigstore/sigstore/pkg/signature"
 
+	"github.com/codeswhat/sockguard/app/internal/boundedio"
 	"github.com/codeswhat/sockguard/app/internal/sigverify"
 )
 
-// VerifyTimeout is the default per-verification context timeout. Bundle
-// verification is bounded because keyless paths may dial the trust-root
-// material in future iterations; today it is purely CPU-bound, but the
-// timeout still guards against pathological inputs.
+// MaxBundleFileBytes caps a signature bundle before JSON decoding.
+const MaxBundleFileBytes int64 = 4 << 20
+
+// VerifyTimeout is the default cooperative verification deadline. Sigstore-go
+// verification is synchronous and local, so cancellation is checked before
+// work begins and after each verification attempt.
 const VerifyTimeout = 10 * time.Second
 
 // SigningKeyConfig is the raw operator config for a single trusted key.
@@ -66,7 +69,7 @@ type RawConfig struct {
 	// RequireRekorInclusion requires a Rekor tlog inclusion proof for
 	// keyless verification. Recommended true.
 	RequireRekorInclusion bool
-	// VerifyTimeoutStr overrides the default per-verification timeout.
+	// VerifyTimeoutStr overrides the default cooperative verification deadline.
 	VerifyTimeoutStr string
 }
 
@@ -195,11 +198,15 @@ func New(cfg Config) (Verifier, error) {
 // `--bundle <file>` output, or any other producer that emits the
 // "application/vnd.dev.sigstore.bundle*" media types.
 func LoadBundle(path string) (verify.SignedEntity, error) {
-	b, err := bundle.LoadJSONFromPath(path)
+	data, err := boundedio.ReadFile(path, MaxBundleFileBytes)
 	if err != nil {
 		return nil, fmt.Errorf("policy_bundle: load sigstore bundle %q: %w", path, err)
 	}
-	return b, nil
+	var b bundle.Bundle
+	if err := b.UnmarshalJSON(data); err != nil {
+		return nil, fmt.Errorf("policy_bundle: load sigstore bundle %q: %w", path, err)
+	}
+	return &b, nil
 }
 
 // disabledVerifier is the no-op verifier returned when Enabled=false. It
@@ -225,19 +232,27 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, yaml []byte, entity verif
 	}
 
 	start := time.Now()
-	digestBytes := sha256.Sum256(yaml)
-	digestHex := hex.EncodeToString(digestBytes[:])
-
 	if _, ok := ctx.Deadline(); !ok && s.cfg.VerifyTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.cfg.VerifyTimeout)
 		defer cancel()
 	}
+	return s.verify(ctx, yaml, entity, start)
+}
 
+func (s *sigstoreVerifier) verify(ctx context.Context, yaml []byte, entity verify.SignedEntity, start time.Time) (VerifyResult, error) {
+	if err := ctx.Err(); err != nil {
+		return VerifyResult{}, fmt.Errorf("policy bundle verification canceled: %w", err)
+	}
+	digestBytes := sha256.Sum256(yaml)
+	digestHex := hex.EncodeToString(digestBytes[:])
 	var keyedErrs, keylessErrs []string
 
 	for _, kv := range s.cfg.AllowedSigningKeys {
 		if err := s.verifyKeyed(ctx, entity, digestBytes[:], kv); err != nil {
+			if ctx.Err() != nil {
+				return VerifyResult{}, err
+			}
 			keyedErrs = append(keyedErrs, fmt.Sprintf("%s: %v", kv.fingerprint, err))
 			continue
 		}
@@ -249,12 +264,16 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, yaml []byte, entity verif
 	}
 
 	for _, kl := range s.cfg.AllowedKeyless {
-		if err := s.verifyKeyless(ctx, entity, digestBytes[:], kl); err != nil {
+		san, err := s.verifyKeyless(ctx, entity, digestBytes[:], kl)
+		if err != nil {
+			if ctx.Err() != nil {
+				return VerifyResult{}, err
+			}
 			keylessErrs = append(keylessErrs, fmt.Sprintf("%s: %v", kl.IssuerExact, err))
 			continue
 		}
 		return VerifyResult{
-			Signer:    "keyless:" + kl.IssuerExact + ":" + kl.SubjectPattern.String(),
+			Signer:    "keyless:" + kl.IssuerExact + ":" + san,
 			DigestHex: digestHex,
 			ElapsedMS: time.Since(start).Milliseconds(),
 		}, nil
@@ -273,10 +292,10 @@ func (s *sigstoreVerifier) Verify(ctx context.Context, yaml []byte, entity verif
 	return VerifyResult{}, fmt.Errorf("policy_bundle verification failed: %s", strings.Join(msgs, "; "))
 }
 
-func (s *sigstoreVerifier) verifyKeyed(_ context.Context, entity verify.SignedEntity, digestBytes []byte, kv KeyedVerifier) error {
-	return sigverify.VerifyKeyed(entity, digestBytes, kv.verifier)
+func (s *sigstoreVerifier) verifyKeyed(ctx context.Context, entity verify.SignedEntity, digestBytes []byte, kv KeyedVerifier) error {
+	return sigverify.VerifyKeyed(ctx, entity, digestBytes, kv.verifier)
 }
 
-func (s *sigstoreVerifier) verifyKeyless(_ context.Context, entity verify.SignedEntity, digestBytes []byte, kl KeylessIdentity) error {
-	return sigverify.VerifyKeyless(entity, digestBytes, s.cfg.TrustedMaterial, kl.IssuerExact, kl.SubjectPattern, s.cfg.RequireRekorInclusion)
+func (s *sigstoreVerifier) verifyKeyless(ctx context.Context, entity verify.SignedEntity, digestBytes []byte, kl KeylessIdentity) (string, error) {
+	return sigverify.VerifyKeylessIdentity(ctx, entity, digestBytes, s.cfg.TrustedMaterial, kl.IssuerExact, kl.SubjectPattern, s.cfg.RequireRekorInclusion)
 }

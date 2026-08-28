@@ -45,6 +45,7 @@ package sigverify
 // genuine regression tests.
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -145,6 +146,7 @@ func TestVerifyKeylessNilCertWithIdentityConfigured(t *testing.T) {
 	entity, tm := newNilCertSignedEntity(t, artifact)
 
 	err := VerifyKeyless(
+		context.Background(),
 		entity,
 		digest[:],
 		tm,

@@ -22,7 +22,7 @@ export const faqItems: Array<{ question: string; answer: string }> = [
   {
     question: "What are signed policy bundles and container image trust?",
     answer:
-      "Signed policy bundles treat the candidate YAML as untrusted until a cosign bundle verifies it. Keyed or keyless trust, Rekor posture, and the verification timeout live in a separate bootstrap file selected with --policy-bundle-trust-config; the signed candidate carries its signature path and cannot authenticate itself. Verification runs at startup and every reload. Container image trust separately resolves workload images to digests and enforces the configured signer identity before deployment.",
+      "Signed policy bundles treat the candidate YAML as untrusted until a cosign bundle verifies it. Keyed or keyless trust, Rekor posture, and a cooperative verification deadline live in a separate bootstrap file; candidate and trust YAML stop at 16 MiB, bundles at 4 MiB, and non-regular inputs are refused. Verification runs at startup and every reload. Container image trust separately resolves workload images to digests, rejects alternate payload URLs, accepts legal manifest media-type parameters, and applies redirect-safe response, signature fan-out, and aggregate payload limits before enforcing signer identity.",
   },
   {
     question: "Is Sockguard production-ready and what license does it use?",
