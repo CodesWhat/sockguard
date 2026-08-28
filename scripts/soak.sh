@@ -175,7 +175,22 @@ TOTAL_SECONDS="$(duration_to_seconds "${DURATION}")"
 # is read-side; deny path is exercised steadily so a leak in the
 # deny-response codepath is also surfaced.
 WORKER_LOG_DIR="$(mktemp -d)"
-trap 'kill "${MOCK_PID}" "${PROXY_PID}" 2>/dev/null || true; rm -f "${MOCK_SOCK}" "${PROXY_SOCK}"; rm -rf "${BUILD_DIR}" "${WORKER_LOG_DIR}"; rm -f "${SAMPLES_TSV}"' EXIT
+WORKER_PIDS=()
+
+cleanup() {
+  local worker_pid
+  for worker_pid in "${WORKER_PIDS[@]}"; do
+    kill "${worker_pid}" 2>/dev/null || true
+  done
+  for worker_pid in "${WORKER_PIDS[@]}"; do
+    wait "${worker_pid}" 2>/dev/null || true
+  done
+  kill "${MOCK_PID}" "${PROXY_PID}" 2>/dev/null || true
+  rm -f "${MOCK_SOCK}" "${PROXY_SOCK}"
+  rm -rf "${BUILD_DIR}" "${WORKER_LOG_DIR}"
+  rm -f "${SAMPLES_TSV}"
+}
+trap cleanup EXIT
 
 run_worker() {
   local label="$1" method="$2" path="$3"
@@ -187,6 +202,21 @@ run_worker() {
     -duration "${DURATION}" \
     -scenario "${label}" \
     > "${WORKER_LOG_DIR}/${label}.json" &
+  WORKER_PIDS+=("$!")
+}
+
+wait_for_workers() {
+  local worker_pid
+  local worker_failed=0
+  for worker_pid in "${WORKER_PIDS[@]}"; do
+    if ! wait "${worker_pid}"; then
+      worker_failed=1
+    fi
+  done
+  if [ "${worker_failed}" -ne 0 ]; then
+    echo "==> FAIL: one or more load workers exited unsuccessfully" >&2
+    return 1
+  fi
 }
 
 echo "==> Soaking for ${DURATION} (concurrency ${CONCURRENCY}/worker)"
@@ -210,7 +240,7 @@ while [ "$(date +%s)" -lt "${SAMPLE_END}" ]; do
     >> "${SAMPLES_TSV}"
 done
 
-wait
+wait_for_workers
 
 FINAL_RSS_KB="$(read_rss_kb "${PROXY_PID}")"
 FINAL_THREADS="$(read_threads "${PROXY_PID}")"

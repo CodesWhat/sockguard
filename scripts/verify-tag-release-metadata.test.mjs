@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   checkTagReleaseMetadata,
+  extractChartImageTag,
   extractChartVersions,
   extractSiteConfigVersion,
   formatCLIError,
@@ -28,6 +30,11 @@ const CHART = `apiVersion: v2
 name: sockguard
 version: 1.7.4
 appVersion: "1.7.4"
+`;
+
+const VALUES = `image:
+  repository: codeswhat/sockguard
+  tag: ""
 `;
 
 const CHANGELOG = `# Changelog
@@ -105,12 +112,119 @@ describe("extractChartVersions", () => {
   });
 });
 
+describe("extractChartImageTag", () => {
+  it("extracts an empty quoted image tag", () => {
+    assert.equal(extractChartImageTag(VALUES), "");
+  });
+
+  it("ignores a sidecar tag before the top-level image block", () => {
+    assert.equal(
+      extractChartImageTag(`sidecar:
+  tag: "old"
+image:
+  repository: codeswhat/sockguard
+  tag: ""
+`),
+      "",
+    );
+  });
+
+  it("does not let an empty sidecar tag hide a pinned primary image", () => {
+    assert.equal(
+      extractChartImageTag(`sidecar:
+  tag: ""
+image:
+  repository: codeswhat/sockguard
+  tag: "2.0.0@sha256:${"a".repeat(64)}"
+`),
+      `2.0.0@sha256:${"a".repeat(64)}`,
+    );
+  });
+
+  it("throws when image.tag is missing", () => {
+    assert.throws(() => extractChartImageTag("image: {}\n"), /block mapping|Could not find/);
+  });
+
+  it("rejects duplicate top-level image blocks instead of trusting the first tag", () => {
+    assert.throws(
+      () =>
+        extractChartImageTag(`image:
+  tag: ""
+image:
+  tag: "2.0.0@sha256:${"a".repeat(64)}"
+`),
+      /unique|duplicate/iu,
+    );
+  });
+
+  it("rejects a quoted duplicate top-level image key", () => {
+    assert.throws(
+      () =>
+        extractChartImageTag(`image:
+  tag: ""
+"image":
+  tag: "evil"
+`),
+      /unique|duplicate/iu,
+    );
+  });
+
+  it("rejects an escaped duplicate top-level image key", () => {
+    assert.throws(
+      () =>
+        extractChartImageTag(`image:
+  repository: codeswhat/sockguard
+  tag: ""
+"\\u0069mage":
+  repository: attacker.invalid/sockguard
+  tag: "evil"
+`),
+      /unique|duplicate/iu,
+    );
+  });
+
+  it("rejects duplicate image.tag keys instead of trusting the first value", () => {
+    assert.throws(
+      () =>
+        extractChartImageTag(`image:
+  tag: "2.0.0@sha256:${"a".repeat(64)}"
+  tag: ""
+`),
+      /unique|duplicate/iu,
+    );
+  });
+
+  it("rejects a quoted duplicate image.tag key", () => {
+    assert.throws(
+      () =>
+        extractChartImageTag(`image:
+  tag: ""
+  "tag": "evil"
+`),
+      /unique|duplicate/iu,
+    );
+  });
+
+  it("rejects a quoted duplicate image.repository key", () => {
+    assert.throws(
+      () =>
+        extractChartImageTag(`image:
+  repository: codeswhat/sockguard
+  "repository": attacker.invalid/sockguard
+  tag: ""
+`),
+      /unique|duplicate/iu,
+    );
+  });
+});
+
 describe("checkTagReleaseMetadata: stable tags", () => {
   it("reports no errors when everything agrees", () => {
     const result = checkTagReleaseMetadata({
       tag: "v1.7.4",
       siteConfig: SITE_CONFIG,
       chart: CHART,
+      values: VALUES,
       changelog: CHANGELOG,
     });
     assert.equal(result.isPrerelease, false);
@@ -122,6 +236,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       tag: "v1.7.5",
       siteConfig: SITE_CONFIG,
       chart: CHART,
+      values: VALUES,
       changelog: CHANGELOG.replace("1.7.4", "1.7.5"),
     });
     assert.ok(result.errors.some((e) => e.includes("site-config.ts") && e.includes("1.7.4")));
@@ -132,6 +247,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       tag: "v1.7.4",
       siteConfig: SITE_CONFIG,
       chart: CHART.replace("version: 1.7.4", "version: 1.7.3"),
+      values: VALUES,
       changelog: CHANGELOG,
     });
     assert.ok(result.errors.some((e) => e.includes("Chart.yaml version")));
@@ -143,6 +259,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       tag: "v1.7.4",
       siteConfig: SITE_CONFIG,
       chart: CHART.replace('appVersion: "1.7.4"', 'appVersion: "1.7.3"'),
+      values: VALUES,
       changelog: CHANGELOG,
     });
     assert.ok(result.errors.some((e) => e.includes("Chart.yaml appVersion")));
@@ -153,6 +270,7 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       tag: "v1.7.5",
       siteConfig: SITE_CONFIG.replace("1.7.4", "1.7.5"),
       chart: CHART.replace(/1\.7\.4/g, "1.7.5"),
+      values: VALUES,
       changelog: CHANGELOG,
     });
     assert.ok(result.errors.some((e) => e.includes("CHANGELOG.md has no dated heading")));
@@ -163,9 +281,63 @@ describe("checkTagReleaseMetadata: stable tags", () => {
       tag: "v9.9.9",
       siteConfig: SITE_CONFIG,
       chart: CHART,
+      values: VALUES,
       changelog: CHANGELOG,
     });
     assert.equal(result.errors.length, 4);
+  });
+
+  it("rejects a non-empty Helm image pin before a stable tag is created", () => {
+    const result = checkTagReleaseMetadata({
+      tag: "v1.7.4",
+      siteConfig: SITE_CONFIG,
+      chart: CHART,
+      values: VALUES.replace('tag: ""', `tag: "1.7.4@sha256:${"a".repeat(64)}"`),
+      changelog: CHANGELOG,
+    });
+    assert.ok(
+      result.errors.some(
+        (error) => error.includes("chart/sockguard/values.yaml") && error.includes("must be empty"),
+      ),
+    );
+  });
+
+  it("rejects a different default Helm image repository", () => {
+    const result = checkTagReleaseMetadata({
+      tag: "v1.7.4",
+      siteConfig: SITE_CONFIG,
+      chart: CHART,
+      values: VALUES.replace(
+        "repository: codeswhat/sockguard",
+        "repository: attacker.invalid/sockguard",
+      ),
+      changelog: CHANGELOG,
+    });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("chart/sockguard/values.yaml") && error.includes("image.repository"),
+      ),
+    );
+  });
+
+  it("does not truncate an unspaced hash in the default Helm image repository", () => {
+    const result = checkTagReleaseMetadata({
+      tag: "v1.7.4",
+      siteConfig: SITE_CONFIG,
+      chart: CHART,
+      values: VALUES.replace(
+        "repository: codeswhat/sockguard",
+        "repository: codeswhat/sockguard#evil",
+      ),
+      changelog: CHANGELOG,
+    });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("chart/sockguard/values.yaml") && error.includes("image.repository"),
+      ),
+    );
   });
 });
 
@@ -175,6 +347,7 @@ describe("checkTagReleaseMetadata: prerelease tags", () => {
       tag: "v1.8.0-rc.1",
       siteConfig: SITE_CONFIG, // still "1.7.4" -- correct for an unreleased rc
       chart: CHART, // still "1.7.4" -- correct for an unreleased rc
+      values: VALUES.replace('tag: ""', `tag: "1.7.4@sha256:${"a".repeat(64)}"`),
       changelog: PRERELEASE_CHANGELOG,
     });
     assert.equal(result.isPrerelease, true);
@@ -222,13 +395,18 @@ describe("CLI: real repository files", () => {
     assert.match(result.stderr, /disagrees with release metadata/);
   });
 
-  it("passes for the tag the repo's own release metadata currently agrees on", () => {
+  it("passes for the tag the repo's own metadata and a prepublication image state agree on", (t) => {
     const currentVersion = extractSiteConfigVersion(
       readFileSync(resolve(repoRoot, "website/src/lib/site-config.ts"), "utf8"),
     );
-    const result = runCLI(["--tag", `v${currentVersion}`]);
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "sockguard-release-values-"));
+    t.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+    const valuesPath = resolve(fixtureRoot, "values.yaml");
+    writeFileSync(valuesPath, VALUES);
+
+    const result = runCLI(["--tag", `v${currentVersion}`, "--values", valuesPath]);
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /agrees with website, chart, and CHANGELOG metadata/);
+    assert.match(result.stdout, /agrees with website, chart, Helm image, and CHANGELOG metadata/);
   });
 
   it("requires --tag", () => {
