@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.0-rc.2] - 2026-08-27
+
+### Fixed
+
+- **GitHub release pages now publish the tagged CHANGELOG entry instead of a blank body.** GoReleaser's changelog pipe stays enabled so `--release-notes` can load the extracted file, and the tag workflow explicitly publishes then reads the body back before it continues.
+- **Container provenance now persists its linked artifact metadata.** The release job grants the narrowly scoped `artifact-metadata: write` permission required by GitHub's attestation action, removing the non-fatal storage-record warning while retaining the signed repository and registry attestations.
+
 ## [2.0.0-rc.1] - 2026-08-27
 
 ### Security

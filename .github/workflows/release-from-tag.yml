@@ -209,6 +209,27 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
+      - name: Publish and verify release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -s release-notes.md ]; then
+            echo "::error::Extracted release notes are missing or empty."
+            exit 1
+          fi
+
+          gh release edit "${RELEASE_TAG}" --notes-file release-notes.md
+
+          expected_body="$(cat release-notes.md)"
+          published_body="$(gh release view "${RELEASE_TAG}" --json body --jq '.body')"
+          if [[ "${published_body}" != "${expected_body}" ]]; then
+            echo "::error::Published release notes do not match the extracted CHANGELOG entry."
+            exit 1
+          fi
+
       # SLSA build provenance for the per-platform archives. The existing
       # attestation in the `release` job covers only the git-archive source
       # snapshot; the compiled binaries had none. Same visibility gate as the
@@ -234,6 +255,7 @@ jobs:
       packages: write
       id-token: write  # cosign keyless signing
       attestations: write
+      artifact-metadata: write
 
     steps:
       - name: Harden Runner
