@@ -85,7 +85,9 @@ snapshot:
   version_template: "{{ incpatch .Version }}-dev"
 
 changelog:
-  disable: true  # Release notes come from CHANGELOG.md via extract-changelog-entry.mjs
+  # The workflow supplies --release-notes, which makes GoReleaser load that
+  # file and skip generated notes. Disabling this pipe skips the file load too.
+  disable: false
 
 release:
   draft: false
