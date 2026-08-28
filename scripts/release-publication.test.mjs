@@ -18,7 +18,7 @@ test("tag releases publish and verify the extracted changelog entry", () => {
   const workflow = read(".github/workflows/release-from-tag.yml");
   const goreleaser = workflowJob(workflow, "goreleaser");
 
-  assert.doesNotMatch(config, /^changelog:\n {2}disable: true\b/m);
+  assert.match(config, /^changelog:\n(?: {2}.*\n)*? {2}disable: false\b/m);
   assert.match(goreleaser, /args: release --clean --release-notes=\.\.\/release-notes\.md/);
   assert.match(goreleaser, /^ {6}- name: Publish and verify release notes$/m);
   assert.match(goreleaser, /gh release edit "\$\{RELEASE_TAG\}" --notes-file release-notes\.md/);
