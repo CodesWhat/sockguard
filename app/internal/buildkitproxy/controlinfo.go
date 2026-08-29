@@ -64,6 +64,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"sync"
@@ -365,8 +366,20 @@ func filterControlUnaryResponse(src io.Reader, maxLen int64, table *responseFiel
 		return nil, nil, denyControlResponseUnparsable()
 	}
 
+	// The re-framed length has to round-trip through the header's uint32.
+	// Filtering only ever removes fields, so len(filtered) is bounded by the
+	// payload readGRPCFrame accepted, and that payload's length came from a
+	// uint32 header of its own — this cannot fire while maxLen stays under
+	// 4 GiB. It is a real check rather than a suppression because maxLen is
+	// operator-set (limits.MaxMessageBytes, an int64), so nothing in the
+	// type system holds the bound; a silent truncation here would hand the
+	// client a frame header that disagrees with its own body.
+	if uint64(len(filtered)) > math.MaxUint32 {
+		return nil, nil, deny(grpcCodeResourceExhausted, "buildkit_message_too_large", "response message exceeds sockguard's size cap")
+	}
+
 	frame := make([]byte, grpcMessageHeaderLen+len(filtered))
-	//nolint:gosec // G115: len(filtered) always fits a uint32. It is bounded by the payload readGRPCFrame returned, whose length came from the frame header's own uint32, and filtering only ever removes fields and re-encodes tags/lengths minimally — the result is never longer than the input.
+	// #nosec G115 -- the conversion is range-checked against math.MaxUint32 immediately above.
 	binary.BigEndian.PutUint32(frame[1:grpcMessageHeaderLen], uint32(len(filtered)))
 	copy(frame[grpcMessageHeaderLen:], filtered)
 	return frame, drift, nil
