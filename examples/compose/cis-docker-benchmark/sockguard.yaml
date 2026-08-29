@@ -124,8 +124,8 @@ rules:
   - match: { method: GET, path: "/info" }
     action: allow
 
-  # Container reads. Logs / archive / attach / export deliberately
-  # omitted — CIS does not require them and they bypass the
+  # Container reads. Process-list top, logs, archive, attach, and export
+  # are deliberately omitted — CIS does not require them and they bypass the
   # response-redaction layer (Section 5 has no specific control, but
   # the principle of least privilege from Section 1 applies).
   - match: { method: GET, path: "/containers/json" }
@@ -133,8 +133,6 @@ rules:
   - match: { method: GET, path: "/containers/*/json" }
     action: allow
   - match: { method: GET, path: "/containers/*/stats" }
-    action: allow
-  - match: { method: GET, path: "/containers/*/top" }
     action: allow
   - match: { method: GET, path: "/containers/*/changes" }
     action: allow

@@ -47,14 +47,13 @@ rules:
   - match: { method: GET, path: "/events" }
     action: allow
 
-  # Containers — list, inspect, stats, logs. No exec, no archive streams.
+  # Containers — list, inspect, stats, changes. No process-list top, exec,
+  # or archive streams.
   - match: { method: GET, path: "/containers/json" }
     action: allow
   - match: { method: GET, path: "/containers/*/json" }
     action: allow
   - match: { method: GET, path: "/containers/*/stats" }
-    action: allow
-  - match: { method: GET, path: "/containers/*/top" }
     action: allow
   - match: { method: GET, path: "/containers/*/changes" }
     action: allow

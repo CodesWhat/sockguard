@@ -455,7 +455,8 @@ before dockerd executes it.
 # Enforces CIS 5.3, 5.4, 5.5, 5.9, 5.10, 5.11, 5.12, 5.15, 5.16, 5.17,
 #          5.21, 5.22, 5.23, 5.25, 5.28, 5.30, 5.31 (structural)
 # Allows:  container/image/network/volume reads, container lifecycle
-# Denies:  exec, build, swarm, secrets, plugins, raw archive/log/attach
+# Denies:  exec, build, swarm, secrets, plugins, process-list top,
+#          raw archive/log/attach
 ```
 
 See [the dedicated CIS Docker Benchmark guide](/cis-docker-benchmark)
@@ -494,10 +495,11 @@ file. See the [Podman guide](/podman) for the full routing model.
 #         on both surfaces
 ```
 
-Unlike `readonly.yaml`, this preset does **not** set
-`insecure_allow_read_exfiltration: true` — every allowed read is a narrow
-list/inspect/metadata endpoint, and it validates clean without the
-acknowledgment. Point `upstream.socket` at either a rootful
+This preset intentionally sets `insecure_allow_read_exfiltration: true` for
+container process monitoring. Docker-compatible `GET /containers/{id}/top`
+forwards caller-selected `ps_args` to the daemon host's `ps` and returns process
+command lines without response redaction. Every other exfiltration-gated route
+remains denied by the narrow rules. Point `upstream.socket` at either a rootful
 (`/run/podman/podman.sock`) or rootless (`$XDG_RUNTIME_DIR/podman/podman.sock`)
 Podman socket; the rule set itself doesn't change.
 

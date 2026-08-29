@@ -415,6 +415,7 @@ func TestValidateAndCompileRulesRejectsRawReadExfiltrationRulesWithoutExplicitOp
 		"GET /containers/sockguard-test/archive",
 		"GET /containers/sockguard-test/export",
 		"GET /containers/sockguard-test/logs",
+		"GET /containers/sockguard-test/top",
 		"GET /containers/sockguard-test/attach/ws",
 		"GET /services/sockguard-test/logs",
 		"GET /tasks/sockguard-test/logs",
@@ -449,6 +450,41 @@ func TestValidateAndCompileRulesRejectsContainerArchiveRuleWithoutReadExfiltrati
 	}
 	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
 		t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
+	}
+}
+
+func TestValidateAndCompileRulesRejectsContainerTopWithoutReadExfiltrationOptIn(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "targeted rule", path: "/containers/*/top"},
+		{name: "broad container rule", path: "/containers/**"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Defaults()
+			cfg.Rules = []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: tt.path}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			}
+
+			_, err := validateAndCompileRules(&cfg)
+			if err == nil {
+				t.Fatal("expected container top read exfiltration validation to fail")
+			}
+			if !strings.Contains(err.Error(), "GET /containers/sockguard-test/top") {
+				t.Fatalf("expected guarded container top endpoint in error, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+				t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "process arguments") {
+				t.Fatalf("expected container top risk in error, got: %v", err)
+			}
+		})
 	}
 }
 
@@ -896,6 +932,92 @@ func TestPresetConfigsPassBuildChain(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestComposeExampleConfigsPassBuildChain(t *testing.T) {
+	examples, err := filepath.Glob(filepath.Join("..", "..", "..", "examples", "compose", "*", "sockguard*.yaml"))
+	if err != nil {
+		t.Fatalf("glob compose examples: %v", err)
+	}
+	if len(examples) == 0 {
+		t.Fatal("no compose example configs found")
+	}
+
+	for _, path := range examples {
+		path := path
+		t.Run(filepath.Base(filepath.Dir(path))+"/"+filepath.Base(path), func(t *testing.T) {
+			t.Parallel()
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load(%s) error: %v", path, err)
+			}
+			if _, err := validateAndCompileRules(cfg); err != nil {
+				t.Fatalf("validateAndCompileRules(%s) error: %v", path, err)
+			}
+		})
+	}
+}
+
+func TestContainerTopAffectedConfigsChooseLeastPrivilege(t *testing.T) {
+	tests := []struct {
+		path             string
+		wantTopRule      bool
+		wantReadExfilAck bool
+	}{
+		{path: filepath.Join("..", "..", "configs", "cis-docker-benchmark.yaml")},
+		{path: filepath.Join("..", "..", "configs", "drydock-with-build.yaml")},
+		{path: filepath.Join("..", "..", "configs", "drydock-with-compose.yaml")},
+		{path: filepath.Join("..", "..", "configs", "drydock-with-mediated-build.yaml")},
+		{path: filepath.Join("..", "..", "configs", "drydock-with-selfupdate.yaml")},
+		{path: filepath.Join("..", "..", "configs", "drydock.yaml")},
+		{path: filepath.Join("..", "..", "configs", "multi-listener.yaml")},
+		{
+			path:             filepath.Join("..", "..", "configs", "podman-readonly.yaml"),
+			wantTopRule:      true,
+			wantReadExfilAck: true,
+		},
+		{path: filepath.Join("..", "..", "..", "examples", "compose", "cis-docker-benchmark", "sockguard.yaml")},
+		{path: filepath.Join("..", "..", "..", "examples", "compose", "drydock", "sockguard.yaml")},
+		{path: filepath.Join("..", "..", "..", "examples", "compose", "multi-host", "sockguard.yaml")},
+	}
+
+	for _, tt := range tests {
+		t.Run(filepath.Base(filepath.Dir(tt.path))+"/"+filepath.Base(tt.path), func(t *testing.T) {
+			cfg, err := config.Load(tt.path)
+			if err != nil {
+				t.Fatalf("Load(%s) error: %v", tt.path, err)
+			}
+
+			gotTopRule := configAllowsContainerTop(cfg)
+			if gotTopRule != tt.wantTopRule {
+				t.Errorf("Docker-compatible container top allow rule = %v, want %v", gotTopRule, tt.wantTopRule)
+			}
+			if cfg.InsecureAllowReadExfiltration != tt.wantReadExfilAck {
+				t.Errorf("insecure_allow_read_exfiltration = %v, want %v", cfg.InsecureAllowReadExfiltration, tt.wantReadExfilAck)
+			}
+		})
+	}
+}
+
+func configAllowsContainerTop(cfg *config.Config) bool {
+	if rulesAllowContainerTop(cfg.Rules) {
+		return true
+	}
+	for _, profile := range cfg.Clients.Profiles {
+		if rulesAllowContainerTop(profile.Rules) {
+			return true
+		}
+	}
+	return false
+}
+
+func rulesAllowContainerTop(rules []config.RuleConfig) bool {
+	for _, rule := range rules {
+		if rule.Action == "allow" && rule.Match.Path == "/containers/*/top" && slices.Contains(splitMethods(rule.Match.Method), http.MethodGet) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestPresetConfigsDenyAttestationStatementsByDefault is an attestation

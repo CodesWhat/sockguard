@@ -207,11 +207,13 @@ The [`podman-readonly.yaml`](https://github.com/CodesWhat/sockguard/blob/main/ap
 preset ships a read-only monitoring posture covering both surfaces in one
 file — list/inspect/stats/top/changes for containers, list/inspect for pods
 (libpod only), images, networks, volumes, and secrets, plus health/version/
-info/events. It deliberately excludes every exfiltration-gated endpoint
-(archive, export, logs, attach, image/manifest push, `generate/kube`) on
-both surfaces, so it validates clean without setting
-`insecure_allow_read_exfiltration`, and it allows no writes at all, so it
-never needs `insecure_allow_body_blind_writes` either. See
+info/events. It retains top for process monitoring, so the Docker-compatible
+route requires `insecure_allow_read_exfiltration: true`: caller-selected
+`ps_args` control the daemon host's `ps` output, whose process command lines
+bypass response redaction. Every other exfiltration-gated endpoint (archive,
+export, logs, attach, image/manifest push, `generate/kube`) stays excluded on
+both surfaces. The preset allows no writes at all, so it never needs
+`insecure_allow_body_blind_writes`. See
 [Presets](/presets) for how to mount a preset as your config file.
 
 ## Known Limitations

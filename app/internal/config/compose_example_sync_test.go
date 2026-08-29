@@ -37,6 +37,11 @@ func TestComposeExamplesInSyncWithCanonicalPresets(t *testing.T) {
 			example:   filepath.Join("..", "..", "..", "examples", "compose", "drydock", "sockguard.yaml"),
 		},
 		{
+			name:      "cis-docker-benchmark",
+			canonical: filepath.Join("..", "..", "configs", "cis-docker-benchmark.yaml"),
+			example:   filepath.Join("..", "..", "..", "examples", "compose", "cis-docker-benchmark", "sockguard.yaml"),
+		},
+		{
 			// The compose example directory runs Portwing standalone against
 			// the shared docker.sock (no nested compose stack of its own —
 			// see examples/compose/portwing/docker-compose.yml), so

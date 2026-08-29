@@ -327,6 +327,43 @@ func TestNew_PreservesResponseBody(t *testing.T) {
 	}
 }
 
+func TestNew_ContainerTopForwardsCallerSelectedProcessArgumentsAndResponse(t *testing.T) {
+	t.Parallel()
+	socketPath := tempSocketPath(t, "container-top")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	const processResponse = `{"Titles":["PID","COMMAND"],"Processes":[["42","/usr/bin/server --credential-file=/run/secrets/prod"]]}`
+	seenPSArgs := make(chan string, 1)
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seenPSArgs <- r.URL.Query().Get("ps_args")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, processResponse)
+		}),
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	rp := NewWithOptions(socketPath, testLogger(), Options{})
+	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc/top?ps_args=-ww+-eo+pid%2Cargs", nil)
+	rec := httptest.NewRecorder()
+	rp.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := <-seenPSArgs; got != "-ww -eo pid,args" {
+		t.Fatalf("upstream ps_args = %q, want caller-selected process argv format", got)
+	}
+	if rec.Body.String() != processResponse {
+		t.Fatalf("response body = %q, want unmodified process argv %q", rec.Body.String(), processResponse)
+	}
+}
+
 func TestNewWithOptions_RedactsProtectedResponses(t *testing.T) {
 	t.Parallel()
 	socketPath := tempSocketPath(t, "response-filter")

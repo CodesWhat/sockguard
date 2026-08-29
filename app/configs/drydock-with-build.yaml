@@ -111,8 +111,6 @@ rules:
     action: allow
   - match: { method: GET, path: "/containers/*/stats" }
     action: allow
-  - match: { method: GET, path: "/containers/*/top" }
-    action: allow
   - match: { method: GET, path: "/containers/*/changes" }
     action: allow
 

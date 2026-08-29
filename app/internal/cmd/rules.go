@@ -123,6 +123,10 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	// path-level logs surface conservatively rather than trying to special-case
 	// follow=1 or other streaming toggles here.
 	{method: http.MethodGet, path: "/containers/sockguard-test/logs"},
+	// Container top accepts caller-selected ps_args and returns process command
+	// lines without response redaction. A version-prefixed request normalizes to
+	// this same Docker-compatible path before rule matching.
+	{method: http.MethodGet, path: "/containers/sockguard-test/top"},
 	{method: http.MethodGet, path: "/containers/sockguard-test/attach/ws"},
 	{method: http.MethodGet, path: "/services/sockguard-test/logs"},
 	{method: http.MethodGet, path: "/tasks/sockguard-test/logs"},
@@ -289,8 +293,8 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 
 	if scope == "" {
 		return fmt.Errorf(
-			"rules allow raw archive/export, log/attach streaming, or registry push endpoints "+
-				"(these can exfiltrate container files, images, plugins, environment variables, and secrets); "+
+			"rules allow raw archive/export, process-list, log/attach streaming, or registry push endpoints "+
+				"(these can exfiltrate container files, images, plugins, process arguments, environment variables, and secrets); "+
 				"either tighten the allow rules to omit these paths or set "+
 				"insecure_allow_read_exfiltration: true to acknowledge the risk. "+
 				"Exposed endpoints: %s",
@@ -299,8 +303,8 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 	}
 
 	return fmt.Errorf(
-		"client profile %q allows raw archive/export, log/attach streaming, or registry push endpoints "+
-			"(these can exfiltrate container files, images, plugins, environment variables, and secrets); "+
+		"client profile %q allows raw archive/export, process-list, log/attach streaming, or registry push endpoints "+
+			"(these can exfiltrate container files, images, plugins, process arguments, environment variables, and secrets); "+
 			"either tighten the profile's allow rules to omit these paths or set the "+
 			"top-level insecure_allow_read_exfiltration: true to acknowledge the risk "+
 			"(it is a global setting, not per-profile). "+
