@@ -69,6 +69,9 @@ func TestIsLongLivedUpstreamRequest(t *testing.T) {
 		{"libpod images export", http.MethodGet, "/libpod/images/export?names=redis", true},
 		{"libpod images pull", http.MethodPost, "/libpod/images/pull?reference=redis", true},
 		{"images pull", http.MethodPost, "/images/pull?fromImage=redis", true},
+		{"buildkit session", http.MethodPost, "/session", true},
+		{"buildkit grpc", http.MethodPost, "/grpc", true},
+		{"buildkit session versioned", http.MethodPost, "/v1.43/session", true},
 		// Finite requests that must be bounded by the deadline.
 		{"containers list", http.MethodGet, "/containers/json", false},
 		{"container inspect", http.MethodGet, "/containers/abc/json", false},
@@ -244,6 +247,8 @@ func TestWithRequestTimeout_DoesNotSeverLiveStream(t *testing.T) {
 		{"task logs follow", http.MethodGet, "/tasks/abc/logs?follow=1"},
 		{"libpod images pull", http.MethodPost, "/libpod/images/pull?reference=redis"},
 		{"images export", http.MethodGet, "/images/export?names=redis"},
+		{"buildkit session", http.MethodPost, "/session"},
+		{"buildkit grpc", http.MethodPost, "/grpc"},
 	}
 
 	for _, tc := range exempt {

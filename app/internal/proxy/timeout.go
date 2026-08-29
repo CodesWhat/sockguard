@@ -22,7 +22,8 @@ import (
 // unchanged. Long-lived endpoints (event streams, follow/stream reads
 // including service and task logs, image pull/create/export/build/push,
 // plugin create/pull/push/upgrade, container export/get, container archive
-// i.e. docker cp, websocket attach, and the blocking container wait) are
+// i.e. docker cp, websocket attach, the BuildKit tunnel endpoints
+// POST /session and POST /grpc, and the blocking container wait) are
 // exempt, because a deadline would sever a legitimately long response.
 // Hijacked endpoints
 // (attach, exec start) never reach this handler: HijackHandler short-circuits
@@ -109,6 +110,18 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		case matchContainerAction(path, "wait"):
 			// /containers/{id}/wait blocks until the container exits.
+			return true
+		case filter.IsBuildkitTunnelPath(path):
+			// POST /session and POST /grpc are BuildKit's long-lived tunnel.
+			// When request_body.buildkit is configured the mediator claims
+			// them upstream of this handler and they never arrive here, but
+			// with it unset withBuildkitMediator falls through to next — and
+			// next is this deadline. The Tecnativa compat layer reaches that
+			// state with no YAML at all: GRPC=1 or SESSION=1 auto-sets
+			// insecure_accept_opaque_buildkit_tunnels, so a plain drop-in
+			// migration would lose every build at the 60s default.
+			// Sharing filter's predicate keeps the two definitions from
+			// drifting the way the container-only log match already did.
 			return true
 		}
 	}
