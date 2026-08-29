@@ -131,6 +131,45 @@ test("CTA tuples exactly cover the approved marketing and docs surfaces", () => 
   assert.equal(isAllowedCta("marketing", "github_repository", "unknown"), false);
 });
 
+test("person-property envelopes never reach the wire", () => {
+  // With save_referrer enabled, posthog-js builds a TOP-LEVEL $set_once
+  // sibling of properties via get_initial_props(), and it carries
+  // $initial_referrer: the full referrer URL, path and query included. Today
+  // person_profiles: "never" also stops posthog-js populating it, but that is
+  // a second, independent guard — this asserts the sanitizer strips the
+  // envelope on its own, so neither guard can be removed silently.
+  const beforeSend = createBeforeSend("phc_public-token_123", ROUTES);
+  const result = beforeSend({
+    uuid: "018f0000-0000-7000-8000-000000000009",
+    event: "$pageview",
+    $set: { email: "someone@example.com" },
+    $set_once: {
+      $initial_referrer: "https://mail.example.com/inbox/private-thread?id=42",
+      $initial_referring_domain: "mail.example.com",
+      $initial_utm_source: "hn",
+    },
+    properties: {
+      ...COOKIELESS_HASH_PROPERTIES,
+      path: "/",
+      $referrer: "https://mail.example.com/inbox/private-thread?id=42",
+      $referring_domain: "mail.example.com",
+    },
+  });
+
+  assert.equal(Object.hasOwn(result, "$set_once"), false);
+  assert.equal(Object.hasOwn(result, "$set"), false);
+  assert.equal(result.properties.$initial_referrer, undefined);
+  assert.equal(result.properties.$referrer, undefined);
+  // The hostname is still forwarded — this test must not pass by the
+  // sanitizer having dropped acquisition data wholesale.
+  assert.equal(result.properties.$referring_domain, "mail.example.com");
+  assert.equal(
+    JSON.stringify(result).includes("private-thread"),
+    false,
+    "no part of the envelope may carry the referrer path",
+  );
+});
+
 test("pageviews are rebuilt from the canonical production URL and a minimal envelope", () => {
   const timestamp = new Date("2026-08-14T12:00:00.000Z");
   const beforeSend = createBeforeSend("phc_public-token_123", ROUTES);
