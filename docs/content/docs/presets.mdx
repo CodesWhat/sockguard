@@ -315,17 +315,27 @@ Full Docker API access for Portainer management UI.
 
 ## Watchtower (`watchtower.yaml`)
 
-Optimized for the [Watchtower](https://github.com/containrrr/watchtower) container auto-updater.
+Optimized for the [Watchtower](https://github.com/nicholas-fedor/watchtower) container auto-updater.
 
-**Use for:** Watchtower with lifecycle hooks and network-aware updates.
+**Use for:** Watchtower v1.21.2 with lifecycle hooks and network-aware updates.
 
 ```yaml
-# Allows: container lifecycle (start, stop, kill, restart, rename, remove, create)
-# Allows: image pull/remove, exec (lifecycle hooks), network connect/disconnect
-# Denies: build, swarm, secrets, plugins
-# Container-create, image-pull, and network attach requests are inspected; exec lifecycle
-# hooks can be inspected too, but this preset keeps insecure_allow_body_blind_writes=true for arbitrary hooks
+# Allows: ping/info; container list, inspect, start, stop, rename, update,
+#         remove and create; image inspect, pull and remove; lifecycle-hook
+#         exec; network connect
+# Denies: every unused container/image/network route, all volume and
+#         distribution routes, read-exfiltration routes, build, swarm,
+#         secrets, configs and plugins
 ```
+
+Container create allows the stock `runc` runtime and rejects other explicit
+runtimes. Container update allows restart-policy changes, which Watchtower uses
+to set `Name: "no"`, while resource, privilege, device and capability updates
+remain denied. Image list is explicitly denied before the registry-qualified
+image-inspect rule. The preset keeps
+`insecure_allow_body_blind_writes: true` for arbitrary lifecycle hooks and
+allows an empty exec user because Watchtower uses the container's configured
+user, but it no longer needs `insecure_allow_read_exfiltration: true`.
 
 ## Homepage (`homepage.yaml`)
 
