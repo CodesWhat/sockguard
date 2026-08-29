@@ -184,6 +184,50 @@ func TestBodySensitiveWriteCatalogTreatsLibpodImagePullAsInspected(t *testing.T)
 	}
 }
 
+// TestBodySensitiveWriteCatalogTreatsLibpodNetworkAttachAsInspected pins the
+// config-validation half of the libpod network connect/disconnect gap: both
+// paths must be in the body-sensitive write catalog, and both must be
+// recognized as covered by request_body.libpod_network so allowing them does
+// not spuriously demand insecure_allow_body_blind_writes.
+func TestBodySensitiveWriteCatalogTreatsLibpodNetworkAttachAsInspected(t *testing.T) {
+	for _, path := range []string{"/libpod/networks/sockguard-test/connect", "/libpod/networks/sockguard-test/disconnect"} {
+		t.Run(path, func(t *testing.T) {
+			var endpoint bodySensitiveWriteEndpoint
+			found := false
+			for _, candidate := range bodySensitiveWriteEndpoints {
+				if candidate.method == http.MethodPost && candidate.path == path {
+					endpoint = candidate
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("POST %s is missing from the body-sensitive write catalog", path)
+			}
+			if !bodyInspectionConfiguredForEndpoint(config.RequestBodyConfig{}, endpoint) {
+				t.Fatalf("POST %s is not recognized as covered by request_body.libpod_network inspection", path)
+			}
+		})
+	}
+}
+
+func TestValidateAndCompileRulesAllowsLibpodNetworkAttachWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/networks/*/connect"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/networks/*/disconnect"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
 func TestValidateAndCompileRulesAllowsLibpodImagePullWithRequestBodyInspection(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{

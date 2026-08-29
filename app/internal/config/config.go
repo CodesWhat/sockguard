@@ -1593,10 +1593,11 @@ func Defaults() Config {
 			// form's default reproduces allow_endpoint_config's long-standing
 			// unconditional-allow behavior for Aliases exactly (#186) — see
 			// EndpointConfigRequestBodyConfig's doc comment. LibpodNetwork
-			// reuses the same struct type and gets the identical default for
-			// posture consistency, even though it has no libpod-native network
-			// connect endpoint to gate and never consults EndpointConfig at all
-			// — see libpod_network.go.
+			// reuses the same struct type and gets the identical default
+			// because it gates the same thing on the other API family:
+			// POST /libpod/networks/{name}/connect carries Podman's own
+			// `aliases` field, which filter.libpodNetworkConnectRequest
+			// projects onto Docker's Aliases for the shared gate.
 			Network: NetworkRequestBodyConfig{
 				EndpointConfig: EndpointConfigRequestBodyConfig{
 					AllowAliases: true,

@@ -30,7 +30,7 @@ func TestLibpodNetworkInspectLibpodCreateIgnoresNonMatchingPaths(t *testing.T) {
 	}{
 		{"docker networks create", http.MethodPost, "/networks/create"},
 		{"wrong method", http.MethodGet, "/libpod/networks/create"},
-		{"libpod network connect (no libpod inspector, deferred)", http.MethodPost, "/libpod/networks/my-net/connect"},
+		{"libpod network connect (handled by inspectLibpodConnect, not create)", http.MethodPost, "/libpod/networks/my-net/connect"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

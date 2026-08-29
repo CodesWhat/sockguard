@@ -43,6 +43,23 @@ func isLibpodImagePullPath(normalizedPath string) bool {
 	return normalizedPath == libpodPathPrefix+"images/pull"
 }
 
+// isLibpodNetworkConnectPath matches POST /libpod/networks/{name}/connect,
+// Podman's native network-connect endpoint. Its handler (libpod.Connect) and
+// its request body (entities.NetworkConnectOptions) are libpod's own, NOT the
+// Docker-compat ones — see libpodNetworkConnectRequest for the wire shape.
+func isLibpodNetworkConnectPath(normalizedPath string) bool {
+	return isNetworkActionPathUnder(libpodPathPrefix+"networks/", normalizedPath, "connect")
+}
+
+// isLibpodNetworkDisconnectPath matches POST
+// /libpod/networks/{name}/disconnect. Unlike connect, Podman registers this
+// route directly on the Docker-compat compat.Disconnect handler, so the body
+// really is Docker's — the path still needs its own matcher because
+// isNetworkActionPath is prefix-guarded on "/networks/" and never sees it.
+func isLibpodNetworkDisconnectPath(normalizedPath string) bool {
+	return isNetworkActionPathUnder(libpodPathPrefix+"networks/", normalizedPath, "disconnect")
+}
+
 // isLibpodExecCreatePath matches POST /libpod/containers/{id}/exec, the
 // libpod equivalent of isExecCreatePath's /containers/{id}/exec.
 func isLibpodExecCreatePath(normalizedPath string) bool {

@@ -100,8 +100,11 @@ type PolicyConfig struct {
 	// LibpodVolume configures request-body inspection for
 	// POST /libpod/volumes/create. #148.
 	LibpodVolume VolumeOptions
-	// LibpodNetwork configures request-body inspection for
-	// POST /libpod/networks/create. #148.
+	// LibpodNetwork configures request-body inspection for the libpod
+	// network write surface: POST /libpod/networks/create (#148) plus
+	// POST /libpod/networks/{name}/connect and .../disconnect, whose
+	// endpoint-config and disconnect-force gates are the same ones
+	// Network applies to the Docker-compat spellings.
 	LibpodNetwork NetworkOptions
 	// LibpodSecret configures request-body inspection for
 	// POST /libpod/secrets/create. #148.
@@ -393,7 +396,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		// execPolicy entry (design doc decision C3).
 		{http.MethodPost, matchesLibpodPodCreateInspection, inspectSeverityCritical, newLibpodPodCreatePolicy(cfg.LibpodPodCreate).inspect, "failed to inspect libpod pod create request body", "unable to inspect libpod pod create request body"},
 		{http.MethodPost, matchesLibpodVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.LibpodVolume).inspectLibpod, "failed to inspect libpod volume create request body", "unable to inspect libpod volume create request body"},
-		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpodCreate, "failed to inspect libpod network create request body", "unable to inspect libpod network create request body"},
+		{http.MethodPost, matchesLibpodNetworkInspection, inspectSeverityHigh, newNetworkPolicy(cfg.LibpodNetwork).inspectLibpod, "failed to inspect libpod network request body", "unable to inspect libpod network request body"},
 		{http.MethodPost, matchesLibpodSecretInspection, inspectSeverityMedium, newLibpodSecretPolicy(cfg.LibpodSecret).inspect, "failed to inspect libpod secret create request", "unable to inspect libpod secret create request"},
 		// libpod image pull shares cfg.ImagePull with the Docker-compat
 		// entry above — one registry allowlist governs both surfaces, so an
@@ -497,8 +500,12 @@ func matchesLibpodVolumeInspection(normalizedPath string) bool {
 	return normalizedPath == libpodPathPrefix+"volumes/create"
 }
 
+// matchesLibpodNetworkInspection covers the whole libpod network write
+// surface from the same predicate networkPolicy.inspectLibpod dispatches on,
+// so the middleware table cannot admit a narrower set of paths than the
+// inspector handles.
 func matchesLibpodNetworkInspection(normalizedPath string) bool {
-	return normalizedPath == libpodPathPrefix+"networks/create"
+	return isLibpodNetworkWritePath(normalizedPath)
 }
 
 func matchesLibpodSecretInspection(normalizedPath string) bool {
