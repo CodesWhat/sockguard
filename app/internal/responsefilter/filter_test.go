@@ -1084,3 +1084,53 @@ func nestedSliceForTest(t *testing.T, payload map[string]any, keys ...string) []
 	}
 	return values
 }
+
+// TestDecodeJSONObjectRejectsTrailingContent pins the one behavior
+// json.Decoder does not share with json.Unmarshal: Decode stops at the end of
+// the first value and ignores whatever follows. This filter decides what a
+// client sees from a response body, so a second document hiding behind the
+// first must be an error, not a silent truncation. The error text is
+// json.Unmarshal's, because rejectResponse surfaces it.
+func TestDecodeJSONObjectRejectsTrailingContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "second document", body: `{"a":1} {"b":2}`, wantErr: `invalid character '{' after top-level value`},
+		{name: "bare garbage", body: `{"a":1}x`, wantErr: `invalid character 'x' after top-level value`},
+		{name: "trailing whitespace is fine", body: "{\"a\":1}\n  \t", wantErr: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeJSONObject([]byte(tc.body))
+
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("decodeJSONObject(%q) error = %v, want nil", tc.body, err)
+				}
+				if got == nil {
+					t.Fatalf("decodeJSONObject(%q) payload = nil, want the decoded object", tc.body)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatalf("decodeJSONObject(%q) error = nil, want %q", tc.body, tc.wantErr)
+			}
+			if err.Error() != tc.wantErr {
+				t.Fatalf("decodeJSONObject(%q) error = %q, want %q", tc.body, err, tc.wantErr)
+			}
+
+			// The rejection has to match what json.Unmarshal did before this
+			// helper existed, or the change is a behavior change in disguise.
+			var discard map[string]any
+			if unmarshalErr := json.Unmarshal([]byte(tc.body), &discard); unmarshalErr == nil {
+				t.Fatalf("json.Unmarshal(%q) accepted the body; this test is asserting a rejection that was never there", tc.body)
+			} else if unmarshalErr.Error() != tc.wantErr {
+				t.Fatalf("json.Unmarshal(%q) error = %q, want the same %q the helper reports", tc.body, unmarshalErr, tc.wantErr)
+			}
+		})
+	}
+}

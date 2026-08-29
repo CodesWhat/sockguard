@@ -1065,6 +1065,12 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 // json.Unmarshal's for the same input, including its "unexpected end of
 // JSON input" wording for truncated/empty bodies, since callers reuse that
 // message via rejectResponse.
+//
+// json.Decoder stops at the end of the first value and would accept a body
+// carrying a second document after it, which json.Unmarshal rejects. This
+// filter decides what a client is allowed to see from those bytes, so
+// silently dropping everything after the first document is a smuggling
+// surface. trailingJSONError restores the rejection.
 func decodeJSONObject(body []byte) (map[string]any, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
@@ -1075,7 +1081,27 @@ func decodeJSONObject(body []byte) (map[string]any, error) {
 		}
 		return nil, err
 	}
+	if err := trailingJSONError(body, dec.InputOffset()); err != nil {
+		return nil, err
+	}
 	return payload, nil
+}
+
+// trailingJSONError reports the same error json.Unmarshal gives for content
+// after a complete top-level value, or nil when only whitespace remains.
+func trailingJSONError(body []byte, offset int64) error {
+	if offset < 0 || offset > int64(len(body)) {
+		return nil
+	}
+	for _, c := range body[offset:] {
+		switch c {
+		case ' ', '\t', '\r', '\n':
+			continue
+		default:
+			return fmt.Errorf("invalid character %q after top-level value", c)
+		}
+	}
+	return nil
 }
 
 func writeResponseBody(resp *http.Response, payload any) error {
