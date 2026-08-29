@@ -59,7 +59,7 @@ rules:
 	}
 }
 
-func TestExecuteMatchCommandEnforcesContainerTopReadAcknowledgment(t *testing.T) {
+func TestExecuteMatchCommandEnforcesProcessListReadAcknowledgment(t *testing.T) {
 	tests := []struct {
 		name         string
 		path         string
@@ -85,6 +85,15 @@ func TestExecuteMatchCommandEnforcesContainerTopReadAcknowledgment(t *testing.T)
     action: deny`,
 		},
 		{
+			name: "exact libpod pod",
+			path: "/v5.0.0/libpod/pods/payments/top",
+			rules: `
+  - match: { method: GET, path: "/libpod/pods/payments/top" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny`,
+		},
+		{
 			name: "representative deny shadows targeted allow",
 			path: "/containers/payments/top",
 			rules: `
@@ -101,6 +110,16 @@ func TestExecuteMatchCommandEnforcesContainerTopReadAcknowledgment(t *testing.T)
 			acknowledged: true,
 			rules: `
   - match: { method: GET, path: "/containers/payments/top" }
+    action: allow
+  - match: { method: "*", path: "/**" }
+    action: deny`,
+		},
+		{
+			name:         "acknowledged libpod pod",
+			path:         "/v5.0.0/libpod/pods/payments/top",
+			acknowledged: true,
+			rules: `
+  - match: { method: GET, path: "/libpod/pods/payments/top" }
     action: allow
   - match: { method: "*", path: "/**" }
     action: deny`,
@@ -146,7 +165,7 @@ upstream:
 			}
 
 			wantDecision := "deny"
-			wantReason := "container process-list reads require insecure_allow_read_exfiltration: true"
+			wantReason := "process-list reads require insecure_allow_read_exfiltration: true"
 			if tt.acknowledged {
 				wantDecision = "allow"
 				wantReason = ""

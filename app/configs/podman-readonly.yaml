@@ -15,8 +15,8 @@
 # /libpod/containers/{id}/top exposes the same process-list class. Both return
 # process command lines outside response redaction, so
 # insecure_allow_read_exfiltration: true below acknowledges that exposure. Raw
-# archive/export/logs/attach streams and image/manifest pushes remain off the
-# allowlist on both surfaces.
+# archive/export/logs/attach streams, native pod top, and image/manifest pushes
+# remain off the allowlist on both surfaces.
 #
 # No write operations are allowed on either surface. This includes native
 # POST /libpod/build. If you add that path later, it uses request_body.build

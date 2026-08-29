@@ -211,7 +211,9 @@ info/events. It retains top for process monitoring, so both the
 Docker-compatible and native libpod routes require
 `insecure_allow_read_exfiltration: true`: Docker-compatible caller-selected
 `ps_args` control the daemon host's `ps` output, and both routes return process
-command lines that bypass response redaction. Every other exfiltration-gated
+command lines that bypass response redaction. Native
+`GET /libpod/pods/{id}/top` carries the same global guard but stays denied by
+this preset's narrow pod rules. Every other exfiltration-gated
 endpoint (archive, export, logs, attach, image/manifest push, `generate/kube`)
 stays excluded on both surfaces. The preset allows no writes at all, so it never needs
 `insecure_allow_body_blind_writes`. See

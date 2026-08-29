@@ -507,6 +507,38 @@ func TestValidateAndCompileRulesRejectsLibpodContainerTopWithoutReadExfiltration
 	}
 }
 
+func TestValidateAndCompileRulesRejectsLibpodPodTopWithoutReadExfiltrationOptIn(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "targeted rule", path: "/libpod/pods/*/top"},
+		{name: "broad pod rule", path: "/libpod/pods/**"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Defaults()
+			cfg.Rules = []config.RuleConfig{
+				{Match: config.MatchConfig{Method: http.MethodGet, Path: tt.path}, Action: "allow"},
+				{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+			}
+
+			_, err := validateAndCompileRules(&cfg)
+			if err == nil {
+				t.Fatal("expected libpod pod top read exfiltration validation to fail")
+			}
+			if !strings.Contains(err.Error(), "GET /libpod/pods/sockguard-test/top") {
+				t.Fatalf("expected guarded libpod pod top endpoint in error, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+				t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *testing.T) {
 	tests := []struct {
 		name     string

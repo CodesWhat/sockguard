@@ -300,26 +300,34 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 	}
 }
 
-// EnforceReadExfiltrationAcknowledgment applies the hard container process-list
-// gate shared by the runtime middleware and offline rule matcher. normalizedPath
+// EnforceReadExfiltrationAcknowledgment applies the hard process-list gate
+// shared by the runtime middleware and offline rule matcher. normalizedPath
 // must already be canonicalized with NormalizePath.
 func EnforceReadExfiltrationAcknowledgment(action Action, method, normalizedPath string, acknowledged bool) (Action, string, bool) {
-	if acknowledged || !isContainerTopRead(method, normalizedPath) {
+	if acknowledged || !isProcessListRead(method, normalizedPath) {
 		return action, "", false
 	}
-	return ActionDeny, "container process-list reads require insecure_allow_read_exfiltration: true", true
+	return ActionDeny, "process-list reads require insecure_allow_read_exfiltration: true", true
 }
 
-func isContainerTopRead(method, normPath string) bool {
+func isProcessListRead(method, normPath string) bool {
 	if upperHTTPMethodASCII(method) != http.MethodGet {
 		return false
 	}
 
-	segments := strings.Split(strings.TrimPrefix(normPath, "/"), "/")
-	if len(segments) == 3 {
-		return segments[0] == "containers" && segments[1] != "" && segments[2] == "top"
+	rest, ok := strings.CutPrefix(normPath, "/containers/")
+	if !ok {
+		rest, ok = strings.CutPrefix(normPath, "/libpod/containers/")
 	}
-	return len(segments) == 4 && segments[0] == "libpod" && segments[1] == "containers" && segments[2] != "" && segments[3] == "top"
+	if !ok {
+		rest, ok = strings.CutPrefix(normPath, "/libpod/pods/")
+	}
+	if !ok {
+		return false
+	}
+
+	name, action, ok := strings.Cut(rest, "/")
+	return ok && name != "" && action == "top"
 }
 
 // resolveActivePolicy picks the per-request runtimePolicy based on the

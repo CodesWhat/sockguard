@@ -296,7 +296,7 @@ func TestMiddlewareDeniedMinimalVerbosity(t *testing.T) {
 	}
 }
 
-func TestMiddlewareContainerTopRequiresReadExfiltrationAcknowledgmentForEveryRuleShape(t *testing.T) {
+func TestMiddlewareProcessListRequiresReadExfiltrationAcknowledgmentForEveryRuleShape(t *testing.T) {
 	tests := []struct {
 		name  string
 		path  string
@@ -327,6 +327,14 @@ func TestMiddlewareContainerTopRequiresReadExfiltrationAcknowledgmentForEveryRul
 				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
 			},
 		},
+		{
+			name: "exact libpod pod name",
+			path: "/v5.0.0/libpod/pods/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/libpod/pods/payments/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -349,7 +357,7 @@ func TestMiddlewareContainerTopRequiresReadExfiltrationAcknowledgmentForEveryRul
 			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
 
 			if reached {
-				t.Fatal("container top reached upstream without insecure_allow_read_exfiltration acknowledgment")
+				t.Fatal("process-list read reached upstream without insecure_allow_read_exfiltration acknowledgment")
 			}
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
@@ -358,7 +366,36 @@ func TestMiddlewareContainerTopRequiresReadExfiltrationAcknowledgmentForEveryRul
 	}
 }
 
-func TestMiddlewareContainerTopAcknowledgmentCannotBeRelaxedByRolloutMode(t *testing.T) {
+func TestMiddlewareProcessListAcknowledgmentAllowsNativePodTop(t *testing.T) {
+	allow, err := CompileRule(Rule{
+		Methods: []string{http.MethodGet},
+		Pattern: "/libpod/pods/payments/top",
+		Action:  ActionAllow,
+		Index:   0,
+	})
+	if err != nil {
+		t.Fatalf("CompileRule: %v", err)
+	}
+
+	reached := false
+	handler := MiddlewareWithOptions([]*CompiledRule{allow}, testLogger(), Options{
+		AllowReadExfiltration: true,
+	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v5.0.0/libpod/pods/payments/top", nil))
+
+	if !reached {
+		t.Fatal("acknowledged native pod top did not reach upstream")
+	}
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+}
+
+func TestMiddlewareProcessListAcknowledgmentCannotBeRelaxedByRolloutMode(t *testing.T) {
 	denyAll, err := CompileRule(Rule{
 		Methods: []string{"*"},
 		Pattern: "/**",
@@ -373,6 +410,7 @@ func TestMiddlewareContainerTopAcknowledgmentCannotBeRelaxedByRolloutMode(t *tes
 		for _, requestPath := range []string{
 			"/v1.53/containers/payments/top",
 			"/v5.0.0/libpod/containers/payments/top",
+			"/v5.0.0/libpod/pods/payments/top",
 		} {
 			t.Run(mode+" "+requestPath, func(t *testing.T) {
 				reached := false
@@ -388,7 +426,7 @@ func TestMiddlewareContainerTopAcknowledgmentCannotBeRelaxedByRolloutMode(t *tes
 				handler.ServeHTTP(rec, req)
 
 				if reached {
-					t.Fatal("container top reached upstream without insecure_allow_read_exfiltration acknowledgment")
+					t.Fatal("process-list read reached upstream without insecure_allow_read_exfiltration acknowledgment")
 				}
 				if rec.Code != http.StatusForbidden {
 					t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)

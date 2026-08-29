@@ -90,6 +90,7 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		{"libpod-pods-list", http.MethodGet, "/libpod/pods/json", "", true},
 		{"libpod-pod-inspect", http.MethodGet, "/libpod/pods/abc/json", "", true},
 		{"libpod-pods-stats", http.MethodGet, "/libpod/pods/stats", "", true},
+		{"libpod-pod-top-denied", http.MethodGet, "/libpod/pods/abc/top", "", false},
 
 		// --- libpod: image reads ---
 		{"libpod-images-list", http.MethodGet, "/libpod/images/json", "", true},
