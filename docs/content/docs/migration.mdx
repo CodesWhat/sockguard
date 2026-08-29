@@ -24,7 +24,7 @@ Before switching the image tag, validate the current configuration with `sockgua
 
 **`Links` and `DriverOpts` have no granular gate.** Neither field is covered by any `endpoint_config.allow_*` option, on either `POST /networks/*/connect` or `POST /containers/create`'s `NetworkingConfig.EndpointsConfig` — they remain denied under the granular block regardless of which other fields you enable. A workflow that needs either must keep `allow_endpoint_config: true` and accept whole-object access instead of narrowing to `endpoint_config`.
 
-See [Configuration](/configuration#request-body-inspection) for the full field mapping.
+See [Configuration](/configuration#request-body-policy-reference) for the full field mapping.
 
 ### Migrating off `insecure_accept_opaque_buildkit_tunnels` (#185)
 
