@@ -80,7 +80,7 @@ func runBridgeAndWaitClosed(t *testing.T, endpoint Endpoint, policy Policy, limi
 	bridgeDone := make(chan struct{})
 	go func() {
 		defer close(bridgeDone)
-		_ = runBridge(context.Background(), legs, session, policy, limits, noopLogger(), registry)
+		_ = runBridge(context.Background(), legs, session, policy, limits, noopLogger(), registry, nil)
 	}()
 
 	tr := &http2.Transport{AllowHTTP: true}

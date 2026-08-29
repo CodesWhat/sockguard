@@ -943,11 +943,16 @@ type BuildkitRequestBodyConfig struct {
 // v1.7 — see buildkitproxy.DeniedExamples — matching the #185 sign-off's
 // "hard-deny the rest, no enabling knobs" compatibility boundary.
 type BuildkitControlRequestBodyConfig struct {
-	// AllowInfo permits the passthrough Control/Info RPC (worker/buildkit
-	// version metadata; no policy-relevant fields). Default false.
+	// AllowInfo permits the Control/Info RPC (buildkit version metadata).
+	// The request carries no policy-relevant field and is forwarded
+	// unchanged; the daemon's response is filtered against
+	// buildkitproxy's field allowlist before the client sees it. Default
+	// false.
 	AllowInfo bool `mapstructure:"allow_info"`
-	// AllowListWorkers permits the passthrough Control/ListWorkers RPC
-	// (worker capability metadata; no policy-relevant fields). Default
+	// AllowListWorkers permits the Control/ListWorkers RPC (worker
+	// metadata). Same shape as AllowInfo: the request is forwarded
+	// unchanged, and the response has the daemon's worker labels, GC
+	// policy and CDI device inventory stripped before relay. Default
 	// false.
 	AllowListWorkers bool `mapstructure:"allow_list_workers"`
 	// AllowStatus permits the mediated Control/Status RPC. Once the

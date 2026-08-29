@@ -198,6 +198,28 @@ type listedContainer struct {
 	} `json:"NetworkSettings"`
 }
 
+// inspectedContainer is the subset of GET /containers/{id}/json needed to
+// confirm that a container still holds a given address. It is deliberately a
+// different shape from listedContainer: /containers/json returns the summary
+// form, which carries only NetworkSettings.Networks, while the inspect
+// response also flattens the default network's endpoint onto NetworkSettings
+// itself (the legacy DefaultNetworkSettings fields, emitted by every daemon
+// that predates their removal). A container started with a plain `docker run`
+// on the default bridge is reported in both places, so reading only Networks
+// would still work there — but reading only the top-level fields would miss
+// every user-defined network. Both are read so neither shape produces a false
+// negative.
+type inspectedContainer struct {
+	NetworkSettings struct {
+		IPAddress         string `json:"IPAddress"`
+		GlobalIPv6Address string `json:"GlobalIPv6Address"`
+		Networks          map[string]struct {
+			IPAddress         string `json:"IPAddress"`
+			GlobalIPv6Address string `json:"GlobalIPv6Address"`
+		} `json:"Networks"`
+	} `json:"NetworkSettings"`
+}
+
 type upstreamResolver struct {
 	client *http.Client
 }
@@ -390,7 +412,7 @@ func newACLResolveClientForClient(client *http.Client, labelPrefix string) func(
 		client: client,
 	}
 	cache := newClientCache(clientCacheTTL, clientCacheMaxSize, time.Now, resolver.resolveClient)
-	cache.verifyLive = resolver.isContainerLive
+	cache.verifyLive = resolver.containerOwnsAddr
 	if labelPrefix != "" {
 		cache.augment = func(c resolvedClient) resolvedClient {
 			return withCompiledLabelRules(c, labelPrefix)
@@ -1061,6 +1083,16 @@ func (r upstreamResolver) resolveClient(ctx context.Context, addr netip.Addr) (r
 // when the daemon confirms the container still exists. A 404 or any transport
 // error returns false; other non-200 responses also return false. The caller
 // must not cache a result when this returns false.
+//
+// This is deliberately weaker than containerOwnsAddr and is used only on the
+// resolve (cache MISS) path, where address ownership has already been read
+// from the /containers/json response that produced the ID and the only
+// remaining question is whether the container survived the round trip. The
+// asymmetry is intentional: a false negative here is a hard denial that
+// repeats on every request, while a false negative in containerOwnsAddr just
+// drops a cache entry and re-resolves. Keeping the miss path on the check
+// that cannot be broken by an inspect-body shape change trades a
+// sub-millisecond recycle window for availability.
 func (r upstreamResolver) isContainerLive(ctx context.Context, id string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/"+url.PathEscape(id)+"/json", nil)
 	if err != nil {
@@ -1073,6 +1105,55 @@ func (r upstreamResolver) isContainerLive(ctx context.Context, id string) bool {
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	_ = resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// containerOwnsAddr performs a GET /containers/{id}/json and returns true only
+// when the daemon still reports addr among that container's addresses. It is
+// the cache's hit-path guard: existence is not sufficient, because `docker
+// stop` leaves a container inspectable (200) while releasing its IP back to
+// IPAM, which lets a new container claim the address inside the cache TTL.
+//
+// Fails closed to a re-resolve on every uncertainty — transport error, non-200
+// status, or a body that will not decode — matching isContainerLive's posture.
+// The body is bounded the same way the container-list path is; an inspect
+// response is small, but it is still attacker-adjacent input.
+func (r upstreamResolver) containerOwnsAddr(ctx context.Context, id string, addr netip.Addr) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://docker/containers/"+url.PathEscape(id)+"/json", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := r.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer func() {
+		// Drain a bounded remainder so the connection stays reusable, then close.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	var inspected inspectedContainer
+	if err := json.NewDecoder(io.LimitReader(resp.Body, filter.MaxResponseBodyBytes)).Decode(&inspected); err != nil {
+		return false
+	}
+	return inspectedContainerHasIP(inspected, addr)
+}
+
+func inspectedContainerHasIP(container inspectedContainer, addr netip.Addr) bool {
+	settings := container.NetworkSettings
+	if ipMatches(settings.IPAddress, addr) || ipMatches(settings.GlobalIPv6Address, addr) {
+		return true
+	}
+	for _, network := range settings.Networks {
+		if ipMatches(network.IPAddress, addr) || ipMatches(network.GlobalIPv6Address, addr) {
+			return true
+		}
+	}
+	return false
 }
 
 func containerHasIP(container listedContainer, addr netip.Addr) bool {

@@ -68,6 +68,7 @@ const FUZZERS = [
   ["FuzzEvaluateStatusRequest", "./internal/buildkitproxy/"],
   ["FuzzRewriteSessionAdvertisement", "./internal/buildkitproxy/"],
   ["FuzzValidateUpgradeRequest", "./internal/buildkitproxy/"],
+  ["FuzzFilterControlResponseMessage", "./internal/buildkitproxy/"],
   ["FuzzDecode", "./internal/dockerfilters/"],
   ["FuzzProxyHeadersAndBody", "./internal/proxy/"],
   ["FuzzHijackHeadersAndBody", "./internal/proxy/"],

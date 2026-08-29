@@ -70,7 +70,14 @@ func newTestBridge(t *testing.T, endpoint Endpoint, policy Policy, limits Limits
 // CONTENT (not just gRPC status codes), e.g. that an admitted Auth call
 // logs the normalized registry host rather than the raw client-supplied
 // field. Everything else should keep using newTestBridge/noopLogger.
-func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler, logger *slog.Logger) *testBridge {
+//
+// driftLimiter is optional and variadic rather than a plain trailing
+// parameter so every existing caller keeps compiling unchanged: only the
+// schema-drift tests in controlinfo_test.go need a limiter isolated from the
+// rest of the package (and from -count>1 reruns of themselves), so they pass
+// one explicitly; everything else gets runBridge's own default of the
+// package-level controlSchemaDrift.
+func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler, logger *slog.Logger, driftLimiter ...*schemaDriftLimiter) *testBridge {
 	t.Helper()
 
 	serverLeg, driverConn := net.Pipe()
@@ -86,10 +93,15 @@ func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, lim
 	}
 	session := registry.Open(SessionKey{ClientIdentity: "test-client", Profile: "test-profile"}, endpoint, clientUUID)
 
+	var limiter *schemaDriftLimiter
+	if len(driftLimiter) > 0 {
+		limiter = driftLimiter[0]
+	}
+
 	legs := bridgeLegs{endpoint: endpoint, serverConn: serverLeg, clientConn: clientLegForBridge}
 	tb := &testBridge{registry: registry, session: session, done: make(chan struct{})}
 	go func() {
-		tb.err = runBridge(context.Background(), legs, session, policy, limits, logger, registry)
+		tb.err = runBridge(context.Background(), legs, session, policy, limits, logger, registry, limiter)
 		close(tb.done)
 	}()
 
@@ -220,9 +232,15 @@ func TestBridgeFailsClosedWhenMediatedMethodHasNoDispatcher(t *testing.T) {
 		registry: registry,
 	}
 	rec := httptest.NewRecorder()
-	req := newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", "opaque")
+	req := newGRPCRequest(t, "/moby.buildkit.v1.Control/Prune", "opaque")
 
-	b.forwardAdmitted(rec, req, "moby.buildkit.v1.Control", "Info", Mediate)
+	// Prune is Deny-by-default and has no dispatcher of any kind, so handing
+	// forwardAdmitted a Mediate disposition for it is exactly the
+	// registry-vs-dispatcher drift this arm exists to fail closed on. Every
+	// method the registry actually lists as Mediate now has a dispatcher —
+	// TestEveryMediatedRegistryMethodHasDispatcher proves it — so the drift
+	// can only be staged artificially like this.
+	b.forwardAdmitted(rec, req, "moby.buildkit.v1.Control", "Prune", Mediate)
 
 	code, msg := grpcStatusOf(t, rec.Result())
 	if code != grpcCodeInternal {
@@ -279,7 +297,7 @@ func TestBridgeForwardsAdmittedMethodVerbatim(t *testing.T) {
 func TestBridgeForwardsPassthroughMethod(t *testing.T) {
 	tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
 
-	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
+	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", ""))
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -299,13 +317,13 @@ func TestBridgeResponseSizeCapTripsResourceExhausted(t *testing.T) {
 
 	tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, limits, bigDaemon)
 
-	// Info (Passthrough) rather than Solve: this test is exercising
+	// Health/Check (Passthrough) rather than Solve: this test is exercising
 	// forward()'s generic response size cap, which applies identically
 	// regardless of method — Solve now routes through
 	// forwardControlMediated's own per-message decode path (see
 	// TestBridgeControlMediatedSolve* for that coverage) and would reject
 	// this request's non-gRPC-framed empty body before ever reaching forward.
-	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
+	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", ""))
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -422,7 +440,7 @@ func TestRunBridgeClientLegHandshakeFailure(t *testing.T) {
 	registry := NewSessionRegistry()
 	session := registry.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
 
-	err := runBridge(context.Background(), bridgeLegs{endpoint: EndpointGRPC, serverConn: serverLeg, clientConn: clientLeg}, session, allowAllPolicy, DefaultLimits(), noopLogger(), registry)
+	err := runBridge(context.Background(), bridgeLegs{endpoint: EndpointGRPC, serverConn: serverLeg, clientConn: clientLeg}, session, allowAllPolicy, DefaultLimits(), noopLogger(), registry, nil)
 	if err == nil {
 		t.Fatal("runBridge() with a dead client leg = nil error, want an error establishing the client leg")
 	}
@@ -484,11 +502,11 @@ func TestBridgeForwardDefaultsHostWhenEmpty(t *testing.T) {
 	}}
 	b := newUnitTestBridge(t, fake)
 
-	req := httptest.NewRequest(http.MethodPost, "/moby.buildkit.v1.Control/Info", nil)
+	req := httptest.NewRequest(http.MethodPost, "/grpc.health.v1.Health/Check", nil)
 	req.Host = ""
 	rec := httptest.NewRecorder()
 
-	b.forward(rec, req, "moby.buildkit.v1.Control", "Info")
+	b.forward(rec, req, "grpc.health.v1.Health", "Check")
 
 	if fake.gotReq == nil {
 		t.Fatal("forward() never called RoundTrip")
