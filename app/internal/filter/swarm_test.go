@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -704,5 +705,65 @@ func TestSwarmInspectUnlockOversizedBody(t *testing.T) {
 	}
 	if !strings.HasPrefix(rejection.reason, "swarm unlock denied: request body exceeds") {
 		t.Fatalf("reason = %q, want oversized body denial", rejection.reason)
+	}
+}
+
+// The daemon parses these query params with httputils.BoolValue, which treats
+// every value outside {"", "0", "no", "false", "none"} as true. A rotation gate
+// that recognized only the canonical spellings would decline to deny
+// ?rotateManagerToken=2 and forward a rotation the operator disabled.
+func TestSwarmUpdateDeniesRotationForNonCanonicalTruthyValues(t *testing.T) {
+	gates := []struct {
+		param string
+		want  string
+	}{
+		{"rotateWorkerToken", "swarm update denied: worker token rotation is not allowed"},
+		{"rotateManagerToken", "swarm update denied: manager token rotation is not allowed"},
+		{"rotateManagerUnlockKey", "swarm update denied: manager unlock key rotation is not allowed"},
+	}
+	// Every one of these is truthy to the daemon.
+	values := []string{"2", "enable", "on2", "x", "yep", "TRUE ", "Y", "-1", "00"}
+
+	for _, gate := range gates {
+		for _, value := range values {
+			t.Run(gate.param+"="+value, func(t *testing.T) {
+				policy := newSwarmPolicy(SwarmOptions{})
+				target := "/swarm/update?version=42&" + gate.param + "=" + url.QueryEscape(value)
+				req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(`{}`))
+
+				denyReason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+				if err != nil {
+					t.Fatalf("inspect() error = %v", err)
+				}
+				if denyReason != gate.want {
+					t.Fatalf("denyReason = %q, want %q", denyReason, gate.want)
+				}
+			})
+		}
+	}
+}
+
+// The mirror of the above: the daemon's falsy set must not be over-denied, or a
+// client that explicitly opts out of rotation is refused a legitimate update.
+func TestSwarmUpdateAllowsRotationParamsWithDaemonFalsyValues(t *testing.T) {
+	params := []string{"rotateWorkerToken", "rotateManagerToken", "rotateManagerUnlockKey"}
+	values := []string{"", "0", "no", "false", "none", "NONE", " False "}
+
+	for _, param := range params {
+		for _, value := range values {
+			t.Run(param+"="+value, func(t *testing.T) {
+				policy := newSwarmPolicy(SwarmOptions{})
+				target := "/swarm/update?version=42&" + param + "=" + url.QueryEscape(value)
+				req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(`{}`))
+
+				denyReason, err := policy.inspect(nil, req, NormalizePath(req.URL.Path))
+				if err != nil {
+					t.Fatalf("inspect() error = %v", err)
+				}
+				if denyReason != "" {
+					t.Fatalf("denyReason = %q, want allow for daemon-falsy %q", denyReason, value)
+				}
+			})
+		}
 	}
 }
