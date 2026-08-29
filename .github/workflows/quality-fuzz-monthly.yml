@@ -97,6 +97,7 @@ jobs:
           - { name: FuzzOwnershipMutateBody,       pkg: ./internal/ownership/ }
           - { name: FuzzOwnershipMutateServiceBody, pkg: ./internal/ownership/ }
           - { name: FuzzFilterModifyResponse,      pkg: ./internal/responsefilter/ }
+          - { name: FuzzFilterSystemDataUsage,     pkg: ./internal/responsefilter/ }
           - { name: FuzzImmutableListenerDiff,     pkg: ./internal/reload/ }
           - { name: FuzzBuildConfig,               pkg: ./internal/policybundle/ }
           - { name: FuzzToRegexString,             pkg: ./internal/glob/ }

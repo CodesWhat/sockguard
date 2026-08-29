@@ -26,6 +26,12 @@ import (
 // (both list exactly Solve and Status), but the switch's default arm exists
 // so a future method added to one and not the other fails CLOSED — no
 // policy decision made at all — rather than forwarding with zero mediation.
+//
+// Internal carries a second meaning controlinfo.go added: a Control/Info or
+// Control/ListWorkers response sockguard could not parse or filter
+// (buildkit_response_filter_failed). Internal rather than InvalidArgument
+// because the peer that produced those bytes is buildkitd, not the client
+// being answered — nothing the client sent is wrong.
 const (
 	grpcCodeInvalidArgument    = 3
 	grpcCodePermissionDenied   = 7

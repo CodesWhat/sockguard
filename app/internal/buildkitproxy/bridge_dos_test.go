@@ -41,7 +41,7 @@ func newConcurrencyTestBridge(t *testing.T, limits Limits, daemonHandler http.Ha
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = runBridge(context.Background(), legs, session, allowAllPolicy, limits, noopLogger(), registry)
+		_ = runBridge(context.Background(), legs, session, allowAllPolicy, limits, noopLogger(), registry, nil)
 	}()
 
 	tr := &http2.Transport{AllowHTTP: true, StrictMaxConcurrentStreams: true}
@@ -126,7 +126,7 @@ func TestBridgeMaxConcurrentStreamsEnforced(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			resp, err := driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
+			resp, err := driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", ""))
 			if err != nil {
 				errs <- err
 				return
@@ -190,7 +190,7 @@ func TestBridgeControlMediatedSolveSizeCapBoundary(t *testing.T) {
 		// Fail-closed granularity per bridge.go's own doc comment: a
 		// size-cap trip ends only this stream — the tunnel itself must
 		// survive and admit a subsequent, properly-sized request.
-		resp2, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
+		resp2, err := tb.driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", ""))
 		if err != nil {
 			t.Fatalf("RoundTrip after size-cap trip: %v", err)
 		}
@@ -258,7 +258,7 @@ func TestBridgeStreamsHeldAtConcurrencyCapDoNotDeadlockFurtherRequests(t *testin
 	holderDone := make(chan struct{}, maxStreams)
 	for i := 0; i < maxStreams; i++ {
 		go func() {
-			resp, err := driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
+			resp, err := driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", ""))
 			if err == nil {
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
@@ -278,7 +278,7 @@ func TestBridgeStreamsHeldAtConcurrencyCapDoNotDeadlockFurtherRequests(t *testin
 
 	extraDone := make(chan error, 1)
 	go func() {
-		resp, err := driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
+		resp, err := driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", ""))
 		if err != nil {
 			extraDone <- err
 			return

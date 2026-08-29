@@ -46,7 +46,7 @@ func TestBridgeBackpressureSlowClientReaderResponseCapStillEnforced(t *testing.T
 
 	tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, limits, fastDaemon)
 
-	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
+	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", ""))
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestBridgeBackpressureSlowDaemonReaderStillDeliversFullBody(t *testing.T) {
 
 	roundTripDone := make(chan error, 1)
 	go func() {
-		resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", string(body)))
+		resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", string(body)))
 		if err != nil {
 			roundTripDone <- err
 			return
