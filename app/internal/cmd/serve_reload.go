@@ -66,6 +66,15 @@ type reloadCoordinator struct {
 	// YAML file.
 	bundleVerifier policybundle.Verifier
 	bundleTrust    config.PolicyBundleConfig
+	// applyFlagOverrides re-applies the process's explicitly-set CLI flags
+	// to a freshly-loaded reload candidate, closing over the already-parsed
+	// *cobra.Command. Documented precedence is flags > env > file > defaults
+	// (docs/content/docs/configuration.mdx), and there is no viper.BindPFlag
+	// anywhere: the override exists ONLY as the one-time struct mutation
+	// startup performs. Without re-applying it, every reload silently drops
+	// the operator's flags. Never nil after newReloadCoordinator — it
+	// defaults to a no-op for fixtures that pass no command.
+	applyFlagOverrides func(*config.Config) error
 }
 
 // reloadCoordinatorParams bundles the inputs newReloadCoordinator needs.
@@ -84,6 +93,10 @@ type reloadCoordinatorParams struct {
 	Runtime         *serveRuntime
 	Versioner       *admin.PolicyVersioner
 	BundleVerifier  policybundle.Verifier
+	// ApplyFlagOverrides must be the same override function startup applied
+	// (see runServeWithDeps). Leaving it nil is only correct for fixtures
+	// that model a process started with no CLI flags at all.
+	ApplyFlagOverrides func(*config.Config) error
 }
 
 // newReloadCoordinator returns a coordinator wired up with the initial
@@ -93,18 +106,22 @@ func newReloadCoordinator(p reloadCoordinatorParams) *reloadCoordinator {
 	if p.InitialTeardown == nil {
 		p.InitialTeardown = func() {}
 	}
+	if p.ApplyFlagOverrides == nil {
+		p.ApplyFlagOverrides = func(*config.Config) error { return nil }
+	}
 	coordinator := &reloadCoordinator{
-		chainTeardown:  p.InitialTeardown,
-		activeCfg:      p.Cfg,
-		rootCtx:        p.RootCtx,
-		swappable:      p.Swappable,
-		cfgFile:        p.CfgFile,
-		logger:         p.Logger,
-		auditLogger:    p.AuditLogger,
-		deps:           p.Deps,
-		runtime:        p.Runtime,
-		versioner:      p.Versioner,
-		bundleVerifier: p.BundleVerifier,
+		chainTeardown:      p.InitialTeardown,
+		activeCfg:          p.Cfg,
+		rootCtx:            p.RootCtx,
+		swappable:          p.Swappable,
+		cfgFile:            p.CfgFile,
+		logger:             p.Logger,
+		auditLogger:        p.AuditLogger,
+		deps:               p.Deps,
+		runtime:            p.Runtime,
+		versioner:          p.Versioner,
+		bundleVerifier:     p.BundleVerifier,
+		applyFlagOverrides: p.ApplyFlagOverrides,
 	}
 	if p.BundleVerifier != nil && p.Cfg != nil {
 		coordinator.bundleTrust = p.Cfg.PolicyBundle
@@ -177,6 +194,60 @@ func (c *reloadCoordinator) reload() {
 	}
 	if c.bundleVerifier != nil {
 		pinPolicyBundleTrust(newCfg, c.bundleTrust)
+	}
+
+	// Re-apply the CLI flag overrides to the candidate, mirroring startup:
+	// runServeWithDeps calls applyFlagOverrides right after loadConfig on the
+	// unsigned path, and AGAIN on signedCfg right after bundle verification.
+	// Position is load → pin trust → flags → compat-env gate → immutable diff
+	// → ApplyCompat → validateRules, which is startup's order exactly.
+	//
+	// It must land before ImmutableDiff. c.activeCfg is the startup config
+	// WITH the overrides applied, so comparing it against a candidate without
+	// them reports a phantom change on every reload for listen, upstream.socket
+	// and log — the operator is told "restart required to apply" for a config
+	// that never changed, for the entire process lifetime. It must also land
+	// before validateRules and the chain rebuild, or a mutable override like
+	// --deny-verbosity minimal is silently dropped on the first reload and the
+	// YAML's value quietly widens deny-response detail.
+	//
+	// Signed bundles: yes, this runs on the signed path too, and it does not
+	// weaken the "parse the EXACT verified bytes" guarantee above. That
+	// guarantee defends against two RUNTIME-mutable channels — a file swapped
+	// between verify and load (#8), and SOCKGUARD_* env vars re-read by the
+	// loader on every reload (#16). CLI flags are neither: they are fixed in
+	// os.Args at exec, parsed once by cobra before RunE, and immutable for the
+	// process lifetime, so re-applying them at reload N replays byte-identical
+	// values to the ones startup applied at serve.go's applyFlagOverrides(cmd,
+	// signedCfg). Startup is the precedent and a reload must not be more
+	// permissive than startup: replaying the same frozen set is by construction
+	// not more permissive, whereas SKIPPING it makes the signed deployment's
+	// effective config depend on how many times the file has been touched.
+	// Layering out-of-band operator input over signed bytes is already the
+	// design here — pinPolicyBundleTrust directly above overwrites the signed
+	// config's trust block with material from --policy-bundle-trust-config,
+	// another CLI-supplied input. The bundle authenticates the policy content,
+	// not the absence of operator flags.
+	if err := c.applyFlagOverrides(newCfg); err != nil {
+		// Only reachable if a flag is redeclared as a non-string type, which
+		// startup would already have failed on. Labeled reject_load rather
+		// than a new metric value: this is a failure to construct the
+		// candidate config, which is what reject_load already means.
+		c.logger.Warn("config reload rejected: applying CLI flag overrides failed",
+			"result", "reject_load",
+			"path", c.cfgFile,
+			"error", err.Error(),
+		)
+		c.runtime.metrics.ObserveConfigReload("reject_load")
+		return
+	}
+
+	// Deliberately a second c.bundleVerifier block rather than folded into the
+	// one above: startup runs this gate AFTER applying flags to signedCfg, and
+	// merging the two would silently reorder it. The check reads only the
+	// process environment, so the order is not load-bearing today — keeping it
+	// aligned with startup is what makes that verifiable at a glance.
+	if c.bundleVerifier != nil {
 		if vars := config.CompatEnvironmentVariables(); len(vars) > 0 {
 			c.logger.Warn("config reload rejected: signed policy cannot use compatibility environment variables",
 				"result", "reject_compat",

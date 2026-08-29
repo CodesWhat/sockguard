@@ -47,8 +47,8 @@ func FuzzEffectiveListenerValidation(f *testing.F) {
 			cfg.Listen = listen
 		}
 
-		first := validateListeners(&cfg)
-		second := validateListeners(&cfg)
+		first := validateListeners(&cfg, validateFull)
+		second := validateListeners(&cfg, validateFull)
 		if !reflect.DeepEqual(first, second) {
 			t.Fatalf("validation is nondeterministic: first=%v second=%v", first, second)
 		}

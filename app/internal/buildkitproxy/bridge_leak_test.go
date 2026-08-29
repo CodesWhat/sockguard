@@ -23,7 +23,7 @@ func TestBridgeSetupTeardownDoesNotLeakGoroutines(t *testing.T) {
 	const iterations = 25
 	for i := 0; i < iterations; i++ {
 		runBridgeAndWaitClosed(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), echoDaemonHandler(), func(driver *http2.ClientConn) {
-			resp, err := driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", "payload"))
+			resp, err := driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", "payload"))
 			if err != nil {
 				t.Fatalf("iteration %d: RoundTrip: %v", i, err)
 			}

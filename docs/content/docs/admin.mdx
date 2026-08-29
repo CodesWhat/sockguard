@@ -77,9 +77,21 @@ reload** — changing listener binding or TLS material requires a process restar
 
 ## POST /admin/validate
 
-Runs the same parse → validate → compile pipeline as `sockguard validate` on a
-YAML body you supply in the request, and returns a structured JSON report.
-Running policy is never mutated.
+Runs the parse → validate → compile pipeline on a YAML body you supply in the
+request, and returns a structured JSON report. Running policy is never mutated.
+
+<Callout type="info">
+  One check is deliberately weaker here than in `sockguard validate`: the
+  endpoint never opens the files a candidate names. `sockguard validate` and
+  startup load the `listen.tls` cert, key, and client CA so a missing or
+  malformed file fails fast; `POST /admin/validate` compiles the same TLS
+  identity constraints but leaves the three paths untouched. Otherwise a caller
+  could point a candidate at any absolute path and read existence, readability,
+  and PEM-validity back out of the `errors` array, turning the endpoint into a
+  host-filesystem probe. So a `200` from this endpoint does not promise the TLS
+  material on disk is loadable; only a restart or `sockguard validate` on the
+  host proves that.
+</Callout>
 
 ### Request
 
