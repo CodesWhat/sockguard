@@ -11,10 +11,10 @@ import "testing"
 // TestDefaultsEndpointConfigAllowAliasesTrue proves the granular form's
 // default reproduces allow_endpoint_config's historical unconditional-allow
 // behavior for Aliases: AllowAliases defaults true for both network and
-// libpod_network (the latter is never consulted, but keeps the same default
-// posture for consistency — see config.Defaults()'s doc comment), while
-// every other granular field defaults false (deny), matching the rest of
-// the codebase's fail-closed convention.
+// libpod_network — the latter gates POST /libpod/networks/{name}/connect's
+// top-level `aliases` field, so it needs the same default for the same
+// Compose-recreate reason — while every other granular field defaults false
+// (deny), matching the rest of the codebase's fail-closed convention.
 func TestDefaultsEndpointConfigAllowAliasesTrue(t *testing.T) {
 	d := Defaults()
 	if !d.RequestBody.Network.EndpointConfig.AllowAliases {
@@ -248,4 +248,151 @@ rules:
 		}
 		_ = Validate(cfg)
 	})
+}
+
+// TestValidateRejectsLibpodAllowEndpointConfigWithExplicitGranularBlock is
+// TestValidateRejectsAllowEndpointConfigWithExplicitGranularBlock's libpod
+// half. request_body.libpod_network carries the identical endpoint_config
+// block and gates POST /libpod/networks/{name}/connect with it, so writing
+// both keys there must fail exactly as it does under request_body.network
+// rather than validating silently.
+func TestValidateRejectsLibpodAllowEndpointConfigWithExplicitGranularBlock(t *testing.T) {
+	t.Run("via YAML", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte(`
+request_body:
+  libpod_network:
+    allow_endpoint_config: true
+    endpoint_config:
+      allow_static_addressing: true
+rules:
+  - match: { method: GET, path: /_ping }
+    action: allow
+`))
+		if err != nil {
+			t.Fatalf("LoadBytes: %v", err)
+		}
+		if !cfg.ExplicitLibpodNetworkEndpointConfig() {
+			t.Fatal("ExplicitLibpodNetworkEndpointConfig() = false, want true")
+		}
+		if cfg.ExplicitNetworkEndpointConfig() {
+			t.Fatal("ExplicitNetworkEndpointConfig() = true, want false — the libpod block must not mark the Docker one explicit")
+		}
+		requireValidationContains(t, cfg, "request_body.libpod_network.allow_endpoint_config and request_body.libpod_network.endpoint_config are mutually exclusive")
+	})
+
+	t.Run("via environment variable", func(t *testing.T) {
+		t.Setenv("SOCKGUARD_REQUEST_BODY_LIBPOD_NETWORK_ALLOW_ENDPOINT_CONFIG", "true")
+		t.Setenv("SOCKGUARD_REQUEST_BODY_LIBPOD_NETWORK_ENDPOINT_CONFIG_ALLOW_MAC_PINNING", "true")
+
+		cfg, err := Load("/nonexistent-so-defaults-and-env-only.yaml")
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if !cfg.ExplicitLibpodNetworkEndpointConfig() {
+			t.Fatal("ExplicitLibpodNetworkEndpointConfig() = false, want true")
+		}
+		requireValidationContains(t, cfg, "request_body.libpod_network.allow_endpoint_config and request_body.libpod_network.endpoint_config are mutually exclusive")
+	})
+}
+
+// TestValidateAllowsLibpodEndpointConfigKeysSeparately proves the check is a
+// mutual-exclusion rule and not a ban on either key: libpod_network with only
+// allow_endpoint_config, and libpod_network with only a granular block, both
+// still load and validate.
+func TestValidateAllowsLibpodEndpointConfigKeysSeparately(t *testing.T) {
+	t.Run("allow_endpoint_config alone", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte(`
+request_body:
+  libpod_network:
+    allow_endpoint_config: true
+rules:
+  - match: { method: GET, path: /_ping }
+    action: allow
+`))
+		if err != nil {
+			t.Fatalf("LoadBytes: %v", err)
+		}
+		if cfg.ExplicitLibpodNetworkEndpointConfig() {
+			t.Fatal("ExplicitLibpodNetworkEndpointConfig() = true, want false (endpoint_config block was never set)")
+		}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("Validate() = %v, want nil", err)
+		}
+	})
+
+	t.Run("granular block alone", func(t *testing.T) {
+		cfg, err := LoadBytes([]byte(`
+request_body:
+  libpod_network:
+    endpoint_config:
+      allow_static_addressing: true
+      allow_mac_pinning: true
+rules:
+  - match: { method: GET, path: /_ping }
+    action: allow
+`))
+		if err != nil {
+			t.Fatalf("LoadBytes: %v", err)
+		}
+		if !cfg.ExplicitLibpodNetworkEndpointConfig() {
+			t.Fatal("ExplicitLibpodNetworkEndpointConfig() = false, want true")
+		}
+		if cfg.RequestBody.LibpodNetwork.AllowEndpointConfig {
+			t.Fatal("LibpodNetwork.AllowEndpointConfig = true, want false (default)")
+		}
+		if err := Validate(cfg); err != nil {
+			t.Fatalf("Validate() = %v, want nil", err)
+		}
+		if !cfg.RequestBody.LibpodNetwork.EndpointConfig.AllowStaticAddressing {
+			t.Error("LibpodNetwork.EndpointConfig.AllowStaticAddressing = false, want true")
+		}
+		if !cfg.RequestBody.LibpodNetwork.EndpointConfig.AllowMACPinning {
+			t.Error("LibpodNetwork.EndpointConfig.AllowMACPinning = false, want true")
+		}
+		if !cfg.RequestBody.LibpodNetwork.EndpointConfig.AllowAliases {
+			t.Error("LibpodNetwork.EndpointConfig.AllowAliases = false, want true (default)")
+		}
+	})
+}
+
+// TestValidateDefaultsHasNoExplicitLibpodEndpointConfigBlock is the libpod
+// twin of TestValidateDefaultsHasNoExplicitEndpointConfigBlock: a pure
+// defaults config must not trip the new check either, even though
+// LibpodNetwork.EndpointConfig.AllowAliases defaults to true.
+func TestValidateDefaultsHasNoExplicitLibpodEndpointConfigBlock(t *testing.T) {
+	cfg, err := Load("/nonexistent-so-defaults-only.yaml")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ExplicitLibpodNetworkEndpointConfig() {
+		t.Fatal("ExplicitLibpodNetworkEndpointConfig() = true, want false for a pure-defaults config")
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
+// TestEndpointConfigProvenanceGroupsAreIndependent pins that the two groups
+// answer for themselves. One provenance pass fills both flags, so a bug that
+// ORed them together would still pass every single-group test above; this
+// asserts the Docker block does not mark the libpod one explicit either.
+func TestEndpointConfigProvenanceGroupsAreIndependent(t *testing.T) {
+	cfg, err := LoadBytes([]byte(`
+request_body:
+  network:
+    endpoint_config:
+      allow_mac_pinning: true
+rules:
+  - match: { method: GET, path: /_ping }
+    action: allow
+`))
+	if err != nil {
+		t.Fatalf("LoadBytes: %v", err)
+	}
+	if !cfg.ExplicitNetworkEndpointConfig() {
+		t.Fatal("ExplicitNetworkEndpointConfig() = false, want true")
+	}
+	if cfg.ExplicitLibpodNetworkEndpointConfig() {
+		t.Fatal("ExplicitLibpodNetworkEndpointConfig() = true, want false — the Docker block must not mark the libpod one explicit")
+	}
 }

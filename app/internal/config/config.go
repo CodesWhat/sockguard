@@ -128,6 +128,15 @@ type Config struct {
 	// round-trips through mapstructure/YAML/JSON.
 	explicitNetworkEndpointConfig bool
 
+	// explicitLibpodNetworkEndpointConfig is explicitNetworkEndpointConfig's
+	// counterpart for request_body.libpod_network.endpoint_config, which
+	// gates POST /libpod/networks/{name}/connect. Both groups carry the same
+	// block and the same mutual-exclusion rule, so both need the same
+	// provenance signal; tracking only the Docker one meant an operator who
+	// wrote both keys under libpod_network got silence where the Docker
+	// spelling gave them an error.
+	explicitLibpodNetworkEndpointConfig bool
+
 	// InsecureAcceptOpaqueBuildkitTunnels acknowledges opening POST /session,
 	// POST /grpc, or a direct BuildKit Control-service method path. Both
 	// endpoints are unversioned opaque hijacked streams: dockerd's embedded
@@ -174,6 +183,13 @@ func (c *Config) ExplicitLegacyListen() bool {
 // check — see validateNetworkEndpointConfig).
 func (c *Config) ExplicitNetworkEndpointConfig() bool {
 	return c.explicitNetworkEndpointConfig
+}
+
+// ExplicitLibpodNetworkEndpointConfig reports whether
+// request_body.libpod_network.endpoint_config was set explicitly, for tests
+// and validation — the libpod half of the same mutual-exclusion check.
+func (c *Config) ExplicitLibpodNetworkEndpointConfig() bool {
+	return c.explicitLibpodNetworkEndpointConfig
 }
 
 // ListenConfig configures a single proxy listener (unix socket or TCP).
@@ -751,8 +767,12 @@ type NetworkRequestBodyConfig struct {
 	// gates (#186) — see EndpointConfigRequestBodyConfig's doc comment for
 	// the field mapping and precedence rules. Only consulted when
 	// allow_endpoint_config is false/unset; setting both is a config
-	// validation error (validateNetworkEndpointConfig). Has no libpod analog
-	// — never consulted by the libpod_network inspector, see libpod_network.go.
+	// validation error (validateNetworkEndpointConfig), under the
+	// libpod_network key as well as this one. Consulted by both inspector
+	// families: the Docker one for POST /networks/*/connect and
+	// container-create's EndpointsConfig, the libpod one for
+	// POST /libpod/networks/{name}/connect, whose top-level snake_case fields
+	// are projected onto EndpointSettings — see filter/libpod_network.go.
 	EndpointConfig       EndpointConfigRequestBodyConfig `mapstructure:"endpoint_config"`
 	AllowDisconnectForce bool                            `mapstructure:"allow_disconnect_force"`
 	// AllowDisableIPv4 permits POST /networks/create with EnableIPv4 explicitly

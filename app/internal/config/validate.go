@@ -841,25 +841,41 @@ func validateRequestBody(cfg *Config) []string {
 	return errs
 }
 
-// validateNetworkEndpointConfig rejects
-// request_body.network.allow_endpoint_config: true combined with an
-// explicitly configured request_body.network.endpoint_config block (#186):
+// validateNetworkEndpointConfig rejects allow_endpoint_config: true combined
+// with an explicitly configured endpoint_config block (#186):
 // allow_endpoint_config already admits every EndpointSettings field
 // unchanged, so a simultaneous granular block is ambiguous — which one an
 // operator actually intends to govern the request is not something sockguard
-// should guess at silently. Detected via cfg.explicitNetworkEndpointConfig
-// (a provenance-only Viper pass; see explicitNetworkEndpointConfigFile/Bytes
-// in load.go) rather than comparing cfg.RequestBody.Network.EndpointConfig
-// against its Go zero value, because EndpointConfigRequestBodyConfig.AllowAliases
-// defaults to true (config.Defaults()), so the merged struct is never the
-// zero value even when the operator never wrote the block at all.
+// should guess at silently. Detected via the cfg.explicit*EndpointConfig
+// provenance flags (a provenance-only Viper pass; see
+// explicitEndpointConfigFile/Bytes in load.go) rather than comparing the
+// merged EndpointConfig against its Go zero value, because
+// EndpointConfigRequestBodyConfig.AllowAliases defaults to true
+// (config.Defaults()), so the merged struct is never the zero value even
+// when the operator never wrote the block at all.
+//
+// Both groups that carry the block are checked. request_body.libpod_network
+// was originally exempt on the belief that libpod had no network-connect
+// endpoint to gate; it does (POST /libpod/networks/{name}/connect), so an
+// operator writing both keys there used to get silence where the Docker
+// spelling gave them an error — a config that quietly means something other
+// than what it says.
 func validateNetworkEndpointConfig(cfg *Config) []string {
+	var errs []string
 	if cfg.RequestBody.Network.AllowEndpointConfig && cfg.explicitNetworkEndpointConfig {
-		return []string{
-			"request_body.network.allow_endpoint_config and request_body.network.endpoint_config are mutually exclusive: allow_endpoint_config: true already admits every EndpointSettings field, so remove the endpoint_config block or set allow_endpoint_config: false and use the granular fields instead",
-		}
+		errs = append(errs, endpointConfigMutualExclusionError("network"))
 	}
-	return nil
+	if cfg.RequestBody.LibpodNetwork.AllowEndpointConfig && cfg.explicitLibpodNetworkEndpointConfig {
+		errs = append(errs, endpointConfigMutualExclusionError("libpod_network"))
+	}
+	return errs
+}
+
+// endpointConfigMutualExclusionError renders the #186 mutual-exclusion
+// message for one request_body group. One template, so the two groups cannot
+// drift into differently-worded advice for the identical mistake.
+func endpointConfigMutualExclusionError(group string) string {
+	return fmt.Sprintf("request_body.%s.allow_endpoint_config and request_body.%s.endpoint_config are mutually exclusive: allow_endpoint_config: true already admits every EndpointSettings field, so remove the endpoint_config block or set allow_endpoint_config: false and use the granular fields instead", group, group)
 }
 
 // validateBuildkitAckMutualExclusion rejects
