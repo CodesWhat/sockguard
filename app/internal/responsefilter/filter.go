@@ -113,7 +113,7 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifySwarmUnlockKey(resp)
 	case normPath == "/info":
 		return f.modifyInfo(resp)
-	case normPath == "/system/df":
+	case normPath == SystemDataUsagePath:
 		return f.modifySystemDataUsage(resp)
 	}
 
@@ -134,8 +134,8 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -197,8 +197,8 @@ func (f *Filter) modifyNetworkInspect(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -218,8 +218,8 @@ func (f *Filter) modifyVolumeList(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -252,8 +252,8 @@ func (f *Filter) modifyVolumeInspect(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -470,8 +470,8 @@ func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) e
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 	if err := mutate(payload); err != nil {
@@ -808,7 +808,7 @@ func (f *Filter) redactSystemDataUsagePayload(payload map[string]any) error {
 }
 
 func (f *Filter) redactSystemDataUsageContainers(payload map[string]any) error {
-	containers, err := systemDataUsageItems(payload, "ContainerUsage")
+	containers, err := systemDataUsageItems(payload, "ContainerUsage", "Containers")
 	if err != nil {
 		return err
 	}
@@ -831,7 +831,7 @@ func (f *Filter) redactSystemDataUsageVolumes(payload map[string]any) error {
 	if !f.opts.RedactMountPaths {
 		return nil
 	}
-	volumes, err := systemDataUsageItems(payload, "VolumeUsage")
+	volumes, err := systemDataUsageItems(payload, "VolumeUsage", "Volumes")
 	if err != nil {
 		return err
 	}
@@ -841,27 +841,59 @@ func (f *Filter) redactSystemDataUsageVolumes(payload map[string]any) error {
 	return nil
 }
 
-// systemDataUsageItems returns the .Items array from a /system/df sub-key
-// (ContainerUsage or VolumeUsage) decoded as object maps. Returns (nil, nil)
-// when the sub-key or its Items field is absent.
-func systemDataUsageItems(payload map[string]any, key string) ([]map[string]any, error) {
-	usage, found, err := nestedMapValue(payload, key)
-	if err != nil || !found {
+// systemDataUsageItems returns one /system/df section's items as object maps,
+// reading both response shapes the Docker Engine API has used.
+//
+// Engine API >= 1.52 nests a section's items under a per-section usage object
+// (ContainerUsage.Items); <= 1.51 returns a bare top-level array (Containers).
+// A daemon answers in exactly one shape, but the proxy cannot know which: the
+// client's requested API version is advisory, and the upstream may be Podman's
+// Docker-compat API. So both keys are read and whatever is present is returned.
+//
+// Reading only the >= 1.52 key silently made every redaction on this endpoint
+// a no-op against every daemon below that version, which is currently almost
+// all of them — redact_mount_paths and redact_network_topology are documented
+// to cover /system/df and did nothing there. Absent keys yield no items, which
+// also covers the ?type= query that asks for only some sections.
+func systemDataUsageItems(payload map[string]any, usageKey, arrayKey string) ([]map[string]any, error) {
+	var out []map[string]any
+
+	usage, found, err := nestedMapValue(payload, usageKey)
+	if err != nil {
 		return nil, err
 	}
-	items, ok := usage["Items"]
-	if !ok || items == nil {
+	if found {
+		nested, err := systemDataUsageItemObjects(usage[systemDataUsageItemsKey], usageKey+"."+systemDataUsageItemsKey)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, nested...)
+	}
+
+	legacy, err := systemDataUsageItemObjects(payload[arrayKey], arrayKey)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, legacy...), nil
+}
+
+const systemDataUsageItemsKey = "Items"
+
+// systemDataUsageItemObjects decodes one array of /system/df items. label is
+// the config-facing path used in error messages.
+func systemDataUsageItemObjects(value any, label string) ([]map[string]any, error) {
+	if value == nil {
 		return nil, nil
 	}
-	arr, ok := items.([]any)
+	arr, ok := value.([]any)
 	if !ok {
-		return nil, fmt.Errorf("%s.Items has unexpected type %T", key, items)
+		return nil, fmt.Errorf("%s has unexpected type %T", label, value)
 	}
 	out := make([]map[string]any, 0, len(arr))
-	for _, value := range arr {
-		obj, ok := value.(map[string]any)
+	for _, entry := range arr {
+		obj, ok := entry.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("%s.Items entry has unexpected type %T", key, value)
+			return nil, fmt.Errorf("%s entry has unexpected type %T", label, entry)
 		}
 		out = append(out, obj)
 	}
@@ -1056,6 +1088,52 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes)
 	}
 	return body, nil
+}
+
+// decodeJSONObject decodes body into a JSON object map with UseNumber
+// enabled, so integers that don't fit in a float64 (e.g. LayersSize above
+// 2^53) round-trip through the filter as json.Number instead of losing
+// precision to the default float64 coercion. Error text matches
+// json.Unmarshal's for the same input, including its "unexpected end of
+// JSON input" wording for truncated/empty bodies, since callers reuse that
+// message via rejectResponse.
+//
+// json.Decoder stops at the end of the first value and would accept a body
+// carrying a second document after it, which json.Unmarshal rejects. This
+// filter decides what a client is allowed to see from those bytes, so
+// silently dropping everything after the first document is a smuggling
+// surface. trailingJSONError restores the rejection.
+func decodeJSONObject(body []byte) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var payload map[string]any
+	if err := dec.Decode(&payload); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			err = errors.New("unexpected end of JSON input")
+		}
+		return nil, err
+	}
+	if err := trailingJSONError(body, dec.InputOffset()); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// trailingJSONError reports the same error json.Unmarshal gives for content
+// after a complete top-level value, or nil when only whitespace remains.
+func trailingJSONError(body []byte, offset int64) error {
+	if offset < 0 || offset > int64(len(body)) {
+		return nil
+	}
+	for _, c := range body[offset:] {
+		switch c {
+		case ' ', '\t', '\r', '\n':
+			continue
+		default:
+			return fmt.Errorf("invalid character %q after top-level value", c)
+		}
+	}
+	return nil
 }
 
 func writeResponseBody(resp *http.Response, payload any) error {

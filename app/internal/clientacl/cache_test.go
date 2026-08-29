@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -85,7 +87,7 @@ func TestClientCacheReResolvesWhenCachedContainerNoLongerLive(t *testing.T) {
 		func() time.Time { return baseNow.Add(time.Duration(nowOffset.Load())) },
 		resolver,
 	)
-	cache.verifyLive = func(_ context.Context, id string) bool {
+	cache.verifyLive = func(_ context.Context, id string, _ netip.Addr) bool {
 		if id != "container-x" {
 			t.Fatalf("verifyLive called with unexpected id %q", id)
 		}
@@ -205,7 +207,7 @@ func TestClientCacheStaleVerificationDoesNotOverwriteNewerResolve(t *testing.T) 
 	verificationStarted := make(chan struct{})
 	releaseVerification := make(chan struct{})
 	var verifications atomic.Int32
-	cache.verifyLive = func(context.Context, string) bool {
+	cache.verifyLive = func(context.Context, string, netip.Addr) bool {
 		if verifications.Add(1) == 1 {
 			close(verificationStarted)
 			<-releaseVerification
@@ -430,5 +432,210 @@ func TestClientCacheEvictsBeyondMaxSize(t *testing.T) {
 	}
 	if got := calls.Load(); got != callsBefore+1 {
 		t.Fatalf("expected one extra resolver call for evicted a, got %d", got-callsBefore)
+	}
+}
+
+// fakeDockerClient points an upstreamResolver at an httptest server instead of
+// a unix socket. Unix-socket helpers derive their path from t.Name(), and the
+// subtest names below overrun the 104-byte sun_path limit on darwin.
+func fakeDockerClient(t *testing.T, handler http.Handler) *http.Client {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rewritten := req.Clone(req.Context())
+			rewritten.URL.Scheme = "http"
+			rewritten.URL.Host = srv.Listener.Addr().String()
+			return http.DefaultTransport.RoundTrip(rewritten)
+		}),
+	}
+}
+
+func seedCacheEntry(c *clientCache, addr netip.Addr, client resolvedClient, at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.storeLocked(addr, client, true, at)
+}
+
+// TestClientCacheVerifiesCachedAddressOwnership pins the cache hit-path
+// contract: a found=true entry is served only while the daemon still reports
+// that container ID holding the requested address.
+//
+// The regression it guards is a label-ACL profile confusion. `docker stop`
+// leaves a container inspectable (GET /containers/{id}/json still answers 200)
+// but releases its IP back to IPAM immediately, so within the 10s TTL a new
+// container can claim the address. An existence-only check passes in that
+// window and hands the stopped container's memoized Labels and pre-compiled
+// labelACLRules to the new owner. Only `docker rm` (404) was ever caught.
+func TestClientCacheVerifiesCachedAddressOwnership(t *testing.T) {
+	const (
+		v4     = "172.28.0.7"
+		v6     = "2001:db8:cafe::7"
+		listV4 = `[{"Id":"container-y","Names":["/y"],"Labels":{"team":"y-owner"},` +
+			`"NetworkSettings":{"Networks":{"appnet":{"IPAddress":"` + v4 +
+			`","GlobalIPv6Address":"` + v6 + `"}}}}]`
+	)
+
+	tests := []struct {
+		name             string
+		addr             string
+		inspectStatus    int
+		inspectBody      string
+		wantID           string
+		wantOwnerLabel   string
+		wantResolveCalls int32
+	}{
+		{
+			// The core regression. Stopped-but-not-removed is the exact shape
+			// Docker reports: the container inspects fine, its endpoints are
+			// blank, and the address is already back in the IPAM pool.
+			name:             "stopped container released the address",
+			addr:             v4,
+			inspectStatus:    http.StatusOK,
+			inspectBody:      `{"Id":"container-x","NetworkSettings":{"IPAddress":"","GlobalIPv6Address":"","Networks":{"appnet":{"IPAddress":"","GlobalIPv6Address":""}}}}`,
+			wantID:           "container-y",
+			wantOwnerLabel:   "y-owner",
+			wantResolveCalls: 1,
+		},
+		{
+			name:             "container survived but moved to another address",
+			addr:             v4,
+			inspectStatus:    http.StatusOK,
+			inspectBody:      `{"Id":"container-x","NetworkSettings":{"Networks":{"appnet":{"IPAddress":"172.28.0.99"}}}}`,
+			wantID:           "container-y",
+			wantOwnerLabel:   "y-owner",
+			wantResolveCalls: 1,
+		},
+		{
+			name:             "removed container inspects 404",
+			addr:             v4,
+			inspectStatus:    http.StatusNotFound,
+			inspectBody:      `{"message":"No such container: container-x"}`,
+			wantID:           "container-y",
+			wantOwnerLabel:   "y-owner",
+			wantResolveCalls: 1,
+		},
+		{
+			name:             "undecodable inspect body fails closed",
+			addr:             v4,
+			inspectStatus:    http.StatusOK,
+			inspectBody:      `{`,
+			wantID:           "container-y",
+			wantOwnerLabel:   "y-owner",
+			wantResolveCalls: 1,
+		},
+		{
+			name:             "still owns the address via a user-defined network",
+			addr:             v4,
+			inspectStatus:    http.StatusOK,
+			inspectBody:      `{"Id":"container-x","NetworkSettings":{"IPAddress":"","Networks":{"appnet":{"IPAddress":"` + v4 + `"}}}}`,
+			wantID:           "container-x",
+			wantOwnerLabel:   "x-owner",
+			wantResolveCalls: 0,
+		},
+		{
+			// False-negative guard: a legacy default-bridge container reports
+			// its address only on the flattened NetworkSettings fields. Reading
+			// Networks alone would evict a perfectly valid entry on every
+			// request and turn the cache into a permanent re-resolve.
+			name:             "default bridge reports the address only at top level",
+			addr:             v4,
+			inspectStatus:    http.StatusOK,
+			inspectBody:      `{"Id":"container-x","NetworkSettings":{"IPAddress":"` + v4 + `","GlobalIPv6Address":"","Networks":{}}}`,
+			wantID:           "container-x",
+			wantOwnerLabel:   "x-owner",
+			wantResolveCalls: 0,
+		},
+		{
+			name:             "default bridge reports the ipv6 address only at top level",
+			addr:             v6,
+			inspectStatus:    http.StatusOK,
+			inspectBody:      `{"Id":"container-x","NetworkSettings":{"GlobalIPv6Address":"` + v6 + `","Networks":{}}}`,
+			wantID:           "container-x",
+			wantOwnerLabel:   "x-owner",
+			wantResolveCalls: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var inspectX atomic.Int32
+			client := fakeDockerClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/containers/json":
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(listV4))
+				case "/containers/container-x/json":
+					inspectX.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(tt.inspectStatus)
+					_, _ = w.Write([]byte(tt.inspectBody))
+				case "/containers/container-y/json":
+					// Liveness check the resolve path runs after a match.
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = w.Write([]byte(`{"Id":"container-y"}`))
+				default:
+					t.Errorf("unexpected daemon path %q", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+
+			resolver := upstreamResolver{client: client}
+			var resolveCalls atomic.Int32
+			at := time.Unix(1_700_000_000, 0)
+			cache := newClientCache(
+				10*time.Second,
+				8,
+				func() time.Time { return at },
+				func(ctx context.Context, addr netip.Addr) (resolvedClient, bool, error) {
+					resolveCalls.Add(1)
+					return resolver.resolveClient(ctx, addr)
+				},
+			)
+			cache.verifyLive = resolver.containerOwnsAddr
+
+			addr := mustAddr(t, tt.addr)
+			seedCacheEntry(cache, addr, resolvedClient{
+				ID:     "container-x",
+				Name:   "x",
+				Labels: map[string]string{"team": "x-owner"},
+			}, at)
+
+			got, found, err := cache.Lookup(context.Background(), addr)
+			if err != nil {
+				t.Fatalf("Lookup() error = %v", err)
+			}
+			if !found {
+				t.Fatal("Lookup() found = false, want true")
+			}
+			if got.ID != tt.wantID {
+				t.Fatalf("Lookup() ID = %q, want %q (stale entry served)", got.ID, tt.wantID)
+			}
+			if got.Labels["team"] != tt.wantOwnerLabel {
+				t.Fatalf("Lookup() labels = %#v, want team=%q", got.Labels, tt.wantOwnerLabel)
+			}
+			if n := resolveCalls.Load(); n != tt.wantResolveCalls {
+				t.Fatalf("resolve calls = %d, want %d", n, tt.wantResolveCalls)
+			}
+			if n := inspectX.Load(); n != 1 {
+				t.Fatalf("inspects of the cached container = %d, want exactly 1", n)
+			}
+		})
+	}
+}
+
+// TestContainerOwnsAddrFailsClosedOnTransportError covers the branch the
+// table above cannot reach: the daemon is unreachable, so ownership is
+// unknown and the entry must not be trusted.
+func TestContainerOwnsAddrFailsClosedOnTransportError(t *testing.T) {
+	resolver := upstreamResolver{client: &http.Client{
+		Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("dial /var/run/docker.sock: connection refused")
+		}),
+	}}
+
+	if resolver.containerOwnsAddr(context.Background(), "container-x", mustAddr(t, "172.28.0.7")) {
+		t.Fatal("containerOwnsAddr() = true with an unreachable daemon, want false")
 	}
 }

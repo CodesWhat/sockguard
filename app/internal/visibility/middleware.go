@@ -22,6 +22,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/inspectcache"
 	"github.com/codeswhat/sockguard/app/internal/logging"
+	"github.com/codeswhat/sockguard/app/internal/responsefilter"
 )
 
 // patternBufferPool pools bytes.Buffer instances so the pattern-filter writer
@@ -169,6 +170,15 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			}
 
 			normPath := normalizedPathForRequest(w, r)
+			// GET /system/df enumerates every container, volume and image on
+			// the host and accepts no `filters` query parameter, so it can only
+			// be constrained on the response. It is deliberately NOT in
+			// needsVisibilityLabelFilter: injecting a `filters=` param the
+			// endpoint does not define would be meaningless at best.
+			if r.Method == http.MethodGet && normPath == responsefilter.SystemDataUsagePath {
+				handleVisibilitySystemDataUsageRequest(logger, next, w, r, &effectivePolicy)
+				return
+			}
 			if needsVisibilityLabelFilter(normPath) {
 				handleVisibilityListRequest(logger, next, w, r, normPath, &effectivePolicy, hasSelectors, hasPatterns)
 				return
@@ -229,8 +239,9 @@ func warnPatternsWithoutSelectors(logger *slog.Logger, scope string, policy comp
 		return
 	}
 	logger.Warn("visibility name/image patterns are set without any visible_resource_labels selector; "+
-		"pattern filtering only applies to /containers/json and /images/json, so /events and the other list "+
-		"endpoints stay unrestricted — add a label selector to constrain them",
+		"pattern filtering only applies to containers and images (/containers/json, /images/json, and the "+
+		"matching sections of /system/df), so /events and the other list endpoints stay unrestricted. "+
+		"Add a label selector to constrain them",
 		"scope", scope)
 }
 
@@ -274,47 +285,50 @@ func handleVisibilityListRequest(logger *slog.Logger, next http.Handler, w http.
 		}
 	}
 	if hasPatterns && needsPatternResponseFilter(normPath) {
-		interceptingW := newPatternFilterWriter(w)
-		defer interceptingW.release()
-		next.ServeHTTP(interceptingW, r)
-		if interceptingW.overflow {
-			logger.ErrorContext(r.Context(), "visibility pattern filter: upstream response exceeds size limit",
-				"limit_bytes", filter.MaxResponseBodyBytes, "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
-			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityResponseTooLarge, "upstream response too large to filter", nil)
-			clearUpstreamRepresentationHeaders(w.Header())
-			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "upstream response too large to filter"})
-			return
-		}
-		if err := interceptingW.flushFiltered(normPath, policy); err != nil {
-			logger.ErrorContext(r.Context(), "visibility pattern list filter failed", "error", logging.SafeString(err.Error()))
-			if !interceptingW.headerWritten {
-				logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility pattern filter failed", nil)
-				clearUpstreamRepresentationHeaders(w.Header())
-				_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility pattern filter failed"})
-			}
-		}
+		filterResponseThroughWriter(logger, next, w, r, "visibility pattern list filter failed", func(fw *patternFilterWriter) error {
+			return fw.flushFiltered(normPath, policy)
+		})
 		return
 	}
 	next.ServeHTTP(w, r)
 }
 
-func clearUpstreamRepresentationHeaders(header http.Header) {
-	for _, name := range []string{
-		"Accept-Ranges",
-		"Content-Digest",
-		"Content-Encoding",
-		"Content-Language",
-		"Content-Length",
-		"Content-Location",
-		"Content-Range",
-		"Digest",
-		"ETag",
-		"Last-Modified",
-		"Repr-Digest",
-		"Transfer-Encoding",
-	} {
-		header.Del(name)
+// filterResponseThroughWriter runs next with a response-buffering writer,
+// applies flush to the buffered body, and converts an oversized upstream
+// response or a flush failure into a fail-closed 502. Both the pattern-filtered
+// list endpoints and GET /system/df share this plumbing; only the flush step
+// differs.
+func filterResponseThroughWriter(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, failureReason string, flush func(*patternFilterWriter) error) {
+	interceptingW := newPatternFilterWriter(w)
+	defer interceptingW.release()
+	next.ServeHTTP(interceptingW, r)
+	if interceptingW.overflow {
+		logger.ErrorContext(r.Context(), "visibility response filter: upstream response exceeds size limit",
+			"limit_bytes", filter.MaxResponseBodyBytes, "method", logging.SafeString(r.Method), "path", logging.SafeString(r.URL.Path))
+		logging.SetDeniedWithCode(w, r, reasonCodeVisibilityResponseTooLarge, "upstream response too large to filter", nil)
+		clearUpstreamRepresentationHeaders(w.Header())
+		_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "upstream response too large to filter"})
+		return
 	}
+	if err := flush(interceptingW); err != nil {
+		logger.ErrorContext(r.Context(), failureReason, "error", logging.SafeString(err.Error()))
+		if !interceptingW.headerWritten {
+			// failureReason names which flush step failed, so the 502 body and
+			// the log record agree. Hard-coding the pattern-filter wording here
+			// told an operator debugging a /system/df 502 to go and look at the
+			// pattern axes, which are not what ran.
+			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, failureReason, nil)
+			clearUpstreamRepresentationHeaders(w.Header())
+			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: failureReason})
+		}
+	}
+}
+
+// clearUpstreamRepresentationHeaders delegates to responsefilter so the header
+// list has exactly one definition; the ownership middleware's /system/df
+// interceptor needs the same one.
+func clearUpstreamRepresentationHeaders(header http.Header) {
+	responsefilter.ClearUpstreamRepresentationHeaders(header)
 }
 
 // handleVisibilityInspectRequest applies the inspect / single-resource
@@ -420,6 +434,39 @@ func mustHaveEmptyBody(code int) bool {
 	}
 }
 
+// commitIfUnfilterable forwards the buffered response untouched for the status
+// codes no body filter applies to, reporting committed=true when it already
+// wrote the response. Shared by flushFiltered and flushSystemDataUsage so both
+// treat 204/304 and non-2xx identically.
+func (p *patternFilterWriter) commitIfUnfilterable() (bool, error) {
+	// RFC 9110 §15.4.5 / §15.3.5: 204 and 304 must have an empty body.
+	// Writing any bytes triggers an http.ResponseWriter downgrade to 502.
+	if mustHaveEmptyBody(p.statusCode) {
+		p.underlying.WriteHeader(p.statusCode)
+		p.headerWritten = true
+		return true, nil
+	}
+
+	// Only filter 2xx responses with a JSON body; pass through everything else.
+	if p.statusCode < http.StatusOK || p.statusCode >= http.StatusMultipleChoices {
+		p.underlying.WriteHeader(p.statusCode)
+		p.headerWritten = true
+		_, err := p.underlying.Write(p.body.Bytes())
+		return true, err
+	}
+	return false, nil
+}
+
+// commitFilteredBody writes body as the final response, setting Content-Length
+// so the rewritten length replaces the upstream's.
+func (p *patternFilterWriter) commitFilteredBody(body []byte) error {
+	p.underlying.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	p.underlying.WriteHeader(p.statusCode)
+	p.headerWritten = true
+	_, err := p.underlying.Write(body)
+	return err
+}
+
 // flushFiltered filters the buffered JSON array response by pattern axes and
 // writes the result to the underlying ResponseWriter.
 //
@@ -429,19 +476,7 @@ func mustHaveEmptyBody(code int) bool {
 // per-item visibility check. Filtered items are encoded into a pooled output
 // buffer so Content-Length can be set before WriteHeader.
 func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPolicy) error {
-	// RFC 9110 §15.4.5 / §15.3.5: 204 and 304 must have an empty body.
-	// Writing any bytes triggers an http.ResponseWriter downgrade to 502.
-	if mustHaveEmptyBody(p.statusCode) {
-		p.underlying.WriteHeader(p.statusCode)
-		p.headerWritten = true
-		return nil
-	}
-
-	// Only filter 2xx responses with a JSON body; pass through everything else.
-	if p.statusCode < http.StatusOK || p.statusCode >= http.StatusMultipleChoices {
-		p.underlying.WriteHeader(p.statusCode)
-		p.headerWritten = true
-		_, err := p.underlying.Write(p.body.Bytes())
+	if committed, err := p.commitIfUnfilterable(); committed {
 		return err
 	}
 
@@ -479,11 +514,7 @@ func (p *patternFilterWriter) flushFiltered(normPath string, policy *compiledPol
 	}
 	out.WriteByte(']')
 
-	p.underlying.Header().Set("Content-Length", strconv.Itoa(out.Len()))
-	p.underlying.WriteHeader(p.statusCode)
-	p.headerWritten = true
-	_, err = p.underlying.Write(out.Bytes())
-	return err
+	return p.commitFilteredBody(out.Bytes())
 }
 
 // itemVisibleByPatterns checks a single JSON list item against the pattern
