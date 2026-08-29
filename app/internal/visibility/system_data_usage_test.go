@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/filter"
+	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/responsefilter"
 )
 
@@ -407,5 +408,175 @@ func TestSystemDataUsageItemVisibleReportsDecodeErrors(t *testing.T) {
 		if _, err := systemDataUsageItemVisible(section, json.RawMessage(`{"Labels":`), policy); err == nil {
 			t.Fatalf("section %s: want an error so the caller fails closed, got nil", section)
 		}
+	}
+}
+
+// libpodSystemDFForTest is a GET /libpod/system/df body in Podman's own report
+// shape (entities.SystemDfReport at v5.8.1), holding one image, container and
+// volume per tier.
+//
+// The prod/dev split lives entirely in free-text Repository/Image/Names/
+// VolumeName values. None of the three item types has a Labels field, so the
+// selector axes have nothing to read; the name and image pattern axes do not
+// help either, because needsPatternResponseFilter scopes them to two
+// Docker-compat list endpoints and neither ContainerSummary nor ImageSummary
+// is what this shape contains. See
+// responsefilter.LibpodSystemDataUsageDenyReason.
+const libpodSystemDFForTest = `{
+  "ImagesSize": 1092588,
+  "Images": [
+    {"Repository":"docker.io/team/prod","Tag":"1","ImageID":"aaaa111122223333","Size":5000,"SharedSize":1000,"UniqueSize":4000,"Containers":1},
+    {"Repository":"docker.io/team/dev","Tag":"1","ImageID":"bbbb444455556666","Size":6000,"SharedSize":1000,"UniqueSize":5000,"Containers":1}
+  ],
+  "Containers": [
+    {"ContainerID":"c-prod","Image":"docker.io/team/prod:1","Command":["sleep","infinity"],"LocalVolumes":1,"Size":100,"RWSize":50,"Status":"running","Names":"prod-web"},
+    {"ContainerID":"c-dev","Image":"docker.io/team/dev:1","Command":["sleep","infinity"],"LocalVolumes":1,"Size":200,"RWSize":60,"Status":"running","Names":"dev-web"}
+  ],
+  "Volumes": [
+    {"VolumeName":"vol-prod","Links":1,"Size":300,"ReclaimableSize":300},
+    {"VolumeName":"vol-dev","Links":1,"Size":400,"ReclaimableSize":400}
+  ]
+}`
+
+func libpodSystemDFHandlerForTest(t *testing.T, opts Options, body string, reached *bool) http.Handler {
+	t.Helper()
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		*reached = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, body)
+	})
+	return middlewareWithDeps(slog.New(slog.NewTextHandler(io.Discard, nil)), opts, visibilityDeps{})(upstream)
+}
+
+func getLibpodPathForTest(t *testing.T, handler http.Handler, method, path string) (*httptest.ResponseRecorder, *logging.RequestMeta) {
+	t.Helper()
+	meta := &logging.RequestMeta{}
+	req := httptest.NewRequest(method, path, nil)
+	req = req.WithContext(logging.WithMeta(req.Context(), meta))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec, meta
+}
+
+// TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy is the regression test
+// for the sibling of the /system/df enumeration bypass: NormalizePath strips
+// the API version prefix but not "/libpod", so GET /libpod/system/df matched
+// neither the compat response filter nor needsVisibilityLabelFilter, and a
+// caller restricted to the prod tier that had been allowed the path received
+// Podman's full host inventory.
+//
+// The report cannot be filtered into shape under any policy axis, so it is
+// refused before the daemon is queried at all.
+func TestLibpodSystemDataUsageRefusedUnderVisibilityPolicy(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		opts     Options
+		path     string
+		upstream string
+	}{
+		{
+			name:     "selector policy, bare libpod path",
+			opts:     Options{VisibleResourceLabels: []string{"tier=prod"}},
+			path:     "/libpod/system/df",
+			upstream: libpodSystemDFForTest,
+		},
+		{
+			name:     "selector policy, podman v5.8.1 client spelling",
+			opts:     Options{VisibleResourceLabels: []string{"tier=prod"}},
+			path:     "/v5.8.1/libpod/system/df",
+			upstream: libpodSystemDFForTest,
+		},
+		{
+			name:     "selector policy, libpod minimum api version",
+			opts:     Options{VisibleResourceLabels: []string{"tier=prod"}},
+			path:     "/v4.0.0/libpod/system/df",
+			upstream: libpodSystemDFForTest,
+		},
+		{
+			name:     "name pattern policy",
+			opts:     Options{NamePatterns: []string{"prod-*"}},
+			path:     "/v5.8.1/libpod/system/df",
+			upstream: libpodSystemDFForTest,
+		},
+		{
+			// Fail-closed: whatever the daemon would have said, the client
+			// gets this proxy's refusal and none of its bytes.
+			name:     "undecodable upstream body",
+			opts:     Options{VisibleResourceLabels: []string{"tier=prod"}},
+			path:     "/v5.8.1/libpod/system/df",
+			upstream: `{"Containers":[{"ContainerID":"c-dev","Names":"dev-web"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			handler := libpodSystemDFHandlerForTest(t, tt.opts, tt.upstream, &reached)
+
+			rec, meta := getLibpodPathForTest(t, handler, http.MethodGet, tt.path)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403; body: %s", rec.Code, rec.Body.String())
+			}
+			if reached {
+				t.Error("the daemon was queried for a report the policy cannot be applied to")
+			}
+			if meta.ReasonCode != reasonCodeVisibilityLibpodDataUsage {
+				t.Errorf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeVisibilityLibpodDataUsage)
+			}
+			body := rec.Body.String()
+			for _, leaked := range []string{"dev-web", "c-dev", "vol-dev", "bbbb444455556666", "1092588"} {
+				if strings.Contains(body, leaked) {
+					t.Errorf("host inventory %q reached the client: %s", leaked, body)
+				}
+			}
+		})
+	}
+}
+
+// TestLibpodSystemDataUsageInertWithoutVisibilityPolicy proves the refusal
+// costs nothing to a deployment with no visibility policy: there is no
+// boundary to enforce, so the rule engine stays the only control.
+func TestLibpodSystemDataUsageInertWithoutVisibilityPolicy(t *testing.T) {
+	t.Parallel()
+	reached := false
+	handler := libpodSystemDFHandlerForTest(t, Options{}, libpodSystemDFForTest, &reached)
+
+	rec, _ := getLibpodPathForTest(t, handler, http.MethodGet, "/v5.8.1/libpod/system/df")
+	if !reached {
+		t.Fatal("upstream was not reached with no visibility policy configured")
+	}
+	if got := rec.Body.String(); got != libpodSystemDFForTest {
+		t.Fatalf("body was rewritten with no visibility policy:\n got: %s\nwant: %s", got, libpodSystemDFForTest)
+	}
+}
+
+// TestLibpodSystemDataUsageVisibilityRefusalIsExact keeps the refusal from
+// widening into the rest of the libpod surface.
+func TestLibpodSystemDataUsageVisibilityRefusalIsExact(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{name: "compat disk usage is filtered, not refused", method: http.MethodGet, path: "/v1.53/system/df"},
+		{name: "libpod container list", method: http.MethodGet, path: "/v5.8.1/libpod/containers/json"},
+		{name: "longer libpod system path", method: http.MethodGet, path: "/v5.8.1/libpod/system/dfstats"},
+		{name: "parent libpod system path", method: http.MethodGet, path: "/v5.8.1/libpod/system"},
+		{name: "non-GET method", method: http.MethodPost, path: "/v5.8.1/libpod/system/df"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			reached := false
+			handler := libpodSystemDFHandlerForTest(t, Options{VisibleResourceLabels: []string{"tier=prod"}}, `{}`, &reached)
+
+			rec, _ := getLibpodPathForTest(t, handler, tt.method, tt.path)
+			if !reached {
+				t.Fatalf("the refusal swallowed %s %s; status = %d, body: %s", tt.method, tt.path, rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
