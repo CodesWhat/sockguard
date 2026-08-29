@@ -20,10 +20,10 @@ import (
 //     health + version + info + events), so operators get one preset for a
 //     Podman host regardless of which API family their monitoring tool uses.
 //   - Container top stays admitted on both surfaces as part of this preset's
-//     process-monitoring contract. The Docker-compatible route requires the
-//     preset's explicit insecure_allow_read_exfiltration acknowledgment;
-//     every other cataloged archive, export, logs, attach, images/get,
-//     images/push, generate/kube, and manifest registry-push path stays denied.
+//     process-monitoring contract. Both routes require the preset's explicit
+//     insecure_allow_read_exfiltration acknowledgment; every other cataloged
+//     archive, export, logs, attach, images/get, images/push, generate/kube,
+//     and manifest registry-push path stays denied.
 //   - No write reaches upstream on either surface — including libpod-only
 //     writes with no Docker-compat analog, like pod create and play/kube.
 func TestPodmanReadonlyPresetConformance(t *testing.T) {

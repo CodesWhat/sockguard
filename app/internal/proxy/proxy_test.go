@@ -338,6 +338,7 @@ func TestNew_ContainerTopForwardsCallerSelectedProcessArgumentsAndResponse(t *te
 
 	const processResponse = `{"Titles":["PID","COMMAND"],"Processes":[["42","/usr/bin/server --credential-file=/run/secrets/prod"]]}`
 	seenPSArgs := make(chan string, 1)
+	responseFilterCalled := false
 	srv := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			seenPSArgs <- r.URL.Query().Get("ps_args")
@@ -348,10 +349,25 @@ func TestNew_ContainerTopForwardsCallerSelectedProcessArgumentsAndResponse(t *te
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
 
-	rp := NewWithOptions(socketPath, testLogger(), Options{})
+	productionFilter := responsefilter.New(responsefilter.Options{
+		RedactContainerEnv:    true,
+		RedactMountPaths:      true,
+		RedactNetworkTopology: true,
+		RedactSensitiveData:   true,
+		RedactHostTopology:    true,
+	})
+	rp := NewWithOptions(socketPath, testLogger(), Options{
+		ModifyResponse: func(resp *http.Response) error {
+			responseFilterCalled = true
+			return productionFilter.ModifyResponse(resp)
+		},
+	})
 	req := httptest.NewRequest(http.MethodGet, "/v1.53/containers/abc/top?ps_args=-ww+-eo+pid%2Cargs", nil)
 	rec := httptest.NewRecorder()
 	rp.ServeHTTP(rec, req)
+	if !responseFilterCalled {
+		t.Fatal("production response filter was not exercised")
+	}
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)

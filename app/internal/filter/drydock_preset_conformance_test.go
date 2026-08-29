@@ -330,7 +330,10 @@ func drydockPresetHandlerFromConfig(t *testing.T, cfg *config.Config) http.Handl
 	// assignment here so preset conformance tests exercise the same
 	// production wiring instead of a stub that always leaves it false.
 	policy.Exec.AllowBlindWrites = cfg.InsecureAllowBodyBlindWrites
-	opts := filter.Options{PolicyConfig: policy}
+	opts := filter.Options{
+		PolicyConfig:          policy,
+		AllowReadExfiltration: cfg.InsecureAllowReadExfiltration,
+	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

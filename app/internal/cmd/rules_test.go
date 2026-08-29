@@ -488,6 +488,25 @@ func TestValidateAndCompileRulesRejectsContainerTopWithoutReadExfiltrationOptIn(
 	}
 }
 
+func TestValidateAndCompileRulesRejectsLibpodContainerTopWithoutReadExfiltrationOptIn(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodGet, Path: "/libpod/containers/*/top"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("expected libpod container top read exfiltration validation to fail")
+	}
+	if !strings.Contains(err.Error(), "GET /libpod/containers/sockguard-test/top") {
+		t.Fatalf("expected guarded libpod container top endpoint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+		t.Fatalf("expected explicit read exfiltration opt-in hint, got: %v", err)
+	}
+}
+
 func TestValidateAndCompileRulesRejectsRegistryPushWithoutExfiltrationOptIn(t *testing.T) {
 	tests := []struct {
 		name     string

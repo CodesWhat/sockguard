@@ -154,6 +154,7 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/archive"},
 	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/export"},
 	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/logs"},
+	{method: http.MethodGet, path: "/libpod/containers/sockguard-test/top"},
 	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/attach"},
 	{method: http.MethodGet, path: "/libpod/images/export"},
 	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get"},

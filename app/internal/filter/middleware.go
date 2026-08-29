@@ -49,6 +49,7 @@ const (
 	reasonCodeRequestBodyPolicyDenied       = "request_body_policy_denied"
 	reasonCodeRequestBodyTooLarge           = "request_body_too_large"
 	reasonCodeRequestBodyInspectionFailed   = "request_body_inspection_failed"
+	reasonCodeReadExfiltrationAckRequired   = "read_exfiltration_acknowledgment_required"
 )
 
 // PolicyConfig configures deny-response behavior plus request-body inspection
@@ -117,6 +118,11 @@ type PolicyConfig struct {
 // Options configures filter middleware behavior.
 type Options struct {
 	PolicyConfig
+	// AllowReadExfiltration carries the global
+	// insecure_allow_read_exfiltration acknowledgment into request-time
+	// enforcement. It is intentionally not part of PolicyConfig because named
+	// client profiles cannot weaken or override this top-level setting.
+	AllowReadExfiltration bool
 	// Profiles defines named per-client policy overrides selected at request time.
 	Profiles map[string]Policy
 	// ResolveProfile returns the named policy to apply for the request.
@@ -251,8 +257,16 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			normPath := resolveNormalizedPath(meta, r)
 			action, ruleIndex, reason := evaluateNormalized(activePolicy.rules, r.Method, normPath)
 			denyStatus := http.StatusForbidden
+			hardDeny := false
 			reasonCode := ruleDecisionReasonCode(action, reason)
 			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
+			if action == ActionAllow && !opts.AllowReadExfiltration && isContainerTopRead(r.Method, normPath) {
+				action = ActionDeny
+				hardDeny = true
+				reasonCode = reasonCodeReadExfiltrationAckRequired
+				reason = "container process-list reads require insecure_allow_read_exfiltration: true"
+				stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
+			}
 
 			if action == ActionAllow {
 				denyReason, denyReasonCode, status := runAllowedInspection(activePolicy, logger, w, r, normPath)
@@ -272,7 +286,7 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			}
 
 			if action == ActionDeny {
-				if meta.AllowsPassThrough() {
+				if !hardDeny && meta.AllowsPassThrough() {
 					meta.Decision = logging.DecisionWouldDeny
 					next.ServeHTTP(w, r)
 					return
@@ -286,6 +300,18 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func isContainerTopRead(method, normPath string) bool {
+	if upperHTTPMethodASCII(method) != http.MethodGet {
+		return false
+	}
+
+	segments := strings.Split(strings.TrimPrefix(normPath, "/"), "/")
+	if len(segments) == 3 {
+		return segments[0] == "containers" && segments[1] != "" && segments[2] == "top"
+	}
+	return len(segments) == 4 && segments[0] == "libpod" && segments[1] == "containers" && segments[2] != "" && segments[3] == "top"
 }
 
 // resolveActivePolicy picks the per-request runtimePolicy based on the

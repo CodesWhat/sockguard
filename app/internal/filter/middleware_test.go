@@ -296,6 +296,68 @@ func TestMiddlewareDeniedMinimalVerbosity(t *testing.T) {
 	}
 }
 
+func TestMiddlewareContainerTopRequiresReadExfiltrationAcknowledgmentForEveryRuleShape(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		rules []Rule
+	}{
+		{
+			name: "exact container name",
+			path: "/containers/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/payments/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
+		{
+			name: "synthetic name deny shadowing broad allow",
+			path: "/containers/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/sockguard-test/top", Action: ActionDeny, Index: 0},
+				{Methods: []string{http.MethodGet}, Pattern: "/containers/**", Action: ActionAllow, Index: 1},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 2},
+			},
+		},
+		{
+			name: "exact libpod container name",
+			path: "/v5.0.0/libpod/containers/payments/top",
+			rules: []Rule{
+				{Methods: []string{http.MethodGet}, Pattern: "/libpod/containers/payments/top", Action: ActionAllow, Index: 0},
+				{Methods: []string{"*"}, Pattern: "/**", Action: ActionDeny, Index: 1},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			compiled := make([]*CompiledRule, 0, len(tt.rules))
+			for _, rule := range tt.rules {
+				compiledRule, err := CompileRule(rule)
+				if err != nil {
+					t.Fatalf("CompileRule(%q): %v", rule.Pattern, err)
+				}
+				compiled = append(compiled, compiledRule)
+			}
+
+			reached := false
+			handler := MiddlewareWithOptions(compiled, testLogger(), Options{})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+
+			if reached {
+				t.Fatal("container top reached upstream without insecure_allow_read_exfiltration acknowledgment")
+			}
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusForbidden)
+			}
+		})
+	}
+}
+
 func TestMiddlewareRejectsOversizedBoundedRequestBodiesWith413(t *testing.T) {
 	tests := []struct {
 		name       string

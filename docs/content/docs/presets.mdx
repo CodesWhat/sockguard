@@ -496,10 +496,12 @@ file. See the [Podman guide](/podman) for the full routing model.
 ```
 
 This preset intentionally sets `insecure_allow_read_exfiltration: true` for
-container process monitoring. Docker-compatible `GET /containers/{id}/top`
-forwards caller-selected `ps_args` to the daemon host's `ps` and returns process
-command lines without response redaction. Every other exfiltration-gated route
-remains denied by the narrow rules. Point `upstream.socket` at either a rootful
+container process monitoring on both API surfaces. Docker-compatible
+`GET /containers/{id}/top` forwards caller-selected `ps_args` to the daemon
+host's `ps`, and native `GET /libpod/containers/{id}/top` exposes the same
+process-list class; both return command lines without response redaction. Every
+other exfiltration-gated route remains denied by the narrow rules. Point
+`upstream.socket` at either a rootful
 (`/run/podman/podman.sock`) or rootless (`$XDG_RUNTIME_DIR/podman/podman.sock`)
 Podman socket; the rule set itself doesn't change.
 

@@ -1479,10 +1479,11 @@ func serveResponseFilterOptions(cfg *config.Config) responsefilter.Options {
 
 func serveFilterOptions(cfg *config.Config, res *upstream.Resolver, clientProfiles map[string]filter.Policy) filter.Options {
 	return filter.Options{
-		PolicyConfig:   servePolicyConfig(cfg, res),
-		Profiles:       clientProfiles,
-		ResolveProfile: clientacl.RequestProfile,
-		Mutation:       cfg.Mutations.ToFilterOptions(),
+		PolicyConfig:          servePolicyConfig(cfg, res),
+		AllowReadExfiltration: cfg.InsecureAllowReadExfiltration,
+		Profiles:              clientProfiles,
+		ResolveProfile:        clientacl.RequestProfile,
+		Mutation:              cfg.Mutations.ToFilterOptions(),
 	}
 }
 
