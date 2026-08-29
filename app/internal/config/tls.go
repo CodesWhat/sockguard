@@ -80,7 +80,7 @@ func BuildMutualTLSServerConfigForField(fieldPrefix string, cfg ListenTLSConfig)
 }
 
 // checkMutualTLSForField reports whether a complete listen.tls block is
-// usable, honouring the caller's validateMode.
+// usable, honoring the caller's validateMode.
 //
 // validateFull builds the real *tls.Config, which loads cert_file/key_file
 // and reads client_ca_file, so an operator-supplied config fails at startup
