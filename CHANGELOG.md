@@ -46,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Tests
 
 - Hijack candidate paths are pinned as never being redactable response shapes. `writeNonUpgradeHijackResponse` copies the upstream body straight to the client without consulting the response filter, which is correct for attach and exec-start because they are raw byte tunnels, but adding a redactable endpoint to `filter.IsHijackCandidatePath` would route it around every configured redaction with nothing failing. A second test proves the fixture is still a shape the filter rewrites, so the first cannot start passing vacuously.
+- **Where `/metrics`, `/health` and `/ready` sit in the middleware chain is now pinned by a test rather than by a comment.** They run after the client ACL and before the rate limiter, and the two halves point opposite ways: `clients.allowed_cidrs` does cover them, and rate-limit quota deliberately does not apply. Both are held by `TestLocalEndpointsSitBehindTheClientCIDRGate` and `TestLocalEndpointsRunAheadOfTheRateLimiter`, which fail if the append order in `buildServeHandlerLayersWithRuntime` moves in either direction. The observability guide documents the tradeoff and what to do about it.
 
 ### Build
 
