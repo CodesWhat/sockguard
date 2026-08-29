@@ -134,8 +134,8 @@ func (f *Filter) modifyContainerInspect(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -197,8 +197,8 @@ func (f *Filter) modifyNetworkInspect(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -218,8 +218,8 @@ func (f *Filter) modifyVolumeList(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -252,8 +252,8 @@ func (f *Filter) modifyVolumeInspect(resp *http.Response) error {
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 
@@ -470,8 +470,8 @@ func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) e
 		return rejectResponse(err)
 	}
 
-	var payload map[string]any
-	if err := json.Unmarshal(body, &payload); err != nil {
+	payload, err := decodeJSONObject(body)
+	if err != nil {
 		return rejectResponse(err)
 	}
 	if err := mutate(payload); err != nil {
@@ -1088,6 +1088,52 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 		return nil, fmt.Errorf("response body exceeds %d bytes", requestfilter.MaxResponseBodyBytes)
 	}
 	return body, nil
+}
+
+// decodeJSONObject decodes body into a JSON object map with UseNumber
+// enabled, so integers that don't fit in a float64 (e.g. LayersSize above
+// 2^53) round-trip through the filter as json.Number instead of losing
+// precision to the default float64 coercion. Error text matches
+// json.Unmarshal's for the same input, including its "unexpected end of
+// JSON input" wording for truncated/empty bodies, since callers reuse that
+// message via rejectResponse.
+//
+// json.Decoder stops at the end of the first value and would accept a body
+// carrying a second document after it, which json.Unmarshal rejects. This
+// filter decides what a client is allowed to see from those bytes, so
+// silently dropping everything after the first document is a smuggling
+// surface. trailingJSONError restores the rejection.
+func decodeJSONObject(body []byte) (map[string]any, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var payload map[string]any
+	if err := dec.Decode(&payload); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			err = errors.New("unexpected end of JSON input")
+		}
+		return nil, err
+	}
+	if err := trailingJSONError(body, dec.InputOffset()); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// trailingJSONError reports the same error json.Unmarshal gives for content
+// after a complete top-level value, or nil when only whitespace remains.
+func trailingJSONError(body []byte, offset int64) error {
+	if offset < 0 || offset > int64(len(body)) {
+		return nil
+	}
+	for _, c := range body[offset:] {
+		switch c {
+		case ' ', '\t', '\r', '\n':
+			continue
+		default:
+			return fmt.Errorf("invalid character %q after top-level value", c)
+		}
+	}
+	return nil
 }
 
 func writeResponseBody(resp *http.Response, payload any) error {
