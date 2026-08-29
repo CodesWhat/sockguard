@@ -74,6 +74,16 @@ type bridge struct {
 	guard    *streamAbuseGuard
 	registry *SessionRegistry
 
+	// schemaDriftLimiter is where controlinfo.go's reportControlSchemaDrift
+	// records which (table, field) pairs it has already warned about. It is
+	// a field rather than a straight read of the package-level
+	// controlSchemaDrift so that tests can give each bridge its own limiter
+	// instead of sharing process-lifetime state across test runs; runBridge
+	// defaults it to the package-level one whenever a caller passes nil, so
+	// production behavior (one log line per distinct drift for the life of
+	// the process) is unchanged.
+	schemaDriftLimiter *schemaDriftLimiter
+
 	clientLeg clientLegConn
 
 	// credentialCalls is Phase 4's per-session credential-call counter — see
@@ -99,16 +109,26 @@ type bridge struct {
 // registry is the same SessionRegistry session was opened from — Phase 3's
 // forwardControlMediated consults it (via SessionKey, not session.ID; see
 // SessionRegistry.OwnsRef's doc comment) to admit Control/Solve refs and
-// check Control/Status ref ownership.
-func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Policy, limits Limits, logger *slog.Logger, registry *SessionRegistry) error {
+// check Control/Status ref ownership. driftLimiter is where
+// reportControlSchemaDrift records which (table, field) pairs it has already
+// warned about; a nil driftLimiter defaults to the package-level
+// controlSchemaDrift, which is what every production caller passes so the
+// warning stays deduplicated for the life of the process. Tests that need a
+// limiter isolated from every other test (and from repeated runs of the same
+// test) pass their own instead.
+func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Policy, limits Limits, logger *slog.Logger, registry *SessionRegistry, driftLimiter *schemaDriftLimiter) error {
+	if driftLimiter == nil {
+		driftLimiter = &controlSchemaDrift
+	}
 	b := &bridge{
-		legs:     legs,
-		session:  session,
-		policy:   policy,
-		limits:   limits,
-		logger:   logger,
-		guard:    newStreamAbuseGuard(limits),
-		registry: registry,
+		legs:               legs,
+		session:            session,
+		policy:             policy,
+		limits:             limits,
+		logger:             logger,
+		guard:              newStreamAbuseGuard(limits),
+		registry:           registry,
+		schemaDriftLimiter: driftLimiter,
 	}
 	defer b.closeAll(nil)
 

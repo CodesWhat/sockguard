@@ -70,7 +70,14 @@ func newTestBridge(t *testing.T, endpoint Endpoint, policy Policy, limits Limits
 // CONTENT (not just gRPC status codes), e.g. that an admitted Auth call
 // logs the normalized registry host rather than the raw client-supplied
 // field. Everything else should keep using newTestBridge/noopLogger.
-func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler, logger *slog.Logger) *testBridge {
+//
+// driftLimiter is optional and variadic rather than a plain trailing
+// parameter so every existing caller keeps compiling unchanged: only the
+// schema-drift tests in controlinfo_test.go need a limiter isolated from the
+// rest of the package (and from -count>1 reruns of themselves), so they pass
+// one explicitly; everything else gets runBridge's own default of the
+// package-level controlSchemaDrift.
+func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, limits Limits, daemonHandler http.Handler, logger *slog.Logger, driftLimiter ...*schemaDriftLimiter) *testBridge {
 	t.Helper()
 
 	serverLeg, driverConn := net.Pipe()
@@ -86,10 +93,15 @@ func newTestBridgeWithLogger(t *testing.T, endpoint Endpoint, policy Policy, lim
 	}
 	session := registry.Open(SessionKey{ClientIdentity: "test-client", Profile: "test-profile"}, endpoint, clientUUID)
 
+	var limiter *schemaDriftLimiter
+	if len(driftLimiter) > 0 {
+		limiter = driftLimiter[0]
+	}
+
 	legs := bridgeLegs{endpoint: endpoint, serverConn: serverLeg, clientConn: clientLegForBridge}
 	tb := &testBridge{registry: registry, session: session, done: make(chan struct{})}
 	go func() {
-		tb.err = runBridge(context.Background(), legs, session, policy, limits, logger, registry)
+		tb.err = runBridge(context.Background(), legs, session, policy, limits, logger, registry, limiter)
 		close(tb.done)
 	}()
 
@@ -428,7 +440,7 @@ func TestRunBridgeClientLegHandshakeFailure(t *testing.T) {
 	registry := NewSessionRegistry()
 	session := registry.Open(SessionKey{ClientIdentity: "c", Profile: "p"}, EndpointGRPC, "")
 
-	err := runBridge(context.Background(), bridgeLegs{endpoint: EndpointGRPC, serverConn: serverLeg, clientConn: clientLeg}, session, allowAllPolicy, DefaultLimits(), noopLogger(), registry)
+	err := runBridge(context.Background(), bridgeLegs{endpoint: EndpointGRPC, serverConn: serverLeg, clientConn: clientLeg}, session, allowAllPolicy, DefaultLimits(), noopLogger(), registry, nil)
 	if err == nil {
 		t.Fatal("runBridge() with a dead client leg = nil error, want an error establishing the client leg")
 	}

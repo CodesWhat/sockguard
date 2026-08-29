@@ -630,6 +630,37 @@ func TestFilterControlResponseMessageDropsUnknownFields(t *testing.T) {
 	}
 }
 
+// TestFilterControlResponseMessageDedupesRepeatedUnknownFields pins the
+// dedup this file's drift collection does at gather time: the same unknown
+// field number, repeated any number of times across a response, must yield
+// exactly one drift entry, while a genuinely different unknown number still
+// gets its own entry, in the order each was first seen. Without this, a
+// response carrying one unknown field on every repeated WorkerRecord could
+// grow the drift slice far larger than the input it was measuring, for
+// entries the downstream schemaDriftLimiter was going to collapse anyway.
+func TestFilterControlResponseMessageDedupesRepeatedUnknownFields(t *testing.T) {
+	// Field 5 appears three times, field 6 once, interleaved so encounter
+	// order isn't just numeric order.
+	payload := concatBytes(
+		lengthDelimited(5, []byte("a")),
+		lengthDelimited(6, []byte("b")),
+		lengthDelimited(5, []byte("c")),
+		lengthDelimited(5, []byte("d")),
+	)
+	want := []schemaDriftField{
+		{table: "InfoResponse", number: 5},
+		{table: "InfoResponse", number: 6},
+	}
+
+	_, drift, denial := filterControlResponseMessage(payload, controlInfoResponseFields)
+	if denial != nil {
+		t.Fatalf("repeated unknown fields denied the response (%s); they must be dropped and reported instead", denial.reasonCode)
+	}
+	if !reflect.DeepEqual(drift, want) {
+		t.Fatalf("drift = %+v, want %+v (field 5 must collapse to one entry, field 6 keeps its own, in first-encounter order)", drift, want)
+	}
+}
+
 // TestBridgeControlListWorkersDropsAndReportsSchemaDrift is the end-to-end
 // version: the call must SUCCEED, the unknown field's bytes must not reach
 // the client, and the operator must get both a warning naming the message and
@@ -647,7 +678,12 @@ func TestBridgeControlListWorkersDropsAndReportsSchemaDrift(t *testing.T) {
 
 	logs := &syncLogBuffer{}
 	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	tb := newTestBridgeWithLogger(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), daemon, logger)
+	// A limiter of its own, not the package-level controlSchemaDrift: that
+	// var is shared for the life of the process, so under -count>1 a second
+	// run of this test would find field 7 already marked seen by the first
+	// and the assertion below would never see the warning it expects.
+	limiter := &schemaDriftLimiter{}
+	tb := newTestBridgeWithLogger(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), daemon, logger, limiter)
 
 	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/ListWorkers", string(grpcFrame(nil))))
 	if err != nil {

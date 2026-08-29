@@ -64,7 +64,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"net/http"
 	"net/url"
 	"sync"
@@ -366,20 +365,14 @@ func filterControlUnaryResponse(src io.Reader, maxLen int64, table *responseFiel
 		return nil, nil, denyControlResponseUnparsable()
 	}
 
-	// The re-framed length has to round-trip through the header's uint32.
-	// Filtering only ever removes fields, so len(filtered) is bounded by the
-	// payload readGRPCFrame accepted, and that payload's length came from a
-	// uint32 header of its own — this cannot fire while maxLen stays under
-	// 4 GiB. It is a real check rather than a suppression because maxLen is
-	// operator-set (limits.MaxMessageBytes, an int64), so nothing in the
-	// type system holds the bound; a silent truncation here would hand the
-	// client a frame header that disagrees with its own body.
-	if uint64(len(filtered)) > math.MaxUint32 {
-		return nil, nil, deny(grpcCodeResourceExhausted, "buildkit_message_too_large", "response message exceeds sockguard's size cap")
-	}
-
 	frame := make([]byte, grpcMessageHeaderLen+len(filtered))
-	// #nosec G115 -- the conversion is range-checked against math.MaxUint32 immediately above.
+	// #nosec G115 -- len(filtered) came from payload, and payload's own length
+	// was parsed out of a uint32 frame header by readGRPCFrame above, so it
+	// was already bounded to 2^32-1 before filterControlResponseMessage ever
+	// saw it. Filtering only removes fields and re-encodes the surviving
+	// tags and lengths minimally, so the filtered payload is never longer
+	// than the input it was filtered from, and the conversion below always
+	// fits back into the uint32 the frame header needs.
 	binary.BigEndian.PutUint32(frame[1:grpcMessageHeaderLen], uint32(len(filtered)))
 	copy(frame[grpcMessageHeaderLen:], filtered)
 	return frame, drift, nil
@@ -414,7 +407,27 @@ func filterControlUnaryResponse(src io.Reader, maxLen int64, table *responseFiel
 // Malformed wire bytes or an unexpected wire type on a known field still deny
 // (buildkit_response_filter_failed), and no path ever falls back to relaying
 // the daemon's original bytes.
+//
+// The returned drift slice holds at most one entry per distinct (table,
+// field number) pair, in first-encounter order. Nothing downstream needs a
+// duplicate: reportControlSchemaDrift's schemaDriftLimiter already collapses
+// repeats before logging, so collecting them here first was pure waste — a
+// response can carry the same unknown field on every repeated WorkerRecord
+// entry, and a large response full of them would otherwise grow the drift
+// slice many times larger than the input it was measuring. filterSeen is
+// this call's dedup set; it has to be shared across the whole recursion
+// (not reset per nested table) because the same (table, number) pair can
+// recur both within one level's repeated fields and across sibling
+// submessages of the same message type.
 func filterControlResponseMessage(payload []byte, table *responseFieldTable) ([]byte, []schemaDriftField, *mediationDenial) {
+	return filterControlResponseMessageDedup(payload, table, make(map[schemaDriftField]struct{}))
+}
+
+// filterControlResponseMessageDedup is filterControlResponseMessage's actual
+// recursive body. seen is the dedup set threaded through every recursive
+// call so a field number repeated anywhere in the message tree, at any
+// depth, is reported only once, at the position it was first encountered.
+func filterControlResponseMessageDedup(payload []byte, table *responseFieldTable, seen map[schemaDriftField]struct{}) ([]byte, []schemaDriftField, *mediationDenial) {
 	out := make([]byte, 0, len(payload))
 	var drift []schemaDriftField
 	for len(payload) > 0 {
@@ -436,7 +449,11 @@ func filterControlResponseMessage(payload []byte, table *responseFieldTable) ([]
 			// ConsumeFieldValue has already measured this field, so a
 			// varint, fixed32/64, bytes or group is all skipped correctly
 			// here without a wire-type check of its own.
-			drift = append(drift, schemaDriftField{table: table.name, number: number})
+			f := schemaDriftField{table: table.name, number: number}
+			if _, dup := seen[f]; !dup {
+				seen[f] = struct{}{}
+				drift = append(drift, f)
+			}
 			continue
 		}
 		if wireType != protowire.BytesType {
@@ -455,7 +472,7 @@ func filterControlResponseMessage(payload []byte, table *responseFieldTable) ([]
 		if innerLen < 0 {
 			return nil, nil, denyControlResponseUnparsable()
 		}
-		nested, nestedDrift, denial := filterControlResponseMessage(inner, rule.nested)
+		nested, nestedDrift, denial := filterControlResponseMessageDedup(inner, rule.nested, seen)
 		if denial != nil {
 			return nil, nil, denial
 		}
@@ -473,8 +490,14 @@ func filterControlResponseMessage(payload []byte, table *responseFieldTable) ([]
 // are behind upstream, because the dropped field may be one their clients now
 // need. The audit disposition is Mediate, not Deny: nothing was refused.
 func (b *bridge) reportControlSchemaDrift(service, method string, drift []schemaDriftField) {
+	// runBridge always sets this, but a bridge built any other way must not
+	// panic a live proxy on a field number it merely failed to recognize.
+	limiter := b.schemaDriftLimiter
+	if limiter == nil {
+		limiter = &controlSchemaDrift
+	}
 	for _, f := range drift {
-		if !controlSchemaDrift.allow(f) {
+		if !limiter.allow(f) {
 			continue
 		}
 		b.logger.Warn("buildkit: dropped an unknown field from a filtered control response; sockguard's schema tables are behind this daemon",

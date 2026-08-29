@@ -41,7 +41,7 @@ func newConcurrencyTestBridge(t *testing.T, limits Limits, daemonHandler http.Ha
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = runBridge(context.Background(), legs, session, allowAllPolicy, limits, noopLogger(), registry)
+		_ = runBridge(context.Background(), legs, session, allowAllPolicy, limits, noopLogger(), registry, nil)
 	}()
 
 	tr := &http2.Transport{AllowHTTP: true, StrictMaxConcurrentStreams: true}
