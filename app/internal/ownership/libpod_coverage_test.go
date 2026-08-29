@@ -376,13 +376,9 @@ func TestLibpodUnscopeableReadsAreInertWithoutOwner(t *testing.T) {
 // each refusal has to be its own branch rather than falling out of the path
 // classifiers, and the two failure modes differ.
 //
-// libpodContainerIdentifier DOES classify the two /libpod/containers/ paths —
-// as containers named "showmounted" and "stats" — which is exactly the shape
-// that left them open: the daemon has no such container, the inspect comes
-// back not-found, and checkOwnedResource turns not-found into
-// verdictPassThrough, so the host inventory was forwarded intact.
-// libpodPodIdentifier deliberately reserves "stats", so /libpod/pods/stats was
-// never classified at all and reached the upstream without any check running.
+// The identifier helpers deliberately reserve all three collection paths, so
+// they reach the upstream without any resource ownership check running. The
+// refusal branch remains necessary to keep their host-wide data unavailable.
 func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -391,8 +387,8 @@ func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing
 		wantIdentifier string
 		wantOK         bool
 	}{
-		{path: filter.LibpodShowMountedPath, classify: libpodContainerIdentifier, wantIdentifier: "showmounted", wantOK: true},
-		{path: filter.LibpodContainerStatsPath, classify: libpodContainerIdentifier, wantIdentifier: "stats", wantOK: true},
+		{path: filter.LibpodShowMountedPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
+		{path: filter.LibpodContainerStatsPath, classify: libpodContainerIdentifier, wantIdentifier: "", wantOK: false},
 		{path: filter.LibpodPodStatsPath, classify: libpodPodIdentifier, wantIdentifier: "", wantOK: false},
 	}
 	if len(tests) != len(filter.LibpodUnscopeableReads()) {

@@ -86,7 +86,7 @@ func libpodContainerIdentifier(method, normPath string) (string, bool) {
 	if identifier == "" {
 		return "", false
 	}
-	if !hasTail && ((method == http.MethodGet || method == http.MethodHead) && identifier == "json" || method == http.MethodPost && (identifier == "create" || identifier == "prune")) {
+	if !hasTail && ((method == http.MethodGet || method == http.MethodHead) && (identifier == "json" || identifier == "showmounted" || identifier == "stats") || method == http.MethodPost && (identifier == "create" || identifier == "prune")) {
 		return "", false
 	}
 	return identifier, true
