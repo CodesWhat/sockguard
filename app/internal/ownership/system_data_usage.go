@@ -156,7 +156,7 @@ func (o *ownerFilterWriter) flushOwned(opts Options) ([]string, error) {
 // the equivalent list endpoints: an exact `<label_key>=<owner>` match on the
 // item's own Labels map. In particular AllowUnownedImages is NOT honored here,
 // because it is not honored on GET /images/json either — addOwnerLabelFilter
-// replaces the label filter unconditionally, so an unlabeled image is already
+// always sends the owner label upstream, so an unlabeled image is already
 // absent from that listing. Matching it keeps the two views consistent, and it
 // is the fail-closed direction.
 func systemDataUsageItemOwned(section responsefilter.SystemDataUsageSection, raw json.RawMessage, opts Options) (bool, error) {
