@@ -329,10 +329,15 @@ Optimized for the [Watchtower](https://github.com/nicholas-fedor/watchtower) con
 ```
 
 Container create allows the stock `runc` runtime and rejects other explicit
-runtimes. Container update allows restart-policy changes, which Watchtower uses
-to set `Name: "no"`, while resource, privilege, device and capability updates
-remain denied. Image list is explicitly denied before the registry-qualified
-image-inspect rule. The preset keeps
+runtimes. It also admits the copied endpoint addressing and optional
+user-configured MAC that Watchtower preserves during recreation, without
+allowing endpoint links, driver options, link-local IPs, or gateway priority.
+Container update allows the restart-only request Watchtower uses to set
+`Name: "no"`. Moby serializes the embedded `Resources` fields at their zero
+values in that request, which the daemon treats as no-ops; nonzero resource,
+privilege, device and capability updates remain denied. Image list is
+explicitly denied before the registry-qualified image-inspect rule. The preset
+keeps
 `insecure_allow_body_blind_writes: true` for arbitrary lifecycle hooks and
 allows an empty exec user because Watchtower uses the container's configured
 user, but it no longer needs `insecure_allow_read_exfiltration: true`.

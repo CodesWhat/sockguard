@@ -19,6 +19,7 @@ Watchtower's `DOCKER_HOST` environment variable accepts `unix://` paths, but the
 | Raw log/archive/image-export streams | Denied — no read-exfiltration acknowledgment |
 | Image pulls | All registries allowed (Watchtower tracks arbitrary images) |
 | Image list | Denied — Watchtower v1.21.2 inspects images directly |
+| Recreated endpoint settings | Copied addressing and a user-configured MAC allowed; links and driver options denied |
 
 ## Usage
 

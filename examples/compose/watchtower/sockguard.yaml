@@ -37,6 +37,10 @@ request_body:
     allow_root_user: true
   image_pull:
     allow_all_registries: true
+  network:
+    endpoint_config:
+      allow_static_addressing: true
+      allow_mac_pinning: true
 
 # Required for arbitrary exec lifecycle hooks.
 # Replace with request_body.exec.allowed_commands if hooks are fixed.

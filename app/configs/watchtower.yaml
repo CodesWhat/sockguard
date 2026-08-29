@@ -37,7 +37,11 @@ response:
 # explicit HostConfig.Runtime, so the stock runc runtime is allowlisted and
 # other explicit runtimes are denied. Watchtower sets RestartPolicy.Name to
 # "no" during shutdown and failed self-update paths; restart-policy updates are
-# allowed while resource, privilege, device and capability updates stay denied.
+# allowed while Moby's serialized zero-value Resources remain daemon no-ops and
+# actual resource, privilege, device and capability updates stay denied. Modern
+# Watchtower recreates copied endpoint settings with IPAddress and, for a
+# user-configured MAC, MacAddress. Those two granular endpoint controls are
+# allowed without opening links, driver options, link-local IPs or GwPriority.
 # Image pulls are inspected too, with arbitrary registries allowed but fromSrc
 # imports denied. Lifecycle-hook commands are arbitrary and default to the
 # container's configured user. Sockguard treats an empty User as root, so root
@@ -54,6 +58,10 @@ request_body:
     allow_root_user: true
   image_pull:
     allow_all_registries: true
+  network:
+    endpoint_config:
+      allow_static_addressing: true
+      allow_mac_pinning: true
 
 # If your lifecycle hooks are fixed commands, replace this with
 # request_body.exec.allowed_commands and remove the unsafe opt-in.

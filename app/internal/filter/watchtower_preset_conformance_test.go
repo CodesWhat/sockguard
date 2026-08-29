@@ -4,11 +4,25 @@ import (
 	"context"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/codeswhat/sockguard/app/internal/config"
 	"github.com/codeswhat/sockguard/app/internal/filter"
 )
+
+// watchtowerContainerCreateBody is the representative JSON emitted by Moby
+// client v0.5.1 for a recreated container whose modern-API endpoint was copied
+// by Watchtower v1.21.2's processEndpoint. The copied operational IPAddress is
+// always present; a user-configured MacAddress survives when it is not the
+// engine-generated address derived from that IP.
+const watchtowerContainerCreateBody = `{"Hostname":"","Domainname":"","User":"","AttachStdin":false,"AttachStdout":false,"AttachStderr":false,"Tty":false,"OpenStdin":false,"StdinOnce":false,"Env":null,"Cmd":null,"Image":"nginx","Volumes":null,"WorkingDir":"","Entrypoint":null,"Labels":null,"HostConfig":{"Binds":null,"ContainerIDFile":"","LogConfig":{"Type":"","Config":null},"NetworkMode":"","PortBindings":null,"RestartPolicy":{"Name":"","MaximumRetryCount":0},"AutoRemove":false,"VolumeDriver":"","VolumesFrom":null,"ConsoleSize":[0,0],"CapAdd":null,"CapDrop":null,"CgroupnsMode":"","Dns":null,"DnsOptions":null,"DnsSearch":null,"ExtraHosts":null,"GroupAdd":null,"IpcMode":"","Cgroup":"","Links":null,"OomScoreAdj":0,"PidMode":"","Privileged":false,"PublishAllPorts":false,"ReadonlyRootfs":false,"SecurityOpt":null,"UTSMode":"","UsernsMode":"","ShmSize":0,"Runtime":"runc","Isolation":"","CpuShares":0,"Memory":0,"NanoCpus":0,"CgroupParent":"","BlkioWeight":0,"BlkioWeightDevice":null,"BlkioDeviceReadBps":null,"BlkioDeviceWriteBps":null,"BlkioDeviceReadIOps":null,"BlkioDeviceWriteIOps":null,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpusetCpus":"","CpusetMems":"","Devices":null,"DeviceCgroupRules":null,"DeviceRequests":null,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":null,"OomKillDisable":null,"PidsLimit":null,"Ulimits":null,"CpuCount":0,"CpuPercent":0,"IOMaximumIOps":0,"IOMaximumBandwidth":0,"MaskedPaths":null,"ReadonlyPaths":null},"NetworkingConfig":{"EndpointsConfig":{"app-net":{"IPAMConfig":null,"Links":null,"Aliases":["watchtower-app"],"DriverOpts":null,"GwPriority":0,"NetworkID":"0123456789abcdef","EndpointID":"abcdef0123456789","Gateway":"172.20.0.1","IPAddress":"172.20.0.10","MacAddress":"02:42:de:ad:be:ef","IPPrefixLen":16,"IPv6Gateway":"","GlobalIPv6Address":"","GlobalIPv6PrefixLen":0,"DNSNames":["watchtower-app","app"]}}}}`
+
+// watchtowerNoRestartUpdateBody is the exact Moby client v0.5.1 JSON for
+// ContainerUpdateOptions{RestartPolicy: &RestartPolicy{Name: "no"}}. Its
+// embedded Resources fields are serialized even though Watchtower did not
+// request a resource update.
+const watchtowerNoRestartUpdateBody = `{"CpuShares":0,"Memory":0,"NanoCpus":0,"CgroupParent":"","BlkioWeight":0,"BlkioWeightDevice":null,"BlkioDeviceReadBps":null,"BlkioDeviceWriteBps":null,"BlkioDeviceReadIOps":null,"BlkioDeviceWriteIOps":null,"CpuPeriod":0,"CpuQuota":0,"CpuRealtimePeriod":0,"CpuRealtimeRuntime":0,"CpusetCpus":"","CpusetMems":"","Devices":null,"DeviceCgroupRules":null,"DeviceRequests":null,"MemoryReservation":0,"MemorySwap":0,"MemorySwappiness":null,"OomKillDisable":null,"PidsLimit":null,"Ulimits":null,"CpuCount":0,"CpuPercent":0,"IOMaximumIOps":0,"IOMaximumBandwidth":0,"RestartPolicy":{"Name":"no","MaximumRetryCount":0}}`
 
 // TestWatchtowerPresetConformance pins the Docker Engine API surface used by
 // nicholas-fedor/watchtower v1.21.2. Watchtower's pkg/container package calls
@@ -30,6 +44,19 @@ func TestWatchtowerPresetConformance(t *testing.T) {
 	}
 	if cfg.InsecureAllowReadExfiltration {
 		t.Error("watchtower.yaml must not acknowledge read exfiltration; Watchtower uses no exfiltration route")
+	}
+	if cfg.RequestBody.Network.AllowEndpointConfig {
+		t.Error("watchtower.yaml must not allow the whole endpoint config")
+	}
+	endpointConfig := cfg.RequestBody.Network.EndpointConfig
+	if !endpointConfig.AllowStaticAddressing || !endpointConfig.AllowMACPinning {
+		t.Errorf("watchtower endpoint config = %#v, want only copied static addressing and MAC pinning allowed", endpointConfig)
+	}
+	if endpointConfig.AllowLinkLocalIPs || endpointConfig.AllowGwPriority || !endpointConfig.AllowAliases {
+		t.Errorf("watchtower endpoint config = %#v, want unrelated endpoint controls unchanged", endpointConfig)
+	}
+	if cfg.RequestBody.ContainerUpdate.AllowResourceUpdates {
+		t.Error("watchtower.yaml must not allow resource updates")
 	}
 
 	handler := drydockPresetHandlerFromConfig(t, cfg, func(policy *filter.PolicyConfig) {
@@ -57,14 +84,18 @@ func TestWatchtowerPresetConformance(t *testing.T) {
 
 		// Watchtower recreates inspected containers with the stock runtime. A
 		// different explicit runtime must not pass the same create rule.
-		{"container-create-runc", http.MethodPost, "/containers/create", `{"Image":"nginx","HostConfig":{"Runtime":"runc"}}`, true},
+		{"container-create-copied-endpoint", http.MethodPost, "/containers/create", watchtowerContainerCreateBody, true},
 		{"container-create-other-runtime-denied", http.MethodPost, "/containers/create", `{"Image":"nginx","HostConfig":{"Runtime":"kata"}}`, false},
+		{"container-create-endpoint-links-denied", http.MethodPost, "/containers/create", strings.Replace(watchtowerContainerCreateBody, `"IPAMConfig":null,"Links":null`, `"IPAMConfig":null,"Links":["db:database"]`, 1), false},
+		{"container-create-endpoint-driver-options-denied", http.MethodPost, "/containers/create", strings.Replace(watchtowerContainerCreateBody, `"DriverOpts":null`, `"DriverOpts":{"com.example":"value"}`, 1), false},
 
-		// Watchtower only changes RestartPolicy to "no". Resource updates stay
-		// behind the body inspector even though the route itself is allowed.
-		{"container-update-no-restart", http.MethodPost, "/containers/abc/update", `{"RestartPolicy":{"Name":"no"}}`, true},
-		{"container-update-memory-denied", http.MethodPost, "/containers/abc/update", `{"Memory":0}`, false},
-		{"container-update-cpu-denied", http.MethodPost, "/containers/abc/update", `{"NanoCpus":2000000000}`, false},
+		// Moby embeds a zero-valued Resources in Watchtower's restart-only
+		// update. Those daemon no-ops pass, while a one-field mutation remains
+		// denied without allow_resource_updates.
+		{"container-update-no-restart", http.MethodPost, "/containers/abc/update", watchtowerNoRestartUpdateBody, true},
+		{"container-update-memory-denied", http.MethodPost, "/containers/abc/update", strings.Replace(watchtowerNoRestartUpdateBody, `"Memory":0`, `"Memory":1`, 1), false},
+		{"container-update-cpu-denied", http.MethodPost, "/containers/abc/update", strings.Replace(watchtowerNoRestartUpdateBody, `"NanoCpus":0`, `"NanoCpus":2000000000`, 1), false},
+		{"container-update-pids-clear-denied", http.MethodPost, "/containers/abc/update", strings.Replace(watchtowerNoRestartUpdateBody, `"PidsLimit":null`, `"PidsLimit":0`, 1), false},
 
 		// Lifecycle-hook exec. Watchtower leaves User empty to use the
 		// container's configured user, which Sockguard conservatively treats as
@@ -87,7 +118,7 @@ func TestWatchtowerPresetConformance(t *testing.T) {
 
 		// Version prefixes normalize before matching.
 		{"v-prefixed-containers-list", http.MethodGet, "/v1.45/containers/json", "", true},
-		{"v-prefixed-container-update", http.MethodPost, "/v1.45/containers/abc/update", `{"RestartPolicy":{"Name":"no"}}`, true},
+		{"v-prefixed-container-update", http.MethodPost, "/v1.45/containers/abc/update", watchtowerNoRestartUpdateBody, true},
 		{"v-prefixed-image-inspect", http.MethodGet, "/v1.45/images/ghcr.io/example/app:latest/json", "", true},
 		{"v-prefixed-network-connect", http.MethodPost, "/v1.45/networks/net1/connect", `{"Container":"abc"}`, true},
 
