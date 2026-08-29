@@ -34,7 +34,7 @@ func buildServeHandler(t *testing.T, cfg *config.Config, logger *slog.Logger, au
 	if err != nil {
 		t.Fatalf("newServeRuntime: %v", err)
 	}
-	handler, teardown := buildServeHandlerChainWithRuntime(serveHandlerBuild{
+	handler, teardown, _ := buildServeHandlerChainWithRuntime(serveHandlerBuild{
 		Cfg:         cfg,
 		Logger:      logger,
 		AuditLogger: auditLogger,
@@ -51,7 +51,7 @@ func buildServeHandlerLayers(cfg *config.Config, logger *slog.Logger, auditLogge
 	if err != nil {
 		panic("newServeRuntime: " + err.Error())
 	}
-	layers, _ := buildServeHandlerLayersWithRuntime(serveHandlerBuild{
+	layers, _, _ := buildServeHandlerLayersWithRuntime(serveHandlerBuild{
 		Cfg:            cfg,
 		Logger:         logger,
 		AuditLogger:    auditLogger,

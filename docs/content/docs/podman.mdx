@@ -57,19 +57,19 @@ on.
 | `POST /libpod/networks/{name}/connect` | `request_body.libpod_network` — same `allow_endpoint_config`/`endpoint_config` gates as `network` | Podman's `libpod.Connect` handler decodes `entities.NetworkConnectOptions`, which is `container` plus an *embedded, untagged* `PerNetworkOptions` — so the endpoint fields are top-level and snake_case (`static_ips`, `static_mac`, `aliases`, `options`) and Docker's `{"EndpointConfig":{...}}` never appears. Sockguard reads that shape and runs it through the same gate as `POST /networks/{id}/connect`: `static_ips` is governed by `allow_static_addressing`, `static_mac` by `allow_mac_pinning`, `aliases` by `allow_aliases`, and `options` (the libpod analog of `DriverOpts`) is fail-closed under anything but `allow_endpoint_config: true`. `static_mac` is checked as a raw string, not as a MAC: Podman's `HardwareAddr.UnmarshalJSON` falls back to a `[]byte` decode, so a base64 blob pins a MAC just as `aa:bb:cc:dd:ee:ff` does. `interface_name` is not gated — it names an interface inside the container's own netns and has no Docker analog. `allow_link_local_ips` and `allow_gw_priority` have no libpod analog and never fire here. |
 | `POST /libpod/networks/{name}/disconnect` | `request_body.libpod_network.allow_disconnect_force` | The one libpod network route Podman registers straight onto the Docker-compat handler (`compat.Disconnect`), so the body really is Docker's `{"Container","Force"}` and the same gate applies unchanged. |
 | `POST /libpod/networks/{name}/update` | `request_body.libpod_network.allow_dns_servers` | Netavark-only, with no Docker analog at any Engine API version: it rewrites an existing network's DNS resolvers, so every container **already attached** starts resolving names through whatever the caller supplied. Default deny. Both directions are gated — adding a resolver redirects, removing one can redirect by omission — and a body that changes no resolver passes. The same knob gates `network_dns_servers` on `POST /libpod/networks/create`, so it governs the whole per-network resolver surface rather than half of it. Note the two spellings are different on the wire: update decodes `entities.NetworkUpdateOptions` (`adddnsservers`/`removednsservers`, run together), create decodes `types.Network` (`network_dns_servers`, snake_case). The snake_case `add_dns_servers` belongs to an internal type Podman never parses from a request. |
-| `POST /libpod/images/pull` | `request_body.image_pull` — **shared with Docker-compat** | Podman's native image pull, the counterpart of Docker's `POST /images/create`. One registry allowlist (`allowed_registries`/`allow_official`/`allow_all_registries`) governs both surfaces, so nothing can be configured for one API family and forgotten for the other. The query shape is libpod's own and is read as such: the reference arrives in `reference` (not `fromImage`/`tag`), Podman matches that key case-insensitively and honors the last of a repeated pair, and it accepts a `docker://` transport prefix — so sockguard folds the key, checks every repeated value, and strips the prefix before matching the host. A pull carrying no usable `reference` is denied unless `allow_all_registries: true`. `allow_imports` does not apply here; libpod imports are a separate route (`POST /libpod/images/import`). |
+| `POST /libpod/images/pull` | `request_body.image_pull` (shared with Docker-compat) | Podman's native image pull, the counterpart of Docker's `POST /images/create`. One registry allowlist (`allowed_registries`/`allow_official`/`allow_all_registries`) governs both surfaces, so nothing can be configured for one API family and forgotten for the other. The query shape is libpod's own and is read as such: the reference arrives in `reference` (not `fromImage`/`tag`), Podman matches that key case-insensitively and honors the last of a repeated pair, and it accepts a `docker://` transport prefix, so sockguard folds the key, checks every repeated value, and strips the prefix before matching the host. A pull carrying no usable `reference` is denied unless `allow_all_registries: true`. `allow_imports` does not apply to native libpod image operations. `POST /libpod/images/load` and `POST /libpod/images/import` are separate, uninspected routes and require the global blind-write acknowledgment. |
 | `POST /libpod/secrets/create` | `request_body.libpod_secret` | Reuses the `secret` config shape. libpod reads `driver` from the query string, not a JSON body, so this inspector never reads `r.Body` — only the query-param path is exercised. |
 
 See the [Configuration Reference](/configuration#request-body-policy-reference)
 for the complete field-by-field mapping and environment-variable names for
 every key above.
 
-## The Uninspected Blind-Write Surface: `play/kube` and Manifests
+## The Uninspected Blind-Write Surface
 
-`POST /libpod/play/kube` (and its identically-handled `/libpod/kube/play`
-alias), `POST /libpod/kube/apply`, and `POST`/`PUT /libpod/manifests/*` have
-**no** request-body inspector in this release — full Kubernetes-YAML/PodSpec
-modeling is out of scope for this release. Admitting any of them requires the same
+`POST /libpod/images/load`, `POST /libpod/images/import`, `POST /libpod/play/kube`
+(and its identically-handled `/libpod/kube/play` alias), `POST /libpod/kube/apply`,
+and `POST`/`PUT /libpod/manifests/*` have **no** request-body inspector in this
+release. Admitting any of them requires the same
 `insecure_allow_body_blind_writes: true` acknowledgment that covers
 uninspected exec, exactly like every other body-bearing write sockguard
 cannot yet constrain.
@@ -140,6 +140,16 @@ same way they cover Docker-compat:
   volumes, secrets — is owner-filtered and visibility-filtered, so switching
   a client from Docker-compat to libpod-native paths is not a way around
   isolation configured on the Docker-compat side.
+- `GET /libpod/system/df` is the one read that cannot be filtered, and it is
+  refused with a `403` instead whenever owner isolation or a visibility policy
+  is active. Podman's native disk-usage report is not the Docker-compat body
+  under another path: its image, container and volume entries carry no labels
+  at all, so no owner label and no visibility selector has a field to match.
+  Refusing keeps it from being a way around isolation the way filtering does
+  for every other libpod read; see
+  [Security](/security#layer-6-owner-label-isolation) for the full field list
+  and why an emptied report was the wrong answer. The Docker-compat
+  `GET /system/df` that Podman also serves is filtered normally.
 - Resource names that happen to equal an API action word remain protected.
   Owner matching reserves keywords only for the exact method and collection
   path, while `GET` and `HEAD` visibility treats write-only keywords as normal
