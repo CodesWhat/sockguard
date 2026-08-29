@@ -191,13 +191,13 @@ func (p swarmPolicy) inspectUpdate(logger *slog.Logger, r *http.Request) (string
 	if !p.allowAutoLockManagers && req.EncryptionConfig.AutoLockManagers {
 		return "swarm update denied: manager autolock is not allowed", nil
 	}
-	if !p.allowTokenRotation && queryBool(r, "rotateWorkerToken") {
+	if !p.allowTokenRotation && dockerBoolValue(r, "rotateWorkerToken") {
 		return "swarm update denied: worker token rotation is not allowed", nil
 	}
-	if !p.allowTokenRotation && queryBool(r, "rotateManagerToken") {
+	if !p.allowTokenRotation && dockerBoolValue(r, "rotateManagerToken") {
 		return "swarm update denied: manager token rotation is not allowed", nil
 	}
-	if !p.allowManagerUnlockKeyRotation && queryBool(r, "rotateManagerUnlockKey") {
+	if !p.allowManagerUnlockKeyRotation && dockerBoolValue(r, "rotateManagerUnlockKey") {
 		return "swarm update denied: manager unlock key rotation is not allowed", nil
 	}
 
@@ -254,12 +254,21 @@ func hasSwarmSigningCAUpdate(cfg swarmCAConfig) bool {
 	return strings.TrimSpace(cfg.SigningCACert) != "" || strings.TrimSpace(cfg.SigningCAKey) != "" || cfg.ForceRotate > 0
 }
 
-func queryBool(r *http.Request, name string) bool {
-	raw := strings.TrimSpace(r.URL.Query().Get(name))
-	switch strings.ToLower(raw) {
-	case "1", "t", "true", "yes", "y", "on":
-		return true
-	default:
+// dockerBoolValue mirrors the daemon's api/server/httputils.BoolValue: a query
+// value is false only when empty or one of "0"/"no"/"false"/"none"
+// (case-insensitive), and true otherwise.
+//
+// This must not be written as an allowlist of truthy spellings. The daemon
+// treats every value outside the falsy set as true, so ?rotateManagerToken=2
+// rotates the token at the daemon. An allowlist that recognizes only "1"/"true"
+// and friends reads such a value as false, declines to deny, and forwards a
+// rotation the operator disabled. proxy.dockerBoolValue carries the same
+// semantics for the same reason.
+func dockerBoolValue(r *http.Request, name string) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get(name))) {
+	case "", "0", "no", "false", "none":
 		return false
+	default:
+		return true
 	}
 }
