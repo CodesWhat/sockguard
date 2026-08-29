@@ -80,7 +80,7 @@ test("public and maintainer docs describe the Homebrew release path", () => {
   assert.match(changelog, /^- \*\*Homebrew distribution/m);
 });
 
-test("the pinned GoReleaser emits a cask that passes brew style", () => {
+test("the release workflow pins GoReleaser to v2.18.0 or newer", () => {
   // GoReleaser < 2.16 emitted `on_intel` before `on_arm` and `url` before
   // `sha256` inside each block, plus a blank line between `on_macos` and
   // `on_linux`. That is 13 Cask/StanzaOrder and Cask/StanzaGrouping offences
