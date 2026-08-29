@@ -27,25 +27,70 @@ func (e *ValidationError) Error() string {
 	return fmt.Sprintf("config validation failed:\n  - %s", strings.Join(e.Errors, "\n  - "))
 }
 
+// validateMode selects whether validation may dereference the filesystem
+// paths a config names.
+type validateMode uint8
+
+const (
+	// validateFull is startup and CLI validation: TLS material named by
+	// listen.tls is loaded so a missing, unreadable, or malformed
+	// cert/key/CA fails fast instead of at the first client connection.
+	validateFull validateMode = iota
+	// validateStructural is validation of a candidate config supplied by a
+	// remote caller. It performs every check validateFull does EXCEPT
+	// reading files. See ValidateStructural for why that distinction is a
+	// security boundary and not an optimization.
+	validateStructural
+)
+
 // Validate checks a Config for correctness, returning a ValidationError
-// if any problems are found.
+// if any problems are found. It loads the TLS material the config names, so
+// it must only be used on a config the operator supplied (startup, the CLI).
+// For a candidate config that arrived over the network, use
+// ValidateStructural.
 func Validate(cfg *Config) error {
-	errs := validateBasic(cfg)
+	return validateWithMode(cfg, validateFull)
+}
+
+// ValidateStructural is Validate with every filesystem dereference disabled.
+//
+// The admin API's POST /validate accepts candidate YAML from a caller and
+// returns the validation errors verbatim. Under Validate, a listen.tls block
+// whose cert_file, key_file, and client_ca_file are all set makes the
+// validator call tls.LoadX509KeyPair and os.ReadFile on those paths and wrap
+// the resulting *os.PathError into the response. A caller who cannot read the
+// host filesystem can therefore point the candidate at any absolute path and
+// learn from the error whether it exists, whether the process can read it,
+// and whether it parses as PEM — a filesystem probing oracle built out of a
+// validation endpoint.
+//
+// Scrubbing the error text is not sufficient: "loaded" versus "did not load"
+// is itself the answer the probe is after. The dereference has to not happen.
+// So the structural mode still compiles the client-certificate identity
+// constraints (pure, and the check most likely to catch a real operator
+// mistake) and still requires cert_file/key_file/client_ca_file to be set
+// together, but never opens them.
+func ValidateStructural(cfg *Config) error {
+	return validateWithMode(cfg, validateStructural)
+}
+
+func validateWithMode(cfg *Config, mode validateMode) error {
+	errs := validateBasic(cfg, mode)
 	if len(errs) > 0 {
 		return &ValidationError{Errors: errs}
 	}
 	return nil
 }
 
-func validateBasic(cfg *Config) []string {
+func validateBasic(cfg *Config, mode validateMode) []string {
 	var errs []string
-	errs = append(errs, validateListeners(cfg)...)
+	errs = append(errs, validateListeners(cfg, mode)...)
 	errs = append(errs, validateUpstream(cfg)...)
 	errs = append(errs, validateLogging(cfg)...)
 	errs = append(errs, validateResponse(cfg)...)
 	errs = append(errs, validateHealthMetrics(cfg)...)
 	if cfg.Admin.Enabled {
-		errs = append(errs, validateAdmin(cfg)...)
+		errs = append(errs, validateAdmin(cfg, mode)...)
 	}
 	errs = append(errs, validateReload(cfg)...)
 	errs = append(errs, validatePolicyBundle(cfg)...)
@@ -62,20 +107,20 @@ func validateBasic(cfg *Config) []string {
 // --listen-socket CLI flag) records whether listen.* was set through any
 // channel other than its zero-value default, so a config that sets both is
 // rejected rather than silently picking a winner.
-func validateListeners(cfg *Config) []string {
+func validateListeners(cfg *Config, mode validateMode) []string {
 	var errs []string
 	if len(cfg.Listeners) > 0 {
 		if cfg.explicitLegacyListen {
 			errs = append(errs, "listen and listeners are mutually exclusive; migrate the listen: block into a single-entry listeners: list")
 		}
-		errs = append(errs, validateExplicitListeners(cfg)...)
+		errs = append(errs, validateExplicitListeners(cfg, mode)...)
 		errs = append(errs, validateExplicitListenersBindUniqueness(cfg)...)
 		return errs
 	}
-	return validateLegacyListen(cfg)
+	return validateLegacyListen(cfg, mode)
 }
 
-func validateLegacyListen(cfg *Config) []string {
+func validateLegacyListen(cfg *Config, mode validateMode) []string {
 	var errs []string
 	if cfg.Listen.Socket == "" && cfg.Listen.Address == "" {
 		errs = append(errs, "at least one listener is required (listen.socket or listen.address)")
@@ -84,7 +129,7 @@ func validateLegacyListen(cfg *Config) []string {
 		errs = append(errs, validateSocketOwnership("listen", cfg.Listen)...)
 	}
 	if cfg.Listen.Socket == "" && cfg.Listen.Address != "" {
-		errs = append(errs, validateTCPListenerSecurity(cfg)...)
+		errs = append(errs, validateTCPListenerSecurity(cfg, mode)...)
 	}
 	return errs
 }
@@ -94,7 +139,7 @@ func validateLegacyListen(cfg *Config) []string {
 // exactly-one-of-socket-or-address (stricter than the legacy implicit
 // socket-wins fallback — new entries reject ambiguity outright), per-entry
 // TLS/plaintext-ack/ownership security, and the allowed_profiles scope.
-func validateExplicitListeners(cfg *Config) []string {
+func validateExplicitListeners(cfg *Config, mode validateMode) []string {
 	var errs []string
 
 	if len(cfg.Listeners) > MaxListeners {
@@ -140,7 +185,7 @@ func validateExplicitListeners(cfg *Config) []string {
 				errs = append(errs, label+".tls is only valid for TCP listeners")
 			}
 		default:
-			errs = append(errs, validateListenerTCPSecurity(label, l.ListenConfig)...)
+			errs = append(errs, validateListenerTCPSecurity(label, l.ListenConfig, mode)...)
 			if l.SocketUID != nil {
 				errs = append(errs, label+".socket_uid is only valid for unix listeners")
 			}
@@ -323,7 +368,7 @@ func validateSocketOwnership(prefix string, listen ListenConfig) []string {
 // an arbitrary field prefix and ListenConfig value, so it can validate any
 // listeners[*] entry's TCP/TLS/plaintext-ack posture with the same
 // constructive checks the legacy listen: block gets.
-func validateListenerTCPSecurity(prefix string, listen ListenConfig) []string {
+func validateListenerTCPSecurity(prefix string, listen ListenConfig, mode validateMode) []string {
 	var errs []string
 
 	if listen.TLS.Enabled() && !listen.TLS.Complete() {
@@ -332,7 +377,7 @@ func validateListenerTCPSecurity(prefix string, listen ListenConfig) []string {
 	}
 
 	if listen.TLS.Complete() {
-		if _, err := BuildMutualTLSServerConfigForField(prefix+".tls", listen.TLS); err != nil {
+		if err := checkMutualTLSForField(prefix+".tls", listen.TLS, mode); err != nil {
 			errs = append(errs, err.Error())
 		}
 	}
@@ -515,7 +560,7 @@ func validateHealthMetrics(cfg *Config) []string {
 	return errs
 }
 
-func validateAdmin(cfg *Config) []string {
+func validateAdmin(cfg *Config, mode validateMode) []string {
 	var errs []string
 	if !strings.HasPrefix(cfg.Admin.Path, "/") {
 		errs = append(errs, fmt.Sprintf("admin.path must start with /, got %q", cfg.Admin.Path))
@@ -541,7 +586,7 @@ func validateAdmin(cfg *Config) []string {
 	if cfg.Metrics.Enabled && cfg.Admin.PolicyVersionPath == cfg.Metrics.Path {
 		errs = append(errs, fmt.Sprintf("admin.policy_version_path must not equal metrics.path when both endpoints are enabled, got %q", cfg.Admin.PolicyVersionPath))
 	}
-	errs = append(errs, validateAdminListener(cfg)...)
+	errs = append(errs, validateAdminListener(cfg, mode)...)
 	errs = append(errs, validateAdminMountOn(cfg)...)
 	return errs
 }
@@ -619,7 +664,7 @@ func literalPercentRuleError(label, pattern string) string {
 // socket/address than the main listener — otherwise the two http.Servers
 // would race for the same bind and the dedicated-listener model would be a
 // silent lie.
-func validateAdminListener(cfg *Config) []string {
+func validateAdminListener(cfg *Config, mode validateMode) []string {
 	listen := cfg.Admin.Listen
 	if !listen.Configured() {
 		return nil
@@ -642,7 +687,7 @@ func validateAdminListener(cfg *Config) []string {
 		if listen.TLS.Enabled() && !listen.TLS.Complete() {
 			errs = append(errs, requiresError("admin.listen.tls", "cert_file, key_file, and client_ca_file together"))
 		} else if listen.TLS.Complete() {
-			if _, err := BuildMutualTLSServerConfigForField("admin.listen.tls", listen.TLS); err != nil {
+			if err := checkMutualTLSForField("admin.listen.tls", listen.TLS, mode); err != nil {
 				errs = append(errs, err.Error())
 			}
 		}
@@ -670,7 +715,7 @@ func validateAdminListener(cfg *Config) []string {
 	return errs
 }
 
-func validateTCPListenerSecurity(cfg *Config) []string {
+func validateTCPListenerSecurity(cfg *Config, mode validateMode) []string {
 	var errs []string
 
 	if cfg.Listen.TLS.Enabled() && !cfg.Listen.TLS.Complete() {
@@ -679,7 +724,7 @@ func validateTCPListenerSecurity(cfg *Config) []string {
 	}
 
 	if cfg.Listen.TLS.Complete() {
-		if _, err := BuildMutualTLSServerConfig(cfg.Listen.TLS); err != nil {
+		if err := checkMutualTLSForField("listen.tls", cfg.Listen.TLS, mode); err != nil {
 			errs = append(errs, err.Error())
 		}
 	}

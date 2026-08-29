@@ -79,6 +79,27 @@ func BuildMutualTLSServerConfigForField(fieldPrefix string, cfg ListenTLSConfig)
 	return tlsConfig, nil
 }
 
+// checkMutualTLSForField reports whether a complete listen.tls block is
+// usable, honouring the caller's validateMode.
+//
+// validateFull builds the real *tls.Config, which loads cert_file/key_file
+// and reads client_ca_file, so an operator-supplied config fails at startup
+// rather than at the first client connection.
+//
+// validateStructural runs only the checks that touch no files. The identity
+// constraints (common_names, dns_names, ip_addresses, uri_sans,
+// public_key_sha256_pins) compile exactly as they do on the full path, so a
+// malformed selector is still reported; the three file paths are left
+// undisturbed. See ValidateStructural for the oracle this closes.
+func checkMutualTLSForField(fieldPrefix string, cfg ListenTLSConfig, mode validateMode) error {
+	if mode == validateStructural {
+		_, err := compileClientCertificateIdentityConstraints(fieldPrefix, cfg)
+		return err
+	}
+	_, err := BuildMutualTLSServerConfigForField(fieldPrefix, cfg)
+	return err
+}
+
 type compiledClientCertificateIdentityConstraints struct {
 	fieldPrefix         string
 	commonNames         []string

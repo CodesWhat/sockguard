@@ -11,8 +11,12 @@ import (
 )
 
 var (
-	validateConfig    = config.Validate
-	compileFilterRule = filter.CompileRule
+	validateConfig = config.Validate
+	// validateConfigStructural is the filesystem-free validator used for a
+	// candidate config that arrived over the admin API. See
+	// config.ValidateStructural.
+	validateConfigStructural = config.ValidateStructural
+	compileFilterRule        = filter.CompileRule
 )
 
 type bodySensitiveWriteEndpoint struct {
@@ -162,8 +166,23 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodPost, path: "/libpod/manifests/sockguard-test/push"},
 }
 
+// validateAndCompileRules validates and compiles an operator-supplied config.
+// It uses the full validator, which loads the TLS material the config names.
 func validateAndCompileRules(cfg *config.Config) ([]*filter.CompiledRule, error) {
-	if err := validateConfig(cfg); err != nil {
+	return validateAndCompileRulesWith(cfg, validateConfig)
+}
+
+// validateAndCompileRulesStructural is validateAndCompileRules for a candidate
+// config supplied by a remote caller. Every check that does not touch the
+// filesystem still runs; the TLS material named by listen.tls is never opened,
+// so the admin API's POST /validate cannot be used to probe host paths. See
+// config.ValidateStructural.
+func validateAndCompileRulesStructural(cfg *config.Config) ([]*filter.CompiledRule, error) {
+	return validateAndCompileRulesWith(cfg, validateConfigStructural)
+}
+
+func validateAndCompileRulesWith(cfg *config.Config, validate func(*config.Config) error) ([]*filter.CompiledRule, error) {
+	if err := validate(cfg); err != nil {
 		return nil, err
 	}
 

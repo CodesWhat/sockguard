@@ -1370,7 +1370,13 @@ func buildAdminValidator(parentLogger *slog.Logger) admin.Validator {
 
 		compatActive := config.ApplyCompat(cfg, discardLogger)
 
-		compiled, compileErr := validateAndCompileRules(cfg)
+		// Structural, not full, validation: this candidate arrived over the
+		// network. The full validator opens the cert, key, and client CA that
+		// listen.tls names and returns the os.PathError verbatim, which would
+		// let a caller point a candidate at any absolute path and read back
+		// whether it exists, is readable, and parses as PEM. See
+		// config.ValidateStructural.
+		compiled, compileErr := validateAndCompileRulesStructural(cfg)
 		if compileErr != nil {
 			return admin.ValidateResponse{
 				OK:           false,
