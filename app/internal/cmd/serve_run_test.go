@@ -27,6 +27,7 @@ import (
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/policybundle"
 	"github.com/codeswhat/sockguard/app/internal/testhelp"
+	"github.com/codeswhat/sockguard/app/internal/upstreamflavor"
 )
 
 type serveTestConn struct {
@@ -121,6 +122,16 @@ func (i serveTestFileInfo) Sys() any {
 func newServeTestDeps() *serveDeps {
 	deps := newServeDeps()
 	deps.umaskMu = &sync.Mutex{}
+	// Every runServeWithDeps test here stubs the upstream dial rather than
+	// standing up a daemon, so the "auto" flavor probe has nothing to talk to
+	// and would fail startup before the behavior under test runs. Stub it to
+	// the pre-detection answer; the probe itself is covered by
+	// internal/upstreamflavor and by upstream_flavor_test.go, and
+	// TestServeDepsBindTheRealUpstreamFlavorProbe pins that production still
+	// binds the real one.
+	deps.detectUpstreamFlavor = func(context.Context, *http.Client) (upstreamflavor.Flavor, error) {
+		return upstreamflavor.Docker, nil
+	}
 	return deps
 }
 
