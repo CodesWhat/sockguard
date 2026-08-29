@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Helm chart's default image is pinned to the published 2.0.0 multi-arch manifest-list digest.** The pin is cleared before each cut because the digest cannot exist until the release images publish; with `codeswhat/sockguard:2.0.0` live on Docker Hub, `values.yaml` now pins `2.0.0@sha256:000ccc47fd16c249072119f00ece90611b24e115655d6f9d618772ab08cdeeea`, resolved with `docker buildx imagetools inspect`, per RELEASING.md's Helm chart section.
 - **The sitemap and the pkg.go.dev badge no longer point at the wrong thing.** `/docs/podman` and `/docs/roadmap` are live and linked from the docs navigation but appeared in none of the sitemap's `<loc>` entries, because the docs slug list is hand-maintained while the comparison slugs are derived. The list now mirrors `docs/content/docs/meta.json` and a test fails when the two drift apart. The Go Reference badge built its pkg.go.dev URL from the GitHub-cased repository slug, which 404s there because pkg.go.dev keys on the case-sensitive `go.mod` module path; it still rendered a valid-looking badge, so the dead link was invisible until clicked.
 
 ### Documentation
@@ -20,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `sockguard_listener_up` is documented in the metric reference; it was published by the code but absent from the table.
 - The Podman guide no longer describes its Kubernetes-YAML scope boundary in terms of v1.6.
 - The roadmap records the Go module major-version path as a v2.1 track. `go.mod` has no `/v2` suffix, so the Go module proxy rejects every v2 tag and still resolves `@latest` to v1.7.5.
+- The metric reference lists the `listener` label on `sockguard_http_requests_total`, `sockguard_http_denied_requests_total`, and `sockguard_http_request_duration_seconds`. All three emit it and none of them documented it, so a dashboard written from the table would have aggregated across listeners without saying so. The label-cardinality section explains where the values come from and that `listeners` is capped at 32.
+- The admin API reference describes `bundle_source` as the basename of `policy_bundle.signature_path` rather than the configured path. The code strips the directory on purpose so the response cannot leak the host's filesystem layout, and the old wording invited operators to expect a full path.
+- The migration guide's link into the configuration reference points at `#request-body-policy-reference`, which exists. It pointed at `#request-body-inspection`, which does not, so the anchor silently dropped readers at the top of the page.
 
 ## [2.0.0] - 2026-08-28
 

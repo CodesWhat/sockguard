@@ -187,7 +187,7 @@ GET /admin/policy/version
 | `profiles` | int | Number of named client profiles |
 | `compat_active` | bool | `true` when Tecnativa env-var compat rules are in effect |
 | `config_sha256` | hex string | SHA-256 of the effective config's JSON encoding. Best-effort; may be empty if the encoder fails. Two snapshots with the same `version` but different hashes indicate a config-drift bug. |
-| `bundle_source` | string | Omitted when `policy_bundle.enabled: false`. The value passed to `policy_bundle.signature_path`. |
+| `bundle_source` | string | Omitted when `policy_bundle.enabled: false`. The basename of `policy_bundle.signature_path`, with the directory stripped so the response does not leak the host's filesystem layout to Docker API callers on the main listener. |
 | `bundle_signer` | string | Omitted when bundles disabled. `keyed:<spki-fingerprint>` for keyed verification or `keyless:<issuer>:<san>` for keyless. |
 | `bundle_digest` | hex string | Omitted when bundles disabled. SHA-256 of the verified YAML bytes. |
 

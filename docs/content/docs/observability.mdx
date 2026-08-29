@@ -68,9 +68,9 @@ all default to `false`, so existing deployments stay quiet until you opt in.
 | -------------------------------------------- | --------- | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `sockguard_build_info`                       | gauge     | `version`, `commit`, `build_date`, `go_version`         | Constant `1`. Use for version panels and Grafana annotations.                                      |
 | `sockguard_start_time_seconds`               | gauge     | —                                                       | Unix epoch when the metrics registry was created. Use for `time() - sockguard_start_time_seconds`. |
-| `sockguard_http_requests_total`              | counter   | `decision`, `method`, `profile`, `route`, `status`      | One per completed request. `decision` ∈ `{allow, deny, would_deny, error}`. Method is a finite enum described below. |
-| `sockguard_http_denied_requests_total`       | counter   | `mode`, `profile`, `reason_code`, `route`               | Only deny-decision rows. `mode` ∈ `{enforce, warn, audit}`. Use for policy-violation alerts. Rule index is in the structured audit log (`matched_rule` field). |
-| `sockguard_http_request_duration_seconds`    | histogram | `decision`, `method`, `profile`, `route`                | Buckets: `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10` seconds.                        |
+| `sockguard_http_requests_total`              | counter   | `decision`, `listener`, `method`, `profile`, `route`, `status` | One per completed request. `decision` ∈ `{allow, deny, would_deny, error}`. Method is a finite enum described below. |
+| `sockguard_http_denied_requests_total`       | counter   | `listener`, `mode`, `profile`, `reason_code`, `route`   | Only deny-decision rows. `mode` ∈ `{enforce, warn, audit}`. Use for policy-violation alerts. Rule index is in the structured audit log (`matched_rule` field). |
+| `sockguard_http_request_duration_seconds`    | histogram | `decision`, `listener`, `method`, `profile`, `route`    | Buckets: `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10` seconds.                        |
 | `sockguard_http_requests_active`             | gauge     | —                                                       | Currently in-flight requests. Spikes during streaming endpoints (logs/attach/events).              |
 | `sockguard_listener_up`                      | gauge     | `listener`, `role`, `network`                           | `1` the listener is serving, `0` it stopped. Published once the bind barrier releases and set to `0` on shutdown or a fatal serve error. The series is never removed, so a stopped listener stays visibly down rather than vanishing from scrape output. |
 | `sockguard_upstream_socket_up`               | gauge     | —                                                       | `1` reachable, `0` unreachable. Only emitted when `health.watchdog.enabled` is true.               |
@@ -97,6 +97,13 @@ An arbitrary method never becomes a new series.
 single `unknown` route instead of retaining caller-controlled text. Profile
 names come from configured profile assignments; if none matches, requests are
 tagged `profile="default"`.
+
+`listener` is the operator-configured listener name the request arrived on, so
+its value set is bounded by the configuration rather than by callers. A legacy
+singular `listen:` block reports `default`, an explicit `listeners[*].name`
+reports that name, and the admin listener reports `admin`. `listeners` is
+capped at 32 entries (`MaxListeners`), so the label cannot grow without an
+operator editing the config.
 
 `reason_code` is a bounded enum: `matched_deny_rule`, `no_matching_allow_rule`,
 `request_body_policy_denied`, `request_body_too_large`,
