@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDefaultsUpstreamHijackInactivityTimeout pins the default: hijack
@@ -91,4 +92,27 @@ func TestValidateUpstreamHijackInactivityTimeout(t *testing.T) {
 			}
 		})
 	}
+}
+
+func FuzzValidateUpstreamHijackInactivityTimeout(f *testing.F) {
+	for _, value := range []string{"", "off", "0s", "-1s", "30s", "10m", "5s extra"} {
+		f.Add(value)
+	}
+
+	f.Fuzz(func(t *testing.T, value string) {
+		cfg := Defaults()
+		cfg.Upstream.HijackInactivityTimeout = value
+		err := Validate(&cfg)
+
+		duration, parseErr := time.ParseDuration(value)
+		if parseErr == nil && duration > 0 {
+			if err != nil {
+				t.Fatalf("Validate() = %v for valid timeout %q", err, value)
+			}
+			return
+		}
+		if err == nil || !strings.Contains(err.Error(), "upstream.hijack_inactivity_timeout") {
+			t.Fatalf("Validate() = %v, want hijack inactivity timeout error for %q", err, value)
+		}
+	})
 }
