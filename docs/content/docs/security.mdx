@@ -148,7 +148,7 @@ Only names represented in `allowed_env_values` receive a value constraint; other
 
 This filtering only applies at exec create — see Known Limitations below for why it cannot be re-checked at exec start.
 
-`POST /images/create` is inspected by default. Sockguard blocks `fromSrc` imports unless explicitly allowed and constrains pulls to Docker Hub official images unless the operator opts into `allow_all_registries` or an explicit registry allowlist.
+`POST /images/create` and native Podman's `POST /libpod/images/pull` are inspected by default through the same `request_body.image_pull` policy. Sockguard blocks `fromSrc` imports unless explicitly allowed and constrains pulls to Docker Hub official images unless the operator opts into `allow_all_registries` or an explicit registry allowlist. The libpod endpoint carries its reference in a `reference` query parameter rather than Docker's `fromImage`, and Podman matches that key case-insensitively and honors the last of a repeated pair, so Sockguard folds the key and checks every value, strips a leading `docker://` transport before matching the host, and denies a libpod pull that carries no usable reference whenever a registry allowlist posture is in force. libpod imports are a separate endpoint (`POST /libpod/images/import`) and are not covered by `allow_imports`.
 
 `POST /build` and native Podman's `POST /libpod/build` are inspected by default through the same `request_body.build` policy. Sockguard blocks primary remote contexts, Podman URL/image additional contexts, `networkmode=host`, and Dockerfiles containing `RUN` instructions unless those behaviors are explicitly allowed. Podman host volume controls, local-path additional contexts, multipart local contexts, and resource-usage output to a daemon-host file require `insecure_allow_body_blind_writes`; all other build checks remain active when that acknowledgment is set. Direct and version-prefixed libpod requests follow the same body-sensitive startup validation as Docker's classic builder.
 
@@ -254,7 +254,7 @@ When `health.watchdog.enabled` is true, Sockguard actively probes the upstream D
 | Risk Level | Endpoints |
 |-----------|-----------|
 | **Critical** | `POST /containers/create`, `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `PUT /containers/{id}/archive` |
-| **High** | `POST /images/create`, `POST /images/load`, `POST /build`, `POST /libpod/build`, `POST /services/create`, `POST /services/{id}/update`, `POST /swarm/init`, `POST /swarm/join`, `POST /swarm/update`, `POST /swarm/unlock`, `POST /nodes/{id}/update`, `POST /plugins/pull`, `POST /plugins/{name}/upgrade`, `POST /plugins/{name}/set`, `POST /plugins/create` |
+| **High** | `POST /images/create`, `POST /libpod/images/pull`, `POST /images/load`, `POST /build`, `POST /libpod/build`, `POST /services/create`, `POST /services/{id}/update`, `POST /swarm/init`, `POST /swarm/join`, `POST /swarm/update`, `POST /swarm/unlock`, `POST /nodes/{id}/update`, `POST /plugins/pull`, `POST /plugins/{name}/upgrade`, `POST /plugins/{name}/set`, `POST /plugins/create` |
 | **Medium** | `POST /containers/{id}/update`, `POST /volumes/create`, `POST /networks/create`, `POST /networks/{id}/connect`, `POST /networks/{id}/disconnect`, `POST /secrets/create`, `POST /configs/create`, `DELETE /containers/{id}` |
 | **Low** | `GET /containers/json`, `GET /events`, `GET /version`, `GET /_ping` |
 
