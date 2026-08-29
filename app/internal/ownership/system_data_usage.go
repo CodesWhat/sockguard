@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
@@ -51,7 +52,14 @@ func filterSystemDataUsageResponse(logger *slog.Logger, next http.Handler, w htt
 		return
 	}
 
-	if err := interceptingW.flushOwned(opts); err != nil {
+	dropped, err := interceptingW.flushOwned(opts)
+	if fresh := responsefilter.FirstSightSystemDataUsageSections(dropped); len(fresh) > 0 {
+		logger.WarnContext(r.Context(), "owner system data usage filter dropped unclassifiable response sections",
+			"sections", logging.SafeString(strings.Join(fresh, ",")),
+			"note", "this build cannot classify these sections by owner, so they are hidden rather than forwarded",
+			"path", logging.SafeString(r.URL.Path))
+	}
+	if err != nil {
 		logger.ErrorContext(r.Context(), "owner system data usage filter failed", "error", logging.SafeString(err.Error()))
 		if !interceptingW.headerWritten {
 			logging.SetDeniedWithCode(w, r, reasonCodeOwnerResponseFilterFail, "owner response filter failed", nil)
@@ -107,34 +115,38 @@ func (o *ownerFilterWriter) Write(b []byte) (int, error) {
 }
 
 // flushOwned writes the owner-filtered body to the underlying ResponseWriter.
-func (o *ownerFilterWriter) flushOwned(opts Options) error {
+//
+// It returns the names of any top-level response sections this build could not
+// classify and therefore removed, so the caller can log them once. See
+// responsefilter.FilterSystemDataUsage.
+func (o *ownerFilterWriter) flushOwned(opts Options) ([]string, error) {
 	// RFC 9110 §15.4.5 / §15.3.5: 204 and 304 must carry an empty body; any
 	// bytes written for them downgrade the response to 502.
 	if o.statusCode == http.StatusNoContent || o.statusCode == http.StatusNotModified {
 		o.underlying.WriteHeader(o.statusCode)
 		o.headerWritten = true
-		return nil
+		return nil, nil
 	}
 	// Only a 2xx carries a data-usage payload; forward anything else verbatim.
 	if o.statusCode < http.StatusOK || o.statusCode >= http.StatusMultipleChoices {
 		o.underlying.WriteHeader(o.statusCode)
 		o.headerWritten = true
 		_, err := o.underlying.Write(o.body.Bytes())
-		return err
+		return nil, err
 	}
 
-	filtered, err := responsefilter.FilterSystemDataUsage(o.body.Bytes(), func(section responsefilter.SystemDataUsageSection, item json.RawMessage) (bool, error) {
+	filtered, dropped, err := responsefilter.FilterSystemDataUsage(o.body.Bytes(), func(section responsefilter.SystemDataUsageSection, item json.RawMessage) (bool, error) {
 		return systemDataUsageItemOwned(section, item, opts)
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	o.underlying.Header().Set("Content-Length", strconv.Itoa(len(filtered)))
 	o.underlying.WriteHeader(o.statusCode)
 	o.headerWritten = true
 	_, err = o.underlying.Write(filtered)
-	return err
+	return dropped, err
 }
 
 // systemDataUsageItemOwned reports whether a /system/df item carries this
@@ -150,9 +162,11 @@ func (o *ownerFilterWriter) flushOwned(opts Options) error {
 func systemDataUsageItemOwned(section responsefilter.SystemDataUsageSection, raw json.RawMessage, opts Options) (bool, error) {
 	kind, ok := systemDataUsageSectionKind(section)
 	if !ok {
-		// A section this build cannot classify is hidden rather than
-		// forwarded, so a future Engine API section does not silently become
-		// an unfiltered enumeration channel.
+		// Unreachable today: FilterSystemDataUsage only ever calls this with
+		// the sections in its own shape table, and removes every other
+		// top-level key outright. Kept fail-closed so that adding a section
+		// there before adding it here hides the items rather than forwarding
+		// them.
 		return false, nil
 	}
 	var item struct {

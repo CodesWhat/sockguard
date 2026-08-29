@@ -184,6 +184,31 @@ func TestSystemDataUsageDropsBuildCache(t *testing.T) {
 	}
 }
 
+// TestSystemDataUsageVisibilityDropsUnknownSections pins the fix for the leak
+// this filter existed to close and did not: a top-level section this build does
+// not recognize used to be re-marshaled verbatim, so a future Engine API
+// section, or one only a Docker-compat upstream sends, reached the client with
+// every item in it and no policy axis applied. BuilderSize is here because it
+// is reachable today rather than hypothetical: the Engine API only removed it
+// in v1.42.
+func TestSystemDataUsageVisibilityDropsUnknownSections(t *testing.T) {
+	t.Parallel()
+	upstream := `{"ImageUsage":{"TotalCount":1,"Items":[{"Id":"sha256:prod","Labels":{"tier":"prod"}}]},` +
+		`"PluginUsage":{"TotalCount":2,"Items":[{"Id":"p1","Labels":{"tier":"dev"}}]},` +
+		`"CheckpointUsage":[{"Id":"cp1"}],"BuilderSize":777}`
+	handler := systemDFHandlerForTest(t, Options{VisibleResourceLabels: []string{"tier=prod"}}, upstream)
+
+	got := getSystemDFForTest(t, handler).Body.String()
+	for _, leaked := range []string{"PluginUsage", "CheckpointUsage", "BuilderSize", "p1", "cp1", "777"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("%q reached the client through /system/df: %s", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "sha256:prod") {
+		t.Fatalf("the visible image was dropped too, so this proves nothing: %s", got)
+	}
+}
+
 func TestSystemDataUsageRewritesAggregates(t *testing.T) {
 	t.Parallel()
 	handler := systemDFHandlerForTest(t, Options{VisibleResourceLabels: []string{"tier=prod"}}, modernSystemDFForTest)
@@ -353,6 +378,12 @@ func TestSystemDataUsageProfilePolicyApplies(t *testing.T) {
 	}
 }
 
+// TestSystemDataUsageItemVisibleUnknownSectionFailsClosed covers a branch that
+// FilterSystemDataUsage no longer reaches, since it removes unknown top-level
+// keys before any item is classified. It stays so the predicate remains
+// fail-closed if a section is added to the shape table before it is added here.
+// The reachable behavior is pinned by
+// TestSystemDataUsageVisibilityDropsUnknownSections.
 func TestSystemDataUsageItemVisibleUnknownSectionFailsClosed(t *testing.T) {
 	t.Parallel()
 	policy := &compiledPolicy{}

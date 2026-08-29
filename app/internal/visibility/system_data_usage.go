@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
+	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/responsefilter"
 )
 
@@ -24,7 +26,14 @@ import (
 // short-circuits when it has none).
 func handleVisibilitySystemDataUsageRequest(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, policy *compiledPolicy) {
 	filterResponseThroughWriter(logger, next, w, r, "visibility system data usage filter failed", func(fw *patternFilterWriter) error {
-		return fw.flushSystemDataUsage(policy)
+		dropped, err := fw.flushSystemDataUsage(policy)
+		if fresh := responsefilter.FirstSightSystemDataUsageSections(dropped); len(fresh) > 0 {
+			logger.WarnContext(r.Context(), "visibility system data usage filter dropped unclassifiable response sections",
+				"sections", logging.SafeString(strings.Join(fresh, ",")),
+				"note", "this build cannot apply the visibility policy to these sections, so they are hidden rather than forwarded",
+				"path", logging.SafeString(r.URL.Path))
+		}
+		return err
 	})
 }
 
@@ -34,18 +43,21 @@ func handleVisibilitySystemDataUsageRequest(logger *slog.Logger, next http.Handl
 // Unlike flushFiltered there is no "not the shape we expected, pass it through"
 // branch: a /system/df body that will not decode is one we cannot prove is safe
 // to forward, so the error propagates and the caller turns it into a 502.
-func (p *patternFilterWriter) flushSystemDataUsage(policy *compiledPolicy) error {
+// It returns the names of any top-level response sections this build could not
+// classify and therefore removed, so the caller can log them once. See
+// responsefilter.FilterSystemDataUsage.
+func (p *patternFilterWriter) flushSystemDataUsage(policy *compiledPolicy) ([]string, error) {
 	if committed, err := p.commitIfUnfilterable(); committed {
-		return err
+		return nil, err
 	}
 
-	filtered, err := responsefilter.FilterSystemDataUsage(p.body.Bytes(), func(section responsefilter.SystemDataUsageSection, item json.RawMessage) (bool, error) {
+	filtered, dropped, err := responsefilter.FilterSystemDataUsage(p.body.Bytes(), func(section responsefilter.SystemDataUsageSection, item json.RawMessage) (bool, error) {
 		return systemDataUsageItemVisible(section, item, policy)
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return p.commitFilteredBody(filtered)
+	return dropped, p.commitFilteredBody(filtered)
 }
 
 // systemDataUsageItemVisible applies the same policy axes to a /system/df item
@@ -62,10 +74,11 @@ func systemDataUsageItemVisible(section responsefilter.SystemDataUsageSection, r
 	case responsefilter.SystemDataUsageVolumes:
 		return systemDataUsageVolumeVisible(raw, policy)
 	default:
-		// A section this build does not know how to classify is hidden rather
-		// than forwarded: a future Engine API section would otherwise become an
-		// unfiltered enumeration channel the moment a daemon started returning
-		// it.
+		// Unreachable today: FilterSystemDataUsage only ever calls this with
+		// the sections in its own shape table, and removes every other
+		// top-level key outright. Kept fail-closed so that adding a section
+		// there before adding it here hides the items rather than forwarding
+		// them.
 		return false, nil
 	}
 }

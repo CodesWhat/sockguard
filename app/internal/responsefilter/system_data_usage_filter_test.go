@@ -3,6 +3,7 @@ package responsefilter
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -110,7 +111,7 @@ const legacySystemDFBody = `{
 
 func TestFilterSystemDataUsageModernShapeKeepsOnlySelectedItems(t *testing.T) {
 	t.Parallel()
-	out, err := FilterSystemDataUsage([]byte(modernSystemDFBody), keepNamed("mine", "img-mine", "vol-mine"))
+	out, _, err := FilterSystemDataUsage([]byte(modernSystemDFBody), keepNamed("mine", "img-mine", "vol-mine"))
 	if err != nil {
 		t.Fatalf("FilterSystemDataUsage() error = %v", err)
 	}
@@ -133,7 +134,7 @@ func TestFilterSystemDataUsageModernShapeKeepsOnlySelectedItems(t *testing.T) {
 
 func TestFilterSystemDataUsageLegacyShapeKeepsOnlySelectedItems(t *testing.T) {
 	t.Parallel()
-	out, err := FilterSystemDataUsage([]byte(legacySystemDFBody), keepNamed("mine", "img-mine", "vol-mine"))
+	out, _, err := FilterSystemDataUsage([]byte(legacySystemDFBody), keepNamed("mine", "img-mine", "vol-mine"))
 	if err != nil {
 		t.Fatalf("FilterSystemDataUsage() error = %v", err)
 	}
@@ -171,7 +172,7 @@ func TestFilterSystemDataUsageDropsBuildCache(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			out, err := FilterSystemDataUsage([]byte(tt.body), keepAll)
+			out, _, err := FilterSystemDataUsage([]byte(tt.body), keepAll)
 			if err != nil {
 				t.Fatalf("FilterSystemDataUsage() error = %v", err)
 			}
@@ -191,7 +192,7 @@ func TestFilterSystemDataUsageDropsBuildCache(t *testing.T) {
 // what the caller can see.
 func TestFilterSystemDataUsageRewritesAggregates(t *testing.T) {
 	t.Parallel()
-	out, err := FilterSystemDataUsage([]byte(modernSystemDFBody), keepNamed("mine", "img-mine", "vol-mine"))
+	out, _, err := FilterSystemDataUsage([]byte(modernSystemDFBody), keepNamed("mine", "img-mine", "vol-mine"))
 	if err != nil {
 		t.Fatalf("FilterSystemDataUsage() error = %v", err)
 	}
@@ -214,7 +215,7 @@ func TestFilterSystemDataUsageRewritesAggregates(t *testing.T) {
 
 func TestFilterSystemDataUsageZeroesLegacyLayersSize(t *testing.T) {
 	t.Parallel()
-	out, err := FilterSystemDataUsage([]byte(legacySystemDFBody), keepAll)
+	out, _, err := FilterSystemDataUsage([]byte(legacySystemDFBody), keepAll)
 	if err != nil {
 		t.Fatalf("FilterSystemDataUsage() error = %v", err)
 	}
@@ -227,7 +228,7 @@ func TestFilterSystemDataUsageZeroesLegacyLayersSize(t *testing.T) {
 // JSON null for a fully filtered section: Docker clients index the array.
 func TestFilterSystemDataUsageAllFilteredYieldsEmptyArray(t *testing.T) {
 	t.Parallel()
-	out, err := FilterSystemDataUsage([]byte(modernSystemDFBody), keepNamed())
+	out, _, err := FilterSystemDataUsage([]byte(modernSystemDFBody), keepNamed())
 	if err != nil {
 		t.Fatalf("FilterSystemDataUsage() error = %v", err)
 	}
@@ -257,7 +258,7 @@ func TestFilterSystemDataUsageTolerantOfMissingAndNullSections(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := FilterSystemDataUsage([]byte(tt.body), keepAll); err != nil {
+			if _, _, err := FilterSystemDataUsage([]byte(tt.body), keepAll); err != nil {
 				t.Fatalf("FilterSystemDataUsage(%s) error = %v", tt.body, err)
 			}
 		})
@@ -269,7 +270,7 @@ func TestFilterSystemDataUsageTolerantOfMissingAndNullSections(t *testing.T) {
 // the items the caller receives.
 func TestFilterSystemDataUsageAbsentItemsZeroesTotalCount(t *testing.T) {
 	t.Parallel()
-	out, err := FilterSystemDataUsage([]byte(`{"VolumeUsage":{"TotalCount":9,"TotalSize":5}}`), keepAll)
+	out, _, err := FilterSystemDataUsage([]byte(`{"VolumeUsage":{"TotalCount":9,"TotalSize":5}}`), keepAll)
 	if err != nil {
 		t.Fatalf("FilterSystemDataUsage() error = %v", err)
 	}
@@ -298,7 +299,7 @@ func TestFilterSystemDataUsageErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := FilterSystemDataUsage([]byte(tt.body), tt.keep); err == nil {
+			if _, _, err := FilterSystemDataUsage([]byte(tt.body), tt.keep); err == nil {
 				t.Fatalf("FilterSystemDataUsage(%s) = nil error, want a failure so the caller fails closed", tt.body)
 			}
 		})
@@ -311,22 +312,81 @@ type unclassifiableError struct{}
 
 func (*unclassifiableError) Error() string { return "cannot classify item" }
 
-// TestFilterSystemDataUsagePreservesUnknownKeysAndItemBytes asserts the filter
-// only touches what it understands: unrelated top-level keys survive, and a
-// kept item's bytes are not HTML-escaped on the way through.
-func TestFilterSystemDataUsagePreservesUnknownKeysAndItemBytes(t *testing.T) {
+// TestFilterSystemDataUsageDropsUnknownKeysAndPreservesItemBytes asserts the
+// two halves that pull in opposite directions: a top-level key this build does
+// not understand is removed rather than forwarded, because whatever is left in
+// the decoded map reaches the client verbatim, while a kept item's bytes are
+// not HTML-escaped on the way through.
+//
+// This test used to assert the opposite of its first half. That was wrong: an
+// unrelated top-level key surviving is exactly the unfiltered enumeration
+// channel the item filter exists to close, and both keep predicates already
+// carried comments claiming a section they cannot classify is hidden.
+func TestFilterSystemDataUsageDropsUnknownKeysAndPreservesItemBytes(t *testing.T) {
 	t.Parallel()
 	body := `{"SomeFutureKey":{"a":1},"ContainerUsage":{"Items":[{"Name":"mine","Command":"sh -c 'a<b && c>d'"}]}}`
-	out, err := FilterSystemDataUsage([]byte(body), keepAll)
+	out, dropped, err := FilterSystemDataUsage([]byte(body), keepAll)
 	if err != nil {
 		t.Fatalf("FilterSystemDataUsage() error = %v", err)
 	}
 	payload := decodeMapForTest(t, out)
-	if _, ok := payload["SomeFutureKey"]; !ok {
-		t.Fatalf("unrelated top-level key dropped: %s", out)
+	if _, ok := payload["SomeFutureKey"]; ok {
+		t.Fatalf("unclassifiable top-level key reached the client: %s", out)
+	}
+	if _, ok := payload["ContainerUsage"]; !ok {
+		t.Fatalf("known section dropped, so the test cannot tell filtering from an empty result: %s", out)
+	}
+	if !reflect.DeepEqual(dropped, []string{"SomeFutureKey"}) {
+		t.Fatalf("dropped = %v, want [SomeFutureKey] so the caller can log it", dropped)
 	}
 	if !strings.Contains(string(out), `a<b && c>d`) {
 		t.Fatalf("kept item bytes were escaped or rewritten: %s", out)
+	}
+}
+
+// TestFilterSystemDataUsageDropsEveryUnknownShape covers the leak's real
+// surface: a whole section object, a bare array, and a scalar host-wide
+// aggregate are all unclassifiable, so all three go. BuilderSize is the
+// reachable case today rather than a hypothetical, since the Engine API only
+// removed it in v1.42 and a Docker-compat upstream may still send it.
+func TestFilterSystemDataUsageDropsEveryUnknownShape(t *testing.T) {
+	t.Parallel()
+	body := `{"PluginUsage":{"TotalCount":2,"Items":[{"Id":"p1","Labels":{"o":"theirs"}}]},` +
+		`"CheckpointUsage":[{"Id":"cp1","Labels":{"o":"theirs"}}],` +
+		`"BuilderSize":777,"Images":[{"Id":"img-mine"}]}`
+	out, dropped, err := FilterSystemDataUsage([]byte(body), keepAll)
+	if err != nil {
+		t.Fatalf("FilterSystemDataUsage() error = %v", err)
+	}
+	for _, leaked := range []string{"PluginUsage", "CheckpointUsage", "BuilderSize", "p1", "cp1", "theirs", "777"} {
+		if strings.Contains(string(out), leaked) {
+			t.Fatalf("%q survived the filter: %s", leaked, out)
+		}
+	}
+	if !strings.Contains(string(out), "img-mine") {
+		t.Fatalf("known section was dropped too, so this proves nothing: %s", out)
+	}
+	want := []string{"BuilderSize", "CheckpointUsage", "PluginUsage"}
+	if !reflect.DeepEqual(dropped, want) {
+		t.Fatalf("dropped = %v, want %v sorted", dropped, want)
+	}
+}
+
+// TestFirstSightSystemDataUsageSectionsReportsEachSectionOnce pins the
+// deduplication a polling dashboard depends on: the dropped set is a property
+// of the daemon's API version, not of a request, so it is worth one log record
+// per process and not one per scrape.
+func TestFirstSightSystemDataUsageSectionsReportsEachSectionOnce(t *testing.T) {
+	// Not parallel: it mutates the package-level seen set.
+	unique := "SectionForFirstSightTest"
+	if got := FirstSightSystemDataUsageSections([]string{unique}); !reflect.DeepEqual(got, []string{unique}) {
+		t.Fatalf("first sight = %v, want [%s]", got, unique)
+	}
+	if got := FirstSightSystemDataUsageSections([]string{unique}); got != nil {
+		t.Fatalf("second sight = %v, want nil so the record is not restated", got)
+	}
+	if got := FirstSightSystemDataUsageSections(nil); got != nil {
+		t.Fatalf("nil input = %v, want nil", got)
 	}
 }
 

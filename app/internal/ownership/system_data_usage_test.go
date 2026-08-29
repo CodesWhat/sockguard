@@ -144,6 +144,31 @@ func TestSystemDataUsageOwnerIsolationDropsBuildCache(t *testing.T) {
 	}
 }
 
+// TestSystemDataUsageOwnerIsolationDropsUnknownSections pins the fix for the
+// leak this filter existed to close and did not: a top-level section this build
+// does not recognize used to be re-marshaled verbatim, so a future Engine API
+// section, or one only a Docker-compat upstream sends, reached the client with
+// every item in it. BuilderSize is here because it is reachable today rather
+// than hypothetical: the Engine API only removed it in v1.42.
+func TestSystemDataUsageOwnerIsolationDropsUnknownSections(t *testing.T) {
+	t.Parallel()
+	upstream := `{"ImageUsage":{"TotalCount":1,"Items":[{"Id":"sha256:mine","Labels":{"` + ownerLabelForTest + `":"team-a"}}]},` +
+		`"PluginUsage":{"TotalCount":2,"Items":[{"Id":"p1","Labels":{"` + ownerLabelForTest + `":"team-b"}}]},` +
+		`"CheckpointUsage":[{"Id":"cp1"}],"BuilderSize":777}`
+	handler := middlewareWithDeps(testLogger(), Options{Owner: "team-a"},
+		fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(systemDFUpstreamHandler(upstream))
+
+	body := getSystemDFForTest(t, handler).Body.String()
+	for _, leaked := range []string{"PluginUsage", "CheckpointUsage", "BuilderSize", "p1", "cp1", "777"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("%q reached the client through /system/df: %s", leaked, body)
+		}
+	}
+	if !strings.Contains(body, "sha256:mine") {
+		t.Fatalf("the caller's own image was dropped too, so this proves nothing: %s", body)
+	}
+}
+
 // TestSystemDataUsageOwnerIsolationRewritesAggregates pins the aggregate
 // decision at the middleware boundary: TotalCount matches what the caller can
 // see, every other host-wide total is zeroed.
@@ -326,6 +351,11 @@ func TestSystemDataUsageItemOwned(t *testing.T) {
 		{name: "null labels", section: responsefilter.SystemDataUsageVolumes, item: `{"Labels":null}`},
 		{name: "missing labels", section: responsefilter.SystemDataUsageVolumes, item: `{"Name":"vol"}`},
 		{name: "owned image", section: responsefilter.SystemDataUsageImages, item: `{"Labels":{"` + ownerLabelForTest + `":"team-a"}}`, want: true},
+		// Unreachable through FilterSystemDataUsage, which removes unknown
+		// top-level keys before any item is classified. Kept so the predicate
+		// stays fail-closed if a section is added to the shape table before it
+		// is added here. TestSystemDataUsageOwnerIsolationDropsUnknownSections
+		// is the one that pins the reachable behavior.
 		{name: "unknown section fails closed", section: responsefilter.SystemDataUsageSection("future"), item: `{"Labels":{"` + ownerLabelForTest + `":"team-a"}}`},
 		{name: "undecodable item", section: responsefilter.SystemDataUsageContainers, item: `{"Labels":`, wantErr: true},
 	}

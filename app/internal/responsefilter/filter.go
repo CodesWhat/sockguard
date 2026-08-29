@@ -113,7 +113,7 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifySwarmUnlockKey(resp)
 	case normPath == "/info":
 		return f.modifyInfo(resp)
-	case normPath == "/system/df":
+	case normPath == SystemDataUsagePath:
 		return f.modifySystemDataUsage(resp)
 	}
 

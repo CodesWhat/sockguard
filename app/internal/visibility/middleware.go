@@ -239,8 +239,9 @@ func warnPatternsWithoutSelectors(logger *slog.Logger, scope string, policy comp
 		return
 	}
 	logger.Warn("visibility name/image patterns are set without any visible_resource_labels selector; "+
-		"pattern filtering only applies to /containers/json and /images/json, so /events and the other list "+
-		"endpoints stay unrestricted — add a label selector to constrain them",
+		"pattern filtering only applies to containers and images (/containers/json, /images/json, and the "+
+		"matching sections of /system/df), so /events and the other list endpoints stay unrestricted. "+
+		"Add a label selector to constrain them",
 		"scope", scope)
 }
 
@@ -312,9 +313,13 @@ func filterResponseThroughWriter(logger *slog.Logger, next http.Handler, w http.
 	if err := flush(interceptingW); err != nil {
 		logger.ErrorContext(r.Context(), failureReason, "error", logging.SafeString(err.Error()))
 		if !interceptingW.headerWritten {
-			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, "visibility pattern filter failed", nil)
+			// failureReason names which flush step failed, so the 502 body and
+			// the log record agree. Hard-coding the pattern-filter wording here
+			// told an operator debugging a /system/df 502 to go and look at the
+			// pattern axes, which are not what ran.
+			logging.SetDeniedWithCode(w, r, reasonCodeVisibilityPolicyLookupFailed, failureReason, nil)
 			clearUpstreamRepresentationHeaders(w.Header())
-			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: "visibility pattern filter failed"})
+			_ = httpjson.Write(w, http.StatusBadGateway, httpjson.ErrorResponse{Message: failureReason})
 		}
 	}
 }

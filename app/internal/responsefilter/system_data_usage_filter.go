@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
+	"sync"
 )
 
 // SystemDataUsagePath is the normalized path of the Docker Engine
@@ -49,11 +51,13 @@ type SystemDataUsageKeepFunc func(SystemDataUsageSection, json.RawMessage) (bool
 //
 //	{"ImageUsage":{"ActiveCount":N,"TotalCount":N,"Reclaimable":N,"TotalSize":N,"Items":[…]}, …}
 //
-// A daemon answers in exactly one of the two shapes, but the proxy has no
-// reliable way to know which (the client's requested API version is advisory
-// and the upstream may be Podman's Docker-compat API), so both key sets are
-// handled on every response. Absent keys are skipped, which also covers the
-// ?type= query that lets a client ask for only some sections.
+// Both key sets are handled on every response, because the proxy has no
+// reliable way to know which one it is looking at: the client's requested API
+// version is advisory, the upstream may be Podman's Docker-compat API, and
+// API v1.52 itself returns BOTH shapes at once so existing integrations can
+// transition (the legacy fields stop being returned at v1.53). Absent keys are
+// skipped, which also covers the ?type= query that lets a client ask for only
+// some sections.
 type systemDataUsageShape struct {
 	section  SystemDataUsageSection
 	usageKey string // Engine API >= 1.52 wrapper object
@@ -114,37 +118,110 @@ var jsonZero = json.RawMessage("0")
 //     absent one, and per-item sizes are still present for a caller that wants
 //     to total its own resources under semantics it controls.
 //
+//   - A top-level key this build does not recognize is REMOVED, and its name
+//     is returned so the caller can say so. The section allowlist is the whole
+//     mechanism: this function rewrites the body by deleting and replacing keys
+//     in a decoded map and re-encoding it, so anything left in that map reaches
+//     the client verbatim. A future Engine API section, or one only a
+//     Docker-compat upstream emits, would therefore be a fully unfiltered
+//     enumeration channel the moment a daemon started returning it, which is
+//     exactly the disclosure the item-level filter exists to stop. Unknown
+//     scalars go the same way: they are host-wide aggregates of a kind this
+//     build cannot recompute, the same reason LayersSize is zeroed.
+//
 // Callers must only invoke this when an owner or visibility policy is actually
 // active: it is not a no-op, and running it against an unconfigured proxy would
 // zero totals nobody asked to hide.
 //
-// The returned body is a fresh buffer; the input is not modified.
-func FilterSystemDataUsage(body []byte, keep SystemDataUsageKeepFunc) ([]byte, error) {
+// The returned body is a fresh buffer; the input is not modified. The returned
+// section names are sorted and deduplicated.
+func FilterSystemDataUsage(body []byte, keep SystemDataUsageKeepFunc) ([]byte, []string, error) {
 	if keep == nil {
-		return nil, errors.New("system data usage filter requires a keep predicate")
+		return nil, nil, errors.New("system data usage filter requires a keep predicate")
 	}
 
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("decode %s response: %w", SystemDataUsagePath, err)
+		return nil, nil, fmt.Errorf("decode %s response: %w", SystemDataUsagePath, err)
 	}
+
+	dropped := dropUnknownSystemDataUsageKeys(payload)
 
 	for _, shape := range systemDataUsageShapes {
 		keepItem := func(item json.RawMessage) (bool, error) { return keep(shape.section, item) }
 		if err := filterSystemDataUsageSection(payload, shape.usageKey, shape.arrayKey, keepItem); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
 	if err := filterSystemDataUsageSection(payload, buildCacheUsageKey, buildCacheArrayKey, dropSystemDataUsageItem); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if _, ok := payload[layersSizeKey]; ok {
 		payload[layersSizeKey] = jsonZero
 	}
 
-	return marshalJSONPreservingEscapes(payload)
+	filtered, err := marshalJSONPreservingEscapes(payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	return filtered, dropped, nil
+}
+
+// knownSystemDataUsageKeys is every top-level key FilterSystemDataUsage knows
+// how to rewrite, across both response shapes. It is derived from the shape
+// table rather than written out again, so adding a section cannot leave the
+// allowlist behind.
+var knownSystemDataUsageKeys = func() map[string]struct{} {
+	known := map[string]struct{}{
+		buildCacheUsageKey: {},
+		buildCacheArrayKey: {},
+		layersSizeKey:      {},
+	}
+	for _, shape := range systemDataUsageShapes {
+		known[shape.usageKey] = struct{}{}
+		known[shape.arrayKey] = struct{}{}
+	}
+	return known
+}()
+
+// dropUnknownSystemDataUsageKeys removes every top-level key outside the
+// allowlist and returns their names, sorted. See FilterSystemDataUsage.
+func dropUnknownSystemDataUsageKeys(payload map[string]json.RawMessage) []string {
+	var dropped []string
+	for key := range payload {
+		if _, known := knownSystemDataUsageKeys[key]; known {
+			continue
+		}
+		dropped = append(dropped, key)
+		delete(payload, key)
+	}
+	sort.Strings(dropped)
+	return dropped
+}
+
+// unreportedSystemDataUsageKeys tracks which unknown section names have already
+// been logged, so a dashboard polling /system/df does not restate the same
+// drift on every scrape.
+var unreportedSystemDataUsageKeys sync.Map
+
+// FirstSightSystemDataUsageSections returns the subset of sections that have
+// not been reported before in this process, marking them reported.
+//
+// The dropped-section set is a property of the daemon's API version rather than
+// of any one request, so it is stable for the lifetime of a process and worth
+// exactly one log record. Callers pass the names FilterSystemDataUsage
+// returned; the empty case is the overwhelmingly common one and allocates
+// nothing.
+func FirstSightSystemDataUsageSections(sections []string) []string {
+	var fresh []string
+	for _, section := range sections {
+		if _, seen := unreportedSystemDataUsageKeys.LoadOrStore(section, struct{}{}); !seen {
+			fresh = append(fresh, section)
+		}
+	}
+	return fresh
 }
 
 // dropSystemDataUsageItem is the keep predicate for build-cache records: they
