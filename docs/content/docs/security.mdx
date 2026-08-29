@@ -208,10 +208,12 @@ named `create`, `prune`, `json`, or another reused keyword still receives the
 normal owner check on inspect and trailing-action paths.
 
 Once a path is classified as targeting a specific resource, owner isolation
-must prove that resource exists before the request can continue. A not-found
-resource returns `403` instead of being forwarded to the daemon, because a
-missing inspect result establishes no owner. The same rule applies when an exec
-session cannot be resolved to its container and when a `container:<ref>`
+must prove that resource exists before the request can continue. In `enforce`
+mode a not-found resource returns `403` instead of being forwarded to the
+daemon, because a missing inspect result establishes no owner. A profile in
+`warn` or `audit` mode logs the would-be denial and forwards the request under
+the existing rollout contract. The same rule applies when an exec session
+cannot be resolved to its container and when a `container:<ref>`
 namespace-sharing target is missing. `allow_unowned_images` applies only to an
 image that resolves successfully and has no owner label. Paths that do not
 identify a resource still pass through this layer, while an inspect error
