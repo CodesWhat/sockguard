@@ -52,6 +52,16 @@ rules:
   - match: { method: GET, path: "/tasks/*" }
     action: allow
 
+  # Swarm node inspect. traefik v3.7.12 pswarm.go parseTasks calls
+  # NodeInspect for every task carrying a NodeID, on the default path
+  # (listTasks is the else branch of `if dData.ExtraConf.LBSwarm`, and the
+  # traefik.docker.lbswarm label defaults to false). Without this rule the
+  # inspect fails, parseTasks returns an error, listTasks skips the task,
+  # and the service ends up with no endpoints. Node list stays denied —
+  # traefik never calls NodeList.
+  - match: { method: GET, path: "/nodes/*" }
+    action: allow
+
   - match: { method: "*", path: "/**" }
     action: deny
     reason: "not allowed by traefik strict preset"

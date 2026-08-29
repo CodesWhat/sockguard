@@ -91,10 +91,16 @@ func TestTraefikPresetConformance(t *testing.T) {
 		{"service-inspect", http.MethodGet, "/services/abc", "", true},
 		{"tasks-list", http.MethodGet, "/tasks", "", true},
 		{"task-inspect", http.MethodGet, "/tasks/abc", "", true},
+		// pswarm.go parseTasks calls NodeInspect for every task carrying a
+		// NodeID; moby/moby client v0.4.0 node_inspect.go:27 maps that to
+		// GET /nodes/{id}. Without this the task is skipped and the service
+		// gets no endpoints.
+		{"node-inspect", http.MethodGet, "/nodes/abc", "", true},
 
 		// Version-prefixed forms of the same reads.
 		{"v-prefixed-containers-list", http.MethodGet, "/v1.45/containers/json", "", true},
 		{"v-prefixed-container-inspect", http.MethodGet, "/v1.45/containers/abc/json", "", true},
+		{"v-prefixed-node-inspect", http.MethodGet, "/v1.45/nodes/abc", "", true},
 
 		// Reads Traefik never makes stay denied — the narrowing is a rule
 		// list, not a "GET is fine" posture.
@@ -102,7 +108,19 @@ func TestTraefikPresetConformance(t *testing.T) {
 		{"container-top-denied", http.MethodGet, "/containers/abc/top", "", false},
 		{"container-changes-denied", http.MethodGet, "/containers/abc/changes", "", false},
 		{"images-list-denied", http.MethodGet, "/images/json", "", false},
+		// Traefik calls NodeInspect but never NodeList, so the two-segment
+		// /nodes/* rule must not also admit the one-segment list.
 		{"nodes-list-denied", http.MethodGet, "/nodes", "", false},
+
+		// The node-ID position is a single "*", which compiles to [^/]* and
+		// matches one path segment. moby registers the node routes as
+		// GET /nodes/{id}, DELETE /nodes/{id} and POST /nodes/{id}/update
+		// (daemon/server/router/swarm/cluster.go), so /nodes/{id}/update is
+		// the only node subpath that exists — it must stay denied under
+		// every method, proving "*" cannot absorb a trailing segment.
+		{"node-update-get-denied", http.MethodGet, "/nodes/abc/update", "", false},
+		{"node-update-denied", http.MethodPost, "/nodes/abc/update", "", false},
+		{"node-remove-denied", http.MethodDelete, "/nodes/abc", "", false},
 
 		// Writes stay denied.
 		{"container-create-denied", http.MethodPost, "/containers/create", "", false},
@@ -165,6 +183,7 @@ func TestHomepagePresetConformance(t *testing.T) {
 		{"image-history-denied", http.MethodGet, "/images/abc/history", "", false},
 		{"container-top-denied", http.MethodGet, "/containers/abc/top", "", false},
 		{"networks-list-denied", http.MethodGet, "/networks", "", false},
+		{"node-inspect-denied", http.MethodGet, "/nodes/abc", "", false},
 
 		// Writes stay denied.
 		{"container-create-denied", http.MethodPost, "/containers/create", "", false},
