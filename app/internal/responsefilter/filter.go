@@ -114,6 +114,16 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 	case normPath == "/info":
 		return f.modifyInfo(resp)
 	case normPath == SystemDataUsagePath:
+		// LibpodSystemDataUsagePath has no case here on purpose, and its
+		// absence is not the gap the ownership and visibility middlewares
+		// close. Everything this handler rewrites is a field Podman's native
+		// report does not have: redactSystemDataUsageContainers reads Mounts
+		// and the container network topology, redactSystemDataUsageVolumes
+		// reads Mountpoint, and SystemDfContainerReport/SystemDfVolumeReport
+		// carry none of the three (see
+		// LibpodSystemDataUsageDenyReason for the full field list). Routing
+		// the native shape here would decode a body and rewrite nothing.
+		// TestLibpodSystemDataUsageHasNothingToRedact pins that.
 		return f.modifySystemDataUsage(resp)
 	}
 
