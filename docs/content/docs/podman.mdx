@@ -65,7 +65,7 @@ every key above.
 `POST /libpod/play/kube` (and its identically-handled `/libpod/kube/play`
 alias), `POST /libpod/kube/apply`, and `POST`/`PUT /libpod/manifests/*` have
 **no** request-body inspector in this release — full Kubernetes-YAML/PodSpec
-modeling is out of scope for v1.6. Admitting any of them requires the same
+modeling is out of scope for this release. Admitting any of them requires the same
 `insecure_allow_body_blind_writes: true` acknowledgment that covers
 uninspected exec, exactly like every other body-bearing write sockguard
 cannot yet constrain.
