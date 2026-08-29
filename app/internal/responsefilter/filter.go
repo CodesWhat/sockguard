@@ -113,7 +113,7 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 		return f.modifySwarmUnlockKey(resp)
 	case normPath == "/info":
 		return f.modifyInfo(resp)
-	case normPath == "/system/df":
+	case normPath == SystemDataUsagePath:
 		return f.modifySystemDataUsage(resp)
 	}
 
@@ -808,7 +808,7 @@ func (f *Filter) redactSystemDataUsagePayload(payload map[string]any) error {
 }
 
 func (f *Filter) redactSystemDataUsageContainers(payload map[string]any) error {
-	containers, err := systemDataUsageItems(payload, "ContainerUsage")
+	containers, err := systemDataUsageItems(payload, "ContainerUsage", "Containers")
 	if err != nil {
 		return err
 	}
@@ -831,7 +831,7 @@ func (f *Filter) redactSystemDataUsageVolumes(payload map[string]any) error {
 	if !f.opts.RedactMountPaths {
 		return nil
 	}
-	volumes, err := systemDataUsageItems(payload, "VolumeUsage")
+	volumes, err := systemDataUsageItems(payload, "VolumeUsage", "Volumes")
 	if err != nil {
 		return err
 	}
@@ -841,27 +841,59 @@ func (f *Filter) redactSystemDataUsageVolumes(payload map[string]any) error {
 	return nil
 }
 
-// systemDataUsageItems returns the .Items array from a /system/df sub-key
-// (ContainerUsage or VolumeUsage) decoded as object maps. Returns (nil, nil)
-// when the sub-key or its Items field is absent.
-func systemDataUsageItems(payload map[string]any, key string) ([]map[string]any, error) {
-	usage, found, err := nestedMapValue(payload, key)
-	if err != nil || !found {
+// systemDataUsageItems returns one /system/df section's items as object maps,
+// reading both response shapes the Docker Engine API has used.
+//
+// Engine API >= 1.52 nests a section's items under a per-section usage object
+// (ContainerUsage.Items); <= 1.51 returns a bare top-level array (Containers).
+// A daemon answers in exactly one shape, but the proxy cannot know which: the
+// client's requested API version is advisory, and the upstream may be Podman's
+// Docker-compat API. So both keys are read and whatever is present is returned.
+//
+// Reading only the >= 1.52 key silently made every redaction on this endpoint
+// a no-op against every daemon below that version, which is currently almost
+// all of them — redact_mount_paths and redact_network_topology are documented
+// to cover /system/df and did nothing there. Absent keys yield no items, which
+// also covers the ?type= query that asks for only some sections.
+func systemDataUsageItems(payload map[string]any, usageKey, arrayKey string) ([]map[string]any, error) {
+	var out []map[string]any
+
+	usage, found, err := nestedMapValue(payload, usageKey)
+	if err != nil {
 		return nil, err
 	}
-	items, ok := usage["Items"]
-	if !ok || items == nil {
+	if found {
+		nested, err := systemDataUsageItemObjects(usage[systemDataUsageItemsKey], usageKey+"."+systemDataUsageItemsKey)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, nested...)
+	}
+
+	legacy, err := systemDataUsageItemObjects(payload[arrayKey], arrayKey)
+	if err != nil {
+		return nil, err
+	}
+	return append(out, legacy...), nil
+}
+
+const systemDataUsageItemsKey = "Items"
+
+// systemDataUsageItemObjects decodes one array of /system/df items. label is
+// the config-facing path used in error messages.
+func systemDataUsageItemObjects(value any, label string) ([]map[string]any, error) {
+	if value == nil {
 		return nil, nil
 	}
-	arr, ok := items.([]any)
+	arr, ok := value.([]any)
 	if !ok {
-		return nil, fmt.Errorf("%s.Items has unexpected type %T", key, items)
+		return nil, fmt.Errorf("%s has unexpected type %T", label, value)
 	}
 	out := make([]map[string]any, 0, len(arr))
-	for _, value := range arr {
-		obj, ok := value.(map[string]any)
+	for _, entry := range arr {
+		obj, ok := entry.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("%s.Items entry has unexpected type %T", key, value)
+			return nil, fmt.Errorf("%s entry has unexpected type %T", label, entry)
 		}
 		out = append(out, obj)
 	}

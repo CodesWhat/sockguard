@@ -71,9 +71,12 @@ func realServices(t *testing.T) map[string]bool {
 // whose message types were deliberately left out of that vendored
 // descriptor (see control.proto's file header and PROVENANCE.md: only
 // Solve/Status and their transitive types were generated for
-// moby.buildkit.v1.Control — Info/ListWorkers are Passthrough and never
-// need a decoded message, so no InfoRequest/ListWorkersRequest were
-// vendored). Without this exception list, TestRegistryMatchesVendoredDescriptors
+// moby.buildkit.v1.Control). Info/ListWorkers stay excepted even though they
+// are Mediate now: controlinfo.go filters their RESPONSES on protobuf wire
+// bytes against its own field-number tables, precisely because no
+// InfoResponse/ListWorkersResponse/WorkerRecord type was ever generated
+// here, and their requests are still forwarded without a decode.
+// Without this exception list, TestRegistryMatchesVendoredDescriptors
 // would demand a full-service vendoring this phase's own trim deliberately
 // avoids — see "Only generate messages actually needed" in the issue #185
 // phase 1 scope.
