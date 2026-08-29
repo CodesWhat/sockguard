@@ -32,7 +32,7 @@ const SystemDataUsagePath = "/system/df"
 // Podman uses as well as any other /vN[.N[.N]]/ form the route regex
 // (/v{version:[0-9][0-9A-Za-z.-]*}) admits, so /v5.0.0/libpod/system/df
 // normalizes here too.
-const LibpodSystemDataUsagePath = "/libpod" + SystemDataUsagePath
+const LibpodSystemDataUsagePath = LibpodPathPrefix + SystemDataUsagePath
 
 // LibpodSystemDataUsageDenyReason is the operator-facing reason the ownership
 // and visibility middlewares report when they refuse GET /libpod/system/df.

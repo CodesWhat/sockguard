@@ -97,6 +97,21 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 
 	// Bespoke handlers (non-uniform guard or body shape).
 	switch {
+	case isLibpodPath(normPath):
+		// Podman's native API family is claimed whole, before any
+		// Docker-compat predicate gets a look. NormalizePath strips the API
+		// version prefix but not /libpod, so none of the predicates below
+		// can match one of these paths today — routing first makes that a
+		// property of the dispatch rather than a coincidence of how the
+		// predicates happen to be anchored, so a future predicate loosened
+		// to match a suffix cannot start feeding a libpod body to a handler
+		// written against the Docker shape. modifyLibpodResponse returns nil
+		// for every libpod read this package deliberately leaves alone,
+		// including LibpodSystemDataUsagePath, which the ownership and
+		// visibility middlewares refuse instead — see
+		// LibpodSystemDataUsageDenyReason and modifyLibpodResponse's own
+		// comment for the rest of that list.
+		return f.modifyLibpodResponse(resp.Request.Method, normPath, resp)
 	case isContainerInspectPath(normPath):
 		return f.modifyContainerInspect(resp)
 	case normPath == "/containers/json":
@@ -114,16 +129,17 @@ func (f *Filter) ModifyResponse(resp *http.Response) error {
 	case normPath == "/info":
 		return f.modifyInfo(resp)
 	case normPath == SystemDataUsagePath:
-		// LibpodSystemDataUsagePath has no case here on purpose, and its
-		// absence is not the gap the ownership and visibility middlewares
-		// close. Everything this handler rewrites is a field Podman's native
-		// report does not have: redactSystemDataUsageContainers reads Mounts
-		// and the container network topology, redactSystemDataUsageVolumes
-		// reads Mountpoint, and SystemDfContainerReport/SystemDfVolumeReport
-		// carry none of the three (see
-		// LibpodSystemDataUsageDenyReason for the full field list). Routing
-		// the native shape here would decode a body and rewrite nothing.
-		// TestLibpodSystemDataUsageHasNothingToRedact pins that.
+		// LibpodSystemDataUsagePath reaches the libpod case above and falls
+		// out of modifyLibpodResponse unhandled, on purpose, and that is not
+		// the gap the ownership and visibility middlewares close. Everything
+		// this handler rewrites is a field Podman's native report does not
+		// have: redactSystemDataUsageContainers reads Mounts and the
+		// container network topology, redactSystemDataUsageVolumes reads
+		// Mountpoint, and SystemDfContainerReport/SystemDfVolumeReport carry
+		// none of the three (see LibpodSystemDataUsageDenyReason for the full
+		// field list). Routing the native shape here would decode a body and
+		// rewrite nothing. TestLibpodSystemDataUsageHasNothingToRedact pins
+		// that.
 		return f.modifySystemDataUsage(resp)
 	}
 
@@ -657,7 +673,28 @@ func (f *Filter) redactTaskPayload(payload map[string]any) error {
 	return nil
 }
 
+// redactSecretPayload redacts the secret material from a secret list entry or
+// inspect body across both shapes that reach this proxy.
+//
+// Spec.Data is the Docker Engine's swarm secret payload. SecretData is
+// Podman's, and it is NOT a nested field: entities.SecretInfoReport
+// (pkg/domain/entities/types/secrets.go at v5.8.1) declares
+// `SecretData string \`json:"SecretData,omitempty"\`` at the top level, while
+// its Spec is {Name, Driver{Name,Options}, Labels} with no Data field at all.
+// abi.SecretInspect fills SecretData from SecretsManager.LookupSecretData
+// whenever the request carries ?showsecret=true.
+//
+// That query parameter reaches BOTH of Podman's surfaces from one handler:
+// compat.InspectSecret reads showsecret before it branches on
+// utils.IsLibpodRequest, and the Docker-compat branch returns
+// SecretInfoReportCompat, which embeds SecretInfoReport and therefore
+// promotes SecretData to the top level too. So GET /secrets/{id}?showsecret=true
+// against a Podman upstream leaked the plaintext through the compat path as
+// well, not just through /libpod/secrets/{name}/json. Handling both fields
+// here closes both. Docker's own daemon never emits SecretData, so the extra
+// rewrite is inert against dockerd.
 func redactSecretPayload(payload map[string]any) error {
+	redactStringField(payload, "SecretData")
 	spec, found, err := nestedMapValue(payload, "Spec")
 	if err != nil || !found {
 		return err
@@ -1411,6 +1448,15 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 	)
 	redactArrayField(networkSettings, "SecondaryIPAddresses")
 	redactArrayField(networkSettings, "SecondaryIPv6Addresses")
+	// AdditionalMACAddresses is a libpod-only field. Podman's
+	// libpod/define.InspectBasicNetworkConfig carries
+	// `AdditionalMacAddresses []string \`json:"AdditionalMACAddresses,omitempty"\``
+	// alongside the singular MacAddress this function already redacts, for the
+	// case where more than one interface is configured on a single network.
+	// Docker's daemon has no such field, so this is inert on the compat shape
+	// and is the difference between redacting a container's MAC addresses and
+	// redacting only the first one on the native shape.
+	redactArrayField(networkSettings, "AdditionalMACAddresses")
 
 	networksValue, ok := networkSettings["Networks"]
 	if !ok || networksValue == nil {
@@ -1440,6 +1486,14 @@ func redactContainerNetworkTopology(payload map[string]any) error {
 				"IPPrefixLen",
 			},
 		)
+		// Docker's EndpointSettings stops at the scalar addresses above.
+		// Podman's InspectAdditionalNetwork embeds the same
+		// InspectBasicNetworkConfig as NetworkSettings itself, so a per-network
+		// entry on the native shape can also carry the secondary address lists
+		// and the additional MAC list. All three are absent from a compat body.
+		redactArrayField(network, "SecondaryIPAddresses")
+		redactArrayField(network, "SecondaryIPv6Addresses")
+		redactArrayField(network, "AdditionalMACAddresses")
 	}
 	return nil
 }
