@@ -74,6 +74,16 @@ type bridge struct {
 	guard    *streamAbuseGuard
 	registry *SessionRegistry
 
+	// schemaDriftLimiter is where controlinfo.go's reportControlSchemaDrift
+	// records which (table, field) pairs it has already warned about. It is
+	// a field rather than a straight read of the package-level
+	// controlSchemaDrift so that tests can give each bridge its own limiter
+	// instead of sharing process-lifetime state across test runs; runBridge
+	// defaults it to the package-level one whenever a caller passes nil, so
+	// production behavior (one log line per distinct drift for the life of
+	// the process) is unchanged.
+	schemaDriftLimiter *schemaDriftLimiter
+
 	clientLeg clientLegConn
 
 	// credentialCalls is Phase 4's per-session credential-call counter — see
@@ -99,16 +109,26 @@ type bridge struct {
 // registry is the same SessionRegistry session was opened from — Phase 3's
 // forwardControlMediated consults it (via SessionKey, not session.ID; see
 // SessionRegistry.OwnsRef's doc comment) to admit Control/Solve refs and
-// check Control/Status ref ownership.
-func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Policy, limits Limits, logger *slog.Logger, registry *SessionRegistry) error {
+// check Control/Status ref ownership. driftLimiter is where
+// reportControlSchemaDrift records which (table, field) pairs it has already
+// warned about; a nil driftLimiter defaults to the package-level
+// controlSchemaDrift, which is what every production caller passes so the
+// warning stays deduplicated for the life of the process. Tests that need a
+// limiter isolated from every other test (and from repeated runs of the same
+// test) pass their own instead.
+func runBridge(ctx context.Context, legs bridgeLegs, session *Session, policy Policy, limits Limits, logger *slog.Logger, registry *SessionRegistry, driftLimiter *schemaDriftLimiter) error {
+	if driftLimiter == nil {
+		driftLimiter = &controlSchemaDrift
+	}
 	b := &bridge{
-		legs:     legs,
-		session:  session,
-		policy:   policy,
-		limits:   limits,
-		logger:   logger,
-		guard:    newStreamAbuseGuard(limits),
-		registry: registry,
+		legs:               legs,
+		session:            session,
+		policy:             policy,
+		limits:             limits,
+		logger:             logger,
+		guard:              newStreamAbuseGuard(limits),
+		registry:           registry,
+		schemaDriftLimiter: driftLimiter,
 	}
 	defer b.closeAll(nil)
 
@@ -185,13 +205,15 @@ func (b *bridge) finalErr() error {
 // method through the Phase 1 registry, then — for a Mediate or Passthrough
 // category — checks whether this request's Policy actually turned that
 // category on (Policy.Allowed; see its doc comment for why this is a
-// separate, necessary gate). A call that clears both checks is, for every
-// method EXCEPT moby.buildkit.v1.Control's Solve/Status, relayed
+// separate, necessary gate). A call that clears both checks is relayed
 // byte-for-byte to the client leg with no message-content decision (Phase
-// 2's scope; the remaining Session-endpoint Mediate methods — Auth, Secrets,
-// SSH, FileSync, FileSend, Upload — get their own per-message mediation in
-// Phases 4-5). Solve/Status route through forwardControlMediated instead —
-// see isControlMediatedMethod.
+// 2's scope) unless it is one of the Mediate methods with a dispatcher of
+// its own: Control's Solve/Status decode their request
+// (forwardControlMediated), Control's Info/ListWorkers rewrite their
+// response (forwardControlInfoMediated), and the Session-endpoint methods —
+// Auth, Secrets, SSH, FileSync, FileSend, Upload — get their own per-message
+// mediation from Phases 4-5. Only the gRPC health checks are left on the
+// plain relay.
 func (b *bridge) handleStream(w http.ResponseWriter, r *http.Request) {
 	service, method, ok := ParseGRPCPath(r.URL.Path)
 	if !ok {
@@ -238,6 +260,14 @@ func (b *bridge) forwardAdmitted(w http.ResponseWriter, r *http.Request, service
 			// on admit, Deny with a specific reason on any check failure),
 			// so it is NOT also audited generically below.
 			b.forwardControlMediated(w, r, service, method)
+			return
+		}
+		if isControlResponseFilteredMethod(b.legs.endpoint, service, method) {
+			// Control/Info and Control/ListWorkers mediate the RESPONSE
+			// rather than the request — forwardControlInfoMediated
+			// (controlinfo.go) audits its own outcome, same convention as
+			// forwardControlMediated above.
+			b.forwardControlInfoMediated(w, r, service, method)
 			return
 		}
 		if isSessionMediatedMethod(b.legs.endpoint, service, method) {
