@@ -1,6 +1,7 @@
 package responsefilter
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -875,6 +876,36 @@ func TestFilterModifyResponse_RedactsSensitivePlatformMetadata(t *testing.T) {
 	firstVolume, _ := volumeItems[0].(map[string]any)
 	if got, _ := firstVolume["Mountpoint"].(string); got != "<redacted>" {
 		t.Fatalf("SystemDF VolumeUsage.Items[0].Mountpoint = %q, want %q", got, "<redacted>")
+	}
+}
+
+func TestFilterModifyResponse_PreservesLargeIntegerPrecision(t *testing.T) {
+	t.Parallel()
+	filter := New(Options{RedactMountPaths: true})
+
+	// 9007199254740993 is 2^53 + 1, the smallest integer float64 cannot
+	// represent exactly. Decoding this response through a plain
+	// map[string]any (default float64 coercion) would silently round it to
+	// 9007199254740992 on the way back out.
+	const largeLayersSize = "9007199254740993"
+	systemDFResp := newResponseForTest(t, http.MethodGet, "/system/df", `{
+		"LayersSize":`+largeLayersSize+`,
+		"ContainerUsage":{
+			"Items":[
+				{"Mounts":[{"Type":"bind","Source":"/srv/data","Destination":"/data"}]}
+			]
+		}
+	}`)
+	if err := filter.ModifyResponse(systemDFResp); err != nil {
+		t.Fatalf("ModifyResponse(system df) error = %v, want nil", err)
+	}
+
+	body, err := io.ReadAll(systemDFResp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if !bytes.Contains(body, []byte(largeLayersSize)) {
+		t.Fatalf("system df response body = %s, want it to contain LayersSize digits %s intact", body, largeLayersSize)
 	}
 }
 
