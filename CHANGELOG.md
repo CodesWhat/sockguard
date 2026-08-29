@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Build
 
 - **The nightly deep fuzz matrix is capped at 12 concurrent jobs, which is what was actually killing it.** The org is on the Free plan's 20-concurrent-job ceiling; this matrix is 22 targets on its own and portwing's Deep Fuzz shares the same `30 9 * * *` minute with 7 more, so 29 jobs contended for 20 slots. Jobs admitted over the ceiling flatlined at `execs 0/sec` and were then reclaimed with "The runner has received a shutdown signal" and exit 143, which reads as a fuzz failure but writes no crasher and no `--- FAIL`. That took 8, 2, 7 and 4 jobs on the nights of 2026-08-24 through 08-27; the single 22/22 night, 08-28, was the one GitHub deferred to 20:56 UTC, clear of the collision. The cap and the reasoning are now written next to the setting, and a test holds it at or below 13 while the matrix stays wider than the cap.
+- **GoReleaser moves from v2.15.3 to v2.18.0, which fixes every `brew style` offence in the generated cask.** The older template emitted `on_intel` before `on_arm`, `url` before `sha256` inside each block, and a blank line between `on_macos` and `on_linux`, for 13 `Cask/StanzaOrder` and `Cask/StanzaGrouping` violations in `Casks/sockguard.rb`. The file is marked DO NOT EDIT and is overwritten on every release, so the tap could never fix it; the pin was the only lever. A test now holds the floor at v2.18.0.
 
 ### Dependencies
 
