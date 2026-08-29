@@ -706,15 +706,27 @@ set; otherwise it has no effect.
 
 A [hot reload](#hot-reload) rebuilds the rate-limit and concurrency machinery
 from scratch, even when the change had nothing to do with `limits` or
-`global_concurrency`. Every client's consumed token-bucket quota and every
-in-flight concurrency count reset to zero on the swap: a bucket that was
-nearly drained comes back full, and a profile sitting at its `max_inflight`
-cap opens back up. State is not carried across the old and new chains, and
-there is no way to preserve it, since a profile can change shape between
-reloads and there is no principled way to remap old counters onto a
-different limit. Sockguard logs a warning when a reload replaces a chain
-that had an active limiter, so this shows up as an expected reload side
-effect rather than an unexplained gap in your throttling data.
+`global_concurrency`. The replacement chain starts empty: every client's
+consumed token-bucket quota and every in-flight concurrency count begin at
+zero, so a bucket that was nearly drained comes back full and a profile
+sitting at its `max_inflight` cap opens back up to new requests.
+
+Only the new chain starts empty. Requests already admitted when the swap
+lands keep running on the old chain and hold its concurrency slot until they
+finish, so the old and new caps overlap for the length of that drain window:
+a profile capped at `max_inflight: 20` can have up to 20 pre-swap requests
+still draining while the new chain admits another 20. The same goes for
+`clients.global_concurrency`. The overlap clears on its own as the old
+requests return.
+
+State is not carried across the old and new chains, and there is no way to
+preserve it, since a profile can change shape between reloads and there is
+no principled way to remap old counters onto a different limit. Sockguard
+logs a warning when a reload replaces a chain that actually held counters (a
+token bucket, a per-profile concurrency cap, or the global one), so this
+shows up as an expected reload side effect rather than an unexplained gap in
+your throttling data. A profile that sets only `limits.priority` has no
+counters to discard, so reloading it stays quiet.
 
 ### Validation
 

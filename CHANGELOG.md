@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The metric reference lists the `listener` label on `sockguard_http_requests_total`, `sockguard_http_denied_requests_total`, and `sockguard_http_request_duration_seconds`. All three emit it and none of them documented it, so a dashboard written from the table would have aggregated across listeners without saying so. The label-cardinality section explains where the values come from and that `listeners` is capped at 32.
 - The admin API reference describes `bundle_source` as the basename of `policy_bundle.signature_path` rather than the configured path. The code strips the directory on purpose so the response cannot leak the host's filesystem layout, and the old wording invited operators to expect a full path.
 - The migration guide's link into the configuration reference points at `#request-body-policy-reference`, which exists. It pointed at `#request-body-inspection`, which does not, so the anchor silently dropped readers at the top of the page.
-- The Rate Limiting and Concurrency Caps section now says a hot reload resets consumed token-bucket quota and in-flight concurrency counts, and does not carry that state across the swap.
+- The Rate Limiting and Concurrency Caps section now says a hot reload resets consumed token-bucket quota and in-flight concurrency counts, and does not carry that state across the swap. It also says that only the replacement chain starts empty: requests admitted before the swap finish on the old chain and hold its slot until they return, so the old and new caps overlap until the drain window closes.
 
 ### Dependencies
 
