@@ -80,6 +80,10 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// acknowledgment — it is listed here so an operator auditing the
 	// body-sensitive write surface sees it alongside the rest of it.
 	{method: http.MethodPost, path: "/libpod/images/pull"},
+	// Native image load and import have no request-body inspector, so allowing
+	// either requires the blind-write acknowledgment.
+	{method: http.MethodPost, path: "/libpod/images/load"},
+	{method: http.MethodPost, path: "/libpod/images/import"},
 	// Podman's native copy-into-container and container-update writes. Both
 	// were absent from this catalog and from compileRuntimePolicy's
 	// inspection table while their Docker-compat twins above were in both,

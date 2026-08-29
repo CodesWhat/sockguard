@@ -28,6 +28,18 @@ The metrics endpoint is local to Sockguard, is never forwarded to Docker,
 bypasses Docker API allow rules like `/health`, and remains behind listener
 security plus `clients.allowed_cidrs`.
 
+`/metrics`, `/health` and `/ready` are the three endpoints Sockguard answers
+itself, and they share a position in the middleware chain: after the client
+ACL, before the rate limiter. The ACL half is what the paragraph above means,
+so a scrape from outside `clients.allowed_cidrs` gets a 403 like any other
+request. The rate-limit half is deliberate in the other direction. A liveness
+probe or a Prometheus scrape never consumes a client's rate-limit quota or a
+concurrency slot, because counting them would throttle Docker API traffic for
+the wrong reason. The tradeoff is that these three have no request-rate ceiling
+of their own, so anything inside the allowlist can scrape them as fast as it
+likes. If that matters for your deployment, put the listener carrying them on a
+Unix socket or narrow `clients.allowed_cidrs` to your scrape source.
+
 ```yaml filename="sockguard.yaml"
 metrics:
   enabled: true

@@ -10,7 +10,7 @@ permissions: read-all
 env:
   DOCKER_PLATFORMS: linux/amd64,linux/arm64
   CI_VERIFY_WORKFLOW_FILE: ci-verify.yml
-  GORELEASER_VERSION: v2.15.3
+  GORELEASER_VERSION: v2.18.0
 
 concurrency:
   group: release-from-tag-${{ github.ref }}
