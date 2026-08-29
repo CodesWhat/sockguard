@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The sitemap and the pkg.go.dev badge no longer point at the wrong thing.** `/docs/podman` and `/docs/roadmap` are live and linked from the docs navigation but appeared in none of the sitemap's `<loc>` entries, because the docs slug list is hand-maintained while the comparison slugs are derived. The list now mirrors `docs/content/docs/meta.json` and a test fails when the two drift apart. The Go Reference badge built its pkg.go.dev URL from the GitHub-cased repository slug, which 404s there because pkg.go.dev keys on the case-sensitive `go.mod` module path; it still rendered a valid-looking badge, so the dead link was invisible until clicked.
+
+### Documentation
+
+- `sockguard_listener_up` is documented in the metric reference; it was published by the code but absent from the table.
+- The Podman guide no longer describes its Kubernetes-YAML scope boundary in terms of v1.6.
+
 ## [2.0.0] - 2026-08-28
 
 v2.0.0 promotes `2.0.0-rc.4` after the exact candidate passed the four-hour
