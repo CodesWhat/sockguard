@@ -89,12 +89,21 @@ func (p containerArchivePolicy) inspect(_ *slog.Logger, r *http.Request, normali
 	return "", nil
 }
 
+// isContainerArchivePath matches the copy-into-container route on BOTH of
+// Podman's spellings — Docker-compat "/containers/{id}/archive" and
+// libpod-native "/libpod/containers/{id}/archive". It is the one place in
+// this package where a single predicate deliberately spans both API families,
+// and that is safe here for a reason that does not generalize: Podman v5.8.1
+// registers the two paths on the identical compat.Archive handler
+// (pkg/api/server/register_archive.go lines 88 and 172, both
+// `.Methods(http.MethodGet, http.MethodPut, http.MethodHead)`), so the `path`
+// query parameter and the tar request body are not merely similar, they are
+// the same code reading the same wire format. There is no second body shape
+// for containerArchivePolicy to get wrong, so forking a libpod twin would
+// have bought nothing but another list to forget to update.
 func isContainerArchivePath(normalizedPath string) bool {
-	if !strings.HasPrefix(normalizedPath, "/containers/") {
-		return false
-	}
-	_, tail, ok := strings.Cut(strings.TrimPrefix(normalizedPath, "/containers/"), "/")
-	return ok && tail == "archive"
+	_, ok := containerSubresourcePath(normalizedPath, "archive")
+	return ok
 }
 
 func normalizeContainerArchiveTargetPath(value string) (string, bool) {

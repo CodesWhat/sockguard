@@ -253,9 +253,9 @@ When `health.watchdog.enabled` is true, Sockguard actively probes the upstream D
 
 | Risk Level | Endpoints |
 |-----------|-----------|
-| **Critical** | `POST /containers/create`, `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `PUT /containers/{id}/archive` |
-| **High** | `POST /images/create`, `POST /libpod/images/pull`, `POST /images/load`, `POST /build`, `POST /libpod/build`, `POST /services/create`, `POST /services/{id}/update`, `POST /swarm/init`, `POST /swarm/join`, `POST /swarm/update`, `POST /swarm/unlock`, `POST /nodes/{id}/update`, `POST /plugins/pull`, `POST /plugins/{name}/upgrade`, `POST /plugins/{name}/set`, `POST /plugins/create` |
-| **Medium** | `POST /containers/{id}/update`, `POST /volumes/create`, `POST /networks/create`, `POST /networks/{id}/connect`, `POST /networks/{id}/disconnect`, `POST /secrets/create`, `POST /configs/create`, `DELETE /containers/{id}` |
+| **Critical** | `POST /containers/create`, `POST /containers/{id}/exec`, `POST /exec/{id}/start`, `PUT /containers/{id}/archive`, `PUT /libpod/containers/{id}/archive`, `POST /libpod/containers/{id}/restore` |
+| **High** | `POST /images/create`, `POST /libpod/images/pull`, `POST /libpod/containers/{id}/checkpoint`, `POST /images/load`, `POST /build`, `POST /libpod/build`, `POST /services/create`, `POST /services/{id}/update`, `POST /swarm/init`, `POST /swarm/join`, `POST /swarm/update`, `POST /swarm/unlock`, `POST /nodes/{id}/update`, `POST /plugins/pull`, `POST /plugins/{name}/upgrade`, `POST /plugins/{name}/set`, `POST /plugins/create` |
+| **Medium** | `POST /containers/{id}/update`, `POST /libpod/containers/{id}/update`, `POST /libpod/containers/{id}/mount`, `POST /volumes/create`, `POST /networks/create`, `POST /networks/{id}/connect`, `POST /networks/{id}/disconnect`, `POST /secrets/create`, `POST /configs/create`, `DELETE /containers/{id}` |
 | **Low** | `GET /containers/json`, `GET /events`, `GET /version`, `GET /_ping` |
 
 ## Image Security

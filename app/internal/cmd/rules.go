@@ -80,6 +80,31 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// acknowledgment — it is listed here so an operator auditing the
 	// body-sensitive write surface sees it alongside the rest of it.
 	{method: http.MethodPost, path: "/libpod/images/pull"},
+	// Podman's native copy-into-container and container-update writes. Both
+	// were absent from this catalog and from compileRuntimePolicy's
+	// inspection table while their Docker-compat twins above were in both,
+	// so an allow rule opened them with no inspection and no startup
+	// warning. Both are inspected now (see
+	// bodyInspectionConfiguredForEndpoint), archive by the very same
+	// containerArchivePolicy — Podman routes PUT /containers/{name}/archive
+	// and PUT /libpod/containers/{name}/archive to one compat.Archive
+	// handler — and update by containerUpdatePolicy.inspectLibpod, which
+	// reads libpod's own body and query shape against the same
+	// request_body.container_update gates.
+	{method: http.MethodPut, path: "/libpod/containers/sockguard-test/archive"},
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/update"},
+	// POST /libpod/containers/{name}/restore has NO request-body inspector,
+	// so it deliberately gets no case in bodyInspectionConfiguredForEndpoint
+	// and always requires insecure_allow_body_blind_writes. With ?import=1
+	// Podman reads the entire request body as a CRIU checkpoint archive
+	// (libpod.Restore -> compat.SaveFromBody in Podman v5.8.1's
+	// pkg/api/handlers/libpod/containers.go) and CREATES A CONTAINER from
+	// it, bypassing every containers/create gate on both surfaces — the
+	// container's spec lives inside a gzipped tar as spec.dump, not in any
+	// JSON sockguard can read. Treat it with the caution play/kube gets: the
+	// ?pod and ?publishPorts parameters mean one restore can also join a pod
+	// and bind host ports.
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/restore"},
 	// play/kube, its "kube/play" alias (Podman registers both spellings on
 	// the identical libpod.PlayKube/KubePlay handlers), kube/apply, and
 	// manifest-list writes have NO request-body inspector at all (#148
@@ -162,6 +187,27 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get"},
 	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push"},
 	{method: http.MethodGet, path: "/libpod/generate/kube"},
+	// Two libpod-only POSTs whose risk is entirely in the RESPONSE, which is
+	// why neither gets a request-body inspector: verified against Podman
+	// v5.8.1's pkg/api/handlers/libpod/containers.go, Checkpoint reads only
+	// the query and MountContainer reads nothing at all, so there is no
+	// request content for an inspector to evaluate and one would degenerate
+	// into an unconditional verdict.
+	//
+	// POST /libpod/containers/*/checkpoint with ?export=1 streams a
+	// tar.gz of the container's CRIU checkpoint back to the caller — the
+	// process memory dump plus root-filesystem changes, so every secret the
+	// container had in memory. That is the same exfiltration shape as
+	// /libpod/containers/*/export above, with more in it.
+	//
+	// POST /libpod/containers/*/mount returns the container root
+	// filesystem's path on the DAEMON host and mounts it there. The response
+	// discloses the storage driver's layout and the container-id-to-path
+	// mapping; it does not return file contents, so it sits here on the
+	// strength of the disclosure rather than being described as a read of
+	// the container's files.
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/checkpoint"},
+	{method: http.MethodPost, path: "/libpod/containers/sockguard-test/mount"},
 	// Manifest-list push routes read local manifest content and transmit it
 	// to a caller-selected registry — a write at the Docker API layer but an
 	// exfiltration surface just like the image/plugin push entries above.
@@ -296,8 +342,8 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 
 	if scope == "" {
 		return fmt.Errorf(
-			"rules allow raw archive/export, log/attach streaming, or registry push endpoints "+
-				"(these can exfiltrate container files, images, plugins, environment variables, and secrets); "+
+			"rules allow raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+				"(these can exfiltrate container files, container memory, images, plugins, environment variables, secrets, and daemon-host filesystem paths); "+
 				"either tighten the allow rules to omit these paths or set "+
 				"insecure_allow_read_exfiltration: true to acknowledge the risk. "+
 				"Exposed endpoints: %s",
@@ -306,8 +352,8 @@ func validateReadExfiltrationRulesForPolicy(scope string, insecure bool, compile
 	}
 
 	return fmt.Errorf(
-		"client profile %q allows raw archive/export, log/attach streaming, or registry push endpoints "+
-			"(these can exfiltrate container files, images, plugins, environment variables, and secrets); "+
+		"client profile %q allows raw archive/export, log/attach streaming, checkpoint export, container rootfs mount, or registry push endpoints "+
+			"(these can exfiltrate container files, container memory, images, plugins, environment variables, secrets, and daemon-host filesystem paths); "+
 			"either tighten the profile's allow rules to omit these paths or set the "+
 			"top-level insecure_allow_read_exfiltration: true to acknowledge the risk "+
 			"(it is a global setting, not per-profile). "+
@@ -438,6 +484,16 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		return true
 	case "/libpod/containers/create":
 		return true
+	case "/libpod/containers/sockguard-test/archive", "/libpod/containers/sockguard-test/update":
+		// Both share their Docker-compat twin's config block and its
+		// fail-closed defaults, so they are covered on exactly the terms the
+		// "/containers/sockguard-test/update", "/containers/sockguard-test/archive"
+		// case above is covered on: container_archive's target-path,
+		// setuid, device-node and escaping-link checks apply verbatim
+		// (Podman runs one compat.Archive handler for both spellings), and
+		// container_update's allow_* gates are enforced against libpod's own
+		// body and query shape by containerUpdatePolicy.inspectLibpod.
+		return true
 	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/secrets/create", "/libpod/images/pull":
 		// libpod_pod_create/libpod_volume/libpod_network/libpod_secret gates
 		// are all plain booleans/allowlists with real fail-closed defaults —
@@ -450,11 +506,12 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		// non-Docker-Hub-official registry, exactly as it does for the
 		// Docker-compat /images/create entry above.
 		return true
-	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply, and
-	// /libpod/manifests/* deliberately have NO case here: they have no
-	// request-body inspector at all (#148 design doc decision C2), so they
-	// fall through to `default: false` below and always require
-	// insecure_allow_body_blind_writes to admit.
+	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply,
+	// /libpod/manifests/*, and /libpod/containers/*/restore deliberately have
+	// NO case here: they have no request-body inspector at all (#148 design
+	// doc decision C2 for the first four; the opaque CRIU checkpoint archive
+	// for restore), so they fall through to `default: false` below and
+	// always require insecure_allow_body_blind_writes to admit.
 	default:
 		return false
 	}

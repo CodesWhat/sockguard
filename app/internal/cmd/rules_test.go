@@ -1264,3 +1264,158 @@ func TestBodyInspectionConfiguredForEndpointLibpodCases(t *testing.T) {
 		})
 	}
 }
+
+// libpodCatalogEntry finds one endpoint in bodySensitiveWriteEndpoints,
+// failing the test when it is absent. Every libpod container-write case below
+// starts by proving its path is in the catalog at all: an endpoint missing
+// from the catalog is scored as "not a body-sensitive write" rather than as
+// "uninspected", which is exactly how PUT /libpod/containers/{name}/archive
+// and POST /libpod/containers/{name}/update went unnoticed.
+func libpodCatalogEntry(t *testing.T, method, path string) bodySensitiveWriteEndpoint {
+	t.Helper()
+
+	for _, candidate := range bodySensitiveWriteEndpoints {
+		if candidate.method == method && candidate.path == path {
+			return candidate
+		}
+	}
+	t.Fatalf("%s %s is missing from the body-sensitive write catalog", method, path)
+	return bodySensitiveWriteEndpoint{}
+}
+
+// TestBodySensitiveWriteCatalogCoversLibpodContainerWrites pins the
+// config-validation half of the libpod container-write gap. Archive and update
+// must be recognized as inspected so allowing them does not spuriously demand
+// insecure_allow_body_blind_writes; restore must NOT be, because its body is
+// an opaque CRIU checkpoint archive no inspector reads.
+func TestBodySensitiveWriteCatalogCoversLibpodContainerWrites(t *testing.T) {
+	tests := []struct {
+		method        string
+		path          string
+		wantInspected bool
+	}{
+		{http.MethodPut, "/libpod/containers/sockguard-test/archive", true},
+		{http.MethodPost, "/libpod/containers/sockguard-test/update", true},
+		{http.MethodPost, "/libpod/containers/sockguard-test/restore", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			endpoint := libpodCatalogEntry(t, tt.method, tt.path)
+			if got := bodyInspectionConfiguredForEndpoint(config.RequestBodyConfig{}, endpoint); got != tt.wantInspected {
+				t.Fatalf("bodyInspectionConfiguredForEndpoint(%s %s) = %v, want %v", tt.method, tt.path, got, tt.wantInspected)
+			}
+		})
+	}
+}
+
+// TestValidateAndCompileRulesLibpodContainerWriteGates pins what an operator
+// actually experiences at startup for each of the five libpod container-write
+// endpoints: archive and update pass on their built-in inspectors, restore
+// demands the blind-write acknowledgment because nothing reads its body, and
+// checkpoint and mount demand the read-exfiltration acknowledgment because
+// their risk is entirely in the response.
+func TestValidateAndCompileRulesLibpodContainerWriteGates(t *testing.T) {
+	tests := []struct {
+		name            string
+		configure       func(cfg *config.Config)
+		wantErr         bool
+		wantErrContains []string
+	}{
+		{
+			name: "allows libpod container archive on the shared container_archive inspector",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPut, Path: "/libpod/containers/*/archive"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+		{
+			name: "allows libpod container update on the shared container_update inspector",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/update"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+		},
+		{
+			name: "rejects libpod container restore without the blind-write acknowledgment",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/restore"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr:         true,
+			wantErrContains: []string{"insecure_allow_body_blind_writes=true", "POST /libpod/containers/sockguard-test/restore"},
+		},
+		{
+			name: "allows libpod container restore once the blind-write acknowledgment is set",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/restore"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg.InsecureAllowBodyBlindWrites = true
+			},
+		},
+		{
+			name: "rejects libpod container checkpoint without the read-exfiltration acknowledgment",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/checkpoint"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr:         true,
+			wantErrContains: []string{"insecure_allow_read_exfiltration", "POST /libpod/containers/sockguard-test/checkpoint"},
+		},
+		{
+			name: "rejects libpod container mount without the read-exfiltration acknowledgment",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/mount"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+			},
+			wantErr:         true,
+			wantErrContains: []string{"insecure_allow_read_exfiltration", "POST /libpod/containers/sockguard-test/mount"},
+		},
+		{
+			name: "allows libpod checkpoint and mount once the read-exfiltration acknowledgment is set",
+			configure: func(cfg *config.Config) {
+				cfg.Rules = []config.RuleConfig{
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/checkpoint"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/containers/*/mount"}, Action: "allow"},
+					{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+				}
+				cfg.InsecureAllowReadExfiltration = true
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			tt.configure(&cfg)
+
+			_, err := validateAndCompileRules(&cfg)
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("validateAndCompileRules() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("validateAndCompileRules() = nil, want an error")
+			}
+			for _, want := range tt.wantErrContains {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+				}
+			}
+		})
+	}
+}
