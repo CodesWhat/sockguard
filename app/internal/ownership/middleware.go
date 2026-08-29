@@ -149,7 +149,7 @@ func middlewareWithDeps(
 				return
 			}
 			if verdict != verdictDeny {
-				next.ServeHTTP(w, r)
+				serveOwnershipAllowed(logger, next, w, r, normPath, opts)
 				return
 			}
 
