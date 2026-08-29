@@ -312,7 +312,7 @@ How we stack up against other Docker socket proxies:
 | Feature | Tecnativa | LinuxServer | wollomatic | 11notes | CetusGuard | **Sockguard** |
 |---------|:---------:|:-----------:|:----------:|:-------:|:----------:|:-------------:|
 | Method + path filtering | ✅ | ✅ | ✅ (regex) | Fixed read-only | ✅ (regex) | ✅ |
-| Granular container write ops | ❌ | Partial (`ALLOW_*`) | Via regex | ❌ (read-only) | Via regex | ✅ |
+| Granular container write ops | Partial (`ALLOW_*`) | Partial (`ALLOW_*`) | Via regex | ❌ (read-only) | Via regex | ✅ |
 | Request body inspection | ❌ | ❌ | Partial (bind-mount source restrictions) | ❌ | ❌ | ✅ (`container` create/update/exec/archive, `image` pull/load, Docker + Podman `build`, `volume`, `network` create/connect/disconnect, `secret`, `config`, `service`, `swarm` init/join/update/unlock, `node` update, `plugin`) |
 | Per-client admission / policy selection | ❌ | ❌ | Partial (IP/hostname + per-container labels) | ❌ | ❌ | ✅ (CIDR + labels + cert selectors incl. SPKI + unix peer profiles) |
 | Read-side visibility / redaction | ❌ | ❌ | ❌ | Partial (blocks 7 risky GETs) | ❌ | ✅ (visibility + protected JSON redaction) |
@@ -321,10 +321,10 @@ How we stack up against other Docker socket proxies:
 | Podman native `/libpod` API | ❌ | ✅ | Via manual regex | ❌ | ✅ | ✅ (default-deny, incl. pod lifecycle) |
 | Multiple main listeners | ❌ | ❌ | ❌ | ✅ (Unix + TCP) | ✅ | ✅ (Unix and/or TCP, listener-scoped TLS + profiles) |
 | Structured access logs | ❌ | ❌ | ✅ (JSON option) | ❌ | ❌ | ✅ (request + trace correlation) |
-| Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (JSON schema + reason codes) |
+| Dedicated audit log schema | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (opt-in, JSON schema + reason codes) |
 | Rate limits / concurrency caps | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile token-bucket + global priority gate) |
 | Rollout modes (audit/warn/enforce) | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (per-profile shadow + would_deny audit) |
-| Hot-reload + policy versioning | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (fsnotify + SIGHUP, `/admin/policy/version`) |
+| Hot-reload + policy versioning | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (opt-in, fsnotify + SIGHUP, `/admin/policy/version`) |
 | Signed policy bundles | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ (sigstore keyed + keyless) |
 | YAML config | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 | Tecnativa env compat | N/A | ✅ | ❌ | ❌ | ❌ | ✅ |

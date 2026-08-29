@@ -10,12 +10,12 @@ Community size|2.6k+ GitHub stars|Growing|competitor
 Production maturity|Maintained since 2017|Newer|competitor
 Request body inspection|No|Yes (12+ resource types, Docker + Podman build)|self
 Per-client policies|No|CIDR + labels + cert selectors + unix peer|self
-Prometheus metrics|No|Yes (finite-label socket-proxy metrics)|self
+Prometheus metrics|No|Yes (opt-in, finite-label socket-proxy metrics)|self
 Signed policy bundles|No|Yes (separate pinned trust, keyed + keyless)|self
 Rollout modes (enforce / warn / audit)|No|Yes (per-profile shadow mode)|self
 Rate limits|No|Yes (per-profile token-bucket)|self
-YAML config + hot-reload|No|Yes (SIGHUP/fsnotify, validate endpoint)|self
-Audit log schema|No|Yes (JSON schema + reason codes)|self
+YAML config + hot-reload|No|Yes (opt-in, SIGHUP/fsnotify, validate endpoint)|self
+Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 `,
   highlightsTable: `
 shield|Request Body Inspection|Tecnativa filters by method and path only. Sockguard inspects bodies across 12+ resource types, including Docker and native Podman builds, before the daemon receives them.

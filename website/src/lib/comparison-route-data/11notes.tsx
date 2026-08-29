@@ -14,9 +14,9 @@ Write API control|No (blocks all writes)|Yes (default-deny + granular rules)|sel
 Read-side redaction|Partial (7 risky GETs blocked)|Full (visibility rules + JSON field redaction)|self
 Signed policy bundles|No|Yes (cosign keyed + keyless, Rekor)|self
 Container image trust|No|Yes (cosign + enforce / warn modes)|self
-Prometheus metrics|No|Yes (socket-proxy request metrics)|self
+Prometheus metrics|No|Yes (opt-in, socket-proxy request metrics)|self
 Rate limits|No|Yes (per-profile token-bucket)|self
-Audit log schema|No|Yes (JSON schema + reason codes)|self
+Audit log schema|No|Yes (opt-in, JSON schema + reason codes)|self
 `,
   highlightsTable: `
 shield|Configurable Default-Deny|11notes is read-only by design — you cannot enable writes. Sockguard starts default-deny and lets you open exactly the operations you need with explicit rules, so CI can run containers while monitoring only reads metrics.

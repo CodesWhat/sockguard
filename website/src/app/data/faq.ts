@@ -7,7 +7,7 @@ export const faqItems: Array<{ question: string; answer: string }> = [
   {
     question: "How is Sockguard different from Tecnativa's docker-socket-proxy?",
     answer:
-      "Tecnativa filters by URL path using environment variables. Sockguard also inspects request bodies across container, exec, image, Docker and Podman build, volume, network, service, swarm, and plugin writes. Per-client profiles, signed policies, image trust, rollout modes, bounded Prometheus metrics, and hot reload add controls Tecnativa does not provide. The compatibility env surface remains a drop-in path for unsigned mode; convert generated rules to YAML before enabling signed-policy trust.",
+      "Tecnativa filters by URL path using environment variables. Sockguard also inspects request bodies across container, exec, image, Docker and Podman build, volume, network, service, swarm, and plugin writes. Per-client profiles, signed policies, image trust, rollout modes, and (opt-in) bounded Prometheus metrics and hot reload add controls Tecnativa does not provide. The compatibility env surface remains a drop-in path for unsigned mode; convert generated rules to YAML before enabling signed-policy trust.",
   },
   {
     question: "Does Sockguard inspect request bodies?",
