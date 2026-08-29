@@ -515,6 +515,12 @@ func modifyMapResponse(resp *http.Response, mutate func(map[string]any) error) e
 // The size limit (MaxResponseBodyBytes) is enforced by wrapping the body
 // reader before handing it to json.Decoder, so oversized responses are
 // still rejected.
+//
+// It decodes through newJSONDecoder and rejects trailing content after the
+// closing bracket for the same two reasons decodeJSONObject does, and neither
+// is cosmetic: this path re-encodes what the client receives, so a number it
+// decoded as a float64 reaches the client with different digits, and a second
+// document after the array was silently dropped rather than refused.
 func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error) error {
 	if resp.Body == nil {
 		return rejectResponse(errors.New("missing response body"))
@@ -527,7 +533,7 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 		R: upstreamBody,
 		N: requestfilter.MaxResponseBodyBytes + 1,
 	}
-	dec := json.NewDecoder(limited)
+	dec := newJSONDecoder(limited)
 
 	// Consume the opening '['.
 	tok, err := dec.Token()
@@ -579,6 +585,28 @@ func streamArrayResponse(resp *http.Response, mutate func(map[string]any) error)
 			out.Truncate(out.Len() - 1)
 		}
 	}
+	// Consume the closing ']' the loop stopped on, then reject anything after
+	// it. A truncated array already fails closed inside the loop, because
+	// dec.More() reports true and the next Decode returns the EOF; what got
+	// through was the opposite shape. json.Decoder stops at the end of the
+	// first value, so a body carrying a second document — or one stray byte —
+	// after the array was quietly truncated to the first document and
+	// forwarded as though it were the whole response. decodeJSONObject has
+	// refused that since the whole-body decode sites were consolidated, via
+	// the same trailingJSONError; this is the streaming path's counterpart.
+	// A filter that decides what a client may see cannot silently drop the
+	// rest of a body.
+	if _, err := dec.Token(); err != nil {
+		return rejectResponse(err)
+	}
+	trailing, err := io.ReadAll(io.MultiReader(dec.Buffered(), limited))
+	if err != nil {
+		return rejectResponse(err)
+	}
+	if err := trailingJSONError(trailing, 0); err != nil {
+		return rejectResponse(err)
+	}
+
 	out.WriteByte(']')
 
 	// Re-check the limit after consuming the closing token.
@@ -1137,13 +1165,30 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 	return body, nil
 }
 
-// decodeJSONObject decodes body into a JSON object map with UseNumber
-// enabled, so integers that don't fit in a float64 (e.g. LayersSize above
-// 2^53) round-trip through the filter as json.Number instead of losing
-// precision to the default float64 coercion. Error text matches
-// json.Unmarshal's for the same input, including its "unexpected end of
-// JSON input" wording for truncated/empty bodies, since callers reuse that
-// message via rejectResponse.
+// newJSONDecoder returns the one json.Decoder configuration this package uses
+// for every response body it decodes and re-encodes, whether the body is read
+// whole or streamed.
+//
+// UseNumber is the load-bearing part. Without it encoding/json coerces every
+// JSON number into a float64, so an integer above 2^53 comes back out of the
+// re-encoded response with different digits than the daemon sent. Configuring
+// the decoder here rather than at each call site is the point: when that bug
+// was first fixed, the five whole-body decode sites were consolidated onto
+// decodeJSONObject and the streaming array path kept its own
+// json.NewDecoder call and therefore kept the float64 coercion. Two decoder
+// setups that have to agree eventually will not.
+func newJSONDecoder(r io.Reader) *json.Decoder {
+	dec := json.NewDecoder(r)
+	dec.UseNumber()
+	return dec
+}
+
+// decodeJSONObject decodes body into a JSON object map through newJSONDecoder,
+// so integers that don't fit in a float64 (e.g. LayersSize above 2^53)
+// round-trip through the filter as json.Number instead of losing precision to
+// the default float64 coercion. Error text matches json.Unmarshal's for the
+// same input, including its "unexpected end of JSON input" wording for
+// truncated/empty bodies, since callers reuse that message via rejectResponse.
 //
 // json.Decoder stops at the end of the first value and would accept a body
 // carrying a second document after it, which json.Unmarshal rejects. This
@@ -1151,8 +1196,7 @@ func readResponseBody(resp *http.Response) ([]byte, error) {
 // silently dropping everything after the first document is a smuggling
 // surface. trailingJSONError restores the rejection.
 func decodeJSONObject(body []byte) (map[string]any, error) {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
+	dec := newJSONDecoder(bytes.NewReader(body))
 	var payload map[string]any
 	if err := dec.Decode(&payload); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {

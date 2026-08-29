@@ -2,7 +2,6 @@ package responsefilter
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -364,11 +363,11 @@ func (f *Filter) modifyLibpodSecretList(resp *http.Response) error {
 }
 
 // decodeJSONObjectArray is decodeJSONObject for a top-level JSON array of
-// objects: same UseNumber decoding so large integers round-trip byte for
-// byte, and the same rejection of a second document hiding behind the first.
+// objects: the same newJSONDecoder configuration so large integers round-trip
+// byte for byte, and the same rejection of a second document hiding behind
+// the first.
 func decodeJSONObjectArray(body []byte) ([]map[string]any, error) {
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
+	dec := newJSONDecoder(bytes.NewReader(body))
 	var payload []map[string]any
 	if err := dec.Decode(&payload); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
