@@ -89,7 +89,18 @@ func TestPodmanReadonlyPresetConformance(t *testing.T) {
 		// --- libpod: pod reads (no Docker-compat equivalent) ---
 		{"libpod-pods-list", http.MethodGet, "/libpod/pods/json", "", true},
 		{"libpod-pod-inspect", http.MethodGet, "/libpod/pods/abc/json", "", true},
-		{"libpod-pods-stats", http.MethodGet, "/libpod/pods/stats", "", true},
+		// The three unscopeable libpod reads. None of them can be scoped to
+		// one caller — no labels on the entries, no `filters` parameter to
+		// attach anything to — so the ownership and visibility middlewares
+		// refuse all three outright. /libpod/pods/stats was allowed here until
+		// v2.1; the rule was removed because a preset cannot both promise
+		// isolation and serve a host-wide read. See
+		// filter.LibpodUnscopeableReads() and, for the machine-checked version
+		// of this across every shipped preset,
+		// TestNoShippedPresetAdmitsAnUnscopeableLibpodRead.
+		{"libpod-pods-stats", http.MethodGet, "/libpod/pods/stats", "", false},
+		{"libpod-containers-stats", http.MethodGet, "/libpod/containers/stats", "", false},
+		{"libpod-containers-showmounted", http.MethodGet, "/libpod/containers/showmounted", "", false},
 
 		// --- libpod: image reads ---
 		{"libpod-images-list", http.MethodGet, "/libpod/images/json", "", true},

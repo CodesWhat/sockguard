@@ -9,6 +9,7 @@ import (
 
 	"github.com/codeswhat/sockguard/app/internal/dockerfilters"
 	"github.com/codeswhat/sockguard/app/internal/dockerresource"
+	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 )
 
@@ -274,88 +275,196 @@ func TestLibpodImageChecksHonorAllowUnownedImages(t *testing.T) {
 	}
 }
 
-// --- GET /libpod/containers/showmounted ------------------------------------
+// --- unscopeable libpod reads ----------------------------------------------
 
-// TestLibpodShowMountedIsRefusedUnderOwnerIsolation covers the third libpod
-// read of the /libpod/system/df shape. libpod.ShowMountedContainers walks
-// runtime.GetAllContainers() and answers with a bare map of container ID to
-// the DAEMON HOST's mount path for it, so one body carries both a host
-// filesystem disclosure and a cross-owner enumeration, and carries no label
-// for either to be filtered on. It accepts no query parameters, so
-// addOwnerLabelFilter has nothing to attach to either.
+// wantOwnerUnscopeableReasonCodes pins the exact reason code this middleware
+// logs for each entry in filter.LibpodUnscopeableReads(). It is written out
+// rather than assembled from ReasonCodeStem so the assembled wire string is
+// asserted literally: an operator greps the access log for these, and a stem
+// rename that quietly changes them fails here. A new entry with no line in
+// this map fails too, which is the point — the code is a decision, not a
+// derivation.
+var wantOwnerUnscopeableReasonCodes = map[string]string{
+	filter.LibpodShowMountedPath:    "owner_libpod_show_mounted_unscopeable",
+	filter.LibpodContainerStatsPath: "owner_libpod_container_stats_unscopeable",
+	filter.LibpodPodStatsPath:       "owner_libpod_pod_stats_unscopeable",
+}
+
+// TestLibpodUnscopeableReadsAreRefusedUnderOwnerIsolation covers every libpod
+// read of the /libpod/system/df shape: a body that enumerates the host, no
+// label or owner field on any entry to filter it by, and no `filters` query
+// parameter for addOwnerLabelFilter to attach to. Each entry's doc comment in
+// internal/filter carries the Podman v5.8.1 evidence for its own shape.
 //
-// It is not in podman-readonly.yaml, but any rule whose glob covers it admits
-// it, and `GET /libpod/containers/*` is one that does NOT also pull in
-// /libpod/containers/*/logs and so needs no read-exfiltration acknowledgment.
-func TestLibpodShowMountedIsRefusedUnderOwnerIsolation(t *testing.T) {
+// The version-prefixed leg matters more here than elsewhere: Podman registers
+// only the VersionedPath spelling of all three routes, so /v5.8.1/... is the
+// only spelling a real Podman binding ever sends.
+func TestLibpodUnscopeableReadsAreRefusedUnderOwnerIsolation(t *testing.T) {
 	t.Parallel()
-	for _, path := range []string{"/libpod/containers/showmounted", "/v5.8.1/libpod/containers/showmounted"} {
-		t.Run(path, func(t *testing.T) {
+	reads := filter.LibpodUnscopeableReads()
+	// Checked both ways round. The table drives the cases, so an entry
+	// deleted from filter.LibpodUnscopeableReads() would otherwise silently
+	// stop being tested here rather than fail.
+	if len(reads) != len(wantOwnerUnscopeableReasonCodes) {
+		t.Fatalf("filter.LibpodUnscopeableReads() has %d entries for %d expected reason codes; an endpoint was added or dropped without a decision here", len(reads), len(wantOwnerUnscopeableReasonCodes))
+	}
+	for _, read := range reads {
+		wantCode, ok := wantOwnerUnscopeableReasonCodes[read.Path]
+		if !ok {
+			t.Fatalf("filter.LibpodUnscopeableReads() gained %q with no expected reason code; decide what this middleware logs for it", read.Path)
+		}
+		for _, path := range []string{read.Path, "/v5.8.1" + read.Path} {
+			t.Run(path, func(t *testing.T) {
+				t.Parallel()
+				opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+				handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
+					http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+						t.Fatal("refused request reached the upstream")
+					}))
+
+				// Warn mode must not forward it: response-side isolation is
+				// not a verdict an operator stages, and a forwarded host
+				// inventory is not something they can measure the impact of
+				// afterwards.
+				meta := &logging.RequestMeta{RolloutMode: "warn"}
+				req := httptest.NewRequest(http.MethodGet, path, nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+				}
+				if meta.ReasonCode != wantCode {
+					t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, wantCode)
+				}
+				if !strings.Contains(rec.Body.String(), read.Reason) {
+					t.Fatalf("body = %s, want the deny reason %q", rec.Body.String(), read.Reason)
+				}
+			})
+		}
+	}
+}
+
+// TestLibpodUnscopeableReadsAreInertWithoutOwner proves the refusals cost
+// nothing to a deployment that configured no owner: there is no boundary to
+// enforce, so the rule engine stays the only control.
+func TestLibpodUnscopeableReadsAreInertWithoutOwner(t *testing.T) {
+	t.Parallel()
+	for _, read := range filter.LibpodUnscopeableReads() {
+		t.Run(read.Path, func(t *testing.T) {
 			t.Parallel()
-			opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
-			handler := middlewareWithDeps(testLogger(), opts, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
-				http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-					t.Fatal("refused request reached the upstream")
+			const body = `{"c-1":"/var/lib/containers/storage/overlay/deadbeef/merged"}`
+			reached := false
+			handler := middlewareWithDeps(testLogger(), Options{}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					_, _ = w.Write([]byte(body))
 				}))
 
-			// Warn mode must not forward it: response-side isolation is not a
-			// verdict an operator stages, and a forwarded host inventory is
-			// not something they can measure the impact of afterwards.
-			meta := &logging.RequestMeta{RolloutMode: "warn"}
-			req := httptest.NewRequest(http.MethodGet, path, nil)
-			req = req.WithContext(logging.WithMeta(req.Context(), meta))
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, read.Path, nil))
 
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
-			}
-			if meta.ReasonCode != reasonCodeOwnerLibpodShowMounted {
-				t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeOwnerLibpodShowMounted)
-			}
-			if !strings.Contains(rec.Body.String(), "libpod show mounted denied") {
-				t.Fatalf("body = %s, want the show-mounted deny reason", rec.Body.String())
+			if !reached || rec.Body.String() != body {
+				t.Fatalf("reached = %v body = %s, want true and the upstream body untouched", reached, rec.Body.String())
 			}
 		})
 	}
 }
 
-// TestLibpodShowMountedInertWithoutOwner proves the refusal costs nothing to a
-// deployment that configured no owner: there is no boundary to enforce, so the
-// rule engine stays the only control.
-func TestLibpodShowMountedInertWithoutOwner(t *testing.T) {
+// TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers pins why
+// each refusal has to be its own branch rather than falling out of the path
+// classifiers, and the two failure modes differ.
+//
+// libpodContainerIdentifier DOES classify the two /libpod/containers/ paths —
+// as containers named "showmounted" and "stats" — which is exactly the shape
+// that left them open: the daemon has no such container, the inspect comes
+// back not-found, and checkOwnedResource turns not-found into
+// verdictPassThrough, so the host inventory was forwarded intact.
+// libpodPodIdentifier deliberately reserves "stats", so /libpod/pods/stats was
+// never classified at all and reached the upstream without any check running.
+func TestLibpodUnscopeableReadsWereNotCoveredByTheExistingIdentifiers(t *testing.T) {
 	t.Parallel()
-	const body = `{"c-1":"/var/lib/containers/storage/overlay/deadbeef/merged"}`
-	reached := false
-	handler := middlewareWithDeps(testLogger(), Options{}, fakeInspector{}.inspectResource, fakeInspector{}.inspectExec)(
-		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			reached = true
-			_, _ = w.Write([]byte(body))
-		}))
-
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/libpod/containers/showmounted", nil))
-
-	if !reached || rec.Body.String() != body {
-		t.Fatalf("reached = %v body = %s, want true and the upstream body untouched", reached, rec.Body.String())
+	tests := []struct {
+		path           string
+		classify       func(method, normPath string) (string, bool)
+		wantIdentifier string
+		wantOK         bool
+	}{
+		{path: filter.LibpodShowMountedPath, classify: libpodContainerIdentifier, wantIdentifier: "showmounted", wantOK: true},
+		{path: filter.LibpodContainerStatsPath, classify: libpodContainerIdentifier, wantIdentifier: "stats", wantOK: true},
+		{path: filter.LibpodPodStatsPath, classify: libpodPodIdentifier, wantIdentifier: "", wantOK: false},
+	}
+	if len(tests) != len(filter.LibpodUnscopeableReads()) {
+		t.Fatalf("%d cases for %d unscopeable reads; a new one needs its own answer here", len(tests), len(filter.LibpodUnscopeableReads()))
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			t.Parallel()
+			identifier, ok := tt.classify(http.MethodGet, tt.path)
+			if ok != tt.wantOK || identifier != tt.wantIdentifier {
+				t.Fatalf("classify(GET, %q) = %q, %v; want %q, %v — if this changes, the refusal branch is the only thing covering the endpoint", tt.path, identifier, ok, tt.wantIdentifier, tt.wantOK)
+			}
+			if libpodNeedsOwnerFilter(tt.path) {
+				t.Fatalf("libpodNeedsOwnerFilter(%q) = true; the endpoint accepts no filters query parameter", tt.path)
+			}
+			if !ok {
+				return
+			}
+			labels, found, err := fakeInspector{}.inspectResource(context.Background(), dockerresource.KindContainer, identifier)
+			if err != nil || found || labels != nil {
+				t.Fatalf("inspect of a container named %q = %v, %v, %v; want not-found, which is why the inspect alone would pass the request through", identifier, labels, found, err)
+			}
+		})
 	}
 }
 
-// TestLibpodShowMountedWasNotCoveredByTheContainerIdentifier pins why the
-// refusal has to be its own branch rather than falling out of
-// libpodContainerIdentifier. That matcher does classify the path — as a
-// container named "showmounted" — which is exactly the shape that left the
-// endpoint open: the daemon has no such container, the inspect comes back
-// not-found, and checkOwnedResource turns not-found into verdictPassThrough,
-// so the host inventory was forwarded intact.
-func TestLibpodShowMountedWasNotCoveredByTheContainerIdentifier(t *testing.T) {
+// TestLibpodContainerStatsIsRefusedEvenWhenTheCallerOwnsAContainerNamedStats
+// is the sharp edge of the previous test. Relying on the not-found inspect to
+// deny GET /libpod/containers/stats would hand the caller the key: create a
+// container named "stats", which they own and are entitled to, and the
+// identifier check starts PASSING — the request is forwarded and Podman serves
+// live usage for every running container on the host, because gorilla/mux
+// routes /libpod/containers/stats to the collection handler regardless of what
+// containers exist.
+//
+// The second leg is the control: the same fixture on /libpod/containers/stats/json
+// is a genuine inspect of that container and stays allowed, so the refusal is
+// scoped to the collection path rather than banning the name.
+func TestLibpodContainerStatsIsRefusedEvenWhenTheCallerOwnsAContainerNamedStats(t *testing.T) {
 	t.Parallel()
-	identifier, ok := libpodContainerIdentifier(http.MethodGet, "/libpod/containers/showmounted")
-	if !ok || identifier != "showmounted" {
-		t.Fatalf("libpodContainerIdentifier(GET, showmounted) = %q, %v; want %q, true — if this ever stops matching, the refusal branch is the only thing covering the endpoint", identifier, ok, "showmounted")
-	}
-	labels, found, err := fakeInspector{}.inspectResource(context.Background(), dockerresource.KindContainer, identifier)
-	if err != nil || found || labels != nil {
-		t.Fatalf("inspect of a container named %q = %v, %v, %v; want not-found, which is why the inspect alone would pass the request through", identifier, labels, found, err)
-	}
+	inspector := fakeInspector{resources: map[string]map[string]inspectResult{
+		string(dockerresource.KindContainer): {
+			"stats": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+		},
+	}}
+	opts := Options{Owner: "job-123", LabelKey: "com.sockguard.owner"}
+
+	t.Run("collection path is refused", func(t *testing.T) {
+		t.Parallel()
+		handler := middlewareWithDeps(testLogger(), opts, inspector.inspectResource, inspector.inspectExec)(
+			http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Fatal("refused request reached the upstream")
+			}))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, filter.LibpodContainerStatsPath, nil))
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "libpod container stats denied") {
+			t.Fatalf("body = %s, want the container-stats deny reason", rec.Body.String())
+		}
+	})
+
+	t.Run("owned container named stats is still inspectable", func(t *testing.T) {
+		t.Parallel()
+		reached := false
+		handler := middlewareWithDeps(testLogger(), opts, inspector.inspectResource, inspector.inspectExec)(
+			http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true }))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/libpod/containers/stats/json", nil))
+		if !reached || rec.Code != http.StatusOK {
+			t.Fatalf("reached = %v status = %d, want true and %d; body: %s", reached, rec.Code, http.StatusOK, rec.Body.String())
+		}
+	})
 }

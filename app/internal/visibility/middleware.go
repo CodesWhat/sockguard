@@ -59,7 +59,6 @@ const (
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
 	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
 	reasonCodeVisibilityLibpodEvents        = "visibility_libpod_events_unscopeable"
-	reasonCodeVisibilityLibpodShowMounted   = "visibility_libpod_show_mounted_unscopeable"
 )
 
 // Options configures label-based visibility control on Docker read endpoints.
@@ -193,15 +192,20 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 				denyLibpodSystemDataUsage(w, r)
 				return
 			}
-			// GET /libpod/containers/showmounted is a third endpoint of that
-			// same shape: it enumerates every mounted container on the host as
-			// a bare ID-to-host-path map, with no labels for the selector axes
-			// and no name or image field for the pattern axes, and it accepts
-			// no query parameters for a filter to attach to. It is refused
-			// rather than filtered — see filter.LibpodShowMountedDenyReason.
-			if r.Method == http.MethodGet && normPath == filter.LibpodShowMountedPath {
-				denyLibpodShowMounted(w, r)
-				return
+			// Three more libpod reads have that same shape — showmounted,
+			// container stats and pod stats — each enumerating the host with
+			// no labels for the selector axes, no name or image field for the
+			// pattern axes, and no `filters` parameter to attach anything to.
+			// They are refused rather than filtered. The set is
+			// filter.LibpodUnscopeableReads(), shared with the ownership
+			// middleware so the two layers cannot disagree about which
+			// endpoints are refusable; each entry's doc comment carries its
+			// shape evidence.
+			if r.Method == http.MethodGet {
+				if read, ok := filter.LookupLibpodUnscopeableRead(normPath); ok {
+					denyUnscopeableLibpodRead(w, r, read)
+					return
+				}
 			}
 			// Podman's native GET /libpod/events accepts the same `filters`
 			// query parameter the Docker-compat /events does — it is literally

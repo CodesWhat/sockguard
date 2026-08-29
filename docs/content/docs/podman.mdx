@@ -177,6 +177,21 @@ same way they cover Docker-compat:
   admits it without needing `insecure_allow_read_exfiltration` — it is not in
   the read-exfiltration catalog, so a deployment that configures neither an
   owner nor a visibility policy and allows the path still receives the map.
+- `GET /libpod/containers/stats` and `GET /libpod/pods/stats` are refused the
+  same way, new in v2.1. Both are collection endpoints rather than per-resource
+  ones: a request that names nothing reports every running container or pod on
+  the host, by design rather than by omission — Podman's own
+  `ValidatePodStatsOptions` sets `all` when nothing is given, "if nothing's
+  specified get all running pods". Neither accepts a `filters` parameter, so a
+  label filter has nothing to attach to, and their records carry container and
+  pod IDs and names but no labels, so neither an owner label nor a visibility
+  selector has a field to match. Both layers answer `403` before the upstream
+  is contacted, audited as `owner_libpod_container_stats_unscopeable` and
+  `owner_libpod_pod_stats_unscopeable` (and their `visibility_` counterparts),
+  regardless of rollout mode. `podman-readonly.yaml` allowed
+  `GET /libpod/pods/stats` before v2.1 and no longer does; see Known
+  Limitations below for what that costs a deployment that runs neither
+  isolation layer.
 - Resource names that happen to equal an API action word remain protected.
   Owner matching reserves keywords only for the exact method and collection
   path, while `GET` and `HEAD` visibility treats write-only keywords as normal
@@ -255,6 +270,12 @@ both surfaces, so it validates clean without setting
 never needs `insecure_allow_body_blind_writes` either. See
 [Presets](/presets) for how to mount a preset as your config file.
 
+One rule left the preset in v2.1: `GET /libpod/pods/stats`, which both
+isolation layers now refuse (above). A preset that advertises owner isolation
+cannot also serve a read that has no owner-scoped form, and the rule could
+only ever have ended in a `403` for anyone running a layer. Add it back to your
+own config if you run single-tenant with neither isolation layer on.
+
 ## Known Limitations
 
 **Deferred past this release** (see the [roadmap](/roadmap) for where these
@@ -284,19 +305,34 @@ land):
 - `AllowedRuntimes` has no libpod equivalent — `request_body.container_create.allowed_runtimes`
   gates the Docker-compat `HostConfig.Runtime` field, but
   `libpod_container_create` has no matching hook today.
-- `GET /libpod/containers/stats` and `GET /libpod/pods/stats` cannot be scoped.
-  Both take `containers`/`namesOrIDs` and `all` but no `filters` parameter, so
-  there is nothing for a label filter to attach to. `GET /libpod/containers/stats`
-  streams unless the caller sends `stream=false`, so buffering its response to
-  filter it would turn a live stats stream into a request that never returns
-  (`GET /libpod/pods/stats` defaults the other way). Their records carry
-  container and pod IDs and names but no labels,
-  so recovering an owned set would mean correlating them against the
-  label-filtered list endpoints — the same multi-request mechanism refused for
-  `/libpod/system/df`. `GET /libpod/pods/stats` is allowed by
-  `podman-readonly.yaml` as shipped. Deny them in your rules if you need the
-  guarantee; they are not refused automatically, unlike `/libpod/system/df` and
-  `/libpod/containers/showmounted`.
+- **There is no owner-scoped form of the collection stats reads to offer you.**
+  `GET /libpod/containers/stats` and `GET /libpod/pods/stats` are refused
+  outright under owner isolation or a visibility policy, so a single-tenant
+  deployment that legitimately wants host-wide stats has to run without either
+  layer, or allow the paths and accept that they answer `403` while a layer is
+  on. Filtering them was not an option: neither takes a `filters` parameter and
+  neither report carries labels, so there is nothing to attach a filter to and
+  nothing to decide an entry by. Correlating them against the label-filtered
+  list endpoints would work, but that is the same multi-request mechanism
+  refused for `/libpod/system/df`.
+
+  Per-container stats survive: `GET /libpod/containers/{name}/stats` is a
+  different route, `{name}` is an identifier both layers already check, and it
+  stays allowed. Podman's own API docs mark it "DEPRECATED. This endpoint will
+  be removed with the next major release. Please use `/libpod/containers/stats`
+  instead", so the only scopeable spelling is the one upstream intends to
+  delete — worth knowing before you build a dashboard on it. Pods have no
+  equivalent at all: Podman registers no per-pod stats route, so pod stats is
+  all-or-nothing.
+
+  The refusal is a plain `403` rather than a truncated stream, which matters
+  because the two endpoints have different default shapes.
+  `GET /libpod/containers/stats` streams unless the caller sends
+  `stream=false` (one NDJSON record per five-second tick);
+  `GET /libpod/pods/stats` returns a single JSON body unless the caller asks
+  for a stream. Sockguard answers before the upstream is contacted either way,
+  so a client written for the streaming shape gets a status line and a normal
+  error body rather than a half-read record.
 - Two libpod image endpoints name their images in the query string rather than
   the path, so owner isolation has nothing to check and they pass through
   unchecked when a rule allows them: `DELETE /libpod/images/remove?images=…`

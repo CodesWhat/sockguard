@@ -54,15 +54,21 @@ func denyLibpodSystemDataUsage(w http.ResponseWriter, r *http.Request) {
 	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 }
 
-// denyLibpodShowMounted refuses GET /libpod/containers/showmounted with a 403
-// without contacting the upstream, so neither the daemon host's mount paths
-// nor the cross-owner container ID set is ever read. The status and the
-// rollout-mode independence are denyLibpodSystemDataUsage's, for the same
-// reasons.
-func denyLibpodShowMounted(w http.ResponseWriter, r *http.Request) {
-	reason := filter.LibpodShowMountedDenyReason
-	logging.SetDeniedWithCode(w, r, reasonCodeVisibilityLibpodShowMounted, reason, nil)
-	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
+// denyUnscopeableLibpodRead refuses one of filter.LibpodUnscopeableReads() with
+// a 403 without contacting the upstream, so the daemon host's mount paths, the
+// cross-owner container and pod ID sets, and the live resource-usage streams in
+// those bodies are never read. The status and the rollout-mode independence are
+// denyLibpodSystemDataUsage's, for the same reasons.
+//
+// The reason code is assembled from the entry's stem rather than switched on,
+// so an endpoint added to that table cannot land here without one. The stems
+// are shared with the ownership middleware, which prefixes them "owner_libpod_"
+// where this one prefixes "visibility_libpod_", so a grep for
+// "show_mounted_unscopeable" finds the refusal at either layer while the full
+// code still says which layer refused it.
+func denyUnscopeableLibpodRead(w http.ResponseWriter, r *http.Request, read filter.LibpodUnscopeableRead) {
+	logging.SetDeniedWithCode(w, r, "visibility_libpod_"+read.ReasonCodeStem+"_unscopeable", read.Reason, nil)
+	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: read.Reason})
 }
 
 // flushSystemDataUsage filters the buffered /system/df object response item by

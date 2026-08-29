@@ -21,6 +21,8 @@ func FuzzLibpodPathIdentifiers(f *testing.F) {
 		"/libpod/images/json",
 		"/libpod/pods/json",
 		"/libpod/pods/stats",
+		"/libpod/containers/stats",
+		"/libpod/containers/showmounted",
 		"/libpod/networks/json",
 		"/libpod/volumes/json",
 		"/libpod/secrets/json",
@@ -84,14 +86,21 @@ func FuzzLibpodPathIdentifiers(f *testing.F) {
 		f.Add(s)
 	}
 
+	// Collection routes: a bare word after the prefix with no "/id/suffix"
+	// shape, so no single-resource identifier may ever match one. The three
+	// in filter.LibpodUnscopeableReads() are here for the same reason the
+	// list endpoints are — misclassifying one as a container or pod named
+	// "stats" or "showmounted" is what left them unchecked before v2.1.
 	collectionRoutes := map[string]bool{
-		"/libpod/containers/json": true,
-		"/libpod/images/json":     true,
-		"/libpod/pods/json":       true,
-		"/libpod/pods/stats":      true,
-		"/libpod/networks/json":   true,
-		"/libpod/volumes/json":    true,
-		"/libpod/secrets/json":    true,
+		"/libpod/containers/json":        true,
+		"/libpod/containers/stats":       true,
+		"/libpod/containers/showmounted": true,
+		"/libpod/images/json":            true,
+		"/libpod/pods/json":              true,
+		"/libpod/pods/stats":             true,
+		"/libpod/networks/json":          true,
+		"/libpod/volumes/json":           true,
+		"/libpod/secrets/json":           true,
 	}
 
 	type identifierHelper struct {

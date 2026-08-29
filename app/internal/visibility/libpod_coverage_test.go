@@ -632,89 +632,137 @@ func TestLibpodEventsInertWithoutVisibilityPolicy(t *testing.T) {
 	}
 }
 
-// --- GET /libpod/containers/showmounted ------------------------------------
+// --- unscopeable libpod reads ----------------------------------------------
 
-// TestLibpodShowMountedIsRefusedUnderVisibilityPolicy covers the third libpod
-// read of the /libpod/system/df shape. libpod.ShowMountedContainers answers
-// with a bare map of container ID to the DAEMON HOST's mount path for it, so
-// the same body discloses host filesystem paths and enumerates every mounted
-// container regardless of policy. Neither policy axis has a field to read:
-// there are no labels for the selectors and no name or image for the
-// patterns, and the endpoint accepts no query parameters for a filter.
+// wantVisibilityUnscopeableReasonCodes pins the exact reason code this
+// middleware logs for each entry in filter.LibpodUnscopeableReads(), written
+// out rather than assembled from ReasonCodeStem for the reason
+// wantOwnerUnscopeableReasonCodes is. The two maps differ only in the prefix,
+// which is how an operator tells which layer refused the request.
+var wantVisibilityUnscopeableReasonCodes = map[string]string{
+	filter.LibpodShowMountedPath:    "visibility_libpod_show_mounted_unscopeable",
+	filter.LibpodContainerStatsPath: "visibility_libpod_container_stats_unscopeable",
+	filter.LibpodPodStatsPath:       "visibility_libpod_pod_stats_unscopeable",
+}
+
+// TestLibpodUnscopeableReadsAreRefusedUnderVisibilityPolicy covers every
+// libpod read of the /libpod/system/df shape from this side. Neither policy
+// axis has a field to read in any of them: no labels for the selectors, no
+// name or image for the patterns, and no `filters` query parameter to attach
+// anything to.
 //
-// Both policy shapes are covered, because a patterns-only policy is the one
-// that would slip through a refusal written to key off selectors alone.
-func TestLibpodShowMountedIsRefusedUnderVisibilityPolicy(t *testing.T) {
+// Both policy shapes are covered for each, because a patterns-only policy is
+// the one that would slip through a refusal written to key off selectors
+// alone.
+func TestLibpodUnscopeableReadsAreRefusedUnderVisibilityPolicy(t *testing.T) {
 	t.Parallel()
-	tests := []struct {
-		name string
-		opts Options
-		path string
+	shapes := []struct {
+		name          string
+		opts          Options
+		versionPrefix string
 	}{
-		{name: "selectors", opts: Options{VisibleResourceLabels: []string{"com.sockguard.visible=true"}}, path: "/libpod/containers/showmounted"},
-		{name: "patterns only", opts: Options{NamePatterns: []string{"web-*"}}, path: "/libpod/containers/showmounted"},
-		{name: "version prefixed", opts: Options{VisibleResourceLabels: []string{"com.sockguard.visible=true"}}, path: "/v5.8.1/libpod/containers/showmounted"},
+		{name: "selectors", opts: Options{VisibleResourceLabels: []string{"com.sockguard.visible=true"}}},
+		{name: "patterns only", opts: Options{NamePatterns: []string{"web-*"}}},
+		{name: "version prefixed", opts: Options{VisibleResourceLabels: []string{"com.sockguard.visible=true"}}, versionPrefix: "/v5.8.1"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	reads := filter.LibpodUnscopeableReads()
+	// Checked both ways round, for the reason
+	// TestLibpodUnscopeableReadsAreRefusedUnderOwnerIsolation is.
+	if len(reads) != len(wantVisibilityUnscopeableReasonCodes) {
+		t.Fatalf("filter.LibpodUnscopeableReads() has %d entries for %d expected reason codes; an endpoint was added or dropped without a decision here", len(reads), len(wantVisibilityUnscopeableReasonCodes))
+	}
+	for _, read := range reads {
+		wantCode, ok := wantVisibilityUnscopeableReasonCodes[read.Path]
+		if !ok {
+			t.Fatalf("filter.LibpodUnscopeableReads() gained %q with no expected reason code; decide what this middleware logs for it", read.Path)
+		}
+		for _, shape := range shapes {
+			t.Run(read.Path+"/"+shape.name, func(t *testing.T) {
+				t.Parallel()
+				handler := middlewareWithDeps(testVisibilityLogger(), shape.opts, visibilityDeps{})(
+					http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+						t.Fatal("refused request reached the upstream")
+					}))
+
+				// Warn mode must not forward it, matching denyLibpodSystemDataUsage.
+				meta := &logging.RequestMeta{RolloutMode: "warn"}
+				req := httptest.NewRequest(http.MethodGet, shape.versionPrefix+read.Path, nil)
+				req = req.WithContext(logging.WithMeta(req.Context(), meta))
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
+				}
+				if meta.ReasonCode != wantCode {
+					t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, wantCode)
+				}
+				if !strings.Contains(rec.Body.String(), read.Reason) {
+					t.Fatalf("body = %s, want the deny reason %q", rec.Body.String(), read.Reason)
+				}
+			})
+		}
+	}
+}
+
+// TestLibpodUnscopeableReadsAreInertWithoutVisibilityPolicy proves the
+// refusals cost nothing to a deployment with no visibility policy.
+func TestLibpodUnscopeableReadsAreInertWithoutVisibilityPolicy(t *testing.T) {
+	t.Parallel()
+	for _, read := range filter.LibpodUnscopeableReads() {
+		t.Run(read.Path, func(t *testing.T) {
 			t.Parallel()
-			handler := middlewareWithDeps(testVisibilityLogger(), tt.opts, visibilityDeps{})(
-				http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-					t.Fatal("refused request reached the upstream")
+			const body = `{"c-1":"/var/lib/containers/storage/overlay/deadbeef/merged"}`
+			reached := false
+			handler := middlewareWithDeps(testVisibilityLogger(), Options{}, visibilityDeps{})(
+				http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					reached = true
+					_, _ = w.Write([]byte(body))
 				}))
 
-			// Warn mode must not forward it, matching denyLibpodSystemDataUsage.
-			meta := &logging.RequestMeta{RolloutMode: "warn"}
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
-			req = req.WithContext(logging.WithMeta(req.Context(), meta))
 			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, req)
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, read.Path, nil))
 
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusForbidden, rec.Body.String())
-			}
-			if meta.ReasonCode != reasonCodeVisibilityLibpodShowMounted {
-				t.Fatalf("meta.ReasonCode = %q, want %q", meta.ReasonCode, reasonCodeVisibilityLibpodShowMounted)
-			}
-			if !strings.Contains(rec.Body.String(), "libpod show mounted denied") {
-				t.Fatalf("body = %s, want the show-mounted deny reason", rec.Body.String())
+			if !reached || rec.Body.String() != body {
+				t.Fatalf("reached = %v body = %s, want true and the upstream body untouched", reached, rec.Body.String())
 			}
 		})
 	}
 }
 
-// TestLibpodShowMountedInertWithoutVisibilityPolicy proves the refusal costs
-// nothing to a deployment with no visibility policy.
-func TestLibpodShowMountedInertWithoutVisibilityPolicy(t *testing.T) {
+// TestLibpodUnscopeableReadsAreNotCoveredByAnyVisibilityIdentifier pins why
+// each refusal has to be its own branch. Every libpod read identifier in this
+// package needs an "/id/suffix" shape, and all three paths are a bare word
+// after the prefix, so none of them matched: before the refusals the requests
+// fell through to the default-visible tail of requestVisibleWithPolicy and
+// were forwarded with the host inventory intact.
+//
+// This is the one real difference from the ownership side, where
+// libpodContainerIdentifier does classify two of the three as containers.
+func TestLibpodUnscopeableReadsAreNotCoveredByAnyVisibilityIdentifier(t *testing.T) {
 	t.Parallel()
-	const body = `{"c-1":"/var/lib/containers/storage/overlay/deadbeef/merged"}`
-	reached := false
-	handler := middlewareWithDeps(testVisibilityLogger(), Options{}, visibilityDeps{})(
-		http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			reached = true
-			_, _ = w.Write([]byte(body))
-		}))
-
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/libpod/containers/showmounted", nil))
-
-	if !reached || rec.Body.String() != body {
-		t.Fatalf("reached = %v body = %s, want true and the upstream body untouched", reached, rec.Body.String())
+	identifiers := map[string]func(string) (string, bool){
+		"libpodContainerReadIdentifier":  libpodContainerReadIdentifier,
+		"libpodImageReadIdentifier":      libpodImageReadIdentifier,
+		"libpodPodReadIdentifier":        libpodPodReadIdentifier,
+		"libpodNetworkInspectIdentifier": libpodNetworkInspectIdentifier,
+		"libpodVolumeInspectIdentifier":  libpodVolumeInspectIdentifier,
+		"libpodSecretInspectIdentifier":  libpodSecretInspectIdentifier,
 	}
-}
-
-// TestLibpodShowMountedWasNotCoveredByTheContainerReadIdentifier pins why the
-// refusal has to be its own branch. libpodContainerReadIdentifier does not
-// match the path at all — its remainder is a bare word with no "/id/suffix"
-// shape — so before this the request fell through to the default-visible tail
-// of requestVisibleWithPolicy and was forwarded with the host inventory
-// intact.
-func TestLibpodShowMountedWasNotCoveredByTheContainerReadIdentifier(t *testing.T) {
-	t.Parallel()
-	if identifier, ok := libpodContainerReadIdentifier(filter.LibpodShowMountedPath); ok {
-		t.Fatalf("libpodContainerReadIdentifier(%q) = %q, want no match", filter.LibpodShowMountedPath, identifier)
-	}
-	if needsVisibilityLabelFilter(filter.LibpodShowMountedPath) {
-		t.Fatalf("needsVisibilityLabelFilter(%q) = true; the endpoint accepts no filters query parameter", filter.LibpodShowMountedPath)
+	for _, read := range filter.LibpodUnscopeableReads() {
+		t.Run(read.Path, func(t *testing.T) {
+			t.Parallel()
+			for name, classify := range identifiers {
+				if identifier, ok := classify(read.Path); ok {
+					t.Fatalf("%s(%q) = %q, want no match", name, read.Path, identifier)
+				}
+			}
+			if needsVisibilityLabelFilter(read.Path) {
+				t.Fatalf("needsVisibilityLabelFilter(%q) = true; the endpoint accepts no filters query parameter", read.Path)
+			}
+			if needsLibpodVisibilityLabelFilter(read.Path) {
+				t.Fatalf("needsLibpodVisibilityLabelFilter(%q) = true; the endpoint accepts no filters query parameter", read.Path)
+			}
+		})
 	}
 }
