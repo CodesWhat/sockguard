@@ -260,11 +260,12 @@ When `health.watchdog.enabled` is true, Sockguard actively probes the upstream D
 
 ## Image Security
 
-Sockguard's container image is built on [Wolfi](https://www.chainguard.dev/chainguard-images) (Chainguard):
+Sockguard's runtime image is Chainguard's distroless [`static`](https://www.chainguard.dev/chainguard-images) base, built from Wolfi packages:
 - Minimal package set, which keeps the base image's CVE exposure low
 - Built-in SBOM output and build provenance when release visibility supports attestations
 - Cosign-signed for verification — see the [image verification guide](/verification) for the canonical `cosign verify` invocation
 - No shell, no package manager in production image
+- Runs as UID 65532 (`nonroot`) from PID 1 — the image has no root user to start as, so there's nothing to drop
 
 ## Runtime Hardening
 
