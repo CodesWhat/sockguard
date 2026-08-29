@@ -117,16 +117,14 @@ func libpodContainerIdentifier(method, normPath string) (string, bool) {
 // registers them earlier: POST /libpod/images/scp/app/push is an image named
 // "scp/app" being pushed, not an scp of "app".
 //
-// Two batch image endpoints are still NOT matched here, because they name
-// their images in the QUERY STRING rather than the path and so need a
-// different mechanism than a path identifier:
-// DELETE /libpod/images/remove?images=…&all= (batch delete, which with
-// all=true names nothing at all) and GET /libpod/images/export?references=…
-// (batch export). Both are reserved above, so they pass through unchecked.
-// The Docker-compat GET /images/get?names=… is unchecked for exactly the same
-// reason, imageIdentifier reserving "get" the same way; neither libpod path is
-// allowed by any shipped preset, and both are covered in the Podman guide's
-// Known Limitations.
+// Two batch image endpoints are not matched here, because they name their
+// images in the query string rather than the path and need a different
+// mechanism than a path identifier:
+// DELETE /libpod/images/remove?images=…&all= and
+// GET /libpod/images/export?references=…. They remain reserved above, while
+// image_batch.go parses and owner-checks their query subjects before the
+// request is forwarded. The Docker-compat GET /images/get?names=… route uses
+// that same batch path.
 func libpodImageIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, libpodPrefix+"images/") {
 		return "", false

@@ -64,6 +64,7 @@ type embeddedOwnershipReference struct {
 type ownershipRequestReferences struct {
 	namespaceContainers []string
 	embeddedResources   []embeddedOwnershipReference
+	imageBatch          *imageBatchOwnershipReferences
 }
 
 // Options configures per-proxy resource ownership labeling and enforcement.
@@ -180,6 +181,12 @@ func (o Options) normalized() Options {
 // still consume another owner's image, volume, network, secret, or config.
 func mutateOwnershipRequest(r *http.Request, normPath string, opts Options) (*ownershipRequestReferences, error) {
 	switch {
+	case isImageBatchOwnershipPath(r.Method, normPath):
+		batch, err := parseImageBatchOwnershipReferences(r, normPath)
+		if err != nil {
+			return nil, err
+		}
+		return &ownershipRequestReferences{imageBatch: batch}, nil
 	case r.Method == http.MethodPost && normPath == "/containers/create":
 		return mutateContainerCreateOwnershipBody(r, opts.LabelKey, opts.Owner)
 	case r.Method == http.MethodPost && (normPath == "/networks/create" || normPath == "/volumes/create" || normPath == "/secrets/create" || normPath == "/configs/create"):
@@ -245,6 +252,14 @@ func allowOwnershipRequestUnprefixed(
 ) (ownershipVerdict, string, error) {
 	strictest := verdictPassThrough
 	if refs != nil {
+		verdict, reason, err := checkImageBatchOwnershipReferences(ctx, inspectResource, refs.imageBatch, opts)
+		if err != nil || verdict == verdictDeny {
+			return verdict, reason, err
+		}
+		if verdict == verdictAllow {
+			strictest = verdictAllow
+		}
+
 		if !opts.AllowCrossOwnerNamespaceSharing && len(refs.namespaceContainers) > 0 {
 			verdict, reason, err := checkContainerNamespaceSharingRefs(ctx, inspectResource, refs.namespaceContainers, opts)
 			if err != nil || verdict == verdictDeny {
@@ -255,7 +270,7 @@ func allowOwnershipRequestUnprefixed(
 			}
 		}
 
-		verdict, reason, err := checkEmbeddedOwnershipReferences(ctx, inspectResource, refs.embeddedResources, opts)
+		verdict, reason, err = checkEmbeddedOwnershipReferences(ctx, inspectResource, refs.embeddedResources, opts)
 		if err != nil || verdict == verdictDeny {
 			return verdict, reason, err
 		}

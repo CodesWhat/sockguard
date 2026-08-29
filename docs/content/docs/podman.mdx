@@ -142,6 +142,17 @@ same way they cover Docker-compat:
   registers on the same `InspectNetwork` handler as `/libpod/networks/{id}/json`.
   `POST /libpod/images/scp/{name}` copies an image to another host, so it is
   owner-checked against `{name}` like a push.
+- Query-selected image batches are owner-checked too. Sockguard decodes every
+  repeated `names` value on Docker-compatible `GET /images/get`, every repeated
+  `references` value on `GET /libpod/images/export`, and every repeated
+  `images` value on `DELETE /libpod/images/remove`, then resolves all of them
+  before forwarding the original request. Each image must carry the caller's
+  owner label even when `allow_unowned_images` permits unlabeled images on
+  ordinary per-image requests. Percent-encoded slashes, tags, and digests are
+  decoded once. A comma is not a list separator in the handlers Podman
+  actually runs, so clients must repeat the query key for multiple images.
+  A foreign, unlabeled, missing, or lookup-failed member prevents the daemon
+  from seeing any part of the batch.
 - `GET /libpod/events` is owner-filtered but is only partly expressible as a
   visibility policy, and that asymmetry is deliberate. Podman evaluates
   several values under one event filter key disjunctively, so a `label=` value
@@ -333,16 +344,22 @@ land):
   for a stream. Sockguard answers before the upstream is contacted either way,
   so a client written for the streaming shape gets a status line and a normal
   error body rather than a half-read record.
-- Two libpod image endpoints name their images in the query string rather than
-  the path, so owner isolation has nothing to check and they pass through
-  unchecked when a rule allows them: `DELETE /libpod/images/remove?images=…`
-  (batch delete, which with `all=true` names nothing at all) and
-  `GET /libpod/images/export?references=…` (batch export).
-  Neither is allowed by any shipped preset, batch export additionally needs
-  `insecure_allow_read_exfiltration`, and the Docker-compat
-  `GET /images/get?names=…` is unchecked for the same reason. Per-image
-  spellings of both actions (`DELETE /libpod/images/{name}`,
-  `GET /libpod/images/{name}/get`) are checked normally.
+- Batch ownership enforcement cannot turn Podman's collection-wide removal
+  into an owner-filtered operation. `DELETE /libpod/images/remove` with no
+  non-empty `images` values makes Podman's image engine enumerate and remove a
+  collection, including with `all=false`; `all=true` is collection-wide when
+  images are omitted for the same reason. Owner isolation refuses the empty
+  shape. With at least one image, Podman takes its named-image branch even when
+  the last repeated `all` value is true, and Sockguard permits the request
+  after every named image passes preflight.
+  The same conservative boundary applies to Moby's Docker-compatible export:
+  a name-only `GET /images/get?names=team/app` expands to every tag in that
+  repository, so Sockguard requires an explicit tag, digest, or full image ID
+  there. Podman's native `GET /libpod/images/export` resolves a name-only
+  reference to one image and remains supported. These checks do not make the
+  daemon action transactional. A tag can be rebound after its preflight
+  inspect, and Podman can still partially apply an authorized multi-image
+  delete if a later daemon-side operation fails.
 - A **visibility** policy with more than one `visible_resource_labels` selector
   is enforceable on `GET /libpod/events` but not on the Docker-compat
   `GET /events` that Podman also serves, because they are the same handler with
