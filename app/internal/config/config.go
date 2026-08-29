@@ -308,6 +308,10 @@ type UpstreamEndpoint struct {
 	// InsecureSkipTLSVerify disables verification of the remote daemon's server
 	// certificate (self-signed homelab daemons). Dangerous in production: it
 	// defeats authentication of the upstream.
+	//
+	// Deprecated: configure tls.ca_file with the daemon's issuing CA instead.
+	// This field remains accepted with unchanged behavior in v2.1 and will be
+	// removed in v3.0.0.
 	InsecureSkipTLSVerify bool `mapstructure:"insecure_skip_tls_verify"`
 }
 

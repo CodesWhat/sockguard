@@ -29,6 +29,7 @@ func resolveUpstreamSpecs(cfg *config.Config, getenv func(string) string, logger
 				KeyFile:               ep.TLS.KeyFile,
 				ServerName:            ep.TLS.ServerName,
 				InsecureAllowPlainTCP: ep.InsecureAllowPlainTCP,
+				//nolint:staticcheck // SA1019: v2.1 keeps the deprecated setting functional until its v3.0.0 removal
 				InsecureSkipTLSVerify: ep.InsecureSkipTLSVerify,
 			}
 		}
@@ -54,15 +55,30 @@ func warnInsecureUpstreamSpecs(logger *slog.Logger, specs []upstream.EndpointSpe
 		return
 	}
 	for _, spec := range specs {
-		switch {
-		case spec.InsecureAllowPlainTCP:
+		if spec.InsecureAllowPlainTCP {
 			logger.Warn("upstream Docker endpoint uses plaintext TCP with no TLS; "+
 				"Docker API traffic (exec streams, secrets, container data) is unencrypted and unauthenticated on the wire",
 				"address", spec.Address, "source", source)
-		case spec.InsecureSkipTLSVerify:
-			logger.Warn("upstream Docker endpoint skips TLS certificate verification; "+
-				"the connection is encrypted but the daemon's identity is not checked (MITM-susceptible)",
-				"address", spec.Address, "source", source)
+		}
+		if spec.InsecureSkipTLSVerify {
+			deprecatedSetting := "upstream.endpoints[].insecure_skip_tls_verify"
+			replacement := "upstream.endpoints[].tls.ca_file"
+			message := "upstream Docker endpoint skips TLS certificate verification; " +
+				"upstream.endpoints[].insecure_skip_tls_verify is deprecated and will be removed in v3.0.0; " +
+				"configure upstream.endpoints[].tls.ca_file to verify the daemon"
+			if source == "DOCKER_HOST environment" {
+				deprecatedSetting = "DOCKER_CERT_PATH without DOCKER_TLS_VERIFY"
+				replacement = "DOCKER_TLS_VERIFY=1"
+				message = "upstream Docker endpoint skips TLS certificate verification because DOCKER_CERT_PATH is set without DOCKER_TLS_VERIFY; " +
+					"this Docker environment fallback is deprecated and will be removed in v3.0.0; set DOCKER_TLS_VERIFY=1 to verify the daemon"
+			}
+			logger.Warn(message,
+				"address", spec.Address,
+				"source", source,
+				"deprecated_setting", deprecatedSetting,
+				"replacement", replacement,
+				"removal_version", "v3.0.0",
+			)
 		}
 	}
 }

@@ -184,6 +184,25 @@ signed policy so the Service and probes can reach the pod.
   `method="OTHER"`; unknown path families appear as `route="unknown"`. Update
   dashboards that previously expected raw custom values.
 
+## From Sockguard v2.0 to v2.1
+
+`upstream.endpoints[].insecure_skip_tls_verify` is deprecated in v2.1 and will be removed in v3.0.0. It remains accepted in v2.1 and its wire behavior has not changed, so upgrading does not break an existing endpoint. Startup now logs the removal version and replacement metadata.
+
+Replace the flag with the CA that issued the daemon certificate:
+
+```diff
+ upstream:
+   endpoints:
+     - address: tcp://dockerd.internal:2376
+       tls:
++        ca_file: /certs/ca.pem
+         cert_file: /certs/cert.pem
+         key_file: /certs/key.pem
+-      insecure_skip_tls_verify: true
+```
+
+The Docker environment fallback follows the same schedule. If `DOCKER_CERT_PATH` is set without `DOCKER_TLS_VERIFY`, add `DOCKER_TLS_VERIFY=1`; sockguard then verifies the daemon against `ca.pem` from that directory. A server-auth-only deployment without client certificates can set `DOCKER_TLS_VERIFY=1` with no `DOCKER_CERT_PATH` and use the host's system roots.
+
 ## From Tecnativa/docker-socket-proxy
 
 Sockguard accepts the current Tecnativa environment-variable surface, including section vars, `ALLOW_RESTARTS`, `SOCKET_PATH`, and `LOG_LEVEL`. Replace the image:

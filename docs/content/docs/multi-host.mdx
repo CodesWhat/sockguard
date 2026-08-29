@@ -90,9 +90,9 @@ Correct use cases: a Swarm manager VIP with two manager IPs behind it, a keepali
 Incorrect use case: two independent Docker hosts running different containers. Use separate sockguard instances for that.
 </Callout>
 
-## Insecure opt-ins
+## Insecure and deprecated opt-ins
 
-Two flags loosen the TLS requirement. Both are explicit acknowledgments of the risk and should only appear in controlled environments.
+Two flags loosen the TLS requirement. Plaintext TCP remains an explicit risk acknowledgment. Skipping server verification is deprecated in v2.1 and scheduled for removal in v3.0.0.
 
 ### Plaintext TCP (no TLS)
 
@@ -105,7 +105,7 @@ upstream:
 
 `insecure_allow_plain_tcp: true` permits a `tcp://` endpoint with no TLS material at all. The Docker API is sent in plaintext — any host on the path can read or inject requests. Only use this on a private, trusted network with no external exposure. The flag mirrors the same acknowledgment on the listener side (`listen.insecure_allow_plain_tcp`).
 
-### Skip server certificate verification
+### Deprecated: skip server certificate verification
 
 ```yaml
 upstream:
@@ -117,7 +117,9 @@ upstream:
       insecure_skip_tls_verify: true   # endpoint-level, a sibling of `tls`
 ```
 
-`insecure_skip_tls_verify: true` skips verification of the daemon's server certificate. Traffic is still encrypted but the daemon's identity is not verified — a man-in-the-middle can present any certificate. Useful for self-signed homelab certs when you control the network and cannot rotate the cert. It is an endpoint-level field (a sibling of `tls`, `address`, and `insecure_allow_plain_tcp`), not a key inside the `tls` block. Prefer providing the correct `ca_file` instead.
+`insecure_skip_tls_verify: true` skips verification of the daemon's server certificate. Traffic is still encrypted but the daemon's identity is not verified, so a man-in-the-middle can present any certificate. It is an endpoint-level field (a sibling of `tls`, `address`, and `insecure_allow_plain_tcp`), not a key inside the `tls` block.
+
+The field remains accepted with unchanged wire behavior throughout v2.1, but it logs a startup deprecation warning and will be removed in v3.0.0. Replace it with the correct `tls.ca_file`, including for self-signed or private-CA daemon certificates.
 
 ## DOCKER_* environment drop-in
 
@@ -135,7 +137,7 @@ Sockguard follows the same semantics as the Docker CLI, so no YAML acknowledgmen
 
 - **`DOCKER_TLS_VERIFY` set + `DOCKER_CERT_PATH`** → verified mTLS using `ca.pem` / `cert.pem` / `key.pem` from the cert directory.
 - **`DOCKER_TLS_VERIFY` set + no `DOCKER_CERT_PATH`** → verified, server-auth-only TLS: the daemon's certificate is checked against the host's **system root CAs** and sockguard presents no client certificate. Use this when the daemon's cert chains to a public/enterprise CA already in the system trust store and the daemon doesn't require client auth.
-- **`DOCKER_TLS_VERIFY` unset + `DOCKER_CERT_PATH` set** → encrypted, but the daemon's server certificate is *not* verified (equivalent to `insecure_skip_tls_verify`), matching the CLI's behavior when verify is off but certs are present.
+- **`DOCKER_TLS_VERIFY` unset + `DOCKER_CERT_PATH` set** → encrypted, but the daemon's server certificate is *not* verified. This fallback remains compatible with the Docker CLI in v2.1, logs a source-specific deprecation warning, and will be removed in v3.0.0. Set `DOCKER_TLS_VERIFY=1` before upgrading.
 - **`DOCKER_TLS_VERIFY` unset + no `DOCKER_CERT_PATH`** → plaintext TCP (equivalent to `insecure_allow_plain_tcp`). The acknowledgment is implicit because your `docker -H` client already talks to that daemon in plaintext.
 
 This means an existing Docker CLI setup works with zero YAML changes — just point sockguard at the same env vars your client uses. To override any of these, set `upstream.endpoints` in YAML, which takes precedence over the environment.
@@ -173,7 +175,7 @@ upstream:
         key_file: /certs/key.pem
         server_name: ""                # SNI override; empty = derived from address host
       insecure_allow_plain_tcp: false  # permit tcp:// with no TLS (plaintext)
-      insecure_skip_tls_verify: false  # skip daemon server-cert verification
+      insecure_skip_tls_verify: false  # deprecated; removed in v3.0.0
     - address: tcp://dockerd-b:2376
       tls: { ca_file: /certs/ca.pem, cert_file: /certs/cert.pem, key_file: /certs/key.pem }
   failover:
