@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `sockguard_listener_up` is documented in the metric reference; it was published by the code but absent from the table.
 - The Podman guide no longer describes its Kubernetes-YAML scope boundary in terms of v1.6.
+- The roadmap records the Go module major-version path as a v2.1 track. `go.mod` has no `/v2` suffix, so the Go module proxy rejects every v2 tag and still resolves `@latest` to v1.7.5.
 
 ## [2.0.0] - 2026-08-28
 

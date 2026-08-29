@@ -26,11 +26,14 @@ say it has shipped.
 The general BuildKit gRPC mediation work shipped under
 [issue #185](https://github.com/CodesWhat/sockguard/issues/185). v2.1 extends
 that completed foundation into selective instruction-level mediation for the
-remaining frontend-less and third-party-frontend paths.
+remaining frontend-less and third-party-frontend paths. The second track is
+packaging rather than proxy behavior: the Go module path still declares a v1
+major version, which keeps the v2 tags out of the Go module proxy.
 
 | Track | Outcome required before release |
 |---|---|
 | BuildKit RUN-instruction coverage | Extend the shipped non-Dockerfile-frontend guard: Sockguard's bounded-depth LLB walk denies any `ExecOp`, and any op that fails to decode, in frontend-less Solves when `allow_run_instructions` is false. The remaining work is real per-instruction mediation of raw-LLB and third-party frontends, so RUN-equivalent ops can be inspected and selectively allowed instead of refused wholesale |
+| Go module major-version path | `go.mod` declares `github.com/codeswhat/sockguard` with no `/v2` suffix, so the module proxy rejects every v2 tag and resolves `@latest` to v1.7.5. Sockguard ships as a binary through Docker, Homebrew, deb and rpm, so no documented install path is broken, but `go install` and the Go Reference badge both still report the v1.x line. Adding the suffix touches 176 files and means regenerating the 11 vendored BuildKit descriptors, whose `go_package` byte length is recorded inside the serialized `FileDescriptorProto` and cannot be rewritten textually |
 
 ## Twelve-month direction
 
