@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **The swarm rotation gates now deny the same query values the daemon acts on.** `allowTokenRotation` and `allowManagerUnlockKeyRotation` default to false, but the gate parsed `?rotateWorkerToken=`, `?rotateManagerToken=` and `?rotateManagerUnlockKey=` with an allowlist of canonical truthy spellings, while dockerd parses them with `httputils.BoolValue`, which is false only for `""`, `0`, `no`, `false` and `none` and true for everything else. A client sending `?rotateManagerToken=2` therefore read as false at the proxy and true at the daemon, rotating the swarm join secret through a control the operator had left disabled. The gate now mirrors the daemon's falsy set, matching what `proxy.dockerBoolValue` and the response filter already do.
+
 ### Added
 
 - **The marketing site and docs site record acquisition attribution.** `save_campaign_params` and `save_referrer` are enabled, and the `before_send` allowlist forwards the five `utm_*` values plus `$referring_domain` on `$pageview` and `$pageleave`. The referrer is transmitted at hostname granularity only: `$referrer` is never copied onto the outgoing envelope, because a full referrer URL can carry a path from a private page. A `$referring_domain` that is not a bare hostname is dropped rather than trimmed, and the `gclid`/`fbclid`/`msclkid` click identifiers that `save_campaign_params` collects are excluded. Neither option uses browser storage, so the cookieless posture is unchanged and no consent banner is required.
