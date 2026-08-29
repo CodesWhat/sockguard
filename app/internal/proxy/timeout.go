@@ -19,10 +19,11 @@ import (
 // until the client gives up.
 //
 // A non-positive timeout disables the wrapper entirely — next is returned
-// unchanged. Long-lived endpoints (event streams, follow/stream reads, image
-// pull/build/push, plugin create/pull/push/upgrade, container export/get, container
-// archive i.e. docker cp, websocket attach, and the blocking container wait)
-// are exempt, because a deadline would sever a legitimately long response.
+// unchanged. Long-lived endpoints (event streams, follow/stream reads
+// including service and task logs, image pull/create/export/build/push,
+// plugin create/pull/push/upgrade, container export/get, container archive
+// i.e. docker cp, websocket attach, and the blocking container wait) are
+// exempt, because a deadline would sever a legitimately long response.
 // Hijacked endpoints
 // (attach, exec start) never reach this handler: HijackHandler short-circuits
 // them earlier in the chain.
@@ -60,6 +61,14 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		case matchContainerAction(path, "logs"):
 			return dockerBoolValue(r, "follow")
+		case matchResourceAction(path, "services", "logs"):
+			// GET /services/{id}/logs?follow=1 tails a swarm service's
+			// aggregated log stream the same way container logs do.
+			return dockerBoolValue(r, "follow")
+		case matchResourceAction(path, "tasks", "logs"):
+			// GET /tasks/{id}/logs?follow=1 tails a single swarm task's log
+			// stream.
+			return dockerBoolValue(r, "follow")
 		case matchContainerAction(path, "stats"):
 			// Stats streams by default; only an explicitly false stream makes it
 			// one-shot — mirror the daemon's BoolValueOrDefault(stream, true).
@@ -73,6 +82,11 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		case strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/get"):
 			return true
+		case path == "/images/export":
+			// GET /images/export streams a tarball of multiple images (Podman's
+			// libpod multi-image export) like the single-image /images/{name}/get
+			// case above.
+			return true
 		case strings.HasPrefix(path, "/containers/") && strings.HasSuffix(path, "/attach/ws"):
 			return true
 		}
@@ -82,7 +96,7 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 		return matchContainerAction(path, "archive")
 	case http.MethodPost:
 		switch {
-		case path == "/build" || path == "/images/create" || path == "/images/load" || path == "/plugins/create":
+		case path == "/build" || path == "/images/create" || path == "/images/pull" || path == "/images/load" || path == "/plugins/create":
 			return true
 		case strings.HasPrefix(path, "/images/") && strings.HasSuffix(path, "/push"):
 			return true
@@ -103,7 +117,14 @@ func isLongLivedUpstreamRequest(w http.ResponseWriter, r *http.Request) bool {
 
 // matchContainerAction reports whether path is exactly /containers/{id}/{action}.
 func matchContainerAction(path, action string) bool {
-	rest, ok := strings.CutPrefix(path, "/containers/")
+	return matchResourceAction(path, "containers", action)
+}
+
+// matchResourceAction reports whether path is exactly /{resource}/{id}/{action},
+// e.g. matchResourceAction(path, "services", "logs") for
+// /services/{id}/logs.
+func matchResourceAction(path, resource, action string) bool {
+	rest, ok := strings.CutPrefix(path, "/"+resource+"/")
 	if !ok {
 		return false
 	}
