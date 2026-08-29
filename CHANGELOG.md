@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The admin API reference describes `bundle_source` as the basename of `policy_bundle.signature_path` rather than the configured path. The code strips the directory on purpose so the response cannot leak the host's filesystem layout, and the old wording invited operators to expect a full path.
 - The migration guide's link into the configuration reference points at `#request-body-policy-reference`, which exists. It pointed at `#request-body-inspection`, which does not, so the anchor silently dropped readers at the top of the page.
 
+### Dependencies
+
+- `github.com/google/go-containerregistry` moves from v0.21.8 to v0.21.9. It is reached only from the opt-in `image_trust` registry-fetch path, never the core proxy path, and `govulncheck` reports zero reachable vulnerabilities either side of the bump.
+
 ## [2.0.0] - 2026-08-28
 
 v2.0.0 promotes `2.0.0-rc.4` after the exact candidate passed the four-hour
