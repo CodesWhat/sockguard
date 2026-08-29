@@ -851,6 +851,114 @@ would-have-been-blocked volume side by side:
 sum by (mode) (rate(sockguard_http_denied_requests_total[5m]))
 ```
 
+## Policy Discovery Workflow
+
+`mode: audit` has a second use beyond staging a tighter rule on an existing
+profile: bootstrapping a policy for a client you don't already have rules
+for. Point a deny-everything profile at the real client, run its normal
+traffic through it, and every request it would have made comes back as a
+`would_deny` audit event carrying the exact method and normalized path — the
+answer to "what does this thing actually call" without reading its source or
+guessing from vendor docs.
+
+**1. Prerequisites.** The audit log is off by default (`log.audit.enabled`
+defaults to `false` — see [Logging And Audit](#logging-and-audit)), and this
+workflow reads nothing else, so it has to be on. The `discovery.yaml` preset
+in `app/configs/` turns it on for you: a `discovery` profile in `mode:
+audit` with a single deny-all rule, applied to every client via
+`clients.default_profile`, with `log.audit.enabled: true` and the audit
+stream on `stdout` (separate from the operational log, which stays on its
+`stderr` default) so it's trivial to capture on its own.
+
+**2. Start with the discovery preset.**
+
+```bash
+sockguard serve --config app/configs/discovery.yaml
+```
+
+Point the client at this sockguard instance exactly as it would run in
+production — same socket path, same TLS/unix-peer setup — just with the
+discovery preset in place of its real policy.
+
+**3. Exercise the client normally.** Let it run through its actual startup
+and steady-state behavior: list, inspect, create, whatever it does on a
+normal day. Nothing is blocked — `mode: audit` forwards every request to the
+daemon regardless of the deny rule, so this is safe to run against a live
+client, not just a sandbox. The only difference from running with no proxy
+at all is that every would-be-denied request is now logged.
+
+**4. Harvest the events.** Every audit event the client's traffic produced
+carries `decision: "would_deny"`, plus the request's `method` and
+`normalized_path`. A denied `POST /v1.51/containers/create` looks like:
+
+```json
+{"event_type":"http_request","timestamp":"2026-08-29T14:32:07.118453Z","request_id":"a1b2c3d4e5f67890","client_request_id":"","method":"POST","raw_path":"/v1.51/containers/create","normalized_path":"/containers/create","decision":"would_deny","reason_code":"matched_deny_rule","reason":"discovery preset — logged only, not enforced","matched_rule":0,"selected_profile":"discovery","rollout_mode":"audit","status":201,"actor_remote_addr":"172.20.0.4:51322","actor_source_ip":"172.20.0.4","transport_listener":"tcp","transport_scheme":"http","transport_protocol":"HTTP/1.1","listener_name":"default","ownership":{"enabled":false,"owner":"","label_key":""}}
+```
+
+`status: 201` is the daemon's real response — the request was actually
+forwarded and actually succeeded; `would_deny` only describes what the
+*profile* would have done. Pull the distinct method/path pairs out of the
+stream with `jq`:
+
+```bash
+docker logs sockguard 2>/dev/null \
+  | jq -r 'select(.decision == "would_deny") | "\(.method) \(.normalized_path)"' \
+  | sort -u
+```
+
+A morning of traffic from, say, a Traefik-style consumer might come back as:
+
+```text
+GET /_ping
+GET /containers/4f8a1c2e9b7d/json
+GET /containers/json
+GET /events
+GET /version
+POST /containers/4f8a1c2e9b7d/start
+```
+
+**5. Turn that into rules.** `normalized_path` carries the real resource ID
+from the traffic that happened to run, not a wildcard — generalize per-
+resource segments (`4f8a1c2e9b7d`) to `*` by hand before writing the rule,
+the same way every other preset in `app/configs/` does. The harvested output
+above becomes:
+
+```yaml filename="sockguard.yaml"
+clients:
+  default_profile: traefik-live
+  profiles:
+    - name: traefik-live
+      rules:
+        - match: { method: GET, path: "/_ping" }
+          action: allow
+        - match: { method: GET, path: "/version" }
+          action: allow
+        - match: { method: GET, path: "/events" }
+          action: allow
+        - match: { method: GET, path: "/containers/json" }
+          action: allow
+        - match: { method: GET, path: "/containers/*/json" }
+          action: allow
+        - match: { method: POST, path: "/containers/*/start" }
+          action: allow
+        - match: { method: "*", path: "/**" }
+          action: deny
+```
+
+Note the new profile has no `mode` field — that's step 6, not this one.
+Leaving `discovery.yaml`'s own deny-all rule in `mode: audit` while you
+edit is fine; nothing is enforced either way until you switch.
+
+**6. Switch off shadow mode and verify.** Replace the discovery config with
+the rules you just wrote — `mode: audit` omitted (or set to `enforce`,
+which is the same thing) so denials are real again — restart sockguard, and
+run the client through the same paths one more time. Confirm two things:
+the client still works exactly as it did in step 3, with no new errors; and
+the audit log shows no `decision: "deny"` events for it (`would_deny` itself
+can't appear anymore — that decision only exists under `warn`/`audit`). If
+you see a real `deny`, you missed a rule; add it and repeat this step before
+calling the profile done.
+
 ## Hot Reload
 
 Sockguard can reload policy at runtime without dropping connections.

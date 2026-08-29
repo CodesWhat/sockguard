@@ -39,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The admin API reference states that a `200` from `POST /admin/validate` does not promise the TLS material on disk is loadable, because that endpoint deliberately never opens it.
 - The roadmap records Podman-native `/libpod/system/df` isolation as a v2.1 track. The Docker-compat form is filtered; the native route returns a third response shape and is not.
 - The migration guide's link into the configuration reference points at `#request-body-policy-reference`, which exists. It pointed at `#request-body-inspection`, which does not, so the anchor silently dropped readers at the top of the page.
+- A new "Policy Discovery Workflow" section in the configuration reference walks `mode: audit` end to end as a policy-bootstrapping tool, not just a staged-rollout one: point the new `discovery.yaml` preset (deny-everything, audit mode, `clients.default_profile`, audit log on) at a real client, harvest `would_deny` events for their `method`/`normalized_path`, and turn the output into real rules. The feature already shipped; only the workflow and the starting-point config were missing.
 
 ### Tests
 

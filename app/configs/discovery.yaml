@@ -1,0 +1,56 @@
+# Sockguard — Discovery Preset
+#
+# A deny-everything policy running in `mode: audit`, for the "I don't know
+# what this client actually needs" workflow: point sockguard at a real
+# client with this preset, run normal traffic through it, harvest the
+# would_deny audit events, and write the real allowlist from what actually
+# came back. See "Policy Discovery Workflow" in
+# docs/content/docs/configuration.mdx for the full loop, and "Rollout
+# Modes" for how `mode: audit` works.
+#
+# THIS IS A DISCOVERY AID, NOT A PRODUCTION POLICY — `mode: audit` never
+# blocks a request, it only logs what it would have blocked, so leaving
+# this preset running grants the client full, unfiltered access to the
+# Docker socket.
+
+upstream:
+  socket: /var/run/docker.sock
+
+log:
+  level: info
+  format: json
+  access_log: true
+  # Discovery depends on the audit stream: would_deny verdicts (and the
+  # normalized_path/method pairs the workflow harvests) only exist there,
+  # not in the access log. See "Logging And Audit" in configuration.mdx.
+  audit:
+    enabled: true
+    format: json
+    output: stdout
+
+health:
+  enabled: true
+  path: /health
+
+# default_profile applies the discovery profile to every client on every
+# listener with no client-cert/source-IP/unix-peer selector required — the
+# point of this preset is "log what everything asks for," not per-client
+# policy.
+clients:
+  default_profile: discovery
+  profiles:
+    - name: discovery
+      mode: audit
+      rules:
+        - match: { method: "*", path: "/**" }
+          action: deny
+          reason: "discovery preset — logged only, not enforced"
+
+# Top-level default policy, used only if a listener's allowed_profiles
+# excludes "discovery" and default_profile does not apply there. Kept
+# deny-all so this preset can never fall back to an unintentionally
+# permissive policy.
+rules:
+  - match: { method: "*", path: "/**" }
+    action: deny
+    reason: "not allowed by discovery preset"
