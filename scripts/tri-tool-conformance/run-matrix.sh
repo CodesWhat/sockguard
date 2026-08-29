@@ -584,7 +584,7 @@ write_artifact() {
   echo "Wrote ${CONFORMANCE_ARTIFACT}"
 }
 
-# shellcheck disable=SC2329 # invoked indirectly by the EXIT-trap finalizer
+# shellcheck disable=SC2317,SC2329 # invoked indirectly by the EXIT-trap finalizer
 emit_setup_failure_artifacts() {
   local exit_status="$1"
   local detail="${SETUP_FAILURE_DETAIL:-row exited before the conformance artifact was written}"

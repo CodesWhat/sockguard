@@ -237,6 +237,15 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
     }
   });
 
+  it("keeps the EXIT-trap artifact writer compatible with CI Shellcheck", () => {
+    const script = readFileSync(scriptPath, "utf8");
+
+    assert.match(
+      script,
+      /# shellcheck disable=SC2317,SC2329 # invoked indirectly by the EXIT-trap finalizer\nemit_setup_failure_artifacts\(\)/,
+    );
+  });
+
   it("accepts only an exact captured X-Portwing-Reason header", () => {
     const script = readFileSync(scriptPath, "utf8");
     const reasonCount = extractShellFunction(
