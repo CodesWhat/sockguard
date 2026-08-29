@@ -208,6 +208,40 @@ func TestPodmanCompatEventsInjectsSingleSelector(t *testing.T) {
 	}
 }
 
+// TestPodmanCompatEventsTreatsRepeatedEffectiveSelectorAsOne covers a profile
+// that repeats a selector it inherits from the default policy. The merged
+// policy is still one distinct constraint, so Podman's single label-filter
+// value can enforce it and the event stream must not be refused as though two
+// independent selectors were present.
+func TestPodmanCompatEventsTreatsRepeatedEffectiveSelectorAsOne(t *testing.T) {
+	t.Parallel()
+	events := []eventForTest{
+		{ID: "visible", Labels: map[string]string{"com.sockguard.visible": "true"}},
+		{ID: "hidden", Labels: map[string]string{"com.sockguard.visible": "false"}},
+	}
+	handler := middlewareWithDeps(podmanEventsTestLogger(), Options{
+		VisibleResourceLabels: []string{"com.sockguard.visible=true"},
+		Profiles: map[string]Policy{
+			"watchtower": {VisibleResourceLabels: []string{" com.sockguard.visible = true "}},
+		},
+		ResolveProfile: func(*http.Request) (string, bool) { return "watchtower", true },
+		UpstreamFlavor: upstreamflavor.Podman,
+	}, visibilityDeps{})(podmanEventsUpstream(t, events, nil))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1.53/events", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"Id":"visible"`) {
+		t.Fatalf("body = %s, want the visible event present", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"Id":"hidden"`) {
+		t.Fatalf("body = %s, want the hidden event absent", rec.Body.String())
+	}
+}
+
 // TestPodmanCompatEventsReplacesClientSuppliedLabelFilter covers the bypass
 // that makes replacement necessary rather than merely tidy. A client-supplied
 // `label` value sits under the same disjunctive key as the injected selector,

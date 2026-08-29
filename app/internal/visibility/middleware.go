@@ -256,7 +256,7 @@ func compileVisibilityPolicies(logger *slog.Logger, opts Options) (compiledPolic
 			return compiledPolicy{}, nil, false
 		}
 		mergedPolicy := compiledPolicy{
-			selectors:     append(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
+			selectors:     appendUniqueSelectors(slices.Clone(defaultPolicy.selectors), compiled.selectors...),
 			namePatterns:  append(slices.Clone(defaultPolicy.namePatterns), compiled.namePatterns...),
 			imagePatterns: append(slices.Clone(defaultPolicy.imagePatterns), compiled.imagePatterns...),
 		}
@@ -706,7 +706,7 @@ func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string) (co
 		if err != nil {
 			return compiled, err
 		}
-		compiled.selectors = append(compiled.selectors, selector)
+		compiled.selectors = appendUniqueSelectors(compiled.selectors, selector)
 	}
 	var err error
 	compiled.namePatterns, err = compilePatterns(nameGlobs)
@@ -718,6 +718,15 @@ func compilePolicy(labels []string, nameGlobs []string, imageGlobs []string) (co
 		return compiledPolicy{}, fmt.Errorf("image_patterns: %w", err)
 	}
 	return compiled, nil
+}
+
+func appendUniqueSelectors(dst []compiledSelector, selectors ...compiledSelector) []compiledSelector {
+	for _, selector := range selectors {
+		if !slices.Contains(dst, selector) {
+			dst = append(dst, selector)
+		}
+	}
+	return dst
 }
 
 func parseSelector(raw string) (compiledSelector, error) {
