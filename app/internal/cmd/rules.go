@@ -80,6 +80,10 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// acknowledgment — it is listed here so an operator auditing the
 	// body-sensitive write surface sees it alongside the rest of it.
 	{method: http.MethodPost, path: "/libpod/images/pull"},
+	// Native image load and import have no request-body inspector, so allowing
+	// either requires the blind-write acknowledgment.
+	{method: http.MethodPost, path: "/libpod/images/load"},
+	{method: http.MethodPost, path: "/libpod/images/import"},
 	// play/kube, its "kube/play" alias (Podman registers both spellings on
 	// the identical libpod.PlayKube/KubePlay handlers), kube/apply, and
 	// manifest-list writes have NO request-body inspector at all (#148
