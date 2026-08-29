@@ -74,9 +74,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # No Docker needed for this leg -- it only proves the route
-      # normalizer and known-routes.json diff logic are correct before
-      # trusting them in the live matrix rows below. Also covered by
+      # No Docker needed for this leg. It proves the route normalizer and
+      # known-routes.json diff logic, plus the fail-closed setup-artifact
+      # path, before trusting them in the live matrix rows below. Also covered by
       # `npm test` (scripts/tri-tool-conformance-run-matrix.test.mjs) on
       # every push; re-run here too so a red matrix row and a broken
       # tripwire are never conflated in this workflow's own results.
@@ -153,7 +153,7 @@ jobs:
             conformance-${{ matrix.row }}.json
             conformance-${{ matrix.row }}-logs/
           retention-days: 90
-          if-no-files-found: warn
+          if-no-files-found: error
 
   summary:
     name: "Summary"
@@ -203,7 +203,7 @@ jobs:
             exit 1
           fi
           if [ "$artifact_count" -ne "$EXPECTED_ROW_COUNT" ]; then
-            echo "::error::found ${artifact_count} conformance-*.json artifact(s), expected ${EXPECTED_ROW_COUNT} (one per matrix row) -- at least one row died before write_artifact ran and its failure is otherwise invisible to this gate"
+            echo "::error::found ${artifact_count} conformance-*.json artifact(s), expected ${EXPECTED_ROW_COUNT} (one per matrix row) -- a row violated the harness's fail-closed artifact contract"
             exit 1
           fi
 
@@ -230,7 +230,7 @@ jobs:
           done
 
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Per-row assertion detail is in each uploaded \`conformance-<row>.json\`; compose and identity-controller logs are stored beside it." >> "$GITHUB_STEP_SUMMARY"
+          echo "Per-row assertion detail is in each uploaded \`conformance-<row>.json\`; compose, identity-agent/controller, and response-header-observer logs are stored beside it." >> "$GITHUB_STEP_SUMMARY"
 
           fail_count="$(jq -s '[.[] | select(.overall=="FAIL")] | length' artifacts/*.json)"
           if [ "$fail_count" -gt 0 ]; then

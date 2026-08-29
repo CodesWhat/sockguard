@@ -10,7 +10,7 @@
 // verify-published-release.sh's --dry-run does.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
@@ -21,6 +21,7 @@ const repoRoot = resolve(scriptDir, "..");
 const scriptPath = resolve(scriptDir, "tri-tool-conformance", "run-matrix.sh");
 const workflowPath = resolve(repoRoot, ".github", "workflows", "quality-tri-tool-conformance.yml");
 const clockPreloadPath = resolve(scriptDir, "tri-tool-conformance", "controller-clock-offset.cjs");
+const headerProxyPath = resolve(scriptDir, "tri-tool-conformance", "controller-header-proxy.cjs");
 
 function runSelfTest() {
   return spawnSync("bash", [scriptPath, "--self-test"], {
@@ -43,6 +44,10 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
 
     assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
     assert.match(result.stdout, /== self-test OK ==/);
+    assert.match(
+      result.stdout,
+      /PASS: setup failure preserves its exit status and writes JSON plus diagnostics/,
+    );
     assert.match(result.stdout, /PASS: known-routes\.json parses as valid JSON/);
     assert.match(
       result.stdout,
@@ -73,6 +78,9 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
     assert.match(script, /assert_identity_acceptance/);
     assert.match(script, /X-Portwing-Reason.*timestamp-skew|timestamp-skew.*X-Portwing-Reason/s);
     assert.match(script, /X-Portwing-Reason.*unknown-key|unknown-key.*X-Portwing-Reason/s);
+    assert.match(script, /DD_AGENT_IDENTITY_HOST="\$IDENTITY_HEADER_PROXY"/);
+    assert.match(script, /wait_for_identity_header_reason unknown-key/);
+    assert.match(script, /wait_for_identity_header_reason timestamp-skew/);
   });
 
   it("does not expand a dependent local before Bash assigns it", () => {
@@ -169,6 +177,146 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
     } finally {
       rmSync(fixtureDir, { recursive: true, force: true });
     }
+  });
+
+  it("writes a failed row artifact and diagnostics when Docker is unavailable", () => {
+    const fixtureDir = mkdtempSync(join(tmpdir(), "tri-tool-setup-failure-"));
+    const binDir = join(fixtureDir, "bin");
+    const dockerPath = join(binDir, "docker");
+    const outputDir = join(fixtureDir, "output");
+    const missingSocket = join(fixtureDir, "missing-docker.sock");
+    mkdirSync(binDir, { recursive: true });
+    mkdirSync(outputDir, { recursive: true });
+    writeFileSync(dockerPath, '#!/bin/sh\necho "docker unavailable" >&2\nexit 69\n');
+    chmodSync(dockerPath, 0o755);
+
+    try {
+      const result = spawnSync(
+        "bash",
+        [
+          scriptPath,
+          "--row",
+          "current-edge",
+          "--sockguard-image",
+          "codeswhat/sockguard:2.0.0",
+          "--portwing-version",
+          "0.9.11",
+          "--drydock-version",
+          "1.6.0",
+        ],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${binDir}:${process.env.PATH}`,
+            TT_CONFORMANCE_OUTPUT_DIR: outputDir,
+            TT_DOCKER_SOCKET_PATH: missingSocket,
+          },
+        },
+      );
+
+      assert.equal(result.status, 69, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+      const report = JSON.parse(
+        readFileSync(join(outputDir, "conformance-current-edge.json"), "utf8"),
+      );
+      assert.equal(report.overall, "FAIL");
+      assert.deepEqual(report.assertions[0], {
+        name: "setup",
+        status: "FAIL",
+        detail: `Docker socket is unavailable at ${missingSocket}`,
+      });
+      const diagnostics = readFileSync(
+        join(outputDir, "conformance-current-edge-logs", "setup-failure.log"),
+        "utf8",
+      );
+      assert.match(diagnostics, /exit_status=69/);
+      assert.match(diagnostics, /Docker socket is unavailable/);
+    } finally {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts only an exact captured X-Portwing-Reason header", () => {
+    const script = readFileSync(scriptPath, "utf8");
+    const reasonCount = extractShellFunction(
+      script,
+      "identity_header_reason_count",
+      "wait_for_identity_header_reason",
+    );
+    const waitForReason = extractShellFunction(
+      script,
+      "wait_for_identity_header_reason",
+      "assert_identity_acceptance",
+    );
+    const cases = [
+      {
+        name: "exact",
+        logs: '{"event":"portwing-response","status":401,"reason":"unknown-key"}',
+        expectedStatus: 0,
+      },
+      {
+        name: "absent",
+        logs: '{"event":"portwing-response","status":401,"reason":null}',
+        expectedStatus: 1,
+      },
+      {
+        name: "wrong",
+        logs: '{"event":"portwing-response","status":401,"reason":"invalid-signature"}',
+        expectedStatus: 1,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const result = spawnSync(
+        "bash",
+        [
+          "-uc",
+          [
+            'IDENTITY_HEADER_PROXY="identity-header-proxy"',
+            `docker() { printf '%s\\n' '${testCase.logs}'; }`,
+            "sleep() { :; }",
+            reasonCount,
+            waitForReason,
+            'wait_for_identity_header_reason "unknown-key" 1 1',
+          ].join("\n"),
+        ],
+        { cwd: repoRoot, encoding: "utf8" },
+      );
+      assert.equal(
+        result.status,
+        testCase.expectedStatus,
+        `${testCase.name}: stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      );
+    }
+  });
+
+  it("parses the response header case-insensitively without inventing a reason", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "-e",
+        [
+          "const { parseResponseHead } = require(process.argv[1]);",
+          "const exact = parseResponseHead('HTTP/1.1 401 Unauthorized\\r\\nx-Portwing-Reason: unknown-key\\r\\nContent-Length: 0');",
+          "const absent = parseResponseHead('HTTP/1.1 401 Unauthorized\\r\\nContent-Length: 0');",
+          "const wrong = parseResponseHead('HTTP/1.1 401 Unauthorized\\r\\nX-Portwing-Reason: replay\\r\\nContent-Length: 0');",
+          "process.stdout.write(JSON.stringify({ exact, absent, wrong }));",
+        ].join(" "),
+        headerProxyPath,
+      ],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+    const parsed = JSON.parse(result.stdout);
+    assert.deepEqual(parsed.exact, {
+      event: "portwing-response",
+      status: 401,
+      reason: "unknown-key",
+    });
+    assert.equal(parsed.absent.reason, null);
+    assert.equal(parsed.wrong.reason, "replay");
   });
 
   it("makes the clock control writable before restoring it", () => {

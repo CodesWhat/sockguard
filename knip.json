@@ -3,7 +3,10 @@
   "workspaces": {
     ".": {
       "entry": ["scripts/*.mjs"],
-      "ignore": ["scripts/tri-tool-conformance/controller-clock-offset.cjs"],
+      "ignore": [
+        "scripts/tri-tool-conformance/controller-clock-offset.cjs",
+        "scripts/tri-tool-conformance/controller-header-proxy.cjs"
+      ],
       "ignoreBinaries": ["go", "helm"]
     },
     "docs": {

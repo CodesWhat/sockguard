@@ -63,9 +63,9 @@ actually see, same rationale as `quality-integration.yml`).
 
 Each row is fully independent: fresh named volumes and fresh secrets every
 run (`docker compose down -v` guard plus a unique project name), a fresh
-`conformance-<row>.json` artifact written unconditionally at the end — pass
-or fail — and full teardown (including any throwaway sentinel containers and
-negative-auth-probe containers) via an `EXIT` trap.
+`conformance-<row>.json` artifact armed before setup and written on every exit
+after row selection, pass or fail, plus full teardown (including any throwaway
+sentinel containers and negative-auth-probe containers) via an `EXIT` trap.
 
 ## Assertions (in order)
 
@@ -89,10 +89,14 @@ negative-auth-probe containers) via an `EXIT` trap.
    key on a second reload, and rejects that controller with
    `X-Portwing-Reason: unknown-key` while the replacement stays healthy. A
    final published controller runs with a test-only `Date.now()` offset, is
-   rejected with `timestamp-skew`, then recovers in the same process after the
-   offset returns to zero. The other rows record explicit skips because this
-   five-operation gate needs to run once against the current tagged pair, not
-   once per transport or compatibility floor.
+   rejected with `X-Portwing-Reason: timestamp-skew`, then recovers in the same
+   process after the offset returns to zero. A transparent TCP observer running
+   inside the exact published Drydock image forwards controller traffic
+   byte-for-byte and records the real HTTP response status and reason header;
+   Portwing's JSON denial logs remain a second required signal. The other rows
+   record explicit skips because this five-operation gate needs to run once
+   against the current tagged pair, not once per transport or compatibility
+   floor.
 4. **Inventory & inspect** — passive: polls sockguard's own access log for
    Portwing's organic `GET /containers/json` + `GET /containers/*/json`
    polling traffic.
@@ -250,10 +254,14 @@ after `compose up` in `assert_pristine_boot` — from the images the row
 actually ran, not a re-pull at the end that could catch a tag having moved
 mid-run) for all three tools, Docker Engine version + API
 version (via `GET /version` through the proxy), the sockguard preset in use,
-the portwing mode, identity key ids and negative-rejection counts when the
-identity lane runs, every observed route shape, and per-assertion pass/fail/skip
-with a detail string. The logs directory preserves the compose stack and each
-identity agent/controller log. The workflow's `summary` job aggregates all
+the portwing mode, identity key ids, Portwing denial-log counts, and exact
+response-header observation counts when the identity lane runs, every observed
+route shape, and per-assertion pass/fail/skip with a detail string. The logs
+directory preserves the compose stack, each identity agent/controller log, and
+the response-header observer log. A valid row arms this output before image
+resolution or Docker setup, so a setup failure preserves its original exit
+status while still writing a failed JSON verdict and diagnostics. Missing
+artifacts fail their matrix upload. The workflow's `summary` job aggregates all
 three rows into `$GITHUB_STEP_SUMMARY`.
 
 ## Live behavior notes and resolved gaps
@@ -267,8 +275,12 @@ failure modes those runs exposed:
   own Standard-mode client performs every authenticated request. The clock
   fault is injected into that same published Node process by overriding only
   `Date.now()`, the clock its signer reads; changing the mounted offset back to
-  zero proves recovery without a restart. Exact Portwing JSON reason fields
-  provide the `unknown-key` and `timestamp-skew` negative controls.
+  zero proves recovery without a restart. A raw TCP observer running from the
+  exact Drydock image forwards those signed requests unchanged and captures the
+  actual `X-Portwing-Reason` response header. Both that exact header and
+  Portwing's matching JSON reason log are required for the `unknown-key` and
+  `timestamp-skew` negative controls. The observer mounts no controller private
+  material.
 
 - **Assertion 9's trigger-invocation HTTP contract** — RESOLVED across the
   2026-08-08/09 live runs (#211) and a local repro against the published
