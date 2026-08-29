@@ -38,14 +38,17 @@ type reloadCoordinator struct {
 	chainTeardown func()
 	activeCfg     *config.Config
 
-	// rateLimitActive tracks whether the CURRENT chain includes an active
-	// rate-limit middleware (built fresh by buildRateLimitMiddleware on
-	// every chain build). A reload always builds a brand-new sampler and
-	// Limiter set, discarding whatever quota/concurrency state the old
-	// ones held — this flag is what reload() checks to decide whether
-	// that discard actually threw anything away, so it can tell the
-	// operator instead of resetting silently.
-	rateLimitActive bool
+	// limiterStateActive tracks whether the CURRENT chain owns counters a
+	// swap would throw away: a token bucket (limits.rate), a per-profile
+	// inflight tracker (limits.concurrency), or the global inflight
+	// tracker (clients.global_concurrency). It is deliberately narrower
+	// than "the rate-limit middleware is installed" — a profile carrying
+	// only limits.priority installs the middleware but compiles no bucket
+	// and no tracker, so a reload discards nothing and must stay quiet.
+	// reload() checks this flag to decide whether the discard actually
+	// threw anything away, so it can tell the operator instead of
+	// resetting silently.
+	limiterStateActive bool
 
 	// rootCtx is the cobra command context; bundle re-verification on
 	// reload must derive its timeout from this so SIGTERM cancels an
@@ -82,18 +85,18 @@ type reloadCoordinator struct {
 // reload-time state — the running config, the swappable handler, every
 // per-process singleton — and grouping them here keeps call sites compact.
 type reloadCoordinatorParams struct {
-	RootCtx                context.Context
-	Cfg                    *config.Config
-	CfgFile                string
-	Swappable              *reload.SwappableHandler
-	InitialTeardown        func()
-	InitialRateLimitActive bool
-	Logger                 *slog.Logger
-	AuditLogger            *logging.AuditLogger
-	Deps                   *serveDeps
-	Runtime                *serveRuntime
-	Versioner              *admin.PolicyVersioner
-	BundleVerifier         policybundle.Verifier
+	RootCtx                   context.Context
+	Cfg                       *config.Config
+	CfgFile                   string
+	Swappable                 *reload.SwappableHandler
+	InitialTeardown           func()
+	InitialLimiterStateActive bool
+	Logger                    *slog.Logger
+	AuditLogger               *logging.AuditLogger
+	Deps                      *serveDeps
+	Runtime                   *serveRuntime
+	Versioner                 *admin.PolicyVersioner
+	BundleVerifier            policybundle.Verifier
 }
 
 // newReloadCoordinator returns a coordinator wired up with the initial
@@ -104,18 +107,18 @@ func newReloadCoordinator(p reloadCoordinatorParams) *reloadCoordinator {
 		p.InitialTeardown = func() {}
 	}
 	coordinator := &reloadCoordinator{
-		chainTeardown:   p.InitialTeardown,
-		activeCfg:       p.Cfg,
-		rateLimitActive: p.InitialRateLimitActive,
-		rootCtx:         p.RootCtx,
-		swappable:       p.Swappable,
-		cfgFile:         p.CfgFile,
-		logger:          p.Logger,
-		auditLogger:     p.AuditLogger,
-		deps:            p.Deps,
-		runtime:         p.Runtime,
-		versioner:       p.Versioner,
-		bundleVerifier:  p.BundleVerifier,
+		chainTeardown:      p.InitialTeardown,
+		activeCfg:          p.Cfg,
+		limiterStateActive: p.InitialLimiterStateActive,
+		rootCtx:            p.RootCtx,
+		swappable:          p.Swappable,
+		cfgFile:            p.CfgFile,
+		logger:             p.Logger,
+		auditLogger:        p.AuditLogger,
+		deps:               p.Deps,
+		runtime:            p.Runtime,
+		versioner:          p.Versioner,
+		bundleVerifier:     p.BundleVerifier,
 	}
 	if p.BundleVerifier != nil && p.Cfg != nil {
 		coordinator.bundleTrust = p.Cfg.PolicyBundle
@@ -231,7 +234,7 @@ func (c *reloadCoordinator) reload() {
 		return
 	}
 
-	newHandler, newTeardown, newRateLimitActive := buildServeHandlerChainWithRuntime(serveHandlerBuild{
+	newHandler, newTeardown, newLimiterStateActive := buildServeHandlerChainWithRuntime(serveHandlerBuild{
 		Cfg:         newCfg,
 		Logger:      c.logger,
 		AuditLogger: c.auditLogger,
@@ -245,8 +248,10 @@ func (c *reloadCoordinator) reload() {
 	// set on every call — there is no carry-over of consumed quota or
 	// in-flight concurrency counts across a reload (see its doc comment).
 	// If the chain being replaced had one of those, its state is about to
-	// be thrown away; say so instead of resetting silently.
-	if c.rateLimitActive {
+	// be thrown away; say so instead of resetting silently. A chain whose
+	// only limits config is limits.priority owns no bucket and no tracker,
+	// so it discards nothing and gets no warning.
+	if c.limiterStateActive {
 		c.logger.Warn("config reload discarded rate limit and concurrency counters",
 			"path", c.cfgFile,
 			"note", "quota consumption and in-flight concurrency counts do not carry across a reload; every client starts with fresh limits",
@@ -265,7 +270,7 @@ func (c *reloadCoordinator) reload() {
 
 	oldTeardown := c.chainTeardown
 	c.chainTeardown = newTeardown
-	c.rateLimitActive = newRateLimitActive
+	c.limiterStateActive = newLimiterStateActive
 	c.activeCfg = newCfg
 
 	// Swap the handler pointer BEFORE tearing down the old chain's

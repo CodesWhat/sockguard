@@ -79,7 +79,7 @@ func TestBuildRateLimitMiddlewareReturnsNilWhenNoLimitsConfigured(t *testing.T) 
 	}
 
 	rt := &serveRuntime{}
-	mw, stop := buildRateLimitMiddleware(cfg, newDiscardLogger(), rt)
+	mw, stop, _ := buildRateLimitMiddleware(cfg, newDiscardLogger(), rt)
 	if mw != nil {
 		t.Errorf("mw = non-nil, want nil")
 	}
@@ -96,7 +96,7 @@ func TestBuildRateLimitMiddlewareBuildsWhenGlobalConcurrencyConfigured(t *testin
 	cfg.Clients.GlobalConcurrency = &config.GlobalConcurrencyConfig{MaxInflight: 4}
 
 	rt := &serveRuntime{}
-	mw, stop := buildRateLimitMiddleware(cfg, newDiscardLogger(), rt)
+	mw, stop, _ := buildRateLimitMiddleware(cfg, newDiscardLogger(), rt)
 	if mw == nil {
 		t.Fatal("mw = nil, want non-nil when global concurrency configured")
 	}
@@ -117,7 +117,7 @@ func TestBuildRateLimitMiddlewareGlobalConcurrencyZeroSkipped(t *testing.T) {
 	cfg.Clients.GlobalConcurrency = &config.GlobalConcurrencyConfig{MaxInflight: 0}
 
 	rt := &serveRuntime{}
-	mw, stop := buildRateLimitMiddleware(cfg, newDiscardLogger(), rt)
+	mw, stop, _ := buildRateLimitMiddleware(cfg, newDiscardLogger(), rt)
 	if mw != nil {
 		t.Fatal("mw = non-nil, want nil when MaxInflight is 0 (the boundary)")
 	}
@@ -141,7 +141,7 @@ func TestBuildRateLimitMiddlewareBuildsWhenProfileLimitsConfigured(t *testing.T)
 	}
 
 	rt := &serveRuntime{}
-	mw, stop := buildRateLimitMiddleware(cfg, newDiscardLogger(), rt)
+	mw, stop, _ := buildRateLimitMiddleware(cfg, newDiscardLogger(), rt)
 	if mw == nil {
 		t.Fatal("mw = nil, want non-nil when profile limits configured")
 	}

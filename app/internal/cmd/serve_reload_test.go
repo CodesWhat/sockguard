@@ -582,8 +582,8 @@ func TestReloadCoordinatorLogsRateLimitStateDiscarded(t *testing.T) {
 	f := newReloadCoordinatorFixture(t, &initial)
 	// Simulate the chain built at startup having had an active rate-limit
 	// middleware (e.g. a profile with a concurrency cap), the way serve.go
-	// would set InitialRateLimitActive from buildServeHandlerChainWithRuntime.
-	f.coordinator.rateLimitActive = true
+	// would set InitialLimiterStateActive from buildServeHandlerChainWithRuntime.
+	f.coordinator.limiterStateActive = true
 
 	clone := initial
 	f.loadCfg = &clone
@@ -606,7 +606,7 @@ func TestReloadCoordinatorNoRateLimitDiscardLogWhenNoneWasActive(t *testing.T) {
 		{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"},
 	}
 	f := newReloadCoordinatorFixture(t, &initial)
-	// f.coordinator.rateLimitActive defaults to false: no profile limits,
+	// f.coordinator.limiterStateActive defaults to false: no profile limits,
 	// no global concurrency cap on the fixture's initial config.
 
 	clone := initial
@@ -626,7 +626,7 @@ func TestReloadCoordinatorNoRateLimitDiscardLogWhenNoneWasActive(t *testing.T) {
 // reload() may emit it. At process startup there is no previous chain to
 // discard, so logging there would be a false alarm on the very first request.
 // Unlike the other two tests here, this constructs the coordinator directly
-// (the way serve.go does at startup) with InitialRateLimitActive: true set
+// (the way serve.go does at startup) with InitialLimiterStateActive: true set
 // through reloadCoordinatorParams, rather than poking the unexported field
 // after the fact — so it also pins that newReloadCoordinator itself must
 // stay silent, not just that some later mutation doesn't retroactively log.
@@ -635,15 +635,108 @@ func TestReloadCoordinatorRateLimitDiscardLogDoesNotFireAtStartup(t *testing.T) 
 	logger := slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	_ = newReloadCoordinator(reloadCoordinatorParams{
-		RootCtx:                context.Background(),
-		Cfg:                    &config.Config{},
-		CfgFile:                "unused",
-		InitialTeardown:        func() {},
-		InitialRateLimitActive: true,
-		Logger:                 logger,
+		RootCtx:                   context.Background(),
+		Cfg:                       &config.Config{},
+		CfgFile:                   "unused",
+		InitialTeardown:           func() {},
+		InitialLimiterStateActive: true,
+		Logger:                    logger,
 	})
 
 	if strings.Contains(logBuf.String(), "discarded rate limit") {
 		t.Fatalf("did not expect a rate-limit-state-discarded log line at startup (before any reload): %s", logBuf.String())
+	}
+}
+
+// TestReloadDiscardWarningTracksLimiterStateNotMiddlewarePresence pins the
+// distinction the discard warning depends on. buildRateLimitMiddleware
+// installs the middleware for a profile that sets only limits.priority —
+// ratelimit.compileProfile keeps such a profile so the global fairness gate
+// can read its tier — but compiles no token bucket and no inflight tracker
+// for it. A reload of that config therefore discards nothing, and claiming
+// it dropped quota and concurrency counters sends an operator hunting for a
+// throttling gap that never happened. Priority also has no effect at all
+// without clients.global_concurrency, which is the config this row models.
+//
+// The flag is driven through the real production path rather than poked onto
+// the coordinator: reload() sets it from buildServeHandlerChainWithRuntime,
+// so the first reload arms it from the config under test and the second
+// reload is the one whose log output is asserted. Before the fix the flag was
+// set from "rate-limit middleware != nil", and the priority-only rows warned.
+func TestReloadDiscardWarningTracksLimiterStateNotMiddlewarePresence(t *testing.T) {
+	const discardMsg = "config reload discarded rate limit and concurrency counters"
+
+	baseCfg := func(limits config.LimitsConfig) config.Config {
+		cfg := config.Defaults()
+		cfg.Rules = []config.RuleConfig{
+			{Match: config.MatchConfig{Method: "GET", Path: "/x"}, Action: "allow"},
+		}
+		cfg.Clients.Profiles = []config.ClientProfileConfig{{Name: "p1", Limits: limits}}
+		return cfg
+	}
+
+	withGlobalConcurrency := func(cfg config.Config, maxInflight int64) config.Config {
+		cfg.Clients.GlobalConcurrency = &config.GlobalConcurrencyConfig{MaxInflight: maxInflight}
+		return cfg
+	}
+
+	tests := []struct {
+		name     string
+		cfg      config.Config
+		wantWarn bool
+	}{
+		{
+			// The finding's case: middleware present, no counters behind it.
+			name:     "priority only, no global concurrency",
+			cfg:      baseCfg(config.LimitsConfig{Priority: "high"}),
+			wantWarn: false,
+		},
+		{
+			// Still no bucket and no per-profile tracker, but the global
+			// gate owns a GlobalInflightTracker whose count is discarded.
+			name:     "priority only with global concurrency",
+			cfg:      withGlobalConcurrency(baseCfg(config.LimitsConfig{Priority: "high"}), 8),
+			wantWarn: true,
+		},
+		{
+			name:     "rate limit configured",
+			cfg:      baseCfg(config.LimitsConfig{Rate: &config.RateLimitConfig{TokensPerSecond: 5, Burst: 5}}),
+			wantWarn: true,
+		},
+		{
+			name:     "concurrency cap configured",
+			cfg:      baseCfg(config.LimitsConfig{Concurrency: &config.ConcurrencyConfig{MaxInflight: 2}}),
+			wantWarn: true,
+		},
+		{
+			name:     "no limits at all",
+			cfg:      baseCfg(config.LimitsConfig{}),
+			wantWarn: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.cfg
+			f := newReloadCoordinatorFixture(t, &cfg)
+
+			// First reload arms the coordinator's flag from a real chain
+			// build over this config; the fixture's loader hands back a
+			// fresh clone each call, so nothing immutable drifts.
+			f.coordinator.reload()
+			if got, ok := f.reloadCount("ok"); !ok || got != 1 {
+				t.Fatalf("first reload did not succeed: ok=%d found=%v", got, ok)
+			}
+			f.logBuf.Reset()
+
+			f.coordinator.reload()
+			if got, ok := f.reloadCount("ok"); !ok || got != 2 {
+				t.Fatalf("second reload did not succeed: ok=%d found=%v", got, ok)
+			}
+
+			if gotWarn := strings.Contains(f.logBuf.String(), discardMsg); gotWarn != tt.wantWarn {
+				t.Fatalf("discard warning emitted = %v, want %v; log: %s", gotWarn, tt.wantWarn, f.logBuf.String())
+			}
+		})
 	}
 }
