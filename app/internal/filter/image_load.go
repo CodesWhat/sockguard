@@ -21,23 +21,33 @@ const maxImageLoadDecompressedBytes = 2 << 30 // 2 GiB (gzip-bomb guard)
 // gzip-compressed image archive expands past maxImageLoadDecompressedBytes.
 var errImageLoadDecompressedTooLarge = errors.New("decompressed image archive exceeds byte limit")
 
-// ImageLoadOptions configures request-body inspection for POST /images/load.
+// ImageLoadOptions configures request-body inspection for POST /images/load
+// and its libpod counterpart POST /libpod/images/load.
 type ImageLoadOptions struct {
 	AllowAllRegistries bool
 	AllowOfficial      bool
 	AllowedRegistries  []string
 	AllowUntagged      bool
+	// AllowBlindWrites wires the top-level insecure_allow_body_blind_writes
+	// acknowledgment, which is the only thing that admits
+	// POST /libpod/local/images/load — the archive-by-daemon-host-path
+	// variant this policy cannot read. It is not part of a request_body
+	// block; internal/cmd/serve.go's attachRuntimeInspectors sets it, the
+	// same way it does for BuildOptions and ExecOptions.
+	AllowBlindWrites bool
 }
 
 type imageLoadPolicy struct {
-	allowUntagged bool
-	imagePolicy   imagePullPolicy
-	io            ioDeps
+	allowUntagged    bool
+	allowBlindWrites bool
+	imagePolicy      imagePullPolicy
+	io               ioDeps
 }
 
 func newImageLoadPolicy(opts ImageLoadOptions) imageLoadPolicy {
 	return imageLoadPolicy{
-		allowUntagged: opts.AllowUntagged,
+		allowUntagged:    opts.AllowUntagged,
+		allowBlindWrites: opts.AllowBlindWrites,
 		imagePolicy: newImagePullPolicy(ImagePullOptions{
 			AllowAllRegistries: opts.AllowAllRegistries,
 			AllowOfficial:      opts.AllowOfficial,
@@ -49,6 +59,18 @@ func newImageLoadPolicy(opts ImageLoadOptions) imageLoadPolicy {
 
 func (p imageLoadPolicy) inspect(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
 	if !matchesImageLoadInspection(normalizedPath) {
+		return "", nil
+	}
+	// POST /libpod/local/images/load carries no archive: it names one by
+	// absolute path on the daemon host and Podman opens it server-side, so
+	// the RepoTags check below has nothing to read and the registry
+	// allowlist cannot be applied at all. Deny it under the blind-write
+	// acknowledgment rather than letting the empty body fall through to
+	// this function's size==0 allow.
+	if isLibpodLocalImageLoadPath(normalizedPath) {
+		if !p.allowBlindWrites {
+			return "image load denied: Podman local image load reads a daemon-host path and requires insecure_allow_body_blind_writes", nil
+		}
 		return "", nil
 	}
 	if !p.allowsAnyImageLoad() {

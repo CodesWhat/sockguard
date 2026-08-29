@@ -80,6 +80,35 @@ var bodySensitiveWriteEndpoints = []bodySensitiveWriteEndpoint{
 	// acknowledgment — it is listed here so an operator auditing the
 	// body-sensitive write surface sees it alongside the rest of it.
 	{method: http.MethodPost, path: "/libpod/images/pull"},
+	// Podman's native image load and import. Both run through the SAME
+	// config an operator already sets for the Docker-compat spellings —
+	// request_body.image_load for the archive, request_body.image_pull's
+	// allow_imports for the import — so both are recognized as inspected
+	// below rather than requiring the blind-write acknowledgment.
+	{method: http.MethodPost, path: "/libpod/images/load"},
+	{method: http.MethodPost, path: "/libpod/images/import"},
+	// The two libpod "local API" routes have no Docker analog and, unlike
+	// every other entry in this catalog, take their input from a path on the
+	// DAEMON HOST rather than from the request: /libpod/local/build's
+	// required `localcontextdir` and /libpod/local/images/load's required
+	// `path` are absolute server-side paths that Podman v5.8.1 validates
+	// only as absolute-and-exists (internal/localapi's
+	// ValidatePathForLocalAPI — no sandbox root). Nothing crosses the socket
+	// for sockguard to read, so they deliberately have no case in
+	// bodyInspectionConfiguredForEndpoint and always require
+	// insecure_allow_body_blind_writes, which is also exactly what the
+	// runtime inspectors demand (filter.buildPolicy.inspectLibpodBuildControls
+	// and filter.imageLoadPolicy.inspect).
+	{method: http.MethodPost, path: "/libpod/local/build"},
+	{method: http.MethodPost, path: "/libpod/local/images/load"},
+	// Image SCP creates a local image from an archive fetched over SSH from
+	// a host the CALLER names, so it is an uninspectable image-ingest path
+	// that bypasses request_body.image_pull's registry allowlist entirely
+	// (Podman v5.8.1 pkg/domain/utils/scp.go: an unknown connection name
+	// falls back to a literal "ssh://"+name rather than being rejected). It
+	// is also an egress channel, so it appears in sensitiveExfilEndpoints
+	// too — admitting it takes both acknowledgments, one per direction.
+	{method: http.MethodPost, path: "/libpod/images/scp/sockguard-test"},
 	// play/kube, its "kube/play" alias (Podman registers both spellings on
 	// the identical libpod.PlayKube/KubePlay handlers), kube/apply, and
 	// manifest-list writes have NO request-body inspector at all (#148
@@ -161,6 +190,16 @@ var sensitiveExfilEndpoints = []sensitiveExfilEndpoint{
 	{method: http.MethodGet, path: "/libpod/images/export"},
 	{method: http.MethodGet, path: "/libpod/images/sockguard-test/get"},
 	{method: http.MethodPost, path: "/libpod/images/sockguard-test/push"},
+	// Image SCP transfers a local image to another HOST over SSH, with the
+	// destination named by the caller in the `destination` query parameter
+	// (Podman v5.8.1 pkg/api/server/register_images.go routes
+	// POST /libpod/images/scp/{name:.*} to libpod.ImageScp, which parses
+	// source from the path and destination from the query and hands both to
+	// domainUtils.ExecuteTransfer). It is the push entries' problem without
+	// their one mitigation: there is no registry to allowlist, and an
+	// unrecognized connection name is turned into "ssh://"+name instead of
+	// being refused, so the destination is an arbitrary SSH endpoint.
+	{method: http.MethodPost, path: "/libpod/images/scp/sockguard-test"},
 	{method: http.MethodGet, path: "/libpod/generate/kube"},
 	// Manifest-list push routes read local manifest content and transmit it
 	// to a caller-selected registry — a write at the Docker API layer but an
@@ -438,7 +477,7 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		return true
 	case "/libpod/containers/create":
 		return true
-	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/secrets/create", "/libpod/images/pull":
+	case "/libpod/pods/create", "/libpod/volumes/create", "/libpod/networks/create", "/libpod/secrets/create", "/libpod/images/pull", "/libpod/images/load", "/libpod/images/import":
 		// libpod_pod_create/libpod_volume/libpod_network/libpod_secret gates
 		// are all plain booleans/allowlists with real fail-closed defaults —
 		// none of them read insecure_allow_body_blind_writes the way exec
@@ -448,12 +487,20 @@ func bodyInspectionConfiguredForEndpoint(requestBody config.RequestBodyConfig, e
 		// joins them on the same terms: it reuses request_body.image_pull,
 		// whose allow_official-only default already denies a pull from any
 		// non-Docker-Hub-official registry, exactly as it does for the
-		// Docker-compat /images/create entry above.
+		// Docker-compat /images/create entry above. So do
+		// POST /libpod/images/load, which carries the same archive body the
+		// /images/load entry above is inspected on and is read by the same
+		// imageLoadPolicy, and POST /libpod/images/import, which is gated by
+		// request_body.image_pull.allow_imports — false by default, and the
+		// same flag that already gates the Docker-compat fromSrc import.
 		return true
-	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply, and
-	// /libpod/manifests/* deliberately have NO case here: they have no
-	// request-body inspector at all (#148 design doc decision C2), so they
-	// fall through to `default: false` below and always require
+	// /libpod/play/kube, /libpod/kube/play, /libpod/kube/apply,
+	// /libpod/manifests/*, /libpod/local/build, /libpod/local/images/load,
+	// and /libpod/images/scp/* deliberately have NO case here: they have no
+	// request-body inspector at all (#148 design doc decision C2 for the
+	// kube/manifest set; for the rest, the input is a daemon-host path or an
+	// SSH destination that never crosses the socket), so they fall through
+	// to `default: false` below and always require
 	// insecure_allow_body_blind_writes to admit.
 	default:
 		return false

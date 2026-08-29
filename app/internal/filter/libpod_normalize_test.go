@@ -42,6 +42,10 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		{"isLibpodContainerAttachPath", isLibpodContainerAttachPath},
 		{"isLibpodPlayKubePath", isLibpodPlayKubePath},
 		{"isLibpodImagePullPath", isLibpodImagePullPath},
+		{"isLibpodImageLoadPath", isLibpodImageLoadPath},
+		{"isLibpodLocalImageLoadPath", isLibpodLocalImageLoadPath},
+		{"isLibpodImageImportPath", isLibpodImageImportPath},
+		{"isLibpodLocalBuildPath", isLibpodLocalBuildPath},
 	}
 
 	positives := map[string]string{
@@ -52,6 +56,10 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		"isLibpodContainerAttachPath": "/libpod/containers/abc123/attach",
 		"isLibpodPlayKubePath":        "/libpod/play/kube",
 		"isLibpodImagePullPath":       "/libpod/images/pull",
+		"isLibpodImageLoadPath":       "/libpod/images/load",
+		"isLibpodLocalImageLoadPath":  "/libpod/local/images/load",
+		"isLibpodImageImportPath":     "/libpod/images/import",
+		"isLibpodLocalBuildPath":      "/libpod/local/build",
 	}
 
 	// Cross-cutting near-misses every matcher must reject.
@@ -66,6 +74,9 @@ func TestLibpodPerResourceMatchers(t *testing.T) {
 		"/containers/abc123/attach",
 		"/pods/create",
 		"/images/create",
+		"/images/load",
+		"/build",
+		"/libpod/build",
 	}
 
 	for _, m := range matchers {
@@ -110,6 +121,8 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		"/exec/abc123/start",
 		"/containers/abc123/attach",
 		"/images/create",
+		"/images/load",
+		"/build",
 	}
 	libpodMatchers := []struct {
 		name    string
@@ -123,6 +136,11 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		{"isLibpodContainerAttachPath", isLibpodContainerAttachPath},
 		{"isLibpodPlayKubePath", isLibpodPlayKubePath},
 		{"isLibpodImagePullPath", isLibpodImagePullPath},
+		{"isLibpodImageLoadPath", isLibpodImageLoadPath},
+		{"isLibpodLocalImageLoadPath", isLibpodLocalImageLoadPath},
+		{"isLibpodImageImportPath", isLibpodImageImportPath},
+		{"isLibpodLocalBuildPath", isLibpodLocalBuildPath},
+		{"isLibpodBuildPath", isLibpodBuildPath},
 	}
 	for _, dp := range dockerPaths {
 		for _, m := range libpodMatchers {
@@ -140,6 +158,11 @@ func TestLibpodMatchersNeverMatchDockerPathsAndViceVersa(t *testing.T) {
 		"/libpod/pods/create",
 		"/libpod/play/kube",
 		"/libpod/images/pull",
+		"/libpod/images/load",
+		"/libpod/local/images/load",
+		"/libpod/images/import",
+		"/libpod/build",
+		"/libpod/local/build",
 	}
 	dockerMatchers := []struct {
 		name    string

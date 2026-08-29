@@ -55,6 +55,8 @@ on.
 | `POST /libpod/volumes/create` | `request_body.libpod_volume` | Reuses the `volume` config shape, decoded against libpod's wire format (driver options live under `Options`, not `DriverOpts`). |
 | `POST /libpod/networks/create` | `request_body.libpod_network` | Reuses the `network` config shape, decoded against libpod's wire format (snake_case fields, no swarm/ingress/attachable/config-only concepts — libpod predates and is independent of Docker's swarm mode). |
 | `POST /libpod/images/pull` | `request_body.image_pull` — **shared with Docker-compat** | Podman's native image pull, the counterpart of Docker's `POST /images/create`. One registry allowlist (`allowed_registries`/`allow_official`/`allow_all_registries`) governs both surfaces, so nothing can be configured for one API family and forgotten for the other. The query shape is libpod's own and is read as such: the reference arrives in `reference` (not `fromImage`/`tag`), Podman matches that key case-insensitively and honors the last of a repeated pair, and it accepts a `docker://` transport prefix — so sockguard folds the key, checks every repeated value, and strips the prefix before matching the host. A pull carrying no usable `reference` is denied unless `allow_all_registries: true`. `allow_imports` does not apply here; libpod imports are a separate route (`POST /libpod/images/import`). |
+| `POST /libpod/images/load` | `request_body.image_load` — **shared with Docker-compat** | Podman's native image load. Verified against Podman v5.8.1: the route takes no query parameters at all and the whole request body is the archive, exactly like Docker's `POST /images/load`, so one `image_load` policy reads both and the `manifest.json` `RepoTags` are checked against the same registry allowlist. Not to be confused with `POST /libpod/local/images/load`, below. |
+| `POST /libpod/images/import` | `request_body.image_pull.allow_imports` — **shared with Docker-compat** | The libpod counterpart of the import that rides on Docker's `POST /images/create?fromSrc=`, gated by the same `allow_imports` flag, which is `false` by default. Every request to the path is an import: with a `URL` query parameter the daemon fetches the tarball from an address the caller chose, and without one it reads the tarball from the request body. The flag alone decides, so no query spelling can steer the verdict; the `URL` value is read only to name the source in the denial. |
 | `POST /libpod/secrets/create` | `request_body.libpod_secret` | Reuses the `secret` config shape. libpod reads `driver` from the query string, not a JSON body, so this inspector never reads `r.Body` — only the query-param path is exercised. |
 
 See the [Configuration Reference](/configuration#request-body-policy-reference)
@@ -92,6 +94,41 @@ radius than the single-container blind writes the acknowledgment flag
 otherwise covers, and no shipped preset (including `podman-readonly.yaml`
 below) ever allows these paths.
 
+## The Daemon-Host Surface: the `local` API and image SCP
+
+Three libpod routes have no Docker analog and, unlike every other write
+sockguard inspects, take their input from somewhere the request never
+travels. There is nothing on the wire to read, so each is refused rather
+than inspected.
+
+`POST /libpod/local/build` and `POST /libpod/local/images/load` are Podman's
+"local API": the build context (`localcontextdir`) and the image archive
+(`path`) are **absolute paths on the daemon host**, both required, and
+Podman v5.8.1 validates them only as absolute-and-exists — there is no
+sandbox root. A client that can call either one reads the daemon's
+filesystem through a directory it names itself. `request_body.build`'s
+`RUN`-instruction scan and `request_body.image_load`'s `RepoTags` check both
+work on the request body, so on these two routes they have nothing to read
+and would pass a request through as though it had been inspected. Both are
+therefore denied unless `insecure_allow_body_blind_writes: true`, at the
+proxy and again at config-validation time, and `allow_run_instructions` does
+not substitute for it. `POST /libpod/build` is unaffected: it still ships its
+context as a tar and is still inspected.
+
+`POST /libpod/images/scp/{name}` copies an image between hosts over SSH.
+The source is the path segment, the destination is the `destination` query
+parameter, and there is no request body at all. It runs in both directions
+and each one crosses a boundary sockguard otherwise holds: outbound it moves
+a local image to a host the caller names, which is an image push without a
+registry to allowlist, and inbound it materializes a local image from a
+remote one, which `request_body.image_pull`'s registry allowlist never sees.
+An unrecognized connection name is not refused — Podman turns it into a
+literal `ssh://<name>` — so the destination really is arbitrary. It is
+listed in **both** acknowledgment catalogs, so opening it needs
+`insecure_allow_body_blind_writes: true` *and*
+`insecure_allow_read_exfiltration: true`, one per direction. There is no
+narrower policy for it; see Known Limitations.
+
 ## Read-Exfiltration Additions
 
 `insecure_allow_read_exfiltration` is extended with libpod's equivalent of
@@ -105,6 +142,10 @@ every Docker-compat exfiltration surface, plus one libpod-only entry:
   `POST /libpod/manifests/*/push` — writes at the API layer, but they push
   local manifest content to a caller-selected registry, the same
   exfiltration shape as an image push
+- `POST /libpod/images/scp/*` — transfers a local image to another host
+  over SSH, to a destination the caller picks. It is also in the blind-write
+  catalog because the same call can pull an image *in* from a remote host;
+  see the section above
 - `GET /libpod/generate/kube` — despite the "generate" name, Podman
   registers this as a `GET` that dumps an existing pod's or container's
   definition to YAML, which can include environment variables and other
@@ -225,6 +266,14 @@ land):
   inspector. (`generate/kube` is not part of this list: it is a `GET`
   read-exfiltration endpoint and remains gated by
   `insecure_allow_read_exfiltration`, as described earlier.)
+- Narrower policy for `POST /libpod/local/build`,
+  `POST /libpod/local/images/load`, and `POST /libpod/images/scp/*` — all
+  three name their input outside the request (a daemon-host path, or an SSH
+  destination), so there is no body for an inspector to model and they stay
+  behind the acknowledgments described above. Constraining them would mean
+  policy over host paths and SSH destinations, which is a different kind of
+  rule than anything `request_body.*` expresses today; no shipped preset
+  allows any of them.
 - Manifest-list write inspection — expected to land alongside future
   image-trust work, since manifest lists are a registry-content concern.
 - Full read-side coverage of the broader `/libpod/generate/*` family beyond

@@ -1,0 +1,170 @@
+package cmd
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/codeswhat/sockguard/app/internal/config"
+)
+
+func findBodySensitiveWriteEndpoint(t *testing.T, method, path string) bodySensitiveWriteEndpoint {
+	t.Helper()
+
+	for _, candidate := range bodySensitiveWriteEndpoints {
+		if candidate.method == method && candidate.path == path {
+			return candidate
+		}
+	}
+	t.Fatalf("%s %s is missing from the body-sensitive write catalog", method, path)
+	return bodySensitiveWriteEndpoint{}
+}
+
+// TestBodySensitiveWriteCatalogCoversLibpodImageWrites pins the
+// config-validation half of the libpod image-write gap. The two endpoints
+// that reuse an existing request_body gate must be recognized as inspected,
+// so allowing them does not spuriously demand
+// insecure_allow_body_blind_writes; the three whose input never crosses the
+// socket must NOT be, so allowing them always does.
+func TestBodySensitiveWriteCatalogCoversLibpodImageWrites(t *testing.T) {
+	tests := []struct {
+		path          string
+		wantInspected bool
+	}{
+		// Same archive body as POST /images/load, read by the same
+		// imageLoadPolicy against request_body.image_load.
+		{path: "/libpod/images/load", wantInspected: true},
+		// Gated by request_body.image_pull.allow_imports, false by default —
+		// the same flag that gates the Docker-compat fromSrc import.
+		{path: "/libpod/images/import", wantInspected: true},
+		// Input is a daemon-host path (`localcontextdir` / `path`), so there
+		// is nothing on the wire to inspect.
+		{path: "/libpod/local/build", wantInspected: false},
+		{path: "/libpod/local/images/load", wantInspected: false},
+		// Source is a path segment and destination is an SSH endpoint; no
+		// body, and no registry to allowlist.
+		{path: "/libpod/images/scp/sockguard-test", wantInspected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			endpoint := findBodySensitiveWriteEndpoint(t, http.MethodPost, tt.path)
+			// An empty RequestBodyConfig is the fail-closed default posture:
+			// whatever protection these report has to hold without the
+			// operator configuring anything.
+			if got := bodyInspectionConfiguredForEndpoint(config.RequestBodyConfig{}, endpoint); got != tt.wantInspected {
+				t.Fatalf("bodyInspectionConfiguredForEndpoint(%s) = %v, want %v", tt.path, got, tt.wantInspected)
+			}
+		})
+	}
+}
+
+// TestValidateAndCompileRulesAllowsLibpodImageLoadAndImport is the positive
+// half: a rule opening the two inspected libpod image writes validates clean
+// under the default config, exactly as the Docker-compat spellings do.
+func TestValidateAndCompileRulesAllowsLibpodImageLoadAndImport(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/load"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/import"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
+// TestValidateAndCompileRulesRejectsLibpodLocalApiWrites pins that the two
+// "local API" routes cannot be opened silently. A realistic operator rule —
+// one that reaches for the whole libpod image surface — has to name them.
+func TestValidateAndCompileRulesRejectsLibpodLocalApiWrites(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/local/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	_, err := validateAndCompileRules(&cfg)
+	if err == nil {
+		t.Fatal("validateAndCompileRules() returned no error, want the blind-write acknowledgment demanded")
+	}
+	for _, want := range []string{
+		"POST /libpod/local/build",
+		"POST /libpod/local/images/load",
+		"insecure_allow_body_blind_writes=true",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to mention %q", err, want)
+		}
+	}
+
+	cfg.InsecureAllowBodyBlindWrites = true
+	if _, err := validateAndCompileRules(&cfg); err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v once acknowledged, want nil", err)
+	}
+}
+
+// TestValidateAndCompileRulesRejectsLibpodImageScpTwice pins the deliberate
+// double-gating of POST /libpod/images/scp/{name}. It moves a local image to
+// a caller-named SSH host (egress) AND materializes a local image from one
+// (ingest that no registry allowlist can see), so it sits in both catalogs
+// and clearing one acknowledgment is not enough to open it.
+func TestValidateAndCompileRulesRejectsLibpodImageScpTwice(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/scp/**"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	err := errorFromValidate(t, &cfg)
+	if !strings.Contains(err.Error(), "POST /libpod/images/scp/sockguard-test") ||
+		!strings.Contains(err.Error(), "insecure_allow_body_blind_writes=true") {
+		t.Fatalf("error = %q, want the uninspected-write acknowledgment demanded first", err)
+	}
+
+	cfg.InsecureAllowBodyBlindWrites = true
+	err = errorFromValidate(t, &cfg)
+	if !strings.Contains(err.Error(), "POST /libpod/images/scp/sockguard-test") ||
+		!strings.Contains(err.Error(), "insecure_allow_read_exfiltration: true") {
+		t.Fatalf("error = %q, want the exfiltration acknowledgment demanded second", err)
+	}
+
+	cfg.InsecureAllowReadExfiltration = true
+	if _, err := validateAndCompileRules(&cfg); err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v once both are acknowledged, want nil", err)
+	}
+}
+
+// TestServePolicyConfigWiresImageLoadBlindWriteAck pins the wiring half of
+// the local-image-load guard. insecure_allow_body_blind_writes is a
+// top-level flag, not part of a request_body block, so it reaches
+// filter.ImageLoadOptions only because attachRuntimeInspectors copies it —
+// and the inspector's deny for POST /libpod/local/images/load is unreachable
+// to acknowledge if that copy goes missing. Driven through
+// servePolicyConfig, the production path, rather than the helper directly.
+func TestServePolicyConfigWiresImageLoadBlindWriteAck(t *testing.T) {
+	cfg := config.Defaults()
+	if got := servePolicyConfig(&cfg, nil).ImageLoad.AllowBlindWrites; got {
+		t.Fatalf("ImageLoad.AllowBlindWrites = %v by default, want false", got)
+	}
+
+	cfg.InsecureAllowBodyBlindWrites = true
+	if got := servePolicyConfig(&cfg, nil).ImageLoad.AllowBlindWrites; !got {
+		t.Fatal("ImageLoad.AllowBlindWrites = false after insecure_allow_body_blind_writes: true, want true")
+	}
+}
+
+func errorFromValidate(t *testing.T, cfg *config.Config) error {
+	t.Helper()
+
+	_, err := validateAndCompileRules(cfg)
+	if err == nil {
+		t.Fatal("validateAndCompileRules() returned no error, want one")
+	}
+	return err
+}

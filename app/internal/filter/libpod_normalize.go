@@ -43,6 +43,65 @@ func isLibpodImagePullPath(normalizedPath string) bool {
 	return normalizedPath == libpodPathPrefix+"images/pull"
 }
 
+// isLibpodImageLoadPath matches POST /libpod/images/load, Podman's native
+// image-load endpoint. Verified against Podman v5.8.1
+// (pkg/api/server/register_images.go registers it on libpod.ImagesLoad;
+// pkg/api/handlers/libpod/images.go's ImagesLoad copies the WHOLE request
+// body to a temp file and hands it to imageEngine.Load): it takes no query
+// parameters at all, and its body is the same docker-archive/oci-archive
+// stream Docker's POST /images/load carries. Same input in the same place,
+// so the Docker-compat inspector applies to it unchanged rather than needing
+// a libpod-specific one — see matchesImageLoadInspection.
+func isLibpodImageLoadPath(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"images/load"
+}
+
+// isLibpodLocalImageLoadPath matches POST /libpod/local/images/load. Despite
+// the name it is not a spelling variant of the endpoint above: it carries NO
+// request body and names an absolute path on the DAEMON HOST in a required
+// `path` query parameter (Podman v5.8.1 pkg/api/handlers/libpod/images.go,
+// ImagesLocalLoad, whose only check is internal/localapi's
+// ValidatePathForLocalAPI — "is it absolute" and "does it exist", with no
+// sandbox root). The archive therefore never crosses the socket, so there is
+// no manifest for sockguard to read; see imageLoadPolicy.inspect.
+func isLibpodLocalImageLoadPath(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"local/images/load"
+}
+
+// isLibpodImageImportPath matches POST /libpod/images/import, the libpod
+// counterpart of the Docker-compat import that rides on
+// POST /images/create?fromSrc= and that request_body.image_pull.allow_imports
+// already gates. Podman v5.8.1's ImagesImport takes the tarball from the body
+// OR fetches it from a caller-supplied `URL` query parameter; both are the
+// same "materialize an image from something that is not a registry pull"
+// operation, which is what allow_imports governs. See
+// imagePullPolicy.inspectLibpodImport.
+func isLibpodImageImportPath(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"images/import"
+}
+
+// isLibpodLocalBuildPath matches POST /libpod/local/build. It shares Podman's
+// build implementation with /libpod/build — both are compat.buildImage in
+// v5.8.1's pkg/api/handlers/compat/images_build.go, so both accept the same
+// libpod-only build query controls — but takes its build context from a
+// required `localcontextdir` query parameter naming an absolute path on the
+// DAEMON HOST instead of from a tar in the request body, and resolves the
+// Containerfile as a daemon-host path too (handleLocalBuildContexts ->
+// localapi.ValidatePathForLocalAPI, the same absolute-and-exists check the
+// local image load uses). Nothing to build from ever crosses the socket, so
+// request_body.build's Dockerfile scan has no bytes to read.
+func isLibpodLocalBuildPath(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"local/build"
+}
+
+// isLibpodBuildPath matches both of Podman's native build endpoints. They
+// differ only in where the build context comes from, and exactly one of them
+// puts it in the request body, which is why inspectLibpodBuildControls gates
+// both while only /libpod/build can be inspected — see isLibpodLocalBuildPath.
+func isLibpodBuildPath(normalizedPath string) bool {
+	return normalizedPath == libpodPathPrefix+"build" || isLibpodLocalBuildPath(normalizedPath)
+}
+
 // isLibpodExecCreatePath matches POST /libpod/containers/{id}/exec, the
 // libpod equivalent of isExecCreatePath's /containers/{id}/exec.
 func isLibpodExecCreatePath(normalizedPath string) bool {

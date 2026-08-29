@@ -138,6 +138,48 @@ func (p imagePullPolicy) inspectLibpod(_ *slog.Logger, r *http.Request, normaliz
 	return "", nil
 }
 
+// libpodImageImportSubject prefixes libpod-family import denial reasons.
+const libpodImageImportSubject = "libpod image import"
+
+// inspectLibpodImport applies request_body.image_pull.allow_imports to
+// Podman's native POST /libpod/images/import — the libpod counterpart of the
+// Docker-compat import that rides on POST /images/create?fromSrc= and that
+// inspect() above already gates. It shares imagePullPolicy for the same
+// reason inspectLibpod does: one allow_imports flag has to govern both
+// surfaces or an operator configures one and leaves the other open.
+//
+// Unlike the pull inspectors, this one does not need to read the query to
+// reach its decision, and deliberately does not. Verified against Podman
+// v5.8.1's pkg/api/handlers/libpod/images.go ImagesImport: EVERY request to
+// this path is an import. When `URL` is set the daemon fetches the tarball
+// from a caller-chosen URL; when it is empty the daemon reads the tarball out
+// of the request body. Both end at imageEngine.Import with a Source the
+// caller picked, so allow_imports alone decides, and the decision cannot be
+// steered by a parameter name Podman might rename or a key-folding quirk in
+// gorilla/schema. The `URL` value is read only to name the source in the
+// denial reason, taking the last of a repeated key the way Podman's decoder
+// would, and an unreadable query costs nothing because the answer is already
+// deny.
+func (p imagePullPolicy) inspectLibpodImport(_ *slog.Logger, r *http.Request, normalizedPath string) (string, error) {
+	if r == nil || r.Method != http.MethodPost || !isLibpodImageImportPath(normalizedPath) {
+		return "", nil
+	}
+	if p.allowImports {
+		return "", nil
+	}
+
+	source := ""
+	for _, raw := range foldQueryKeys(r.URL.Query())["url"] {
+		if trimmed := strings.TrimSpace(raw); trimmed != "" {
+			source = trimmed
+		}
+	}
+	if source == "" {
+		return libpodImageImportSubject + " denied: importing images is not allowed", nil
+	}
+	return fmt.Sprintf("%s denied: importing images from %q is not allowed", libpodImageImportSubject, source), nil
+}
+
 func (p imagePullPolicy) denyReasonForReference(fromImage, subject string) string {
 	if fromImage == "" {
 		return ""
