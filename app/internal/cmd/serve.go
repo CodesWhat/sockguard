@@ -218,6 +218,12 @@ func runServeWithDeps(cmd *cobra.Command, args []string, deps *serveDeps) error 
 		Runtime:         runtime,
 		Versioner:       versioner,
 		BundleVerifier:  bundleVerifier,
+		// Same overrides startup applied above, replayed on every reload
+		// candidate. cmd's flags are parsed before RunE and never mutated
+		// afterwards, so the reloader goroutine only reads frozen state.
+		ApplyFlagOverrides: func(candidate *config.Config) error {
+			return applyFlagOverrides(cmd, candidate)
+		},
 	})
 	defer coordinator.stop()
 
