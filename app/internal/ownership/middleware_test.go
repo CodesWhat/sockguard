@@ -2793,13 +2793,22 @@ func startUnixHTTPServer(t *testing.T, handler http.Handler) string {
 	t.Helper()
 
 	// Unix-domain socket paths are short on several platforms (104 bytes on
-	// macOS), so do not embed the full test name here.
-	socketPath := filepath.Join("/tmp", fmt.Sprintf("sg-owner-%d.sock", time.Now().UnixNano()))
-	_ = os.Remove(socketPath)
-
-	ln, err := net.Listen("unix", socketPath)
+	// macOS), so do not embed the full test name here. t.TempDir() is also out:
+	// it derives the path from the test name and nests, which overruns that
+	// limit. A UnixNano stamp is not unique enough on its own — two parallel
+	// subtests collided on it during a full-suite run on 2026-08-29 and failed
+	// with "bind: address already in use" — so take a kernel-unique directory
+	// and use a fixed short name inside it.
+	dir, err := os.MkdirTemp("/tmp", "sg-own")
 	if err != nil {
-		t.Fatalf("listen unix: %v", err)
+		t.Fatalf("mkdtemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socketPath := filepath.Join(dir, "s.sock")
+
+	ln, listenErr := net.Listen("unix", socketPath)
+	if listenErr != nil {
+		t.Fatalf("listen unix: %v", listenErr)
 	}
 
 	srv := &http.Server{Handler: handler}
