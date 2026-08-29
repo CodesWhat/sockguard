@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -306,4 +307,63 @@ func TestWithRequestTimeout_DoesNotSeverLiveStream(t *testing.T) {
 			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
 		}
 	})
+}
+
+// The deadline's 504 is a PRE-HEADER outcome only. Once the daemon has
+// committed response headers, Go's ReverseProxy cannot replace the status: a
+// read error during copyResponse is not routed to ErrorHandler, so the client
+// keeps the already-sent status and sees a truncated body. The deadline still
+// does its real job here — it aborts the hung upstream connection instead of
+// pinning the request — but it does not, and cannot, surface as 504.
+//
+// This is the exact case WithRequestTimeout exists for (headers arrive
+// promptly, body hangs), so the distinction was easy to state backwards, and
+// was: both this function's doc comment and configuration.mdx claimed a 504
+// here until 2026-08-29.
+func TestWithRequestTimeout_BodyPhaseTruncatesRatherThanReturning504(t *testing.T) {
+	t.Parallel()
+	socketPath := tempSocketPath(t, "bodyphase")
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	release := make(chan struct{})
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		fmt.Fprint(w, `{"partial":`)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release // hang the body well past the deadline
+	})}
+	go srv.Serve(ln)
+	t.Cleanup(func() {
+		close(release)
+		srv.Close()
+	})
+
+	wrapped := WithRequestTimeout(NewWithOptions(socketPath, testLogger(), Options{}), 75*time.Millisecond)
+	front := httptest.NewServer(wrapped)
+	t.Cleanup(front.Close)
+
+	resp, err := http.Get(front.URL + "/containers/json")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d (headers were already committed)", resp.StatusCode, http.StatusOK)
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr == nil {
+		t.Fatalf("body read succeeded (%q), want a truncation error", string(body))
+	}
+	if string(body) != `{"partial":` {
+		t.Fatalf("body = %q, want the partial prefix written before the hang", string(body))
+	}
 }

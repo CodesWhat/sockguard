@@ -12,11 +12,26 @@ import (
 
 // WithRequestTimeout wraps next so that ordinary finite upstream requests are
 // bounded by a total per-request deadline. When the deadline fires, the proxy
-// transport aborts the upstream connection and the ReverseProxy ErrorHandler
-// returns a 504 (reasonCodeUpstreamRequestTimeout). This is the body-phase
-// backstop that ResponseHeaderTimeout cannot provide: a daemon that sends
-// headers promptly and then hangs the body would otherwise pin the request
-// until the client gives up.
+// transport aborts the upstream connection. This is the body-phase backstop
+// that ResponseHeaderTimeout cannot provide: a daemon that sends headers
+// promptly and then hangs the body would otherwise pin the request until the
+// client gives up.
+//
+// What the client sees depends on whether response headers were already
+// committed, and only the first case is a 504:
+//
+//   - Deadline fires BEFORE response headers arrive: the error surfaces from
+//     RoundTrip, the ReverseProxy ErrorHandler runs, and the client gets a 504
+//     (reasonCodeUpstreamRequestTimeout).
+//   - Deadline fires AFTER response headers are committed: Go's ReverseProxy
+//     does not route a copyResponse read error to ErrorHandler, and HTTP does
+//     not allow replacing a sent status anyway. The client keeps the committed
+//     status and sees a truncated body. The request is still aborted, which is
+//     the point, but there is no 504 and cannot be one.
+//
+// The second case is the one this wrapper exists for, which makes it easy to
+// describe backwards; both this comment and the docs did until 2026-08-29.
+// TestWithRequestTimeout_BodyPhaseTruncatesRatherThanReturning504 pins it.
 //
 // A non-positive timeout disables the wrapper entirely — next is returned
 // unchanged. Long-lived endpoints (event streams, follow/stream reads
