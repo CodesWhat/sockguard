@@ -95,6 +95,15 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 
 	cfg.Rules = rules
 
+	// ALLOW_DELETE predates Sockguard's query inspector and admits the full
+	// Tecnativa container-remove call surface. Preserve that compatibility
+	// behavior without changing native defaults or user-authored rules.
+	if compatEnvEnabled("ALLOW_DELETE", false) {
+		cfg.RequestBody.ContainerRemove.AllowForce = true
+		cfg.RequestBody.ContainerRemove.AllowRemoveVolumes = true
+		cfg.RequestBody.ContainerRemove.AllowRemoveLinks = true
+	}
+
 	// GRPC=1 / SESSION=1 open the opaque BuildKit /grpc and /session tunnels
 	// (see buildkitTunnelEndpoints in cmd/rules.go), which now require the
 	// dedicated insecure_accept_opaque_buildkit_tunnels acknowledgment rather

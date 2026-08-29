@@ -1523,9 +1523,14 @@ ALLOW_STOP=1       # Allow POST /containers/{id}/stop
 ALLOW_RESTARTS=1   # Allow POST /containers/{id}/stop|restart|kill
 ALLOW_CREATE=0     # Deny POST /containers/create (default)
 ALLOW_EXEC=0       # Deny POST /containers/{id}/exec (default)
+ALLOW_DELETE=0     # Deny DELETE /containers/{id} (default)
 ```
 
 Sockguard also accepts the legacy singular `ALLOW_RESTART=1` alias, but `ALLOW_RESTARTS` is the upstream Tecnativa/LinuxServer name.
+`ALLOW_DELETE=1` preserves the compatibility surface's historical behavior by
+allowing force removal, anonymous-volume removal, and legacy link removal as
+well as a bare delete. Move the rule to YAML and configure
+`request_body.container_remove` when you want those three controls separated.
 
 ## Precedence
 
