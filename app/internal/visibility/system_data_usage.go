@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/codeswhat/sockguard/app/internal/filter"
 	"github.com/codeswhat/sockguard/app/internal/httpjson"
 	"github.com/codeswhat/sockguard/app/internal/logging"
 	"github.com/codeswhat/sockguard/app/internal/responsefilter"
@@ -50,6 +51,17 @@ func handleVisibilitySystemDataUsageRequest(logger *slog.Logger, next http.Handl
 func denyLibpodSystemDataUsage(w http.ResponseWriter, r *http.Request) {
 	reason := responsefilter.LibpodSystemDataUsageDenyReason
 	logging.SetDeniedWithCode(w, r, reasonCodeVisibilityLibpodDataUsage, reason, nil)
+	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
+}
+
+// denyLibpodShowMounted refuses GET /libpod/containers/showmounted with a 403
+// without contacting the upstream, so neither the daemon host's mount paths
+// nor the cross-owner container ID set is ever read. The status and the
+// rollout-mode independence are denyLibpodSystemDataUsage's, for the same
+// reasons.
+func denyLibpodShowMounted(w http.ResponseWriter, r *http.Request) {
+	reason := filter.LibpodShowMountedDenyReason
+	logging.SetDeniedWithCode(w, r, reasonCodeVisibilityLibpodShowMounted, reason, nil)
 	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 }
 

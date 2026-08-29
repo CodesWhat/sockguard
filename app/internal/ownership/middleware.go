@@ -325,11 +325,12 @@ func allowPathOwnershipRequest(
 	// above resource-for-resource so a client cannot evade ownership
 	// enforcement by switching from the Docker-compat API to Podman's
 	// native one for actions on an already-existing resource. Containers,
-	// networks, volumes, and secrets are checked against their Docker-compat
-	// inspect path (dockerresource.KindContainer/KindNetwork/KindVolume/
-	// KindSecret) since Podman's compat API is a translation layer over the
-	// same underlying resource store for those kinds; pods have no
-	// Docker-compat equivalent and use dockerresource.KindLibpodPod.
+	// networks, volumes, images and secrets are checked against their
+	// Docker-compat inspect path (dockerresource.KindContainer/KindNetwork/
+	// KindVolume/KindImage/KindSecret) since Podman's compat API is a
+	// translation layer over the same underlying resource store for those
+	// kinds; pods have no Docker-compat equivalent and use
+	// dockerresource.KindLibpodPod.
 	if identifier, ok := libpodContainerIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindContainer, identifier, opts, false)
 	}
@@ -351,6 +352,9 @@ func allowPathOwnershipRequest(
 	}
 	if identifier, ok := libpodVolumeIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindVolume, identifier, opts, false)
+	}
+	if identifier, ok := libpodImageIdentifier(method, normPath); ok {
+		return checkOwnedResource(ctx, inspectResource, dockerresource.KindImage, identifier, opts, opts.AllowUnownedImages)
 	}
 	if identifier, ok := libpodSecretIdentifier(method, normPath); ok {
 		return checkOwnedResource(ctx, inspectResource, dockerresource.KindSecret, identifier, opts, false)

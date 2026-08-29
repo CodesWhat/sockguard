@@ -19,6 +19,7 @@ const (
 	reasonCodeOwnerResponseTooLarge        = "owner_response_too_large"
 	reasonCodeOwnerResponseFilterFail      = "owner_response_filter_failed"
 	reasonCodeOwnerLibpodDataUsageUnscoped = "owner_libpod_data_usage_unscopeable"
+	reasonCodeOwnerLibpodShowMounted       = "owner_libpod_show_mounted_unscopeable"
 )
 
 // serveOwnershipAllowed forwards a request the ownership policy did not deny.
@@ -36,6 +37,12 @@ const (
 // on and it is refused instead — see
 // responsefilter.LibpodSystemDataUsageDenyReason for the shape and the
 // reasoning.
+//
+// GET /libpod/containers/showmounted is a third endpoint of that same shape
+// and is refused for the same reason: it enumerates every mounted container
+// on the host as a bare ID-to-host-path map, with no labels to classify an
+// entry by and no query parameter to attach a filter to. See
+// filter.LibpodShowMountedDenyReason.
 func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.ResponseWriter, r *http.Request, normPath string, opts Options) {
 	if r.Method == http.MethodGet {
 		switch normPath {
@@ -45,9 +52,23 @@ func serveOwnershipAllowed(logger *slog.Logger, next http.Handler, w http.Respon
 		case responsefilter.LibpodSystemDataUsagePath:
 			denyLibpodSystemDataUsage(w, r)
 			return
+		case filter.LibpodShowMountedPath:
+			denyLibpodShowMounted(w, r)
+			return
 		}
 	}
 	next.ServeHTTP(w, r)
+}
+
+// denyLibpodShowMounted refuses GET /libpod/containers/showmounted with a 403
+// and never contacts the upstream, so neither the host mount paths nor the
+// cross-owner container ID set is ever read. Like denyLibpodSystemDataUsage
+// it is unconditional: a warn-mode deployment forwarding the map is the exact
+// disclosure this closes.
+func denyLibpodShowMounted(w http.ResponseWriter, r *http.Request) {
+	reason := filter.LibpodShowMountedDenyReason
+	logging.SetDeniedWithCode(w, r, reasonCodeOwnerLibpodShowMounted, reason, nil)
+	_ = httpjson.Write(w, http.StatusForbidden, httpjson.ErrorResponse{Message: reason})
 }
 
 // denyLibpodSystemDataUsage refuses GET /libpod/system/df with a 403 and never

@@ -132,10 +132,30 @@ same way they cover Docker-compat:
 - Pods have no Docker-compat equivalent, so they get a dedicated
   `KindLibpodPod` resource kind with its own list/inspect owner-filtering
   and visibility coverage.
-- Every libpod list and inspect/action path — containers, pods, networks,
-  volumes, secrets — is owner-filtered and visibility-filtered, so switching
-  a client from Docker-compat to libpod-native paths is not a way around
-  isolation configured on the Docker-compat side.
+- Every libpod list and inspect/action path — containers, images, pods,
+  networks, volumes, secrets — is owner-filtered and visibility-filtered, so
+  switching a client from Docker-compat to libpod-native paths is not a way
+  around isolation configured on the Docker-compat side. Read coverage follows
+  the routes Podman actually serves rather than the `/json` inspect alone:
+  `/exists`, `/top`, `/healthcheck`, `/archive`, `/tree`, `/changes`, volume
+  `/export`, and the bare `GET /libpod/networks/{id}` spelling Podman
+  registers on the same `InspectNetwork` handler as `/libpod/networks/{id}/json`.
+  `POST /libpod/images/scp/{name}` copies an image to another host, so it is
+  owner-checked against `{name}` like a push.
+- `GET /libpod/events` is owner-filtered but is only partly expressible as a
+  visibility policy, and that asymmetry is deliberate. Podman evaluates
+  several values under one event filter key disjunctively, so a `label=` value
+  injected beside a client-supplied one ORs with it instead of narrowing.
+  Owner isolation replaces the `label` key outright and so leaves exactly one
+  value, for which disjunctive and conjunctive evaluation are the same thing.
+  A visibility policy's selectors are ANDed by definition and the endpoint has
+  no second filter key to hold the extra one, so sockguard injects a single
+  selector where the policy has one and refuses the endpoint with a `403` and
+  `visibility_libpod_events_unscopeable` where it has more. Reporting a subset
+  was rejected for the same reason an emptied `/libpod/system/df` was: a client
+  watching an event stream cannot tell a quiet host from a filter that stopped
+  applying. The refusal is independent of rollout mode, and a deployment with
+  no visibility policy is unaffected.
 - `GET /libpod/system/df` is the one read that cannot be filtered, and it is
   refused with a `403` instead whenever owner isolation or a visibility policy
   is active. Podman's native disk-usage report is not the Docker-compat body
@@ -146,6 +166,17 @@ same way they cover Docker-compat:
   [Security](/security#layer-6-owner-label-isolation) for the full field list
   and why an emptied report was the wrong answer. The Docker-compat
   `GET /system/df` that Podman also serves is filtered normally.
+- `GET /libpod/containers/showmounted` is refused the same way and for the
+  same reason. Podman answers it with a bare map of container ID to the daemon
+  host's mount path for that container, built from every container on the
+  host, so one body is both a host-filesystem disclosure and a cross-owner
+  enumeration. It carries no labels, has no Docker-compat counterpart, and
+  accepts no query parameters, so redacting the paths would still hand over
+  the enumeration and there is no field left to decide an entry by. It is not
+  in `podman-readonly.yaml`, but a rule such as `GET /libpod/containers/*`
+  admits it without needing `insecure_allow_read_exfiltration` — it is not in
+  the read-exfiltration catalog, so a deployment that configures neither an
+  owner nor a visibility policy and allows the path still receives the map.
 - Resource names that happen to equal an API action word remain protected.
   Owner matching reserves keywords only for the exact method and collection
   path, while `GET` and `HEAD` visibility treats write-only keywords as normal
@@ -253,3 +284,36 @@ land):
 - `AllowedRuntimes` has no libpod equivalent — `request_body.container_create.allowed_runtimes`
   gates the Docker-compat `HostConfig.Runtime` field, but
   `libpod_container_create` has no matching hook today.
+- `GET /libpod/containers/stats` and `GET /libpod/pods/stats` cannot be scoped.
+  Both take `containers`/`namesOrIDs` and `all` but no `filters` parameter, so
+  there is nothing for a label filter to attach to. `GET /libpod/containers/stats`
+  streams unless the caller sends `stream=false`, so buffering its response to
+  filter it would turn a live stats stream into a request that never returns
+  (`GET /libpod/pods/stats` defaults the other way). Their records carry
+  container and pod IDs and names but no labels,
+  so recovering an owned set would mean correlating them against the
+  label-filtered list endpoints — the same multi-request mechanism refused for
+  `/libpod/system/df`. `GET /libpod/pods/stats` is allowed by
+  `podman-readonly.yaml` as shipped. Deny them in your rules if you need the
+  guarantee; they are not refused automatically, unlike `/libpod/system/df` and
+  `/libpod/containers/showmounted`.
+- Two libpod image endpoints name their images in the query string rather than
+  the path, so owner isolation has nothing to check and they pass through
+  unchecked when a rule allows them: `DELETE /libpod/images/remove?images=…`
+  (batch delete, which with `all=true` names nothing at all) and
+  `GET /libpod/images/export?references=…` (batch export).
+  Neither is allowed by any shipped preset, batch export additionally needs
+  `insecure_allow_read_exfiltration`, and the Docker-compat
+  `GET /images/get?names=…` is unchecked for the same reason. Per-image
+  spellings of both actions (`DELETE /libpod/images/{name}`,
+  `GET /libpod/images/{name}/get`) are checked normally.
+- A **visibility** policy with more than one `visible_resource_labels` selector
+  is enforceable on `GET /libpod/events` but not on the Docker-compat
+  `GET /events` that Podman also serves, because they are the same handler with
+  the same disjunctive label filter and sockguard cannot tell a Podman upstream
+  from dockerd. The libpod spelling is refused; the compat spelling still gets
+  the append-style injection that is correct against dockerd, so on a Podman
+  upstream a multi-selector policy is a `label` OR rather than an AND there.
+  Owner isolation is unaffected on both spellings — it replaces the key rather
+  than appending to it. Configure a single selector, or deny `GET /events` in
+  your rules, if you need the guarantee on a Podman upstream.

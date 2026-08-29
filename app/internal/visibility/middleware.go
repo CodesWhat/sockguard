@@ -58,6 +58,8 @@ const (
 	reasonCodeVisibilityPolicyHidResource   = "visibility_policy_hid_resource"
 	reasonCodeVisibilityResponseTooLarge    = "visibility_response_too_large"
 	reasonCodeVisibilityLibpodDataUsage     = "visibility_libpod_data_usage_unscopeable"
+	reasonCodeVisibilityLibpodEvents        = "visibility_libpod_events_unscopeable"
+	reasonCodeVisibilityLibpodShowMounted   = "visibility_libpod_show_mounted_unscopeable"
 )
 
 // Options configures label-based visibility control on Docker read endpoints.
@@ -189,6 +191,28 @@ func middlewareWithDeps(logger *slog.Logger, opts Options, deps visibilityDeps) 
 			// responsefilter.LibpodSystemDataUsageDenyReason.
 			if r.Method == http.MethodGet && normPath == responsefilter.LibpodSystemDataUsagePath {
 				denyLibpodSystemDataUsage(w, r)
+				return
+			}
+			// GET /libpod/containers/showmounted is a third endpoint of that
+			// same shape: it enumerates every mounted container on the host as
+			// a bare ID-to-host-path map, with no labels for the selector axes
+			// and no name or image field for the pattern axes, and it accepts
+			// no query parameters for a filter to attach to. It is refused
+			// rather than filtered — see filter.LibpodShowMountedDenyReason.
+			if r.Method == http.MethodGet && normPath == filter.LibpodShowMountedPath {
+				denyLibpodShowMounted(w, r)
+				return
+			}
+			// Podman's native GET /libpod/events accepts the same `filters`
+			// query parameter the Docker-compat /events does — it is literally
+			// the same handler — but evaluates several values under one filter
+			// key disjunctively, so the append-style injection every other list
+			// endpoint uses would widen the stream instead of narrowing it. It
+			// gets its own single-selector injection, and a refusal when the
+			// policy has more selectors than the shape can express. See
+			// libpodEventsDenyReason.
+			if r.Method == http.MethodGet && normPath == LibpodEventsPath {
+				handleLibpodVisibilityEventsRequest(next, w, r, &effectivePolicy)
 				return
 			}
 			if needsVisibilityLabelFilter(normPath) {
@@ -823,16 +847,19 @@ func requestVisibleWithPolicy(ctx context.Context, normPath string, policy *comp
 		}
 		return resourceVisible(ctx, deps, dockerresource.KindContainer, containerID, policy.selectors)
 	}
-	// libpod route family (#148 PR5): containers/volumes/secrets are checked
-	// against their Docker-compat inspect path (Podman's compat API is a
-	// translation layer over the same underlying resource store for those
-	// kinds); networks and pods use their libpod-native inspect path via
+	// libpod route family (#148 PR5): containers, images, volumes and secrets
+	// are checked against their Docker-compat inspect path (Podman's compat
+	// API is a translation layer over the same underlying resource store for
+	// those kinds); networks and pods use their libpod-native inspect path via
 	// dockerresource.KindLibpodNetwork/KindLibpodPod — networks because
 	// GET /libpod/networks/{id}/json differs in label-key casing and (per
 	// design doc C6) may return a single-element array-wrapped response,
 	// pods because they have no Docker-compat equivalent at all.
 	if identifier, ok := libpodContainerReadIdentifier(normPath); ok {
 		return resourceVisible(ctx, deps, dockerresource.KindContainer, identifier, policy.selectors)
+	}
+	if identifier, ok := libpodImageReadIdentifier(normPath); ok {
+		return resourceVisible(ctx, deps, dockerresource.KindImage, identifier, policy.selectors)
 	}
 	if identifier, ok := libpodPodReadIdentifier(normPath); ok {
 		return resourceVisible(ctx, deps, dockerresource.KindLibpodPod, identifier, policy.selectors)
