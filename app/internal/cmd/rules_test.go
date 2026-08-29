@@ -161,6 +161,45 @@ func TestBodySensitiveWriteCatalogTreatsLibpodBuildAsInspected(t *testing.T) {
 	}
 }
 
+// TestBodySensitiveWriteCatalogTreatsLibpodImagePullAsInspected pins the
+// config-validation half of the libpod image-pull gap: POST
+// /libpod/images/pull must be in the body-sensitive write catalog, and it must
+// be recognized as covered by request_body.image_pull so allowing it does not
+// spuriously demand insecure_allow_body_blind_writes.
+func TestBodySensitiveWriteCatalogTreatsLibpodImagePullAsInspected(t *testing.T) {
+	var endpoint bodySensitiveWriteEndpoint
+	found := false
+	for _, candidate := range bodySensitiveWriteEndpoints {
+		if candidate.method == http.MethodPost && candidate.path == "/libpod/images/pull" {
+			endpoint = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("POST /libpod/images/pull is missing from the body-sensitive write catalog")
+	}
+	if !bodyInspectionConfiguredForEndpoint(config.RequestBodyConfig{}, endpoint) {
+		t.Fatal("POST /libpod/images/pull is not recognized as covered by request_body.image_pull inspection")
+	}
+}
+
+func TestValidateAndCompileRulesAllowsLibpodImagePullWithRequestBodyInspection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Rules = []config.RuleConfig{
+		{Match: config.MatchConfig{Method: http.MethodPost, Path: "/libpod/images/pull"}, Action: "allow"},
+		{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+	}
+
+	compiled, err := validateAndCompileRules(&cfg)
+	if err != nil {
+		t.Fatalf("validateAndCompileRules() error = %v", err)
+	}
+	if len(compiled) != len(cfg.Rules) {
+		t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+	}
+}
+
 func TestValidateAndCompileRulesAllowsServiceWritesWithRequestBodyInspection(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Rules = []config.RuleConfig{
@@ -1127,6 +1166,54 @@ func TestValidateAndCompileRulesLibpodGates(t *testing.T) {
 			}
 			if len(compiled) != len(cfg.Rules) {
 				t.Fatalf("compiled %d rules, want %d", len(compiled), len(cfg.Rules))
+			}
+		})
+	}
+}
+
+func TestValidateAndCompileRulesLibpodImageLoadAndImportRequireBlindWriteAck(t *testing.T) {
+	for _, endpoint := range []string{"/libpod/images/load", "/libpod/images/import"} {
+		t.Run(endpoint, func(t *testing.T) {
+			for _, tt := range []struct {
+				name         string
+				acknowledged bool
+				wantErr      bool
+			}{
+				{name: "without acknowledgment", wantErr: true},
+				{name: "with acknowledgment", acknowledged: true},
+			} {
+				t.Run(tt.name, func(t *testing.T) {
+					cfg := config.Defaults()
+					cfg.InsecureAllowBodyBlindWrites = tt.acknowledged
+					cfg.Rules = []config.RuleConfig{
+						{Match: config.MatchConfig{Method: http.MethodPost, Path: endpoint}, Action: "allow"},
+						{Match: config.MatchConfig{Method: "*", Path: "/**"}, Action: "deny"},
+					}
+
+					compiled, err := validateAndCompileRules(&cfg)
+					if tt.wantErr {
+						if err == nil {
+							t.Fatal("expected validateAndCompileRules() to reject an unacknowledged body-blind image write")
+						}
+						for _, want := range []string{"insecure_allow_body_blind_writes=true", "POST " + endpoint} {
+							if !strings.Contains(err.Error(), want) {
+								t.Fatalf("expected %q in error, got: %v", want, err)
+							}
+						}
+						return
+					}
+
+					if err != nil {
+						t.Fatalf("validateAndCompileRules() error = %v", err)
+					}
+					for _, requestPath := range []string{endpoint, "/v5.0.0" + endpoint} {
+						req := httptest.NewRequest(http.MethodPost, requestPath, nil)
+						action, _, _ := filter.Evaluate(compiled, req)
+						if action != filter.ActionAllow {
+							t.Errorf("POST %s action = %q, want %q", requestPath, action, filter.ActionAllow)
+						}
+					}
+				})
 			}
 		})
 	}
