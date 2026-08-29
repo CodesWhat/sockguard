@@ -220,9 +220,15 @@ func TestBridgeFailsClosedWhenMediatedMethodHasNoDispatcher(t *testing.T) {
 		registry: registry,
 	}
 	rec := httptest.NewRecorder()
-	req := newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", "opaque")
+	req := newGRPCRequest(t, "/moby.buildkit.v1.Control/Prune", "opaque")
 
-	b.forwardAdmitted(rec, req, "moby.buildkit.v1.Control", "Info", Mediate)
+	// Prune is Deny-by-default and has no dispatcher of any kind, so handing
+	// forwardAdmitted a Mediate disposition for it is exactly the
+	// registry-vs-dispatcher drift this arm exists to fail closed on. Every
+	// method the registry actually lists as Mediate now has a dispatcher —
+	// TestEveryMediatedRegistryMethodHasDispatcher proves it — so the drift
+	// can only be staged artificially like this.
+	b.forwardAdmitted(rec, req, "moby.buildkit.v1.Control", "Prune", Mediate)
 
 	code, msg := grpcStatusOf(t, rec.Result())
 	if code != grpcCodeInternal {
@@ -279,7 +285,7 @@ func TestBridgeForwardsAdmittedMethodVerbatim(t *testing.T) {
 func TestBridgeForwardsPassthroughMethod(t *testing.T) {
 	tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), echoDaemonHandler())
 
-	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
+	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", ""))
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -299,13 +305,13 @@ func TestBridgeResponseSizeCapTripsResourceExhausted(t *testing.T) {
 
 	tb := newTestBridge(t, EndpointGRPC, allowAllPolicy, limits, bigDaemon)
 
-	// Info (Passthrough) rather than Solve: this test is exercising
+	// Health/Check (Passthrough) rather than Solve: this test is exercising
 	// forward()'s generic response size cap, which applies identically
 	// regardless of method — Solve now routes through
 	// forwardControlMediated's own per-message decode path (see
 	// TestBridgeControlMediatedSolve* for that coverage) and would reject
 	// this request's non-gRPC-framed empty body before ever reaching forward.
-	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/Info", ""))
+	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/grpc.health.v1.Health/Check", ""))
 	if err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -484,11 +490,11 @@ func TestBridgeForwardDefaultsHostWhenEmpty(t *testing.T) {
 	}}
 	b := newUnitTestBridge(t, fake)
 
-	req := httptest.NewRequest(http.MethodPost, "/moby.buildkit.v1.Control/Info", nil)
+	req := httptest.NewRequest(http.MethodPost, "/grpc.health.v1.Health/Check", nil)
 	req.Host = ""
 	rec := httptest.NewRecorder()
 
-	b.forward(rec, req, "moby.buildkit.v1.Control", "Info")
+	b.forward(rec, req, "grpc.health.v1.Health", "Check")
 
 	if fake.gotReq == nil {
 		t.Fatal("forward() never called RoundTrip")

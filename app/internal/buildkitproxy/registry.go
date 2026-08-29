@@ -30,10 +30,21 @@ const (
 	// forwarded — see the request_body.buildkit config surface.
 	Mediate
 	// Passthrough methods are relayed without a policy decision on message
-	// content, but are still size-capped and — per the #185 synthesis —
-	// typed, so a rewritten/filtered response (e.g. Info/ListWorkers
-	// advertising only the permitted method set) is possible without a
-	// full mediation path.
+	// content, but are still size-capped.
+	//
+	// This used to promise that "a rewritten/filtered response (e.g.
+	// Info/ListWorkers advertising only the permitted method set) is
+	// possible without a full mediation path" because Passthrough methods
+	// are "typed". That was wrong on both halves. InfoResponse,
+	// ListWorkersResponse and WorkerRecord are exactly the message types
+	// buildkitproto's control.proto trim left UNVENDORED (PROVENANCE.md),
+	// precisely because these two RPCs were Passthrough — so they were never
+	// typed here at all. And rewriting a response IS a policy decision on
+	// message content, which is what this disposition is defined as not
+	// making. Both methods are Mediate below now, and controlinfo.go filters
+	// their responses on protobuf wire bytes; the only methods left on this
+	// disposition are the gRPC health checks, whose response carries a
+	// serving status and nothing about the host.
 	Passthrough
 )
 
@@ -104,10 +115,16 @@ type method struct {
 // read it top to bottom.
 var registry = map[method]Disposition{
 	// moby.buildkit.v1.Control (EndpointGRPC, POST /grpc).
-	{EndpointGRPC, "moby.buildkit.v1.Control", "Solve"}:       Mediate,
-	{EndpointGRPC, "moby.buildkit.v1.Control", "Status"}:      Mediate,
-	{EndpointGRPC, "moby.buildkit.v1.Control", "Info"}:        Passthrough,
-	{EndpointGRPC, "moby.buildkit.v1.Control", "ListWorkers"}: Passthrough,
+	{EndpointGRPC, "moby.buildkit.v1.Control", "Solve"}:  Mediate,
+	{EndpointGRPC, "moby.buildkit.v1.Control", "Status"}: Mediate,
+	// Info and ListWorkers are Mediate on their RESPONSE only: their
+	// requests carry nothing policy-relevant (InfoRequest is empty,
+	// ListWorkersRequest carries a client-chosen worker filter) and are
+	// forwarded byte-for-byte, but the daemon's reply describes the host
+	// rather than the caller and is rewritten against a field allowlist
+	// before the client sees it — see controlinfo.go.
+	{EndpointGRPC, "moby.buildkit.v1.Control", "Info"}:        Mediate,
+	{EndpointGRPC, "moby.buildkit.v1.Control", "ListWorkers"}: Mediate,
 
 	// grpc.health.v1.Health, served locally per the synthesis ("gRPC
 	// health, advertising only the rewritten permitted method set") —

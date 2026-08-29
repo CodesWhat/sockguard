@@ -25,6 +25,7 @@ func TestEveryMediatedRegistryMethodHasDispatcher(t *testing.T) {
 			continue
 		}
 		if !isControlMediatedMethod(m.Endpoint, m.Service, m.Method) &&
+			!isControlResponseFilteredMethod(m.Endpoint, m.Service, m.Method) &&
 			!isSessionMediatedMethod(m.Endpoint, m.Service, m.Method) &&
 			!isStreamMediatedMethod(m.Endpoint, m.Service, m.Method) {
 			t.Errorf("%s/%s.%s is Mediate but has no dispatcher", m.Endpoint, m.Service, m.Method)
