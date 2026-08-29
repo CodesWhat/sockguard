@@ -931,6 +931,9 @@ func TestLoadEnvOverrides(t *testing.T) {
 	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_REQUESTS", "true")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_CREATE_ALLOW_DEVICE_CGROUP_RULES", "true")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_UPDATE_ALLOW_RESTART_POLICY", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_REMOVE_ALLOW_FORCE", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_REMOVE_ALLOW_REMOVE_VOLUMES", "true")
+	t.Setenv("SOCKGUARD_REQUEST_BODY_CONTAINER_REMOVE_ALLOW_REMOVE_LINKS", "true")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_NETWORK_ALLOW_ENDPOINT_CONFIG", "true")
 	t.Setenv("SOCKGUARD_REQUEST_BODY_SWARM_ALLOW_UNLOCK", "true")
 	t.Setenv("SOCKGUARD_OWNERSHIP_OWNER", "ci-job-456")
@@ -1019,6 +1022,15 @@ func TestLoadEnvOverrides(t *testing.T) {
 	}
 	if !cfg.RequestBody.ContainerUpdate.AllowRestartPolicy {
 		t.Errorf("RequestBody.ContainerUpdate.AllowRestartPolicy = %v, want true", cfg.RequestBody.ContainerUpdate.AllowRestartPolicy)
+	}
+	if !cfg.RequestBody.ContainerRemove.AllowForce {
+		t.Errorf("RequestBody.ContainerRemove.AllowForce = %v, want true", cfg.RequestBody.ContainerRemove.AllowForce)
+	}
+	if !cfg.RequestBody.ContainerRemove.AllowRemoveVolumes {
+		t.Errorf("RequestBody.ContainerRemove.AllowRemoveVolumes = %v, want true", cfg.RequestBody.ContainerRemove.AllowRemoveVolumes)
+	}
+	if !cfg.RequestBody.ContainerRemove.AllowRemoveLinks {
+		t.Errorf("RequestBody.ContainerRemove.AllowRemoveLinks = %v, want true", cfg.RequestBody.ContainerRemove.AllowRemoveLinks)
 	}
 	if !cfg.RequestBody.Network.AllowEndpointConfig {
 		t.Errorf("RequestBody.Network.AllowEndpointConfig = %v, want true", cfg.RequestBody.Network.AllowEndpointConfig)

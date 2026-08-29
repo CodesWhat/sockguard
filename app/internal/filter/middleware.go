@@ -73,6 +73,9 @@ type PolicyConfig struct {
 	// ContainerUpdate configures request-body inspection for
 	// POST /containers/*/update.
 	ContainerUpdate ContainerUpdateOptions
+	// ContainerRemove configures query inspection for
+	// DELETE /containers/{id}.
+	ContainerRemove ContainerRemoveOptions
 	// ContainerArchive configures request-body inspection for
 	// PUT /containers/*/archive.
 	ContainerArchive ContainerArchiveOptions
@@ -376,6 +379,7 @@ func compileRuntimePolicy(rules []*CompiledRule, cfg PolicyConfig, mutationEng *
 		{http.MethodPost, matchesImagePullInspection, inspectSeverityHigh, newImagePullPolicy(cfg.ImagePull).inspect, "failed to inspect image pull request", "unable to inspect image pull request"},
 		{http.MethodPost, matchesBuildInspection, inspectSeverityCritical, newBuildPolicy(cfg.Build).inspect, "failed to inspect build request", "unable to inspect build request"},
 		{http.MethodPost, matchesContainerUpdateInspection, inspectSeverityHigh, newContainerUpdatePolicy(cfg.ContainerUpdate).inspect, "failed to inspect container update request body", "unable to inspect container update request body"},
+		{http.MethodDelete, matchesContainerRemoveInspection, inspectSeverityMedium, newContainerRemovePolicy(cfg.ContainerRemove).inspect, "failed to inspect container remove query", "unable to inspect container remove query"},
 		{http.MethodPut, matchesContainerArchiveInspection, inspectSeverityHigh, newContainerArchivePolicy(cfg.ContainerArchive).inspect, "failed to inspect container archive request body", "unable to inspect container archive request body"},
 		{http.MethodPost, matchesImageLoadInspection, inspectSeverityHigh, newImageLoadPolicy(cfg.ImageLoad).inspect, "failed to inspect image load request body", "unable to inspect image load request body"},
 		{http.MethodPost, matchesVolumeInspection, inspectSeverityMedium, newVolumePolicy(cfg.Volume).inspect, "failed to inspect volume create request body", "unable to inspect volume create request body"},
@@ -435,6 +439,10 @@ func matchesBuildInspection(normalizedPath string) bool {
 
 func matchesContainerUpdateInspection(normalizedPath string) bool {
 	return isContainerUpdatePath(normalizedPath)
+}
+
+func matchesContainerRemoveInspection(normalizedPath string) bool {
+	return isContainerRemovePath(normalizedPath)
 }
 
 func matchesContainerArchiveInspection(normalizedPath string) bool {

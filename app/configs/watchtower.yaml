@@ -47,6 +47,9 @@ response:
 # container's configured user. Sockguard treats an empty User as root, so root
 # exec must be acknowledged in addition to the blind-write opt-in below.
 request_body:
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
   container_create:
     allowed_bind_mounts: []
     allowed_runtimes:

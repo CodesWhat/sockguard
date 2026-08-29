@@ -80,7 +80,9 @@ func TestWatchtowerPresetConformance(t *testing.T) {
 		{"container-start", http.MethodPost, "/containers/abc/start", "", true},
 		{"container-stop", http.MethodPost, "/containers/abc/stop", "", true},
 		{"container-rename", http.MethodPost, "/containers/abc/rename", "", true},
-		{"container-remove", http.MethodDelete, "/containers/abc", "", true},
+		{"container-remove-force", http.MethodDelete, "/containers/abc?force=true", "", true},
+		{"container-remove-volumes", http.MethodDelete, "/containers/abc?force=true&v=true", "", true},
+		{"container-remove-link-denied", http.MethodDelete, "/containers/abc?link=true", "", false},
 
 		// Watchtower recreates inspected containers with the stock runtime. A
 		// different explicit runtime must not pass the same create rule.

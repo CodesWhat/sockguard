@@ -39,6 +39,9 @@ func TestHomarrPresetConformance(t *testing.T) {
 		{"container-stop", http.MethodPost, "/containers/abc/stop", "", true},
 		{"container-restart", http.MethodPost, "/containers/abc/restart", "", true},
 		{"container-remove", http.MethodDelete, "/containers/abc", "", true},
+		{"container-remove-force-denied", http.MethodDelete, "/containers/abc?force=true", "", false},
+		{"container-remove-volumes-denied", http.MethodDelete, "/containers/abc?v=true", "", false},
+		{"container-remove-link-denied", http.MethodDelete, "/containers/abc?link=true", "", false},
 
 		// Docker API version prefixes normalize before matching.
 		{"v-prefixed-containers-list", http.MethodGet, "/v1.45/containers/json", "", true},
@@ -47,6 +50,7 @@ func TestHomarrPresetConformance(t *testing.T) {
 		{"v-prefixed-container-logs", http.MethodGet, "/v1.45/containers/abc/logs", "", true},
 		{"v-prefixed-container-start", http.MethodPost, "/v1.45/containers/abc/start", "", true},
 		{"v-prefixed-container-remove", http.MethodDelete, "/v1.45/containers/abc", "", true},
+		{"v-prefixed-container-remove-force-denied", http.MethodDelete, "/v1.45/containers/abc?force=1", "", false},
 
 		// Homarr does not call Docker metadata endpoints.
 		{"ping-get-denied", http.MethodGet, "/_ping", "", false},

@@ -26,6 +26,9 @@ response:
   redact_network_topology: false
 
 request_body:
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
   container_create:
     allowed_bind_mounts: []
     allowed_runtimes:

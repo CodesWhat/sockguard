@@ -102,6 +102,9 @@ response:
 # HostConfig.Runtime — without it every recreation is rejected at
 # POST /containers/create with 403 "runtime \"runc\" is not allowlisted".
 request_body:
+  container_remove:
+    allow_force: true
+    allow_remove_volumes: true
   container_create:
     allowed_bind_mounts: []
     allowed_runtimes:

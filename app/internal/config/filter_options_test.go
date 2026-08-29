@@ -51,6 +51,11 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowResourceUpdates: true,
 			AllowRestartPolicy:   true,
 		},
+		ContainerRemove: ContainerRemoveRequestBodyConfig{
+			AllowForce:         true,
+			AllowRemoveVolumes: true,
+			AllowRemoveLinks:   true,
+		},
 		ContainerArchive: ContainerArchiveRequestBodyConfig{
 			AllowedPaths:       []string{"/tmp/uploads", "/var/lib/app"},
 			AllowSetID:         true,
@@ -208,6 +213,11 @@ func TestRequestBodyConfigToFilterOptionsMapsEveryPolicy(t *testing.T) {
 			AllowCapabilities:    true,
 			AllowResourceUpdates: true,
 			AllowRestartPolicy:   true,
+		},
+		ContainerRemove: filter.ContainerRemoveOptions{
+			AllowForce:         true,
+			AllowRemoveVolumes: true,
+			AllowRemoveLinks:   true,
 		},
 		ContainerArchive: filter.ContainerArchiveOptions{
 			AllowedPaths:       []string{"/tmp/uploads", "/var/lib/app"},

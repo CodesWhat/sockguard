@@ -22,6 +22,8 @@ Optimized for the [drydock](https://github.com/CodesWhat/drydock) container upda
 # while still denying image imports via fromSrc
 # container updates are inspected; restart-policy/resource/device/capability changes
 # stay denied unless you explicitly allow them under request_body.container_update
+# container removal permits drydock's force-removal recovery path but keeps
+# anonymous-volume and legacy-link deletion denied
 # the stock "runc" runtime is allowlisted (request_body.container_create.allowed_runtimes)
 # because drydock recreates containers from their inspect spec, which usually carries an
 # explicit HostConfig.Runtime — without it every update would 403 at /containers/create
@@ -69,6 +71,8 @@ through this proxy, not just a single standalone container.
 # (POST /networks/*/connect is already allowed by drydock.yaml — untouched)
 # Body inspection for the new endpoints reuses drydock.yaml's existing
 # network/volume create guardrails (deny custom drivers/driver opts by default)
+# Container removal additionally permits Compose's force and anonymous-volume
+# cleanup controls; legacy link deletion stays denied
 # Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
 # with default settings never calls POST /build at all — it drives dockerd's
 # embedded BuildKit over the hijacked, unversioned /session and /grpc streams
@@ -153,6 +157,8 @@ any remote Docker agent that needs lifecycle control, image pull, and event stre
 ```yaml
 # Allows: container read (list, inspect, stats, top, changes, logs)
 # Allows: container lifecycle (start, stop, restart, kill, rename, update, wait, create, remove)
+# Container removal permits Portwing's force option; anonymous-volume and
+# legacy-link deletion stay denied
 # Allows: image read, pull, remove
 # Allows: network read, volume read, distribution, Swarm service reads
 # Denies: exec, build, swarm writes, secrets, plugins, raw archive/export/attach streams
@@ -203,6 +209,8 @@ plain container orchestration.
 #         POST /volumes/create, DELETE /volumes/*
 # Body inspection for the new endpoints reuses portwing.yaml's existing
 # network/volume create guardrails (deny custom drivers/driver opts by default)
+# Container removal additionally permits Compose's force and anonymous-volume
+# cleanup controls; legacy link deletion stays denied
 # Still denied: /build, /session, /grpc. `docker compose build` / `up --build`
 # with default settings never calls POST /build at all — it drives dockerd's
 # embedded BuildKit over the hijacked, unversioned /session and /grpc streams
@@ -337,7 +345,8 @@ Container update allows the restart-only request Watchtower uses to set
 values in that request, which the daemon treats as no-ops; nonzero resource,
 privilege, device and capability updates remain denied. Image list is
 explicitly denied before the registry-qualified image-inspect rule. The preset
-keeps
+permits Watchtower's force-removal path and optional anonymous-volume cleanup,
+while legacy link removal stays denied. It keeps
 `insecure_allow_body_blind_writes: true` for arbitrary lifecycle hooks and
 allows an empty exec user because Watchtower uses the container's configured
 user, but it no longer needs `insecure_allow_read_exfiltration: true`.
@@ -376,7 +385,9 @@ Optimized for [Homarr](https://homarr.dev) dashboard with container management.
 Homarr v1.76.2 uses container logs, so this preset still sets
 `insecure_allow_read_exfiltration: true`. Logs are the only exfiltration route
 it allows; container archive, export and attach routes and image tarball routes
-stay denied.
+stay denied. Its dockerode call is `container.remove()` with no options, so the
+preset allows only bare container removal; `force`, anonymous-volume deletion,
+and legacy link deletion stay denied.
 
 ## Diun (`diun.yaml`)
 
@@ -432,7 +443,9 @@ workflows (i.e. anything from a fork PR or a low-trust org member).
 The preset enforces what a workflow can *do* once admitted. Pair it
 with `clients.allowed_cidrs` (TCP listener) or `clients.unix_peer_profiles`
 (unix listener) to authenticate which process is connecting — sockguard
-on its own does not know which runner identity is on the other end.
+on its own does not know which runner identity is on the other end. The runner
+cleans up with `docker rm --force`, so force removal is enabled; anonymous-volume
+and legacy-link deletion stay denied.
 
 ## GitLab Runner (Docker Executor) (`gitlab-runner.yaml`)
 
@@ -453,6 +466,10 @@ to inject job steps.
 # via the logs and attach APIs. Gate the proxy socket to the runner via clients.unix_peer_profiles
 # or clients.allowed_cidrs to bound both.
 ```
+
+GitLab Runner force-removes job containers and removes their anonymous volumes
+unless `volume_keep` is enabled, so this preset enables both controls. Legacy
+link deletion stays denied.
 
 Notable: the preset **deliberately rejects privileged containers** even
 if the runner's `config.toml` has `privileged = true`. DinD-style jobs

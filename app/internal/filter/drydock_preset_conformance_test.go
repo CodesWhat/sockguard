@@ -129,6 +129,9 @@ func TestDrydockPresetConformance(t *testing.T) {
 		{"update", http.MethodPost, "/containers/abc/update", "", true},
 		{"wait", http.MethodPost, "/containers/abc/wait", "", true},
 		{"remove", http.MethodDelete, "/containers/abc", "", true},
+		{"force-remove-recovery", http.MethodDelete, "/containers/abc?force=true", "", true},
+		{"remove-volumes-denied", http.MethodDelete, "/containers/abc?v=true", "", false},
+		{"remove-link-denied", http.MethodDelete, "/containers/abc?link=true", "", false},
 
 		// Recreate: the inspect spec carries an explicit runc runtime, which the
 		// allowed_runtimes allowlist must admit. Guards regression B1.

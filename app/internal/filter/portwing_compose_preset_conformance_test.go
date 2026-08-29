@@ -35,6 +35,8 @@ func TestPortwingComposePresetConformance(t *testing.T) {
 		{"network-delete", http.MethodDelete, "/networks/abc", "", true},
 		{"volume-create", http.MethodPost, "/volumes/create", `{"Name":"stack_data","Driver":"local"}`, true},
 		{"volume-delete", http.MethodDelete, "/volumes/stack_data", "", true},
+		{"container-remove-force-and-volumes", http.MethodDelete, "/containers/abc?force=1&v=1", "", true},
+		{"container-remove-link-denied", http.MethodDelete, "/containers/abc?link=1", "", false},
 
 		// A custom network/volume driver is still denied — the compose
 		// additions don't loosen the existing driver allowlist defaults.
@@ -74,6 +76,8 @@ func TestDrydockComposePresetConformance(t *testing.T) {
 		{"network-delete", http.MethodDelete, "/networks/abc", "", true},
 		{"volume-create", http.MethodPost, "/volumes/create", `{"Name":"stack_data","Driver":"local"}`, true},
 		{"volume-delete", http.MethodDelete, "/volumes/stack_data", "", true},
+		{"container-remove-force-and-volumes", http.MethodDelete, "/containers/abc?force=1&v=1", "", true},
+		{"container-remove-link-denied", http.MethodDelete, "/containers/abc?link=1", "", false},
 
 		{"build-denied", http.MethodPost, "/build", "", false},
 		{"logs-denied", http.MethodGet, "/containers/abc/logs", "", false},
