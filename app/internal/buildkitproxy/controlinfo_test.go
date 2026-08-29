@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -74,31 +75,31 @@ var (
 func TestFilterControlResponseMessage(t *testing.T) {
 	cases := []struct {
 		name    string
-		fields  map[protowire.Number]responseFieldRule
+		table   *responseFieldTable
 		payload []byte
 		want    []byte
 	}{
 		{
 			name:    "InfoResponse keeps the buildkit version whole",
-			fields:  controlInfoResponseFields,
+			table:   controlInfoResponseFields,
 			payload: lengthDelimited(1, testBuildkitVersion),
 			want:    lengthDelimited(1, testBuildkitVersion),
 		},
 		{
 			name:    "InfoResponse with no version set stays empty",
-			fields:  controlInfoResponseFields,
+			table:   controlInfoResponseFields,
 			payload: nil,
 			want:    []byte{},
 		},
 		{
 			name:    "ListWorkersResponse drops labels, GC policy and CDI devices",
-			fields:  controlListWorkersResponseFields,
+			table:   controlListWorkersResponseFields,
 			payload: lengthDelimited(1, testWorkerRecord),
 			want:    lengthDelimited(1, testWorkerRecordFiltered),
 		},
 		{
-			name:   "every worker in a multi-worker response is filtered",
-			fields: controlListWorkersResponseFields,
+			name:  "every worker in a multi-worker response is filtered",
+			table: controlListWorkersResponseFields,
 			payload: concatBytes(
 				lengthDelimited(1, testWorkerRecord),
 				lengthDelimited(1, testWorkerRecord),
@@ -110,7 +111,7 @@ func TestFilterControlResponseMessage(t *testing.T) {
 		},
 		{
 			name:    "a worker with nothing but dropped fields becomes an empty record",
-			fields:  controlListWorkersResponseFields,
+			table:   controlListWorkersResponseFields,
 			payload: lengthDelimited(1, lengthDelimited(2, testWorkerLabelHostname)),
 			want:    lengthDelimited(1, nil),
 		},
@@ -118,7 +119,7 @@ func TestFilterControlResponseMessage(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, denial := filterControlResponseMessage(tc.payload, tc.fields)
+			got, _, denial := filterControlResponseMessage(tc.payload, tc.table)
 			if denial != nil {
 				t.Fatalf("filterControlResponseMessage denied a well-formed message: %s/%s", denial.reasonCode, denial.message)
 			}
@@ -134,7 +135,7 @@ func TestFilterControlResponseMessage(t *testing.T) {
 // label value, GC-policy value or CDI device name a caller is not permitted
 // may survive anywhere in the bytes the client receives.
 func TestFilterControlResponseWithholdsHostMetadata(t *testing.T) {
-	got, denial := filterControlResponseMessage(lengthDelimited(1, testWorkerRecord), controlListWorkersResponseFields)
+	got, _, denial := filterControlResponseMessage(lengthDelimited(1, testWorkerRecord), controlListWorkersResponseFields)
 	if denial != nil {
 		t.Fatalf("unexpected denial: %s", denial.reasonCode)
 	}
@@ -166,70 +167,42 @@ func TestFilterControlResponseWithholdsHostMetadata(t *testing.T) {
 func TestFilterControlResponseMessageFailsClosed(t *testing.T) {
 	cases := []struct {
 		name           string
-		fields         map[protowire.Number]responseFieldRule
+		table          *responseFieldTable
 		payload        []byte
 		wantReasonCode string
 		wantCode       int
 	}{
 		{
-			name:           "unknown top-level field on InfoResponse",
-			fields:         controlInfoResponseFields,
-			payload:        lengthDelimited(2, []byte("a field this filter has never reviewed")),
-			wantReasonCode: "buildkit_schema_unsupported",
-			wantCode:       grpcCodeFailedPrecondition,
-		},
-		{
-			name:           "unknown field added to WorkerRecord",
-			fields:         controlListWorkersResponseFields,
-			payload:        lengthDelimited(1, lengthDelimited(7, []byte("a future upstream field"))),
-			wantReasonCode: "buildkit_schema_unsupported",
-			wantCode:       grpcCodeFailedPrecondition,
-		},
-		{
-			name:           "unknown field added to BuildkitVersion",
-			fields:         controlInfoResponseFields,
-			payload:        lengthDelimited(1, lengthDelimited(5, []byte("a future upstream field"))),
-			wantReasonCode: "buildkit_schema_unsupported",
-			wantCode:       grpcCodeFailedPrecondition,
-		},
-		{
-			name:           "unknown field added to Platform",
-			fields:         controlListWorkersResponseFields,
-			payload:        lengthDelimited(1, lengthDelimited(3, lengthDelimited(6, []byte("a future upstream field")))),
-			wantReasonCode: "buildkit_schema_unsupported",
-			wantCode:       grpcCodeFailedPrecondition,
-		},
-		{
 			name:           "truncated length prefix",
-			fields:         controlListWorkersResponseFields,
+			table:          controlListWorkersResponseFields,
 			payload:        []byte{0x0a, 0x7f},
 			wantReasonCode: "buildkit_response_filter_failed",
 			wantCode:       grpcCodeInternal,
 		},
 		{
 			name:           "trailing tag with no value",
-			fields:         controlInfoResponseFields,
+			table:          controlInfoResponseFields,
 			payload:        []byte{0x0a},
 			wantReasonCode: "buildkit_response_filter_failed",
 			wantCode:       grpcCodeInternal,
 		},
 		{
 			name:           "known field arriving with a varint wire type",
-			fields:         controlInfoResponseFields,
+			table:          controlInfoResponseFields,
 			payload:        protowire.AppendVarint(protowire.AppendTag(nil, 1, protowire.VarintType), 7),
 			wantReasonCode: "buildkit_response_filter_failed",
 			wantCode:       grpcCodeInternal,
 		},
 		{
 			name:           "dropped field arriving with a varint wire type is still refused, not skipped",
-			fields:         controlListWorkersResponseFields,
+			table:          controlListWorkersResponseFields,
 			payload:        lengthDelimited(1, protowire.AppendVarint(protowire.AppendTag(nil, 2, protowire.VarintType), 7)),
 			wantReasonCode: "buildkit_response_filter_failed",
 			wantCode:       grpcCodeInternal,
 		},
 		{
 			name:           "garbage bytes",
-			fields:         controlListWorkersResponseFields,
+			table:          controlListWorkersResponseFields,
 			payload:        []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
 			wantReasonCode: "buildkit_response_filter_failed",
 			wantCode:       grpcCodeInternal,
@@ -238,7 +211,7 @@ func TestFilterControlResponseMessageFailsClosed(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, denial := filterControlResponseMessage(tc.payload, tc.fields)
+			got, _, denial := filterControlResponseMessage(tc.payload, tc.table)
 			if denial == nil {
 				t.Fatalf("filterControlResponseMessage admitted %x, want a denial", tc.payload)
 			}
@@ -314,7 +287,7 @@ func TestFilterControlUnaryResponseFraming(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			frame, denial := filterControlUnaryResponse(bytes.NewReader(tc.body), tc.maxLen, controlListWorkersResponseFields)
+			frame, _, denial := filterControlUnaryResponse(bytes.NewReader(tc.body), tc.maxLen, controlListWorkersResponseFields)
 			if tc.wantReasonCode != "" {
 				if denial == nil {
 					t.Fatalf("filterControlUnaryResponse admitted %x, want a %s denial", tc.body, tc.wantReasonCode)
@@ -401,12 +374,6 @@ func TestBridgeControlInfoFailsClosedOnUnfilterableResponse(t *testing.T) {
 			responseBody:   grpcFrame([]byte{0x0a, 0x7f, 0x01}),
 			wantCode:       grpcCodeInternal,
 			wantReasonCode: "buildkit_response_filter_failed",
-		},
-		{
-			name:           "a framed message carrying a field this filter has never reviewed",
-			responseBody:   grpcFrame(lengthDelimited(9, []byte(secret))),
-			wantCode:       grpcCodeFailedPrecondition,
-			wantReasonCode: "buildkit_schema_unsupported",
 		},
 	}
 
@@ -562,19 +529,20 @@ func FuzzFilterControlResponseMessage(f *testing.F) {
 	f.Add(lengthDelimited(1, lengthDelimited(7, []byte("unreviewed"))), true)
 
 	f.Fuzz(func(t *testing.T, payload []byte, listWorkers bool) {
-		fields := controlInfoResponseFields
+		table := controlInfoResponseFields
 		if listWorkers {
-			fields = controlListWorkersResponseFields
+			table = controlListWorkersResponseFields
 		}
 
-		got, denial := filterControlResponseMessage(payload, fields)
+		got, _, denial := filterControlResponseMessage(payload, table)
 		if denial != nil {
 			if got != nil {
 				t.Fatalf("denial %s still returned %x bytes", denial.reasonCode, got)
 			}
-			switch denial.reasonCode {
-			case "buildkit_schema_unsupported", "buildkit_response_filter_failed":
-			default:
+			// An unknown field number is dropped and reported now, not
+			// denied, so the only denial this function can still produce is
+			// "these bytes could not be parsed at all".
+			if denial.reasonCode != "buildkit_response_filter_failed" {
 				t.Fatalf("unexpected reason code %q", denial.reasonCode)
 			}
 			return
@@ -583,7 +551,7 @@ func FuzzFilterControlResponseMessage(f *testing.F) {
 			t.Fatalf("filtered %d bytes into %d; rewriting must never grow a message", len(payload), len(got))
 		}
 
-		again, denial := filterControlResponseMessage(got, fields)
+		again, _, denial := filterControlResponseMessage(got, table)
 		if denial != nil {
 			t.Fatalf("re-filtering an already-filtered message denied it: %s", denial.reasonCode)
 		}
@@ -591,4 +559,139 @@ func FuzzFilterControlResponseMessage(f *testing.F) {
 			t.Fatalf("filtering is not idempotent: %x then %x", got, again)
 		}
 	})
+}
+
+// TestFilterControlResponseMessageDropsUnknownFields is the other half of the
+// fails-closed story. An unknown field number is NOT a denial: it is dropped,
+// and reported so an operator learns the tables are behind upstream. What
+// matters is that dropping withholds exactly what denying would have, which
+// is why every case here asserts the payload bytes are gone from the output
+// as well as asserting the drift report.
+//
+// The four shapes are the four depths a future upstream field can appear at,
+// and all four have real precedent: upstream added WorkerRecord.5 in v0.11.0,
+// WorkerRecord.6 in v0.20.0 and BuildkitVersion.4 in v0.30.0.
+func TestFilterControlResponseMessageDropsUnknownFields(t *testing.T) {
+	const secret = "org.mobyproject.buildkit.worker.hostname=build-host-01.internal"
+
+	cases := []struct {
+		name      string
+		table     *responseFieldTable
+		payload   []byte
+		wantDrift []schemaDriftField
+	}{
+		{
+			name:      "unknown top-level field on InfoResponse",
+			table:     controlInfoResponseFields,
+			payload:   lengthDelimited(2, []byte(secret)),
+			wantDrift: []schemaDriftField{{table: "InfoResponse", number: 2}},
+		},
+		{
+			name:      "unknown field added to WorkerRecord",
+			table:     controlListWorkersResponseFields,
+			payload:   lengthDelimited(1, lengthDelimited(7, []byte(secret))),
+			wantDrift: []schemaDriftField{{table: "WorkerRecord", number: 7}},
+		},
+		{
+			name:      "unknown field added to BuildkitVersion",
+			table:     controlInfoResponseFields,
+			payload:   lengthDelimited(1, lengthDelimited(5, []byte(secret))),
+			wantDrift: []schemaDriftField{{table: "BuildkitVersion", number: 5}},
+		},
+		{
+			name:      "unknown field added to Platform",
+			table:     controlListWorkersResponseFields,
+			payload:   lengthDelimited(1, lengthDelimited(3, lengthDelimited(6, []byte(secret)))),
+			wantDrift: []schemaDriftField{{table: "Platform", number: 6}},
+		},
+		{
+			name:  "a non-length-delimited unknown field is skipped by its own wire type",
+			table: controlInfoResponseFields,
+			// Field 3, varint. ConsumeFieldValue measures it without the
+			// BytesType check known fields get, so this must not be an error.
+			payload:   append(protowire.AppendTag(nil, 3, protowire.VarintType), protowire.AppendVarint(nil, 42)...),
+			wantDrift: []schemaDriftField{{table: "InfoResponse", number: 3}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, drift, denial := filterControlResponseMessage(tc.payload, tc.table)
+			if denial != nil {
+				t.Fatalf("an unknown field denied the response (%s); it must be dropped and reported instead", denial.reasonCode)
+			}
+			if bytes.Contains(got, []byte(secret)) {
+				t.Fatalf("dropping let the unknown field's bytes through:\n%x", got)
+			}
+			if !reflect.DeepEqual(drift, tc.wantDrift) {
+				t.Fatalf("drift = %+v, want %+v", drift, tc.wantDrift)
+			}
+		})
+	}
+}
+
+// TestBridgeControlListWorkersDropsAndReportsSchemaDrift is the end-to-end
+// version: the call must SUCCEED, the unknown field's bytes must not reach
+// the client, and the operator must get both a warning naming the message and
+// field and an audit record, so drift is visible without being fatal.
+func TestBridgeControlListWorkersDropsAndReportsSchemaDrift(t *testing.T) {
+	const secret = "org.mobyproject.buildkit.worker.hostname=build-host-01.internal"
+
+	// A WorkerRecord carrying only a field 7 nobody has reviewed.
+	body := grpcFrame(lengthDelimited(1, lengthDelimited(7, []byte(secret))))
+	daemon := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/grpc")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	})
+
+	logs := &syncLogBuffer{}
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	tb := newTestBridgeWithLogger(t, EndpointGRPC, allowAllPolicy, DefaultLimits(), daemon, logger)
+
+	resp, err := tb.driver.RoundTrip(newGRPCRequest(t, "/moby.buildkit.v1.Control/ListWorkers", string(grpcFrame(nil))))
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	relayed, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading response body: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if got := resp.Header.Get("Grpc-Status"); got != "" && got != "0" {
+		t.Fatalf("Grpc-Status header = %q; schema drift must not fail the call", got)
+	}
+	if bytes.Contains(relayed, []byte(secret)) {
+		t.Fatalf("the unknown field's bytes reached the client: %q", relayed)
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, "reason_code=buildkit_schema_drift") {
+		t.Fatalf("audit log missing reason_code=buildkit_schema_drift:\n%s", out)
+	}
+	if !strings.Contains(out, "message=WorkerRecord") || !strings.Contains(out, "field=7") {
+		t.Fatalf("drift report does not name the message and field an operator has to look up:\n%s", out)
+	}
+}
+
+// TestSchemaDriftLimiterReportsEachFieldOnce pins the rate limit. ListWorkers
+// runs at least once per build, so an unrated warning on a drifted daemon is
+// a line per build forever.
+func TestSchemaDriftLimiterReportsEachFieldOnce(t *testing.T) {
+	var limiter schemaDriftLimiter
+	worker7 := schemaDriftField{table: "WorkerRecord", number: 7}
+
+	if !limiter.allow(worker7) {
+		t.Fatal("the first sighting of a drifted field must be reported")
+	}
+	if limiter.allow(worker7) {
+		t.Fatal("the same field was reported twice; the limiter is not deduplicating")
+	}
+	if !limiter.allow(schemaDriftField{table: "Platform", number: 7}) {
+		t.Fatal("field 7 in a different message is a different fact and must be reported on its own")
+	}
+	if !limiter.allow(schemaDriftField{table: "WorkerRecord", number: 8}) {
+		t.Fatal("a different field in the same message must be reported on its own")
+	}
 }
