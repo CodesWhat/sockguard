@@ -124,7 +124,9 @@ func libpodContainerIdentifier(method, normPath string) (string, bool) {
 // GET /libpod/images/export?references=…. They remain reserved above, while
 // image_batch.go parses and owner-checks their query subjects before the
 // request is forwarded. The Docker-compat GET /images/get?names=… route uses
-// that same batch path.
+// that same batch path but is refused under ownership because one selector can
+// export a multi-platform index that the ordinary image inspect cannot fully
+// authorize.
 func libpodImageIdentifier(method, normPath string) (string, bool) {
 	if !strings.HasPrefix(normPath, libpodPrefix+"images/") {
 		return "", false

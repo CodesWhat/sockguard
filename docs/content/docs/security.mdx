@@ -221,37 +221,50 @@ remains a `502` lookup failure.
 
 The same boundary applies to references embedded inside container and service payloads, not only the resource named by the URL. Container creates authorize the requested image, named volumes, custom network mode, every endpoint-config network, and every `container:<ref>` namespace-sharing target. Service creates and updates authorize the task image, named volumes, networks, secrets, and configs. A foreign label or unresolved workload dependency is denied before Docker sees the request; only an image that successfully resolves and is genuinely unlabeled can use `allow_unowned_images`. Create new volumes, networks, secrets, and configs through their owner-stamping endpoints before attaching them to a workload. This turns one shared Docker socket into N isolated identity views without leaving workload dependencies as an ownership side door.
 
-Image batch export and removal get a stricter preflight because forwarding one
-mixed batch can disclose or delete several images before a later member fails.
-In `enforce` mode, Sockguard resolves every repeated `names`, `references`, or
-`images` query value on `GET /images/get`,
-`GET /libpod/images/export`, and `DELETE /libpod/images/remove` before the
-daemon sees the action. Every member must carry the caller's owner label;
-`allow_unowned_images` does not admit an unlabeled batch member. A foreign,
-unlabeled, missing, or lookup-failed member stops the whole request, and the
-original query is forwarded byte-for-byte only after all checks pass. Values
-are percent-decoded once and repeated keys form the list. Commas remain part
-of one value because neither Moby nor Podman's string-slice decoder splits
-them. Podman's `References` and `Images` key spellings are case-insensitive;
-Sockguard combines every casing in arrival order, deduplicates decoded
-identifiers for ownership lookup, and refuses more than 256 selected values
-before deduplication so one action cannot amplify into unbounded daemon
-inspect work.
+Native image batch export and removal get a stricter preflight because
+forwarding one mixed batch can disclose or delete several images before a
+later member fails. In `enforce` mode, Sockguard resolves every repeated
+`references` value on `GET /libpod/images/export` and every repeated `images`
+value on `DELETE /libpod/images/remove` before the daemon sees the action.
+Every member must carry the caller's owner label; `allow_unowned_images` does
+not admit an unlabeled batch member. A foreign, unlabeled, missing, or
+lookup-failed member stops the whole request, and the original query is
+forwarded byte-for-byte only after all checks pass. Values are percent-decoded
+once and repeated keys form the list. Commas remain part of one value because
+Podman's string-slice decoder does not split them. Podman's `References` and
+`Images` key spellings are case-insensitive; Sockguard combines every casing in
+arrival order, deduplicates decoded identifiers for ownership lookup, and
+refuses more than 256 selected values before deduplication so one action cannot
+amplify into unbounded daemon inspect work.
 
-Two collection-expanding forms are refused instead of guessed at. Podman's
-batch remove treats an empty `images` list as a request to enumerate and remove
-the matching image collection, even when `all=false`, so owner isolation
-requires at least one image. With a non-empty `images` list, Podman takes the
-named-image branch even when the last `all` value is true, so that form remains
-available after each named image passes preflight. Moby treats a name-only
-`names=team/app` export as every tagged image in that repository, so the
-Docker-compatible batch route requires an explicit tag, digest, or full image
-ID. Podman's native export resolves a name-only reference to one image and can
-still use it. These are preflight checks, not a daemon transaction: an image
-tag can still be rebound between inspect and action, and a later daemon-side
-operational failure can still leave Podman's own multi-image remove partially
-applied. The ownership gate guarantees that no initially unauthorized batch is
-forwarded; it cannot make the upstream API atomic.
+Native batch removal is admitted only when its complete effect remains inside
+that named-image set. An empty `images` list enters Podman's collection-removal
+path even when `all=false`, so owner isolation requires at least one image.
+Podman's default `noprune=false` recursively removes dangling parent images,
+so every possible case-insensitive `noprune` decode must be true. Any possible
+`force=true` decode is refused because Podman can remove containers using the
+image. Any possible `lookupManifest=true` decode is refused because it changes
+lookup from the platform instance returned by the compatibility inspect to the
+manifest-list object. Gorilla/schema groups repetitions by their exact decoded
+key spelling, uses the last value within one spelling, and matches separate
+spellings case-insensitively in unspecified map order. Sockguard therefore
+accepts a scalar control only when every result Podman could act on is safe.
+
+Docker-compatible `GET /images/get?names=…` is refused when ownership is active
+and at least one name is supplied. On Moby's containerd image store, a tag,
+digest, or full ID can name a multi-platform index. Omitting `platform` exports
+the full index, and an explicit platform can differ from the default platform
+whose config the ordinary image inspect returns. Sockguard cannot enumerate
+and authorize every exported config through that inspect shape, so every named
+compatibility export fails closed rather than relying on the classic image
+store's narrower behavior. An omitted `names` list is still forwarded to the
+daemon's own no-reference error.
+
+These native checks are preflights, not a daemon transaction. An image tag can
+still be rebound between inspect and action, and a later daemon-side failure
+can still leave a multi-image removal partially applied. The ownership gate
+guarantees that no initially unauthorized native batch is forwarded; it cannot
+make the upstream API atomic.
 
 ### Layer 7: Visibility-Controlled Reads
 Sockguard's response filter applies to known protected Docker JSON response shapes on successful body-bearing 2xx responses across request methods, not only `GET 200`. If a protected successful response cannot be parsed or sanitized safely, Sockguard fails closed with a generic `502` instead of forwarding unsanitized data. Non-success responses, `HEAD` responses, no-body statuses, non-protected paths, and streaming endpoints (logs, attach, events) pass through unmodified — those are protected by request-side rules and the read-side exfiltration guardrail, not by response rewriting.

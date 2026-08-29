@@ -143,21 +143,32 @@ same way they cover Docker-compat:
   registers on the same `InspectNetwork` handler as `/libpod/networks/{id}/json`.
   `POST /libpod/images/scp/{name}` copies an image to another host, so it is
   owner-checked against `{name}` like a push.
-- Query-selected image batches are owner-checked too. Sockguard decodes every
-  repeated `names` value on Docker-compatible `GET /images/get`, every repeated
-  `references` value on `GET /libpod/images/export`, and every repeated
-  `images` value on `DELETE /libpod/images/remove`, then resolves all of them
-  before forwarding the original request. Each image must carry the caller's
-  owner label even when `allow_unowned_images` permits unlabeled images on
-  ordinary per-image requests. Percent-encoded slashes, tags, and digests are
-  decoded once. A comma is not a list separator in the handlers Podman
-  actually runs, so clients must repeat the query key for multiple images.
-  Podman's case-insensitive query decoder also accepts `References` and
-  `Images`; Sockguard combines every casing in arrival order before checking,
-  deduplicates decoded identifiers for lookup, and refuses more than 256
-  selected values before deduplication.
-  A foreign, unlabeled, missing, or lookup-failed member prevents the daemon
-  from seeing any part of the batch.
+- Query-selected native image batches are owner-checked too. Sockguard decodes
+  every repeated `references` value on `GET /libpod/images/export` and every
+  repeated `images` value on `DELETE /libpod/images/remove`, then resolves all
+  of them before forwarding the original request. Each image must carry the
+  caller's owner label even when `allow_unowned_images` permits unlabeled
+  images on ordinary per-image requests. Percent-encoded slashes, tags, and
+  digests are decoded once. A comma is not a list separator in Podman's real
+  handlers, so clients must repeat the query key for multiple images. Podman's
+  case-insensitive decoder also accepts `References` and `Images`; Sockguard
+  combines every casing in arrival order before checking, deduplicates decoded
+  identifiers for lookup, and refuses more than 256 selected values before
+  deduplication. Native removal also requires `noprune=true`; `force=true` and
+  `lookupManifest=true` are refused because they can act on containers, parent
+  images, or a manifest object outside the named-image preflight. Different
+  case spellings and repetitions are evaluated conservatively using Podman's
+  scalar decoder semantics. A foreign, unlabeled, missing, lookup-failed, or
+  effect-expanding member prevents the daemon from seeing any part of the
+  batch.
+- Docker-compatible `GET /images/get?names=…` is refused when ownership is
+  active and at least one name is supplied. Moby's containerd image store can
+  export a full multi-platform index for one tag, digest, or ID, and a requested
+  platform can differ from the default platform returned by an ordinary image
+  inspect. Sockguard cannot prove every exported platform's owner through that
+  inspect shape, so it fails closed instead of treating the selector as one
+  image. An omitted `names` list is still forwarded to Docker's own
+  no-reference error.
 - `GET /libpod/events` is owner-filtered but is only partly expressible as a
   visibility policy, and that asymmetry is deliberate. Podman evaluates
   several values under one event filter key disjunctively, so a `label=` value
@@ -354,17 +365,17 @@ land):
   non-empty `images` values makes Podman's image engine enumerate and remove a
   collection, including with `all=false`; `all=true` is collection-wide when
   images are omitted for the same reason. Owner isolation refuses the empty
-  shape. With at least one image, Podman takes its named-image branch even when
-  the last repeated `all` value is true, and Sockguard permits the request
-  after every named image passes preflight.
-  The same conservative boundary applies to Moby's Docker-compatible export:
-  a name-only `GET /images/get?names=team/app` expands to every tag in that
-  repository, so Sockguard requires an explicit tag, digest, or full image ID
-  there. Podman's native `GET /libpod/images/export` resolves a name-only
-  reference to one image and remains supported. These checks do not make the
-  daemon action transactional. A tag can be rebound after its preflight
-  inspect, and Podman can still partially apply an authorized multi-image
-  delete if a later daemon-side operation fails.
+  shape. With at least one image, Sockguard still requires `noprune=true` and
+  refuses `force=true` or `lookupManifest=true`; those controls can remove
+  unnamed parents, containers, or a manifest object that the named-image
+  preflight did not authorize. Podman's native `GET /libpod/images/export`
+  resolves a name-only reference to one image and remains supported.
+  Docker-compatible `GET /images/get` cannot get the same treatment. One tag,
+  digest, or ID may be a multi-platform index in Moby's containerd image store,
+  so every named compatibility export is refused while ownership is active.
+  These checks do not make the daemon action transactional. A tag can be
+  rebound after its preflight inspect, and Podman can still partially apply an
+  authorized multi-image delete if a later daemon-side operation fails.
 - A **visibility** policy with more than one `visible_resource_labels` selector
   is enforceable on `GET /libpod/events` but not on the Docker-compat
   `GET /events` that Podman also serves, because they are the same handler with

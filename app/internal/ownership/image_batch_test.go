@@ -20,21 +20,6 @@ func TestImageBatchOwnershipPreflightsEveryNamedImage(t *testing.T) {
 		wantIDs []string
 	}{
 		{
-			name:    "compat one tagged reference",
-			method:  http.MethodGet,
-			target:  "/images/get?names=registry.example%2Fteam%2Fapp%3A1",
-			wantIDs: []string{"registry.example/team/app:1"},
-		},
-		{
-			name:   "versioned compat repeated tag and image ID",
-			method: http.MethodGet,
-			target: "/v1.52/images/get?names=registry.example%2Fteam%2Fapp%3A1&names=sha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			wantIDs: []string{
-				"registry.example/team/app:1",
-				"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			},
-		},
-		{
 			name:   "versioned libpod export repeated tag and digest",
 			method: http.MethodGet,
 			target: "/v5.8.1/libpod/images/export?format=docker-archive&references=registry.example%2Fteam%2Fapp%3A1&references=registry.example%2Fteam%2Fapp%40sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -62,7 +47,7 @@ func TestImageBatchOwnershipPreflightsEveryNamedImage(t *testing.T) {
 		{
 			name:   "versioned libpod remove repeated references",
 			method: http.MethodDelete,
-			target: "/v5.8.1/libpod/images/remove?force=true&images=registry.example%2Fteam%2Fapp%3A1&images=sha256%3Acccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+			target: "/v5.8.1/libpod/images/remove?noprune=true&images=registry.example%2Fteam%2Fapp%3A1&images=sha256%3Acccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			wantIDs: []string{
 				"registry.example/team/app:1",
 				"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
@@ -71,7 +56,7 @@ func TestImageBatchOwnershipPreflightsEveryNamedImage(t *testing.T) {
 		{
 			name:   "libpod remove folds every image key variant in arrival order",
 			method: http.MethodDelete,
-			target: "/libpod/images/remove?Images=mine%3A1&IMAGES=theirs%3A1&images=ours%3A1",
+			target: "/libpod/images/remove?noprune=true&Images=mine%3A1&IMAGES=theirs%3A1&images=ours%3A1",
 			wantIDs: []string{
 				"mine:1",
 				"theirs:1",
@@ -81,13 +66,25 @@ func TestImageBatchOwnershipPreflightsEveryNamedImage(t *testing.T) {
 		{
 			name:    "libpod remove does not split commas",
 			method:  http.MethodDelete,
-			target:  "/libpod/images/remove?all=false&images=mine%3A1%2Ctheirs%3A1",
+			target:  "/libpod/images/remove?all=false&noprune=true&images=mine%3A1%2Ctheirs%3A1",
 			wantIDs: []string{"mine:1,theirs:1"},
 		},
 		{
 			name:    "libpod named remove uses the last repeated all value",
 			method:  http.MethodDelete,
-			target:  "/libpod/images/remove?all=false&all=true&images=mine%3A1",
+			target:  "/libpod/images/remove?all=false&all=true&noprune=true&images=mine%3A1",
+			wantIDs: []string{"mine:1"},
+		},
+		{
+			name:    "libpod named remove uses the last repeated safe scalar values",
+			method:  http.MethodDelete,
+			target:  "/libpod/images/remove?force=true&force=false&noprune=false&noprune=true&lookupManifest=true&lookupManifest=false&images=mine%3A1",
+			wantIDs: []string{"mine:1"},
+		},
+		{
+			name:    "libpod empty scalar case variant does not clear a true setter",
+			method:  http.MethodDelete,
+			target:  "/libpod/images/remove?NoPrune=true&noprune=&images=mine%3A1",
 			wantIDs: []string{"mine:1"},
 		},
 	}
@@ -145,11 +142,6 @@ func TestImageBatchOwnershipDeduplicatesUpstreamLookups(t *testing.T) {
 		target string
 	}{
 		{
-			name:   "compat repeated names",
-			method: http.MethodGet,
-			target: "/images/get?names=mine%3A1&names=mine%3A1",
-		},
-		{
 			name:   "libpod export repeated case variants",
 			method: http.MethodGet,
 			target: "/libpod/images/export?references=mine%3A1&References=mine%3A1&REFERENCES=mine%3A1",
@@ -157,7 +149,7 @@ func TestImageBatchOwnershipDeduplicatesUpstreamLookups(t *testing.T) {
 		{
 			name:   "libpod remove repeated case variants",
 			method: http.MethodDelete,
-			target: "/libpod/images/remove?images=mine%3A1&Images=mine%3A1&IMAGES=mine%3A1",
+			target: "/libpod/images/remove?noprune=true&images=mine%3A1&Images=mine%3A1&IMAGES=mine%3A1",
 		},
 	}
 
@@ -222,6 +214,165 @@ func TestImageBatchOwnershipRejectsTooManySelectedReferencesBeforeLookup(t *test
 	}
 }
 
+func TestImageBatchOwnershipRefusesCompatExportWhosePlatformEffectsCannotBeFullyAuthorized(t *testing.T) {
+	tests := []struct {
+		name   string
+		target string
+		id     string
+	}{
+		{
+			name:   "tag with implicit full index",
+			target: "/images/get?names=registry.example%2Fteam%2Fapp%3A1",
+			id:     "registry.example/team/app:1",
+		},
+		{
+			name:   "tag with one platform not carried into inspect",
+			target: "/v1.52/images/get?names=registry.example%2Fteam%2Fapp%3A1&platform=linux%2Farm64",
+			id:     "registry.example/team/app:1",
+		},
+		{
+			name:   "full ID may name an index",
+			target: "/v1.52/images/get?names=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&platform=linux%2Famd64",
+			id:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		{
+			name:   "digest with several selected platforms",
+			target: "/v1.52/images/get?names=registry.example%2Fteam%2Fapp%40sha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb&platform=linux%2Famd64&platform=linux%2Farm64",
+			id:     "registry.example/team/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inspector := &recordingInspector{resources: map[string]map[string]inspectResult{
+				string(dockerresource.KindImage): {
+					tt.id: {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+				},
+			}}
+			reached := false
+			handler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+				inspector.inspectResource,
+				inspector.inspectExec,
+			)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.target, nil))
+
+			if rec.Code != http.StatusForbidden || reached {
+				t.Fatalf("status = %d reached = %v, want %d and false; body: %s", rec.Code, reached, http.StatusForbidden, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "multi-platform image export") {
+				t.Fatalf("body = %q, want multi-platform image export denial", rec.Body.String())
+			}
+			if len(inspector.calls) != 0 {
+				t.Fatalf("inspect calls = %#v, want none for an export whose full effect cannot be enumerated", inspector.calls)
+			}
+		})
+	}
+}
+
+func TestImageBatchOwnershipRejectsEffectExpandingLibpodRemoveOptions(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		wantStatus int
+		wantReason string
+	}{
+		{
+			name:       "force removes containers",
+			target:     "/libpod/images/remove?images=mine%3A1&noprune=true&force=true",
+			wantStatus: http.StatusForbidden,
+			wantReason: "force image batch removal",
+		},
+		{
+			name:       "force case variants have competing final values",
+			target:     "/libpod/images/remove?images=mine%3A1&noprune=true&Force=false&FORCE=true",
+			wantStatus: http.StatusForbidden,
+			wantReason: "force image batch removal",
+		},
+		{
+			name:       "pruning enabled by default",
+			target:     "/libpod/images/remove?images=mine%3A1",
+			wantStatus: http.StatusForbidden,
+			wantReason: "requires noprune=true",
+		},
+		{
+			name:       "pruning explicitly enabled",
+			target:     "/libpod/images/remove?images=mine%3A1&noprune=false",
+			wantStatus: http.StatusForbidden,
+			wantReason: "requires noprune=true",
+		},
+		{
+			name:       "pruning case variants have competing final values",
+			target:     "/libpod/images/remove?images=mine%3A1&NoPrune=true&NOPRUNE=false",
+			wantStatus: http.StatusForbidden,
+			wantReason: "requires noprune=true",
+		},
+		{
+			name:       "manifest lookup retargets removal",
+			target:     "/libpod/images/remove?images=mine%3A1&noprune=true&lookupManifest=true",
+			wantStatus: http.StatusForbidden,
+			wantReason: "manifest-list image batch removal",
+		},
+		{
+			name:       "manifest lookup case variants have competing final values",
+			target:     "/libpod/images/remove?images=mine%3A1&noprune=true&LookupManifest=false&LOOKUPMANIFEST=true",
+			wantStatus: http.StatusForbidden,
+			wantReason: "manifest-list image batch removal",
+		},
+		{
+			name:       "malformed case variant scalar",
+			target:     "/libpod/images/remove?images=mine%3A1&noprune=true&Force=invalid",
+			wantStatus: http.StatusBadRequest,
+			wantReason: "force",
+		},
+		{
+			name:       "malformed case variant all scalar",
+			target:     "/libpod/images/remove?images=mine%3A1&noprune=true&All=invalid",
+			wantStatus: http.StatusBadRequest,
+			wantReason: "all",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inspector := &recordingInspector{resources: map[string]map[string]inspectResult{
+				string(dockerresource.KindImage): {
+					"mine:1": {labels: map[string]string{"com.sockguard.owner": "job-123"}, found: true},
+				},
+			}}
+			reached := false
+			handler := middlewareWithDeps(
+				testLogger(),
+				Options{Owner: "job-123", LabelKey: "com.sockguard.owner"},
+				inspector.inspectResource,
+				inspector.inspectExec,
+			)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, tt.target, nil))
+
+			if rec.Code != tt.wantStatus || reached {
+				t.Fatalf("status = %d reached = %v, want %d and false; body: %s", rec.Code, reached, tt.wantStatus, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.wantReason) {
+				t.Fatalf("body = %q, want reason containing %q", rec.Body.String(), tt.wantReason)
+			}
+			if len(inspector.calls) != 0 {
+				t.Fatalf("inspect calls = %#v, want none before rejecting unsafe removal controls", inspector.calls)
+			}
+		})
+	}
+}
+
 func TestImageBatchOwnershipDeniesTheWholeRequestWhenAnyImageIsUnauthorized(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -231,9 +382,9 @@ func TestImageBatchOwnershipDeniesTheWholeRequestWhenAnyImageIsUnauthorized(t *t
 		result inspectResult
 	}{
 		{
-			name:   "compat mixed owner batch",
+			name:   "libpod export mixed owner batch",
 			method: http.MethodGet,
-			target: "/images/get?names=mine%3A1&names=theirs%3A1",
+			target: "/libpod/images/export?references=mine%3A1&references=theirs%3A1",
 			badID:  "theirs:1",
 			result: inspectResult{labels: map[string]string{"com.sockguard.owner": "other-job"}, found: true},
 		},
@@ -247,7 +398,7 @@ func TestImageBatchOwnershipDeniesTheWholeRequestWhenAnyImageIsUnauthorized(t *t
 		{
 			name:   "libpod remove requires owner label despite allow unowned",
 			method: http.MethodDelete,
-			target: "/libpod/images/remove?images=mine%3A1&images=unlabeled%3A1",
+			target: "/libpod/images/remove?noprune=true&images=mine%3A1&images=unlabeled%3A1",
 			badID:  "unlabeled:1",
 			result: inspectResult{labels: map[string]string{}, found: true},
 		},
@@ -286,9 +437,8 @@ func TestImageBatchOwnershipLookupFailureStopsBeforeTheUpstream(t *testing.T) {
 		method string
 		target string
 	}{
-		{name: "compat", method: http.MethodGet, target: "/images/get?names=broken%3A1"},
 		{name: "libpod export", method: http.MethodGet, target: "/libpod/images/export?references=broken%3A1"},
-		{name: "libpod remove", method: http.MethodDelete, target: "/libpod/images/remove?images=broken%3A1"},
+		{name: "libpod remove", method: http.MethodDelete, target: "/libpod/images/remove?noprune=true&images=broken%3A1"},
 	}
 
 	for _, tt := range tests {

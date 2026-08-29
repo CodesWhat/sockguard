@@ -26,6 +26,11 @@ type imageBatchQueryValue struct {
 	value string
 }
 
+type imageBatchBoolPossibilities struct {
+	mayBeTrue  bool
+	mayBeFalse bool
+}
+
 func isImageBatchOwnershipPath(method, normPath string) bool {
 	return method == http.MethodGet && (normPath == "/images/get" || normPath == libpodPrefix+"images/export") ||
 		method == http.MethodDelete && normPath == libpodPrefix+"images/remove"
@@ -39,6 +44,7 @@ func parseImageBatchOwnershipReferences(r *http.Request, normPath string) (*imag
 
 	key := "names"
 	foldKeys := false
+	denialReason := ""
 	switch normPath {
 	case libpodPrefix + "images/export":
 		key = "references"
@@ -46,18 +52,29 @@ func parseImageBatchOwnershipReferences(r *http.Request, normPath string) (*imag
 	case libpodPrefix + "images/remove":
 		key = "images"
 		foldKeys = true
-		var lastAllValue string
-		hasAllValue := false
-		for _, field := range query {
-			if field.key == "all" {
-				lastAllValue = field.value
-				hasAllValue = true
-			}
+		if _, err := parseImageBatchBoolPossibilities(query, "all"); err != nil {
+			return nil, fmt.Errorf("invalid image batch query: %w", err)
 		}
-		if hasAllValue {
-			if _, err := strconv.ParseBool(lastAllValue); err != nil {
-				return nil, fmt.Errorf("invalid image batch query: all: %w", err)
-			}
+		force, err := parseImageBatchBoolPossibilities(query, "force")
+		if err != nil {
+			return nil, fmt.Errorf("invalid image batch query: %w", err)
+		}
+		noPrune, err := parseImageBatchBoolPossibilities(query, "noprune")
+		if err != nil {
+			return nil, fmt.Errorf("invalid image batch query: %w", err)
+		}
+		lookupManifest, err := parseImageBatchBoolPossibilities(query, "lookupManifest")
+		if err != nil {
+			return nil, fmt.Errorf("invalid image batch query: %w", err)
+		}
+
+		switch {
+		case force.mayBeTrue:
+			denialReason = "owner policy denied force image batch removal because it can remove containers"
+		case noPrune.mayBeFalse:
+			denialReason = "owner policy requires noprune=true for image batch removal"
+		case lookupManifest.mayBeTrue:
+			denialReason = "owner policy denied manifest-list image batch removal"
 		}
 	}
 
@@ -87,15 +104,58 @@ func parseImageBatchOwnershipReferences(r *http.Request, normPath string) (*imag
 	if normPath == libpodPrefix+"images/remove" && len(identifiers) == 0 {
 		return &imageBatchOwnershipReferences{denialReason: "owner policy denied unscoped image batch removal"}, nil
 	}
-	if normPath == "/images/get" {
-		for _, identifier := range identifiers {
-			if !compatImageExportNamesOneImage(identifier) {
-				return &imageBatchOwnershipReferences{denialReason: "owner policy cannot safely enumerate an image repository export"}, nil
-			}
-		}
+	if denialReason != "" {
+		return &imageBatchOwnershipReferences{denialReason: denialReason}, nil
+	}
+	if normPath == "/images/get" && len(identifiers) > 0 {
+		return &imageBatchOwnershipReferences{denialReason: "owner policy cannot safely authorize Docker-compatible multi-platform image export"}, nil
 	}
 
 	return &imageBatchOwnershipReferences{identifiers: identifiers}, nil
+}
+
+// parseImageBatchBoolPossibilities mirrors the native Podman decoder's
+// security-relevant scalar behavior. Gorilla/schema matches field names with
+// strings.EqualFold, but r.URL.Query groups values by their exact decoded key
+// spelling before the decoder iterates that map. Repetitions of one exact
+// spelling use their last value; differently-cased spellings each remain a
+// possible final setter because map iteration order is unspecified. An empty
+// final value is a no-op with the decoder's default ZeroEmpty(false).
+func parseImageBatchBoolPossibilities(query []imageBatchQueryValue, key string) (imageBatchBoolPossibilities, error) {
+	lastBySpelling := make(map[string]string)
+	spellings := make([]string, 0)
+	for _, field := range query {
+		if !strings.EqualFold(field.key, key) {
+			continue
+		}
+		if _, seen := lastBySpelling[field.key]; !seen {
+			spellings = append(spellings, field.key)
+		}
+		lastBySpelling[field.key] = field.value
+	}
+
+	possibilities := imageBatchBoolPossibilities{}
+	hasSetter := false
+	for _, spelling := range spellings {
+		value := lastBySpelling[spelling]
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.ParseBool(value)
+		if err != nil {
+			return imageBatchBoolPossibilities{}, fmt.Errorf("%s: %w", key, err)
+		}
+		hasSetter = true
+		if parsed {
+			possibilities.mayBeTrue = true
+		} else {
+			possibilities.mayBeFalse = true
+		}
+	}
+	if !hasSetter {
+		possibilities.mayBeFalse = true
+	}
+	return possibilities, nil
 }
 
 // parseImageBatchQuery follows net/url.ParseQuery's decoding and validation
@@ -131,30 +191,6 @@ func parseImageBatchQuery(rawQuery string) ([]imageBatchQueryValue, error) {
 		values = append(values, imageBatchQueryValue{key: key, value: value})
 	}
 	return values, nil
-}
-
-func compatImageExportNamesOneImage(identifier string) bool {
-	if len(identifier) == 64 {
-		allHex := true
-		for _, char := range identifier {
-			if (char < '0' || char > '9') && (char < 'a' || char > 'f') && (char < 'A' || char > 'F') {
-				allHex = false
-				break
-			}
-		}
-		if allHex {
-			return true
-		}
-	}
-
-	if at := strings.IndexByte(identifier, '@'); at > 0 && at == strings.LastIndexByte(identifier, '@') {
-		digest := identifier[at+1:]
-		separator := strings.IndexByte(digest, ':')
-		return separator > 0 && separator < len(digest)-1
-	}
-
-	lastColon := strings.LastIndexByte(identifier, ':')
-	return lastColon > strings.LastIndexByte(identifier, '/') && lastColon < len(identifier)-1
 }
 
 func checkImageBatchOwnershipReferences(
