@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The marketing site and docs site record acquisition attribution.** `save_campaign_params` and `save_referrer` are enabled, and the `before_send` allowlist forwards the five `utm_*` values plus `$referring_domain` on `$pageview` and `$pageleave`. The referrer is transmitted at hostname granularity only: `$referrer` is never copied onto the outgoing envelope, because a full referrer URL can carry a path from a private page. A `$referring_domain` that is not a bare hostname is dropped rather than trimmed, and the `gclid`/`fbclid`/`msclkid` click identifiers that `save_campaign_params` collects are excluded. Neither option uses browser storage, so the cookieless posture is unchanged and no consent banner is required.
+
 ## [2.0.0] - 2026-08-28
 
 v2.0.0 promotes `2.0.0-rc.4` after the exact candidate passed the four-hour

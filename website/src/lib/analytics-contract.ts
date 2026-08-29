@@ -252,6 +252,14 @@ function createCommonProperties(
   return properties;
 }
 
+// Rebuilds the envelope from scratch. Omitting $set and $set_once is
+// deliberate and load-bearing, not an oversight: with save_referrer on,
+// posthog-js attaches a top-level $set_once carrying $initial_referrer,
+// which is the FULL referrer URL including path and query. Copying those
+// fields through to "complete" the CaptureResult type would leak exactly
+// what applyAcquisitionProperties exists to prevent. Pinned by
+// "person-property envelopes never reach the wire" in
+// scripts/analytics-contract.test.mjs.
 function createCaptureResult(input: CaptureResult, properties: CaptureProperties): CaptureResult {
   const result: CaptureResult = {
     uuid: input.uuid,
