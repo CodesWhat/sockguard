@@ -116,12 +116,23 @@ func runMatch(cmd *cobra.Command, args []string) error {
 		URL:    &url.URL{Path: path},
 	}
 	decision, matchedRuleIndex, reason := filter.Evaluate(compiled, req)
+	normalizedPath := filter.NormalizePath(path)
+	gatedDecision, acknowledgmentReason, hardDeny := filter.EnforceReadExfiltrationAcknowledgment(
+		decision,
+		method,
+		normalizedPath,
+		cfg.InsecureAllowReadExfiltration,
+	)
+	if hardDeny {
+		decision = gatedDecision
+		reason = acknowledgmentReason
+	}
 
 	result := matchResult{
 		Config:         cfgFile,
 		Method:         method,
 		Path:           path,
-		NormalizedPath: filter.NormalizePath(path),
+		NormalizedPath: normalizedPath,
 		Decision:       string(decision),
 		Reason:         reason,
 		CompatMode:     compatActive,

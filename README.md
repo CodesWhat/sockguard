@@ -431,7 +431,8 @@ sockguard version                                   # Print version
 at a config and a `<method, path>` and it prints which rule fires,
 what the normalized path looks like, and the reason (if any), so
 you can sanity-check a ruleset before any traffic hits the proxy.
-Output is text by default or JSON via `-o json`.
+It applies the same hard container process-list acknowledgment gate as the
+running proxy. Output is text by default or JSON via `-o json`.
 
 <hr>
 

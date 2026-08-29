@@ -257,14 +257,12 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			normPath := resolveNormalizedPath(meta, r)
 			action, ruleIndex, reason := evaluateNormalized(activePolicy.rules, r.Method, normPath)
 			denyStatus := http.StatusForbidden
-			hardDeny := false
 			reasonCode := ruleDecisionReasonCode(action, reason)
 			stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
-			if !opts.AllowReadExfiltration && isContainerTopRead(r.Method, normPath) {
-				action = ActionDeny
-				hardDeny = true
+			action, acknowledgmentReason, hardDeny := EnforceReadExfiltrationAcknowledgment(action, r.Method, normPath, opts.AllowReadExfiltration)
+			if hardDeny {
 				reasonCode = reasonCodeReadExfiltrationAckRequired
-				reason = "container process-list reads require insecure_allow_read_exfiltration: true"
+				reason = acknowledgmentReason
 				stampDecisionOnMeta(meta, action, ruleIndex, reasonCode, reason, normPath)
 			}
 
@@ -300,6 +298,16 @@ func MiddlewareWithOptions(rules []*CompiledRule, logger *slog.Logger, opts Opti
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+// EnforceReadExfiltrationAcknowledgment applies the hard container process-list
+// gate shared by the runtime middleware and offline rule matcher. normalizedPath
+// must already be canonicalized with NormalizePath.
+func EnforceReadExfiltrationAcknowledgment(action Action, method, normalizedPath string, acknowledged bool) (Action, string, bool) {
+	if acknowledged || !isContainerTopRead(method, normalizedPath) {
+		return action, "", false
+	}
+	return ActionDeny, "container process-list reads require insecure_allow_read_exfiltration: true", true
 }
 
 func isContainerTopRead(method, normPath string) bool {
