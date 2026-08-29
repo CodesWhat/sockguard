@@ -29,6 +29,14 @@ function runSelfTest() {
   });
 }
 
+function extractShellFunction(script, name, nextName) {
+  const start = script.indexOf(`${name}() {`);
+  const end = script.indexOf(`\n\n${nextName}() {`, start);
+  assert.notEqual(start, -1, `${name} should exist`);
+  assert.notEqual(end, -1, `${nextName} should follow ${name}`);
+  return script.slice(start, end);
+}
+
 describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
   it("passes the route normalizer + tripwire diff self-test", () => {
     const result = runSelfTest();
@@ -122,6 +130,45 @@ describe("tri-tool-conformance/run-matrix.sh --self-test", () => {
 
     assert.match(script, /'"reason":"unknown-key"'/);
     assert.match(script, /'"reason":"timestamp-skew"'/);
+  });
+
+  it("reports an enrollment transport failure without an unset-variable abort", () => {
+    const fixtureDir = mkdtempSync(join(tmpdir(), "tri-tool-enroll-failure-"));
+    const publicPath = join(fixtureDir, "controller.pub");
+    const script = readFileSync(scriptPath, "utf8");
+    const identityEnroll = extractShellFunction(
+      script,
+      "identity_enroll",
+      "identity_replace_registry",
+    );
+    writeFileSync(publicPath, "ed25519 ZmFrZS1wdWJsaWM= test-controller\n");
+
+    try {
+      const result = spawnSync(
+        "bash",
+        [
+          "-uc",
+          [
+            'IDENTITY_AGENT="identity-agent"',
+            'compose() { printf "%s\\n" "probe transport unavailable" >&2; return 42; }',
+            identityEnroll,
+            'identity_enroll "enrollment-secret" "$1" || true',
+            'printf "%s\\n%s\\n" "$IDENTITY_ENROLL_STATUS" "$IDENTITY_ENROLL_BODY"',
+          ].join("\n"),
+          "bash",
+          publicPath,
+        ],
+        { cwd: repoRoot, encoding: "utf8" },
+      );
+
+      assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+      assert.match(result.stdout, /^transport-error\n/);
+      assert.match(result.stdout, /exit 42/);
+      assert.match(result.stdout, /probe transport unavailable/);
+      assert.doesNotMatch(result.stderr, /unbound variable/);
+    } finally {
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
   });
 
   it("makes the clock control writable before restoring it", () => {

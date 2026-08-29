@@ -902,12 +902,18 @@ identity_key_id() {
 }
 
 identity_enroll() {
-  local secret="$1" public_file="$2" request response
+  local secret="$1" public_file="$2" request response rc=0
+  IDENTITY_ENROLL_STATUS="transport-error"
+  IDENTITY_ENROLL_BODY="enrollment request did not complete"
   request="$(jq -n --arg secret "$secret" --arg public_key "$(awk 'NF >= 2 && $1 == "ed25519" { print $2; exit }' "$public_file")" \
     '{enrollment_token:$secret,public_key:$public_key}')"
   response="$(compose exec -T probe curl --silent --show-error --max-time 10 \
     -X POST -H 'Content-Type: application/json' -d "$request" \
-    --write-out '\n%{http_code}' "http://${IDENTITY_AGENT}:4100/api/portwing/enroll" 2>/dev/null)" || return 1
+    --write-out '\n%{http_code}' "http://${IDENTITY_AGENT}:4100/api/portwing/enroll" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    IDENTITY_ENROLL_BODY="enrollment transport failed (compose/curl exit ${rc}): ${response:-no diagnostic output}"
+    return 1
+  fi
   IDENTITY_ENROLL_STATUS="$(tail -n 1 <<<"$response")"
   IDENTITY_ENROLL_BODY="$(sed '$d' <<<"$response")"
 }
