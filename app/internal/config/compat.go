@@ -83,7 +83,10 @@ func ApplyCompat(cfg *Config, logger *slog.Logger) bool {
 		return false
 	}
 
-	logger.Info("tecnativa compatibility mode active", "note", "generating rules from environment variables")
+	logger.Info("tecnativa compatibility mode active",
+		"note", "generating rules from environment variables",
+		"vars", strings.Join(compatEnvVarSettings(), ","),
+	)
 	warnInvalidCompatEnvVars(logger)
 
 	rules := generateSectionRules()
@@ -136,6 +139,21 @@ func CompatEnvironmentVariables() []string {
 		}
 	}
 	return found
+}
+
+// compatEnvVarSettings returns "KEY=value" for every Tecnativa env var
+// CompatEnvironmentVariables found set, in the same order. These are all
+// policy-shaping booleans (POST, CONTAINERS, ALLOW_START, ...), never
+// credentials, so the activation log can name what actually armed compat
+// mode instead of just noting that something did.
+func compatEnvVarSettings() []string {
+	keys := CompatEnvironmentVariables()
+	settings := make([]string, 0, len(keys))
+	for _, key := range keys {
+		val, _ := os.LookupEnv(key)
+		settings = append(settings, key+"="+val)
+	}
+	return settings
 }
 
 func warnInvalidCompatEnvVars(logger *slog.Logger) {
